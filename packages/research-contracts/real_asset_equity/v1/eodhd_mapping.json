@@ -1,0 +1,75 @@
+{
+  "$id": "https://yourfirm.internal/schemas/source-mapping/v1.0.0",
+  "title": "Source & API Mapping Layer (API-agnostic core + EODHD primary)",
+  "description": "Separates the report schema from any specific vendor. Each schema field path maps to a PRIMARY source (EODHD where it fits your student-rate Fundamentals plan) and one or more FALLBACK sources (free). If you ever swap EODHD for FMP/Tiingo/etc, you only edit this file, never the report schema. 'eodhd_endpoint' values reference EODHD's documented endpoints; agents using EODHD's MCP server (75 tools) can also call by tool name. Field paths use dot/[] notation into report_schema.json.",
+  "provider_primary": "EODHD_Fundamentals_Data_Feed_student_rate",
+  "swap_instructions": "To change provider: replace 'eodhd_endpoint' + 'eodhd_path' on each row with the new vendor's locator. Report schema is untouched.",
+
+  "global_notes": {
+    "currency_normalization": "EODHD returns native reporting currency. Agent must convert market_cap/EV/revenue to USD_m using a dated FX (EODHD forex endpoint or ECB reference rate, both acceptable T2/T5) and record the rate+date in datapoint.note.",
+    "liquidity": "avg_daily_value_traded computed by agent: EODHD EOD volume x close, 90-day average. data_quality B; mark T6 for the computation.",
+    "tier_assignment_rule": "When a fact comes from EODHD but EODHD itself sourced it from a filing (US via SEC, Canada via SEDAR), agent should record source_tier as T5_api_aggregator UNLESS it has independently opened the underlying filing, in which case T1 with the filing named. Do not inflate tiers."
+  },
+
+  "mappings": [
+    {"field": "identity.legal_name", "eodhd_endpoint": "/fundamentals/{TICKER}", "eodhd_path": "General.Name", "fallback": ["company IR page (T1)", "SEC EDGAR / SEDAR+ cover (T2)"]},
+    {"field": "identity.ticker", "eodhd_endpoint": "/fundamentals/{TICKER}", "eodhd_path": "General.Code", "fallback": []},
+    {"field": "identity.exchange", "eodhd_endpoint": "/fundamentals/{TICKER}", "eodhd_path": "General.Exchange", "fallback": []},
+    {"field": "identity.country_domicile", "eodhd_endpoint": "/fundamentals/{TICKER}", "eodhd_path": "General.CountryName", "fallback": []},
+    {"field": "identity.reporting_currency", "eodhd_endpoint": "/fundamentals/{TICKER}", "eodhd_path": "General.CurrencyCode", "fallback": []},
+    {"field": "identity.fiscal_year_end", "eodhd_endpoint": "/fundamentals/{TICKER}", "eodhd_path": "General.FiscalYearEnd", "fallback": []},
+    {"field": "identity.one_line_description", "eodhd_endpoint": "/fundamentals/{TICKER}", "eodhd_path": "General.Description", "fallback": ["company website (T1)"], "note": "EODHD description is often generic; agent should rewrite from the latest annual report for accuracy."},
+    {"field": "identity.position_in_supply_chain", "eodhd_endpoint": null, "eodhd_path": null, "fallback": ["agent inference from filings (T6, justify)"], "note": "Not in any API. Agent-derived from business description + supply-chain reasoning."},
+
+    {"field": "snapshot_financials.price", "eodhd_endpoint": "/real-time/{TICKER} or /eod/{TICKER}", "eodhd_path": "close", "fallback": ["exchange site (T2)"]},
+    {"field": "snapshot_financials.market_cap_usd_m", "eodhd_endpoint": "/fundamentals/{TICKER}", "eodhd_path": "Highlights.MarketCapitalization", "fallback": [], "note": "Convert to USD."},
+    {"field": "snapshot_financials.enterprise_value_usd_m", "eodhd_endpoint": "/fundamentals/{TICKER}", "eodhd_path": "Valuation.EnterpriseValue", "fallback": ["compute: mktcap + net debt + minorities - cash (T6)"]},
+    {"field": "snapshot_financials.ebitda_ttm_usd_m", "eodhd_endpoint": "/fundamentals/{TICKER}", "eodhd_path": "Highlights.EBITDA", "fallback": ["income statement compute (T1/T6)"]},
+    {"field": "snapshot_financials.revenue_ttm_usd_m", "eodhd_endpoint": "/fundamentals/{TICKER}", "eodhd_path": "Highlights.RevenueTTM", "fallback": []},
+    {"field": "snapshot_financials.ev_ebitda_x", "eodhd_endpoint": "/fundamentals/{TICKER}", "eodhd_path": "Valuation.EnterpriseValueEbitda", "fallback": ["compute (T6)"]},
+    {"field": "snapshot_financials.fcf_ttm_usd_m", "eodhd_endpoint": "/fundamentals/{TICKER}", "eodhd_path": "Financials.Cash_Flow.* (freeCashFlow)", "fallback": ["CFO - capex from cash-flow statement (T1)"]},
+    {"field": "snapshot_financials.shares_out_m", "eodhd_endpoint": "/fundamentals/{TICKER}", "eodhd_path": "SharesStats.SharesOutstanding", "fallback": []},
+    {"field": "snapshot_financials.free_float_pct", "eodhd_endpoint": "/fundamentals/{TICKER}", "eodhd_path": "SharesStats.PercentInsiders / PercentInstitutions", "fallback": ["compute 100 - insider% (T6)"]},
+    {"field": "snapshot_financials.avg_daily_value_traded_usd_k", "eodhd_endpoint": "/eod/{TICKER}", "eodhd_path": "volume x close, 90d avg", "fallback": ["exchange data (T2)"], "note": "Agent computes; T6."},
+
+    {"field": "business.revenue_segments", "eodhd_endpoint": "/fundamentals/{TICKER}", "eodhd_path": "(limited; often absent for small caps)", "fallback": ["annual report segment note (T1) — PREFERRED", "MD&A (T1)"], "note": "For small caps EODHD segment data is thin; go to the filing."},
+    {"field": "business.geographic_revenue_split", "eodhd_endpoint": null, "eodhd_path": null, "fallback": ["annual report geographic note (T1)"]},
+    {"field": "business.market_share", "eodhd_endpoint": null, "eodhd_path": null, "fallback": ["industry report T3", "USGS for commodity share T2", "agent estimate T6"]},
+    {"field": "business.customer_concentration", "eodhd_endpoint": null, "eodhd_path": null, "fallback": ["10-K/annual report customer-concentration disclosure (T1)"], "note": "Often a required risk-factor disclosure; agent should grep filings."},
+
+    {"field": "real_asset_block.ppe_net_usd_m", "eodhd_endpoint": "/fundamentals/{TICKER}", "eodhd_path": "Financials.Balance_Sheet.*.propertyPlantEquipment", "fallback": ["balance sheet (T1)"]},
+    {"field": "real_asset_block.goodwill_intangibles_pct_of_assets", "eodhd_endpoint": "/fundamentals/{TICKER}", "eodhd_path": "Financials.Balance_Sheet.*.(goodWill + intangibleAssets)/totalAssets", "fallback": ["balance sheet compute (T6)"]},
+    {"field": "real_asset_block.estimated_replacement_value_usd_m", "eodhd_endpoint": null, "eodhd_path": null, "fallback": ["technical report capex (T1)", "comparable project build costs (T3)", "agent model (T6)"]},
+    {"field": "real_asset_block.mining_resource.reserves", "eodhd_endpoint": null, "eodhd_path": null, "fallback": ["NI 43-101 / JORC technical report (T1) — MANDATORY source", "SEDAR+ filing (T2)"], "note": "Never take reserves from an aggregator. Always the technical report."},
+    {"field": "real_asset_block.mining_resource.aisc_or_cash_cost", "eodhd_endpoint": null, "eodhd_path": null, "fallback": ["technical report / feasibility study (T1)", "company presentation (T1)"]},
+    {"field": "real_asset_block.commodity_price_sensitivity.current_spot_or_term_price", "eodhd_endpoint": null, "eodhd_path": null, "fallback": ["see commodity_price_sources in source_taxonomy.json"], "note": "Genuine data gap at this budget; use free proxies, mark quality C/D."},
+    {"field": "real_asset_block.capacity_metric", "eodhd_endpoint": null, "eodhd_path": null, "fallback": ["company filings/presentations (T1)", "IEA/EIA capacity data for generation (T2)"]},
+
+    {"field": "financials_deep.revenue_3y", "eodhd_endpoint": "/fundamentals/{TICKER}", "eodhd_path": "Financials.Income_Statement.yearly.*.totalRevenue", "fallback": ["filings (T1)"]},
+    {"field": "financials_deep.roic_or_roce", "eodhd_endpoint": "/fundamentals/{TICKER}", "eodhd_path": "Highlights.ReturnOnEquityTTM (proxy) / compute ROCE", "fallback": ["compute NOPAT/CapitalEmployed (T6)"]},
+    {"field": "financials_deep.debt_structure.total_debt_usd_m", "eodhd_endpoint": "/fundamentals/{TICKER}", "eodhd_path": "Financials.Balance_Sheet.*.(shortLongTermDebtTotal)", "fallback": ["balance sheet (T1)"]},
+    {"field": "financials_deep.debt_structure.nearest_maturity", "eodhd_endpoint": null, "eodhd_path": null, "fallback": ["debt note in annual report (T1)", "bond prospectus (T1)"], "note": "Maturity schedule is in the filing notes, not the API."},
+
+    {"field": "peers.peer_table", "eodhd_endpoint": "/screener + /fundamentals", "eodhd_path": "use Screener API to find same-sector small caps, then pull fundamentals each", "fallback": ["agent-constructed from theme knowledge (T6)"], "note": "EODHD Screener filters by market cap, sector, exchange — useful for peer discovery AND for the upstream screening funnel."},
+
+    {"field": "governance.key_holders", "eodhd_endpoint": "/fundamentals/{TICKER}", "eodhd_path": "Holders.Institutions / Holders.Funds", "fallback": ["proxy / 13D-13G / SEDAR+ insider reports (T1/T2)"]},
+    {"field": "governance.insider_activity", "eodhd_endpoint": "/insider-transactions?code={TICKER}", "eodhd_path": "(SEC Form 4 feed)", "fallback": ["SEC EDGAR Form 4 direct (T2)", "SEDAR+ insider reporting / Canada SEDI (T2)", "ASX Appendix 3Y (T2)"], "note": "EODHD insider feed is strong for US; for non-US go to the local regulator filing."},
+    {"field": "governance.executive_remuneration_comment", "eodhd_endpoint": null, "eodhd_path": null, "fallback": ["proxy statement DEF 14A (T1)", "remuneration report in annual report (T1)"]},
+
+    {"field": "catalysts_risks.tariff_trade_exposure", "eodhd_endpoint": null, "eodhd_path": null, "fallback": ["USTR / EU tariff databases (T2)", "company filings risk factors (T1)", "trade press (T4)"]},
+
+    {"field": "thesis.macro_geopolitical_tailwind", "eodhd_endpoint": "/news?s={TICKER} (sentiment + headlines, supporting only)", "eodhd_path": "news array", "fallback": ["IEA/IRENA/EIA reports (T2)", "USGS critical-minerals (T2)", "see source_taxonomy.json"], "note": "EODHD news is a discovery aid, not a citable authority for the tailwind itself — anchor to T2/T3."},
+
+    {"field": "discovery_profile.entry_path", "eodhd_endpoint": null, "eodhd_path": null, "fallback": ["agent meta-record of how the candidate was reached (T6)"], "note": "Pipeline metadata, not an external fact. The coordinator agent records which discovery route produced the name."},
+    {"field": "discovery_profile.supply_chain_distance_from_obvious", "eodhd_endpoint": null, "eodhd_path": null, "fallback": ["agent inference from the connection map (T6)"]},
+    {"field": "discovery_profile.coverage_metrics.sell_side_estimate_count", "eodhd_endpoint": "/fundamentals/{TICKER}", "eodhd_path": "AnalystRatings / Earnings estimate provider count (where present)", "fallback": ["count distinct brokers in any estimate feed (T5)", "0 if none found, quality C"], "note": "Thin or absent for small caps — absence itself is the signal (under-covered)."},
+    {"field": "discovery_profile.coverage_metrics.institutional_ownership_pct", "eodhd_endpoint": "/fundamentals/{TICKER}", "eodhd_path": "SharesStats.PercentInstitutions", "fallback": ["13F aggregation via EDGAR (T2)"]},
+    {"field": "discovery_profile.coverage_metrics.english_news_volume_12m", "eodhd_endpoint": "/news?s={TICKER}&limit=...", "eodhd_path": "count of English items last 12m", "fallback": ["agent web-search hit count (T6)"], "note": "Low volume + a real thesis = language-barrier edge."},
+    {"field": "discovery_profile.coverage_metrics.primary_disclosure_language", "eodhd_endpoint": null, "eodhd_path": null, "fallback": ["inspect the primary filing on the local regulator (T1/T2)"], "note": "Non-English primary disclosure is a structural coverage barrier the agent can arbitrage via translation."},
+    {"field": "discovery_profile.coverage_metrics.days_since_ipo_or_relisting", "eodhd_endpoint": "/fundamentals/{TICKER}", "eodhd_path": "General.IPODate (compute delta)", "fallback": ["exchange listing record (T2)"]},
+    {"field": "discovery_profile.coverage_metrics.sector_tag_mismatch", "eodhd_endpoint": "/fundamentals/{TICKER}", "eodhd_path": "General.Sector / General.Industry vs business description", "fallback": ["agent judgement: does the tag match what they actually do? (T6)"], "note": "Mis-tagged names are invisible to thematic screens — a discovery gold-seam."},
+
+    {"field": "discovery_profile.event_trigger.trigger_type", "eodhd_endpoint": "/insider-transactions (for insider triggers only)", "eodhd_path": "insider feed", "fallback": ["see source_taxonomy.discovery_feeds_event_triggers — permits, USAspending/EU TED awards, UN Comtrade flow shifts, export-control notices, Google Patents clusters, refinancing filings (T1/T2)"], "note": "Most trigger types are NOT in any fundamentals API — they live in regulator/procurement/registry feeds. This is the point: the edge is in feeds others don't read."},
+    {"field": "discovery_profile.event_trigger.trigger_date", "eodhd_endpoint": null, "eodhd_path": null, "fallback": ["date stamped on the originating filing/award/notice (T1/T2)"]}
+  ]
+}

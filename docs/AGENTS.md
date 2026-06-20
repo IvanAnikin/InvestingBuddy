@@ -160,6 +160,87 @@ used by `POST /api/v1/reports/{id}/validate-citations`.
 
 ---
 
+---
+
+## Real-Asset Equity Report Schema Contract (Phase 3.5)
+
+All future company-analysis workflows targeting real-asset companies (energy transition, grid, materials, mining, defense sub-tier, etc.) must produce output that is **schema-valid** against:
+
+```
+packages/research-contracts/real_asset_equity/v1/report_schema.json
+```
+
+This schema enforces the `datapoint` envelope rule: **every value-bearing fact must include source, date, source tier, and data quality flag.** Bare numbers are a schema violation.
+
+### Datapoint Rule
+
+Every financial metric must be wrapped:
+
+```json
+{
+  "value": 320.0,
+  "unit": "USD_m",
+  "as_of": "2026-06-01",
+  "source_tier": "T5_api_aggregator",
+  "source_name": "EODHD fundamentals",
+  "source_url": null,
+  "data_quality": "B_single_credible",
+  "note": "Converted from SEK at 10.42 SEK/USD on 2026-06-01"
+}
+```
+
+A bare `"market_cap_usd_m": 320.0` is rejected by the schema validator.
+
+### Source Tiers
+
+| Tier | Label | Examples |
+|---|---|---|
+| T1 | `T1_primary_filing` | Annual reports, 10-K, NI 43-101, company IR |
+| T2 | `T2_regulator_or_gov` | SEC EDGAR, SEDAR+, USGS, IEA, Eurostat |
+| T3 | `T3_industry_specialist` | Trade bodies, recognized commodity analysts |
+| T4 | `T4_quality_media` | FT, Reuters, Bloomberg News |
+| T5 | `T5_api_aggregator` | **EODHD**, Stooq, Alpha Vantage |
+| T6 | `T6_model_estimate` | Agent-derived calculation (must show method) |
+
+EODHD is T5. See `docs/DATA_SOURCES.md` for full taxonomy.
+
+### CitationValidator Upgrade Path (Phase 4)
+
+In Phase 4, `CitationValidator` will validate both:
+
+1. **Database citations** — existing Phase 3 behaviour: are thesis, rating, and financial_metrics sections cited in the `citations` table?
+2. **Report schema datapoint source fields** — new: every `datapoint.source_tier` must be present, and T6 estimates in decision-critical fields must trigger a warning.
+
+The workflow must not allow a final report to proceed if `uncited_claim_scan_passed: false` (from the schema's `self_critique` block) or if the schema validator returns errors.
+
+### Schema Validation Utility
+
+`apps/api/app/services/report_validation_service.py` provides offline validation:
+
+```python
+from app.services.report_validation_service import validate_real_asset_report
+
+result = validate_real_asset_report(report_dict)
+# result.is_valid  → bool
+# result.errors    → list of schema violation messages
+# result.warnings  → list of D_weak_or_stale datapoints in critical sections
+```
+
+This runs with no external calls and can be used as a workflow gate before saving a draft report.
+
+### Discovery Profile
+
+Future research workflows must populate the `discovery_profile` section, which makes obscurity measurable:
+
+- `entry_path` — how the candidate was found (supply-chain laddering preferred over conventional_screen)
+- `supply_chain_distance_from_obvious` — steps removed from the obvious beneficiary (2–3 is the target zone)
+- `coverage_metrics` — sell-side count, English news volume, sector mis-tag, disclosure language
+- `event_trigger` — the specific event that surfaced the name before consensus (insider buy, permit, contract award)
+
+A `conventional_screen` entry path caps the `underresearched_edge` pillar score at 2/5.
+
+---
+
 ## Planned Workflows (Phase 4+)
 
 | Workflow | Status | Description |

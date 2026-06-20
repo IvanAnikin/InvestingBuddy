@@ -1,6 +1,6 @@
 # Roadmap
 
-## Current Phase: Phase 3 — Research Storage & Citations Foundation
+## Current Phase: Phase 3.5 — Research Contracts Foundation (Real-Asset Equity)
 
 ---
 
@@ -92,7 +92,68 @@ Skills used: `database-design`, `backend-fastapi`, `langgraph-agents`, `testing-
 
 ---
 
-## Phase 4: Full Council-of-Agents MVP
+---
+
+## Phase 3.5: Research Contracts Foundation (Real-Asset Equity) ✅
+
+**Status: Complete**
+
+Goal: Formal, versioned, machine-validated report contract for real-asset company deep dives. No live API calls. Foundation for all future real-asset agent output.
+
+Deliverables:
+- [x] `packages/research-contracts/real_asset_equity/v1/report_schema.json` — JSON Schema Draft 2020-12 output contract
+- [x] `packages/research-contracts/real_asset_equity/v1/source_taxonomy.json` — tier-ranked T1–T6 source catalogue
+- [x] `packages/research-contracts/real_asset_equity/v1/eodhd_mapping.json` — provider mapping layer (schema field → EODHD endpoint + free fallbacks)
+- [x] `packages/research-contracts/real_asset_equity/v1/alpha_sourcing_strategy.md` — discovery methodology (supply-chain laddering, event triggers)
+- [x] `packages/research-contracts/real_asset_equity/v1/example_report_filled.json` — fictional worked example validating against the schema
+- [x] `apps/api/app/services/report_validation_service.py` — offline `validate_real_asset_report()` utility
+- [x] `apps/api/tests/test_report_validation.py` — tests: example validates; malformed fails; bare numbers fail; D-quality warnings surface
+- [x] `docs/DATA_SOURCES.md` — source tier definitions, EODHD classification, provider abstraction plan
+- [x] `docs/AGENTS.md` updated — real-asset schema contract, CitationValidator upgrade path, discovery profile
+- [x] `docs/PROMPTING_GUIDE.md` updated — datapoint rule, source instructions, self-critique, discovery discipline
+- [x] `docs/ROADMAP.md` updated — Phase 4 Financial Data Provider Foundation added
+
+Key constraints enforced:
+- No live EODHD, OpenBB, SEC EDGAR, or LLM calls
+- No Azure credentials required
+- All tests run offline
+- `example_report_filled.json` is fictional; not investment advice
+
+Skills used: `product-architect`, `investment-domain`, `financial-data`, `backend-fastapi`, `testing-qa`, `docs-maintainer`, `security-review`
+
+---
+
+## Phase 4: Financial Data Provider Foundation
+
+**Status: Not started**
+
+Goal: Provider abstraction layer so agents can resolve financial data from multiple sources without changing the report schema. CI uses a mock provider with no external calls.
+
+Deliverables:
+- [ ] `FinancialDataProvider` abstract base class (`apps/api/app/integrations/financial_data_provider.py`)
+- [ ] `MockFinancialDataProvider` — deterministic test data, no external calls, used in all CI tests
+- [ ] `SecEdgarProvider` — US company filings via `data.sec.gov` free JSON API (T1/T2)
+- [ ] `StooqProvider` — free historical price data (T5)
+- [ ] `GleifProvider` — free legal entity identity / LEI lookup (T2)
+- [ ] `OpenBBProvider` — optional open-source multi-source aggregator, free tier (T5)
+- [ ] `EODHDProvider` — paid EODHD Fundamentals (T5); requires API key; excluded from CI
+- [ ] Provider output normalized into `datapoint` envelope with correct source tier
+- [ ] `FinancialDataService` — selects provider based on config; falls back in order
+- [ ] Integration tests for `MockFinancialDataProvider` (no network required)
+- [ ] `.env.example` updated with `EODHD_API_KEY` placeholder
+- [ ] `docs/DATA_SOURCES.md` updated with provider implementation notes
+
+Rules:
+- No live API calls in CI — CI tests must use `MockFinancialDataProvider` or pre-recorded fixtures
+- EODHD key must not be hardcoded; load from env/Key Vault only
+- Provider abstraction must allow swapping EODHD for any other provider by editing config, not code
+- Tier assignment: EODHD → T5; direct EDGAR → T2; company IR → T1
+
+Skills to use: `financial-data`, `backend-fastapi`, `testing-qa`, `security-review`
+
+---
+
+## Phase 5: Full Council-of-Agents MVP
 
 **Status: Not started**
 
@@ -106,12 +167,13 @@ Deliverables:
 - [ ] Admin report review screen
 - [ ] Publish / reject actions
 - [ ] Public report list and detail pages
+- [ ] Agent output validated against real-asset report schema before draft is saved
 
 Skills to use: `langgraph-agents`, `backend-fastapi`, `frontend-nextjs`, `investment-domain`, `testing-qa`
 
 ---
 
-## Phase 5: Weekly Report Pipeline
+## Phase 6: Weekly Report Pipeline
 
 **Status: Not started**
 
@@ -130,7 +192,7 @@ Skills to use: `langgraph-agents`, `frontend-nextjs`, `azure-deployment`
 
 ---
 
-## Phase 6: Judge + Backtesting
+## Phase 7: Judge + Backtesting
 
 **Status: Not started**
 
@@ -148,7 +210,7 @@ Skills to use: `langgraph-agents`, `financial-data`, `backend-fastapi`, `investm
 
 ---
 
-## Phase 7: Personalized Investor Assistant
+## Phase 8: Personalized Investor Assistant
 
 **Status: Not started (Version 2)**
 

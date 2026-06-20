@@ -1,6 +1,6 @@
 # Architecture
 
-## Status: Phase 3 — Research Storage and Citations Foundation
+## Status: Phase 3.5 — Research Contracts Foundation (Real-Asset Equity)
 
 ---
 
@@ -90,7 +90,7 @@ investingbuddy/
 │   │   │   │       └── citations.py    Phase 3
 │   │   │   ├── models/         SQLAlchemy ORM: Company, Report, AgentRun, AgentStep, Source, Citation
 │   │   │   ├── schemas/        Pydantic: company, report, agent, source (incl. citations)
-│   │   │   ├── services/       company_service, report_service, agent_run_service, source_service, citation_service
+│   │   │   ├── services/       company_service, report_service, agent_run_service, source_service, citation_service, report_validation_service
 │   │   │   ├── agents/
 │   │   │   │   ├── base.py     CompanyAnalysisState TypedDict
 │   │   │   │   └── validation/
@@ -108,7 +108,10 @@ investingbuddy/
 │       └── src/app/
 ├── packages/
 │   ├── shared-types/   TypeScript types shared between frontend and backend
-│   └── prompts/        Versioned prompt templates
+│   ├── prompts/        Versioned prompt templates
+│   └── research-contracts/
+│       └── real_asset_equity/
+│           └── v1/     JSON Schema + source taxonomy + provider mapping + example (Phase 3.5)
 ├── infra/
 │   ├── azure/          ARM / Bicep infrastructure definitions
 │   ├── github-actions/ Reusable action fragments
@@ -158,6 +161,7 @@ All errors are caught, logged to `agent_runs.error_message`, and returned as HTT
 | Phase 1 | ✅ Complete | FastAPI skeleton, Next.js skeleton, Docker Compose, GitHub Actions CI |
 | Phase 2 | ✅ Complete | DB foundation (Alembic + 4 tables), company endpoints, LangGraph workflow skeleton |
 | Phase 3 | ✅ Complete | Source + Citation models, migration 002, source/citation services + API, CitationValidator skeleton, workflow creates placeholder source + citation |
+| Phase 3.5 | ✅ Complete | Real-asset equity report schema contract, source taxonomy, EODHD provider mapping, offline schema validation utility, report validation tests, DATA_SOURCES.md |
 
 ---
 

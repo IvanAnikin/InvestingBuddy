@@ -13,6 +13,7 @@ dependencies = [
     "python-dotenv>=1.0",
     "langgraph>=0.2",
     "langchain-core>=0.3",
+    "jsonschema>=4.23",
 ]
 
 [project.optional-dependencies]
@@ -38,6 +39,9 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E501"]
 
 [tool.mypy]
 python_version = "3.12"

@@ -83,6 +83,11 @@ Definition of done:
 | Auth, secrets, prompt injection, permissions | `security-review` |
 | README, docs/, DECISIONS | `docs-maintainer` |
 | Feature scoping, milestones, roadmap | `product-architect` |
+| Starting / verifying the local dev stack | `local-dev-operator` |
+| Committing, pushing, merging, tagging releases | `git-release-manager` |
+| Running tests + lint before a commit | `ci-test-runner` |
+| Diagnosing broken local environment | `dev-environment-troubleshooter` |
+| Manual UI/API smoke testing | `manual-qa` |
 
 When a task spans multiple areas, break it into sequential sub-tasks and route each separately.
 
