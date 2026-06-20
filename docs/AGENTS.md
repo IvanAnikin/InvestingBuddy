@@ -1,17 +1,6 @@
 # Agent Architecture
 
-## Status: Placeholder — Phase 0
-
-This document describes the InvestingBuddy multi-agent system.
-
-Update this file when:
-- A new agent is added or removed
-- An agent's responsibilities change
-- A new workflow is implemented
-- A workflow step order changes
-- State schemas change
-
-For implementation rules see `.claude/skills/langgraph-agents/SKILL.md`.
+## Status: Phase 2 — Company analysis workflow skeleton implemented
 
 ---
 
@@ -35,110 +24,162 @@ Improvement Suggestions → Admin Review → New Prompt Versions
 
 ---
 
-## Team 1: Research Team
+## Persistence (All Workflows)
 
-**Purpose:** Collect evidence, normalize sources and produce research packages.
+Every workflow execution must:
+1. Create one `agent_runs` record at start (`status = running`)
+2. Create one `agent_steps` record per node with `input_json` and `output_json`
+3. Update `agent_runs` at completion (`status = completed` or `failed`)
+4. Link any output records (reports, analyses) to `agent_run_id`
 
-| Agent | Responsibility |
-|---|---|
-| Market Scanner Agent | Finds candidate companies and themes for investigation |
-| Financial Data Agent | Collects market cap, EV, revenue, EBITDA, FCF, multiples |
-| Filings Agent | Reads annual/quarterly reports, investor presentations |
-| News & Geopolitics Agent | Analyzes macro, geopolitical and regulatory developments |
-| Industry Research Agent | Builds industry and sector context, peer group |
-| Source Quality Agent | Scores evidence quality, flags weak or missing sources |
-
-**Outputs:** `research_packages`, `sources`, `source_chunks`, `company_financial_snapshots`
-
----
-
-## Team 2: Analysis Council
-
-**Purpose:** Interpret research and produce a rated investment recommendation via structured debate.
-
-| Agent | Responsibility |
-|---|---|
-| Bull Case Analyst | Constructs positive thesis, catalysts, upside case |
-| Bear Case Analyst | Constructs negative thesis, downside risks, thesis-break conditions |
-| Valuation Analyst | Performs relative valuation, DCF, EV/EBITDA, FCF yield |
-| Risk Analyst | Evaluates financial, geopolitical, regulatory, liquidity risks |
-| Catalyst Analyst | Identifies near-term and medium-term catalysts |
-| Portfolio Fit Analyst | Evaluates diversification and suitability (mainly V2) |
-| Investment Committee Chair | Synthesizes all agent outputs, resolves disagreements, assigns final rating |
-
-**Outputs:** `analyses` with final_rating (BUY / WATCH / HOLD / SELL / REJECT), confidence_score, risk_score
-
----
-
-## Team 3: Validation & Publishing Team
-
-**Purpose:** Ensure quality and produce final report content.
-
-| Agent | Responsibility |
-|---|---|
-| Citation Validator | Verifies every factual claim has a source, date, currency |
-| Fact Consistency Validator | Checks for internal contradictions across sections |
-| Report Writer | Generates full investment memo (admin view) |
-| Blog Writer | Generates public web post version |
-| Email Writer | Generates newsletter draft |
-| PDF Formatter | Structures content for PDF generation |
-
-**Outputs:** `reports` in various formats
-
----
-
-## Team 4: Judge Team
-
-**Purpose:** Evaluate agent system quality and produce improvement suggestions after recommendations mature.
-
-| Agent | Responsibility |
-|---|---|
-| LLM-as-Judge Evaluator | Evaluates reasoning quality, citation quality, risk coverage |
-| Backtesting Evaluator | Compares recommendations against actual market outcomes |
-| Prompt Improvement Recommender | Suggests prompt and workflow changes |
-| Source Quality Calibrator | Adjusts source credibility rankings |
-
-**Outputs:** `judge_evaluations` — for admin review only, not auto-deployed
-
----
-
-## Persistence
-
-Every workflow must persist:
-- `agent_runs` — one record per workflow execution
-- `agent_steps` — one record per node execution, including input/output JSON
-
-This enables debugging, auditing and judge evaluation.
+This enables debugging, auditing and future judge evaluation.
 
 ---
 
 ## Implemented Workflows
 
-None yet — Phase 2+
+### company_analysis — Phase 2 skeleton
 
-| Workflow | Status | Description |
-|---|---|---|
-| company_deep_dive | Not implemented | Manual ticker input → draft report |
-| weekly_research | Not implemented | Scheduled full pipeline |
-| watchlist_monitoring | Not implemented | Monitor existing positions |
-| judge_evaluation | Not implemented | Post-publication quality assessment |
+**Trigger:** `POST /api/v1/workflows/company-analysis/run`
 
----
+**Input:** company UUID (must exist in `companies` table) or ticker + exchange
 
-## Output Schema (Standard Fields)
+**Purpose:** Runs a stub company analysis that creates a draft report.
+Currently uses deterministic placeholder logic — no LLM calls.
+Designed so that real LLM nodes can be dropped in per node without changing the graph structure.
 
-All agent outputs must include:
-```json
+**Graph:**
+
+```
+initialize
+    ↓ (company found?)
+    ├── No → handle_error → END
+    └── Yes → analyze_company → save_report → finalize → END
+```
+
+**Nodes:**
+
+| Node | Agent Name | Step Name | What it does |
+|---|---|---|---|
+| initialize | WorkflowController | initialize | Creates agent_run record, loads company from DB |
+| analyze_company | CompanyAnalyst | analyze_company | Produces structured placeholder analysis JSON |
+| save_report | ReportWriter | save_draft_report | Saves draft report to `reports` table |
+| finalize | WorkflowController | finalize | Marks agent_run as completed |
+| handle_error | WorkflowController | handle_error | Marks agent_run as failed |
+
+**Source:** `apps/api/app/workflows/company_analysis.py`
+
+**Output state fields:**
+```python
 {
-  "ticker": "...",
-  "company_name": "...",
-  "rating": "WATCH",
-  "confidence_score": 0.0,
-  "risk_score": 0.0,
-  "citations": [],
-  "missing_information": [],
-  "decision_explanation": "..."
+  "agent_run_id": "uuid",
+  "company_name": "Volkswagen AG",
+  "ticker": "VOW3",
+  "analysis_output": { ... },   # see output schema below
+  "draft_report_id": "uuid",
+  "status": "completed" | "failed",
+  "error": None | "error message"
 }
 ```
 
-See `.claude/skills/langgraph-agents/SKILL.md` for full schema reference.
+---
+
+## Analysis Output Schema (Phase 2 Placeholder)
+
+All nodes that produce analysis output follow this schema.
+Phase 2 returns `is_placeholder: true`; Phase 3+ nodes will return real LLM output.
+
+```json
+{
+  "ticker": "VOW3",
+  "company_name": "Volkswagen AG",
+  "rating": "WATCH",
+  "confidence_score": 0.50,
+  "risk_score": 0.50,
+  "investment_horizon_months": 24,
+  "thesis": "...",
+  "bull_case": ["..."],
+  "bear_case": ["..."],
+  "catalysts": ["..."],
+  "financial_metrics": {},
+  "citations": [],
+  "missing_information": ["..."],
+  "decision_explanation": "...",
+  "generated_at": "2026-06-16T12:00:00Z",
+  "is_placeholder": true
+}
+```
+
+Allowed ratings: `BUY`, `WATCH`, `HOLD`, `SELL`, `REJECT`
+
+---
+
+## Planned Workflows (Phase 3+)
+
+| Workflow | Status | Description |
+|---|---|---|
+| company_analysis | ✅ Skeleton (Phase 2) | Manual ticker input → draft report (placeholder) |
+| company_analysis (real LLM) | Phase 3 | Full analysis with Azure OpenAI + citations |
+| weekly_research | Phase 5 | Scheduled full research pipeline |
+| watchlist_monitoring | Phase 5 | Monitor existing watchlist positions |
+| judge_evaluation | Phase 6 | Post-publication quality assessment |
+
+---
+
+## Planned Agent Teams (Phase 3+)
+
+### Team 1: Research Team
+
+| Agent | Responsibility |
+|---|---|
+| Market Scanner | Finds candidate companies and themes |
+| Financial Data Agent | Collects market cap, EV, revenue, EBITDA, FCF, multiples |
+| Filings Agent | Reads annual/quarterly reports, investor presentations |
+| News & Geopolitics Agent | Analyzes macro, geopolitical and regulatory developments |
+| Industry Research Agent | Builds industry context, peer group |
+| Source Quality Agent | Scores evidence quality, flags weak sources |
+
+### Team 2: Analysis Council
+
+| Agent | Responsibility |
+|---|---|
+| Bull Case Analyst | Positive thesis, catalysts, upside case |
+| Bear Case Analyst | Negative thesis, downside risks, thesis-break conditions |
+| Valuation Analyst | Relative valuation, DCF, EV/EBITDA, FCF yield |
+| Risk Analyst | Financial, geopolitical, regulatory, liquidity risks |
+| Catalyst Analyst | Near-term and medium-term catalysts |
+| Investment Committee Chair | Synthesizes outputs, resolves disagreements, assigns rating |
+
+### Team 3: Validation & Publishing Team
+
+| Agent | Responsibility |
+|---|---|
+| Citation Validator | Every claim must have a source, date, currency |
+| Fact Consistency Validator | No internal contradictions across sections |
+| Report Writer | Full investment memo (admin view) |
+| Blog Writer | Public web post version |
+| Email Writer | Newsletter draft |
+
+### Team 4: Judge Team (Phase 6)
+
+| Agent | Responsibility |
+|---|---|
+| LLM-as-Judge Evaluator | Reasoning quality, citation quality, risk coverage |
+| Backtesting Evaluator | Compares recommendations vs actual market outcomes |
+| Prompt Improvement Recommender | Suggests prompt and workflow changes (admin reviews) |
+
+---
+
+## Adding Real LLM Calls to Phase 2 Skeleton
+
+To wire Azure OpenAI into the Phase 2 workflow:
+
+1. Configure `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_DEPLOYMENT_NAME` in `.env`
+2. Add `langchain-openai` to `pyproject.toml`
+3. Replace the `_build_placeholder_analysis()` call in `node_analyze_company` with a LangChain chain that invokes Azure OpenAI with structured output
+4. Add citation fields to the output
+5. Update `model_name` and `tokens_used` in the `complete_agent_step` call
+
+The graph structure, persistence and error handling do not need to change.
+
+See `.claude/skills/langgraph-agents/SKILL.md` for agent output schema requirements.

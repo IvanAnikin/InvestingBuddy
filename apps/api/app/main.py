@@ -1,13 +1,17 @@
 from fastapi import FastAPI
 
+from app.api.v1.companies import router as companies_router
 from app.api.v1.health import router as health_router
+from app.api.v1.workflows import router as workflows_router
 from app.core.config import settings
 
 app = FastAPI(
     title=settings.app_name,
-    version="0.1.0",
+    version="0.2.0",
     docs_url="/api/docs",
     redoc_url="/api/redoc",
 )
 
 app.include_router(health_router)
+app.include_router(companies_router, prefix="/api/v1")
+app.include_router(workflows_router, prefix="/api/v1")
