@@ -1,0 +1,165 @@
+{
+  "$id": "https://yourfirm.internal/schemas/source-taxonomy/v1.0.0",
+  "title": "High-Quality Source Taxonomy — Real-Asset Equity Research",
+  "description": "The knowledge base of permitted, quality-ranked sources. Agents may ONLY cite from sources resolvable to one of these tiers. Explicitly EXCLUDED: Reddit, StockTwits, retail forums, anonymous blogs, promotional newsletters, paid stock-promotion sites, generic content farms. Where a source is paywalled beyond budget, it is listed as 'reference_only' (use the free proxy noted).",
+
+  "tier_definitions": {
+    "T1_primary_filing": "Company's own regulated disclosures and technical documents. Highest authority for company-specific facts.",
+    "T2_regulator_or_gov": "Government / regulator / multilateral. Highest authority for industry, commodity, policy, macro facts.",
+    "T3_industry_specialist": "Trade bodies and recognized industry analysts. Authority for industry structure & dynamics.",
+    "T4_quality_media": "Reputable journalism with editorial standards. Good for catalysts, context, breaking developments.",
+    "T5_api_aggregator": "Structured-data vendors. Convenient but record underlying origin where known.",
+    "T6_model_estimate": "Agent's own calculation/inference. Always show method."
+  },
+
+  "T1_primary_filings": {
+    "us": [{"name": "SEC EDGAR full-text search", "url": "https://efts.sec.gov/LATEST/search-index?q=", "forms": ["10-K","10-Q","8-K","DEF 14A","Form 4","13D/G","S-1","424B"], "api": "free JSON: data.sec.gov", "cost": "free"}],
+    "canada": [{"name": "SEDAR+", "url": "https://www.sedarplus.ca", "forms": ["AIF","MD&A","NI 43-101 technical reports","financial statements","insider reports (SEDI)"], "cost": "free", "note": "CRITICAL for mining small caps — most junior miners list TSX/TSX-V."}],
+    "australia": [{"name": "ASX Announcements", "url": "https://www.asx.com.au/markets/trade-our-cash-market/announcements", "forms": ["JORC reports","quarterly activities (Appendix 5B)","Appendix 3Y insider"], "cost": "free", "note": "CRITICAL for rare earths, lithium, uranium juniors."}],
+    "uk_eu": [{"name": "National Storage Mechanism (UK FCA)", "url": "https://data.fca.org.uk/#/nsm/nationalstoragemechanism", "cost": "free"}, {"name": "company registry / regulated-info via exchange (Euronext, Deutsche Börse, Nordics)", "cost": "free"}],
+    "global_generic": [{"name": "Company investor-relations site", "use": "presentations, technical reports, capacity/offtake disclosures", "cost": "free", "note": "Often the richest real-asset detail (mine plans, PPA terms) lives in IR decks."}]
+  },
+
+  "T2_regulator_government_multilateral": {
+    "commodities_minerals": [
+      {"name": "USGS Mineral Commodity Summaries", "url": "https://www.usgs.gov/centers/national-minerals-information-center", "covers": "90+ minerals: production, reserves, price, net-import-reliance, by country", "license": "CC0 public domain", "format": "CSV + PDF per commodity", "cost": "free", "priority": "HIGHEST for any materials/mining name"},
+      {"name": "USGS Critical Minerals List", "url": "https://www.usgs.gov/programs/mineral-resources-program", "use": "policy tailwind anchoring (criticality => govt support)", "cost": "free"},
+      {"name": "British Geological Survey — World Mineral Statistics", "url": "https://www.bgs.ac.uk/mineralsuk/", "cost": "free"},
+      {"name": "EU Critical Raw Materials Act / RMIS", "url": "https://rmis.jrc.ec.europa.eu/", "use": "EU criticality, supply-risk scoring", "cost": "free"}
+    ],
+    "energy_power_grid": [
+      {"name": "IEA reports", "url": "https://www.iea.org/reports", "covers": "electricity, grids, electrification, critical minerals for energy, capacity outlooks", "cost": "many free; some flagship free", "priority": "HIGHEST for energy-transition tailwind"},
+      {"name": "IRENA", "url": "https://www.irena.org/Publications", "covers": "renewables capacity, cost curves", "cost": "free"},
+      {"name": "US EIA", "url": "https://www.eia.gov/", "covers": "US energy data, generation, capacity, prices", "api": "free EIA Open Data API", "cost": "free"},
+      {"name": "Ember", "url": "https://ember-energy.org/", "covers": "global electricity transition data", "cost": "free", "tier_note": "borderline T2/T3, high quality, open data"},
+      {"name": "ENTSO-E Transparency", "url": "https://transparency.entsoe.eu/", "covers": "European grid/transmission data", "api": "free", "cost": "free"}
+    ],
+    "macro_trade_policy": [
+      {"name": "FRED (St Louis Fed)", "url": "https://fred.stlouisfed.org/", "api": "free", "cost": "free"},
+      {"name": "World Bank Data / Commodity Markets 'Pink Sheet'", "url": "https://www.worldbank.org/en/research/commodity-markets", "covers": "monthly commodity price benchmarks", "cost": "free", "priority": "useful free commodity price reference"},
+      {"name": "IMF data", "url": "https://www.imf.org/en/Data", "cost": "free"},
+      {"name": "USTR tariff actions / EU TARIC", "url": "https://hts.usitc.gov/ ; https://ec.europa.eu/taxation_customs/dds2/taric/", "use": "tariff/trade exposure field", "cost": "free"},
+      {"name": "Eurostat", "url": "https://ec.europa.eu/eurostat", "cost": "free"}
+    ],
+    "emerging_markets": [
+      {"name": "national statistics offices & central banks (Indonesia BPS/BI, Kazakhstan, Philippines PSA)", "use": "under-researched region data, often local-language => translate", "cost": "free", "note": "Translation of local-language regulatory/news = a genuine alpha edge per your #14."},
+      {"name": "Fraser Institute Mining Survey", "url": "https://www.fraserinstitute.org/", "use": "jurisdiction_risk field", "cost": "free"}
+    ],
+    "nuclear_fuel_cycle": [
+      {"name": "IAEA (Power Reactor Information System / data)", "url": "https://www.iaea.org/", "covers": "reactor fleet, fuel cycle, HALEU context", "cost": "free", "note": "Bottleneck in nuclear is conversion/enrichment/fabrication capacity, not ore — map names to that chokepoint."},
+      {"name": "OECD Nuclear Energy Agency (NEA)", "url": "https://www.oecd-nea.org/", "covers": "uranium supply-demand 'Red Book', fuel cycle", "cost": "free"},
+      {"name": "World Nuclear Association — fuel cycle pages", "url": "https://world-nuclear.org/", "cost": "free"}
+    ],
+    "water_infrastructure": [
+      {"name": "OECD Water data / Environment Directorate", "url": "https://www.oecd.org/water/", "covers": "water stress, infrastructure investment", "cost": "free"},
+      {"name": "UN-Water / FAO AQUASTAT", "url": "https://www.fao.org/aquastat/", "covers": "water resources, withdrawals by sector", "cost": "free"},
+      {"name": "national water regulators (e.g. Ofwat UK, US EPA)", "cost": "free", "use": "rate cases, capex programs, permits"}
+    ],
+    "agricultural_inputs_fertilizer": [
+      {"name": "USGS (potash, phosphate, sulphur, nitrogen)", "url": "https://www.usgs.gov/centers/national-minerals-information-center", "cost": "free"},
+      {"name": "FAO / FAOSTAT", "url": "https://www.fao.org/faostat/", "covers": "food security, fertilizer use", "cost": "free"},
+      {"name": "International Fertilizer Association (IFA) — public data", "url": "https://www.ifastat.org/", "cost": "partly free"}
+    ],
+    "logistics_ports_rail_shipping": [
+      {"name": "UNCTAD Review of Maritime Transport", "url": "https://unctad.org/", "covers": "global shipping flows, port throughput", "cost": "free"},
+      {"name": "Baltic Exchange indices (headline levels)", "url": "https://www.balticexchange.com/", "covers": "dry-bulk/tanker freight rates", "cost": "freemium", "note": "Headline indices public; granular data paid."},
+      {"name": "port-authority throughput data + national rail regulators", "cost": "free", "use": "corridor re-rating from reshoring/redirected flows"},
+      {"name": "Drewry (some free insight pieces)", "cost": "freemium reference_only for detail"}
+    ],
+    "defense_industrial": [
+      {"name": "SIPRI (arms, military expenditure databases)", "url": "https://www.sipri.org/databases", "covers": "global defense spending, arms transfers", "cost": "free"},
+      {"name": "government procurement: USAspending.gov", "url": "https://www.usaspending.gov/", "covers": "US federal contract awards to specific (often small) suppliers", "api": "free", "cost": "free", "priority": "HIGH — structured award data almost nobody screens"},
+      {"name": "EU TED (Tenders Electronic Daily)", "url": "https://ted.europa.eu/", "covers": "EU public tenders & awards", "api": "free", "cost": "free"}
+    ]
+  },
+
+  "T3_industry_specialist": {
+    "free_or_partly_free": [
+      {"name": "World Nuclear Association", "url": "https://world-nuclear.org/", "covers": "uranium demand, reactor pipeline", "cost": "free"},
+      {"name": "International Energy Forum / SETIS", "cost": "free"},
+      {"name": "Adamas Intelligence (REE) — public notes", "covers": "rare earth magnet demand", "cost": "partly free", "reference_only": false},
+      {"name": "industry trade associations (e.g. Copper Development Assoc, Silver Institute, Lithium producers' disclosures)", "cost": "free"}
+    ],
+    "reference_only_paywalled_beyond_budget": [
+      {"name": "Wood Mackenzie", "covers": "power, metals, mining cost curves", "cost": "$$$ enterprise", "free_proxy": "USGS cost data + company technical reports for AISC; IEA for power"},
+      {"name": "Benchmark Mineral Intelligence", "covers": "lithium/graphite/anode/cathode prices & supply", "cost": "$$$", "free_proxy": "USGS + producer disclosures + World Bank Pink Sheet"},
+      {"name": "Fastmarkets / Argus", "covers": "REE oxide, battery metal prices", "cost": "$$$", "free_proxy": "Shanghai Metals Market free tier; USGS notes Argus prices in MCS (citable secondhand via USGS T2)"},
+      {"name": "UxC / TradeTech", "covers": "uranium spot & term price", "cost": "$$$", "free_proxy": "Cameco posts indicative spot/term; Sprott Physical Uranium Trust NAV; Numerco public spot"},
+      {"name": "CRU Group", "covers": "metals, fertilizers, wire & cable / grid", "cost": "$$$", "free_proxy": "USGS + ENTSO-E + company data"}
+    ]
+  },
+
+  "T4_quality_media": {
+    "global": [
+      {"name": "Reuters", "cost": "freemium"}, {"name": "Financial Times", "cost": "paywall"}, {"name": "Bloomberg (news)", "cost": "paywall"},
+      {"name": "Nikkei Asia", "use": "Asia supply chains, under-covered", "cost": "paywall"}, {"name": "Mining.com", "cost": "free", "use": "junior-miner news flow"},
+      {"name": "Mining Weekly", "cost": "free"}, {"name": "Argus Media news (headlines)", "cost": "freemium"},
+      {"name": "Utility Dive / pv magazine / Recharge", "use": "grid, solar, renewables trade press", "cost": "free"},
+      {"name": "Chemical & Engineering News (C&EN) / ICIS headlines", "use": "specialty chemicals & intermediates", "cost": "freemium"},
+      {"name": "Lloyd's List / TradeWinds (headlines)", "use": "shipping, ports, freight", "cost": "freemium"},
+      {"name": "Defense News / Janes (headlines)", "use": "defense sub-tier", "cost": "freemium"},
+      {"name": "Global Water Intelligence (headlines)", "use": "water infrastructure", "cost": "freemium"}
+    ],
+    "regional_underresearched": [
+      {"name": "regional/local-language business press (translate)", "use": "per #14 edge: stories not in English-language coverage", "examples": ["Jakarta Post / Kontan (Indonesia)", "BusinessWorld (Philippines)", "Kazakh/Central-Asia outlets"], "cost": "mostly free"}
+    ],
+    "usage_rule": "T4 supports catalysts/context only. Never the SOLE basis for a number — corroborate to T1/T2."
+  },
+
+  "T5_api_aggregators": {
+    "primary": {"name": "EODHD Fundamentals Data Feed (student rate ~30 CHF)", "covers": "global fundamentals, financials, insider (US), holders, screener, news+sentiment, macro", "agent_native": "MCP server (75 tools) + OpenAPI 3.1 + Agent Skills", "cost": "~30 CHF student", "url": "https://eodhd.com/"},
+    "free_supplementary": [
+      {"name": "SEC EDGAR API (data.sec.gov)", "cost": "free", "use": "authoritative US fundamentals + filings, corroborates EODHD"},
+      {"name": "OpenBB Platform", "url": "https://openbb.co/", "cost": "free open-source", "use": "aggregation layer that itself wraps many free providers; good agent tooling"},
+      {"name": "Yahoo Finance (unofficial)", "cost": "free", "tier_note": "convenience only, treat as T5 low-quality, corroborate"}
+    ]
+  },
+
+  "discovery_feeds_event_triggers": {
+    "description": "CHANGE-detection sources — the heart of non-consensus discovery. Static fundamentals converge on the same names; these feeds surface re-rating EVENTS in public regulator/procurement/registry files BEFORE sell-side reacts. Map each to discovery_profile.event_trigger.trigger_type. All free or freemium.",
+    "insider_and_ownership_changes": [
+      {"name": "SEC Form 4 / 13D / 13G (EDGAR)", "url": "https://www.sec.gov/cgi-bin/browse-edgar", "trigger": "insider_cluster_buy, strategic_or_state_investor", "cost": "free"},
+      {"name": "Canada SEDI (insider) via SEDAR+", "url": "https://www.sedarplus.ca", "trigger": "insider_cluster_buy", "cost": "free"},
+      {"name": "ASX Appendix 3Y / substantial-holder notices", "trigger": "insider_cluster_buy, strategic_or_state_investor", "cost": "free"},
+      {"name": "EU/UK major-shareholding (TR-1) notifications", "trigger": "strategic_or_state_investor", "cost": "free"}
+    ],
+    "permits_and_capacity": [
+      {"name": "mining permit / environmental-assessment registries (national & state)", "trigger": "permit_granted, capacity_qualification", "cost": "free", "note": "A granted permit is a binary re-rating event sitting in a public regulator file."},
+      {"name": "grid connection / interconnection queues (e.g. national TSO, FERC, ENTSO-E)", "trigger": "capacity_qualification", "cost": "free"},
+      {"name": "company technical reports & quarterly activity reports (NI 43-101, JORC, ASX 5B)", "trigger": "first_offtake, capacity_qualification", "cost": "free"}
+    ],
+    "government_contracts_and_procurement": [
+      {"name": "USAspending.gov", "url": "https://www.usaspending.gov/", "trigger": "government_contract_award", "api": "free", "cost": "free", "priority": "HIGH — small-supplier awards are public, structured, almost unscreened"},
+      {"name": "EU TED", "url": "https://ted.europa.eu/", "trigger": "government_contract_award", "cost": "free"},
+      {"name": "national defense/energy procurement portals", "trigger": "government_contract_award", "cost": "free"}
+    ],
+    "trade_export_controls_stockpiles": [
+      {"name": "UN Comtrade", "url": "https://comtrade.un.org/", "trigger": "customs_flow_shift", "api": "free tier", "cost": "free", "note": "See a physical flow shift before it hits any company's revenue."},
+      {"name": "national customs/trade statistics", "trigger": "customs_flow_shift", "cost": "free"},
+      {"name": "export-control & licensing announcements (e.g. China MOFCOM gallium/germanium/graphite; US BIS Entity List; strategic stockpile notices)", "trigger": "export_control_or_stockpile", "cost": "free", "priority": "HIGH — policy flows that move specific names"}
+    ],
+    "innovation_capability": [
+      {"name": "Google Patents", "url": "https://patents.google.com/", "trigger": "patent_cluster", "cost": "free"},
+      {"name": "USPTO PatFT / EPO Espacenet", "url": "https://www.uspto.gov/ ; https://worldwide.espacenet.com/", "trigger": "patent_cluster", "cost": "free", "note": "A spike in a small firm's filings in a specific separation/processing tech is a forward capability signal."}
+    ],
+    "financing_events": [
+      {"name": "filings disclosing refinancing / new facility / bond issue (EDGAR/SEDAR+/RNS)", "trigger": "maturity_refinanced", "cost": "free"}
+    ]
+  },
+
+  "commodity_price_sources_quick_reference": {
+    "note": "These fill real_asset_block.commodity_price_sensitivity. At budget, expect quality B at best (World Bank/USGS) down to C/D (proxies). ALWAYS flag.",
+    "uranium": ["Cameco indicative spot/term (T1/T3, free)", "Sprott Physical Uranium Trust NAV/holdings (T1, free)", "Numerco spot (T3, free)", "UxC/TradeTech (reference_only $$$)"],
+    "rare_earths_oxides": ["USGS MCS (cites Argus FOB-China, T2, free, but lagged)", "Shanghai Metals Market free tier (T3)", "Lynas/MP Materials disclosures (T1)"],
+    "lithium_graphite_cobalt_nickel": ["World Bank Pink Sheet (T2, free, monthly)", "USGS (T2)", "producer quarterly realized prices (T1)", "Benchmark (reference_only $$$)"],
+    "copper_aluminium_zinc": ["LME via World Bank Pink Sheet (T2, free)", "FRED (T2)"],
+    "grid_equipment_transformers_cable": ["no clean spot price — use order-book/backlog disclosures (T1) + ENTSO-E/IEA grid-investment outlooks (T2)"],
+    "potash_phosphate_fertilizer": ["World Bank Pink Sheet (T2, free)", "USGS (T2, free)", "FAO/IFA (T2/T3)"],
+    "freight_shipping_rates": ["Baltic Exchange headline indices (T3, freemium)", "UNCTAD (T2)"],
+    "water": ["no commodity spot — use regulated rate cases / tariff filings (T1/T2) + utility capex programs"],
+    "specialty_chemicals_intermediates": ["mostly contract-priced — use producer realized prices (T1) + ICIS/C&EN headline commentary (T4) + trade-flow proxy via UN Comtrade (T2)"]
+  },
+
+  "excluded_sources_hard_block": [
+    "Reddit / subreddits", "StockTwits", "Discord/Telegram tips", "anonymous Substack/blogspot with no disclosed author", "stock-promotion / paid-IR newsletters", "content farms / SEO spam", "X/Twitter as a primary fact source (may be a lead, never a citation)", "AI-generated aggregator pages with no primary source"]
+}

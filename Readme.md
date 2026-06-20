@@ -123,12 +123,14 @@ Copy `.env.example` to `.env` and fill in values as needed.
 |---|---|---|
 | Phase 0 | Done | Agentic dev infrastructure (skills, commands, docs) |
 | Phase 1 | Done | Application skeleton (FastAPI + Next.js + Docker + CI) |
-| Phase 2 | Planned | First LangGraph agent workflow, company storage |
-| Phase 3 | Planned | Research storage, citations, Blob + AI Search |
-| Phase 4 | Planned | Full council-of-agents MVP |
-| Phase 5 | Planned | Weekly report pipeline, watchlists |
-| Phase 6 | Planned | Judge system and backtesting |
-| Phase 7 | Planned | Personalized investor assistant (V2) |
+| Phase 2 | Done | First LangGraph agent workflow, company storage |
+| Phase 3 | Done | Research storage, citations, Blob + AI Search |
+| Phase 3.5 | Done | Research contracts foundation (real-asset equity schema, validation, source taxonomy) |
+| Phase 4 | Planned | Financial data provider foundation (free sources, EODHD, provider abstraction) |
+| Phase 5 | Planned | Full council-of-agents MVP |
+| Phase 6 | Planned | Weekly report pipeline, watchlists |
+| Phase 7 | Planned | Judge system and backtesting |
+| Phase 8 | Planned | Personalized investor assistant (V2) |
 
 ---
 

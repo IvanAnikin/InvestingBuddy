@@ -191,6 +191,133 @@ The `run_citation_validator()` interface and `CitationValidatorOutput` schema do
 
 ---
 
+---
+
+## Phase 3.5: Real-Asset Equity Report Schema Contract
+
+### Required Output Contract
+
+All future agents producing real-asset company analyses must output JSON that validates against:
+
+```
+packages/research-contracts/real_asset_equity/v1/report_schema.json
+```
+
+This is a JSON Schema Draft 2020-12 document enforcing:
+
+1. **Datapoint envelope** — every value-bearing fact is an object, not a bare scalar:
+
+```json
+{
+  "value": 320.0,
+  "unit": "USD_m",
+  "as_of": "2026-06-01",
+  "source_tier": "T5_api_aggregator",
+  "source_name": "EODHD fundamentals endpoint",
+  "source_url": null,
+  "data_quality": "B_single_credible",
+  "note": "Converted from SEK at 10.42 on 2026-06-01"
+}
+```
+
+Agents must **never emit a bare number** where a `datapoint` is expected. This is a hard schema gate — the workflow rejects reports that fail it.
+
+2. **Source tier enforcement** — every datapoint must declare one of the six valid tiers:
+   - `T1_primary_filing` → `T2_regulator_or_gov` → `T3_industry_specialist` → `T4_quality_media` → `T5_api_aggregator` → `T6_model_estimate`
+   - EODHD always maps to `T5_api_aggregator`
+   - T6 must include a `note` explaining the method
+
+3. **Data quality flags** — `A_verified`, `B_single_credible`, `C_inferred`, `D_weak_or_stale`
+   - Any `D` flag in a decision-critical section triggers a `self_critique.data_quality_warnings` entry
+   - The mandatory `self_critique.uncited_claim_scan_passed` field must be `true` before submission
+
+4. **Conviction** — replaces the legacy `rating` field for real-asset reports:
+   - Allowed values: `SHORTLIST_HIGH`, `SHORTLIST`, `WATCHLIST`, `PASS`
+   - Derived from `scoring.composite_score` + kill-flags; agent may only override downward
+
+### Real-Asset Prompt Template Requirements
+
+When writing prompts for agents that fill the real-asset report schema:
+
+```
+## Output Requirements
+
+Return a JSON object that validates against the real-asset equity report schema
+(packages/research-contracts/real_asset_equity/v1/report_schema.json).
+
+For EVERY value-bearing field, wrap the value in a datapoint object:
+{
+  "value": <the fact>,
+  "unit": "<unit or null>",
+  "as_of": "<YYYY-MM-DD>",
+  "source_tier": "<T1 through T6>",
+  "source_name": "<human-readable source name>",
+  "source_url": "<URL or null>",
+  "data_quality": "<A_verified|B_single_credible|C_inferred|D_weak_or_stale>",
+  "note": "<required if T6 or quality C/D>"
+}
+
+If you do not have a sourced value for a required field:
+- Set "value" to null
+- Set "data_quality" to "D_weak_or_stale"
+- Explain in "note" what is missing and why
+- Add the field to self_critique.data_quality_warnings
+
+Do NOT emit a bare number, string, or boolean where a datapoint is expected.
+```
+
+### Source Instruction in Every Financial Prompt
+
+Add this block to every prompt that requests financial metrics:
+
+```
+SOURCE DISCIPLINE:
+- EODHD data → source_tier: "T5_api_aggregator"
+- SEC EDGAR / SEDAR+ / ASX filings accessed directly → source_tier: "T1_primary_filing"
+- USGS / IEA / Eurostat / government data → source_tier: "T2_regulator_or_gov"
+- Your own computed value (e.g. FCF = CFO - capex) → source_tier: "T6_model_estimate",
+  data_quality: "C_inferred", note: "<show the formula>"
+
+The permitted source universe is defined in:
+packages/research-contracts/real_asset_equity/v1/source_taxonomy.json
+
+Never cite Reddit, StockTwits, promotional newsletters, or unattributed blogs.
+```
+
+### Adversarial Self-Critique Instruction
+
+Every real-asset report prompt must include a self-critique pass:
+
+```
+MANDATORY SELF-CRITIQUE (fill self_critique section):
+1. strongest_bear_case: Steelman the best argument AGAINST this recommendation.
+   Minimum 150 characters. Be specific.
+2. weakest_links_in_thesis: List the 1-3 assumptions most likely to be wrong.
+3. data_quality_warnings: List every decision-critical field with quality C or D.
+4. confirmation_bias_check: Did you seek disconfirming evidence? What did you find?
+5. uncited_claim_scan_passed: Set to true ONLY if zero value-bearing claims
+   lack a datapoint wrapper. Otherwise set false and fix before submitting.
+```
+
+### Discovery Profile Instruction
+
+Future prompts for the Market Scanner / Financial Data Agent must populate `discovery_profile`:
+
+```
+DISCOVERY DISCIPLINE:
+- entry_path: How did you reach this candidate?
+  Prefer "supply_chain_laddering" or "event_trigger" over "conventional_screen".
+  A conventional_screen entry caps underresearched_edge score at 2/5.
+- supply_chain_distance_from_obvious: How many steps from the obvious thematic name?
+  Target 2-3. 0 = the name everyone already covers.
+- coverage_metrics: Measure obscurity — sell_side_estimate_count, english_news_volume_12m,
+  sector_tag_mismatch (boolean). These must trace to the underresearched_edge pillar score.
+- core_target_profile (in report_meta): State (a) the physical chokepoint, (b) the
+  structural flow, (c) why it is obscure. If you cannot state all three, reconsider the name.
+```
+
+---
+
 ## Not Yet Implemented (Phase 4+)
 
 No production LLM prompts have been created yet.
