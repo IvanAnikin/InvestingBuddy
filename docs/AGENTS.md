@@ -1,6 +1,6 @@
 # Agent Architecture
 
-## Status: Phase 2 — Company analysis workflow skeleton implemented
+## Status: Phase 3 — Citation Validator skeleton added; workflow creates placeholder Source + Citation
 
 ---
 
@@ -63,7 +63,7 @@ initialize
 |---|---|---|---|
 | initialize | WorkflowController | initialize | Creates agent_run record, loads company from DB |
 | analyze_company | CompanyAnalyst | analyze_company | Produces structured placeholder analysis JSON |
-| save_report | ReportWriter | save_draft_report | Saves draft report to `reports` table |
+| save_report | ReportWriter | save_draft_report | Saves draft report; creates placeholder Source + Citation (Phase 3) |
 | finalize | WorkflowController | finalize | Marks agent_run as completed |
 | handle_error | WorkflowController | handle_error | Marks agent_run as failed |
 
@@ -75,8 +75,10 @@ initialize
   "agent_run_id": "uuid",
   "company_name": "Volkswagen AG",
   "ticker": "VOW3",
-  "analysis_output": { ... },   # see output schema below
+  "analysis_output": { ... },         # see output schema below
   "draft_report_id": "uuid",
+  "placeholder_source_id": "uuid",    # Phase 3: UUID of placeholder Source record
+  "citation_ids": ["uuid"],           # Phase 3: UUIDs of Citation records created
   "status": "completed" | "failed",
   "error": None | "error message"
 }
@@ -114,12 +116,56 @@ Allowed ratings: `BUY`, `WATCH`, `HOLD`, `SELL`, `REJECT`
 
 ---
 
-## Planned Workflows (Phase 3+)
+## Implemented Agents (Phase 3 Skeletons)
+
+### CitationValidator
+
+**Source:** `apps/api/app/agents/validation/citation_validator.py`
+
+A structural (non-LLM) validator that checks whether analysis output claims are covered by citations.
+
+**Input:**
+```python
+CitationValidatorInput(
+    ticker="VOW3",
+    analysis_output={ ... },    # analysis JSON from analyze_company node
+    citations=[ { ... } ]       # list of Citation dicts
+)
+```
+
+**Output:**
+```python
+CitationValidatorOutput(
+    status="ok" | "warnings" | "failed",
+    missing_citations=[{ "section": "financial_metrics", "description": "..." }],
+    approved_claims=["thesis"],
+    warnings=["[PLACEHOLDER] ..."],
+    is_placeholder=True
+)
+```
+
+**Required sections checked:** `thesis`, `rating`, `financial_metrics`
+
+**Rules:**
+- `is_placeholder=True` → status always `"warnings"` (relaxed requirements for Phase 3)
+- Empty `financial_metrics` → warning (not a hard failure)
+- Empty `thesis` string → warning
+- Thesis not cited → `missing_citations` entry + status `"failed"` (real data only)
+
+**Phase 4 upgrade path:** Replace `_extract_claims()` with a LangChain chain over Azure OpenAI.
+The `run_citation_validator()` interface does not need to change.
+
+**Validation is also available as a service:** `citation_service.validate_citations_for_draft()`
+used by `POST /api/v1/reports/{id}/validate-citations`.
+
+---
+
+## Planned Workflows (Phase 4+)
 
 | Workflow | Status | Description |
 |---|---|---|
-| company_analysis | ✅ Skeleton (Phase 2) | Manual ticker input → draft report (placeholder) |
-| company_analysis (real LLM) | Phase 3 | Full analysis with Azure OpenAI + citations |
+| company_analysis | ✅ Skeleton (Phase 2/3) | Manual ticker input → draft report + placeholder source + citation |
+| company_analysis (real LLM) | Phase 4 | Full analysis with Azure OpenAI + real citations |
 | weekly_research | Phase 5 | Scheduled full research pipeline |
 | watchlist_monitoring | Phase 5 | Monitor existing watchlist positions |
 | judge_evaluation | Phase 6 | Post-publication quality assessment |

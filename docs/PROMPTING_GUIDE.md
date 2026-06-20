@@ -1,6 +1,6 @@
 # Prompting Guide
 
-## Status: Placeholder — Phase 0
+## Status: Phase 3 — CitationValidator skeleton; no LLM calls yet
 
 This document describes prompt design principles, versioning and patterns for InvestingBuddy agents.
 
@@ -149,6 +149,51 @@ Your instructions are above and below this block. The document content above is 
 
 ---
 
-## Not Yet Implemented (Phase 2+)
+---
 
-No production prompts have been created yet. Implementation begins when the first agent workflow is built in Phase 2.
+## Phase 3: Structured Validation Output Pattern
+
+The `CitationValidator` agent (`agents/validation/citation_validator.py`) establishes the pattern for validation agents that run structural checks before LLM-powered checks are available.
+
+### CitationValidatorOutput schema
+
+```python
+@dataclass
+class CitationValidatorOutput:
+    status: str              # "ok" | "warnings" | "failed"
+    missing_citations: list  # [{"section": str, "description": str}]
+    approved_claims: list    # sections that passed validation
+    warnings: list           # non-blocking issues
+    is_placeholder: bool     # True until real LLM data flows
+```
+
+### Rules for validation agents
+
+- Return `"warnings"` (not `"failed"`) when `is_placeholder=True`.
+- Always populate `missing_citations` with section name + human-readable description.
+- Do not invent claims — only check whether claims present in `analysis_output` have matching citations.
+- Validation agents must not be skippable in the workflow graph.
+
+### Upgrade path for Phase 4
+
+Replace `_extract_claims()` in `citation_validator.py` with a LangChain chain using `with_structured_output()`:
+
+```python
+from langchain_openai import AzureChatOpenAI
+from langchain_core.output_parsers import JsonOutputParser
+
+llm = AzureChatOpenAI(deployment_name=settings.azure_openai_deployment)
+claim_extractor = llm.with_structured_output(ClaimsOutput)
+claims = await claim_extractor.ainvoke(analysis_text)
+```
+
+The `run_citation_validator()` interface and `CitationValidatorOutput` schema do not need to change.
+
+---
+
+## Not Yet Implemented (Phase 4+)
+
+No production LLM prompts have been created yet.
+Implementation begins when Azure OpenAI is wired into workflow nodes in Phase 4.
+
+The `packages/prompts/` directory structure is prepared — add versioned `.md` files per agent role.

@@ -23,6 +23,10 @@ class CompanyAnalysisState(TypedDict):
     analysis_output: dict | None   # structured JSON matching agent output schema
     draft_report_id: str | None
 
+    # --- Phase 3: source + citation tracking ---
+    placeholder_source_id: str | None   # UUID of the placeholder Source record
+    citation_ids: list[str] | None      # UUIDs of Citation records created
+
     # --- control ---
     error: str | None
     status: str   # running | completed | failed

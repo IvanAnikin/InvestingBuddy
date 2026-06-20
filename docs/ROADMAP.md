@@ -1,6 +1,6 @@
 # Roadmap
 
-## Current Phase: Phase 2 — First Agent Workflow Foundation
+## Current Phase: Phase 3 — Research Storage & Citations Foundation
 
 ---
 
@@ -65,23 +65,30 @@ Skills used: `orchestrator`, `database-design`, `backend-fastapi`, `langgraph-ag
 
 ---
 
-## Phase 3: Research Storage & Citations
+## Phase 3: Research Storage & Citations Foundation ✅
 
-**Status: Not started**
+**Status: Complete**
 
 Goal: Agent workflows can store research sources and link claims to citations.
 
 Deliverables:
-- [ ] Sources table and migration
-- [ ] Source chunks table and migration
-- [ ] Citations table and migration
-- [ ] Azure Blob Storage integration (store PDF documents)
-- [ ] Azure AI Search integration (chunk + embed sources)
-- [ ] Source ingestion pipeline
-- [ ] Citation Validator agent integrated into workflow
-- [ ] Source Quality Agent integrated into workflow
+- [x] `Source` + `Citation` SQLAlchemy models (`app/models/source.py`)
+- [x] Alembic migration 002 — creates `sources` and `citations` tables
+- [x] Source service: `create_source`, `get_or_create_source` (dedup by hash/URL), `list_sources`, `get_source`
+- [x] Citation service: `create_citation`, `list_citations_for_report`, `validate_citations_for_draft`
+- [x] API endpoints: `POST/GET /api/v1/sources`, `GET /api/v1/sources/{id}`
+- [x] API endpoints: `POST/GET /api/v1/reports/{id}/citations`, `POST /api/v1/reports/{id}/validate-citations`
+- [x] `company_analysis` workflow creates placeholder `Source` + `Citation` in `save_report` node
+- [x] `CitationValidator` agent skeleton (`agents/validation/citation_validator.py`) — structural check, no LLM
+- [x] 76 passing tests (all new Phase 3 code covered)
+- [x] ruff linting clean
+- [ ] Azure Blob Storage integration (store PDF documents) — deferred to Phase 4
+- [ ] Azure AI Search integration (chunk + embed sources) — deferred to Phase 4
+- [ ] Real financial data ingestion (OpenBB, external APIs) — deferred to Phase 4
+- [ ] Source Quality Agent — deferred to Phase 4
+- [ ] Full LLM-powered citation validation — deferred to Phase 4
 
-Skills to use: `financial-data`, `langgraph-agents`, `database-design`, `azure-deployment`
+Skills used: `database-design`, `backend-fastapi`, `langgraph-agents`, `testing-qa`, `docs-maintainer`
 
 ---
 
