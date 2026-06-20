@@ -160,6 +160,42 @@ echo "=== WEB PORT ===" && lsof -i :3000 2>/dev/null | head -2 || echo "free"
 
 ---
 
+## Azure CLI Check
+
+The Azure CLI is installed in a separate venv at `~/.venvs/azure-cli`.
+It is **not** installed via Homebrew and is **not** part of `apps/api/.venv`.
+
+### Check Azure CLI is available
+
+```bash
+source ~/.venvs/azure-cli/bin/activate
+az version
+az account show
+```
+
+If `az: command not found` after activating, the venv needs to be created:
+
+```bash
+python3 -m venv ~/.venvs/azure-cli
+source ~/.venvs/azure-cli/bin/activate
+pip install --upgrade pip
+pip install azure-cli
+```
+
+### Azure CLI problems table
+
+| Symptom | Root Cause | Fix |
+|---|---|---|
+| `az: command not found` | venv not activated or not installed | `source ~/.venvs/azure-cli/bin/activate` then `pip install azure-cli` |
+| `az: command not found` after activation | `azure-cli` not yet installed in venv | `pip install --upgrade pip && pip install azure-cli` |
+| `Please run 'az login'` | Not authenticated | `az login` |
+| Wrong subscription shown | Multiple subscriptions | `az account list` then `az account set --subscription <name>` |
+| `brew`-based `az` conflicts | Homebrew `az` on PATH before venv | Always activate `~/.venvs/azure-cli` first; `which az` should show `~/.venvs/azure-cli/bin/az` |
+
+The `~/.venvs/azure-cli` directory is local-only and must never be committed.
+
+---
+
 ## Rules
 
 - Always fix root causes. Do not patch symptoms (e.g. deleting lock files without understanding why the lock exists).
@@ -167,3 +203,4 @@ echo "=== WEB PORT ===" && lsof -i :3000 2>/dev/null | head -2 || echo "free"
 - Do not modify `.env.example` — it is a template committed to git; real values go in `.env`.
 - Never commit `.env` or `.env.local`.
 - If Docker Compose configuration changes are needed, ask before modifying `docker-compose.yml`.
+- Never commit Azure credentials, subscription IDs, or the `~/.venvs/` directory.
