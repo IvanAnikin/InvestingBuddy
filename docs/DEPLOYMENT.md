@@ -1,16 +1,16 @@
 # Deployment
 
-## Status: Phase 1 — Local development only. Azure not yet provisioned.
+## Status: Phase A Plan — Azure Staging Designed, Not Yet Provisioned
 
 ---
 
 ## Environment Overview
 
-| Environment | Purpose | Status |
-|---|---|---|
-| Local | Development | Docker Compose — available from Phase 1 |
-| Staging | Pre-production testing | Azure App Service — Phase 2+ |
-| Production | Live platform | Azure App Service — Phase 2+ |
+| Environment | Purpose | Resource Group | Status |
+|---|---|---|---|
+| Local | Development | Docker Compose | Available from Phase 1 |
+| Staging | Pre-production testing | `ib-stg-rg` | Planned — awaiting provisioning approval |
+| Production | Live platform | `ib-prod-rg` | Phase 5+ |
 
 ---
 
@@ -48,49 +48,95 @@ npm run dev
 
 ---
 
-## CI/CD Workflows
+## Azure Infrastructure Plan
 
-### Phase 1 (current)
+Full details: [`infra/azure/README.md`](../infra/azure/README.md)
 
-```
-.github/workflows/
-├── api-ci.yml      On push/PR to main (apps/api/**): ruff + pytest
-└── web-ci.yml      On push/PR to main (apps/web/**): typecheck + lint + build
-```
+### Region
 
-CI runs on every pull request and push to `main`. Both workflows are path-filtered to avoid unnecessary runs.
+`westeurope` (Netherlands) — lowest latency for EU users, GDPR compliant.
 
-### Phase 2+ (planned)
+### Infrastructure Approach
 
-```
-.github/workflows/
-├── deploy-api-staging.yml      Merge to main → deploy to Azure App Service
-└── deploy-web-staging.yml      Merge to main → deploy to Azure App Service
-```
+Bicep — native Azure DSL, idempotent, GitHub Actions native, no state file.
 
-Production deployment will be manual until Phase 2 is complete.
+### Naming Convention
+
+`ib-{env}-{resource}` (e.g. `ib-stg-api`, `ib-stg-db`, `ib-stg-kv`)
+
+Storage Account exception: `ib{env}storage` (no hyphens)
 
 ---
 
-## Required Azure Resources (MVP — not yet provisioned)
+## Azure Resources — Staging (`ib-stg-rg`)
 
-| Resource | Type | Purpose |
-|---|---|---|
-| `investingbuddy-rg` | Resource Group | Container for all resources |
-| `investingbuddy-api` | App Service | FastAPI backend |
-| `investingbuddy-web` | App Service / Static Web App | Next.js frontend |
-| `investingbuddy-db` | PostgreSQL Flexible Server | Main database |
-| `investingbuddystorage` | Storage Account | Blob storage for documents |
-| `investingbuddy-search` | AI Search Service | Vector search / RAG |
-| `investingbuddy-openai` | Azure OpenAI | LLM runtime |
-| `investingbuddy-kv` | Key Vault | Production secrets |
-| `investingbuddy-insights` | Application Insights | Monitoring |
+### Phase A Core (not yet provisioned)
 
-Future (Phase 5+):
-| Resource | Type | Purpose |
+| Name | Type | SKU | Purpose |
+|---|---|---|---|
+| `ib-stg-rg` | Resource Group | — | Container for all staging resources |
+| `ib-stg-logs` | Log Analytics Workspace | PerGB2018 | Required by Application Insights |
+| `ib-stg-insights` | Application Insights | — | Monitoring and alerting |
+| `ib-stg-kv` | Key Vault | Standard | Secrets — DB password, app secrets |
+| `ib-stg-api-plan` | App Service Plan | B2 Linux | Compute for FastAPI |
+| `ib-stg-api` | App Service (Python 3.12) | — | FastAPI backend |
+| `ib-stg-web-plan` | App Service Plan | B1 Linux | Compute for Next.js |
+| `ib-stg-web` | App Service (Node 22) | — | Next.js frontend |
+| `ib-stg-db` | PostgreSQL Flexible Server 16 | Standard_B1ms | Main database |
+| `ibstgstorage` | Storage Account (LRS) | Standard | Blob storage for documents |
+
+### Phase 4+ (provision when needed)
+
+| Name | Type | Purpose |
 |---|---|---|
-| `investingbuddy-bus` | Service Bus | Background job queue |
-| `investingbuddy-func` | Function App | Scheduled jobs |
+| `ib-stg-openai` | Azure OpenAI | LLM runtime for agent workflows |
+| `ib-stg-search` | Azure AI Search | RAG / vector search |
+
+### Phase 5+ (future)
+
+| Name | Type | Purpose |
+|---|---|---|
+| `ib-stg-bus` | Azure Service Bus | Background job queue |
+| `ib-stg-func` | Azure Function App | Scheduled jobs |
+
+---
+
+## CI/CD Workflows
+
+### Current (Phase 1–3.5)
+
+```
+.github/workflows/
+├── api-ci.yml           On push/PR to main (apps/api/**): ruff + pytest
+└── web-ci.yml           On push/PR to main (apps/web/**): typecheck + lint + build
+```
+
+CI runs on every pull request and push to `main`. Both workflows are path-filtered.
+
+### Phase A (planned — not yet active)
+
+```
+.github/workflows/
+├── deploy-api-staging.yml    Merge to main → deploy to ib-stg-api (PLACEHOLDER)
+└── deploy-web-staging.yml    Merge to main → deploy to ib-stg-web (PLACEHOLDER)
+```
+
+Deployment workflows are committed as commented-out placeholders.
+Activate only after staging resources are provisioned and checklist is complete.
+
+### GitHub Actions Authentication
+
+OIDC federated credentials — no long-lived `AZURE_CREDENTIALS` JSON secret.
+
+```yaml
+- uses: azure/login@v2
+  with:
+    client-id: ${{ secrets.AZURE_CLIENT_ID }}
+    tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+    subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+```
+
+Requires `permissions: id-token: write` in the workflow job.
 
 ---
 
@@ -100,41 +146,49 @@ Copy `.env.example` to `.env`. The defaults work for local Docker development.
 
 ### Backend (`apps/api`)
 
-| Variable | Required | Notes |
-|---|---|---|
-| `DATABASE_URL` | Yes | PostgreSQL async connection string |
-| `APP_ENV` | No | `development` / `staging` / `production` |
-| `SECRET_KEY` | Yes (prod) | Random secret — never hardcode |
-| `AZURE_OPENAI_ENDPOINT` | Phase 2+ | |
-| `AZURE_OPENAI_API_KEY` | Phase 2+ | Stored in Key Vault in prod |
-| `AZURE_OPENAI_API_VERSION` | Phase 2+ | |
-| `AZURE_OPENAI_DEPLOYMENT_NAME` | Phase 2+ | |
-| `AZURE_STORAGE_CONNECTION_STRING` | Phase 3+ | |
-| `AZURE_STORAGE_CONTAINER_NAME` | Phase 3+ | |
-| `AZURE_SEARCH_ENDPOINT` | Phase 3+ | |
-| `AZURE_SEARCH_API_KEY` | Phase 3+ | |
-| `AZURE_SEARCH_INDEX_NAME` | Phase 3+ | |
+| Variable | Required | Phase | Notes |
+|---|---|---|---|
+| `DATABASE_URL` | Yes | 1+ | PostgreSQL async connection string |
+| `APP_ENV` | No | 1+ | `development` / `staging` / `production` |
+| `SECRET_KEY` | Yes (prod) | 1+ | Random secret — never hardcode |
+| `AZURE_OPENAI_ENDPOINT` | No | 4+ | Leave empty locally |
+| `AZURE_OPENAI_API_KEY` | No | 4+ | Stored in Key Vault in staging/prod |
+| `AZURE_OPENAI_API_VERSION` | No | 4+ | `2024-08-01-preview` |
+| `AZURE_OPENAI_DEPLOYMENT_NAME` | No | 4+ | |
+| `AZURE_STORAGE_CONNECTION_STRING` | No | 3+ | Use Managed Identity in staging |
+| `AZURE_STORAGE_CONTAINER_NAME` | No | 3+ | `investingbuddy-documents` |
+| `AZURE_SEARCH_ENDPOINT` | No | 4+ | |
+| `AZURE_SEARCH_API_KEY` | No | 4+ | Use Managed Identity in staging |
+| `AZURE_SEARCH_INDEX_NAME` | No | 4+ | `investingbuddy-research` |
+| `APPLICATIONINSIGHTS_CONNECTION_STRING` | No | A+ | Injected via App Service config |
 
 ### Frontend (`apps/web`)
 
-| Variable | Required | Notes |
-|---|---|---|
-| `NEXT_PUBLIC_API_BASE_URL` | No | Defaults to `http://localhost:8000` |
-| `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` | Phase 2+ | |
-| `CLERK_SECRET_KEY` | Phase 2+ | |
+| Variable | Required | Phase | Notes |
+|---|---|---|---|
+| `NEXT_PUBLIC_API_BASE_URL` | No | 1+ | Defaults to `http://localhost:8000` |
+| `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` | No | 7+ | |
+| `CLERK_SECRET_KEY` | No | 7+ | Stored in Key Vault |
 
 ---
 
-## GitHub Actions Secrets Required (Phase 2+)
+## GitHub Actions Secrets Required
 
-```
-AZURE_CREDENTIALS                    Service principal for deployment
-AZURE_OPENAI_API_KEY
-AZURE_STORAGE_CONNECTION_STRING
-AZURE_SEARCH_API_KEY
-DATABASE_URL_STAGING
-CLERK_SECRET_KEY
-```
+### Phase A (staging deployment)
+
+| Secret | Purpose | How to Get |
+|---|---|---|
+| `AZURE_CLIENT_ID` | OIDC App Registration client ID | Azure AD → App Registrations → `ib-github-actions-stg` |
+| `AZURE_TENANT_ID` | Azure AD tenant ID | Azure AD → Overview |
+| `AZURE_SUBSCRIPTION_ID` | Target subscription | Azure portal → Subscriptions |
+| `AZURE_STAGING_DB_PASSWORD` | DB provisioning only | Generate: `openssl rand -hex 16` |
+
+### Phase 4+ (when OpenAI/Search added)
+
+| Secret | Purpose |
+|---|---|
+| `AZURE_OPENAI_API_KEY` | Only if managed identity not used |
+| `AZURE_SEARCH_API_KEY` | Only if managed identity not used |
 
 ---
 
@@ -144,21 +198,91 @@ CLERK_SECRET_KEY
 |---|---|
 | `.env` (local, gitignored) | Local development credentials |
 | `.env.example` (committed) | Variable names with empty/example values |
-| GitHub Actions Secrets | CI/CD deployment credentials |
-| Azure Key Vault | Production secrets |
-| App Service Configuration | Runtime env vars (linked to Key Vault via managed identity) |
+| GitHub Actions Secrets | OIDC credentials + provisioning secrets |
+| Azure Key Vault (`ib-stg-kv`) | Runtime secrets for staging |
+| App Service Configuration | Env vars — non-secret values direct, secrets as Key Vault references |
 
-Never commit: `.env`, API keys, Azure credentials, database passwords.
+**Never commit:** `.env`, API keys, Azure credentials, database passwords, subscription IDs.
+
+**Prefer managed identity** over connection-string secrets for all Azure service-to-service access.
 
 ---
 
 ## Branch and Deployment Strategy
 
 ```
-feature/* → PR → CI (tests only) → merge to main
-main      → CI → staging deployment (Phase 2+)
+feature/*   → PR → CI (lint + test + build) → merge to main
+main        → CI → staging deployment (Phase A, after provisioning)
+release/*   → production deployment (Phase 5+)
 ```
 
-Production deployment is manual until Phase 2+ deployment automation is complete.
-
 Never commit directly to `main` once deployment is active.
+
+---
+
+## Estimated Monthly Cost (Staging)
+
+| Resource | SKU | Est. USD/month |
+|---|---|---|
+| API App Service | B2 | ~$60 |
+| Web App Service | B1 | ~$14 |
+| PostgreSQL Flexible | Standard_B1ms | ~$17 |
+| Storage Account | LRS, minimal use | ~$1 |
+| Key Vault | Standard | ~$1 |
+| App Insights + Log Analytics | Pay-per-use | ~$5 |
+| **Total (Phase A, no AI)** | | **~$98/month** |
+
+Azure OpenAI + AI Search (Phase 4) will add $50–250/month depending on token volume.
+
+---
+
+## Azure CLI Local Setup
+
+The Azure CLI is installed in a dedicated Python venv at `~/.venvs/azure-cli`.
+Do **not** use Homebrew. Do **not** use the project's `apps/api/.venv`.
+
+```bash
+python3 -m venv ~/.venvs/azure-cli
+source ~/.venvs/azure-cli/bin/activate
+pip install --upgrade pip
+pip install azure-cli
+
+az version
+az login
+az account show
+```
+
+**Before every Azure task**, activate first:
+
+```bash
+source ~/.venvs/azure-cli/bin/activate
+az version
+az account show
+```
+
+Full setup details and security constraints: [`infra/azure/README.md`](../infra/azure/README.md)
+
+---
+
+## Pre-Provisioning Checklist
+
+See full checklist: [`infra/azure/README.md`](../infra/azure/README.md)
+
+Summary:
+- [ ] `~/.venvs/azure-cli` venv created and pip `azure-cli` installed
+- [ ] `az version` works after activating venv
+- [ ] `az login` completed and `az account show` confirms correct subscription
+- [ ] No secrets, subscription IDs or credentials committed to repo
+- [ ] App Registration `ib-github-actions-stg` created with federated credential
+- [ ] GitHub Secrets set: `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`
+- [ ] Resource naming, region (`westeurope`), and SKUs approved
+- [ ] Cost estimate (~$98/month) accepted
+- [ ] Staging-only provisioning confirmed (not production)
+
+---
+
+## Provisioning
+
+When the checklist is complete, use the provisioning prompt in
+[`infra/azure/README.md`](../infra/azure/README.md) to trigger the next
+implementation step.

@@ -48,11 +48,18 @@ Identify the target environment: local / staging / production.
 - [ ] Deployment workflows exist for target environment
 - [ ] Deployment only triggers after CI passes
 
+### Azure CLI (local provisioning checks only)
+- [ ] Azure CLI venv activated: `source ~/.venvs/azure-cli/bin/activate`
+- [ ] `az version` confirms CLI is working from pip-installed venv (not Homebrew)
+- [ ] `az account show` confirms the correct subscription
+- [ ] No Azure credentials, subscription IDs or secrets are committed to the repo
+
 ### Azure Resources
 - [ ] All required Azure resources are provisioned (see docs/DEPLOYMENT.md)
 - [ ] Azure App Service app settings match `.env.example` variables
 - [ ] Azure Key Vault contains all production secrets
 - [ ] Azure Database for PostgreSQL is reachable from App Service
+- [ ] Staging-only: confirm target is `ib-stg-rg`, not production
 
 ### Health Endpoint
 - [ ] `GET /health` returns 200 OK on the backend
