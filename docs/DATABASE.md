@@ -1,6 +1,6 @@
 # Database Schema
 
-## Status: Phase 2 — Initial Tables Created
+## Status: Phase 3 — Sources and Citations Added
 
 ---
 
@@ -43,6 +43,7 @@ alembic revision --autogenerate -m "short description"
 | Revision | File | Tables Created |
 |---|---|---|
 | 001 | `001_add_initial_tables.py` | companies, agent_runs, agent_steps, reports |
+| 002 | `002_add_sources_and_citations.py` | sources, citations |
 
 ---
 
@@ -149,7 +150,50 @@ Report status values: `draft`, `review`, `published`, `archived`
 
 ---
 
-## Planned Tables (Phase 3+)
+### Research Knowledge Base
+
+**sources**
+```
+id                  UUID PK
+source_type         VARCHAR(50) NOT NULL
+title               VARCHAR(500) NOT NULL
+url                 VARCHAR(2000) NULLABLE
+publisher           VARCHAR(200) NULLABLE
+published_at        TIMESTAMP WITH TIME ZONE NULLABLE
+retrieved_at        TIMESTAMP WITH TIME ZONE NOT NULL
+credibility_score   NUMERIC(4,3) NULLABLE
+content_hash        VARCHAR(64) NULLABLE
+blob_path           VARCHAR(1000) NULLABLE
+created_at          TIMESTAMP WITH TIME ZONE
+
+INDEX: source_type, content_hash, url
+```
+
+Valid source_type values: `annual_report`, `quarterly_report`, `investor_presentation`,
+`news_article`, `analyst_report`, `industry_report`, `regulatory_filing`,
+`earnings_call_transcript`, `press_release`, `financial_data_feed`,
+`web_page`, `internal_document`, `placeholder`
+
+Source deduplication: `get_or_create_source()` checks `content_hash` first, then `url`.
+
+**citations**
+```
+id              UUID PK
+source_id       UUID FK → sources.id (RESTRICT)
+report_id       UUID FK → reports.id (CASCADE) NULLABLE
+agent_run_id    UUID FK → agent_runs.id (SET NULL) NULLABLE
+claim_text      VARCHAR(500) NULLABLE
+source_quote    TEXT NULLABLE
+url             VARCHAR(2000) NULLABLE
+retrieved_at    TIMESTAMP WITH TIME ZONE NULLABLE
+created_at      TIMESTAMP WITH TIME ZONE
+
+INDEX: source_id, report_id, agent_run_id
+```
+
+---
+
+## Planned Tables (Phase 4+)
 
 These tables are designed in the tech spec but not yet migrated:
 
@@ -159,14 +203,12 @@ These tables are designed in the tech spec but not yet migrated:
 - `portfolios`, `portfolio_positions` — manual portfolio input (no broker)
 
 ### Research Knowledge Base
-- `sources` — documents, filings, news articles
-- `source_chunks` — text chunks for RAG
-- `research_packages` — per-company research collection
+- `source_chunks` — text chunks for RAG (Phase 4)
+- `research_packages` — per-company research collection (Phase 4)
 
 ### Analysis & Recommendations
 - `analyses` — bull/bear case, ratings, confidence scores
 - `recommendations` — published investment signals with performance tracking
-- `citations` — claim-to-source links
 
 ### Prompt Management
 - `prompt_templates`, `prompt_versions` — versioned agent prompts

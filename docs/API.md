@@ -1,6 +1,6 @@
 # API Reference
 
-## Status: Phase 2 — Company endpoints and workflow trigger implemented
+## Status: Phase 3 — Sources and Citations endpoints added
 
 ---
 
@@ -42,7 +42,7 @@ Authentication via Clerk JWT is planned for Phase 7. No auth is enforced yet.
 
 **Response:**
 ```json
-{ "status": "ok", "environment": "development", "version": "0.2.0" }
+{ "status": "ok", "environment": "development", "version": "0.3.0" }
 ```
 
 ---
@@ -151,10 +151,136 @@ Errors:
 - `422` — company not found in database
 - `500` — workflow execution error (see agent_run logs)
 
-> **Phase 2 note:** The workflow uses deterministic placeholder logic.
+> **Phase 2/3 note:** The workflow uses deterministic placeholder logic.
 > No LLM calls are made. Analysis output is always rated WATCH with `is_placeholder: true`.
-> Wire real LLM calls in Phase 3 by replacing node bodies in
+> The workflow also creates a placeholder `Source` and `Citation` record (Phase 3).
+> Wire real LLM calls in Phase 4 by replacing node bodies in
 > `apps/api/app/workflows/company_analysis.py`.
+
+---
+
+### Sources
+
+| Method | Path | Status | Description |
+|---|---|---|---|
+| POST | `/api/v1/sources` | ✅ Live | Create or return existing source (dedup by hash/URL) |
+| GET | `/api/v1/sources` | ✅ Live | List all sources |
+| GET | `/api/v1/sources/{source_id}` | ✅ Live | Get source by UUID |
+
+**POST /api/v1/sources** — Create or deduplicate a source
+
+Deduplication order: `content_hash` first, then `url`. If a match is found the existing record is returned with HTTP 200. A new record returns HTTP 201.
+
+Request:
+```json
+{
+  "source_type": "news_article",
+  "title": "Volkswagen Q4 Results 2025",
+  "url": "https://example.com/vow3-q4-2025",
+  "publisher": "Reuters",
+  "credibility_score": 0.85
+}
+```
+
+Response `201 Created` (new) or `200 OK` (existing):
+```json
+{
+  "id": "uuid",
+  "source_type": "news_article",
+  "title": "Volkswagen Q4 Results 2025",
+  "url": "https://example.com/vow3-q4-2025",
+  "publisher": "Reuters",
+  "retrieved_at": "2026-06-20T10:00:00Z",
+  "credibility_score": 0.85,
+  "created_at": "2026-06-20T10:00:00Z"
+}
+```
+
+Errors:
+- `422` — invalid `source_type` (must be one of the 13 valid values; see `docs/DATABASE.md`)
+
+**GET /api/v1/sources** — List sources
+
+Query parameters: `limit` (default 50), `offset` (default 0)
+
+Response `200 OK`:
+```json
+{ "items": [ { ...source... } ], "total": 12 }
+```
+
+**GET /api/v1/sources/{source_id}** — Get source by UUID
+
+Response `200 OK`: source object
+Error `404 Not Found`: source does not exist
+
+---
+
+### Citations
+
+| Method | Path | Status | Description |
+|---|---|---|---|
+| POST | `/api/v1/reports/{report_id}/citations` | ✅ Live | Add a citation to a report |
+| GET | `/api/v1/reports/{report_id}/citations` | ✅ Live | List citations for a report |
+| POST | `/api/v1/reports/{report_id}/validate-citations` | ✅ Live | Validate citation coverage for a draft report |
+
+**POST /api/v1/reports/{report_id}/citations** — Add citation
+
+Request:
+```json
+{
+  "source_id": "uuid-of-source",
+  "claim_text": "thesis",
+  "source_quote": "Revenue declined 8% YoY in Q4 2025."
+}
+```
+
+Response `201 Created`:
+```json
+{
+  "id": "uuid",
+  "source_id": "uuid",
+  "report_id": "uuid",
+  "agent_run_id": null,
+  "claim_text": "thesis",
+  "source_quote": "Revenue declined 8% YoY in Q4 2025.",
+  "url": null,
+  "retrieved_at": null,
+  "created_at": "2026-06-20T10:00:00Z"
+}
+```
+
+Errors:
+- `404` — report not found
+- `422` — source_id not found or missing
+
+**GET /api/v1/reports/{report_id}/citations** — List citations
+
+Response `200 OK`:
+```json
+{ "items": [ { ...citation... } ], "total": 3 }
+```
+
+**POST /api/v1/reports/{report_id}/validate-citations** — Validate citation coverage
+
+Runs a structural (non-LLM) check: are thesis, rating, and financial_metrics sections cited?
+
+Response `200 OK`:
+```json
+{
+  "status": "ok" | "warnings" | "failed",
+  "total_claims": 3,
+  "cited_claims": 2,
+  "missing_citations": [
+    { "section": "financial_metrics", "description": "No source linked." }
+  ],
+  "approved_claims": ["thesis"],
+  "warnings": ["[PLACEHOLDER] Analysis output is marked is_placeholder=true."]
+}
+```
+
+> **Phase 3 note:** Validation is purely structural — no LLM calls.
+> `is_placeholder=true` outputs always return `status: "warnings"`.
+> Full LLM-powered fact-checking is planned for Phase 4.
 
 ---
 
@@ -173,7 +299,7 @@ Errors:
 
 ---
 
-## Planned Endpoints (Phase 3+)
+## Planned Endpoints (Phase 4+)
 
 ### Public (unauthenticated)
 | Method | Path | Phase |
@@ -186,8 +312,8 @@ Errors:
 ### Admin
 | Method | Path | Phase |
 |---|---|---|
-| GET | `/api/v1/admin/agent-runs` | Phase 3 |
-| GET | `/api/v1/admin/agent-runs/{id}` | Phase 3 |
+| GET | `/api/v1/admin/agent-runs` | Phase 4 |
+| GET | `/api/v1/admin/agent-runs/{id}` | Phase 4 |
 | POST | `/api/v1/admin/reports/{id}/publish` | Phase 4 |
 | POST | `/api/v1/admin/reports/{id}/reject` | Phase 4 |
 | GET | `/api/v1/admin/judge-evaluations` | Phase 6 |

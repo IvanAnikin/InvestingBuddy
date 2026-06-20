@@ -1,6 +1,6 @@
 # Architecture
 
-## Status: Phase 2 — Database foundation, company endpoints, and workflow skeleton
+## Status: Phase 3 — Research Storage and Citations Foundation
 
 ---
 
@@ -52,7 +52,7 @@ Azure Application Insights
 ### Database
 - Local: PostgreSQL 16 via Docker Compose
 - Production: Azure Database for PostgreSQL Flexible Server
-- Status: **Alembic configured; migration 001 creates companies, agent_runs, agent_steps, reports**
+- Status: **migration 001 (companies, agent_runs, agent_steps, reports) + migration 002 (sources, citations)**
 
 ### Vector Search
 - Azure AI Search
@@ -85,17 +85,23 @@ investingbuddy/
 │   │   │   │   └── v1/
 │   │   │   │       ├── health.py
 │   │   │   │       ├── companies.py
-│   │   │   │       └── workflows.py
-│   │   │   ├── models/         SQLAlchemy ORM: Company, Report, AgentRun, AgentStep
-│   │   │   ├── schemas/        Pydantic: company, report, agent
-│   │   │   ├── services/       company_service, report_service, agent_run_service
+│   │   │   │       ├── workflows.py
+│   │   │   │       ├── sources.py      Phase 3
+│   │   │   │       └── citations.py    Phase 3
+│   │   │   ├── models/         SQLAlchemy ORM: Company, Report, AgentRun, AgentStep, Source, Citation
+│   │   │   ├── schemas/        Pydantic: company, report, agent, source (incl. citations)
+│   │   │   ├── services/       company_service, report_service, agent_run_service, source_service, citation_service
 │   │   │   ├── agents/
-│   │   │   │   └── base.py     CompanyAnalysisState TypedDict
+│   │   │   │   ├── base.py     CompanyAnalysisState TypedDict
+│   │   │   │   └── validation/
+│   │   │   │       └── citation_validator.py   Phase 3 skeleton
 │   │   │   ├── workflows/
 │   │   │   │   └── company_analysis.py
 │   │   │   └── db/             session, base
 │   │   ├── alembic/
-│   │   │   └── versions/001_add_initial_tables.py
+│   │   │   └── versions/
+│   │   │       ├── 001_add_initial_tables.py
+│   │   │       └── 002_add_sources_and_citations.py   Phase 3
 │   │   ├── tests/
 │   │   └── pyproject.toml
 │   └── web/        Next.js frontend
@@ -151,15 +157,17 @@ All errors are caught, logged to `agent_runs.error_message`, and returned as HTT
 | Phase 0 | ✅ Complete | Agentic dev infrastructure: skills, commands, docs scaffolding |
 | Phase 1 | ✅ Complete | FastAPI skeleton, Next.js skeleton, Docker Compose, GitHub Actions CI |
 | Phase 2 | ✅ Complete | DB foundation (Alembic + 4 tables), company endpoints, LangGraph workflow skeleton |
+| Phase 3 | ✅ Complete | Source + Citation models, migration 002, source/citation services + API, CitationValidator skeleton, workflow creates placeholder source + citation |
 
 ---
 
 ## What Is Not Yet Implemented
 
 - Authentication (Clerk) — Phase 7
-- Azure OpenAI LLM calls in workflow nodes — Phase 3
-- Financial data ingestion and sources — Phase 3
-- Azure AI Search, Blob Storage — Phase 3+
+- Azure OpenAI LLM calls in workflow nodes — Phase 4
+- Real financial data ingestion (OpenBB, external APIs) — Phase 4
+- Azure AI Search (embeddings, RAG) — Phase 4+
+- Azure Blob Storage (PDF documents) — Phase 4+
 - Full council-of-agents (all agent teams) — Phase 4
 - Scheduled background jobs — Phase 5
 - Judge / backtesting — Phase 6
