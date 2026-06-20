@@ -1,17 +1,6 @@
 # Database Schema
 
-## Status: Placeholder — Phase 0
-
-This document describes the InvestingBuddy PostgreSQL database schema.
-
-Update this file when:
-- A new table is added
-- A column is added, renamed or removed
-- An enum value is added
-- An index is added or removed
-- A foreign key relationship changes
-
-For migration rules see `.claude/skills/database-design/SKILL.md`.
+## Status: Phase 2 — Initial Tables Created
 
 ---
 
@@ -19,215 +8,114 @@ For migration rules see `.claude/skills/database-design/SKILL.md`.
 
 ```
 Engine:     PostgreSQL 16
-ORM:        SQLAlchemy async
+ORM:        SQLAlchemy async (2.0+)
 Migrations: Alembic
-Local:      Docker container (docker-compose.yml — Phase 1)
+Local:      Docker container (docker-compose.yml)
 Production: Azure Database for PostgreSQL Flexible Server
 ```
 
-Connection string format:
+Connection string format (async driver):
 ```
-postgresql+asyncpg://user:password@host:5432/investingbuddy
+postgresql+psycopg://user:password@host:5432/investingbuddy
+```
+
+---
+
+## Running Migrations
+
+```bash
+cd apps/api
+source .venv/bin/activate
+
+alembic upgrade head       # apply all pending migrations
+alembic downgrade -1       # roll back one migration
+alembic history            # show migration history
+alembic current            # show current migration
+
+# generate migration from model changes
+alembic revision --autogenerate -m "short description"
 ```
 
 ---
 
-## Schema Status: Not Yet Created (Phase 1)
+## Applied Migrations
 
-No tables exist yet. First migrations will be created in Phase 1.
-
----
-
-## Planned Tables
-
-### Users & Accounts
-
-**users**
-```
-id              UUID PK
-email           VARCHAR UNIQUE NOT NULL
-name            VARCHAR
-role            ENUM (public_user, subscriber, admin, super_admin)
-created_at      TIMESTAMP
-updated_at      TIMESTAMP
-```
-
-**user_preferences**
-```
-id                      UUID PK
-user_id                 UUID FK → users.id
-preferred_regions       JSONB
-preferred_sectors       JSONB
-excluded_sectors        JSONB
-risk_level              VARCHAR
-investment_horizon      VARCHAR
-notification_frequency  VARCHAR
-created_at              TIMESTAMP
-updated_at              TIMESTAMP
-```
-
-**portfolios**
-```
-id              UUID PK
-user_id         UUID FK → users.id
-name            VARCHAR
-base_currency   VARCHAR
-created_at      TIMESTAMP
-updated_at      TIMESTAMP
-```
-
-**portfolio_positions** (manual input only — no broker)
-```
-id                  UUID PK
-portfolio_id        UUID FK → portfolios.id
-ticker              VARCHAR
-exchange            VARCHAR
-company_id          UUID FK → companies.id NULLABLE
-quantity            DECIMAL NULLABLE
-average_price       DECIMAL NULLABLE
-currency            VARCHAR
-created_at          TIMESTAMP
-updated_at          TIMESTAMP
-```
+| Revision | File | Tables Created |
+|---|---|---|
+| 001 | `001_add_initial_tables.py` | companies, agent_runs, agent_steps, reports |
 
 ---
+
+## Implemented Tables
 
 ### Company Intelligence
 
 **companies**
 ```
 id              UUID PK
-ticker          VARCHAR NOT NULL
-exchange        VARCHAR NOT NULL
-name            VARCHAR NOT NULL
-country         VARCHAR
-region          VARCHAR
-sector          VARCHAR
-industry        VARCHAR
-market_cap      DECIMAL NULLABLE
-currency        VARCHAR
-website         VARCHAR NULLABLE
+ticker          VARCHAR(20) NOT NULL
+exchange        VARCHAR(20) NOT NULL
+name            VARCHAR(200) NOT NULL
+country         VARCHAR(100) NULLABLE
+region          VARCHAR(100) NULLABLE
+sector          VARCHAR(100) NULLABLE
+industry        VARCHAR(100) NULLABLE
+market_cap      NUMERIC(20,2) NULLABLE
+currency        VARCHAR(10) NULLABLE
+website         VARCHAR(500) NULLABLE
 description     TEXT NULLABLE
-status          ENUM (new, researching, analyzed, watchlist, recommended_buy, recommended_sell, rejected, archived)
-created_at      TIMESTAMP
-updated_at      TIMESTAMP
+status          VARCHAR(50) NOT NULL DEFAULT 'new'
+created_at      TIMESTAMP WITH TIME ZONE
+updated_at      TIMESTAMP WITH TIME ZONE
+
+UNIQUE: (ticker, exchange)
 INDEX: ticker, exchange, status
 ```
 
-**company_financial_snapshots**
-```
-id                  UUID PK
-company_id          UUID FK → companies.id
-snapshot_date       DATE
-market_cap          DECIMAL NULLABLE
-enterprise_value    DECIMAL NULLABLE
-revenue             DECIMAL NULLABLE
-ebitda              DECIMAL NULLABLE
-free_cash_flow      DECIMAL NULLABLE
-cash                DECIMAL NULLABLE
-debt                DECIMAL NULLABLE
-net_debt            DECIMAL NULLABLE
-ev_ebitda           DECIMAL NULLABLE
-pe_ratio            DECIMAL NULLABLE
-fcf_yield           DECIMAL NULLABLE
-source_id           UUID FK → sources.id
-created_at          TIMESTAMP
-```
+Company status values: `new`, `researching`, `analyzed`, `watchlist`,
+`recommended_buy`, `recommended_sell`, `rejected`, `archived`
 
 ---
 
-### Research Knowledge Base
+### Agent Auditability
 
-**sources**
-```
-id                  UUID PK
-source_type         VARCHAR (annual_report, quarterly_report, transcript, news, industry_report, etc.)
-title               VARCHAR
-url                 VARCHAR
-publisher           VARCHAR NULLABLE
-published_at        TIMESTAMP NULLABLE
-retrieved_at        TIMESTAMP NOT NULL
-credibility_score   DECIMAL NULLABLE
-blob_path           VARCHAR NULLABLE
-content_hash        VARCHAR NULLABLE (deduplication)
-created_at          TIMESTAMP
-INDEX: source_type, retrieved_at
-```
-
-**source_chunks**
-```
-id              UUID PK
-source_id       UUID FK → sources.id
-chunk_text      TEXT
-chunk_index     INTEGER
-embedding_id    VARCHAR NULLABLE (Azure AI Search document ID)
-created_at      TIMESTAMP
-```
-
-**research_packages**
-```
-id              UUID PK
-company_id      UUID FK → companies.id NULLABLE
-theme_id        UUID FK → themes.id NULLABLE
-agent_run_id    UUID FK → agent_runs.id
-summary         TEXT NULLABLE
-status          VARCHAR
-created_at      TIMESTAMP
-updated_at      TIMESTAMP
-```
-
----
-
-### Analysis & Recommendations
-
-**analyses**
+**agent_runs**
 ```
 id                      UUID PK
-company_id              UUID FK → companies.id
-research_package_id     UUID FK → research_packages.id NULLABLE
-agent_run_id            UUID FK → agent_runs.id
-bull_case               TEXT NULLABLE
-bear_case               TEXT NULLABLE
-valuation_summary       TEXT NULLABLE
-risk_summary            TEXT NULLABLE
-catalyst_summary        TEXT NULLABLE
-final_rating            ENUM (BUY, WATCH, HOLD, SELL, REJECT) NULLABLE
-confidence_score        DECIMAL NULLABLE
-risk_score              DECIMAL NULLABLE
-created_at              TIMESTAMP
+workflow_name           VARCHAR(100) NOT NULL
+workflow_version        VARCHAR(50) NOT NULL DEFAULT '1.0.0'
+status                  VARCHAR(50) NOT NULL DEFAULT 'running'
+started_at              TIMESTAMP WITH TIME ZONE
+finished_at             TIMESTAMP WITH TIME ZONE NULLABLE
+trigger_type            VARCHAR(50) NOT NULL DEFAULT 'manual'
+created_by_user_id      UUID NULLABLE
+total_tokens            INTEGER NULLABLE
+total_cost              NUMERIC(10,6) NULLABLE
+error_message           TEXT NULLABLE
+
+INDEX: workflow_name, status
 ```
 
-**recommendations**
-```
-id                      UUID PK
-company_id              UUID FK → companies.id
-analysis_id             UUID FK → analyses.id
-rating                  ENUM (BUY, WATCH, HOLD, SELL, REJECT)
-recommendation_date     DATE
-publication_date        DATE NULLABLE
-entry_price             DECIMAL NULLABLE
-currency                VARCHAR
-horizon_months          INTEGER
-confidence_score        DECIMAL
-risk_score              DECIMAL
-benchmark_id            UUID NULLABLE
-status                  ENUM (draft, review, published, closed, invalidated)
-created_at              TIMESTAMP
-updated_at              TIMESTAMP
-INDEX: company_id, status, recommendation_date
-```
+Trigger types: `manual`, `scheduled`, `system`, `judge_requested`
+Status values: `running`, `completed`, `failed`
 
-**citations**
+**agent_steps**
 ```
 id                  UUID PK
-report_id           UUID FK → reports.id NULLABLE
-analysis_id         UUID FK → analyses.id NULLABLE
-source_id           UUID FK → sources.id NOT NULL
-claim_text          TEXT
-source_quote        TEXT NULLABLE
-url                 VARCHAR
-retrieved_at        TIMESTAMP
-created_at          TIMESTAMP
+agent_run_id        UUID FK → agent_runs.id (CASCADE)
+agent_name          VARCHAR(100) NOT NULL
+step_name           VARCHAR(100) NOT NULL
+status              VARCHAR(50) NOT NULL DEFAULT 'running'
+input_json          JSON NULLABLE
+output_json         JSON NULLABLE
+model_name          VARCHAR(100) NULLABLE
+tokens_used         INTEGER NULLABLE
+cost                NUMERIC(10,6) NULLABLE
+started_at          TIMESTAMP WITH TIME ZONE
+finished_at         TIMESTAMP WITH TIME ZONE NULLABLE
+error_message       TEXT NULLABLE
+
+INDEX: agent_run_id
 ```
 
 ---
@@ -237,124 +125,61 @@ created_at          TIMESTAMP
 **reports**
 ```
 id                          UUID PK
-title                       VARCHAR NOT NULL
-slug                        VARCHAR UNIQUE NOT NULL
-report_type                 ENUM (weekly, monthly, quarterly, yearly, company_deep_dive, theme_report, personalized)
+title                       VARCHAR(500) NOT NULL
+slug                        VARCHAR(500) NOT NULL UNIQUE
+report_type                 VARCHAR(50) NOT NULL
 period_start                DATE NULLABLE
 period_end                  DATE NULLABLE
-status                      ENUM (draft, review, published, archived)
+status                      VARCHAR(50) NOT NULL DEFAULT 'draft'
 summary                     TEXT NULLABLE
 content_markdown            TEXT NULLABLE
 content_html                TEXT NULLABLE
 created_by_agent_run_id     UUID FK → agent_runs.id NULLABLE
-published_at                TIMESTAMP NULLABLE
-created_at                  TIMESTAMP
-updated_at                  TIMESTAMP
-INDEX: slug, status, published_at, report_type
+published_at                TIMESTAMP WITH TIME ZONE NULLABLE
+created_at                  TIMESTAMP WITH TIME ZONE
+updated_at                  TIMESTAMP WITH TIME ZONE
+
+INDEX: slug, status, report_type, published_at
 ```
 
-**report_recommendations**
-```
-id                  UUID PK
-report_id           UUID FK → reports.id
-recommendation_id   UUID FK → recommendations.id
-display_order       INTEGER
-created_at          TIMESTAMP
-```
+Report types: `weekly`, `monthly`, `quarterly`, `yearly`,
+`company_deep_dive`, `theme_report`, `personalized`
+
+Report status values: `draft`, `review`, `published`, `archived`
 
 ---
 
-### Agent Auditability
+## Planned Tables (Phase 3+)
 
-**agent_runs**
-```
-id                      UUID PK
-workflow_name           VARCHAR
-workflow_version        VARCHAR
-status                  ENUM (running, completed, failed)
-started_at              TIMESTAMP
-finished_at             TIMESTAMP NULLABLE
-trigger_type            ENUM (manual, scheduled, system, judge_requested)
-created_by_user_id      UUID FK → users.id NULLABLE
-total_tokens            INTEGER NULLABLE
-total_cost              DECIMAL NULLABLE
-error_message           TEXT NULLABLE
-```
+These tables are designed in the tech spec but not yet migrated:
 
-**agent_steps**
-```
-id                  UUID PK
-agent_run_id        UUID FK → agent_runs.id
-agent_name          VARCHAR
-step_name           VARCHAR
-status              ENUM (running, completed, failed)
-input_json          JSONB NULLABLE
-output_json         JSONB NULLABLE
-prompt_version_id   UUID FK → prompt_versions.id NULLABLE
-model_name          VARCHAR NULLABLE
-tokens_used         INTEGER NULLABLE
-cost                DECIMAL NULLABLE
-started_at          TIMESTAMP
-finished_at         TIMESTAMP NULLABLE
-error_message       TEXT NULLABLE
-```
+### Users & Accounts
+- `users` — id, email, name, role
+- `user_preferences` — sector/region preferences, risk level
+- `portfolios`, `portfolio_positions` — manual portfolio input (no broker)
 
----
+### Research Knowledge Base
+- `sources` — documents, filings, news articles
+- `source_chunks` — text chunks for RAG
+- `research_packages` — per-company research collection
+
+### Analysis & Recommendations
+- `analyses` — bull/bear case, ratings, confidence scores
+- `recommendations` — published investment signals with performance tracking
+- `citations` — claim-to-source links
 
 ### Prompt Management
+- `prompt_templates`, `prompt_versions` — versioned agent prompts
+- `judge_evaluations` — recommendation quality scores
 
-**prompt_templates**
-```
-id              UUID PK
-agent_name      VARCHAR
-name            VARCHAR
-description     TEXT NULLABLE
-created_at      TIMESTAMP
-```
-
-**prompt_versions**
-```
-id                      UUID PK
-prompt_template_id      UUID FK → prompt_templates.id
-version                 VARCHAR
-content                 TEXT
-created_at              TIMESTAMP
-created_by              VARCHAR NULLABLE
-```
+See `Implementation_docs/INVESTINGBUDDY_TECH_SPEC.md` Section 12 for full column-level schema.
 
 ---
 
-### Judge System
+## Rules
 
-**judge_evaluations**
-```
-id                      UUID PK
-recommendation_id       UUID FK → recommendations.id
-agent_run_id            UUID FK → agent_runs.id
-evaluation_date         DATE
-performance_window      VARCHAR (1m, 3m, 6m, 12m, 24m, 36m)
-actual_return           DECIMAL NULLABLE
-benchmark_return        DECIMAL NULLABLE
-sector_return           DECIMAL NULLABLE
-alpha                   DECIMAL NULLABLE
-max_drawdown            DECIMAL NULLABLE
-quality_score           DECIMAL NULLABLE
-reasoning_score         DECIMAL NULLABLE
-citation_score          DECIMAL NULLABLE
-risk_score              DECIMAL NULLABLE
-judge_summary           TEXT NULLABLE
-improvement_suggestions JSONB NULLABLE
-created_at              TIMESTAMP
-```
-
----
-
-## Running Migrations
-
-```bash
-cd apps/api
-alembic upgrade head       # apply all pending migrations
-alembic downgrade -1       # roll back one migration
-alembic history            # show migration history
-alembic current            # show current migration
-```
+- Every schema change requires an Alembic migration — no exceptions.
+- Every migration must have a working `downgrade()`.
+- Never delete research history (`agent_runs`, `agent_steps`, `reports`).
+- Never store private portfolio data in public-facing tables.
+- Store rejected companies — they prevent repeated analysis cost.

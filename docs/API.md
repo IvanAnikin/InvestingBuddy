@@ -1,16 +1,6 @@
 # API Reference
 
-## Status: Placeholder — Phase 0
-
-This document describes the InvestingBuddy REST API.
-
-Update this file when:
-- A new endpoint is added
-- An existing endpoint changes its request or response schema
-- An endpoint is deprecated or removed
-- Authentication requirements change
-
-For implementation rules see `.claude/skills/backend-fastapi/SKILL.md`.
+## Status: Phase 2 — Company endpoints and workflow trigger implemented
 
 ---
 
@@ -22,104 +12,189 @@ Staging:        https://api-staging.investingbuddy.com (future)
 Production:     https://api.investingbuddy.com (future)
 ```
 
+Interactive docs (development only):
+```
+http://localhost:8000/api/docs      (Swagger UI)
+http://localhost:8000/api/redoc     (ReDoc)
+```
+
 ---
 
 ## API Tiers
 
-### Public (`/api/`)
-No authentication required. Returns only published, public-facing data.
+| Prefix | Auth Required | Purpose |
+|---|---|---|
+| `/api/v1/` | No (Phase 2) | Core CRUD and workflow endpoints |
+| `/api/me/` | Yes (Phase 7) | Authenticated user-specific data |
+| `/api/admin/` | Admin role (future) | Platform management |
 
-### User (`/api/me/`)
-Requires valid authentication token. Returns only the requesting user's own data.
-
-### Admin (`/api/admin/`)
-Requires authentication + admin role. Returns platform management data and workflow controls.
+Authentication via Clerk JWT is planned for Phase 7. No auth is enforced yet.
 
 ---
 
-## Authentication
+## Implemented Endpoints
 
-MVP uses Clerk for authentication. Include the Clerk JWT token in the Authorization header:
+### Health
+
+| Method | Path | Status | Description |
+|---|---|---|---|
+| GET | `/health` | ✅ Live | Application health check |
+
+**Response:**
+```json
+{ "status": "ok", "environment": "development", "version": "0.2.0" }
 ```
-Authorization: Bearer <token>
-```
 
 ---
 
-## Public Endpoints
+### Companies
 
-> Not yet implemented — Phase 1+
+| Method | Path | Status | Description |
+|---|---|---|---|
+| POST | `/api/v1/companies` | ✅ Live | Add a company to the research universe |
+| GET | `/api/v1/companies` | ✅ Live | List all companies |
+| GET | `/api/v1/companies/{id}` | ✅ Live | Get company by UUID |
 
-| Method | Path | Description |
-|---|---|---|
-| GET | /api/reports | List published reports |
-| GET | /api/reports/{slug} | Report detail |
-| GET | /api/themes | List themes |
-| GET | /api/themes/{slug} | Theme detail |
-| GET | /api/companies/{ticker} | Company page data |
-| GET | /health | Health check |
+**POST /api/v1/companies** — Create a company
 
----
-
-## User Endpoints (Authenticated)
-
-> Not yet implemented — Phase 1+ (Version 2)
-
-| Method | Path | Description |
-|---|---|---|
-| GET | /api/me | Current user profile |
-| PUT | /api/me/preferences | Update preferences |
-| GET | /api/me/portfolio | Get portfolio |
-| POST | /api/me/portfolio/positions | Add position |
-| PUT | /api/me/portfolio/positions/{id} | Update position |
-| DELETE | /api/me/portfolio/positions/{id} | Remove position |
-| GET | /api/me/recommendations | Personalized recommendations |
-| GET | /api/me/notifications | Notification settings |
-| PUT | /api/me/notifications | Update notification settings |
-
----
-
-## Admin Endpoints (Admin Role Required)
-
-> Not yet implemented — Phase 1+
-
-| Method | Path | Description |
-|---|---|---|
-| GET | /api/admin/reports | List all reports (including drafts) |
-| GET | /api/admin/reports/{id} | Report detail with agent debug info |
-| POST | /api/admin/reports/{id}/publish | Publish a report |
-| POST | /api/admin/reports/{id}/reject | Reject a report |
-| GET | /api/admin/agent-runs | List agent run history |
-| GET | /api/admin/agent-runs/{id} | Agent run detail with steps |
-| POST | /api/admin/workflows/company-deep-dive/run | Trigger company analysis |
-| POST | /api/admin/workflows/weekly-research/run | Trigger weekly research |
-| GET | /api/admin/companies | List all companies |
-| POST | /api/admin/companies | Add company/ticker |
-| GET | /api/admin/watchlist | Current watchlist |
-| GET | /api/admin/judge-evaluations | Judge evaluation results |
-| POST | /api/admin/prompts/{id}/approve | Approve prompt update |
-
----
-
-## Standard Error Responses
-
+Request:
 ```json
 {
-  "detail": "Human-readable error message"
+  "ticker": "VOW3",
+  "exchange": "XETRA",
+  "name": "Volkswagen AG",
+  "country": "Germany",
+  "region": "Europe",
+  "sector": "Automotive",
+  "industry": "Auto Manufacturers",
+  "market_cap": 60000000000.0,
+  "currency": "EUR",
+  "website": "https://www.volkswagenag.com",
+  "description": "German automobile manufacturer."
 }
+```
+
+Response `201 Created`:
+```json
+{
+  "id": "uuid",
+  "ticker": "VOW3",
+  "exchange": "XETRA",
+  "name": "Volkswagen AG",
+  "status": "new",
+  "created_at": "2026-06-16T12:00:00Z",
+  "updated_at": "2026-06-16T12:00:00Z",
+  ...
+}
+```
+
+Errors:
+- `409 Conflict` — ticker + exchange combination already exists
+- `422 Unprocessable Content` — validation failure (missing required fields)
+
+**GET /api/v1/companies** — List companies
+
+Query parameters:
+- `limit` (int, default 50) — max items to return
+- `offset` (int, default 0) — pagination offset
+
+Response `200 OK`:
+```json
+{
+  "items": [ { ...company... } ],
+  "total": 42
+}
+```
+
+**GET /api/v1/companies/{company_id}** — Get company by ID
+
+Response `200 OK`: company object
+Error `404 Not Found`: company does not exist
+
+---
+
+### Workflows
+
+| Method | Path | Status | Description |
+|---|---|---|---|
+| POST | `/api/v1/workflows/company-analysis/run` | ✅ Live | Trigger company analysis workflow |
+
+**POST /api/v1/workflows/company-analysis/run** — Trigger workflow
+
+Supply either `company_id` (UUID of existing company) or `ticker` + `exchange`.
+
+Request by company ID:
+```json
+{ "company_id": "11111111-1111-1111-1111-111111111111" }
+```
+
+Request by ticker:
+```json
+{ "ticker": "VOW3", "exchange": "XETRA" }
+```
+
+Response `202 Accepted`:
+```json
+{
+  "agent_run_id": "uuid",
+  "draft_report_id": "uuid",
+  "status": "completed",
+  "summary": "Volkswagen AG is being added to the research pipeline...",
+  "workflow_name": "company_analysis",
+  "company_name": "Volkswagen AG",
+  "ticker": "VOW3"
+}
+```
+
+Errors:
+- `422` — no company_id or ticker provided
+- `422` — company not found in database
+- `500` — workflow execution error (see agent_run logs)
+
+> **Phase 2 note:** The workflow uses deterministic placeholder logic.
+> No LLM calls are made. Analysis output is always rated WATCH with `is_placeholder: true`.
+> Wire real LLM calls in Phase 3 by replacing node bodies in
+> `apps/api/app/workflows/company_analysis.py`.
+
+---
+
+## Standard Error Response
+
+```json
+{ "detail": "Human-readable error message" }
 ```
 
 | Status | Meaning |
 |---|---|
-| 400 | Bad request / validation error |
-| 401 | Not authenticated |
-| 403 | Authenticated but not authorized |
 | 404 | Resource not found |
-| 422 | Unprocessable entity (Pydantic validation failed) |
+| 409 | Conflict (duplicate) |
+| 422 | Validation error or business logic rejection |
 | 500 | Internal server error |
 
 ---
 
-## Not Yet Implemented
+## Planned Endpoints (Phase 3+)
 
-All endpoints above are planned but not yet built. Implementation begins in Phase 1.
+### Public (unauthenticated)
+| Method | Path | Phase |
+|---|---|---|
+| GET | `/api/v1/reports` | Phase 4 |
+| GET | `/api/v1/reports/{slug}` | Phase 4 |
+| GET | `/api/v1/themes` | Phase 4 |
+| GET | `/api/v1/companies/{ticker}` | Phase 4 (public company page) |
+
+### Admin
+| Method | Path | Phase |
+|---|---|---|
+| GET | `/api/v1/admin/agent-runs` | Phase 3 |
+| GET | `/api/v1/admin/agent-runs/{id}` | Phase 3 |
+| POST | `/api/v1/admin/reports/{id}/publish` | Phase 4 |
+| POST | `/api/v1/admin/reports/{id}/reject` | Phase 4 |
+| GET | `/api/v1/admin/judge-evaluations` | Phase 6 |
+
+### User (Authenticated, Version 2)
+| Method | Path | Phase |
+|---|---|---|
+| GET | `/api/me/recommendations` | Phase 7 |
+| GET | `/api/me/portfolio` | Phase 7 |
+| POST | `/api/me/portfolio/positions` | Phase 7 |

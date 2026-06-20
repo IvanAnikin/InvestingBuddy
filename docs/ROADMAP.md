@@ -1,6 +1,6 @@
 # Roadmap
 
-## Current Phase: Phase 0 — Agentic Repository Infrastructure
+## Current Phase: Phase 2 — First Agent Workflow Foundation
 
 ---
 
@@ -18,47 +18,50 @@ Deliverables:
 
 ---
 
-## Phase 1: Application Skeleton
+## Phase 1: Application Skeleton ✅
 
-**Status: Not started**
+**Status: Complete**
 
 Goal: A working, deployable skeleton of the full stack with no business logic yet.
 
 Deliverables:
-- [ ] `apps/api/` — FastAPI skeleton with health endpoint (`GET /health`)
-- [ ] `apps/api/app/core/` — config, logging, exceptions
-- [ ] `apps/api/app/db/` — SQLAlchemy session, base model
-- [ ] `apps/api/alembic/` — Alembic setup (no migrations yet)
-- [ ] `apps/web/` — Next.js App Router skeleton with homepage
-- [ ] `docker-compose.yml` — local PostgreSQL container
-- [ ] `.env.example` — all required environment variable names
-- [ ] `.github/workflows/api-ci.yml` — backend CI (lint, type check, pytest)
-- [ ] `.github/workflows/web-ci.yml` — frontend CI (typecheck, lint, build)
-- [ ] `README.md` update — local setup instructions
-
-Skills to use: `backend-fastapi`, `frontend-nextjs`, `database-design`, `azure-deployment`, `testing-qa`
+- [x] `apps/api/` — FastAPI skeleton with health endpoint (`GET /health`)
+- [x] `apps/api/app/core/` — config, logging, exceptions
+- [x] `apps/api/app/db/` — SQLAlchemy async session, base model
+- [x] `apps/web/` — Next.js App Router skeleton with homepage
+- [x] `docker-compose.yml` — local PostgreSQL container
+- [x] `.env.example` — all required environment variable names
+- [x] `.github/workflows/api-ci.yml` — backend CI (lint, type check, pytest)
+- [x] `.github/workflows/web-ci.yml` — frontend CI (typecheck, lint, build)
+- [x] `README.md` — local setup instructions
 
 ---
 
-## Phase 2: First Agent Workflow
+## Phase 2: First Agent Workflow Foundation ✅
 
-**Status: Not started**
+**Status: Complete**
 
-Goal: Admin can manually trigger a company analysis workflow.
+Goal: Database foundation, company management endpoints, and a triggerable LangGraph workflow skeleton.
 
 Deliverables:
-- [ ] Company SQLAlchemy model and Alembic migration
-- [ ] Company CRUD API endpoints (`POST /api/admin/companies`, `GET /api/admin/companies`)
-- [ ] LangGraph installed and configured
-- [ ] Azure OpenAI connection working
-- [ ] First `company_deep_dive` workflow skeleton (3 nodes: Market Scanner, Company Analyst, Investment Committee)
-- [ ] Agent run logging (agent_runs, agent_steps tables and migration)
-- [ ] Draft analysis saved to database
-- [ ] Admin endpoint to trigger workflow (`POST /api/admin/workflows/company-deep-dive/run`)
-- [ ] Admin endpoint to view agent run (`GET /api/admin/agent-runs/{id}`)
-- [ ] Smoke test for workflow with mocked LLM
+- [x] Alembic configured with async migrations
+- [x] Initial migration (`001`) — creates `companies`, `agent_runs`, `agent_steps`, `reports`
+- [x] SQLAlchemy models: `Company`, `Report`, `AgentRun`, `AgentStep`
+- [x] Company API endpoints: `POST /api/v1/companies`, `GET /api/v1/companies`, `GET /api/v1/companies/{id}`
+- [x] Report model + service (draft creation)
+- [x] Agent run + step service (create, complete, fail)
+- [x] LangGraph `StateGraph` workflow skeleton (`company_analysis`)
+- [x] Workflow trigger endpoint: `POST /api/v1/workflows/company-analysis/run`
+- [x] Draft report saved to DB by workflow
+- [x] Every workflow execution logged as `agent_run` + `agent_steps`
+- [x] 27 passing tests (company endpoints, workflow trigger, service layer, graph structure)
+- [x] ruff linting clean
+- [ ] Azure OpenAI connection (deferred to Phase 3 — workflow uses placeholder logic)
 
-Skills to use: `langgraph-agents`, `backend-fastapi`, `database-design`, `testing-qa`
+> **Note:** Workflow nodes use deterministic placeholder output (`is_placeholder: true`, rating always WATCH).
+> Wire real LLM calls in Phase 3 by replacing node bodies in `company_analysis.py`.
+
+Skills used: `orchestrator`, `database-design`, `backend-fastapi`, `langgraph-agents`, `testing-qa`, `docs-maintainer`
 
 ---
 

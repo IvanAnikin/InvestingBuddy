@@ -1,6 +1,6 @@
 # Architecture
 
-## Status: Phase 1 — Application Skeleton
+## Status: Phase 2 — Database foundation, company endpoints, and workflow skeleton
 
 ---
 
@@ -41,18 +41,18 @@ Azure Application Insights
 ### Backend (`apps/api/`)
 - FastAPI, SQLAlchemy async, Pydantic v2, Alembic
 - All business logic, database operations, agent orchestration triggers
-- Status: **skeleton with `/health` endpoint created in Phase 1**
+- Status: **company endpoints + workflow trigger live in Phase 2**
 
 ### Agent Layer (`apps/api/app/agents/`, `apps/api/app/workflows/`)
-- LangGraph workflows
+- LangGraph `StateGraph` workflows
 - Four agent teams: Research, Analysis Council, Validation, Judge
 - All runs logged to `agent_runs` and `agent_steps` tables
-- Status: **not yet implemented — Phase 2+**
+- Status: **`company_analysis` skeleton implemented in Phase 2 (placeholder nodes, no LLM yet)**
 
 ### Database
 - Local: PostgreSQL 16 via Docker Compose
-- Production: Azure Database for PostgreSQL (Phase 2+)
-- Status: **Docker Compose configured in Phase 1; models deferred to Phase 2**
+- Production: Azure Database for PostgreSQL Flexible Server
+- Status: **Alembic configured; migration 001 creates companies, agent_runs, agent_steps, reports**
 
 ### Vector Search
 - Azure AI Search
@@ -80,13 +80,22 @@ investingbuddy/
 │   ├── api/        FastAPI backend
 │   │   ├── app/
 │   │   │   ├── main.py
-│   │   │   ├── core/       (config, security, logging)
-│   │   │   ├── api/        (route handlers)
+│   │   │   ├── core/           config, security, logging
+│   │   │   ├── api/
 │   │   │   │   └── v1/
-│   │   │   ├── models/     (SQLAlchemy ORM models)
-│   │   │   ├── schemas/    (Pydantic request/response schemas)
-│   │   │   ├── services/   (business logic)
-│   │   │   └── db/         (session, base)
+│   │   │   │       ├── health.py
+│   │   │   │       ├── companies.py
+│   │   │   │       └── workflows.py
+│   │   │   ├── models/         SQLAlchemy ORM: Company, Report, AgentRun, AgentStep
+│   │   │   ├── schemas/        Pydantic: company, report, agent
+│   │   │   ├── services/       company_service, report_service, agent_run_service
+│   │   │   ├── agents/
+│   │   │   │   └── base.py     CompanyAnalysisState TypedDict
+│   │   │   ├── workflows/
+│   │   │   │   └── company_analysis.py
+│   │   │   └── db/             session, base
+│   │   ├── alembic/
+│   │   │   └── versions/001_add_initial_tables.py
 │   │   ├── tests/
 │   │   └── pyproject.toml
 │   └── web/        Next.js frontend
@@ -109,25 +118,49 @@ investingbuddy/
 
 ## API Versioning
 
-All backend routes are versioned under `/api/v1/`.  
-The health endpoint lives at `/health` (unversioned, used by load balancers and health checks).
+All backend routes are versioned under `/api/v1/`.
+The health endpoint lives at `/health` (unversioned, used by load balancers).
+
+---
+
+## Workflow Execution Pattern
+
+```
+API endpoint (POST /api/v1/workflows/company-analysis/run)
+    ↓
+run_company_analysis(db, company_id)
+    ↓
+LangGraph StateGraph.ainvoke(initial_state)
+    ↓
+  node_initialize          → creates agent_run record
+  node_analyze_company     → creates agent_step, produces analysis JSON
+  node_save_report         → saves draft to reports table
+  node_finalize            → marks agent_run completed
+    ↓
+WorkflowRunResponse (agent_run_id, draft_report_id, status, summary)
+```
+
+All errors are caught, logged to `agent_runs.error_message`, and returned as HTTP 422.
 
 ---
 
 ## Phase History
 
-| Phase | What Changed |
-|---|---|
-| Phase 0 | Agentic dev infrastructure: skills, commands, docs scaffolding |
-| Phase 1 | `apps/api/` FastAPI skeleton, `apps/web/` Next.js skeleton, Docker Compose, GitHub Actions CI |
+| Phase | Status | What Changed |
+|---|---|---|
+| Phase 0 | ✅ Complete | Agentic dev infrastructure: skills, commands, docs scaffolding |
+| Phase 1 | ✅ Complete | FastAPI skeleton, Next.js skeleton, Docker Compose, GitHub Actions CI |
+| Phase 2 | ✅ Complete | DB foundation (Alembic + 4 tables), company endpoints, LangGraph workflow skeleton |
 
 ---
 
-## Not Yet Implemented
+## What Is Not Yet Implemented
 
-- Database models (`apps/api/app/models/`) — Phase 2
-- Alembic migrations — Phase 2
-- LangGraph agent workflows — Phase 2+
-- Azure infrastructure — Phase 2+
-- Authentication (Clerk) — Phase 2+
+- Authentication (Clerk) — Phase 7
+- Azure OpenAI LLM calls in workflow nodes — Phase 3
+- Financial data ingestion and sources — Phase 3
 - Azure AI Search, Blob Storage — Phase 3+
+- Full council-of-agents (all agent teams) — Phase 4
+- Scheduled background jobs — Phase 5
+- Judge / backtesting — Phase 6
+- Personalized recommendations — Phase 7
