@@ -1,6 +1,6 @@
 # Roadmap
 
-## Current Phase: Phase 4 — Financial Data Provider Foundation
+## Current Phase: Phase 4.5 — Live Free Data Provider Integration
 
 ---
 
@@ -151,6 +151,40 @@ Rules enforced:
 - Provider abstraction allows swapping EODHD by editing config, not code
 - Tier assignment: EODHD → T5; EDGAR direct → T2; company IR → T1
 - Mock data always marked `is_mock=True` and `D_weak_or_stale`
+
+Skills used: `financial-data`, `backend-fastapi`, `testing-qa`, `security-review`, `docs-maintainer`
+
+---
+
+## Phase 4.5: Live Free Data Provider Integration ✅
+
+**Status: Complete**
+
+Goal: Implement live (no API key) financial data providers with offline test coverage and source-record integration. No LLM. No Azure.
+
+Deliverables:
+- [x] `StooqProvider` — live OHLCV CSV fetch from stooq.com; T5_api_aggregator; `_parse_stooq_csv()` pure parse function; exchange→suffix mapping
+- [x] `GleifProvider` — live LEI lookup and name search from api.gleif.org; T2_regulator_or_gov; `_is_lei()` detection; `get_by_lei()` and `search_by_name()` public methods
+- [x] `SecEdgarProvider` — live company submissions fetch from data.sec.gov by CIK; T2_regulator_or_gov; `get_company_by_cik()` public method; CIK zero-padding; fiscal year end parsing
+- [x] `OpenBBProvider` — kept as evaluation placeholder; status `not_implemented`; not added as required dependency
+- [x] `SourceRecordAttrs` schema and `build_source_record()` utility in `financial_data_provider.py` — maps provider metadata to DB-ready source record attrs
+- [x] Tier → source_type and credibility_score mapping (T1→0.95, T2→0.90, T5→0.55, etc.)
+- [x] Dev diagnostic API endpoints: `GET /api/v1/financial-data/stooq/prices/{ticker}`, `/gleif/entity/{lei_or_name}`, `/sec-edgar/company/{cik}`
+- [x] `httpx` added to main dependencies
+- [x] `ENABLE_INTEGRATION_TESTS=false` flag added to config and `.env.example`
+- [x] `@pytest.mark.integration` marker registered in `pyproject.toml`
+- [x] Test fixtures: `stooq_aapl_us.csv`, `gleif_apple_inc.json`, `gleif_empty_result.json`, `stooq_no_data.csv`, `sec_edgar_aapl_submissions.json`
+- [x] 100+ offline tests in `test_phase5_live_providers.py` — all CI-safe, no network, no keys
+- [x] Live integration tests in `test_integration_live_providers.py` — opt-in via `ENABLE_INTEGRATION_TESTS=true`
+- [x] Manual integration test command documented in `test_integration_live_providers.py`
+- [x] 268 total tests passing; ruff clean
+- [x] `docs/DATA_SOURCES.md`, `docs/API.md`, `docs/ARCHITECTURE.md`, `docs/ROADMAP.md`, `.env.example` updated
+
+Constraints enforced:
+- No live calls in CI — all tests offline or skipped
+- No EODHD calls (deferred)
+- No LLM or Azure
+- Provider status updated: Stooq, GLEIF, SEC EDGAR → `ok`; OpenBB → `not_implemented`; EODHD → `not_configured`
 
 Skills used: `financial-data`, `backend-fastapi`, `testing-qa`, `security-review`, `docs-maintainer`
 

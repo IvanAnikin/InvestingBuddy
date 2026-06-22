@@ -1,0 +1,16 @@
+{
+  "data": [],
+  "meta": {
+    "goldenCopy": {
+      "publishDate": "2026-06-19T00:00:00Z"
+    },
+    "pagination": {
+      "currentPage": 1,
+      "perPage": 10,
+      "from": 0,
+      "to": 0,
+      "total": 0,
+      "lastPage": 1
+    }
+  }
+}

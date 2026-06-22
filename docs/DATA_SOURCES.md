@@ -1,6 +1,6 @@
 # Data Sources
 
-## Status: Phase 4 — Financial Data Provider Foundation implemented
+## Status: Phase 4.5 — Live Free Data Provider Integration implemented
 
 This document defines the permitted source universe, tier classification, and provider implementation notes for InvestingBuddy.
 
@@ -84,10 +84,10 @@ All providers are registered in `FinancialDataService` and selectable via `FINAN
 | Class | Module | Source Tier | Status | Notes |
 |---|---|---|---|---|
 | `MockFinancialDataProvider` | `integrations/providers/mock_provider.py` | T6 | ✅ Active | Deterministic demo data; used in all CI tests; no network calls |
-| `SecEdgarProvider` | `integrations/providers/sec_edgar_provider.py` | T2 | Skeleton | Free; US regulatory filings; `data.sec.gov` JSON API |
-| `GleifProvider` | `integrations/providers/gleif_provider.py` | T2 | Skeleton | Free; LEI registry; `api.gleif.org` |
-| `StooqProvider` | `integrations/providers/stooq_provider.py` | T5 | Skeleton | Free; historical OHLCV prices; no API key |
-| `OpenBBProvider` | `integrations/providers/openbb_provider.py` | T5 | Skeleton | Free tier; multi-source aggregator; requires `openbb-platform` |
+| `SecEdgarProvider` | `integrations/providers/sec_edgar_provider.py` | T2 | ✅ Live (CIK) | Free; `get_company_by_cik(cik)` fetches from `data.sec.gov`; no API key; ticker→CIK deferred |
+| `GleifProvider` | `integrations/providers/gleif_provider.py` | T2 | ✅ Live | Free; LEI lookup by code or name; `api.gleif.org`; no API key |
+| `StooqProvider` | `integrations/providers/stooq_provider.py` | T5 | ✅ Live | Free; live OHLCV CSV from `stooq.com`; no API key |
+| `OpenBBProvider` | `integrations/providers/openbb_provider.py` | T5 | Evaluation placeholder | Not yet integrated; requires `openbb-platform`; evaluate before Phase 6 |
 | `EodhdProvider` | `integrations/providers/eodhd_provider.py` | T5 | Placeholder | Paid; requires `EODHD_API_KEY`; excluded from CI |
 
 ### Provider Abstract Interface
@@ -145,6 +145,44 @@ FINANCIAL_DATA_PROVIDER=eodhd  # requires EODHD_API_KEY
 - **EODHD API key must not be hardcoded** — store in `.env` (local) or Azure Key Vault (production)
 - **Provider output must carry correct source tier** — EODHD → T5; EDGAR direct → T2; company IR → T1
 - **Mock data must be flagged** — `is_mock=True` in `ProviderResponseMetadata`; `D_weak_or_stale` data quality
+- **Live provider integration tests must be opt-in** — set `ENABLE_INTEGRATION_TESTS=true` locally; never in CI
+
+### Source Record Integration (Phase 4.5)
+
+When a provider returns data, prepare a `Source` database record using the helper:
+
+```python
+from app.integrations.financial_data_provider import build_source_record
+
+attrs = build_source_record(
+    meta=response.meta,
+    source_url=response.source_url,
+    title=f"Stooq prices — {ticker}",
+    data_quality=DataQuality.B_single_credible,
+)
+# attrs.source_type, attrs.credibility_score, attrs.retrieved_at etc. are all set
+# Pass to source_service.create_source() for DB persistence
+```
+
+Tier → source_type → credibility mapping:
+
+| Tier | source_type | credibility_score |
+|---|---|---|
+| T1 | `company_filing` | 0.95 |
+| T2 | `government_data` | 0.90 |
+| T3 | `industry_report` | 0.75 |
+| T4 | `news_article` | 0.65 |
+| T5 | `financial_data_api` | 0.55 |
+| T6 | `model_estimate` | 0.20 |
+
+### OpenBB Evaluation Note
+
+`OpenBBProvider` remains a skeleton placeholder. OpenBB should be evaluated before Phase 6 on the following criteria:
+1. Does `openbb-platform` add meaningful data sources not covered by Stooq / GLEIF / SEC EDGAR?
+2. Does it require API keys for useful coverage?
+3. Does adding it as a dependency create CI or packaging complexity?
+
+Decision: **Do not add as a required dependency until the above is answered.**
 
 ---
 

@@ -1,6 +1,6 @@
 # API Reference
 
-## Status: Phase 4 — Financial Data Provider smoke-test endpoints added
+## Status: Phase 4.5 — Live free data provider diagnostic endpoints added
 
 ---
 
@@ -310,6 +310,9 @@ These endpoints are for **development and provider smoke-testing only**. They do
 | GET | `/api/v1/financial-data/providers` | ✅ Live | List all registered providers with capabilities and status |
 | GET | `/api/v1/financial-data/mock/company/{ticker}` | ✅ Live | Company profile from mock provider (demo data only) |
 | GET | `/api/v1/financial-data/mock/prices/{ticker}` | ✅ Live | Price history from mock provider (demo data only) |
+| GET | `/api/v1/financial-data/stooq/prices/{ticker}` | ✅ Live (network) | Live OHLCV price history from Stooq (T5, free) |
+| GET | `/api/v1/financial-data/gleif/entity/{lei_or_name}` | ✅ Live (network) | Legal entity lookup from GLEIF registry (T2, free) |
+| GET | `/api/v1/financial-data/sec-edgar/company/{cik}` | ✅ Live (network) | Company profile from SEC EDGAR by CIK (T2, free) |
 
 **GET /api/v1/financial-data/providers** — List all providers
 
@@ -374,6 +377,76 @@ Response `200 OK`:
 ```
 
 > **Phase 4 note:** All `/financial-data/mock/*` responses are clearly marked `is_mock: true` and `data_quality: D_weak_or_stale`. They contain synthetic demo data from `MockFinancialDataProvider` and must not be used as real financial information.
+
+---
+
+**GET /api/v1/financial-data/stooq/prices/{ticker}** — Live Stooq price history
+
+Makes a real external HTTP call to stooq.com. Returns OHLCV data. No API key required.
+
+Query parameters: `exchange` (optional, e.g. NASDAQ, XETRA, LSE), `start_date`, `end_date` (YYYY-MM-DD)
+
+Response `200 OK`:
+```json
+{
+  "ticker": "AAPL",
+  "exchange": "NASDAQ",
+  "currency": "USD",
+  "price_points": [
+    { "date": "2026-06-13", "open": 194.79, "high": 195.87, "low": 193.97, "close": 194.35, "volume": 47484600 }
+  ],
+  "data_quality": "B_single_credible",
+  "meta": { "provider_name": "stooq", "source_tier": "T5_api_aggregator", "is_mock": false }
+}
+```
+
+Errors: `404` if ticker has no data on Stooq; `502` on network failure.
+
+---
+
+**GET /api/v1/financial-data/gleif/entity/{lei_or_name}** — GLEIF entity lookup
+
+Makes a real external HTTP call to api.gleif.org. Pass a 20-character LEI (direct lookup) or a company name (search).
+
+Response `200 OK`:
+```json
+{
+  "ticker": "HWUPKR0MPOU8FGXBT394",
+  "legal_name": "Apple Inc.",
+  "lei": "HWUPKR0MPOU8FGXBT394",
+  "country_domicile": "US",
+  "data_quality": "A_verified",
+  "meta": { "provider_name": "gleif", "source_tier": "T2_regulator_or_gov", "is_mock": false }
+}
+```
+
+Errors: `404` if LEI not found or name search returns no results; `502` on network failure.
+
+---
+
+**GET /api/v1/financial-data/sec-edgar/company/{cik}** — SEC EDGAR company by CIK
+
+Makes a real external HTTP call to data.sec.gov. CIK must be numeric (e.g. `320193` for Apple).
+
+Response `200 OK`:
+```json
+{
+  "ticker": "AAPL",
+  "legal_name": "Apple Inc.",
+  "country_domicile": "US",
+  "reporting_currency": "USD",
+  "fiscal_year_end": "September",
+  "website": "https://www.apple.com",
+  "data_quality": "A_verified",
+  "meta": { "provider_name": "sec_edgar", "source_tier": "T2_regulator_or_gov", "is_mock": false }
+}
+```
+
+Errors: `422` if CIK is not numeric; `404` if CIK not found; `502` on network failure.
+
+> **Phase 4.5 note:** Stooq, GLEIF and SEC EDGAR endpoints make real external HTTP calls.
+> They are for **developer diagnostics only** and must not be exposed to end users.
+> Not investment advice. Set `FINANCIAL_DATA_PROVIDER=mock` in CI to use offline data.
 
 ---
 

@@ -406,20 +406,23 @@ async def test_eodhd_get_fundamentals_raises_not_implemented() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_sec_edgar_status_not_implemented() -> None:
-    assert SecEdgarProvider().get_provider_status() == ProviderStatus.not_implemented
+def test_sec_edgar_status_ok() -> None:
+    # Phase 5: SecEdgarProvider is now implemented (CIK submissions client).
+    assert SecEdgarProvider().get_provider_status() == ProviderStatus.ok
 
 
-def test_stooq_status_not_implemented() -> None:
-    assert StooqProvider().get_provider_status() == ProviderStatus.not_implemented
+def test_stooq_status_ok() -> None:
+    # Phase 5: StooqProvider is now implemented (live CSV fetch).
+    assert StooqProvider().get_provider_status() == ProviderStatus.ok
 
 
 def test_openbb_status_not_implemented() -> None:
     assert OpenBBProvider().get_provider_status() == ProviderStatus.not_implemented
 
 
-def test_gleif_status_not_implemented() -> None:
-    assert GleifProvider().get_provider_status() == ProviderStatus.not_implemented
+def test_gleif_status_ok() -> None:
+    # Phase 5: GleifProvider is now implemented (live LEI lookup).
+    assert GleifProvider().get_provider_status() == ProviderStatus.ok
 
 
 @pytest.mark.asyncio
@@ -429,9 +432,10 @@ async def test_sec_edgar_raises_not_implemented_company_profile() -> None:
 
 
 @pytest.mark.asyncio
-async def test_stooq_raises_not_implemented_price_history() -> None:
+async def test_stooq_get_company_profile_raises_not_implemented() -> None:
+    # Phase 5: price_history is now implemented; company_profile is still unsupported.
     with pytest.raises(NotImplementedError):
-        await StooqProvider().get_price_history("TEST")
+        await StooqProvider().get_company_profile("TEST")
 
 
 @pytest.mark.asyncio
@@ -441,9 +445,10 @@ async def test_openbb_raises_not_implemented_fundamentals() -> None:
 
 
 @pytest.mark.asyncio
-async def test_gleif_raises_not_implemented_lei_lookup() -> None:
+async def test_gleif_get_price_history_raises_not_implemented() -> None:
+    # Phase 5: GLEIF entity lookup is implemented; price_history is not applicable.
     with pytest.raises(NotImplementedError):
-        await GleifProvider().get_company_profile("TEST")
+        await GleifProvider().get_price_history("TEST")
 
 
 # ---------------------------------------------------------------------------

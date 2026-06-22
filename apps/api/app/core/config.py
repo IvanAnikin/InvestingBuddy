@@ -22,5 +22,10 @@ class Settings(BaseSettings):
     eodhd_api_key: str = ""
     eodhd_base_url: str = "https://eodhd.com/api"
 
+    # ── Integration Tests (Phase 5) ─────────────────────────────────────────
+    # Set to True to enable live network calls in tests (local only).
+    # NEVER set to True in CI — CI must always run offline with mock provider.
+    enable_integration_tests: bool = False
+
 
 settings = Settings()
