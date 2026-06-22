@@ -182,5 +182,9 @@ def sample_citation(
     )
     citation.url = None
     citation.retrieved_at = None
+    # Phase 6: provenance fields (None for placeholder citations)
+    citation.field_path = None
+    citation.source_tier = None
+    citation.data_quality = None
     citation.created_at = now
     return citation

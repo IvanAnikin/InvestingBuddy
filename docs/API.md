@@ -1,6 +1,6 @@
 # API Reference
 
-## Status: Phase 4.5 — Live free data provider diagnostic endpoints added
+## Status: Phase 6 — Company snapshot workflow with provider + validation summary
 
 ---
 
@@ -128,34 +128,52 @@ Request by company ID:
 { "company_id": "11111111-1111-1111-1111-111111111111" }
 ```
 
-Request by ticker:
+Request by ticker with provider control (Phase 6):
 ```json
-{ "ticker": "VOW3", "exchange": "XETRA" }
+{
+  "ticker": "VOW3",
+  "exchange": "XETRA",
+  "provider_name": "mock",
+  "require_schema_valid": false
+}
 ```
 
-Response `202 Accepted`:
+`provider_name` — optional, defaults to `FINANCIAL_DATA_PROVIDER` config value (`mock` in CI).
+`require_schema_valid` — optional bool (default `false`). When `true`, the endpoint returns `422` if the schema draft fails validation.
+
+Response `202 Accepted` (Phase 6):
 ```json
 {
   "agent_run_id": "uuid",
   "draft_report_id": "uuid",
   "status": "completed",
-  "summary": "Volkswagen AG is being added to the research pipeline...",
+  "summary": "Provider snapshot for Volkswagen AG. Provider: mock. Schema: invalid.",
   "workflow_name": "company_analysis",
   "company_name": "Volkswagen AG",
-  "ticker": "VOW3"
+  "ticker": "VOW3",
+  "provider_name": "mock",
+  "is_mock": true,
+  "schema_valid": false,
+  "validation_errors": ["[(root)] 'snapshot_financials' is a required property"],
+  "validation_warnings": [],
+  "missing_fields": ["identity.isin", "identity.lei", "profile.website"]
 }
 ```
 
 Errors:
 - `422` — no company_id or ticker provided
 - `422` — company not found in database
+- `422` — unknown provider_name (not in registry)
+- `422` — `require_schema_valid=true` and schema draft failed validation
 - `500` — workflow execution error (see agent_run logs)
 
-> **Phase 2/3 note:** The workflow uses deterministic placeholder logic.
-> No LLM calls are made. Analysis output is always rated WATCH with `is_placeholder: true`.
-> The workflow also creates a placeholder `Source` and `Citation` record (Phase 3).
-> Wire real LLM calls in Phase 4 by replacing node bodies in
-> `apps/api/app/workflows/company_analysis.py`.
+> **Phase 6 note:** The workflow fetches provider data via `FinancialDataService`,
+> builds a structured company snapshot, creates `Source` + `Citation` records with
+> `field_path`, `source_tier`, `data_quality`, validates against the real-asset report schema,
+> and saves a draft report. No LLM calls. No investment recommendations.
+> Default provider is `mock` — all CI runs are offline.
+> `schema_valid` will typically be `false` at this phase since many required schema
+> sections are not yet populated (LLM agents are needed for those).
 
 ---
 

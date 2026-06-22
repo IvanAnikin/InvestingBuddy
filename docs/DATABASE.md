@@ -1,6 +1,6 @@
 # Database Schema
 
-## Status: Phase 3 — Sources and Citations Added
+## Status: Phase 6 — Citation Provenance Fields Added
 
 ---
 
@@ -40,10 +40,11 @@ alembic revision --autogenerate -m "short description"
 
 ## Applied Migrations
 
-| Revision | File | Tables Created |
+| Revision | File | Tables / Columns Changed |
 |---|---|---|
-| 001 | `001_add_initial_tables.py` | companies, agent_runs, agent_steps, reports |
-| 002 | `002_add_sources_and_citations.py` | sources, citations |
+| 001 | `001_add_initial_tables.py` | creates companies, agent_runs, agent_steps, reports |
+| 002 | `002_add_sources_and_citations.py` | creates sources, citations |
+| 003 | `003_add_citation_provenance_fields.py` | adds field_path, source_tier, data_quality to citations |
 
 ---
 
@@ -172,7 +173,9 @@ INDEX: source_type, content_hash, url
 Valid source_type values: `annual_report`, `quarterly_report`, `investor_presentation`,
 `news_article`, `analyst_report`, `industry_report`, `regulatory_filing`,
 `earnings_call_transcript`, `press_release`, `financial_data_feed`,
-`web_page`, `internal_document`, `placeholder`
+`web_page`, `internal_document`, `placeholder`,
+`financial_data_api` (T5, Phase 6), `government_data` (T2, Phase 6),
+`company_filing` (T1, Phase 6), `model_estimate` (T6, Phase 6)
 
 Source deduplication: `get_or_create_source()` checks `content_hash` first, then `url`.
 
@@ -186,10 +189,17 @@ claim_text      VARCHAR(500) NULLABLE
 source_quote    TEXT NULLABLE
 url             VARCHAR(2000) NULLABLE
 retrieved_at    TIMESTAMP WITH TIME ZONE NULLABLE
+field_path      VARCHAR(200) NULLABLE   Phase 6: e.g. "identity.legal_name"
+source_tier     VARCHAR(50) NULLABLE    Phase 6: T1–T6 from source taxonomy
+data_quality    VARCHAR(50) NULLABLE    Phase 6: A_verified … D_weak_or_stale
 created_at      TIMESTAMP WITH TIME ZONE
 
-INDEX: source_id, report_id, agent_run_id
+INDEX: source_id, report_id, agent_run_id, field_path, source_tier
 ```
+
+`field_path` encodes which report schema field this citation covers.
+`source_tier` and `data_quality` mirror the provenance metadata from the provider.
+All three are nullable for backward compatibility with Phase 2/3 placeholder citations.
 
 ---
 

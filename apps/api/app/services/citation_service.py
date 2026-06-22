@@ -20,6 +20,9 @@ async def create_citation(db: AsyncSession, data: CitationCreate) -> Citation:
         source_quote=data.source_quote,
         url=data.url,
         retrieved_at=data.retrieved_at,
+        field_path=data.field_path,
+        source_tier=data.source_tier,
+        data_quality=data.data_quality,
     )
     db.add(citation)
     await db.commit()
