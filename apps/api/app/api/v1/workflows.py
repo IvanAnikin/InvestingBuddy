@@ -18,8 +18,12 @@ router = APIRouter(prefix="/workflows", tags=["workflows"])
     description=(
         "Run the company analysis workflow for a given company. "
         "Supply either company_id or (ticker + exchange). "
-        "The company must already exist in the database. "
-        "Returns the agent run ID, draft report ID, and a summary of the result."
+        "The company must already exist in the database.\n\n"
+        "Phase 6: the workflow fetches provider data, builds a company snapshot, "
+        "creates source + citation records, validates against the real-asset report schema, "
+        "and saves a draft report. "
+        "Provider defaults to 'mock' (offline, no API keys required). "
+        "Returns agent_run_id, draft_report_id, provider summary, and schema validation result."
     ),
 )
 async def run_company_analysis_endpoint(
@@ -38,6 +42,8 @@ async def run_company_analysis_endpoint(
             company_id=str(payload.company_id) if payload.company_id else None,
             ticker=payload.ticker,
             exchange=payload.exchange,
+            provider_name=payload.provider_name,
+            require_schema_valid=payload.require_schema_valid,
         )
     except Exception as exc:
         raise HTTPException(
@@ -53,17 +59,31 @@ async def run_company_analysis_endpoint(
 
     agent_run_id_str = final_state.get("agent_run_id")
     draft_report_id_str = final_state.get("draft_report_id")
+    validation_result = final_state.get("schema_validation_result") or {}
+    snapshot = final_state.get("company_snapshot") or {}
+
+    summary = (
+        final_state.get("analysis_output", {}).get("thesis", "")
+        if final_state.get("analysis_output")
+        else ""
+    ) or (
+        f"Provider snapshot for {final_state.get('company_name', 'company')}. "
+        f"Provider: {final_state.get('provider_name', 'mock')}. "
+        f"Schema: {'valid' if final_state.get('schema_valid') else 'invalid'}."
+    )
 
     return WorkflowRunResponse(
         agent_run_id=uuid.UUID(agent_run_id_str) if agent_run_id_str else uuid.uuid4(),
         draft_report_id=uuid.UUID(draft_report_id_str) if draft_report_id_str else None,
         status=final_state.get("status", "completed"),
-        summary=(
-            final_state.get("analysis_output", {}).get("thesis", "Workflow completed.")
-            if final_state.get("analysis_output")
-            else "Workflow completed."
-        ),
+        summary=summary,
         workflow_name="company_analysis",
         company_name=final_state.get("company_name"),
         ticker=final_state.get("ticker"),
+        provider_name=final_state.get("provider_name"),
+        is_mock=final_state.get("is_mock"),
+        schema_valid=final_state.get("schema_valid"),
+        validation_errors=validation_result.get("errors", []),
+        validation_warnings=validation_result.get("warnings", []),
+        missing_fields=snapshot.get("missing_fields", []),
     )

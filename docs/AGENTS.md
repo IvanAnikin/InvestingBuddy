@@ -1,6 +1,6 @@
 # Agent Architecture
 
-## Status: Phase 4 — Financial data provider abstraction added; CitationValidator upgrade path documented
+## Status: Phase 6 — Real company snapshot workflow; provider data → source records → citations → schema validation
 
 ---
 
@@ -38,49 +38,115 @@ This enables debugging, auditing and future judge evaluation.
 
 ## Implemented Workflows
 
-### company_analysis — Phase 2 skeleton
+### company_analysis — Phase 6: Real Company Snapshot
 
 **Trigger:** `POST /api/v1/workflows/company-analysis/run`
 
-**Input:** company UUID (must exist in `companies` table) or ticker + exchange
+**Input:** company UUID (must exist in `companies` table) or ticker + exchange.
+Optional: `provider_name` (default: `mock`), `require_schema_valid` (default: `false`).
 
-**Purpose:** Runs a stub company analysis that creates a draft report.
-Currently uses deterministic placeholder logic — no LLM calls.
-Designed so that real LLM nodes can be dropped in per node without changing the graph structure.
+**Purpose:** Fetches real provider data, builds a structured company snapshot,
+stores source + citation records with provenance, validates the output against the
+real-asset equity report schema, and saves a draft report. No LLM calls. No investment
+recommendations. Schema validation result is stored regardless of pass/fail.
 
 **Graph:**
 
 ```
-initialize
+load_company
     ↓ (company found?)
     ├── No → handle_error → END
-    └── Yes → analyze_company → save_report → finalize → END
+    └── Yes → fetch_provider_data
+                    ↓ (provider valid?)
+                    ├── No → handle_error → END
+                    └── Yes → create_source_records
+                                    ↓
+                              build_company_snapshot
+                                    ↓
+                              create_citations
+                                    ↓
+                              validate_report_schema
+                                    ↓
+                              save_draft_report
+                                    ↓
+                              log_agent_steps → END
 ```
 
 **Nodes:**
 
 | Node | Agent Name | Step Name | What it does |
 |---|---|---|---|
-| initialize | WorkflowController | initialize | Creates agent_run record, loads company from DB |
-| analyze_company | CompanyAnalyst | analyze_company | Produces structured placeholder analysis JSON |
-| save_report | ReportWriter | save_draft_report | Saves draft report; creates placeholder Source + Citation (Phase 3) |
-| finalize | WorkflowController | finalize | Marks agent_run as completed |
-| handle_error | WorkflowController | handle_error | Marks agent_run as failed |
+| load_company | WorkflowController | load_company | Creates agent_run; resolves company from DB |
+| fetch_provider_data | FinancialDataAgent | fetch_provider_data | Calls FinancialDataService; gets profile + prices |
+| create_source_records | SourceRecordAgent | create_source_records | Calls `build_source_record()` + `get_or_create_source()` for each data item |
+| build_company_snapshot | SnapshotBuilder | build_company_snapshot | Builds structured snapshot dict; lists missing fields |
+| create_citations | CitationAgent | create_citations | Creates Citation records with field_path, source_tier, data_quality |
+| validate_report_schema | SchemaValidator | validate_report_schema | Calls `validate_real_asset_report()`; stores ValidationResult |
+| save_draft_report | ReportWriter | save_draft_report | Saves draft report with snapshot JSON, mock/live flag, schema validation status |
+| log_agent_steps | WorkflowController | log_agent_steps | Marks agent_run completed; logs final step summary |
+| handle_error | WorkflowController | handle_error | Marks agent_run failed |
 
 **Source:** `apps/api/app/workflows/company_analysis.py`
+**Snapshot builder:** `apps/api/app/workflows/snapshot_builder.py`
 
 **Output state fields:**
 ```python
 {
   "agent_run_id": "uuid",
-  "company_name": "Volkswagen AG",
-  "ticker": "VOW3",
-  "analysis_output": { ... },         # see output schema below
+  "company_name": "Acme Nordic AS",
+  "ticker": "TEST",
+  "provider_name": "mock",
+  "is_mock": True,
+  "company_snapshot": { ... },              # structured snapshot dict
+  "source_ids": ["uuid", "uuid"],           # Source records created
+  "provider_source_id": "uuid",            # Source UUID for company profile
+  "price_source_id": "uuid",               # Source UUID for price data (None if unavailable)
+  "citation_ids": ["uuid", ...],           # Citation records with field_path
+  "schema_validation_result": {
+    "is_valid": False,
+    "errors": ["..."],
+    "warnings": []
+  },
+  "schema_valid": False,
   "draft_report_id": "uuid",
-  "placeholder_source_id": "uuid",    # Phase 3: UUID of placeholder Source record
-  "citation_ids": ["uuid"],           # Phase 3: UUIDs of Citation records created
+  "analysis_output": { "is_placeholder": True, ... },
   "status": "completed" | "failed",
   "error": None | "error message"
+}
+```
+
+**Company snapshot structure:**
+```python
+{
+  "company_identity": {
+    "ticker": "TEST",
+    "exchange": "OSE",
+    "legal_name": "Acme Nordic AS [MOCK]",
+    "country_domicile": "Norway",
+    "isin": None,           # None → listed in missing_fields
+    "lei": None,
+  },
+  "provider_metadata": {
+    "provider_name": "mock",
+    "source_tier": "T6_model_estimate",
+    "retrieved_at": "2026-06-20T12:00:00Z",
+    "is_mock": True,
+    "note": "DEMO DATA — MockFinancialDataProvider."
+  },
+  "source_tier": "T6_model_estimate",
+  "retrieved_at": "2026-06-20T12:00:00Z",
+  "is_mock": True,
+  "profile": { "reporting_currency": "NOK", "sector": "Industrials", ... },
+  "price_history_summary": {
+    "available": True,
+    "currency": "NOK",
+    "data_points_count": 5,
+    "date_range": {"start": "2026-01-02", "end": "2026-01-08"},
+    "latest_close": 11.15
+  },
+  "missing_fields": ["identity.isin", "identity.lei", "profile.website"],
+  "investment_recommendation": null,    # explicitly null — no recommendation at this phase
+  "snapshot_generated_at": "2026-06-22T..."
 }
 ```
 
@@ -264,11 +330,11 @@ A `conventional_screen` entry path caps the `underresearched_edge` pillar score 
 
 | Workflow | Status | Description |
 |---|---|---|
-| company_analysis | ✅ Skeleton (Phase 2/3) | Manual ticker input → draft report + placeholder source + citation |
-| company_analysis (real LLM) | Phase 4 | Full analysis with Azure OpenAI + real citations |
+| company_analysis | ✅ Phase 6 | Provider data snapshot → sources + citations (with field_path) → schema validation → draft report |
+| company_analysis (real LLM) | Phase 5 | Full analysis with Azure OpenAI + real citations; replace placeholder nodes with LangChain chains |
 | weekly_research | Phase 5 | Scheduled full research pipeline |
 | watchlist_monitoring | Phase 5 | Monitor existing watchlist positions |
-| judge_evaluation | Phase 6 | Post-publication quality assessment |
+| judge_evaluation | Phase 7 | Post-publication quality assessment |
 
 ---
 

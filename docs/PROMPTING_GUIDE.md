@@ -1,6 +1,6 @@
 # Prompting Guide
 
-## Status: Phase 3 — CitationValidator skeleton; no LLM calls yet
+## Status: Phase 6 — Snapshot workflow established; no LLM calls yet
 
 This document describes prompt design principles, versioning and patterns for InvestingBuddy agents.
 
@@ -318,9 +318,44 @@ DISCOVERY DISCIPLINE:
 
 ---
 
-## Not Yet Implemented (Phase 4+)
+---
+
+## Phase 6: Snapshot Workflow Node Pattern
+
+Phase 6 established the data-only workflow pattern. When LLM calls are wired in (Phase 5),
+nodes will follow this hybrid structure:
+
+```python
+# Pattern for a future LLM node replacing a Phase 6 data-only node
+async def node_analyze_company(state):
+    # 1. Retrieve data already in state (built by snapshot nodes)
+    snapshot = state["company_snapshot"]
+    profile_data = snapshot["profile"]
+
+    # 2. Build prompt using snapshot data — never bare numbers
+    prompt = f"""
+    Company: {snapshot['company_identity']['legal_name']}
+    Provider data tier: {snapshot['source_tier']}
+    Retrieved: {snapshot['retrieved_at']}
+    ...
+    """
+
+    # 3. Call LLM with structured output
+    # (wire Azure OpenAI here via LangChain with_structured_output)
+
+    # 4. Return analysis output with investment_recommendation = None until
+    #    Investment Committee Chair node synthesizes the full council
+    return {"analysis_output": { ..., "is_placeholder": False }}
+```
+
+The snapshot data flow means LLM nodes receive pre-validated, provider-sourced input
+rather than raw strings — reducing hallucination risk for financial facts.
+
+---
+
+## Not Yet Implemented (Phase 5+)
 
 No production LLM prompts have been created yet.
-Implementation begins when Azure OpenAI is wired into workflow nodes in Phase 4.
+Implementation begins when Azure OpenAI is wired into workflow nodes in Phase 5.
 
 The `packages/prompts/` directory structure is prepared — add versioned `.md` files per agent role.

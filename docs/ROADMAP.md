@@ -1,6 +1,6 @@
 # Roadmap
 
-## Current Phase: Phase 4.5 — Live Free Data Provider Integration
+## Current Phase: Phase 6 — Real Company Snapshot Workflow
 
 ---
 
@@ -187,6 +187,39 @@ Constraints enforced:
 - Provider status updated: Stooq, GLEIF, SEC EDGAR → `ok`; OpenBB → `not_implemented`; EODHD → `not_configured`
 
 Skills used: `financial-data`, `backend-fastapi`, `testing-qa`, `security-review`, `docs-maintainer`
+
+---
+
+## Phase 6: Real Company Snapshot Workflow ✅
+
+**Status: Complete**
+
+Goal: Connect the existing company-analysis workflow skeleton to `FinancialDataService` so the system can create a real structured company snapshot from provider data, store sources/citations, validate output against the real-asset report schema, and save a draft report.
+
+Deliverables:
+- [x] `company_analysis` workflow upgraded to 8 nodes: `load_company` → `fetch_provider_data` → `create_source_records` → `build_company_snapshot` → `create_citations` → `validate_report_schema` → `save_draft_report` → `log_agent_steps`
+- [x] `apps/api/app/workflows/snapshot_builder.py` — pure transformation module: `build_company_snapshot()`, `build_schema_draft()`, `get_profile_citation_fields()`, `get_price_citation_fields()`
+- [x] `FinancialDataService` wired into workflow; default provider remains `MockFinancialDataProvider` (offline, no keys)
+- [x] Structured company snapshot with company identity, provider metadata, source tier, retrieved timestamp, profile data, price history summary, missing fields list, and explicit `investment_recommendation: null`
+- [x] Schema draft built using datapoint wrappers for all identity fields; validated against `validate_real_asset_report()`; result stored in state and report; failure marks `schema_valid=False` (no crash)
+- [x] `Source` records created from `build_source_record()` helper for profile data and price data
+- [x] `Citation` records created with `field_path`, `source_tier`, `data_quality` for every provider data item used
+- [x] Alembic migration 003: adds `field_path VARCHAR(200)`, `source_tier VARCHAR(50)`, `data_quality VARCHAR(50)` to citations table
+- [x] `CitationCreate` / `CitationRead` updated; `VALID_SOURCE_TYPES` extended with `financial_data_api`, `government_data`, `company_filing`, `model_estimate`
+- [x] `WorkflowRunRequest` extended: `provider_name`, `require_schema_valid`
+- [x] `WorkflowRunResponse` extended: `provider_name`, `is_mock`, `schema_valid`, `validation_errors`, `validation_warnings`, `missing_fields`
+- [x] 38 new offline tests in `test_phase6_snapshot_workflow.py`; 306 total tests passing; ruff clean
+- [x] All CI tests run offline — no network, no Azure, no API keys
+
+Constraints enforced:
+- No Azure OpenAI / LLM calls
+- No investment recommendations (BUY/SELL/WATCH)
+- No EODHD required
+- No Azure resources required
+- No network in CI tests
+- No auth implemented
+
+Skills used: `financial-data`, `backend-fastapi`, `langgraph-agents`, `database-design`, `investment-domain`, `testing-qa`, `security-review`, `docs-maintainer`
 
 ---
 

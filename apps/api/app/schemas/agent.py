@@ -29,12 +29,35 @@ class WorkflowRunRequest(BaseModel):
     exchange: str | None = Field(
         None, max_length=20, description="Exchange code when creating from ticker"
     )
+    # Phase 6: provider and validation control
+    provider_name: str | None = Field(
+        None,
+        description=(
+            "Financial data provider to use. "
+            "Omit to use the FINANCIAL_DATA_PROVIDER config value (default: mock). "
+            "Options: mock, stooq, gleif, sec_edgar, eodhd."
+        ),
+    )
+    require_schema_valid: bool = Field(
+        False,
+        description=(
+            "If true, the workflow fails with status=failed when the schema draft "
+            "does not validate against the real-asset report schema. "
+            "Default false — validation result is stored but does not block completion."
+        ),
+    )
 
     model_config = {
         "json_schema_extra": {
             "examples": [
                 {"company_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6"},
                 {"ticker": "NOVO B", "exchange": "CPH"},
+                {
+                    "ticker": "AAPL",
+                    "exchange": "NASDAQ",
+                    "provider_name": "mock",
+                    "require_schema_valid": False,
+                },
             ]
         }
     }
@@ -48,3 +71,10 @@ class WorkflowRunResponse(BaseModel):
     workflow_name: str
     company_name: str | None = None
     ticker: str | None = None
+    # Phase 6: provider + validation summary
+    provider_name: str | None = None
+    is_mock: bool | None = None
+    schema_valid: bool | None = None
+    validation_errors: list[str] = Field(default_factory=list)
+    validation_warnings: list[str] = Field(default_factory=list)
+    missing_fields: list[str] = Field(default_factory=list)

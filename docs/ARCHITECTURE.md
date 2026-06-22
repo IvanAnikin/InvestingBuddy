@@ -1,6 +1,6 @@
 # Architecture
 
-## Status: Phase 4.5 — Live Free Data Provider Integration
+## Status: Phase 6 — Real Company Snapshot Workflow
 
 ---
 
@@ -97,12 +97,14 @@ investingbuddy/
 │   │   │   │   └── validation/
 │   │   │   │       └── citation_validator.py   Phase 3 skeleton
 │   │   │   ├── workflows/
-│   │   │   │   └── company_analysis.py
+│   │   │   │   ├── company_analysis.py   8-node Phase 6 workflow
+│   │   │   │   └── snapshot_builder.py   pure transformation: snapshot + schema draft
 │   │   │   └── db/             session, base
 │   │   ├── alembic/
 │   │   │   └── versions/
 │   │   │       ├── 001_add_initial_tables.py
-│   │   │       └── 002_add_sources_and_citations.py   Phase 3
+│   │   │       ├── 002_add_sources_and_citations.py   Phase 3
+│   │   │       └── 003_add_citation_provenance_fields.py  Phase 6
 │   │   ├── tests/
 │   │   └── pyproject.toml
 │   └── web/        Next.js frontend
@@ -138,19 +140,26 @@ The health endpoint lives at `/health` (unversioned, used by load balancers).
 ```
 API endpoint (POST /api/v1/workflows/company-analysis/run)
     ↓
-run_company_analysis(db, company_id)
+run_company_analysis(db, company_id, provider_name, require_schema_valid)
     ↓
 LangGraph StateGraph.ainvoke(initial_state)
     ↓
-  node_initialize          → creates agent_run record
-  node_analyze_company     → creates agent_step, produces analysis JSON
-  node_save_report         → saves draft to reports table
-  node_finalize            → marks agent_run completed
+  load_company             → creates agent_run, resolves company from DB
+  fetch_provider_data      → calls FinancialDataService (default: MockProvider)
+  create_source_records    → build_source_record() + source_service.get_or_create_source()
+  build_company_snapshot   → snapshot_builder.build_company_snapshot()
+  create_citations         → CitationCreate with field_path, source_tier, data_quality
+  validate_report_schema   → validate_real_asset_report() → ValidationResult stored
+  save_draft_report        → ReportCreate with snapshot JSON + validation status
+  log_agent_steps          → marks agent_run completed
     ↓
-WorkflowRunResponse (agent_run_id, draft_report_id, status, summary)
+WorkflowRunResponse (agent_run_id, draft_report_id, status, summary,
+                     provider_name, is_mock, schema_valid,
+                     validation_errors, validation_warnings, missing_fields)
 ```
 
 All errors are caught, logged to `agent_runs.error_message`, and returned as HTTP 422.
+`require_schema_valid=true` in the request body forces `status=failed` when the schema draft is invalid.
 
 ---
 
@@ -165,13 +174,14 @@ All errors are caught, logged to `agent_runs.error_message`, and returned as HTT
 | Phase 3.5 | ✅ Complete | Real-asset equity report schema contract, source taxonomy, EODHD provider mapping, offline schema validation utility, report validation tests, DATA_SOURCES.md |
 | Phase 4 | ✅ Complete | Financial data provider abstraction, MockProvider, provider skeletons (SecEdgar/Stooq/OpenBB/Gleif/EODHD), FinancialDataService registry, smoke-test API endpoints |
 | Phase 4.5 | ✅ Complete | Live free provider implementations: StooqProvider (OHLCV CSV), GleifProvider (LEI lookup), SecEdgarProvider (CIK submissions); SourceRecordAttrs helper; diagnostic API endpoints; fixture-based offline tests; integration test harness |
+| Phase 6 | ✅ Complete | 8-node company_analysis workflow; FinancialDataService integrated; company snapshot; source + citation records (with field_path, source_tier, data_quality); schema validation gate; migration 003; 38 new tests; 306 total |
 
 ---
 
 ## What Is Not Yet Implemented
 
-- Authentication (Clerk) — Phase 7
-- Azure OpenAI LLM calls in workflow nodes — Phase 5
+- Authentication (Clerk) — Phase 8
+- Azure OpenAI LLM calls in workflow nodes — Phase 5 (Full Council MVP)
 - Live EODHD calls (paid, requires `EODHD_API_KEY`) — deferred
 - Ticker → CIK resolution for SecEdgarProvider — Phase 5
 - SEC EDGAR XBRL fundamentals (`get_fundamentals`) — Phase 5
@@ -179,6 +189,7 @@ All errors are caught, logged to `agent_runs.error_message`, and returned as HTT
 - Azure Blob Storage (PDF documents) — Phase 5+
 - Full council-of-agents (all agent teams) — Phase 5
 - OpenBB integration (evaluation pending) — Phase 5/6
-- Scheduled background jobs — Phase 6
+- Scheduled background jobs (Azure Functions / Service Bus) — Phase 7
 - Judge / backtesting — Phase 7
 - Personalized recommendations — Phase 8
+- Report citations linked to report_id at save time (currently linked via agent_run_id only) — Phase 5

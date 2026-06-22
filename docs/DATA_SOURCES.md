@@ -1,6 +1,6 @@
 # Data Sources
 
-## Status: Phase 4.5 — Live Free Data Provider Integration implemented
+## Status: Phase 6 — Provider data now flows into source records, citations, and schema-validated snapshot reports
 
 This document defines the permitted source universe, tier classification, and provider implementation notes for InvestingBuddy.
 
@@ -147,7 +147,24 @@ FINANCIAL_DATA_PROVIDER=eodhd  # requires EODHD_API_KEY
 - **Mock data must be flagged** — `is_mock=True` in `ProviderResponseMetadata`; `D_weak_or_stale` data quality
 - **Live provider integration tests must be opt-in** — set `ENABLE_INTEGRATION_TESTS=true` locally; never in CI
 
-### Source Record Integration (Phase 4.5)
+### Source and Citation Integration (Phase 6 — Implemented)
+
+The Phase 6 workflow uses provider data to create source records and structured citations automatically.
+
+**Workflow flow:**
+1. `fetch_provider_data` — calls `FinancialDataService` (default: `MockFinancialDataProvider`)
+2. `create_source_records` — calls `build_source_record()` + `source_service.get_or_create_source()` for each data item
+3. `create_citations` — creates `Citation` records with `field_path`, `source_tier`, `data_quality`
+
+**Citation field_path examples:**
+```
+identity.legal_name       → Citation for the company's legal name from provider
+identity.country_domicile → Citation for domicile from provider
+profile.sector            → Citation for sector classification
+price_history.latest_close → Citation for the most recent price point
+```
+
+**Source record creation example:**
 
 When a provider returns data, prepare a `Source` database record using the helper:
 

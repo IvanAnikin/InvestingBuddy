@@ -21,6 +21,11 @@ VALID_SOURCE_TYPES = {
     "hiring_data",
     "insider_transaction",
     "placeholder",
+    # Phase 6: provider-tier source types (mapped from SourceTier enum)
+    "financial_data_api",   # T5_api_aggregator — Stooq, EODHD, Alpha Vantage
+    "government_data",      # T2_regulator_or_gov — SEC EDGAR, GLEIF, Eurostat
+    "company_filing",       # T1_primary_filing — company IR, 10-K, 40-F
+    "model_estimate",       # T6_model_estimate — agent-derived calculation
 }
 
 
@@ -70,6 +75,10 @@ class CitationCreate(BaseModel):
     source_quote: str | None = None
     url: str | None = Field(None, max_length=2000)
     retrieved_at: datetime | None = None
+    # Phase 6: structured provenance (set by provider-sourced citations)
+    field_path: str | None = Field(None, max_length=200)
+    source_tier: str | None = Field(None, max_length=50)
+    data_quality: str | None = Field(None, max_length=50)
 
 
 class CitationRead(BaseModel):
@@ -83,6 +92,10 @@ class CitationRead(BaseModel):
     source_quote: str | None
     url: str | None
     retrieved_at: datetime | None
+    # Phase 6: structured provenance
+    field_path: str | None = None
+    source_tier: str | None = None
+    data_quality: str | None = None
     created_at: datetime
 
 

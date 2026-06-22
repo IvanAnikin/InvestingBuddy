@@ -68,6 +68,10 @@ class Citation(Base):
     source_quote: Mapped[str | None] = mapped_column(sa.Text)
     url: Mapped[str | None] = mapped_column(sa.String(2000))
     retrieved_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True))
+    # Phase 6: structured provenance fields for provider-sourced citations
+    field_path: Mapped[str | None] = mapped_column(sa.String(200))
+    source_tier: Mapped[str | None] = mapped_column(sa.String(50))
+    data_quality: Mapped[str | None] = mapped_column(sa.String(50))
     created_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True), default=_utcnow, server_default=sa.func.now()
     )

@@ -32,6 +32,8 @@ def _make_completed_state(
         "company_name": "Volkswagen AG",
         "company_sector": "Automotive",
         "company_description": None,
+        "provider_name": "mock",
+        "is_mock": True,
         "analysis_output": {
             "rating": "WATCH",
             "confidence_score": 0.5,
@@ -40,6 +42,12 @@ def _make_completed_state(
         "draft_report_id": str(report_id),
         "placeholder_source_id": _PLACEHOLDER_SOURCE_ID,
         "citation_ids": [_PLACEHOLDER_CITATION_ID],
+        "company_snapshot": None,
+        "provider_source_id": None,
+        "price_source_id": None,
+        "source_ids": None,
+        "schema_validation_result": None,
+        "schema_valid": None,
         "error": None,
         "status": "completed",
     }
@@ -142,7 +150,7 @@ async def test_workflow_graph_builds_successfully() -> None:
 
 
 async def test_workflow_initial_state_shape() -> None:
-    """Verify the initial state TypedDict has all expected keys including Phase 3 fields."""
+    """Verify the initial state TypedDict has all expected keys including Phase 6 fields."""
     state: CompanyAnalysisState = {
         "company_id": None,
         "ticker": "VOW3",
@@ -151,10 +159,18 @@ async def test_workflow_initial_state_shape() -> None:
         "company_name": None,
         "company_sector": None,
         "company_description": None,
+        "provider_name": None,
+        "is_mock": None,
         "analysis_output": None,
         "draft_report_id": None,
         "placeholder_source_id": None,
         "citation_ids": None,
+        "company_snapshot": None,
+        "provider_source_id": None,
+        "price_source_id": None,
+        "source_ids": None,
+        "schema_validation_result": None,
+        "schema_valid": None,
         "error": None,
         "status": "running",
     }
@@ -163,6 +179,12 @@ async def test_workflow_initial_state_shape() -> None:
     assert state["analysis_output"] is None
     assert state["placeholder_source_id"] is None
     assert state["citation_ids"] is None
+    # Phase 6 fields
+    assert state["provider_name"] is None
+    assert state["is_mock"] is None
+    assert state["company_snapshot"] is None
+    assert state["schema_validation_result"] is None
+    assert state["schema_valid"] is None
 
 
 async def test_completed_workflow_state_includes_source_and_citation(
@@ -174,6 +196,9 @@ async def test_completed_workflow_state_includes_source_and_citation(
     assert isinstance(state["citation_ids"], list)
     assert len(state["citation_ids"]) == 1
     assert state["citation_ids"][0] == _PLACEHOLDER_CITATION_ID
+    # Phase 6 fields present in completed state
+    assert state["provider_name"] == "mock"
+    assert state["is_mock"] is True
 
 
 async def test_placeholder_analysis_output_structure() -> None:
