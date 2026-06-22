@@ -1,6 +1,6 @@
 # Architecture
 
-## Status: Phase 3.5 — Research Contracts Foundation (Real-Asset Equity)
+## Status: Phase 4 — Financial Data Provider Foundation
 
 ---
 
@@ -90,7 +90,8 @@ investingbuddy/
 │   │   │   │       └── citations.py    Phase 3
 │   │   │   ├── models/         SQLAlchemy ORM: Company, Report, AgentRun, AgentStep, Source, Citation
 │   │   │   ├── schemas/        Pydantic: company, report, agent, source (incl. citations)
-│   │   │   ├── services/       company_service, report_service, agent_run_service, source_service, citation_service, report_validation_service
+│   │   │   ├── integrations/   financial_data_provider.py (ABC + schemas), financial_data_service.py, providers/ (mock, eodhd, sec_edgar, stooq, openbb, gleif)
+   │   │   ├── services/       company_service, report_service, agent_run_service, source_service, citation_service, report_validation_service
 │   │   │   ├── agents/
 │   │   │   │   ├── base.py     CompanyAnalysisState TypedDict
 │   │   │   │   └── validation/
@@ -162,17 +163,18 @@ All errors are caught, logged to `agent_runs.error_message`, and returned as HTT
 | Phase 2 | ✅ Complete | DB foundation (Alembic + 4 tables), company endpoints, LangGraph workflow skeleton |
 | Phase 3 | ✅ Complete | Source + Citation models, migration 002, source/citation services + API, CitationValidator skeleton, workflow creates placeholder source + citation |
 | Phase 3.5 | ✅ Complete | Real-asset equity report schema contract, source taxonomy, EODHD provider mapping, offline schema validation utility, report validation tests, DATA_SOURCES.md |
+| Phase 4 | ✅ Complete | Financial data provider abstraction, MockProvider, provider skeletons (SecEdgar/Stooq/OpenBB/Gleif/EODHD), FinancialDataService registry, smoke-test API endpoints |
 
 ---
 
 ## What Is Not Yet Implemented
 
 - Authentication (Clerk) — Phase 7
-- Azure OpenAI LLM calls in workflow nodes — Phase 4
-- Real financial data ingestion (OpenBB, external APIs) — Phase 4
-- Azure AI Search (embeddings, RAG) — Phase 4+
-- Azure Blob Storage (PDF documents) — Phase 4+
-- Full council-of-agents (all agent teams) — Phase 4
-- Scheduled background jobs — Phase 5
-- Judge / backtesting — Phase 6
-- Personalized recommendations — Phase 7
+- Azure OpenAI LLM calls in workflow nodes — Phase 5
+- Live financial data calls (EODHD, SEC EDGAR, Stooq, OpenBB, GLEIF) — Phase 5 (providers skeleton in Phase 4)
+- Azure AI Search (embeddings, RAG) — Phase 5+
+- Azure Blob Storage (PDF documents) — Phase 5+
+- Full council-of-agents (all agent teams) — Phase 5
+- Scheduled background jobs — Phase 6
+- Judge / backtesting — Phase 7
+- Personalized recommendations — Phase 8

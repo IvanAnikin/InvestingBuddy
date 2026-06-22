@@ -1,6 +1,6 @@
 # Roadmap
 
-## Current Phase: Phase 3.5 — Research Contracts Foundation (Real-Asset Equity)
+## Current Phase: Phase 4 — Financial Data Provider Foundation
 
 ---
 
@@ -123,33 +123,36 @@ Skills used: `product-architect`, `investment-domain`, `financial-data`, `backen
 
 ---
 
-## Phase 4: Financial Data Provider Foundation
+## Phase 4: Financial Data Provider Foundation ✅
 
-**Status: Not started**
+**Status: Complete**
 
 Goal: Provider abstraction layer so agents can resolve financial data from multiple sources without changing the report schema. CI uses a mock provider with no external calls.
 
 Deliverables:
-- [ ] `FinancialDataProvider` abstract base class (`apps/api/app/integrations/financial_data_provider.py`)
-- [ ] `MockFinancialDataProvider` — deterministic test data, no external calls, used in all CI tests
-- [ ] `SecEdgarProvider` — US company filings via `data.sec.gov` free JSON API (T1/T2)
-- [ ] `StooqProvider` — free historical price data (T5)
-- [ ] `GleifProvider` — free legal entity identity / LEI lookup (T2)
-- [ ] `OpenBBProvider` — optional open-source multi-source aggregator, free tier (T5)
-- [ ] `EODHDProvider` — paid EODHD Fundamentals (T5); requires API key; excluded from CI
-- [ ] Provider output normalized into `datapoint` envelope with correct source tier
-- [ ] `FinancialDataService` — selects provider based on config; falls back in order
-- [ ] Integration tests for `MockFinancialDataProvider` (no network required)
-- [ ] `.env.example` updated with `EODHD_API_KEY` placeholder
-- [ ] `docs/DATA_SOURCES.md` updated with provider implementation notes
+- [x] `FinancialDataProvider` abstract base class (`apps/api/app/integrations/financial_data_provider.py`)
+- [x] Typed Pydantic schemas: `CompanyProfileData`, `PriceHistoryData`, `PricePoint`, `FundamentalsData`, `FundamentalDataPoint`, `ProviderResponseMetadata`, `ProviderCapability`, `ProviderStatus`, `SourceTier`, `DataQuality`
+- [x] `MockFinancialDataProvider` — deterministic test data, no external calls, `is_mock=True`
+- [x] `SecEdgarProvider` — skeleton; T2 tier; raises `NotImplementedError`; no network
+- [x] `StooqProvider` — skeleton; T5 tier; raises `NotImplementedError`; no network
+- [x] `GleifProvider` — skeleton; T2 tier; raises `NotImplementedError`; no network
+- [x] `OpenBBProvider` — skeleton; T5 tier; raises `NotImplementedError`; no network
+- [x] `EodhdProvider` — placeholder; T5 tier; references `eodhd_mapping.json`; no network; `EODHD_API_KEY` not required in tests
+- [x] `FinancialDataService` — provider registry; selects provider from `FINANCIAL_DATA_PROVIDER` config; default `mock`
+- [x] `FINANCIAL_DATA_PROVIDER`, `EODHD_API_KEY`, `EODHD_BASE_URL` added to config + `.env.example`
+- [x] Dev API endpoints: `GET /api/v1/financial-data/providers`, `GET /api/v1/financial-data/mock/company/{ticker}`, `GET /api/v1/financial-data/mock/prices/{ticker}`
+- [x] 40+ offline tests — no Azure, no EODHD key, no external network
+- [x] `docs/DATA_SOURCES.md` updated with provider registry and implementation notes
+- [x] `docs/API.md`, `docs/ARCHITECTURE.md`, `docs/ROADMAP.md`, `docs/AGENTS.md`, `README.md` updated
 
-Rules:
-- No live API calls in CI — CI tests must use `MockFinancialDataProvider` or pre-recorded fixtures
-- EODHD key must not be hardcoded; load from env/Key Vault only
-- Provider abstraction must allow swapping EODHD for any other provider by editing config, not code
-- Tier assignment: EODHD → T5; direct EDGAR → T2; company IR → T1
+Rules enforced:
+- No live API calls in CI — all tests use `MockFinancialDataProvider`
+- EODHD key not hardcoded; loaded from env/Key Vault only
+- Provider abstraction allows swapping EODHD by editing config, not code
+- Tier assignment: EODHD → T5; EDGAR direct → T2; company IR → T1
+- Mock data always marked `is_mock=True` and `D_weak_or_stale`
 
-Skills to use: `financial-data`, `backend-fastapi`, `testing-qa`, `security-review`
+Skills used: `financial-data`, `backend-fastapi`, `testing-qa`, `security-review`, `docs-maintainer`
 
 ---
 

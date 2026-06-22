@@ -109,11 +109,13 @@ Copy `.env.example` to `.env` and fill in values as needed.
 | `DATABASE_URL` | Yes | PostgreSQL connection string |
 | `APP_ENV` | No | `development` / `staging` / `production` |
 | `SECRET_KEY` | Yes (prod) | App secret key |
-| `AZURE_OPENAI_*` | Phase 2+ | Azure OpenAI credentials for agent workflows |
-| `AZURE_STORAGE_*` | Phase 3+ | Azure Blob Storage for documents |
-| `AZURE_SEARCH_*` | Phase 3+ | Azure AI Search for RAG |
+| `AZURE_OPENAI_*` | Phase 5+ | Azure OpenAI credentials for agent workflows |
+| `AZURE_STORAGE_*` | Phase 5+ | Azure Blob Storage for documents |
+| `AZURE_SEARCH_*` | Phase 5+ | Azure AI Search for RAG |
+| `FINANCIAL_DATA_PROVIDER` | No | Provider to use: `mock` (default) / `eodhd` / `sec_edgar` / etc. |
+| `EODHD_API_KEY` | Phase 5+ | EODHD API key — required only when provider is `eodhd` |
 | `NEXT_PUBLIC_API_BASE_URL` | No | Backend API URL for the frontend |
-| `NEXT_PUBLIC_CLERK_*` | Phase 2+ | Clerk authentication keys |
+| `NEXT_PUBLIC_CLERK_*` | Phase 7+ | Clerk authentication keys |
 
 ---
 
@@ -126,7 +128,7 @@ Copy `.env.example` to `.env` and fill in values as needed.
 | Phase 2 | Done | First LangGraph agent workflow, company storage |
 | Phase 3 | Done | Research storage, citations, Blob + AI Search |
 | Phase 3.5 | Done | Research contracts foundation (real-asset equity schema, validation, source taxonomy) |
-| Phase 4 | Planned | Financial data provider foundation (free sources, EODHD, provider abstraction) |
+| Phase 4 | Done | Financial data provider foundation (provider abstraction, mock provider, provider skeletons, API endpoints) |
 | Phase 5 | Planned | Full council-of-agents MVP |
 | Phase 6 | Planned | Weekly report pipeline, watchlists |
 | Phase 7 | Planned | Judge system and backtesting |

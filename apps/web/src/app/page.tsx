@@ -51,11 +51,12 @@ export default function HomePage() {
           </h2>
           <div className="rounded-lg border border-amber-200 bg-amber-50 p-4">
             <p className="font-medium text-amber-800">
-              Phase 1 — Application Skeleton
+              Phase 4 in progress — Financial Data Provider Foundation
             </p>
             <p className="mt-1 text-sm text-amber-700">
-              The platform is under active development. Research features,
-              reports, and agent workflows are not yet available.
+              The platform is under active development. Real reports, live
+              financial-data integrations, and agent-generated research are not
+              yet available to users.
             </p>
           </div>
         </section>
