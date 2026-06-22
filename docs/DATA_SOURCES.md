@@ -1,8 +1,8 @@
 # Data Sources
 
-## Status: Phase 3.5 — Research Contracts Foundation; no live provider calls yet
+## Status: Phase 4 — Financial Data Provider Foundation implemented
 
-This document defines the permitted source universe, tier classification, and provider abstraction plan for InvestingBuddy.
+This document defines the permitted source universe, tier classification, and provider implementation notes for InvestingBuddy.
 
 Every financial claim in an agent-produced report must trace to one of the tier definitions below. Agents are prohibited from citing sources outside this taxonomy (e.g. Reddit, StockTwits, promotional newsletters, anonymous blogs).
 
@@ -73,27 +73,78 @@ These files are the ground truth for:
 
 ---
 
-## Provider Abstraction Plan (Phase 4)
+## Provider Abstraction (Phase 4 — Implemented)
 
 The report schema is **provider-agnostic**. `eodhd_mapping.json` is a mapping layer, not a hardcoded dependency. To switch or add a provider, edit only the mapping file — the schema never changes.
 
-Planned provider abstractions for Phase 4:
+### Provider Registry
 
-| Class | Description |
-|---|---|
-| `FinancialDataProvider` | Abstract base interface |
-| `MockFinancialDataProvider` | Deterministic test data — no external calls; used in CI |
-| `SecEdgarProvider` | Free US regulatory filings via data.sec.gov JSON API |
-| `StooqProvider` | Free historical price data (no key required) |
-| `GleifProvider` | Free entity identity data (LEI registry) |
-| `OpenBBProvider` | Open-source multi-source aggregator (optional, free tier) |
-| `EODHDProvider` | Paid aggregator (EODHD Fundamentals; requires API key; not in CI) |
+All providers are registered in `FinancialDataService` and selectable via `FINANCIAL_DATA_PROVIDER` config:
 
-Rules for all providers:
-- No live API calls in CI — CI must use `MockFinancialDataProvider` or cached fixtures
-- EODHD API key must not be hardcoded; store in Azure Key Vault / `.env`
-- Provider output must be normalized into the `datapoint` envelope before passing to agents
-- Source tier must be set correctly: EODHD → T5; EDGAR direct → T2; company IR → T1
+| Class | Module | Source Tier | Status | Notes |
+|---|---|---|---|---|
+| `MockFinancialDataProvider` | `integrations/providers/mock_provider.py` | T6 | ✅ Active | Deterministic demo data; used in all CI tests; no network calls |
+| `SecEdgarProvider` | `integrations/providers/sec_edgar_provider.py` | T2 | Skeleton | Free; US regulatory filings; `data.sec.gov` JSON API |
+| `GleifProvider` | `integrations/providers/gleif_provider.py` | T2 | Skeleton | Free; LEI registry; `api.gleif.org` |
+| `StooqProvider` | `integrations/providers/stooq_provider.py` | T5 | Skeleton | Free; historical OHLCV prices; no API key |
+| `OpenBBProvider` | `integrations/providers/openbb_provider.py` | T5 | Skeleton | Free tier; multi-source aggregator; requires `openbb-platform` |
+| `EodhdProvider` | `integrations/providers/eodhd_provider.py` | T5 | Placeholder | Paid; requires `EODHD_API_KEY`; excluded from CI |
+
+### Provider Abstract Interface
+
+All providers implement `FinancialDataProvider` (`integrations/financial_data_provider.py`):
+
+```python
+class FinancialDataProvider(ABC):
+    provider_name: str
+    source_tier: SourceTier
+    get_supported_capabilities() -> list[ProviderCapability]
+    get_provider_status() -> ProviderStatus
+    async get_company_profile(ticker, exchange) -> CompanyProfileData
+    async get_price_history(ticker, exchange, start_date, end_date) -> PriceHistoryData
+    async get_fundamentals(ticker, exchange) -> FundamentalsData
+```
+
+### Typed Output Schemas
+
+Every provider output uses typed Pydantic schemas. Each response carries full provenance:
+
+```python
+class CompanyProfileData(BaseModel):
+    ticker: str
+    legal_name: str
+    source_url: str | None
+    data_quality: DataQuality
+    meta: ProviderResponseMetadata   # provider_name, source_tier, retrieved_at, is_mock
+
+class PriceHistoryData(BaseModel):
+    ticker: str
+    currency: str
+    price_points: list[PricePoint]
+    data_quality: DataQuality
+    meta: ProviderResponseMetadata
+
+class FundamentalsData(BaseModel):
+    ticker: str
+    datapoints: list[FundamentalDataPoint]  # each carries source_tier, data_quality, note
+    meta: ProviderResponseMetadata
+```
+
+### Provider Selection
+
+Set `FINANCIAL_DATA_PROVIDER` in `.env`:
+
+```
+FINANCIAL_DATA_PROVIDER=mock   # default; CI; local dev without credentials
+FINANCIAL_DATA_PROVIDER=eodhd  # requires EODHD_API_KEY
+```
+
+### Provider Rules
+
+- **No live API calls in CI** — CI must use `MockFinancialDataProvider` (the default)
+- **EODHD API key must not be hardcoded** — store in `.env` (local) or Azure Key Vault (production)
+- **Provider output must carry correct source tier** — EODHD → T5; EDGAR direct → T2; company IR → T1
+- **Mock data must be flagged** — `is_mock=True` in `ProviderResponseMetadata`; `D_weak_or_stale` data quality
 
 ---
 

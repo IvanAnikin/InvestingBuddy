@@ -1,6 +1,6 @@
 # Agent Architecture
 
-## Status: Phase 3 — Citation Validator skeleton added; workflow creates placeholder Source + Citation
+## Status: Phase 4 — Financial data provider abstraction added; CitationValidator upgrade path documented
 
 ---
 
@@ -204,7 +204,26 @@ A bare `"market_cap_usd_m": 320.0` is rejected by the schema validator.
 
 EODHD is T5. See `docs/DATA_SOURCES.md` for full taxonomy.
 
-### CitationValidator Upgrade Path (Phase 4)
+### Financial Data Provider Integration (Phase 4)
+
+The `FinancialDataService` is now available for use in agent nodes.
+Import and call it from any workflow node to fetch company profile or price data:
+
+```python
+from app.integrations.financial_data_service import FinancialDataService
+
+svc = FinancialDataService()           # uses FINANCIAL_DATA_PROVIDER config (default: mock)
+profile = await svc.get_company_profile(ticker, exchange)
+prices  = await svc.get_price_history(ticker, exchange)
+```
+
+Provider output carries full provenance in `meta: ProviderResponseMetadata`:
+- `provider_name`, `source_tier`, `retrieved_at`, `is_mock`
+
+The Financial Data Agent (planned: Phase 5) will use `FinancialDataService` to populate
+`snapshot_financials` and `financials_deep` sections of the real-asset report schema.
+
+### CitationValidator Upgrade Path (Phase 4/5)
 
 In Phase 4, `CitationValidator` will validate both:
 
