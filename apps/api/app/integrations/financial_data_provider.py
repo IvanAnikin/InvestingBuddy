@@ -12,6 +12,10 @@ Every provider output carries:
 
 No real API keys are required to import or instantiate providers.
 Only EodhdProvider and live network providers require credentials.
+
+Source record integration (Phase 5):
+  Use build_source_record(meta, source_url, title) to prepare a dict suitable
+  for creating a Source database record from any provider response.
 """
 
 from __future__ import annotations
@@ -155,6 +159,76 @@ class FundamentalsData(BaseModel):
     exchange: str | None = None
     datapoints: list[FundamentalDataPoint]
     meta: ProviderResponseMetadata = Field(...)
+
+
+# ---------------------------------------------------------------------------
+# Source record integration helpers (Phase 5)
+# ---------------------------------------------------------------------------
+
+# Maps source tier → source_type string used in the Source database table.
+_TIER_TO_SOURCE_TYPE: dict[str, str] = {
+    SourceTier.T1_primary_filing: "company_filing",
+    SourceTier.T2_regulator_or_gov: "government_data",
+    SourceTier.T3_industry_specialist: "industry_report",
+    SourceTier.T4_quality_media: "news_article",
+    SourceTier.T5_api_aggregator: "financial_data_api",
+    SourceTier.T6_model_estimate: "model_estimate",
+}
+
+# Maps source tier → credibility score (0.0–1.0).
+_TIER_TO_CREDIBILITY: dict[str, float] = {
+    SourceTier.T1_primary_filing: 0.95,
+    SourceTier.T2_regulator_or_gov: 0.90,
+    SourceTier.T3_industry_specialist: 0.75,
+    SourceTier.T4_quality_media: 0.65,
+    SourceTier.T5_api_aggregator: 0.55,
+    SourceTier.T6_model_estimate: 0.20,
+}
+
+
+class SourceRecordAttrs(BaseModel):
+    """
+    Prepared attributes for creating a Source database record from provider data.
+
+    Call build_source_record() to populate this from a ProviderResponseMetadata.
+    The caller is responsible for the actual DB write (source_service.create_source).
+    """
+
+    source_type: str
+    title: str
+    url: str | None
+    publisher: str
+    retrieved_at: datetime
+    credibility_score: float
+    provider_name: str
+    source_tier: SourceTier
+    data_quality: DataQuality
+
+
+def build_source_record(
+    meta: ProviderResponseMetadata,
+    source_url: str | None = None,
+    title: str | None = None,
+    data_quality: DataQuality = DataQuality.B_single_credible,
+) -> SourceRecordAttrs:
+    """
+    Prepare source record attributes from provider response metadata.
+
+    These can be passed directly to source_service.create_source() after
+    constructing a SourceCreate schema from the returned dict.
+    """
+    tier_value = meta.source_tier if isinstance(meta.source_tier, str) else meta.source_tier.value
+    return SourceRecordAttrs(
+        source_type=_TIER_TO_SOURCE_TYPE.get(tier_value, "financial_data_api"),
+        title=title or f"Provider data from {meta.provider_name}",
+        url=source_url,
+        publisher=meta.provider_name,
+        retrieved_at=meta.retrieved_at,
+        credibility_score=_TIER_TO_CREDIBILITY.get(tier_value, 0.50),
+        provider_name=meta.provider_name,
+        source_tier=meta.source_tier,
+        data_quality=data_quality,
+    )
 
 
 # ---------------------------------------------------------------------------
