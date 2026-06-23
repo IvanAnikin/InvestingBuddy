@@ -25,6 +25,11 @@ dev = [
     "ruff>=0.8",
     "mypy>=1.13",
 ]
+# Install when LLM_PROVIDER=azure_openai is used locally or in staging.
+# Not required for CI — default LLM_PROVIDER=mock uses no Azure credentials.
+llm = [
+    "langchain-openai>=0.2",
+]
 
 [build-system]
 requires = ["setuptools>=70"]

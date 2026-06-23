@@ -39,6 +39,13 @@ class CompanyAnalysisState(TypedDict):
     schema_validation_result: dict | None     # {is_valid, errors, warnings} from validator
     schema_valid: bool | None                 # convenience flag
 
+    # --- Phase 7: LLM research sections ---
+    use_llm: bool | None                      # True = run generate_research_sections node
+    llm_provider: str | None                  # resolved LLM provider name (mock | azure_openai)
+    llm_used: bool | None                     # True when LLM node ran (not skipped)
+    llm_sections: dict | None                 # ResearchSectionsOutput as dict
+    llm_section_warnings: list[str] | None    # safety-gate warnings from validate_llm_sections
+
     # --- control ---
     error: str | None
     status: str   # running | completed | failed

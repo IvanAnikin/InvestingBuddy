@@ -1,6 +1,6 @@
 # Prompting Guide
 
-## Status: Phase 6 — Snapshot workflow established; no LLM calls yet
+## Status: Phase 7 — First LLM research node live; mock and Azure OpenAI supported
 
 This document describes prompt design principles, versioning and patterns for InvestingBuddy agents.
 
@@ -353,9 +353,63 @@ rather than raw strings — reducing hallucination risk for financial facts.
 
 ---
 
-## Not Yet Implemented (Phase 5+)
+---
 
-No production LLM prompts have been created yet.
-Implementation begins when Azure OpenAI is wired into workflow nodes in Phase 5.
+## Phase 7: First LLM Research Node — `generate_research_sections`
 
-The `packages/prompts/` directory structure is prepared — add versioned `.md` files per agent role.
+### Implemented Prompt
+
+**File:** `packages/prompts/research/phase7_company_research_v1.md`
+
+This is the first production prompt in the system. It uses the pattern documented
+above and enforces all constraints at the prompt level.
+
+**LLM:** `ResearchLLMClient` interface — `MockResearchLLMClient` (offline, CI) or
+`AzureOpenAIResearchLLMClient` (requires `AZURE_OPENAI_*` env vars, opt-in only).
+
+### What This Prompt Generates
+
+| Section | Description | Restrictions |
+|---|---|---|
+| `thesis_summary_draft` | 1-3 sentences on the company's relevance to the research universe | No rating; factual identity data only |
+| `business_overview_draft` | 2-4 sentences on business model, products, key markets | Only supplied context; mark if data missing |
+| `missing_information` | List of fields needed for full analysis | Non-empty; financial fields always missing at this phase |
+| `self_critique_limitations` | 1-2 sentences on what's missing and why this is not advice | Required; explicitly says "not investment advice" |
+
+### What This Prompt Must NOT Generate
+
+- Any investment rating (`BUY`, `SELL`, `WATCH`, `HOLD`, `REJECT`)
+- Any price target, fair value, or valuation estimate
+- Any financial numbers not in the supplied context
+- Any statement treated as a final recommendation
+- Any speculative claims not flagged as assumptions
+
+The `validate_llm_sections()` safety gate runs after every call and appends warnings
+to `llm_section_warnings` if forbidden content is detected.
+
+### Usage in Workflow
+
+```python
+# Opt-in: use_llm=True required (default=False, CI-safe)
+POST /api/v1/workflows/company-analysis/run
+{
+  "ticker": "EXAMPLE",
+  "exchange": "OSE",
+  "use_llm": true,
+  "llm_provider": "mock"      # "mock" for offline; "azure_openai" for real calls
+}
+```
+
+### Prompt Versioning Convention
+
+- File name encodes version: `phase7_company_research_v1.md`
+- Major version bump = structural change to output schema
+- Minor version bump = wording improvement only
+- Future versions go in same directory: `phase7_company_research_v1_1.md`, etc.
+
+## Planned Prompts (Phase 5+)
+
+No full council-of-agents prompts have been created yet.
+Implementation begins when the full Research Team + Analysis Council are wired up in Phase 5.
+
+The `packages/prompts/` directory structure is ready — add versioned `.md` files per agent role.

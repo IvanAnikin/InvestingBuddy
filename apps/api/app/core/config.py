@@ -27,5 +27,17 @@ class Settings(BaseSettings):
     # NEVER set to True in CI — CI must always run offline with mock provider.
     enable_integration_tests: bool = False
 
+    # ── LLM Provider (Phase 7) ──────────────────────────────────────────────
+    # Which LLM client to use: "mock" | "azure_openai"
+    # Default is "mock" so CI tests require no Azure credentials or network.
+    llm_provider: str = "mock"
+
+    # Azure OpenAI credentials — required only when llm_provider="azure_openai".
+    # Never hardcode. Load from Azure Key Vault in staging/production.
+    azure_openai_endpoint: str = ""
+    azure_openai_api_key: str = ""
+    azure_openai_api_version: str = "2024-08-01-preview"
+    azure_openai_deployment_name: str = ""
+
 
 settings = Settings()

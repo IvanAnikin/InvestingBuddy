@@ -1,29 +1,35 @@
 """
-Company Analysis Workflow — Phase 6: Real Company Snapshot.
+Company Analysis Workflow — Phase 7: LLM Research Sections (optional).
 
-Node structure (8 nodes + error handler):
-  1. load_company        — resolve company from DB; create agent_run record
-  2. fetch_provider_data — call FinancialDataService (default: MockProvider)
-  3. create_source_records — build Source DB records from provider metadata
-  4. build_company_snapshot — assemble structured snapshot + schema draft
-  5. create_citations    — create Citation records with field_path/source_tier/data_quality
-  6. validate_report_schema — call validate_real_asset_report(); store result
-  7. save_draft_report   — save draft report with snapshot + validation status
-  8. log_agent_steps     — mark agent_run completed; final step logging
-  handle_error           — marks agent_run failed on any unhandled error
+Node structure (9 nodes + error handler):
+  1. load_company              — resolve company from DB; create agent_run record
+  2. fetch_provider_data       — call FinancialDataService (default: MockProvider)
+  3. create_source_records     — build Source DB records from provider metadata
+  4. build_company_snapshot    — assemble structured snapshot + schema draft
+  5. generate_research_sections — (OPTIONAL) call LLM to generate draft sections
+                                  Skipped when use_llm=False (default).
+                                  Default LLM is MockResearchLLMClient (offline).
+  6. create_citations          — create Citation records with field_path/source_tier/data_quality
+  7. validate_report_schema    — call validate_real_asset_report(); store result
+  8. save_draft_report         — save draft report with snapshot + validation status
+  9. log_agent_steps           — mark agent_run completed; final step logging
+  handle_error                 — marks agent_run failed on any unhandled error
 
 Design rules enforced:
-  - No LLM calls.
-  - No investment recommendations.
-  - No bare financial numbers in the schema draft — all values in datapoint envelopes.
+  - LLM calls are opt-in: use_llm=False by default; all CI tests run offline.
+  - Default LLM provider is "mock" — no Azure credentials required in tests.
+  - LLM output is constrained: no rating, no price target, no valuation, no bare numbers.
+  - LLM output is safety-validated before being stored.
+  - Schema validation always runs regardless of LLM usage.
+  - No investment recommendations at this phase.
   - Mock provider is the default; all CI tests run offline.
   - Every node logs an agent_step (input + output JSON).
-  - Schema validation is attempted; failure marks draft schema_valid=False (no crash).
 """
 
 from __future__ import annotations
 
 import json
+import pathlib
 import re
 import uuid
 from datetime import datetime, timezone
@@ -38,6 +44,7 @@ from app.integrations.financial_data_provider import (
     build_source_record,
 )
 from app.integrations.financial_data_service import FinancialDataService
+from app.integrations.llm_provider import get_llm_client, validate_llm_sections
 from app.schemas.report import ReportCreate
 from app.schemas.source import CitationCreate, SourceCreate
 from app.services import (
@@ -56,7 +63,29 @@ from app.workflows.snapshot_builder import (
 )
 
 WORKFLOW_NAME = "company_analysis"
-WORKFLOW_VERSION = "2.0.0"
+WORKFLOW_VERSION = "3.0.0"
+
+_PROMPT_PATH = (
+    pathlib.Path(__file__).resolve().parents[5]
+    / "packages"
+    / "prompts"
+    / "research"
+    / "phase7_company_research_v1.md"
+)
+
+
+def _load_prompt_template() -> str:
+    """Load the versioned prompt template from packages/prompts/."""
+    if _PROMPT_PATH.exists():
+        return _PROMPT_PATH.read_text(encoding="utf-8")
+    # Fallback inline minimal prompt if file not found (should not happen in normal usage)
+    return (
+        "Generate research sections for the following company:\n\n"
+        "{{COMPANY_CONTEXT}}\n\n"
+        "Output JSON with: thesis_summary_draft, business_overview_draft, "
+        "missing_information, self_critique_limitations. "
+        "No rating. No price target. No invented numbers."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -124,12 +153,20 @@ def _build_placeholder_analysis(state: CompanyAnalysisState) -> dict:
 def build_company_analysis_graph(
     db: AsyncSession,
     provider_name: str | None = None,
+    use_llm: bool = False,
+    llm_provider: str | None = None,
 ):
     """
-    Return a compiled LangGraph graph with all 8 Phase 6 nodes.
+    Return a compiled LangGraph graph with all Phase 7 nodes.
 
     provider_name — override config default (None = use FINANCIAL_DATA_PROVIDER config).
     Default is "mock" so all CI tests run offline.
+
+    use_llm — when True, the generate_research_sections node runs after build_company_snapshot.
+    Default False — safe offline mode, no LLM calls, CI-safe.
+
+    llm_provider — override config default for LLM (None = use LLM_PROVIDER config).
+    Default is "mock" so all CI tests run without Azure credentials.
     """
 
     _run_holder: dict = {}
@@ -373,7 +410,78 @@ def build_company_analysis_graph(
         return {"company_snapshot": snapshot}
 
     # ------------------------------------------------------------------ #
-    # Node 5: create_citations                                            #
+    # Node 5: generate_research_sections  (optional LLM node)            #
+    # ------------------------------------------------------------------ #
+    async def node_generate_research_sections(state: CompanyAnalysisState) -> dict:
+        run = _run_holder.get("run")
+        snapshot = _run_holder.get("snapshot", {})
+        resolved_llm_provider = state.get("llm_provider") or llm_provider
+
+        step = await agent_run_service.create_agent_step(
+            db,
+            run=run,
+            agent_name="ResearchLLMAgent",
+            step_name="generate_research_sections",
+            input_data={
+                "llm_provider": resolved_llm_provider or "config_default",
+                "use_llm": state.get("use_llm"),
+                "snapshot_keys": list(snapshot.keys()),
+            },
+        )
+
+        # If use_llm is False, skip without calling LLM
+        if not state.get("use_llm"):
+            await agent_run_service.complete_agent_step(
+                db,
+                step,
+                output_data={"skipped": True, "reason": "use_llm=False"},
+            )
+            return {"llm_used": False, "llm_provider": "none", "llm_sections": None}
+
+        try:
+            client = get_llm_client(resolved_llm_provider)
+            prompt_template = _load_prompt_template()
+            sections = await client.generate_research_sections(
+                company_snapshot=snapshot,
+                prompt_template=prompt_template,
+            )
+            safety = validate_llm_sections(sections)
+
+            sections_dict = sections.model_dump()
+
+            await agent_run_service.complete_agent_step(
+                db,
+                step,
+                output_data={
+                    "llm_provider": client.provider_name,
+                    "is_mock": client.is_mock,
+                    "safety_passed": safety.passed,
+                    "safety_warnings": safety.warnings,
+                    "thesis_length": len(sections.thesis_summary_draft),
+                    "missing_info_count": len(sections.missing_information),
+                },
+            )
+
+            return {
+                "llm_used": True,
+                "llm_provider": client.provider_name,
+                "llm_sections": sections_dict,
+                "llm_section_warnings": safety.warnings if not safety.passed else [],
+            }
+
+        except Exception as exc:
+            error_msg = f"generate_research_sections failed: {exc}"
+            await agent_run_service.fail_agent_step(db, step, error_msg)
+            # LLM failure is non-fatal — workflow continues without LLM sections
+            return {
+                "llm_used": False,
+                "llm_provider": "failed",
+                "llm_sections": None,
+                "llm_section_warnings": [error_msg],
+            }
+
+    # ------------------------------------------------------------------ #
+    # Node 6: create_citations  (was Node 5 in Phase 6)                  #
     # ------------------------------------------------------------------ #
     async def node_create_citations(state: CompanyAnalysisState) -> dict:
         run = _run_holder.get("run")
@@ -441,7 +549,7 @@ def build_company_analysis_graph(
         return {"citation_ids": citation_ids}
 
     # ------------------------------------------------------------------ #
-    # Node 6: validate_report_schema                                      #
+    # Node 7: validate_report_schema  (was Node 6 in Phase 6)            #
     # ------------------------------------------------------------------ #
     async def node_validate_report_schema(state: CompanyAnalysisState) -> dict:
         run = _run_holder.get("run")
@@ -489,7 +597,7 @@ def build_company_analysis_graph(
         }
 
     # ------------------------------------------------------------------ #
-    # Node 7: save_draft_report                                           #
+    # Node 8: save_draft_report  (was Node 7 in Phase 6)                 #
     # ------------------------------------------------------------------ #
     async def node_save_draft_report(state: CompanyAnalysisState) -> dict:
         run = _run_holder.get("run")
@@ -503,6 +611,10 @@ def build_company_analysis_graph(
         schema_valid = state.get("schema_valid", False)
         provider_name_used = state.get("provider_name") or "mock"
         missing_fields = snapshot.get("missing_fields", [])
+        llm_used = state.get("llm_used", False)
+        llm_sections = state.get("llm_sections") or {}
+        llm_section_warnings = state.get("llm_section_warnings") or []
+        llm_provider_used = state.get("llm_provider") or "none"
 
         step = await agent_run_service.create_agent_step(
             db,
@@ -515,6 +627,8 @@ def build_company_analysis_graph(
                 "schema_valid": schema_valid,
                 "provider_name": provider_name_used,
                 "is_mock": is_mock,
+                "llm_used": llm_used,
+                "llm_provider": llm_provider_used,
             },
         )
 
@@ -523,14 +637,18 @@ def build_company_analysis_graph(
         # Build human-readable markdown content
         mode_tag = "[MOCK DATA]" if is_mock else "[LIVE DATA]"
         schema_tag = "SCHEMA VALID" if schema_valid else "SCHEMA INVALID"
+        llm_tag = f"[LLM: {llm_provider_used}]" if llm_used else "[LLM: not used]"
         errors = validation.get("errors", [])
         warnings = validation.get("warnings", [])
 
         content_md = (
-            f"# {company_name} — Snapshot Report {mode_tag}\n\n"
+            f"# {company_name} — Draft Research Report {mode_tag}\n\n"
             f"**Provider:** {provider_name_used}  \n"
             f"**Ticker:** {ticker}  \n"
-            f"**Schema Validation:** {schema_tag}  \n\n"
+            f"**Schema Validation:** {schema_tag}  \n"
+            f"**LLM:** {llm_tag}  \n\n"
+            "> **ADMIN DRAFT ONLY** — Not investment advice. "
+            "Human review required before any use.\n\n"
         )
         if errors:
             content_md += "## Schema Errors\n\n"
@@ -543,6 +661,34 @@ def build_company_analysis_graph(
             content_md += "\n".join(f"- {w}" for w in warnings)
             content_md += "\n\n"
 
+        # LLM-generated sections (if available)
+        if llm_used and llm_sections:
+            if llm_section_warnings:
+                content_md += "## LLM Safety Warnings\n\n"
+                for w in llm_section_warnings:
+                    content_md += f"> **WARNING:** {w}\n\n"
+
+            content_md += (
+                "## Thesis Summary (LLM Draft — Admin Review Required)\n\n"
+                "> This section was generated by an LLM using provider identity data only. "
+                "It is NOT investment advice. No rating or price target has been assigned.\n\n"
+            )
+            content_md += llm_sections.get("thesis_summary_draft", "") + "\n\n"
+
+            content_md += (
+                "## Business Overview (LLM Draft — Admin Review Required)\n\n"
+            )
+            content_md += llm_sections.get("business_overview_draft", "") + "\n\n"
+
+            llm_missing = llm_sections.get("missing_information", [])
+            if llm_missing:
+                content_md += "## Missing Information (LLM Assessment)\n\n"
+                content_md += "\n".join(f"- {m}" for m in llm_missing)
+                content_md += "\n\n"
+
+            content_md += "## Limitations (LLM Self-Critique)\n\n"
+            content_md += llm_sections.get("self_critique_limitations", "") + "\n\n"
+
         identity = snapshot.get("company_identity", {})
         content_md += "## Company Identity\n\n"
         content_md += f"- **Legal Name:** {identity.get('legal_name', 'N/A')}  \n"
@@ -550,7 +696,7 @@ def build_company_analysis_graph(
         content_md += f"- **Country:** {identity.get('country_domicile', 'N/A')}  \n\n"
 
         if missing_fields:
-            content_md += "## Missing Fields\n\n"
+            content_md += "## Missing Fields (Provider Data)\n\n"
             content_md += "\n".join(f"- `{f}`" for f in missing_fields)
             content_md += "\n\n"
 
@@ -559,15 +705,16 @@ def build_company_analysis_graph(
         content_md += "\n```\n\n"
         content_md += (
             "---\n\n"
-            "*This is a Phase 6 provider data snapshot. "
+            "*This is a Phase 7 draft report. "
             "No investment recommendation has been made. "
             "Human review required before any action.*\n"
         )
 
         summary = (
-            f"Provider snapshot for {company_name} ({ticker}). "
+            f"Draft research for {company_name} ({ticker}). "
             f"Provider: {provider_name_used}. "
             f"{'MOCK DATA' if is_mock else 'LIVE DATA'}. "
+            f"LLM: {llm_provider_used if llm_used else 'not used'}. "
             f"Schema: {schema_tag}. "
             f"Missing fields: {len(missing_fields)}. "
             "No investment recommendation."
@@ -609,7 +756,7 @@ def build_company_analysis_graph(
         }
 
     # ------------------------------------------------------------------ #
-    # Node 8: log_agent_steps                                             #
+    # Node 9: log_agent_steps  (was Node 8 in Phase 6)                   #
     # ------------------------------------------------------------------ #
     async def node_log_agent_steps(state: CompanyAnalysisState) -> dict:
         run = _run_holder.get("run")
@@ -661,6 +808,7 @@ def build_company_analysis_graph(
     graph.add_node("fetch_provider_data", node_fetch_provider_data)
     graph.add_node("create_source_records", node_create_source_records)
     graph.add_node("build_company_snapshot", node_build_company_snapshot)
+    graph.add_node("generate_research_sections", node_generate_research_sections)
     graph.add_node("create_citations", node_create_citations)
     graph.add_node("validate_report_schema", node_validate_report_schema)
     graph.add_node("save_draft_report", node_save_draft_report)
@@ -671,7 +819,8 @@ def build_company_analysis_graph(
     graph.add_conditional_edges("load_company", route_after_load_company)
     graph.add_conditional_edges("fetch_provider_data", route_after_fetch)
     graph.add_edge("create_source_records", "build_company_snapshot")
-    graph.add_edge("build_company_snapshot", "create_citations")
+    graph.add_edge("build_company_snapshot", "generate_research_sections")
+    graph.add_edge("generate_research_sections", "create_citations")
     graph.add_edge("create_citations", "validate_report_schema")
     graph.add_edge("validate_report_schema", "save_draft_report")
     graph.add_edge("save_draft_report", "log_agent_steps")
@@ -693,6 +842,8 @@ async def run_company_analysis(
     exchange: str | None = None,
     provider_name: str | None = None,
     require_schema_valid: bool = False,
+    use_llm: bool = False,
+    llm_provider: str | None = None,
 ) -> CompanyAnalysisState:
     """
     Execute the company analysis workflow and return the final state.
@@ -702,6 +853,8 @@ async def run_company_analysis(
 
     provider_name — override the default provider (None = use config, default: mock).
     require_schema_valid — if True and schema validation fails, status will be "failed".
+    use_llm — if True, the generate_research_sections LLM node runs. Default False.
+    llm_provider — override config LLM provider (None = use LLM_PROVIDER config, default: mock).
     """
     initial_state: CompanyAnalysisState = {
         "company_id": company_id,
@@ -723,11 +876,21 @@ async def run_company_analysis(
         "source_ids": None,
         "schema_validation_result": None,
         "schema_valid": None,
+        "use_llm": use_llm,
+        "llm_provider": llm_provider,
+        "llm_used": None,
+        "llm_sections": None,
+        "llm_section_warnings": None,
         "error": None,
         "status": "running",
     }
 
-    graph = build_company_analysis_graph(db, provider_name=provider_name)
+    graph = build_company_analysis_graph(
+        db,
+        provider_name=provider_name,
+        use_llm=use_llm,
+        llm_provider=llm_provider,
+    )
     final_state: CompanyAnalysisState = await graph.ainvoke(initial_state)
 
     # If caller requires schema-valid output and we got an invalid draft, fail

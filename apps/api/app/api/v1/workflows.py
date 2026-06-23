@@ -19,11 +19,12 @@ router = APIRouter(prefix="/workflows", tags=["workflows"])
         "Run the company analysis workflow for a given company. "
         "Supply either company_id or (ticker + exchange). "
         "The company must already exist in the database.\n\n"
-        "Phase 6: the workflow fetches provider data, builds a company snapshot, "
-        "creates source + citation records, validates against the real-asset report schema, "
-        "and saves a draft report. "
-        "Provider defaults to 'mock' (offline, no API keys required). "
-        "Returns agent_run_id, draft_report_id, provider summary, and schema validation result."
+        "Phase 7: optionally runs an LLM research sections node after the provider snapshot. "
+        "Set use_llm=true to enable; defaults to false (offline, no LLM credentials required). "
+        "LLM output is constrained to draft sections only — no rating, no price target. "
+        "Schema validation always runs regardless of LLM usage. "
+        "Returns agent_run_id, draft_report_id, provider summary, schema validation result, "
+        "and llm_used/llm_provider summary."
     ),
 )
 async def run_company_analysis_endpoint(
@@ -44,6 +45,8 @@ async def run_company_analysis_endpoint(
             exchange=payload.exchange,
             provider_name=payload.provider_name,
             require_schema_valid=payload.require_schema_valid,
+            use_llm=payload.use_llm,
+            llm_provider=payload.llm_provider,
         )
     except Exception as exc:
         raise HTTPException(
@@ -61,15 +64,19 @@ async def run_company_analysis_endpoint(
     draft_report_id_str = final_state.get("draft_report_id")
     validation_result = final_state.get("schema_validation_result") or {}
     snapshot = final_state.get("company_snapshot") or {}
+    llm_used = final_state.get("llm_used", False)
+    llm_provider_used = final_state.get("llm_provider")
+
+    company_name = final_state.get("company_name", "company")
+    provider_name_used = final_state.get("provider_name", "mock")
+    schema_label = "valid" if final_state.get("schema_valid") else "invalid"
+    llm_label = f"LLM: {llm_provider_used}" if llm_used else "LLM: not used"
 
     summary = (
-        final_state.get("analysis_output", {}).get("thesis", "")
-        if final_state.get("analysis_output")
-        else ""
-    ) or (
-        f"Provider snapshot for {final_state.get('company_name', 'company')}. "
-        f"Provider: {final_state.get('provider_name', 'mock')}. "
-        f"Schema: {'valid' if final_state.get('schema_valid') else 'invalid'}."
+        f"Draft research for {company_name}. "
+        f"Provider: {provider_name_used}. "
+        f"Schema: {schema_label}. "
+        f"{llm_label}."
     )
 
     return WorkflowRunResponse(
@@ -86,4 +93,6 @@ async def run_company_analysis_endpoint(
         validation_errors=validation_result.get("errors", []),
         validation_warnings=validation_result.get("warnings", []),
         missing_fields=snapshot.get("missing_fields", []),
+        llm_provider=llm_provider_used,
+        llm_used=llm_used,
     )
