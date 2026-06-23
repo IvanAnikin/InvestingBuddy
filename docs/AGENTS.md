@@ -1,6 +1,6 @@
 # Agent Architecture
 
-## Status: Phase 6 — Real company snapshot workflow; provider data → source records → citations → schema validation
+## Status: Phase 7 — First LLM research node; optional mock/Azure OpenAI draft section generation
 
 ---
 
@@ -38,17 +38,24 @@ This enables debugging, auditing and future judge evaluation.
 
 ## Implemented Workflows
 
-### company_analysis — Phase 6: Real Company Snapshot
+### company_analysis — Phase 7: LLM Research Sections (optional)
 
 **Trigger:** `POST /api/v1/workflows/company-analysis/run`
 
 **Input:** company UUID (must exist in `companies` table) or ticker + exchange.
-Optional: `provider_name` (default: `mock`), `require_schema_valid` (default: `false`).
+Optional: `provider_name` (default: `mock`), `require_schema_valid` (default: `false`),
+`use_llm` (default: `false`), `llm_provider` (default: config `LLM_PROVIDER`, default: `mock`).
 
-**Purpose:** Fetches real provider data, builds a structured company snapshot,
-stores source + citation records with provenance, validates the output against the
-real-asset equity report schema, and saves a draft report. No LLM calls. No investment
-recommendations. Schema validation result is stored regardless of pass/fail.
+**Purpose:** Fetches provider data, builds a structured company snapshot, optionally
+runs an LLM node to generate draft research sections (thesis summary, business overview,
+missing information, self-critique), stores source + citation records, validates against
+the real-asset report schema, and saves a draft report.
+
+- `use_llm=false` (default): no LLM calls, fully offline, CI-safe.
+- `use_llm=true` with `llm_provider=mock`: mock LLM, still offline, no Azure credentials.
+- `use_llm=true` with `llm_provider=azure_openai`: calls Azure OpenAI (requires env vars).
+
+No investment recommendations at this phase. No BUY/SELL/WATCH rating from LLM.
 
 **Graph:**
 
@@ -63,6 +70,8 @@ load_company
                                     ↓
                               build_company_snapshot
                                     ↓
+                              generate_research_sections  ← NEW (Phase 7)
+                                    ↓ (skipped if use_llm=False)
                               create_citations
                                     ↓
                               validate_report_schema
@@ -80,14 +89,17 @@ load_company
 | fetch_provider_data | FinancialDataAgent | fetch_provider_data | Calls FinancialDataService; gets profile + prices |
 | create_source_records | SourceRecordAgent | create_source_records | Calls `build_source_record()` + `get_or_create_source()` for each data item |
 | build_company_snapshot | SnapshotBuilder | build_company_snapshot | Builds structured snapshot dict; lists missing fields |
+| generate_research_sections | ResearchLLMAgent | generate_research_sections | Calls `ResearchLLMClient.generate_research_sections()`; skipped if `use_llm=False`; non-fatal on error |
 | create_citations | CitationAgent | create_citations | Creates Citation records with field_path, source_tier, data_quality |
 | validate_report_schema | SchemaValidator | validate_report_schema | Calls `validate_real_asset_report()`; stores ValidationResult |
-| save_draft_report | ReportWriter | save_draft_report | Saves draft report with snapshot JSON, mock/live flag, schema validation status |
+| save_draft_report | ReportWriter | save_draft_report | Saves draft report with snapshot JSON, LLM sections if available, schema validation status |
 | log_agent_steps | WorkflowController | log_agent_steps | Marks agent_run completed; logs final step summary |
 | handle_error | WorkflowController | handle_error | Marks agent_run failed |
 
 **Source:** `apps/api/app/workflows/company_analysis.py`
 **Snapshot builder:** `apps/api/app/workflows/snapshot_builder.py`
+**LLM provider:** `apps/api/app/integrations/llm_provider.py`
+**Prompt template:** `packages/prompts/research/phase7_company_research_v1.md`
 
 **Output state fields:**
 ```python
@@ -108,6 +120,15 @@ load_company
     "warnings": []
   },
   "schema_valid": False,
+  "llm_used": False,                        # True when LLM node ran
+  "llm_provider": "mock" | "azure_openai" | "none",
+  "llm_sections": {                         # populated when llm_used=True
+    "thesis_summary_draft": "...",
+    "business_overview_draft": "...",
+    "missing_information": ["..."],
+    "self_critique_limitations": "..."
+  },
+  "llm_section_warnings": [],              # safety-gate warnings (rating/price-target detected)
   "draft_report_id": "uuid",
   "analysis_output": { "is_placeholder": True, ... },
   "status": "completed" | "failed",
@@ -149,6 +170,58 @@ load_company
   "snapshot_generated_at": "2026-06-22T..."
 }
 ```
+
+---
+
+---
+
+## LLM Provider Abstraction (Phase 7)
+
+**Source:** `apps/api/app/integrations/llm_provider.py`
+
+The `ResearchLLMClient` abstract interface allows swapping LLM backends without
+changing the workflow graph. Selection is controlled by `LLM_PROVIDER` config.
+
+### Implementations
+
+| Class | Provider Name | Credentials Required | When Used |
+|---|---|---|---|
+| `MockResearchLLMClient` | `mock` | None | Default; CI; local dev |
+| `AzureOpenAIResearchLLMClient` | `azure_openai` | `AZURE_OPENAI_*` env vars | Staging/production with real keys |
+
+### LLM Output Schema (`ResearchSectionsOutput`)
+
+```python
+class ResearchSectionsOutput(BaseModel):
+    thesis_summary_draft: str          # 1-3 sentences, factual only
+    business_overview_draft: str       # 2-4 sentences, factual only
+    missing_information: list[str]     # fields needed for full analysis
+    self_critique_limitations: str     # 1-2 sentences on gaps and non-advice status
+```
+
+**Fields intentionally absent:** `rating`, `price_target`, `conviction`, `valuation`,
+`recommendation`. The schema physically cannot produce investment recommendations.
+
+### Safety Gate (`validate_llm_sections`)
+
+After every LLM call, `validate_llm_sections()` checks for:
+- Rating keywords: `BUY`, `SELL`, `HOLD`, `WATCH`, `REJECT`, `SHORTLIST`, `WATCHLIST`
+- Price target phrases: `price target`, `target price`, `fair value`, `upside of`
+
+If found, warnings are appended to `llm_section_warnings` in state.
+The workflow does NOT crash — output is still stored as draft with warnings for admin review.
+
+### Prompt Template
+
+**Path:** `packages/prompts/research/phase7_company_research_v1.md`
+
+Versioned prompt template (v1). Hard constraints enforced in prompt:
+1. No investment rating output
+2. No price target or fair value
+3. No invented financial numbers — only supplied context
+4. JSON output only, matching `ResearchSectionsOutput` schema
+5. Explicit self-critique section required
+6. Context wrapped in `<company_context>` block with prompt injection mitigations
 
 ---
 
@@ -330,8 +403,8 @@ A `conventional_screen` entry path caps the `underresearched_edge` pillar score 
 
 | Workflow | Status | Description |
 |---|---|---|
-| company_analysis | ✅ Phase 6 | Provider data snapshot → sources + citations (with field_path) → schema validation → draft report |
-| company_analysis (real LLM) | Phase 5 | Full analysis with Azure OpenAI + real citations; replace placeholder nodes with LangChain chains |
+| company_analysis | ✅ Phase 7 | Provider snapshot → LLM draft sections (optional) → sources + citations → schema validation → draft report |
+| company_analysis (full council) | Phase 5 | Full analysis with Azure OpenAI + real citations; full Research + Analysis Council + Validation teams |
 | weekly_research | Phase 5 | Scheduled full research pipeline |
 | watchlist_monitoring | Phase 5 | Monitor existing watchlist positions |
 | judge_evaluation | Phase 7 | Post-publication quality assessment |

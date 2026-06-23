@@ -109,13 +109,14 @@ Copy `.env.example` to `.env` and fill in values as needed.
 | `DATABASE_URL` | Yes | PostgreSQL connection string |
 | `APP_ENV` | No | `development` / `staging` / `production` |
 | `SECRET_KEY` | Yes (prod) | App secret key |
-| `AZURE_OPENAI_*` | Phase 5+ | Azure OpenAI credentials for agent workflows |
+| `LLM_PROVIDER` | No | LLM client: `mock` (default, CI-safe) / `azure_openai` |
+| `AZURE_OPENAI_*` | Phase 7+ | Azure OpenAI credentials — required only when `LLM_PROVIDER=azure_openai` |
 | `AZURE_STORAGE_*` | Phase 5+ | Azure Blob Storage for documents |
 | `AZURE_SEARCH_*` | Phase 5+ | Azure AI Search for RAG |
 | `FINANCIAL_DATA_PROVIDER` | No | Provider to use: `mock` (default) / `eodhd` / `sec_edgar` / etc. |
 | `EODHD_API_KEY` | Phase 5+ | EODHD API key — required only when provider is `eodhd` |
 | `NEXT_PUBLIC_API_BASE_URL` | No | Backend API URL for the frontend |
-| `NEXT_PUBLIC_CLERK_*` | Phase 7+ | Clerk authentication keys |
+| `NEXT_PUBLIC_CLERK_*` | Phase 8+ | Clerk authentication keys |
 
 ---
 
@@ -129,10 +130,13 @@ Copy `.env.example` to `.env` and fill in values as needed.
 | Phase 3 | Done | Research storage, citations, Blob + AI Search |
 | Phase 3.5 | Done | Research contracts foundation (real-asset equity schema, validation, source taxonomy) |
 | Phase 4 | Done | Financial data provider foundation (provider abstraction, mock provider, provider skeletons, API endpoints) |
+| Phase 4.5 | Done | Live free data providers (Stooq, GLEIF, SEC EDGAR) |
+| Phase 6 | Done | Real company snapshot workflow (8-node; provider data → sources + citations → schema validation) |
+| Phase 7 | Done | Azure OpenAI + first LLM research agent (optional generate_research_sections node; mock + Azure clients) |
 | Phase 5 | Planned | Full council-of-agents MVP |
-| Phase 6 | Planned | Weekly report pipeline, watchlists |
-| Phase 7 | Planned | Judge system and backtesting |
-| Phase 8 | Planned | Personalized investor assistant (V2) |
+| Phase 8 | Planned | Judge system and backtesting |
+| Phase 9 | Planned | Weekly report pipeline, watchlists |
+| Phase 10 | Planned | Personalized investor assistant (V2) |
 
 ---
 

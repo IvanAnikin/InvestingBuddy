@@ -46,6 +46,24 @@ class WorkflowRunRequest(BaseModel):
             "Default false — validation result is stored but does not block completion."
         ),
     )
+    # Phase 7: LLM research sections control
+    use_llm: bool = Field(
+        False,
+        description=(
+            "If true, the workflow runs the generate_research_sections LLM node "
+            "after building the company snapshot. "
+            "Default false — safe offline mode with no LLM calls. "
+            "When true, uses the LLM_PROVIDER config (default: mock)."
+        ),
+    )
+    llm_provider: str | None = Field(
+        None,
+        description=(
+            "LLM provider to use when use_llm=true. "
+            "Omit to use the LLM_PROVIDER config value (default: mock). "
+            "Options: mock, azure_openai."
+        ),
+    )
 
     model_config = {
         "json_schema_extra": {
@@ -57,6 +75,14 @@ class WorkflowRunRequest(BaseModel):
                     "exchange": "NASDAQ",
                     "provider_name": "mock",
                     "require_schema_valid": False,
+                    "use_llm": False,
+                },
+                {
+                    "ticker": "AAPL",
+                    "exchange": "NASDAQ",
+                    "provider_name": "mock",
+                    "use_llm": True,
+                    "llm_provider": "mock",
                 },
             ]
         }
@@ -78,3 +104,6 @@ class WorkflowRunResponse(BaseModel):
     validation_errors: list[str] = Field(default_factory=list)
     validation_warnings: list[str] = Field(default_factory=list)
     missing_fields: list[str] = Field(default_factory=list)
+    # Phase 7: LLM summary
+    llm_provider: str | None = None
+    llm_used: bool | None = None

@@ -1,6 +1,6 @@
 # Roadmap
 
-## Current Phase: Phase 6 — Real Company Snapshot Workflow
+## Current Phase: Phase 7 — Azure OpenAI + First LLM Research Agent
 
 ---
 
@@ -243,7 +243,7 @@ Skills to use: `langgraph-agents`, `backend-fastapi`, `frontend-nextjs`, `invest
 
 ---
 
-## Phase 6: Weekly Report Pipeline
+## Phase 9: Weekly Report Pipeline
 
 **Status: Not started**
 
@@ -262,7 +262,47 @@ Skills to use: `langgraph-agents`, `frontend-nextjs`, `azure-deployment`
 
 ---
 
-## Phase 7: Judge + Backtesting
+## Phase 7: Azure OpenAI + First LLM Research Agent ✅
+
+**Status: Complete**
+
+Goal: Add the first optional LLM-powered research node that consumes the company snapshot
+and generates structured draft sections. Workflow remains fully testable offline with a
+mock LLM provider.
+
+Deliverables:
+- [x] `ResearchLLMClient` abstract interface (`apps/api/app/integrations/llm_provider.py`)
+- [x] `MockResearchLLMClient` — deterministic, offline, no credentials, default for CI
+- [x] `AzureOpenAIResearchLLMClient` — skeleton with LangChain `with_structured_output`; requires `AZURE_OPENAI_*` env vars; never used in CI
+- [x] `get_llm_client(provider)` factory — selects client from config; defaults to mock
+- [x] `ResearchSectionsOutput` Pydantic schema — no rating, no price target, no valuation fields
+- [x] `validate_llm_sections()` safety gate — flags rating keywords and price target phrases
+- [x] `generate_research_sections` node added to `company_analysis` workflow (node 5 of 9)
+- [x] Node is opt-in: `use_llm=False` by default; skips gracefully when false
+- [x] LLM failure is non-fatal — workflow completes without LLM sections on error
+- [x] LLM sections appear in draft report `content_markdown` (labeled ADMIN DRAFT ONLY)
+- [x] Schema validation still runs after LLM node (and is unaffected by LLM output)
+- [x] `WorkflowRunRequest` extended: `use_llm`, `llm_provider`
+- [x] `WorkflowRunResponse` extended: `llm_provider`, `llm_used`
+- [x] `LLM_PROVIDER`, `AZURE_OPENAI_*` added to config + `.env.example`
+- [x] Versioned prompt template: `packages/prompts/research/phase7_company_research_v1.md`
+- [x] `langchain-openai>=0.2` added as optional `[llm]` dependency in `pyproject.toml`
+- [x] 28 new offline tests in `test_phase7_llm_agent.py`; 334 total tests passing; ruff clean
+- [x] `docs/AGENTS.md`, `docs/PROMPTING_GUIDE.md`, `docs/API.md`, `docs/ARCHITECTURE.md`, `docs/ROADMAP.md`, `README.md` updated
+
+Constraints enforced:
+- No BUY/SELL/WATCH/HOLD/REJECT from LLM
+- No price target or valuation conclusion from LLM
+- No invented financial numbers
+- LLM output is admin/draft only — not public investment advice
+- All CI tests run offline (no Azure, no network, no credentials)
+- Azure OpenAI is opt-in and config-driven only
+
+Skills used: `langgraph-agents`, `backend-fastapi`, `investment-domain`, `security-review`, `testing-qa`, `docs-maintainer`
+
+---
+
+## Phase 8: Judge + Backtesting
 
 **Status: Not started**
 
@@ -280,7 +320,7 @@ Skills to use: `langgraph-agents`, `financial-data`, `backend-fastapi`, `investm
 
 ---
 
-## Phase 8: Personalized Investor Assistant
+## Phase 10: Personalized Investor Assistant
 
 **Status: Not started (Version 2)**
 

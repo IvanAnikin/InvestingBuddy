@@ -1,6 +1,6 @@
 # Architecture
 
-## Status: Phase 6 — Real Company Snapshot Workflow
+## Status: Phase 7 — First LLM Research Node
 
 ---
 
@@ -90,14 +90,14 @@ investingbuddy/
 │   │   │   │       └── citations.py    Phase 3
 │   │   │   ├── models/         SQLAlchemy ORM: Company, Report, AgentRun, AgentStep, Source, Citation
 │   │   │   ├── schemas/        Pydantic: company, report, agent, source (incl. citations)
-│   │   │   ├── integrations/   financial_data_provider.py (ABC + schemas + SourceRecordAttrs), financial_data_service.py, providers/ (mock, eodhd, sec_edgar[live], stooq[live], gleif[live], openbb[placeholder])
+│   │   │   ├── integrations/   financial_data_provider.py (ABC + schemas + SourceRecordAttrs), financial_data_service.py, llm_provider.py (ResearchLLMClient ABC + MockClient + AzureClient + factory), providers/ (mock, eodhd, sec_edgar[live], stooq[live], gleif[live], openbb[placeholder])
 │   │   │   ├── services/       company_service, report_service, agent_run_service, source_service, citation_service, report_validation_service
 │   │   │   ├── agents/
 │   │   │   │   ├── base.py     CompanyAnalysisState TypedDict
 │   │   │   │   └── validation/
 │   │   │   │       └── citation_validator.py   Phase 3 skeleton
 │   │   │   ├── workflows/
-│   │   │   │   ├── company_analysis.py   8-node Phase 6 workflow
+│   │   │   │   ├── company_analysis.py   9-node Phase 7 workflow (+ optional LLM node)
 │   │   │   │   └── snapshot_builder.py   pure transformation: snapshot + schema draft
 │   │   │   └── db/             session, base
 │   │   ├── alembic/
@@ -111,7 +111,9 @@ investingbuddy/
 │       └── src/app/
 ├── packages/
 │   ├── shared-types/   TypeScript types shared between frontend and backend
-│   ├── prompts/        Versioned prompt templates
+│   ├── prompts/
+│   │   └── research/
+│   │       └── phase7_company_research_v1.md   Phase 7 LLM prompt (v1)
 │   └── research-contracts/
 │       └── real_asset_equity/
 │           └── v1/     JSON Schema + source taxonomy + provider mapping + example (Phase 3.5)
@@ -144,18 +146,20 @@ run_company_analysis(db, company_id, provider_name, require_schema_valid)
     ↓
 LangGraph StateGraph.ainvoke(initial_state)
     ↓
-  load_company             → creates agent_run, resolves company from DB
-  fetch_provider_data      → calls FinancialDataService (default: MockProvider)
-  create_source_records    → build_source_record() + source_service.get_or_create_source()
-  build_company_snapshot   → snapshot_builder.build_company_snapshot()
-  create_citations         → CitationCreate with field_path, source_tier, data_quality
-  validate_report_schema   → validate_real_asset_report() → ValidationResult stored
-  save_draft_report        → ReportCreate with snapshot JSON + validation status
-  log_agent_steps          → marks agent_run completed
+  load_company                → creates agent_run, resolves company from DB
+  fetch_provider_data         → calls FinancialDataService (default: MockProvider)
+  create_source_records       → build_source_record() + source_service.get_or_create_source()
+  build_company_snapshot      → snapshot_builder.build_company_snapshot()
+  generate_research_sections  → ResearchLLMClient.generate_research_sections() [optional; use_llm=False by default]
+  create_citations            → CitationCreate with field_path, source_tier, data_quality
+  validate_report_schema      → validate_real_asset_report() → ValidationResult stored
+  save_draft_report           → ReportCreate with snapshot JSON + LLM sections + validation status
+  log_agent_steps             → marks agent_run completed
     ↓
 WorkflowRunResponse (agent_run_id, draft_report_id, status, summary,
                      provider_name, is_mock, schema_valid,
-                     validation_errors, validation_warnings, missing_fields)
+                     validation_errors, validation_warnings, missing_fields,
+                     llm_provider, llm_used)
 ```
 
 All errors are caught, logged to `agent_runs.error_message`, and returned as HTTP 422.
@@ -175,13 +179,14 @@ All errors are caught, logged to `agent_runs.error_message`, and returned as HTT
 | Phase 4 | ✅ Complete | Financial data provider abstraction, MockProvider, provider skeletons (SecEdgar/Stooq/OpenBB/Gleif/EODHD), FinancialDataService registry, smoke-test API endpoints |
 | Phase 4.5 | ✅ Complete | Live free provider implementations: StooqProvider (OHLCV CSV), GleifProvider (LEI lookup), SecEdgarProvider (CIK submissions); SourceRecordAttrs helper; diagnostic API endpoints; fixture-based offline tests; integration test harness |
 | Phase 6 | ✅ Complete | 8-node company_analysis workflow; FinancialDataService integrated; company snapshot; source + citation records (with field_path, source_tier, data_quality); schema validation gate; migration 003; 38 new tests; 306 total |
+| Phase 7 | ✅ Complete | 9-node workflow; `ResearchLLMClient` abstraction (Mock + AzureOpenAI skeleton); optional `generate_research_sections` LLM node; `ResearchSectionsOutput` schema; safety gate; prompt template v1; `use_llm`/`llm_provider` API fields; 28 new offline tests; 334 total |
 
 ---
 
 ## What Is Not Yet Implemented
 
 - Authentication (Clerk) — Phase 8
-- Azure OpenAI LLM calls in workflow nodes — Phase 5 (Full Council MVP)
+- Azure OpenAI in production (real keys) — optional, configure `LLM_PROVIDER=azure_openai` + env vars
 - Live EODHD calls (paid, requires `EODHD_API_KEY`) — deferred
 - Ticker → CIK resolution for SecEdgarProvider — Phase 5
 - SEC EDGAR XBRL fundamentals (`get_fundamentals`) — Phase 5

@@ -1,6 +1,6 @@
 # API Reference
 
-## Status: Phase 6 — Company snapshot workflow with provider + validation summary
+## Status: Phase 7 — LLM research sections node; llm_provider + llm_used in workflow response
 
 ---
 
@@ -138,16 +138,30 @@ Request by ticker with provider control (Phase 6):
 }
 ```
 
-`provider_name` — optional, defaults to `FINANCIAL_DATA_PROVIDER` config value (`mock` in CI).
-`require_schema_valid` — optional bool (default `false`). When `true`, the endpoint returns `422` if the schema draft fails validation.
+Request with LLM research sections enabled (Phase 7):
+```json
+{
+  "ticker": "VOW3",
+  "exchange": "XETRA",
+  "provider_name": "mock",
+  "use_llm": true,
+  "llm_provider": "mock"
+}
+```
 
-Response `202 Accepted` (Phase 6):
+Request fields:
+- `provider_name` — optional; defaults to `FINANCIAL_DATA_PROVIDER` config value (`mock` in CI).
+- `require_schema_valid` — optional bool (default `false`). When `true`, returns `422` if schema draft fails.
+- `use_llm` — optional bool (default `false`). When `true`, runs the `generate_research_sections` LLM node. Default `false` is CI-safe (no LLM calls, no credentials needed).
+- `llm_provider` — optional; defaults to `LLM_PROVIDER` config value (`mock` in CI). Options: `mock`, `azure_openai`.
+
+Response `202 Accepted` (Phase 7):
 ```json
 {
   "agent_run_id": "uuid",
   "draft_report_id": "uuid",
   "status": "completed",
-  "summary": "Provider snapshot for Volkswagen AG. Provider: mock. Schema: invalid.",
+  "summary": "Draft research for Volkswagen AG. Provider: mock. Schema: invalid. LLM: mock.",
   "workflow_name": "company_analysis",
   "company_name": "Volkswagen AG",
   "ticker": "VOW3",
@@ -156,7 +170,9 @@ Response `202 Accepted` (Phase 6):
   "schema_valid": false,
   "validation_errors": ["[(root)] 'snapshot_financials' is a required property"],
   "validation_warnings": [],
-  "missing_fields": ["identity.isin", "identity.lei", "profile.website"]
+  "missing_fields": ["identity.isin", "identity.lei", "profile.website"],
+  "llm_provider": "mock",
+  "llm_used": true
 }
 ```
 
@@ -167,13 +183,15 @@ Errors:
 - `422` — `require_schema_valid=true` and schema draft failed validation
 - `500` — workflow execution error (see agent_run logs)
 
-> **Phase 6 note:** The workflow fetches provider data via `FinancialDataService`,
-> builds a structured company snapshot, creates `Source` + `Citation` records with
-> `field_path`, `source_tier`, `data_quality`, validates against the real-asset report schema,
-> and saves a draft report. No LLM calls. No investment recommendations.
-> Default provider is `mock` — all CI runs are offline.
-> `schema_valid` will typically be `false` at this phase since many required schema
-> sections are not yet populated (LLM agents are needed for those).
+> **Phase 7 note:** The workflow optionally calls an LLM to generate draft research
+> sections (thesis summary, business overview, missing information, self-critique).
+> LLM output is constrained: no rating, no price target, no invented numbers.
+> A safety gate (`validate_llm_sections`) flags forbidden content as warnings.
+> Schema validation always runs regardless of LLM usage.
+> Default `use_llm=false` is CI-safe — no Azure OpenAI credentials required.
+> `llm_provider=mock` runs the offline `MockResearchLLMClient` (also CI-safe).
+> `llm_provider=azure_openai` requires `AZURE_OPENAI_*` env vars and is opt-in only.
+> All outputs are admin/draft — not investment advice.
 
 ---
 
