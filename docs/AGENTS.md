@@ -1,6 +1,6 @@
 # Agent Architecture
 
-## Status: Phase 7 — First LLM research node; optional mock/Azure OpenAI draft section generation
+## Status: Phase 8 — Research Team agents: financial data, source quality, research completeness, citation validator v2
 
 ---
 
@@ -38,7 +38,7 @@ This enables debugging, auditing and future judge evaluation.
 
 ## Implemented Workflows
 
-### company_analysis — Phase 7: LLM Research Sections (optional)
+### company_analysis — Phase 8: Research Team Agents
 
 **Trigger:** `POST /api/v1/workflows/company-analysis/run`
 
@@ -46,18 +46,19 @@ This enables debugging, auditing and future judge evaluation.
 Optional: `provider_name` (default: `mock`), `require_schema_valid` (default: `false`),
 `use_llm` (default: `false`), `llm_provider` (default: config `LLM_PROVIDER`, default: `mock`).
 
-**Purpose:** Fetches provider data, builds a structured company snapshot, optionally
-runs an LLM node to generate draft research sections (thesis summary, business overview,
-missing information, self-critique), stores source + citation records, validates against
-the real-asset report schema, and saves a draft report.
+**Purpose:** 13-node workflow. Fetches provider data, builds a structured company snapshot,
+runs four deterministic Research Team agents (no LLM calls), optionally runs an LLM node
+to generate draft research sections, stores source + citation records, validates against
+the real-asset report schema, runs Research Completeness and Citation Validator v2 agents,
+and saves a draft report with Research Team summaries.
 
 - `use_llm=false` (default): no LLM calls, fully offline, CI-safe.
 - `use_llm=true` with `llm_provider=mock`: mock LLM, still offline, no Azure credentials.
 - `use_llm=true` with `llm_provider=azure_openai`: calls Azure OpenAI (requires env vars).
 
-No investment recommendations at this phase. No BUY/SELL/WATCH rating from LLM.
+No investment recommendations. No BUY/SELL/WATCH/rating. No price targets.
 
-**Graph:**
+**Graph (v4.0.0):**
 
 ```
 load_company
@@ -70,11 +71,19 @@ load_company
                                     ↓
                               build_company_snapshot
                                     ↓
-                              generate_research_sections  ← NEW (Phase 7)
-                                    ↓ (skipped if use_llm=False)
+                              financial_data_agent       ← NEW (Phase 8)
+                                    ↓
+                              source_quality_agent       ← NEW (Phase 8)
+                                    ↓
+                              generate_research_sections (skipped if use_llm=False)
+                                    ↓
                               create_citations
                                     ↓
                               validate_report_schema
+                                    ↓
+                              research_completeness_agent ← NEW (Phase 8)
+                                    ↓
+                              citation_validator_v2       ← NEW (Phase 8)
                                     ↓
                               save_draft_report
                                     ↓
@@ -89,50 +98,66 @@ load_company
 | fetch_provider_data | FinancialDataAgent | fetch_provider_data | Calls FinancialDataService; gets profile + prices |
 | create_source_records | SourceRecordAgent | create_source_records | Calls `build_source_record()` + `get_or_create_source()` for each data item |
 | build_company_snapshot | SnapshotBuilder | build_company_snapshot | Builds structured snapshot dict; lists missing fields |
+| financial_data_agent | FinancialDataResearchAgent | financial_data_agent | Deterministic: lists available vs missing financial data; classifies source tiers; warns on T5/T6 |
+| source_quality_agent | SourceQualityResearchAgent | source_quality_agent | Deterministic: classifies source strength; enforces T5 never promoted; warns on decision-critical T5/T6 claims |
 | generate_research_sections | ResearchLLMAgent | generate_research_sections | Calls `ResearchLLMClient.generate_research_sections()`; skipped if `use_llm=False`; non-fatal on error |
 | create_citations | CitationAgent | create_citations | Creates Citation records with field_path, source_tier, data_quality |
 | validate_report_schema | SchemaValidator | validate_report_schema | Calls `validate_real_asset_report()`; stores ValidationResult |
-| save_draft_report | ReportWriter | save_draft_report | Saves draft report with snapshot JSON, LLM sections if available, schema validation status |
+| research_completeness_agent | ResearchCompletenessAgent | research_completeness_agent | Schema-driven: compares draft against required sections; lists blocking and non-blocking gaps |
+| citation_validator_v2 | CitationValidatorV2 | citation_validator_v2 | Checks DB citations AND schema draft datapoints; flags bare numbers; warns on T5/T6 decision-critical fields |
+| save_draft_report | ReportWriter | save_draft_report | Saves draft report; includes Research Team summaries in admin markdown |
 | log_agent_steps | WorkflowController | log_agent_steps | Marks agent_run completed; logs final step summary |
 | handle_error | WorkflowController | handle_error | Marks agent_run failed |
 
-**Source:** `apps/api/app/workflows/company_analysis.py`
-**Snapshot builder:** `apps/api/app/workflows/snapshot_builder.py`
-**LLM provider:** `apps/api/app/integrations/llm_provider.py`
-**Prompt template:** `packages/prompts/research/phase7_company_research_v1.md`
+**Sources:**
+- `apps/api/app/workflows/company_analysis.py`
+- `apps/api/app/agents/research_team/financial_data_agent.py`
+- `apps/api/app/agents/research_team/source_quality_agent.py`
+- `apps/api/app/agents/research_team/research_completeness_agent.py`
+- `apps/api/app/agents/research_team/citation_validator_v2.py`
+- `apps/api/app/integrations/llm_provider.py`
+- Prompt templates: `packages/prompts/research/phase8_*_v1.md`
 
-**Output state fields:**
+**Output state fields (Phase 8 additions):**
 ```python
 {
-  "agent_run_id": "uuid",
-  "company_name": "Acme Nordic AS",
-  "ticker": "TEST",
-  "provider_name": "mock",
-  "is_mock": True,
-  "company_snapshot": { ... },              # structured snapshot dict
-  "source_ids": ["uuid", "uuid"],           # Source records created
-  "provider_source_id": "uuid",            # Source UUID for company profile
-  "price_source_id": "uuid",               # Source UUID for price data (None if unavailable)
-  "citation_ids": ["uuid", ...],           # Citation records with field_path
-  "schema_validation_result": {
-    "is_valid": False,
-    "errors": ["..."],
-    "warnings": []
+  # ... (all Phase 7 fields) ...
+  # Phase 8: Research Team
+  "financial_data_summary": {
+    "available_financial_data": ["identity.legal_name", "price_history.latest_close", ...],
+    "missing_financial_data": ["financials.revenue", "financials.ebitda", ...],
+    "data_quality_notes": ["Mock provider active ..."],
+    "source_tier_summary": {"T6_model_estimate": 1, ...},
+    "financial_context_summary": "Acme Nordic AS (TEST) — Industrials ...",
+    "warnings": ["Mock provider active: all values are synthetic demo data.", ...]
   },
-  "schema_valid": False,
-  "llm_used": False,                        # True when LLM node ran
-  "llm_provider": "mock" | "azure_openai" | "none",
-  "llm_sections": {                         # populated when llm_used=True
-    "thesis_summary_draft": "...",
-    "business_overview_draft": "...",
-    "missing_information": ["..."],
-    "self_critique_limitations": "..."
+  "source_quality_summary": {
+    "overall_source_quality": "weak" | "adequate" | "strong" | "insufficient",
+    "strong_sources": [],
+    "weak_sources": ["mock (T6_model_estimate): company identity and profile data"],
+    "missing_primary_sources": ["Annual report / 10-K ...", ...],
+    "aggregator_only_claims": ["identity.legal_name: sourced only from T6_model_estimate", ...],
+    "recommended_source_upgrades": ["Replace mock/T6 data with live provider ...", ...],
+    "warnings": ["Mock provider active ...", ...]
   },
-  "llm_section_warnings": [],              # safety-gate warnings (rating/price-target detected)
-  "draft_report_id": "uuid",
-  "analysis_output": { "is_placeholder": True, ... },
-  "status": "completed" | "failed",
-  "error": None | "error message"
+  "research_completeness_summary": {
+    "complete_sections": [],
+    "incomplete_sections": ["report_meta", "identity", "snapshot_financials", ...],
+    "missing_required_fields": ["report_meta.schema_version", ...],
+    "next_research_tasks": ["Verify legal entity via GLEIF", ...],
+    "blocking_gaps": ["Required section absent: report_meta ...", ...],
+    "non_blocking_gaps": ["Optional section absent: discovery_profile", ...]
+  },
+  "upgraded_citation_validation": {
+    "status": "ok" | "warnings" | "failed",
+    "approved_claims": [],
+    "missing_citations": [],
+    "weak_citation_warnings": ["Mock provider active: all citation records reference synthetic data.", ...],
+    "unsupported_number_warnings": [],
+    "source_tier_warnings": []
+  },
+  "research_team_warnings": ["...aggregated warnings from all 4 agents..."],
+  "research_team_complete": True
 }
 ```
 
@@ -403,7 +428,7 @@ A `conventional_screen` entry path caps the `underresearched_edge` pillar score 
 
 | Workflow | Status | Description |
 |---|---|---|
-| company_analysis | ✅ Phase 7 | Provider snapshot → LLM draft sections (optional) → sources + citations → schema validation → draft report |
+| company_analysis | ✅ Phase 8 | Provider snapshot → Research Team agents → LLM draft sections (optional) → citations → schema validation → Research Completeness + Citation v2 → draft report |
 | company_analysis (full council) | Phase 5 | Full analysis with Azure OpenAI + real citations; full Research + Analysis Council + Validation teams |
 | weekly_research | Phase 5 | Scheduled full research pipeline |
 | watchlist_monitoring | Phase 5 | Monitor existing watchlist positions |
@@ -415,14 +440,16 @@ A `conventional_screen` entry path caps the `underresearched_edge` pillar score 
 
 ### Team 1: Research Team
 
-| Agent | Responsibility |
-|---|---|
-| Market Scanner | Finds candidate companies and themes |
-| Financial Data Agent | Collects market cap, EV, revenue, EBITDA, FCF, multiples |
-| Filings Agent | Reads annual/quarterly reports, investor presentations |
-| News & Geopolitics Agent | Analyzes macro, geopolitical and regulatory developments |
-| Industry Research Agent | Builds industry context, peer group |
-| Source Quality Agent | Scores evidence quality, flags weak sources |
+| Agent | Status | Responsibility |
+|---|---|---|
+| Market Scanner | Phase 5 | Finds candidate companies and themes |
+| Financial Data Agent | ✅ Phase 8 (deterministic) | Lists available vs missing financial data; classifies source tiers; warns on T5/T6 |
+| Source Quality Agent | ✅ Phase 8 (deterministic) | Classifies source strength T1–T6; warns on T5/T6-only decision-critical claims |
+| Research Completeness Agent | ✅ Phase 8 (deterministic) | Schema-driven gap analysis; lists blocking gaps and next research tasks |
+| Citation Validator v2 | ✅ Phase 8 (deterministic) | Validates DB citations + schema draft datapoints; flags bare numbers and weak-tier decision-critical fields |
+| Filings Agent | Phase 5 | Reads annual/quarterly reports, investor presentations |
+| News & Geopolitics Agent | Phase 5 | Analyzes macro, geopolitical and regulatory developments |
+| Industry Research Agent | Phase 5 | Builds industry context, peer group |
 
 ### Team 2: Analysis Council
 

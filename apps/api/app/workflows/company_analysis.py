@@ -1,21 +1,24 @@
 """
-Company Analysis Workflow — Phase 7: LLM Research Sections (optional).
+Company Analysis Workflow — Phase 8: Research Team Agents.
 
-Node structure (9 nodes + error handler):
-  1. load_company              — resolve company from DB; create agent_run record
-  2. fetch_provider_data       — call FinancialDataService (default: MockProvider)
-  3. create_source_records     — build Source DB records from provider metadata
-  4. build_company_snapshot    — assemble structured snapshot + schema draft
-  5. generate_research_sections — (OPTIONAL) call LLM to generate draft sections
-                                  Skipped when use_llm=False (default).
-                                  Default LLM is MockResearchLLMClient (offline).
-  6. create_citations          — create Citation records with field_path/source_tier/data_quality
-  7. validate_report_schema    — call validate_real_asset_report(); store result
-  8. save_draft_report         — save draft report with snapshot + validation status
-  9. log_agent_steps           — mark agent_run completed; final step logging
-  handle_error                 — marks agent_run failed on any unhandled error
+Node structure (13 nodes + error handler):
+  1.  load_company              — resolve company from DB; create agent_run record
+  2.  fetch_provider_data       — call FinancialDataService (default: MockProvider)
+  3.  create_source_records     — build Source DB records from provider metadata
+  4.  build_company_snapshot    — assemble structured snapshot + schema draft
+  5.  financial_data_agent      — structured financial data summary (deterministic)
+  6.  source_quality_agent      — T1–T6 source quality assessment (deterministic)
+  7.  generate_research_sections — (OPTIONAL) LLM draft sections; skipped by default
+  8.  create_citations          — create Citation records with field_path/source_tier/data_quality
+  9.  validate_report_schema    — call validate_real_asset_report(); store result
+  10. research_completeness_agent — schema-gap analysis; next research tasks
+  11. citation_validator_v2     — upgraded citation + datapoint source validation
+  12. save_draft_report         — save draft report with all research team outputs
+  13. log_agent_steps           — mark agent_run completed; final step logging
+  handle_error                  — marks agent_run failed on any unhandled error
 
 Design rules enforced:
+  - Research Team nodes 5, 6, 10, 11 are deterministic — no LLM calls.
   - LLM calls are opt-in: use_llm=False by default; all CI tests run offline.
   - Default LLM provider is "mock" — no Azure credentials required in tests.
   - LLM output is constrained: no rating, no price target, no valuation, no bare numbers.
@@ -28,7 +31,6 @@ Design rules enforced:
 
 from __future__ import annotations
 
-import json
 import pathlib
 import re
 import uuid
@@ -38,6 +40,22 @@ from langgraph.graph import END, StateGraph
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.base import CompanyAnalysisState
+from app.agents.research_team.citation_validator_v2 import (
+    run_upgraded_citation_validator,
+    upgraded_citation_validation_to_dict,
+)
+from app.agents.research_team.financial_data_agent import (
+    financial_data_agent_output_to_dict,
+    run_financial_data_agent,
+)
+from app.agents.research_team.research_completeness_agent import (
+    research_completeness_output_to_dict,
+    run_research_completeness_agent,
+)
+from app.agents.research_team.source_quality_agent import (
+    run_source_quality_agent,
+    source_quality_output_to_dict,
+)
 from app.integrations.financial_data_provider import (
     DataQuality,
     PriceHistoryData,
@@ -63,7 +81,7 @@ from app.workflows.snapshot_builder import (
 )
 
 WORKFLOW_NAME = "company_analysis"
-WORKFLOW_VERSION = "3.0.0"
+WORKFLOW_VERSION = "4.0.0"
 
 _PROMPT_PATH = (
     pathlib.Path(__file__).resolve().parents[5]
@@ -410,7 +428,120 @@ def build_company_analysis_graph(
         return {"company_snapshot": snapshot}
 
     # ------------------------------------------------------------------ #
-    # Node 5: generate_research_sections  (optional LLM node)            #
+    # Node 5: financial_data_agent  (Phase 8 Research Team)              #
+    # ------------------------------------------------------------------ #
+    async def node_financial_data_agent(state: CompanyAnalysisState) -> dict:
+        run = _run_holder.get("run")
+        snapshot = _run_holder.get("snapshot", {})
+        source_ids = state.get("source_ids") or []
+
+        step = await agent_run_service.create_agent_step(
+            db,
+            run=run,
+            agent_name="FinancialDataAgent",
+            step_name="financial_data_agent",
+            input_data={
+                "ticker": state.get("ticker"),
+                "provider_name": state.get("provider_name"),
+                "source_ids_count": len(source_ids),
+            },
+        )
+
+        try:
+            output = run_financial_data_agent(
+                company_snapshot=snapshot,
+                source_ids=source_ids,
+            )
+            output_dict = financial_data_agent_output_to_dict(output)
+            _run_holder["financial_data_summary"] = output_dict
+
+            await agent_run_service.complete_agent_step(
+                db,
+                step,
+                output_data={
+                    "available_count": len(output.available_financial_data),
+                    "missing_count": len(output.missing_financial_data),
+                    "warnings_count": len(output.warnings),
+                    "source_tier_summary": output.source_tier_summary,
+                },
+            )
+
+            return {
+                "financial_data_summary": output_dict,
+            }
+
+        except Exception as exc:
+            error_msg = f"financial_data_agent failed: {exc}"
+            await agent_run_service.fail_agent_step(db, step, error_msg)
+            # Non-fatal — workflow continues
+            fallback = {
+                "available_financial_data": [],
+                "missing_financial_data": [],
+                "data_quality_notes": [error_msg],
+                "source_tier_summary": {},
+                "financial_context_summary": f"FinancialDataAgent failed: {exc}",
+                "warnings": [error_msg],
+            }
+            _run_holder["financial_data_summary"] = fallback
+            return {"financial_data_summary": fallback}
+
+    # ------------------------------------------------------------------ #
+    # Node 6: source_quality_agent  (Phase 8 Research Team)              #
+    # ------------------------------------------------------------------ #
+    async def node_source_quality_agent(state: CompanyAnalysisState) -> dict:
+        run = _run_holder.get("run")
+        snapshot = _run_holder.get("snapshot", {})
+
+        step = await agent_run_service.create_agent_step(
+            db,
+            run=run,
+            agent_name="SourceQualityAgent",
+            step_name="source_quality_agent",
+            input_data={
+                "ticker": state.get("ticker"),
+                "provider_name": state.get("provider_name"),
+                "is_mock": state.get("is_mock"),
+            },
+        )
+
+        try:
+            output = run_source_quality_agent(company_snapshot=snapshot)
+            output_dict = source_quality_output_to_dict(output)
+            _run_holder["source_quality_summary"] = output_dict
+
+            await agent_run_service.complete_agent_step(
+                db,
+                step,
+                output_data={
+                    "overall_source_quality": output.overall_source_quality,
+                    "strong_sources_count": len(output.strong_sources),
+                    "weak_sources_count": len(output.weak_sources),
+                    "aggregator_only_claims_count": len(output.aggregator_only_claims),
+                    "warnings_count": len(output.warnings),
+                },
+            )
+
+            return {
+                "source_quality_summary": output_dict,
+            }
+
+        except Exception as exc:
+            error_msg = f"source_quality_agent failed: {exc}"
+            await agent_run_service.fail_agent_step(db, step, error_msg)
+            fallback = {
+                "overall_source_quality": "insufficient",
+                "strong_sources": [],
+                "weak_sources": [],
+                "missing_primary_sources": [],
+                "aggregator_only_claims": [],
+                "recommended_source_upgrades": [],
+                "warnings": [error_msg],
+            }
+            _run_holder["source_quality_summary"] = fallback
+            return {"source_quality_summary": fallback}
+
+    # ------------------------------------------------------------------ #
+    # Node 7: generate_research_sections  (optional LLM node)            #
     # ------------------------------------------------------------------ #
     async def node_generate_research_sections(state: CompanyAnalysisState) -> dict:
         run = _run_holder.get("run")
@@ -481,7 +612,7 @@ def build_company_analysis_graph(
             }
 
     # ------------------------------------------------------------------ #
-    # Node 6: create_citations  (was Node 5 in Phase 6)                  #
+    # Node 8: create_citations  (was Node 6 in Phase 7)                  #
     # ------------------------------------------------------------------ #
     async def node_create_citations(state: CompanyAnalysisState) -> dict:
         run = _run_holder.get("run")
@@ -549,7 +680,7 @@ def build_company_analysis_graph(
         return {"citation_ids": citation_ids}
 
     # ------------------------------------------------------------------ #
-    # Node 7: validate_report_schema  (was Node 6 in Phase 6)            #
+    # Node 9: validate_report_schema  (was Node 7 in Phase 7)            #
     # ------------------------------------------------------------------ #
     async def node_validate_report_schema(state: CompanyAnalysisState) -> dict:
         run = _run_holder.get("run")
@@ -597,7 +728,149 @@ def build_company_analysis_graph(
         }
 
     # ------------------------------------------------------------------ #
-    # Node 8: save_draft_report  (was Node 7 in Phase 6)                 #
+    # Node 10: research_completeness_agent  (Phase 8 Research Team)      #
+    # ------------------------------------------------------------------ #
+    async def node_research_completeness_agent(state: CompanyAnalysisState) -> dict:
+        run = _run_holder.get("run")
+        snapshot = _run_holder.get("snapshot", {})
+        schema_draft = _run_holder.get("schema_draft")
+        validation_result = _run_holder.get("validation_result", {})
+        schema_errors = validation_result.get("errors", [])
+
+        step = await agent_run_service.create_agent_step(
+            db,
+            run=run,
+            agent_name="ResearchCompletenessAgent",
+            step_name="research_completeness_agent",
+            input_data={
+                "ticker": state.get("ticker"),
+                "schema_valid": state.get("schema_valid"),
+                "schema_error_count": len(schema_errors),
+                "draft_sections": list(schema_draft.keys()) if schema_draft else [],
+            },
+        )
+
+        try:
+            output = run_research_completeness_agent(
+                company_snapshot=snapshot,
+                schema_draft=schema_draft,
+                schema_validation_errors=schema_errors,
+            )
+            output_dict = research_completeness_output_to_dict(output)
+            _run_holder["research_completeness_summary"] = output_dict
+
+            await agent_run_service.complete_agent_step(
+                db,
+                step,
+                output_data={
+                    "complete_sections": output.complete_sections,
+                    "incomplete_sections_count": len(output.incomplete_sections),
+                    "missing_required_fields_count": len(output.missing_required_fields),
+                    "blocking_gaps_count": len(output.blocking_gaps),
+                    "next_tasks_count": len(output.next_research_tasks),
+                },
+            )
+
+            return {
+                "research_completeness_summary": output_dict,
+            }
+
+        except Exception as exc:
+            error_msg = f"research_completeness_agent failed: {exc}"
+            await agent_run_service.fail_agent_step(db, step, error_msg)
+            fallback = {
+                "complete_sections": [],
+                "incomplete_sections": [],
+                "missing_required_fields": [],
+                "next_research_tasks": [],
+                "blocking_gaps": [error_msg],
+                "non_blocking_gaps": [],
+            }
+            _run_holder["research_completeness_summary"] = fallback
+            return {"research_completeness_summary": fallback}
+
+    # ------------------------------------------------------------------ #
+    # Node 11: citation_validator_v2  (Phase 8 Research Team)            #
+    # ------------------------------------------------------------------ #
+    async def node_citation_validator_v2(state: CompanyAnalysisState) -> dict:
+        run = _run_holder.get("run")
+        snapshot = _run_holder.get("snapshot", {})
+        schema_draft = _run_holder.get("schema_draft")
+        agent_run_id = state.get("agent_run_id")
+
+        step = await agent_run_service.create_agent_step(
+            db,
+            run=run,
+            agent_name="CitationValidatorV2",
+            step_name="citation_validator_v2",
+            input_data={
+                "ticker": state.get("ticker"),
+                "citation_ids_count": len(state.get("citation_ids") or []),
+                "schema_draft_sections": list(schema_draft.keys()) if schema_draft else [],
+            },
+        )
+
+        try:
+            # Fetch citation records created in this run for source_tier info
+            citation_records: list[dict] = []
+            if agent_run_id:
+                try:
+                    run_citations = await citation_service.list_citations_for_agent_run(
+                        db, uuid.UUID(agent_run_id)
+                    )
+                    citation_records = [
+                        {
+                            "id": str(c.id),
+                            "field_path": c.field_path,
+                            "source_tier": c.source_tier,
+                            "data_quality": c.data_quality,
+                        }
+                        for c in run_citations
+                    ]
+                except Exception:
+                    pass  # Non-fatal if citation fetch fails
+
+            output = run_upgraded_citation_validator(
+                company_snapshot=snapshot,
+                schema_draft=schema_draft,
+                citation_records=citation_records,
+            )
+            output_dict = upgraded_citation_validation_to_dict(output)
+            _run_holder["upgraded_citation_validation"] = output_dict
+
+            await agent_run_service.complete_agent_step(
+                db,
+                step,
+                output_data={
+                    "status": output.status,
+                    "approved_claims_count": len(output.approved_claims),
+                    "missing_citations_count": len(output.missing_citations),
+                    "weak_warnings_count": len(output.weak_citation_warnings),
+                    "unsupported_numbers_count": len(output.unsupported_number_warnings),
+                    "tier_warnings_count": len(output.source_tier_warnings),
+                },
+            )
+
+            return {
+                "upgraded_citation_validation": output_dict,
+            }
+
+        except Exception as exc:
+            error_msg = f"citation_validator_v2 failed: {exc}"
+            await agent_run_service.fail_agent_step(db, step, error_msg)
+            fallback = {
+                "status": "warnings",
+                "approved_claims": [],
+                "missing_citations": [],
+                "weak_citation_warnings": [error_msg],
+                "unsupported_number_warnings": [],
+                "source_tier_warnings": [],
+            }
+            _run_holder["upgraded_citation_validation"] = fallback
+            return {"upgraded_citation_validation": fallback}
+
+    # ------------------------------------------------------------------ #
+    # Node 12: save_draft_report  (Phase 8 — includes Research Team)     #
     # ------------------------------------------------------------------ #
     async def node_save_draft_report(state: CompanyAnalysisState) -> dict:
         run = _run_holder.get("run")
@@ -616,6 +889,23 @@ def build_company_analysis_graph(
         llm_section_warnings = state.get("llm_section_warnings") or []
         llm_provider_used = state.get("llm_provider") or "none"
 
+        # Phase 8: Research Team outputs
+        financial_data_summary = _run_holder.get("financial_data_summary") or {}
+        source_quality_summary = _run_holder.get("source_quality_summary") or {}
+        research_completeness_summary = _run_holder.get("research_completeness_summary") or {}
+        upgraded_citation_validation = _run_holder.get("upgraded_citation_validation") or {}
+
+        # Aggregate research team warnings
+        research_team_warnings: list[str] = []
+        research_team_warnings.extend(financial_data_summary.get("warnings", []))
+        research_team_warnings.extend(source_quality_summary.get("warnings", []))
+        research_team_warnings.extend(
+            upgraded_citation_validation.get("weak_citation_warnings", [])
+        )
+        research_team_warnings.extend(
+            upgraded_citation_validation.get("source_tier_warnings", [])
+        )
+
         step = await agent_run_service.create_agent_step(
             db,
             run=run,
@@ -629,6 +919,7 @@ def build_company_analysis_graph(
                 "is_mock": is_mock,
                 "llm_used": llm_used,
                 "llm_provider": llm_provider_used,
+                "research_team_warnings_count": len(research_team_warnings),
             },
         )
 
@@ -640,16 +931,133 @@ def build_company_analysis_graph(
         llm_tag = f"[LLM: {llm_provider_used}]" if llm_used else "[LLM: not used]"
         errors = validation.get("errors", [])
         warnings = validation.get("warnings", [])
+        source_quality = source_quality_summary.get("overall_source_quality", "unknown")
+        citation_v2_status = upgraded_citation_validation.get("status", "unknown")
 
         content_md = (
-            f"# {company_name} — Draft Research Report {mode_tag}\n\n"
+            f"# {company_name} — Phase 8 Draft Research Package {mode_tag}\n\n"
             f"**Provider:** {provider_name_used}  \n"
             f"**Ticker:** {ticker}  \n"
             f"**Schema Validation:** {schema_tag}  \n"
-            f"**LLM:** {llm_tag}  \n\n"
+            f"**LLM:** {llm_tag}  \n"
+            f"**Source Quality:** {source_quality}  \n"
+            f"**Citation Validation:** {citation_v2_status}  \n\n"
             "> **ADMIN DRAFT ONLY** — Not investment advice. "
             "Human review required before any use.\n\n"
         )
+
+        # ── Company Snapshot ──────────────────────────────────────────
+        identity = snapshot.get("company_identity", {})
+        content_md += "## Company Snapshot\n\n"
+        content_md += f"- **Legal Name:** {identity.get('legal_name', 'N/A')}  \n"
+        content_md += f"- **Exchange:** {identity.get('exchange', 'N/A')}  \n"
+        content_md += f"- **Country:** {identity.get('country_domicile', 'N/A')}  \n\n"
+
+        if missing_fields:
+            content_md += "### Missing Fields (Provider Data)\n\n"
+            content_md += "\n".join(f"- `{f}`" for f in missing_fields)
+            content_md += "\n\n"
+
+        # ── Provider Data Summary ────────────────────────────────────
+        provider_meta = snapshot.get("provider_metadata", {})
+        content_md += "## Provider Data Summary\n\n"
+        content_md += (
+            f"- **Provider:** {provider_meta.get('provider_name', 'N/A')}  \n"
+            f"- **Source Tier:** {provider_meta.get('source_tier', 'N/A')}  \n"
+            f"- **Retrieved:** {provider_meta.get('retrieved_at', 'N/A')}  \n"
+            f"- **Mock Data:** {provider_meta.get('is_mock', True)}  \n\n"
+        )
+
+        # ── Financial Data Agent Summary ─────────────────────────────
+        content_md += "## Financial Data Agent Summary\n\n"
+        content_md += financial_data_summary.get("financial_context_summary", "N/A") + "\n\n"
+        fda_warnings = financial_data_summary.get("warnings", [])
+        if fda_warnings:
+            content_md += "**Warnings:**\n\n"
+            content_md += "\n".join(f"- {w}" for w in fda_warnings)
+            content_md += "\n\n"
+        fda_missing = financial_data_summary.get("missing_financial_data", [])
+        if fda_missing:
+            content_md += f"**Missing financial data categories:** {len(fda_missing)} total.  \n\n"
+
+        # ── Source Quality Agent Summary ─────────────────────────────
+        content_md += "## Source Quality Agent Summary\n\n"
+        content_md += f"**Overall source quality:** {source_quality}  \n\n"
+        sq_weak = source_quality_summary.get("weak_sources", [])
+        if sq_weak:
+            content_md += "**Weak sources:**\n\n"
+            content_md += "\n".join(f"- {s}" for s in sq_weak)
+            content_md += "\n\n"
+        sq_agg = source_quality_summary.get("aggregator_only_claims", [])
+        if sq_agg:
+            content_md += f"**Aggregator-only claims:** {len(sq_agg)}  \n\n"
+        sq_upgrades = source_quality_summary.get("recommended_source_upgrades", [])
+        if sq_upgrades:
+            content_md += "**Recommended source upgrades:**\n\n"
+            content_md += "\n".join(f"- {u}" for u in sq_upgrades[:5])
+            content_md += "\n\n"
+
+        # ── LLM Research Draft ───────────────────────────────────────
+        if llm_used and llm_sections:
+            if llm_section_warnings:
+                content_md += "## LLM Safety Warnings\n\n"
+                for w in llm_section_warnings:
+                    content_md += f"> **WARNING:** {w}\n\n"
+
+            content_md += (
+                "## LLM Research Draft (Admin Review Required)\n\n"
+                "> Generated by LLM using provider identity data only. "
+                "NOT investment advice. No rating or price target assigned.\n\n"
+            )
+            content_md += (
+                "### Thesis Summary\n\n"
+                + llm_sections.get("thesis_summary_draft", "") + "\n\n"
+            )
+            content_md += (
+                "### Business Overview\n\n"
+                + llm_sections.get("business_overview_draft", "") + "\n\n"
+            )
+            llm_missing = llm_sections.get("missing_information", [])
+            if llm_missing:
+                content_md += "### Missing Information (LLM Assessment)\n\n"
+                content_md += "\n".join(f"- {m}" for m in llm_missing)
+                content_md += "\n\n"
+            content_md += (
+                "### Limitations (LLM Self-Critique)\n\n"
+                + llm_sections.get("self_critique_limitations", "") + "\n\n"
+            )
+
+        # ── Research Completeness Review ─────────────────────────────
+        content_md += "## Research Completeness Review\n\n"
+        rc = research_completeness_summary
+        complete = rc.get("complete_sections", [])
+        incomplete = rc.get("incomplete_sections", [])
+        content_md += (
+            f"**Complete sections:** {', '.join(complete) if complete else 'none'}  \n"
+            f"**Incomplete sections:** {len(incomplete)}  \n"
+            f"**Blocking gaps:** {len(rc.get('blocking_gaps', []))}  \n\n"
+        )
+        next_tasks = rc.get("next_research_tasks", [])
+        if next_tasks:
+            content_md += "**Next research tasks:**\n\n"
+            content_md += "\n".join(f"- {t}" for t in next_tasks[:8])
+            content_md += "\n\n"
+
+        # ── Citation Validation Review ───────────────────────────────
+        content_md += "## Citation Validation Review (v2)\n\n"
+        content_md += f"**Status:** {citation_v2_status}  \n"
+        unsup_nums = upgraded_citation_validation.get("unsupported_number_warnings", [])
+        if unsup_nums:
+            content_md += "\n**Unsupported number warnings:**\n\n"
+            content_md += "\n".join(f"- {w}" for w in unsup_nums)
+            content_md += "\n\n"
+        tier_warns = upgraded_citation_validation.get("source_tier_warnings", [])
+        if tier_warns:
+            content_md += "\n**Source tier warnings:**\n\n"
+            content_md += "\n".join(f"- {w}" for w in tier_warns[:5])
+            content_md += "\n\n"
+
+        # ── Schema Errors / Warnings ─────────────────────────────────
         if errors:
             content_md += "## Schema Errors\n\n"
             content_md += "\n".join(f"- `{e}`" for e in errors[:10])
@@ -661,53 +1069,24 @@ def build_company_analysis_graph(
             content_md += "\n".join(f"- {w}" for w in warnings)
             content_md += "\n\n"
 
-        # LLM-generated sections (if available)
-        if llm_used and llm_sections:
-            if llm_section_warnings:
-                content_md += "## LLM Safety Warnings\n\n"
-                for w in llm_section_warnings:
-                    content_md += f"> **WARNING:** {w}\n\n"
-
-            content_md += (
-                "## Thesis Summary (LLM Draft — Admin Review Required)\n\n"
-                "> This section was generated by an LLM using provider identity data only. "
-                "It is NOT investment advice. No rating or price target has been assigned.\n\n"
-            )
-            content_md += llm_sections.get("thesis_summary_draft", "") + "\n\n"
-
-            content_md += (
-                "## Business Overview (LLM Draft — Admin Review Required)\n\n"
-            )
-            content_md += llm_sections.get("business_overview_draft", "") + "\n\n"
-
-            llm_missing = llm_sections.get("missing_information", [])
-            if llm_missing:
-                content_md += "## Missing Information (LLM Assessment)\n\n"
-                content_md += "\n".join(f"- {m}" for m in llm_missing)
-                content_md += "\n\n"
-
-            content_md += "## Limitations (LLM Self-Critique)\n\n"
-            content_md += llm_sections.get("self_critique_limitations", "") + "\n\n"
-
-        identity = snapshot.get("company_identity", {})
-        content_md += "## Company Identity\n\n"
-        content_md += f"- **Legal Name:** {identity.get('legal_name', 'N/A')}  \n"
-        content_md += f"- **Exchange:** {identity.get('exchange', 'N/A')}  \n"
-        content_md += f"- **Country:** {identity.get('country_domicile', 'N/A')}  \n\n"
-
-        if missing_fields:
-            content_md += "## Missing Fields (Provider Data)\n\n"
-            content_md += "\n".join(f"- `{f}`" for f in missing_fields)
+        # ── Missing Information ──────────────────────────────────────
+        all_missing = list(dict.fromkeys(
+            missing_fields
+            + financial_data_summary.get("missing_financial_data", [])
+        ))
+        if all_missing:
+            content_md += f"## Missing Information ({len(all_missing)} items)\n\n"
+            content_md += "\n".join(f"- `{m}`" for m in all_missing[:20])
+            if len(all_missing) > 20:
+                content_md += f"\n- ... ({len(all_missing) - 20} more)\n"
             content_md += "\n\n"
 
-        content_md += "## Snapshot JSON\n\n```json\n"
-        content_md += json.dumps(snapshot, indent=2, default=str)
-        content_md += "\n```\n\n"
         content_md += (
             "---\n\n"
-            "*This is a Phase 7 draft report. "
+            "> **Admin-only disclaimer:** This is a Phase 8 draft research package. "
             "No investment recommendation has been made. "
-            "Human review required before any action.*\n"
+            "Do not publish or share externally without human admin review. "
+            "Not investment advice.\n"
         )
 
         summary = (
@@ -716,6 +1095,8 @@ def build_company_analysis_graph(
             f"{'MOCK DATA' if is_mock else 'LIVE DATA'}. "
             f"LLM: {llm_provider_used if llm_used else 'not used'}. "
             f"Schema: {schema_tag}. "
+            f"Source quality: {source_quality}. "
+            f"Citation v2: {citation_v2_status}. "
             f"Missing fields: {len(missing_fields)}. "
             "No investment recommendation."
         )
@@ -748,15 +1129,20 @@ def build_company_analysis_graph(
                 "slug": report.slug,
                 "schema_valid": schema_valid,
                 "missing_fields_count": len(missing_fields),
+                "source_quality": source_quality,
+                "citation_v2_status": citation_v2_status,
+                "research_team_warnings_count": len(research_team_warnings),
             },
         )
 
         return {
             "draft_report_id": str(report.id),
+            "research_team_warnings": research_team_warnings,
+            "research_team_complete": True,
         }
 
     # ------------------------------------------------------------------ #
-    # Node 9: log_agent_steps  (was Node 8 in Phase 6)                   #
+    # Node 13: log_agent_steps  (was Node 9 in Phase 7)                  #
     # ------------------------------------------------------------------ #
     async def node_log_agent_steps(state: CompanyAnalysisState) -> dict:
         run = _run_holder.get("run")
@@ -808,9 +1194,16 @@ def build_company_analysis_graph(
     graph.add_node("fetch_provider_data", node_fetch_provider_data)
     graph.add_node("create_source_records", node_create_source_records)
     graph.add_node("build_company_snapshot", node_build_company_snapshot)
+    # Phase 8: Research Team nodes (deterministic)
+    graph.add_node("financial_data_agent", node_financial_data_agent)
+    graph.add_node("source_quality_agent", node_source_quality_agent)
+    # Phase 7: optional LLM node
     graph.add_node("generate_research_sections", node_generate_research_sections)
     graph.add_node("create_citations", node_create_citations)
     graph.add_node("validate_report_schema", node_validate_report_schema)
+    # Phase 8: post-validation Research Team nodes
+    graph.add_node("research_completeness_agent", node_research_completeness_agent)
+    graph.add_node("citation_validator_v2", node_citation_validator_v2)
     graph.add_node("save_draft_report", node_save_draft_report)
     graph.add_node("log_agent_steps", node_log_agent_steps)
     graph.add_node("handle_error", node_handle_error)
@@ -819,10 +1212,14 @@ def build_company_analysis_graph(
     graph.add_conditional_edges("load_company", route_after_load_company)
     graph.add_conditional_edges("fetch_provider_data", route_after_fetch)
     graph.add_edge("create_source_records", "build_company_snapshot")
-    graph.add_edge("build_company_snapshot", "generate_research_sections")
+    graph.add_edge("build_company_snapshot", "financial_data_agent")
+    graph.add_edge("financial_data_agent", "source_quality_agent")
+    graph.add_edge("source_quality_agent", "generate_research_sections")
     graph.add_edge("generate_research_sections", "create_citations")
     graph.add_edge("create_citations", "validate_report_schema")
-    graph.add_edge("validate_report_schema", "save_draft_report")
+    graph.add_edge("validate_report_schema", "research_completeness_agent")
+    graph.add_edge("research_completeness_agent", "citation_validator_v2")
+    graph.add_edge("citation_validator_v2", "save_draft_report")
     graph.add_edge("save_draft_report", "log_agent_steps")
     graph.add_edge("log_agent_steps", END)
     graph.add_edge("handle_error", END)
@@ -881,6 +1278,13 @@ async def run_company_analysis(
         "llm_used": None,
         "llm_sections": None,
         "llm_section_warnings": None,
+        # Phase 8: Research Team
+        "financial_data_summary": None,
+        "source_quality_summary": None,
+        "research_completeness_summary": None,
+        "upgraded_citation_validation": None,
+        "research_team_warnings": None,
+        "research_team_complete": None,
         "error": None,
         "status": "running",
     }

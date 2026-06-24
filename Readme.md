@@ -133,10 +133,11 @@ Copy `.env.example` to `.env` and fill in values as needed.
 | Phase 4.5 | Done | Live free data providers (Stooq, GLEIF, SEC EDGAR) |
 | Phase 6 | Done | Real company snapshot workflow (8-node; provider data → sources + citations → schema validation) |
 | Phase 7 | Done | Azure OpenAI + first LLM research agent (optional generate_research_sections node; mock + Azure clients) |
+| Phase 8 | Done | Research Team agents: 4 deterministic nodes (financial data, source quality, research completeness, citation validator v2); 13-node workflow v4.0.0 |
 | Phase 5 | Planned | Full council-of-agents MVP |
-| Phase 8 | Planned | Judge system and backtesting |
-| Phase 9 | Planned | Weekly report pipeline, watchlists |
-| Phase 10 | Planned | Personalized investor assistant (V2) |
+| Phase 9 | Planned | Judge system and backtesting |
+| Phase 10 | Planned | Weekly report pipeline, watchlists |
+| Phase 11 | Planned | Personalized investor assistant (V2) |
 
 ---
 

@@ -1,6 +1,6 @@
 # Roadmap
 
-## Current Phase: Phase 7 — Azure OpenAI + First LLM Research Agent
+## Current Phase: Phase 8 — Research Team Agents (4 deterministic agents)
 
 ---
 
@@ -302,7 +302,40 @@ Skills used: `langgraph-agents`, `backend-fastapi`, `investment-domain`, `securi
 
 ---
 
-## Phase 8: Judge + Backtesting
+## Phase 8: Research Team Agents ✅
+
+**Status: Complete**
+
+Goal: Extend the `company_analysis` workflow with four deterministic Research Team agents
+that run offline (no LLM, no Azure) and produce structured quality assessments of the
+financial data, source quality, research completeness, and citation coverage.
+
+Deliverables:
+- [x] `financial_data_agent.py` — lists available vs missing financial data; classifies source tiers; warns on T5/T6 or mock data
+- [x] `source_quality_agent.py` — enforces T5 providers (EODHD, Stooq, OpenBB) never promoted to primary; classifies T1–T6 strength; warns on T5/T6-only decision-critical claims
+- [x] `research_completeness_agent.py` — schema-driven gap analysis against 9 report sections; lists blocking vs non-blocking gaps; next research task list
+- [x] `citation_validator_v2.py` — checks DB citations AND schema draft datapoints; flags bare numbers (`status=failed`); warns on weak-tier citations for decision-critical fields
+- [x] 3 versioned LLM prompt templates (`packages/prompts/research/phase8_*_v1.md`)
+- [x] `CompanyAnalysisState` extended with 6 Phase 8 fields: `financial_data_summary`, `source_quality_summary`, `research_completeness_summary`, `upgraded_citation_validation`, `research_team_warnings`, `research_team_complete`
+- [x] `company_analysis` workflow extended to 13 nodes (v4.0.0): 4 new Research Team nodes wired in correct sequence
+- [x] `WorkflowRunResponse` extended with 5 Phase 8 compact summary fields
+- [x] Draft report `content_markdown` includes Research Team admin sections
+- [x] 52 new offline tests in `test_phase8_research_team.py`; 278 total tests passing; ruff clean
+- [x] `docs/AGENTS.md`, `docs/API.md`, `docs/ARCHITECTURE.md`, `docs/ROADMAP.md`, `docs/PROMPTING_GUIDE.md`, `README.md` updated
+
+Constraints enforced:
+- No BUY/SELL/WATCH/HOLD/REJECT or price target
+- No invented financial numbers
+- T5 providers (EODHD, Stooq, OpenBB) never promoted to primary tier
+- All 4 Research Team agents are non-fatal (exceptions caught; workflow always completes)
+- No Azure resources created; no Azure credentials required
+- All CI tests run offline (no network, no LLM, no credentials)
+
+Skills used: `langgraph-agents`, `backend-fastapi`, `investment-domain`, `security-review`, `testing-qa`, `docs-maintainer`
+
+---
+
+## Phase 9: Judge + Backtesting
 
 **Status: Not started**
 

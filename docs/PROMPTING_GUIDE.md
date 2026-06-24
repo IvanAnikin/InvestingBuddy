@@ -1,6 +1,6 @@
 # Prompting Guide
 
-## Status: Phase 7 — First LLM research node live; mock and Azure OpenAI supported
+## Status: Phase 8 — Research Team agent prompts added (deterministic + LLM variants)
 
 This document describes prompt design principles, versioning and patterns for InvestingBuddy agents.
 
@@ -406,6 +406,42 @@ POST /api/v1/workflows/company-analysis/run
 - Major version bump = structural change to output schema
 - Minor version bump = wording improvement only
 - Future versions go in same directory: `phase7_company_research_v1_1.md`, etc.
+
+---
+
+## Phase 8: Research Team Agent Prompts
+
+Three versioned prompt templates were added in Phase 8 for use when the deterministic
+Research Team agents are upgraded to optional LLM-enriched mode.
+
+All Phase 8 prompts follow the constraints established in Phase 7 and Phase 3.5.
+
+### Prompt Files
+
+| File | Agent | When Used |
+|---|---|---|
+| `packages/prompts/research/phase8_financial_data_agent_v1.md` | FinancialDataAgent | LLM enrichment of financial context summary |
+| `packages/prompts/research/phase8_source_quality_agent_v1.md` | SourceQualityAgent | LLM enrichment of source quality assessment |
+| `packages/prompts/research/phase8_research_completeness_agent_v1.md` | ResearchCompletenessAgent | LLM-driven gap analysis against report schema |
+
+### Shared Constraints (All Phase 8 Prompts)
+
+1. **No investment rating, conviction, or recommendation** — `BUY`, `SELL`, `WATCH`, `HOLD`, `REJECT`, `SHORTLIST` are all forbidden
+2. **No price target or valuation** — `fair value`, `price target`, `target price`, `upside of` are forbidden
+3. **No invented financial numbers** — only reference data supplied in the context blocks
+4. **T5 providers (EODHD, Stooq, OpenBB) must never be promoted to primary tier** — always T5
+5. **JSON output only** — no markdown prose in response; must match the specified output schema
+6. **Context injection uses XML-delimited blocks** with prompt injection mitigation instructions
+7. **Output labeled admin draft** — not investment advice
+
+### Phase 8 Deterministic vs LLM Modes
+
+Phase 8 Research Team agents are **deterministic by default** — they run without any LLM call
+and produce structured output from the company snapshot alone. The prompt templates above
+are provided for when the `use_llm=True` path is extended to also enrich Research Team outputs.
+
+Currently all four Research Team agents run in deterministic mode only.
+The prompt templates are implemented but not yet wired into `use_llm=True` paths.
 
 ## Planned Prompts (Phase 5+)
 
