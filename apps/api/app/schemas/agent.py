@@ -113,3 +113,13 @@ class WorkflowRunResponse(BaseModel):
     research_completeness_summary: dict | None = None
     citation_validation_summary: dict | None = None
     research_team_warnings: list[str] = Field(default_factory=list)
+    # Phase 9: Analysis Council summaries
+    bull_case_summary: dict | None = None
+    bear_case_summary: dict | None = None
+    risk_summary: dict | None = None
+    valuation_guard_summary: dict | None = None
+    committee_chair_summary: dict | None = None
+    analysis_council_warnings: list[str] = Field(default_factory=list)
+    quality_gate_status: dict | None = None
+    provisional_internal_status: str | None = None
+    human_review_required: bool | None = None

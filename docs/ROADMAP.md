@@ -1,6 +1,6 @@
 # Roadmap
 
-## Current Phase: Phase 8 — Research Team Agents (4 deterministic agents)
+## Current Phase: Phase 9 — Analysis Council MVP (5 deterministic agents)
 
 ---
 
@@ -335,7 +335,42 @@ Skills used: `langgraph-agents`, `backend-fastapi`, `investment-domain`, `securi
 
 ---
 
-## Phase 9: Judge + Backtesting
+## Phase 9: Analysis Council MVP ✅
+
+**Status: Complete**
+
+Goal: Extend the `company_analysis` workflow with five deterministic Analysis Council agents
+that run offline (no LLM, no Azure) and produce structured bull/bear/risk/valuation/committee
+assessments. All agents enforce no-recommendation, no-price-target constraints.
+
+Deliverables:
+- [x] `bull_case_agent.py` — positive thesis points, sector tailwinds, evidence used, assumptions; forbidden word gate; confidence based on source tier
+- [x] `bear_case_agent.py` — negative thesis points, headwinds, key unknowns; challenges bull case assumptions; no SELL/SHORT language
+- [x] `risk_agent.py` — classifies risks across 6 categories; always includes data-quality and source-quality risks from Phase 8 agents
+- [x] `valuation_guard_agent.py` — checks DCF/relative/yield inputs; blocks valuation for mock/T5/T6 data; never produces price target or fair value
+- [x] `investment_committee_chair.py` — synthesises all council outputs; quality gate (5 boolean checks); assigns provisional_internal_status from allowed set only
+- [x] 5 versioned LLM prompt templates (`packages/prompts/research/phase9_*_v1.md`)
+- [x] `CompanyAnalysisState` extended with 9 Phase 9 fields
+- [x] `company_analysis` workflow extended to 18 nodes (v5.0.0)
+- [x] `WorkflowRunResponse` extended with 9 Phase 9 compact summary fields
+- [x] Draft report `content_markdown` includes Analysis Council admin sections
+- [x] 64 new offline tests in `test_phase9_analysis_council.py`; 458 total tests passing; ruff clean
+- [x] `docs/AGENTS.md`, `docs/API.md`, `docs/ARCHITECTURE.md`, `docs/ROADMAP.md`, `docs/PROMPTING_GUIDE.md`, `README.md` updated
+
+Constraints enforced:
+- No public BUY/SELL/HOLD/WATCH/REJECT recommendations produced
+- No price targets or fair value estimates
+- No invented financial numbers
+- Allowed internal statuses enforced: only 5 whitelisted values
+- All 5 Analysis Council agents are non-fatal (exceptions caught; workflow always completes)
+- No Azure resources created; no Azure credentials required
+- All CI tests run offline (no network, no LLM, no credentials)
+
+Skills used: `langgraph-agents`, `backend-fastapi`, `investment-domain`, `security-review`, `testing-qa`, `docs-maintainer`
+
+---
+
+## Phase 10: Judge + Backtesting
 
 **Status: Not started**
 

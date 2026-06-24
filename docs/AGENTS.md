@@ -1,6 +1,6 @@
 # Agent Architecture
 
-## Status: Phase 8 — Research Team agents: financial data, source quality, research completeness, citation validator v2
+## Status: Phase 9 — Analysis Council MVP: 5 deterministic analysis agents (bull/bear/risk/valuation/committee)
 
 ---
 
@@ -38,7 +38,7 @@ This enables debugging, auditing and future judge evaluation.
 
 ## Implemented Workflows
 
-### company_analysis — Phase 8: Research Team Agents
+### company_analysis — Phase 9: Analysis Council MVP
 
 **Trigger:** `POST /api/v1/workflows/company-analysis/run`
 
@@ -46,19 +46,23 @@ This enables debugging, auditing and future judge evaluation.
 Optional: `provider_name` (default: `mock`), `require_schema_valid` (default: `false`),
 `use_llm` (default: `false`), `llm_provider` (default: config `LLM_PROVIDER`, default: `mock`).
 
-**Purpose:** 13-node workflow. Fetches provider data, builds a structured company snapshot,
-runs four deterministic Research Team agents (no LLM calls), optionally runs an LLM node
-to generate draft research sections, stores source + citation records, validates against
-the real-asset report schema, runs Research Completeness and Citation Validator v2 agents,
-and saves a draft report with Research Team summaries.
+**Purpose:** 18-node workflow. Fetches provider data, builds a structured company snapshot,
+runs four deterministic Research Team agents, optionally runs an LLM node, stores source +
+citation records, validates the schema, runs Research Completeness and Citation Validator v2
+agents, then runs five deterministic Analysis Council agents (no LLM calls), and saves a
+draft report with Research Team + Analysis Council summaries.
 
 - `use_llm=false` (default): no LLM calls, fully offline, CI-safe.
 - `use_llm=true` with `llm_provider=mock`: mock LLM, still offline, no Azure credentials.
 - `use_llm=true` with `llm_provider=azure_openai`: calls Azure OpenAI (requires env vars).
 
-No investment recommendations. No BUY/SELL/WATCH/rating. No price targets.
+**Constraints (absolute):**
+- No public BUY/SELL/HOLD/WATCH/REJECT recommendations ever produced.
+- No price targets or fair value estimates.
+- No personalized investment advice.
+- `provisional_internal_status` is admin-only internal workflow state (not a public rating).
 
-**Graph (v4.0.0):**
+**Graph (v5.0.0):**
 
 ```
 load_company
@@ -71,9 +75,9 @@ load_company
                                     ↓
                               build_company_snapshot
                                     ↓
-                              financial_data_agent       ← NEW (Phase 8)
+                              financial_data_agent
                                     ↓
-                              source_quality_agent       ← NEW (Phase 8)
+                              source_quality_agent
                                     ↓
                               generate_research_sections (skipped if use_llm=False)
                                     ↓
@@ -81,9 +85,19 @@ load_company
                                     ↓
                               validate_report_schema
                                     ↓
-                              research_completeness_agent ← NEW (Phase 8)
+                              research_completeness_agent
                                     ↓
-                              citation_validator_v2       ← NEW (Phase 8)
+                              citation_validator_v2
+                                    ↓
+                              bull_case_agent            ← NEW (Phase 9)
+                                    ↓
+                              bear_case_agent            ← NEW (Phase 9)
+                                    ↓
+                              risk_agent                 ← NEW (Phase 9)
+                                    ↓
+                              valuation_guard_agent      ← NEW (Phase 9)
+                                    ↓
+                              investment_committee_chair ← NEW (Phase 9)
                                     ↓
                               save_draft_report
                                     ↓
@@ -105,59 +119,162 @@ load_company
 | validate_report_schema | SchemaValidator | validate_report_schema | Calls `validate_real_asset_report()`; stores ValidationResult |
 | research_completeness_agent | ResearchCompletenessAgent | research_completeness_agent | Schema-driven: compares draft against required sections; lists blocking and non-blocking gaps |
 | citation_validator_v2 | CitationValidatorV2 | citation_validator_v2 | Checks DB citations AND schema draft datapoints; flags bare numbers; warns on T5/T6 decision-critical fields |
-| save_draft_report | ReportWriter | save_draft_report | Saves draft report; includes Research Team summaries in admin markdown |
+| bull_case_agent | BullCaseAgent | bull_case_agent | Deterministic: identifies positive thesis points, sector tailwinds, evidence used, assumptions, missing evidence; confidence level based on source tier; safety gate rejects forbidden words |
+| bear_case_agent | BearCaseAgent | bear_case_agent | Deterministic: identifies negative thesis points, headwinds, key unknowns; explicitly challenges bull case assumptions; no SELL/SHORT language |
+| risk_agent | RiskAgent | risk_agent | Deterministic: classifies business/financial/market/regulatory/data-quality/source-quality risks; always includes data quality risks from Phase 8 agents |
+| valuation_guard_agent | ValuationGuardAgent | valuation_guard_agent | Deterministic: checks DCF + relative + yield valuation input availability; blocks valuation when mock/T5/T6 or missing fundamentals; lists allowed next steps |
+| investment_committee_chair | InvestmentCommitteeChair | investment_committee_chair | Deterministic: synthesises all council outputs; determines provisional_internal_status; sets quality_gate_status; never assigns BUY/SELL/rating |
+| save_draft_report | ReportWriter | save_draft_report | Saves draft report; includes Research Team + Analysis Council summaries in admin markdown |
 | log_agent_steps | WorkflowController | log_agent_steps | Marks agent_run completed; logs final step summary |
 | handle_error | WorkflowController | handle_error | Marks agent_run failed |
 
 **Sources:**
 - `apps/api/app/workflows/company_analysis.py`
-- `apps/api/app/agents/research_team/financial_data_agent.py`
-- `apps/api/app/agents/research_team/source_quality_agent.py`
-- `apps/api/app/agents/research_team/research_completeness_agent.py`
-- `apps/api/app/agents/research_team/citation_validator_v2.py`
+- `apps/api/app/agents/research_team/` — Phase 8 agents
+- `apps/api/app/agents/analysis_council/` — Phase 9 agents
 - `apps/api/app/integrations/llm_provider.py`
-- Prompt templates: `packages/prompts/research/phase8_*_v1.md`
+- Prompt templates: `packages/prompts/research/phase8_*_v1.md`, `phase9_*_v1.md`
 
-**Output state fields (Phase 8 additions):**
+---
+
+### Analysis Council — Phase 9 Agents
+
+**Package:** `apps/api/app/agents/analysis_council/`
+
+All 5 agents are **deterministic** (no LLM calls). All exceptions are caught — the workflow
+continues even if an agent fails. Forbidden content (BUY/SELL/price target/fair value) is
+detected and either rejected or flagged in warnings.
+
+#### BullCaseAgent (`bull_case_agent.py`)
+
+Identifies the constructive case for further research. **Never** assigns a BUY recommendation
+or price target. Output confidence is `"low"` whenever mock/T5/T6 data is active.
+
+Output fields: `positive_thesis_points`, `potential_tailwinds`, `evidence_used`,
+`assumptions`, `missing_evidence`, `confidence_level`, `warnings`.
+
+#### BearCaseAgent (`bear_case_agent.py`)
+
+Identifies research risks and challenges bull case assumptions. **Never** uses SELL/SHORT
+language. Always lists key unknowns when fundamentals are absent.
+
+Output fields: `negative_thesis_points`, `potential_headwinds`, `key_unknowns`,
+`evidence_used`, `missing_evidence`, `confidence_level`, `warnings`.
+
+#### RiskAgent (`risk_agent.py`)
+
+Classifies risks across 6 categories. **Always** includes `data_quality_risks` and
+`source_quality_risks` — they are never empty. Unknown items prefixed with `"UNKNOWN:"`.
+
+Output fields: `business_risks`, `financial_risks`, `market_risks`,
+`regulatory_geopolitical_risks`, `data_quality_risks`, `source_quality_risks`,
+`risk_summary`, `warnings`.
+
+#### ValuationGuardAgent (`valuation_guard_agent.py`)
+
+Gate that blocks premature valuation. Checks DCF inputs (6 required), relative valuation
+inputs (4 required), and yield inputs. Sets `valuation_readiness` to `"not_ready"` for
+mock/T5/T6 data. Never produces a price target or fair value.
+
+Output fields: `valuation_readiness`, `available_valuation_inputs`,
+`missing_valuation_inputs`, `valuation_blockers`, `allowed_next_steps`,
+`disallowed_outputs`, `warnings`.
+
+#### InvestmentCommitteeChair (`investment_committee_chair.py`)
+
+Synthesises all council outputs. Assigns a `provisional_internal_status` from the allowed
+set only. Sets `human_review_required=True` for watchlist/ready-for-deeper-analysis
+conditions.
+
+**Allowed internal statuses (admin-only, never public):**
+```
+research_incomplete
+needs_primary_sources
+ready_for_deeper_analysis
+reject_due_to_data_quality
+watchlist_candidate_for_review
+```
+
+Output fields: `committee_summary`, `bull_bear_balance`, `primary_open_questions`,
+`research_next_steps`, `quality_gate_status`, `provisional_internal_status`,
+`human_review_required`, `warnings`.
+
+**Quality gate checks (5 boolean flags):**
+- `source_quality_ok` — overall_source_quality is "strong" or "adequate"
+- `citation_status_ok` — citation_validator_v2 status is "ok"
+- `schema_valid` — schema validation passed
+- `valuation_ready` — valuation_readiness is "ready" or "partial"
+- `research_complete` — no blocking gaps in research completeness
+
+**Output state fields (Phase 8 + Phase 9 additions):**
 ```python
 {
   # ... (all Phase 7 fields) ...
   # Phase 8: Research Team
-  "financial_data_summary": {
-    "available_financial_data": ["identity.legal_name", "price_history.latest_close", ...],
-    "missing_financial_data": ["financials.revenue", "financials.ebitda", ...],
-    "data_quality_notes": ["Mock provider active ..."],
-    "source_tier_summary": {"T6_model_estimate": 1, ...},
-    "financial_context_summary": "Acme Nordic AS (TEST) — Industrials ...",
-    "warnings": ["Mock provider active: all values are synthetic demo data.", ...]
+  "financial_data_summary": { ... },
+  "source_quality_summary": { ... },
+  "research_completeness_summary": { ... },
+  "upgraded_citation_validation": { ... },
+  "research_team_warnings": ["..."],
+  "research_team_complete": True,
+  # Phase 9: Analysis Council
+  "bull_case_summary": {
+    "positive_thesis_points": ["..."],
+    "potential_tailwinds": ["..."],
+    "evidence_used": ["..."],
+    "assumptions": ["..."],
+    "missing_evidence": ["..."],
+    "confidence_level": "low" | "medium" | "high",
+    "warnings": ["..."]
   },
-  "source_quality_summary": {
-    "overall_source_quality": "weak" | "adequate" | "strong" | "insufficient",
-    "strong_sources": [],
-    "weak_sources": ["mock (T6_model_estimate): company identity and profile data"],
-    "missing_primary_sources": ["Annual report / 10-K ...", ...],
-    "aggregator_only_claims": ["identity.legal_name: sourced only from T6_model_estimate", ...],
-    "recommended_source_upgrades": ["Replace mock/T6 data with live provider ...", ...],
-    "warnings": ["Mock provider active ...", ...]
+  "bear_case_summary": {
+    "negative_thesis_points": ["..."],
+    "potential_headwinds": ["..."],
+    "key_unknowns": ["..."],
+    "evidence_used": ["..."],
+    "missing_evidence": ["..."],
+    "confidence_level": "low" | "medium" | "high",
+    "warnings": ["..."]
   },
-  "research_completeness_summary": {
-    "complete_sections": [],
-    "incomplete_sections": ["report_meta", "identity", "snapshot_financials", ...],
-    "missing_required_fields": ["report_meta.schema_version", ...],
-    "next_research_tasks": ["Verify legal entity via GLEIF", ...],
-    "blocking_gaps": ["Required section absent: report_meta ...", ...],
-    "non_blocking_gaps": ["Optional section absent: discovery_profile", ...]
+  "risk_summary": {
+    "business_risks": ["..."],
+    "financial_risks": ["..."],
+    "market_risks": ["..."],
+    "regulatory_geopolitical_risks": ["..."],
+    "data_quality_risks": ["..."],
+    "source_quality_risks": ["..."],
+    "risk_summary": "...",
+    "warnings": ["..."]
   },
-  "upgraded_citation_validation": {
-    "status": "ok" | "warnings" | "failed",
-    "approved_claims": [],
-    "missing_citations": [],
-    "weak_citation_warnings": ["Mock provider active: all citation records reference synthetic data.", ...],
-    "unsupported_number_warnings": [],
-    "source_tier_warnings": []
+  "valuation_guard_summary": {
+    "valuation_readiness": "not_ready" | "partial" | "ready",
+    "available_valuation_inputs": ["..."],
+    "missing_valuation_inputs": ["..."],
+    "valuation_blockers": ["CRITICAL: ..."],
+    "allowed_next_steps": ["..."],
+    "disallowed_outputs": ["price target", "fair value", ...],
+    "warnings": ["..."]
   },
-  "research_team_warnings": ["...aggregated warnings from all 4 agents..."],
-  "research_team_complete": True
+  "committee_chair_summary": {
+    "committee_summary": "...",
+    "bull_bear_balance": "bull_dominant" | "bear_dominant" | "balanced" | "insufficient_data",
+    "primary_open_questions": ["..."],
+    "research_next_steps": ["..."],
+    "quality_gate_status": {
+      "source_quality_ok": False,
+      "citation_status_ok": False,
+      "schema_valid": False,
+      "valuation_ready": False,
+      "research_complete": False
+    },
+    "provisional_internal_status": "research_incomplete",
+    "human_review_required": True,
+    "warnings": ["..."]
+  },
+  "analysis_council_warnings": ["...aggregated warnings from all 5 AC agents..."],
+  "quality_gate_status": { ... },
+  "provisional_internal_status": "research_incomplete",
+  "human_review_required": True
 }
 ```
 

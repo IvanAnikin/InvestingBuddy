@@ -1,6 +1,6 @@
 # API Reference
 
-## Status: Phase 8 — Research Team agents; research_team_* fields in workflow response
+## Status: Phase 9 — Analysis Council MVP; analysis_council_* fields in workflow response
 
 ---
 
@@ -155,16 +155,16 @@ Request fields:
 - `use_llm` — optional bool (default `false`). When `true`, runs the `generate_research_sections` LLM node. Default `false` is CI-safe (no LLM calls, no credentials needed).
 - `llm_provider` — optional; defaults to `LLM_PROVIDER` config value (`mock` in CI). Options: `mock`, `azure_openai`.
 
-Response `202 Accepted` (Phase 8):
+Response `202 Accepted` (Phase 9):
 ```json
 {
   "agent_run_id": "uuid",
   "draft_report_id": "uuid",
   "status": "completed",
-  "summary": "Draft research for Volkswagen AG. Provider: mock. Schema: invalid. Source quality: weak. Citation v2: warnings. LLM: not used.",
+  "summary": "Phase 9 Analysis Council draft for Acme Nordic AS. Provider: mock. Schema: invalid. Source quality: weak. Internal status: research_incomplete. Human review: true. LLM: not used.",
   "workflow_name": "company_analysis",
-  "company_name": "Volkswagen AG",
-  "ticker": "VOW3",
+  "company_name": "Acme Nordic AS",
+  "ticker": "TEST",
   "provider_name": "mock",
   "is_mock": true,
   "schema_valid": false,
@@ -173,40 +173,59 @@ Response `202 Accepted` (Phase 8):
   "missing_fields": ["identity.isin", "identity.lei", "profile.website"],
   "llm_provider": null,
   "llm_used": false,
-  "financial_data_summary": {
-    "available_count": 8,
-    "missing_count": 24,
-    "source_tier_summary": {"T6_model_estimate": 1, "T5_api_aggregator": 0},
-    "financial_context_summary": "Acme Nordic AS (TEST) — Industrials, Norway, reporting in NOK ...",
-    "warnings_count": 3
+  "financial_data_summary": { "available_count": 8, "missing_count": 24, "warnings_count": 3, "..." : "..." },
+  "source_quality_summary": { "overall_source_quality": "weak", "weak_sources_count": 2, "..." : "..." },
+  "research_completeness_summary": { "complete_sections": [], "blocking_gaps_count": 25, "..." : "..." },
+  "citation_validation_summary": { "status": "warnings", "weak_citation_warnings_count": 1, "..." : "..." },
+  "research_team_warnings": ["Mock provider active: all values are synthetic demo data.", "..."],
+  "bull_case_summary": {
+    "confidence_level": "low",
+    "positive_thesis_points_count": 3,
+    "potential_tailwinds_count": 2,
+    "missing_evidence_count": 5,
+    "warnings_count": 1
   },
-  "source_quality_summary": {
-    "overall_source_quality": "weak",
-    "strong_sources_count": 0,
-    "weak_sources_count": 2,
-    "aggregator_only_claims_count": 4,
-    "warnings_count": 4
+  "bear_case_summary": {
+    "confidence_level": "low",
+    "negative_thesis_points_count": 4,
+    "key_unknowns_count": 6,
+    "warnings_count": 1
   },
-  "research_completeness_summary": {
-    "complete_sections": [],
-    "incomplete_sections_count": 9,
-    "missing_required_fields_count": 25,
-    "blocking_gaps_count": 25,
-    "next_research_tasks_count": 14
+  "risk_summary": {
+    "risk_summary": "All 6 risk categories identified. Data quality risks dominate due to mock provider.",
+    "business_risks_count": 2,
+    "financial_risks_count": 2,
+    "market_risks_count": 2,
+    "data_quality_risks_count": 3,
+    "source_quality_risks_count": 2,
+    "warnings_count": 0
   },
-  "citation_validation_summary": {
-    "status": "warnings",
-    "approved_claims_count": 0,
-    "missing_citations_count": 0,
-    "weak_citation_warnings_count": 1,
-    "unsupported_number_warnings_count": 0,
-    "source_tier_warnings_count": 0
+  "valuation_guard_summary": {
+    "valuation_readiness": "not_ready",
+    "blockers_count": 3,
+    "available_inputs_count": 0,
+    "missing_inputs_count": 10,
+    "warnings_count": 1
   },
-  "research_team_warnings": [
-    "Mock provider active: all values are synthetic demo data.",
-    "Source tier T6_model_estimate: all identity and price data from mock is aggregator quality.",
-    "..."
-  ]
+  "committee_chair_summary": {
+    "committee_summary": "Research package based on mock provider data only. All analysis council assessments are illustrative.",
+    "bull_bear_balance": "insufficient_data",
+    "provisional_internal_status": "research_incomplete",
+    "human_review_required": true,
+    "open_questions_count": 5,
+    "research_next_steps_count": 4,
+    "warnings_count": 1
+  },
+  "analysis_council_warnings": ["Mock provider active — all council outputs are illustrative.", "..."],
+  "quality_gate_status": {
+    "source_quality_ok": false,
+    "citation_status_ok": false,
+    "schema_valid": false,
+    "valuation_ready": false,
+    "research_complete": false
+  },
+  "provisional_internal_status": "research_incomplete",
+  "human_review_required": true
 }
 ```
 
@@ -217,17 +236,20 @@ Errors:
 - `422` — `require_schema_valid=true` and schema draft failed validation
 - `500` — workflow execution error (see agent_run logs)
 
-> **Phase 8 note:** Four deterministic Research Team agents run after the snapshot phase.
+> **Phase 9 note:** Five deterministic Analysis Council agents run after the Research Team phase.
 > These agents require no LLM calls and no Azure credentials; they are always active.
-> - `financial_data_agent` — classifies available vs missing financial data; warns on T5/T6 sources.
-> - `source_quality_agent` — enforces T5 providers (EODHD, Stooq, OpenBB) are never promoted to primary;
->   classifies sources; warns on decision-critical T5/T6-only claims.
-> - `research_completeness_agent` — schema-driven gap analysis; blocking vs non-blocking gaps.
-> - `citation_validator_v2` — checks DB citations AND schema draft datapoints;
->   flags bare numbers (`status=failed`); warns on weak-tier citations for decision-critical fields.
+> - `bull_case_agent` — positive thesis points, tailwinds, evidence, assumptions; forbidden word gate.
+> - `bear_case_agent` — negative thesis points, headwinds, key unknowns; challenges bull case.
+> - `risk_agent` — 6-category risk classification; data_quality_risks always populated.
+> - `valuation_guard_agent` — blocks valuation when mock/T5/T6 data; no price target ever produced.
+> - `investment_committee_chair` — quality gate; assigns `provisional_internal_status` (admin-only, not public).
+>
+> **`provisional_internal_status` allowed values (admin-only internal workflow state — never public):**
+> `research_incomplete`, `needs_primary_sources`, `ready_for_deeper_analysis`,
+> `reject_due_to_data_quality`, `watchlist_candidate_for_review`.
 >
 > The optional LLM node (`use_llm=true`) is unchanged from Phase 7.
-> No investment recommendation, rating, or price target is ever produced.
+> No public investment recommendation, rating, or price target is ever produced.
 > All outputs are admin/draft — not investment advice.
 
 ---

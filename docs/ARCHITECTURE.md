@@ -1,6 +1,6 @@
 # Architecture
 
-## Status: Phase 8 — Research Team Agents (4 deterministic nodes in company_analysis workflow)
+## Status: Phase 9 — Analysis Council MVP (18-node workflow, 5 deterministic Analysis Council agents)
 
 ---
 
@@ -47,12 +47,18 @@ Azure Application Insights
 - LangGraph `StateGraph` workflows
 - Four agent teams: Research, Analysis Council, Validation, Judge
 - All runs logged to `agent_runs` and `agent_steps` tables
-- Status: **Phase 8 — `company_analysis` is a 13-node workflow with 4 live Research Team agents (deterministic), 1 optional LLM node, and full source/citation tracking. Workflow version `4.0.0`.**
+- Status: **Phase 9 — `company_analysis` is an 18-node workflow with 4 Research Team + 5 Analysis Council agents (all deterministic), 1 optional LLM node, and full source/citation tracking. Workflow version `5.0.0`.**
 - Research Team agents (Phase 8, `apps/api/app/agents/research_team/`):
   - `financial_data_agent.py` — classifies available vs missing financial data; source tier accounting
   - `source_quality_agent.py` — T1–T6 source classification; enforces T5 providers never promoted
   - `research_completeness_agent.py` — schema-driven gap analysis; blocking vs non-blocking gaps
   - `citation_validator_v2.py` — checks DB citations AND schema draft datapoints; flags bare numbers
+- Analysis Council agents (Phase 9, `apps/api/app/agents/analysis_council/`):
+  - `bull_case_agent.py` — positive thesis points, sector tailwinds, evidence, assumptions; forbidden word gate
+  - `bear_case_agent.py` — negative thesis points, headwinds, key unknowns; challenges bull case
+  - `risk_agent.py` — 6-category risk classification; always includes data-quality and source-quality risks
+  - `valuation_guard_agent.py` — blocks valuation when mock/T5/T6 data; no price target ever produced
+  - `investment_committee_chair.py` — synthesises council; quality gate; assigns provisional_internal_status from whitelist only
 
 ### Database
 - Local: PostgreSQL 16 via Docker Compose
@@ -185,6 +191,8 @@ All errors are caught, logged to `agent_runs.error_message`, and returned as HTT
 | Phase 4.5 | ✅ Complete | Live free provider implementations: StooqProvider (OHLCV CSV), GleifProvider (LEI lookup), SecEdgarProvider (CIK submissions); SourceRecordAttrs helper; diagnostic API endpoints; fixture-based offline tests; integration test harness |
 | Phase 6 | ✅ Complete | 8-node company_analysis workflow; FinancialDataService integrated; company snapshot; source + citation records (with field_path, source_tier, data_quality); schema validation gate; migration 003; 38 new tests; 306 total |
 | Phase 7 | ✅ Complete | 9-node workflow; `ResearchLLMClient` abstraction (Mock + AzureOpenAI skeleton); optional `generate_research_sections` LLM node; `ResearchSectionsOutput` schema; safety gate; prompt template v1; `use_llm`/`llm_provider` API fields; 28 new offline tests; 334 total |
+| Phase 8 | ✅ Complete | 13-node workflow v4.0.0; 4 deterministic Research Team agents (financial data, source quality, completeness, citation v2); 3 prompt templates; 9 new state fields; 5 API response fields; 52 new offline tests; 394 total |
+| Phase 9 | ✅ Complete | 18-node workflow v5.0.0; 5 deterministic Analysis Council agents (bull, bear, risk, valuation guard, committee chair); 5 prompt templates; 9 new state fields; 9 API response fields; 64 new offline tests; 458 total |
 
 ---
 

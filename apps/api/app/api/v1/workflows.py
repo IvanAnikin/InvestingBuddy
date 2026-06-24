@@ -79,6 +79,17 @@ async def run_company_analysis_endpoint(
     upgraded_citation_validation = final_state.get("upgraded_citation_validation")
     research_team_warnings = final_state.get("research_team_warnings") or []
 
+    # Phase 9: Analysis Council outputs
+    bull_case_summary = final_state.get("bull_case_summary")
+    bear_case_summary = final_state.get("bear_case_summary")
+    risk_summary = final_state.get("risk_summary")
+    valuation_guard_summary = final_state.get("valuation_guard_summary")
+    committee_chair_summary = final_state.get("committee_chair_summary")
+    analysis_council_warnings = final_state.get("analysis_council_warnings") or []
+    quality_gate_status = final_state.get("quality_gate_status")
+    provisional_internal_status = final_state.get("provisional_internal_status")
+    human_review_required = final_state.get("human_review_required")
+
     source_quality = (source_quality_summary or {}).get("overall_source_quality", "unknown")
     citation_v2_status = (upgraded_citation_validation or {}).get("status", "unknown")
 
@@ -130,12 +141,79 @@ async def run_company_analysis_endpoint(
             "source_tier_warnings_count": len(cv2.get("source_tier_warnings", [])),
         }
 
+    # Phase 9: Analysis Council compact summaries
+    bc_compact = None
+    if bull_case_summary:
+        bc = bull_case_summary
+        bc_compact = {
+            "confidence_level": bc.get("confidence_level", "low"),
+            "positive_thesis_points_count": len(bc.get("positive_thesis_points", [])),
+            "potential_tailwinds_count": len(bc.get("potential_tailwinds", [])),
+            "missing_evidence_count": len(bc.get("missing_evidence", [])),
+            "warnings_count": len(bc.get("warnings", [])),
+        }
+
+    br_compact = None
+    if bear_case_summary:
+        br = bear_case_summary
+        br_compact = {
+            "confidence_level": br.get("confidence_level", "low"),
+            "negative_thesis_points_count": len(br.get("negative_thesis_points", [])),
+            "key_unknowns_count": len(br.get("key_unknowns", [])),
+            "warnings_count": len(br.get("warnings", [])),
+        }
+
+    risk_compact = None
+    if risk_summary:
+        rs = risk_summary
+        risk_compact = {
+            "risk_summary": rs.get("risk_summary", ""),
+            "business_risks_count": len(rs.get("business_risks", [])),
+            "financial_risks_count": len(rs.get("financial_risks", [])),
+            "market_risks_count": len(rs.get("market_risks", [])),
+            "data_quality_risks_count": len(rs.get("data_quality_risks", [])),
+            "source_quality_risks_count": len(rs.get("source_quality_risks", [])),
+            "warnings_count": len(rs.get("warnings", [])),
+        }
+
+    vg_compact = None
+    if valuation_guard_summary:
+        vg = valuation_guard_summary
+        vg_compact = {
+            "valuation_readiness": vg.get("valuation_readiness", "not_ready"),
+            "blockers_count": len(vg.get("valuation_blockers", [])),
+            "available_inputs_count": len(vg.get("available_valuation_inputs", [])),
+            "missing_inputs_count": len(vg.get("missing_valuation_inputs", [])),
+            "warnings_count": len(vg.get("warnings", [])),
+        }
+
+    cc_compact = None
+    if committee_chair_summary:
+        cc = committee_chair_summary
+        cc_compact = {
+            "committee_summary": cc.get("committee_summary", ""),
+            "bull_bear_balance": cc.get("bull_bear_balance", "insufficient_data"),
+            "provisional_internal_status": cc.get(
+                "provisional_internal_status", "research_incomplete"
+            ),
+            "human_review_required": cc.get("human_review_required", True),
+            "open_questions_count": len(cc.get("primary_open_questions", [])),
+            "research_next_steps_count": len(cc.get("research_next_steps", [])),
+            "warnings_count": len(cc.get("warnings", [])),
+        }
+
+    internal_status = provisional_internal_status or (
+        (committee_chair_summary or {}).get("provisional_internal_status", "research_incomplete")
+    )
+    human_review = human_review_required if human_review_required is not None else True
+
     summary = (
-        f"Draft research for {company_name}. "
+        f"Phase 9 Analysis Council draft for {company_name}. "
         f"Provider: {provider_name_used}. "
         f"Schema: {schema_label}. "
         f"Source quality: {source_quality}. "
-        f"Citation v2: {citation_v2_status}. "
+        f"Internal status: {internal_status}. "
+        f"Human review: {human_review}. "
         f"{llm_label}."
     )
 
@@ -161,4 +239,14 @@ async def run_company_analysis_endpoint(
         research_completeness_summary=rc_compact,
         citation_validation_summary=cv2_compact,
         research_team_warnings=research_team_warnings,
+        # Phase 9: Analysis Council
+        bull_case_summary=bc_compact,
+        bear_case_summary=br_compact,
+        risk_summary=risk_compact,
+        valuation_guard_summary=vg_compact,
+        committee_chair_summary=cc_compact,
+        analysis_council_warnings=analysis_council_warnings,
+        quality_gate_status=quality_gate_status,
+        provisional_internal_status=internal_status,
+        human_review_required=human_review,
     )
