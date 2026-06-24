@@ -1,31 +1,35 @@
 """
-Company Analysis Workflow — Phase 8: Research Team Agents.
+Company Analysis Workflow — Phase 9: Analysis Council MVP.
 
-Node structure (13 nodes + error handler):
-  1.  load_company              — resolve company from DB; create agent_run record
-  2.  fetch_provider_data       — call FinancialDataService (default: MockProvider)
-  3.  create_source_records     — build Source DB records from provider metadata
-  4.  build_company_snapshot    — assemble structured snapshot + schema draft
-  5.  financial_data_agent      — structured financial data summary (deterministic)
-  6.  source_quality_agent      — T1–T6 source quality assessment (deterministic)
-  7.  generate_research_sections — (OPTIONAL) LLM draft sections; skipped by default
-  8.  create_citations          — create Citation records with field_path/source_tier/data_quality
-  9.  validate_report_schema    — call validate_real_asset_report(); store result
+Node structure (18 nodes + error handler):
+  1.  load_company                — resolve company from DB; create agent_run record
+  2.  fetch_provider_data         — call FinancialDataService (default: MockProvider)
+  3.  create_source_records       — build Source DB records from provider metadata
+  4.  build_company_snapshot      — assemble structured snapshot + schema draft
+  5.  financial_data_agent        — structured financial data summary (deterministic)
+  6.  source_quality_agent        — T1–T6 source quality assessment (deterministic)
+  7.  generate_research_sections  — (OPTIONAL) LLM draft sections; skipped by default
+  8.  create_citations            — create Citation records with field_path/source_tier/data_quality
+  9.  validate_report_schema      — call validate_real_asset_report(); store result
   10. research_completeness_agent — schema-gap analysis; next research tasks
-  11. citation_validator_v2     — upgraded citation + datapoint source validation
-  12. save_draft_report         — save draft report with all research team outputs
-  13. log_agent_steps           — mark agent_run completed; final step logging
-  handle_error                  — marks agent_run failed on any unhandled error
+  11. citation_validator_v2       — upgraded citation + datapoint source validation
+  12. bull_case_agent             — positive thesis elements from research package (Phase 9)
+  13. bear_case_agent             — negative thesis elements; challenges bull case (Phase 9)
+  14. risk_agent                  — structured risk categories incl. data/source risks (Phase 9)
+  15. valuation_guard_agent       — blocks premature valuation conclusions (Phase 9)
+  16. investment_committee_chair  — synthesises council; assigns provisional status (Phase 9)
+  17. save_draft_report           — save draft report with all council outputs
+  18. log_agent_steps             — mark agent_run completed; final step logging
+  handle_error                    — marks agent_run failed on any unhandled error
 
 Design rules enforced:
-  - Research Team nodes 5, 6, 10, 11 are deterministic — no LLM calls.
+  - All Phase 9 Analysis Council nodes (12–16) are deterministic — no LLM calls.
+  - Phase 9 nodes are non-fatal — exceptions are caught; workflow always completes.
+  - No BUY/SELL/HOLD/WATCH/REJECT/SHORTLIST from any node.
+  - No price target, fair value, or valuation conclusion from any node.
+  - Provisional internal status must be one of the five allowed internal workflow statuses.
   - LLM calls are opt-in: use_llm=False by default; all CI tests run offline.
-  - Default LLM provider is "mock" — no Azure credentials required in tests.
-  - LLM output is constrained: no rating, no price target, no valuation, no bare numbers.
-  - LLM output is safety-validated before being stored.
-  - Schema validation always runs regardless of LLM usage.
-  - No investment recommendations at this phase.
-  - Mock provider is the default; all CI tests run offline.
+  - Mock provider is the default; all CI tests run offline with no credentials.
   - Every node logs an agent_step (input + output JSON).
 """
 
@@ -39,6 +43,26 @@ from datetime import datetime, timezone
 from langgraph.graph import END, StateGraph
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agents.analysis_council.bear_case_agent import (
+    bear_case_output_to_dict,
+    run_bear_case_agent,
+)
+from app.agents.analysis_council.bull_case_agent import (
+    bull_case_output_to_dict,
+    run_bull_case_agent,
+)
+from app.agents.analysis_council.investment_committee_chair import (
+    committee_chair_output_to_dict,
+    run_investment_committee_chair,
+)
+from app.agents.analysis_council.risk_agent import (
+    risk_agent_output_to_dict,
+    run_risk_agent,
+)
+from app.agents.analysis_council.valuation_guard_agent import (
+    run_valuation_guard_agent,
+    valuation_guard_output_to_dict,
+)
 from app.agents.base import CompanyAnalysisState
 from app.agents.research_team.citation_validator_v2 import (
     run_upgraded_citation_validator,
@@ -81,7 +105,7 @@ from app.workflows.snapshot_builder import (
 )
 
 WORKFLOW_NAME = "company_analysis"
-WORKFLOW_VERSION = "4.0.0"
+WORKFLOW_VERSION = "5.0.0"
 
 _PROMPT_PATH = (
     pathlib.Path(__file__).resolve().parents[5]
@@ -870,7 +894,349 @@ def build_company_analysis_graph(
             return {"upgraded_citation_validation": fallback}
 
     # ------------------------------------------------------------------ #
-    # Node 12: save_draft_report  (Phase 8 — includes Research Team)     #
+    # Node 12: bull_case_agent  (Phase 9 Analysis Council)               #
+    # ------------------------------------------------------------------ #
+    async def node_bull_case_agent(state: CompanyAnalysisState) -> dict:
+        run = _run_holder.get("run")
+        snapshot = _run_holder.get("snapshot", {})
+        financial_data_summary = _run_holder.get("financial_data_summary") or {}
+        source_quality_summary = _run_holder.get("source_quality_summary") or {}
+        research_completeness_summary = _run_holder.get("research_completeness_summary") or {}
+        llm_sections = state.get("llm_sections") or {}
+
+        step = await agent_run_service.create_agent_step(
+            db,
+            run=run,
+            agent_name="BullCaseAgent",
+            step_name="bull_case_agent",
+            input_data={
+                "ticker": state.get("ticker"),
+                "is_mock": state.get("is_mock"),
+                "llm_used": state.get("llm_used"),
+            },
+        )
+
+        try:
+            output = run_bull_case_agent(
+                company_snapshot=snapshot,
+                financial_data_summary=financial_data_summary,
+                source_quality_summary=source_quality_summary,
+                research_completeness_summary=research_completeness_summary,
+                llm_sections=llm_sections if llm_sections else None,
+            )
+            output_dict = bull_case_output_to_dict(output)
+            _run_holder["bull_case_summary"] = output_dict
+
+            await agent_run_service.complete_agent_step(
+                db,
+                step,
+                output_data={
+                    "positive_thesis_points_count": len(output.positive_thesis_points),
+                    "potential_tailwinds_count": len(output.potential_tailwinds),
+                    "confidence_level": output.confidence_level,
+                    "warnings_count": len(output.warnings),
+                },
+            )
+            return {"bull_case_summary": output_dict}
+
+        except Exception as exc:
+            error_msg = f"bull_case_agent failed: {exc}"
+            await agent_run_service.fail_agent_step(db, step, error_msg)
+            fallback = {
+                "positive_thesis_points": [],
+                "potential_tailwinds": [],
+                "evidence_used": [],
+                "assumptions": [],
+                "missing_evidence": [error_msg],
+                "confidence_level": "low",
+                "warnings": [error_msg],
+            }
+            _run_holder["bull_case_summary"] = fallback
+            return {"bull_case_summary": fallback}
+
+    # ------------------------------------------------------------------ #
+    # Node 13: bear_case_agent  (Phase 9 Analysis Council)               #
+    # ------------------------------------------------------------------ #
+    async def node_bear_case_agent(state: CompanyAnalysisState) -> dict:
+        run = _run_holder.get("run")
+        snapshot = _run_holder.get("snapshot", {})
+        financial_data_summary = _run_holder.get("financial_data_summary") or {}
+        source_quality_summary = _run_holder.get("source_quality_summary") or {}
+        research_completeness_summary = _run_holder.get("research_completeness_summary") or {}
+        bull_case_summary = _run_holder.get("bull_case_summary") or {}
+
+        step = await agent_run_service.create_agent_step(
+            db,
+            run=run,
+            agent_name="BearCaseAgent",
+            step_name="bear_case_agent",
+            input_data={
+                "ticker": state.get("ticker"),
+                "is_mock": state.get("is_mock"),
+                "bull_case_confidence": bull_case_summary.get("confidence_level", "low"),
+            },
+        )
+
+        try:
+            output = run_bear_case_agent(
+                company_snapshot=snapshot,
+                financial_data_summary=financial_data_summary,
+                source_quality_summary=source_quality_summary,
+                research_completeness_summary=research_completeness_summary,
+                bull_case_summary=bull_case_summary if bull_case_summary else None,
+            )
+            output_dict = bear_case_output_to_dict(output)
+            _run_holder["bear_case_summary"] = output_dict
+
+            await agent_run_service.complete_agent_step(
+                db,
+                step,
+                output_data={
+                    "negative_thesis_points_count": len(output.negative_thesis_points),
+                    "key_unknowns_count": len(output.key_unknowns),
+                    "confidence_level": output.confidence_level,
+                    "warnings_count": len(output.warnings),
+                },
+            )
+            return {"bear_case_summary": output_dict}
+
+        except Exception as exc:
+            error_msg = f"bear_case_agent failed: {exc}"
+            await agent_run_service.fail_agent_step(db, step, error_msg)
+            fallback = {
+                "negative_thesis_points": [],
+                "potential_headwinds": [],
+                "key_unknowns": [error_msg],
+                "evidence_used": [],
+                "missing_evidence": [],
+                "confidence_level": "low",
+                "warnings": [error_msg],
+            }
+            _run_holder["bear_case_summary"] = fallback
+            return {"bear_case_summary": fallback}
+
+    # ------------------------------------------------------------------ #
+    # Node 14: risk_agent  (Phase 9 Analysis Council)                    #
+    # ------------------------------------------------------------------ #
+    async def node_risk_agent(state: CompanyAnalysisState) -> dict:
+        run = _run_holder.get("run")
+        snapshot = _run_holder.get("snapshot", {})
+        financial_data_summary = _run_holder.get("financial_data_summary") or {}
+        source_quality_summary = _run_holder.get("source_quality_summary") or {}
+        research_completeness_summary = _run_holder.get("research_completeness_summary") or {}
+        upgraded_citation_validation = _run_holder.get("upgraded_citation_validation") or {}
+
+        step = await agent_run_service.create_agent_step(
+            db,
+            run=run,
+            agent_name="RiskAgent",
+            step_name="risk_agent",
+            input_data={
+                "ticker": state.get("ticker"),
+                "is_mock": state.get("is_mock"),
+                "citation_status": upgraded_citation_validation.get("status", "unknown"),
+            },
+        )
+
+        try:
+            output = run_risk_agent(
+                company_snapshot=snapshot,
+                financial_data_summary=financial_data_summary,
+                source_quality_summary=source_quality_summary,
+                research_completeness_summary=research_completeness_summary,
+                upgraded_citation_validation=upgraded_citation_validation or None,
+            )
+            output_dict = risk_agent_output_to_dict(output)
+            _run_holder["risk_summary"] = output_dict
+
+            total_risks = (
+                len(output.business_risks) + len(output.financial_risks) +
+                len(output.market_risks) + len(output.regulatory_geopolitical_risks) +
+                len(output.data_quality_risks) + len(output.source_quality_risks)
+            )
+            await agent_run_service.complete_agent_step(
+                db,
+                step,
+                output_data={
+                    "total_risk_flags": total_risks,
+                    "data_quality_risks_count": len(output.data_quality_risks),
+                    "source_quality_risks_count": len(output.source_quality_risks),
+                    "warnings_count": len(output.warnings),
+                },
+            )
+            return {"risk_summary": output_dict}
+
+        except Exception as exc:
+            error_msg = f"risk_agent failed: {exc}"
+            await agent_run_service.fail_agent_step(db, step, error_msg)
+            fallback = {
+                "business_risks": [],
+                "financial_risks": [],
+                "market_risks": [],
+                "regulatory_geopolitical_risks": [],
+                "data_quality_risks": [error_msg],
+                "source_quality_risks": [],
+                "risk_summary": f"RiskAgent failed: {error_msg}",
+                "warnings": [error_msg],
+            }
+            _run_holder["risk_summary"] = fallback
+            return {"risk_summary": fallback}
+
+    # ------------------------------------------------------------------ #
+    # Node 15: valuation_guard_agent  (Phase 9 Analysis Council)         #
+    # ------------------------------------------------------------------ #
+    async def node_valuation_guard_agent(state: CompanyAnalysisState) -> dict:
+        run = _run_holder.get("run")
+        snapshot = _run_holder.get("snapshot", {})
+        financial_data_summary = _run_holder.get("financial_data_summary") or {}
+        source_quality_summary = _run_holder.get("source_quality_summary") or {}
+
+        step = await agent_run_service.create_agent_step(
+            db,
+            run=run,
+            agent_name="ValuationGuardAgent",
+            step_name="valuation_guard_agent",
+            input_data={
+                "ticker": state.get("ticker"),
+                "is_mock": state.get("is_mock"),
+                "source_tier": (snapshot.get("provider_metadata") or {}).get("source_tier"),
+            },
+        )
+
+        try:
+            output = run_valuation_guard_agent(
+                company_snapshot=snapshot,
+                financial_data_summary=financial_data_summary,
+                source_quality_summary=source_quality_summary,
+            )
+            output_dict = valuation_guard_output_to_dict(output)
+            _run_holder["valuation_guard_summary"] = output_dict
+
+            await agent_run_service.complete_agent_step(
+                db,
+                step,
+                output_data={
+                    "valuation_readiness": output.valuation_readiness,
+                    "blockers_count": len(output.valuation_blockers),
+                    "available_inputs_count": len(output.available_valuation_inputs),
+                    "missing_inputs_count": len(output.missing_valuation_inputs),
+                    "warnings_count": len(output.warnings),
+                },
+            )
+            return {"valuation_guard_summary": output_dict}
+
+        except Exception as exc:
+            error_msg = f"valuation_guard_agent failed: {exc}"
+            await agent_run_service.fail_agent_step(db, step, error_msg)
+            fallback = {
+                "valuation_readiness": "not_ready",
+                "available_valuation_inputs": [],
+                "missing_valuation_inputs": [],
+                "valuation_blockers": [error_msg],
+                "allowed_next_steps": [],
+                "disallowed_outputs": [],
+                "warnings": [error_msg],
+            }
+            _run_holder["valuation_guard_summary"] = fallback
+            return {"valuation_guard_summary": fallback}
+
+    # ------------------------------------------------------------------ #
+    # Node 16: investment_committee_chair  (Phase 9 Analysis Council)    #
+    # ------------------------------------------------------------------ #
+    async def node_investment_committee_chair(state: CompanyAnalysisState) -> dict:
+        run = _run_holder.get("run")
+        snapshot = _run_holder.get("snapshot", {})
+        bull_case_summary = _run_holder.get("bull_case_summary") or {}
+        bear_case_summary = _run_holder.get("bear_case_summary") or {}
+        risk_summary = _run_holder.get("risk_summary") or {}
+        valuation_guard_summary = _run_holder.get("valuation_guard_summary") or {}
+        research_completeness_summary = _run_holder.get("research_completeness_summary") or {}
+        source_quality_summary = _run_holder.get("source_quality_summary") or {}
+        upgraded_citation_validation = _run_holder.get("upgraded_citation_validation") or {}
+
+        step = await agent_run_service.create_agent_step(
+            db,
+            run=run,
+            agent_name="InvestmentCommitteeChair",
+            step_name="investment_committee_chair",
+            input_data={
+                "ticker": state.get("ticker"),
+                "bull_confidence": bull_case_summary.get("confidence_level", "low"),
+                "bear_confidence": bear_case_summary.get("confidence_level", "low"),
+                "valuation_readiness": valuation_guard_summary.get(
+                    "valuation_readiness", "not_ready"
+                ),
+                "schema_valid": state.get("schema_valid"),
+            },
+        )
+
+        try:
+            output = run_investment_committee_chair(
+                company_snapshot=snapshot,
+                bull_case_summary=bull_case_summary,
+                bear_case_summary=bear_case_summary,
+                risk_summary=risk_summary,
+                valuation_guard_summary=valuation_guard_summary,
+                research_completeness_summary=research_completeness_summary,
+                source_quality_summary=source_quality_summary,
+                upgraded_citation_validation=upgraded_citation_validation or None,
+                schema_valid=state.get("schema_valid"),
+            )
+            output_dict = committee_chair_output_to_dict(output)
+            _run_holder["committee_chair_summary"] = output_dict
+
+            await agent_run_service.complete_agent_step(
+                db,
+                step,
+                output_data={
+                    "provisional_internal_status": output.provisional_internal_status,
+                    "bull_bear_balance": output.bull_bear_balance,
+                    "human_review_required": output.human_review_required,
+                    "open_questions_count": len(output.primary_open_questions),
+                    "warnings_count": len(output.warnings),
+                },
+            )
+
+            # Aggregate analysis council warnings
+            analysis_council_warnings: list[str] = []
+            for summary_key in ["bull_case_summary", "bear_case_summary", "risk_summary",
+                                 "valuation_guard_summary"]:
+                s = _run_holder.get(summary_key) or {}
+                analysis_council_warnings.extend(s.get("warnings", []))
+            analysis_council_warnings.extend(output.warnings)
+
+            return {
+                "committee_chair_summary": output_dict,
+                "analysis_council_warnings": analysis_council_warnings,
+                "quality_gate_status": output.quality_gate_status,
+                "provisional_internal_status": output.provisional_internal_status,
+                "human_review_required": output.human_review_required,
+            }
+
+        except Exception as exc:
+            error_msg = f"investment_committee_chair failed: {exc}"
+            await agent_run_service.fail_agent_step(db, step, error_msg)
+            fallback = {
+                "committee_summary": f"InvestmentCommitteeChair failed: {error_msg}",
+                "bull_bear_balance": "insufficient_data",
+                "primary_open_questions": [],
+                "research_next_steps": [],
+                "quality_gate_status": {},
+                "provisional_internal_status": "research_incomplete",
+                "human_review_required": True,
+                "warnings": [error_msg],
+            }
+            _run_holder["committee_chair_summary"] = fallback
+            return {
+                "committee_chair_summary": fallback,
+                "analysis_council_warnings": [error_msg],
+                "quality_gate_status": {},
+                "provisional_internal_status": "research_incomplete",
+                "human_review_required": True,
+            }
+
+    # ------------------------------------------------------------------ #
+    # Node 17: save_draft_report  (Phase 9 — includes Analysis Council)  #
     # ------------------------------------------------------------------ #
     async def node_save_draft_report(state: CompanyAnalysisState) -> dict:
         run = _run_holder.get("run")
@@ -894,6 +1260,16 @@ def build_company_analysis_graph(
         source_quality_summary = _run_holder.get("source_quality_summary") or {}
         research_completeness_summary = _run_holder.get("research_completeness_summary") or {}
         upgraded_citation_validation = _run_holder.get("upgraded_citation_validation") or {}
+
+        # Phase 9: Analysis Council outputs
+        bull_case_summary = _run_holder.get("bull_case_summary") or {}
+        bear_case_summary = _run_holder.get("bear_case_summary") or {}
+        risk_summary_dict = _run_holder.get("risk_summary") or {}
+        valuation_guard_summary = _run_holder.get("valuation_guard_summary") or {}
+        committee_chair_summary = _run_holder.get("committee_chair_summary") or {}
+        analysis_council_warnings = state.get("analysis_council_warnings") or []
+        provisional_status = state.get("provisional_internal_status") or "research_incomplete"
+        human_review_req = state.get("human_review_required", True)
 
         # Aggregate research team warnings
         research_team_warnings: list[str] = []
@@ -920,6 +1296,9 @@ def build_company_analysis_graph(
                 "llm_used": llm_used,
                 "llm_provider": llm_provider_used,
                 "research_team_warnings_count": len(research_team_warnings),
+                "analysis_council_warnings_count": len(analysis_council_warnings),
+                "provisional_internal_status": provisional_status,
+                "human_review_required": human_review_req,
             },
         )
 
@@ -935,15 +1314,19 @@ def build_company_analysis_graph(
         citation_v2_status = upgraded_citation_validation.get("status", "unknown")
 
         content_md = (
-            f"# {company_name} — Phase 8 Draft Research Package {mode_tag}\n\n"
+            f"# {company_name} — Phase 9 Analysis Council Draft {mode_tag}\n\n"
             f"**Provider:** {provider_name_used}  \n"
             f"**Ticker:** {ticker}  \n"
             f"**Schema Validation:** {schema_tag}  \n"
             f"**LLM:** {llm_tag}  \n"
             f"**Source Quality:** {source_quality}  \n"
-            f"**Citation Validation:** {citation_v2_status}  \n\n"
-            "> **ADMIN DRAFT ONLY** — Not investment advice. "
-            "Human review required before any use.\n\n"
+            f"**Citation Validation:** {citation_v2_status}  \n"
+            f"**Provisional Internal Status:** `{provisional_status}`  \n"
+            f"**Human Review Required:** {human_review_req}  \n\n"
+            "> **INTERNAL ADMIN DRAFT ONLY.** "
+            "This is not investment advice and must not be published without human admin review. "
+            "No investment recommendation has been made. "
+            "All analysis council outputs are internal workflow artefacts only.\n\n"
         )
 
         # ── Company Snapshot ──────────────────────────────────────────
@@ -1027,6 +1410,87 @@ def build_company_analysis_graph(
                 + llm_sections.get("self_critique_limitations", "") + "\n\n"
             )
 
+        # ── Bull Case Draft ───────────────────────────────────────────────
+        content_md += "## Bull Case Draft (Analysis Council — Internal)\n\n"
+        bc_points = bull_case_summary.get("positive_thesis_points", [])
+        bc_confidence = bull_case_summary.get("confidence_level", "low")
+        content_md += f"**Confidence Level:** {bc_confidence}  \n\n"
+        if bc_points:
+            content_md += "**Positive Thesis Points:**\n\n"
+            content_md += "\n".join(f"- {p}" for p in bc_points)
+            content_md += "\n\n"
+        bc_tailwinds = bull_case_summary.get("potential_tailwinds", [])
+        if bc_tailwinds:
+            content_md += "**Potential Tailwinds:**\n\n"
+            content_md += "\n".join(f"- {t}" for t in bc_tailwinds[:5])
+            content_md += "\n\n"
+        bc_missing = bull_case_summary.get("missing_evidence", [])
+        if bc_missing:
+            content_md += f"**Missing Evidence:** {len(bc_missing)} items.  \n\n"
+        bc_warnings = bull_case_summary.get("warnings", [])
+        if bc_warnings:
+            content_md += "**Warnings:**\n\n"
+            content_md += "\n".join(f"> {w}" for w in bc_warnings[:3])
+            content_md += "\n\n"
+
+        # ── Bear Case Draft ───────────────────────────────────────────────
+        content_md += "## Bear Case Draft (Analysis Council — Internal)\n\n"
+        br_points = bear_case_summary.get("negative_thesis_points", [])
+        br_confidence = bear_case_summary.get("confidence_level", "low")
+        content_md += f"**Confidence Level:** {br_confidence}  \n\n"
+        if br_points:
+            content_md += "**Negative Thesis Points:**\n\n"
+            content_md += "\n".join(f"- {p}" for p in br_points)
+            content_md += "\n\n"
+        br_unknowns = bear_case_summary.get("key_unknowns", [])
+        if br_unknowns:
+            content_md += "**Key Unknowns:**\n\n"
+            content_md += "\n".join(f"- {u}" for u in br_unknowns[:5])
+            content_md += "\n\n"
+
+        # ── Risk Review ───────────────────────────────────────────────────
+        content_md += "## Risk Review (Analysis Council — Internal)\n\n"
+        content_md += risk_summary_dict.get("risk_summary", "N/A") + "\n\n"
+        dq_risks = risk_summary_dict.get("data_quality_risks", [])
+        if dq_risks:
+            content_md += "**Data Quality Risks:**\n\n"
+            content_md += "\n".join(f"- {r}" for r in dq_risks)
+            content_md += "\n\n"
+        sq_risks = risk_summary_dict.get("source_quality_risks", [])
+        if sq_risks:
+            content_md += "**Source Quality Risks:**\n\n"
+            content_md += "\n".join(f"- {r}" for r in sq_risks[:5])
+            content_md += "\n\n"
+
+        # ── Valuation Guard ───────────────────────────────────────────────
+        content_md += "## Valuation Guard (Analysis Council — Internal)\n\n"
+        vg_readiness = valuation_guard_summary.get("valuation_readiness", "not_ready")
+        content_md += f"**Valuation Readiness:** `{vg_readiness}`  \n\n"
+        vg_blockers = valuation_guard_summary.get("valuation_blockers", [])
+        if vg_blockers:
+            content_md += "**Valuation Blockers:**\n\n"
+            content_md += "\n".join(f"- {b}" for b in vg_blockers)
+            content_md += "\n\n"
+        vg_disallowed = valuation_guard_summary.get("disallowed_outputs", [])
+        if vg_disallowed:
+            content_md += "**Disallowed Outputs at This Phase:**\n\n"
+            content_md += "\n".join(f"- {d}" for d in vg_disallowed)
+            content_md += "\n\n"
+
+        # ── Investment Committee Chair Summary ────────────────────────────
+        content_md += "## Investment Committee Chair Summary (Admin Only)\n\n"
+        content_md += committee_chair_summary.get("committee_summary", "N/A") + "\n\n"
+        cc_questions = committee_chair_summary.get("primary_open_questions", [])
+        if cc_questions:
+            content_md += "**Primary Open Questions:**\n\n"
+            content_md += "\n".join(f"- {q}" for q in cc_questions[:6])
+            content_md += "\n\n"
+        cc_next = committee_chair_summary.get("research_next_steps", [])
+        if cc_next:
+            content_md += "**Research Next Steps:**\n\n"
+            content_md += "\n".join(f"- {s}" for s in cc_next[:6])
+            content_md += "\n\n"
+
         # ── Research Completeness Review ─────────────────────────────
         content_md += "## Research Completeness Review\n\n"
         rc = research_completeness_summary
@@ -1083,28 +1547,30 @@ def build_company_analysis_graph(
 
         content_md += (
             "---\n\n"
-            "> **Admin-only disclaimer:** This is a Phase 8 draft research package. "
-            "No investment recommendation has been made. "
-            "Do not publish or share externally without human admin review. "
-            "Not investment advice.\n"
+            "> **INTERNAL ADMIN DRAFT — PHASE 9 ANALYSIS COUNCIL.** "
+            "This is not investment advice. "
+            "No public investment recommendation has been made. "
+            "No price target, fair value, or valuation conclusion has been produced. "
+            "Human admin review is required before any further use. "
+            "Do not publish or share externally.\n"
         )
 
         summary = (
-            f"Draft research for {company_name} ({ticker}). "
+            f"Phase 9 Analysis Council draft for {company_name} ({ticker}). "
             f"Provider: {provider_name_used}. "
             f"{'MOCK DATA' if is_mock else 'LIVE DATA'}. "
             f"LLM: {llm_provider_used if llm_used else 'not used'}. "
             f"Schema: {schema_tag}. "
             f"Source quality: {source_quality}. "
-            f"Citation v2: {citation_v2_status}. "
-            f"Missing fields: {len(missing_fields)}. "
+            f"Internal status: {provisional_status}. "
+            f"Human review: {human_review_req}. "
             "No investment recommendation."
         )
 
         report = await report_service.create_draft_report(
             db,
             ReportCreate(
-                title=f"{company_name} — Provider Snapshot {mode_tag}",
+                title=f"{company_name} — Analysis Council Draft {mode_tag}",
                 slug=slug,
                 report_type="company_deep_dive",
                 summary=summary,
@@ -1141,8 +1607,10 @@ def build_company_analysis_graph(
             "research_team_complete": True,
         }
 
+    # (save_draft_report ends here)
+
     # ------------------------------------------------------------------ #
-    # Node 13: log_agent_steps  (was Node 9 in Phase 7)                  #
+    # Node 18: log_agent_steps  (was Node 13 in Phase 8)                  #
     # ------------------------------------------------------------------ #
     async def node_log_agent_steps(state: CompanyAnalysisState) -> dict:
         run = _run_holder.get("run")
@@ -1204,6 +1672,12 @@ def build_company_analysis_graph(
     # Phase 8: post-validation Research Team nodes
     graph.add_node("research_completeness_agent", node_research_completeness_agent)
     graph.add_node("citation_validator_v2", node_citation_validator_v2)
+    # Phase 9: Analysis Council nodes (deterministic)
+    graph.add_node("bull_case_agent", node_bull_case_agent)
+    graph.add_node("bear_case_agent", node_bear_case_agent)
+    graph.add_node("risk_agent", node_risk_agent)
+    graph.add_node("valuation_guard_agent", node_valuation_guard_agent)
+    graph.add_node("investment_committee_chair", node_investment_committee_chair)
     graph.add_node("save_draft_report", node_save_draft_report)
     graph.add_node("log_agent_steps", node_log_agent_steps)
     graph.add_node("handle_error", node_handle_error)
@@ -1219,7 +1693,13 @@ def build_company_analysis_graph(
     graph.add_edge("create_citations", "validate_report_schema")
     graph.add_edge("validate_report_schema", "research_completeness_agent")
     graph.add_edge("research_completeness_agent", "citation_validator_v2")
-    graph.add_edge("citation_validator_v2", "save_draft_report")
+    # Phase 9: Analysis Council chain
+    graph.add_edge("citation_validator_v2", "bull_case_agent")
+    graph.add_edge("bull_case_agent", "bear_case_agent")
+    graph.add_edge("bear_case_agent", "risk_agent")
+    graph.add_edge("risk_agent", "valuation_guard_agent")
+    graph.add_edge("valuation_guard_agent", "investment_committee_chair")
+    graph.add_edge("investment_committee_chair", "save_draft_report")
     graph.add_edge("save_draft_report", "log_agent_steps")
     graph.add_edge("log_agent_steps", END)
     graph.add_edge("handle_error", END)
@@ -1285,6 +1765,16 @@ async def run_company_analysis(
         "upgraded_citation_validation": None,
         "research_team_warnings": None,
         "research_team_complete": None,
+        # Phase 9: Analysis Council
+        "bull_case_summary": None,
+        "bear_case_summary": None,
+        "risk_summary": None,
+        "valuation_guard_summary": None,
+        "committee_chair_summary": None,
+        "analysis_council_warnings": None,
+        "quality_gate_status": None,
+        "provisional_internal_status": None,
+        "human_review_required": None,
         "error": None,
         "status": "running",
     }

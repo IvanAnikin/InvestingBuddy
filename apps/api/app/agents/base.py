@@ -54,6 +54,17 @@ class CompanyAnalysisState(TypedDict):
     research_team_warnings: list[str] | None     # aggregated warnings from all RT agents
     research_team_complete: bool | None          # True when all RT nodes ran without fatal error
 
+    # --- Phase 9: Analysis Council agent outputs ---
+    bull_case_summary: dict | None               # BullCaseAgent output
+    bear_case_summary: dict | None               # BearCaseAgent output
+    risk_summary: dict | None                    # RiskAgent output
+    valuation_guard_summary: dict | None         # ValuationGuardAgent output
+    committee_chair_summary: dict | None         # InvestmentCommitteeChair output
+    analysis_council_warnings: list[str] | None  # aggregated warnings from all AC agents
+    quality_gate_status: dict | None             # committee quality gate results
+    provisional_internal_status: str | None      # internal research workflow status
+    human_review_required: bool | None           # True when committee flags human review
+
     # --- control ---
     error: str | None
     status: str   # running | completed | failed

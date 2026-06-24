@@ -134,8 +134,9 @@ Copy `.env.example` to `.env` and fill in values as needed.
 | Phase 6 | Done | Real company snapshot workflow (8-node; provider data → sources + citations → schema validation) |
 | Phase 7 | Done | Azure OpenAI + first LLM research agent (optional generate_research_sections node; mock + Azure clients) |
 | Phase 8 | Done | Research Team agents: 4 deterministic nodes (financial data, source quality, research completeness, citation validator v2); 13-node workflow v4.0.0 |
+| Phase 9 | Done | Analysis Council MVP: 5 deterministic agents (bull/bear/risk/valuation guard/committee chair); 18-node workflow v5.0.0; no public recommendations |
 | Phase 5 | Planned | Full council-of-agents MVP |
-| Phase 9 | Planned | Judge system and backtesting |
+| Phase 10 | Planned | Judge system and backtesting |
 | Phase 10 | Planned | Weekly report pipeline, watchlists |
 | Phase 11 | Planned | Personalized investor assistant (V2) |
 
