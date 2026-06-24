@@ -1,6 +1,6 @@
 # Architecture
 
-## Status: Phase 7 — First LLM Research Node
+## Status: Phase 8 — Research Team Agents (4 deterministic nodes in company_analysis workflow)
 
 ---
 
@@ -47,7 +47,12 @@ Azure Application Insights
 - LangGraph `StateGraph` workflows
 - Four agent teams: Research, Analysis Council, Validation, Judge
 - All runs logged to `agent_runs` and `agent_steps` tables
-- Status: **`company_analysis` skeleton implemented in Phase 2 (placeholder nodes, no LLM yet)**
+- Status: **Phase 8 — `company_analysis` is a 13-node workflow with 4 live Research Team agents (deterministic), 1 optional LLM node, and full source/citation tracking. Workflow version `4.0.0`.**
+- Research Team agents (Phase 8, `apps/api/app/agents/research_team/`):
+  - `financial_data_agent.py` — classifies available vs missing financial data; source tier accounting
+  - `source_quality_agent.py` — T1–T6 source classification; enforces T5 providers never promoted
+  - `research_completeness_agent.py` — schema-driven gap analysis; blocking vs non-blocking gaps
+  - `citation_validator_v2.py` — checks DB citations AND schema draft datapoints; flags bare numbers
 
 ### Database
 - Local: PostgreSQL 16 via Docker Compose

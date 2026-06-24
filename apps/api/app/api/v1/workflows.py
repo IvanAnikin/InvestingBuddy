@@ -72,10 +72,70 @@ async def run_company_analysis_endpoint(
     schema_label = "valid" if final_state.get("schema_valid") else "invalid"
     llm_label = f"LLM: {llm_provider_used}" if llm_used else "LLM: not used"
 
+    # Phase 8: Research Team outputs
+    financial_data_summary = final_state.get("financial_data_summary")
+    source_quality_summary = final_state.get("source_quality_summary")
+    research_completeness_summary = final_state.get("research_completeness_summary")
+    upgraded_citation_validation = final_state.get("upgraded_citation_validation")
+    research_team_warnings = final_state.get("research_team_warnings") or []
+
+    source_quality = (source_quality_summary or {}).get("overall_source_quality", "unknown")
+    citation_v2_status = (upgraded_citation_validation or {}).get("status", "unknown")
+
+    # Build compact summaries for API response (avoid large nested objects)
+    fda_compact = None
+    if financial_data_summary:
+        fda = financial_data_summary
+        fda_compact = {
+            "available_count": len(fda.get("available_financial_data", [])),
+            "missing_count": len(fda.get("missing_financial_data", [])),
+            "source_tier_summary": fda.get("source_tier_summary", {}),
+            "financial_context_summary": fda.get("financial_context_summary", ""),
+            "warnings_count": len(fda.get("warnings", [])),
+        }
+
+    sq_compact = None
+    if source_quality_summary:
+        sq = source_quality_summary
+        sq_compact = {
+            "overall_source_quality": source_quality,
+            "strong_sources_count": len(sq.get("strong_sources", [])),
+            "weak_sources_count": len(sq.get("weak_sources", [])),
+            "aggregator_only_claims_count": len(sq.get("aggregator_only_claims", [])),
+            "warnings_count": len(sq.get("warnings", [])),
+        }
+
+    rc_compact = None
+    if research_completeness_summary:
+        rc = research_completeness_summary
+        rc_compact = {
+            "complete_sections": rc.get("complete_sections", []),
+            "incomplete_sections_count": len(rc.get("incomplete_sections", [])),
+            "missing_required_fields_count": len(rc.get("missing_required_fields", [])),
+            "blocking_gaps_count": len(rc.get("blocking_gaps", [])),
+            "next_research_tasks_count": len(rc.get("next_research_tasks", [])),
+        }
+
+    cv2_compact = None
+    if upgraded_citation_validation:
+        cv2 = upgraded_citation_validation
+        cv2_compact = {
+            "status": citation_v2_status,
+            "approved_claims_count": len(cv2.get("approved_claims", [])),
+            "missing_citations_count": len(cv2.get("missing_citations", [])),
+            "weak_citation_warnings_count": len(cv2.get("weak_citation_warnings", [])),
+            "unsupported_number_warnings_count": len(
+                cv2.get("unsupported_number_warnings", [])
+            ),
+            "source_tier_warnings_count": len(cv2.get("source_tier_warnings", [])),
+        }
+
     summary = (
         f"Draft research for {company_name}. "
         f"Provider: {provider_name_used}. "
         f"Schema: {schema_label}. "
+        f"Source quality: {source_quality}. "
+        f"Citation v2: {citation_v2_status}. "
         f"{llm_label}."
     )
 
@@ -95,4 +155,10 @@ async def run_company_analysis_endpoint(
         missing_fields=snapshot.get("missing_fields", []),
         llm_provider=llm_provider_used,
         llm_used=llm_used,
+        # Phase 8: Research Team
+        financial_data_summary=fda_compact,
+        source_quality_summary=sq_compact,
+        research_completeness_summary=rc_compact,
+        citation_validation_summary=cv2_compact,
+        research_team_warnings=research_team_warnings,
     )

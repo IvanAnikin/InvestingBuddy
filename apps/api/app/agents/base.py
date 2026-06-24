@@ -46,6 +46,14 @@ class CompanyAnalysisState(TypedDict):
     llm_sections: dict | None                 # ResearchSectionsOutput as dict
     llm_section_warnings: list[str] | None    # safety-gate warnings from validate_llm_sections
 
+    # --- Phase 8: Research Team agent outputs ---
+    financial_data_summary: dict | None          # FinancialDataAgent output
+    source_quality_summary: dict | None          # SourceQualityAgent output
+    research_completeness_summary: dict | None   # ResearchCompletenessAgent output
+    upgraded_citation_validation: dict | None    # UpgradedCitationValidator output
+    research_team_warnings: list[str] | None     # aggregated warnings from all RT agents
+    research_team_complete: bool | None          # True when all RT nodes ran without fatal error
+
     # --- control ---
     error: str | None
     status: str   # running | completed | failed

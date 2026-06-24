@@ -1,6 +1,6 @@
 # API Reference
 
-## Status: Phase 7 — LLM research sections node; llm_provider + llm_used in workflow response
+## Status: Phase 8 — Research Team agents; research_team_* fields in workflow response
 
 ---
 
@@ -155,13 +155,13 @@ Request fields:
 - `use_llm` — optional bool (default `false`). When `true`, runs the `generate_research_sections` LLM node. Default `false` is CI-safe (no LLM calls, no credentials needed).
 - `llm_provider` — optional; defaults to `LLM_PROVIDER` config value (`mock` in CI). Options: `mock`, `azure_openai`.
 
-Response `202 Accepted` (Phase 7):
+Response `202 Accepted` (Phase 8):
 ```json
 {
   "agent_run_id": "uuid",
   "draft_report_id": "uuid",
   "status": "completed",
-  "summary": "Draft research for Volkswagen AG. Provider: mock. Schema: invalid. LLM: mock.",
+  "summary": "Draft research for Volkswagen AG. Provider: mock. Schema: invalid. Source quality: weak. Citation v2: warnings. LLM: not used.",
   "workflow_name": "company_analysis",
   "company_name": "Volkswagen AG",
   "ticker": "VOW3",
@@ -171,8 +171,42 @@ Response `202 Accepted` (Phase 7):
   "validation_errors": ["[(root)] 'snapshot_financials' is a required property"],
   "validation_warnings": [],
   "missing_fields": ["identity.isin", "identity.lei", "profile.website"],
-  "llm_provider": "mock",
-  "llm_used": true
+  "llm_provider": null,
+  "llm_used": false,
+  "financial_data_summary": {
+    "available_count": 8,
+    "missing_count": 24,
+    "source_tier_summary": {"T6_model_estimate": 1, "T5_api_aggregator": 0},
+    "financial_context_summary": "Acme Nordic AS (TEST) — Industrials, Norway, reporting in NOK ...",
+    "warnings_count": 3
+  },
+  "source_quality_summary": {
+    "overall_source_quality": "weak",
+    "strong_sources_count": 0,
+    "weak_sources_count": 2,
+    "aggregator_only_claims_count": 4,
+    "warnings_count": 4
+  },
+  "research_completeness_summary": {
+    "complete_sections": [],
+    "incomplete_sections_count": 9,
+    "missing_required_fields_count": 25,
+    "blocking_gaps_count": 25,
+    "next_research_tasks_count": 14
+  },
+  "citation_validation_summary": {
+    "status": "warnings",
+    "approved_claims_count": 0,
+    "missing_citations_count": 0,
+    "weak_citation_warnings_count": 1,
+    "unsupported_number_warnings_count": 0,
+    "source_tier_warnings_count": 0
+  },
+  "research_team_warnings": [
+    "Mock provider active: all values are synthetic demo data.",
+    "Source tier T6_model_estimate: all identity and price data from mock is aggregator quality.",
+    "..."
+  ]
 }
 ```
 
@@ -183,14 +217,17 @@ Errors:
 - `422` — `require_schema_valid=true` and schema draft failed validation
 - `500` — workflow execution error (see agent_run logs)
 
-> **Phase 7 note:** The workflow optionally calls an LLM to generate draft research
-> sections (thesis summary, business overview, missing information, self-critique).
-> LLM output is constrained: no rating, no price target, no invented numbers.
-> A safety gate (`validate_llm_sections`) flags forbidden content as warnings.
-> Schema validation always runs regardless of LLM usage.
-> Default `use_llm=false` is CI-safe — no Azure OpenAI credentials required.
-> `llm_provider=mock` runs the offline `MockResearchLLMClient` (also CI-safe).
-> `llm_provider=azure_openai` requires `AZURE_OPENAI_*` env vars and is opt-in only.
+> **Phase 8 note:** Four deterministic Research Team agents run after the snapshot phase.
+> These agents require no LLM calls and no Azure credentials; they are always active.
+> - `financial_data_agent` — classifies available vs missing financial data; warns on T5/T6 sources.
+> - `source_quality_agent` — enforces T5 providers (EODHD, Stooq, OpenBB) are never promoted to primary;
+>   classifies sources; warns on decision-critical T5/T6-only claims.
+> - `research_completeness_agent` — schema-driven gap analysis; blocking vs non-blocking gaps.
+> - `citation_validator_v2` — checks DB citations AND schema draft datapoints;
+>   flags bare numbers (`status=failed`); warns on weak-tier citations for decision-critical fields.
+>
+> The optional LLM node (`use_llm=true`) is unchanged from Phase 7.
+> No investment recommendation, rating, or price target is ever produced.
 > All outputs are admin/draft — not investment advice.
 
 ---

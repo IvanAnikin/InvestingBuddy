@@ -107,3 +107,9 @@ class WorkflowRunResponse(BaseModel):
     # Phase 7: LLM summary
     llm_provider: str | None = None
     llm_used: bool | None = None
+    # Phase 8: Research Team summaries
+    financial_data_summary: dict | None = None
+    source_quality_summary: dict | None = None
+    research_completeness_summary: dict | None = None
+    citation_validation_summary: dict | None = None
+    research_team_warnings: list[str] = Field(default_factory=list)

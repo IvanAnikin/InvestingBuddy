@@ -23,14 +23,11 @@ Safety assertions enforced:
   - validate_llm_sections() passes on clean output
 """
 
+from datetime import datetime, timezone
+
 import pytest
 
 from app.core.config import settings
-from app.integrations.llm_provider import (
-    AzureOpenAIResearchLLMClient,
-    ResearchSectionsOutput,
-    validate_llm_sections,
-)
 from app.integrations.financial_data_provider import (
     CompanyProfileData,
     DataQuality,
@@ -40,8 +37,12 @@ from app.integrations.financial_data_provider import (
     ProviderStatus,
     SourceTier,
 )
+from app.integrations.llm_provider import (
+    AzureOpenAIResearchLLMClient,
+    ResearchSectionsOutput,
+    validate_llm_sections,
+)
 from app.workflows.snapshot_builder import build_company_snapshot
-from datetime import datetime, timezone
 
 _SKIP = pytest.mark.skipif(
     settings.llm_provider != "azure_openai",
