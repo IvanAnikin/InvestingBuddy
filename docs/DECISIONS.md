@@ -224,3 +224,30 @@ Activate before every Azure task: `source ~/.venvs/azure-cli/bin/activate`.
 - The venv is local-only and is never committed (covered by `.gitignore`).
 - Developer must remember to activate the venv before running `az` commands — documented in all relevant skill and command files.
 - GitHub Actions does not use this venv — it uses `azure/login@v2` with OIDC (see ADR-009).
+- On Python 3.14, `pip install azure-cli` fails because `cryptography` has no pre-built wheel and requires Rust to compile from source. Use `pip install --prefer-binary azure-cli` to force pip to select an older binary-compatible wheel instead.
+
+---
+
+## ADR-011: gpt-4.1-mini as Phase 7 Development LLM
+
+**Date:** 2026-06-23
+**Status:** Accepted
+
+### Context
+Phase 7 requires a real Azure OpenAI model for local development testing of the
+`generate_research_sections` LLM node. The original plan referenced `gpt-4o-mini`
+but a live model availability check in `westeurope` showed `gpt-4.1-mini` is now
+the current-generation mini model with a longer deprecation timeline.
+
+### Decision
+Deploy `gpt-4.1-mini` v2025-04-14 under the deployment name `gpt-4.1-mini` using
+the `GlobalStandard` SKU at 10K TPM capacity. Use API version `2025-01-01-preview`
+(required for this model version).
+
+### Consequences
+- Cost-effective: gpt-4.1-mini is the cheapest capable model in the GPT-4 family on Azure.
+- Latest-generation: supersedes gpt-4o-mini; same API surface so no code changes needed to upgrade to gpt-4o or gpt-4.1 later.
+- Long deprecation: support until October 2027.
+- `AZURE_OPENAI_API_VERSION` bumped from `2024-08-01-preview` to `2025-01-01-preview` to support this model.
+- Deployment name `gpt-4.1-mini` matches the model name — easy to remember and consistent with naming convention.
+- CI is unaffected — CI uses `LLM_PROVIDER=mock` (no Azure credentials, no network calls).

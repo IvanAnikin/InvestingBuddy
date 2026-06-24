@@ -1,6 +1,6 @@
 # Deployment
 
-## Status: Phase A Plan — Azure Staging Designed, Not Yet Provisioned
+## Status: Phase 7 — Azure OpenAI provisioned for local dev; Phase A staging not yet provisioned
 
 ---
 
@@ -9,7 +9,7 @@
 | Environment | Purpose | Resource Group | Status |
 |---|---|---|---|
 | Local | Development | Docker Compose | Available from Phase 1 |
-| Staging | Pre-production testing | `ib-stg-rg` | Planned — awaiting provisioning approval |
+| Staging | Pre-production testing | `ib-stg-rg` | Resource group created; Azure OpenAI provisioned (Phase 7); App Service/DB not yet provisioned |
 | Production | Live platform | `ib-prod-rg` | Phase 5+ |
 
 ---
@@ -85,11 +85,16 @@ Storage Account exception: `ib{env}storage` (no hyphens)
 | `ib-stg-db` | PostgreSQL Flexible Server 16 | Standard_B1ms | Main database |
 | `ibstgstorage` | Storage Account (LRS) | Standard | Blob storage for documents |
 
+### Phase 7 (provisioned — local real-LLM dev)
+
+| Name | Type | SKU | Status | Notes |
+|---|---|---|---|---|
+| `ib-stg-openai` | Azure OpenAI | S0 | **Provisioned** | Endpoint: `https://ib-stg-openai-d52d2.openai.azure.com/`; deployment: `gpt-4.1-mini` v2025-04-14 |
+
 ### Phase 4+ (provision when needed)
 
 | Name | Type | Purpose |
 |---|---|---|
-| `ib-stg-openai` | Azure OpenAI | LLM runtime for agent workflows |
 | `ib-stg-search` | Azure AI Search | RAG / vector search |
 
 ### Phase 5+ (future)
@@ -151,10 +156,11 @@ Copy `.env.example` to `.env`. The defaults work for local Docker development.
 | `DATABASE_URL` | Yes | 1+ | PostgreSQL async connection string |
 | `APP_ENV` | No | 1+ | `development` / `staging` / `production` |
 | `SECRET_KEY` | Yes (prod) | 1+ | Random secret — never hardcode |
-| `AZURE_OPENAI_ENDPOINT` | No | 4+ | Leave empty locally |
-| `AZURE_OPENAI_API_KEY` | No | 4+ | Stored in Key Vault in staging/prod |
-| `AZURE_OPENAI_API_VERSION` | No | 4+ | `2024-08-01-preview` |
-| `AZURE_OPENAI_DEPLOYMENT_NAME` | No | 4+ | |
+| `AZURE_OPENAI_ENDPOINT` | No | 7+ | `https://ib-stg-openai-d52d2.openai.azure.com/` (local `.env` only) |
+| `AZURE_OPENAI_API_KEY` | No | 7+ | Local `.env` only; Key Vault reference in staging/prod |
+| `AZURE_OPENAI_API_VERSION` | No | 7+ | `2025-01-01-preview` (required for gpt-4.1-mini) |
+| `AZURE_OPENAI_DEPLOYMENT_NAME` | No | 7+ | `gpt-4.1-mini` |
+| `LLM_PROVIDER` | No | 7+ | `mock` (CI default); `azure_openai` (local real-LLM testing) |
 | `AZURE_STORAGE_CONNECTION_STRING` | No | 3+ | Use Managed Identity in staging |
 | `AZURE_STORAGE_CONTAINER_NAME` | No | 3+ | `investingbuddy-documents` |
 | `AZURE_SEARCH_ENDPOINT` | No | 4+ | |
@@ -241,11 +247,15 @@ Azure OpenAI + AI Search (Phase 4) will add $50–250/month depending on token v
 The Azure CLI is installed in a dedicated Python venv at `~/.venvs/azure-cli`.
 Do **not** use Homebrew. Do **not** use the project's `apps/api/.venv`.
 
+**Important:** Python 3.14 does not have a pre-built `cryptography` wheel. Use
+`--prefer-binary` to force pip to select a compatible binary wheel instead of trying
+to compile from source (which requires Rust and will fail without it).
+
 ```bash
 python3 -m venv ~/.venvs/azure-cli
 source ~/.venvs/azure-cli/bin/activate
 pip install --upgrade pip
-pip install azure-cli
+pip install --prefer-binary azure-cli   # --prefer-binary required on Python 3.14
 
 az version
 az login
@@ -264,18 +274,24 @@ Full setup details and security constraints: [`infra/azure/README.md`](../infra/
 
 ---
 
-## Pre-Provisioning Checklist
+## Provisioning Status
 
+### Phase 7 (complete)
+- [x] `~/.venvs/azure-cli` venv created with `pip install --prefer-binary azure-cli`
+- [x] `az login` completed and correct subscription confirmed
+- [x] `ib-stg-rg` resource group created in `westeurope`
+- [x] `ib-stg-openai` Azure OpenAI resource created (S0, `westeurope`)
+- [x] `gpt-4.1-mini` v2025-04-14 deployment created (GlobalStandard, 10K TPM)
+- [x] Local `.env` populated with endpoint, key, version, deployment name
+- [x] `langchain-openai` installed via `pip install -e ".[llm]"` in `apps/api/.venv`
+- [x] 8/8 real Azure OpenAI integration tests pass
+
+### Phase A — Core Staging (not yet provisioned)
 See full checklist: [`infra/azure/README.md`](../infra/azure/README.md)
 
-Summary:
-- [ ] `~/.venvs/azure-cli` venv created and pip `azure-cli` installed
-- [ ] `az version` works after activating venv
-- [ ] `az login` completed and `az account show` confirms correct subscription
-- [ ] No secrets, subscription IDs or credentials committed to repo
 - [ ] App Registration `ib-github-actions-stg` created with federated credential
 - [ ] GitHub Secrets set: `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`
-- [ ] Resource naming, region (`westeurope`), and SKUs approved
+- [ ] `ib-stg-kv`, `ib-stg-api`, `ib-stg-web`, `ib-stg-db`, `ibstgstorage` provisioned
 - [ ] Cost estimate (~$98/month) accepted
 - [ ] Staging-only provisioning confirmed (not production)
 

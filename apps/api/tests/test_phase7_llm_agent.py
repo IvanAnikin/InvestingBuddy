@@ -840,6 +840,10 @@ def test_prompt_template_contains_required_constraints():
 
 
 def test_ci_uses_mock_llm_by_default():
-    """Default LLM_PROVIDER config is 'mock' — CI never needs Azure credentials."""
-    from app.core.config import settings
-    assert settings.llm_provider == "mock"
+    """Settings.llm_provider field default is 'mock' — CI has no .env so this default applies."""
+    from app.core.config import Settings
+    field_info = Settings.model_fields.get("llm_provider")
+    assert field_info is not None
+    assert field_info.default == "mock", (
+        f"Settings.llm_provider default must be 'mock' for CI safety. Got: {field_info.default}"
+    )

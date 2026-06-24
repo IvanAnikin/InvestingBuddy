@@ -1,10 +1,13 @@
 # InvestingBuddy — Azure Infrastructure
 
-## Status: Phase A Plan — Awaiting Provisioning Approval
+## Status: Phase 7 complete — Azure OpenAI provisioned; Phase A core staging not yet provisioned
 
-This document is the authoritative reference for Azure staging infrastructure.
-No resources have been created yet. Do not provision until the approval checklist
-at the bottom of this file is completed and confirmed.
+Provisioned (Phase 7):
+- `ib-stg-rg` — resource group, `westeurope`
+- `ib-stg-openai` — Azure OpenAI S0, endpoint `https://ib-stg-openai-d52d2.openai.azure.com/`
+- Deployment: `gpt-4.1-mini` v2025-04-14, GlobalStandard, 10K TPM
+
+Not yet provisioned: App Service, PostgreSQL, Key Vault, Storage, AI Search (Phase A).
 
 ---
 
@@ -67,11 +70,16 @@ Exceptions:
 | `ib-stg-db` | PostgreSQL Flexible Server 16 | Standard_B1ms | Main database |
 | `ibstgstorage` | Storage Account (LRS) | Standard | Blob storage for documents |
 
-### Later Resources (Phase 4+, do not provision now)
+### Phase 7 (provisioned)
+
+| Name | Type | SKU | Status |
+|---|---|---|---|
+| `ib-stg-openai` | Azure OpenAI | S0 | **Provisioned** — `gpt-4.1-mini` v2025-04-14, GlobalStandard, 10K TPM |
+
+### Phase 4+ (provision when needed)
 
 | Name | Type | Purpose |
 |---|---|---|
-| `ib-stg-openai` | Azure OpenAI | LLM runtime for agent workflows |
 | `ib-stg-search` | Azure AI Search | RAG / vector search |
 
 ### Future Resources (Phase 5+, do not provision now)
@@ -247,11 +255,15 @@ The `~/.venvs/azure-cli` directory is local-only and must never be committed.
 
 ### First-time install
 
+**Note:** Python 3.14 has no pre-built `cryptography` wheel. Use `--prefer-binary` so
+pip selects an older binary-compatible wheel instead of compiling from source (which
+requires Rust/Cargo).
+
 ```bash
 python3 -m venv ~/.venvs/azure-cli
 source ~/.venvs/azure-cli/bin/activate
 pip install --upgrade pip
-pip install azure-cli
+pip install --prefer-binary azure-cli   # --prefer-binary required on Python 3.14
 
 which az        # should show ~/.venvs/azure-cli/bin/az
 az version
@@ -284,15 +296,20 @@ is for provisioning and inspection only — it does not affect CI/CD.
 
 ## Pre-Provisioning Checklist
 
-Complete all items before running any `az` or Bicep commands:
+### Phase 7 (complete)
+- [x] `~/.venvs/azure-cli` venv created with `pip install --prefer-binary azure-cli`
+- [x] `az version` confirms CLI working (`azure-cli 2.87.0`)
+- [x] Logged in and correct subscription confirmed
+- [x] `ib-stg-rg` created in `westeurope`
+- [x] `ib-stg-openai` Azure OpenAI S0 created
+- [x] `gpt-4.1-mini` v2025-04-14 deployment created (GlobalStandard, 10K TPM)
+- [x] Local `.env` populated; 8/8 real Azure OpenAI integration tests pass
 
-### Local Azure CLI
-- [ ] `~/.venvs/azure-cli` venv created and `azure-cli` pip-installed
-- [ ] Activated: `source ~/.venvs/azure-cli/bin/activate`
-- [ ] `az version` confirms CLI is working
-- [ ] Logged in: `az login`
-- [ ] Correct subscription confirmed: `az account show`
-- [ ] Subscription ID noted (do not commit to repo — store only in GitHub Secrets)
+### Phase A Core Staging (next — complete before running Bicep)
+
+#### Local Azure CLI
+- [x] `~/.venvs/azure-cli` venv ready
+- [ ] Subscription ID noted (store only in GitHub Secrets — never commit)
 
 ### Azure AD Setup
 - [ ] App Registration `ib-github-actions-stg` created
