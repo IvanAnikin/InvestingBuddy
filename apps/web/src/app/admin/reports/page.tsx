@@ -2,12 +2,20 @@ import Link from "next/link";
 import { fetchReports } from "@/lib/api";
 import type { Report } from "@/types/api";
 
-function Badge({ label, color }: { label: string; color: "gray" | "amber" | "green" | "red" }) {
-  const styles = {
+function Badge({
+  label,
+  color,
+}: {
+  label: string;
+  color: "gray" | "amber" | "green" | "red" | "blue" | "purple";
+}) {
+  const styles: Record<string, string> = {
     gray: "bg-gray-100 text-gray-700",
     amber: "bg-amber-100 text-amber-800",
     green: "bg-green-100 text-green-800",
     red: "bg-red-100 text-red-800",
+    blue: "bg-blue-100 text-blue-800",
+    purple: "bg-purple-100 text-purple-800",
   };
   return (
     <span className={`inline-block px-2 py-0.5 rounded text-xs font-semibold ${styles[color]}`}>
@@ -16,12 +24,25 @@ function Badge({ label, color }: { label: string; color: "gray" | "amber" | "gre
   );
 }
 
-function reportStatusColor(status: string): "gray" | "amber" | "green" | "red" {
-  if (status === "published") return "green";
+function reviewStatusColor(
+  status: string,
+): "gray" | "amber" | "green" | "red" | "blue" | "purple" {
+  if (status === "approved_internal") return "green";
+  if (status === "rejected_internal") return "red";
+  if (status === "under_review") return "blue";
+  if (status === "needs_revision") return "purple";
   if (status === "draft") return "amber";
-  if (status === "rejected") return "red";
   return "gray";
 }
+
+const REVIEW_STATUS_LABELS: Record<string, string> = {
+  draft: "Draft",
+  under_review: "Under Review",
+  approved_internal: "Approved (Internal)",
+  rejected_internal: "Rejected",
+  needs_revision: "Needs Revision",
+  archived: "Archived",
+};
 
 async function getReports() {
   try {
@@ -97,7 +118,7 @@ export default async function ReportsPage() {
               <tr className="text-xs text-gray-500 uppercase tracking-wide border-b border-gray-100">
                 <th className="px-5 py-2 text-left font-medium">Title</th>
                 <th className="px-3 py-2 text-left font-medium">Type</th>
-                <th className="px-3 py-2 text-left font-medium">Status</th>
+                <th className="px-3 py-2 text-left font-medium">Review Status</th>
                 <th className="px-3 py-2 text-left font-medium">Created</th>
                 <th className="px-3 py-2 text-left font-medium"></th>
               </tr>
@@ -123,8 +144,8 @@ export default async function ReportsPage() {
                   </td>
                   <td className="px-3 py-3 whitespace-nowrap">
                     <Badge
-                      label={r.status}
-                      color={reportStatusColor(r.status)}
+                      label={REVIEW_STATUS_LABELS[r.review_status] ?? r.review_status ?? "draft"}
+                      color={reviewStatusColor(r.review_status ?? "draft")}
                     />
                   </td>
                   <td className="px-3 py-3 text-xs text-gray-400 whitespace-nowrap">

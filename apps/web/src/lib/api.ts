@@ -5,6 +5,9 @@ import type {
   HealthResponse,
   Report,
   ReportList,
+  ReviewActionRequest,
+  ReviewActionResponse,
+  ReviewEventList,
   WorkflowRunRequest,
   WorkflowRunResponse,
 } from "@/types/api";
@@ -75,4 +78,56 @@ export async function fetchReports(limit = 50, offset = 0): Promise<ReportList> 
 
 export async function fetchReport(id: string): Promise<Report> {
   return apiFetch<Report>(`/api/v1/reports/${id}`);
+}
+
+// ---------------------------------------------------------------------------
+// Phase 11: Review workflow API functions
+// ---------------------------------------------------------------------------
+
+export async function markUnderReview(
+  reportId: string,
+  request: ReviewActionRequest,
+): Promise<ReviewActionResponse> {
+  return apiFetch<ReviewActionResponse>(
+    `/api/v1/admin/reports/${reportId}/mark-under-review`,
+    { method: "POST", body: JSON.stringify(request) },
+  );
+}
+
+export async function approveReport(
+  reportId: string,
+  request: ReviewActionRequest,
+): Promise<ReviewActionResponse> {
+  return apiFetch<ReviewActionResponse>(
+    `/api/v1/admin/reports/${reportId}/approve`,
+    { method: "POST", body: JSON.stringify(request) },
+  );
+}
+
+export async function rejectReport(
+  reportId: string,
+  request: ReviewActionRequest,
+): Promise<ReviewActionResponse> {
+  return apiFetch<ReviewActionResponse>(
+    `/api/v1/admin/reports/${reportId}/reject`,
+    { method: "POST", body: JSON.stringify(request) },
+  );
+}
+
+export async function requestRevision(
+  reportId: string,
+  request: ReviewActionRequest,
+): Promise<ReviewActionResponse> {
+  return apiFetch<ReviewActionResponse>(
+    `/api/v1/admin/reports/${reportId}/needs-revision`,
+    { method: "POST", body: JSON.stringify(request) },
+  );
+}
+
+export async function fetchReviewEvents(
+  reportId: string,
+): Promise<ReviewEventList> {
+  return apiFetch<ReviewEventList>(
+    `/api/v1/admin/reports/${reportId}/review-events`,
+  );
 }
