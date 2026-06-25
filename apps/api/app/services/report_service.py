@@ -1,9 +1,21 @@
 import uuid
 
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.report import Report
 from app.schemas.report import ReportCreate
+
+
+async def list_reports(
+    db: AsyncSession, limit: int = 50, offset: int = 0
+) -> tuple[list[Report], int]:
+    count_result = await db.execute(select(func.count()).select_from(Report))
+    total = count_result.scalar_one()
+    result = await db.execute(
+        select(Report).order_by(Report.created_at.desc()).offset(offset).limit(limit)
+    )
+    return list(result.scalars().all()), total
 
 
 async def create_draft_report(db: AsyncSession, data: ReportCreate) -> Report:
