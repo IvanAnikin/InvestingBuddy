@@ -20,6 +20,7 @@ from app.main import app
 from app.models.agent_run import AgentRun
 from app.models.company import Company
 from app.models.report import Report
+from app.models.review_event import ReportReviewEvent
 from app.models.source import Citation, Source
 
 # ---------------------------------------------------------------------------
@@ -125,6 +126,11 @@ def citation_id() -> uuid.UUID:
 
 
 @pytest.fixture
+def review_event_id() -> uuid.UUID:
+    return uuid.UUID("66666666-6666-6666-6666-666666666666")
+
+
+@pytest.fixture
 def sample_report(report_id: uuid.UUID, agent_run_id: uuid.UUID) -> MagicMock:
     now = datetime.now(timezone.utc)
     report = MagicMock(spec=Report)
@@ -142,7 +148,33 @@ def sample_report(report_id: uuid.UUID, agent_run_id: uuid.UUID) -> MagicMock:
     report.published_at = None
     report.created_at = now
     report.updated_at = now
+    # Phase 11: review workflow fields
+    report.review_status = "draft"
+    report.reviewed_at = None
+    report.reviewer_note = None
+    report.review_decision_reason = None
+    report.human_review_required = True
+    report.approved_by = None
+    report.rejected_by = None
     return report
+
+
+@pytest.fixture
+def sample_review_event(
+    review_event_id: uuid.UUID,
+    report_id: uuid.UUID,
+) -> MagicMock:
+    now = datetime.now(timezone.utc)
+    event = MagicMock(spec=ReportReviewEvent)
+    event.id = review_event_id
+    event.report_id = report_id
+    event.action = "mark_under_review"
+    event.from_status = "draft"
+    event.to_status = "under_review"
+    event.note = None
+    event.actor_label = "admin@test.com"
+    event.created_at = now
+    return event
 
 
 @pytest.fixture

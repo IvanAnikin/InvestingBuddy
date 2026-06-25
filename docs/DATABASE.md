@@ -1,6 +1,6 @@
 # Database Schema
 
-## Status: Phase 6 — Citation Provenance Fields Added
+## Status: Phase 11 — Review Workflow Fields and report_review_events Table Added
 
 ---
 
@@ -45,6 +45,7 @@ alembic revision --autogenerate -m "short description"
 | 001 | `001_add_initial_tables.py` | creates companies, agent_runs, agent_steps, reports |
 | 002 | `002_add_sources_and_citations.py` | creates sources, citations |
 | 003 | `003_add_citation_provenance_fields.py` | adds field_path, source_tier, data_quality to citations |
+| 004 | `004_add_review_workflow.py` | adds review_status, reviewed_at, reviewer_note, review_decision_reason, human_review_required, approved_by, rejected_by to reports; creates report_review_events |
 
 ---
 
@@ -138,16 +139,51 @@ content_markdown            TEXT NULLABLE
 content_html                TEXT NULLABLE
 created_by_agent_run_id     UUID FK → agent_runs.id NULLABLE
 published_at                TIMESTAMP WITH TIME ZONE NULLABLE
+
+-- Phase 11 review workflow columns
+review_status               VARCHAR(50) NOT NULL DEFAULT 'draft'
+reviewed_at                 TIMESTAMP WITH TIME ZONE NULLABLE
+reviewer_note               TEXT NULLABLE
+review_decision_reason      TEXT NULLABLE
+human_review_required       BOOLEAN NOT NULL DEFAULT true
+approved_by                 VARCHAR(200) NULLABLE
+rejected_by                 VARCHAR(200) NULLABLE
+
 created_at                  TIMESTAMP WITH TIME ZONE
 updated_at                  TIMESTAMP WITH TIME ZONE
 
-INDEX: slug, status, report_type, published_at
+INDEX: slug, status, review_status, report_type, published_at
 ```
 
 Report types: `weekly`, `monthly`, `quarterly`, `yearly`,
 `company_deep_dive`, `theme_report`, `personalized`
 
-Report status values: `draft`, `review`, `published`, `archived`
+Report status values (lifecycle): `draft`, `review`, `published`, `archived`
+
+Review status values (Phase 11 human review workflow): `draft`, `under_review`, `approved_internal`, `rejected_internal`, `needs_revision`, `archived`
+
+Note: `status` tracks publication lifecycle; `review_status` tracks the human review workflow. They are separate columns. Internal approval (`approved_internal`) does not change `status` to `published` — public publishing is not implemented.
+
+---
+
+### Review Audit Log (Phase 11)
+
+**report_review_events**
+```
+id              UUID PK
+report_id       UUID FK → reports.id (CASCADE)
+action          VARCHAR(50) NOT NULL     mark_under_review | approve | reject | needs_revision
+from_status     VARCHAR(50) NULLABLE     previous review_status
+to_status       VARCHAR(50) NOT NULL     new review_status after this action
+note            TEXT NULLABLE            reviewer note (required for reject/needs_revision)
+actor_label     VARCHAR(200) NULLABLE    reviewer label (email/name — no FK to users yet)
+created_at      TIMESTAMP WITH TIME ZONE NOT NULL
+
+INDEX: report_id, action
+```
+
+Immutable — records are never updated or deleted. One row per human review action.
+`actor_label` is a plain string (no FK to `users`) — user accounts are Phase 12 future work.
 
 ---
 

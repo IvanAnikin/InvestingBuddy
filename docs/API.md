@@ -1,6 +1,6 @@
 # API Reference
 
-## Status: Phase 10 — Admin Review UI; reports listing and detail endpoints added
+## Status: Phase 11 — Admin Review / Approve-Reject Workflow; review action endpoints and audit log added
 
 ---
 
@@ -555,6 +555,11 @@ These endpoints are for **internal admin and development use only**. They expose
 |---|---|---|---|
 | GET | `/api/v1/reports` | ✅ Live | List all draft reports (admin only) |
 | GET | `/api/v1/reports/{report_id}` | ✅ Live | Get a single draft report by ID (admin only) |
+| POST | `/api/v1/admin/reports/{report_id}/mark-under-review` | ✅ Live | Move report to under_review (admin only) |
+| POST | `/api/v1/admin/reports/{report_id}/approve` | ✅ Live | Approve report internally (approved_internal; not public) |
+| POST | `/api/v1/admin/reports/{report_id}/reject` | ✅ Live | Reject report (rejected_internal; requires note) |
+| POST | `/api/v1/admin/reports/{report_id}/needs-revision` | ✅ Live | Request revision (needs_revision; requires note) |
+| GET | `/api/v1/admin/reports/{report_id}/review-events` | ✅ Live | Get immutable audit log of all review actions |
 
 **GET /api/v1/reports** — List draft reports
 
@@ -593,7 +598,107 @@ Error `404 Not Found`: report does not exist
 > It is not investment advice. It is not a public recommendation.
 > No BUY/SELL/HOLD/WATCH recommendation is ever contained in reports.
 > Internal workflow statuses (e.g. `research_incomplete`) are operational metadata only.
-> Authentication will be added in Phase 11.
+> Authentication will be added in Phase 12.
+
+---
+
+### Admin Report Review (Phase 11)
+
+**Review status values**: `draft` → `under_review` → `approved_internal` | `rejected_internal` | `needs_revision`
+
+**POST /api/v1/admin/reports/{report_id}/mark-under-review**
+
+Request:
+```json
+{ "note": "Starting review.", "actor_label": "admin@example.com" }
+```
+
+**POST /api/v1/admin/reports/{report_id}/approve**
+
+Approve a report internally. Set `acknowledge_warnings=true` when `human_review_required=true`.
+
+Request:
+```json
+{
+  "note": "Reviewed — sources adequate for internal use.",
+  "actor_label": "admin@example.com",
+  "acknowledge_warnings": true
+}
+```
+
+**POST /api/v1/admin/reports/{report_id}/reject**
+
+Requires `note`.
+
+Request:
+```json
+{ "note": "Source quality insufficient — T5 only.", "actor_label": "admin@example.com" }
+```
+
+**POST /api/v1/admin/reports/{report_id}/needs-revision**
+
+Requires `note`.
+
+Request:
+```json
+{ "note": "Please add SEC filing citation for revenue claim.", "actor_label": "admin@example.com" }
+```
+
+All review action responses follow `ReviewActionResponse`:
+```json
+{
+  "report_id": "uuid",
+  "action": "approve",
+  "from_status": "under_review",
+  "to_status": "approved_internal",
+  "note": "Reviewed — sources adequate.",
+  "actor_label": "admin@example.com",
+  "message": "Report approved internally (approved_internal). PUBLIC PUBLISHING IS NOT IMPLEMENTED. INTERNAL ADMIN ONLY. ..."
+}
+```
+
+**GET /api/v1/admin/reports/{report_id}/review-events**
+
+Immutable chronological audit log.
+
+```json
+{
+  "items": [
+    {
+      "id": "uuid",
+      "report_id": "uuid",
+      "action": "mark_under_review",
+      "from_status": "draft",
+      "to_status": "under_review",
+      "note": null,
+      "actor_label": "admin@example.com",
+      "created_at": "2026-06-25T10:00:00Z"
+    }
+  ],
+  "total": 1
+}
+```
+
+**Allowed transitions:**
+
+| Action | Allowed from |
+|---|---|
+| mark_under_review | draft, needs_revision |
+| approve | under_review |
+| reject | under_review, needs_revision, draft |
+| needs_revision | under_review |
+
+**Validation rules:**
+- `reject` and `needs_revision` require a non-empty `note`
+- `approve` when `human_review_required=true` requires `acknowledge_warnings=true`
+- All actions create an immutable `report_review_events` record
+- No `/publish` endpoint exists — public publishing not implemented in Phase 11
+
+> **Phase 11 constraints:**
+> - Internal approval ≠ public publication. No public-facing report is produced.
+> - All outputs remain draft/internal — not investment advice.
+> - Human reviewer remains responsible for all review decisions.
+> - Authentication not yet enforced — restrict access at network level (Phase 12).
 
 ---
 

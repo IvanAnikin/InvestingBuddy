@@ -1,6 +1,6 @@
 # Roadmap
 
-## Current Phase: Phase 10 — Admin Review UI (internal workspace at /admin)
+## Current Phase: Phase 11 — Admin Review / Approve-Reject Workflow (human review loop complete)
 
 ---
 
@@ -406,7 +406,49 @@ Skills used: `frontend-nextjs`, `backend-fastapi`, `testing-qa`, `security-revie
 
 ---
 
-## Phase 11: Judge + Backtesting
+## Phase 11: Admin Review / Approve-Reject Workflow ✅
+
+**Status: Complete**
+
+Goal: Complete the human-review loop for draft reports. Admin users can approve or reject internal draft reports from the UI. This is internal workflow only — not public publishing, not investment advice.
+
+Deliverables:
+- [x] `review_status` column added to `reports` (draft / under_review / approved_internal / rejected_internal / needs_revision / archived)
+- [x] Review metadata columns: `reviewed_at`, `reviewer_note`, `review_decision_reason`, `human_review_required`, `approved_by`, `rejected_by`
+- [x] `report_review_events` table — immutable audit log of every review action
+- [x] Alembic migration 004 — adds all Phase 11 columns and creates `report_review_events`
+- [x] `ReportReviewEvent` SQLAlchemy model (`app/models/review_event.py`)
+- [x] `ReviewActionRequest`, `ReviewActionResponse`, `ReviewEventRead`, `ReviewEventList` Pydantic schemas
+- [x] Review service functions: `mark_under_review`, `approve_report`, `reject_report`, `needs_revision`, `get_review_events`
+- [x] Status transition guard — validates allowed-from states per action
+- [x] Note required for `reject` and `needs_revision`
+- [x] `acknowledge_warnings=true` required for approve when `human_review_required=true`
+- [x] `POST /api/v1/admin/reports/{id}/mark-under-review`
+- [x] `POST /api/v1/admin/reports/{id}/approve` — internal approval only, not public
+- [x] `POST /api/v1/admin/reports/{id}/reject` — note required
+- [x] `POST /api/v1/admin/reports/{id}/needs-revision` — note required
+- [x] `GET /api/v1/admin/reports/{id}/review-events` — chronological audit log
+- [x] No `/publish` endpoint — public publishing intentionally omitted
+- [x] `ReviewPanel` client component — interactive review buttons, note textarea, acknowledgement checkbox, warning banners
+- [x] Review event timeline in `/admin/reports/[id]`
+- [x] Report list updated to show `review_status` with color-coded badge
+- [x] TypeScript types and API client updated for all new schemas
+- [x] 30 new backend tests; 493 total; ruff clean; typecheck / lint / build clean (8 routes)
+- [x] `docs/API.md`, `docs/DATABASE.md`, `docs/ARCHITECTURE.md`, `docs/ROADMAP.md`, `README.md` updated
+
+Constraints enforced:
+- No public publishing — no `/publish` endpoint exists
+- No investment advice or BUY/SELL/HOLD/WATCH recommendations
+- No user authentication (Phase 12 future work — restrict at network level)
+- No Azure resources provisioned
+- No secrets committed
+- All UI clearly states internal-only / draft / not investment advice
+
+Skills used: `backend-fastapi`, `database-design`, `frontend-nextjs`, `investment-domain`, `security-review`, `testing-qa`, `docs-maintainer`
+
+---
+
+## Phase 12: Judge + Backtesting
 
 **Status: Not started**
 

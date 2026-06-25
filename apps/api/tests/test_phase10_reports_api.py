@@ -192,6 +192,14 @@ async def test_report_content_does_not_expose_buy_sell(
     safe_report.published_at = None
     safe_report.created_at = now
     safe_report.updated_at = now
+    # Phase 11 review fields
+    safe_report.review_status = "draft"
+    safe_report.reviewed_at = None
+    safe_report.reviewer_note = None
+    safe_report.review_decision_reason = None
+    safe_report.human_review_required = True
+    safe_report.approved_by = None
+    safe_report.rejected_by = None
 
     with patch(_GET, new_callable=AsyncMock, return_value=safe_report):
         response = await client.get(f"/api/v1/reports/{report_id}")

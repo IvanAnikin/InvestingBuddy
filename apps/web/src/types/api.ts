@@ -53,10 +53,52 @@ export interface Report {
   published_at: string | null;
   created_at: string;
   updated_at: string;
+  // Phase 11 review workflow fields
+  review_status: string;
+  reviewed_at: string | null;
+  reviewer_note: string | null;
+  review_decision_reason: string | null;
+  human_review_required: boolean;
+  approved_by: string | null;
+  rejected_by: string | null;
 }
 
 export interface ReportList {
   items: Report[];
+  total: number;
+}
+
+// Phase 11: Review action request/response
+export interface ReviewActionRequest {
+  note?: string;
+  actor_label?: string;
+  acknowledge_warnings?: boolean;
+}
+
+export interface ReviewActionResponse {
+  report_id: string;
+  action: string;
+  from_status: string | null;
+  to_status: string;
+  note: string | null;
+  actor_label: string | null;
+  message: string;
+}
+
+// Phase 11: Review event (immutable audit log entry)
+export interface ReviewEvent {
+  id: string;
+  report_id: string;
+  action: string;
+  from_status: string | null;
+  to_status: string;
+  note: string | null;
+  actor_label: string | null;
+  created_at: string;
+}
+
+export interface ReviewEventList {
+  items: ReviewEvent[];
   total: number;
 }
 
