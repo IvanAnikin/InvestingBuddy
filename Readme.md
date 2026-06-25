@@ -74,7 +74,8 @@ npm install
 npm run dev
 ```
 
-Frontend runs at <http://localhost:3000>
+Frontend runs at <http://localhost:3000>  
+Admin workspace at <http://localhost:3000/admin> (internal — not investment advice)
 
 ---
 
@@ -135,10 +136,10 @@ Copy `.env.example` to `.env` and fill in values as needed.
 | Phase 7 | Done | Azure OpenAI + first LLM research agent (optional generate_research_sections node; mock + Azure clients) |
 | Phase 8 | Done | Research Team agents: 4 deterministic nodes (financial data, source quality, research completeness, citation validator v2); 13-node workflow v4.0.0 |
 | Phase 9 | Done | Analysis Council MVP: 5 deterministic agents (bull/bear/risk/valuation guard/committee chair); 18-node workflow v5.0.0; no public recommendations |
+| Phase 10 | Done | Admin Review UI: `/admin` workspace with dashboard, company form, analysis trigger, report list + detail; reports API endpoints; 463 tests |
 | Phase 5 | Planned | Full council-of-agents MVP |
-| Phase 10 | Planned | Judge system and backtesting |
-| Phase 10 | Planned | Weekly report pipeline, watchlists |
-| Phase 11 | Planned | Personalized investor assistant (V2) |
+| Phase 11 | Planned | Judge system and backtesting |
+| Phase 12 | Planned | Personalized investor assistant (V2) |
 
 ---
 

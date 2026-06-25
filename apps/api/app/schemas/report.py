@@ -35,3 +35,8 @@ class ReportRead(BaseModel):
     published_at: datetime | None
     created_at: datetime
     updated_at: datetime
+
+
+class ReportList(BaseModel):
+    items: list[ReportRead]
+    total: int

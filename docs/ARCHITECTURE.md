@@ -1,6 +1,6 @@
 # Architecture
 
-## Status: Phase 9 — Analysis Council MVP (18-node workflow, 5 deterministic Analysis Council agents)
+## Status: Phase 10 — Admin Review UI (18-node workflow + internal admin workspace at /admin)
 
 ---
 
@@ -36,7 +36,14 @@ Azure Application Insights
 - Next.js 16, React 19, TypeScript, Tailwind CSS v4, App Router
 - Public report pages, admin dashboard, user account (V2)
 - Communicates with backend via REST API
-- Status: **skeleton created in Phase 1**
+- Status: **Phase 10 — Admin Review UI live at `/admin`**
+  - `/admin` — dashboard (health, company count, latest reports)
+  - `/admin/companies/new` — create company form
+  - `/admin/analysis` — trigger workflow form with full Phase 9 result display
+  - `/admin/reports` — draft report list
+  - `/admin/reports/[id]` — draft report detail with content and metadata
+  - `src/lib/api.ts` — typed API client
+  - `src/types/api.ts` — TypeScript types matching backend Pydantic schemas
 
 ### Backend (`apps/api/`)
 - FastAPI, SQLAlchemy async, Pydantic v2, Alembic
@@ -193,6 +200,7 @@ All errors are caught, logged to `agent_runs.error_message`, and returned as HTT
 | Phase 7 | ✅ Complete | 9-node workflow; `ResearchLLMClient` abstraction (Mock + AzureOpenAI skeleton); optional `generate_research_sections` LLM node; `ResearchSectionsOutput` schema; safety gate; prompt template v1; `use_llm`/`llm_provider` API fields; 28 new offline tests; 334 total |
 | Phase 8 | ✅ Complete | 13-node workflow v4.0.0; 4 deterministic Research Team agents (financial data, source quality, completeness, citation v2); 3 prompt templates; 9 new state fields; 5 API response fields; 52 new offline tests; 394 total |
 | Phase 9 | ✅ Complete | 18-node workflow v5.0.0; 5 deterministic Analysis Council agents (bull, bear, risk, valuation guard, committee chair); 5 prompt templates; 9 new state fields; 9 API response fields; 64 new offline tests; 458 total |
+| Phase 10 | ✅ Complete | Admin Review UI (`/admin`); 5 Next.js routes; `GET /api/v1/reports` + `GET /api/v1/reports/{id}`; typed API client; 13 new backend tests; 463 total; ruff + typecheck + lint + build clean |
 
 ---
 

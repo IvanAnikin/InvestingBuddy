@@ -1,6 +1,6 @@
 # Roadmap
 
-## Current Phase: Phase 9 — Analysis Council MVP (5 deterministic agents)
+## Current Phase: Phase 10 — Admin Review UI (internal workspace at /admin)
 
 ---
 
@@ -370,7 +370,43 @@ Skills used: `langgraph-agents`, `backend-fastapi`, `investment-domain`, `securi
 
 ---
 
-## Phase 10: Judge + Backtesting
+## Phase 10: Admin Review UI ✅
+
+**Status: Complete**
+
+Goal: First usable internal admin workspace for reviewing InvestingBuddy research outputs without needing cURL or Swagger UI.
+
+Deliverables:
+- [x] `GET /api/v1/reports` — list draft reports (admin/dev only)
+- [x] `GET /api/v1/reports/{report_id}` — get draft report by ID (admin/dev only)
+- [x] `ReportList` Pydantic schema + `list_reports` service function
+- [x] `/admin` — dashboard: backend health, company count, latest reports, platform status badges
+- [x] `/admin/companies/new` — company creation form (ticker, exchange, name, country, sector, currency)
+- [x] `/admin/analysis` — analysis run form with full Phase 9 result display (quality gate, bull/bear/risk/valuation/committee, warnings)
+- [x] `/admin/reports` — draft report list table
+- [x] `/admin/reports/[id]` — draft report detail with metadata, admin disclaimers, raw markdown content
+- [x] Admin layout: persistent disclaimer banner ("NOT INVESTMENT ADVICE"), navigation, footer
+- [x] `src/lib/api.ts` — typed fetch client for all admin endpoints
+- [x] `src/types/api.ts` — TypeScript types matching all backend Pydantic schemas
+- [x] 13 new offline backend tests for reports endpoints; 463 total passing; ruff clean
+- [x] Frontend: typecheck clean, lint clean, build clean (7 routes)
+- [x] Homepage updated to Phase 10 status with /admin link
+- [x] `docs/API.md`, `docs/ARCHITECTURE.md`, `docs/ROADMAP.md`, `README.md` updated
+
+Constraints enforced:
+- No public publishing
+- No investment advice or BUY/SELL/HOLD/WATCH recommendations
+- No user authentication (documented as Phase 11 future work)
+- No new Azure resources
+- No deploy to Azure
+- No secrets committed
+- All UI prominently disclaims admin-only, draft-only status
+
+Skills used: `frontend-nextjs`, `backend-fastapi`, `testing-qa`, `security-review`, `docs-maintainer`
+
+---
+
+## Phase 11: Judge + Backtesting
 
 **Status: Not started**
 
