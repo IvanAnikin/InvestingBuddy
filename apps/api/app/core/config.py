@@ -27,6 +27,12 @@ class Settings(BaseSettings):
     # NEVER set to True in CI — CI must always run offline with mock provider.
     enable_integration_tests: bool = False
 
+    # ── Staging Access Control (Phase 12) ─────────────────────────────────
+    # When APP_ENV=staging, set this to "username:password" to enable HTTP
+    # Basic Auth on all routes (except /health). Leave empty to disable.
+    # Store value in Key Vault as 'staging-basic-auth' — never hardcode.
+    staging_basic_auth: str = ""
+
     # ── LLM Provider (Phase 7) ──────────────────────────────────────────────
     # Which LLM client to use: "mock" | "azure_openai"
     # Default is "mock" so CI tests require no Azure credentials or network.

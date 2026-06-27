@@ -1,6 +1,6 @@
 # Roadmap
 
-## Current Phase: Phase 11 — Admin Review / Approve-Reject Workflow (human review loop complete)
+## Current Phase: Phase 12 — Azure Staging Deployment (Bicep infrastructure complete)
 
 ---
 
@@ -448,7 +448,51 @@ Skills used: `backend-fastapi`, `database-design`, `frontend-nextjs`, `investmen
 
 ---
 
-## Phase 12: Judge + Backtesting
+## Phase 12: Azure Staging Deployment ✅
+
+**Status: Complete (infrastructure code)**
+
+Goal: Provision and deploy the first Azure staging environment for InvestingBuddy.
+Staging only — internal admin use, not public investment advice.
+
+Deliverables:
+- [x] `infra/azure/main.bicep` — full module wiring + inline RBAC assignments
+- [x] `infra/azure/parameters/staging.bicepparam` — reads DB password from env var, no secrets committed
+- [x] `infra/azure/modules/monitoring.bicep` — Log Analytics Workspace + Application Insights
+- [x] `infra/azure/modules/keyvault.bicep` — Key Vault Standard, RBAC permission model
+- [x] `infra/azure/modules/storage.bicep` — StorageV2 LRS + `investingbuddy-documents` container
+- [x] `infra/azure/modules/postgres.bicep` — PostgreSQL 16 Flexible Server Standard_B1ms
+- [x] `infra/azure/modules/appservice.bicep` — API B2 (Python 3.12) + Web B1 (Node 22)
+- [x] `.github/workflows/deploy-api-staging.yml` — activated; OIDC login; ZIP deploy; health check
+- [x] `.github/workflows/deploy-web-staging.yml` — activated; OIDC login; build with staging URL; ZIP deploy; smoke check
+- [x] Staging Basic Auth middleware in FastAPI (`STAGING_BASIC_AUTH` env var → HTTP Basic Auth on all routes except `/health`)
+- [x] `gunicorn` added as `[deploy]` optional dependency in `pyproject.toml`
+- [x] `STAGING_BASIC_AUTH` added to config, `.env.example`, Key Vault reference in Bicep
+- [x] `docs/DEPLOYMENT.md` fully updated — provisioning commands, migration steps, smoke tests, OIDC setup, cost notes, security limitations
+- [x] `infra/azure/README.md` fully updated — Bicep structure, resource specs, KV secrets list, checklist
+- [x] `docs/ARCHITECTURE.md`, `docs/ROADMAP.md`, `README.md` updated
+
+Pending (manual steps before resources are live):
+- [ ] Create App Registration `ib-github-actions-stg` + OIDC federated credential
+- [ ] Set GitHub Secrets: `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `AZURE_STAGING_DB_PASSWORD`
+- [ ] Run `az deployment group create` against `ib-stg-rg`
+- [ ] Populate Key Vault secrets (5 secrets)
+- [ ] Run `alembic upgrade head` on staging DB
+- [ ] Staging smoke tests pass
+
+Constraints enforced:
+- No production resources created or targeted
+- No secrets committed to repository
+- No Azure OpenAI required in CI (LLM_PROVIDER=mock default)
+- No Azure AI Search provisioned
+- No public publishing of investment research
+- No breaking changes to local development
+
+Skills used: `azure-deployment`, `backend-fastapi`, `security-review`, `docs-maintainer`
+
+---
+
+## Phase 13: Judge + Backtesting
 
 **Status: Not started**
 

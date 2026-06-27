@@ -1,4 +1,6 @@
-from fastapi import FastAPI
+import base64
+
+from fastapi import FastAPI, Request, Response
 
 from app.api.v1.admin_reports import router as admin_reports_router
 from app.api.v1.citations import router as citations_router
@@ -16,6 +18,27 @@ app = FastAPI(
     docs_url="/api/docs",
     redoc_url="/api/redoc",
 )
+
+# ── Staging Basic Auth middleware ──────────────────────────────────────────
+# Activated when APP_ENV=staging and STAGING_BASIC_AUTH="username:password".
+# Protects all routes except /health (used by App Service health checks).
+# This is a minimal access control for the staging environment — not a
+# replacement for proper authentication (planned for Phase 12 with Clerk).
+if settings.app_env == "staging" and settings.staging_basic_auth:
+    _expected = base64.b64encode(settings.staging_basic_auth.encode()).decode()
+
+    @app.middleware("http")
+    async def staging_basic_auth(request: Request, call_next: object) -> Response:
+        if request.url.path == "/health":
+            return await call_next(request)  # type: ignore[operator]
+        auth = request.headers.get("Authorization", "")
+        if auth == f"Basic {_expected}":
+            return await call_next(request)  # type: ignore[operator]
+        return Response(
+            content="Staging access restricted",
+            status_code=401,
+            headers={"WWW-Authenticate": 'Basic realm="InvestingBuddy Staging"'},
+        )
 
 app.include_router(health_router)
 app.include_router(companies_router, prefix="/api/v1")
