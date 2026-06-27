@@ -1,6 +1,6 @@
 # Architecture
 
-## Status: Phase 11 — Admin Review / Approve-Reject Workflow (human review loop complete)
+## Status: Phase 12 — Azure Staging Infrastructure (Bicep provisioning complete, deployment active)
 
 ---
 
@@ -204,6 +204,7 @@ All errors are caught, logged to `agent_runs.error_message`, and returned as HTT
 | Phase 9 | ✅ Complete | 18-node workflow v5.0.0; 5 deterministic Analysis Council agents (bull, bear, risk, valuation guard, committee chair); 5 prompt templates; 9 new state fields; 9 API response fields; 64 new offline tests; 458 total |
 | Phase 10 | ✅ Complete | Admin Review UI (`/admin`); 5 Next.js routes; `GET /api/v1/reports` + `GET /api/v1/reports/{id}`; typed API client; 13 new backend tests; 463 total; ruff + typecheck + lint + build clean |
 | Phase 11 | ✅ Complete | Admin Review Workflow; 5 new admin endpoints; `ReportReviewEvent` model; migration 004; `ReviewPanel` client component; review event timeline; 30 new backend tests; 493 total; ruff + typecheck + lint + build clean |
+| Phase 12 | ✅ Complete | Azure Staging Infrastructure; 5 Bicep modules; `main.bicep` with RBAC; activated `deploy-api-staging.yml` + `deploy-web-staging.yml` (OIDC); staging Basic Auth middleware; `gunicorn` deploy extra; docs updated |
 
 ---
 

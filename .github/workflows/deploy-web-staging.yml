@@ -1,56 +1,77 @@
-# PLACEHOLDER — DO NOT ENABLE until staging resources are provisioned
-# and the checklist in infra/azure/README.md is complete.
+name: Deploy Web — Staging
+
+# Triggers on merge to main when web code or this workflow changes.
+# Requires GitHub Secrets: AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID
+# Uses OIDC federated credentials — no long-lived credential JSON stored.
 #
-# To activate:
-#   1. Complete all items in infra/azure/README.md pre-provisioning checklist
-#   2. Set GitHub Secrets: AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID
-#   3. Provision ib-stg-web App Service
-#   4. Uncomment this workflow and remove these header comments
-#
-# name: Deploy Web — Staging
-#
-# on:
-#   push:
-#     branches: [main]
-#     paths:
-#       - "apps/web/**"
-#       - ".github/workflows/deploy-web-staging.yml"
-#
-# permissions:
-#   id-token: write   # required for OIDC
-#   contents: read
-#
-# jobs:
-#   deploy:
-#     name: Deploy Next.js to Staging
-#     runs-on: ubuntu-latest
-#     environment: staging
-#
-#     steps:
-#       - uses: actions/checkout@v4
-#
-#       - uses: azure/login@v2
-#         with:
-#           client-id: ${{ secrets.AZURE_CLIENT_ID }}
-#           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-#           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-#
-#       - uses: actions/setup-node@v4
-#         with:
-#           node-version: "22"
-#           cache: "npm"
-#           cache-dependency-path: apps/web/package-lock.json
-#
-#       - name: Install and build
-#         working-directory: apps/web
-#         run: |
-#           npm ci
-#           npm run build
-#         env:
-#           NEXT_PUBLIC_API_BASE_URL: https://ib-stg-api.azurewebsites.net
-#
-#       - name: Deploy to Azure App Service
-#         uses: azure/webapps-deploy@v3
-#         with:
-#           app-name: ib-stg-web
-#           package: apps/web
+# NEXT_PUBLIC_API_BASE_URL is a Next.js public variable — it is baked into the
+# bundle at build time. The value below must match the deployed API hostname.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/web/**"
+      - ".github/workflows/deploy-web-staging.yml"
+
+permissions:
+  id-token: write   # required for OIDC federated login
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy Next.js to ib-stg-web
+    runs-on: ubuntu-latest
+    environment: staging
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # OIDC login — ephemeral token, no long-lived credentials in GitHub Secrets
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: apps/web/package-lock.json
+
+      # Build with staging API URL baked into Next.js bundle (NEXT_PUBLIC_ vars)
+      - name: Install and build
+        working-directory: apps/web
+        run: |
+          npm ci
+          npm run build
+        env:
+          NEXT_PUBLIC_API_BASE_URL: https://ib-stg-api.azurewebsites.net
+
+      # Deploy full app folder: includes .next/ and node_modules/ so the
+      # App Service startup command (next start) works without an npm install step.
+      - name: Create deployment ZIP
+        run: |
+          cd apps/web
+          zip -r ../../deploy-web.zip . \
+            --exclude "*.log" \
+            --exclude ".env*"
+
+      - name: Deploy to Azure App Service
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ib-stg-web
+          package: deploy-web.zip
+
+      - name: Smoke check — web frontend
+        run: |
+          echo "Waiting for App Service to restart..."
+          sleep 45
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://ib-stg-web.azurewebsites.net)
+          echo "Web frontend HTTP status: $STATUS"
+          if [ "$STATUS" != "200" ]; then
+            echo "ERROR: web smoke check failed (HTTP $STATUS)"
+            exit 1
+          fi
+          echo "Web frontend smoke check passed."

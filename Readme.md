@@ -110,6 +110,7 @@ Copy `.env.example` to `.env` and fill in values as needed.
 | `DATABASE_URL` | Yes | PostgreSQL connection string |
 | `APP_ENV` | No | `development` / `staging` / `production` |
 | `SECRET_KEY` | Yes (prod) | App secret key |
+| `STAGING_BASIC_AUTH` | Phase 12+ | Staging access control `user:pass` — Key Vault ref in staging |
 | `LLM_PROVIDER` | No | LLM client: `mock` (default, CI-safe) / `azure_openai` |
 | `AZURE_OPENAI_*` | Phase 7+ | Azure OpenAI credentials — required only when `LLM_PROVIDER=azure_openai` |
 | `AZURE_STORAGE_*` | Phase 5+ | Azure Blob Storage for documents |
@@ -138,9 +139,10 @@ Copy `.env.example` to `.env` and fill in values as needed.
 | Phase 9 | Done | Analysis Council MVP: 5 deterministic agents (bull/bear/risk/valuation guard/committee chair); 18-node workflow v5.0.0; no public recommendations |
 | Phase 10 | Done | Admin Review UI: `/admin` workspace with dashboard, company form, analysis trigger, report list + detail; reports API endpoints; 463 tests |
 | Phase 11 | Done | Admin Review / Approve-Reject Workflow: 5 admin review endpoints; `report_review_events` audit table; `ReviewPanel` UI; 493 tests |
+| Phase 12 | Done | Azure Staging Infrastructure: 5 Bicep modules; activated deploy workflows (OIDC); staging Basic Auth middleware |
 | Phase 5 | Planned | Full council-of-agents MVP |
-| Phase 12 | Planned | Judge system and backtesting |
-| Phase 13 | Planned | Personalized investor assistant (V2) |
+| Phase 13 | Planned | Judge system and backtesting |
+| Phase 14 | Planned | Personalized investor assistant (V2) |
 
 ---
 

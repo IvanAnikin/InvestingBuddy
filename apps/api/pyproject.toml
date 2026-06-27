@@ -25,6 +25,11 @@ dev = [
     "ruff>=0.8",
     "mypy>=1.13",
 ]
+# Install in Azure App Service (staging/production).
+# gunicorn serves uvicorn workers for multi-process production serving.
+deploy = [
+    "gunicorn>=23.0",
+]
 # Install when LLM_PROVIDER=azure_openai is used locally or in staging.
 # Not required for CI — default LLM_PROVIDER=mock uses no Azure credentials.
 llm = [
