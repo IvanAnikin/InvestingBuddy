@@ -1,0 +1,56 @@
+{
+  "cik": "320193",
+  "entityType": "operating",
+  "sic": "3571",
+  "sicDescription": "Electronic Computers",
+  "insiderTransactionForOwnerExists": 1,
+  "insiderTransactionForIssuerExists": 1,
+  "name": "Apple Inc.",
+  "tickers": ["AAPL"],
+  "exchanges": ["Nasdaq"],
+  "ein": "942404110",
+  "description": "",
+  "website": "https://www.apple.com",
+  "investorWebsite": "https://investor.apple.com",
+  "category": "Large accelerated filer",
+  "fiscalYearEnd": "0930",
+  "stateOfIncorporation": "DE",
+  "stateOfIncorporationDescription": "Delaware",
+  "phone": "4089961010",
+  "flags": "",
+  "mailing": {
+    "street1": "ONE APPLE PARK WAY",
+    "street2": null,
+    "city": "CUPERTINO",
+    "stateOrCountry": "CA",
+    "zipCode": "95014",
+    "stateOrCountryDescription": "CA"
+  },
+  "business": {
+    "street1": "ONE APPLE PARK WAY",
+    "street2": null,
+    "city": "CUPERTINO",
+    "stateOrCountry": "CA",
+    "zipCode": "95014",
+    "stateOrCountryDescription": "CA"
+  },
+  "filings": {
+    "recent": {
+      "accessionNumber": [],
+      "filingDate": [],
+      "reportDate": [],
+      "acceptanceDateTime": [],
+      "act": [],
+      "form": [],
+      "fileNumber": [],
+      "filmNumber": [],
+      "items": [],
+      "size": [],
+      "isXBRL": [],
+      "isInlineXBRL": [],
+      "primaryDocument": [],
+      "primaryDocDescription": []
+    },
+    "files": []
+  }
+}

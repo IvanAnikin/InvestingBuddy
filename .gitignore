@@ -55,3 +55,11 @@ infra/terraform/.terraform/
 infra/terraform/*.tfstate
 infra/terraform/*.tfstate.backup
 infra/terraform/*.tfvars
+
+# ─── Azure CLI venv (pip-installed, local only) ───────────────────────────────
+# ~/.venvs/azure-cli is outside the repo — this entry guards against accidental
+# symlinking or nested clone scenarios.
+.venvs/
+
+# ─── Temporary upload / extraction folders ────────────────────────────────────
+ozgy_files/

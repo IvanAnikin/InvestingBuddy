@@ -1,6 +1,6 @@
 # Testing
 
-## Status: Placeholder — Phase 0
+## Status: Active — Phase 3.5
 
 This document describes the InvestingBuddy testing strategy and test commands.
 
@@ -10,6 +10,7 @@ Update this file when:
 - New test patterns are established
 
 For testing rules see `.claude/skills/testing-qa/SKILL.md`.
+For quick check commands see `.claude/skills/ci-test-runner/SKILL.md`.
 
 ---
 
@@ -44,22 +45,34 @@ apps/api/tests/
 
 ---
 
+## Test Count Reference
+
+| Phase | Test count | Notes |
+|---|---|---|
+| Phase 1 | 2 | Health endpoint smoke |
+| Phase 2 | 27 | Agent workflow + company storage |
+| Phase 3 | 76 | Citations, research storage |
+| Phase 3.5 | 96 | +20 report validation (all offline) |
+
 ## Running Backend Tests
 
 ```bash
 cd apps/api
 
 # Run all tests
-pytest
+.venv/bin/pytest tests/ -q
 
 # Run with verbose output
-pytest -v
+.venv/bin/pytest tests/ -v
 
 # Run specific test file
-pytest tests/integration/test_reports.py
+.venv/bin/pytest tests/test_report_validation.py -v
 
-# Run with coverage (after installing pytest-cov)
-pytest --cov=app
+# Run tests matching a name pattern
+.venv/bin/pytest tests/ -k "test_report" -v
+
+# Stop on first failure
+.venv/bin/pytest tests/ -x
 ```
 
 ---
@@ -70,10 +83,19 @@ pytest --cov=app
 cd apps/api
 
 # Lint
-ruff check .
+.venv/bin/ruff check .
 
-# Type check
-mypy .
+# Auto-fix lint issues
+.venv/bin/ruff check --fix .
+
+# Type check (run when types are touched)
+.venv/bin/mypy .
+```
+
+### Quick full backend check
+
+```bash
+cd apps/api && .venv/bin/pytest tests/ -q && .venv/bin/ruff check . && echo "ALL BACKEND CHECKS PASSED"
 ```
 
 ---
@@ -98,6 +120,12 @@ cd apps/web
 npm run typecheck
 npm run lint
 npm run build
+```
+
+### Quick full frontend check
+
+```bash
+cd apps/web && npm run typecheck && npm run lint && npm run build && echo "ALL FRONTEND CHECKS PASSED"
 ```
 
 ---

@@ -163,6 +163,11 @@ investingbuddy/
 | Testing / QA | `.claude/skills/testing-qa/` | Tests, CI checks |
 | Security Review | `.claude/skills/security-review/` | Auth, secrets, prompt injection |
 | Docs Maintainer | `.claude/skills/docs-maintainer/` | Documentation updates |
+| Local Dev Operator | `.claude/skills/local-dev-operator/` | Starting and verifying the local stack |
+| Git Release Manager | `.claude/skills/git-release-manager/` | Safe commits, push, merge, tagging |
+| CI Test Runner | `.claude/skills/ci-test-runner/` | Running checks; blocking commits on failure |
+| Dev Env Troubleshooter | `.claude/skills/dev-environment-troubleshooter/` | Diagnosing and fixing broken local environments |
+| Manual QA | `.claude/skills/manual-qa/` | Manual smoke tests and regression checklists |
 
 ## Available Commands
 
@@ -177,3 +182,9 @@ investingbuddy/
 | generate-tests | `.claude/commands/generate-tests.md` | Adding test coverage |
 | update-docs | `.claude/commands/update-docs.md` | Keeping docs current |
 | deploy-check | `.claude/commands/deploy-check.md` | Pre-deploy validation |
+| launch-local | `.claude/commands/launch-local.md` | Starting the full local dev stack |
+| run-checks | `.claude/commands/run-checks.md` | Running all checks before a commit |
+| git-safe-commit | `.claude/commands/git-safe-commit.md` | Staging and committing safely |
+| git-push-merge | `.claude/commands/git-push-merge.md` | Pushing, merging to main, and tagging |
+| manual-smoke-test | `.claude/commands/manual-smoke-test.md` | Manual QA against the running stack |
+| troubleshoot-local | `.claude/commands/troubleshoot-local.md` | Diagnosing broken local environments |

@@ -1,0 +1,77 @@
+name: Deploy API — Staging
+
+# Triggers on merge to main when API code or this workflow changes.
+# Requires GitHub Secrets: AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID
+# Uses OIDC federated credentials — no long-lived credential JSON stored.
+#
+# NOTE: Database migrations are NOT run automatically.
+# Run manually after first deploy: see docs/DEPLOYMENT.md#running-migrations-on-staging
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/api/**"
+      - "infra/azure/**"
+      - ".github/workflows/deploy-api-staging.yml"
+
+permissions:
+  id-token: write   # required for OIDC federated login
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy FastAPI to ib-stg-api
+    runs-on: ubuntu-latest
+    environment: staging
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # OIDC login — ephemeral token, no long-lived credentials in GitHub Secrets
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Install production + deploy dependencies (includes gunicorn)
+      - name: Install dependencies
+        working-directory: apps/api
+        run: pip install -e ".[deploy]"
+
+      # SCM_DO_BUILD_DURING_DEPLOYMENT=true in App Service runs pip install on server.
+      # Exclude test files and local venv from the package.
+      - name: Create deployment ZIP
+        run: |
+          cd apps/api
+          zip -r ../../deploy-api.zip . \
+            --exclude "*.pyc" \
+            --exclude "__pycache__/*" \
+            --exclude ".venv/*" \
+            --exclude "tests/*" \
+            --exclude ".pytest_cache/*" \
+            --exclude "*.egg-info/*"
+
+      - name: Deploy to Azure App Service
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ib-stg-api
+          package: deploy-api.zip
+
+      # Wait for App Service to restart and run health check
+      - name: Smoke check — API health
+        run: |
+          echo "Waiting for App Service to restart..."
+          sleep 45
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://ib-stg-api.azurewebsites.net/health)
+          echo "Health endpoint HTTP status: $STATUS"
+          if [ "$STATUS" != "200" ]; then
+            echo "ERROR: health check failed (HTTP $STATUS)"
+            exit 1
+          fi
+          echo "API health check passed."

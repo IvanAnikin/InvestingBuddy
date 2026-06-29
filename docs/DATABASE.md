@@ -1,6 +1,6 @@
 # Database Schema
 
-## Status: Phase 2 — Initial Tables Created
+## Status: Phase 11 — Review Workflow Fields and report_review_events Table Added
 
 ---
 
@@ -40,9 +40,12 @@ alembic revision --autogenerate -m "short description"
 
 ## Applied Migrations
 
-| Revision | File | Tables Created |
+| Revision | File | Tables / Columns Changed |
 |---|---|---|
-| 001 | `001_add_initial_tables.py` | companies, agent_runs, agent_steps, reports |
+| 001 | `001_add_initial_tables.py` | creates companies, agent_runs, agent_steps, reports |
+| 002 | `002_add_sources_and_citations.py` | creates sources, citations |
+| 003 | `003_add_citation_provenance_fields.py` | adds field_path, source_tier, data_quality to citations |
+| 004 | `004_add_review_workflow.py` | adds review_status, reviewed_at, reviewer_note, review_decision_reason, human_review_required, approved_by, rejected_by to reports; creates report_review_events |
 
 ---
 
@@ -136,20 +139,107 @@ content_markdown            TEXT NULLABLE
 content_html                TEXT NULLABLE
 created_by_agent_run_id     UUID FK → agent_runs.id NULLABLE
 published_at                TIMESTAMP WITH TIME ZONE NULLABLE
+
+-- Phase 11 review workflow columns
+review_status               VARCHAR(50) NOT NULL DEFAULT 'draft'
+reviewed_at                 TIMESTAMP WITH TIME ZONE NULLABLE
+reviewer_note               TEXT NULLABLE
+review_decision_reason      TEXT NULLABLE
+human_review_required       BOOLEAN NOT NULL DEFAULT true
+approved_by                 VARCHAR(200) NULLABLE
+rejected_by                 VARCHAR(200) NULLABLE
+
 created_at                  TIMESTAMP WITH TIME ZONE
 updated_at                  TIMESTAMP WITH TIME ZONE
 
-INDEX: slug, status, report_type, published_at
+INDEX: slug, status, review_status, report_type, published_at
 ```
 
 Report types: `weekly`, `monthly`, `quarterly`, `yearly`,
 `company_deep_dive`, `theme_report`, `personalized`
 
-Report status values: `draft`, `review`, `published`, `archived`
+Report status values (lifecycle): `draft`, `review`, `published`, `archived`
+
+Review status values (Phase 11 human review workflow): `draft`, `under_review`, `approved_internal`, `rejected_internal`, `needs_revision`, `archived`
+
+Note: `status` tracks publication lifecycle; `review_status` tracks the human review workflow. They are separate columns. Internal approval (`approved_internal`) does not change `status` to `published` — public publishing is not implemented.
 
 ---
 
-## Planned Tables (Phase 3+)
+### Review Audit Log (Phase 11)
+
+**report_review_events**
+```
+id              UUID PK
+report_id       UUID FK → reports.id (CASCADE)
+action          VARCHAR(50) NOT NULL     mark_under_review | approve | reject | needs_revision
+from_status     VARCHAR(50) NULLABLE     previous review_status
+to_status       VARCHAR(50) NOT NULL     new review_status after this action
+note            TEXT NULLABLE            reviewer note (required for reject/needs_revision)
+actor_label     VARCHAR(200) NULLABLE    reviewer label (email/name — no FK to users yet)
+created_at      TIMESTAMP WITH TIME ZONE NOT NULL
+
+INDEX: report_id, action
+```
+
+Immutable — records are never updated or deleted. One row per human review action.
+`actor_label` is a plain string (no FK to `users`) — user accounts are Phase 12 future work.
+
+---
+
+### Research Knowledge Base
+
+**sources**
+```
+id                  UUID PK
+source_type         VARCHAR(50) NOT NULL
+title               VARCHAR(500) NOT NULL
+url                 VARCHAR(2000) NULLABLE
+publisher           VARCHAR(200) NULLABLE
+published_at        TIMESTAMP WITH TIME ZONE NULLABLE
+retrieved_at        TIMESTAMP WITH TIME ZONE NOT NULL
+credibility_score   NUMERIC(4,3) NULLABLE
+content_hash        VARCHAR(64) NULLABLE
+blob_path           VARCHAR(1000) NULLABLE
+created_at          TIMESTAMP WITH TIME ZONE
+
+INDEX: source_type, content_hash, url
+```
+
+Valid source_type values: `annual_report`, `quarterly_report`, `investor_presentation`,
+`news_article`, `analyst_report`, `industry_report`, `regulatory_filing`,
+`earnings_call_transcript`, `press_release`, `financial_data_feed`,
+`web_page`, `internal_document`, `placeholder`,
+`financial_data_api` (T5, Phase 6), `government_data` (T2, Phase 6),
+`company_filing` (T1, Phase 6), `model_estimate` (T6, Phase 6)
+
+Source deduplication: `get_or_create_source()` checks `content_hash` first, then `url`.
+
+**citations**
+```
+id              UUID PK
+source_id       UUID FK → sources.id (RESTRICT)
+report_id       UUID FK → reports.id (CASCADE) NULLABLE
+agent_run_id    UUID FK → agent_runs.id (SET NULL) NULLABLE
+claim_text      VARCHAR(500) NULLABLE
+source_quote    TEXT NULLABLE
+url             VARCHAR(2000) NULLABLE
+retrieved_at    TIMESTAMP WITH TIME ZONE NULLABLE
+field_path      VARCHAR(200) NULLABLE   Phase 6: e.g. "identity.legal_name"
+source_tier     VARCHAR(50) NULLABLE    Phase 6: T1–T6 from source taxonomy
+data_quality    VARCHAR(50) NULLABLE    Phase 6: A_verified … D_weak_or_stale
+created_at      TIMESTAMP WITH TIME ZONE
+
+INDEX: source_id, report_id, agent_run_id, field_path, source_tier
+```
+
+`field_path` encodes which report schema field this citation covers.
+`source_tier` and `data_quality` mirror the provenance metadata from the provider.
+All three are nullable for backward compatibility with Phase 2/3 placeholder citations.
+
+---
+
+## Planned Tables (Phase 4+)
 
 These tables are designed in the tech spec but not yet migrated:
 
@@ -159,14 +249,12 @@ These tables are designed in the tech spec but not yet migrated:
 - `portfolios`, `portfolio_positions` — manual portfolio input (no broker)
 
 ### Research Knowledge Base
-- `sources` — documents, filings, news articles
-- `source_chunks` — text chunks for RAG
-- `research_packages` — per-company research collection
+- `source_chunks` — text chunks for RAG (Phase 4)
+- `research_packages` — per-company research collection (Phase 4)
 
 ### Analysis & Recommendations
 - `analyses` — bull/bear case, ratings, confidence scores
 - `recommendations` — published investment signals with performance tracking
-- `citations` — claim-to-source links
 
 ### Prompt Management
 - `prompt_templates`, `prompt_versions` — versioned agent prompts

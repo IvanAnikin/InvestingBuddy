@@ -1,0 +1,1251 @@
+{
+  "report_meta": {
+    "schema_version": "1.0.0",
+    "report_id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+    "generated_at": "2026-06-19T10:00:00Z",
+    "agent_pipeline_version": "demo-1.1-prose",
+    "candidate_emerged_from": "The pipeline began from the accelerating transmission build-out in the US and EU, identified the large-power-transformer shortage as the binding physical constraint, and laddered two steps up the chain to the supply of grain-oriented electrical steel (GOES) cores and laminations. That path surfaced Nordic Core Lamination AB, a sole regionally-qualified processor that the obvious 'grid' screens miss because it is classified as a commodity steel company.",
+    "core_target_profile": "Mispriced physical optionality on the European grid build-out. The chokepoint is a single qualified facility that converts GOES into transformer cores and laminations; the structural flow is the multi-year, policy-driven surge in transmission and transformer investment; the obscurity comes from a sub-USD 350m market cap, only two sell-side notes, and a sector tag ('iron & steel') that hides the company from thematic grid screens.",
+    "theme_tags": [
+      "grid_transmission",
+      "grid_switchgear_cables",
+      "electrification",
+      "reshoring_supply_chain",
+      "materials_production"
+    ],
+    "conviction": "WATCHLIST"
+  },
+  "identity": {
+    "legal_name": {
+      "value": "Nordic Core Lamination AB (FICTIONAL)",
+      "unit": null,
+      "as_of": "2026-06-19",
+      "source_tier": "T6_model_estimate",
+      "source_name": "illustrative",
+      "source_url": null,
+      "data_quality": "D_weak_or_stale",
+      "note": "ILLUSTRATIVE — fictional company, written to show prose & full field population. Not investment advice."
+    },
+    "ticker": {
+      "value": "NCLAB",
+      "unit": null,
+      "as_of": "2026-06-19",
+      "source_tier": "T6_model_estimate",
+      "source_name": "illustrative",
+      "source_url": null,
+      "data_quality": "D_weak_or_stale",
+      "note": "ILLUSTRATIVE — fictional company, written to show prose & full field population. Not investment advice."
+    },
+    "exchange": {
+      "value": "Nasdaq Stockholm",
+      "unit": null,
+      "as_of": "2026-06-19",
+      "source_tier": "T6_model_estimate",
+      "source_name": "illustrative",
+      "source_url": null,
+      "data_quality": "D_weak_or_stale",
+      "note": "ILLUSTRATIVE — fictional company, written to show prose & full field population. Not investment advice."
+    },
+    "country_domicile": {
+      "value": "Sweden",
+      "unit": null,
+      "as_of": "2026-06-19",
+      "source_tier": "T6_model_estimate",
+      "source_name": "illustrative",
+      "source_url": null,
+      "data_quality": "D_weak_or_stale",
+      "note": "ILLUSTRATIVE — fictional company, written to show prose & full field population. Not investment advice."
+    },
+    "country_primary_operations": {
+      "value": "Sweden and Poland",
+      "unit": null,
+      "as_of": "2026-06-19",
+      "source_tier": "T6_model_estimate",
+      "source_name": "illustrative",
+      "source_url": null,
+      "data_quality": "D_weak_or_stale",
+      "note": "ILLUSTRATIVE — fictional company, written to show prose & full field population. Not investment advice."
+    },
+    "reporting_currency": {
+      "value": "SEK",
+      "unit": null,
+      "as_of": "2026-06-19",
+      "source_tier": "T6_model_estimate",
+      "source_name": "illustrative",
+      "source_url": null,
+      "data_quality": "D_weak_or_stale",
+      "note": "ILLUSTRATIVE — fictional company, written to show prose & full field population. Not investment advice."
+    },
+    "fiscal_year_end": {
+      "value": "31 December",
+      "unit": null,
+      "as_of": "2026-06-19",
+      "source_tier": "T6_model_estimate",
+      "source_name": "illustrative",
+      "source_url": null,
+      "data_quality": "D_weak_or_stale",
+      "note": "ILLUSTRATIVE — fictional company, written to show prose & full field population. Not investment advice."
+    },
+    "founded_year": {
+      "value": 1974,
+      "unit": null,
+      "as_of": "2026-06-19",
+      "source_tier": "T6_model_estimate",
+      "source_name": "illustrative",
+      "source_url": null,
+      "data_quality": "D_weak_or_stale",
+      "note": "ILLUSTRATIVE — fictional company, written to show prose & full field population. Not investment advice."
+    },
+    "one_line_description": {
+      "value": "Nordic Core Lamination converts grain-oriented electrical steel into the wound cores and stacked laminations that sit at the heart of large power and distribution transformers, supplying transformer manufacturers and utilities across northern Europe.",
+      "unit": null,
+      "as_of": "2026-06-19",
+      "source_tier": "T6_model_estimate",
+      "source_name": "illustrative",
+      "source_url": null,
+      "data_quality": "D_weak_or_stale",
+      "note": "ILLUSTRATIVE — fictional company, written to show prose & full field population. Not investment advice."
+    },
+    "position_in_supply_chain": {
+      "value": "Specialty processing/component tier: it sits between the upstream GOES steel mills and the downstream transformer OEMs, transforming a commodity input into a qualified, application-specific component.",
+      "unit": null,
+      "as_of": "2026-06-19",
+      "source_tier": "T6_model_estimate",
+      "source_name": "illustrative",
+      "source_url": null,
+      "data_quality": "D_weak_or_stale",
+      "note": "ILLUSTRATIVE — fictional company, written to show prose & full field population. Not investment advice."
+    }
+  },
+  "discovery_profile": {
+    "entry_path": "supply_chain_laddering",
+    "supply_chain_distance_from_obvious": 2,
+    "coverage_metrics": {
+      "sell_side_estimate_count": {
+        "value": 2,
+        "unit": null,
+        "as_of": "2026-06-18",
+        "source_tier": "T5_api_aggregator",
+        "source_name": "EODHD fundamentals (illustrative)",
+        "source_url": null,
+        "data_quality": "C_inferred",
+        "note": "Only two brokers publish estimates, both small Nordic houses; the name has no bulge-bracket coverage."
+      },
+      "institutional_ownership_pct": {
+        "value": 31,
+        "unit": "%",
+        "as_of": "2026-06-18",
+        "source_tier": "T5_api_aggregator",
+        "source_name": "EODHD fundamentals (illustrative)",
+        "source_url": null,
+        "data_quality": "C_inferred",
+        "note": "Moderate, dominated by two domestic funds; no global institutions on the register."
+      },
+      "english_news_volume_12m": {
+        "value": 14,
+        "unit": null,
+        "as_of": "2026-06-18",
+        "source_tier": "T6_model_estimate",
+        "source_name": "agent news count (illustrative)",
+        "source_url": null,
+        "data_quality": "C_inferred",
+        "note": "Most coverage is in Swedish; English-language articles are sparse, which is part of the coverage gap."
+      },
+      "primary_disclosure_language": {
+        "value": "Swedish",
+        "unit": null,
+        "as_of": "2026-06-18",
+        "source_tier": "T1_primary_filing",
+        "source_name": "Company FY2025 Annual Report (illustrative)",
+        "source_url": null,
+        "data_quality": "B_single_credible",
+        "note": "The annual report and interim statements are filed primarily in Swedish, creating a translation barrier that keeps generalist English-language analysts away."
+      },
+      "days_since_ipo_or_relisting": {
+        "value": 4200,
+        "unit": "days",
+        "as_of": "2026-06-18",
+        "source_tier": "T2_regulator_or_gov",
+        "source_name": "exchange record (illustrative)",
+        "source_url": null,
+        "data_quality": "C_inferred",
+        "note": "Long-listed but historically ignored; not a recent IPO, so obscurity is structural rather than novelty-driven."
+      },
+      "sector_tag_mismatch": {
+        "value": true,
+        "unit": null,
+        "as_of": "2026-06-18",
+        "source_tier": "T6_model_estimate",
+        "source_name": "agent judgement (illustrative)",
+        "source_url": null,
+        "data_quality": "B_single_credible",
+        "note": "Classified under generic 'iron & steel', so thematic grid/electrification screens never surface it despite ~80% of revenue being grid-component sales."
+      }
+    },
+    "event_trigger": {
+      "trigger_type": {
+        "value": "first_offtake",
+        "unit": null,
+        "as_of": "2026-05-20",
+        "source_tier": "T1_primary_filing",
+        "source_name": "regulatory disclosure (illustrative)",
+        "source_url": null,
+        "data_quality": "B_single_credible",
+        "note": "First multi-year framework agreement with a major transformer OEM, disclosed via a Swedish-language exchange release."
+      },
+      "trigger_date": {
+        "value": "2026-05-20",
+        "unit": null,
+        "as_of": "2026-05-20",
+        "source_tier": "T1_primary_filing",
+        "source_name": "regulatory disclosure (illustrative)",
+        "source_url": null,
+        "data_quality": "B_single_credible",
+        "note": "ILLUSTRATIVE — fictional company, written to show prose & full field population. Not investment advice."
+      },
+      "why_not_yet_priced": "The framework agreement was announced in Swedish during a thin summer trading period and was not picked up by the two covering brokers, so the order-visibility step-change is not yet reflected in estimates."
+    },
+    "discovery_edge_summary": "The name is reachable only by reasoning up the transformer supply chain to the GOES-lamination chokepoint; a conventional 'grid equipment' screen misses it because the company is tagged as commodity steel, carries just two local-language sell-side notes, and reports primarily in Swedish. The combination of a measurable coverage gap and a recent, untranslated offtake trigger is the edge."
+  },
+  "snapshot_financials": {
+    "price": {
+      "value": 82.0,
+      "unit": "SEK",
+      "as_of": "2026-06-18",
+      "source_tier": "T5_api_aggregator",
+      "source_name": "EODHD fundamentals (illustrative)",
+      "source_url": null,
+      "data_quality": "B_single_credible",
+      "note": "Closing price."
+    },
+    "market_cap_usd_m": {
+      "value": 305,
+      "unit": "USD_m",
+      "as_of": "2026-06-18",
+      "source_tier": "T6_model_estimate",
+      "source_name": "computed (illustrative)",
+      "source_url": null,
+      "data_quality": "B_single_credible",
+      "note": "SEK 3,280m at USDSEK 10.75 on 2026-06-18."
+    },
+    "enterprise_value_usd_m": {
+      "value": 360,
+      "unit": "USD_m",
+      "as_of": "2026-06-18",
+      "source_tier": "T6_model_estimate",
+      "source_name": "computed (illustrative)",
+      "source_url": null,
+      "data_quality": "B_single_credible",
+      "note": "Market cap plus net debt."
+    },
+    "net_debt_usd_m": {
+      "value": 55,
+      "unit": "USD_m",
+      "as_of": "2026-03-31",
+      "source_tier": "T1_primary_filing",
+      "source_name": "Company FY2025 Annual Report (illustrative)",
+      "source_url": null,
+      "data_quality": "B_single_credible",
+      "note": null
+    },
+    "revenue_ttm_usd_m": {
+      "value": 248,
+      "unit": "USD_m",
+      "as_of": "2026-03-31",
+      "source_tier": "T1_primary_filing",
+      "source_name": "Company FY2025 Annual Report (illustrative)",
+      "source_url": null,
+      "data_quality": "B_single_credible",
+      "note": null
+    },
+    "ebitda_ttm_usd_m": {
+      "value": 37,
+      "unit": "USD_m",
+      "as_of": "2026-03-31",
+      "source_tier": "T1_primary_filing",
+      "source_name": "Company FY2025 Annual Report (illustrative)",
+      "source_url": null,
+      "data_quality": "B_single_credible",
+      "note": null
+    },
+    "fcf_ttm_usd_m": {
+      "value": 12,
+      "unit": "USD_m",
+      "as_of": "2026-03-31",
+      "source_tier": "T1_primary_filing",
+      "source_name": "Company FY2025 Annual Report (illustrative)",
+      "source_url": null,
+      "data_quality": "B_single_credible",
+      "note": "Depressed by expansion capex; underlying cash generation is higher."
+    },
+    "ev_ebitda_x": {
+      "value": 9.7,
+      "unit": "x",
+      "as_of": "2026-06-18",
+      "source_tier": "T6_model_estimate",
+      "source_name": "computed (illustrative)",
+      "source_url": null,
+      "data_quality": "B_single_credible",
+      "note": null
+    },
+    "ev_revenue_x": {
+      "value": 1.5,
+      "unit": "x",
+      "as_of": "2026-06-18",
+      "source_tier": "T6_model_estimate",
+      "source_name": "computed (illustrative)",
+      "source_url": null,
+      "data_quality": "B_single_credible",
+      "note": null
+    },
+    "fcf_yield_pct": {
+      "value": 3.9,
+      "unit": "%",
+      "as_of": "2026-06-18",
+      "source_tier": "T6_model_estimate",
+      "source_name": "computed (illustrative)",
+      "source_url": null,
+      "data_quality": "B_single_credible",
+      "note": "On current FCF; would rise materially once the second line completes."
+    },
+    "net_debt_ebitda_x": {
+      "value": 1.5,
+      "unit": "x",
+      "as_of": "2026-03-31",
+      "source_tier": "T6_model_estimate",
+      "source_name": "computed (illustrative)",
+      "source_url": null,
+      "data_quality": "B_single_credible",
+      "note": null
+    },
+    "shares_out_m": {
+      "value": 40.0,
+      "unit": null,
+      "as_of": "2026-03-31",
+      "source_tier": "T1_primary_filing",
+      "source_name": "Company FY2025 Annual Report (illustrative)",
+      "source_url": null,
+      "data_quality": "B_single_credible",
+      "note": null
+    },
+    "avg_daily_value_traded_usd_k": {
+      "value": 240,
+      "unit": "USD_k",
+      "as_of": "2026-06-18",
+      "source_tier": "T6_model_estimate",
+      "source_name": "computed (illustrative)",
+      "source_url": null,
+      "data_quality": "B_single_credible",
+      "note": "Ninety-day average; thin, which is a genuine position-sizing constraint."
+    },
+    "free_float_pct": {
+      "value": 52,
+      "unit": "%",
+      "as_of": "2026-03-31",
+      "source_tier": "T5_api_aggregator",
+      "source_name": "EODHD fundamentals (illustrative)",
+      "source_url": null,
+      "data_quality": "B_single_credible",
+      "note": null
+    },
+    "is_under_2bn_usd": {
+      "value": true,
+      "unit": null,
+      "as_of": "2026-06-18",
+      "source_tier": "T6_model_estimate",
+      "source_name": "computed (illustrative)",
+      "source_url": null,
+      "data_quality": "A_verified",
+      "note": "Well within the sub-USD 2bn mandate."
+    }
+  },
+  "thesis": {
+    "one_paragraph_thesis": "Nordic Core Lamination owns the only facility in its region qualified to convert grain-oriented electrical steel into transformer cores at the tolerances large-power transformers demand. As European transmission operators race to expand and replace ageing grid infrastructure, transformer manufacturers face multi-year lead times, and the GOES-to-core conversion step is a quiet but binding bottleneck. The market values the company as a cyclical steel processor at roughly ten times EBITDA, overlooking that its qualified position behaves more like a toll on grid capex: volumes are increasingly contracted years ahead, and pricing carries a cost-pass-through structure that protects margins. As the recently signed framework agreement converts into shipments and the second production line ramps, realised margins and order visibility should force a re-rating toward the multiples of grid-equipment peers rather than commodity steelmakers. The downside is cushioned by the replacement value of the qualified facility, which is difficult and slow to recreate.",
+    "why_underresearched": "The company is sub-USD 350m in market capitalisation, below most institutional minimum size thresholds; it is followed by only two small Nordic brokers and no global houses; it reports primarily in Swedish, which deters generalist English-language analysts; and it is classified under a generic 'iron & steel' sector code, so thematic screens for grid and electrification exposure never surface it.",
+    "macro_geopolitical_tailwind": "Independent grid-investment outlooks point to a sustained, policy-backed increase in transmission and transformer spending across Europe through 2030, driven by electrification, renewable interconnection, and the replacement of ageing assets. Transformer and electrical-steel supply is repeatedly identified as a choke point in that build-out, and Nordic Core Lamination sits directly on the constrained conversion step, giving it leverage to a structural rather than cyclical demand driver.",
+    "variant_perception": "Consensus treats the company as a price-taking steel processor whose multiple should compress as the steel cycle matures. The variant view is that its sole-qualification position and lengthening contracted order book give it durable, toll-like economics with pricing power that the market has not yet recognised, so the appropriate multiple should expand, not contract.",
+    "what_would_break_thesis": [
+      "A competitor achieves equivalent regional GOES-core qualification within the investment horizon, eroding the sole-source advantage.",
+      "European grid capex is delayed or met through imported transformers despite trade measures, softening volumes.",
+      "GOES feedstock cost inflation outpaces the contractual pass-through, compressing the conversion spread."
+    ]
+  },
+  "business": {
+    "revenue_segments": [
+      {
+        "segment": "Power-transformer cores and laminations",
+        "pct_of_revenue": {
+          "value": 72,
+          "unit": "%",
+          "as_of": "2025-12-31",
+          "source_tier": "T1_primary_filing",
+          "source_name": "Company FY2025 Annual Report (illustrative)",
+          "source_url": null,
+          "data_quality": "B_single_credible",
+          "note": null
+        },
+        "comment": "The core franchise; highest-margin, qualification-protected work tied directly to grid investment."
+      },
+      {
+        "segment": "Distribution-transformer laminations",
+        "pct_of_revenue": {
+          "value": 20,
+          "unit": "%",
+          "as_of": "2025-12-31",
+          "source_tier": "T1_primary_filing",
+          "source_name": "Company FY2025 Annual Report (illustrative)",
+          "source_url": null,
+          "data_quality": "B_single_credible",
+          "note": null
+        },
+        "comment": "Higher-volume, more competitive, but steady utility-driven demand."
+      },
+      {
+        "segment": "Tooling, slitting and aftermarket services",
+        "pct_of_revenue": {
+          "value": 8,
+          "unit": "%",
+          "as_of": "2025-12-31",
+          "source_tier": "T1_primary_filing",
+          "source_name": "Company FY2025 Annual Report (illustrative)",
+          "source_url": null,
+          "data_quality": "B_single_credible",
+          "note": null
+        },
+        "comment": "Small but sticky, deepening customer switching costs."
+      }
+    ],
+    "geographic_revenue_split": [
+      {
+        "region": "Nordics",
+        "pct_of_revenue": {
+          "value": 48,
+          "unit": "%",
+          "as_of": "2025-12-31",
+          "source_tier": "T1_primary_filing",
+          "source_name": "Company FY2025 Annual Report (illustrative)",
+          "source_url": null,
+          "data_quality": "B_single_credible",
+          "note": null
+        }
+      },
+      {
+        "region": "Germany and Central Europe",
+        "pct_of_revenue": {
+          "value": 34,
+          "unit": "%",
+          "as_of": "2025-12-31",
+          "source_tier": "T1_primary_filing",
+          "source_name": "Company FY2025 Annual Report (illustrative)",
+          "source_url": null,
+          "data_quality": "B_single_credible",
+          "note": null
+        }
+      },
+      {
+        "region": "Rest of Europe and export",
+        "pct_of_revenue": {
+          "value": 18,
+          "unit": "%",
+          "as_of": "2025-12-31",
+          "source_tier": "T1_primary_filing",
+          "source_name": "Company FY2025 Annual Report (illustrative)",
+          "source_url": null,
+          "data_quality": "B_single_credible",
+          "note": null
+        }
+      }
+    ],
+    "market_share": {
+      "value": 40,
+      "unit": "%",
+      "as_of": "2025-12-31",
+      "source_tier": "T6_model_estimate",
+      "source_name": "agent estimate from filings + trade data (illustrative)",
+      "source_url": null,
+      "data_quality": "C_inferred",
+      "note": "Estimated share of qualified power-transformer core supply in its core Nordic-German service region; basis and method should be tightened with a trade-body source before relying on it."
+    },
+    "moat_assessment": "The moat is physical and regulatory rather than intellectual: qualifying a facility to supply cores for large power transformers takes years of audited test runs with each transformer OEM, and the capital and time required to replicate the qualified line are substantial. Long-term framework agreements and the integration of the company's tooling into customers' designs add switching costs on top of the qualification barrier. This is the kind of asset-backed, hard-to-replicate position the mandate targets, distinct from an IP- or goodwill-heavy software moat.",
+    "competitive_advantage_detail": "Competitors fall into two groups: large diversified steel processors that lack the specific power-transformer qualification, and a handful of qualified players concentrated outside the region whose lead times and freight costs make them uncompetitive for time-sensitive Nordic and German orders. Nordic Core Lamination's advantage is the combination of being qualified, being local to a demand region experiencing a capex surge, and having spare expansion capacity coming online.",
+    "customer_concentration": {
+      "value": 46,
+      "unit": "%",
+      "as_of": "2025-12-31",
+      "source_tier": "T1_primary_filing",
+      "source_name": "Company FY2025 Annual Report (illustrative)",
+      "source_url": null,
+      "data_quality": "B_single_credible",
+      "note": "Top three customers account for roughly 46% of revenue; this concentration is a genuine risk, partly mitigated by multi-year framework agreements and deep design integration that make switching costly for those customers."
+    },
+    "key_customers": [
+      "A major European transformer OEM (the new framework counterparty)",
+      "Two regional transformer manufacturers",
+      "Several Nordic distribution utilities"
+    ],
+    "industry_trends": "Demand is being pulled by a multi-year increase in grid transmission investment and an ageing installed transformer base that must be replaced. Transformer lead times have lengthened materially, and electrical-steel and core conversion capacity is widely cited as a bottleneck. Supply is slow to respond because qualification and capacity additions take years, which supports pricing for incumbent qualified processors over the investment horizon."
+  },
+  "real_asset_block": {
+    "asset_type": "manufacturing_capacity",
+    "asset_quality_summary": "The company operates two qualified processing sites, one in Sweden and one in Poland, with specialised annealing, slitting and core-winding lines. The Swedish site holds qualifications that would take a new entrant years of audited runs to match. Asset tangibility is high and intangibles are negligible, which fits the real-asset mandate; the principal asset risk is concentration in two physical sites rather than asset obsolescence.",
+    "ppe_net_usd_m": {
+      "value": 190,
+      "unit": "USD_m",
+      "as_of": "2025-12-31",
+      "source_tier": "T1_primary_filing",
+      "source_name": "Company FY2025 Annual Report (illustrative)",
+      "source_url": null,
+      "data_quality": "B_single_credible",
+      "note": "Net property, plant and equipment dominates the balance sheet, consistent with a real-asset processor."
+    },
+    "ppe_pct_of_assets": {
+      "value": 61,
+      "unit": "%",
+      "as_of": "2025-12-31",
+      "source_tier": "T6_model_estimate",
+      "source_name": "computed from balance sheet (illustrative)",
+      "source_url": null,
+      "data_quality": "B_single_credible",
+      "note": "High tangible-asset intensity; passes the mandate sanity check that value should sit in physical assets."
+    },
+    "goodwill_intangibles_pct_of_assets": {
+      "value": 5,
+      "unit": "%",
+      "as_of": "2025-12-31",
+      "source_tier": "T6_model_estimate",
+      "source_name": "computed from balance sheet (illustrative)",
+      "source_url": null,
+      "data_quality": "B_single_credible",
+      "note": "Low intangibles; this is deliberately the opposite of the IP/goodwill-heavy names the mandate avoids."
+    },
+    "estimated_replacement_value_usd_m": {
+      "value": 330,
+      "unit": "USD_m",
+      "as_of": "2026-06-18",
+      "source_tier": "T6_model_estimate",
+      "source_name": "agent estimate from comparable line build costs (illustrative)",
+      "source_url": null,
+      "data_quality": "C_inferred",
+      "note": "Approximate cost to rebuild and re-qualify the two lines; sits close to enterprise value, providing an asset-backing floor under the thesis. Method: comparable greenfield line capex plus an allowance for multi-year qualification time."
+    },
+    "capex_cycle_stage": {
+      "value": "expansion",
+      "unit": null,
+      "as_of": "2025-12-31",
+      "source_tier": "T1_primary_filing",
+      "source_name": "Company FY2025 Annual Report (illustrative)",
+      "source_url": null,
+      "data_quality": "B_single_credible",
+      "note": "The company is mid-way through adding a second high-margin power-transformer core line, which is currently suppressing free cash flow but expands future earning capacity."
+    },
+    "sustaining_capex_usd_m": {
+      "value": 9,
+      "unit": "USD_m",
+      "as_of": "2025-12-31",
+      "source_tier": "T1_primary_filing",
+      "source_name": "Company FY2025 Annual Report (illustrative)",
+      "source_url": null,
+      "data_quality": "B_single_credible",
+      "note": null
+    },
+    "growth_capex_usd_m": {
+      "value": 22,
+      "unit": "USD_m",
+      "as_of": "2025-12-31",
+      "source_tier": "T1_primary_filing",
+      "source_name": "Company FY2025 Annual Report (illustrative)",
+      "source_url": null,
+      "data_quality": "B_single_credible",
+      "note": null
+    },
+    "capacity_metric": {
+      "value": 48000,
+      "unit": "tonnes_per_year",
+      "as_of": "2025-12-31",
+      "source_tier": "T1_primary_filing",
+      "source_name": "Company FY2025 Annual Report (illustrative)",
+      "source_url": null,
+      "data_quality": "B_single_credible",
+      "note": "Nameplate processing capacity across both sites; rises by roughly a third when the new line completes."
+    },
+    "utilization_pct": {
+      "value": 86,
+      "unit": "%",
+      "as_of": "2025-12-31",
+      "source_tier": "T1_primary_filing",
+      "source_name": "Company FY2025 Annual Report (illustrative)",
+      "source_url": null,
+      "data_quality": "B_single_credible",
+      "note": "High utilisation, underlining the capacity constraint the expansion addresses."
+    },
+    "mining_resource": null,
+    "offtake_contract_coverage": {
+      "pct_volume_contracted": {
+        "value": 70,
+        "unit": "%",
+        "as_of": "2026-03-31",
+        "source_tier": "T1_primary_filing",
+        "source_name": "Company FY2025 Annual Report (illustrative)",
+        "source_url": null,
+        "data_quality": "B_single_credible",
+        "note": "Around 70% of expected volume over the next three years is covered by framework agreements, materially de-risking revenue over the horizon."
+      },
+      "weighted_avg_contract_tenor_years": {
+        "value": 3.5,
+        "unit": "years",
+        "as_of": "2026-03-31",
+        "source_tier": "T1_primary_filing",
+        "source_name": "Company FY2025 Annual Report (illustrative)",
+        "source_url": null,
+        "data_quality": "B_single_credible",
+        "note": null
+      },
+      "counterparty_quality": {
+        "value": "Predominantly investment-grade transformer OEMs and regulated utilities",
+        "unit": null,
+        "as_of": "2026-03-31",
+        "source_tier": "T1_primary_filing",
+        "source_name": "Company FY2025 Annual Report (illustrative)",
+        "source_url": null,
+        "data_quality": "B_single_credible",
+        "note": null
+      },
+      "pricing_mechanism": {
+        "value": "Cost-pass-through on the steel input with a margin escalator",
+        "unit": null,
+        "as_of": "2026-03-31",
+        "source_tier": "T1_primary_filing",
+        "source_name": "Company FY2025 Annual Report (illustrative)",
+        "source_url": null,
+        "data_quality": "B_single_credible",
+        "note": "Protects the conversion spread against feedstock inflation, which is central to the toll-like characterisation."
+      }
+    },
+    "commodity_price_sensitivity": {
+      "key_commodity": {
+        "value": "Grain-oriented electrical steel (input)",
+        "unit": null,
+        "as_of": "2026-06-18",
+        "source_tier": "T2_regulator_or_gov",
+        "source_name": "USGS / regulatory filing (illustrative)",
+        "source_url": null,
+        "data_quality": "C_inferred",
+        "note": "The company is a processor, so its exposure is to the conversion spread rather than to an output commodity price."
+      },
+      "current_spot_or_term_price": {
+        "value": null,
+        "unit": "USD_per_tonne",
+        "as_of": "2026-06-18",
+        "source_tier": "T6_model_estimate",
+        "source_name": "no clean public GOES price",
+        "source_url": null,
+        "data_quality": "D_weak_or_stale",
+        "note": "There is no clean public spot price for GOES; this is a genuine data gap at this budget and is flagged rather than guessed."
+      },
+      "ebitda_sensitivity_to_10pct_price": {
+        "value": 3,
+        "unit": "%",
+        "as_of": "2026-06-18",
+        "source_tier": "T6_model_estimate",
+        "source_name": "agent estimate (illustrative)",
+        "source_url": null,
+        "data_quality": "C_inferred",
+        "note": "Because most volume carries a pass-through, a 10% move in steel input price is estimated to move EBITDA only modestly; method: applying the pass-through coverage to the contracted book."
+      },
+      "incentive_price_vs_current": {
+        "value": null,
+        "unit": null,
+        "as_of": "2026-06-18",
+        "source_tier": "T6_model_estimate",
+        "source_name": "not applicable to a processor",
+        "source_url": null,
+        "data_quality": "D_weak_or_stale",
+        "note": "Incentive-price framing applies to commodity producers, not to a conversion-spread processor."
+      }
+    }
+  },
+  "financials_deep": {
+    "revenue_3y": [
+      {
+        "value": 186,
+        "unit": "USD_m",
+        "as_of": "2023-12-31",
+        "source_tier": "T1_primary_filing",
+        "source_name": "Company FY2025 Annual Report (illustrative)",
+        "source_url": null,
+        "data_quality": "B_single_credible",
+        "note": null
+      },
+      {
+        "value": 214,
+        "unit": "USD_m",
+        "as_of": "2024-12-31",
+        "source_tier": "T1_primary_filing",
+        "source_name": "Company FY2025 Annual Report (illustrative)",
+        "source_url": null,
+        "data_quality": "B_single_credible",
+        "note": null
+      },
+      {
+        "value": 248,
+        "unit": "USD_m",
+        "as_of": "2025-12-31",
+        "source_tier": "T1_primary_filing",
+        "source_name": "Company FY2025 Annual Report (illustrative)",
+        "source_url": null,
+        "data_quality": "B_single_credible",
+        "note": null
+      }
+    ],
+    "ebitda_margin_3y": [
+      {
+        "value": 12.5,
+        "unit": "%",
+        "as_of": "2023-12-31",
+        "source_tier": "T1_primary_filing",
+        "source_name": "Company FY2025 Annual Report (illustrative)",
+        "source_url": null,
+        "data_quality": "B_single_credible",
+        "note": null
+      },
+      {
+        "value": 13.8,
+        "unit": "%",
+        "as_of": "2024-12-31",
+        "source_tier": "T1_primary_filing",
+        "source_name": "Company FY2025 Annual Report (illustrative)",
+        "source_url": null,
+        "data_quality": "B_single_credible",
+        "note": null
+      },
+      {
+        "value": 14.9,
+        "unit": "%",
+        "as_of": "2025-12-31",
+        "source_tier": "T1_primary_filing",
+        "source_name": "Company FY2025 Annual Report (illustrative)",
+        "source_url": null,
+        "data_quality": "B_single_credible",
+        "note": "Margins are widening as the mix shifts toward qualification-protected power-transformer work."
+      }
+    ],
+    "fcf_3y": [
+      {
+        "value": 15,
+        "unit": "USD_m",
+        "as_of": "2023-12-31",
+        "source_tier": "T1_primary_filing",
+        "source_name": "Company FY2025 Annual Report (illustrative)",
+        "source_url": null,
+        "data_quality": "B_single_credible",
+        "note": null
+      },
+      {
+        "value": 14,
+        "unit": "USD_m",
+        "as_of": "2024-12-31",
+        "source_tier": "T1_primary_filing",
+        "source_name": "Company FY2025 Annual Report (illustrative)",
+        "source_url": null,
+        "data_quality": "B_single_credible",
+        "note": null
+      },
+      {
+        "value": 12,
+        "unit": "USD_m",
+        "as_of": "2025-12-31",
+        "source_tier": "T1_primary_filing",
+        "source_name": "Company FY2025 Annual Report (illustrative)",
+        "source_url": null,
+        "data_quality": "B_single_credible",
+        "note": "Free cash flow has dipped as growth capex on the second line ramped, not because of operational deterioration."
+      }
+    ],
+    "roic_or_roce": {
+      "value": 13,
+      "unit": "%",
+      "as_of": "2025-12-31",
+      "source_tier": "T6_model_estimate",
+      "source_name": "computed (illustrative)",
+      "source_url": null,
+      "data_quality": "B_single_credible",
+      "note": "Return on capital employed comfortably above the cost of capital, and rising with the mix shift."
+    },
+    "balance_sheet_summary": "The balance sheet is dominated by tangible processing assets, with net debt of roughly USD 55m equating to about 1.5 times EBITDA. Intangibles are negligible. The company funds the second-line expansion through a mix of operating cash flow and a term loan, and retains covenant headroom. This is a conservatively financed real-asset balance sheet rather than a leveraged or intangible-heavy one.",
+    "cashflow_quality_comment": "Cash conversion is sound once growth capex is separated from sustaining capex: underlying operating cash flow comfortably covers maintenance needs, and the current free-cash-flow dip is a deliberate investment choice rather than a working-capital or earnings-quality problem. Working capital swings with steel input prices but is partly neutralised by the pass-through pricing.",
+    "debt_structure": {
+      "total_debt_usd_m": {
+        "value": 72,
+        "unit": "USD_m",
+        "as_of": "2025-12-31",
+        "source_tier": "T1_primary_filing",
+        "source_name": "Company FY2025 Annual Report (illustrative)",
+        "source_url": null,
+        "data_quality": "B_single_credible",
+        "note": null
+      },
+      "net_debt_ebitda_x": {
+        "value": 1.5,
+        "unit": "x",
+        "as_of": "2025-12-31",
+        "source_tier": "T6_model_estimate",
+        "source_name": "computed (illustrative)",
+        "source_url": null,
+        "data_quality": "B_single_credible",
+        "note": "Comfortable leverage for an asset-backed processor with contracted revenue."
+      },
+      "nearest_maturity": {
+        "value": "2029 — USD 45m term loan",
+        "unit": null,
+        "as_of": "2025-12-31",
+        "source_tier": "T1_primary_filing",
+        "source_name": "Company FY2025 Annual Report (illustrative)",
+        "source_url": null,
+        "data_quality": "B_single_credible",
+        "note": "No near-term refinancing wall; the principal facility matures in 2029, well beyond the catalyst window."
+      },
+      "weighted_avg_cost_of_debt_pct": {
+        "value": 4.6,
+        "unit": "%",
+        "as_of": "2025-12-31",
+        "source_tier": "T1_primary_filing",
+        "source_name": "Company FY2025 Annual Report (illustrative)",
+        "source_url": null,
+        "data_quality": "B_single_credible",
+        "note": null
+      },
+      "covenant_headroom_comment": "The company reports comfortable headroom against its leverage and interest-cover covenants, with the expansion fully funded under existing facilities.",
+      "liquidity_runway_comment": "As an established, cash-generative business rather than a pre-revenue developer, liquidity runway is not a concern; cash plus undrawn facilities cover the remaining expansion spend several times over."
+    }
+  },
+  "valuation": {
+    "primary_method": "EV_EBITDA_relative",
+    "primary_method_justification": "The company is an established, cash-generative operator with increasingly contracted cash flows, so a relative EV/EBITDA approach against grid-equipment and specialty-processing peers is the cleanest primary anchor. It is cross-checked against the estimated replacement value of the qualified facilities, which provides an absolute asset-backing floor and is more relevant here than a precise DCF given the data quality available at this budget.",
+    "fair_value_per_share": {
+      "value": 110,
+      "unit": "SEK",
+      "as_of": "2026-06-18",
+      "source_tier": "T6_model_estimate",
+      "source_name": "agent valuation (illustrative)",
+      "source_url": null,
+      "data_quality": "C_inferred",
+      "note": "Base case, on a re-rating toward grid-equipment peer multiples as the contracted book and margin mix are recognised."
+    },
+    "upside_downside_pct": {
+      "value": 34,
+      "unit": "%",
+      "as_of": "2026-06-18",
+      "source_tier": "T6_model_estimate",
+      "source_name": "computed (illustrative)",
+      "source_url": null,
+      "data_quality": "C_inferred",
+      "note": "Base-case upside to current price."
+    },
+    "bull_bear_base": {
+      "bear_value": {
+        "value": 70,
+        "unit": "SEK",
+        "as_of": "2026-06-18",
+        "source_tier": "T6_model_estimate",
+        "source_name": "agent valuation (illustrative)",
+        "source_url": null,
+        "data_quality": "C_inferred",
+        "note": "Multiple compresses toward commodity steel; cushioned by asset backing near this level."
+      },
+      "base_value": {
+        "value": 110,
+        "unit": "SEK",
+        "as_of": "2026-06-18",
+        "source_tier": "T6_model_estimate",
+        "source_name": "agent valuation (illustrative)",
+        "source_url": null,
+        "data_quality": "C_inferred",
+        "note": null
+      },
+      "bull_value": {
+        "value": 145,
+        "unit": "SEK",
+        "as_of": "2026-06-18",
+        "source_tier": "T6_model_estimate",
+        "source_name": "agent valuation (illustrative)",
+        "source_url": null,
+        "data_quality": "C_inferred",
+        "note": "Full re-rating plus second-line contribution at target utilisation."
+      },
+      "skew_comment": "Risk/reward is favourably skewed: the downside is floored close to the replacement value of the qualified assets, while the upside captures both a multiple re-rating and the incremental earnings from the expansion."
+    },
+    "key_valuation_assumptions": [
+      "A partial re-rating from roughly ten times toward the low-teens EV/EBITDA of grid-equipment peers as the contracted order book becomes visible.",
+      "The second power-transformer core line ramps to target utilisation within roughly two years.",
+      "The cost-pass-through pricing holds, protecting the conversion spread against steel input inflation."
+    ],
+    "implied_vs_replacement_value": "At an enterprise value of roughly USD 360m against an estimated replacement value of around USD 330m, the market is paying only modestly above the cost of recreating the physical assets, and is effectively assigning little value to the multi-year qualification advantage — the core of the margin of safety."
+  },
+  "peers": {
+    "peer_construction_logic": "Peers were selected to match the company's actual economics rather than its mistaken sector tag: qualified electrical-steel and transformer-component processors of broadly similar size and contract profile, plus a small number of grid-equipment component suppliers. Commodity steelmakers were deliberately excluded because they are driven by a different cycle, and including them is precisely the error that makes the company screen as 'cheap steel' rather than a re-rating grid component.",
+    "peer_table": [
+      {
+        "name": "Peer A (fictional)",
+        "ticker": "PRA",
+        "market_cap_usd_m": {
+          "value": 900,
+          "unit": "USD_m",
+          "as_of": "2026-06-18",
+          "source_tier": "T5_api_aggregator",
+          "source_name": "EODHD fundamentals (illustrative)",
+          "source_url": null,
+          "data_quality": "C_inferred",
+          "note": null
+        },
+        "ev_ebitda_x": {
+          "value": 12.5,
+          "unit": "x",
+          "as_of": "2026-06-18",
+          "source_tier": "T5_api_aggregator",
+          "source_name": "EODHD fundamentals (illustrative)",
+          "source_url": null,
+          "data_quality": "C_inferred",
+          "note": null
+        },
+        "key_differentiator_vs_target": "Larger and more diversified, but without a comparable sole-qualification position; trades at a premium that the target could partly close."
+      },
+      {
+        "name": "Peer B (fictional)",
+        "ticker": "PRB",
+        "market_cap_usd_m": {
+          "value": 1400,
+          "unit": "USD_m",
+          "as_of": "2026-06-18",
+          "source_tier": "T5_api_aggregator",
+          "source_name": "EODHD fundamentals (illustrative)",
+          "source_url": null,
+          "data_quality": "C_inferred",
+          "note": null
+        },
+        "ev_ebitda_x": {
+          "value": 13.8,
+          "unit": "x",
+          "as_of": "2026-06-18",
+          "source_tier": "T5_api_aggregator",
+          "source_name": "EODHD fundamentals (illustrative)",
+          "source_url": null,
+          "data_quality": "C_inferred",
+          "note": null
+        },
+        "key_differentiator_vs_target": "A downstream transformer OEM rather than a component processor; a customer-type peer that frames the end-market multiple."
+      },
+      {
+        "name": "Peer C (fictional)",
+        "ticker": "PRC",
+        "market_cap_usd_m": {
+          "value": 520,
+          "unit": "USD_m",
+          "as_of": "2026-06-18",
+          "source_tier": "T5_api_aggregator",
+          "source_name": "EODHD fundamentals (illustrative)",
+          "source_url": null,
+          "data_quality": "C_inferred",
+          "note": null
+        },
+        "ev_ebitda_x": {
+          "value": 10.5,
+          "unit": "x",
+          "as_of": "2026-06-18",
+          "source_tier": "T5_api_aggregator",
+          "source_name": "EODHD fundamentals (illustrative)",
+          "source_url": null,
+          "data_quality": "C_inferred",
+          "note": null
+        },
+        "key_differentiator_vs_target": "The closest comparable in size and processing focus; the small premium to the target looks unjustified given the target's stronger qualification moat."
+      }
+    ],
+    "relative_positioning_comment": "The company trades at a discount to the most relevant qualified-processor and grid-equipment peers despite a narrower but deeper moat and a lengthening contracted order book. That discount appears to reflect its mis-tagging and thin coverage rather than any fundamental inferiority, which is the mispricing the thesis seeks to exploit."
+  },
+  "governance": {
+    "ownership_structure": "The register is anchored by the founding family, which retains roughly 22% and two board seats, alongside two domestic institutional funds holding around 30% between them. Free float is about 52%. There are no global institutional holders, consistent with the coverage gap, and the founding family's continued large stake aligns insiders with minority shareholders.",
+    "key_holders": [
+      {
+        "holder": "Founding family (fictional)",
+        "pct": {
+          "value": 22,
+          "unit": "%",
+          "as_of": "2026-03-31",
+          "source_tier": "T2_regulator_or_gov",
+          "source_name": "Regulator insider filing (illustrative)",
+          "source_url": null,
+          "data_quality": "B_single_credible",
+          "note": null
+        },
+        "type": "founder"
+      },
+      {
+        "holder": "Domestic Fund I (fictional)",
+        "pct": {
+          "value": 17,
+          "unit": "%",
+          "as_of": "2026-03-31",
+          "source_tier": "T5_api_aggregator",
+          "source_name": "EODHD fundamentals (illustrative)",
+          "source_url": null,
+          "data_quality": "C_inferred",
+          "note": null
+        },
+        "type": "institutional"
+      },
+      {
+        "holder": "Domestic Fund II (fictional)",
+        "pct": {
+          "value": 13,
+          "unit": "%",
+          "as_of": "2026-03-31",
+          "source_tier": "T5_api_aggregator",
+          "source_name": "EODHD fundamentals (illustrative)",
+          "source_url": null,
+          "data_quality": "C_inferred",
+          "note": null
+        },
+        "type": "institutional"
+      }
+    ],
+    "management_track_record": "The chief executive joined from a large transformer OEM and has overseen the margin-accretive shift toward qualification-protected power-transformer work and the on-schedule progress of the second line. The management team's prior record includes delivering earlier capacity additions on time and on budget, which lends credibility to the current expansion plan. Capital allocation has been disciplined, favouring qualified-capacity expansion over diversification.",
+    "insider_activity": {
+      "value": "Net insider buying of roughly USD 0.8m over the last six months",
+      "unit": null,
+      "as_of": "2026-06-01",
+      "source_tier": "T2_regulator_or_gov",
+      "source_name": "Regulator insider filing (illustrative)",
+      "source_url": null,
+      "data_quality": "B_single_credible",
+      "note": "Two directors and the CFO added to holdings around the framework-agreement announcement, a supportive signal; in a real report this would cite the specific Swedish insider filings."
+    },
+    "executive_remuneration_comment": "Executive pay is modest by international standards and weighted toward long-term equity, with vesting tied to return-on-capital and delivery of the expansion. The founding family's large holding further aligns incentives. No unusual related-party arrangements were identified, though the family's board representation warrants ongoing attention.",
+    "workforce_signals": "Headcount has grown roughly 8% over the past year as the company staffs the second line, and employee-review sentiment is broadly positive, emphasising stable employment and engineering pride while noting pay that lags larger multinationals. The principal workforce risk is the availability of skilled annealing and core-winding operators, a genuine constraint in a specialised process; the safety record is clean. There is no disclosed unionisation issue beyond standard Nordic collective agreements, and key-person dependency is moderate given a deep bench of long-tenured process engineers.",
+    "related_party_or_governance_flags": [
+      "Founding family holds two board seats; monitor for related-party transactions, though none material were identified."
+    ]
+  },
+  "catalysts_risks": {
+    "catalysts": [
+      {
+        "catalyst": "Commissioning of the second power-transformer core line and first realised margins from it",
+        "expected_window": "12-18 months",
+        "probability": "high",
+        "impact": "high"
+      },
+      {
+        "catalyst": "Conversion of the new framework agreement into disclosed shipment volumes",
+        "expected_window": "6-12 months",
+        "probability": "high",
+        "impact": "medium"
+      },
+      {
+        "catalyst": "Initiation of coverage by a larger broker as English-language visibility improves",
+        "expected_window": "12-24 months",
+        "probability": "medium",
+        "impact": "medium"
+      }
+    ],
+    "risks": [
+      {
+        "risk": "A competitor achieves equivalent regional core qualification",
+        "type": "thesis_specific",
+        "severity": "high",
+        "mitigant": "Multi-year qualification lead time and existing contracted volumes; the company's head start is several years."
+      },
+      {
+        "risk": "Customer concentration in the top three accounts",
+        "type": "customer_concentration",
+        "severity": "medium",
+        "mitigant": "Multi-year framework agreements and deep design integration raise switching costs."
+      },
+      {
+        "risk": "Thin trading liquidity constrains position building and exit",
+        "type": "liquidity",
+        "severity": "medium",
+        "mitigant": "Size the position accordingly and accept a long holding period consistent with the 2-6 year horizon."
+      },
+      {
+        "risk": "Steel input cost inflation outruns the contractual pass-through",
+        "type": "commodity_price",
+        "severity": "low",
+        "mitigant": "Pass-through pricing with a margin escalator covers most contracted volume."
+      }
+    ],
+    "tariff_trade_exposure": "The company is a net beneficiary of European measures that favour domestic grid-equipment content and of tariffs that raise the cost of imported transformers and cores, which reinforce its local-supply advantage. Its own inputs are sourced largely within Europe, limiting direct tariff cost exposure. In a real report the specific EU trade measures and any anti-dumping duties on electrical steel would be cited from the relevant regulatory source.",
+    "acquisitions_divestments": "The company has grown organically rather than through acquisition, with no material divestments in its history. Given its scarce qualified position, it is more plausibly a future acquisition target for a larger grid-equipment group than an acquirer, which represents potential optionality rather than a base-case assumption."
+  },
+  "scoring": {
+    "pillars": {
+      "asset_quality": {
+        "score": 4,
+        "weight": 0.15,
+        "rationale": "Two qualified processing sites with high tangible-asset intensity and negligible intangibles; the Swedish line is genuinely hard to replicate, though concentration in two sites caps the score below five.",
+        "key_evidence": [
+          {
+            "value": 61,
+            "unit": "%",
+            "as_of": "2025-12-31",
+            "source_tier": "T6_model_estimate",
+            "source_name": "computed from balance sheet (illustrative)",
+            "source_url": null,
+            "data_quality": "B_single_credible",
+            "note": "High tangible-asset intensity; passes the mandate sanity check that value should sit in physical assets."
+          }
+        ]
+      },
+      "balance_sheet_resilience": {
+        "score": 4,
+        "weight": 0.15,
+        "rationale": "Leverage of about 1.5 times EBITDA, the nearest maturity in 2029 well beyond the catalyst window, and the expansion fully funded with covenant headroom.",
+        "key_evidence": [
+          {
+            "value": 1.5,
+            "unit": "x",
+            "as_of": "2025-12-31",
+            "source_tier": "T6_model_estimate",
+            "source_name": "computed (illustrative)",
+            "source_url": null,
+            "data_quality": "B_single_credible",
+            "note": "Comfortable leverage for an asset-backed processor with contracted revenue."
+          }
+        ]
+      },
+      "valuation_gap": {
+        "score": 3,
+        "weight": 0.15,
+        "rationale": "Roughly 34% base-case upside with a downside floored near replacement value, but scored at three because the valuation inputs are agent estimates rather than verified figures in this illustrative report.",
+        "key_evidence": [
+          {
+            "value": 34,
+            "unit": "%",
+            "as_of": "2026-06-18",
+            "source_tier": "T6_model_estimate",
+            "source_name": "computed (illustrative)",
+            "source_url": null,
+            "data_quality": "C_inferred",
+            "note": "Base-case upside to current price."
+          }
+        ]
+      },
+      "moat_competitive": {
+        "score": 4,
+        "weight": 0.15,
+        "rationale": "A physical and regulatory moat from multi-year qualification plus framework agreements and design integration, partially offset by customer concentration.",
+        "key_evidence": [
+          {
+            "value": 70,
+            "unit": "%",
+            "as_of": "2026-03-31",
+            "source_tier": "T1_primary_filing",
+            "source_name": "Company FY2025 Annual Report (illustrative)",
+            "source_url": null,
+            "data_quality": "B_single_credible",
+            "note": "Around 70% of expected volume over the next three years is covered by framework agreements, materially de-risking revenue over the horizon."
+          }
+        ]
+      },
+      "macro_geo_tailwind": {
+        "score": 4,
+        "weight": 0.15,
+        "rationale": "Direct leverage to a durable, policy-backed European grid-investment cycle, sitting on the constrained conversion step.",
+        "key_evidence": [
+          {
+            "value": "European grid-investment outlook",
+            "unit": null,
+            "as_of": "2026-01-01",
+            "source_tier": "T2_regulator_or_gov",
+            "source_name": "IEA Electricity/Grids outlook (illustrative)",
+            "source_url": null,
+            "data_quality": "B_single_credible",
+            "note": "Anchor to the published outlook in a real report."
+          }
+        ]
+      },
+      "catalyst_proximity": {
+        "score": 3,
+        "weight": 0.1,
+        "rationale": "The main re-rating catalyst, the second line, is twelve to eighteen months out, with a nearer shipment-conversion catalyst supporting it.",
+        "key_evidence": [
+          {
+            "value": "second-line commissioning in 12-18 months",
+            "unit": null,
+            "as_of": "2026-06-18",
+            "source_tier": "T1_primary_filing",
+            "source_name": "Company FY2025 Annual Report (illustrative)",
+            "source_url": null,
+            "data_quality": "B_single_credible",
+            "note": null
+          }
+        ]
+      },
+      "management_governance": {
+        "score": 4,
+        "weight": 0.075,
+        "rationale": "Credible, aligned management with an on-time delivery record and a large founding-family stake, tempered by family board representation.",
+        "key_evidence": [
+          {
+            "value": "net insider buying ~USD 0.8m",
+            "unit": null,
+            "as_of": "2026-06-01",
+            "source_tier": "T2_regulator_or_gov",
+            "source_name": "Regulator insider filing (illustrative)",
+            "source_url": null,
+            "data_quality": "B_single_credible",
+            "note": null
+          }
+        ]
+      },
+      "underresearched_edge": {
+        "score": 4,
+        "weight": 0.075,
+        "rationale": "A measurable coverage gap: two local-language sell-side notes, low English-news volume, a sector-tag mismatch, and Swedish-language primary disclosure, reached by supply-chain laddering rather than a conventional screen.",
+        "key_evidence": [
+          {
+            "value": true,
+            "unit": null,
+            "as_of": "2026-06-18",
+            "source_tier": "T6_model_estimate",
+            "source_name": "agent judgement (illustrative)",
+            "source_url": null,
+            "data_quality": "B_single_credible",
+            "note": "Classified under generic 'iron & steel', so thematic grid/electrification screens never surface it despite ~80% of revenue being grid-component sales."
+          }
+        ]
+      }
+    },
+    "composite_score": 3.74,
+    "score_to_conviction_mapping": ">=4.2 and no high-severity unmitigated risk maps to SHORTLIST_HIGH; 3.5 to 4.2 maps to SHORTLIST; 2.8 to 3.5 maps to WATCHLIST; below 2.8 maps to PASS. The composite of 3.74 maps to SHORTLIST, but is overridden down to WATCHLIST because all figures here are illustrative — see the verdict."
+  },
+  "verdict": {
+    "recommendation": "WATCHLIST",
+    "override_reason": "The composite score maps to SHORTLIST, but because every datapoint in this report is illustrative rather than verified, the honesty discipline requires holding at WATCHLIST until real, sourced data replaces the placeholders. This also demonstrates the downward-only override rule.",
+    "watchlist_triggers": [
+      "Real audited figures replace the illustrative placeholders.",
+      "Disclosed shipment volumes confirm the framework agreement is converting.",
+      "Second-line commissioning is confirmed via a regulatory announcement.",
+      "A larger broker initiates coverage, signalling the coverage gap is closing."
+    ],
+    "missing_information": [
+      "Audited segment-level margins for the power-transformer core business.",
+      "The exact tenor and pricing terms of the new framework agreement.",
+      "An independent trade-body confirmation of the estimated regional market share."
+    ],
+    "position_sizing_note": "With roughly USD 240k of average daily value traded, only a modest position can be built without moving the price, so the name suits a patient, appropriately sized allocation consistent with the multi-year horizon rather than a large or tactical position."
+  },
+  "self_critique": {
+    "strongest_bear_case": "A disciplined short-seller would argue that the qualification moat is being overstated: qualification is achievable by a determined competitor within a few years, the framework agreements are lower-margin pass-through arrangements dressed up as pricing power, and the business is ultimately a cyclical steel processor whose multiple should compress as the European capex cycle peaks rather than expand. They would add that the thin liquidity means any disappointment de-rates the shares sharply with little ability to exit, and that customer concentration leaves the company exposed if a single OEM in-sources or switches.",
+    "weakest_links_in_thesis": [
+      "The durability of the qualification moat is asserted from filings and reasoning rather than proven by an independent source.",
+      "The market-share estimate is an agent inference that needs a trade-body source.",
+      "The absence of a clean public GOES price weakens the precision of the spread and sensitivity analysis."
+    ],
+    "data_quality_warnings": [
+      "Every datapoint in this report is illustrative and carries low quality; nothing here should inform a real decision.",
+      "The GOES input price is unavailable at this budget and is flagged rather than estimated, which limits the commodity-sensitivity analysis.",
+      "Market share and replacement value are agent estimates (quality C) and should be corroborated before relying on them."
+    ],
+    "confirmation_bias_check": "For this demonstration the agent did not run genuine disconfirming searches; in production this field must record the specific disconfirming queries run, such as searches for competing qualification announcements or for evidence that the framework agreement carries thin margins, and what they returned.",
+    "uncited_claim_scan_passed": true
+  }
+}
