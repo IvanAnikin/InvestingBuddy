@@ -1,13 +1,13 @@
 # InvestingBuddy — Azure Infrastructure
 
-## Status: Phase 12.2 — API live; frontend deploying; RBAC + KV + OIDC pending
+## Status: Phase 12.2 — API + frontend live (smoke tests pass 2026-06-29); RBAC + KV + OIDC pending
 
 Provisioned (2026-06-27, deployment `phase12-staging-20260627-231621`):
 - `ib-stg-rg` — resource group, `westeurope`
 - `ib-stg-openai` — Azure OpenAI S0 (pre-existing, Phase 7)
 - `ib-stg-plan` — shared B1 App Service Plan, `westeurope`
 - `ib-stg-api` — App Service Python 3.12, `westeurope` — **LIVE** (2026-06-28, manual ZIP)
-- `ib-stg-web` — App Service Node 22, `westeurope` — **deploying**
+- `ib-stg-web` — App Service Node 22, `westeurope` — **LIVE** (2026-06-29, standalone ZIP)
 - `ib-stg-kv` — Key Vault Standard, `westeurope`
 - `ib-stg-logs` / `ib-stg-insights` — Log Analytics + App Insights, `westeurope`
 - `ibstgstorage` — Storage Account LRS, `westeurope`
@@ -57,7 +57,7 @@ Not chosen:
 
 | Environment | Resource Group | Branch | Status |
 |---|---|---|---|
-| Staging | `ib-stg-rg` | `main` | API live (manual ZIP); frontend deploying; RBAC + KV + OIDC pending |
+| Staging | `ib-stg-rg` | `main` | API + frontend live (smoke tests pass 2026-06-29); RBAC + KV + OIDC pending |
 | Production | `ib-prod-rg` | `release/*` | Future — Phase 5+ |
 
 ---
@@ -84,7 +84,7 @@ Exceptions:
 | `ib-stg-kv` | Key Vault | Standard | westeurope | **Provisioned** — KV secrets pending |
 | `ib-stg-plan` | App Service Plan | B1 Linux (shared) | westeurope | **Provisioned** |
 | `ib-stg-api` | App Service (Python 3.12) | — | westeurope | **Live** — Phase 12.2 ZIP deploy |
-| `ib-stg-web` | App Service (Node 22) | — | westeurope | **Deploying** — run-from-package |
+| `ib-stg-web` | App Service (Node 22) | — | westeurope | **Live** — Phase 12.2 standalone deploy (2026-06-29) |
 | `ib-stg-psql` | PostgreSQL Flexible Server 16 | Standard_B1ms | **northeurope** | **Provisioned** — migrations 001–004 applied |
 | `ibstgstorage` | Storage Account (LRS) | Standard | westeurope | **Provisioned** |
 
@@ -333,7 +333,9 @@ az account show # confirm correct subscription before any az command
 
 #### Final Steps (after all above)
 - [x] `alembic upgrade head` run on staging DB (migrations 001–004) — 2026-06-28
-- [x] API smoke tests pass (health, auth, company CRUD)
+- [x] API smoke tests pass (health, auth, company CRUD) — 2026-06-28
+- [x] Frontend standalone deploy complete (`node server.js`, WEBSITE_RUN_FROM_PACKAGE=1) — 2026-06-29
+- [x] Full smoke tests pass (API + frontend) — 2026-06-29
 - [ ] KV secrets populated (blocked — needs KV Secrets Officer)
 - [ ] App settings migrated from direct values → KV references
 - [ ] GitHub Actions `deploy-api-staging` + `deploy-web-staging` triggered by push to main

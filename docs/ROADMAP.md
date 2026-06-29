@@ -1,6 +1,6 @@
 # Roadmap
 
-## Current Phase: Phase 12 — Azure Staging Deployment (API live; frontend deploying)
+## Current Phase: Phase 12 — Azure Staging Deployment ✅ (API + frontend live; OIDC/KV pending)
 
 ---
 
@@ -483,10 +483,10 @@ via `az webapp deploy` with direct app settings. All Azure resources in `ib-stg-
 - [x] `apps/api/requirements.txt` — pinned pip freeze for Oryx Python build
 - [x] `apps/api/app/workflows/company_analysis.py` — fixed `parents[4]` (was `parents[5]`, caused IndexError on Oryx extraction path)
 - [x] `apps/web/next.config.ts` — `output: "standalone"` for reliable Azure App Service deploy
-- [x] Frontend deploying: `https://ib-stg-web.azurewebsites.net` — standalone ZIP (`node server.js`)
+- [x] Frontend live: `https://ib-stg-web.azurewebsites.net` — standalone ZIP, `node server.js`, smoke tests pass
 
-Pending (permissions blocked or in progress):
-- [ ] Frontend smoke test pass
+Pending (permissions blocked):
+- [x] Frontend smoke test pass (2026-06-29)
 - [ ] Grant `ivan.anikin@outlook.com` Owner on `ib-stg-rg` (AD permission needed)
 - [ ] Create App Registration `ib-github-actions-stg` + OIDC federated credential
 - [ ] Set GitHub Secrets: `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`

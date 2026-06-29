@@ -1,6 +1,6 @@
 # Deployment
 
-## Status: Phase 12.2 — API deployed and live; frontend deployment in progress; RBAC + KV + OIDC pending permissions fix
+## Status: Phase 12.2 — API and frontend deployed and live; RBAC + KV + OIDC pending permissions fix
 
 ---
 
@@ -9,7 +9,7 @@
 | Environment | Purpose | Resource Group | Status |
 |---|---|---|---|
 | Local | Development | Docker Compose | Available from Phase 1 |
-| Staging | Pre-production testing | `ib-stg-rg` | API live 2026-06-28; frontend deployment in progress; RBAC + KV + OIDC pending |
+| Staging | Pre-production testing | `ib-stg-rg` | API + frontend live 2026-06-29; smoke tests pass; RBAC + KV + OIDC pending |
 | Production | Live platform | `ib-prod-rg` | Phase 5+ |
 
 ---
@@ -80,7 +80,7 @@ Storage Account exception: `ib{env}storage` (no hyphens)
 | `ib-stg-kv` | Key Vault | Standard | westeurope | **Provisioned** — secrets pending |
 | `ib-stg-plan` | App Service Plan | B1 Linux (shared) | westeurope | **Provisioned** |
 | `ib-stg-api` | App Service (Python 3.12) | — | westeurope | **Live** — Phase 12.2 ZIP deploy (2026-06-28) |
-| `ib-stg-web` | App Service (Node 22) | — | westeurope | **Deploying** — run-from-package in progress |
+| `ib-stg-web` | App Service (Node 22) | — | westeurope | **Live** — Phase 12.2 standalone deploy (2026-06-29) |
 | `ib-stg-psql` | PostgreSQL Flexible Server 16 | Standard_B1ms | **northeurope** ¹ | **Provisioned** — migrations 001–004 applied 2026-06-28 |
 | `ibstgstorage` | Storage Account (LRS) | Standard | westeurope | **Provisioned** |
 
@@ -572,7 +572,10 @@ Never commit directly to `main` once deployment is active.
 - [x] `ib-stg-kv`, `ib-stg-logs`, `ib-stg-insights`, `ibstgstorage` — provisioned (westeurope)
 - [x] `ib-stg-psql` — provisioned (northeurope, named `ib-stg-psql` not `ib-stg-db`)
 
-#### Phase 12.2 — Manual deploy (OIDC skipped) — 2026-06-28
+#### Phase 12.2 — Manual deploy (OIDC skipped) — 2026-06-29
+
+All smoke tests pass as of 2026-06-29.
+
 - [x] `apps/api/app/workflows/company_analysis.py` — fixed `parents[5]` → `parents[4]` (IndexError in Oryx extraction path)
 - [x] `apps/api/app/main.py` — `hmac.compare_digest` for timing-safe Basic Auth
 - [x] `apps/api/app/core/config.py` — `secret_key` field added
@@ -582,14 +585,22 @@ Never commit directly to `main` once deployment is active.
 - [x] `WEBSITES_CONTAINER_START_TIME_LIMIT=1800` set on both apps (Oryx extraction timeout)
 - [x] API ZIP deployed via `az webapp deploy --type zip` → Oryx pip install + gunicorn startup
 - [x] Alembic migrations 001–004 run via local machine with temp firewall rule
-- [x] Smoke tests: health ✓, auth ✓, company CRUD ✓
-- [x] Frontend: `WEBSITE_RUN_FROM_PACKAGE=1` + full ZIP deploy in progress
+- [x] `apps/web/next.config.ts` — `output: "standalone"`, `lockDistDir: false` (12MB ZIP vs 144MB)
+- [x] Frontend deployed: `WEBSITE_RUN_FROM_PACKAGE=1` + standalone ZIP + `node server.js` startup
+
+**Smoke tests (2026-06-29):**
+- `GET /health` → 200 `{"status":"ok","environment":"staging"}` ✓
+- `GET /api/v1/companies` (no auth) → 401 ✓
+- `GET /api/v1/companies` (with auth) → 200 ✓
+- `POST /api/v1/reports/test/publish` → 404 (no publish endpoint) ✓
+- `GET https://ib-stg-web.azurewebsites.net/` → 200, full InvestingBuddy HTML ✓
+- `GET https://ib-stg-web.azurewebsites.net/admin` → 200 ✓
 
 #### Known limitations (Phase 12.2)
-- Analysis workflow fails at `report_validation_service` because `packages/research-contracts/` is not bundled in the API ZIP. Paths resolve incorrectly in the Oryx extraction dir. Fix: bundle schema in ZIP or use env var override.
+- Analysis workflow fails at `report_validation_service` because `packages/research-contracts/` is not bundled in the API ZIP. Fix: bundle schema in ZIP or use env var override.
 - OIDC not configured — deploy requires manual `az webapp deploy` (not GitHub Actions).
 - App settings (secrets) stored directly in App Service config — not via KV references. Temporary.
-- Frontend on shared B1 plan causes SCM container interference during concurrent deployments.
+- Frontend NodeProjectOptimizer (NPO) takes ~18 minutes on B1 to zip standalone `node_modules` during deploy; app still uses original ZIP via WEBSITE_RUN_FROM_PACKAGE=1 so startup is unaffected.
 
 #### Blocked — Needs Owner role on `ib-stg-rg` (current account is Contributor-only)
 - [ ] Re-run Bicep with `param skipRbac = false` to apply managed identity → KV/Storage role assignments
