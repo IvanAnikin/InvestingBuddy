@@ -1,4 +1,5 @@
 import base64
+import hmac
 
 from fastapi import FastAPI, Request, Response
 
@@ -32,7 +33,7 @@ if settings.app_env == "staging" and settings.staging_basic_auth:
         if request.url.path == "/health":
             return await call_next(request)  # type: ignore[operator]
         auth = request.headers.get("Authorization", "")
-        if auth == f"Basic {_expected}":
+        if hmac.compare_digest(auth, f"Basic {_expected}"):
             return await call_next(request)  # type: ignore[operator]
         return Response(
             content="Staging access restricted",

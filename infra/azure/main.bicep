@@ -28,6 +28,15 @@ param dbAdminPassword string
 @description('GitHub Actions App Registration principal ID (object ID). Set to activate KV Secrets Officer role assignment.')
 param githubActionsPrincipalId string = ''
 
+@description('Skip RBAC role assignments. Set true if the deploying identity lacks Microsoft.Authorization/roleAssignments/write (Contributor-only accounts). Assign roles manually or re-deploy after granting Owner/User Access Administrator.')
+param skipRbac bool = false
+
+@description('Azure region for PostgreSQL Flexible Server. Some MSDN subscriptions have offer restrictions on westeurope for PostgreSQL — override to northeurope if provisioning fails with LocationIsOfferRestricted.')
+param dbLocation string = resourceGroup().location
+
+@description('PostgreSQL Flexible Server name override. Default: ib-{env}-db. Override if a previous failed deployment left an ARM name reservation in a different region (InvalidResourceLocation error).')
+param dbServerNameOverride string = ''
+
 // ── Resource Names ─────────────────────────────────────────────────────────
 
 var apiAppName = '${projectShort}-${env}-api'
@@ -35,7 +44,7 @@ var webAppName = '${projectShort}-${env}-web'
 // Single shared B1 plan for both API and Web (cost-optimised for early staging)
 // Scale-up: change SKU in modules/appservice.bicep, or split into two plans
 var sharedPlanName = '${projectShort}-${env}-plan'
-var dbServerName = '${projectShort}-${env}-db'
+var dbServerName = empty(dbServerNameOverride) ? '${projectShort}-${env}-db' : dbServerNameOverride
 var kvName = '${projectShort}-${env}-kv'
 var storageName = '${projectShort}${env}storage'
 var insightsName = '${projectShort}-${env}-insights'
@@ -110,27 +119,30 @@ module appServiceModule 'modules/appservice.bicep' = {
 module postgresModule 'modules/postgres.bicep' = {
   name: 'postgres'
   params: {
-    location: location
+    location: dbLocation
     dbServerName: dbServerName
     dbAdminPassword: dbAdminPassword
   }
 }
 
 // ── RBAC Assignments ───────────────────────────────────────────────────────
-// Scoped to existing KV/Storage resources after modules deploy them.
-// Uses existing references so Bicep can set the correct scope for roleAssignments.
+// Scoped to the KV/Storage resources deployed by the modules above.
+// existing resource names use local vars (computable at deployment start) so
+// that Bicep can resolve .id for the scope and guid() name arguments.
+// principalId still references module outputs (allowed in properties block).
 
 resource kvExisting 'Microsoft.KeyVault/vaults@2023-07-01' existing = {
-  name: kvModule.outputs.kvName
+  name: kvName
 }
 
 resource storageExisting 'Microsoft.Storage/storageAccounts@2023-05-01' existing = {
-  name: storageModule.outputs.storageAccountName
+  name: storageName
 }
 
 // API managed identity → Key Vault Secrets User
-resource apiKvSecretsUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(kvExisting.id, appServiceModule.outputs.apiManagedIdentityPrincipalId, kvSecretsUserRoleId)
+// guid uses apiAppName (var, deployment-start computable) not the module-output principalId
+resource apiKvSecretsUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!skipRbac) {
+  name: guid(kvExisting.id, apiAppName, kvSecretsUserRoleId)
   scope: kvExisting
   properties: {
     roleDefinitionId: kvSecretsUserRoleId
@@ -140,8 +152,8 @@ resource apiKvSecretsUser 'Microsoft.Authorization/roleAssignments@2022-04-01' =
 }
 
 // Web managed identity → Key Vault Secrets User
-resource webKvSecretsUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(kvExisting.id, appServiceModule.outputs.webManagedIdentityPrincipalId, kvSecretsUserRoleId)
+resource webKvSecretsUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!skipRbac) {
+  name: guid(kvExisting.id, webAppName, kvSecretsUserRoleId)
   scope: kvExisting
   properties: {
     roleDefinitionId: kvSecretsUserRoleId
@@ -151,8 +163,8 @@ resource webKvSecretsUser 'Microsoft.Authorization/roleAssignments@2022-04-01' =
 }
 
 // API managed identity → Storage Blob Data Contributor
-resource apiStorageBlobContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(storageExisting.id, appServiceModule.outputs.apiManagedIdentityPrincipalId, storageBlobDataContributorRoleId)
+resource apiStorageBlobContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!skipRbac) {
+  name: guid(storageExisting.id, apiAppName, storageBlobDataContributorRoleId)
   scope: storageExisting
   properties: {
     roleDefinitionId: storageBlobDataContributorRoleId
@@ -162,7 +174,7 @@ resource apiStorageBlobContributor 'Microsoft.Authorization/roleAssignments@2022
 }
 
 // GitHub Actions SP → Key Vault Secrets Officer (optional — set githubActionsPrincipalId to activate)
-resource githubActionsKvOfficer 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(githubActionsPrincipalId)) {
+resource githubActionsKvOfficer 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!skipRbac && !empty(githubActionsPrincipalId)) {
   name: guid(kvExisting.id, githubActionsPrincipalId, kvSecretsOfficerRoleId)
   scope: kvExisting
   properties: {

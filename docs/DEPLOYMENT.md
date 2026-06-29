@@ -1,6 +1,6 @@
 # Deployment
 
-## Status: Phase 12 — Azure Staging Infrastructure Provisioned (Bicep + GitHub Actions active)
+## Status: Phase 12.2 — API deployed and live; frontend deployment in progress; RBAC + KV + OIDC pending permissions fix
 
 ---
 
@@ -9,7 +9,7 @@
 | Environment | Purpose | Resource Group | Status |
 |---|---|---|---|
 | Local | Development | Docker Compose | Available from Phase 1 |
-| Staging | Pre-production testing | `ib-stg-rg` | Bicep written; App Service, DB, KV, Storage ready to provision |
+| Staging | Pre-production testing | `ib-stg-rg` | API live 2026-06-28; frontend deployment in progress; RBAC + KV + OIDC pending |
 | Production | Live platform | `ib-prod-rg` | Phase 5+ |
 
 ---
@@ -70,19 +70,21 @@ Storage Account exception: `ib{env}storage` (no hyphens)
 
 ## Azure Resources — Staging (`ib-stg-rg`)
 
-### Phase A Core (Bicep written — ready to provision)
+### Phase A Core (provisioned 2026-06-27)
 
-| Name | Type | SKU | Purpose | Status |
+| Name | Type | SKU | Location | Status |
 |---|---|---|---|---|
-| `ib-stg-rg` | Resource Group | — | Container for all staging resources | **Provisioned** |
-| `ib-stg-logs` | Log Analytics Workspace | PerGB2018 | Required by Application Insights | Bicep ready |
-| `ib-stg-insights` | Application Insights | — | Monitoring and alerting | Bicep ready |
-| `ib-stg-kv` | Key Vault | Standard | Secrets — DB password, app secrets | Bicep ready |
-| `ib-stg-plan` | App Service Plan | **B1 Linux (shared)** | Compute for API + Web (cost-optimised) | Bicep ready |
-| `ib-stg-api` | App Service (Python 3.12) | — | FastAPI backend | Bicep ready |
-| `ib-stg-web` | App Service (Node 22) | — | Next.js frontend | Bicep ready |
-| `ib-stg-db` | PostgreSQL Flexible Server 16 | Standard_B1ms | Main database | Bicep ready |
-| `ibstgstorage` | Storage Account (LRS) | Standard | Blob storage for documents | Bicep ready |
+| `ib-stg-rg` | Resource Group | — | westeurope | **Provisioned** |
+| `ib-stg-logs` | Log Analytics Workspace | PerGB2018 | westeurope | **Provisioned** |
+| `ib-stg-insights` | Application Insights | — | westeurope | **Provisioned** |
+| `ib-stg-kv` | Key Vault | Standard | westeurope | **Provisioned** — secrets pending |
+| `ib-stg-plan` | App Service Plan | B1 Linux (shared) | westeurope | **Provisioned** |
+| `ib-stg-api` | App Service (Python 3.12) | — | westeurope | **Live** — Phase 12.2 ZIP deploy (2026-06-28) |
+| `ib-stg-web` | App Service (Node 22) | — | westeurope | **Deploying** — run-from-package in progress |
+| `ib-stg-psql` | PostgreSQL Flexible Server 16 | Standard_B1ms | **northeurope** ¹ | **Provisioned** — migrations 001–004 applied 2026-06-28 |
+| `ibstgstorage` | Storage Account (LRS) | Standard | westeurope | **Provisioned** |
+
+¹ Named `ib-stg-psql` (not `ib-stg-db`): a failed westeurope attempt left a ghost ARM reservation for `ib-stg-db`; westeurope is also offer-restricted for PostgreSQL on this MSDN subscription. `northeurope` (Ireland) is EU/GDPR compliant. FQDN: `ib-stg-psql.postgres.database.azure.com`
 
 ### Phase 7 (provisioned — local real-LLM dev)
 
@@ -100,9 +102,15 @@ Storage Account exception: `ib{env}storage` (no hyphens)
 
 ## Staging URLs (after provisioning)
 
-> **Status: not yet provisioned.** No Phase A resources have been deployed.
-> The URLs below will only resolve after `az deployment group create` is run.
-> Staging smoke tests cannot be run until provisioning is complete.
+> **Status (2026-06-28): API is live** via manual ZIP deploy. OIDC and KV references are skipped for now — app settings are configured directly in App Service (temporary). Frontend deployment in progress.
+>
+> **Smoke test results:**
+> - `GET /health` → `{"status":"ok","environment":"staging","version":"0.1.0"}` ✓
+> - `GET /api/v1/companies` (no auth) → 401 ✓
+> - `GET /api/v1/companies` (with auth) → 200 ✓
+> - `POST /api/v1/companies` → 200, UUID returned, DB write confirmed ✓
+> - `GET /docs` (no auth) → 401 ✓
+> - Analysis workflow → starts correctly; fails at schema validation (see known limitations)
 
 | Service | URL |
 |---|---|
@@ -162,7 +170,7 @@ source ~/.venvs/azure-cli/bin/activate
 az keyvault secret set \
   --vault-name ib-stg-kv \
   --name database-url \
-  --value "postgresql+psycopg://ibadmin:${AZURE_STAGING_DB_PASSWORD}@ib-stg-db.postgres.database.azure.com:5432/investingbuddy?sslmode=require"
+  --value "postgresql+psycopg://ibadmin:${AZURE_STAGING_DB_PASSWORD}@ib-stg-psql.postgres.database.azure.com:5432/investingbuddy?sslmode=require"
 
 # Random secret key for the API
 az keyvault secret set \
@@ -210,22 +218,22 @@ alembic current
 YOUR_IP=$(curl -s https://api.ipify.org)
 az postgres flexible-server firewall-rule create \
   --resource-group ib-stg-rg \
-  --name ib-stg-db \
-  --rule-name local-dev \
+  --server-name ib-stg-psql \
+  --name local-dev \
   --start-ip-address $YOUR_IP \
   --end-ip-address $YOUR_IP
 
 # Run migrations from local machine
 cd apps/api
 source .venv/bin/activate
-DATABASE_URL="postgresql+psycopg://ibadmin:<password>@ib-stg-db.postgres.database.azure.com:5432/investingbuddy?sslmode=require" \
+DATABASE_URL="postgresql+psycopg://ibadmin:<password>@ib-stg-psql.postgres.database.azure.com:5432/investingbuddy?sslmode=require" \
   alembic upgrade head
 
 # Remove the temporary firewall rule
 az postgres flexible-server firewall-rule delete \
   --resource-group ib-stg-rg \
-  --name ib-stg-db \
-  --rule-name local-dev --yes
+  --server-name ib-stg-psql \
+  --name local-dev --yes
 ```
 
 ### Verify migrations applied
@@ -549,18 +557,49 @@ Never commit directly to `main` once deployment is active.
 - [x] Local `.env` populated with endpoint, key, version, deployment name
 - [x] 8/8 real Azure OpenAI integration tests pass
 
-### Phase A — Core Staging (Bicep written; run checklist before `az deployment group create`)
-- [x] `infra/azure/main.bicep` complete — calls all 5 modules
+### Phase A — Core Staging
+
+#### Completed 2026-06-27
+- [x] `infra/azure/main.bicep` — module wiring + conditional RBAC (`skipRbac` param)
 - [x] `infra/azure/modules/monitoring.bicep` — Log Analytics + App Insights
-- [x] `infra/azure/modules/keyvault.bicep` — Key Vault Standard
-- [x] `infra/azure/modules/storage.bicep` — StorageV2 LRS + container
+- [x] `infra/azure/modules/keyvault.bicep` — Key Vault Standard (RBAC mode)
+- [x] `infra/azure/modules/storage.bicep` — StorageV2 LRS + private container
 - [x] `infra/azure/modules/postgres.bicep` — PostgreSQL 16 Flexible Server
-- [x] `infra/azure/modules/appservice.bicep` — API B2 + Web B1
-- [x] `deploy-api-staging.yml` — active (uncommented, health check included)
-- [x] `deploy-web-staging.yml` — active (uncommented, smoke check included)
-- [ ] App Registration `ib-github-actions-stg` created with federated credential
+- [x] `infra/azure/modules/appservice.bicep` — shared B1 plan, API + Web
+- [x] `deploy-api-staging.yml` — OIDC + health check
+- [x] `deploy-web-staging.yml` — OIDC + smoke check
+- [x] `ib-stg-plan`, `ib-stg-api`, `ib-stg-web` — provisioned (westeurope)
+- [x] `ib-stg-kv`, `ib-stg-logs`, `ib-stg-insights`, `ibstgstorage` — provisioned (westeurope)
+- [x] `ib-stg-psql` — provisioned (northeurope, named `ib-stg-psql` not `ib-stg-db`)
+
+#### Phase 12.2 — Manual deploy (OIDC skipped) — 2026-06-28
+- [x] `apps/api/app/workflows/company_analysis.py` — fixed `parents[5]` → `parents[4]` (IndexError in Oryx extraction path)
+- [x] `apps/api/app/main.py` — `hmac.compare_digest` for timing-safe Basic Auth
+- [x] `apps/api/app/core/config.py` — `secret_key` field added
+- [x] `apps/api/requirements.txt` — created with pinned pip freeze for Oryx build
+- [x] App Service app settings configured directly (no KV references — temporary)
+- [x] `WEBSITE_WARMUP_PATH=/health` set on ib-stg-api (Azure warmup probe gets 200)
+- [x] `WEBSITES_CONTAINER_START_TIME_LIMIT=1800` set on both apps (Oryx extraction timeout)
+- [x] API ZIP deployed via `az webapp deploy --type zip` → Oryx pip install + gunicorn startup
+- [x] Alembic migrations 001–004 run via local machine with temp firewall rule
+- [x] Smoke tests: health ✓, auth ✓, company CRUD ✓
+- [x] Frontend: `WEBSITE_RUN_FROM_PACKAGE=1` + full ZIP deploy in progress
+
+#### Known limitations (Phase 12.2)
+- Analysis workflow fails at `report_validation_service` because `packages/research-contracts/` is not bundled in the API ZIP. Paths resolve incorrectly in the Oryx extraction dir. Fix: bundle schema in ZIP or use env var override.
+- OIDC not configured — deploy requires manual `az webapp deploy` (not GitHub Actions).
+- App settings (secrets) stored directly in App Service config — not via KV references. Temporary.
+- Frontend on shared B1 plan causes SCM container interference during concurrent deployments.
+
+#### Blocked — Needs Owner role on `ib-stg-rg` (current account is Contributor-only)
+- [ ] Re-run Bicep with `param skipRbac = false` to apply managed identity → KV/Storage role assignments
+- [ ] Key Vault secrets populated: `database-url`, `db-password`, `secret-key`, `openai-api-key`, `staging-basic-auth`
+- [ ] Migrate App Service app settings from direct values → `@Microsoft.KeyVault()` references
+
+#### Blocked — Needs Entra ID Application Developer role
+- [ ] App Registration `ib-github-actions-stg` created with federated credential for `main` branch
 - [ ] GitHub Secrets set: `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`
-- [ ] `az deployment group create` executed against `ib-stg-rg`
-- [ ] Key Vault secrets populated (`database-url`, `secret-key`, `openai-api-key`, `staging-basic-auth`)
-- [ ] `alembic upgrade head` run on staging DB
-- [ ] Staging smoke tests pass
+
+#### Pending (unblocks after above)
+- [ ] GitHub Actions deployment triggered (push to `main`)
+- [ ] Bundle `packages/research-contracts/` in API ZIP and fix path resolution

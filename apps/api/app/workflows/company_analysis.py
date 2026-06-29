@@ -108,7 +108,7 @@ WORKFLOW_NAME = "company_analysis"
 WORKFLOW_VERSION = "5.0.0"
 
 _PROMPT_PATH = (
-    pathlib.Path(__file__).resolve().parents[5]
+    pathlib.Path(__file__).resolve().parents[4]
     / "packages"
     / "prompts"
     / "research"

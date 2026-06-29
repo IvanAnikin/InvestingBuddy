@@ -21,3 +21,12 @@ param location = 'westeurope'
 param projectShort = 'ib'
 param dbAdminPassword = readEnvironmentVariable('AZURE_STAGING_DB_PASSWORD', '')
 param githubActionsPrincipalId = ''
+// Set true while deploying with a Contributor-only account (no roleAssignments/write).
+// After gaining Owner/User Access Administrator on ib-stg-rg, set false and re-deploy.
+param skipRbac = true
+// PostgreSQL in northeurope — westeurope is offer-restricted on this MSDN subscription.
+// northeurope (Ireland) is EU/GDPR compliant and the next-closest region.
+param dbLocation = 'northeurope'
+// ib-stg-db had a failed westeurope ARM reservation from a previous deployment attempt.
+// Using ib-stg-psql to avoid the InvalidResourceLocation name collision.
+param dbServerNameOverride = 'ib-stg-psql'

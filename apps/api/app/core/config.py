@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     app_name: str = "InvestingBuddy API"
     app_env: str = "development"
     debug: bool = False
+    secret_key: str = "change-me-before-production"
 
     database_url: str = (
         "postgresql+psycopg://investingbuddy:investingbuddy@localhost:5432/investingbuddy"

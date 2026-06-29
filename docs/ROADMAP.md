@@ -1,6 +1,6 @@
 # Roadmap
 
-## Current Phase: Phase 12 — Azure Staging Deployment (Bicep infrastructure complete)
+## Current Phase: Phase 12 — Azure Staging Deployment (API live; frontend deploying)
 
 ---
 
@@ -448,14 +448,15 @@ Skills used: `backend-fastapi`, `database-design`, `frontend-nextjs`, `investmen
 
 ---
 
-## Phase 12: Azure Staging Deployment ✅
+## Phase 12: Azure Staging Deployment 🚀
 
-**Status: Complete (infrastructure code)**
+**Status: Phase 12.1 infrastructure complete; Phase 12.2 first deploy in progress**
 
 Goal: Provision and deploy the first Azure staging environment for InvestingBuddy.
 Staging only — internal admin use, not public investment advice.
 
-Deliverables:
+### Phase 12.1 — Bicep Infrastructure
+
 - [x] `infra/azure/main.bicep` — full module wiring + inline RBAC assignments
 - [x] `infra/azure/parameters/staging.bicepparam` — reads DB password from env var, no secrets committed
 - [x] `infra/azure/modules/monitoring.bicep` — Log Analytics Workspace + Application Insights
@@ -470,15 +471,33 @@ Deliverables:
 - [x] `STAGING_BASIC_AUTH` added to config, `.env.example`, Key Vault reference in Bicep
 - [x] `docs/DEPLOYMENT.md` fully updated — provisioning commands, migration steps, smoke tests, OIDC setup, cost notes, security limitations
 - [x] `infra/azure/README.md` fully updated — Bicep structure, resource specs, KV secrets list, checklist
-- [x] `docs/ARCHITECTURE.md`, `docs/ROADMAP.md`, `README.md` updated
 
-Pending (manual steps before resources are live):
+### Phase 12.2 — First Manual Deploy (No OIDC)
+
+Approach: Skip OIDC/Key Vault while App Registration permissions are pending; deploy directly
+via `az webapp deploy` with direct app settings. All Azure resources in `ib-stg-rg`.
+
+- [x] API backend deployed: `https://ib-stg-api.azurewebsites.net` — live, Basic Auth enabled
+- [x] API health check: `GET /health` → `{"status":"ok","environment":"staging","version":"0.1.0"}`
+- [x] Alembic migrations applied: 001–004 against `ib-stg-psql`
+- [x] `apps/api/requirements.txt` — pinned pip freeze for Oryx Python build
+- [x] `apps/api/app/workflows/company_analysis.py` — fixed `parents[4]` (was `parents[5]`, caused IndexError on Oryx extraction path)
+- [x] `apps/web/next.config.ts` — `output: "standalone"` for reliable Azure App Service deploy
+- [x] Frontend deploying: `https://ib-stg-web.azurewebsites.net` — standalone ZIP (`node server.js`)
+
+Pending (permissions blocked or in progress):
+- [ ] Frontend smoke test pass
+- [ ] Grant `ivan.anikin@outlook.com` Owner on `ib-stg-rg` (AD permission needed)
 - [ ] Create App Registration `ib-github-actions-stg` + OIDC federated credential
-- [ ] Set GitHub Secrets: `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `AZURE_STAGING_DB_PASSWORD`
-- [ ] Run `az deployment group create` against `ib-stg-rg`
-- [ ] Populate Key Vault secrets (5 secrets)
-- [ ] Run `alembic upgrade head` on staging DB
-- [ ] Staging smoke tests pass
+- [ ] Set GitHub Secrets: `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`
+- [ ] Populate Key Vault secrets and migrate app settings → KV references
+- [ ] Enable GitHub Actions automated deploy pipeline
+
+Known limitations (Phase 12.2 manual deploy):
+- App settings stored as direct values (not Key Vault references) — acceptable for staging only
+- OIDC skipped — GitHub Actions deploy workflows require OIDC credentials not yet created
+- Analysis workflow fails at report validation step (schema path not bundled in API ZIP)
+- Shared B1 plan: SCM container interference — must deploy apps sequentially
 
 Constraints enforced:
 - No production resources created or targeted
@@ -488,7 +507,7 @@ Constraints enforced:
 - No public publishing of investment research
 - No breaking changes to local development
 
-Skills used: `azure-deployment`, `backend-fastapi`, `security-review`, `docs-maintainer`
+Skills used: `azure-deployment`, `backend-fastapi`, `frontend-nextjs`, `security-review`, `database-design`, `testing-qa`, `dev-environment-troubleshooter`, `docs-maintainer`
 
 ---
 

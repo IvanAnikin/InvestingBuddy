@@ -1,19 +1,30 @@
 # InvestingBuddy — Azure Infrastructure
 
-## Status: Phase 12 — Bicep complete; ready to provision
+## Status: Phase 12.2 — API live; frontend deploying; RBAC + KV + OIDC pending
 
-Provisioned:
+Provisioned (2026-06-27, deployment `phase12-staging-20260627-231621`):
 - `ib-stg-rg` — resource group, `westeurope`
-- `ib-stg-openai` — Azure OpenAI S0, endpoint `https://ib-stg-openai-d52d2.openai.azure.com/`
-- Deployment: `gpt-4.1-mini` v2025-04-14, GlobalStandard, 10K TPM
+- `ib-stg-openai` — Azure OpenAI S0 (pre-existing, Phase 7)
+- `ib-stg-plan` — shared B1 App Service Plan, `westeurope`
+- `ib-stg-api` — App Service Python 3.12, `westeurope` — **LIVE** (2026-06-28, manual ZIP)
+- `ib-stg-web` — App Service Node 22, `westeurope` — **deploying**
+- `ib-stg-kv` — Key Vault Standard, `westeurope`
+- `ib-stg-logs` / `ib-stg-insights` — Log Analytics + App Insights, `westeurope`
+- `ibstgstorage` — Storage Account LRS, `westeurope`
+- `ib-stg-psql` — PostgreSQL 16 Flexible Server, **`northeurope`** ¹ — migrations 001–004 applied
 
-Bicep written and ready to deploy (Phase A):
-- `ib-stg-kv` — Key Vault Standard
-- `ib-stg-logs` / `ib-stg-insights` — Log Analytics + Application Insights
-- `ib-stg-api-plan` / `ib-stg-api` — App Service B2 (Python 3.12)
-- `ib-stg-web-plan` / `ib-stg-web` — App Service B1 (Node 22)
-- `ib-stg-db` — PostgreSQL 16 Flexible Server Standard_B1ms
-- `ibstgstorage` — Storage Account LRS
+¹ Named `ib-stg-psql` (not `ib-stg-db`) because a failed westeurope attempt left an ARM
+  name reservation for `ib-stg-db` in westeurope. The MSDN subscription is also offer-restricted
+  for PostgreSQL in westeurope, so `northeurope` (Ireland, EU/GDPR) is used instead.
+  FQDN: `ib-stg-psql.postgres.database.azure.com`
+
+Deployed without OIDC (Phase 12.2 decision): secrets in App Service settings directly (temporary);
+Key Vault references and OIDC blocked pending permissions. See `docs/DEPLOYMENT.md` for details.
+
+Still pending (permissions wall):
+- RBAC role assignments (requires Owner on `ib-stg-rg` — current account is Contributor-only)
+- Key Vault secrets (requires Key Vault Secrets Officer role)
+- GitHub OIDC App Registration (requires Entra ID Application Developer role)
 
 Not yet provisioned: Azure AI Search (Phase 4+).
 
@@ -46,7 +57,7 @@ Not chosen:
 
 | Environment | Resource Group | Branch | Status |
 |---|---|---|---|
-| Staging | `ib-stg-rg` | `main` | Bicep written; deploy pending OIDC + secrets setup |
+| Staging | `ib-stg-rg` | `main` | API live (manual ZIP); frontend deploying; RBAC + KV + OIDC pending |
 | Production | `ib-prod-rg` | `release/*` | Future — Phase 5+ |
 
 ---
@@ -63,19 +74,19 @@ Exceptions:
 
 ## Staging Resource List (`ib-stg-rg`)
 
-### Core Resources (Bicep ready — Phase A)
+### Core Resources (Phase A — provisioned 2026-06-27)
 
-| Name | Type | SKU | Purpose | Status |
+| Name | Type | SKU | Location | Status |
 |---|---|---|---|---|
-| `ib-stg-rg` | Resource Group | — | Container for all staging resources | **Provisioned** |
-| `ib-stg-logs` | Log Analytics Workspace | PerGB2018 | Required by App Insights | Bicep ready |
-| `ib-stg-insights` | Application Insights | — | Monitoring, alerting | Bicep ready |
-| `ib-stg-kv` | Key Vault | Standard | Staging secrets | Bicep ready |
-| `ib-stg-plan` | App Service Plan | **B1 Linux (shared)** | Compute for API + Web | Bicep ready |
-| `ib-stg-api` | App Service (Python 3.12) | — | FastAPI backend | Bicep ready |
-| `ib-stg-web` | App Service (Node 22) | — | Next.js frontend | Bicep ready |
-| `ib-stg-db` | PostgreSQL Flexible Server 16 | Standard_B1ms | Main database | Bicep ready |
-| `ibstgstorage` | Storage Account (LRS) | Standard | Blob storage | Bicep ready |
+| `ib-stg-rg` | Resource Group | — | westeurope | **Provisioned** |
+| `ib-stg-logs` | Log Analytics Workspace | PerGB2018 | westeurope | **Provisioned** |
+| `ib-stg-insights` | Application Insights | — | westeurope | **Provisioned** |
+| `ib-stg-kv` | Key Vault | Standard | westeurope | **Provisioned** — KV secrets pending |
+| `ib-stg-plan` | App Service Plan | B1 Linux (shared) | westeurope | **Provisioned** |
+| `ib-stg-api` | App Service (Python 3.12) | — | westeurope | **Live** — Phase 12.2 ZIP deploy |
+| `ib-stg-web` | App Service (Node 22) | — | westeurope | **Deploying** — run-from-package |
+| `ib-stg-psql` | PostgreSQL Flexible Server 16 | Standard_B1ms | **northeurope** | **Provisioned** — migrations 001–004 applied |
+| `ibstgstorage` | Storage Account (LRS) | Standard | westeurope | **Provisioned** |
 
 ### Phase 7 (provisioned)
 
@@ -143,9 +154,11 @@ rather than modules — this avoids circular dependencies between appservice →
 - Managed Identity: system-assigned
 - `NEXT_PUBLIC_API_BASE_URL` baked into build at CI time
 
-### PostgreSQL Flexible Server (`ib-stg-db`)
+### PostgreSQL Flexible Server (`ib-stg-psql`)
 - Version: PostgreSQL 16
 - SKU: Standard_B1ms (1 vCore, 2 GB RAM)
+- Location: `northeurope` (westeurope is offer-restricted on this MSDN subscription)
+- FQDN: `ib-stg-psql.postgres.database.azure.com`
 - Storage: 32 GB auto-grow
 - Backup retention: 7 days
 - High availability: Disabled (staging only)
@@ -153,6 +166,7 @@ rather than modules — this avoids circular dependencies between appservice →
 - Admin password: stored in Key Vault (`ib-stg-kv`) as `db-password`
 - Database name: `investingbuddy`
 - Firewall: Azure services allowed (0.0.0.0 rule)
+- Note: Bicep parameter `dbServerNameOverride = 'ib-stg-psql'` in staging.bicepparam
 
 ### Storage Account (`ibstgstorage`)
 - Kind: StorageV2 (General Purpose v2)
@@ -172,13 +186,16 @@ rather than modules — this avoids circular dependencies between appservice →
 
 ### Key Vault Secrets (populate after provisioning)
 
-| Secret Name | Value |
-|---|---|
-| `database-url` | `postgresql+psycopg://ibadmin:<pwd>@ib-stg-db.postgres.database.azure.com:5432/investingbuddy?sslmode=require` |
-| `db-password` | DB admin password |
-| `secret-key` | Random 32-byte hex (`openssl rand -hex 32`) |
-| `openai-api-key` | Azure OpenAI key from `ib-stg-openai` |
-| `staging-basic-auth` | `username:password` for HTTP Basic Auth middleware |
+| Secret Name | Value | Status |
+|---|---|---|
+| `database-url` | `postgresql+psycopg://ibadmin:<pwd>@ib-stg-psql.postgres.database.azure.com:5432/investingbuddy?sslmode=require` | **Pending** |
+| `db-password` | DB admin password (generate: `openssl rand -hex 16`) | **Pending** |
+| `secret-key` | Random 32-byte hex (`openssl rand -hex 32`) | **Pending** |
+| `openai-api-key` | Azure OpenAI key from `ib-stg-openai` | **Pending** |
+| `staging-basic-auth` | `username:password` for HTTP Basic Auth middleware | **Pending** |
+
+All secrets require **Key Vault Secrets Officer** role on `ib-stg-kv`.
+Current account (`ivan.anikin@outlook.com`) needs this role assigned — see permissions note below.
 
 ---
 
@@ -267,35 +284,60 @@ az account show # confirm correct subscription before any az command
 ### Phase A Core Staging
 
 #### Infrastructure Code (Phase 12 — complete)
-- [x] `infra/azure/main.bicep` — full module wiring + RBAC assignments
-- [x] `infra/azure/parameters/staging.bicepparam` — reads DB password from env var
+- [x] `infra/azure/main.bicep` — module wiring + conditional RBAC + `skipRbac`/`dbLocation`/`dbServerNameOverride` params
+- [x] `infra/azure/parameters/staging.bicepparam` — `skipRbac=true`, `dbLocation=northeurope`, `dbServerNameOverride=ib-stg-psql`
 - [x] `infra/azure/modules/monitoring.bicep`
 - [x] `infra/azure/modules/keyvault.bicep`
 - [x] `infra/azure/modules/storage.bicep`
 - [x] `infra/azure/modules/postgres.bicep`
 - [x] `infra/azure/modules/appservice.bicep`
-- [x] `.github/workflows/deploy-api-staging.yml` — activated with OIDC + health check
-- [x] `.github/workflows/deploy-web-staging.yml` — activated with OIDC + smoke check
+- [x] `.github/workflows/deploy-api-staging.yml` — OIDC + health check
+- [x] `.github/workflows/deploy-web-staging.yml` — OIDC + smoke check
 
-#### Azure AD Setup (manual — before running Bicep)
+#### Azure Resources (provisioned 2026-06-27)
+- [x] `ib-stg-plan` / `ib-stg-api` / `ib-stg-web` — App Service
+- [x] `ib-stg-kv` — Key Vault
+- [x] `ib-stg-logs` / `ib-stg-insights` — Monitoring
+- [x] `ibstgstorage` — Storage
+- [x] `ib-stg-psql` — PostgreSQL (northeurope)
+
+#### Permissions Required — Manual Action Needed
+- [ ] `ivan.anikin@outlook.com` granted **Owner** on `ib-stg-rg` (unblocks RBAC + KV + OIDC)
+  — Currently Contributor-only; `jg_sandy.ru#EXT#@jgsandy.onmicrosoft.com` is the existing Owner.
+  — OR: grant **Key Vault Secrets Officer** on `ib-stg-kv` for secrets-only access.
+
+#### RBAC Role Assignments (needs Owner — currently skipped)
+- [ ] Re-run Bicep with `skipRbac=false` (set in staging.bicepparam after gaining Owner)
+  — Assigns: API managed identity → KV Secrets User
+  — Assigns: Web managed identity → KV Secrets User
+  — Assigns: API managed identity → Storage Blob Data Contributor
+
+#### Key Vault Secrets (needs Key Vault Secrets Officer)
+- [ ] `database-url` — `postgresql+psycopg://ibadmin:<pwd>@ib-stg-psql.postgres.database.azure.com:5432/investingbuddy?sslmode=require`
+- [ ] `db-password` — DB admin password
+- [ ] `secret-key` — `openssl rand -hex 32`
+- [ ] `openai-api-key` — from `ib-stg-openai` keys
+- [ ] `staging-basic-auth` — `admin:<generate-password>`
+
+#### Azure AD / OIDC Setup (needs Entra ID Application Developer role)
 - [ ] App Registration `ib-github-actions-stg` created
-- [ ] Service Principal created for App Registration
-- [ ] Federated credential configured for `main` branch
-- [ ] `Contributor` role assigned on `ib-stg-rg`
+- [ ] Service Principal created
+- [ ] Federated credential for `main` branch configured
+- [ ] `Contributor` role assigned on `ib-stg-rg` for the SP
 
-#### GitHub Secrets (manual — before deployment workflows work)
+#### GitHub Secrets
 - [ ] `AZURE_CLIENT_ID` set
 - [ ] `AZURE_TENANT_ID` set
 - [ ] `AZURE_SUBSCRIPTION_ID` set
-- [ ] `AZURE_STAGING_DB_PASSWORD` generated and set
+- [ ] `AZURE_STAGING_DB_PASSWORD` set (needed for Bicep re-runs only)
 
-#### Provisioning (after above complete)
-- [ ] `az deployment group create` executed against `ib-stg-rg`
-- [ ] All outputs verified (API URL, web URL, DB FQDN)
-- [ ] Key Vault secrets populated (5 secrets)
-- [ ] KV Secrets Officer RBAC added for GitHub Actions SP
-- [ ] `alembic upgrade head` run on staging DB
-- [ ] Staging smoke tests pass (all 6 checks)
+#### Final Steps (after all above)
+- [x] `alembic upgrade head` run on staging DB (migrations 001–004) — 2026-06-28
+- [x] API smoke tests pass (health, auth, company CRUD)
+- [ ] KV secrets populated (blocked — needs KV Secrets Officer)
+- [ ] App settings migrated from direct values → KV references
+- [ ] GitHub Actions `deploy-api-staging` + `deploy-web-staging` triggered by push to main
+- [ ] Full end-to-end staging smoke tests (analysis workflow, admin review, report publishing)
 
 ---
 
