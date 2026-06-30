@@ -1,6 +1,6 @@
 # Agent Architecture
 
-## Status: Phase 9 — Analysis Council MVP: 5 deterministic analysis agents (bull/bear/risk/valuation/committee)
+## Status: Phase 14 — Company Discovery / Screener: CompanyScreener + CompanyDiscoveryService pre-analysis layer; 601 tests passing
 
 ---
 
@@ -541,6 +541,79 @@ Future research workflows must populate the `discovery_profile` section, which m
 - `event_trigger` — the specific event that surfaced the name before consensus (insider buy, permit, contract award)
 
 A `conventional_screen` entry path caps the `underresearched_edge` pillar score at 2/5.
+
+---
+
+## Company Discovery Layer (Phase 14)
+
+The discovery layer is a pre-analysis funnel that screens a defined universe of companies
+and produces an internal list of candidates for deeper research. It runs **before** the
+`company_analysis` workflow and does **not** produce investment recommendations.
+
+**Sources:**
+- `apps/api/app/services/screener.py` — `CompanyScreener` (pure logic, no DB)
+- `apps/api/app/services/company_discovery_service.py` — `CompanyDiscoveryService` (DB-aware)
+- `apps/api/app/api/v1/discovery.py` — 7 admin/dev-only API endpoints
+
+### CompanyScreener
+
+Deterministic, stateless class. No LLM calls. No network calls in CI.
+
+**Input modes:**
+- `provider_name="mock"` (default): reads from `_MOCK_UNIVERSE_BY_THEME` dict; assigns `T6_model_estimate` / `D_weak_or_stale`.
+- `provider_name="eodhd"` with `eodhd_search_results` list: parses live EODHD search response; assigns `T5_api_aggregator` / `B_single_credible`; filters non-equity types.
+
+**Supported themes (6):**
+`energy_transition`, `electrification_grid`, `defense_security`,
+`industrial_resilience`, `real_assets`, `materials_mining`
+
+**Candidate output:** `CandidateInput` dataclass — no `recommendation`, `price_target`, or `fair_value` fields.
+
+**T5 warning (always added for EODHD candidates):**
+`"Candidate requires primary-source validation before final analysis."`
+
+**candidate_status state machine:**
+
+| Status | Meaning |
+|---|---|
+| `candidate_found` | Raw find; minimal data |
+| `needs_data` | More data needed |
+| `needs_primary_sources` | T5/T6 data only; T1/T2 validation required |
+| `ready_for_deeper_analysis` | Sufficient data for company-analysis workflow |
+| `rejected_by_screen` | Did not meet screen criteria |
+| `error` | Error during processing |
+
+Forbidden statuses (never stored): `BUY`, `SELL`, `HOLD`, `WATCH`
+
+### CompanyDiscoveryService
+
+Async service that wraps `CompanyScreener` and persists results to DB.
+
+**`run_screening(db, run_id, universe, params)`** — creates a `ScreeningRun` record,
+calls `CompanyScreener.screen()`, persists `ScreeningCandidate` records, and writes a
+summary JSON. The summary note reads: `"Internal research funnel only. No investment recommendation produced."`
+
+**`promote_candidate_to_analysis(db, candidate_id)`** — finds or creates a `Company`
+record (via ticker + exchange lookup). Sets `candidate_status = "ready_for_deeper_analysis"`.
+Returns `PromoteCandidateResponse` with `company_created` bool and message:
+`"No recommendation produced. No publishing performed."`.
+
+Promotion does **not** auto-trigger the `company_analysis` workflow. Admin must call
+`POST /api/v1/workflows/company-analysis/run` separately with the promoted company ID.
+
+### Discovery API Endpoints (Admin/Dev Only)
+
+All 7 endpoints are tagged `discovery` and are not public.
+
+| Method | Path | Description |
+|---|---|---|
+| POST | `/api/v1/discovery/universes` | Create screening universe |
+| GET | `/api/v1/discovery/universes` | List universes |
+| POST | `/api/v1/discovery/universes/{id}/runs` | Start a screening run |
+| GET | `/api/v1/discovery/universes/{id}/runs` | List runs for a universe |
+| GET | `/api/v1/discovery/runs/{id}` | Get run detail + summary |
+| GET | `/api/v1/discovery/runs/{id}/candidates` | List candidates for a run |
+| POST | `/api/v1/discovery/candidates/{id}/promote` | Promote candidate to Company |
 
 ---
 

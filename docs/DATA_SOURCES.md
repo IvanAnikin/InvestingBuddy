@@ -1,6 +1,6 @@
 # Data Sources
 
-## Status: Phase 6 — Provider data now flows into source records, citations, and schema-validated snapshot reports
+## Status: Phase 14 — EODHD search used as T5 in CompanyScreener; EodhdProvider live; provider data flows into source records, citations, and schema-validated snapshot reports
 
 This document defines the permitted source universe, tier classification, and provider implementation notes for InvestingBuddy.
 
@@ -76,6 +76,19 @@ These files are the ground truth for:
 ## Provider Abstraction (Phase 4 — Implemented)
 
 The report schema is **provider-agnostic**. `eodhd_mapping.json` is a mapping layer, not a hardcoded dependency. To switch or add a provider, edit only the mapping file — the schema never changes.
+
+### Phase 14 Screener Usage (EODHD Search)
+
+`CompanyScreener` can accept live EODHD search results via `eodhd_search_results` parameter.
+These come from `GET https://eodhd.com/api/search/...` and are classified as `T5_api_aggregator`
+with data quality `B_single_credible`.
+
+Screener-stage EODHD data never advances beyond `T5` in the source tier. The T5 validation
+warning is appended to every EODHD-sourced candidate:
+`"Candidate requires primary-source validation before final analysis."`
+
+No EODHD API key is needed in CI — the screener tests use fixture-backed offline results.
+Live screening requires `EODHD_API_KEY` (same key as `EodhdProvider`).
 
 ### Provider Registry
 

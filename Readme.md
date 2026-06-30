@@ -142,9 +142,11 @@ Copy `.env.example` to `.env` and fill in values as needed.
 | Phase 11 | Done | Admin Review / Approve-Reject Workflow: 5 admin review endpoints; `report_review_events` audit table; `ReviewPanel` UI; 493 tests |
 | Phase 12 | Done | Azure Staging Infrastructure: 5 Bicep modules; activated deploy workflows (OIDC); staging Basic Auth middleware |
 | Phase 13 | Done | EODHD Real Financial Data: live `EodhdProvider`; `CompanyIdentifierResolver`; `company_financial_snapshots` table; fundamentals in workflow + snapshot_builder; 4 EODHD diagnostic endpoints; 552 offline tests |
+| Phase 14 | Done | Company Discovery / Screener: `CompanyScreener`; `CompanyDiscoveryService`; 3 new DB tables (migration 006); 7 discovery API endpoints (universes + runs + candidates + promote); 6 themes; T5 enforced for EODHD; 601 offline tests |
 | Phase 5 | Planned | Full council-of-agents MVP |
-| Phase 14 | Planned | Judge system and backtesting |
-| Phase 15 | Planned | Personalized investor assistant (V2) |
+| Phase 15 | Planned | Candidate Scoring (quantitative scoring model for screened candidates) |
+| Phase 16 | Planned | Judge system and backtesting |
+| Phase 17 | Planned | Personalized investor assistant (V2) |
 
 ---
 

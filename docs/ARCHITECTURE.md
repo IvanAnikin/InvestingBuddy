@@ -1,6 +1,6 @@
 # Architecture
 
-## Status: Phase 13 — EODHD Real Financial Data Integration (provider live, 552 tests passing)
+## Status: Phase 14 — Company Discovery / Screener (601 tests passing; 3 new DB tables; 7 new endpoints)
 
 ---
 
@@ -72,7 +72,7 @@ Azure Application Insights
 ### Database
 - Local: PostgreSQL 16 via Docker Compose
 - Production: Azure Database for PostgreSQL Flexible Server
-- Status: **migration 004 applied — reports table has review_status + 6 review fields; report_review_events audit table created**
+- Status: **migration 006 applied — screening_universes, screening_runs, screening_candidates tables created (Phase 14)**
 
 ### Vector Search
 - Azure AI Search
@@ -206,6 +206,7 @@ All errors are caught, logged to `agent_runs.error_message`, and returned as HTT
 | Phase 11 | ✅ Complete | Admin Review Workflow; 5 new admin endpoints; `ReportReviewEvent` model; migration 004; `ReviewPanel` client component; review event timeline; 30 new backend tests; 493 total; ruff + typecheck + lint + build clean |
 | Phase 12 | ✅ Complete | Azure Staging Infrastructure; 5 Bicep modules; `main.bicep` with RBAC; activated `deploy-api-staging.yml` + `deploy-web-staging.yml` (OIDC); staging Basic Auth middleware; `gunicorn` deploy extra; docs updated |
 | Phase 13 | ✅ Complete | EODHD real provider (`EodhdProvider`); `CompanyIdentifierResolver`; `company_financial_snapshots` table (migration 005, JSONB); workflow + snapshot_builder fundamentals enrichment; 4 EODHD diagnostic endpoints + `/resolve`; `WorkflowRunResponse` Phase 13 fields; 51 new offline tests; 552 total |
+| Phase 14 | ✅ Complete | Company Discovery / Screener; `CompanyScreener`; `CompanyDiscoveryService`; 3 new tables (migration 006); 7 discovery API endpoints (universes + runs + candidates + promote); 6 themes; T5 source tier enforced for EODHD; fixture-based EODHD search; candidate promotion; 57 new offline tests; 601 total |
 
 ---
 
