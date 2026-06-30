@@ -408,6 +408,10 @@ These endpoints are for **development and provider smoke-testing only**. They do
 | GET | `/api/v1/financial-data/stooq/prices/{ticker}` | ✅ Live (network) | Live OHLCV price history from Stooq (T5, free) |
 | GET | `/api/v1/financial-data/gleif/entity/{lei_or_name}` | ✅ Live (network) | Legal entity lookup from GLEIF registry (T2, free) |
 | GET | `/api/v1/financial-data/sec-edgar/company/{cik}` | ✅ Live (network) | Company profile from SEC EDGAR by CIK (T2, free) |
+| GET | `/api/v1/financial-data/eodhd/status` | ✅ Live (Phase 13) | EODHD provider status (no network call; `not_configured` if key absent) |
+| GET | `/api/v1/financial-data/eodhd/company/{symbol}` | ✅ Live (Phase 13, network) | Company profile from EODHD; `symbol` = `TICKER.EXCHANGE` (e.g. `AAPL.US`); requires `EODHD_API_KEY` |
+| GET | `/api/v1/financial-data/eodhd/fundamentals/{symbol}` | ✅ Live (Phase 13, network) | Full fundamentals from EODHD; requires `EODHD_API_KEY`; returns datapoints with T5 source tier |
+| GET | `/api/v1/financial-data/resolve` | ✅ Live (Phase 13) | Resolve company identifier to EODHD symbol(s); `?q=AAPL` or `?q=Apple+Inc`; optional `?exchange=NASDAQ`; warns when ambiguous |
 
 **GET /api/v1/financial-data/providers** — List all providers
 

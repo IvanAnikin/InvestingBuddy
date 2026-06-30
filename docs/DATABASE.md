@@ -1,6 +1,6 @@
 # Database Schema
 
-## Status: Phase 11 — Review Workflow Fields and report_review_events Table Added
+## Status: Phase 13 — company_financial_snapshots Table Added (EODHD JSONB storage)
 
 ---
 
@@ -46,6 +46,7 @@ alembic revision --autogenerate -m "short description"
 | 002 | `002_add_sources_and_citations.py` | creates sources, citations |
 | 003 | `003_add_citation_provenance_fields.py` | adds field_path, source_tier, data_quality to citations |
 | 004 | `004_add_review_workflow.py` | adds review_status, reviewed_at, reviewer_note, review_decision_reason, human_review_required, approved_by, rejected_by to reports; creates report_review_events |
+| 005 | `005_add_financial_snapshots.py` | creates company_financial_snapshots (JSONB snapshot storage with SHA-256 dedup hash, FK to companies and agent_runs) |
 
 ---
 
@@ -184,6 +185,37 @@ INDEX: report_id, action
 
 Immutable — records are never updated or deleted. One row per human review action.
 `actor_label` is a plain string (no FK to `users`) — user accounts are Phase 12 future work.
+
+---
+
+### Financial Data Snapshots (Phase 13)
+
+**company_financial_snapshots**
+```
+id                  UUID PK (default gen_random_uuid())
+company_id          UUID NULLABLE FK → companies.id (SET NULL on delete)
+ticker              VARCHAR(20) NOT NULL
+exchange            VARCHAR(20) NULLABLE
+agent_run_id        UUID NULLABLE FK → agent_runs.id (SET NULL on delete)
+provider_name       VARCHAR(50) NOT NULL       "eodhd" | "mock" | etc.
+source_tier         VARCHAR(50) NOT NULL       always "T5_api_aggregator" for EODHD
+snapshot_type       VARCHAR(50) NOT NULL       "fundamentals" | "profile" | "price_history"
+retrieved_at        TIMESTAMP WITH TIME ZONE NOT NULL
+data_quality        VARCHAR(50) NOT NULL       DataQuality enum value
+raw_payload_json    JSONB NULLABLE             full raw provider response
+raw_payload_hash    VARCHAR(64) NULLABLE       SHA-256 hex digest for deduplication
+datapoints_json     JSONB NULLABLE             extracted FundamentalDataPoint list
+created_at          TIMESTAMP WITH TIME ZONE NOT NULL default now()
+
+INDEX: ix_cfs_provider_ticker (provider_name, ticker) — compound
+INDEX: ix_cfs_snapshot_type (snapshot_type)
+INDEX: ix_cfs_company_id (company_id)
+INDEX: ix_cfs_agent_run_id (agent_run_id)
+INDEX: ix_cfs_retrieved_at (retrieved_at)
+INDEX: ix_cfs_raw_payload_hash (raw_payload_hash) — for deduplication
+```
+
+`raw_payload_hash` enables deduplication: before persisting, callers can check whether an identical payload was already stored (same SHA-256). `company_id` and `agent_run_id` are SET NULL on referenced row deletion to preserve the snapshot history.
 
 ---
 

@@ -492,7 +492,35 @@ Skills used: `azure-deployment`, `backend-fastapi`, `security-review`, `docs-mai
 
 ---
 
-## Phase 13: Judge + Backtesting
+## Phase 13: EODHD Real Financial Data Integration
+
+**Status: ✅ Delivered (2026-06-29)**
+
+Goal: Connect the financial-data provider abstraction to real structured financial data from EODHD so InvestingBuddy can analyze real public companies with meaningful fundamentals, ratios, statements, and source metadata.
+
+Deliverables:
+- [x] `EodhdProvider` upgraded from placeholder to real implementation — company profile, price history, fundamentals (Highlights, Valuation, SharesStats, Technicals, annual Income/Balance/Cash Flow statements)
+- [x] `CompanyIdentifierResolver` service — resolves ticker, name, or EODHD-format symbol to canonical EODHD symbols; detects ambiguity; works offline (structural parse) and live (EODHD search)
+- [x] `company_financial_snapshots` table (migration 005) — persists raw EODHD payloads (JSONB) with SHA-256 deduplication hash, per-run and per-company linkage
+- [x] `FinancialDataService.get_fundamentals()` — delegates to active provider
+- [x] Company analysis workflow enriched: when `provider_name=eodhd`, fundamentals are fetched non-fatally, stored in state, and passed to `snapshot_builder`
+- [x] `snapshot_builder` updated: `build_company_snapshot()` and `build_schema_draft()` populate `fundamentals_summary` and `snapshot_financials` with datapoint wrappers (T5, B_single_credible)
+- [x] 4 diagnostic API endpoints: `GET /eodhd/status`, `GET /eodhd/company/{symbol}`, `GET /eodhd/fundamentals/{symbol}`, `GET /resolve`
+- [x] `WorkflowRunResponse` extended with `fundamentals_available` and `fundamentals_warnings`
+- [x] 51 offline tests — no network, no EODHD key required in CI; fixtures: `eodhd_fundamentals_aapl.json`, `eodhd_eod_aapl.json`, `eodhd_search_apple.json`, `eodhd_fundamentals_sparse.json`
+- [x] Source tier always T5_api_aggregator — never promoted
+
+Constraints enforced:
+- No BUY/SELL/HOLD/WATCH recommendations
+- No price targets
+- EODHD not required in CI; tests use fixtures + mocks
+- No API keys committed; loaded from env or Azure Key Vault
+
+Skills used: `financial-data`, `backend-fastapi`, `database-design`, `langgraph-agents`, `testing-qa`, `security-review`, `docs-maintainer`
+
+---
+
+## Phase 14: Judge + Backtesting
 
 **Status: Not started**
 

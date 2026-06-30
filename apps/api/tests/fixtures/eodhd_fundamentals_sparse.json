@@ -1,0 +1,70 @@
+{
+  "General": {
+    "Code": "SMLCO",
+    "Type": "Common Stock",
+    "Name": "Smallco Nordic AS",
+    "Exchange": "OL",
+    "CurrencyCode": "NOK",
+    "CurrencyName": "Norwegian Krone",
+    "CountryName": "Norway",
+    "CountryISO": "NO",
+    "ISIN": null,
+    "Sector": "Industrials",
+    "Industry": "Industrial Conglomerates",
+    "Description": null,
+    "FiscalYearEnd": "December",
+    "IPODate": null,
+    "WebURL": null
+  },
+  "Highlights": {
+    "MarketCapitalization": null,
+    "MarketCapitalizationMln": null,
+    "EBITDA": null,
+    "PERatio": null,
+    "PEGRatio": null,
+    "EarningsShare": null,
+    "MostRecentQuarter": null,
+    "ProfitMargin": null,
+    "OperatingMarginTTM": null,
+    "ReturnOnAssetsTTM": null,
+    "ReturnOnEquityTTM": null,
+    "RevenueTTM": null,
+    "RevenuePerShareTTM": null,
+    "GrossProfitTTM": null,
+    "DilutedEpsTTM": null
+  },
+  "Valuation": {
+    "TrailingPE": null,
+    "ForwardPE": null,
+    "PriceSalesTTM": null,
+    "PriceBookMRQ": null,
+    "EnterpriseValue": null,
+    "EnterpriseValueRevenue": null,
+    "EnterpriseValueEbitda": null
+  },
+  "SharesStats": {
+    "SharesOutstanding": null,
+    "SharesFloat": null,
+    "PercentInsiders": null,
+    "PercentInstitutions": null
+  },
+  "Technicals": {
+    "Beta": null,
+    "52WeekHigh": null,
+    "52WeekLow": null
+  },
+  "Financials": {
+    "Balance_Sheet": {
+      "currency_symbol": "NOK",
+      "yearly": {}
+    },
+    "Income_Statement": {
+      "currency_symbol": "NOK",
+      "yearly": {}
+    },
+    "Cash_Flow": {
+      "currency_symbol": "NOK",
+      "yearly": {}
+    }
+  }
+}

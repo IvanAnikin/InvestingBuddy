@@ -1,0 +1,29 @@
+[
+  {
+    "Code": "AAPL",
+    "Exchange": "US",
+    "Name": "Apple Inc",
+    "Type": "Common Stock",
+    "Country": "USA",
+    "Currency": "USD",
+    "ISIN": "US0378331005"
+  },
+  {
+    "Code": "APC",
+    "Exchange": "LSE",
+    "Name": "Apple Hospitality REIT",
+    "Type": "Common Stock",
+    "Country": "United Kingdom",
+    "Currency": "GBP",
+    "ISIN": "GB00BPETQ973"
+  },
+  {
+    "Code": "APRU",
+    "Exchange": "US",
+    "Name": "Apple Rush Company Inc",
+    "Type": "Common Stock",
+    "Country": "USA",
+    "Currency": "USD",
+    "ISIN": null
+  }
+]

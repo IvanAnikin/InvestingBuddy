@@ -249,4 +249,7 @@ async def run_company_analysis_endpoint(
         quality_gate_status=quality_gate_status,
         provisional_internal_status=internal_status,
         human_review_required=human_review,
+        # Phase 13: EODHD fundamentals
+        fundamentals_available=final_state.get("fundamentals_available"),
+        fundamentals_warnings=final_state.get("fundamentals_warnings") or [],
     )

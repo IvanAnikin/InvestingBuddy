@@ -82,6 +82,7 @@ from app.agents.research_team.source_quality_agent import (
 )
 from app.integrations.financial_data_provider import (
     DataQuality,
+    FundamentalsData,
     PriceHistoryData,
     build_source_record,
 )
@@ -299,6 +300,21 @@ def build_company_analysis_graph(
                 except NotImplementedError:
                     prices = None
 
+            # Phase 13: optionally fetch EODHD fundamentals
+            fundamentals: FundamentalsData | None = None
+            fundamentals_warnings: list[str] = []
+            if pname == "eodhd" and "fundamentals" in caps:
+                try:
+                    fundamentals = await svc.get_fundamentals(ticker, exchange)
+                except NotImplementedError:
+                    fundamentals_warnings.append(
+                        "EODHD fundamentals: NotImplementedError — skipped."
+                    )
+                except Exception as fund_exc:
+                    fundamentals_warnings.append(
+                        f"EODHD fundamentals fetch failed (non-fatal): {fund_exc}"
+                    )
+
             is_mock = profile.meta.is_mock
 
             await agent_run_service.complete_agent_step(
@@ -310,17 +326,22 @@ def build_company_analysis_graph(
                     "ticker": profile.ticker,
                     "legal_name": profile.legal_name,
                     "price_points_count": len(prices.price_points) if prices else 0,
+                    "fundamentals_datapoints_count": len(fundamentals.datapoints) if fundamentals else 0, # noqa: E501
+                    "fundamentals_warnings": fundamentals_warnings,
                 },
             )
 
             # Stash provider objects in holder for later nodes
             _run_holder["profile"] = profile
             _run_holder["prices"] = prices
+            _run_holder["fundamentals"] = fundamentals
 
             return {
                 "provider_name": profile.meta.provider_name,
                 "is_mock": is_mock,
                 "analysis_output": _build_placeholder_analysis(state),
+                "fundamentals_available": fundamentals is not None,
+                "fundamentals_warnings": fundamentals_warnings or None,
             }
 
         except (ValueError, Exception) as exc:
@@ -420,6 +441,7 @@ def build_company_analysis_graph(
         run = _run_holder.get("run")
         profile = _run_holder.get("profile")
         prices = _run_holder.get("prices")
+        fundamentals = _run_holder.get("fundamentals")
 
         step = await agent_run_service.create_agent_step(
             db,
@@ -430,10 +452,11 @@ def build_company_analysis_graph(
                 "ticker": state.get("ticker"),
                 "provider_name": state.get("provider_name"),
                 "is_mock": state.get("is_mock"),
+                "fundamentals_available": fundamentals is not None,
             },
         )
 
-        snapshot = build_company_snapshot(profile=profile, prices=prices)
+        snapshot = build_company_snapshot(profile=profile, prices=prices, fundamentals=fundamentals)
 
         await agent_run_service.complete_agent_step(
             db,
@@ -445,6 +468,7 @@ def build_company_analysis_graph(
                 "price_history_available": snapshot.get("price_history_summary", {}).get(
                     "available", False
                 ),
+                "fundamentals_summary_available": snapshot.get("fundamentals_summary") is not None,
             },
         )
 
@@ -720,12 +744,13 @@ def build_company_analysis_graph(
             input_data={"report_id_attempt": agent_run_id},
         )
 
-        # Build a minimal schema-draft using provider data
+        # Build a minimal schema-draft using provider data (Phase 13: includes fundamentals)
         draft = build_schema_draft(
             report_id=agent_run_id or str(uuid.uuid4()),
             snapshot=_run_holder.get("snapshot", {}),
             profile=profile,
             prices=prices,
+            fundamentals=_run_holder.get("fundamentals"),
         )
 
         # Validate — expected to fail at this phase (many required sections absent)

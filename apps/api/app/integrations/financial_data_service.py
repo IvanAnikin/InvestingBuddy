@@ -2,7 +2,7 @@
 FinancialDataService — provider registry and selector.
 
 Reads FINANCIAL_DATA_PROVIDER from config (default: "mock").
-Exposes provider capabilities, company profile, and price history retrieval.
+Exposes provider capabilities, company profile, price history, and fundamentals.
 Fails safely with a ValueError when an unknown provider name is requested.
 
 No real API key is required unless FINANCIAL_DATA_PROVIDER is set to a live
@@ -15,6 +15,7 @@ from app.core.config import settings
 from app.integrations.financial_data_provider import (
     CompanyProfileData,
     FinancialDataProvider,
+    FundamentalsData,
     PriceHistoryData,
     ProviderCapability,
     ProviderStatus,
@@ -105,3 +106,17 @@ class FinancialDataService:
         return await self._provider.get_price_history(
             ticker, exchange, start_date, end_date
         )
+
+    async def get_fundamentals(
+        self,
+        ticker: str,
+        exchange: str | None = None,
+    ) -> FundamentalsData:
+        """
+        Fetch fundamental financial data from the active provider.
+
+        When the active provider does not support fundamentals (raises
+        NotImplementedError), the error is propagated so callers can decide
+        whether to treat missing fundamentals as a workflow warning or error.
+        """
+        return await self._provider.get_fundamentals(ticker, exchange)

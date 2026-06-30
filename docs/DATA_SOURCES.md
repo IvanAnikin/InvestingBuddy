@@ -88,7 +88,7 @@ All providers are registered in `FinancialDataService` and selectable via `FINAN
 | `GleifProvider` | `integrations/providers/gleif_provider.py` | T2 | ✅ Live | Free; LEI lookup by code or name; `api.gleif.org`; no API key |
 | `StooqProvider` | `integrations/providers/stooq_provider.py` | T5 | ✅ Live | Free; live OHLCV CSV from `stooq.com`; no API key |
 | `OpenBBProvider` | `integrations/providers/openbb_provider.py` | T5 | Evaluation placeholder | Not yet integrated; requires `openbb-platform`; evaluate before Phase 6 |
-| `EodhdProvider` | `integrations/providers/eodhd_provider.py` | T5 | Placeholder | Paid; requires `EODHD_API_KEY`; excluded from CI |
+| `EodhdProvider` | `integrations/providers/eodhd_provider.py` | T5 | ✅ Live (Phase 13) | Paid; requires `EODHD_API_KEY`; company profile, price history, fundamentals (Highlights, Valuation, SharesStats, Technicals, annual statements); excluded from CI; tests run offline via fixtures |
 
 ### Provider Abstract Interface
 

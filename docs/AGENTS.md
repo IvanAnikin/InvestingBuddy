@@ -501,8 +501,11 @@ prices  = await svc.get_price_history(ticker, exchange)
 Provider output carries full provenance in `meta: ProviderResponseMetadata`:
 - `provider_name`, `source_tier`, `retrieved_at`, `is_mock`
 
-The Financial Data Agent (planned: Phase 5) will use `FinancialDataService` to populate
-`snapshot_financials` and `financials_deep` sections of the real-asset report schema.
+Phase 13 update: `FinancialDataService.get_fundamentals(ticker, exchange)` is now live.
+When `provider_name=eodhd`, the workflow calls it non-fatally in `node_fetch_provider_data` and
+passes `FundamentalsData` to `snapshot_builder`. The snapshot gains a `fundamentals_summary` dict
+and the schema draft gains a `snapshot_financials` block with datapoint-wrapped T5 values.
+EODHD must remain classified as T5 — see `docs/DATA_SOURCES.md`.
 
 ### CitationValidator Upgrade Path (Phase 4/5)
 

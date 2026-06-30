@@ -116,7 +116,8 @@ Copy `.env.example` to `.env` and fill in values as needed.
 | `AZURE_STORAGE_*` | Phase 5+ | Azure Blob Storage for documents |
 | `AZURE_SEARCH_*` | Phase 5+ | Azure AI Search for RAG |
 | `FINANCIAL_DATA_PROVIDER` | No | Provider to use: `mock` (default) / `eodhd` / `sec_edgar` / etc. |
-| `EODHD_API_KEY` | Phase 5+ | EODHD API key — required only when provider is `eodhd` |
+| `EODHD_API_KEY` | Phase 13+ | EODHD API key — required only when provider is `eodhd`; store in Key Vault for staging/prod |
+| `ENABLE_EODHD_INTEGRATION_TESTS` | Phase 13+ | Set `true` for local live EODHD integration tests; never set in CI |
 | `NEXT_PUBLIC_API_BASE_URL` | No | Backend API URL for the frontend |
 | `NEXT_PUBLIC_CLERK_*` | Phase 8+ | Clerk authentication keys |
 
@@ -140,9 +141,10 @@ Copy `.env.example` to `.env` and fill in values as needed.
 | Phase 10 | Done | Admin Review UI: `/admin` workspace with dashboard, company form, analysis trigger, report list + detail; reports API endpoints; 463 tests |
 | Phase 11 | Done | Admin Review / Approve-Reject Workflow: 5 admin review endpoints; `report_review_events` audit table; `ReviewPanel` UI; 493 tests |
 | Phase 12 | Done | Azure Staging Infrastructure: 5 Bicep modules; activated deploy workflows (OIDC); staging Basic Auth middleware |
+| Phase 13 | Done | EODHD Real Financial Data: live `EodhdProvider`; `CompanyIdentifierResolver`; `company_financial_snapshots` table; fundamentals in workflow + snapshot_builder; 4 EODHD diagnostic endpoints; 552 offline tests |
 | Phase 5 | Planned | Full council-of-agents MVP |
-| Phase 13 | Planned | Judge system and backtesting |
-| Phase 14 | Planned | Personalized investor assistant (V2) |
+| Phase 14 | Planned | Judge system and backtesting |
+| Phase 15 | Planned | Personalized investor assistant (V2) |
 
 ---
 
