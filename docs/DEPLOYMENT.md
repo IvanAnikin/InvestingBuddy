@@ -258,30 +258,35 @@ Expected result after Phase 12: migration `004` is the current head.
 ```
 
 Both deployment workflows:
-- Use OIDC federated credentials (no long-lived `AZURE_CREDENTIALS` JSON)
-- Require `permissions: id-token: write`
+- Use App Service publish profile credentials (stored as GitHub secrets)
 - Run a post-deploy smoke check (health endpoint / HTTP 200)
 - **Do not run Alembic migrations** — run manually after schema changes
 
-### GitHub Actions Authentication (OIDC)
+### GitHub Actions Authentication (Publish Profile)
 
-No long-lived `AZURE_CREDENTIALS` JSON is stored in GitHub. OIDC uses ephemeral tokens:
+Publish profiles are downloaded from the Azure Portal App Service blade and stored as
+GitHub repository secrets. They contain Kudu deployment credentials scoped to a single
+App Service instance.
 
 ```yaml
-- uses: azure/login@v2
+- uses: azure/webapps-deploy@v3
   with:
-    client-id: ${{ secrets.AZURE_CLIENT_ID }}
-    tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-    subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+    app-name: ib-stg-api
+    publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE_API }}
+    package: deploy-api.zip
 ```
 
-Requires `permissions: id-token: write` in the workflow job.
+**To rotate:** Download a fresh publish profile from Azure Portal → App Service →
+"Get publish profile", then update the GitHub secret via `gh secret set`.
+
+**Future:** Switch to OIDC federated credentials once `ib-github-actions-stg` App
+Registration is created (requires Entra ID Application Developer role — currently blocked).
 
 ---
 
-## OIDC Setup (one-time manual step)
+## OIDC Setup (future — blocked on Entra permissions)
 
-Before the deployment workflows can authenticate, create the App Registration:
+Once the Entra ID Application Developer role is granted, replace publish profiles with OIDC:
 
 ```bash
 source ~/.venvs/azure-cli/bin/activate
@@ -361,7 +366,14 @@ Copy `.env.example` to `.env`. The defaults work for local Docker development.
 
 ## GitHub Actions Secrets Required
 
-### Phase A (staging deployment)
+### Phase 12 (active — publish profile auth)
+
+| Secret | Purpose | How to Get |
+|---|---|---|
+| `AZURE_WEBAPP_PUBLISH_PROFILE_API` | Kudu deploy credentials for `ib-stg-api` | Azure Portal → `ib-stg-api` → "Get publish profile" |
+| `AZURE_WEBAPP_PUBLISH_PROFILE_WEB` | Kudu deploy credentials for `ib-stg-web` | Azure Portal → `ib-stg-web` → "Get publish profile" |
+
+### Phase A — future OIDC (blocked on Entra permissions)
 
 | Secret | Purpose | How to Get |
 |---|---|---|

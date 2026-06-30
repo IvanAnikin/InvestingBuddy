@@ -1,8 +1,9 @@
 name: Deploy API — Staging
 
 # Triggers on merge to main when API code or this workflow changes.
-# Requires GitHub Secrets: AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID
-# Uses OIDC federated credentials — no long-lived credential JSON stored.
+# Requires GitHub Secret: AZURE_WEBAPP_PUBLISH_PROFILE_API
+# Uses App Service publish profile — downloaded from Azure Portal, stored as GitHub secret.
+# OIDC (App Registration) will replace this once Entra permissions are granted.
 #
 # NOTE: Database migrations are NOT run automatically.
 # Run manually after first deploy: see docs/DEPLOYMENT.md#running-migrations-on-staging
@@ -14,9 +15,9 @@ on:
       - "apps/api/**"
       - "infra/azure/**"
       - ".github/workflows/deploy-api-staging.yml"
+  workflow_dispatch:
 
 permissions:
-  id-token: write   # required for OIDC federated login
   contents: read
 
 jobs:
@@ -28,24 +29,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # OIDC login — ephemeral token, no long-lived credentials in GitHub Secrets
-      - uses: azure/login@v2
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      # Install production + deploy dependencies (includes gunicorn)
-      - name: Install dependencies
+      # Validate pyproject.toml + gunicorn resolve correctly in CI.
+      # Oryx runs: pip install -r requirements.txt on the server using the file in the ZIP.
+      - name: Validate dependencies
         working-directory: apps/api
         run: pip install -e ".[deploy]"
 
-      # SCM_DO_BUILD_DURING_DEPLOYMENT=true in App Service runs pip install on server.
-      # Exclude test files and local venv from the package.
+      # Exclude test files, local venv, and build artefacts from the package.
       - name: Create deployment ZIP
         run: |
           cd apps/api
@@ -61,17 +55,23 @@ jobs:
         uses: azure/webapps-deploy@v3
         with:
           app-name: ib-stg-api
+          publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE_API }}
           package: deploy-api.zip
 
-      # Wait for App Service to restart and run health check
+      # /health is exempt from Basic Auth — safe to poll without credentials.
+      # Allow extra time for Oryx pip install + gunicorn startup on B1 (~10 min cold boot).
       - name: Smoke check — API health
         run: |
           echo "Waiting for App Service to restart..."
-          sleep 45
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://ib-stg-api.azurewebsites.net/health)
-          echo "Health endpoint HTTP status: $STATUS"
-          if [ "$STATUS" != "200" ]; then
-            echo "ERROR: health check failed (HTTP $STATUS)"
-            exit 1
-          fi
-          echo "API health check passed."
+          sleep 60
+          for i in 1 2 3 4 5; do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://ib-stg-api.azurewebsites.net/health)
+            echo "Attempt $i — health endpoint HTTP status: $STATUS"
+            if [ "$STATUS" = "200" ]; then
+              echo "API health check passed."
+              exit 0
+            fi
+            sleep 60
+          done
+          echo "ERROR: health check failed after 5 attempts"
+          exit 1

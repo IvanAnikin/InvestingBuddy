@@ -1,11 +1,17 @@
 name: Deploy Web — Staging
 
 # Triggers on merge to main when web code or this workflow changes.
-# Requires GitHub Secrets: AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID
-# Uses OIDC federated credentials — no long-lived credential JSON stored.
+# Requires GitHub Secret: AZURE_WEBAPP_PUBLISH_PROFILE_WEB
+# Uses App Service publish profile — downloaded from Azure Portal, stored as GitHub secret.
+# OIDC (App Registration) will replace this once Entra permissions are granted.
 #
-# NEXT_PUBLIC_API_BASE_URL is a Next.js public variable — it is baked into the
-# bundle at build time. The value below must match the deployed API hostname.
+# Next.js standalone output: produces a self-contained ~12MB bundle.
+# Startup command on App Service: node server.js
+# NEXT_PUBLIC_API_BASE_URL is baked into the bundle at build time.
+# WEBSITE_RUN_FROM_PACKAGE=1 must be set in App Service config — the ZIP is
+# mounted read-only and the app runs directly from it (node server.js reads JS,
+# no execute bits needed). NodeProjectOptimizer is bypassed when package.json
+# is absent from the ZIP root.
 
 on:
   push:
@@ -13,9 +19,9 @@ on:
     paths:
       - "apps/web/**"
       - ".github/workflows/deploy-web-staging.yml"
+  workflow_dispatch:
 
 permissions:
-  id-token: write   # required for OIDC federated login
   contents: read
 
 jobs:
@@ -27,20 +33,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # OIDC login — ephemeral token, no long-lived credentials in GitHub Secrets
-      - uses: azure/login@v2
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
           cache: "npm"
           cache-dependency-path: apps/web/package-lock.json
 
-      # Build with staging API URL baked into Next.js bundle (NEXT_PUBLIC_ vars)
+      # NEXT_PUBLIC_ variables are baked into the bundle at build time.
       - name: Install and build
         working-directory: apps/web
         run: |
@@ -49,29 +48,39 @@ jobs:
         env:
           NEXT_PUBLIC_API_BASE_URL: https://ib-stg-api.azurewebsites.net
 
-      # Deploy full app folder: includes .next/ and node_modules/ so the
-      # App Service startup command (next start) works without an npm install step.
+      # Assemble standalone bundle: copy static assets + public dir into the
+      # standalone output directory before packaging.
+      # Remove root package.json before zipping — its presence triggers
+      # NodeProjectOptimizer on Azure B1 (~18 min wasted re-pack on shared plan).
       - name: Create deployment ZIP
         run: |
-          cd apps/web
-          zip -r ../../deploy-web.zip . \
-            --exclude "*.log" \
-            --exclude ".env*"
+          cp -r apps/web/public apps/web/.next/standalone/public
+          cp -r apps/web/.next/static apps/web/.next/standalone/.next/static
+          rm -f apps/web/.next/standalone/package.json
+          cd apps/web/.next/standalone
+          zip -r ../../../../deploy-web.zip . \
+            --exclude "*.log"
 
       - name: Deploy to Azure App Service
         uses: azure/webapps-deploy@v3
         with:
           app-name: ib-stg-web
+          publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE_WEB }}
           package: deploy-web.zip
 
+      # Allow extra time for WEBSITE_RUN_FROM_PACKAGE mount + node server.js startup.
       - name: Smoke check — web frontend
         run: |
           echo "Waiting for App Service to restart..."
-          sleep 45
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://ib-stg-web.azurewebsites.net)
-          echo "Web frontend HTTP status: $STATUS"
-          if [ "$STATUS" != "200" ]; then
-            echo "ERROR: web smoke check failed (HTTP $STATUS)"
-            exit 1
-          fi
-          echo "Web frontend smoke check passed."
+          sleep 60
+          for i in 1 2 3 4 5; do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://ib-stg-web.azurewebsites.net)
+            echo "Attempt $i — web frontend HTTP status: $STATUS"
+            if [ "$STATUS" = "200" ]; then
+              echo "Web frontend smoke check passed."
+              exit 0
+            fi
+            sleep 30
+          done
+          echo "ERROR: web smoke check failed after 5 attempts"
+          exit 1
