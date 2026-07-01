@@ -166,17 +166,18 @@ export default async function AdminDashboard() {
           Platform Phase
         </p>
         <div className="flex flex-wrap gap-2">
-          <Badge label="Phase 10" color="blue" />
-          <Badge label="Admin Review UI" color="blue" />
+          <Badge label="Phase 14" color="blue" />
+          <Badge label="Company Discovery" color="blue" />
           <Badge label="18-node Workflow" color="gray" />
           <Badge label="Analysis Council Active" color="gray" />
+          <Badge label="Discovery Screener Active" color="gray" />
           <Badge label="No Public Publishing" color="amber" />
           <Badge label="No Auth Yet" color="amber" />
         </div>
         <p className="text-xs text-gray-500 mt-3">
-          Phase 9 completed: 5 Analysis Council agents (bull case, bear case,
-          risk, valuation guard, committee chair). Phase 10 adds this admin
-          review workspace.
+          Phase 14 complete: company discovery screener with 6 themes,
+          CompanyDiscoveryService, 3 new DB tables, 7 discovery endpoints,
+          and candidate promotion to analysis. 609 offline tests passing.
         </p>
       </div>
 
