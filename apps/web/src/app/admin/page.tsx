@@ -166,18 +166,19 @@ export default async function AdminDashboard() {
           Platform Phase
         </p>
         <div className="flex flex-wrap gap-2">
-          <Badge label="Phase 14" color="blue" />
-          <Badge label="Company Discovery" color="blue" />
-          <Badge label="18-node Workflow" color="gray" />
+          <Badge label="Phase 16" color="blue" />
+          <Badge label="Final Report Generator" color="blue" />
+          <Badge label="19-node Workflow" color="gray" />
           <Badge label="Analysis Council Active" color="gray" />
           <Badge label="Discovery Screener Active" color="gray" />
+          <Badge label="Scoring Engine Active" color="gray" />
           <Badge label="No Public Publishing" color="amber" />
           <Badge label="No Auth Yet" color="amber" />
         </div>
         <p className="text-xs text-gray-500 mt-3">
-          Phase 14 complete: company discovery screener with 6 themes,
-          CompanyDiscoveryService, 3 new DB tables, 7 discovery endpoints,
-          and candidate promotion to analysis. 609 offline tests passing.
+          Phase 16 complete: FinalReportGeneratorService, 19-section internal
+          report structure, report-level safety gate, 5 final report endpoints,
+          migration 008. Human review required. 725 offline tests passing.
         </p>
       </div>
 
