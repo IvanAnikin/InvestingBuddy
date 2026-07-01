@@ -193,7 +193,7 @@ export default function AnalysisPage() {
       <div>
         <h1 className="text-xl font-bold text-gray-900">Run Analysis</h1>
         <p className="text-sm text-gray-500 mt-1">
-          Trigger the 18-node company analysis workflow. Output is an admin
+          Trigger the 19-node company analysis workflow. Output is an admin
           draft only — not investment advice.
         </p>
       </div>

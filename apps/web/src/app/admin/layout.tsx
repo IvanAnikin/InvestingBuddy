@@ -54,7 +54,7 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
 
       {/* Footer disclaimer */}
       <footer className="border-t border-gray-200 bg-white text-center text-xs text-gray-400 py-4 px-4">
-        InvestingBuddy Admin Dashboard · Phase 10 · Internal draft review only ·
+        InvestingBuddy Admin Dashboard · Phase 17 · Internal draft review only ·
         No BUY/SELL/HOLD recommendations · All outputs require human review
         before publication · Not investment advice
       </footer>

@@ -1,6 +1,6 @@
 # Roadmap
 
-## Current Phase: Phase 16 — Final Report Generator (complete)
+## Current Phase: Phase 17 — Admin Auth & Frontend-to-API Proxy (complete)
 
 ---
 
@@ -616,7 +616,39 @@ Skills used: `investment-domain`, `backend-fastapi`, `database-design`, `testing
 
 ---
 
-## Phase 17: Judge + Backtesting
+## Phase 17: Admin Auth & Frontend-to-API Proxy ✅
+
+**Status: Complete (2026-07-01)**
+
+Goal: Fix the hosted admin UI so all protected FastAPI calls succeed on staging without exposing Basic Auth credentials to the browser.
+
+Problem solved:
+- `ib-stg-web` admin pages made direct browser calls to the protected FastAPI backend.
+- Browser cannot include `Authorization: Basic …` without exposing credentials in JS bundles or network payloads.
+- Result: `Error: Failed to fetch` on Add Company, company count, reports list, and all review actions.
+
+Deliverables:
+- [x] `apps/web/src/app/api/admin/proxy/[...path]/route.ts` — Next.js server-side proxy route; path allowlist; adds `Authorization: Basic` from server-only `BACKEND_BASIC_AUTH` env var; sanitizes errors; never exposes credentials to browser
+- [x] `apps/web/src/lib/api.ts` — smart base URL: server components call `BACKEND_API_BASE_URL` directly with auth header; client components use same-origin proxy `/api/admin/proxy/…`
+- [x] Proxy allowlist covering: `/health`, `/api/v1/companies`, `/api/v1/reports`, `/api/v1/workflows`, `/api/v1/admin/reports`, `/api/v1/discovery`, `/api/v1/scoring`, `/api/v1/final-reports`, `/api/v1/financial-data`, `/api/v1/sources`, `/api/v1/citations`
+- [x] `BACKEND_API_BASE_URL` and `BACKEND_BASIC_AUTH` (server-only, no `NEXT_PUBLIC_` prefix) added to `.env.example` and documented for `ib-stg-web` App Service
+- [x] Stale copy fixed: footer "Phase 10" → "Phase 17"; Run Analysis "18-node" → "19-node"; "No Auth Yet" badge → "Admin Proxy Active"; Platform Phase badges updated
+- [x] Frontend typecheck clean, lint clean, build clean (proxy route appears as `ƒ (Dynamic)`)
+- [x] No credential values committed; credentials read from App Service environment at runtime only
+- [x] FastAPI staging Basic Auth retained; no changes to backend
+
+Constraints enforced:
+- `BACKEND_BASIC_AUTH` never used with `NEXT_PUBLIC_` prefix — server-only
+- Proxy allowlist rejects unknown paths with 404 before contacting backend
+- Authorization header never forwarded to browser in response
+- No backend code changes
+- No secrets committed
+
+Skills used: `frontend-nextjs`, `security-review`, `azure-deployment`, `docs-maintainer`
+
+---
+
+## Phase 18: Judge + Backtesting
 
 **Status: Not started**
 
