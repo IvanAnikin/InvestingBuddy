@@ -71,6 +71,9 @@ class CompanyAnalysisState(TypedDict):
     fundamentals_warnings: list[str] | None      # warnings from fundamentals fetch
     financial_snapshot_id: str | None            # UUID of persisted CompanyFinancialSnapshot
 
+    # --- Phase 15: Research Attractiveness Scorecard ---
+    research_attractiveness_scorecard: dict | None  # ScorecardResult.to_dict() output
+
     # --- control ---
     error: str | None
     status: str   # running | completed | failed

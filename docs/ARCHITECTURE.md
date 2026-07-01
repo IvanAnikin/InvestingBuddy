@@ -1,6 +1,6 @@
 # Architecture
 
-## Status: Phase 14 — Company Discovery / Screener (601 tests passing; 3 new DB tables; 7 new endpoints)
+## Status: Phase 15 — Scoring + Valuation Framework (663 tests passing; 1 new DB table; 5 new endpoints; 19-node workflow)
 
 ---
 
@@ -56,7 +56,7 @@ Azure Application Insights
 - LangGraph `StateGraph` workflows
 - Four agent teams: Research, Analysis Council, Validation, Judge
 - All runs logged to `agent_runs` and `agent_steps` tables
-- Status: **Phase 9 — `company_analysis` is an 18-node workflow with 4 Research Team + 5 Analysis Council agents (all deterministic), 1 optional LLM node, and full source/citation tracking. Workflow version `5.0.0`.**
+- Status: **Phase 15 — `company_analysis` is a 19-node workflow with 4 Research Team + 5 Analysis Council + 1 Scoring agents (all deterministic), 1 optional LLM node, and full source/citation tracking. Workflow version `6.0.0`.**
 - Research Team agents (Phase 8, `apps/api/app/agents/research_team/`):
   - `financial_data_agent.py` — classifies available vs missing financial data; source tier accounting
   - `source_quality_agent.py` — T1–T6 source classification; enforces T5 providers never promoted
@@ -68,11 +68,13 @@ Azure Application Insights
   - `risk_agent.py` — 6-category risk classification; always includes data-quality and source-quality risks
   - `valuation_guard_agent.py` — blocks valuation when mock/T5/T6 data; no price target ever produced
   - `investment_committee_chair.py` — synthesises council; quality gate; assigns provisional_internal_status from whitelist only
+- Scoring agent (Phase 15, `apps/api/app/agents/analysis_council/`):
+  - `score_research_attractiveness.py` — Node 17; deterministic 10-dimension research attractiveness scorecard; non-fatal; no price targets; no recommendations; T6/mock ≤ 30, T5 ≤ 60, T1/T2 ≤ 100
 
 ### Database
 - Local: PostgreSQL 16 via Docker Compose
 - Production: Azure Database for PostgreSQL Flexible Server
-- Status: **migration 006 applied — screening_universes, screening_runs, screening_candidates tables created (Phase 14)**
+- Status: **migration 007 applied — scorecards table created (Phase 15); migrations 001–007 all applied**
 
 ### Vector Search
 - Azure AI Search
@@ -207,6 +209,7 @@ All errors are caught, logged to `agent_runs.error_message`, and returned as HTT
 | Phase 12 | ✅ Complete | Azure Staging Infrastructure; 5 Bicep modules; `main.bicep` with RBAC; activated `deploy-api-staging.yml` + `deploy-web-staging.yml` (OIDC); staging Basic Auth middleware; `gunicorn` deploy extra; docs updated |
 | Phase 13 | ✅ Complete | EODHD real provider (`EodhdProvider`); `CompanyIdentifierResolver`; `company_financial_snapshots` table (migration 005, JSONB); workflow + snapshot_builder fundamentals enrichment; 4 EODHD diagnostic endpoints + `/resolve`; `WorkflowRunResponse` Phase 13 fields; 51 new offline tests; 552 total |
 | Phase 14 | ✅ Complete | Company Discovery / Screener; `CompanyScreener`; `CompanyDiscoveryService`; 3 new tables (migration 006); 7 discovery API endpoints (universes + runs + candidates + promote); 6 themes; T5 source tier enforced for EODHD; fixture-based EODHD search; candidate promotion; 57 new offline tests; 601 total |
+| Phase 15 | ✅ Complete | Scoring + Valuation Framework; `ScoringEngine` (10 dimensions; T6/mock ≤ 30, T5 ≤ 60, T1/T2 ≤ 100); `ValuationReadinessService`; `scorecards` table (migration 007); `ScoringService`; `score_research_attractiveness` node (Node 17); workflow v6.0.0 (19 nodes); 5 scoring API endpoints; 54 new offline tests; 675 total |
 
 ---
 

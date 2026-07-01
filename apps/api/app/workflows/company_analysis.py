@@ -59,6 +59,9 @@ from app.agents.analysis_council.risk_agent import (
     risk_agent_output_to_dict,
     run_risk_agent,
 )
+from app.agents.analysis_council.score_research_attractiveness import (
+    run_score_research_attractiveness,
+)
 from app.agents.analysis_council.valuation_guard_agent import (
     run_valuation_guard_agent,
     valuation_guard_output_to_dict,
@@ -1268,7 +1271,72 @@ def build_company_analysis_graph(
             }
 
     # ------------------------------------------------------------------ #
-    # Node 17: save_draft_report  (Phase 9 — includes Analysis Council)  #
+    # Node 17: score_research_attractiveness  (Phase 15)                 #
+    # ------------------------------------------------------------------ #
+    async def node_score_research_attractiveness(state: CompanyAnalysisState) -> dict:
+        run = _run_holder.get("run")
+        snapshot = _run_holder.get("snapshot", {})
+
+        step = await agent_run_service.create_agent_step(
+            db,
+            run=run,
+            agent_name="ScoringEngine",
+            step_name="score_research_attractiveness",
+            input_data={
+                "ticker": state.get("ticker"),
+                "is_mock": state.get("is_mock"),
+                "provider_name": state.get("provider_name"),
+            },
+        )
+
+        try:
+            scorecard_dict = run_score_research_attractiveness(
+                company_snapshot=snapshot,
+                financial_data_summary=_run_holder.get("financial_data_summary"),
+                source_quality_summary=_run_holder.get("source_quality_summary"),
+                research_completeness_summary=_run_holder.get("research_completeness_summary"),
+                citation_validation_summary=_run_holder.get("upgraded_citation_validation"),
+                bull_case_summary=_run_holder.get("bull_case_summary"),
+                bear_case_summary=_run_holder.get("bear_case_summary"),
+                risk_summary=_run_holder.get("risk_summary"),
+                valuation_guard_summary=_run_holder.get("valuation_guard_summary"),
+                committee_chair_summary=_run_holder.get("committee_chair_summary"),
+            )
+            _run_holder["research_attractiveness_scorecard"] = scorecard_dict
+
+            await agent_run_service.complete_agent_step(
+                db,
+                step,
+                output_data={
+                    "overall_score": scorecard_dict.get("overall_score", 0),
+                    "internal_status": scorecard_dict.get("internal_status", "not_enough_data"),
+                    "warnings_count": len(scorecard_dict.get("warnings", [])),
+                },
+            )
+            return {"research_attractiveness_scorecard": scorecard_dict}
+
+        except Exception as exc:
+            error_msg = f"score_research_attractiveness failed: {exc}"
+            await agent_run_service.fail_agent_step(db, step, error_msg)
+            fallback = {
+                "overall_score": 0,
+                "internal_status": "not_enough_data",
+                "scores": {},
+                "warnings": [error_msg],
+                "missing_data": [],
+                "reasoning": f"Scoring node failed: {error_msg}",
+                "source_quality_summary": {},
+                "next_research_steps": [],
+                "disclaimer": (
+                    "INTERNAL SCORE ONLY. Not investment advice. "
+                    "Not a public recommendation. Human review required."
+                ),
+            }
+            _run_holder["research_attractiveness_scorecard"] = fallback
+            return {"research_attractiveness_scorecard": fallback}
+
+    # ------------------------------------------------------------------ #
+    # Node 18: save_draft_report  (Phase 9 — includes Analysis Council)  #
     # ------------------------------------------------------------------ #
     async def node_save_draft_report(state: CompanyAnalysisState) -> dict:
         run = _run_holder.get("run")
@@ -1710,6 +1778,8 @@ def build_company_analysis_graph(
     graph.add_node("risk_agent", node_risk_agent)
     graph.add_node("valuation_guard_agent", node_valuation_guard_agent)
     graph.add_node("investment_committee_chair", node_investment_committee_chair)
+    # Phase 15: scoring node
+    graph.add_node("score_research_attractiveness", node_score_research_attractiveness)
     graph.add_node("save_draft_report", node_save_draft_report)
     graph.add_node("log_agent_steps", node_log_agent_steps)
     graph.add_node("handle_error", node_handle_error)
@@ -1731,7 +1801,9 @@ def build_company_analysis_graph(
     graph.add_edge("bear_case_agent", "risk_agent")
     graph.add_edge("risk_agent", "valuation_guard_agent")
     graph.add_edge("valuation_guard_agent", "investment_committee_chair")
-    graph.add_edge("investment_committee_chair", "save_draft_report")
+    # Phase 15: insert scoring between council and report save
+    graph.add_edge("investment_committee_chair", "score_research_attractiveness")
+    graph.add_edge("score_research_attractiveness", "save_draft_report")
     graph.add_edge("save_draft_report", "log_agent_steps")
     graph.add_edge("log_agent_steps", END)
     graph.add_edge("handle_error", END)
