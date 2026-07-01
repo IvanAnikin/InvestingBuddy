@@ -1,6 +1,6 @@
 # Database Schema
 
-## Status: Phase 15 — Scorecards Table Added (scorecards)
+## Status: Phase 16 — Final Report Generator columns added (reports table)
 
 ---
 
@@ -49,6 +49,7 @@ alembic revision --autogenerate -m "short description"
 | 005 | `005_add_financial_snapshots.py` | creates company_financial_snapshots (JSONB snapshot storage with SHA-256 dedup hash, FK to companies and agent_runs) |
 | 006 | `006_add_discovery_screener.py` | creates screening_universes, screening_runs, screening_candidates (Phase 14 company discovery funnel) |
 | 007 | `007_add_scorecards.py` | creates scorecards (Phase 15 multi-dimension research attractiveness scoring) |
+| 008 | `008_add_final_report_fields.py` | adds `final_report_version`, `safety_validation_json`, `schema_validation_json`, `source_summary_json`, `scorecard_id` to reports (Phase 16 Final Report Generator) |
 
 ---
 
@@ -152,10 +153,17 @@ human_review_required       BOOLEAN NOT NULL DEFAULT true
 approved_by                 VARCHAR(200) NULLABLE
 rejected_by                 VARCHAR(200) NULLABLE
 
+-- Phase 16 Final Report Generator columns
+final_report_version        VARCHAR(20) NULLABLE   -- e.g. "16.0.0"
+safety_validation_json      JSONB NULLABLE          -- SafetyValidationResult; blocks_approval=True if forbidden terms found
+schema_validation_json      JSONB NULLABLE          -- schema validation errors and warnings
+source_summary_json         JSONB NULLABLE          -- aggregated source/citation counts
+scorecard_id                UUID FK → scorecards.id (SET NULL) NULLABLE
+
 created_at                  TIMESTAMP WITH TIME ZONE
 updated_at                  TIMESTAMP WITH TIME ZONE
 
-INDEX: slug, status, review_status, report_type, published_at
+INDEX: slug, status, review_status, report_type, published_at, scorecard_id
 ```
 
 Report types: `weekly`, `monthly`, `quarterly`, `yearly`,
@@ -399,6 +407,30 @@ INDEX: company_id, screening_candidate_id, report_id, score_type, overall_score 
 
 **Forbidden values (never stored):**
 `BUY`, `SELL`, `HOLD`, `WATCH`, `price_target`, `fair_value`, `upside_percent`
+
+---
+
+### Final Report Generator (Phase 16)
+
+Phase 16 adds 5 columns to the existing **reports** table (migration 008) and does not create new tables.
+
+**New reports columns (migration 008):**
+
+| Column | Type | Description |
+|---|---|---|
+| `final_report_version` | VARCHAR(20) NULLABLE | Generator version, e.g. `"16.0.0"` |
+| `safety_validation_json` | JSONB NULLABLE | Safety gate result; `blocks_approval=True` if forbidden language found |
+| `schema_validation_json` | JSONB NULLABLE | Schema validation errors and warnings |
+| `source_summary_json` | JSONB NULLABLE | Aggregated source/citation counts per section |
+| `scorecard_id` | UUID FK → scorecards.id (SET NULL) NULLABLE | Links report to its Phase 15 scorecard |
+
+**19 required report sections** (stored in `content_json`):`admin_disclaimer`, `executive_summary`, `company_identity`, `discovery_rationale`, `data_availability_summary`, `financial_snapshot`, `internal_scorecard`, `valuation_readiness`, `bull_case`, `bear_case`, `risk_analysis`, `source_quality_review`, `citation_validation_review`, `research_completeness_review`, `missing_information`, `committee_chair_summary`, `workflow_status`, `human_review_checklist`, `source_citation_appendix`
+
+**Safety gate forbidden terms (never stored in report text):**
+`BUY`, `SELL`, `HOLD`, `WATCH`, `price target`, `target price`, `fair value`, `intrinsic value`, `upside of`, `upside percentage`, `guaranteed return`, `will go up`, `will go down`
+
+**Exempt field names** (scanned content but term allowed as meta-documentation):
+`disallowed_outputs`, `blocked_methods`, `forbidden_terms_found`, `forbidden_terms`, `prohibited_outputs`
 
 ---
 

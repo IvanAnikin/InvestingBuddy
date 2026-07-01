@@ -1,6 +1,6 @@
 # Architecture
 
-## Status: Phase 15 — Scoring + Valuation Framework (663 tests passing; 1 new DB table; 5 new endpoints; 19-node workflow)
+## Status: Phase 16 — Final Report Generator (725 tests passing; 5 new columns in reports table; 5 new endpoints; safety gate; 19-section structured report)
 
 ---
 
@@ -70,11 +70,15 @@ Azure Application Insights
   - `investment_committee_chair.py` — synthesises council; quality gate; assigns provisional_internal_status from whitelist only
 - Scoring agent (Phase 15, `apps/api/app/agents/analysis_council/`):
   - `score_research_attractiveness.py` — Node 17; deterministic 10-dimension research attractiveness scorecard; non-fatal; no price targets; no recommendations; T6/mock ≤ 30, T5 ≤ 60, T1/T2 ≤ 100
+- Final Report Generator (Phase 16, `apps/api/app/services/final_report_generator.py`):
+  - `FinalReportGeneratorService` — 6 async methods; assembles 19-section internal draft from scorecard/candidate/company/report inputs
+  - Safety gate (`run_safety_gate`) — scans all section text for forbidden recommendation language; `blocks_approval=True` on any hit; exempt-field list prevents false positives from meta-documentation fields
+  - LLM optional (offline by default) — enriches `executive_summary` via `packages/prompts/research/phase16_final_report_generator_v1.md`
 
 ### Database
 - Local: PostgreSQL 16 via Docker Compose
 - Production: Azure Database for PostgreSQL Flexible Server
-- Status: **migration 007 applied — scorecards table created (Phase 15); migrations 001–007 all applied**
+- Status: **migration 008 pending on staging — adds 5 final-report columns to reports table (Phase 16); migrations 001–007 applied on staging; 001–008 applied locally**
 
 ### Vector Search
 - Azure AI Search
@@ -210,6 +214,7 @@ All errors are caught, logged to `agent_runs.error_message`, and returned as HTT
 | Phase 13 | ✅ Complete | EODHD real provider (`EodhdProvider`); `CompanyIdentifierResolver`; `company_financial_snapshots` table (migration 005, JSONB); workflow + snapshot_builder fundamentals enrichment; 4 EODHD diagnostic endpoints + `/resolve`; `WorkflowRunResponse` Phase 13 fields; 51 new offline tests; 552 total |
 | Phase 14 | ✅ Complete | Company Discovery / Screener; `CompanyScreener`; `CompanyDiscoveryService`; 3 new tables (migration 006); 7 discovery API endpoints (universes + runs + candidates + promote); 6 themes; T5 source tier enforced for EODHD; fixture-based EODHD search; candidate promotion; 57 new offline tests; 601 total |
 | Phase 15 | ✅ Complete | Scoring + Valuation Framework; `ScoringEngine` (10 dimensions; T6/mock ≤ 30, T5 ≤ 60, T1/T2 ≤ 100); `ValuationReadinessService`; `scorecards` table (migration 007); `ScoringService`; `score_research_attractiveness` node (Node 17); workflow v6.0.0 (19 nodes); 5 scoring API endpoints; 54 new offline tests; 675 total |
+| Phase 16 | ✅ Complete | Final Report Generator; `FinalReportGeneratorService` (6 methods); safety gate (forbidden-term scan + exempt-field list); 19-section structured internal draft report; migration 008 (5 new reports columns); 5 API endpoints; LLM optional (offline by default); prompt template v1; 62 new offline tests; 737 total |
 
 ---
 

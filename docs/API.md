@@ -1,6 +1,6 @@
 # API Reference
 
-## Status: Phase 15 — Scoring + Valuation Framework endpoints added (admin/dev only)
+## Status: Phase 16 — Final Report Generator endpoints added (admin/dev only)
 
 ---
 
@@ -907,6 +907,83 @@ Response `200 OK`:
 > - Scoring node in company analysis workflow (Node 17) runs automatically after Analysis Council.
 > - All scoring is non-fatal — workflow always completes even if scoring fails.
 > - Human admin review required before any action on high-priority items.
+
+---
+
+### Final Reports (Phase 16 — Admin/Dev Only)
+
+> All endpoints are admin/dev only. No public publishing is ever performed.
+> No BUY/SELL/HOLD/WATCH recommendations, price targets, fair values,
+> or upside percentages are ever produced. Human review is always required.
+
+| Method | Path | Status | Description |
+|---|---|---|---|
+| POST | `/api/v1/final-reports/from-scorecard/{scorecard_id}` | ✅ Live | Generate final report from scored candidate |
+| POST | `/api/v1/final-reports/from-candidate/{candidate_id}` | ✅ Live | Generate final report from discovery candidate |
+| POST | `/api/v1/final-reports/from-company/{company_id}` | ✅ Live | Generate final report from company record |
+| POST | `/api/v1/final-reports/{report_id}/validate` | ✅ Live | Re-validate an existing report |
+| POST | `/api/v1/final-reports/{report_id}/regenerate-section` | ✅ Live | Regenerate a single section of an existing report |
+
+**POST /api/v1/final-reports/from-scorecard/{scorecard_id}** — Generate from scorecard
+
+Response (201):
+```json
+{
+  "report_id": "uuid",
+  "status": "draft",
+  "review_status": "draft",
+  "schema_valid": true,
+  "safety_valid": true,
+  "human_review_required": true,
+  "internal_status": "ready_for_deeper_analysis",
+  "sections_generated": ["admin_disclaimer", "executive_summary", "..."],
+  "missing_sections": [],
+  "safety_validation": { "passed": true, "forbidden_terms_found": [], "blocks_approval": false },
+  "schema_validation_errors": [],
+  "scorecard_id": "uuid",
+  "source_count": 0,
+  "citation_count": 0,
+  "human_review_checklist": [{ "item": "...", "required": true, "completed": false }],
+  "disclaimer": "INTERNAL ADMIN DRAFT ONLY. NOT INVESTMENT ADVICE. ..."
+}
+```
+
+**POST /api/v1/final-reports/{report_id}/regenerate-section** — Regenerate a section
+
+Request body:
+```json
+{ "section_name": "executive_summary", "notes": "optional admin note" }
+```
+
+Response (200):
+```json
+{
+  "report_id": "uuid",
+  "section_name": "executive_summary",
+  "regenerated": true,
+  "safety_valid": true,
+  "warnings": [],
+  "disclaimer": "INTERNAL ADMIN DRAFT ONLY. NOT INVESTMENT ADVICE. ..."
+}
+```
+
+**Allowed section names for regenerate-section:**
+`executive_summary`, `company_identity`, `discovery_rationale`, `data_availability_summary`,
+`financial_snapshot`, `internal_scorecard`, `valuation_readiness`, `bull_case`, `bear_case`,
+`risk_analysis`, `source_quality_review`, `citation_validation_review`,
+`research_completeness_review`, `missing_information`, `committee_chair_summary`,
+`workflow_status`, `human_review_checklist`, `source_citation_appendix`
+
+> **Phase 16 constraints:**
+> - 19-section structured internal draft report — never a public document.
+> - Safety gate scans every section for forbidden recommendation language.
+> - `blocks_approval=True` in safety_validation if any forbidden term found.
+> - All 6 allowed `internal_status` labels are research queue labels, not public recommendations:
+>   `not_enough_data`, `low_priority_research`, `needs_primary_sources`,
+>   `ready_for_deeper_analysis`, `high_priority_for_human_review`, `reject_due_to_data_quality`
+> - LLM (optional) used only for executive_summary section enrichment; offline by default.
+> - Schema validation non-fatal — `schema_valid=False` stored with errors for human review.
+> - Report version stored in `final_report_version` column (current: `16.0.0`).
 
 ---
 
