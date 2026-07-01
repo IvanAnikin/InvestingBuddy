@@ -1,6 +1,6 @@
 # Agent Architecture
 
-## Status: Phase 14 — Company Discovery / Screener: CompanyScreener + CompanyDiscoveryService pre-analysis layer; 601 tests passing
+## Status: Phase 15 — Scoring + Valuation Framework: ScoringEngine + score_research_attractiveness node; 675 tests passing
 
 ---
 
@@ -614,6 +614,86 @@ All 7 endpoints are tagged `discovery` and are not public.
 | GET | `/api/v1/discovery/runs/{id}` | Get run detail + summary |
 | GET | `/api/v1/discovery/runs/{id}/candidates` | List candidates for a run |
 | POST | `/api/v1/discovery/candidates/{id}/promote` | Promote candidate to Company |
+
+---
+
+## Research Attractiveness Scoring Layer (Phase 15)
+
+The scoring layer runs **after** the Analysis Council in the `company_analysis` workflow and
+**after** screening in the Discovery layer. It produces internal research attractiveness scores
+only — never investment recommendations.
+
+**Sources:**
+- `apps/api/app/services/scoring_engine.py` — `ScoringEngine` (pure logic, no DB, no LLM)
+- `apps/api/app/services/scoring_service.py` — `ScoringService` (DB-aware wrapper)
+- `apps/api/app/agents/analysis_council/score_research_attractiveness.py` — LangGraph node
+- `apps/api/app/api/v1/scoring.py` — 5 admin/dev-only API endpoints
+
+### ScoringEngine
+
+Deterministic, stateless class. No LLM calls. No network calls.
+
+**10 scoring dimensions (all 0–100 integers):**
+
+| Dimension | Weight | Description |
+|---|---|---|
+| `source_quality_score` | 20% | T1–T6 tier quality |
+| `data_completeness_score` | 18% | Available vs expected data fields |
+| `theme_alignment_score` | 15% | Keyword match against 6 investment themes |
+| `business_quality_score` | 12% | Identity completeness |
+| `financial_strength_score` | 12% | Financial data available |
+| `valuation_readiness_score` | 10% | Readiness for future valuation work |
+| `growth_context_score` | 8% | Growth indicators in discovery reasons |
+| `catalyst_visibility_score` | 5% | Catalysts visible |
+| `risk_penalty_score` | -20% | Source/data risk (subtracted) |
+
+**Score caps by data tier:**
+- T6/mock: overall score ≤ 30/100
+- T5: overall score ≤ 60/100
+- T1/T2: full 0–100 range
+
+**Safety gate:** `_check_forbidden_terms()` scans all output text and blocks any forbidden
+terms (`BUY`, `SELL`, `HOLD`, `WATCH`, `price target`, `fair value`, etc.) from appearing
+in any output field. If triggered, output is downgraded to `internal_status = "not_enough_data"`.
+
+### ValuationReadinessService
+
+Readiness-only classifier. **Never** produces a price target, fair value, or upside estimate.
+
+**States:** `not_ready` | `partial` | `ready_for_basic_multiples` | `ready_for_deeper_valuation`
+
+### ALLOWED_INTERNAL_STATUSES (6 research queue labels)
+
+All statuses are research-queue labels for admin use only — never public recommendations.
+
+| Status | Meaning |
+|---|---|
+| `not_enough_data` | Insufficient data to score |
+| `low_priority_research` | Score too low to prioritise |
+| `needs_primary_sources` | T5/T6 only; T1/T2 validation required |
+| `ready_for_deeper_analysis` | Sufficient data for analysis workflow |
+| `high_priority_for_human_review` | High score; admin should review |
+| `reject_due_to_data_quality` | Data quality too poor to proceed |
+
+### score_research_attractiveness (Node 17 in company_analysis workflow)
+
+LangGraph node inserted **between** `investment_committee_chair` (Node 16) and
+`save_draft_report` (Node 18). Non-fatal — always returns, never raises.
+
+**Inputs:** All Analysis Council summaries from `_run_holder`
+(company_snapshot, financial_data_summary, source_quality_summary, research_completeness_summary,
+citation_validation_summary, bull_case_summary, bear_case_summary, risk_summary,
+valuation_guard_summary, committee_chair_summary)
+
+**Output:** `research_attractiveness_scorecard` dict persisted into `CompanyAnalysisState`
+and stored in `_run_holder`.
+
+**On failure:** Returns fallback dict with `internal_status = "not_enough_data"` and
+`overall_score = 0`. Workflow continues normally.
+
+### Workflow Version
+
+`company_analysis` workflow version: **6.0.0** (19 nodes total)
 
 ---
 

@@ -1,6 +1,6 @@
 # Database Schema
 
-## Status: Phase 14 — Discovery Screener Tables Added (screening_universes, screening_runs, screening_candidates)
+## Status: Phase 15 — Scorecards Table Added (scorecards)
 
 ---
 
@@ -48,6 +48,7 @@ alembic revision --autogenerate -m "short description"
 | 004 | `004_add_review_workflow.py` | adds review_status, reviewed_at, reviewer_note, review_decision_reason, human_review_required, approved_by, rejected_by to reports; creates report_review_events |
 | 005 | `005_add_financial_snapshots.py` | creates company_financial_snapshots (JSONB snapshot storage with SHA-256 dedup hash, FK to companies and agent_runs) |
 | 006 | `006_add_discovery_screener.py` | creates screening_universes, screening_runs, screening_candidates (Phase 14 company discovery funnel) |
+| 007 | `007_add_scorecards.py` | creates scorecards (Phase 15 multi-dimension research attractiveness scoring) |
 
 ---
 
@@ -344,6 +345,59 @@ INDEX: screening_run_id, candidate_status, ticker, company_id
 | `error` | Error occurred during candidate processing |
 
 **Forbidden values (never stored in candidate_status):**
+`BUY`, `SELL`, `HOLD`, `WATCH`, `price_target`, `fair_value`, `upside_percent`
+
+---
+
+---
+
+### Research Attractiveness Scoring (Phase 15)
+
+**scorecards**
+```
+id                          UUID PK
+company_id                  UUID NULLABLE FK → companies.id (SET NULL)
+screening_candidate_id      UUID NULLABLE FK → screening_candidates.id (SET NULL)
+report_id                   UUID NULLABLE FK → reports.id (SET NULL)
+score_type                  VARCHAR(50) NOT NULL   "candidate_scoring" | "company_analysis_scoring"
+overall_score               INTEGER NOT NULL        0–100 composite (T6/mock ≤ 30, T5 ≤ 60, T1/T2 ≤ 100)
+internal_status             VARCHAR(100) NOT NULL   from ALLOWED_INTERNAL_STATUSES (research queue label only)
+scores_json                 JSONB NULLABLE          {dimension_name: {score, explanation, evidence_used, missing_data, warnings}}
+warnings_json               JSONB NULLABLE          list of warning strings
+missing_data_json           JSONB NULLABLE          list of missing data field names
+source_quality_summary_json JSONB NULLABLE          {source_tier, is_mock, quality_score, ...}
+provider_name               VARCHAR(100) NULLABLE
+created_at                  TIMESTAMP WITH TIME ZONE NOT NULL
+
+INDEX: company_id, screening_candidate_id, report_id, score_type, overall_score DESC, created_at DESC
+```
+
+**10 scoring dimensions (all 0–100 integers):**
+
+| Dimension | Weight | What it measures |
+|---|---|---|
+| `source_quality_score` | 20% | T1–T6 tier quality; T5/T6 produce warnings |
+| `data_completeness_score` | 18% | Ratio of available vs expected fields |
+| `theme_alignment_score` | 15% | Match against 6 investment themes |
+| `business_quality_score` | 12% | Identity completeness (ticker, name, sector, country) |
+| `financial_strength_score` | 12% | Financial data fields present |
+| `valuation_readiness_score` | 10% | Readiness for future valuation work (not a valuation) |
+| `growth_context_score` | 8% | Growth indicators in discovery reasons + sector |
+| `catalyst_visibility_score` | 5% | Catalysts/triggers visible |
+| `risk_penalty_score` | -20% | Source risk, mock data, missing data (subtracted) |
+
+**ALLOWED_INTERNAL_STATUSES (research queue labels — never public recommendations):**
+
+| Status | Meaning |
+|---|---|
+| `not_enough_data` | Insufficient data to score; further data collection required |
+| `low_priority_research` | Low score; deprioritise for now |
+| `needs_primary_sources` | T5/T6 only; T1/T2 validation required before progress |
+| `ready_for_deeper_analysis` | Sufficient data quality for company-analysis workflow |
+| `high_priority_for_human_review` | High score; admin should review for analysis pipeline |
+| `reject_due_to_data_quality` | Data quality too poor to proceed |
+
+**Forbidden values (never stored):**
 `BUY`, `SELL`, `HOLD`, `WATCH`, `price_target`, `fair_value`, `upside_percent`
 
 ---

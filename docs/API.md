@@ -1,6 +1,6 @@
 # API Reference
 
-## Status: Phase 14 — Company Discovery / Screener endpoints added (admin/dev only)
+## Status: Phase 15 — Scoring + Valuation Framework endpoints added (admin/dev only)
 
 ---
 
@@ -836,7 +836,77 @@ Errors:
 >   "Candidate requires primary-source validation before final analysis."
 > - Promotion creates a Company record for later analysis; it does NOT auto-trigger analysis.
 > - Admin must separately run the company-analysis workflow for deeper research.
-> - Phase 15 will add scoring; Phase 16 will enable final report generation.
+
+---
+
+## Scoring / Valuation Framework (Phase 15 — Admin / Dev Only)
+
+All scoring endpoints are **admin/dev-only**. They produce internal research attractiveness scores only.
+No investment recommendations, price targets, fair values, or upside percentages are produced.
+`internal_status` values are research queue labels — not public recommendations. Not investment advice.
+
+| Method | Path | Status | Description |
+|---|---|---|---|
+| POST | `/api/v1/scoring/candidates/{candidate_id}` | ✅ Phase 15 | Score a screening candidate; persist scorecard |
+| GET | `/api/v1/scoring/candidates/{candidate_id}` | ✅ Phase 15 | Get latest scorecard for a candidate |
+| POST | `/api/v1/scoring/runs/{run_id}` | ✅ Phase 15 | Score all candidates in a screening run |
+| GET | `/api/v1/scoring/runs/{run_id}/ranked-candidates` | ✅ Phase 15 | List candidates ranked by score (admin view) |
+| POST | `/api/v1/scoring/companies/{company_id}` | ✅ Phase 15 | Score a company from analysis workflow data |
+
+**POST /api/v1/scoring/candidates/{candidate_id}** — Score and persist a screening candidate
+
+Response `201 Created`:
+```json
+{
+  "candidate_id": "uuid",
+  "scorecard_id": "uuid",
+  "overall_score": 18,
+  "internal_status": "needs_primary_sources",
+  "scores": {
+    "source_quality_score": {"score": 15, "explanation": "T6 mock source.", "warnings": ["Mock data"]},
+    "data_completeness_score": {"score": 20, "explanation": "4/15 expected fields.", "warnings": []},
+    "theme_alignment_score": {"score": 40, "explanation": "2 theme keywords matched.", "warnings": []}
+  },
+  "warnings": ["Mock/T6 data: overall score capped at 30."],
+  "missing_data": ["market_cap", "revenue_ttm"],
+  "valuation_readiness": {
+    "valuation_readiness": "not_ready",
+    "available_inputs": [],
+    "missing_inputs": ["market_cap", "ebitda"],
+    "blocked_methods": ["DCF", "EV/EBITDA"],
+    "allowed_methods": [],
+    "disclaimer": "Valuation readiness check only. No fair value, price target, or upside estimate is produced here."
+  },
+  "disclaimer": "INTERNAL SCORE ONLY. Not investment advice. Not a public recommendation. Human review required before any action."
+}
+```
+
+**GET /api/v1/scoring/runs/{run_id}/ranked-candidates** — Ranked candidate list
+
+Response `200 OK`:
+```json
+{
+  "run_id": "uuid",
+  "items": [
+    {"rank": 1, "candidate_id": "uuid", "ticker": "ORSTED", "overall_score": 42, "internal_status": "ready_for_deeper_analysis", ...},
+    {"rank": 2, "candidate_id": "uuid", "ticker": "RWE", "overall_score": 38, "internal_status": "needs_primary_sources", ...}
+  ],
+  "total": 12,
+  "note": "Candidates are ranked by internal research attractiveness score. Ranking is NOT a public investment recommendation.",
+  "disclaimer": "INTERNAL SCORE ONLY. Not investment advice."
+}
+```
+
+> **Phase 15 constraints:**
+> - No BUY/SELL/HOLD/WATCH public recommendations ever produced.
+> - No price targets, fair values, or upside percentages ever produced.
+> - `internal_status` is a research queue label for admin use only.
+> - T6/mock data: overall score capped at ≤ 30/100.
+> - T5 data: overall score capped at ≤ 60/100.
+> - T1/T2 data: full 0–100 range.
+> - Scoring node in company analysis workflow (Node 17) runs automatically after Analysis Council.
+> - All scoring is non-fatal — workflow always completes even if scoring fails.
+> - Human admin review required before any action on high-priority items.
 
 ---
 

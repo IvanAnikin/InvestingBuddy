@@ -1,6 +1,6 @@
 # Roadmap
 
-## Current Phase: Phase 14 — Company Discovery / Screener (complete)
+## Current Phase: Phase 15 — Scoring + Valuation Framework (complete)
 
 ---
 
@@ -551,19 +551,37 @@ Skills used: `financial-data`, `backend-fastapi`, `database-design`, `investment
 
 ---
 
-## Phase 15: Candidate Scoring + Research Ranking
+## Phase 15: Scoring + Valuation Framework ✅
 
-**Status: Not started**
+**Status: Complete (2026-07-01)**
 
-Goal: Add structured scoring on top of Phase 14 discovery candidates. Score candidates on multiple dimensions (source quality, data completeness, theme fit, business quality) to produce a ranked shortlist for deeper analysis.
+Goal: Add a deterministic multi-dimension research attractiveness scorecard on top of Phase 14 discovery candidates and Phase 9 company analysis outputs. Score candidates across 10 dimensions to produce ranked shortlists for deeper admin review — no investment recommendations, no price targets, no fair values.
 
 Deliverables:
-- [ ] Candidate scoring model (multi-dimension 1–5 rubric)
-- [ ] Scoring service
-- [ ] Ranked candidate list API
-- [ ] Admin review of scored candidates
+- [x] `Scorecard` SQLAlchemy model (`app/models/scorecard.py`) — `scorecards` table; JSONB for scores/warnings/missing_data/source_quality_summary; FK links to companies, screening_candidates, reports (all SET NULL)
+- [x] Alembic migration 007 — creates `scorecards` table
+- [x] `ScoringEngine` — deterministic 10-dimension scorer; T6/mock ≤ 30, T5 ≤ 60, T1/T2 ≤ 100 caps; risk_penalty_score subtracted; safety gate blocks all forbidden terms
+- [x] `ValuationReadinessService` — readiness-only classifier (not_ready / partial / ready_for_basic_multiples / ready_for_deeper_valuation); never produces price target or fair value
+- [x] `ALLOWED_INTERNAL_STATUSES` — 6 research queue labels; never public recommendations
+- [x] `ScoringService` — DB-aware: score_candidate, score_screening_run, list_ranked_candidates, explain_candidate_score, score_company_analysis
+- [x] Pydantic schemas (`app/schemas/scoring.py`) — all responses include static disclaimer
+- [x] 5 admin/dev API endpoints under `/api/v1/scoring/`
+- [x] `score_research_attractiveness` LangGraph node (Phase 15, Node 17) — non-fatal; inserted between `investment_committee_chair` and `save_draft_report`
+- [x] `CompanyAnalysisState` extended with `research_attractiveness_scorecard` field
+- [x] Workflow version bumped to 6.0.0 (19 nodes total)
+- [x] 54 new offline tests; 675 total; ruff clean
+- [x] Docs updated: API.md, DATABASE.md, ARCHITECTURE.md, ROADMAP.md, AGENTS.md, README.md
 
-Skills to use: `investment-domain`, `backend-fastapi`, `testing-qa`
+Constraints enforced:
+- No BUY/SELL/HOLD/WATCH/REJECT public recommendations
+- No price targets, fair values, or upside percentages
+- internal_status values are research queue labels only (admin-only)
+- Mock/T6 data capped at ≤ 30/100 overall score
+- T5 data capped at ≤ 60/100 overall score
+- All CI tests offline (no network, no EODHD key, no Azure)
+- No secrets committed
+
+Skills used: `investment-domain`, `backend-fastapi`, `database-design`, `langgraph-agents`, `testing-qa`, `docs-maintainer`
 
 ---
 
