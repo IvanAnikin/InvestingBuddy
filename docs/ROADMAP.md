@@ -1,6 +1,6 @@
 # Roadmap
 
-## Current Phase: Phase 12 — Azure Staging Deployment (Bicep infrastructure complete)
+## Current Phase: Phase 14 — Company Discovery / Screener (complete)
 
 ---
 
@@ -492,7 +492,82 @@ Skills used: `azure-deployment`, `backend-fastapi`, `security-review`, `docs-mai
 
 ---
 
-## Phase 13: Judge + Backtesting
+## Phase 13: EODHD Real Financial Data Integration
+
+**Status: ✅ Delivered (2026-06-29)**
+
+Goal: Connect the financial-data provider abstraction to real structured financial data from EODHD so InvestingBuddy can analyze real public companies with meaningful fundamentals, ratios, statements, and source metadata.
+
+Deliverables:
+- [x] `EodhdProvider` upgraded from placeholder to real implementation — company profile, price history, fundamentals (Highlights, Valuation, SharesStats, Technicals, annual Income/Balance/Cash Flow statements)
+- [x] `CompanyIdentifierResolver` service — resolves ticker, name, or EODHD-format symbol to canonical EODHD symbols; detects ambiguity; works offline (structural parse) and live (EODHD search)
+- [x] `company_financial_snapshots` table (migration 005) — persists raw EODHD payloads (JSONB) with SHA-256 deduplication hash, per-run and per-company linkage
+- [x] `FinancialDataService.get_fundamentals()` — delegates to active provider
+- [x] Company analysis workflow enriched: when `provider_name=eodhd`, fundamentals are fetched non-fatally, stored in state, and passed to `snapshot_builder`
+- [x] `snapshot_builder` updated: `build_company_snapshot()` and `build_schema_draft()` populate `fundamentals_summary` and `snapshot_financials` with datapoint wrappers (T5, B_single_credible)
+- [x] 4 diagnostic API endpoints: `GET /eodhd/status`, `GET /eodhd/company/{symbol}`, `GET /eodhd/fundamentals/{symbol}`, `GET /resolve`
+- [x] `WorkflowRunResponse` extended with `fundamentals_available` and `fundamentals_warnings`
+- [x] 51 offline tests — no network, no EODHD key required in CI; fixtures: `eodhd_fundamentals_aapl.json`, `eodhd_eod_aapl.json`, `eodhd_search_apple.json`, `eodhd_fundamentals_sparse.json`
+- [x] Source tier always T5_api_aggregator — never promoted
+
+Constraints enforced:
+- No BUY/SELL/HOLD/WATCH recommendations
+- No price targets
+- EODHD not required in CI; tests use fixtures + mocks
+- No API keys committed; loaded from env or Azure Key Vault
+
+Skills used: `financial-data`, `backend-fastapi`, `database-design`, `langgraph-agents`, `testing-qa`, `security-review`, `docs-maintainer`
+
+---
+
+## Phase 14: Company Discovery / Screener ✅
+
+**Status: Complete (2026-06-30)**
+
+Goal: Add the first candidate discovery system so InvestingBuddy can screen a defined universe of companies and produce an internal list of candidates worth deeper analysis.
+
+Deliverables:
+- [x] `ScreeningUniverse`, `ScreeningRun`, `ScreeningCandidate` SQLAlchemy models (`app/models/screening.py`)
+- [x] Alembic migration 006 — creates `screening_universes`, `screening_runs`, `screening_candidates`
+- [x] `CompanyScreener` — deterministic theme-based screener; 6 themes; sector/exchange/region/keyword filters; market cap range filters; T5/T6 source tier assignment
+- [x] `CompanyDiscoveryService` — `create_universe`, `run_screening`, `get_screening_run`, `list_screening_runs`, `list_candidates`, `promote_candidate_to_analysis`
+- [x] Candidate promotion — creates or identifies a `Company` record; sets `candidate_status=ready_for_deeper_analysis`; no auto-analysis triggered
+- [x] 7 admin/dev API endpoints under `/api/v1/discovery/`
+- [x] EODHD fixture-backed offline search result parsing; source tier stays T5
+- [x] Mandatory T5 warning: "Candidate requires primary-source validation before final analysis."
+- [x] `candidate_status` allowed values: `candidate_found | needs_data | needs_primary_sources | ready_for_deeper_analysis | rejected_by_screen | error`
+- [x] Forbidden outputs never produced: BUY, SELL, HOLD, WATCH, price_target, fair_value, upside_percent
+- [x] 57 new offline tests; 601 total; ruff clean
+- [x] `docs/API.md`, `docs/DATABASE.md`, `docs/ARCHITECTURE.md`, `docs/ROADMAP.md`, `docs/AGENTS.md`, `docs/DATA_SOURCES.md`, `README.md` updated
+
+Constraints enforced:
+- No investment recommendations, price targets, or fair values produced
+- EODHD data stays T5_api_aggregator — never promoted
+- Promotion creates Company record only; analysis workflow must be triggered separately by admin
+- All CI tests offline (no network, no EODHD key, no Azure)
+- No secrets committed
+
+Skills used: `financial-data`, `backend-fastapi`, `database-design`, `investment-domain`, `testing-qa`, `security-review`, `docs-maintainer`
+
+---
+
+## Phase 15: Candidate Scoring + Research Ranking
+
+**Status: Not started**
+
+Goal: Add structured scoring on top of Phase 14 discovery candidates. Score candidates on multiple dimensions (source quality, data completeness, theme fit, business quality) to produce a ranked shortlist for deeper analysis.
+
+Deliverables:
+- [ ] Candidate scoring model (multi-dimension 1–5 rubric)
+- [ ] Scoring service
+- [ ] Ranked candidate list API
+- [ ] Admin review of scored candidates
+
+Skills to use: `investment-domain`, `backend-fastapi`, `testing-qa`
+
+---
+
+## Phase 16: Judge + Backtesting
 
 **Status: Not started**
 

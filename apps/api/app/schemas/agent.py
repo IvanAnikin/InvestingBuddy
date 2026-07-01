@@ -123,3 +123,6 @@ class WorkflowRunResponse(BaseModel):
     quality_gate_status: dict | None = None
     provisional_internal_status: str | None = None
     human_review_required: bool | None = None
+    # Phase 13: EODHD fundamentals
+    fundamentals_available: bool | None = None
+    fundamentals_warnings: list[str] = Field(default_factory=list)

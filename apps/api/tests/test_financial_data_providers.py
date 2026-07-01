@@ -381,23 +381,30 @@ def test_eodhd_provider_status_not_configured_when_no_key(
 
 
 @pytest.mark.asyncio
-async def test_eodhd_get_company_profile_raises_not_implemented() -> None:
+async def test_eodhd_get_company_profile_raises_provider_error_no_key(monkeypatch) -> None:
+    # Phase 13: EodhdProvider is now real — raises EodhdProviderError when key absent.
+    monkeypatch.delenv("EODHD_API_KEY", raising=False)
+    from app.integrations.providers.eodhd_provider import EodhdProviderError
     provider = EodhdProvider()
-    with pytest.raises(NotImplementedError):
+    with pytest.raises(EodhdProviderError, match="EODHD_API_KEY"):
         await provider.get_company_profile("TEST")
 
 
 @pytest.mark.asyncio
-async def test_eodhd_get_price_history_raises_not_implemented() -> None:
+async def test_eodhd_get_price_history_raises_provider_error_no_key(monkeypatch) -> None:
+    monkeypatch.delenv("EODHD_API_KEY", raising=False)
+    from app.integrations.providers.eodhd_provider import EodhdProviderError
     provider = EodhdProvider()
-    with pytest.raises(NotImplementedError):
+    with pytest.raises(EodhdProviderError, match="EODHD_API_KEY"):
         await provider.get_price_history("TEST")
 
 
 @pytest.mark.asyncio
-async def test_eodhd_get_fundamentals_raises_not_implemented() -> None:
+async def test_eodhd_get_fundamentals_raises_provider_error_no_key(monkeypatch) -> None:
+    monkeypatch.delenv("EODHD_API_KEY", raising=False)
+    from app.integrations.providers.eodhd_provider import EodhdProviderError
     provider = EodhdProvider()
-    with pytest.raises(NotImplementedError):
+    with pytest.raises(EodhdProviderError, match="EODHD_API_KEY"):
         await provider.get_fundamentals("TEST")
 
 

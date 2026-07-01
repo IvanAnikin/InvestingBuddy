@@ -65,6 +65,12 @@ class CompanyAnalysisState(TypedDict):
     provisional_internal_status: str | None      # internal research workflow status
     human_review_required: bool | None           # True when committee flags human review
 
+    # --- Phase 13: EODHD fundamentals ---
+    fundamentals_data: dict | None               # FundamentalsData as dict (when eodhd provider)
+    fundamentals_available: bool | None          # True when real fundamentals were fetched
+    fundamentals_warnings: list[str] | None      # warnings from fundamentals fetch
+    financial_snapshot_id: str | None            # UUID of persisted CompanyFinancialSnapshot
+
     # --- control ---
     error: str | None
     status: str   # running | completed | failed

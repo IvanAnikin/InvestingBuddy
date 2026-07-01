@@ -51,12 +51,12 @@ export default function HomePage() {
           </h2>
           <div className="rounded-lg border border-amber-200 bg-amber-50 p-4">
             <p className="font-medium text-amber-800">
-              Phase 10 — Admin Review UI
+              Phase 14 — Company Discovery / Screener
             </p>
             <p className="mt-1 text-sm text-amber-700">
               The platform is under active development. The 18-node analysis
-              council workflow is operational. An internal admin workspace is
-              available at{" "}
+              council workflow is operational. A company discovery screener is
+              live. An internal admin workspace is available at{" "}
               <a href="/admin" className="underline hover:text-amber-900">
                 /admin
               </a>{" "}

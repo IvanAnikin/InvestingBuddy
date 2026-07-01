@@ -11,12 +11,19 @@ Phase 4 endpoints (mock only — no external calls):
   GET /api/v1/financial-data/mock/prices/{ticker}
 
 Phase 5 endpoints (live free providers — require network access):
-  GET /api/v1/financial-data/stooq/prices/{ticker}     Live Stooq price history (T5)
-  GET /api/v1/financial-data/gleif/entity/{lei_or_name} GLEIF entity lookup (T2)
-  GET /api/v1/financial-data/sec-edgar/company/{cik}   SEC EDGAR company by CIK (T2)
+  GET /api/v1/financial-data/stooq/prices/{ticker}        Live Stooq price history (T5)
+  GET /api/v1/financial-data/gleif/entity/{lei_or_name}   GLEIF entity lookup (T2)
+  GET /api/v1/financial-data/sec-edgar/company/{cik}      SEC EDGAR company by CIK (T2)
 
-Phase 5 endpoints make real external HTTP calls. Do not expose them to end users.
-Do not use responses as investment advice.
+Phase 13 endpoints (EODHD — paid API key required; admin/dev only):
+  GET /api/v1/financial-data/eodhd/status                 EODHD provider status
+  GET /api/v1/financial-data/eodhd/company/{symbol}       Company profile from EODHD
+  GET /api/v1/financial-data/eodhd/fundamentals/{symbol}  Fundamentals from EODHD
+  GET /api/v1/financial-data/resolve                      Resolve ticker/name to symbol
+
+Phase 13 endpoints require EODHD_API_KEY. They make real external HTTP calls.
+Do not expose them to end users. Do not use responses as investment advice.
+EODHD is classified as T5_api_aggregator — never promote to T1/T2.
 """
 
 from __future__ import annotations
@@ -25,6 +32,7 @@ from fastapi import APIRouter, HTTPException, Query, status
 
 from app.integrations.financial_data_provider import (
     CompanyProfileData,
+    FundamentalsData,
     PriceHistoryData,
 )
 from app.integrations.financial_data_service import FinancialDataService
@@ -226,3 +234,183 @@ async def sec_edgar_company_by_cik(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"SEC EDGAR request failed: {exc}",
         ) from exc
+
+
+# ---------------------------------------------------------------------------
+# Phase 13 — EODHD endpoints (paid key required; admin/dev diagnostic only)
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/eodhd/status",
+    summary="[DEV] EODHD provider status",
+    description=(
+        "Returns the current EODHD provider status. "
+        "When EODHD_API_KEY is not set, returns not_configured. "
+        "Does not make any network call. "
+        "Source tier: T5_api_aggregator. Not investment advice."
+    ),
+)
+async def eodhd_status() -> dict:
+    from app.integrations.providers.eodhd_provider import EodhdProvider
+
+    provider = EodhdProvider()
+    return {
+        "provider": "eodhd",
+        "source_tier": "T5_api_aggregator",
+        "status": provider.get_provider_status().value,
+        "capabilities": [c.value for c in provider.get_supported_capabilities()],
+        "note": (
+            "EODHD is classified as T5_api_aggregator. "
+            "Do not promote EODHD data to T1/T2 tier. "
+            "Requires EODHD_API_KEY in environment."
+        ),
+    }
+
+
+@router.get(
+    "/eodhd/company/{symbol}",
+    response_model=CompanyProfileData,
+    summary="[DEV] Company profile from EODHD (T5 — requires EODHD_API_KEY)",
+    description=(
+        "[LIVE — makes external HTTP call to EODHD API] "
+        "Fetches company identity/profile from the EODHD /fundamentals endpoint. "
+        "Symbol must be in EODHD format: TICKER.EXCHANGE (e.g. AAPL.US, VOW3.XETRA). "
+        "Source tier: T5_api_aggregator. Requires EODHD_API_KEY. "
+        "Not investment advice. Dev/diagnostic use only."
+    ),
+)
+async def eodhd_company_profile(
+    symbol: str,
+    exchange: str | None = Query(
+        default=None,
+        description=(
+            "Optional exchange override. If symbol already contains a dot "
+            "(e.g. AAPL.US), the exchange suffix in the symbol takes precedence."
+        ),
+    ),
+) -> CompanyProfileData:
+    from app.integrations.providers.eodhd_provider import (
+        EodhdAuthError,
+        EodhdNotFoundError,
+        EodhdProviderError,
+        EodhdRateLimitError,
+    )
+
+    svc = FinancialDataService(provider_name="eodhd")
+    ticker = symbol.split(".")[0] if "." in symbol else symbol
+    exch = symbol.split(".")[1] if "." in symbol else exchange
+    try:
+        return await svc.get_company_profile(ticker=ticker.upper(), exchange=exch)
+    except EodhdAuthError as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
+    except EodhdNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except EodhdRateLimitError as exc:
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(exc)) from exc
+    except EodhdProviderError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"EODHD company profile error: {exc}",
+        ) from exc
+
+
+@router.get(
+    "/eodhd/fundamentals/{symbol}",
+    response_model=FundamentalsData,
+    summary="[DEV] Full fundamentals from EODHD (T5 — requires EODHD_API_KEY)",
+    description=(
+        "[LIVE — makes external HTTP call to EODHD API] "
+        "Fetches full fundamentals (Highlights, Valuation, SharesStats, "
+        "Income Statement, Balance Sheet, Cash Flow) from EODHD. "
+        "All values are wrapped in FundamentalDataPoint envelopes with T5 tier. "
+        "Symbol must be in EODHD format: TICKER.EXCHANGE (e.g. AAPL.US). "
+        "Requires EODHD_API_KEY. Not investment advice. Dev/diagnostic use only."
+    ),
+)
+async def eodhd_fundamentals(
+    symbol: str,
+    exchange: str | None = Query(default=None, description="Optional exchange override"),
+) -> FundamentalsData:
+    from app.integrations.providers.eodhd_provider import (
+        EodhdAuthError,
+        EodhdNotFoundError,
+        EodhdProviderError,
+        EodhdRateLimitError,
+    )
+
+    svc = FinancialDataService(provider_name="eodhd")
+    ticker = symbol.split(".")[0] if "." in symbol else symbol
+    exch = symbol.split(".")[1] if "." in symbol else exchange
+    try:
+        return await svc.get_fundamentals(ticker=ticker.upper(), exchange=exch)
+    except EodhdAuthError as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
+    except EodhdNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except EodhdRateLimitError as exc:
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(exc)) from exc
+    except EodhdProviderError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    except NotImplementedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail=f"Fundamentals not supported by active provider: {exc}",
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"EODHD fundamentals error: {exc}",
+        ) from exc
+
+
+@router.get(
+    "/resolve",
+    summary="[DEV] Resolve a company name or ticker to a canonical EODHD symbol",
+    description=(
+        "Resolves a company name or ticker to a canonical EODHD symbol using the "
+        "EODHD search API. When EODHD_API_KEY is not configured, performs structural "
+        "pattern matching only (low confidence). "
+        "Returns a list of candidates with confidence scores and ambiguity warnings. "
+        "Do not silently accept an ambiguous result — verify the symbol before use. "
+        "Not investment advice. Dev/diagnostic use only."
+    ),
+)
+async def resolve_company(
+    query: str = Query(description="Ticker, company name, or EODHD symbol (e.g. AAPL.US)"),
+    exchange: str | None = Query(
+        default=None,
+        description="Optional exchange hint to disambiguate (e.g. NASDAQ, XETRA)",
+    ),
+    provider: str = Query(default="eodhd", description="Provider to use for search (eodhd)"),
+) -> dict:
+    from app.services.identifier_resolver import CompanyIdentifierResolver
+
+    resolver = CompanyIdentifierResolver()
+    result = await resolver.resolve(query=query, exchange=exchange, provider=provider)
+    return {
+        "query": result.query,
+        "is_ambiguous": result.is_ambiguous,
+        "warnings": result.warnings,
+        "candidates": [
+            {
+                "canonical_ticker": c.canonical_ticker,
+                "provider_symbol": c.provider_symbol,
+                "exchange": c.exchange,
+                "company_name": c.company_name,
+                "country": c.country,
+                "provider_confidence": round(c.provider_confidence, 3),
+                "is_ambiguous": c.is_ambiguous,
+                "source": c.source,
+                "warnings": c.warnings,
+            }
+            for c in result.candidates
+        ],
+        "source_tier": "T5_api_aggregator",
+        "note": (
+            "EODHD resolution is T5 quality. Verify the resolved symbol against "
+            "primary sources (company IR, exchange listing) before use in research."
+        ),
+    }

@@ -1,6 +1,6 @@
 # Data Sources
 
-## Status: Phase 6 — Provider data now flows into source records, citations, and schema-validated snapshot reports
+## Status: Phase 14 — EODHD search used as T5 in CompanyScreener; EodhdProvider live; provider data flows into source records, citations, and schema-validated snapshot reports
 
 This document defines the permitted source universe, tier classification, and provider implementation notes for InvestingBuddy.
 
@@ -77,6 +77,19 @@ These files are the ground truth for:
 
 The report schema is **provider-agnostic**. `eodhd_mapping.json` is a mapping layer, not a hardcoded dependency. To switch or add a provider, edit only the mapping file — the schema never changes.
 
+### Phase 14 Screener Usage (EODHD Search)
+
+`CompanyScreener` can accept live EODHD search results via `eodhd_search_results` parameter.
+These come from `GET https://eodhd.com/api/search/...` and are classified as `T5_api_aggregator`
+with data quality `B_single_credible`.
+
+Screener-stage EODHD data never advances beyond `T5` in the source tier. The T5 validation
+warning is appended to every EODHD-sourced candidate:
+`"Candidate requires primary-source validation before final analysis."`
+
+No EODHD API key is needed in CI — the screener tests use fixture-backed offline results.
+Live screening requires `EODHD_API_KEY` (same key as `EodhdProvider`).
+
 ### Provider Registry
 
 All providers are registered in `FinancialDataService` and selectable via `FINANCIAL_DATA_PROVIDER` config:
@@ -88,7 +101,7 @@ All providers are registered in `FinancialDataService` and selectable via `FINAN
 | `GleifProvider` | `integrations/providers/gleif_provider.py` | T2 | ✅ Live | Free; LEI lookup by code or name; `api.gleif.org`; no API key |
 | `StooqProvider` | `integrations/providers/stooq_provider.py` | T5 | ✅ Live | Free; live OHLCV CSV from `stooq.com`; no API key |
 | `OpenBBProvider` | `integrations/providers/openbb_provider.py` | T5 | Evaluation placeholder | Not yet integrated; requires `openbb-platform`; evaluate before Phase 6 |
-| `EodhdProvider` | `integrations/providers/eodhd_provider.py` | T5 | Placeholder | Paid; requires `EODHD_API_KEY`; excluded from CI |
+| `EodhdProvider` | `integrations/providers/eodhd_provider.py` | T5 | ✅ Live (Phase 13) | Paid; requires `EODHD_API_KEY`; company profile, price history, fundamentals (Highlights, Valuation, SharesStats, Technicals, annual statements); excluded from CI; tests run offline via fixtures |
 
 ### Provider Abstract Interface
 

@@ -1,6 +1,6 @@
 # API Reference
 
-## Status: Phase 11 — Admin Review / Approve-Reject Workflow; review action endpoints and audit log added
+## Status: Phase 14 — Company Discovery / Screener endpoints added (admin/dev only)
 
 ---
 
@@ -408,6 +408,10 @@ These endpoints are for **development and provider smoke-testing only**. They do
 | GET | `/api/v1/financial-data/stooq/prices/{ticker}` | ✅ Live (network) | Live OHLCV price history from Stooq (T5, free) |
 | GET | `/api/v1/financial-data/gleif/entity/{lei_or_name}` | ✅ Live (network) | Legal entity lookup from GLEIF registry (T2, free) |
 | GET | `/api/v1/financial-data/sec-edgar/company/{cik}` | ✅ Live (network) | Company profile from SEC EDGAR by CIK (T2, free) |
+| GET | `/api/v1/financial-data/eodhd/status` | ✅ Live (Phase 13) | EODHD provider status (no network call; `not_configured` if key absent) |
+| GET | `/api/v1/financial-data/eodhd/company/{symbol}` | ✅ Live (Phase 13, network) | Company profile from EODHD; `symbol` = `TICKER.EXCHANGE` (e.g. `AAPL.US`); requires `EODHD_API_KEY` |
+| GET | `/api/v1/financial-data/eodhd/fundamentals/{symbol}` | ✅ Live (Phase 13, network) | Full fundamentals from EODHD; requires `EODHD_API_KEY`; returns datapoints with T5 source tier |
+| GET | `/api/v1/financial-data/resolve` | ✅ Live (Phase 13) | Resolve company identifier to EODHD symbol(s); `?q=AAPL` or `?q=Apple+Inc`; optional `?exchange=NASDAQ`; warns when ambiguous |
 
 **GET /api/v1/financial-data/providers** — List all providers
 
@@ -699,6 +703,140 @@ Immutable chronological audit log.
 > - All outputs remain draft/internal — not investment advice.
 > - Human reviewer remains responsible for all review decisions.
 > - Authentication not yet enforced — restrict access at network level (Phase 12).
+
+---
+
+---
+
+## Discovery / Screener (Phase 14 — Admin / Dev Only)
+
+All discovery endpoints are **admin/dev-only**. They are internal research funnel endpoints.
+No investment recommendations, price targets, fair values, or upside percentages are produced.
+Not investment advice. Not public-facing.
+
+| Method | Path | Status | Description |
+|---|---|---|---|
+| POST | `/api/v1/discovery/universes` | ✅ Phase 14 | Create a screening universe definition |
+| GET | `/api/v1/discovery/universes` | ✅ Phase 14 | List all universe definitions |
+| POST | `/api/v1/discovery/runs` | ✅ Phase 14 | Execute a screen against a universe |
+| GET | `/api/v1/discovery/runs` | ✅ Phase 14 | List all screening runs |
+| GET | `/api/v1/discovery/runs/{run_id}` | ✅ Phase 14 | Get a screening run by ID |
+| GET | `/api/v1/discovery/runs/{run_id}/candidates` | ✅ Phase 14 | List candidates produced by a run |
+| POST | `/api/v1/discovery/candidates/{candidate_id}/promote` | ✅ Phase 14 | Promote candidate to company analysis funnel |
+
+**POST /api/v1/discovery/universes** — Create screening universe
+
+```json
+{
+  "name": "EU Energy Transition",
+  "description": "European energy transition companies",
+  "region": "Europe",
+  "exchange": null,
+  "sector_filter": "Utilities",
+  "theme": "energy_transition",
+  "provider_name": "mock"
+}
+```
+
+Allowed themes: `energy_transition`, `electrification_grid`, `defense_security`,
+`industrial_resilience`, `real_assets`, `materials_mining`
+
+Response `201 Created`:
+```json
+{
+  "id": "uuid",
+  "name": "EU Energy Transition",
+  "theme": "energy_transition",
+  "region": "Europe",
+  "provider_name": "mock",
+  "created_at": "2026-06-30T..."
+}
+```
+
+**POST /api/v1/discovery/runs** — Execute a screen
+
+```json
+{
+  "universe_id": "uuid",
+  "max_candidates": 50,
+  "market_cap_min": null,
+  "market_cap_max": null,
+  "keyword_search": null
+}
+```
+
+Response `201 Created`:
+```json
+{
+  "id": "uuid",
+  "universe_id": "uuid",
+  "status": "completed",
+  "provider_name": "mock",
+  "summary_json": {
+    "total_candidates": 3,
+    "status_counts": {"candidate_found": 3},
+    "note": "Internal research funnel only. No investment recommendation produced."
+  }
+}
+```
+
+**GET /api/v1/discovery/runs/{run_id}/candidates** — List candidates
+
+Response `200 OK`:
+```json
+{
+  "items": [
+    {
+      "id": "uuid",
+      "ticker": "ORSTED",
+      "exchange": "CPH",
+      "name": "Ørsted A/S",
+      "country": "Denmark",
+      "sector": "Utilities",
+      "candidate_status": "candidate_found",
+      "discovery_reasons_json": ["Theme match 'energy_transition': keywords found — offshore, wind"],
+      "available_data_json": ["ticker", "exchange", "name", "country", "sector"],
+      "missing_data_json": ["market_cap", "currency", "revenue_ttm"],
+      "source_tier": "T6_model_estimate",
+      "data_quality": "D_weak_or_stale",
+      "warnings_json": ["Mock/synthetic data only — all values are demo placeholders."]
+    }
+  ],
+  "total": 3
+}
+```
+
+**POST /api/v1/discovery/candidates/{candidate_id}/promote** — Promote to company analysis
+
+Response `200 OK`:
+```json
+{
+  "candidate_id": "uuid",
+  "company_id": "uuid",
+  "ticker": "ORSTED",
+  "exchange": "CPH",
+  "name": "Ørsted A/S",
+  "promoted": true,
+  "company_created": true,
+  "new_candidate_status": "ready_for_deeper_analysis",
+  "message": "Candidate promoted. Company record created (ORSTED.CPH). Run the company-analysis workflow separately to begin deeper research. No recommendation produced. No publishing performed."
+}
+```
+
+Errors:
+- `404` — universe/run/candidate not found
+- `422` — candidate in error or rejected_by_screen state
+- `422` — universe theme invalid
+
+> **Phase 14 constraints:**
+> - Internal research funnel only. Candidates are NOT investment recommendations.
+> - No BUY/SELL/HOLD/WATCH/price_target/fair_value/upside ever produced.
+> - EODHD data remains T5_api_aggregator — never promoted to T1/T2.
+> - Candidate with only T5 data always gets the mandatory warning:
+>   "Candidate requires primary-source validation before final analysis."
+> - Promotion creates a Company record for later analysis; it does NOT auto-trigger analysis.
+> - Admin must separately run the company-analysis workflow for deeper research.
+> - Phase 15 will add scoring; Phase 16 will enable final report generation.
 
 ---
 

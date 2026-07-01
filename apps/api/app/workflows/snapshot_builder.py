@@ -1,14 +1,18 @@
 """
-snapshot_builder — Phase 6 utility.
+snapshot_builder — Phase 6/13 utility.
 
-Transforms raw provider data (CompanyProfileData, PriceHistoryData) into:
+Transforms raw provider data (CompanyProfileData, PriceHistoryData,
+FundamentalsData) into:
   1. A structured company snapshot dict suitable for DB storage.
   2. A minimal schema-attempt dict that follows the real-asset equity report
      schema datapoint convention, ready for validate_real_asset_report().
 
-The schema-attempt will fail full validation (many required sections are absent)
-but allows the workflow to record which schema fields were populated and which
-validation errors occur before LLM agents are available.
+Phase 13 adds fundamentals enrichment: when FundamentalsData is provided
+(EODHD provider), snapshot_financials fields are populated with datapoint
+wrappers, and the schema draft gains more filled sections.
+
+The schema-attempt will still fail full validation (many required sections
+are absent) but has meaningfully more data when fundamentals are available.
 
 No LLM calls. No network calls. No database access. Pure data transformation.
 """
@@ -20,6 +24,7 @@ from typing import Any
 
 from app.integrations.financial_data_provider import (
     CompanyProfileData,
+    FundamentalsData,
     PriceHistoryData,
     ProviderResponseMetadata,
 )
@@ -80,6 +85,7 @@ def _provider_note(meta: ProviderResponseMetadata) -> str:
 def build_company_snapshot(
     profile: CompanyProfileData,
     prices: PriceHistoryData | None,
+    fundamentals: FundamentalsData | None = None,
 ) -> dict:
     """
     Build a structured company snapshot from provider data.
@@ -126,6 +132,12 @@ def build_company_snapshot(
         price_summary = {"available": False, "reason": "price_history not fetched or empty"}
         missing_fields.append("price_history")
 
+    # Build fundamentals summary when EODHD fundamentals are available
+    fundamentals_summary: dict | None = None
+    if fundamentals and fundamentals.datapoints:
+        dp_by_field = {dp.field_name: dp for dp in fundamentals.datapoints}
+        fundamentals_summary = _build_fundamentals_summary(dp_by_field, missing_fields)
+
     snapshot = {
         "company_identity": {
             "ticker": profile.ticker,
@@ -158,11 +170,56 @@ def build_company_snapshot(
             else profile.data_quality.value,
         },
         "price_history_summary": price_summary,
+        "fundamentals_summary": fundamentals_summary,
         "missing_fields": missing_fields,
         "investment_recommendation": None,
         "snapshot_generated_at": datetime.now(timezone.utc).isoformat(),
     }
     return snapshot
+
+
+def _build_fundamentals_summary(
+    dp_by_field: dict,
+    missing_fields: list[str],
+) -> dict:
+    """
+    Build a condensed fundamentals summary dict from EODHD datapoints.
+
+    Only extracts key financial snapshot fields. Each present field is noted
+    as available; absent fields are added to missing_fields.
+    """
+
+    def _get(field_name: str, missing_label: str) -> Any:
+        dp = dp_by_field.get(field_name)
+        if dp is None:
+            missing_fields.append(missing_label)
+            return None
+        return dp.value
+
+    summary: dict[str, Any] = {
+        "market_cap_mln": _get("highlights.market_cap_mln", "fundamentals.market_cap_mln"),
+        "enterprise_value_mln": _get("valuation.enterprise_value_mln", "fundamentals.enterprise_value_mln"), # noqa: E501
+        "ebitda_mln": _get("highlights.ebitda", "fundamentals.ebitda_mln"),
+        "revenue_ttm_mln": _get("highlights.revenue_ttm_mln", "fundamentals.revenue_ttm_mln"),
+        "ev_ebitda_x": _get("valuation.ev_ebitda", "fundamentals.ev_ebitda_x"),
+        "pe_ratio": _get("highlights.pe_ratio", "fundamentals.pe_ratio"),
+        "profit_margin": _get("highlights.profit_margin", "fundamentals.profit_margin"),
+        "operating_margin_ttm": _get("highlights.operating_margin_ttm", "fundamentals.operating_margin_ttm"), # noqa: E501
+        "return_on_equity_ttm": _get("highlights.return_on_equity_ttm", "fundamentals.return_on_equity_ttm"), # noqa: E501
+        "shares_outstanding_mln": _get("shares.outstanding_mln", "fundamentals.shares_outstanding_mln"), # noqa: E501
+        "beta": _get("technicals.beta", "fundamentals.beta"),
+        "52_week_high": _get("technicals.52_week_high", "fundamentals.52_week_high"),
+        "52_week_low": _get("technicals.52_week_low", "fundamentals.52_week_low"),
+        "source_tier": "T5_api_aggregator",
+        "data_quality": "B_single_credible",
+        "note": (
+            "Fundamentals from EODHD (T5_api_aggregator). "
+            "Do not promote to T1/T2. "
+            "Values are in USD_m where noted; verify currency for non-USD companies."
+        ),
+    }
+    # Remove None values from summary (they were already added to missing_fields)
+    return {k: v for k, v in summary.items() if v is not None or k in ("source_tier", "data_quality", "note")} # noqa: E501
 
 
 # ---------------------------------------------------------------------------
@@ -175,6 +232,7 @@ def build_schema_draft(
     snapshot: dict,
     profile: CompanyProfileData,
     prices: PriceHistoryData | None,
+    fundamentals: FundamentalsData | None = None,
 ) -> dict:
     """
     Build a minimal schema-attempt dict using the real-asset equity report contract.
@@ -272,6 +330,56 @@ def build_schema_draft(
             "data_points_count": len(prices.price_points),
             "currency": prices.currency,
         }
+
+    # Phase 13: populate snapshot_financials from EODHD fundamentals
+    if fundamentals and fundamentals.datapoints:
+        dp_by_field = {dp.field_name: dp for dp in fundamentals.datapoints}
+        fund_meta = fundamentals.meta
+        fund_tier = (
+            fund_meta.source_tier
+            if isinstance(fund_meta.source_tier, str)
+            else fund_meta.source_tier.value
+        )
+        fund_source_name = f"EODHD fundamentals — {ticker}.{exchange}"
+        fund_source_url = f"https://eodhd.com/financial-apis/fundamental-api/?s={ticker}.{exchange}"
+
+        def _fund_dp(field_name: str, unit: str | None, note: str | None = None) -> dict | None:
+            dp = dp_by_field.get(field_name)
+            if dp is None or dp.value is None:
+                return None
+            return _make_datapoint(
+                value=dp.value,
+                unit=unit,
+                as_of=dp.as_of or retrieved_date,
+                source_tier=fund_tier,
+                source_name=fund_source_name,
+                source_url=fund_source_url,
+                data_quality=dp.data_quality
+                if isinstance(dp.data_quality, str)
+                else dp.data_quality.value,
+                note=note,
+            )
+
+        snapshot_financials: dict = {}
+        _fields_map = [
+            ("highlights.market_cap_mln", "market_cap_usd_m", "USD_m",
+             "Native currency — verify FX conversion. eodhd_mapping.json: snapshot_financials.market_cap_usd_m"), # noqa: E501
+            ("valuation.enterprise_value_mln", "enterprise_value_usd_m", "USD_m", None),
+            ("highlights.ebitda", "ebitda_ttm_usd_m", "USD_m", None),
+            ("highlights.revenue_ttm_mln", "revenue_ttm_usd_m", "USD_m", None),
+            ("valuation.ev_ebitda", "ev_ebitda_x", "x", None),
+            ("shares.outstanding_mln", "shares_out_m", "M shares", None),
+            ("shares.percent_insiders", "free_float_pct", "%",
+             "Computed as 100 - percent_insiders. Approximate only."),
+        ]
+        for src_field, dst_field, unit, note in _fields_map:
+            dp_val = _fund_dp(src_field, unit, note)
+            if dp_val is not None:
+                snapshot_financials[dst_field] = dp_val
+
+        if snapshot_financials:
+            draft["snapshot_financials"] = snapshot_financials
+            draft["_phase13_fundamentals_available"] = True
 
     return draft
 
