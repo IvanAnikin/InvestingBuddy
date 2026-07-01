@@ -12,17 +12,40 @@ import type {
   WorkflowRunResponse,
 } from "@/types/api";
 
-const API_BASE =
-  process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
+// All protected API calls are routed through the Next.js server-side proxy so
+// that credentials never appear in browser JS, network payloads, or JS bundles.
+//
+// Server components (SSR) call the backend directly using server-only env vars
+// and add the Authorization header on the Node.js side.
+//
+// Client components (browser) call the same-origin proxy at /api/admin/proxy/…
+// which adds the Authorization header before forwarding to the backend.
 
-async function apiFetch<T>(
-  path: string,
-  init?: RequestInit,
-): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
+const PROXY_PREFIX = "/api/admin/proxy";
+const SERVER_BASE =
+  process.env.BACKEND_API_BASE_URL ?? "http://localhost:8000";
+const BACKEND_BASIC_AUTH = process.env.BACKEND_BASIC_AUTH ?? "";
+
+function buildUrl(path: string): string {
+  if (typeof window === "undefined") {
+    return `${SERVER_BASE}${path}`;
+  }
+  return `${PROXY_PREFIX}${path}`;
+}
+
+function serverAuthHeaders(): Record<string, string> {
+  if (typeof window === "undefined" && BACKEND_BASIC_AUTH) {
+    return { Authorization: `Basic ${btoa(BACKEND_BASIC_AUTH)}` };
+  }
+  return {};
+}
+
+async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(buildUrl(path), {
     ...init,
     headers: {
       "Content-Type": "application/json",
+      ...serverAuthHeaders(),
       ...init?.headers,
     },
   });
@@ -45,8 +68,13 @@ export async function fetchHealth(): Promise<HealthResponse> {
   return apiFetch<HealthResponse>("/health");
 }
 
-export async function fetchCompanies(limit = 50, offset = 0): Promise<CompanyList> {
-  return apiFetch<CompanyList>(`/api/v1/companies?limit=${limit}&offset=${offset}`);
+export async function fetchCompanies(
+  limit = 50,
+  offset = 0,
+): Promise<CompanyList> {
+  return apiFetch<CompanyList>(
+    `/api/v1/companies?limit=${limit}&offset=${offset}`,
+  );
 }
 
 export async function fetchCompany(id: string): Promise<Company> {
@@ -72,8 +100,13 @@ export async function runAnalysis(
   );
 }
 
-export async function fetchReports(limit = 50, offset = 0): Promise<ReportList> {
-  return apiFetch<ReportList>(`/api/v1/reports?limit=${limit}&offset=${offset}`);
+export async function fetchReports(
+  limit = 50,
+  offset = 0,
+): Promise<ReportList> {
+  return apiFetch<ReportList>(
+    `/api/v1/reports?limit=${limit}&offset=${offset}`,
+  );
 }
 
 export async function fetchReport(id: string): Promise<Report> {

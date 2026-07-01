@@ -1,6 +1,6 @@
 # Architecture
 
-## Status: Phase 16 — Final Report Generator (725 tests passing; 5 new columns in reports table; 5 new endpoints; safety gate; 19-section structured report)
+## Status: Phase 17 — Admin Auth Proxy (Next.js server-side proxy for protected FastAPI calls; no credentials in browser; Add Company + reports + review actions fixed on staging)
 
 ---
 
@@ -35,17 +35,34 @@ Azure Application Insights
 ### Frontend (`apps/web/`)
 - Next.js 16, React 19, TypeScript, Tailwind CSS v4, App Router
 - Public report pages, admin dashboard, user account (V2)
-- Communicates with backend via REST API
-- Status: **Phase 11 — Admin Review / Approve-Reject Workflow live at `/admin`**
+- Communicates with backend via server-side proxy (Phase 17+) — credentials never in browser
+- Status: **Phase 17 — Admin Auth Proxy live; all protected admin API calls routed through Next.js server-side proxy**
+  - `/api/admin/proxy/[...path]` — server-side proxy route; adds `Authorization: Basic` server-side; path allowlist; rejects unknown paths; sanitizes errors; never exposes credentials to browser
+  - `src/lib/api.ts` — smart base URL: server components call `BACKEND_API_BASE_URL` directly; client components use `/api/admin/proxy/…`
   - `/admin` — dashboard (health, company count, latest reports)
   - `/admin/companies/new` — create company form
-  - `/admin/analysis` — trigger workflow form with full Phase 9 result display
+  - `/admin/analysis` — trigger 19-node workflow; full result display
   - `/admin/reports` — draft report list with review_status column
   - `/admin/reports/[id]` — report detail with review action panel + event timeline
     - `ReviewPanel` (client component) — interactive review buttons, note textarea, warnings
     - Review event timeline — chronological audit log display
-  - `src/lib/api.ts` — typed API client (includes review action functions)
   - `src/types/api.ts` — TypeScript types (includes ReviewActionRequest, ReviewEvent, etc.)
+
+#### Admin Auth Proxy — Request Flow (Phase 17)
+
+```text
+Browser (admin UI)
+  → same-origin: /api/admin/proxy/api/v1/companies   (no credentials)
+  → Next.js server route.ts
+       adds Authorization: Basic <base64(BACKEND_BASIC_AUTH)>   [server-only env var]
+  → FastAPI backend: https://ib-stg-api.azurewebsites.net/api/v1/companies
+       checks STAGING_BASIC_AUTH
+  → response forwarded back to browser   (Authorization header stripped)
+```
+
+Required App Service env vars for `ib-stg-web` (server-only, no `NEXT_PUBLIC_` prefix):
+- `BACKEND_API_BASE_URL` — full URL of the FastAPI backend
+- `BACKEND_BASIC_AUTH` — `user:password` matching `STAGING_BASIC_AUTH` on the API
 
 ### Backend (`apps/api/`)
 - FastAPI, SQLAlchemy async, Pydantic v2, Alembic

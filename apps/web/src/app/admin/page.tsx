@@ -166,19 +166,19 @@ export default async function AdminDashboard() {
           Platform Phase
         </p>
         <div className="flex flex-wrap gap-2">
-          <Badge label="Phase 16" color="blue" />
+          <Badge label="Phase 17" color="blue" />
           <Badge label="Final Report Generator" color="blue" />
           <Badge label="19-node Workflow" color="gray" />
           <Badge label="Analysis Council Active" color="gray" />
           <Badge label="Discovery Screener Active" color="gray" />
           <Badge label="Scoring Engine Active" color="gray" />
           <Badge label="No Public Publishing" color="amber" />
-          <Badge label="No Auth Yet" color="amber" />
+          <Badge label="Admin Proxy Active" color="amber" />
         </div>
         <p className="text-xs text-gray-500 mt-3">
-          Phase 16 complete: FinalReportGeneratorService, 19-section internal
-          report structure, report-level safety gate, 5 final report endpoints,
-          migration 008. Human review required. 725 offline tests passing.
+          Phase 17 complete: Admin Auth Proxy — all protected API calls routed
+          through server-side Next.js proxy. Credentials never exposed to
+          browser. Based on Phase 16: 725 offline tests passing.
         </p>
       </div>
 
@@ -238,7 +238,7 @@ export default async function AdminDashboard() {
             Run Analysis
           </span>
           <span className="text-xs text-gray-500">
-            Trigger the 18-node company analysis workflow
+            Trigger the 19-node company analysis workflow
           </span>
         </Link>
       </div>
