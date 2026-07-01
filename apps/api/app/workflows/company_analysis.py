@@ -108,13 +108,20 @@ from app.workflows.snapshot_builder import (
 WORKFLOW_NAME = "company_analysis"
 WORKFLOW_VERSION = "5.0.0"
 
-_PROMPT_PATH = (
-    pathlib.Path(__file__).resolve().parents[5]
-    / "packages"
-    / "prompts"
-    / "research"
-    / "phase7_company_research_v1.md"
-)
+def _resolve_prompt_path() -> pathlib.Path:
+    # Walk up the directory tree looking for packages/prompts/; avoids hard-coded
+    # depth which breaks on Azure App Service (shallower extraction path).
+    here = pathlib.Path(__file__).resolve()
+    for parent in here.parents:
+        candidate = (
+            parent / "packages" / "prompts" / "research" / "phase7_company_research_v1.md"
+        )
+        if candidate.exists():
+            return candidate
+    return here  # not found — _load_prompt_template falls back to inline prompt
+
+
+_PROMPT_PATH = _resolve_prompt_path()
 
 
 def _load_prompt_template() -> str:
@@ -1800,6 +1807,8 @@ async def run_company_analysis(
         "quality_gate_status": None,
         "provisional_internal_status": None,
         "human_review_required": None,
+        # Phase 15: Research Attractiveness Scorecard
+        "research_attractiveness_scorecard": None,
         "error": None,
         "status": "running",
     }
