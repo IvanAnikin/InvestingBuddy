@@ -18,8 +18,9 @@ percentages are stored.  Human review is always required before any action.
 """
 
 import sqlalchemy as sa
-from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB
+
+from alembic import op
 
 # revision identifiers
 revision = "008"
