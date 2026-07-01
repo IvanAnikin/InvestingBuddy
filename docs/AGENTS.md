@@ -1,6 +1,6 @@
 # Agent Architecture
 
-## Status: Phase 15 — Scoring + Valuation Framework: ScoringEngine + score_research_attractiveness node; 675 tests passing
+## Status: Phase 16 — Final Report Generator: FinalReportGeneratorService + safety gate; 737 tests passing
 
 ---
 
@@ -694,6 +694,74 @@ and stored in `_run_holder`.
 ### Workflow Version
 
 `company_analysis` workflow version: **6.0.0** (19 nodes total)
+
+---
+
+## Final Report Generator Layer (Phase 16)
+
+Produces a 19-section structured internal draft report from all Phase 1–15 outputs.
+**Never produces public investment advice, recommendations, price targets, or fair values.**
+Human admin review is always required.
+
+**Sources:**
+- `apps/api/app/services/final_report_generator.py` — `FinalReportGeneratorService` (6 methods)
+- `apps/api/app/schemas/final_report.py` — Pydantic schemas + `ALLOWED_INTERNAL_STATUSES`
+- `apps/api/app/api/v1/final_reports.py` — 5 admin/dev-only API endpoints
+- `packages/prompts/research/phase16_final_report_generator_v1.md` — LLM prompt template (optional)
+
+### FinalReportGeneratorService
+
+**Methods:**
+- `generate_from_scorecard(scorecard_id, db)` — entry point from Phase 15 scored candidate
+- `generate_from_candidate(candidate_id, db)` — entry point from Phase 14 discovery candidate
+- `generate_from_company(company_id, db)` — entry point from company record
+- `generate_from_report(report_id, db)` — re-generates from an existing report record
+- `validate_final_report(report_id, db)` — re-runs safety + schema validation on existing report
+- `regenerate_report_section(report_id, section_name, db, notes)` — rebuilds one named section
+
+All methods are fully offline-testable; LLM use is optional (`use_llm=False` by default).
+
+### Safety Gate (`run_safety_gate`)
+
+Scans all section text for forbidden output terms. Returns `SafetyValidationResult`.
+
+**Forbidden terms:** `BUY`, `SELL`, `HOLD`, `WATCH`, `price target`, `target price`,
+`fair value`, `intrinsic value`, `upside of`, `upside percentage`, `guaranteed return`,
+`will go up`, `will go down`, `personalized advice`, `tailored recommendation`,
+`shortlist_high`, `SHORTLIST_HIGH`
+
+**Exempt field names** (not scanned): `disallowed_outputs`, `blocked_methods`,
+`forbidden_terms_found`, `forbidden_terms`, `prohibited_outputs`
+
+**`blocks_approval=True`** when any forbidden term is found. This prevents the report
+from advancing through the admin review workflow.
+
+### 19 Report Sections
+
+Every section includes provenance labels on all values: `sourced_fact`, `model_interpretation`,
+`missing_data`, `assumption`, `human_review_required`.
+
+| # | Section | Description |
+|---|---|---|
+| 1 | `admin_disclaimer` | Static INTERNAL ADMIN DRAFT ONLY disclaimer |
+| 2 | `executive_summary` | 2–4 sentence company overview; optionally LLM-enriched |
+| 3 | `company_identity` | Ticker, exchange, ISIN, LEI, domicile, sector |
+| 4 | `discovery_rationale` | Discovery reasons and theme match from Phase 14 |
+| 5 | `data_availability_summary` | Available vs missing fields, data tier summary |
+| 6 | `financial_snapshot` | Revenue, EBITDA, PE, market cap (T5 EODHD; needs T1 validation) |
+| 7 | `internal_scorecard` | Phase 15 overall_score + 10 dimensions |
+| 8 | `valuation_readiness` | Phase 15 readiness classifier; no price target produced |
+| 9 | `bull_case` | Positive thesis from Analysis Council Bull Case Agent |
+| 10 | `bear_case` | Negative thesis from Analysis Council Bear Case Agent |
+| 11 | `risk_analysis` | 6-category risk from Risk Agent |
+| 12 | `source_quality_review` | T1–T6 source distribution and mock-data flags |
+| 13 | `citation_validation_review` | Citation status from Citation Validator v2 |
+| 14 | `research_completeness_review` | Blocking and non-blocking research gaps |
+| 15 | `missing_information` | Aggregated missing fields from all sources |
+| 16 | `committee_chair_summary` | Synthesis from Investment Committee Chair |
+| 17 | `workflow_status` | Agent run ID, report status, schema/safety results |
+| 18 | `human_review_checklist` | Admin checklist before approval; all items required |
+| 19 | `source_citation_appendix` | Full citations list with tier and quality |
 
 ---
 

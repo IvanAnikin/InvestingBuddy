@@ -2,6 +2,7 @@ import uuid
 from datetime import date, datetime, timezone
 
 import sqlalchemy as sa
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -45,6 +46,20 @@ class Report(Base):
     )
     approved_by: Mapped[str | None] = mapped_column(sa.String(200), nullable=True)
     rejected_by: Mapped[str | None] = mapped_column(sa.String(200), nullable=True)
+
+    # Phase 16: Final Report Generator fields
+    final_report_version: Mapped[str | None] = mapped_column(
+        sa.String(20), nullable=True
+    )
+    safety_validation_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    schema_validation_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    source_summary_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    scorecard_id: Mapped[uuid.UUID | None] = mapped_column(
+        sa.Uuid(as_uuid=True),
+        sa.ForeignKey("scorecards.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
     created_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True), default=_utcnow, server_default=sa.func.now()

@@ -1,6 +1,6 @@
 # Roadmap
 
-## Current Phase: Phase 15 — Scoring + Valuation Framework (complete)
+## Current Phase: Phase 16 — Final Report Generator (complete)
 
 ---
 
@@ -585,7 +585,38 @@ Skills used: `investment-domain`, `backend-fastapi`, `database-design`, `langgra
 
 ---
 
-## Phase 16: Judge + Backtesting
+## Phase 16: Final Report Generator ✅
+
+**Status: Complete (2026-07-01)**
+
+Goal: Combine all Phase 1–15 outputs (discovery candidate, scorecard, financial snapshot, Research Team + Analysis Council outputs, citations) into a single 19-section structured internal draft report for human admin review. Safety gate blocks all forbidden recommendation language.
+
+Deliverables:
+- [x] `FinalReportGeneratorService` — 6 async methods: `generate_from_scorecard`, `generate_from_candidate`, `generate_from_company`, `generate_from_report`, `validate_final_report`, `regenerate_report_section`
+- [x] Safety gate (`run_safety_gate`) — forbidden-term scan across all section text; exempt-field list for meta-documentation fields; `blocks_approval=True` on any hit
+- [x] 19 required report sections: `admin_disclaimer`, `executive_summary`, `company_identity`, `discovery_rationale`, `data_availability_summary`, `financial_snapshot`, `internal_scorecard`, `valuation_readiness`, `bull_case`, `bear_case`, `risk_analysis`, `source_quality_review`, `citation_validation_review`, `research_completeness_review`, `missing_information`, `committee_chair_summary`, `workflow_status`, `human_review_checklist`, `source_citation_appendix`
+- [x] Alembic migration 008 — adds 5 columns to `reports` table: `final_report_version`, `safety_validation_json`, `schema_validation_json`, `source_summary_json`, `scorecard_id` (FK → scorecards)
+- [x] Pydantic schemas (`app/schemas/final_report.py`) — `SafetyValidationResult`, `FinalReportResponse`, `FinalReportValidateResponse`, `RegenerateSectionResponse`, `HumanReviewChecklistItem`; static `INTERNAL_DISCLAIMER` always included
+- [x] 5 admin/dev-only API endpoints under `/api/v1/final-reports/`
+- [x] LLM optional (offline by default) — enriches `executive_summary` via prompt template v1
+- [x] Prompt template `packages/prompts/research/phase16_final_report_generator_v1.md`
+- [x] 62 new offline tests; 737 total; ruff clean
+- [x] Docs updated: API.md, DATABASE.md, ARCHITECTURE.md, ROADMAP.md, AGENTS.md, README.md
+
+Constraints enforced:
+- No BUY/SELL/HOLD/WATCH/REJECT public recommendations
+- No price targets, fair values, or upside percentages
+- No public publishing — all reports saved as admin-only drafts
+- Human review always required (`human_review_required=True`)
+- Safety gate blocks all forbidden language before report is stored
+- LLM fully offline-testable; no Azure credentials in CI tests
+- All 6 `internal_status` values are research queue labels only
+
+Skills used: `investment-domain`, `backend-fastapi`, `database-design`, `testing-qa`, `docs-maintainer`
+
+---
+
+## Phase 17: Judge + Backtesting
 
 **Status: Not started**
 
