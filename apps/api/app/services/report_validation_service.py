@@ -9,6 +9,7 @@ Requires: jsonschema>=4.23 (Draft 2020-12 support).
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -20,16 +21,6 @@ from jsonschema.exceptions import SchemaError
 # Schema loading
 # ---------------------------------------------------------------------------
 
-_REPO_ROOT = Path(__file__).parents[4]
-_SCHEMA_PATH = (
-    _REPO_ROOT
-    / "packages"
-    / "research-contracts"
-    / "real_asset_equity"
-    / "v1"
-    / "report_schema.json"
-)
-
 _DATA_QUALITY_WARN = "D_weak_or_stale"
 _DECISION_CRITICAL_FIELDS = {
     "snapshot_financials",
@@ -39,14 +30,54 @@ _DECISION_CRITICAL_FIELDS = {
     "scoring",
 }
 
+_SCHEMA_SUFFIX = Path("real_asset_equity") / "v1" / "report_schema.json"
+_THIS_FILE = Path(__file__)
+
+
+def _find_schema_path() -> Path:
+    """Resolve report_schema.json from multiple candidate locations.
+
+    Priority:
+    1. RESEARCH_CONTRACTS_DIR env var (explicit override)
+    2. Sibling packages/ dir — Azure App Service (ZIP extracts api/* to wwwroot/)
+    3. Repo-root packages/ — local dev (file is 4 levels below repo root)
+    4. apps/ sibling packages/ — intermediate layout
+    """
+    env_dir = os.environ.get("RESEARCH_CONTRACTS_DIR")
+    if env_dir:
+        candidate = Path(env_dir) / _SCHEMA_SUFFIX
+        if candidate.exists():
+            return candidate
+        raise FileNotFoundError(
+            f"RESEARCH_CONTRACTS_DIR={env_dir!r} is set but schema not found at {candidate}. "
+            "Check the RESEARCH_CONTRACTS_DIR value."
+        )
+
+    candidates = [
+        # Azure App Service: ZIP root is wwwroot; parents[2] == wwwroot
+        _THIS_FILE.parents[2] / "packages" / "research-contracts" / _SCHEMA_SUFFIX,
+        # Local dev: repo root is 4 levels up from apps/api/app/services/
+        _THIS_FILE.parents[4] / "packages" / "research-contracts" / _SCHEMA_SUFFIX,
+        # apps/ sibling layout: parents[3] == apps/, parents[3].parent == repo root
+        _THIS_FILE.parents[3] / "packages" / "research-contracts" / _SCHEMA_SUFFIX,
+    ]
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+
+    paths_checked = "\n  ".join(str(c) for c in candidates)
+    raise FileNotFoundError(
+        f"Report schema not found. Searched:\n  {paths_checked}\n"
+        "To fix: set RESEARCH_CONTRACTS_DIR to the research-contracts directory, "
+        "or ensure packages/research-contracts/real_asset_equity/v1/ is present "
+        "relative to the deployment root."
+    )
+
 
 def _load_schema() -> dict[str, Any]:
-    if not _SCHEMA_PATH.exists():
-        raise FileNotFoundError(
-            f"Report schema not found at {_SCHEMA_PATH}. "
-            "Ensure packages/research-contracts/real_asset_equity/v1/ is present."
-        )
-    with _SCHEMA_PATH.open(encoding="utf-8") as fh:
+    schema_path = _find_schema_path()
+    with schema_path.open(encoding="utf-8") as fh:
         return json.load(fh)
 
 

@@ -2,6 +2,8 @@ import Link from "next/link";
 import { fetchCompanies, fetchHealth, fetchReports } from "@/lib/api";
 import type { CompanyList, HealthResponse, ReportList } from "@/types/api";
 
+export const dynamic = "force-dynamic";
+
 function Badge({
   label,
   color,

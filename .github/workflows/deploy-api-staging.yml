@@ -40,6 +40,8 @@ jobs:
         run: pip install -e ".[deploy]"
 
       # Exclude test files, local venv, and build artefacts from the package.
+      # Also bundle packages/research-contracts/ so the API can find report_schema.json
+      # at /home/site/wwwroot/packages/research-contracts/ on Azure App Service.
       - name: Create deployment ZIP
         run: |
           cd apps/api
@@ -50,6 +52,16 @@ jobs:
             --exclude "tests/*" \
             --exclude ".pytest_cache/*" \
             --exclude "*.egg-info/*"
+          cd ../..
+          zip -r deploy-api.zip packages/research-contracts/ \
+            --exclude "*.pyc" \
+            --exclude "__pycache__/*"
+
+      - name: Verify schema in deployment package
+        run: |
+          echo "Verifying report_schema.json is present in deployment package..."
+          unzip -l deploy-api.zip | grep "packages/research-contracts/real_asset_equity/v1/report_schema.json"
+          echo "Schema file confirmed in deployment package."
 
       - name: Deploy to Azure App Service
         uses: azure/webapps-deploy@v3
