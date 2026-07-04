@@ -35,3 +35,21 @@ class ReportRead(BaseModel):
     published_at: datetime | None
     created_at: datetime
     updated_at: datetime
+
+
+class ReportList(BaseModel):
+    items: list[ReportRead]
+    total: int
+
+
+class GenerateFinalReportResponse(BaseModel):
+    report_id: uuid.UUID
+    status: str
+    message: str
+
+
+class ValidateReportResponse(BaseModel):
+    report_id: uuid.UUID
+    validation_passed: bool
+    issues: list[str]
+    message: str

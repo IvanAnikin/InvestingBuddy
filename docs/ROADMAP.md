@@ -1,6 +1,6 @@
 # Roadmap
 
-## Current Phase: Phase 2 — First Agent Workflow Foundation
+## Current Phase: Phase 21 — Playwright Admin Smoke Tests
 
 ---
 
@@ -34,6 +34,45 @@ Deliverables:
 - [x] `.github/workflows/api-ci.yml` — backend CI (lint, type check, pytest)
 - [x] `.github/workflows/web-ci.yml` — frontend CI (typecheck, lint, build)
 - [x] `README.md` — local setup instructions
+
+---
+
+## Phase 21: Playwright Admin Smoke Tests ✅
+
+**Status: Complete**
+
+Goal: Add repeatable frontend/admin smoke tests so the core admin workflow is no longer verified manually.
+
+Deliverables:
+- [x] Reports API: `GET /api/v1/reports`, `GET /api/v1/reports/{id}`, `POST /api/v1/reports/{id}/generate-final`, `POST /api/v1/reports/{id}/validate`
+- [x] Admin UI pages: dashboard, add company, run analysis, draft reports list, report detail
+- [x] Admin layout with safety disclaimers (INTERNAL ADMIN ONLY, NOT INVESTMENT ADVICE, NOT FOR PUBLICATION, HUMAN REVIEW REQUIRED)
+- [x] Phase 20 final report UI actions: Generate Internal Final Report Draft, Validate Final Report, Regenerate Section
+- [x] Playwright installed (`@playwright/test`) with `playwright.config.ts`
+- [x] `tests/e2e/admin-dashboard.spec.ts` — 12 tests
+- [x] `tests/e2e/admin-company-flow.spec.ts` — 5 tests
+- [x] `tests/e2e/admin-report-flow.spec.ts` — 18 tests (run analysis + reports list + report detail)
+- [x] `tests/e2e/safety-copy.spec.ts` — 17 tests
+- [x] All tests use Playwright route mocking — no EODHD, Azure OpenAI, or live DB required
+- [x] Staging tests opt-in: `ENABLE_STAGING_E2E=true`
+- [x] `.github/workflows/frontend-e2e.yml` — opt-in workflow (manual trigger only)
+- [x] `.gitignore` updated for playwright-report/, test-results/, blob-report/
+- [x] No public BUY/SELL/HOLD/price-target/publish action buttons
+
+Test company (deterministic):
+- Ticker: IBTEST, Exchange: MOCK, Provider: mock
+
+Notes:
+- Tests mock all API calls via `page.route()` — work without any live backend
+- Staging E2E is opt-in only — not triggered in standard CI
+- Phase 19 (live EODHD staging smoke test) remains deferred
+
+Run locally:
+```bash
+cd apps/web
+npx playwright install --with-deps   # first time only
+npm run test:e2e
+```
 
 ---
 

@@ -98,6 +98,20 @@ npm run lint
 npm run build
 ```
 
+### Frontend E2E (Playwright)
+
+```bash
+cd apps/web
+npx playwright install --with-deps   # first time only
+npm run test:e2e                      # local mock-only tests
+```
+
+Run against staging (opt-in):
+
+```bash
+PLAYWRIGHT_BASE_URL=https://ib-stg-web.azurewebsites.net ENABLE_STAGING_E2E=true npm run test:e2e
+```
+
 ---
 
 ## Environment Variables
@@ -123,12 +137,13 @@ Copy `.env.example` to `.env` and fill in values as needed.
 |---|---|---|
 | Phase 0 | Done | Agentic dev infrastructure (skills, commands, docs) |
 | Phase 1 | Done | Application skeleton (FastAPI + Next.js + Docker + CI) |
-| Phase 2 | Planned | First LangGraph agent workflow, company storage |
+| Phase 2 | Done | First LangGraph agent workflow, company storage |
 | Phase 3 | Planned | Research storage, citations, Blob + AI Search |
 | Phase 4 | Planned | Full council-of-agents MVP |
 | Phase 5 | Planned | Weekly report pipeline, watchlists |
 | Phase 6 | Planned | Judge system and backtesting |
 | Phase 7 | Planned | Personalized investor assistant (V2) |
+| Phase 21 | Done | Playwright admin smoke tests (mock provider, no live EODHD) |
 
 ---
 
