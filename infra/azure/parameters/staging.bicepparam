@@ -21,3 +21,6 @@ param location = 'westeurope'
 param projectShort = 'ib'
 param dbAdminPassword = readEnvironmentVariable('AZURE_STAGING_DB_PASSWORD', '')
 param githubActionsPrincipalId = ''
+param skipRbac = true
+param dbLocation = 'northeurope'
+param dbServerNameOverride = 'ib-stg-psql'
