@@ -63,3 +63,8 @@ infra/terraform/*.tfvars
 
 # ─── Temporary upload / extraction folders ────────────────────────────────────
 ozgy_files/
+
+# ─── Playwright ────────────────────────────────────────────────────────────────
+playwright-report/
+test-results/
+blob-report/
