@@ -156,6 +156,12 @@ def sample_report(report_id: uuid.UUID, agent_run_id: uuid.UUID) -> MagicMock:
     report.human_review_required = True
     report.approved_by = None
     report.rejected_by = None
+    # Phase 16 final report fields
+    report.final_report_version = "16.0.0"
+    report.safety_validation_json = {"passed": True}
+    report.schema_validation_json = {"is_valid": True}
+    report.source_summary_json = {"source_count": 2, "citation_count": 3}
+    report.scorecard_id = None
     return report
 
 

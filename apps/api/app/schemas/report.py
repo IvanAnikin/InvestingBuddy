@@ -71,6 +71,13 @@ class ReportRead(BaseModel):
     approved_by: str | None = None
     rejected_by: str | None = None
 
+    # Phase 16 final report fields
+    final_report_version: str | None = None
+    safety_validation_json: dict | None = None
+    schema_validation_json: dict | None = None
+    source_summary_json: dict | None = None
+    scorecard_id: uuid.UUID | None = None
+
 
 class ReportList(BaseModel):
     items: list[ReportRead]

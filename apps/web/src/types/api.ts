@@ -61,6 +61,12 @@ export interface Report {
   human_review_required: boolean;
   approved_by: string | null;
   rejected_by: string | null;
+  // Phase 16 final report metadata fields
+  final_report_version: string | null;
+  safety_validation_json: Record<string, unknown> | null;
+  schema_validation_json: Record<string, unknown> | null;
+  source_summary_json: Record<string, unknown> | null;
+  scorecard_id: string | null;
 }
 
 export interface ReportList {
@@ -100,6 +106,50 @@ export interface ReviewEvent {
 export interface ReviewEventList {
   items: ReviewEvent[];
   total: number;
+}
+
+export interface FinalReportResponse {
+  report_id: string;
+  status: string;
+  review_status: string;
+  schema_valid: boolean;
+  safety_valid: boolean;
+  human_review_required: boolean;
+  internal_status: string | null;
+  sections_generated: string[];
+  missing_sections: string[];
+  safety_validation: Record<string, unknown> | null;
+  schema_validation_errors: string[];
+  schema_validation_warnings: string[];
+  validation_warnings: string[];
+  scorecard_id: string | null;
+  source_count: number;
+  citation_count: number;
+  human_review_checklist: Array<Record<string, unknown>>;
+  disclaimer: string;
+}
+
+export interface FinalReportValidateResponse {
+  report_id: string;
+  schema_valid: boolean;
+  safety_valid: boolean;
+  human_review_required: boolean;
+  safety_validation: Record<string, unknown> | null;
+  schema_validation_errors: string[];
+  schema_validation_warnings: string[];
+  validation_warnings: string[];
+  sections_present: string[];
+  missing_sections: string[];
+  disclaimer: string;
+}
+
+export interface FinalReportRegenerateSectionResponse {
+  report_id: string;
+  section_name: string;
+  regenerated: boolean;
+  safety_valid: boolean;
+  warnings: string[];
+  disclaimer: string;
 }
 
 export interface WorkflowRunRequest {

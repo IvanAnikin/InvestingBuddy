@@ -168,19 +168,22 @@ export default async function AdminDashboard() {
           Platform Phase
         </p>
         <div className="flex flex-wrap gap-2">
-          <Badge label="Phase 17" color="blue" />
+          <Badge label="Phase 20" color="blue" />
           <Badge label="Final Report Generator" color="blue" />
+          <Badge label="Final Report Admin UI" color="blue" />
           <Badge label="19-node Workflow" color="gray" />
           <Badge label="Analysis Council Active" color="gray" />
           <Badge label="Discovery Screener Active" color="gray" />
           <Badge label="Scoring Engine Active" color="gray" />
           <Badge label="No Public Publishing" color="amber" />
           <Badge label="Admin Proxy Active" color="amber" />
+          <Badge label="Phase 19 Deferred" color="amber" />
         </div>
         <p className="text-xs text-gray-500 mt-3">
-          Phase 17 complete: Admin Auth Proxy — all protected API calls routed
-          through server-side Next.js proxy. Credentials never exposed to
-          browser. Based on Phase 16: 725 offline tests passing.
+          Phase 20 in progress: internal final report actions and metadata are
+          exposed in admin-only UI. Phase 19 live EODHD smoke testing remains
+          deferred. All browser requests continue through the Phase 17 admin
+          proxy and outputs stay internal-only.
         </p>
       </div>
 

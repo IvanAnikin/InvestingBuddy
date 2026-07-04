@@ -1,6 +1,6 @@
 # Roadmap
 
-## Current Phase: Phase 17 — Admin Auth & Frontend-to-API Proxy (complete)
+## Current Phase: Phase 20 — Admin Final Report UI (recovery in PR)
 
 ---
 
@@ -645,6 +645,36 @@ Constraints enforced:
 - No secrets committed
 
 Skills used: `frontend-nextjs`, `security-review`, `azure-deployment`, `docs-maintainer`
+
+---
+
+## Phase 19: Live EODHD Smoke Test (staging) ⏸️
+
+**Status: Pending / Deferred**
+
+Goal: run a controlled staging smoke test against live EODHD data.
+
+Deferred constraints:
+- Do not run live EODHD from CI or sandbox environments.
+- Keep all tests deterministic and offline by default.
+- No secrets in source control or test artifacts.
+
+---
+
+## Phase 20: Admin Final Report UI
+
+**Status: In progress (PR recovery)**
+
+Goal: expose Phase 16 final-report generation and validation workflows in admin UI only.
+
+Planned deliverables:
+- [x] Report schema/type exposure of Phase 16 metadata fields
+- [x] Admin report detail metadata rendering for final report fields
+- [x] Admin actions: generate internal final report draft, validate final report
+- [x] Optional regenerate-section action
+- [x] Reports list shows final-report/review metadata when available
+- [x] Browser calls continue through Phase 17 admin proxy
+- [x] No public publishing and no BUY/SELL/HOLD/WATCH recommendations or price targets
 
 ---
 
