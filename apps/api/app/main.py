@@ -1,42 +1,57 @@
 import base64
 import hmac
-import os
 
-from fastapi import FastAPI, Request
-from fastapi.responses import Response
+from fastapi import FastAPI, Request, Response
 
+from app.api.v1.admin_reports import router as admin_reports_router
+from app.api.v1.citations import router as citations_router
 from app.api.v1.companies import router as companies_router
+from app.api.v1.discovery import router as discovery_router
+from app.api.v1.final_reports import router as final_reports_router
+from app.api.v1.financial_data import router as financial_data_router
 from app.api.v1.health import router as health_router
+from app.api.v1.reports import router as reports_router
+from app.api.v1.scoring import router as scoring_router
+from app.api.v1.sources import router as sources_router
 from app.api.v1.workflows import router as workflows_router
 from app.core.config import settings
 
 app = FastAPI(
     title=settings.app_name,
-    version="0.2.0",
+    version="0.7.0",
     docs_url="/api/docs",
     redoc_url="/api/redoc",
 )
 
-_STAGING_AUTH_USER = "admin"
-_STAGING_AUTH_PASS = os.environ.get("STAGING_BASIC_AUTH_PASSWORD", "")
+# ── Staging Basic Auth middleware ──────────────────────────────────────────
+# Activated when APP_ENV=staging and STAGING_BASIC_AUTH="username:password".
+# Protects all routes except /health (used by App Service health checks).
+# This is a minimal access control for the staging environment — not a
+# replacement for proper authentication (planned for Phase 12 with Clerk).
+if settings.app_env == "staging" and settings.staging_basic_auth:
+    _expected = base64.b64encode(settings.staging_basic_auth.encode()).decode()
 
-
-@app.middleware("http")
-async def staging_basic_auth_middleware(request: Request, call_next: object) -> Response:
-    if settings.app_env == "staging" and _STAGING_AUTH_PASS:
-        if request.url.path != "/health":
-            auth = request.headers.get("Authorization", "")
-            _expected = base64.b64encode(
-                f"{_STAGING_AUTH_USER}:{_STAGING_AUTH_PASS}".encode()
-            ).decode()
-            if not hmac.compare_digest(auth, f"Basic {_expected}"):
-                return Response(
-                    status_code=401,
-                    headers={"WWW-Authenticate": 'Basic realm="staging"'},
-                )
-    return await call_next(request)
-
+    @app.middleware("http")
+    async def staging_basic_auth(request: Request, call_next: object) -> Response:
+        if request.url.path == "/health":
+            return await call_next(request)  # type: ignore[operator]
+        auth = request.headers.get("Authorization", "")
+        if hmac.compare_digest(auth, f"Basic {_expected}"):
+            return await call_next(request)  # type: ignore[operator]
+        return Response(
+            content="Staging access restricted",
+            status_code=401,
+            headers={"WWW-Authenticate": 'Basic realm="InvestingBuddy Staging"'},
+        )
 
 app.include_router(health_router)
 app.include_router(companies_router, prefix="/api/v1")
 app.include_router(workflows_router, prefix="/api/v1")
+app.include_router(sources_router, prefix="/api/v1")
+app.include_router(citations_router, prefix="/api/v1")
+app.include_router(financial_data_router, prefix="/api/v1")
+app.include_router(reports_router, prefix="/api/v1")
+app.include_router(admin_reports_router, prefix="/api/v1")
+app.include_router(discovery_router, prefix="/api/v1")
+app.include_router(scoring_router, prefix="/api/v1")
+app.include_router(final_reports_router, prefix="/api/v1")

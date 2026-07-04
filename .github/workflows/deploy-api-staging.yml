@@ -1,0 +1,89 @@
+name: Deploy API — Staging
+
+# Triggers on merge to main when API code or this workflow changes.
+# Requires GitHub Secret: AZURE_WEBAPP_PUBLISH_PROFILE_API
+# Uses App Service publish profile — downloaded from Azure Portal, stored as GitHub secret.
+# OIDC (App Registration) will replace this once Entra permissions are granted.
+#
+# NOTE: Database migrations are NOT run automatically.
+# Run manually after first deploy: see docs/DEPLOYMENT.md#running-migrations-on-staging
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/api/**"
+      - "infra/azure/**"
+      - ".github/workflows/deploy-api-staging.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy FastAPI to ib-stg-api
+    runs-on: ubuntu-latest
+    environment: staging
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Validate pyproject.toml + gunicorn resolve correctly in CI.
+      # Oryx runs: pip install -r requirements.txt on the server using the file in the ZIP.
+      - name: Validate dependencies
+        working-directory: apps/api
+        run: pip install -e ".[deploy]"
+
+      # Exclude test files, local venv, and build artefacts from the package.
+      # Also bundle packages/research-contracts/ so the API can find report_schema.json
+      # at /home/site/wwwroot/packages/research-contracts/ on Azure App Service.
+      - name: Create deployment ZIP
+        run: |
+          cd apps/api
+          zip -r ../../deploy-api.zip . \
+            --exclude "*.pyc" \
+            --exclude "__pycache__/*" \
+            --exclude ".venv/*" \
+            --exclude "tests/*" \
+            --exclude ".pytest_cache/*" \
+            --exclude "*.egg-info/*"
+          cd ../..
+          zip -r deploy-api.zip packages/research-contracts/ \
+            --exclude "*.pyc" \
+            --exclude "__pycache__/*"
+
+      - name: Verify schema in deployment package
+        run: |
+          echo "Verifying report_schema.json is present in deployment package..."
+          unzip -l deploy-api.zip | grep "packages/research-contracts/real_asset_equity/v1/report_schema.json"
+          echo "Schema file confirmed in deployment package."
+
+      - name: Deploy to Azure App Service
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ib-stg-api
+          publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE_API }}
+          package: deploy-api.zip
+
+      # /health is exempt from Basic Auth — safe to poll without credentials.
+      # Allow extra time for Oryx pip install + gunicorn startup on B1 (~10 min cold boot).
+      - name: Smoke check — API health
+        run: |
+          echo "Waiting for App Service to restart..."
+          sleep 60
+          for i in 1 2 3 4 5; do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://ib-stg-api.azurewebsites.net/health)
+            echo "Attempt $i — health endpoint HTTP status: $STATUS"
+            if [ "$STATUS" = "200" ]; then
+              echo "API health check passed."
+              exit 0
+            fi
+            sleep 60
+          done
+          echo "ERROR: health check failed after 5 attempts"
+          exit 1

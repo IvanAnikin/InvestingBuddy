@@ -1,0 +1,196 @@
+{
+  "General": {
+    "Code": "AAPL",
+    "Type": "Common Stock",
+    "Name": "Apple Inc",
+    "Exchange": "NASDAQ",
+    "CurrencyCode": "USD",
+    "CurrencyName": "US Dollar",
+    "CurrencySymbol": "$",
+    "CountryName": "USA",
+    "CountryISO": "US",
+    "ISIN": "US0378331005",
+    "Sector": "Technology",
+    "Industry": "Consumer Electronics",
+    "Description": "Apple Inc. designs, manufactures, and markets smartphones, personal computers, tablets, wearables, and accessories worldwide.",
+    "FiscalYearEnd": "September",
+    "IPODate": "1980-12-12",
+    "WebURL": "https://www.apple.com",
+    "GicSector": "Information Technology",
+    "GicGroup": "Technology Hardware & Equipment"
+  },
+  "Highlights": {
+    "MarketCapitalization": 2923441217536,
+    "MarketCapitalizationMln": 2923441.22,
+    "EBITDA": 135408996352,
+    "PERatio": 29.57,
+    "PEGRatio": 2.86,
+    "WallStreetTargetPrice": 212.93,
+    "BookValue": 3.77,
+    "DividendShare": 1.0,
+    "DividendYield": 0.0052,
+    "EarningsShare": 6.57,
+    "EPSEstimateCurrentYear": 7.25,
+    "EPSEstimateNextYear": 8.05,
+    "MostRecentQuarter": "2024-09-28",
+    "ProfitMargin": 0.2394,
+    "OperatingMarginTTM": 0.2837,
+    "ReturnOnAssetsTTM": 0.2137,
+    "ReturnOnEquityTTM": 1.7094,
+    "RevenueTTM": 400869990400,
+    "RevenuePerShareTTM": 25.88,
+    "QuarterlyRevenueGrowthYOY": 0.049,
+    "GrossProfitTTM": 180683000000,
+    "DilutedEpsTTM": 6.57,
+    "QuarterlyEarningsGrowthYOY": 0.102
+  },
+  "Valuation": {
+    "TrailingPE": 29.57,
+    "ForwardPE": 26.59,
+    "PriceSalesTTM": 7.3,
+    "PriceBookMRQ": 50.89,
+    "EnterpriseValue": 2956099756032,
+    "EnterpriseValueRevenue": 7.37,
+    "EnterpriseValueEbitda": 21.83
+  },
+  "SharesStats": {
+    "SharesOutstanding": 15115800000,
+    "SharesFloat": 15092870000,
+    "PercentInsiders": 0.07,
+    "PercentInstitutions": 61.35,
+    "SharesShortPriorMonth": 100000000,
+    "ShortRatio": 1.5,
+    "ShortPercentFloat": 0.007
+  },
+  "Technicals": {
+    "Beta": 1.24,
+    "52WeekHigh": 211.44,
+    "52WeekLow": 164.08,
+    "50DayMA": 204.27,
+    "200DayMA": 193.41,
+    "SharesShort": 100000000,
+    "SharesShortPriorMonth": 100000000,
+    "ShortRatio": 1.5,
+    "ShortPercent": 0.0066
+  },
+  "AnalystRatings": {
+    "Rating": 3.42,
+    "TargetPrice": 212.93,
+    "StrongBuy": 22,
+    "Buy": 11,
+    "Hold": 12,
+    "Sell": 3,
+    "StrongSell": 0
+  },
+  "SplitsDividends": {
+    "ForwardAnnualDividendRate": 1.0,
+    "ForwardAnnualDividendYield": 0.0052,
+    "PayoutRatio": 0.1530,
+    "DividendDate": "2025-02-13",
+    "ExDividendDate": "2025-02-07"
+  },
+  "Financials": {
+    "Balance_Sheet": {
+      "currency_symbol": "USD",
+      "quarterly": {},
+      "yearly": {
+        "2024-09-28": {
+          "date": "2024-09-28",
+          "filing_date": "2024-11-01",
+          "totalAssets": 364980000000,
+          "totalCurrentAssets": 152987000000,
+          "cash": 29943000000,
+          "shortTermInvestments": 35228000000,
+          "netReceivables": 60331000000,
+          "inventory": 7286000000,
+          "totalLiabilities": 308030000000,
+          "totalCurrentLiabilities": 176392000000,
+          "shortLongTermDebtTotal": 97341000000,
+          "longTermDebtTotal": 85750000000,
+          "totalShareholderEquity": 56950000000,
+          "propertyPlantEquipment": 45680000000,
+          "goodWill": 0,
+          "intangibleAssets": 0,
+          "longTermInvestments": 91479000000
+        },
+        "2023-09-30": {
+          "date": "2023-09-30",
+          "filing_date": "2023-11-03",
+          "totalAssets": 352583000000,
+          "totalCurrentAssets": 143566000000,
+          "cash": 29965000000,
+          "shortTermInvestments": 31590000000,
+          "netReceivables": 60985000000,
+          "inventory": 6331000000,
+          "totalLiabilities": 290437000000,
+          "totalCurrentLiabilities": 145308000000,
+          "shortLongTermDebtTotal": 109280000000,
+          "longTermDebtTotal": 95281000000,
+          "totalShareholderEquity": 62146000000,
+          "propertyPlantEquipment": 43671000000,
+          "goodWill": 0,
+          "intangibleAssets": 0,
+          "longTermInvestments": 100544000000
+        }
+      }
+    },
+    "Income_Statement": {
+      "currency_symbol": "USD",
+      "quarterly": {},
+      "yearly": {
+        "2024-09-28": {
+          "date": "2024-09-28",
+          "filing_date": "2024-11-01",
+          "totalRevenue": 391035000000,
+          "grossProfit": 180683000000,
+          "operatingIncome": 123216000000,
+          "netIncome": 93736000000,
+          "ebitda": 135408996352,
+          "eps": 6.11,
+          "epsDiluted": 6.08,
+          "incomeTaxExpense": 29749000000,
+          "researchDevelopment": 31370000000
+        },
+        "2023-09-30": {
+          "date": "2023-09-30",
+          "filing_date": "2023-11-03",
+          "totalRevenue": 383285000000,
+          "grossProfit": 169148000000,
+          "operatingIncome": 114301000000,
+          "netIncome": 96995000000,
+          "ebitda": 130092000000,
+          "eps": 6.16,
+          "epsDiluted": 6.13,
+          "incomeTaxExpense": 29749000000,
+          "researchDevelopment": 29915000000
+        }
+      }
+    },
+    "Cash_Flow": {
+      "currency_symbol": "USD",
+      "quarterly": {},
+      "yearly": {
+        "2024-09-28": {
+          "date": "2024-09-28",
+          "filing_date": "2024-11-01",
+          "totalCashFromOperatingActivities": 118254000000,
+          "capitalExpenditures": -9447000000,
+          "freeCashFlow": 108807000000,
+          "totalCashFromInvestingActivities": 2935000000,
+          "totalCashFromFinancingActivities": -121983000000,
+          "netIncome": 93736000000
+        },
+        "2023-09-30": {
+          "date": "2023-09-30",
+          "filing_date": "2023-11-03",
+          "totalCashFromOperatingActivities": 110543000000,
+          "capitalExpenditures": -11149000000,
+          "freeCashFlow": 99394000000,
+          "totalCashFromInvestingActivities": 3705000000,
+          "totalCashFromFinancingActivities": -108488000000,
+          "netIncome": 96995000000
+        }
+      }
+    }
+  }
+}

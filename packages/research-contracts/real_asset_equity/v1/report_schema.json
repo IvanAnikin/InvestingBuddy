@@ -1,0 +1,443 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://yourfirm.internal/schemas/real-asset-equity-report/v1.0.0",
+  "title": "Real-Asset Equity Research Report",
+  "description": "Agent-fillable output schema for a single 'winning' candidate in the real-asset / supply-chain investment universe (energy transmission, generation, supply, materials, electrification, rare earths, materials production). Designed to be cross-comparable across companies. EVERY value-bearing field is wrapped in a 'datapoint' object carrying its value, source, and quality flag. Agents MUST NOT emit a bare number anywhere a 'datapoint' is expected.",
+  "type": "object",
+
+  "$defs": {
+    "isoDate": {
+      "type": "string",
+      "format": "date",
+      "description": "YYYY-MM-DD."
+    },
+
+    "sourceTier": {
+      "type": "string",
+      "enum": ["T1_primary_filing", "T2_regulator_or_gov", "T3_industry_specialist", "T4_quality_media", "T5_api_aggregator", "T6_model_estimate"],
+      "description": "Provenance tier. T1=company filing/IR (10-K,10-Q,40-F,annual report,prospectus,MD&A,technical report NI 43-101/JORC). T2=government/regulator (SEC EDGAR, SEDAR+, ASX, USGS, IEA, IRENA, EIA, Eurostat, central banks). T3=industry specialist (trade body, recognized commodity/grid report). T4=reputable media (FT, Reuters, Bloomberg news, Nikkei, regional quality press). T5=data API aggregator (EODHD etc). T6=agent-derived estimate/calculation. LOWER number = more authoritative."
+    },
+
+    "dataQuality": {
+      "type": "string",
+      "enum": ["A_verified", "B_single_credible", "C_inferred", "D_weak_or_stale"],
+      "description": "A=cross-confirmed by >=2 independent sources OR direct from a T1/T2 filing. B=single credible T1-T4 source, uncontested. C=agent inference/estimate from credible inputs (must show method). D=weak, stale (>18m for fast-moving), contested, or proxy-only. Any 'D' in a decision-critical field must be surfaced in the report's data_quality_warnings."
+    },
+
+    "datapoint": {
+      "type": "object",
+      "description": "Universal wrapper. NO standalone facts allowed in this report — everything traces to a source.",
+      "properties": {
+        "value": {
+          "description": "The fact. Type depends on field (number, string, boolean). Use null + quality D if genuinely unavailable.",
+          "type": ["number", "string", "boolean", "null"]
+        },
+        "unit": {"type": ["string", "null"], "description": "e.g. 'USD_m', 'USD', 'x', '%', 'tonnes', 'MW', 'years'. Null for non-numeric."},
+        "as_of": {"$ref": "#/$defs/isoDate", "description": "Date the fact is true as of (e.g. balance-sheet date, price date, report date)."},
+        "source_tier": {"$ref": "#/$defs/sourceTier"},
+        "source_name": {"type": "string", "description": "Human-readable, e.g. 'Company 40-F FY2024', 'USGS MCS 2025 Lithium', 'EODHD fundamentals'."},
+        "source_url": {"type": ["string", "null"], "format": "uri"},
+        "data_quality": {"$ref": "#/$defs/dataQuality"},
+        "note": {"type": ["string", "null"], "description": "Optional: calc method if T6/inferred, caveat, or disambiguation. Required if data_quality is C or D."}
+      },
+      "required": ["value", "as_of", "source_tier", "source_name", "data_quality"],
+      "additionalProperties": false
+    },
+
+    "scoreItem": {
+      "type": "object",
+      "description": "A single 1-5 rubric score with mandatory justification and the evidence it rests on.",
+      "properties": {
+        "score": {"type": "integer", "minimum": 1, "maximum": 5, "description": "1=very poor/red flag, 2=below avg, 3=neutral/in-line, 4=above avg/attractive, 5=exceptional/strong edge."},
+        "weight": {"type": "number", "minimum": 0, "maximum": 1, "description": "Weight within composite. Weights across all scored pillars must sum to 1.0."},
+        "rationale": {"type": "string", "minLength": 40, "description": "Why this score. Must reference specific facts already captured elsewhere in the report."},
+        "key_evidence": {"type": "array", "items": {"$ref": "#/$defs/datapoint"}, "description": "The 1-4 datapoints most responsible for this score."}
+      },
+      "required": ["score", "weight", "rationale", "key_evidence"],
+      "additionalProperties": false
+    }
+  },
+
+  "properties": {
+
+    "report_meta": {
+      "type": "object",
+      "description": "PAGE 1 header block.",
+      "properties": {
+        "schema_version": {"type": "string", "const": "1.0.0"},
+        "report_id": {"type": "string", "description": "UUID. Also the dedup key into the analyzed/rejected ticker DB."},
+        "generated_at": {"type": "string", "format": "date-time"},
+        "agent_pipeline_version": {"type": "string"},
+        "candidate_emerged_from": {"type": "string", "description": "1-2 sentences: which thesis/connection-map path surfaced this name (e.g. 'walked up the grid-transformer supply chain from a US utility capex acceleration to a sole-source GOES electrical-steel supplier')."},
+        "core_target_profile": {"type": "string", "description": "Restate the unifying thesis in one line: this is mispriced physical optionality on a structural flow. Name (a) the physical chokepoint the company occupies, (b) the structural flow being pushed through it, (c) why it is mispriced/obscure. Forces the agent to confirm the name fits the real mandate, not just a theme keyword."},
+        "theme_tags": {
+          "type": "array",
+          "items": {"type": "string", "enum": [
+            "energy_transition", "grid_transmission", "grid_distribution", "grid_automation", "grid_switchgear_cables", "generation", "electrification", "batteries", "battery_recycling",
+            "rare_earths", "critical_materials", "materials_production", "mining", "uranium", "nuclear_fuel_cycle", "recycling_secondary_supply",
+            "specialty_chemicals_intermediates", "water_infrastructure", "agricultural_inputs_fertilizer",
+            "ports_rail_logistics", "specialized_shipping", "reshoring_supply_chain", "deglobalization",
+            "defense_industrial_subtier", "space", "resilience_security",
+            "robotics_sensors_automation", "autonomous_mining_maritime",
+            "emerging_markets_central_asia", "emerging_markets_seasia", "emerging_markets_other"
+          ]},
+          "minItems": 1,
+          "description": "Non-exhaustive and deliberately broad: the themes are instances of the same DNA (real assets + structural flow + under-coverage). If a name fits the core_target_profile but no tag matches, add the closest and note the gap in candidate_emerged_from."
+        },
+        "conviction": {"type": "string", "enum": ["SHORTLIST_HIGH", "SHORTLIST", "WATCHLIST", "PASS"], "description": "Final verdict. Derived from composite_score + kill-flags, but agent may override down (never silently up) with justification in verdict.override_reason."}
+      },
+      "required": ["schema_version", "report_id", "generated_at", "candidate_emerged_from", "core_target_profile", "theme_tags", "conviction"],
+      "additionalProperties": false
+    },
+
+    "identity": {
+      "type": "object",
+      "description": "PAGE 1 — what is this company.",
+      "properties": {
+        "legal_name": {"$ref": "#/$defs/datapoint"},
+        "ticker": {"$ref": "#/$defs/datapoint"},
+        "exchange": {"$ref": "#/$defs/datapoint", "description": "value e.g. 'ASX','TSX-V','NYSE','LSE'."},
+        "country_domicile": {"$ref": "#/$defs/datapoint"},
+        "country_primary_operations": {"$ref": "#/$defs/datapoint"},
+        "reporting_currency": {"$ref": "#/$defs/datapoint"},
+        "fiscal_year_end": {"$ref": "#/$defs/datapoint"},
+        "founded_year": {"$ref": "#/$defs/datapoint"},
+        "one_line_description": {"$ref": "#/$defs/datapoint", "description": "Plain-language: what they make/own/sell."},
+        "position_in_supply_chain": {"$ref": "#/$defs/datapoint", "description": "Where in the value chain: upstream extraction / processing-refining / component / equipment OEM / EPC / operator-utility / recycler."}
+      },
+      "required": ["legal_name", "ticker", "exchange", "country_primary_operations", "one_line_description", "position_in_supply_chain"],
+      "additionalProperties": false
+    },
+
+    "discovery_profile": {
+      "type": "object",
+      "description": "PAGE 1 — the measurable case that this name is genuinely under-covered and was reached by reasoning, not by a conventional screen. This is the alpha-source audit trail. Each field is a positive screening input: lower coverage / higher mis-tag / stronger event trigger = higher discovery edge.",
+      "properties": {
+        "entry_path": {"type": "string", "enum": ["supply_chain_laddering", "event_trigger", "language_jurisdiction_barrier", "mis_tag_discovery", "policy_flow_mapping", "conventional_screen", "other"], "description": "HOW this candidate was reached. 'conventional_screen' is a yellow flag — if true, the bar to proceed should RISE (novelty gate). The other paths are the intended, non-consensus routes."},
+        "supply_chain_distance_from_obvious": {"type": "integer", "minimum": 0, "maximum": 5, "description": "How many steps removed from the obvious beneficiary. 0 = the obvious name everyone covers; 2-3 = the under-covered feedstock/component/processing supplier the flow must pass through (the sweet spot)."},
+        "coverage_metrics": {
+          "type": "object",
+          "description": "Quantified obscurity. The discovery multiplier rests on these. Use null + quality D where genuinely unobtainable.",
+          "properties": {
+            "sell_side_estimate_count": {"$ref": "#/$defs/datapoint", "description": "Number of sell-side analysts with published estimates. Lower = more under-covered. 0-2 is the target zone."},
+            "institutional_ownership_pct": {"$ref": "#/$defs/datapoint", "description": "Low can mean under-discovered (good) but watch liquidity. Interpret alongside ADV."},
+            "english_news_volume_12m": {"$ref": "#/$defs/datapoint", "description": "Count of English-language articles last 12m. Low + a real thesis = language-barrier edge."},
+            "primary_disclosure_language": {"$ref": "#/$defs/datapoint", "description": "Language of the primary regulatory filing. Non-English is a structural coverage barrier = edge (if the agent can translate)."},
+            "days_since_ipo_or_relisting": {"$ref": "#/$defs/datapoint", "description": "Recent spin-offs/relistings are orphaned by analyst continuity. <540 days is a discovery zone."},
+            "sector_tag_mismatch": {"$ref": "#/$defs/datapoint", "description": "Boolean. TRUE if the exchange/SIC/GICS tag materially misdescribes what the company actually does (e.g. a rare-earth separator filed under generic 'chemicals'). Mis-tagging hides names from thematic screens."}
+          },
+          "required": ["sell_side_estimate_count", "english_news_volume_12m", "sector_tag_mismatch"],
+          "additionalProperties": false
+        },
+        "event_trigger": {
+          "type": ["object", "null"],
+          "description": "If entry_path is event_trigger, the specific change-event that surfaced the name BEFORE consensus reaction. Events re-rate small caps; static filters converge. Null if not event-driven.",
+          "properties": {
+            "trigger_type": {"$ref": "#/$defs/datapoint", "description": "value enum-like: 'first_offtake'|'permit_granted'|'insider_cluster_buy'|'maturity_refinanced'|'strategic_or_state_investor'|'government_contract_award'|'patent_cluster'|'export_control_or_stockpile'|'customs_flow_shift'|'capacity_qualification'. Source must be a primary regulator/procurement/registry feed."},
+            "trigger_date": {"$ref": "#/$defs/datapoint"},
+            "why_not_yet_priced": {"type": "string", "description": "Why the market hasn't reacted yet — the window of edge."}
+          }
+        },
+        "discovery_edge_summary": {"type": "string", "minLength": 60, "description": "Synthesize: why is THIS name reachable by your pipeline but missed by the consensus screen? Specific, not generic."}
+      },
+      "required": ["entry_path", "supply_chain_distance_from_obvious", "coverage_metrics", "discovery_edge_summary"],
+      "additionalProperties": false
+    },
+
+    "snapshot_financials": {
+      "type": "object",
+      "description": "PAGE 1 — the cross-comparable number block. All companies report these same fields so they line up side by side.",
+      "properties": {
+        "price": {"$ref": "#/$defs/datapoint"},
+        "market_cap_usd_m": {"$ref": "#/$defs/datapoint", "description": "Normalize to USD millions for cross-comparability regardless of listing currency. Note FX rate + date in 'note'."},
+        "enterprise_value_usd_m": {"$ref": "#/$defs/datapoint"},
+        "net_debt_usd_m": {"$ref": "#/$defs/datapoint"},
+        "revenue_ttm_usd_m": {"$ref": "#/$defs/datapoint"},
+        "ebitda_ttm_usd_m": {"$ref": "#/$defs/datapoint"},
+        "fcf_ttm_usd_m": {"$ref": "#/$defs/datapoint"},
+        "ev_ebitda_x": {"$ref": "#/$defs/datapoint"},
+        "ev_revenue_x": {"$ref": "#/$defs/datapoint"},
+        "fcf_yield_pct": {"$ref": "#/$defs/datapoint"},
+        "net_debt_ebitda_x": {"$ref": "#/$defs/datapoint"},
+        "shares_out_m": {"$ref": "#/$defs/datapoint"},
+        "avg_daily_value_traded_usd_k": {"$ref": "#/$defs/datapoint", "description": "Liquidity gate. 90-day ADV in USD thousands. Critical for small caps."},
+        "free_float_pct": {"$ref": "#/$defs/datapoint"},
+        "is_under_2bn_usd": {"$ref": "#/$defs/datapoint", "description": "Boolean. Mandate check: target <2B USD market cap."}
+      },
+      "required": ["price", "market_cap_usd_m", "enterprise_value_usd_m", "revenue_ttm_usd_m", "ev_ebitda_x", "avg_daily_value_traded_usd_k", "is_under_2bn_usd"],
+      "additionalProperties": false
+    },
+
+    "thesis": {
+      "type": "object",
+      "description": "PAGE 1/2 — the actual pitch. This is what gets read first by a human.",
+      "properties": {
+        "one_paragraph_thesis": {"type": "string", "minLength": 200, "maxLength": 1200, "description": "The core argument: what they own, why the macro/geopolitical tailwind matters, why it's mispriced, what closes the gap. Self-contained."},
+        "why_underresearched": {"type": "string", "description": "Concrete evidence of low coverage: analyst count, language barrier, obscure listing, complexity, recent spin/relisting. This is the alpha source — be specific."},
+        "macro_geopolitical_tailwind": {"type": "string", "description": "The 2-6yr structural driver and WHY this company is leveraged to it. Tie to a cited T2/T3 source (IEA, USGS, policy)."},
+        "variant_perception": {"type": "string", "description": "What the agent believes that consensus/the market does not, and why the market is wrong/late."},
+        "what_would_break_thesis": {"type": "array", "items": {"type": "string"}, "minItems": 2, "description": "Falsifiable kill-conditions for the thesis. Forces intellectual honesty."}
+      },
+      "required": ["one_paragraph_thesis", "why_underresearched", "macro_geopolitical_tailwind", "variant_perception", "what_would_break_thesis"],
+      "additionalProperties": false
+    },
+
+    "business": {
+      "type": "object",
+      "description": "PAGE 2 — business model & competitive position.",
+      "properties": {
+        "revenue_segments": {"type": "array", "items": {"type": "object", "properties": {"segment": {"type": "string"}, "pct_of_revenue": {"$ref": "#/$defs/datapoint"}, "comment": {"type": "string"}}, "required": ["segment", "pct_of_revenue"]}},
+        "geographic_revenue_split": {"type": "array", "items": {"type": "object", "properties": {"region": {"type": "string"}, "pct_of_revenue": {"$ref": "#/$defs/datapoint"}}, "required": ["region", "pct_of_revenue"]}},
+        "market_share": {"$ref": "#/$defs/datapoint", "description": "In its core product/geography, if estimable. Note basis in 'note'."},
+        "moat_assessment": {"type": "string", "description": "Source of durable advantage: resource quality/grade, location, permits, long-term contracts, switching costs, scale, IP, regulatory barrier. Real-asset moats are often physical/permitting, not IP."},
+        "competitive_advantage_detail": {"type": "string"},
+        "customer_concentration": {"$ref": "#/$defs/datapoint", "description": "value = % revenue from top customer (or top 3 — specify in note). High concentration is a real-asset risk."},
+        "key_customers": {"type": "array", "items": {"type": "string"}},
+        "industry_trends": {"type": "string", "description": "Demand/supply dynamics, capacity additions, pricing direction. Anchor to T2/T3 cited sources."}
+      },
+      "required": ["revenue_segments", "geographic_revenue_split", "moat_assessment", "customer_concentration", "industry_trends"],
+      "additionalProperties": false
+    },
+
+    "real_asset_block": {
+      "type": "object",
+      "description": "PAGE 2/3 — THE differentiator for this mandate. Standardized so a miner, a transmission operator, and an electrical-steel maker remain cross-comparable. Fill 'asset_type' then the relevant sub-block; mark inapplicable sub-blocks null with quality note.",
+      "properties": {
+        "asset_type": {"type": "string", "enum": ["mining_resource", "generation_assets", "transmission_distribution", "processing_refining", "manufacturing_capacity", "mixed"], "description": "Drives which sub-fields are decision-critical."},
+
+        "asset_quality_summary": {"type": "string", "description": "Plain-language: how good are the physical assets vs peers (grade, location, age, technology, irreplaceability)."},
+        "ppe_net_usd_m": {"$ref": "#/$defs/datapoint", "description": "Net PP&E — anchors a real-asset balance sheet (vs IP/goodwill-heavy names you are deliberately avoiding)."},
+        "ppe_pct_of_assets": {"$ref": "#/$defs/datapoint", "description": "Tangible-asset intensity. Mandate sanity check: should be HIGH. Low value => possibly wrong universe."},
+        "goodwill_intangibles_pct_of_assets": {"$ref": "#/$defs/datapoint", "description": "Mandate sanity check: should be LOW. Flag if high."},
+        "estimated_replacement_value_usd_m": {"$ref": "#/$defs/datapoint", "description": "Replacement/reinstatement cost of the asset base if estimable. Compare to EV. Often the real-asset margin of safety."},
+
+        "capex_cycle_stage": {"$ref": "#/$defs/datapoint", "description": "value enum-like: 'greenfield_construction'|'ramp_up'|'sustaining'|'expansion'|'harvest'. Determines FCF profile over the 2-6yr horizon."},
+        "sustaining_capex_usd_m": {"$ref": "#/$defs/datapoint"},
+        "growth_capex_usd_m": {"$ref": "#/$defs/datapoint"},
+        "capacity_metric": {"$ref": "#/$defs/datapoint", "description": "Nameplate capacity in natural unit (MW, ktpa, tpa, km of line). Specify unit."},
+        "utilization_pct": {"$ref": "#/$defs/datapoint"},
+
+        "mining_resource": {
+          "type": ["object", "null"],
+          "description": "Only for miners/resource owners. Source: NI 43-101 / JORC technical report (T1).",
+          "properties": {
+            "primary_commodities": {"type": "array", "items": {"type": "string"}},
+            "reserves": {"$ref": "#/$defs/datapoint", "description": "Proven+probable, natural unit."},
+            "resources_mi": {"$ref": "#/$defs/datapoint", "description": "Measured+indicated."},
+            "reserve_life_years": {"$ref": "#/$defs/datapoint"},
+            "ore_grade": {"$ref": "#/$defs/datapoint", "description": "Grade vs peer average — the single biggest driver of mining economics."},
+            "aisc_or_cash_cost": {"$ref": "#/$defs/datapoint", "description": "All-in sustaining cost per unit. Position on the global cost curve in note."},
+            "position_on_cost_curve_pct": {"$ref": "#/$defs/datapoint", "description": "Percentile (1st quartile = top tier). Survives low prices."},
+            "permitting_status": {"$ref": "#/$defs/datapoint", "description": "value e.g. 'fully_permitted'|'in_progress'|'key_permit_pending'. Binary risk for developers."},
+            "jurisdiction_risk": {"$ref": "#/$defs/datapoint", "description": "Mining-investment-attractiveness of jurisdiction (e.g. Fraser Institute style)."}
+          }
+        },
+
+        "offtake_contract_coverage": {
+          "type": ["object", "null"],
+          "description": "Critical for materials/generation/processing. De-risks revenue.",
+          "properties": {
+            "pct_volume_contracted": {"$ref": "#/$defs/datapoint"},
+            "weighted_avg_contract_tenor_years": {"$ref": "#/$defs/datapoint"},
+            "counterparty_quality": {"$ref": "#/$defs/datapoint", "description": "Investment-grade offtakers? PPA with utility? Government?"},
+            "pricing_mechanism": {"$ref": "#/$defs/datapoint", "description": "fixed / floor / spot-linked / escalator."}
+          }
+        },
+
+        "commodity_price_sensitivity": {
+          "type": ["object", "null"],
+          "description": "For price-takers. Quantifies the swing factor.",
+          "properties": {
+            "key_commodity": {"$ref": "#/$defs/datapoint"},
+            "current_spot_or_term_price": {"$ref": "#/$defs/datapoint", "description": "Note source. For uranium use term price proxy; for REE oxides use FOB China proxy — both often quality C/D, flag honestly."},
+            "ebitda_sensitivity_to_10pct_price": {"$ref": "#/$defs/datapoint", "description": "Approx % EBITDA change per 10% commodity move. T6/inferred is fine if method shown."},
+            "incentive_price_vs_current": {"$ref": "#/$defs/datapoint", "description": "Price needed to incentivize new global supply vs current — the structural bull/bear setup."}
+          }
+        }
+      },
+      "required": ["asset_type", "asset_quality_summary", "ppe_pct_of_assets", "goodwill_intangibles_pct_of_assets", "capex_cycle_stage"],
+      "additionalProperties": false
+    },
+
+    "financials_deep": {
+      "type": "object",
+      "description": "PAGE 3 — B/S, I/S, CF, debt. 3-year trend where possible.",
+      "properties": {
+        "revenue_3y": {"type": "array", "items": {"$ref": "#/$defs/datapoint"}, "description": "Oldest->newest, 3 points."},
+        "ebitda_margin_3y": {"type": "array", "items": {"$ref": "#/$defs/datapoint"}},
+        "fcf_3y": {"type": "array", "items": {"$ref": "#/$defs/datapoint"}},
+        "roic_or_roce": {"$ref": "#/$defs/datapoint"},
+        "balance_sheet_summary": {"type": "string"},
+        "cashflow_quality_comment": {"type": "string", "description": "Cash conversion, working-capital swings, capitalized vs expensed, one-offs."},
+        "debt_structure": {
+          "type": "object",
+          "properties": {
+            "total_debt_usd_m": {"$ref": "#/$defs/datapoint"},
+            "net_debt_ebitda_x": {"$ref": "#/$defs/datapoint"},
+            "nearest_maturity": {"$ref": "#/$defs/datapoint", "description": "Date + amount. Refinancing wall = real-asset killer."},
+            "weighted_avg_cost_of_debt_pct": {"$ref": "#/$defs/datapoint"},
+            "covenant_headroom_comment": {"type": "string"},
+            "liquidity_runway_comment": {"type": "string", "description": "Esp. for pre-revenue developers: months of cash at current burn."}
+          },
+          "required": ["total_debt_usd_m", "net_debt_ebitda_x"]
+        }
+      },
+      "required": ["revenue_3y", "balance_sheet_summary", "debt_structure"],
+      "additionalProperties": false
+    },
+
+    "valuation": {
+      "type": "object",
+      "description": "PAGE 3 — generic by design; agent picks the right primary method for the asset type and JUSTIFIES it. Quality of inputs > precision of output.",
+      "properties": {
+        "primary_method": {"type": "string", "enum": ["EV_EBITDA_relative", "NAV_sum_of_parts", "DCF", "replacement_cost", "P_FCF", "asset_backing"], "description": "Choose the method the asset type warrants (e.g. NAV for miners, EV/EBITDA for operators). Justify below."},
+        "primary_method_justification": {"type": "string", "minLength": 50},
+        "fair_value_per_share": {"$ref": "#/$defs/datapoint"},
+        "upside_downside_pct": {"$ref": "#/$defs/datapoint", "description": "vs current price. Base case."},
+        "bull_bear_base": {
+          "type": "object",
+          "properties": {
+            "bear_value": {"$ref": "#/$defs/datapoint"},
+            "base_value": {"$ref": "#/$defs/datapoint"},
+            "bull_value": {"$ref": "#/$defs/datapoint"},
+            "skew_comment": {"type": "string", "description": "Is risk/reward asymmetric? Real-asset downside is often floored by asset backing."}
+          }
+        },
+        "key_valuation_assumptions": {"type": "array", "items": {"type": "string"}, "minItems": 2, "description": "The 2-5 assumptions the value hinges on. Each should map to a datapoint elsewhere."},
+        "implied_vs_replacement_value": {"type": "string", "description": "Is EV above or below replacement cost? Margin-of-safety anchor."}
+      },
+      "required": ["primary_method", "primary_method_justification", "upside_downside_pct", "key_valuation_assumptions"],
+      "additionalProperties": false
+    },
+
+    "peers": {
+      "type": "object",
+      "description": "PAGE 3/4 — peer construction + relative positioning.",
+      "properties": {
+        "peer_construction_logic": {"type": "string", "description": "How peers were chosen (same commodity/stage/geography). Bad peer sets are the #1 cause of false 'cheap' signals."},
+        "peer_table": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {"type": "string"},
+              "ticker": {"type": "string"},
+              "market_cap_usd_m": {"$ref": "#/$defs/datapoint"},
+              "ev_ebitda_x": {"$ref": "#/$defs/datapoint"},
+              "key_differentiator_vs_target": {"type": "string"}
+            },
+            "required": ["name", "ticker"]
+          },
+          "minItems": 2
+        },
+        "relative_positioning_comment": {"type": "string", "description": "Is the discount/premium justified by quality, or a genuine mispricing?"}
+      },
+      "required": ["peer_construction_logic", "peer_table", "relative_positioning_comment"],
+      "additionalProperties": false
+    },
+
+    "governance": {
+      "type": "object",
+      "description": "PAGE 4 — ownership, management, insiders, comp.",
+      "properties": {
+        "ownership_structure": {"type": "string", "description": "Major holders, founder/family/state stakes, free float dynamics."},
+        "key_holders": {"type": "array", "items": {"type": "object", "properties": {"holder": {"type": "string"}, "pct": {"$ref": "#/$defs/datapoint"}, "type": {"type": "string", "description": "founder/state/PE/institutional/strategic"}}}},
+        "management_track_record": {"type": "string", "description": "CEO/key exec history — prior value creation/destruction, capital-allocation record. Critical for small caps."},
+        "insider_activity": {"$ref": "#/$defs/datapoint", "description": "Net insider buying/selling last 6-12m. Source: SEC Form 4 / SEDAR+ / local equivalent. value e.g. 'net_buying_2.1m_usd'."},
+        "executive_remuneration_comment": {"type": "string", "description": "Alignment: comp vs performance, equity ownership, related-party concerns."},
+        "workforce_signals": {"type": "string", "description": "Employee-side signals: headcount trend, hiring/attrition direction, employee-review sentiment (e.g. Glassdoor) and what it implies about culture/execution, key-person dependency, unionization or labour-cost exposure. For real-asset names, watch skilled-operator availability and safety record. Prose, source-flagged where a specific datapoint is cited."},
+        "related_party_or_governance_flags": {"type": "array", "items": {"type": "string"}}
+      },
+      "required": ["ownership_structure", "management_track_record", "insider_activity"],
+      "additionalProperties": false
+    },
+
+    "catalysts_risks": {
+      "type": "object",
+      "description": "PAGE 4 — what moves it and what kills it over 2-6yr.",
+      "properties": {
+        "catalysts": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "object", "properties": {
+            "catalyst": {"type": "string"},
+            "expected_window": {"type": "string", "description": "e.g. 'H2 2026','12-24m'."},
+            "probability": {"type": "string", "enum": ["high", "medium", "low"]},
+            "impact": {"type": "string", "enum": ["high", "medium", "low"]}
+          }, "required": ["catalyst", "expected_window", "probability", "impact"]}
+        },
+        "risks": {
+          "type": "array",
+          "minItems": 2,
+          "items": {"type": "object", "properties": {
+            "risk": {"type": "string"},
+            "type": {"type": "string", "enum": ["commodity_price", "operational", "permitting_regulatory", "financing_dilution", "customer_concentration", "jurisdiction_political", "tariff_trade", "fx", "liquidity", "governance", "thesis_specific"]},
+            "severity": {"type": "string", "enum": ["high", "medium", "low"]},
+            "mitigant": {"type": "string"}
+          }, "required": ["risk", "type", "severity"]}
+        },
+        "tariff_trade_exposure": {"type": "string", "description": "Explicit per-mandate: import/export exposure, tariff lists, content/origin rules, reshoring beneficiary or victim."},
+        "acquisitions_divestments": {"type": "string", "description": "M&A history + likelihood of being acquirer or target."}
+      },
+      "required": ["catalysts", "risks", "tariff_trade_exposure"],
+      "additionalProperties": false
+    },
+
+    "scoring": {
+      "type": "object",
+      "description": "PAGE 4 — the rubric. Composite drives conviction. Weights MUST sum to 1.0.",
+      "properties": {
+        "pillars": {
+          "type": "object",
+          "properties": {
+            "asset_quality": {"$ref": "#/$defs/scoreItem", "description": "Physical asset quality, grade/location/irreplaceability, cost-curve position."},
+            "balance_sheet_resilience": {"$ref": "#/$defs/scoreItem", "description": "Leverage, maturity wall, dilution risk, liquidity runway."},
+            "valuation_gap": {"$ref": "#/$defs/scoreItem", "description": "Upside to fair value AND margin of safety vs asset backing."},
+            "moat_competitive": {"$ref": "#/$defs/scoreItem"},
+            "macro_geo_tailwind": {"$ref": "#/$defs/scoreItem", "description": "Strength + durability of the 2-6yr structural driver and the company's leverage to it."},
+            "catalyst_proximity": {"$ref": "#/$defs/scoreItem"},
+            "management_governance": {"$ref": "#/$defs/scoreItem"},
+            "underresearched_edge": {"$ref": "#/$defs/scoreItem", "description": "How real and exploitable is the information/coverage gap. MUST be justified by the measured discovery_profile.coverage_metrics (sell-side count, English news volume, mis-tag, days-since-relisting, disclosure language), not asserted. A conventional_screen entry_path caps this score at 2."}
+          },
+          "required": ["asset_quality", "balance_sheet_resilience", "valuation_gap", "moat_competitive", "macro_geo_tailwind", "catalyst_proximity", "management_governance", "underresearched_edge"],
+          "additionalProperties": false
+        },
+        "composite_score": {"type": "number", "minimum": 1, "maximum": 5, "description": "Weighted average of pillar scores. Compute, don't guess."},
+        "score_to_conviction_mapping": {"type": "string", "description": "State the rule applied, e.g. '>=4.2 & no high-severity unmitigated risk => SHORTLIST_HIGH; 3.5-4.2 => SHORTLIST; 2.8-3.5 => WATCHLIST; <2.8 => PASS'."}
+      },
+      "required": ["pillars", "composite_score", "score_to_conviction_mapping"],
+      "additionalProperties": false
+    },
+
+    "verdict": {
+      "type": "object",
+      "description": "PAGE 4 footer — the decision + monitoring plan.",
+      "properties": {
+        "recommendation": {"type": "string", "enum": ["SHORTLIST_HIGH", "SHORTLIST", "WATCHLIST", "PASS"]},
+        "override_reason": {"type": ["string", "null"], "description": "Required if recommendation differs from score_to_conviction_mapping output. Agent may only override DOWNWARD."},
+        "watchlist_triggers": {"type": "array", "items": {"type": "string"}, "description": "If WATCHLIST: the specific events/prices/filings that would promote it to SHORTLIST (e.g. 'permit granted','price < X','next 10-Q confirms ramp'). Feeds the monitoring agent."},
+        "missing_information": {"type": "array", "items": {"type": "string"}, "description": "Known gaps that, if filled, would raise confidence. Feeds funnel stage 4."},
+        "position_sizing_note": {"type": "string", "description": "Liquidity-aware: can a meaningful position be built given ADV/float?"}
+      },
+      "required": ["recommendation", "watchlist_triggers", "missing_information"],
+      "additionalProperties": false
+    },
+
+    "self_critique": {
+      "type": "object",
+      "description": "MANDATORY adversarial pass. The agent argues AGAINST its own report before submission.",
+      "properties": {
+        "strongest_bear_case": {"type": "string", "minLength": 150, "description": "The best argument a smart short-seller would make. Steelman it."},
+        "weakest_links_in_thesis": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+        "data_quality_warnings": {"type": "array", "items": {"type": "string"}, "description": "Auto-populate: list every decision-critical field carrying quality C or D, with which one."},
+        "confirmation_bias_check": {"type": "string", "description": "Did the agent seek disconfirming evidence? What did it find?"},
+        "uncited_claim_scan_passed": {"type": "boolean", "description": "TRUE only if a self-scan found zero value-bearing claims without a datapoint wrapper."}
+      },
+      "required": ["strongest_bear_case", "weakest_links_in_thesis", "data_quality_warnings", "uncited_claim_scan_passed"],
+      "additionalProperties": false
+    }
+  },
+
+  "required": ["report_meta", "identity", "discovery_profile", "snapshot_financials", "thesis", "business", "real_asset_block", "financials_deep", "valuation", "peers", "governance", "catalysts_risks", "scoring", "verdict", "self_critique"],
+  "additionalProperties": false
+}

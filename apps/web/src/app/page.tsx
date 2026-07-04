@@ -51,11 +51,18 @@ export default function HomePage() {
           </h2>
           <div className="rounded-lg border border-amber-200 bg-amber-50 p-4">
             <p className="font-medium text-amber-800">
-              Phase 1 — Application Skeleton
+              Phase 16 — Final Report Generator
             </p>
             <p className="mt-1 text-sm text-amber-700">
-              The platform is under active development. Research features,
-              reports, and agent workflows are not yet available.
+              The platform is under active development. The 19-node analysis
+              council workflow is operational. A company discovery screener,
+              scoring engine, and final report generator are live. An internal
+              admin workspace is available at{" "}
+              <a href="/admin" className="underline hover:text-amber-900">
+                /admin
+              </a>{" "}
+              for development review. Real reports are not yet published for
+              public use.
             </p>
           </div>
         </section>

@@ -131,16 +131,54 @@ docs/DEPLOYMENT.md
 
 ---
 
+## Local Azure CLI Setup
+
+The Azure CLI is installed in a dedicated Python venv — not via Homebrew (unreliable on Mac)
+and not inside the project's `apps/api/.venv`.
+
+**Venv location:** `~/.venvs/azure-cli` (local only, never committed)
+
+### First-time install
+
+```bash
+python3 -m venv ~/.venvs/azure-cli
+source ~/.venvs/azure-cli/bin/activate
+pip install --upgrade pip
+pip install azure-cli
+
+which az        # confirm: ~/.venvs/azure-cli/bin/az
+az version
+az login
+az account show
+```
+
+### Standard activation (run before every Azure-related task)
+
+```bash
+source ~/.venvs/azure-cli/bin/activate
+az version
+az account show
+```
+
+Always confirm the correct subscription before running any `az` or Bicep command.
+
+GitHub Actions uses OIDC — local `az login` is for provisioning/inspection only.
+
+---
+
 ## Rules
 
 - Never commit secrets.
-- Use GitHub repository secrets for CI/CD credentials.
+- Never commit subscription IDs, tenant IDs, client IDs, or credential JSON.
+- Use GitHub repository secrets for CI/CD credentials (OIDC — no long-lived JSON).
 - Prefer managed identity over connection-string secrets.
 - Keep staging and production separate — different resource groups or namespaces.
 - Deployment pipeline must run full test suite before deploying.
 - Document every required Azure resource in `docs/DEPLOYMENT.md`.
 - Document every required GitHub Actions secret in `docs/DEPLOYMENT.md`.
 - Every `.env.example` variable must have a comment explaining what it is.
+- Always activate `~/.venvs/azure-cli` before running `az` commands locally.
+- Confirm `az account show` shows the correct subscription before any write operation.
 
 ---
 

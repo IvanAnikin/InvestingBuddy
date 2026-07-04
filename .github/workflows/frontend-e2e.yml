@@ -1,0 +1,70 @@
+name: Frontend E2E (Playwright)
+
+# Phase 21 — Admin smoke tests
+#
+# This workflow is opt-in only. It is NOT triggered automatically on push/PR.
+#
+# To run against staging:
+#   PLAYWRIGHT_BASE_URL=https://ib-stg-web.azurewebsites.net
+#   ENABLE_STAGING_E2E=true
+#
+# To trigger manually:
+#   gh workflow run frontend-e2e.yml
+#   gh workflow run frontend-e2e.yml -f staging=true
+#
+# Note: The webServer in playwright.config.ts auto-starts Next.js in local mode.
+# For CI to work, the backend API must also be running or all tests must mock it
+# (which they do by default via Playwright route interception).
+
+on:
+  workflow_dispatch:
+    inputs:
+      staging:
+        description: "Run against staging (requires STAGING_E2E_URL secret)"
+        type: boolean
+        default: false
+
+jobs:
+  e2e:
+    name: Playwright Admin Smoke Tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Run Playwright tests (local mode — API mocked)
+        if: ${{ !inputs.staging }}
+        run: npm run test:e2e
+        env:
+          CI: "true"
+
+      - name: Run Playwright tests (staging, opt-in)
+        if: ${{ inputs.staging }}
+        run: npm run test:e2e
+        env:
+          CI: "true"
+          PLAYWRIGHT_BASE_URL: ${{ secrets.STAGING_E2E_URL }}
+          ENABLE_STAGING_E2E: "true"
+
+      - name: Upload Playwright report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: playwright-report
+          path: apps/web/playwright-report/
+          retention-days: 14

@@ -1,15 +1,32 @@
-// InvestingBuddy — Azure Infrastructure
-// Main Bicep template for all environments.
+// InvestingBuddy — Azure Staging Infrastructure
+// Region: westeurope | Resource group: ib-stg-rg
+// Deploy: az deployment group create --resource-group ib-stg-rg \
+//           --template-file infra/azure/main.bicep \
+//           --parameters infra/azure/parameters/staging.bicepparam \
+//           --parameters dbAdminPassword=<password-from-key-vault>
+//
+// WARNING: This template targets STAGING only (ib-stg-rg).
+// Do NOT target ib-prod-rg or any production resource group.
 
-@description('Short environment label, e.g. stg or prod.')
-param environment string = 'stg'
+targetScope = 'resourceGroup'
 
-@description('Azure region for most resources.')
+// ── Parameters ────────────────────────────────────────────────────────────
+
+@description('Environment tag — stg or prod')
+param env string = 'stg'
+
+@description('Azure region for all resources')
 param location string = resourceGroup().location
 
-// ---------------------------------------------------------------------------
-// Resilience parameters
-// ---------------------------------------------------------------------------
+@description('Project short name used in resource naming')
+param projectShort string = 'ib'
+
+@secure()
+@description('PostgreSQL admin password. Generate: openssl rand -hex 16. Store result in Key Vault as db-password.')
+param dbAdminPassword string
+
+@description('GitHub Actions App Registration principal ID (object ID). Set to activate KV Secrets Officer role assignment.')
+param githubActionsPrincipalId string = ''
 
 @description('Set to true to skip RBAC role assignments. Required for deployments where the identity cannot perform Microsoft.Authorization/roleAssignments/write.')
 param skipRbac bool = false
@@ -20,97 +37,159 @@ param dbLocation string = resourceGroup().location
 @description('Override for the PostgreSQL server name. When empty the name is auto-generated.')
 param dbServerNameOverride string = ''
 
-// ---------------------------------------------------------------------------
-// Derived values
-// ---------------------------------------------------------------------------
+// ── Resource Names ─────────────────────────────────────────────────────────
 
-var dbServerName = dbServerNameOverride != '' ? dbServerNameOverride : 'ib-${environment}-psql'
-var appServicePlanName = 'ib-${environment}-asp'
-var apiAppName = 'ib-${environment}-api'
-var storageAccountName = 'ib${environment}sa'
+var apiAppName = '${projectShort}-${env}-api'
+var webAppName = '${projectShort}-${env}-web'
+// Single shared B1 plan for both API and Web (cost-optimised for early staging)
+// Scale-up: change SKU in modules/appservice.bicep, or split into two plans
+var sharedPlanName = '${projectShort}-${env}-plan'
+var dbServerName = dbServerNameOverride != '' ? dbServerNameOverride : '${projectShort}-${env}-db'
+var kvName = '${projectShort}-${env}-kv'
+var storageName = '${projectShort}${env}storage'
+var insightsName = '${projectShort}-${env}-insights'
+var logsName = '${projectShort}-${env}-logs'
 
-// ---------------------------------------------------------------------------
-// App Service Plan
-// ---------------------------------------------------------------------------
+// ── Role Definition IDs (built-in Azure roles) ────────────────────────────
 
-resource appServicePlan 'Microsoft.Web/serverfarms@2023-01-01' = {
-  name: appServicePlanName
-  location: location
-  sku: {
-    name: 'B1'
-    tier: 'Basic'
-  }
-  properties: {
-    reserved: true // Linux
-  }
-}
+var kvSecretsOfficerRoleId = subscriptionResourceId(
+  'Microsoft.Authorization/roleDefinitions',
+  'b86a8fe4-44ce-4948-aee5-eccb2c155cd7'
+)
+var kvSecretsUserRoleId = subscriptionResourceId(
+  'Microsoft.Authorization/roleDefinitions',
+  '4633458b-17de-408a-b874-0445c86b69e6'
+)
+var storageBlobDataContributorRoleId = subscriptionResourceId(
+  'Microsoft.Authorization/roleDefinitions',
+  'ba92f5b4-2d11-453d-a403-e96b0029c9fe'
+)
 
-// ---------------------------------------------------------------------------
-// API App Service
-// ---------------------------------------------------------------------------
+// ── Module: Monitoring ─────────────────────────────────────────────────────
 
-resource apiApp 'Microsoft.Web/sites@2023-01-01' = {
-  name: apiAppName
-  location: location
-  properties: {
-    serverFarmId: appServicePlan.id
-    siteConfig: {
-      linuxFxVersion: 'PYTHON|3.12'
-      appSettings: [
-        {
-          name: 'APP_ENV'
-          value: environment
-        }
-      ]
-    }
-  }
-}
-
-// ---------------------------------------------------------------------------
-// PostgreSQL Flexible Server
-// ---------------------------------------------------------------------------
-
-module postgresql 'modules/postgresql.bicep' = {
-  name: 'postgresql'
+module monitoringModule 'modules/monitoring.bicep' = {
+  name: 'monitoring'
   params: {
-    serverName: dbServerName
+    location: location
+    logsName: logsName
+    insightsName: insightsName
+  }
+}
+
+// ── Module: Key Vault ──────────────────────────────────────────────────────
+// RBAC assignments added below after managed identities are known
+
+module kvModule 'modules/keyvault.bicep' = {
+  name: 'keyvault'
+  params: {
+    location: location
+    kvName: kvName
+  }
+}
+
+// ── Module: Storage ────────────────────────────────────────────────────────
+// RBAC assignments added below after managed identities are known
+
+module storageModule 'modules/storage.bicep' = {
+  name: 'storage'
+  params: {
+    location: location
+    storageName: storageName
+  }
+}
+
+// ── Module: App Services ───────────────────────────────────────────────────
+// API (Python 3.12) + Web (Node 22) — shared B1 plan, system-assigned managed identity
+// Key Vault references in app settings activate once RBAC assignments below are applied
+
+module appServiceModule 'modules/appservice.bicep' = {
+  name: 'appservice'
+  params: {
+    location: location
+    apiAppName: apiAppName
+    webAppName: webAppName
+    sharedPlanName: sharedPlanName
+    kvUri: kvModule.outputs.kvUri
+    appInsightsConnectionString: monitoringModule.outputs.insightsConnectionString
+  }
+}
+
+// ── Module: PostgreSQL ─────────────────────────────────────────────────────
+
+module postgresModule 'modules/postgres.bicep' = {
+  name: 'postgres'
+  params: {
     location: dbLocation
-    environment: environment
+    dbServerName: dbServerName
+    dbAdminPassword: dbAdminPassword
   }
 }
 
-// ---------------------------------------------------------------------------
-// Storage Account
-// ---------------------------------------------------------------------------
+// ── RBAC Assignments ───────────────────────────────────────────────────────
+// Scoped to existing KV/Storage resources after modules deploy them.
+// Uses existing references so Bicep can set the correct scope for roleAssignments.
 
-resource storageAccount 'Microsoft.Storage/storageAccounts@2023-01-01' = {
-  name: storageAccountName
-  location: location
-  sku: {
-    name: 'Standard_LRS'
-  }
-  kind: 'StorageV2'
+resource kvExisting 'Microsoft.KeyVault/vaults@2023-07-01' existing = {
+  name: kvModule.outputs.kvName
 }
 
-// ---------------------------------------------------------------------------
-// RBAC role assignments — gated so deployments can skip when the identity
-// lacks Microsoft.Authorization/roleAssignments/write permission.
-// ---------------------------------------------------------------------------
+resource storageExisting 'Microsoft.Storage/storageAccounts@2023-05-01' existing = {
+  name: storageModule.outputs.storageAccountName
+}
 
-resource apiAppStorageBlobContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!skipRbac) {
-  name: guid(storageAccount.id, apiApp.id, 'ba92f5b4-2d11-453d-a403-e96b0029c9fe')
-  scope: storageAccount
+// API managed identity → Key Vault Secrets User
+resource apiKvSecretsUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!skipRbac) {
+  name: guid(kvExisting.id, appServiceModule.outputs.apiManagedIdentityPrincipalId, kvSecretsUserRoleId)
+  scope: kvExisting
   properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'ba92f5b4-2d11-453d-a403-e96b0029c9fe')
-    principalId: apiApp.identity.principalId
+    roleDefinitionId: kvSecretsUserRoleId
+    principalId: appServiceModule.outputs.apiManagedIdentityPrincipalId
     principalType: 'ServicePrincipal'
   }
 }
 
-// ---------------------------------------------------------------------------
-// Outputs
-// ---------------------------------------------------------------------------
+// Web managed identity → Key Vault Secrets User
+resource webKvSecretsUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!skipRbac) {
+  name: guid(kvExisting.id, appServiceModule.outputs.webManagedIdentityPrincipalId, kvSecretsUserRoleId)
+  scope: kvExisting
+  properties: {
+    roleDefinitionId: kvSecretsUserRoleId
+    principalId: appServiceModule.outputs.webManagedIdentityPrincipalId
+    principalType: 'ServicePrincipal'
+  }
+}
 
-output apiAppName string = apiApp.name
+// API managed identity → Storage Blob Data Contributor
+resource apiStorageBlobContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!skipRbac) {
+  name: guid(storageExisting.id, appServiceModule.outputs.apiManagedIdentityPrincipalId, storageBlobDataContributorRoleId)
+  scope: storageExisting
+  properties: {
+    roleDefinitionId: storageBlobDataContributorRoleId
+    principalId: appServiceModule.outputs.apiManagedIdentityPrincipalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+// GitHub Actions SP → Key Vault Secrets Officer (optional — set githubActionsPrincipalId to activate)
+resource githubActionsKvOfficer 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!skipRbac && !empty(githubActionsPrincipalId)) {
+  name: guid(kvExisting.id, githubActionsPrincipalId, kvSecretsOfficerRoleId)
+  scope: kvExisting
+  properties: {
+    roleDefinitionId: kvSecretsOfficerRoleId
+    principalId: githubActionsPrincipalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+// ── Outputs ────────────────────────────────────────────────────────────────
+
+output apiAppName string = apiAppName
+output webAppName string = webAppName
 output dbServerName string = dbServerName
-output storageAccountName string = storageAccount.name
+output kvName string = kvName
+output storageName string = storageName
+output insightsName string = insightsName
+output logsName string = logsName
+output apiUrl string = 'https://${appServiceModule.outputs.apiDefaultHostname}'
+output webUrl string = 'https://${appServiceModule.outputs.webDefaultHostname}'
+output dbFqdn string = postgresModule.outputs.dbServerFqdn

@@ -1,0 +1,73 @@
+{
+  "data": [
+    {
+      "type": "lei-records",
+      "id": "HWUPKR0MPOU8FGXBT394",
+      "attributes": {
+        "lei": "HWUPKR0MPOU8FGXBT394",
+        "entity": {
+          "legalName": {
+            "name": "Apple Inc.",
+            "language": "en"
+          },
+          "otherNames": [],
+          "transliteratedOtherNames": [],
+          "legalAddress": {
+            "language": "en",
+            "addressLines": ["One Apple Park Way"],
+            "city": "Cupertino",
+            "region": "US-CA",
+            "country": "US",
+            "postalCode": "95014"
+          },
+          "headquartersAddress": {
+            "language": "en",
+            "addressLines": ["One Apple Park Way"],
+            "city": "Cupertino",
+            "region": "US-CA",
+            "country": "US",
+            "postalCode": "95014"
+          },
+          "registeredAt": {
+            "id": "RA000660",
+            "other": ""
+          },
+          "jurisdiction": "US-DE",
+          "category": "GENERAL",
+          "legalForm": {
+            "id": "8888",
+            "other": "Delaware Corporation"
+          },
+          "status": "ACTIVE"
+        },
+        "registration": {
+          "initialRegistrationDate": "2012-06-06T15:53:00Z",
+          "lastUpdateDate": "2024-10-10T08:22:00Z",
+          "status": "ISSUED",
+          "nextRenewalDate": "2025-10-10T08:22:00Z",
+          "managedBy": "RA000660"
+        }
+      },
+      "relationships": {
+        "managing-lou": {
+          "links": {
+            "reporting-exception": "https://api.gleif.org/api/v1/lei-records/HWUPKR0MPOU8FGXBT394/reporting-exception"
+          }
+        }
+      }
+    }
+  ],
+  "meta": {
+    "goldenCopy": {
+      "publishDate": "2026-06-19T00:00:00Z"
+    },
+    "pagination": {
+      "currentPage": 1,
+      "perPage": 10,
+      "from": 1,
+      "to": 1,
+      "total": 1,
+      "lastPage": 1
+    }
+  }
+}

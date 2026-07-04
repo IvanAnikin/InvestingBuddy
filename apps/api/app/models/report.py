@@ -2,6 +2,7 @@ import uuid
 from datetime import date, datetime, timezone
 
 import sqlalchemy as sa
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -30,6 +31,36 @@ class Report(Base):
         sa.Uuid(as_uuid=True), sa.ForeignKey("agent_runs.id"), nullable=True
     )
     published_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True))
+
+    # Phase 11 review workflow fields
+    review_status: Mapped[str] = mapped_column(
+        sa.String(50), nullable=False, default="draft"
+    )
+    reviewed_at: Mapped[datetime | None] = mapped_column(
+        sa.DateTime(timezone=True), nullable=True
+    )
+    reviewer_note: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
+    review_decision_reason: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
+    human_review_required: Mapped[bool] = mapped_column(
+        sa.Boolean, nullable=False, default=True
+    )
+    approved_by: Mapped[str | None] = mapped_column(sa.String(200), nullable=True)
+    rejected_by: Mapped[str | None] = mapped_column(sa.String(200), nullable=True)
+
+    # Phase 16: Final Report Generator fields
+    final_report_version: Mapped[str | None] = mapped_column(
+        sa.String(20), nullable=True
+    )
+    safety_validation_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    schema_validation_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    source_summary_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    scorecard_id: Mapped[uuid.UUID | None] = mapped_column(
+        sa.Uuid(as_uuid=True),
+        sa.ForeignKey("scorecards.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True), default=_utcnow, server_default=sa.func.now()
     )
@@ -43,6 +74,7 @@ class Report(Base):
     __table_args__ = (
         sa.Index("ix_reports_slug", "slug"),
         sa.Index("ix_reports_status", "status"),
+        sa.Index("ix_reports_review_status", "review_status"),
         sa.Index("ix_reports_report_type", "report_type"),
         sa.Index("ix_reports_published_at", "published_at"),
     )
