@@ -35,6 +35,12 @@ function reviewStatusColor(
   return "gray";
 }
 
+function schemaValidLabel(report: Report): string {
+  const value = report.schema_validation_json?.is_valid;
+  if (typeof value === "boolean") return value ? "Schema OK" : "Schema Issues";
+  return "Schema n/a";
+}
+
 const REVIEW_STATUS_LABELS: Record<string, string> = {
   draft: "Draft",
   under_review: "Under Review",
@@ -119,6 +125,7 @@ export default async function ReportsPage() {
                 <th className="px-5 py-2 text-left font-medium">Title</th>
                 <th className="px-3 py-2 text-left font-medium">Type</th>
                 <th className="px-3 py-2 text-left font-medium">Review Status</th>
+                <th className="px-3 py-2 text-left font-medium">Final Report</th>
                 <th className="px-3 py-2 text-left font-medium">Created</th>
                 <th className="px-3 py-2 text-left font-medium"></th>
               </tr>
@@ -147,6 +154,10 @@ export default async function ReportsPage() {
                       label={REVIEW_STATUS_LABELS[r.review_status] ?? r.review_status ?? "draft"}
                       color={reviewStatusColor(r.review_status ?? "draft")}
                     />
+                  </td>
+                  <td className="px-3 py-3 text-xs text-gray-500">
+                    <div>{r.final_report_version ?? "No final report yet"}</div>
+                    <div className="text-gray-400">{schemaValidLabel(r)}</div>
                   </td>
                   <td className="px-3 py-3 text-xs text-gray-400 whitespace-nowrap">
                     {new Date(r.created_at).toLocaleDateString()}

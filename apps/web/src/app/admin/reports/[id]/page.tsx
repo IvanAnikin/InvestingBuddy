@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { fetchReport, fetchReviewEvents } from "@/lib/api";
 import type { Report, ReviewEvent } from "@/types/api";
+import FinalReportActions from "./FinalReportActions";
 import ReviewPanel from "./ReviewPanel";
 
 // ---------------------------------------------------------------------------
@@ -60,6 +61,16 @@ function MetaRow({ label, value }: { label: string; value: string }) {
       <span className="text-gray-800 font-mono text-xs break-all">{value}</span>
     </div>
   );
+}
+
+function readValidationFlag(
+  payload: Record<string, unknown> | null,
+  key: string,
+): string {
+  if (!payload || typeof payload !== "object") return "n/a";
+  const value = payload[key];
+  if (typeof value === "boolean") return value ? "true" : "false";
+  return "n/a";
 }
 
 // ---------------------------------------------------------------------------
@@ -282,7 +293,22 @@ export default async function ReportDetailPage({
         {report.period_end && (
           <MetaRow label="Period End" value={report.period_end} />
         )}
+        <MetaRow
+          label="Final Report Version"
+          value={report.final_report_version ?? "n/a"}
+        />
+        <MetaRow label="Scorecard ID" value={report.scorecard_id ?? "n/a"} />
+        <MetaRow
+          label="Safety Validation Passed"
+          value={readValidationFlag(report.safety_validation_json, "passed")}
+        />
+        <MetaRow
+          label="Schema Validation is_valid"
+          value={readValidationFlag(report.schema_validation_json, "is_valid")}
+        />
       </div>
+
+      <FinalReportActions reportId={report.id} />
 
       {/* Review action panel — client component */}
       <ReviewPanel report={report} />

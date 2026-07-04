@@ -145,9 +145,12 @@ Copy `.env.example` to `.env` and fill in values as needed.
 | Phase 14 | Done | Company Discovery / Screener: `CompanyScreener`; `CompanyDiscoveryService`; 3 new DB tables (migration 006); 7 discovery API endpoints (universes + runs + candidates + promote); 6 themes; T5 enforced for EODHD; 601 offline tests |
 | Phase 15 | Done | Scoring + Valuation Framework: `ScoringEngine` (10 dimensions; T6/mock ≤ 30, T5 ≤ 60, T1/T2 ≤ 100); `ValuationReadinessService`; `scorecards` table (migration 007); `score_research_attractiveness` Node 17; workflow v6.0.0 (19 nodes); 5 scoring API endpoints; 675 offline tests |
 | Phase 16 | Done | Final Report Generator: `FinalReportGeneratorService` (6 methods); safety gate; 19-section structured internal draft; migration 008 (5 new reports columns); 5 admin endpoints; LLM optional; 737 offline tests |
-| Phase 5 | Planned | Full council-of-agents MVP |
-| Phase 17 | Planned | Judge system and backtesting |
-| Phase 18 | Planned | Personalized investor assistant (V2) |
+| Phase 17 | Done | Admin Auth Proxy: all browser admin calls routed through Next.js server-side proxy (`/api/admin/proxy`); backend credentials remain server-only |
+| Phase 18 | Done | Staging E2E reliability hardening and auth/Bicep resilience fixes |
+| Phase 19 | Pending / Deferred | Live EODHD smoke testing in staging (deferred; do not run live EODHD in CI/sandbox) |
+| Phase 20 | In Progress | Admin Final Report UI: internal final-report actions (generate draft, validate, optional regenerate section) + final-report metadata rendering |
+| Phase 21 | Planned | Judge system, backtesting, and prompt-improvement loop |
+| Phase 22 | Planned | Personalized investor assistant (V2) |
 
 ---
 

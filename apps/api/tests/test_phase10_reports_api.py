@@ -141,6 +141,11 @@ async def test_report_response_has_all_expected_fields(
         "published_at",
         "created_at",
         "updated_at",
+        "final_report_version",
+        "safety_validation_json",
+        "schema_validation_json",
+        "source_summary_json",
+        "scorecard_id",
     }
     for field in required_fields:
         assert field in data, f"Missing field: {field}"
@@ -200,6 +205,11 @@ async def test_report_content_does_not_expose_buy_sell(
     safe_report.human_review_required = True
     safe_report.approved_by = None
     safe_report.rejected_by = None
+    safe_report.final_report_version = "16.0.0"
+    safe_report.safety_validation_json = {"passed": True}
+    safe_report.schema_validation_json = {"is_valid": True}
+    safe_report.source_summary_json = {"source_count": 0, "citation_count": 0}
+    safe_report.scorecard_id = None
 
     with patch(_GET, new_callable=AsyncMock, return_value=safe_report):
         response = await client.get(f"/api/v1/reports/{report_id}")

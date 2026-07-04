@@ -1,6 +1,9 @@
 import type {
   Company,
   CompanyCreate,
+  FinalReportRegenerateSectionResponse,
+  FinalReportResponse,
+  FinalReportValidateResponse,
   CompanyList,
   HealthResponse,
   Report,
@@ -162,5 +165,36 @@ export async function fetchReviewEvents(
 ): Promise<ReviewEventList> {
   return apiFetch<ReviewEventList>(
     `/api/v1/admin/reports/${reportId}/review-events`,
+  );
+}
+
+export async function generateFinalReportFromReport(
+  reportId: string,
+): Promise<FinalReportResponse> {
+  return apiFetch<FinalReportResponse>(
+    `/api/v1/final-reports/from-report/${reportId}`,
+    { method: "POST" },
+  );
+}
+
+export async function validateFinalReport(
+  reportId: string,
+): Promise<FinalReportValidateResponse> {
+  return apiFetch<FinalReportValidateResponse>(
+    `/api/v1/final-reports/${reportId}/validate`,
+    { method: "POST" },
+  );
+}
+
+export async function regenerateFinalReportSection(
+  reportId: string,
+  sectionName: string,
+): Promise<FinalReportRegenerateSectionResponse> {
+  return apiFetch<FinalReportRegenerateSectionResponse>(
+    `/api/v1/final-reports/${reportId}/regenerate-section`,
+    {
+      method: "POST",
+      body: JSON.stringify({ section_name: sectionName }),
+    },
   );
 }

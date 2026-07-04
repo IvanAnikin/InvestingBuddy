@@ -9,6 +9,7 @@ Endpoints:
   POST /api/v1/final-reports/from-scorecard/{scorecard_id}
   POST /api/v1/final-reports/from-candidate/{candidate_id}
   POST /api/v1/final-reports/from-company/{company_id}
+  POST /api/v1/final-reports/from-report/{report_id}
   POST /api/v1/final-reports/{report_id}/validate
   POST /api/v1/final-reports/{report_id}/regenerate-section
 """
@@ -113,6 +114,35 @@ async def generate_from_company(
 ) -> FinalReportResponse:
     try:
         return await _svc.generate_from_company(db, company_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Final report generation failed: {exc}",
+        ) from exc
+
+
+@router.post(
+    "/from-report/{report_id}",
+    response_model=FinalReportResponse,
+    status_code=201,
+    summary="Generate final report draft from an existing report",
+    description=(
+        "ADMIN/DEV ONLY. Generates a structured internal final report draft "
+        "from an existing report and its linked workflow artifacts. "
+        "Report is saved with status=draft, review_status=draft, "
+        "human_review_required=True. "
+        "NOT investment advice. No BUY/SELL/HOLD/WATCH recommendation is produced. "
+        "No price target or fair value is produced."
+    ),
+)
+async def generate_from_report(
+    report_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+) -> FinalReportResponse:
+    try:
+        return await _svc.generate_from_report(db, report_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
