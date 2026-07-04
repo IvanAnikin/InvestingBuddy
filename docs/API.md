@@ -1012,3 +1012,27 @@ Response (200):
 | GET | `/api/me/recommendations` | Phase 7 |
 | GET | `/api/me/portfolio` | Phase 7 |
 | POST | `/api/me/portfolio/positions` | Phase 7 |
+
+---
+
+## Phase 22: Backtesting & Judge Endpoints
+
+All endpoints are **admin/dev-only**. No public-facing routes.  
+No BUY/SELL/HOLD/WATCH recommendations, price targets, fair values, or upside percentages are produced.  
+All responses include `disclaimer: "INTERNAL ADMIN USE ONLY. NOT INVESTMENT ADVICE."`.
+
+| Method | Path | Description |
+|---|---|---|
+| POST | `/api/v1/backtesting/runs` | Create a new backtest run |
+| GET | `/api/v1/backtesting/runs` | List all backtest runs |
+| GET | `/api/v1/backtesting/runs/{run_id}` | Get a specific backtest run |
+| POST | `/api/v1/backtesting/runs/{run_id}/add-report/{report_id}` | Add a report to a backtest run |
+| POST | `/api/v1/backtesting/runs/{run_id}/evaluate` | Evaluate all reports in a run |
+| GET | `/api/v1/backtesting/runs/{run_id}/results` | List results for a run |
+| GET | `/api/v1/backtesting/runs/{run_id}/summary` | Get aggregate summary for a run |
+| POST | `/api/v1/backtesting/reports/{report_id}/judge` | Run judge evaluation on a single report |
+
+**Notes:**
+- Default provider: `mock` (deterministic, no network, no API keys required in CI).
+- Live providers (EODHD, Stooq) can be added later via `BACKTEST_PROVIDER` env var without breaking the interface.
+- Allowed judge statuses: `insufficient_data`, `useful_research`, `needs_better_sources`, `poor_evidence_quality`, `outcome_inconclusive`, `outcome_review_required`.

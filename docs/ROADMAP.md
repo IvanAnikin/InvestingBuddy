@@ -1,6 +1,6 @@
 # Roadmap
 
-## Current Phase: Phase 21 — Playwright Admin Smoke Tests
+## Current Phase: Phase 22 — Judge + Backtesting Framework
 
 ---
 
@@ -693,21 +693,30 @@ Deliverables:
 
 ---
 
-## Phase 18: Judge + Backtesting
+## Phase 22: Judge + Backtesting Framework
 
-**Status: Not started**
+**Status: Complete**
 
-Goal: Platform evaluates its own recommendation quality and improves prompts.
+Goal: Add a non-public internal judge and backtesting framework that evaluates generated internal reports over time, compares thesis development against later reference outcomes, and helps evaluate research quality.
+
+No public investment advice is produced. No BUY/SELL/HOLD/WATCH recommendations, price targets, fair values, or upside percentages are produced. All evaluations are internal historical quality assessments only. CI uses mock provider — no live EODHD or Azure OpenAI required.
 
 Deliverables:
-- [ ] Recommendation performance tracking (price history vs. entry price)
-- [ ] Benchmark comparison
-- [ ] Judge evaluation workflow
-- [ ] Prompt versioning system (prompt_templates, prompt_versions tables)
-- [ ] Admin review of judge improvement suggestions
-- [ ] First real system improvement loop
+- [x] `backtest_runs`, `backtest_results`, `thesis_tracking_events` DB tables (migration 009)
+- [x] `MockHistoricalOutcomeProvider` — deterministic, offline, no API keys required
+- [x] `HistoricalOutcomeProvider` abstract interface (live providers addable later)
+- [x] `BacktestingService` — create/list/evaluate runs, add reports, summarize
+- [x] `ResearchJudgeService` — deterministic quality scoring, safety gate, forbidden-term scan
+- [x] API endpoints under `/api/v1/backtesting` (admin/dev only)
+- [x] Pydantic v2 schemas with INTERNAL_DISCLAIMER on all responses
+- [x] 34 offline pytest tests — no network, no EODHD key, no Azure OpenAI
+- [x] Phase 19 live EODHD smoke testing remains pending/deferred
 
-Skills to use: `langgraph-agents`, `financial-data`, `backend-fastapi`, `investment-domain`
+Allowed internal judge statuses (never public recommendations):
+`insufficient_data` | `useful_research` | `needs_better_sources` |
+`poor_evidence_quality` | `outcome_inconclusive` | `outcome_review_required`
+
+Skills used: `backend-fastapi`, `database-design`, `financial-data`, `investment-domain`, `testing-qa`, `security-review`, `docs-maintainer`
 
 ---
 

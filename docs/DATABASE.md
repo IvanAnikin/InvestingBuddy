@@ -50,6 +50,7 @@ alembic revision --autogenerate -m "short description"
 | 006 | `006_add_discovery_screener.py` | creates screening_universes, screening_runs, screening_candidates (Phase 14 company discovery funnel) |
 | 007 | `007_add_scorecards.py` | creates scorecards (Phase 15 multi-dimension research attractiveness scoring) |
 | 008 | `008_add_final_report_fields.py` | adds `final_report_version`, `safety_validation_json`, `schema_validation_json`, `source_summary_json`, `scorecard_id` to reports (Phase 16 Final Report Generator) |
+| 009 | `009_add_backtesting_tables.py` | creates `backtest_runs`, `backtest_results`, `thesis_tracking_events` (Phase 22 Judge + Backtesting Framework) |
 
 ---
 
