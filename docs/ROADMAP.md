@@ -1,6 +1,6 @@
 # Roadmap
 
-## Current Phase: Phase 20 — Admin Final Report UI (recovery in PR)
+## Current Phase: Phase 21 — Playwright Admin Smoke Tests
 
 ---
 
@@ -675,6 +675,21 @@ Planned deliverables:
 - [x] Reports list shows final-report/review metadata when available
 - [x] Browser calls continue through Phase 17 admin proxy
 - [x] No public publishing and no BUY/SELL/HOLD/WATCH recommendations or price targets
+
+---
+
+## Phase 21: Playwright Admin Smoke Tests
+
+**Status: Complete**
+
+Goal: add deterministic Playwright smoke tests for admin workflows without changing backend or existing admin UI implementation.
+
+Deliverables:
+- [x] Playwright config + admin smoke tests added under `apps/web/tests/e2e/`
+- [x] Frontend E2E workflow added for manual/opt-in execution
+- [x] Tests default to mock provider/data routes
+- [x] Staging E2E remains opt-in only
+- [x] Phase 19 live EODHD smoke testing remains pending/deferred
 
 ---
 

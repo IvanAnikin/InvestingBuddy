@@ -97,7 +97,11 @@ cd apps/web
 npm run typecheck
 npm run lint
 npm run build
+npx playwright install --with-deps
+npm run test:e2e
 ```
+
+Playwright Phase 21 admin smoke tests use mock data/provider by default. Staging E2E execution is opt-in.
 
 ---
 
@@ -149,7 +153,7 @@ Copy `.env.example` to `.env` and fill in values as needed.
 | Phase 18 | Done | Staging E2E reliability hardening and auth/Bicep resilience fixes |
 | Phase 19 | Pending / Deferred | Live EODHD smoke testing in staging (deferred; do not run live EODHD in CI/sandbox) |
 | Phase 20 | In Progress | Admin Final Report UI: internal final-report actions (generate draft, validate, optional regenerate section) + final-report metadata rendering |
-| Phase 21 | Planned | Judge system, backtesting, and prompt-improvement loop |
+| Phase 21 | Done | Playwright admin smoke tests (mock provider by default, staging E2E opt-in only) |
 | Phase 22 | Planned | Personalized investor assistant (V2) |
 
 ---
