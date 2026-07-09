@@ -247,6 +247,6 @@ All errors are caught, logged to `agent_runs.error_message`, and returned as HTT
 - Full council-of-agents (all agent teams) — Phase 5
 - OpenBB integration (evaluation pending) — Phase 5/6
 - Scheduled background jobs (Azure Functions / Service Bus) — Phase 7
-- Judge / backtesting — Phase 7
+- Judge / backtesting — Phase 22 ✅ (internal only, mock provider, no public recommendations)
 - Personalized recommendations — Phase 8
 - Report citations linked to report_id at save time (currently linked via agent_run_id only) — Phase 5

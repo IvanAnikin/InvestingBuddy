@@ -154,7 +154,7 @@ Copy `.env.example` to `.env` and fill in values as needed.
 | Phase 19 | Pending / Deferred | Live EODHD smoke testing in staging (deferred; do not run live EODHD in CI/sandbox) |
 | Phase 20 | In Progress | Admin Final Report UI: internal final-report actions (generate draft, validate, optional regenerate section) + final-report metadata rendering |
 | Phase 21 | Done | Playwright admin smoke tests (mock provider by default, staging E2E opt-in only) |
-| Phase 22 | Planned | Personalized investor assistant (V2) |
+| Phase 22 | Done | Judge + Backtesting Framework: `BacktestingService`, `ResearchJudgeService`, `MockHistoricalOutcomeProvider`; migration 009 (backtest_runs, backtest_results, thesis_tracking_events); 8 admin-only API endpoints; 34 offline tests; no live EODHD; no public recommendations |
 
 ---
 
