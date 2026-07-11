@@ -51,18 +51,21 @@ export default function HomePage() {
           </h2>
           <div className="rounded-lg border border-amber-200 bg-amber-50 p-4">
             <p className="font-medium text-amber-800">
-              Phase 16 — Final Report Generator
+              Phase 22.1 — Internal Admin Backtesting UI
             </p>
             <p className="mt-1 text-sm text-amber-700">
-              The platform is under active development. The 19-node analysis
-              council workflow is operational. A company discovery screener,
-              scoring engine, and final report generator are live. An internal
-              admin workspace is available at{" "}
+              The platform is under active development. The internal admin
+              workspace is live with a company analysis runner, final report
+              generator, and backtesting/judge workflow. Real-provider EODHD
+              data integration is live and smoke testing is in progress. All
+              outputs remain internal and require human review before any
+              publication. No public reports are published yet.
+            </p>
+            <p className="mt-2 text-sm text-amber-700">
+              Internal admin workspace:{" "}
               <a href="/admin" className="underline hover:text-amber-900">
                 /admin
-              </a>{" "}
-              for development review. Real reports are not yet published for
-              public use.
+              </a>
             </p>
           </div>
         </section>
