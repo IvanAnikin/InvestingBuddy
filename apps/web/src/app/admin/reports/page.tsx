@@ -2,6 +2,8 @@ import Link from "next/link";
 import { fetchReports } from "@/lib/api";
 import type { Report } from "@/types/api";
 
+export const dynamic = "force-dynamic";
+
 function Badge({
   label,
   color,
