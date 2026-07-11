@@ -10,6 +10,7 @@ const navLinks = [
   { href: "/admin/companies/new", label: "Add Company" },
   { href: "/admin/analysis", label: "Run Analysis" },
   { href: "/admin/reports", label: "Draft Reports" },
+  { href: "/admin/backtesting", label: "Backtesting" },
 ];
 
 export default function AdminLayout({ children }: { children: ReactNode }) {
@@ -54,9 +55,9 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
 
       {/* Footer disclaimer */}
       <footer className="border-t border-gray-200 bg-white text-center text-xs text-gray-400 py-4 px-4">
-        InvestingBuddy Admin Dashboard · Phase 20 · Internal draft review only ·
-        No BUY/SELL/HOLD recommendations · All outputs require human review
-        before publication · Not investment advice
+        InvestingBuddy Admin Dashboard · Phase 22.1 · Internal draft review and
+        backtesting only · No BUY/SELL/HOLD recommendations · No price targets ·
+        All outputs require human review · Not investment advice
       </footer>
     </div>
   );
