@@ -1,6 +1,6 @@
 # Data Sources
 
-## Status: Phase 14 — EODHD search used as T5 in CompanyScreener; EodhdProvider live; provider data flows into source records, citations, and schema-validated snapshot reports
+## Status: Phase 19.1 — Free Real Data Provider Stack; SEC EDGAR XBRL fundamentals (T2) + EODHD price-only (free plan) + Stooq prices + Trend Signal Engine; composite free_real and eodhd_free_real providers; no paid fundamentals required
 
 This document defines the permitted source universe, tier classification, and provider implementation notes for InvestingBuddy.
 
@@ -97,11 +97,15 @@ All providers are registered in `FinancialDataService` and selectable via `FINAN
 | Class | Module | Source Tier | Status | Notes |
 |---|---|---|---|---|
 | `MockFinancialDataProvider` | `integrations/providers/mock_provider.py` | T6 | ✅ Active | Deterministic demo data; used in all CI tests; no network calls |
-| `SecEdgarProvider` | `integrations/providers/sec_edgar_provider.py` | T2 | ✅ Live (CIK) | Free; `get_company_by_cik(cik)` fetches from `data.sec.gov`; no API key; ticker→CIK deferred |
+| `SecEdgarProvider` | `integrations/providers/sec_edgar_provider.py` | T2 | ✅ Live (CIK) | Free; `get_company_by_cik(cik)` fetches from `data.sec.gov`; no API key; ticker→CIK via index |
+| `SecEdgarFundamentalsProvider` | `integrations/providers/sec_edgar_fundamentals.py` | T2 | ✅ Live (Phase 19.1) | Free; ticker→CIK resolution via company_tickers.json; XBRL companyfacts; 10 core us-gaap concepts; no API key; US only |
 | `GleifProvider` | `integrations/providers/gleif_provider.py` | T2 | ✅ Live | Free; LEI lookup by code or name; `api.gleif.org`; no API key |
 | `StooqProvider` | `integrations/providers/stooq_provider.py` | T5 | ✅ Live | Free; live OHLCV CSV from `stooq.com`; no API key |
+| `EodhdPriceOnlyProvider` | `integrations/providers/eodhd_price_only_provider.py` | T5 | ✅ Live (Phase 19.1) | Free plan; requires `EODHD_API_KEY`; `/eod` only — no `/fundamentals`; warns on missing fundamentals |
+| `FreeRealProvider` | `integrations/providers/free_real_provider.py` | T2+T5 | ✅ Live (Phase 19.1) | Composite: Stooq (price) + SEC EDGAR (profile + fundamentals); no keys needed; US equity focus |
+| `EodhdFreeRealProvider` | `integrations/providers/free_real_provider.py` | T2+T5 | ✅ Live (Phase 19.1) | Composite: EODHD /eod (price) + SEC EDGAR (fundamentals); requires `EODHD_API_KEY` free plan |
 | `OpenBBProvider` | `integrations/providers/openbb_provider.py` | T5 | Evaluation placeholder | Not yet integrated; requires `openbb-platform`; evaluate before Phase 6 |
-| `EodhdProvider` | `integrations/providers/eodhd_provider.py` | T5 | ✅ Live (Phase 13) | Paid; requires `EODHD_API_KEY`; company profile, price history, fundamentals (Highlights, Valuation, SharesStats, Technicals, annual statements); excluded from CI; tests run offline via fixtures |
+| `EodhdProvider` | `integrations/providers/eodhd_provider.py` | T5 | ✅ Live (Phase 13) | Paid; requires `EODHD_API_KEY` paid plan; company profile, price history, fundamentals; excluded from CI |
 
 ### Provider Abstract Interface
 
@@ -148,9 +152,52 @@ class FundamentalsData(BaseModel):
 Set `FINANCIAL_DATA_PROVIDER` in `.env`:
 
 ```
-FINANCIAL_DATA_PROVIDER=mock   # default; CI; local dev without credentials
-FINANCIAL_DATA_PROVIDER=eodhd  # requires EODHD_API_KEY
+FINANCIAL_DATA_PROVIDER=mock              # default; CI; local dev without credentials
+FINANCIAL_DATA_PROVIDER=free_real         # Stooq + SEC EDGAR; no keys needed; US equity focus
+FINANCIAL_DATA_PROVIDER=eodhd_free_real   # EODHD /eod + SEC EDGAR; requires EODHD_API_KEY (free plan)
+FINANCIAL_DATA_PROVIDER=eodhd_price_only  # EODHD /eod only; requires EODHD_API_KEY (free plan)
+FINANCIAL_DATA_PROVIDER=eodhd             # Full EODHD: requires paid EODHD_API_KEY
 ```
+
+### Phase 19.1: Free Real Data Stack
+
+**Provider stack: `free_real`** (no API keys required)
+- **Price data**: Stooq.com (`T5_api_aggregator`) — free OHLCV for global exchanges
+- **Fundamentals**: SEC EDGAR XBRL (`T2_regulator_or_gov`) — us-gaap concepts from 10-K / 20-F
+- **Profile**: SEC EDGAR submissions (`T2_regulator_or_gov`) — ticker→CIK resolved via company_tickers.json
+- **Trend signals**: `TrendSignalEngine` (`T6_model_estimate`) — computed from price data
+
+**Provider stack: `eodhd_free_real`** (free EODHD API key required)
+- **Price data**: EODHD `/eod` (`T5_api_aggregator`) — EODHD free plan covers `/eod`; `/fundamentals` not called
+- **Fundamentals**: SEC EDGAR XBRL (`T2_regulator_or_gov`)
+- **Profile**: SEC EDGAR submissions (with EODHD stub fallback for non-US tickers)
+
+**EODHD free plan limitation:**
+The EODHD free API key covers `/eod` (end-of-day prices) but returns HTTP 403 for `/fundamentals`.
+`EodhdPriceOnlyProvider` and `EodhdFreeRealProvider` intentionally never call `/fundamentals`.
+SEC EDGAR XBRL replaces EODHD fundamentals for U.S.-listed companies.
+For non-US international fundamentals, a paid EODHD plan is required (use `EodhdProvider`).
+
+**Trend Signal Engine (`apps/api/app/integrations/trend_signal_engine.py`):**
+- Internal-only; outputs are never published directly
+- Labels: `positive_momentum_candidate`, `neutral_momentum`, `negative_momentum`, `insufficient_price_history`
+- No BUY/SELL/HOLD/WATCH — strictly prohibited
+- Source tier: T6_model_estimate (computed from T5 price data)
+- Metrics: 1M/3M/6M returns, 50-day MA deviation, 200-day MA deviation, relative strength vs benchmark
+
+**News/Catalyst Interface (`apps/api/app/integrations/news_catalyst_provider.py`):**
+- `NullNewsCatalystProvider` — default; returns empty events + warning; no crash
+- `SecEdgar8KProvider` — free; fetches recent 8-K filings from SEC EDGAR submissions; T2 tier
+- Configure: `NEWS_CATALYST_PROVIDER=sec_8k` in environment
+
+**AAPL expected behavior (provider=free_real or eodhd_free_real):**
+1. CIK resolved: 320193 (via company_tickers.json)
+2. SEC EDGAR submissions: Apple Inc. profile (T2)
+3. XBRL companyfacts: revenue 383,285 USD_m, net income 96,995 USD_m, total assets 352,583 USD_m (FY2023, 10-K)
+4. Price history: 250+ trading days of OHLCV from Stooq or EODHD /eod
+5. Trend signals: returns, MA deviations, internal momentum label
+6. `is_mock=False` when any real provider succeeded
+7. Partial warnings when a source is unavailable — not a failure
 
 ### Provider Rules
 

@@ -1,0 +1,217 @@
+{
+  "cik": 320193,
+  "entityName": "Apple Inc.",
+  "facts": {
+    "us-gaap": {
+      "Revenues": {
+        "label": "Revenues",
+        "description": "Amount of revenue recognized from goods sold, services rendered, insurance premiums, or other activities.",
+        "units": {
+          "USD": [
+            {
+              "end": "2021-09-25",
+              "val": 365817000000,
+              "accn": "0000320193-21-000105",
+              "fy": 2021,
+              "fp": "FY",
+              "form": "10-K",
+              "filed": "2021-10-29",
+              "frame": "CY2021"
+            },
+            {
+              "end": "2022-09-24",
+              "val": 394328000000,
+              "accn": "0000320193-22-000108",
+              "fy": 2022,
+              "fp": "FY",
+              "form": "10-K",
+              "filed": "2022-10-28",
+              "frame": "CY2022"
+            },
+            {
+              "end": "2023-09-30",
+              "val": 383285000000,
+              "accn": "0000320193-23-000106",
+              "fy": 2023,
+              "fp": "FY",
+              "form": "10-K",
+              "filed": "2023-11-03",
+              "frame": "CY2023"
+            }
+          ]
+        }
+      },
+      "NetIncomeLoss": {
+        "label": "Net Income (Loss)",
+        "description": "The portion of profit or loss for the period, net of income taxes.",
+        "units": {
+          "USD": [
+            {
+              "end": "2022-09-24",
+              "val": 99803000000,
+              "accn": "0000320193-22-000108",
+              "fy": 2022,
+              "fp": "FY",
+              "form": "10-K",
+              "filed": "2022-10-28"
+            },
+            {
+              "end": "2023-09-30",
+              "val": 96995000000,
+              "accn": "0000320193-23-000106",
+              "fy": 2023,
+              "fp": "FY",
+              "form": "10-K",
+              "filed": "2023-11-03"
+            }
+          ]
+        }
+      },
+      "EarningsPerShareBasic": {
+        "label": "Earnings Per Share, Basic",
+        "description": "The amount of net income or loss for the period per each share of common stock.",
+        "units": {
+          "USD/shares": [
+            {
+              "end": "2022-09-24",
+              "val": 6.15,
+              "accn": "0000320193-22-000108",
+              "fy": 2022,
+              "fp": "FY",
+              "form": "10-K",
+              "filed": "2022-10-28"
+            },
+            {
+              "end": "2023-09-30",
+              "val": 6.16,
+              "accn": "0000320193-23-000106",
+              "fy": 2023,
+              "fp": "FY",
+              "form": "10-K",
+              "filed": "2023-11-03"
+            }
+          ]
+        }
+      },
+      "EarningsPerShareDiluted": {
+        "label": "Earnings Per Share, Diluted",
+        "description": "Diluted EPS includes dilutive securities.",
+        "units": {
+          "USD/shares": [
+            {
+              "end": "2023-09-30",
+              "val": 6.13,
+              "accn": "0000320193-23-000106",
+              "fy": 2023,
+              "fp": "FY",
+              "form": "10-K",
+              "filed": "2023-11-03"
+            }
+          ]
+        }
+      },
+      "Assets": {
+        "label": "Assets",
+        "description": "Sum of the carrying amounts of all assets.",
+        "units": {
+          "USD": [
+            {
+              "end": "2023-09-30",
+              "val": 352583000000,
+              "accn": "0000320193-23-000106",
+              "fy": 2023,
+              "fp": "FY",
+              "form": "10-K",
+              "filed": "2023-11-03"
+            }
+          ]
+        }
+      },
+      "Liabilities": {
+        "label": "Liabilities",
+        "description": "Sum of the carrying amounts of all liabilities.",
+        "units": {
+          "USD": [
+            {
+              "end": "2023-09-30",
+              "val": 290437000000,
+              "accn": "0000320193-23-000106",
+              "fy": 2023,
+              "fp": "FY",
+              "form": "10-K",
+              "filed": "2023-11-03"
+            }
+          ]
+        }
+      },
+      "StockholdersEquity": {
+        "label": "Stockholders' Equity",
+        "description": "Total of all stockholders' equity items.",
+        "units": {
+          "USD": [
+            {
+              "end": "2023-09-30",
+              "val": 62146000000,
+              "accn": "0000320193-23-000106",
+              "fy": 2023,
+              "fp": "FY",
+              "form": "10-K",
+              "filed": "2023-11-03"
+            }
+          ]
+        }
+      },
+      "NetCashProvidedByUsedInOperatingActivities": {
+        "label": "Net Cash from Operating Activities",
+        "description": "Cash generated from operations.",
+        "units": {
+          "USD": [
+            {
+              "end": "2023-09-30",
+              "val": 110543000000,
+              "accn": "0000320193-23-000106",
+              "fy": 2023,
+              "fp": "FY",
+              "form": "10-K",
+              "filed": "2023-11-03"
+            }
+          ]
+        }
+      },
+      "LongTermDebt": {
+        "label": "Long-term Debt",
+        "description": "Carrying amount of long-term debt.",
+        "units": {
+          "USD": [
+            {
+              "end": "2023-09-30",
+              "val": 95281000000,
+              "accn": "0000320193-23-000106",
+              "fy": 2023,
+              "fp": "FY",
+              "form": "10-K",
+              "filed": "2023-11-03"
+            }
+          ]
+        }
+      },
+      "DebtCurrent": {
+        "label": "Debt, Current",
+        "description": "Current portion of debt obligations.",
+        "units": {
+          "USD": [
+            {
+              "end": "2023-09-30",
+              "val": 15812000000,
+              "accn": "0000320193-23-000106",
+              "fy": 2023,
+              "fp": "FY",
+              "form": "10-K",
+              "filed": "2023-11-03"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

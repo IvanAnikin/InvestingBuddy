@@ -20,20 +20,28 @@ from app.integrations.financial_data_provider import (
     ProviderCapability,
     ProviderStatus,
 )
+from app.integrations.providers.eodhd_price_only_provider import EodhdPriceOnlyProvider
 from app.integrations.providers.eodhd_provider import EodhdProvider
+from app.integrations.providers.free_real_provider import EodhdFreeRealProvider, FreeRealProvider
 from app.integrations.providers.gleif_provider import GleifProvider
 from app.integrations.providers.mock_provider import MockFinancialDataProvider
 from app.integrations.providers.openbb_provider import OpenBBProvider
+from app.integrations.providers.sec_edgar_fundamentals import SecEdgarFundamentalsProvider
 from app.integrations.providers.sec_edgar_provider import SecEdgarProvider
 from app.integrations.providers.stooq_provider import StooqProvider
 
 _REGISTRY: dict[str, type[FinancialDataProvider]] = {
     "mock": MockFinancialDataProvider,
     "eodhd": EodhdProvider,
+    "eodhd_price_only": EodhdPriceOnlyProvider,
     "sec_edgar": SecEdgarProvider,
+    "sec_edgar_fundamentals": SecEdgarFundamentalsProvider,
     "stooq": StooqProvider,
     "openbb": OpenBBProvider,
     "gleif": GleifProvider,
+    # Phase 19.1: free real-data composite providers
+    "free_real": FreeRealProvider,
+    "eodhd_free_real": EodhdFreeRealProvider,
 }
 
 
