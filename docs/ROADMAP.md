@@ -1,6 +1,6 @@
 # Roadmap
 
-## Current Phase: Phase 22.1 — Admin Backtesting UI
+## Current Phase: Phase 22.1 — Admin Backtesting UI (branch: feature/phase-19-1-free-real-data-provider-stack in review)
 
 ---
 
@@ -650,14 +650,45 @@ Skills used: `frontend-nextjs`, `security-review`, `azure-deployment`, `docs-mai
 
 ## Phase 19: Live EODHD Smoke Test (staging) ⏸️
 
-**Status: Pending / Deferred**
+**Status: Superseded by Phase 19.1**
 
-Goal: run a controlled staging smoke test against live EODHD data.
+Original goal: run a controlled staging smoke test against live EODHD data.
+Deferred because EODHD fundamentals (/fundamentals) requires a paid subscription.
 
-Deferred constraints:
-- Do not run live EODHD from CI or sandbox environments.
-- Keep all tests deterministic and offline by default.
-- No secrets in source control or test artifacts.
+---
+
+## Phase 19.1: Free Real Data Provider Stack ✅
+
+**Status: Complete (PR: feature/phase-19-1-free-real-data-provider-stack)**
+
+Goal: enable real (non-mock) company analysis using only free data sources.
+No paid EODHD fundamentals subscription required.
+
+Deliverables:
+- [x] `EodhdPriceOnlyProvider` — EODHD `/eod` prices only (free plan); no `/fundamentals` call; warns on missing fundamentals
+- [x] `SecEdgarFundamentalsProvider` — ticker→CIK resolution + XBRL companyfacts; 10 us-gaap core concepts; T2 tier; no key
+- [x] `TrendSignalEngine` — 1M/3M/6M returns, MA50/MA200 deviations, relative strength; internal labels only; no BUY/SELL/HOLD/WATCH
+- [x] `FreeRealSnapshotComposer` — combines DB identity + SEC fundamentals + Stooq/EODHD prices; is_mock=False when any real source contributes; partial success + warnings
+- [x] `NewsCatalystProvider` — abstract interface; `SecEdgar8KProvider` (free, T2); `NullNewsCatalystProvider` (safe default)
+- [x] Composite providers: `FreeRealProvider` (Stooq + SEC), `EodhdFreeRealProvider` (EODHD /eod + SEC)
+- [x] Registered in `FinancialDataService`: `free_real`, `eodhd_free_real`, `eodhd_price_only`, `sec_edgar_fundamentals`
+- [x] 64 new offline tests (no network, no API keys)
+- [x] Fixtures: `sec_companyfacts_aapl.json`, `sec_tickers_mini.json`
+- [x] 831 total tests passing
+- [x] Docs: DATA_SOURCES.md, ROADMAP.md, API.md, Readme.md
+
+Constraints enforced:
+- No BUY/SELL/HOLD/WATCH in any output
+- No price targets, fair values, or upside/downside percentages
+- All outputs internal and human-reviewed before publication
+- No new .env secrets or API keys required for `free_real` stack
+- EODHD fundamentals (paid /fundamentals endpoint) not required for MVP
+
+AAPL expected behavior (free_real):
+- CIK: 320193 (resolved via SEC company_tickers.json)
+- Fundamentals: revenue 383,285 USD_m, net income 96,995 USD_m (FY2023 10-K, T2)
+- Price: Stooq OHLCV (T5) → trend signals → `positive/neutral/negative_momentum_candidate`
+- is_mock=False; partial warnings for any unavailable source
 
 ---
 

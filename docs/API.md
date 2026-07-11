@@ -1,6 +1,6 @@
 # API Reference
 
-## Status: Phase 16 — Final Report Generator endpoints added (admin/dev only)
+## Status: Phase 19.1 — Free Real Data Provider Stack; SEC EDGAR fundamentals + EODHD price-only + Trend Signal Engine; new provider keys: free_real, eodhd_free_real, eodhd_price_only, sec_edgar_fundamentals
 
 ---
 
@@ -150,7 +150,7 @@ Request with LLM research sections enabled (Phase 7):
 ```
 
 Request fields:
-- `provider_name` — optional; defaults to `FINANCIAL_DATA_PROVIDER` config value (`mock` in CI).
+- `provider_name` — optional; defaults to `FINANCIAL_DATA_PROVIDER` config value (`mock` in CI). Phase 19.1 free-plan values: `free_real` (Stooq + SEC EDGAR, no keys), `eodhd_free_real` (EODHD /eod + SEC EDGAR, requires EODHD_API_KEY free plan), `eodhd_price_only` (EODHD /eod only).
 - `require_schema_valid` — optional bool (default `false`). When `true`, returns `422` if schema draft fails.
 - `use_llm` — optional bool (default `false`). When `true`, runs the `generate_research_sections` LLM node. Default `false` is CI-safe (no LLM calls, no credentials needed).
 - `llm_provider` — optional; defaults to `LLM_PROVIDER` config value (`mock` in CI). Options: `mock`, `azure_openai`.

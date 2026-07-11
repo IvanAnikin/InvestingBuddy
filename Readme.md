@@ -120,7 +120,7 @@ Copy `.env.example` to `.env` and fill in values as needed.
 | `AZURE_STORAGE_*` | Phase 5+ | Azure Blob Storage for documents |
 | `AZURE_SEARCH_*` | Phase 5+ | Azure AI Search for RAG |
 | `FINANCIAL_DATA_PROVIDER` | No | Provider to use: `mock` (default) / `eodhd` / `sec_edgar` / etc. |
-| `EODHD_API_KEY` | Phase 13+ | EODHD API key — required only when provider is `eodhd`; store in Key Vault for staging/prod |
+| `EODHD_API_KEY` | Phase 13+ | EODHD API key — free plan works for `eodhd_price_only` and `eodhd_free_real` (`/eod` endpoint); paid plan required for `eodhd` (`/fundamentals`); store in Key Vault for staging/prod |
 | `ENABLE_EODHD_INTEGRATION_TESTS` | Phase 13+ | Set `true` for local live EODHD integration tests; never set in CI |
 | `NEXT_PUBLIC_API_BASE_URL` | No | Backend API URL for the frontend |
 | `NEXT_PUBLIC_CLERK_*` | Phase 8+ | Clerk authentication keys |
@@ -151,7 +151,8 @@ Copy `.env.example` to `.env` and fill in values as needed.
 | Phase 16 | Done | Final Report Generator: `FinalReportGeneratorService` (6 methods); safety gate; 19-section structured internal draft; migration 008 (5 new reports columns); 5 admin endpoints; LLM optional; 737 offline tests |
 | Phase 17 | Done | Admin Auth Proxy: all browser admin calls routed through Next.js server-side proxy (`/api/admin/proxy`); backend credentials remain server-only |
 | Phase 18 | Done | Staging E2E reliability hardening and auth/Bicep resilience fixes |
-| Phase 19 | Pending / Deferred | Live EODHD smoke testing in staging (deferred; do not run live EODHD in CI/sandbox) |
+| Phase 19 | Superseded | Live EODHD smoke testing — superseded by Phase 19.1 |
+| Phase 19.1 | Done | Free Real Data Provider Stack: `EodhdPriceOnlyProvider` (EODHD /eod free plan); `SecEdgarFundamentalsProvider` (XBRL fundamentals, ticker→CIK, no key); `TrendSignalEngine` (1M/3M/6M returns, MA50/MA200, momentum labels — no BUY/SELL/HOLD/WATCH); `FreeRealSnapshotComposer`; `NewsCatalystProvider` (SEC 8-K); composite providers `free_real` + `eodhd_free_real`; 64 new offline tests; 831 total; no paid fundamentals required |
 | Phase 20 | In Progress | Admin Final Report UI: internal final-report actions (generate draft, validate, optional regenerate section) + final-report metadata rendering |
 | Phase 21 | Done | Playwright admin smoke tests (mock provider by default, staging E2E opt-in only) |
 | Phase 22 | Done | Judge + Backtesting Framework: `BacktestingService`, `ResearchJudgeService`, `MockHistoricalOutcomeProvider`; migration 009 (backtest_runs, backtest_results, thesis_tracking_events); 8 admin-only API endpoints; 34 offline tests; no live EODHD; no public recommendations |
