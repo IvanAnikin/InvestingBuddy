@@ -97,8 +97,15 @@ def load_fixture(name: str) -> dict:
 
 def _make_price_points(n: int, start_price: float = 100.0, drift: float = 0.001):
     """Generate n synthetic price points for testing."""
-    from app.integrations.financial_data_provider import PriceHistoryData, PricePoint, ProviderResponseMetadata, ProviderStatus, SourceTier
     from datetime import date, timedelta
+
+    from app.integrations.financial_data_provider import (
+        PriceHistoryData,
+        PricePoint,
+        ProviderResponseMetadata,
+        ProviderStatus,
+        SourceTier,
+    )
 
     points = []
     price = start_price
@@ -147,8 +154,8 @@ class TestEodhdPriceOnlyProvider:
         assert provider.get_provider_status() == ProviderStatus.not_configured
 
     def test_key_present_returns_ok(self):
-        from app.integrations.providers.eodhd_price_only_provider import EodhdPriceOnlyProvider
         from app.integrations.financial_data_provider import ProviderStatus
+        from app.integrations.providers.eodhd_price_only_provider import EodhdPriceOnlyProvider
         with patch.dict(os.environ, {"EODHD_API_KEY": "testkey123"}, clear=False):
             provider = EodhdPriceOnlyProvider()
         assert provider.get_provider_status() == ProviderStatus.ok
@@ -165,7 +172,7 @@ class TestEodhdPriceOnlyProvider:
 
     def test_get_company_profile_returns_stub_without_network(self):
         from app.integrations.providers.eodhd_price_only_provider import (
-            EodhdPriceOnlyProvider, PRICE_ONLY_WARNING
+            EodhdPriceOnlyProvider,
         )
         provider = EodhdPriceOnlyProvider()
         profile = asyncio.run(provider.get_company_profile("AAPL", "NASDAQ"))
@@ -184,8 +191,8 @@ class TestEodhdPriceOnlyProvider:
         assert EodhdPriceOnlyProvider().provider_name == "eodhd_price_only"
 
     def test_capabilities_only_price_history(self):
-        from app.integrations.providers.eodhd_price_only_provider import EodhdPriceOnlyProvider
         from app.integrations.financial_data_provider import ProviderCapability
+        from app.integrations.providers.eodhd_price_only_provider import EodhdPriceOnlyProvider
         caps = EodhdPriceOnlyProvider().get_supported_capabilities()
         assert ProviderCapability.price_history in caps
         assert ProviderCapability.fundamentals not in caps
@@ -352,7 +359,7 @@ class TestSecEdgarFundamentalsParser:
 
 class TestTrendSignalEngine:
     def test_insufficient_history_below_30_points(self):
-        from app.integrations.trend_signal_engine import compute_trend_signals, LABEL_INSUFFICIENT
+        from app.integrations.trend_signal_engine import LABEL_INSUFFICIENT, compute_trend_signals
         price_data = _make_price_points(15)
         result = compute_trend_signals(price_data)
         assert result.momentum_label == LABEL_INSUFFICIENT
@@ -360,14 +367,14 @@ class TestTrendSignalEngine:
         assert len(result.data_warnings) > 0
 
     def test_positive_momentum_with_rising_prices(self):
-        from app.integrations.trend_signal_engine import compute_trend_signals, LABEL_POSITIVE
+        from app.integrations.trend_signal_engine import LABEL_POSITIVE, compute_trend_signals
         # drift=0.003 → strongly rising prices over 250 days
         price_data = _make_price_points(250, drift=0.003)
         result = compute_trend_signals(price_data)
         assert result.momentum_label == LABEL_POSITIVE
 
     def test_negative_momentum_with_falling_prices(self):
-        from app.integrations.trend_signal_engine import compute_trend_signals, LABEL_NEGATIVE
+        from app.integrations.trend_signal_engine import LABEL_NEGATIVE, compute_trend_signals
         # drift=-0.003 → strongly falling prices
         price_data = _make_price_points(250, drift=-0.003)
         result = compute_trend_signals(price_data)
@@ -401,7 +408,10 @@ class TestTrendSignalEngine:
 
     def test_no_forbidden_terms_in_labels(self):
         from app.integrations.trend_signal_engine import (
-            compute_trend_signals, LABEL_POSITIVE, LABEL_NEGATIVE, LABEL_NEUTRAL, LABEL_INSUFFICIENT
+            LABEL_INSUFFICIENT,
+            LABEL_NEGATIVE,
+            LABEL_NEUTRAL,
+            LABEL_POSITIVE,
         )
         all_labels = [LABEL_POSITIVE, LABEL_NEGATIVE, LABEL_NEUTRAL, LABEL_INSUFFICIENT]
         for label in all_labels:
@@ -455,8 +465,13 @@ class TestFreeRealSnapshotComposer:
 
     @pytest.fixture
     def real_fundamentals_data(self):
+        from app.integrations.financial_data_provider import (
+            FundamentalsData,
+            ProviderResponseMetadata,
+            ProviderStatus,
+            SourceTier,
+        )
         from app.integrations.providers.sec_edgar_fundamentals import parse_company_facts
-        from app.integrations.financial_data_provider import FundamentalsData, ProviderResponseMetadata, ProviderStatus, SourceTier
         aapl_facts = load_fixture("sec_companyfacts_aapl.json")
         dps, _ = parse_company_facts(aapl_facts, "AAPL", "320193")
         meta = ProviderResponseMetadata(
@@ -666,14 +681,20 @@ class TestNewsCatalystProvider:
         assert events[0].source_tier == "T2_regulator_or_gov"
 
     def test_get_provider_factory_null(self):
-        from app.integrations.news_catalyst_provider import get_news_catalyst_provider, NullNewsCatalystProvider
+        from app.integrations.news_catalyst_provider import (
+            NullNewsCatalystProvider,
+            get_news_catalyst_provider,
+        )
         env = {k: v for k, v in os.environ.items() if k != "NEWS_CATALYST_PROVIDER"}
         with patch.dict(os.environ, env, clear=True):
             provider = get_news_catalyst_provider()
         assert isinstance(provider, NullNewsCatalystProvider)
 
     def test_get_provider_factory_sec_8k(self):
-        from app.integrations.news_catalyst_provider import get_news_catalyst_provider, SecEdgar8KProvider
+        from app.integrations.news_catalyst_provider import (
+            SecEdgar8KProvider,
+            get_news_catalyst_provider,
+        )
         provider = get_news_catalyst_provider("sec_8k")
         assert isinstance(provider, SecEdgar8KProvider)
 
@@ -755,11 +776,11 @@ class TestForbiddenTermsAbsent:
 
     def test_trend_signal_labels_forbidden_terms_absent(self):
         from app.integrations.trend_signal_engine import (
-            LABEL_POSITIVE, LABEL_NEGATIVE, LABEL_NEUTRAL, LABEL_INSUFFICIENT
+            LABEL_INSUFFICIENT,
+            LABEL_NEGATIVE,
+            LABEL_NEUTRAL,
+            LABEL_POSITIVE,
         )
-        import inspect
-        import app.integrations.trend_signal_engine as module
-        source = inspect.getsource(module)
         for term in ["BUY", "SELL", "HOLD", "WATCH"]:
             # The term should not appear as a label value (comments don't count here but
             # label constants must not contain the term)

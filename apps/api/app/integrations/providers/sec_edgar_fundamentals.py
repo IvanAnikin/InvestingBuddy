@@ -43,6 +43,7 @@ from typing import Any
 import httpx
 
 from app.integrations.financial_data_provider import (
+    CompanyProfileData,
     DataQuality,
     FundamentalDataPoint,
     FundamentalsData,
@@ -277,7 +278,7 @@ class SecEdgarFundamentalsProvider(SecEdgarProvider):
         self,
         ticker: str,
         exchange: str | None = None,
-    ) -> "CompanyProfileData":  # noqa: F821
+    ) -> CompanyProfileData:
         """
         Resolve company profile from SEC EDGAR.
 
