@@ -261,11 +261,12 @@ def run_investment_committee_chair(
     safety_violations = _check_forbidden_output(all_text)
     if safety_violations:
         warnings.extend(safety_violations)
-        # Downgrade status on any safety violation
+        # Downgrade status and force human review on any safety violation
         provisional_internal_status = "research_incomplete"
+        human_review_required = True
         warnings.append(
             "SAFETY: forbidden content detected in committee output. "
-            "Status downgraded to 'research_incomplete'."
+            "Status downgraded to 'research_incomplete'. Human review forced."
         )
 
     return CommitteeChairOutput(
