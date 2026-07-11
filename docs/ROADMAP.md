@@ -1,6 +1,6 @@
 # Roadmap
 
-## Current Phase: Phase 22 — Judge + Backtesting Framework
+## Current Phase: Phase 22.1 — Admin Backtesting UI
 
 ---
 
@@ -693,7 +693,7 @@ Deliverables:
 
 ---
 
-## Phase 22: Judge + Backtesting Framework
+## Phase 22: Judge + Backtesting Framework ✅
 
 **Status: Complete**
 
@@ -717,6 +717,33 @@ Allowed internal judge statuses (never public recommendations):
 `poor_evidence_quality` | `outcome_inconclusive` | `outcome_review_required`
 
 Skills used: `backend-fastapi`, `database-design`, `financial-data`, `investment-domain`, `testing-qa`, `security-review`, `docs-maintainer`
+
+---
+
+## Phase 22.1: Admin Backtesting UI ✅
+
+**Status: Complete**
+
+Goal: Expose the Phase 22 backtesting backend through a minimal admin-only web UI.
+
+All UI is internal-only. No public recommendations, price targets, fair values, or upside percentages are exposed. Mock provider only — no live EODHD in UI. All pages include the mandatory INTERNAL ADMIN USE ONLY disclaimer. Admin proxy (Phase 17) is the only API path; browser never contacts backend directly.
+
+Deliverables:
+- [x] `/admin/backtesting` — backtest runs list with table, loading/empty/error states
+- [x] Create backtest run form (mock provider only, clearly labelled)
+- [x] `/admin/backtesting/[id]` — run detail with metadata, summary stats, results cards
+- [x] Evaluate Run button → POST proxy → mock evaluate
+- [x] Refresh Results button
+- [x] Summary stats (total/completed/failed/avg_judge_score)
+- [x] Per-result cards with outcome_json, judge_evaluation_json, warnings, missing_data
+- [x] Backtesting nav link added to admin layout
+- [x] TypeScript types for all Phase 22 schemas in `types/api.ts`
+- [x] API helper functions: `listBacktestRuns`, `createBacktestRun`, `getBacktestRun`, `evaluateBacktestRun`, `listBacktestResults`, `getBacktestSummary`
+- [x] Playwright smoke tests (13 tests) — fully mocked, no live staging required
+- [x] typecheck, lint, build all clean
+- [x] 767 backend tests passing, ruff clean
+
+Skills used: `frontend-nextjs`, `testing-qa`, `docs-maintainer`
 
 ---
 

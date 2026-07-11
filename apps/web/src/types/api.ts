@@ -254,3 +254,79 @@ export interface HealthResponse {
 export interface ApiError {
   detail: string;
 }
+
+// ---------------------------------------------------------------------------
+// Phase 22: Backtesting types
+// ---------------------------------------------------------------------------
+
+export interface BacktestRunCreate {
+  name: string;
+  description?: string;
+  horizon_days?: number;
+  benchmark_symbol?: string;
+  provider_name?: string;
+  parameters?: Record<string, unknown>;
+}
+
+export interface BacktestRunResponse {
+  id: string;
+  name: string;
+  description: string | null;
+  status: string;
+  horizon_days: number | null;
+  benchmark_symbol: string | null;
+  provider_name: string;
+  parameters_json: Record<string, unknown> | null;
+  summary_json: Record<string, unknown> | null;
+  created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  error_message: string | null;
+  disclaimer: string;
+}
+
+export interface BacktestRunListResponse {
+  runs: BacktestRunResponse[];
+  total: number;
+  disclaimer: string;
+}
+
+export interface BacktestResultResponse {
+  id: string;
+  backtest_run_id: string;
+  report_id: string | null;
+  company_id: string | null;
+  scorecard_id: string | null;
+  ticker: string | null;
+  exchange: string | null;
+  evaluation_start_date: string | null;
+  evaluation_end_date: string | null;
+  horizon_days: number | null;
+  benchmark_symbol: string | null;
+  outcome_json: Record<string, unknown> | null;
+  judge_evaluation_json: Record<string, unknown> | null;
+  warnings_json: string[] | null;
+  missing_data_json: string[] | null;
+  status: string;
+  created_at: string;
+  disclaimer: string;
+}
+
+export interface BacktestResultListResponse {
+  results: BacktestResultResponse[];
+  total: number;
+  disclaimer: string;
+}
+
+export interface BacktestRunSummary {
+  backtest_run_id: string;
+  name: string;
+  status: string;
+  total_results: number;
+  completed_results: number;
+  failed_results: number;
+  avg_judge_score: number | null;
+  status_breakdown: Record<string, number>;
+  warnings: string[];
+  disclaimer: string;
+}

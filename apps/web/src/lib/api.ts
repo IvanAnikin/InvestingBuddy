@@ -1,4 +1,9 @@
 import type {
+  BacktestResultListResponse,
+  BacktestRunCreate,
+  BacktestRunListResponse,
+  BacktestRunResponse,
+  BacktestRunSummary,
   Company,
   CompanyCreate,
   FinalReportRegenerateSectionResponse,
@@ -196,5 +201,51 @@ export async function regenerateFinalReportSection(
       method: "POST",
       body: JSON.stringify({ section_name: sectionName }),
     },
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Phase 22: Backtesting API helpers
+// ---------------------------------------------------------------------------
+
+export async function listBacktestRuns(): Promise<BacktestRunListResponse> {
+  return apiFetch<BacktestRunListResponse>("/api/v1/backtesting/runs");
+}
+
+export async function createBacktestRun(
+  payload: BacktestRunCreate,
+): Promise<BacktestRunResponse> {
+  return apiFetch<BacktestRunResponse>("/api/v1/backtesting/runs", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function getBacktestRun(id: string): Promise<BacktestRunResponse> {
+  return apiFetch<BacktestRunResponse>(`/api/v1/backtesting/runs/${id}`);
+}
+
+export async function evaluateBacktestRun(
+  id: string,
+): Promise<BacktestRunResponse> {
+  return apiFetch<BacktestRunResponse>(
+    `/api/v1/backtesting/runs/${id}/evaluate`,
+    { method: "POST" },
+  );
+}
+
+export async function listBacktestResults(
+  id: string,
+): Promise<BacktestResultListResponse> {
+  return apiFetch<BacktestResultListResponse>(
+    `/api/v1/backtesting/runs/${id}/results`,
+  );
+}
+
+export async function getBacktestSummary(
+  id: string,
+): Promise<BacktestRunSummary> {
+  return apiFetch<BacktestRunSummary>(
+    `/api/v1/backtesting/runs/${id}/summary`,
   );
 }
