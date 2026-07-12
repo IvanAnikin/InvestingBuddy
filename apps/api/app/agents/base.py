@@ -74,6 +74,13 @@ class CompanyAnalysisState(TypedDict):
     # --- Phase 15: Research Attractiveness Scorecard ---
     research_attractiveness_scorecard: dict | None  # ScorecardResult.to_dict() output
 
+    # --- Phase 19.2: composite provider tracking ---
+    requested_provider_name: str | None       # original requested provider (preserved)
+    contributing_providers: list[str] | None  # sub-providers that contributed data
+    free_real_snapshot: dict | None           # FreeRealSnapshot.to_dict() output
+    trend_signal_summary: dict | None         # TrendSignalResult fields dict
+    provider_warnings: list[str] | None       # warnings from composite provider composition
+
     # --- control ---
     error: str | None
     status: str   # running | completed | failed

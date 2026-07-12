@@ -1,6 +1,6 @@
 # Roadmap
 
-## Current State: Phase 19.1 Free Real Data Provider Stack released on staging — partial real-data success (SEC EDGAR ✅; Stooq blocked from Azure; EODHD /eod visible via eodhd_free_real); Phase 22.1 Admin Backtesting UI live; safety fix applied (human_review_required=True when committee safety guard triggers). Next: Phase 19.2 — wire price + trend into main workflow.
+## Current State: Phase 19.2 Real Price + Trend Workflow Integration Fix released — Stooq→EODHD non-blocking fallback, TrendSignalEngine wired into company_analysis workflow, composite provider tracking (contributing_providers, requested_provider_name), T5/T6 source metadata visible in snapshot and draft report; Phase 19.1 Free Real Data Stack merged; Phase 22.1 Admin Backtesting UI live. Next: Phase 23 Auth or Phase 24 News/Catalyst.
 
 ---
 

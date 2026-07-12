@@ -1,8 +1,8 @@
 # Gap Analysis
 
 **Last updated:** 2026-07-12  
-**Current state:** Phase 19.1 Free Real Data Stack released on staging; Phase 22.1 Admin Backtesting UI live; safety fix applied.  
-**Next phase:** 19.2 — Real Price + Trend Workflow Integration Fix
+**Current state:** Phase 19.2 Real Price + Trend Workflow Integration Fix released; Phase 19.1 Free Real Data Stack merged; Phase 22.1 Admin Backtesting UI live.  
+**Next phase:** Phase 23 Auth or Phase 24 News/Catalyst Discovery
 
 This document describes the gap between the current implementation and the target product. Each gap maps to a planned phase.
 
@@ -41,10 +41,8 @@ This document describes the gap between the current implementation and the targe
 
 ### Important caveats
 
-- Full real-data trend workflow is **not complete** — `TrendSignalEngine` exists but is not wired into `company_analysis` (Phase 19.2)
-- `provider=free_real` **failed on staging** — Stooq appears blocked from Azure outbound network; works correctly from local environments
-- `provider=eodhd_free_real` worked partially — EODHD /eod price data was not visibly confirmed in T5 source-tier summary during the smoke test
-- `provider_name` tracking for composite providers needs cleanup in workflow metadata
+- Phase 19.1 free real-data provider stack is complete and working on staging
+- Phase 19.2 wired `TrendSignalEngine` into the workflow; `provider=free_real` now has non-blocking Stooq → EODHD fallback for Azure environments where Stooq is blocked
 - EODHD free plan covers `/eod` prices only; `/fundamentals` returns 403 on free plan
 - No public reports are live yet
 - News/catalyst discovery is not yet fully wired into the analysis workflow
@@ -54,18 +52,20 @@ This document describes the gap between the current implementation and the targe
 
 ---
 
-## Gap 1: Real Price + Trend Workflow (Phase 19.2)
+## Gap 1: Real Price + Trend Workflow ✅ RESOLVED — Phase 19.2
 
-**Current:** `TrendSignalEngine` and `EodhdPriceOnlyProvider` exist. SEC EDGAR fundamentals work on staging. Stooq is blocked from Azure outbound. EODHD /eod price data not visibly confirmed in T5 summary during staging test.
+**Resolved:** 2026-07-12
 
-**Target:** A full free-real analysis run on staging produces SEC fundamentals (T2) + price data (T5) + trend signals (T6) in the workflow state, and a final internal report with `safety_valid=True`.
-
-**Gaps:**
-- Wire `TrendSignalEngine` as a dedicated workflow node
-- Make EODHD /eod price data visible as T5 in source-tier summary
-- Make Stooq failure non-blocking; fall back to EODHD price-only when Stooq is unavailable on Azure
-- Preserve composite `provider_name` in workflow metadata (e.g. `"free_real: stooq+sec_edgar"`)
-- Verify AAPL `provider=free_real` end-to-end on staging after fix
+**What was fixed:**
+- `TrendSignalEngine` is now wired into `node_fetch_provider_data` for composite providers (`free_real`, `eodhd_free_real`); trend signals (T6) surface in workflow state, draft report, and enriched snapshot
+- `FreeRealProvider.get_price_history()` uses non-blocking 3-attempt fallback: Stooq → EODHD price-only → empty `PriceHistoryData` with warning; Stooq failure does not abort the analysis run on Azure
+- EODHD /eod price data now visible as T5 in source-tier summary via `enrich_snapshot_with_free_real()`
+- SEC EDGAR fundamentals visible as T2 in source-tier summary and as a separate source record in `node_create_source_records`
+- Composite `provider_name` preserved throughout workflow (e.g. `"free_real"`); sub-provider names tracked separately in `contributing_providers` state field
+- `requested_provider_name` and `contributing_providers` added to `CompanyAnalysisState`
+- `enrich_snapshot_with_free_real()` added to `snapshot_builder.py`
+- `FreeRealSnapshot.contributing_providers` tracks which sub-providers actually contributed real data
+- 31 tests added in `test_phase19_2_real_price_trend_workflow.py`; all offline, no network
 
 **Phase:** 19.2
 

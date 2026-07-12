@@ -385,6 +385,114 @@ def build_schema_draft(
 
 
 # ---------------------------------------------------------------------------
+# Free-real snapshot enrichment (Phase 19.2)
+# ---------------------------------------------------------------------------
+
+
+def enrich_snapshot_with_free_real(snapshot: dict, free_real_dict: dict) -> dict:
+    """
+    Inject Phase 19.2 composite-provider metadata into an existing snapshot dict.
+
+    Adds/updates:
+      - provider_metadata.contributing_providers
+      - provider_metadata.provider_stack
+      - price_history_summary (from free_real price data when available)
+      - fundamentals_summary (from free_real fundamentals when available)
+      - trend_signal_summary (T6_model_estimate)
+      - free_real_warnings
+
+    Designed to be called after build_company_snapshot() to layer in the
+    richer composite metadata from FreeRealSnapshot.to_dict().
+    """
+    result = dict(snapshot)
+
+    # ── Provider metadata ────────────────────────────────────────────────
+    provider_meta = dict(result.get("provider_metadata") or {})
+    provider_meta["contributing_providers"] = free_real_dict.get("contributing_providers", [])
+    provider_meta["provider_stack"] = free_real_dict.get("provider_stack", "unknown")
+    result["provider_metadata"] = provider_meta
+
+    # ── Price history from free_real (T5) ────────────────────────────────
+    fr_price = free_real_dict.get("price_history")
+    if fr_price and fr_price.get("num_points", 0) > 0:
+        result["price_history_summary"] = {
+            "available": True,
+            "data_points_count": fr_price["num_points"],
+            "latest_close": fr_price.get("latest_close"),
+            "date_range": {
+                "start": fr_price.get("earliest_date"),
+                "end": fr_price.get("latest_date"),
+            },
+            "source_tier": fr_price.get("source_tier") or "T5_api_aggregator",
+            "provider_name": fr_price.get("provider"),
+            "currency": "USD",
+            "price_data_quality": "B_single_credible",
+        }
+        # Remove price_history from missing_fields if it was marked missing
+        missing = result.get("missing_fields") or []
+        result["missing_fields"] = [f for f in missing if f != "price_history"]
+
+    # ── Fundamentals from free_real (T2) ────────────────────────────────
+    fr_fund = free_real_dict.get("fundamentals")
+    if fr_fund and fr_fund.get("num_datapoints", 0) > 0:
+        # Build a condensed fundamentals summary from SEC EDGAR datapoints
+        dp_map = {dp["field_name"]: dp for dp in (fr_fund.get("datapoints") or [])}
+
+        def _val(key: str) -> float | None:
+            dp = dp_map.get(key)
+            return dp["value"] if dp else None
+
+        result["fundamentals_summary"] = {
+            "source_tier": fr_fund.get("source_tier") or "T2_regulator_or_gov",
+            "provider": fr_fund.get("provider"),
+            "num_datapoints": fr_fund["num_datapoints"],
+            "revenue_usd_m": _val("sec_edgar.revenue"),
+            "net_income_usd_m": _val("sec_edgar.net_income"),
+            "eps_basic": _val("sec_edgar.eps_basic"),
+            "eps_diluted": _val("sec_edgar.eps_diluted"),
+            "total_assets_usd_m": _val("sec_edgar.total_assets"),
+            "total_liabilities_usd_m": _val("sec_edgar.total_liabilities"),
+            "shareholders_equity_usd_m": _val("sec_edgar.shareholders_equity"),
+            "operating_cash_flow_usd_m": _val("sec_edgar.operating_cash_flow"),
+            "long_term_debt_usd_m": _val("sec_edgar.long_term_debt"),
+            "short_term_debt_usd_m": _val("sec_edgar.short_term_debt"),
+            "data_quality": fr_fund.get("data_quality") or "B_single_credible",
+            "note": (
+                "Fundamentals from SEC EDGAR XBRL (T2_regulator_or_gov). "
+                "Annual 10-K data. Values in USD_m."
+            ),
+        }
+
+    # ── Trend signals (T6) ───────────────────────────────────────────────
+    fr_trend = free_real_dict.get("trend_signals")
+    if fr_trend:
+        result["trend_signal_summary"] = {
+            "momentum_label": fr_trend.get("momentum_label"),
+            "return_1m": fr_trend.get("return_1m"),
+            "return_3m": fr_trend.get("return_3m"),
+            "return_6m": fr_trend.get("return_6m"),
+            "pct_above_ma50": fr_trend.get("pct_above_ma50"),
+            "pct_above_ma200": fr_trend.get("pct_above_ma200"),
+            "relative_strength": fr_trend.get("relative_strength"),
+            "source_tier": fr_trend.get("source_tier") or "T6_model_estimate",
+            "data_warnings": fr_trend.get("data_warnings") or [],
+            "note": (
+                "Internal momentum labels only. "
+                "T6_model_estimate — derived from T5 price data. "
+                "No investment recommendation. "
+                "Not investment advice."
+            ),
+        }
+
+    # ── Free-real warnings ───────────────────────────────────────────────
+    fr_warnings = free_real_dict.get("warnings") or []
+    if fr_warnings:
+        result["free_real_warnings"] = fr_warnings
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Citation field descriptors for provider data items
 # ---------------------------------------------------------------------------
 

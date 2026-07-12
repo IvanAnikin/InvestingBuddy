@@ -101,6 +101,8 @@ class FreeRealSnapshot:
     provider_stack: str = "unknown"
     composed_at: str = ""
     warnings: list[str] = field(default_factory=list)
+    # Which sub-providers actually contributed data (e.g. ["sec_edgar_fundamentals", "stooq"])
+    contributing_providers: list[str] = field(default_factory=list)
 
     # Raw profile from provider (enrichment)
     provider_profile: CompanyProfileData | None = None
@@ -175,6 +177,7 @@ class FreeRealSnapshot:
             "is_mock": self.is_mock,
             "provider_stack": self.provider_stack,
             "composed_at": self.composed_at,
+            "contributing_providers": self.contributing_providers,
             "price_history": price_summary,
             "fundamentals": fund_summary,
             "trend_signals": trend_summary,
@@ -289,6 +292,20 @@ async def compose_free_real_snapshot(
             f"Trend signals not computable for {identity.ticker} — no price data."
         )
 
+    # ── Contributing providers ──────────────────────────────────────────────
+    contributing: list[str] = []
+    if fundamentals_data is not None and not fundamentals_data.meta.is_mock:
+        p = fundamentals_data.meta.provider_name
+        if p and p not in contributing:
+            contributing.append(p)
+    if price_data is not None and not price_data.meta.is_mock:
+        p = price_data.meta.provider_name
+        if p and p not in contributing:
+            contributing.append(p)
+    if trend_signals is not None:
+        if "trend_signal_engine" not in contributing:
+            contributing.append("trend_signal_engine")
+
     return FreeRealSnapshot(
         ticker=identity.ticker,
         legal_name=identity.legal_name,
@@ -308,4 +325,5 @@ async def compose_free_real_snapshot(
         is_mock=not has_real_data,
         provider_stack=provider_stack,
         warnings=warnings,
+        contributing_providers=contributing,
     )

@@ -90,6 +90,7 @@ from app.integrations.financial_data_provider import (
     build_source_record,
 )
 from app.integrations.financial_data_service import FinancialDataService
+from app.integrations.free_real_snapshot import CompanyIdentity, compose_free_real_snapshot
 from app.integrations.llm_provider import get_llm_client, validate_llm_sections
 from app.schemas.report import ReportCreate
 from app.schemas.source import CitationCreate, SourceCreate
@@ -104,6 +105,7 @@ from app.services.report_validation_service import validate_real_asset_report
 from app.workflows.snapshot_builder import (
     build_company_snapshot,
     build_schema_draft,
+    enrich_snapshot_with_free_real,
     get_price_citation_fields,
     get_profile_citation_fields,
 )
@@ -287,6 +289,8 @@ def build_company_analysis_graph(
     async def node_fetch_provider_data(state: CompanyAnalysisState) -> dict:
         run = _run_holder.get("run")
         pname = state.get("provider_name") or provider_name
+        # Preserve the originally-requested provider name throughout the workflow.
+        requested_pname: str = pname or "mock"
         ticker = state.get("ticker") or "UNKNOWN"
         exchange = state.get("exchange")
 
@@ -295,7 +299,11 @@ def build_company_analysis_graph(
             run=run,
             agent_name="FinancialDataAgent",
             step_name="fetch_provider_data",
-            input_data={"ticker": ticker, "exchange": exchange, "provider_name": pname},
+            input_data={
+                "ticker": ticker,
+                "exchange": exchange,
+                "provider_name": requested_pname,
+            },
         )
 
         try:
@@ -309,35 +317,90 @@ def build_company_analysis_graph(
                     prices = await svc.get_price_history(ticker, exchange)
                 except NotImplementedError:
                     prices = None
+                except Exception as price_exc:
+                    # Non-fatal — workflow continues without price data
+                    prices = None
+                    _run_holder.setdefault("provider_warnings_pre", []).append(
+                        f"Price fetch failed (non-fatal): {price_exc}"
+                    )
 
-            # Phase 13: optionally fetch EODHD fundamentals
+            # Phase 13+19.2: fetch fundamentals for eodhd, free_real, eodhd_free_real
             fundamentals: FundamentalsData | None = None
             fundamentals_warnings: list[str] = []
-            if pname == "eodhd" and "fundamentals" in caps:
+            if pname in ("eodhd", "free_real", "eodhd_free_real") and "fundamentals" in caps:
                 try:
                     fundamentals = await svc.get_fundamentals(ticker, exchange)
                 except NotImplementedError:
                     fundamentals_warnings.append(
-                        "EODHD fundamentals: NotImplementedError — skipped."
+                        f"{pname} fundamentals: NotImplementedError — skipped."
                     )
                 except Exception as fund_exc:
                     fundamentals_warnings.append(
-                        f"EODHD fundamentals fetch failed (non-fatal): {fund_exc}"
+                        f"{pname} fundamentals fetch failed (non-fatal): {fund_exc}"
                     )
 
-            is_mock = profile.meta.is_mock
+            # ── Phase 19.2: compose FreeRealSnapshot for composite providers ──
+            free_real_snap_dict: dict | None = None
+            trend_signal_summary: dict | None = None
+            contributing_providers: list[str] = []
+            provider_warnings: list[str] = list(fundamentals_warnings)
+            provider_warnings.extend(_run_holder.pop("provider_warnings_pre", []))
+
+            is_mock: bool
+
+            if pname in ("free_real", "eodhd_free_real"):
+                identity = CompanyIdentity(
+                    ticker=ticker,
+                    legal_name=profile.legal_name,
+                    exchange=exchange,
+                    country_domicile=profile.country_domicile,
+                    sector=profile.sector,
+                    industry=profile.industry,
+                )
+                snap = await compose_free_real_snapshot(
+                    identity=identity,
+                    price_data=prices if (prices and prices.price_points) else None,
+                    fundamentals_data=fundamentals,
+                    provider_stack=pname,
+                    extra_warnings=provider_warnings,
+                )
+                free_real_snap_dict = snap.to_dict()
+                if snap.trend_signals:
+                    ts = snap.trend_signals
+                    trend_signal_summary = {
+                        "momentum_label": ts.momentum_label,
+                        "return_1m": ts.return_1m,
+                        "return_3m": ts.return_3m,
+                        "return_6m": ts.return_6m,
+                        "pct_above_ma50": ts.pct_above_ma50,
+                        "pct_above_ma200": ts.pct_above_ma200,
+                        "relative_strength": ts.relative_strength,
+                        "source_tier": ts.source_tier,
+                        "computed_at": ts.computed_at,
+                        "data_warnings": ts.data_warnings,
+                    }
+                contributing_providers = snap.contributing_providers
+                provider_warnings = snap.warnings
+                is_mock = snap.is_mock
+            else:
+                is_mock = profile.meta.is_mock
 
             await agent_run_service.complete_agent_step(
                 db,
                 step,
                 output_data={
-                    "provider_name": profile.meta.provider_name,
+                    "provider_name": requested_pname,
                     "is_mock": is_mock,
                     "ticker": profile.ticker,
                     "legal_name": profile.legal_name,
                     "price_points_count": len(prices.price_points) if prices else 0,
-                    "fundamentals_datapoints_count": len(fundamentals.datapoints) if fundamentals else 0, # noqa: E501
+                    "fundamentals_datapoints_count": (
+                        len(fundamentals.datapoints) if fundamentals else 0
+                    ),
                     "fundamentals_warnings": fundamentals_warnings,
+                    "contributing_providers": contributing_providers,
+                    "trend_signal_available": trend_signal_summary is not None,
+                    "provider_warnings_count": len(provider_warnings),
                 },
             )
 
@@ -345,9 +408,16 @@ def build_company_analysis_graph(
             _run_holder["profile"] = profile
             _run_holder["prices"] = prices
             _run_holder["fundamentals"] = fundamentals
+            _run_holder["free_real_snapshot"] = free_real_snap_dict
+            _run_holder["trend_signal_summary"] = trend_signal_summary
 
             return {
-                "provider_name": profile.meta.provider_name,
+                "provider_name": requested_pname,   # preserve requested provider name
+                "requested_provider_name": requested_pname,
+                "contributing_providers": contributing_providers,
+                "free_real_snapshot": free_real_snap_dict,
+                "trend_signal_summary": trend_signal_summary,
+                "provider_warnings": provider_warnings or None,
                 "is_mock": is_mock,
                 "analysis_output": _build_placeholder_analysis(state),
                 "fundamentals_available": fundamentals is not None,
@@ -367,6 +437,8 @@ def build_company_analysis_graph(
         run = _run_holder.get("run")
         profile = _run_holder.get("profile")
         prices = _run_holder.get("prices")
+        fundamentals = _run_holder.get("fundamentals")
+        pname = state.get("provider_name") or "mock"
         ticker = state.get("ticker") or "UNKNOWN"
 
         step = await agent_run_service.create_agent_step(
@@ -374,12 +446,13 @@ def build_company_analysis_graph(
             run=run,
             agent_name="SourceRecordAgent",
             step_name="create_source_records",
-            input_data={"ticker": ticker, "provider_name": state.get("provider_name")},
+            input_data={"ticker": ticker, "provider_name": pname},
         )
 
         source_ids: list[str] = []
         provider_source_id: str | None = None
         price_source_id: str | None = None
+        fundamentals_source_id: str | None = None
 
         # Source record for company profile data
         profile_attrs = build_source_record(
@@ -404,7 +477,7 @@ def build_company_analysis_graph(
         source_ids.append(str(profile_source.id))
         provider_source_id = str(profile_source.id)
 
-        # Source record for price history (if fetched)
+        # Source record for price history (if fetched with data points, T5)
         if prices and prices.price_points:
             price_attrs = build_source_record(
                 meta=prices.meta,
@@ -428,14 +501,41 @@ def build_company_analysis_graph(
             source_ids.append(str(price_source.id))
             price_source_id = str(price_source.id)
 
+        # Phase 19.2: source record for SEC EDGAR fundamentals (T2) for composite providers
+        if fundamentals and fundamentals.datapoints and pname in ("free_real", "eodhd_free_real"):
+            fund_attrs = build_source_record(
+                meta=fundamentals.meta,
+                source_url=None,
+                title=f"SEC EDGAR XBRL — fundamentals: {ticker} (T2_regulator_or_gov)",
+                data_quality=DataQuality.B_single_credible,
+            )
+            fund_source, _ = await source_service.get_or_create_source(
+                db,
+                SourceCreate(
+                    source_type=fund_attrs.source_type,
+                    title=fund_attrs.title,
+                    url=fund_attrs.url,
+                    publisher=fund_attrs.publisher,
+                    retrieved_at=fund_attrs.retrieved_at,
+                    credibility_score=fund_attrs.credibility_score,
+                ),
+            )
+            source_ids.append(str(fund_source.id))
+            fundamentals_source_id = str(fund_source.id)
+
         await agent_run_service.complete_agent_step(
             db,
             step,
-            output_data={"source_ids": source_ids, "provider_source_id": provider_source_id},
+            output_data={
+                "source_ids": source_ids,
+                "provider_source_id": provider_source_id,
+                "fundamentals_source_id": fundamentals_source_id,
+            },
         )
 
         _run_holder["provider_source_id"] = provider_source_id
         _run_holder["price_source_id"] = price_source_id
+        _run_holder["fundamentals_source_id"] = fundamentals_source_id
 
         return {
             "source_ids": source_ids,
@@ -468,6 +568,12 @@ def build_company_analysis_graph(
 
         snapshot = build_company_snapshot(profile=profile, prices=prices, fundamentals=fundamentals)
 
+        # Phase 19.2: enrich snapshot with composite free_real data
+        # (trend signals, contributing providers, SEC-EDGAR fundamentals, T5 price metadata)
+        free_real_snap = _run_holder.get("free_real_snapshot")
+        if free_real_snap:
+            snapshot = enrich_snapshot_with_free_real(snapshot, free_real_snap)
+
         await agent_run_service.complete_agent_step(
             db,
             step,
@@ -479,6 +585,10 @@ def build_company_analysis_graph(
                     "available", False
                 ),
                 "fundamentals_summary_available": snapshot.get("fundamentals_summary") is not None,
+                "trend_signal_available": snapshot.get("trend_signal_summary") is not None,
+                "contributing_providers": (
+                    (snapshot.get("provider_metadata") or {}).get("contributing_providers") or []
+                ),
             },
         )
 
@@ -1607,6 +1717,48 @@ def build_company_analysis_graph(
             content_md += "\n".join(f"- {t}" for t in next_tasks[:8])
             content_md += "\n\n"
 
+        # ── Trend Signal Summary (Phase 19.2 — T6_model_estimate) ───────
+        trend_sig = _run_holder.get("trend_signal_summary") or {}
+        if trend_sig:
+            content_md += "## Trend Signal Summary (Internal — T6 Model Estimate)\n\n"
+            content_md += (
+                "> **INTERNAL ONLY.** Momentum labels are T6_model_estimate derived from price "
+                "history. No investment recommendation. Not investment advice.\n\n"
+            )
+            momentum = trend_sig.get("momentum_label", "N/A")
+            content_md += f"**Momentum Label:** `{momentum}`  \n"
+            for metric, label in [
+                ("return_1m", "1M Return (%)"),
+                ("return_3m", "3M Return (%)"),
+                ("return_6m", "6M Return (%)"),
+                ("pct_above_ma50", "% above MA50"),
+                ("pct_above_ma200", "% above MA200"),
+                ("relative_strength", "Relative Strength"),
+            ]:
+                val = trend_sig.get(metric)
+                if val is not None:
+                    content_md += f"**{label}:** {val}  \n"
+            src_tier = trend_sig.get("source_tier", "T6_model_estimate")
+            content_md += f"**Source Tier:** {src_tier}  \n"
+            ts_warnings = trend_sig.get("data_warnings") or []
+            if ts_warnings:
+                content_md += "**Trend Data Warnings:**\n\n"
+                content_md += "\n".join(f"- {w}" for w in ts_warnings)
+            content_md += "\n\n"
+
+        # ── Provider Warnings (Phase 19.2) ───────────────────────────
+        prov_warnings = state.get("provider_warnings") or []
+        if prov_warnings:
+            content_md += "## Provider Warnings\n\n"
+            content_md += "\n".join(f"- {w}" for w in prov_warnings)
+            content_md += "\n\n"
+
+        # ── Contributing Providers (Phase 19.2) ─────────────────────
+        contrib = state.get("contributing_providers") or []
+        if contrib:
+            content_md += "## Contributing Providers\n\n"
+            content_md += ", ".join(f"`{p}`" for p in contrib) + "\n\n"
+
         # ── Citation Validation Review ───────────────────────────────
         content_md += "## Citation Validation Review (v2)\n\n"
         content_md += f"**Status:** {citation_v2_status}  \n"
@@ -1881,6 +2033,12 @@ async def run_company_analysis(
         "human_review_required": None,
         # Phase 15: Research Attractiveness Scorecard
         "research_attractiveness_scorecard": None,
+        # Phase 19.2: composite provider tracking
+        "requested_provider_name": provider_name,
+        "contributing_providers": None,
+        "free_real_snapshot": None,
+        "trend_signal_summary": None,
+        "provider_warnings": None,
         "error": None,
         "status": "running",
     }
