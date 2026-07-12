@@ -284,6 +284,63 @@ Registration is created (requires Entra ID Application Developer role — curren
 
 ---
 
+## Staging Runtime Configuration (`ib-stg-api`)
+
+### Gunicorn workers — 1 worker on B1 (intentional)
+
+`ib-stg-api` runs a **single gunicorn worker** on the B1 App Service Plan. This is
+a deliberate reliability trade-off, not an oversight:
+
+- **B1 memory headroom** — B1 has ~1.75 GB RAM. The LangGraph / LangChain agent
+  stack loads a large dependency graph at import time; a second worker roughly
+  doubles resident memory and risks OOM restarts on B1.
+- **Heavy startup** — cold boot already runs Oryx `pip install` + a slow
+  first-import of the agent runtime. Multiple workers multiply cold-start cost.
+- **Staging prioritises reliability over concurrency** — staging serves smoke
+  tests and admin QA, not production traffic, so a single worker is sufficient.
+
+**Do not raise this to `--workers 2` on B1.** Only move to 2+ workers **after**
+scaling the plan to **B2 / S1 or higher**, where the extra memory headroom exists.
+The startup command is intentionally pinned to `--workers 1` for the current stack.
+
+### Deploy health-check hardening (Phase 19.2.1)
+
+The API deploy previously could report a **false green**: Azure sometimes routed
+the `/health` probe to the **old** container while the new one was still building
+during async recycle, so the smoke check saw HTTP 200 from stale code.
+
+The deploy workflow now verifies the **new** container is actually serving:
+
+1. **Build marker** — the workflow writes `build_info.json` (commit SHA, build id,
+   build time) into the deployment ZIP. `app/core/build_info.py` reads it at
+   startup and `/health` exposes it as `commit_sha` / `build_id` (additive,
+   backward-compatible fields — `status`, `environment`, `version` are unchanged).
+   `build_info.json` carries only public build identifiers — **no secrets** — and
+   is git-ignored (generated at deploy time only).
+2. **SHA-matched, stable polling** — the smoke check polls `/health`, parses
+   `commit_sha`, and requires **3 consecutive** responses matching the workflow's
+   `github.sha` before passing. A single lucky hit on the old container no longer
+   passes the gate. It times out (~9 min, tuned for B1 single-worker cold start)
+   with a clear failure instead of a false success.
+
+### Oryx / runtime failure detection
+
+The real Phase 19.2 failure was a **transient Oryx virtualenv error**: `uvicorn`
+was missing at container runtime (`antenv` failed to build). Re-running the same
+deploy fixed it. The smoke check now scans the `/health` response for common
+boot-failure signatures and fails clearly with remediation guidance:
+
+- `ModuleNotFoundError` / `No module named 'uvicorn'`
+- broken/missing `antenv`
+- container exit/crash / generic "Application Error"
+
+On detection it prints the signature, HTTP status, and served commit SHA (no
+secrets, no app settings values) and advises **re-running the deploy** — which
+clears the transient Oryx failure. It never silently passes because the old
+container answered.
+
+---
+
 ## OIDC Setup (future — blocked on Entra permissions)
 
 Once the Entra ID Application Developer role is granted, replace publish profiles with OIDC:

@@ -7,6 +7,14 @@ name: Deploy API — Staging
 #
 # NOTE: Database migrations are NOT run automatically.
 # Run manually after first deploy: see docs/DEPLOYMENT.md#running-migrations-on-staging
+#
+# Phase 19.2.1 — deploy health hardening:
+#   The smoke check now confirms the NEW container is serving by comparing the
+#   commit SHA reported at /health against this workflow's github.sha. This avoids
+#   the false-green case where Azure routes /health to the OLD container during
+#   async recycle. It also detects common Oryx/runtime boot failures (missing
+#   uvicorn / broken antenv) instead of silently passing.
+#   ib-stg-api runs a single gunicorn worker on B1 (see docs/DEPLOYMENT.md).
 
 on:
   push:
@@ -39,6 +47,23 @@ jobs:
         working-directory: apps/api
         run: pip install -e ".[deploy]"
 
+      # Phase 19.2.1: bundle the commit SHA + build id into the deployment package.
+      # The API reads this at startup and exposes it on /health (app/core/build_info.py),
+      # so the smoke check below can prove the NEW container is serving.
+      # Contains only public build identifiers — no secrets.
+      - name: Write build metadata
+        working-directory: apps/api
+        run: |
+          cat > build_info.json <<EOF
+          {
+            "commit_sha": "${{ github.sha }}",
+            "build_id": "${{ github.run_id }}",
+            "build_time": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+          echo "Wrote build_info.json:"
+          cat build_info.json
+
       # Exclude test files, local venv, and build artefacts from the package.
       # Also bundle packages/research-contracts/ so the API can find report_schema.json
       # at /home/site/wwwroot/packages/research-contracts/ on Azure App Service.
@@ -57,11 +82,13 @@ jobs:
             --exclude "*.pyc" \
             --exclude "__pycache__/*"
 
-      - name: Verify schema in deployment package
+      - name: Verify deployment package contents
         run: |
           echo "Verifying report_schema.json is present in deployment package..."
           unzip -l deploy-api.zip | grep "packages/research-contracts/real_asset_equity/v1/report_schema.json"
-          echo "Schema file confirmed in deployment package."
+          echo "Verifying build_info.json is present in deployment package..."
+          unzip -l deploy-api.zip | grep -E "(^| )build_info.json"
+          echo "Deployment package contents confirmed."
 
       - name: Deploy to Azure App Service
         uses: azure/webapps-deploy@v3
@@ -71,19 +98,61 @@ jobs:
           package: deploy-api.zip
 
       # /health is exempt from Basic Auth — safe to poll without credentials.
-      # Allow extra time for Oryx pip install + gunicorn startup on B1 (~10 min cold boot).
-      - name: Smoke check — API health
+      # Confirms the NEW container is serving by matching commit_sha, and requires
+      # multiple consecutive stable responses so we don't accept a single lucky hit
+      # on the old container mid-recycle. Also detects Oryx/runtime boot failures.
+      # Allow extra time for Oryx pip install + single-worker gunicorn cold start on B1.
+      - name: Smoke check — verify new container is serving
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
         run: |
-          echo "Waiting for App Service to restart..."
+          HEALTH_URL="https://ib-stg-api.azurewebsites.net/health"
+          REQUIRED=3          # consecutive matching responses required
+          MAX_ATTEMPTS=16     # ~= 60s initial + 16 * 30s ≈ 9 min for B1 cold start
+          echo "Expecting /health commit_sha=$EXPECTED_SHA at $HEALTH_URL"
+          echo "Waiting for App Service to recycle and Oryx to build antenv (1 worker on B1)..."
           sleep 60
-          for i in 1 2 3 4 5; do
-            STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://ib-stg-api.azurewebsites.net/health)
-            echo "Attempt $i — health endpoint HTTP status: $STATUS"
-            if [ "$STATUS" = "200" ]; then
-              echo "API health check passed."
-              exit 0
+
+          CONSECUTIVE=0
+          STATUS="000"
+          SERVED_SHA=""
+          for i in $(seq 1 "$MAX_ATTEMPTS"); do
+            BODY=$(curl -s --max-time 20 "$HEALTH_URL" || true)
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 20 "$HEALTH_URL" || echo "000")
+            SERVED_SHA=$(printf '%s' "$BODY" | python3 -c "import sys,json; print(json.load(sys.stdin).get('commit_sha',''))" 2>/dev/null || echo "")
+            echo "Attempt $i/$MAX_ATTEMPTS — HTTP $STATUS — served commit_sha=${SERVED_SHA:-<none>}"
+
+            # ── Oryx / runtime failure signature detection ──────────────────────
+            if printf '%s' "$BODY" | grep -qiE "ModuleNotFoundError|No module named .?uvicorn|Application Error|antenv|container.*(exit|crash)"; then
+              echo "::error::Runtime/Oryx failure signature detected in health response."
+              echo "This usually means antenv/uvicorn failed to build at container start"
+              echo "(transient Oryx virtualenv failure). Re-running this deploy typically fixes it."
+              printf '%s\n' "$BODY" | head -c 500
+              exit 1
             fi
-            sleep 60
+
+            if [ "$STATUS" = "200" ] && [ -n "$SERVED_SHA" ] && [ "$SERVED_SHA" = "$EXPECTED_SHA" ]; then
+              CONSECUTIVE=$((CONSECUTIVE + 1))
+              echo "  stable match #$CONSECUTIVE / $REQUIRED"
+              if [ "$CONSECUTIVE" -ge "$REQUIRED" ]; then
+                echo "New container confirmed serving commit $EXPECTED_SHA ($REQUIRED stable responses)."
+                exit 0
+              fi
+            else
+              if [ "$CONSECUTIVE" -gt 0 ]; then
+                echo "  reset — response not yet stable on the new container"
+              fi
+              CONSECUTIVE=0
+            fi
+            sleep 30
           done
-          echo "ERROR: health check failed after 5 attempts"
+
+          echo "::error::Deploy health check failed — new container did not serve commit $EXPECTED_SHA."
+          echo "Last HTTP status: $STATUS"
+          echo "Last served commit_sha: ${SERVED_SHA:-<none>}"
+          echo "Likely causes:"
+          echo "  1. Old container still answering /health during async recycle (never flipped)."
+          echo "  2. Transient Oryx venv/uvicorn build failure at container start."
+          echo "  3. App crashed after deploy (check App Service Log stream / _success.log)."
+          echo "Common fix: re-run this workflow to redeploy — the transient Oryx failure clears."
           exit 1

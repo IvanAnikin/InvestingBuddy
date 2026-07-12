@@ -567,7 +567,12 @@ class ScoringEngine:
         provider_meta = company_snapshot.get("provider_metadata", {})
         ticker = identity.get("ticker", "N/A")
         name = identity.get("legal_name", "Unknown")
-        sector = company_snapshot.get("profile", {}).get("sector", "")
+        # Phase 19.2.1: real providers (e.g. SEC EDGAR) leave sector absent, so the
+        # snapshot can carry ``"sector": None``. ``dict.get(key, default)`` returns
+        # None (not the default) for an explicit None value, so coalesce to "" to
+        # keep every downstream string operation (theme alignment join) crash-safe.
+        profile_data = company_snapshot.get("profile") or {}
+        sector = profile_data.get("sector") or ""
         source_tier = provider_meta.get("source_tier", "T6_model_estimate")
         is_mock = company_snapshot.get("is_mock", True)
 
@@ -1010,6 +1015,10 @@ class ScoringEngine:
     def _score_theme_alignment_from_context(
         self, bc: dict, br: dict, sector: str
     ) -> DimensionScore:
+        # Phase 19.2.1: defensive guard — sector may be None when the provider
+        # (e.g. SEC EDGAR) does not supply it. Coalesce to "" so the join below
+        # never raises TypeError: sequence item expected str, got NoneType.
+        sector = sector or ""
         bull_points = bc.get("positive_thesis_points", [])
         if not bull_points:
             return DimensionScore(

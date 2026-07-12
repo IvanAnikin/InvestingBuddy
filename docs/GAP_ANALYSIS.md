@@ -67,7 +67,13 @@ This document describes the gap between the current implementation and the targe
 - `FreeRealSnapshot.contributing_providers` tracks which sub-providers actually contributed real data
 - 31 tests added in `test_phase19_2_real_price_trend_workflow.py`; all offline, no network
 
-**Phase:** 19.2
+**Phase 19.2.1 follow-up (observability + deploy hardening):** ✅ 2026-07-12
+- Stooq→EODHD fallback reason now surfaced in the report's Provider Warnings section (`summarize_price_provider_warning()` in `free_real_snapshot.py`); previously the reason stayed buried in `price.meta.note`
+- `scoring_engine.score_company_analysis` no longer raises `TypeError` when `sector` is `None` (SEC EDGAR profiles omit sector) — extraction coalesces to `""` and `_score_theme_alignment_from_context` guards defensively
+- Deploy health-check hardened: `/health` exposes `commit_sha`/`build_id`; deploy smoke check requires 3 consecutive SHA-matched responses (no false-green on async recycle) + Oryx/runtime boot-failure detection
+- 20 tests added in `test_phase19_2_1_hardening.py`; `docs/DEPLOYMENT.md` documents the intentional `--workers 1` on B1
+
+**Phase:** 19.2 → 19.2.1
 
 ---
 
