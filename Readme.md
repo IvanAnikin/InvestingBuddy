@@ -152,10 +152,14 @@ Copy `.env.example` to `.env` and fill in values as needed.
 | Phase 17 | Done | Admin Auth Proxy: all browser admin calls routed through Next.js server-side proxy (`/api/admin/proxy`); backend credentials remain server-only |
 | Phase 18 | Done | Staging E2E reliability hardening and auth/Bicep resilience fixes |
 | Phase 19 | Superseded | Live EODHD smoke testing — superseded by Phase 19.1 |
-| Phase 19.1 | Done | Free Real Data Provider Stack: `EodhdPriceOnlyProvider` (EODHD /eod free plan); `SecEdgarFundamentalsProvider` (XBRL fundamentals, ticker→CIK, no key); `TrendSignalEngine` (1M/3M/6M returns, MA50/MA200, momentum labels — no BUY/SELL/HOLD/WATCH); `FreeRealSnapshotComposer`; `NewsCatalystProvider` (SEC 8-K); composite providers `free_real` + `eodhd_free_real`; 64 new offline tests; 831 total; no paid fundamentals required |
-| Phase 20 | In Progress | Admin Final Report UI: internal final-report actions (generate draft, validate, optional regenerate section) + final-report metadata rendering |
+| Phase 19.1 | Done | Free Real Data Provider Stack: `EodhdPriceOnlyProvider` (EODHD /eod free plan); `SecEdgarFundamentalsProvider` (XBRL fundamentals, ticker→CIK, no key); `TrendSignalEngine` (1M/3M/6M returns, MA50/MA200, momentum labels — no BUY/SELL/HOLD/WATCH); `FreeRealSnapshotComposer`; `NewsCatalystProvider` (SEC 8-K); composite providers `free_real` + `eodhd_free_real`; 64 new offline tests; 831 total; no paid fundamentals required. Staging: SEC EDGAR ✅; Stooq blocked from Azure; TrendSignalEngine not yet wired into main workflow. |
+| Phase 19.1 safety fix | Done | `investment_committee_chair` forces `human_review_required=True` when safety guard triggers |
+| Phase 20 | Done | Admin Final Report UI: internal final-report actions (generate draft, validate, optional regenerate section) + final-report metadata rendering |
 | Phase 21 | Done | Playwright admin smoke tests (mock provider by default, staging E2E opt-in only) |
 | Phase 22 | Done | Judge + Backtesting Framework: `BacktestingService`, `ResearchJudgeService`, `MockHistoricalOutcomeProvider`; migration 009 (backtest_runs, backtest_results, thesis_tracking_events); 8 admin-only API endpoints; 34 offline tests; no live EODHD; no public recommendations |
+| Phase 22.1 | Done | Admin Backtesting UI: `/admin/backtesting` runs list + detail; create/evaluate/refresh; 13 Playwright tests; typecheck + lint + build clean |
+| Phase 22.1 maint | Done | `/admin/reports` dynamic rendering fix; homepage platform phase text updated |
+| Phase 19.2 | Up next | Wire TrendSignalEngine into main workflow; Stooq fallback on Azure; provider_name tracking; verify AAPL free_real end-to-end on staging |
 
 ---
 

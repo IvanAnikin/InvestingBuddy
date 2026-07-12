@@ -167,6 +167,8 @@ FINANCIAL_DATA_PROVIDER=eodhd             # Full EODHD: requires paid EODHD_API_
 - **Profile**: SEC EDGAR submissions (`T2_regulator_or_gov`) — ticker→CIK resolved via company_tickers.json
 - **Trend signals**: `TrendSignalEngine` (`T6_model_estimate`) — computed from price data
 
+**Known limitation (staging):** Stooq.com appears blocked from Azure outbound network (observed 2026-07-11 staging smoke test). `free_real` on Azure currently falls back to SEC fundamentals only (`is_mock=False`, but no price/trend data). Phase 19.2 will add a non-blocking fallback to EODHD price-only when Stooq is unavailable. `free_real` works correctly from local or non-Azure environments.
+
 **Provider stack: `eodhd_free_real`** (free EODHD API key required)
 - **Price data**: EODHD `/eod` (`T5_api_aggregator`) — EODHD free plan covers `/eod`; `/fundamentals` not called
 - **Fundamentals**: SEC EDGAR XBRL (`T2_regulator_or_gov`)
@@ -184,6 +186,14 @@ For non-US international fundamentals, a paid EODHD plan is required (use `Eodhd
 - No BUY/SELL/HOLD/WATCH — strictly prohibited
 - Source tier: T6_model_estimate (computed from T5 price data)
 - Metrics: 1M/3M/6M returns, 50-day MA deviation, 200-day MA deviation, relative strength vs benchmark
+- Called by `FreeRealSnapshotComposer` but **not yet wired into the `company_analysis` workflow** — Phase 19.2
+
+**Phase 19.2 gaps for free_real stack:**
+- Wire `TrendSignalEngine` as a workflow node (T6 trend signals in analysis state)
+- Preserve composite `provider_name` in workflow metadata (e.g. `"free_real: stooq+sec_edgar"`)
+- Make Stooq failure non-blocking on Azure; fall back to EODHD /eod price-only
+- Make EODHD /eod price data visible as T5 in workflow source-tier summary
+- Verify AAPL `provider=free_real` produces SEC + price + trend + final report with `safety_valid=True` on staging
 
 **News/Catalyst Interface (`apps/api/app/integrations/news_catalyst_provider.py`):**
 - `NullNewsCatalystProvider` — default; returns empty events + warning; no crash
