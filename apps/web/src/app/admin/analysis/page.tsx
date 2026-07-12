@@ -11,7 +11,92 @@ import type {
   WorkflowRunResponse,
 } from "@/types/api";
 
-const PROVIDERS = ["mock", "stooq", "gleif", "sec_edgar", "eodhd"];
+type ProviderTag =
+  | "recommended"
+  | "paid"
+  | "price-only"
+  | "us-only"
+  | "legacy"
+  | "offline";
+
+interface ProviderOption {
+  value: string;
+  label: string;
+  // Short note shown under the dropdown when this provider is selected.
+  note?: string;
+  tag?: ProviderTag;
+}
+
+// Order mirrors the Phase 19.2 recommended real-data stack first, then the
+// individual sub-providers, then the legacy / paid full providers last so the
+// paid EODHD full provider is not selected by accident.
+const PROVIDERS: ProviderOption[] = [
+  {
+    value: "mock",
+    label: "mock — Mock / offline CI-safe",
+    tag: "offline",
+    note: "Offline placeholder data. Safe for CI and smoke tests. No external calls.",
+  },
+  {
+    value: "free_real",
+    label: "free_real — Free real data: SEC + price + trend",
+    tag: "recommended",
+    note: "Recommended real-data provider. Combines SEC EDGAR data, price data, and internal trend signals. No paid access required.",
+  },
+  {
+    value: "eodhd_free_real",
+    label: "eodhd_free_real — EODHD price-only + SEC",
+    note: "EODHD price data (no paid fundamentals) combined with SEC EDGAR data.",
+  },
+  {
+    value: "eodhd_price_only",
+    label: "eodhd_price_only — EODHD price-only",
+    tag: "price-only",
+    note: "Price data only. No fundamentals.",
+  },
+  {
+    value: "sec_edgar_fundamentals",
+    label: "sec_edgar_fundamentals — SEC EDGAR fundamentals only",
+    tag: "us-only",
+    note: "U.S. SEC-registered companies only.",
+  },
+  {
+    value: "stooq",
+    label: "stooq — Stooq price data",
+    tag: "price-only",
+    note: "Price data only.",
+  },
+  {
+    value: "gleif",
+    label: "gleif — GLEIF identity",
+    note: "Legal entity identity data only (GLEIF).",
+  },
+  {
+    value: "sec_edgar",
+    label: "sec_edgar — Legacy SEC EDGAR",
+    tag: "legacy",
+    note: "Legacy SEC EDGAR provider. Prefer sec_edgar_fundamentals or free_real.",
+  },
+  {
+    value: "eodhd",
+    label: "eodhd — EODHD full provider (paid fundamentals required)",
+    tag: "paid",
+    note: "Requires paid EODHD Fundamentals access. On the free plan the /fundamentals call fails with 403. Use free_real or eodhd_free_real instead.",
+  },
+];
+
+const PROVIDER_TAG_STYLES: Record<
+  ProviderTag,
+  { label: string; color: "green" | "red" | "amber" | "gray" | "blue" }
+> = {
+  recommended: { label: "Recommended", color: "green" },
+  paid: { label: "Paid / full provider", color: "red" },
+  "price-only": { label: "Price only", color: "gray" },
+  "us-only": { label: "U.S. only", color: "blue" },
+  legacy: { label: "Legacy", color: "amber" },
+  offline: { label: "Offline", color: "gray" },
+};
+
 const LLM_PROVIDERS = ["mock", "azure_openai"];
 
 const inputCls =
@@ -165,6 +250,8 @@ export default function AnalysisPage() {
   const [result, setResult] = useState<WorkflowRunResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  const selectedProvider = PROVIDERS.find((p) => p.value === providerName);
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setSubmitting(true);
@@ -238,12 +325,36 @@ export default function AnalysisPage() {
               onChange={(e) => setProviderName(e.target.value)}
             >
               {PROVIDERS.map((p) => (
-                <option key={p} value={p}>
-                  {p}
-                  {p === "mock" ? " (offline / CI-safe)" : ""}
+                <option key={p.value} value={p.value}>
+                  {p.label}
                 </option>
               ))}
             </select>
+
+            {/* Static guidance for the real-data stack */}
+            <p className="text-xs text-gray-500 mt-1">
+              Use <code className="font-mono">free_real</code> for the current
+              free real-data workflow. It combines SEC EDGAR data, price data,
+              and internal trend signals. The <code className="font-mono">eodhd</code>{" "}
+              full provider requires paid Fundamentals access.
+            </p>
+
+            {/* Per-provider note for the current selection */}
+            {selectedProvider && (
+              <div className="flex items-start gap-2 mt-1.5">
+                {selectedProvider.tag && (
+                  <Badge
+                    label={PROVIDER_TAG_STYLES[selectedProvider.tag].label}
+                    color={PROVIDER_TAG_STYLES[selectedProvider.tag].color}
+                  />
+                )}
+                {selectedProvider.note && (
+                  <p className="text-xs text-gray-600">
+                    {selectedProvider.note}
+                  </p>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Advanced options */}
