@@ -13,6 +13,11 @@ dist/
 .mypy_cache/
 .ruff_cache/
 
+# ─── Build metadata (Phase 19.2.1) ────────────────────────────────────────────
+# Generated at deploy time and bundled into the ZIP — never committed.
+build_info.json
+apps/api/build_info.json
+
 # ─── Environment / Secrets ────────────────────────────────────────────────────
 .env
 .env.local

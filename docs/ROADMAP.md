@@ -1,6 +1,6 @@
 # Roadmap
 
-## Current State: Phase 19.2 Real Price + Trend Workflow Integration Fix released — Stooq→EODHD non-blocking fallback, TrendSignalEngine wired into company_analysis workflow, composite provider tracking (contributing_providers, requested_provider_name), T5/T6 source metadata visible in snapshot and draft report; Phase 19.1 Free Real Data Stack merged; Phase 22.1 Admin Backtesting UI live. Next: Phase 23 Auth or Phase 24 News/Catalyst.
+## Current State: Phase 19.2.1 Staging Deploy + Provider Observability Hardening — SHA-verified deploy health check (commit_sha/build_id on /health, no more false-green on async recycle), Oryx/runtime boot-failure detection, Stooq→EODHD fallback surfaced in provider warnings, sector=None scoring fix, documented `--workers 1` on B1. Builds on Phase 19.2 (Stooq→EODHD non-blocking fallback, TrendSignalEngine wired, composite provider tracking, T5/T6 source metadata) and Phase 19.1 Free Real Data Stack. Phase 22.1 Admin Backtesting UI live. Next: Phase 23 Auth or Phase 24 News/Catalyst.
 
 ---
 
@@ -812,23 +812,41 @@ Skills used: `frontend-nextjs`, `testing-qa`, `docs-maintainer`
 
 ---
 
-## Phase 19.2: Real Price + Trend Workflow Integration Fix
+## Phase 19.2: Real Price + Trend Workflow Integration Fix ✅
 
-**Status: Not started — recommended next phase**
+**Status: Released on staging (2026-07-12, tag `v1.19.2-real-price-trend-workflow`)**
 
-Goal: Make the `free_real` and `eodhd_free_real` providers fully functional as end-to-end real-data analysis paths. Deliver a verified AAPL run with `is_mock=False`, SEC fundamentals, real price data, and trend signals — producing a final internal report with `safety_valid=True`.
+Goal: Make the `free_real` and `eodhd_free_real` providers fully functional as end-to-end real-data analysis paths. Delivered a verified AAPL run with `is_mock=False`, SEC fundamentals, real price data, and trend signals — producing a final internal report with `safety_valid=True`.
 
-Deliverables:
-- [ ] Wire `TrendSignalEngine` into the `company_analysis` workflow (new node, non-fatal, T6)
-- [ ] Make EODHD /eod price data visible as T5 source in workflow state + T5 source-tier summary
-- [ ] Preserve composite `provider_name` in workflow metadata (e.g. `"free_real: stooq+sec_edgar"`)
-- [ ] Make Stooq fetch failure non-blocking on Azure; fall back to `eodhd_price_only` when Stooq fails
-- [ ] Allow `free_real` to degrade gracefully to SEC-fundamentals-only when price source is unavailable
-- [ ] Verify AAPL `provider=free_real` produces SEC + price + trend data in staging
-- [ ] Generate final internal report with `safety_valid=True` from partial real data
-- [ ] Update workflow version to 7.0.0
+Delivered:
+- [x] Wired `TrendSignalEngine` into the `company_analysis` workflow (non-fatal, T6)
+- [x] EODHD /eod price data visible as T5 source in workflow state + snapshot
+- [x] Preserved composite provider tracking (`contributing_providers`, `requested_provider_name`)
+- [x] Made Stooq fetch failure non-blocking; falls back to `eodhd_price_only` when Stooq fails
+- [x] `free_real` degrades gracefully to SEC-fundamentals-only when price source is unavailable
+- [x] AAPL `provider=free_real` produces SEC + price + trend data; final internal report `safety_valid=True`
 
-Skills to use: `langgraph-agents`, `financial-data`, `backend-fastapi`, `testing-qa`
+Skills used: `langgraph-agents`, `financial-data`, `backend-fastapi`, `testing-qa`
+
+---
+
+## Phase 19.2.1: Staging Deploy + Provider Observability Hardening ✅
+
+**Status: Complete — follow-up to Phase 19.2**
+
+Goal: Harden the staging deploy pipeline against false-green health checks and transient Oryx boot failures observed during the Phase 19.2 release, and surface the Stooq→EODHD price fallback in report provider warnings.
+
+Delivered:
+- [x] Deploy health-check now confirms the **new** container is serving — `/health` exposes `commit_sha` / `build_id` (from a bundled `build_info.json`) and the smoke check requires 3 consecutive SHA-matched responses before passing
+- [x] Oryx/runtime boot-failure detection in the deploy workflow (missing `uvicorn` / broken `antenv` / container exit) with clear remediation instead of silent success
+- [x] Stooq→EODHD price fallback reason surfaced into `provider_warnings` and the draft report's Provider Warnings section (`summarize_price_provider_warning`)
+- [x] Fixed pre-existing `scoring_engine` `TypeError` when `sector` is `None` (SEC EDGAR profiles omit sector)
+- [x] Documented the intentional `--workers 1` on B1 staging configuration (see `docs/DEPLOYMENT.md`)
+- [x] Backend tests added (build metadata, fallback surfacing, sector=None scoring); no public recommendations, no paid EODHD fundamentals, no secrets
+
+Constraints held: no Clerk auth, no news/catalyst system, no public publishing, no paid plans, no broad discovery, no provider rewrites beyond warning propagation.
+
+Skills used: `azure-deployment`, `financial-data`, `backend-fastapi`, `testing-qa`, `docs-maintainer`
 
 ---
 

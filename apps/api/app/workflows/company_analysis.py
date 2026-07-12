@@ -90,7 +90,11 @@ from app.integrations.financial_data_provider import (
     build_source_record,
 )
 from app.integrations.financial_data_service import FinancialDataService
-from app.integrations.free_real_snapshot import CompanyIdentity, compose_free_real_snapshot
+from app.integrations.free_real_snapshot import (
+    CompanyIdentity,
+    compose_free_real_snapshot,
+    summarize_price_provider_warning,
+)
 from app.integrations.llm_provider import get_llm_client, validate_llm_sections
 from app.schemas.report import ReportCreate
 from app.schemas.source import CitationCreate, SourceCreate
@@ -345,6 +349,15 @@ def build_company_analysis_graph(
             contributing_providers: list[str] = []
             provider_warnings: list[str] = list(fundamentals_warnings)
             provider_warnings.extend(_run_holder.pop("provider_warnings_pre", []))
+
+            # Phase 19.2.1: surface the Stooq→EODHD price fallback reason from the
+            # raw price fetch. This must happen against the raw `prices` object so
+            # the "no usable price history" case (empty price_data → None passed to
+            # the composer) still reaches provider_warnings. The composer de-dupes
+            # against the non-empty (fallback-succeeded) case.
+            price_fallback_warning = summarize_price_provider_warning(prices)
+            if price_fallback_warning:
+                provider_warnings.append(price_fallback_warning)
 
             is_mock: bool
 

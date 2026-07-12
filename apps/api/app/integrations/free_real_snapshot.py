@@ -186,6 +186,54 @@ class FreeRealSnapshot:
 
 
 # ---------------------------------------------------------------------------
+# Price provider fallback warning surfacing (Phase 19.2.1)
+# ---------------------------------------------------------------------------
+
+
+def summarize_price_provider_warning(price_data: PriceHistoryData | None) -> str | None:
+    """
+    Surface a concise, factual provider warning from a price fetch's metadata note.
+
+    FreeRealProvider records the Stooq→EODHD fallback reason in
+    ``price_data.meta.note``. Before Phase 19.2.1 that reason stayed buried in the
+    price metadata and never reached the report's provider-warnings section, so
+    operators could not see when a price fallback had happened.
+
+    This helper lifts that reason into a short internal warning suitable for the
+    ``provider_warnings`` list. Wording is internal and factual — it does not
+    overstate data reliability and contains no secrets or credentials.
+
+    Returns None when the note carries no fallback / failure signal (e.g. Stooq
+    succeeded directly), so normal successful fetches add no noise.
+    """
+    if price_data is None:
+        return None
+    note = (price_data.meta.note or "").strip()
+    if not note:
+        return None
+    lowered = note.lower()
+
+    # Both price providers failed — no usable price history at all.
+    if "no usable price history" in lowered:
+        return "No usable price history available; trend signals unavailable."
+
+    # Stooq failed or returned nothing and the EODHD price-only fallback was used.
+    stooq_failed = "stooq" in lowered and (
+        "fallback" in lowered
+        or "falling back" in lowered
+        or "unavailable" in lowered
+        or "0 price points" in lowered
+    )
+    if stooq_failed:
+        if price_data.price_points:
+            return "Stooq price provider unavailable; used EODHD price-only fallback."
+        return (
+            "Stooq price provider unavailable; EODHD price-only fallback returned no data."
+        )
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Composer
 # ---------------------------------------------------------------------------
 
@@ -237,6 +285,11 @@ async def compose_free_real_snapshot(
                 f"Price provider '{price_provider}' returned 0 price points "
                 f"for {identity.ticker}."
             )
+        # Phase 19.2.1: surface the Stooq→EODHD fallback reason carried in meta.note
+        # so it reaches the report's Provider Warnings section, not just price meta.
+        price_fallback_warning = summarize_price_provider_warning(price_data)
+        if price_fallback_warning:
+            warnings.append(price_fallback_warning)
     else:
         warnings.append(
             f"No price data available for {identity.ticker}. "
@@ -305,6 +358,10 @@ async def compose_free_real_snapshot(
     if trend_signals is not None:
         if "trend_signal_engine" not in contributing:
             contributing.append("trend_signal_engine")
+
+    # De-duplicate warnings while preserving order — the price fallback reason can
+    # arrive both from the caller (extra_warnings) and from meta.note surfacing.
+    warnings = list(dict.fromkeys(warnings))
 
     return FreeRealSnapshot(
         ticker=identity.ticker,
