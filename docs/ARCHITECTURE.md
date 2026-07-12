@@ -1,6 +1,6 @@
 # Architecture
 
-## Status: Phase 17 — Admin Auth Proxy (Next.js server-side proxy for protected FastAPI calls; no credentials in browser; Add Company + reports + review actions fixed on staging)
+## Status: Phase 22.1 — Admin Backtesting UI live; Phase 19.1 Free Real Data Stack released on staging (partial real-data success — SEC EDGAR ✅, Stooq blocked from Azure, EODHD /eod partial); safety fix applied (investment_committee_chair forces human_review_required=True on safety violations); TrendSignalEngine exists but not yet wired into main workflow (Phase 19.2); 831 backend tests passing
 
 ---
 
@@ -36,17 +36,18 @@ Azure Application Insights
 - Next.js 16, React 19, TypeScript, Tailwind CSS v4, App Router
 - Public report pages, admin dashboard, user account (V2)
 - Communicates with backend via server-side proxy (Phase 17+) — credentials never in browser
-- Status: **Phase 17 — Admin Auth Proxy live; all protected admin API calls routed through Next.js server-side proxy**
+- Status: **Phase 22.1 — Admin Backtesting UI live; admin proxy active for all admin routes; dynamic rendering on /admin/reports**
   - `/api/admin/proxy/[...path]` — server-side proxy route; adds `Authorization: Basic` server-side; path allowlist; rejects unknown paths; sanitizes errors; never exposes credentials to browser
   - `src/lib/api.ts` — smart base URL: server components call `BACKEND_API_BASE_URL` directly; client components use `/api/admin/proxy/…`
   - `/admin` — dashboard (health, company count, latest reports)
   - `/admin/companies/new` — create company form
   - `/admin/analysis` — trigger 19-node workflow; full result display
-  - `/admin/reports` — draft report list with review_status column
+  - `/admin/reports` — draft report list with review_status column (dynamic rendering restored)
   - `/admin/reports/[id]` — report detail with review action panel + event timeline
     - `ReviewPanel` (client component) — interactive review buttons, note textarea, warnings
     - Review event timeline — chronological audit log display
-  - `src/types/api.ts` — TypeScript types (includes ReviewActionRequest, ReviewEvent, etc.)
+  - `/admin/backtesting` — backtesting runs list; create run form; run detail with evaluate/refresh
+  - `src/types/api.ts` — TypeScript types (includes ReviewActionRequest, ReviewEvent, BacktestRun, BacktestResult, etc.)
 
 #### Admin Auth Proxy — Request Flow (Phase 17)
 
@@ -73,7 +74,7 @@ Required App Service env vars for `ib-stg-web` (server-only, no `NEXT_PUBLIC_` p
 - LangGraph `StateGraph` workflows
 - Four agent teams: Research, Analysis Council, Validation, Judge
 - All runs logged to `agent_runs` and `agent_steps` tables
-- Status: **Phase 15 — `company_analysis` is a 19-node workflow with 4 Research Team + 5 Analysis Council + 1 Scoring agents (all deterministic), 1 optional LLM node, and full source/citation tracking. Workflow version `6.0.0`.**
+- Status: **Phase 22.1 — `company_analysis` is a 19-node workflow (v6.0.0) with 4 Research Team + 5 Analysis Council + 1 Scoring agents (all deterministic), 1 optional LLM node, and full source/citation tracking. `investment_committee_chair` forces `human_review_required=True` when safety guard triggers (safety fix 2026-07-12). `TrendSignalEngine` exists but not yet wired in (Phase 19.2). `BacktestingService` + `ResearchJudgeService` live (Phase 22). Admin Backtesting UI live (Phase 22.1).**
 - Research Team agents (Phase 8, `apps/api/app/agents/research_team/`):
   - `financial_data_agent.py` — classifies available vs missing financial data; source tier accounting
   - `source_quality_agent.py` — T1–T6 source classification; enforces T5 providers never promoted
@@ -95,7 +96,7 @@ Required App Service env vars for `ib-stg-web` (server-only, no `NEXT_PUBLIC_` p
 ### Database
 - Local: PostgreSQL 16 via Docker Compose
 - Production: Azure Database for PostgreSQL Flexible Server
-- Status: **migration 008 pending on staging — adds 5 final-report columns to reports table (Phase 16); migrations 001–007 applied on staging; 001–008 applied locally**
+- Status: **migrations 001–009 applied locally; migrations 001–009 applied on staging; migration 009 adds backtest_runs, backtest_results, thesis_tracking_events (Phase 22)**
 
 ### Vector Search
 - Azure AI Search
@@ -232,21 +233,36 @@ All errors are caught, logged to `agent_runs.error_message`, and returned as HTT
 | Phase 14 | ✅ Complete | Company Discovery / Screener; `CompanyScreener`; `CompanyDiscoveryService`; 3 new tables (migration 006); 7 discovery API endpoints (universes + runs + candidates + promote); 6 themes; T5 source tier enforced for EODHD; fixture-based EODHD search; candidate promotion; 57 new offline tests; 601 total |
 | Phase 15 | ✅ Complete | Scoring + Valuation Framework; `ScoringEngine` (10 dimensions; T6/mock ≤ 30, T5 ≤ 60, T1/T2 ≤ 100); `ValuationReadinessService`; `scorecards` table (migration 007); `ScoringService`; `score_research_attractiveness` node (Node 17); workflow v6.0.0 (19 nodes); 5 scoring API endpoints; 54 new offline tests; 675 total |
 | Phase 16 | ✅ Complete | Final Report Generator; `FinalReportGeneratorService` (6 methods); safety gate (forbidden-term scan + exempt-field list); 19-section structured internal draft report; migration 008 (5 new reports columns); 5 API endpoints; LLM optional (offline by default); prompt template v1; 62 new offline tests; 737 total |
+| Phase 17 | ✅ Complete | Admin Auth Proxy; Next.js server-side proxy (`/api/admin/proxy`); `BACKEND_BASIC_AUTH` server-only env var; path allowlist; credentials never exposed to browser |
+| Phase 18 | ✅ Complete | Staging E2E reliability fix; research contracts bundled in API ZIP; schema path robustness; auth + Bicep hardening; 733 tests |
+| Phase 19 | Superseded | Live EODHD smoke test — superseded by Phase 19.1 (EODHD /fundamentals requires paid plan) |
+| Phase 19.1 | ✅ Released | Free Real Data Stack: `EodhdPriceOnlyProvider`, `SecEdgarFundamentalsProvider`, `TrendSignalEngine`, `FreeRealSnapshotComposer`, `NewsCatalystProvider` (8-K), composite `free_real` + `eodhd_free_real`; 64 new offline tests; 831 total. Staging: SEC EDGAR ✅; Stooq blocked from Azure; EODHD /eod partial. TrendSignalEngine not yet wired into main workflow. |
+| Phase 19.1 safety fix | ✅ Complete | `investment_committee_chair` forces `human_review_required=True` when safety guard triggers |
+| Phase 20 | ✅ Complete | Admin Final Report UI — final-report metadata rendering, generate/validate/regenerate actions in admin UI |
+| Phase 21 | ✅ Complete | Playwright admin smoke tests (mock provider by default, staging E2E opt-in) |
+| Phase 22 | ✅ Complete | Judge + Backtesting Framework; `BacktestingService`, `ResearchJudgeService`, `MockHistoricalOutcomeProvider`; migration 009 (3 tables); 8 admin-only API endpoints; 34 offline tests |
+| Phase 22.1 | ✅ Complete | Admin Backtesting UI: `/admin/backtesting` list + detail; create/evaluate/refresh; 13 Playwright tests; typecheck + lint + build clean |
+| Phase 22.1 maintenance | ✅ Complete | `/admin/reports` dynamic rendering fix; homepage platform phase text updated |
 
 ---
 
 ## What Is Not Yet Implemented
 
-- Authentication (Clerk) — Phase 8
+- **TrendSignalEngine in main workflow** — `TrendSignalEngine` exists but is not yet wired into `company_analysis`; Phase 19.2
+- **Price data visible in T5 source-tier summary** — EODHD /eod price not visibly confirmed in staging smoke test; Phase 19.2
+- **Stooq fallback on Azure** — Stooq appears blocked from Azure outbound; `free_real` provider needs non-blocking fallback to EODHD price-only; Phase 19.2
+- **Composite provider_name tracking** — workflow metadata does not yet preserve composite provider names (e.g. `"free_real: stooq+sec_edgar"`); Phase 19.2
+- **Admin auth hardening** — staging uses Basic Auth + proxy; Clerk/allowlist route-level auth is Phase 23
+- **News + catalyst discovery workflow** — `SecEdgar8KProvider` exists but not wired into `company_analysis`; Phase 24
+- **Real market candidate discovery** — screener foundation exists; full momentum + fundamentals + catalyst ranking is Phase 25
+- **Public report publishing** — all reports are internal only; public approved-report pages are Phase 26
+- **User accounts** — no signup, dashboard, watchlists, or preferences yet; Phase 27
+- **Paid plans / Stripe** — not built; Phase 28
+- **Personalized research reports** — not built; Phase 29
+- **Monitoring + alerts** — thesis tracking table exists (Phase 22); automated monitoring workflow is Phase 30
 - Azure OpenAI in production (real keys) — optional, configure `LLM_PROVIDER=azure_openai` + env vars
 - Live EODHD calls require `EODHD_API_KEY` — set in env or Azure Key Vault; tests run offline
-- Ticker → CIK resolution for SecEdgarProvider — Phase 5
-- SEC EDGAR XBRL fundamentals (`get_fundamentals`) — Phase 5
-- Azure AI Search (embeddings, RAG) — Phase 5+
-- Azure Blob Storage (PDF documents) — Phase 5+
-- Full council-of-agents (all agent teams) — Phase 5
-- OpenBB integration (evaluation pending) — Phase 5/6
-- Scheduled background jobs (Azure Functions / Service Bus) — Phase 7
-- Judge / backtesting — Phase 22 ✅ (internal only, mock provider, no public recommendations)
-- Personalized recommendations — Phase 8
-- Report citations linked to report_id at save time (currently linked via agent_run_id only) — Phase 5
+- Azure AI Search (embeddings, RAG) — future
+- Azure Blob Storage (PDF documents) — future
+- OpenBB integration (evaluation pending) — future
+- Scheduled background jobs (Azure Functions / Service Bus) — Phase 30+

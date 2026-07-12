@@ -1,6 +1,6 @@
 # Agent Architecture
 
-## Status: Phase 16 — Final Report Generator: FinalReportGeneratorService + safety gate; 737 tests passing
+## Status: Phase 22.1 — Admin Backtesting UI live; `investment_committee_chair` forces `human_review_required=True` on safety violations (safety fix 2026-07-12); `TrendSignalEngine` exists (Phase 19.1) but not yet wired into main workflow (Phase 19.2); 831 backend tests passing
 
 ---
 
@@ -46,11 +46,7 @@ This enables debugging, auditing and future judge evaluation.
 Optional: `provider_name` (default: `mock`), `require_schema_valid` (default: `false`),
 `use_llm` (default: `false`), `llm_provider` (default: config `LLM_PROVIDER`, default: `mock`).
 
-**Purpose:** 18-node workflow. Fetches provider data, builds a structured company snapshot,
-runs four deterministic Research Team agents, optionally runs an LLM node, stores source +
-citation records, validates the schema, runs Research Completeness and Citation Validator v2
-agents, then runs five deterministic Analysis Council agents (no LLM calls), and saves a
-draft report with Research Team + Analysis Council summaries.
+**Purpose:** 19-node workflow (v6.0.0). Fetches provider data (including SEC EDGAR XBRL fundamentals and EODHD /eod prices via Phase 19.1 providers), builds a structured company snapshot, runs four deterministic Research Team agents, optionally runs an LLM node, stores source + citation records, validates the schema, runs Research Completeness and Citation Validator v2 agents, then runs five deterministic Analysis Council agents (no LLM calls), scores research attractiveness, and saves a draft report. `investment_committee_chair` forces `human_review_required=True` when safety guard triggers. `TrendSignalEngine` is available but not yet wired as a workflow node (Phase 19.2).
 
 - `use_llm=false` (default): no LLM calls, fully offline, CI-safe.
 - `use_llm=true` with `llm_provider=mock`: mock LLM, still offline, no Azure credentials.
@@ -62,13 +58,13 @@ draft report with Research Team + Analysis Council summaries.
 - No personalized investment advice.
 - `provisional_internal_status` is admin-only internal workflow state (not a public rating).
 
-**Graph (v5.0.0):**
+**Graph (v6.0.0, 19 nodes):**
 
 ```
 load_company
     ↓ (company found?)
     ├── No → handle_error → END
-    └── Yes → fetch_provider_data
+    └── Yes → fetch_provider_data       (provider: mock | free_real | eodhd_free_real | eodhd | ...)
                     ↓ (provider valid?)
                     ├── No → handle_error → END
                     └── Yes → create_source_records
@@ -89,20 +85,24 @@ load_company
                                     ↓
                               citation_validator_v2
                                     ↓
-                              bull_case_agent            ← NEW (Phase 9)
+                              bull_case_agent
                                     ↓
-                              bear_case_agent            ← NEW (Phase 9)
+                              bear_case_agent
                                     ↓
-                              risk_agent                 ← NEW (Phase 9)
+                              risk_agent
                                     ↓
-                              valuation_guard_agent      ← NEW (Phase 9)
+                              valuation_guard_agent
                                     ↓
-                              investment_committee_chair ← NEW (Phase 9)
+                              investment_committee_chair    (forces human_review_required=True when safety guard triggers)
+                                    ↓
+                              score_research_attractiveness (Node 17; non-fatal)
                                     ↓
                               save_draft_report
                                     ↓
                               log_agent_steps → END
 ```
+
+Note: `TrendSignalEngine` is available at `apps/api/app/integrations/trend_signal_engine.py` and is called by `FreeRealSnapshotComposer`, but is not yet a standalone workflow node. Wiring it as Node 18 (between `score_research_attractiveness` and `save_draft_report`) is Phase 19.2.
 
 **Nodes:**
 
@@ -184,7 +184,8 @@ Output fields: `valuation_readiness`, `available_valuation_inputs`,
 
 Synthesises all council outputs. Assigns a `provisional_internal_status` from the allowed
 set only. Sets `human_review_required=True` for watchlist/ready-for-deeper-analysis
-conditions.
+conditions. **Safety fix (2026-07-12):** also forces `human_review_required=True` whenever
+the committee safety guard triggers — forbidden terms detected or safety violations fired.
 
 **Allowed internal statuses (admin-only, never public):**
 ```
@@ -765,15 +766,17 @@ Every section includes provenance labels on all values: `sourced_fact`, `model_i
 
 ---
 
-## Planned Workflows (Phase 4+)
+## Workflow Status
 
 | Workflow | Status | Description |
 |---|---|---|
-| company_analysis | ✅ Phase 8 | Provider snapshot → Research Team agents → LLM draft sections (optional) → citations → schema validation → Research Completeness + Citation v2 → draft report |
-| company_analysis (full council) | Phase 5 | Full analysis with Azure OpenAI + real citations; full Research + Analysis Council + Validation teams |
-| weekly_research | Phase 5 | Scheduled full research pipeline |
-| watchlist_monitoring | Phase 5 | Monitor existing watchlist positions |
-| judge_evaluation | Phase 7 | Post-publication quality assessment |
+| `company_analysis` | ✅ Phase 22.1 (v6.0.0, 19 nodes) | Provider snapshot → Research Team → optional LLM → citations → schema validation → Analysis Council → scoring → draft report |
+| `backtesting` / `judge_evaluation` | ✅ Phase 22 (internal, mock provider) | `BacktestingService` + `ResearchJudgeService`; historical quality assessment; no public recommendations |
+| `company_analysis` + trend signals | Phase 19.2 | Wire `TrendSignalEngine` as node; Stooq fallback to EODHD price-only on Azure |
+| `news_catalyst_workflow` | Phase 24 | News + catalyst discovery via SEC 8-K + optional news API |
+| `market_discovery` | Phase 25 | Real market-wide candidate ranking using momentum + fundamentals + catalysts |
+| `weekly_research` | Future | Scheduled full research pipeline (Azure Functions) |
+| `watchlist_monitoring` | Phase 30 | Monitor research theses; trigger re-analysis on significant events |
 
 ---
 

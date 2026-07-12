@@ -15,6 +15,7 @@ Read these files before planning significant changes:
 - `docs/DATABASE.md`
 - `docs/API.md`
 - `docs/DEPLOYMENT.md`
+- `docs/GAP_ANALYSIS.md`
 
 ---
 

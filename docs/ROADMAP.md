@@ -1,6 +1,6 @@
 # Roadmap
 
-## Current Phase: Phase 22.1 — Admin Backtesting UI (branch: feature/phase-19-1-free-real-data-provider-stack in review)
+## Current State: Phase 19.1 Free Real Data Provider Stack released on staging — partial real-data success (SEC EDGAR ✅; Stooq blocked from Azure; EODHD /eod visible via eodhd_free_real); Phase 22.1 Admin Backtesting UI live; safety fix applied (human_review_required=True when committee safety guard triggers). Next: Phase 19.2 — wire price + trend into main workflow.
 
 ---
 
@@ -659,7 +659,7 @@ Deferred because EODHD fundamentals (/fundamentals) requires a paid subscription
 
 ## Phase 19.1: Free Real Data Provider Stack ✅
 
-**Status: Complete (PR: feature/phase-19-1-free-real-data-provider-stack)**
+**Status: Released on staging (2026-07-11). Partial real-data success. Follow-up Phase 19.2 required.**
 
 Goal: enable real (non-mock) company analysis using only free data sources.
 No paid EODHD fundamentals subscription required.
@@ -684,11 +684,45 @@ Constraints enforced:
 - No new .env secrets or API keys required for `free_real` stack
 - EODHD fundamentals (paid /fundamentals endpoint) not required for MVP
 
-AAPL expected behavior (free_real):
+**Staging smoke test results (2026-07-11):**
+- `provider=eodhd_free_real`: partial success — SEC EDGAR XBRL fundamentals (T2) retrieved; EODHD /eod prices not visibly confirmed in T5 source-tier summary during test
+- `provider=free_real`: failed on staging — Stooq appears blocked from Azure outbound network; Stooq succeeds from local/non-Azure environments
+- `is_mock=False` confirmed for eodhd_free_real run
+- Final internal report generation works from partial real (SEC EDGAR) data
+
+**Known gaps for Phase 19.2:**
+- EODHD /eod price data must be made visibly present in T5 source-tier summary
+- TrendSignalEngine exists but is not yet wired into the main `company_analysis` workflow
+- `provider_name` tracking for composite providers needs cleanup in workflow metadata
+- Stooq failure must be made non-blocking on Azure; `free_real` should fall back to EODHD price-only when Stooq fails
+
+AAPL expected behavior (free_real, local):
 - CIK: 320193 (resolved via SEC company_tickers.json)
 - Fundamentals: revenue 383,285 USD_m, net income 96,995 USD_m (FY2023 10-K, T2)
 - Price: Stooq OHLCV (T5) → trend signals → `positive/neutral/negative_momentum_candidate`
 - is_mock=False; partial warnings for any unavailable source
+
+---
+
+## Phase 19.1 Safety Fix ✅
+
+**Status: Complete (commit 77648b0, 2026-07-12)**
+
+**What was fixed:** `investment_committee_chair` now forces `human_review_required=True` when the safety guard triggers (i.e., when forbidden terms are detected or safety violations fire). Previously, the safety flag could remain `False` even when the committee safety check detected a problem.
+
+**Why this matters:** All internal reports that trigger safety violations must require explicit admin acknowledgement before approval can proceed. This is a non-negotiable invariant.
+
+---
+
+## Phase 22.1 Maintenance — /admin/reports Fix + Homepage Update ✅
+
+**Status: Complete (2026-07-11)**
+
+Commits:
+- `ad68026` — restore `/admin/reports` dynamic rendering (Next.js `export const dynamic = 'force-dynamic'`)
+- `5241335` — update homepage platform phase text to reflect Phase 22.1 status
+
+These were delivered as direct commits to main following the Phase 22.1 Admin Backtesting UI (tag `v1.22.1`). No new backend logic.
 
 ---
 
@@ -778,22 +812,171 @@ Skills used: `frontend-nextjs`, `testing-qa`, `docs-maintainer`
 
 ---
 
-## Phase 10: Personalized Investor Assistant
+## Phase 19.2: Real Price + Trend Workflow Integration Fix
+
+**Status: Not started — recommended next phase**
+
+Goal: Make the `free_real` and `eodhd_free_real` providers fully functional as end-to-end real-data analysis paths. Deliver a verified AAPL run with `is_mock=False`, SEC fundamentals, real price data, and trend signals — producing a final internal report with `safety_valid=True`.
+
+Deliverables:
+- [ ] Wire `TrendSignalEngine` into the `company_analysis` workflow (new node, non-fatal, T6)
+- [ ] Make EODHD /eod price data visible as T5 source in workflow state + T5 source-tier summary
+- [ ] Preserve composite `provider_name` in workflow metadata (e.g. `"free_real: stooq+sec_edgar"`)
+- [ ] Make Stooq fetch failure non-blocking on Azure; fall back to `eodhd_price_only` when Stooq fails
+- [ ] Allow `free_real` to degrade gracefully to SEC-fundamentals-only when price source is unavailable
+- [ ] Verify AAPL `provider=free_real` produces SEC + price + trend data in staging
+- [ ] Generate final internal report with `safety_valid=True` from partial real data
+- [ ] Update workflow version to 7.0.0
+
+Skills to use: `langgraph-agents`, `financial-data`, `backend-fastapi`, `testing-qa`
+
+---
+
+## Phase 23: Admin Auth Hardening
+
+**Status: Not started**
+
+Goal: Replace staging Basic Auth with proper admin-only access control. This phase is about protecting the admin UI — not public user accounts.
+
+Deliverables:
+- [ ] Clerk integration for admin routes (allowlist-based)
+- [ ] Admin route-level authentication middleware
+- [ ] Remove reliance on `STAGING_BASIC_AUTH` for admin access
+- [ ] CI/CD secrets rotation and Key Vault cleanup
+- [ ] Access audit trail for admin actions
+
+Skills to use: `security-review`, `backend-fastapi`, `frontend-nextjs`
+
+---
+
+## Phase 24: News + Catalyst Discovery Agent
+
+**Status: Not started**
+
+Goal: Add a news and catalyst discovery agent that fetches recent 8-K filings, press releases, and optional news signals for research candidates. Surface catalyst signals in the analysis workflow.
+
+Deliverables:
+- [ ] `NewsCatalystAgent` node in `company_analysis` workflow
+- [ ] Expand `SecEdgar8KProvider` to parse and classify filing types
+- [ ] Optional: integrate free news API (GDELT, NewsData, or Alpha Vantage News) as T5 source
+- [ ] Catalyst scoring incorporated into `ScoringEngine`
+- [ ] Catalyst signals visible in final internal report
+- [ ] All news data stays T4/T5 — never promoted to T1/T2
+
+Skills to use: `financial-data`, `langgraph-agents`, `backend-fastapi`, `testing-qa`
+
+---
+
+## Phase 25: Real Market Candidate Discovery Engine
+
+**Status: Not started**
+
+Goal: Replace mock/EODHD-search-based discovery with a real market-wide candidate ranking pipeline using momentum, fundamentals, catalysts, and sector context.
+
+Deliverables:
+- [ ] Market-wide candidate screener using real price + SEC data
+- [ ] Multi-signal ranking: price momentum + fundamentals quality + catalyst recency + sector context
+- [ ] Automated candidate queue: companies surfaced by discovery enter a review queue
+- [ ] Admin can review, promote, or reject candidates
+- [ ] No automatic progression to analysis without admin approval
+- [ ] Source tier enforced: T5 for aggregated data; T2 for SEC-derived data
+
+Skills to use: `financial-data`, `backend-fastapi`, `investment-domain`, `testing-qa`
+
+---
+
+## Phase 26: Public Report Publishing Website
+
+**Status: Not started**
+
+Goal: Build the first public-facing pages for approved internal reports. Only human-approved reports are ever shown publicly.
+
+Deliverables:
+- [ ] Public report list page (approved reports only)
+- [ ] Public report detail page
+- [ ] Admin publish action (`POST /api/v1/admin/reports/{id}/publish`)
+- [ ] Reports must pass: `safety_valid=True`, `review_status=approved_internal`, admin explicit publish action
+- [ ] No price targets, fair values, or BUY/SELL/HOLD/WATCH on public pages
+- [ ] All public pages include regulatory disclaimer ("not investment advice")
+- [ ] SEO: `sitemap.xml`, metadata, OpenGraph tags
+- [ ] No personalized content on public pages
+
+Skills to use: `frontend-nextjs`, `backend-fastapi`, `security-review`, `investment-domain`
+
+---
+
+## Phase 27: User Accounts + Watchlists
+
+**Status: Not started**
+
+Goal: Allow users to create accounts, follow companies, and save watchlists. No personalized research yet.
+
+Deliverables:
+- [ ] User authentication (Clerk)
+- [ ] User dashboard
+- [ ] Company watchlists
+- [ ] Notification preferences (email opt-in for new approved reports)
+- [ ] User data strictly separated from public research tables
+
+Skills to use: `backend-fastapi`, `frontend-nextjs`, `security-review`
+
+---
+
+## Phase 28: Paid Plans + Stripe
+
+**Status: Not started**
+
+Goal: Introduce subscription tiers that gate access to premium features such as earlier report access and custom report requests.
+
+Deliverables:
+- [ ] Stripe integration for subscription management
+- [ ] Free / Paid tier differentiation
+- [ ] Usage limits per tier
+- [ ] Admin billing dashboard (basic)
+- [ ] No financial advice unlocked by any paid tier — plans gate access, not advice quality
+
+Skills to use: `backend-fastapi`, `frontend-nextjs`, `security-review`
+
+---
+
+## Phase 29: Personalized Research Reports
 
 **Status: Not started (Version 2)**
 
-Goal: Users can create accounts, enter portfolios and receive personalized recommendations.
+Goal: Users on paid plans can request custom internal research reports based on their preferences and areas of interest. These are still human-approved before delivery.
+
+Important constraints:
+- Personalized reports are research candidate summaries — not personalized investment advice
+- Reports must still pass safety gate and human review
+- User portfolio data must never leak into public tables
+- Output clearly labeled: "internal research candidate" / "positive momentum candidate" / "candidate for human research review"
 
 Deliverables:
-- [ ] User accounts and authentication (Clerk integration)
-- [ ] User preferences storage
-- [ ] Manual portfolio input
-- [ ] Portfolio Fit Agent
-- [ ] Personalized recommendation filtering
-- [ ] Private user dashboard
-- [ ] Notification preferences and delivery
+- [ ] User preference storage (sectors, regions, themes)
+- [ ] Portfolio Fit Agent skeleton
+- [ ] Personalized candidate filtering from discovery queue
+- [ ] Custom report request queue
+- [ ] Private user dashboard with personalized report history
 
-Skills to use: `backend-fastapi`, `frontend-nextjs`, `langgraph-agents`, `security-review`
+Skills to use: `backend-fastapi`, `frontend-nextjs`, `langgraph-agents`, `security-review`, `investment-domain`
+
+---
+
+## Phase 30: Monitoring, Alerts + Thesis Tracking
+
+**Status: Not started**
+
+Goal: Track research thesis performance over time. Alert admin when monitored companies have significant events. Enable ongoing quality feedback to the research system.
+
+Deliverables:
+- [ ] Thesis tracking events table (Phase 22 foundation)
+- [ ] Automated monitoring workflow (Azure Functions scheduled trigger)
+- [ ] Event-triggered re-analysis for monitored companies
+- [ ] Admin alert queue for significant events (8-K filings, price moves)
+- [ ] Backtesting result integration to measure research quality over time
+- [ ] Backtesting does not predict future results — disclaimer enforced
+
+Skills to use: `langgraph-agents`, `azure-deployment`, `backend-fastapi`, `investment-domain`
 
 ---
 
@@ -805,3 +988,5 @@ Skills to use: `backend-fastapi`, `frontend-nextjs`, `langgraph-agents`, `securi
 - Mobile app (not in current roadmap)
 - Social or community features
 - Guaranteed investment returns
+- Automated public BUY/SELL/HOLD/WATCH recommendations
+- Unreviewed price targets or fair values on public pages
