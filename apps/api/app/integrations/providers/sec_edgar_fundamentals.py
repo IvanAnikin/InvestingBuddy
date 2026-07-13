@@ -329,6 +329,19 @@ class SecEdgarFundamentalsProvider(SecEdgarProvider):
 
         datapoints, warnings = parse_company_facts(data, ticker, cik)
 
+        # Phase 19.3: layer normalized fundamentals (derived margins, FCF, total
+        # debt, cash, gross/operating income, YoY growth) on top of the base 10.
+        # Existing field_names from parse_company_facts win to preserve behavior.
+        from app.integrations.sec_fundamentals_normalizer import normalize_company_facts
+
+        normalized = normalize_company_facts(data, ticker, cik)
+        existing_fields = {dp.field_name for dp in datapoints}
+        for dp in normalized.to_datapoints():
+            if dp.field_name not in existing_fields:
+                datapoints.append(dp)
+                existing_fields.add(dp.field_name)
+        warnings.extend(normalized.warnings)
+
         warning_note = " | ".join(warnings) if warnings else None
         status_note = (
             f"SEC EDGAR XBRL companyfacts — {ticker.upper()} CIK {padded}. "

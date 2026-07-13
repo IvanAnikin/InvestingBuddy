@@ -195,16 +195,45 @@ def run_valuation_guard_agent(
             "No valuation work permitted with synthetic data."
         )
 
+    # ── Phase 19.3: recognize primary-source statement fundamentals ───────
+    # When core financial-statement inputs (revenue, net income, FCF, assets,
+    # debt, cash) are available from a T1/T2 source, valuation readiness can
+    # move from not_ready to partial — even though market-based inputs
+    # (market cap, shares, EV) and EBITDA remain missing, which keeps every
+    # actual valuation conclusion blocked.
+    primary_source = source_tier in ("T1_primary_filing", "T2_regulator_or_gov")
+    core_statement_inputs = [
+        "financials.revenue",
+        "financials.net_income",
+        "financials.free_cash_flow",
+        "financials.total_assets",
+        "financials.total_debt",
+        "financials.cash_and_equivalents",
+    ]
+    core_available = [f for f in core_statement_inputs if f in available_financial_data]
+    has_core_financials = (
+        not is_mock and primary_source and len(core_available) >= 4
+    )
+
     # ── Determine valuation_readiness ─────────────────────────────────────
-    hard_blocks = [b for b in valuation_blockers if "CRITICAL" in b or "blocked" in b.lower()]
-    if hard_blocks or is_mock:
+    hard_blocks = [b for b in valuation_blockers if "CRITICAL" in b]
+    if is_mock or not primary_source or hard_blocks:
         valuation_readiness = "not_ready"
-    elif len(valuation_blockers) > 2:
-        valuation_readiness = "not_ready"
-    elif valuation_blockers:
+    elif has_core_financials:
         valuation_readiness = "partial"
+    elif valuation_blockers:
+        valuation_readiness = "not_ready"
     else:
         valuation_readiness = "ready"
+
+    if valuation_readiness == "partial":
+        valuation_blockers.append(
+            "Valuation conclusion withheld: SEC statement fundamentals "
+            f"({', '.join(core_available)}) are available, but market-based "
+            "inputs (market capitalization, shares outstanding, enterprise value) "
+            "and EBITDA are not — no valuation multiple or DCF conclusion is "
+            "produced at this phase."
+        )
 
     # ── Allowed next steps ────────────────────────────────────────────────
     if valuation_readiness == "not_ready":

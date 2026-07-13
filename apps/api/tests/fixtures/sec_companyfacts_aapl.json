@@ -167,8 +167,121 @@
         "units": {
           "USD": [
             {
+              "end": "2022-09-24",
+              "val": 122151000000,
+              "accn": "0000320193-22-000108",
+              "fy": 2022,
+              "fp": "FY",
+              "form": "10-K",
+              "filed": "2022-10-28"
+            },
+            {
               "end": "2023-09-30",
               "val": 110543000000,
+              "accn": "0000320193-23-000106",
+              "fy": 2023,
+              "fp": "FY",
+              "form": "10-K",
+              "filed": "2023-11-03"
+            }
+          ]
+        }
+      },
+      "GrossProfit": {
+        "label": "Gross Profit",
+        "description": "Revenue less cost of goods and services sold.",
+        "units": {
+          "USD": [
+            {
+              "end": "2021-09-25",
+              "val": 152836000000,
+              "accn": "0000320193-21-000105",
+              "fy": 2021,
+              "fp": "FY",
+              "form": "10-K",
+              "filed": "2021-10-29"
+            },
+            {
+              "end": "2022-09-24",
+              "val": 170782000000,
+              "accn": "0000320193-22-000108",
+              "fy": 2022,
+              "fp": "FY",
+              "form": "10-K",
+              "filed": "2022-10-28"
+            },
+            {
+              "end": "2023-09-30",
+              "val": 169148000000,
+              "accn": "0000320193-23-000106",
+              "fy": 2023,
+              "fp": "FY",
+              "form": "10-K",
+              "filed": "2023-11-03"
+            }
+          ]
+        }
+      },
+      "OperatingIncomeLoss": {
+        "label": "Operating Income (Loss)",
+        "description": "The net result of operating revenues less operating expenses.",
+        "units": {
+          "USD": [
+            {
+              "end": "2022-09-24",
+              "val": 119437000000,
+              "accn": "0000320193-22-000108",
+              "fy": 2022,
+              "fp": "FY",
+              "form": "10-K",
+              "filed": "2022-10-28"
+            },
+            {
+              "end": "2023-09-30",
+              "val": 114301000000,
+              "accn": "0000320193-23-000106",
+              "fy": 2023,
+              "fp": "FY",
+              "form": "10-K",
+              "filed": "2023-11-03"
+            }
+          ]
+        }
+      },
+      "PaymentsToAcquirePropertyPlantAndEquipment": {
+        "label": "Payments to Acquire Property, Plant and Equipment",
+        "description": "Cash outflow for purchases of and capital improvements to property, plant and equipment (capital expenditures).",
+        "units": {
+          "USD": [
+            {
+              "end": "2022-09-24",
+              "val": 10708000000,
+              "accn": "0000320193-22-000108",
+              "fy": 2022,
+              "fp": "FY",
+              "form": "10-K",
+              "filed": "2022-10-28"
+            },
+            {
+              "end": "2023-09-30",
+              "val": 10959000000,
+              "accn": "0000320193-23-000106",
+              "fy": 2023,
+              "fp": "FY",
+              "form": "10-K",
+              "filed": "2023-11-03"
+            }
+          ]
+        }
+      },
+      "CashAndCashEquivalentsAtCarryingValue": {
+        "label": "Cash and Cash Equivalents, at Carrying Value",
+        "description": "Amount of currency on hand and demand deposits with banks or financial institutions.",
+        "units": {
+          "USD": [
+            {
+              "end": "2023-09-30",
+              "val": 29965000000,
               "accn": "0000320193-23-000106",
               "fy": 2023,
               "fp": "FY",

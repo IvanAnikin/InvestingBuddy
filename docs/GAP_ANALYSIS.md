@@ -1,8 +1,8 @@
 # Gap Analysis
 
-**Last updated:** 2026-07-12  
-**Current state:** Phase 19.2 Real Price + Trend Workflow Integration Fix released; Phase 19.1 Free Real Data Stack merged; Phase 22.1 Admin Backtesting UI live.  
-**Next phase:** Phase 23 Auth or Phase 24 News/Catalyst Discovery
+**Last updated:** 2026-07-13  
+**Current state:** Phase 19.3 SEC Fundamentals Normalization + Report Completeness Upgrade delivered; Phase 19.2.1 observability hardening on staging; Phase 19.1 Free Real Data Stack merged; Phase 22.1 Admin Backtesting UI live.  
+**Next phase:** Phase 19.4 Identity/Sector/Market-Metric Enrichment, then Phase 23 Auth or Phase 24 News/Catalyst Discovery
 
 This document describes the gap between the current implementation and the target product. Each gap maps to a planned phase.
 
@@ -38,12 +38,14 @@ This document describes the gap between the current implementation and the targe
 - SEC EDGAR partial real-data analysis confirmed working on staging (`is_mock=False`)
 - `eodhd_free_real` produced partial real data through SEC EDGAR on staging
 - Final internal report generation works from partial real (SEC EDGAR) data
+- Phase 19.3 SEC fundamentals normalization: `sec_fundamentals_normalizer` maps SEC XBRL companyfacts into normalized income-statement / cash-flow / balance-sheet metrics + derived margins, ROE, debt-to-equity and YoY growth; injected into the `free_real` snapshot and consumed by `FinancialDataAgent` and `ValuationGuardAgent`
 
 ### Important caveats
 
 - Phase 19.1 free real-data provider stack is complete and working on staging
 - Phase 19.2 wired `TrendSignalEngine` into the workflow; `provider=free_real` now has non-blocking Stooq → EODHD fallback for Azure environments where Stooq is blocked
-- EODHD free plan covers `/eod` prices only; `/fundamentals` returns 403 on free plan
+- Phase 19.3 sources real fundamentals from SEC XBRL, but **the report is still not fully investor-grade**: EBITDA, market cap, enterprise value, shares outstanding, sector, ISIN/LEI and valuation multiples remain unavailable (Phase 19.4). Valuation readiness reaches `partial` at best; every valuation conclusion stays blocked; `schema_valid` may still be false.
+- EODHD free plan covers `/eod` prices only; `/fundamentals` returns 403 on free plan — SEC EDGAR XBRL is the fundamentals source
 - No public reports are live yet
 - News/catalyst discovery is not yet fully wired into the analysis workflow
 - Public report publishing is not yet implemented
@@ -74,6 +76,29 @@ This document describes the gap between the current implementation and the targe
 - 20 tests added in `test_phase19_2_1_hardening.py`; `docs/DEPLOYMENT.md` documents the intentional `--workers 1` on B1
 
 **Phase:** 19.2 → 19.2.1
+
+---
+
+## Gap 1b: Financial Fundamentals in the Report ⚙️ PARTIALLY RESOLVED — Phase 19.3
+
+**Resolved (fundamentals extraction):** 2026-07-13
+
+**The gap before Phase 19.3:** The Phase 19.2 `free_real` report was technically successful (`is_mock=false`, `safety_valid=true`) but **not user-valuable**. Raw SEC XBRL datapoints were fetched but never mapped into financial-statement fields, so the report said *"No financial fundamentals sourced at this phase"*, `internal status=research_incomplete`, `valuation_readiness=not_ready`, and financial analysis was empty.
+
+**What Phase 19.3 fixed:**
+- `sec_fundamentals_normalizer.normalize_company_facts()` maps us-gaap companyfacts into normalized metrics: revenue, gross/operating/net income, EPS, operating cash flow, capex, free cash flow, total assets/liabilities/equity, cash, short/long-term/total debt, plus derived gross/operating/net margin, ROE, debt-to-equity, FCF margin and revenue/net-income/FCF YoY growth
+- Latest annual (10-K/20-F) preferred; latest 10-Q used as a labelled fallback; annual data is **never mislabelled TTM**
+- Normalized fundamentals injected into `fundamentals_summary` via `enrich_snapshot_with_free_real()`
+- `FinancialDataAgent` recognizes ~10 sourced financial categories and narrates them; report no longer says *"No financial fundamentals sourced at this phase"*
+- `ValuationGuardAgent` moves `not_ready → partial` with core statement inputs from T1/T2, with more specific blockers
+- `missing_information` count for financial fields materially decreases
+- 22 offline tests; AAPL fixture enriched with gross profit, operating income, capex, cash, prior-year OCF
+
+**Safety held:** EBITDA never fabricated; no market cap/EV without shares; no BUY/SELL/HOLD/WATCH, price target, fair value or upside; `human_review_required=true`; `schema_valid` may still be false.
+
+**What remains (Phase 19.4):** sector/industry, shares outstanding → market cap, enterprise value, 52-week range, ISIN/LEI, valuation multiples. Until then the report is *"SEC-derived fundamentals available; valuation readiness partial"* — a meaningful step toward investor-grade research, not the finished product.
+
+**Phase:** 19.3 → 19.4
 
 ---
 

@@ -1,6 +1,6 @@
 # Data Sources
 
-## Status: Phase 19.2.1 — Free Real Data Provider Stack wired end-to-end; SEC EDGAR XBRL fundamentals (T2) + EODHD price-only (free plan) + Stooq prices + Trend Signal Engine (T6); composite free_real and eodhd_free_real providers; Stooq→EODHD fallback reason surfaced in provider warnings; no paid fundamentals required
+## Status: Phase 19.3 — SEC EDGAR XBRL fundamentals now **normalized** into structured income-statement / cash-flow / balance-sheet metrics + derived margins, ROE, debt-to-equity and YoY growth (T2), injected into the free_real snapshot and consumed by the analysis agents. Builds on Phase 19.2.1 (Free Real Data Provider Stack wired end-to-end; SEC EDGAR XBRL fundamentals (T2) + EODHD price-only (free plan) + Stooq prices + Trend Signal Engine (T6); composite free_real and eodhd_free_real providers; Stooq→EODHD fallback reason surfaced in provider warnings). No paid fundamentals required. EBITDA / market cap / EV / shares outstanding remain unavailable and are never fabricated (Phase 19.4).
 
 This document defines the permitted source universe, tier classification, and provider implementation notes for InvestingBuddy.
 
@@ -98,7 +98,8 @@ All providers are registered in `FinancialDataService` and selectable via `FINAN
 |---|---|---|---|---|
 | `MockFinancialDataProvider` | `integrations/providers/mock_provider.py` | T6 | ✅ Active | Deterministic demo data; used in all CI tests; no network calls |
 | `SecEdgarProvider` | `integrations/providers/sec_edgar_provider.py` | T2 | ✅ Live (CIK) | Free; `get_company_by_cik(cik)` fetches from `data.sec.gov`; no API key; ticker→CIK via index |
-| `SecEdgarFundamentalsProvider` | `integrations/providers/sec_edgar_fundamentals.py` | T2 | ✅ Live (Phase 19.1) | Free; ticker→CIK resolution via company_tickers.json; XBRL companyfacts; 10 core us-gaap concepts; no API key; US only |
+| `SecEdgarFundamentalsProvider` | `integrations/providers/sec_edgar_fundamentals.py` | T2 | ✅ Live (Phase 19.1; normalized 19.3) | Free; ticker→CIK resolution via company_tickers.json; XBRL companyfacts; 10 core us-gaap concepts + Phase 19.3 normalized metrics (gross/operating income, capex, FCF, cash, total debt, derived margins/ROE/D-E/YoY); no API key; US only |
+| `sec_fundamentals_normalizer` | `integrations/sec_fundamentals_normalizer.py` | T2 | ✅ Live (Phase 19.3) | Pure/offline; maps us-gaap companyfacts → normalized income-statement / cash-flow / balance-sheet metrics + derived ratios; annual (10-K) preferred, 10-Q fallback with warning; EBITDA never fabricated |
 | `GleifProvider` | `integrations/providers/gleif_provider.py` | T2 | ✅ Live | Free; LEI lookup by code or name; `api.gleif.org`; no API key |
 | `StooqProvider` | `integrations/providers/stooq_provider.py` | T5 | ✅ Live | Free; live OHLCV CSV from `stooq.com`; no API key |
 | `EodhdPriceOnlyProvider` | `integrations/providers/eodhd_price_only_provider.py` | T5 | ✅ Live (Phase 19.1) | Free plan; requires `EODHD_API_KEY`; `/eod` only — no `/fundamentals`; warns on missing fundamentals |
@@ -204,6 +205,45 @@ For non-US international fundamentals, a paid EODHD plan is required (use `Eodhd
 **Phase 19.2.1 delivered (observability):** ✅
 - Stooq→EODHD fallback reason surfaced in `provider_warnings` (see above)
 - `scoring_engine` no longer raises `TypeError` when a real provider omits `sector` (coalesced to `""`)
+
+### Phase 19.3: SEC Fundamentals Normalization
+
+`sec_fundamentals_normalizer.normalize_company_facts()` turns raw SEC XBRL companyfacts into a
+`NormalizedSecFinancials` structure. It selects the **latest annual** value per concept
+(`form ∈ {10-K, 20-F, …}`, `fp=FY`), keeps the prior fiscal year for YoY growth, and falls back to
+the **latest 10-Q with a warning** when no annual filing exists. All dollar values are scaled to
+millions (`USD_m`); margins/ROE/growth are percentages; debt-to-equity is a ratio (`x`).
+
+**us-gaap → normalized concept map:**
+
+| Normalized field | us-gaap concept(s) tried (first match wins) |
+|---|---|
+| `revenue` | `Revenues`, `RevenueFromContractWithCustomerExcludingAssessedTax`, `SalesRevenueNet`, `RevenueFromContractWithCustomerIncludingAssessedTax` |
+| `gross_profit` | `GrossProfit` |
+| `operating_income` | `OperatingIncomeLoss` |
+| `net_income` | `NetIncomeLoss`, `ProfitLoss` |
+| `eps_basic` / `eps_diluted` | `EarningsPerShareBasic` / `EarningsPerShareDiluted` |
+| `operating_cash_flow` | `NetCashProvidedByUsedInOperatingActivities`(`…ContinuingOperations`) |
+| `capital_expenditures` | `PaymentsToAcquirePropertyPlantAndEquipment`, `PaymentsToAcquireProductiveAssets` |
+| `total_assets` | `Assets` |
+| `total_liabilities` | `Liabilities` |
+| `shareholders_equity` | `StockholdersEquity`, `StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest` |
+| `cash_and_equivalents` | `CashAndCashEquivalentsAtCarryingValue`, `CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents` |
+| `long_term_debt` | `LongTermDebt`, `LongTermDebtNoncurrent` |
+| `short_term_debt` | `DebtCurrent`, `ShortTermBorrowings`, `LongTermDebtCurrent` |
+| `shares_outstanding` | `dei:EntityCommonStockSharesOutstanding` (often absent → market cap not computed) |
+
+**Derived metrics (marked `C_inferred`):** `free_cash_flow = OCF − capex`; `total_debt = short + long`;
+`gross/operating/net_margin`, `free_cash_flow_margin`, `return_on_equity`, `debt_to_equity`;
+`revenue/net_income/free_cash_flow` YoY growth (annual only).
+
+**Never fabricated:** `EBITDA` (no D&A extracted at this phase), `market_cap` and `enterprise_value`
+(require price × shares; shares usually absent from statement data). These stay missing with a warning.
+
+**Downstream effect:** the normalized fields land in `fundamentals_summary` (`enrich_snapshot_with_free_real`),
+the `FinancialDataAgent` narrates them and marks ~10 financial categories available, and the
+`ValuationGuardAgent` reaches `valuation_readiness=partial` while keeping every valuation **conclusion**
+blocked. No BUY/SELL/HOLD/WATCH, price target, fair value or upside is ever produced.
 
 **News/Catalyst Interface (`apps/api/app/integrations/news_catalyst_provider.py`):**
 - `NullNewsCatalystProvider` — default; returns empty events + warning; no crash

@@ -1,6 +1,6 @@
 # Roadmap
 
-## Current State: Phase 19.2.1 Staging Deploy + Provider Observability Hardening — SHA-verified deploy health check (commit_sha/build_id on /health, no more false-green on async recycle), Oryx/runtime boot-failure detection, Stooq→EODHD fallback surfaced in provider warnings, sector=None scoring fix, documented `--workers 1` on B1. Builds on Phase 19.2 (Stooq→EODHD non-blocking fallback, TrendSignalEngine wired, composite provider tracking, T5/T6 source metadata) and Phase 19.1 Free Real Data Stack. Phase 22.1 Admin Backtesting UI live. Next: Phase 23 Auth or Phase 24 News/Catalyst.
+## Current State: Phase 19.3 SEC Fundamentals Normalization + Report Completeness Upgrade — SEC EDGAR XBRL companyfacts are now normalized into structured income-statement, cash-flow and balance-sheet metrics (revenue, gross/operating/net income, EPS, operating cash flow, free cash flow, assets/liabilities/equity, cash, total debt) plus derived margins, ROE, debt-to-equity and YoY growth, and injected into the `free_real` snapshot. The `free_real` report now sources real fundamentals (no longer "No financial fundamentals sourced at this phase"), the FinancialDataAgent narrates them, and the ValuationGuardAgent moves from `not_ready` to `partial` while still blocking every valuation conclusion (EBITDA, market cap, shares outstanding and EV remain unavailable and are never fabricated). No BUY/SELL/HOLD/WATCH, price target, fair value or upside is produced; `human_review_required` stays true; `schema_valid` may still be false. Builds on Phase 19.2.1 (SHA-verified deploy health check, provider observability), Phase 19.2 (real price + trend workflow) and Phase 19.1 Free Real Data Stack. Next: Phase 19.4 identity/sector/market-metric enrichment, then Phase 23 Auth / Phase 24 News-Catalyst.
 
 ---
 
@@ -847,6 +847,77 @@ Delivered:
 Constraints held: no Clerk auth, no news/catalyst system, no public publishing, no paid plans, no broad discovery, no provider rewrites beyond warning propagation.
 
 Skills used: `azure-deployment`, `financial-data`, `backend-fastapi`, `testing-qa`, `docs-maintainer`
+
+---
+
+## Phase 19.3: SEC Fundamentals Normalization + Report Completeness Upgrade ✅
+
+**Status: Delivered (2026-07-13)**
+
+### Why this phase
+
+The Phase 19.2 `free_real` report was a **technical validation artifact, not an investor-grade research report**. The pipeline worked end-to-end — `is_mock=false`, SEC identity (T2), EODHD/Stooq prices (T5), TrendSignalEngine momentum (T6), `safety_valid=true` — but the report carried **no financial fundamentals**. It said *"No financial fundamentals sourced at this phase"*, `internal status=research_incomplete`, `valuation_readiness=not_ready`, and its financial analysis was empty because the raw SEC XBRL datapoints were never mapped into the income-statement / cash-flow / balance-sheet fields the analysis agents look for.
+
+### What Phase 19.3 fixes
+
+Goal: make the `free_real` report **financially useful** by extracting, normalizing and injecting SEC EDGAR XBRL fundamentals into the company-analysis workflow — moving from *"identity and price data only"* toward *"SEC-derived fundamentals available; financial trend analysis partially ready; valuation guard can evaluate readiness using real financial data."*
+
+Delivered:
+- [x] New `sec_fundamentals_normalizer` module — pure, offline, maps us-gaap companyfacts into normalized metrics
+- [x] Income statement: revenue, gross profit, operating income, net income, EPS basic/diluted
+- [x] Cash flow: operating cash flow, capital expenditures, free cash flow (= OCF − capex when both exist)
+- [x] Balance sheet: total assets, total liabilities, shareholders' equity, cash & equivalents, short/long-term debt, total debt
+- [x] Derived: gross/operating/net margin, ROE, debt-to-equity, FCF margin, revenue/net-income/FCF YoY growth
+- [x] Metadata: fiscal year/period, form type, filed date, accession number, `T2_regulator_or_gov` tier
+- [x] Latest annual (10-K/20-F, `fp=FY`) preferred; latest 10-Q used as fallback **with a warning**; YoY skipped on quarterly fallback
+- [x] Normalized fundamentals injected into the `free_real` / `eodhd_free_real` snapshot (`fundamentals_summary`)
+- [x] `FinancialDataAgent` now recognizes ~10 sourced financial categories and narrates revenue/growth/net income/margins/cash flow/balance sheet/debt
+- [x] `ValuationGuardAgent` moves `not_ready → partial` when core statement inputs are available from T1/T2, with **more specific blockers**
+- [x] Report no longer says *"No financial fundamentals sourced at this phase"* when SEC facts exist
+- [x] 22 offline tests (`test_phase19_3_sec_fundamentals_normalization.py`); AAPL fixture enriched with gross profit, operating income, capex, cash and prior-year OCF
+
+### Safety constraints held (unchanged)
+
+- **EBITDA is never fabricated** — left missing (with a warning) when depreciation & amortization is unavailable
+- **No market cap / EV** — not computed without price + shares outstanding (shares absent from SEC statement data)
+- **Annual data is labelled annual, never mislabelled TTM**
+- No BUY/SELL/HOLD/WATCH, no price target, fair value, intrinsic value, upside/downside, or undervalued/overvalued label
+- Valuation conclusions remain **blocked**; `partial` means "financial inputs available, conclusions withheld"
+- `human_review_required` stays true; outputs are internal-only; `schema_valid` may still be false (financial completeness materially improves without faking schema validity)
+
+### What remains after Phase 19.3
+
+- **Phase 19.4** — identity / sector / market-metric enrichment (sector, industry, ISIN/LEI, 52-week range, market cap, shares outstanding, enterprise value)
+- **Phase 23** — admin auth hardening
+- **Phase 24** — news / catalyst discovery
+- **Phase 25** — real market candidate discovery
+- **Phase 26** — public report publishing
+- **Phase 27** — user accounts / watchlists
+- **Phase 28** — paid plans
+- **Phase 29** — personalized reports
+- **Phase 30** — monitoring / alerts / thesis tracking
+
+Skills used: `financial-data`, `investment-domain`, `langgraph-agents`, `backend-fastapi`, `testing-qa`, `docs-maintainer`
+
+---
+
+## Phase 19.4: Identity + Sector + Market-Metric Enrichment
+
+**Status: Not started**
+
+Goal: Close the remaining company-identity and market-derived gaps that Phase 19.3 intentionally left open, so the `free_real` report reaches broader completeness without paid EODHD `/fundamentals`.
+
+Deliverables:
+- [ ] Sector / industry / description enrichment from SEC submissions (SIC → sector mapping) or a free classification source
+- [ ] Shares outstanding from SEC `dei:EntityCommonStockSharesOutstanding` (when present) → enables market cap = price × shares
+- [ ] 52-week high/low derived from the existing price history
+- [ ] ISIN / LEI lookup (GLEIF is free, T2) for legal-entity confirmation
+- [ ] Market cap / enterprise value computed only when both price and shares are available — still no valuation conclusion
+- [ ] Feed these into valuation readiness so relative-multiple **inputs** (not conclusions) become partially available
+
+Constraints: no paid EODHD `/fundamentals`, no valuation conclusions, no recommendations, no price targets.
+
+Skills to use: `financial-data`, `investment-domain`, `backend-fastapi`, `testing-qa`
 
 ---
 
