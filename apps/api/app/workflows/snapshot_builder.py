@@ -438,30 +438,69 @@ def enrich_snapshot_with_free_real(snapshot: dict, free_real_dict: dict) -> dict
         # Build a condensed fundamentals summary from SEC EDGAR datapoints
         dp_map = {dp["field_name"]: dp for dp in (fr_fund.get("datapoints") or [])}
 
-        def _val(key: str) -> float | None:
+        def _val(key: str) -> Any:
             dp = dp_map.get(key)
             return dp["value"] if dp else None
 
-        result["fundamentals_summary"] = {
+        # Phase 19.3: normalized SEC fundamentals — income statement, cash flow,
+        # balance sheet, derived margins/growth, plus filing metadata. Every key
+        # is None when the underlying SEC concept was unavailable (never faked).
+        period_basis = _val("sec_edgar.period_basis") or "annual"
+        fund_summary: dict[str, Any] = {
             "source_tier": fr_fund.get("source_tier") or "T2_regulator_or_gov",
             "provider": fr_fund.get("provider"),
             "num_datapoints": fr_fund["num_datapoints"],
+            # Income statement
             "revenue_usd_m": _val("sec_edgar.revenue"),
+            "gross_profit_usd_m": _val("sec_edgar.gross_profit"),
+            "operating_income_usd_m": _val("sec_edgar.operating_income"),
             "net_income_usd_m": _val("sec_edgar.net_income"),
             "eps_basic": _val("sec_edgar.eps_basic"),
             "eps_diluted": _val("sec_edgar.eps_diluted"),
+            # Cash flow
+            "operating_cash_flow_usd_m": _val("sec_edgar.operating_cash_flow"),
+            "capital_expenditures_usd_m": _val("sec_edgar.capital_expenditures"),
+            "free_cash_flow_usd_m": _val("sec_edgar.free_cash_flow"),
+            # Balance sheet
             "total_assets_usd_m": _val("sec_edgar.total_assets"),
             "total_liabilities_usd_m": _val("sec_edgar.total_liabilities"),
             "shareholders_equity_usd_m": _val("sec_edgar.shareholders_equity"),
-            "operating_cash_flow_usd_m": _val("sec_edgar.operating_cash_flow"),
-            "long_term_debt_usd_m": _val("sec_edgar.long_term_debt"),
+            "cash_and_equivalents_usd_m": _val("sec_edgar.cash_and_equivalents"),
             "short_term_debt_usd_m": _val("sec_edgar.short_term_debt"),
+            "long_term_debt_usd_m": _val("sec_edgar.long_term_debt"),
+            "total_debt_usd_m": _val("sec_edgar.total_debt"),
+            "shares_outstanding_mln": _val("sec_edgar.shares_outstanding"),
+            # Derived metrics (percentages / ratios)
+            "gross_margin_pct": _val("sec_edgar.gross_margin"),
+            "operating_margin_pct": _val("sec_edgar.operating_margin"),
+            "net_margin_pct": _val("sec_edgar.net_margin"),
+            "return_on_equity_pct": _val("sec_edgar.return_on_equity"),
+            "free_cash_flow_margin_pct": _val("sec_edgar.free_cash_flow_margin"),
+            "debt_to_equity": _val("sec_edgar.debt_to_equity"),
+            "revenue_yoy_growth_pct": _val("sec_edgar.revenue_yoy_growth"),
+            "net_income_yoy_growth_pct": _val("sec_edgar.net_income_yoy_growth"),
+            "free_cash_flow_yoy_growth_pct": _val("sec_edgar.free_cash_flow_yoy_growth"),
+            # Not sourced from SEC statements — kept explicit for honesty
+            "ebitda_usd_m": None,
+            "market_cap_usd_m": None,
+            "enterprise_value_usd_m": None,
+            # Filing metadata
+            "fiscal_year": _val("sec_edgar.fiscal_year"),
+            "fiscal_period": _val("sec_edgar.fiscal_period"),
+            "form_type": _val("sec_edgar.form_type"),
+            "filed_date": _val("sec_edgar.filed_date"),
+            "accession_number": _val("sec_edgar.accession_number"),
+            "period_basis": period_basis,
             "data_quality": fr_fund.get("data_quality") or "B_single_credible",
             "note": (
-                "Fundamentals from SEC EDGAR XBRL (T2_regulator_or_gov). "
-                "Annual 10-K data. Values in USD_m."
+                "SEC EDGAR XBRL fundamentals normalized for latest fiscal periods "
+                f"({period_basis}). Statement values in USD_m; margins/growth in %. "
+                "Annual figures are NOT labelled TTM. EBITDA, market cap and "
+                "enterprise value are not available from SEC statement data and "
+                "remain missing. Source tier T2_regulator_or_gov."
             ),
         }
+        result["fundamentals_summary"] = fund_summary
 
     # ── Trend signals (T6) ───────────────────────────────────────────────
     fr_trend = free_real_dict.get("trend_signals")

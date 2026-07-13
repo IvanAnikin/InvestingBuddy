@@ -46,6 +46,32 @@ _EXPECTED_FINANCIAL_CATEGORIES = [
     "current_ratio",
 ]
 
+# Maps a fundamentals_summary key → expected financial category.
+# Covers both the SEC EDGAR normalized keys (Phase 19.3) and the EODHD keys
+# (Phase 13). A category counts as available only when its value is not None.
+_FUNDAMENTALS_TO_CATEGORY = {
+    # SEC EDGAR normalized (Phase 19.3, T2_regulator_or_gov)
+    "revenue_usd_m": "revenue",
+    "operating_income_usd_m": "ebit",
+    "net_income_usd_m": "net_income",
+    "total_assets_usd_m": "total_assets",
+    "total_debt_usd_m": "total_debt",
+    "cash_and_equivalents_usd_m": "cash_and_equivalents",
+    "free_cash_flow_usd_m": "free_cash_flow",
+    "eps_basic": "earnings_per_share",
+    "eps_diluted": "earnings_per_share",
+    "return_on_equity_pct": "return_on_equity",
+    "debt_to_equity": "debt_to_equity",
+    # EODHD (Phase 13, T5_api_aggregator)
+    "revenue_ttm_mln": "revenue",
+    "ebitda_mln": "ebitda",
+    "market_cap_mln": "market_cap",
+    "enterprise_value_mln": "enterprise_value",
+    "ev_ebitda_x": "ev_ebitda",
+    "pe_ratio": "price_to_earnings",
+    "return_on_equity_ttm": "return_on_equity",
+}
+
 # Identity / profile fields available at snapshot phase
 _SNAPSHOT_FIELDS = [
     "identity.legal_name",
@@ -79,6 +105,95 @@ class FinancialDataAgentOutput:
     warnings: list[str] = field(default_factory=list)
 
 
+def _fmt_m(value: float | None) -> str | None:
+    """Format a USD-millions value, or None if absent."""
+    if value is None:
+        return None
+    return f"{value:,.0f} USD_m"
+
+
+def _summarize_fundamentals(fs: dict, legal_name: str) -> str:
+    """
+    Build a factual, internal narrative from normalized fundamentals.
+
+    Uses only sourced values. Labels annual data as annual (never TTM) and is
+    explicit about what remains unavailable. Produces no valuation conclusion,
+    price target, fair value or recommendation.
+    """
+    basis = fs.get("period_basis", "annual")
+    fy = fs.get("fiscal_year")
+    form = fs.get("form_type")
+    period_label = f"{basis} FY{fy}" if fy else basis
+    if form:
+        period_label += f" ({form})"
+
+    parts: list[str] = [
+        f"SEC EDGAR XBRL fundamentals were normalized for {legal_name} "
+        f"for the latest {period_label}."
+    ]
+
+    rev = fs.get("revenue_usd_m")
+    rev_g = fs.get("revenue_yoy_growth_pct")
+    if rev is not None:
+        seg = f"Revenue {_fmt_m(rev)}"
+        if rev_g is not None:
+            seg += f" ({rev_g:+.1f}% YoY)"
+        parts.append(seg + ".")
+
+    ni = fs.get("net_income_usd_m")
+    nm = fs.get("net_margin_pct")
+    if ni is not None:
+        seg = f"Net income {_fmt_m(ni)}"
+        if nm is not None:
+            seg += f" (net margin {nm:.1f}%)"
+        parts.append(seg + ".")
+
+    opm = fs.get("operating_margin_pct")
+    gm = fs.get("gross_margin_pct")
+    if gm is not None or opm is not None:
+        bits = []
+        if gm is not None:
+            bits.append(f"gross margin {gm:.1f}%")
+        if opm is not None:
+            bits.append(f"operating margin {opm:.1f}%")
+        parts.append("Margins: " + ", ".join(bits) + ".")
+
+    ocf = fs.get("operating_cash_flow_usd_m")
+    fcf = fs.get("free_cash_flow_usd_m")
+    if ocf is not None:
+        seg = f"Operating cash flow {_fmt_m(ocf)}"
+        if fcf is not None:
+            seg += f"; free cash flow {_fmt_m(fcf)}"
+        parts.append(seg + ".")
+
+    ta = fs.get("total_assets_usd_m")
+    tl = fs.get("total_liabilities_usd_m")
+    eq = fs.get("shareholders_equity_usd_m")
+    if any(v is not None for v in (ta, tl, eq)):
+        bits = []
+        if ta is not None:
+            bits.append(f"assets {_fmt_m(ta)}")
+        if tl is not None:
+            bits.append(f"liabilities {_fmt_m(tl)}")
+        if eq is not None:
+            bits.append(f"equity {_fmt_m(eq)}")
+        parts.append("Balance sheet: " + ", ".join(bits) + ".")
+
+    td = fs.get("total_debt_usd_m")
+    de = fs.get("debt_to_equity")
+    if td is not None:
+        seg = f"Total debt {_fmt_m(td)}"
+        if de is not None:
+            seg += f" (debt/equity {de:.2f}x)"
+        parts.append(seg + ".")
+
+    parts.append(
+        "Valuation remains incomplete: EBITDA, market capitalization, enterprise "
+        "value and shares outstanding are not available from SEC statement data."
+    )
+    return " ".join(parts)
+
+
 def run_financial_data_agent(
     company_snapshot: dict,
     source_ids: list[str] | None = None,
@@ -100,6 +215,7 @@ def run_financial_data_agent(
     profile = company_snapshot.get("profile", {})
     price_summary = company_snapshot.get("price_history_summary", {})
     provider_meta = company_snapshot.get("provider_metadata", {})
+    fundamentals_summary = company_snapshot.get("fundamentals_summary") or {}
     missing_fields = set(company_snapshot.get("missing_fields", []))
     is_mock = company_snapshot.get("is_mock", True)
 
@@ -128,9 +244,20 @@ def run_financial_data_agent(
         for fp in _PRICE_FIELDS:
             missing.append(fp)
 
-    # Financial fundamentals — none present at snapshot phase
+    # Financial fundamentals — Phase 19.3: recognize categories now sourced
+    # from the fundamentals_summary (SEC EDGAR XBRL for free_real / EODHD for
+    # the paid stack). A category is available only when its value is not None.
+    available_categories: set[str] = set()
+    for key, cat in _FUNDAMENTALS_TO_CATEGORY.items():
+        if fundamentals_summary.get(key) is not None:
+            available_categories.add(cat)
+
     for cat in _EXPECTED_FINANCIAL_CATEGORIES:
-        missing.append(f"financials.{cat}")
+        path = f"financials.{cat}"
+        if cat in available_categories:
+            available.append(path)
+        else:
+            missing.append(path)
 
     # ── Source tier accounting ────────────────────────────────────────────
     source_tier_summary: dict[str, int] = {
@@ -192,19 +319,27 @@ def run_financial_data_agent(
     # ── Build summary narrative ───────────────────────────────────────────
     ticker = identity.get("ticker", "N/A")
     legal_name = identity.get("legal_name", "Unknown")
-    country = identity.get("country_domicile", "unknown country")
-    sector = profile.get("sector", "unknown sector")
-    currency = profile.get("reporting_currency", "unknown currency")
+    country = identity.get("country_domicile") or "unknown country"
+    sector = profile.get("sector") or "unknown sector"
+    currency = profile.get("reporting_currency") or "unknown currency"
 
-    financial_context_summary = (
+    header = (
         f"{legal_name} ({ticker}) — {sector}, {country}, reporting in {currency}. "
         f"Provider: {provider_name} ({source_tier}). "
         f"Available data points: {len(available)}. "
         f"Missing data categories: {len(missing)} "
         f"(including {missing_fundamentals_count} financial fundamental fields). "
-        "No financial fundamentals sourced at this phase — "
-        "identity and price data only."
     )
+
+    if available_categories:
+        financial_context_summary = header + _summarize_fundamentals(
+            fundamentals_summary, legal_name
+        )
+    else:
+        financial_context_summary = (
+            header + "No financial fundamentals sourced at this phase — "
+            "identity and price data only."
+        )
     if is_mock:
         financial_context_summary += " [MOCK DATA — not real financial information]"
 

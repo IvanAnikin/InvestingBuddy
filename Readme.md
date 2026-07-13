@@ -159,7 +159,10 @@ Copy `.env.example` to `.env` and fill in values as needed.
 | Phase 22 | Done | Judge + Backtesting Framework: `BacktestingService`, `ResearchJudgeService`, `MockHistoricalOutcomeProvider`; migration 009 (backtest_runs, backtest_results, thesis_tracking_events); 8 admin-only API endpoints; 34 offline tests; no live EODHD; no public recommendations |
 | Phase 22.1 | Done | Admin Backtesting UI: `/admin/backtesting` runs list + detail; create/evaluate/refresh; 13 Playwright tests; typecheck + lint + build clean |
 | Phase 22.1 maint | Done | `/admin/reports` dynamic rendering fix; homepage platform phase text updated |
-| Phase 19.2 | Up next | Wire TrendSignalEngine into main workflow; Stooq fallback on Azure; provider_name tracking; verify AAPL free_real end-to-end on staging |
+| Phase 19.2 | Done | Real Price + Trend Workflow: `TrendSignalEngine` wired into `company_analysis`; non-blocking Stooq→EODHD fallback on Azure; composite provider tracking; T5/T6 metadata in snapshot; AAPL `free_real` end-to-end on staging with `safety_valid=True` |
+| Phase 19.2.1 | Done | Staging deploy + provider observability hardening: SHA-verified `/health` deploy check, Oryx boot-fail detection, Stooq→EODHD fallback surfaced in provider warnings, `sector=None` scoring fix |
+| Phase 19.3 | Done | SEC Fundamentals Normalization + Report Completeness: `sec_fundamentals_normalizer` maps SEC XBRL companyfacts → normalized income/cash-flow/balance-sheet metrics + derived margins/ROE/debt-to-equity/YoY; injected into `free_real` snapshot; `FinancialDataAgent` narrates real fundamentals; `ValuationGuardAgent` reaches `partial` (conclusions still blocked); EBITDA/market cap/EV never fabricated; 22 offline tests. Remaining identity/sector/market-metric enrichment → Phase 19.4 |
+| Phase 19.4 | Up next | Identity/sector/market-metric enrichment: sector/industry, shares outstanding → market cap, enterprise value, 52-week range, ISIN/LEI — no paid fundamentals, no valuation conclusions |
 
 ---
 

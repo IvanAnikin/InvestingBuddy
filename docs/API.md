@@ -1,6 +1,6 @@
 # API Reference
 
-## Status: Phase 19.1 — Free Real Data Provider Stack; SEC EDGAR fundamentals + EODHD price-only + Trend Signal Engine; new provider keys: free_real, eodhd_free_real, eodhd_price_only, sec_edgar_fundamentals
+## Status: Phase 19.3 — SEC EDGAR XBRL fundamentals **normalized** (income/cash-flow/balance-sheet metrics + derived margins/ROE/debt-to-equity/YoY) and injected into the `free_real` / `eodhd_free_real` analysis snapshot. No API contract changed: the `valuation_guard_summary.valuation_readiness` in the workflow-run response can now be `"partial"` (in addition to `"not_ready"` / `"ready"`) when SEC statement fundamentals are available; valuation conclusions remain blocked. Builds on Phase 19.1 Free Real Data Provider Stack (provider keys: `free_real`, `eodhd_free_real`, `eodhd_price_only`, `sec_edgar_fundamentals`).
 
 ---
 

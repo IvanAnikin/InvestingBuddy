@@ -1,6 +1,6 @@
 # Agent Architecture
 
-## Status: Phase 22.1 — Admin Backtesting UI live; `investment_committee_chair` forces `human_review_required=True` on safety violations (safety fix 2026-07-12); `TrendSignalEngine` exists (Phase 19.1) but not yet wired into main workflow (Phase 19.2); 831 backend tests passing
+## Status: Phase 19.3 — SEC XBRL fundamentals normalized (`sec_fundamentals_normalizer`) and consumed by `FinancialDataAgent` (narrates real fundamentals) and `ValuationGuardAgent` (`not_ready → partial`, conclusions still blocked). Builds on Phase 19.2 (`TrendSignalEngine` wired into `company_analysis`), Phase 19.2.1 (provider observability), Phase 22.1 (Admin Backtesting UI). `investment_committee_chair` forces `human_review_required=True` on safety violations. 906 backend tests passing.
 
 ---
 
@@ -112,7 +112,7 @@ Note: `TrendSignalEngine` is available at `apps/api/app/integrations/trend_signa
 | fetch_provider_data | FinancialDataAgent | fetch_provider_data | Calls FinancialDataService; gets profile + prices |
 | create_source_records | SourceRecordAgent | create_source_records | Calls `build_source_record()` + `get_or_create_source()` for each data item |
 | build_company_snapshot | SnapshotBuilder | build_company_snapshot | Builds structured snapshot dict; lists missing fields |
-| financial_data_agent | FinancialDataResearchAgent | financial_data_agent | Deterministic: lists available vs missing financial data; classifies source tiers; warns on T5/T6 |
+| financial_data_agent | FinancialDataResearchAgent | financial_data_agent | Deterministic: lists available vs missing financial data; classifies source tiers; warns on T5/T6. **Phase 19.3:** reads normalized SEC fundamentals from `fundamentals_summary`, marks ~10 financial categories available (revenue, EBIT, net income, assets, total debt, cash, FCF, EPS, ROE, D/E) and narrates revenue/growth/margins/cash-flow/balance-sheet instead of "No financial fundamentals sourced at this phase" |
 | source_quality_agent | SourceQualityResearchAgent | source_quality_agent | Deterministic: classifies source strength; enforces T5 never promoted; warns on decision-critical T5/T6 claims |
 | generate_research_sections | ResearchLLMAgent | generate_research_sections | Calls `ResearchLLMClient.generate_research_sections()`; skipped if `use_llm=False`; non-fatal on error |
 | create_citations | CitationAgent | create_citations | Creates Citation records with field_path, source_tier, data_quality |
@@ -122,7 +122,7 @@ Note: `TrendSignalEngine` is available at `apps/api/app/integrations/trend_signa
 | bull_case_agent | BullCaseAgent | bull_case_agent | Deterministic: identifies positive thesis points, sector tailwinds, evidence used, assumptions, missing evidence; confidence level based on source tier; safety gate rejects forbidden words |
 | bear_case_agent | BearCaseAgent | bear_case_agent | Deterministic: identifies negative thesis points, headwinds, key unknowns; explicitly challenges bull case assumptions; no SELL/SHORT language |
 | risk_agent | RiskAgent | risk_agent | Deterministic: classifies business/financial/market/regulatory/data-quality/source-quality risks; always includes data quality risks from Phase 8 agents |
-| valuation_guard_agent | ValuationGuardAgent | valuation_guard_agent | Deterministic: checks DCF + relative + yield valuation input availability; blocks valuation when mock/T5/T6 or missing fundamentals; lists allowed next steps |
+| valuation_guard_agent | ValuationGuardAgent | valuation_guard_agent | Deterministic: checks DCF + relative + yield valuation input availability; blocks valuation when mock/T5/T6 or missing fundamentals; lists allowed next steps. **Phase 19.3:** moves `not_ready → partial` when core statement inputs are available from T1/T2, with more specific blockers; every valuation **conclusion** stays blocked (EBITDA / market cap / shares / EV unavailable) |
 | investment_committee_chair | InvestmentCommitteeChair | investment_committee_chair | Deterministic: synthesises all council outputs; determines provisional_internal_status; sets quality_gate_status; never assigns BUY/SELL/rating |
 | save_draft_report | ReportWriter | save_draft_report | Saves draft report; includes Research Team + Analysis Council summaries in admin markdown |
 | log_agent_steps | WorkflowController | log_agent_steps | Marks agent_run completed; logs final step summary |
@@ -176,7 +176,17 @@ Gate that blocks premature valuation. Checks DCF inputs (6 required), relative v
 inputs (4 required), and yield inputs. Sets `valuation_readiness` to `"not_ready"` for
 mock/T5/T6 data. Never produces a price target or fair value.
 
-Output fields: `valuation_readiness`, `available_valuation_inputs`,
+**Phase 19.3 — `partial` readiness:** when core financial-statement inputs (revenue, net
+income, free cash flow, total assets, total debt, cash) are available from a **T1/T2** source
+and the data is not mock, `valuation_readiness` moves from `not_ready` to `partial`. This
+signals "real financial inputs are available" — it does **not** unblock any valuation
+conclusion. DCF and relative valuation remain blocked because EBITDA, market capitalization,
+shares outstanding and enterprise value are still unavailable (SEC statement data alone does
+not contain them, and they are never fabricated). The guard adds a specific blocker explaining
+which inputs are present and why no conclusion is produced. Mock and T5/T6-only data stay
+`not_ready` (unchanged safety behavior).
+
+Output fields: `valuation_readiness` (`not_ready` | `partial` | `ready`), `available_valuation_inputs`,
 `missing_valuation_inputs`, `valuation_blockers`, `allowed_next_steps`,
 `disallowed_outputs`, `warnings`.
 
@@ -507,6 +517,15 @@ When `provider_name=eodhd`, the workflow calls it non-fatally in `node_fetch_pro
 passes `FundamentalsData` to `snapshot_builder`. The snapshot gains a `fundamentals_summary` dict
 and the schema draft gains a `snapshot_financials` block with datapoint-wrapped T5 values.
 EODHD must remain classified as T5 — see `docs/DATA_SOURCES.md`.
+
+Phase 19.3 update: for `provider_name ∈ {free_real, eodhd_free_real}`, fundamentals come from
+**SEC EDGAR XBRL (T2)**, not EODHD. `SecEdgarFundamentalsProvider.get_fundamentals()` merges the
+base 10 concepts (`parse_company_facts`) with the normalized metrics from
+`sec_fundamentals_normalizer.normalize_company_facts()` (gross/operating income, capex, free cash
+flow, cash, total debt, derived margins/ROE/debt-to-equity/YoY growth, plus filing metadata).
+`enrich_snapshot_with_free_real()` lands these in `fundamentals_summary` with honest labelling:
+statement values in `USD_m`, margins/growth in `%`, annual data **not** mislabelled TTM, and
+`ebitda_usd_m` / `market_cap_usd_m` / `enterprise_value_usd_m` explicitly `None` (never fabricated).
 
 ### CitationValidator Upgrade Path (Phase 4/5)
 

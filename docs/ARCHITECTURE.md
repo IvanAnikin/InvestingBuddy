@@ -1,6 +1,6 @@
 # Architecture
 
-## Status: Phase 22.1 — Admin Backtesting UI live; Phase 19.1 Free Real Data Stack released on staging (partial real-data success — SEC EDGAR ✅, Stooq blocked from Azure, EODHD /eod partial); safety fix applied (investment_committee_chair forces human_review_required=True on safety violations); TrendSignalEngine exists but not yet wired into main workflow (Phase 19.2); 831 backend tests passing
+## Status: Phase 19.3 — SEC EDGAR XBRL fundamentals normalized into structured income-statement / cash-flow / balance-sheet metrics + derived ratios (`sec_fundamentals_normalizer`), injected into the `free_real` snapshot; `FinancialDataAgent` narrates them, `ValuationGuardAgent` reaches `partial` while still blocking all valuation conclusions (EBITDA / market cap / EV / shares never fabricated). Builds on Phase 19.2.1 (provider observability), Phase 19.2 (TrendSignalEngine wired), Phase 19.1 Free Real Data Stack, Phase 22.1 Admin Backtesting UI. 906 backend tests passing (12 skipped, integration-only).
 
 ---
 
@@ -243,6 +243,9 @@ All errors are caught, logged to `agent_runs.error_message`, and returned as HTT
 | Phase 22 | ✅ Complete | Judge + Backtesting Framework; `BacktestingService`, `ResearchJudgeService`, `MockHistoricalOutcomeProvider`; migration 009 (3 tables); 8 admin-only API endpoints; 34 offline tests |
 | Phase 22.1 | ✅ Complete | Admin Backtesting UI: `/admin/backtesting` list + detail; create/evaluate/refresh; 13 Playwright tests; typecheck + lint + build clean |
 | Phase 22.1 maintenance | ✅ Complete | `/admin/reports` dynamic rendering fix; homepage platform phase text updated |
+| Phase 19.2 | ✅ Released | Real Price + Trend Workflow: `TrendSignalEngine` wired into `company_analysis`; Stooq→EODHD non-blocking fallback; composite provider tracking; T5/T6 metadata in snapshot |
+| Phase 19.2.1 | ✅ Complete | Staging deploy + provider observability hardening: SHA-verified `/health` deploy check, Oryx boot-fail detection, Stooq→EODHD fallback surfaced in provider warnings, `sector=None` scoring fix |
+| Phase 19.3 | ✅ Delivered | SEC Fundamentals Normalization + Report Completeness: `sec_fundamentals_normalizer` maps us-gaap companyfacts → normalized income/cash-flow/balance-sheet metrics + derived margins/ROE/D-E/YoY; injected into `free_real` snapshot; `FinancialDataAgent` narrates fundamentals; `ValuationGuardAgent` reaches `partial`; EBITDA/market cap/EV never fabricated; 22 offline tests. Remaining identity/sector/market-metric enrichment → Phase 19.4 |
 
 ---
 
