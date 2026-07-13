@@ -126,12 +126,34 @@ def run_bear_case_agent(
         if bull_missing:
             missing_evidence.extend(bull_missing)
 
-    # ── Missing financial fundamentals ────────────────────────────────────
+    # ── Financial fundamentals completeness ───────────────────────────────
+    available_financials = [
+        f for f in financial_data_summary.get("available_financial_data", [])
+        if f.startswith("financials.")
+    ]
     missing_financials = [
         f for f in financial_data_summary.get("missing_financial_data", [])
         if f.startswith("financials.")
     ]
-    if missing_financials:
+    missing_labels = [f.split(".", 1)[1].replace("_", " ") for f in missing_financials]
+
+    if missing_financials and available_financials:
+        # Partial completeness: statement fundamentals (e.g. SEC EDGAR revenue,
+        # net income, cash flow, balance sheet) are sourced, but market/valuation
+        # inputs remain missing. Do NOT claim revenue/net income/cash flow/debt
+        # are absent when they are present — name the actually-missing inputs.
+        negative_thesis_points.append(
+            f"Financial completeness is partial: {len(available_financials)} statement "
+            f"categories are sourced (revenue, net income, cash flow, balance sheet), "
+            f"but {len(missing_financials)} valuation inputs remain missing "
+            f"({', '.join(missing_labels[:5])}{'...' if len(missing_labels) > 5 else ''}). "
+            "Market-based valuation cannot be completed at this phase."
+        )
+        key_unknowns.append(
+            "Several valuation inputs remain missing: "
+            f"{', '.join(missing_labels[:6])}{'...' if len(missing_labels) > 6 else ''}."
+        )
+    elif missing_financials:
         negative_thesis_points.append(
             f"All {len(missing_financials)} core financial fundamental categories are missing "
             "(revenue, EBITDA, margins, debt, cash flow). "

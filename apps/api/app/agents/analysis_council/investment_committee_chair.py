@@ -223,33 +223,46 @@ def run_investment_committee_chair(
         )
 
     # ── Determine if human review required ───────────────────────────────
+    # Fail-safe: this is an internal research-queue pipeline where every draft
+    # must be admin-reviewed before any further action. Human review is required
+    # whenever ANY quality signal is unresolved — mock data, invalid schema, a
+    # non-clean citation status, weak/insufficient source quality, a valuation
+    # that is not fully ready, outstanding blocking gaps, or a provisional status
+    # that is itself a research-queue state (all allowed statuses are). The
+    # embedded markdown MUST reflect this same canonical value so the committee
+    # section can never contradict the report/page metadata.
     human_review_required = (
-        provisional_internal_status in (
-            "watchlist_candidate_for_review",
-            "ready_for_deeper_analysis",
-        )
-        or citation_status == "failed"
+        is_mock
+        or not bool(schema_valid)
+        or citation_status != "ok"
         or overall_sq in ("weak", "insufficient")
-        or is_mock
+        or valuation_readiness in ("not_ready", "partial")
+        or blocking_gaps > 0
+        or provisional_internal_status in ALLOWED_INTERNAL_STATUSES
     )
 
     # ── Build committee summary ───────────────────────────────────────────
-    committee_summary = (
-        f"INTERNAL COMMITTEE DRAFT — {legal_name} ({ticker}). "
-        f"Provisional status: '{provisional_internal_status}'. "
-        f"Bull/bear balance: {bull_bear_balance}. "
-        f"Quality gates passed: {gates_passed}/{gates_total}. "
-        f"Source quality: {overall_sq}. "
-        f"Citation status: {citation_status}. "
-        f"Valuation readiness: {valuation_readiness}. "
-        f"Blocking research gaps: {blocking_gaps}. "
-        f"Human review required: {human_review_required}. "
-        "This is not an investment recommendation. "
-        "Admin review required before any further action."
-    )
+    def _compose_summary(status: str, review_required: bool) -> str:
+        text = (
+            f"INTERNAL COMMITTEE DRAFT — {legal_name} ({ticker}). "
+            f"Provisional status: '{status}'. "
+            f"Bull/bear balance: {bull_bear_balance}. "
+            f"Quality gates passed: {gates_passed}/{gates_total}. "
+            f"Source quality: {overall_sq}. "
+            f"Citation status: {citation_status}. "
+            f"Valuation readiness: {valuation_readiness}. "
+            f"Blocking research gaps: {blocking_gaps}. "
+            f"Human review required: {review_required}. "
+            "This is not an investment recommendation. "
+            "Admin review required before any further action."
+        )
+        if is_mock:
+            text += " [MOCK DATA — all assessments are illustrative only]"
+        return text
 
-    if is_mock:
-        committee_summary += " [MOCK DATA — all assessments are illustrative only]"
+    committee_summary = _compose_summary(
+        provisional_internal_status, human_review_required
+    )
 
     # ── Safety check on all output text ──────────────────────────────────
     all_text = " ".join([
@@ -267,6 +280,11 @@ def run_investment_committee_chair(
         warnings.append(
             "SAFETY: forbidden content detected in committee output. "
             "Status downgraded to 'research_incomplete'. Human review forced."
+        )
+        # Recompose the summary so the embedded text reflects the final
+        # (downgraded, review-required) canonical state — not the pre-safety one.
+        committee_summary = _compose_summary(
+            provisional_internal_status, human_review_required
         )
 
     return CommitteeChairOutput(

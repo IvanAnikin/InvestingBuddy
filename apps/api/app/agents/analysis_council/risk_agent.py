@@ -123,11 +123,28 @@ def run_risk_agent(
         )
 
     # ── Financial risks ───────────────────────────────────────────────────
+    available_financials = [
+        f for f in financial_data_summary.get("available_financial_data", [])
+        if f.startswith("financials.")
+    ]
     missing_financials = [
         f for f in financial_data_summary.get("missing_financial_data", [])
         if f.startswith("financials.")
     ]
-    if missing_financials:
+    if missing_financials and available_financials:
+        # Partial: statement fundamentals are sourced but valuation inputs are
+        # not. Financial data is partial, NOT absent.
+        missing_labels = [
+            f.split(".", 1)[1].replace("_", " ") for f in missing_financials
+        ]
+        financial_risks.append(
+            f"Financial data is partial: {len(available_financials)} statement categories "
+            "(revenue, net income, cash flow, balance sheet) are sourced; "
+            f"{len(missing_financials)} valuation inputs remain missing "
+            f"({', '.join(missing_labels[:5])}{'...' if len(missing_labels) > 5 else ''}). "
+            "Leverage and liquidity can be partially assessed; market-based valuation cannot."
+        )
+    elif missing_financials:
         financial_risks.append(
             f"UNKNOWN: All {len(missing_financials)} core financial categories missing "
             "(revenue, EBITDA, margins, debt, cash flow). "

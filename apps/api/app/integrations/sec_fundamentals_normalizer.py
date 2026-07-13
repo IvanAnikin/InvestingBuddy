@@ -12,10 +12,14 @@ raw datapoints into the income-statement / cash-flow / balance-sheet fields the
 FinancialDataAgent and ValuationGuardAgent look for.
 
 This module fills that gap. It:
-  1. Selects the latest annual (10-K / 20-F, fp=FY) value for each concept,
-     with the prior fiscal year kept for year-over-year growth.
+  1. Selects the latest annual (10-K / 20-F, fp=FY) value per line item by
+     freshness across ALL alias concepts — the entry with the latest fiscal
+     year wins (filed date breaks ties), so a stale taxonomy tag (e.g. Apple's
+     ``Revenues`` ending FY2018) can never shadow the current tag's FY2019+
+     values. The prior fiscal year (same concept) is kept for YoY growth, and
+     full-year periods are preferred over embedded Q4 slices for flow concepts.
   2. Falls back to the latest quarterly (10-Q) value with a warning when no
-     annual value exists.
+     annual value exists, and warns when the selected annual year looks stale.
   3. Derives margins, ROE, debt-to-equity, free cash flow and YoY growth only
      when the required inputs are present.
   4. Never fabricates values. EBITDA and market-cap are left missing (with a
@@ -124,6 +128,39 @@ def _fy_of(entry: dict) -> int | None:
     return None
 
 
+def _freshness_key(entry: dict) -> tuple[int, str, str]:
+    """
+    Ranking key for choosing the freshest entry.
+
+    Latest fiscal year wins; latest filed date is the tiebreaker (this is what
+    lets an amended/refiled annual value supersede an earlier one for the same
+    year); latest period-end date breaks any remaining tie.
+    """
+    return (_fy_of(entry) or 0, entry.get("filed") or "", entry.get("end") or "")
+
+
+def _is_full_year_period(entry: dict) -> bool:
+    """
+    True when a flow entry spans roughly a full fiscal year.
+
+    10-K filings frequently include a fourth-quarter (~3 month) period for
+    income-statement / cash-flow concepts alongside the full-year period, both
+    tagged form=10-K, fp=FY. Selecting the Q4 slice would understate revenue,
+    net income, etc. Balance-sheet (instant) concepts have no ``start`` and are
+    always treated as full-period.
+    """
+    start = entry.get("start")
+    end = entry.get("end")
+    if not start or not end:
+        return True
+    try:
+        s = datetime.strptime(start[:10], "%Y-%m-%d")
+        e = datetime.strptime(end[:10], "%Y-%m-%d")
+    except (ValueError, TypeError):
+        return True
+    return (e - s).days >= 300
+
+
 def _select_metric(
     facts: dict[str, Any],
     concepts: list[str],
@@ -131,11 +168,22 @@ def _select_metric(
     scale_to_millions: bool,
 ) -> _Metric:
     """
-    Select the latest annual value for the first matching concept.
+    Select the latest annual value across ALL matching alias concepts.
+
+    Freshness — not alias order — wins. This matters when a company switches
+    XBRL taxonomy tags (e.g. Apple's stale ``Revenues`` tag stops at FY2018
+    while the current ``RevenueFromContractWithCustomerExcludingAssessedTax``
+    tag carries FY2019+). Picking the first alias that merely *has* data would
+    return the stale FY2018 value; instead we gather annual candidates from
+    every alias and choose the one with the latest fiscal year, tie-broken by
+    filed date.
 
     Falls back to the latest quarterly value when no annual entry exists.
-    Keeps the prior fiscal-year annual value for year-over-year growth.
+    Keeps the prior fiscal-year annual value (same concept) for YoY growth.
     """
+    annual_candidates: list[tuple[str, dict]] = []
+    quarterly_candidates: list[tuple[str, dict]] = []
+
     for concept in concepts:
         concept_data = facts.get(concept)
         if not concept_data:
@@ -144,64 +192,62 @@ def _select_metric(
         entries = units.get(unit_key, [])
         if not entries and unit_key == "USD/shares":
             entries = units.get("USD", [])
-        if not entries:
-            continue
+        for e in entries:
+            if e.get("val") is None:
+                continue
+            if e.get("form") in _ANNUAL_FORMS and e.get("fp", "FY") == "FY":
+                annual_candidates.append((concept, e))
+            elif e.get("form") in _QUARTERLY_FORMS:
+                quarterly_candidates.append((concept, e))
 
-        annual = [
-            e
-            for e in entries
-            if e.get("form") in _ANNUAL_FORMS
-            and e.get("fp", "FY") == "FY"
-            and e.get("val") is not None
-        ]
-        period_type = "annual"
-        selected_pool = annual
-        if not annual:
-            selected_pool = [
+    period_type = "annual"
+    pool = annual_candidates
+    if not pool:
+        pool = quarterly_candidates
+        period_type = "quarterly"
+    if not pool:
+        return _Metric()
+
+    # Prefer full-year durations for flow concepts; fall back to the whole pool
+    # if none look full-year (e.g. balance-sheet instants, or odd filings).
+    ranked = [ce for ce in pool if _is_full_year_period(ce[1])] or pool
+    concept, latest = max(ranked, key=lambda ce: _freshness_key(ce[1]))
+
+    raw_val = latest.get("val")
+    value = float(raw_val) / _MILLION if scale_to_millions else float(raw_val)
+
+    prior_value: float | None = None
+    if period_type == "annual":
+        latest_fy = _fy_of(latest)
+        if latest_fy is not None:
+            prior_entries = [
                 e
-                for e in entries
-                if e.get("form") in _QUARTERLY_FORMS and e.get("val") is not None
+                for c, e in annual_candidates
+                if c == concept
+                and _fy_of(e) == latest_fy - 1
+                and _is_full_year_period(e)
             ]
-            period_type = "quarterly"
-        if not selected_pool:
-            continue
+            if prior_entries:
+                prior_raw = max(prior_entries, key=_freshness_key).get("val")
+                if prior_raw is not None:
+                    prior_value = (
+                        float(prior_raw) / _MILLION
+                        if scale_to_millions
+                        else float(prior_raw)
+                    )
 
-        latest = max(selected_pool, key=lambda e: e.get("end", ""))
-        raw_val = latest.get("val")
-        value = float(raw_val) / _MILLION if scale_to_millions else float(raw_val)
-
-        prior_value: float | None = None
-        if period_type == "annual":
-            latest_fy = _fy_of(latest)
-            if latest_fy is not None:
-                prior_entries = [
-                    e for e in annual if _fy_of(e) == latest_fy - 1
-                ]
-                if prior_entries:
-                    prior_raw = max(
-                        prior_entries, key=lambda e: e.get("end", "")
-                    ).get("val")
-                    if prior_raw is not None:
-                        prior_value = (
-                            float(prior_raw) / _MILLION
-                            if scale_to_millions
-                            else float(prior_raw)
-                        )
-
-        return _Metric(
-            value=round(value, 2),
-            prior_value=round(prior_value, 2) if prior_value is not None else None,
-            concept=concept,
-            fy=_fy_of(latest),
-            fp=latest.get("fp"),
-            form=latest.get("form"),
-            filed=latest.get("filed"),
-            accn=latest.get("accn"),
-            end=latest.get("end"),
-            period_type=period_type,
-        )
-
-    return _Metric()
+    return _Metric(
+        value=round(value, 2),
+        prior_value=round(prior_value, 2) if prior_value is not None else None,
+        concept=concept,
+        fy=_fy_of(latest),
+        fp=latest.get("fp"),
+        form=latest.get("form"),
+        filed=latest.get("filed"),
+        accn=latest.get("accn"),
+        end=latest.get("end"),
+        period_type=period_type,
+    )
 
 
 def _pct(numerator: float | None, denominator: float | None) -> float | None:
@@ -552,6 +598,17 @@ def normalize_company_facts(
             warnings.append(
                 f"SEC EDGAR: no annual (10-K) filing found for {ticker.upper()}; "
                 "used latest quarterly (10-Q) values. Annual figures preferred."
+            )
+        elif (
+            headline.period_type == "annual"
+            and result.fiscal_year is not None
+            and result.fiscal_year < datetime.now(timezone.utc).year - 2
+        ):
+            warnings.append(
+                f"SEC EDGAR: latest annual filing selected is FY{result.fiscal_year}, "
+                f"more than two fiscal years behind the current year "
+                f"({datetime.now(timezone.utc).year}). Data may be stale — "
+                "confirm no newer 10-K/20-F was filed."
             )
 
     # ── Derived: total debt ──────────────────────────────────────────────

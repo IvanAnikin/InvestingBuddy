@@ -1,6 +1,6 @@
 # Agent Architecture
 
-## Status: Phase 19.3 — SEC XBRL fundamentals normalized (`sec_fundamentals_normalizer`) and consumed by `FinancialDataAgent` (narrates real fundamentals) and `ValuationGuardAgent` (`not_ready → partial`, conclusions still blocked). Builds on Phase 19.2 (`TrendSignalEngine` wired into `company_analysis`), Phase 19.2.1 (provider observability), Phase 22.1 (Admin Backtesting UI). `investment_committee_chair` forces `human_review_required=True` on safety violations. 906 backend tests passing.
+## Status: Phase 19.3.1 — SEC freshness + review-consistency hotfix. The SEC normalizer selects the latest annual filing across all alias concepts (no stale FY2018); `investment_committee_chair` now emits a **canonical** `human_review_required` (fail-safe true; the embedded markdown never says "Human review required: False" when the report metadata requires review); `BearCaseAgent` / `RiskAgent` acknowledge **partial** SEC fundamentals instead of claiming all fundamentals are missing. On top of Phase 19.3 — SEC XBRL fundamentals normalized (`sec_fundamentals_normalizer`) and consumed by `FinancialDataAgent` (narrates real fundamentals) and `ValuationGuardAgent` (`not_ready → partial`, conclusions still blocked). Builds on Phase 19.2 (`TrendSignalEngine` wired into `company_analysis`), Phase 19.2.1 (provider observability), Phase 22.1 (Admin Backtesting UI). 920 backend tests passing.
 
 ---
 
@@ -120,8 +120,8 @@ Note: `TrendSignalEngine` is available at `apps/api/app/integrations/trend_signa
 | research_completeness_agent | ResearchCompletenessAgent | research_completeness_agent | Schema-driven: compares draft against required sections; lists blocking and non-blocking gaps |
 | citation_validator_v2 | CitationValidatorV2 | citation_validator_v2 | Checks DB citations AND schema draft datapoints; flags bare numbers; warns on T5/T6 decision-critical fields |
 | bull_case_agent | BullCaseAgent | bull_case_agent | Deterministic: identifies positive thesis points, sector tailwinds, evidence used, assumptions, missing evidence; confidence level based on source tier; safety gate rejects forbidden words |
-| bear_case_agent | BearCaseAgent | bear_case_agent | Deterministic: identifies negative thesis points, headwinds, key unknowns; explicitly challenges bull case assumptions; no SELL/SHORT language |
-| risk_agent | RiskAgent | risk_agent | Deterministic: classifies business/financial/market/regulatory/data-quality/source-quality risks; always includes data quality risks from Phase 8 agents |
+| bear_case_agent | BearCaseAgent | bear_case_agent | Deterministic: identifies negative thesis points, headwinds, key unknowns; explicitly challenges bull case assumptions; no SELL/SHORT language. **Phase 19.3.1:** when SEC statement fundamentals are sourced but valuation inputs are not, says completeness is *partial* and names only the genuinely missing inputs — no longer claims all fundamentals (revenue/net income/cash flow/debt) are "none sourced" |
+| risk_agent | RiskAgent | risk_agent | Deterministic: classifies business/financial/market/regulatory/data-quality/source-quality risks; always includes data quality risks from Phase 8 agents. **Phase 19.3.1:** reports financial data as *partial* (not absent) when SEC statement metrics are present |
 | valuation_guard_agent | ValuationGuardAgent | valuation_guard_agent | Deterministic: checks DCF + relative + yield valuation input availability; blocks valuation when mock/T5/T6 or missing fundamentals; lists allowed next steps. **Phase 19.3:** moves `not_ready → partial` when core statement inputs are available from T1/T2, with more specific blockers; every valuation **conclusion** stays blocked (EBITDA / market cap / shares / EV unavailable) |
 | investment_committee_chair | InvestmentCommitteeChair | investment_committee_chair | Deterministic: synthesises all council outputs; determines provisional_internal_status; sets quality_gate_status; never assigns BUY/SELL/rating |
 | save_draft_report | ReportWriter | save_draft_report | Saves draft report; includes Research Team + Analysis Council summaries in admin markdown |
@@ -193,9 +193,14 @@ Output fields: `valuation_readiness` (`not_ready` | `partial` | `ready`), `avail
 #### InvestmentCommitteeChair (`investment_committee_chair.py`)
 
 Synthesises all council outputs. Assigns a `provisional_internal_status` from the allowed
-set only. Sets `human_review_required=True` for watchlist/ready-for-deeper-analysis
-conditions. **Safety fix (2026-07-12):** also forces `human_review_required=True` whenever
+set only. **Safety fix (2026-07-12):** forces `human_review_required=True` whenever
 the committee safety guard triggers — forbidden terms detected or safety violations fired.
+**Review-consistency fix (Phase 19.3.1):** `human_review_required` is now computed
+fail-safe — true for mock data, invalid schema, non-`ok` citation status, weak/insufficient
+source quality, `not_ready`/`partial` valuation, blocking gaps, or any research-queue status
+(every allowed status is one). The `committee_summary` markdown is composed from this final
+canonical value (and re-composed after a safety downgrade), so it can never read
+"Human review required: False" while the report/page metadata says review is required.
 
 **Allowed internal statuses (admin-only, never public):**
 ```

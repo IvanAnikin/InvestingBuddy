@@ -1,6 +1,6 @@
 # Roadmap
 
-## Current State: Phase 19.3 SEC Fundamentals Normalization + Report Completeness Upgrade — SEC EDGAR XBRL companyfacts are now normalized into structured income-statement, cash-flow and balance-sheet metrics (revenue, gross/operating/net income, EPS, operating cash flow, free cash flow, assets/liabilities/equity, cash, total debt) plus derived margins, ROE, debt-to-equity and YoY growth, and injected into the `free_real` snapshot. The `free_real` report now sources real fundamentals (no longer "No financial fundamentals sourced at this phase"), the FinancialDataAgent narrates them, and the ValuationGuardAgent moves from `not_ready` to `partial` while still blocking every valuation conclusion (EBITDA, market cap, shares outstanding and EV remain unavailable and are never fabricated). No BUY/SELL/HOLD/WATCH, price target, fair value or upside is produced; `human_review_required` stays true; `schema_valid` may still be false. Builds on Phase 19.2.1 (SHA-verified deploy health check, provider observability), Phase 19.2 (real price + trend workflow) and Phase 19.1 Free Real Data Stack. Next: Phase 19.4 identity/sector/market-metric enrichment, then Phase 23 Auth / Phase 24 News-Catalyst.
+## Current State: Phase 19.3.1 SEC Freshness + Review Consistency Fix — hotfix on top of Phase 19.3 SEC Fundamentals Normalization. The SEC normalizer now selects the **latest annual** filing across all us-gaap alias concepts (filed date breaks fiscal-year ties, full-year periods preferred, stale-year warning), so a stale taxonomy tag can no longer produce an outdated "latest annual FY2018" for AAPL-like data. The Investment Committee markdown now reflects the **canonical** `human_review_required` (never "False" when the page metadata says review is required), and bear-case / risk wording acknowledges **partial** SEC fundamentals instead of claiming all fundamentals are missing. Underlying Phase 19.3: SEC EDGAR XBRL companyfacts normalized into income-statement / cash-flow / balance-sheet metrics + derived margins, ROE, debt-to-equity and YoY growth, injected into the `free_real` snapshot; the FinancialDataAgent narrates them and the ValuationGuardAgent moves `not_ready → partial` while still blocking every valuation conclusion (EBITDA, market cap, shares outstanding and EV remain unavailable and are never fabricated). No BUY/SELL/HOLD/WATCH, price target, fair value or upside; `safety_valid` and `human_review_required` stay true; `schema_valid` may still be false. Next: Phase 19.4 identity/sector/market-metric enrichment, then Phase 23 Auth / Phase 24 News-Catalyst.
 
 ---
 
@@ -898,6 +898,24 @@ Delivered:
 - **Phase 30** — monitoring / alerts / thesis tracking
 
 Skills used: `financial-data`, `investment-domain`, `langgraph-agents`, `backend-fastapi`, `testing-qa`, `docs-maintainer`
+
+---
+
+## Phase 19.3.1: SEC Freshness + Review Consistency Fix ✅
+
+**Status: Delivered (2026-07-13)**
+
+Hotfix for three defects found in the first Phase 19.3 AAPL `free_real` report:
+
+- **Stale fiscal year (FY2018)** — the SEC normalizer selected the value of the **first** matching us-gaap alias concept, returning immediately. Apple retains a stale `Revenues` tag (data stops at FY2018) that shadowed the current `RevenueFromContractWithCustomerExcludingAssessedTax` tag (FY2019+), so the report's "latest annual" was FY2018. **Fix:** `_select_metric` now gathers annual candidates across **all** alias concepts and picks the latest fiscal year (filed date breaks ties → an amended/restated 10-K/A supersedes the original); full-year periods are preferred over embedded Q4 slices for flow concepts; a **stale-data warning** is emitted when the selected annual year is more than two fiscal years old.
+- **`human_review_required` inconsistency** — the Investment Committee markdown said *"Human review required: False"* while the page/report metadata said *Yes*. The committee chair computed review-required only for watchlist/ready statuses, so `research_incomplete` (with good source quality, valid citations, non-mock data) came out `False`. **Fix:** review-required is now fail-safe — true for mock, invalid schema, non-clean citation status, weak/insufficient source quality, `not_ready`/`partial` valuation, blocking gaps, or any research-queue status; the embedded summary is (re)composed from the final canonical value, including after a safety downgrade.
+- **Contradictory financial wording** — bear-case and risk sections still said *"all core financial fundamentals are missing"* and listed revenue/net income/cash flow/debt as *"none sourced"* even though SEC-normalized statement metrics were present. **Fix:** when statement fundamentals are sourced but valuation inputs are not, both sections now say completeness is **partial**, acknowledge the sourced revenue/net-income/cash-flow/balance-sheet metrics, and name only the genuinely missing inputs (EBITDA, market cap, enterprise value, …).
+
+Safety unchanged: `safety_valid` stays true, `human_review_required` stays true, valuation stays `partial` with conclusions blocked, `schema_valid` may still be false. No BUY/SELL/HOLD/WATCH, price target, fair value or upside. No paid EODHD `/fundamentals`.
+
+Tests: `test_phase19_3_1_sec_freshness_review_consistency.py` (14 offline tests) — freshness selection, filed-date tiebreaker, quarterly fallback + warning, stale-year warning, wording consistency, human-review consistency, and safety guarantees. 920 backend tests passing.
+
+Skills used: `financial-data`, `langgraph-agents`, `backend-fastapi`, `testing-qa`, `docs-maintainer`
 
 ---
 
