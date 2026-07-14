@@ -1,6 +1,8 @@
 # Roadmap
 
-## Current State: Phase 19.4 Identity + Sector + Market-Metric Enrichment — builds on Phase 19.3.1. Two pure enrichment modules now feed the `free_real` snapshot: `company_profile_enrichment` fills sector (DB or **inferred** from SEC SIC, T6), industry/website (SEC, T2) and LEI (GLEIF, T2, name-guarded) — LEI/ISIN/IPO date are never fabricated; `market_metrics_enrichment` derives latest close + **52-week range** (T5), **shares outstanding** (SEC DEI, T2), and **market cap / enterprise value / P/E** as DERIVED ESTIMATES (T6, cited inputs) only when their inputs exist. EBITDA, EV/EBITDA and beta are never fabricated. Resolved fields are pruned from `missing_fields` (AAPL missing-info count drops materially); the FinancialDataAgent narrates the derived metrics and the ValuationGuardAgent recognises them but still blocks every valuation conclusion (readiness stays `partial`). The report markdown gains identity/profile and **Market Metrics (Derived — Internal)** sections. Underlying Phase 19.3(.1): SEC EDGAR XBRL companyfacts normalized into income-statement / cash-flow / balance-sheet metrics + derived margins/ROE/debt-to-equity/YoY growth with latest-annual freshness selection. No BUY/SELL/HOLD/WATCH, price target, fair value or upside; `safety_valid` and `human_review_required` stay true; `schema_valid` may still be false. No paid EODHD `/fundamentals`, no broad discovery. Next: Phase 24 News-Catalyst, Phase 25 discovery, then Phase 23 Auth.
+## Current State: Phase 19.4.1 Enrichment Completeness Consistency — a hotfix on top of Phase 19.4. After the Phase 19.4 AAPL `free_real` smoke test, enriched fields that were present in the Company Snapshot (LEI, sector classification, derived market cap / EV / P/E / 52-week range, shares outstanding) were still being reported as **missing / blocking gaps** and still triggered *"Obtain LEI"* recommendations, because `research_completeness_agent` derived its gaps from the raw-profile schema draft (which never carries enrichment) and `source_quality_agent` recommended obtaining the LEI unconditionally. Phase 19.4.1 makes the completeness layer consume the enriched snapshot: a present enriched field is no longer a missing field, a blocking gap, or an "obtain it" next-step — while genuinely-absent fields (ISIN, EBITDA, EV/EBITDA, beta, IPO date, website) stay gaps and nothing is fabricated. Derived market metrics remain labelled **internal T6 estimates**, valuation readiness stays `partial` with all conclusions blocked, `human_review_required` stays true, and `schema_valid` may still be false. No BUY/SELL/HOLD/WATCH, price target, fair value or upside.
+
+### Phase 19.4 (underlying): Identity + Sector + Market-Metric Enrichment — builds on Phase 19.3.1. Two pure enrichment modules feed the `free_real` snapshot: `company_profile_enrichment` fills sector (DB or **inferred** from SEC SIC, T6), industry/website (SEC, T2) and LEI (GLEIF, T2, name-guarded) — LEI/ISIN/IPO date are never fabricated; `market_metrics_enrichment` derives latest close + **52-week range** (T5), **shares outstanding** (SEC DEI, T2), and **market cap / enterprise value / P/E** as DERIVED ESTIMATES (T6, cited inputs) only when their inputs exist. EBITDA, EV/EBITDA and beta are never fabricated. Resolved fields are pruned from `missing_fields` (AAPL missing-info count drops materially); the FinancialDataAgent narrates the derived metrics and the ValuationGuardAgent recognises them but still blocks every valuation conclusion (readiness stays `partial`). The report markdown gains identity/profile and **Market Metrics (Derived — Internal)** sections. Underlying Phase 19.3(.1): SEC EDGAR XBRL companyfacts normalized into income-statement / cash-flow / balance-sheet metrics + derived margins/ROE/debt-to-equity/YoY growth with latest-annual freshness selection. No paid EODHD `/fundamentals`, no broad discovery. Next: Phase 24 News-Catalyst, Phase 25 discovery, then Phase 23 Auth.
 
 ---
 
@@ -944,10 +946,39 @@ Tests: `test_phase19_4_identity_sector_market_metrics.py` (24 offline tests) —
 
 Skills used: `financial-data`, `investment-domain`, `langgraph-agents`, `backend-fastapi`, `testing-qa`, `docs-maintainer`
 
-### What remains after Phase 19.4
+---
+
+## Phase 19.4.1: Enrichment Completeness Consistency Fix ✅
+
+**Status: Delivered (2026-07-14)**
+
+Goal: Fix consistency issues found after the Phase 19.4 AAPL `free_real` staging smoke test. The report correctly showed `provider=free_real`, LIVE DATA, LEI, sector, SEC financials, derived market cap / EV / P/E, 52-week range, shares outstanding, `safety_valid=true` and `human_review_required=true` — **but** it still inconsistently listed some *enriched-and-present* fields as missing/blocking:
+
+- Company Snapshot showed the LEI, yet the Investment Committee / Research Completeness still called `identity.lei` a blocking gap.
+- Source Quality still recommended *"Obtain LEI"* even when the LEI was present.
+- Derived market metrics and sector classification were still surfaced as gaps.
+
+Root cause: `research_completeness_agent` derived its blocking gaps from the schema draft, which is built from the **raw provider profile** and never carries the Phase 19.4 enrichment; and `source_quality_agent` appended the "Obtain LEI from GLEIF" recommendation **unconditionally**.
+
+Minimal consistency-layer fixes (no workflow rewrite):
+
+- **`research_completeness_agent.py`** — new `_enriched_present_fields()` derives, from the *enriched* company snapshot, which schema field entries are already satisfied (identity `lei`/`isin`/`sector_classification`, and `snapshot_financials` market cap / EV / revenue / net income / total debt / cash). A present enriched field is no longer reported as a blocking gap or missing required field, and identity next-steps (`obtain LEI` / `confirm ISIN`) are dropped when already satisfied. Genuinely-absent fields (ISIN, EBITDA) stay gaps.
+- **`source_quality_agent.py`** — the *"Obtain LEI from GLEIF API"* recommendation is now gated on `identity.lei` actually being missing. When market cap / EV are present only as derived estimates, it recommends *replacing the derived T6 estimates with a primary source before publication* — without ever claiming the metric is unavailable.
+
+Everything downstream (Bear Case key-unknowns, Risk Agent regulatory checks, Committee open questions / next steps, Final Report provenance) already reads the enriched snapshot, so it becomes consistent transitively once these two roots are fixed.
+
+Safety unchanged: derived market metrics stay internal T6 estimates, valuation readiness stays `partial` with all conclusions blocked, `human_review_required` stays true, `schema_valid` may still be false. No BUY/SELL/HOLD/WATCH, price target, fair value or upside. No fabricated LEI/ISIN/EBITDA/beta.
+
+Tests: `test_phase19_4_1_enrichment_completeness_consistency.py` (20 offline tests) — LEI/sector/market-metric present-vs-absent consistency across missing fields, blocking gaps, source-quality recommendations and committee open questions; valuation stays partial; human review stays true; no forbidden output; provider=mock behaviour unchanged. 964 backend tests passing.
+
+Skills used: `investment-domain`, `langgraph-agents`, `backend-fastapi`, `testing-qa`, `docs-maintainer`
+
+### What remains after Phase 19.4.1
+
+Genuinely-missing data (kept honestly missing, never fabricated): **ISIN, website, IPO date, EBITDA, EV/EBITDA, beta, dividend yield, book value per share, current ratio**. Plus larger scope:
 
 - **Phase 24** — news / catalyst discovery (8-K, press releases, optional free news)
-- **Phase 25** — market candidate discovery (broad screening beyond seeded tickers)
+- **Phase 25** — market candidate discovery (broad screening beyond seeded tickers); peers / governance
 - **Phase 26** — public report publishing
 - **Phase 23** — admin auth hardening
 - **Phase 27–29** — user accounts, paid plans, personalized reports
