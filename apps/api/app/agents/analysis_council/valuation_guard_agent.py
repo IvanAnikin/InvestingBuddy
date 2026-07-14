@@ -103,6 +103,14 @@ def run_valuation_guard_agent(
     profile = company_snapshot.get("profile", {})
     price_summary = company_snapshot.get("price_history_summary", {})
     provider_meta = company_snapshot.get("provider_metadata", {})
+    fundamentals_summary = company_snapshot.get("fundamentals_summary") or {}
+
+    # Phase 19.4: market cap / EV / shares may now be present as DERIVED
+    # ESTIMATES (T6) from free price + SEC data. They enrich the readiness
+    # picture but, being estimates without EBITDA/validated market inputs, they
+    # must NOT enable any valuation conclusion.
+    derived_market_cap = fundamentals_summary.get("market_cap_usd_m") is not None
+    derived_ev = fundamentals_summary.get("enterprise_value_usd_m") is not None
 
     source_tier = provider_meta.get("source_tier", "T6_model_estimate")
     provider_name = provider_meta.get("provider_name", "unknown")
@@ -227,13 +235,28 @@ def run_valuation_guard_agent(
         valuation_readiness = "ready"
 
     if valuation_readiness == "partial":
-        valuation_blockers.append(
-            "Valuation conclusion withheld: SEC statement fundamentals "
-            f"({', '.join(core_available)}) are available, but market-based "
-            "inputs (market capitalization, shares outstanding, enterprise value) "
-            "and EBITDA are not — no valuation multiple or DCF conclusion is "
-            "produced at this phase."
-        )
+        if derived_market_cap or derived_ev:
+            derived_bits = []
+            if derived_market_cap:
+                derived_bits.append("market capitalization")
+            if derived_ev:
+                derived_bits.append("enterprise value")
+            valuation_blockers.append(
+                "Valuation conclusion withheld: SEC statement fundamentals "
+                f"({', '.join(core_available)}) are available and "
+                f"{', '.join(derived_bits)} is present only as a DERIVED "
+                "ESTIMATE (T6, from free price + SEC data). EBITDA, EV/EBITDA and "
+                "validated market inputs remain unavailable — no valuation "
+                "multiple or DCF conclusion is produced at this phase."
+            )
+        else:
+            valuation_blockers.append(
+                "Valuation conclusion withheld: SEC statement fundamentals "
+                f"({', '.join(core_available)}) are available, but market-based "
+                "inputs (market capitalization, shares outstanding, enterprise value) "
+                "and EBITDA are not — no valuation multiple or DCF conclusion is "
+                "produced at this phase."
+            )
 
     # ── Allowed next steps ────────────────────────────────────────────────
     if valuation_readiness == "not_ready":

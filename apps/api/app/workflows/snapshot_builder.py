@@ -532,6 +532,125 @@ def enrich_snapshot_with_free_real(snapshot: dict, free_real_dict: dict) -> dict
 
 
 # ---------------------------------------------------------------------------
+# Identity / profile enrichment (Phase 19.4)
+# ---------------------------------------------------------------------------
+
+
+def enrich_snapshot_with_profile_enrichment(snapshot: dict, prof_dict: dict) -> dict:
+    """
+    Layer Phase 19.4 identity/profile enrichment onto an existing snapshot dict.
+
+    Fills sector / industry / website / LEI / ISIN when the enrichment sourced
+    them, prunes the corresponding entries from ``missing_fields``, and records
+    per-field provenance under ``identity_profile_enrichment``. Never overwrites
+    a value that is already present with None.
+    """
+    result = dict(snapshot)
+    identity = dict(result.get("company_identity") or {})
+    profile = dict(result.get("profile") or {})
+    missing = list(result.get("missing_fields") or [])
+
+    # Identity fields
+    if prof_dict.get("lei") and not identity.get("lei"):
+        identity["lei"] = prof_dict["lei"]
+    if prof_dict.get("isin") and not identity.get("isin"):
+        identity["isin"] = prof_dict["isin"]
+
+    # Profile fields
+    if prof_dict.get("sector") and not profile.get("sector"):
+        profile["sector"] = prof_dict["sector"]
+    if prof_dict.get("industry") and not profile.get("industry"):
+        profile["industry"] = prof_dict["industry"]
+    if prof_dict.get("website") and not profile.get("website"):
+        profile["website"] = prof_dict["website"]
+
+    for resolved in prof_dict.get("resolved_missing_fields") or []:
+        if resolved in missing:
+            missing.remove(resolved)
+
+    result["company_identity"] = identity
+    result["profile"] = profile
+    result["missing_fields"] = missing
+    result["identity_profile_enrichment"] = {
+        "sector": prof_dict.get("sector"),
+        "sector_is_inferred": prof_dict.get("sector_is_inferred", False),
+        "industry": prof_dict.get("industry"),
+        "website": prof_dict.get("website"),
+        "lei": prof_dict.get("lei"),
+        "isin": prof_dict.get("isin"),
+        "source_tiers": prof_dict.get("source_tiers", {}),
+        "warnings": prof_dict.get("warnings", []),
+    }
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Market-metric enrichment (Phase 19.4)
+# ---------------------------------------------------------------------------
+
+
+def enrich_snapshot_with_market_metrics(snapshot: dict, mm_dict: dict) -> dict:
+    """
+    Layer Phase 19.4 derived market metrics onto an existing snapshot dict.
+
+    Merges derived market cap / enterprise value / P/E / 52-week range / shares
+    into ``fundamentals_summary`` (only where a derived value exists), exposes a
+    standalone ``market_metrics_summary`` for the report, and prunes the
+    corresponding EODHD-style entries from ``missing_fields``.
+
+    Derived market cap / EV / P/E are DERIVED ESTIMATES (T6_model_estimate) —
+    they are never presented as official figures or a valuation conclusion.
+    EBITDA, EV/EBITDA and beta are left missing (never fabricated).
+    """
+    result = dict(snapshot)
+    fs = dict(result.get("fundamentals_summary") or {})
+    missing = list(result.get("missing_fields") or [])
+
+    def _set(key: str, value: Any) -> None:
+        if value is not None:
+            fs[key] = value
+
+    _set("latest_close", mm_dict.get("latest_close"))
+    _set("52_week_high", mm_dict.get("week52_high"))
+    _set("52_week_low", mm_dict.get("week52_low"))
+    if mm_dict.get("shares_outstanding_mln") is not None:
+        fs["shares_outstanding_mln"] = mm_dict["shares_outstanding_mln"]
+    _set("market_cap_usd_m", mm_dict.get("market_cap_mln"))
+    _set("enterprise_value_usd_m", mm_dict.get("enterprise_value_mln"))
+    _set("pe_ratio", mm_dict.get("pe_ratio"))
+    _set("profit_margin", mm_dict.get("profit_margin_pct"))
+
+    if fs:
+        fs["market_metrics_note"] = mm_dict.get("note")
+        result["fundamentals_summary"] = fs
+
+    # Standalone summary block for the report markdown / final report inputs.
+    result["market_metrics_summary"] = {
+        "latest_close": mm_dict.get("latest_close"),
+        "latest_close_date": mm_dict.get("latest_close_date"),
+        "week52_high": mm_dict.get("week52_high"),
+        "week52_low": mm_dict.get("week52_low"),
+        "week52_high_date": mm_dict.get("week52_high_date"),
+        "week52_low_date": mm_dict.get("week52_low_date"),
+        "shares_outstanding_mln": mm_dict.get("shares_outstanding_mln"),
+        "market_cap_mln": mm_dict.get("market_cap_mln"),
+        "enterprise_value_mln": mm_dict.get("enterprise_value_mln"),
+        "pe_ratio": mm_dict.get("pe_ratio"),
+        "pe_basis": mm_dict.get("pe_basis"),
+        "currency": mm_dict.get("currency", "USD"),
+        "source_tiers": mm_dict.get("source_tiers", {}),
+        "warnings": mm_dict.get("warnings", []),
+        "note": mm_dict.get("note"),
+    }
+
+    for resolved in mm_dict.get("resolved_missing_fields") or []:
+        if resolved in missing:
+            missing.remove(resolved)
+    result["missing_fields"] = missing
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Citation field descriptors for provider data items
 # ---------------------------------------------------------------------------
 
