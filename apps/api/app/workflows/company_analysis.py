@@ -83,6 +83,7 @@ from app.agents.research_team.source_quality_agent import (
     run_source_quality_agent,
     source_quality_output_to_dict,
 )
+from app.integrations.company_profile_enrichment import enrich_company_profile
 from app.integrations.financial_data_provider import (
     DataQuality,
     FundamentalsData,
@@ -96,6 +97,7 @@ from app.integrations.free_real_snapshot import (
     summarize_price_provider_warning,
 )
 from app.integrations.llm_provider import get_llm_client, validate_llm_sections
+from app.integrations.market_metrics_enrichment import derive_market_metrics
 from app.schemas.report import ReportCreate
 from app.schemas.source import CitationCreate, SourceCreate
 from app.services import (
@@ -110,12 +112,86 @@ from app.workflows.snapshot_builder import (
     build_company_snapshot,
     build_schema_draft,
     enrich_snapshot_with_free_real,
+    enrich_snapshot_with_market_metrics,
+    enrich_snapshot_with_profile_enrichment,
     get_price_citation_fields,
     get_profile_citation_fields,
 )
 
 WORKFLOW_NAME = "company_analysis"
 WORKFLOW_VERSION = "5.0.0"
+
+
+async def _lookup_gleif_profile(legal_name: str | None):
+    """
+    Best-effort GLEIF LEI lookup by legal name (Phase 19.4).
+
+    Non-fatal: any network / parse error returns None so the workflow proceeds
+    without an LEI. GLEIF is a free public registry (no API key). The enrichment
+    layer guards attribution with a legal-name match before accepting the LEI.
+    """
+    if not legal_name:
+        return None
+    try:
+        from app.integrations.providers.gleif_provider import GleifProvider
+
+        results = await GleifProvider().search_by_name(legal_name, page_size=1)
+        return results[0] if results else None
+    except Exception:
+        return None
+
+
+async def _apply_phase19_4_enrichment(
+    snapshot: dict,
+    profile,
+    prices,
+    company,
+    ticker: str,
+) -> tuple[dict, dict | None]:
+    """
+    Apply Phase 19.4 identity/profile + derived market-metric enrichment.
+
+    Returns the enriched snapshot and the market-metrics dict (or None). All
+    steps are non-fatal — enrichment never blocks the workflow.
+    """
+    reporting_currency = (snapshot.get("profile") or {}).get("reporting_currency") or "USD"
+    legal_name = (snapshot.get("company_identity") or {}).get("legal_name")
+
+    # ── Identity / profile enrichment (SEC profile + best-effort GLEIF) ──
+    try:
+        gleif_profile = await _lookup_gleif_profile(legal_name)
+        prof = enrich_company_profile(
+            ticker=ticker,
+            legal_name=legal_name,
+            exchange=(snapshot.get("company_identity") or {}).get("exchange"),
+            country=(snapshot.get("company_identity") or {}).get("country_domicile"),
+            cik=getattr(company, "sec_cik", None) if company else None,
+            db_sector=getattr(company, "sector", None) if company else None,
+            db_industry=getattr(company, "industry", None) if company else None,
+            sec_profile=profile,
+            gleif_profile=gleif_profile,
+        )
+        snapshot = enrich_snapshot_with_profile_enrichment(snapshot, prof.to_dict())
+    except Exception:
+        # Enrichment is advisory only — never fail the workflow on it.
+        pass
+
+    # ── Derived market metrics (free price history + SEC fundamentals) ───
+    market_metrics_dict: dict | None = None
+    try:
+        mm = derive_market_metrics(
+            ticker=ticker,
+            fundamentals_summary=snapshot.get("fundamentals_summary"),
+            price_history=prices if (prices and prices.price_points) else None,
+            reporting_currency=reporting_currency,
+        )
+        market_metrics_dict = mm.to_dict()
+        snapshot = enrich_snapshot_with_market_metrics(snapshot, market_metrics_dict)
+    except Exception:
+        market_metrics_dict = None
+
+    return snapshot, market_metrics_dict
+
 
 def _resolve_prompt_path() -> pathlib.Path:
     # Walk up the directory tree looking for packages/prompts/; avoids hard-coded
@@ -269,6 +345,8 @@ def build_company_analysis_graph(
             await agent_run_service.fail_agent_step(db, step, "Company not found in database")
             await agent_run_service.fail_agent_run(db, run, "Company not found in database")
             return {"status": "failed", "error": "Company not found in database"}
+
+        _run_holder["company"] = company
 
         await agent_run_service.complete_agent_step(
             db,
@@ -586,6 +664,19 @@ def build_company_analysis_graph(
         free_real_snap = _run_holder.get("free_real_snapshot")
         if free_real_snap:
             snapshot = enrich_snapshot_with_free_real(snapshot, free_real_snap)
+
+        # Phase 19.4: identity/profile + derived market-metric enrichment.
+        pname = state.get("provider_name") or "mock"
+        market_metrics_dict: dict | None = None
+        if pname in ("free_real", "eodhd_free_real"):
+            snapshot, market_metrics_dict = await _apply_phase19_4_enrichment(
+                snapshot=snapshot,
+                profile=profile,
+                prices=prices,
+                company=_run_holder.get("company"),
+                ticker=state.get("ticker") or "UNKNOWN",
+            )
+        _run_holder["market_metrics_summary"] = market_metrics_dict
 
         await agent_run_service.complete_agent_step(
             db,
@@ -1554,10 +1645,31 @@ def build_company_analysis_graph(
 
         # ── Company Snapshot ──────────────────────────────────────────
         identity = snapshot.get("company_identity", {})
+        snap_profile = snapshot.get("profile", {})
         content_md += "## Company Snapshot\n\n"
         content_md += f"- **Legal Name:** {identity.get('legal_name', 'N/A')}  \n"
         content_md += f"- **Exchange:** {identity.get('exchange', 'N/A')}  \n"
-        content_md += f"- **Country:** {identity.get('country_domicile', 'N/A')}  \n\n"
+        content_md += f"- **Country:** {identity.get('country_domicile', 'N/A')}  \n"
+        content_md += f"- **Sector:** {snap_profile.get('sector') or 'N/A (not sourced)'}  \n"
+        content_md += f"- **Industry:** {snap_profile.get('industry') or 'N/A (not sourced)'}  \n"
+        content_md += f"- **Website:** {snap_profile.get('website') or 'N/A (not sourced)'}  \n"
+        content_md += f"- **LEI:** {identity.get('lei') or 'N/A (not sourced)'}  \n"
+        content_md += f"- **ISIN:** {identity.get('isin') or 'N/A (not sourced)'}  \n\n"
+
+        # ── Identity/Profile Enrichment provenance (Phase 19.4) ───────
+        ip_enrich = snapshot.get("identity_profile_enrichment") or {}
+        if ip_enrich:
+            if ip_enrich.get("sector_is_inferred") and ip_enrich.get("sector"):
+                content_md += (
+                    f"> Sector `{ip_enrich['sector']}` is a DERIVED ESTIMATE "
+                    "(T6_model_estimate) inferred from the SEC SIC classification — "
+                    "not a sourced fact.\n\n"
+                )
+            ip_warnings = ip_enrich.get("warnings") or []
+            if ip_warnings:
+                content_md += "**Identity/Profile enrichment notes:**\n\n"
+                content_md += "\n".join(f"- {w}" for w in ip_warnings[:6])
+                content_md += "\n\n"
 
         if missing_fields:
             content_md += "### Missing Fields (Provider Data)\n\n"
@@ -1728,6 +1840,40 @@ def build_company_analysis_graph(
         if next_tasks:
             content_md += "**Next research tasks:**\n\n"
             content_md += "\n".join(f"- {t}" for t in next_tasks[:8])
+            content_md += "\n\n"
+
+        # ── Market Metrics (Phase 19.4 — derived internal estimates) ─────
+        market_metrics = _run_holder.get("market_metrics_summary") or {}
+        if market_metrics:
+            content_md += "## Market Metrics (Derived — Internal)\n\n"
+            content_md += (
+                "> **INTERNAL ONLY.** Market cap, enterprise value and P/E are "
+                "DERIVED ESTIMATES (T6_model_estimate) from free price data (T5) "
+                "and SEC fundamentals (T2). Not official figures, not a valuation "
+                "conclusion, not investment advice. Margins are annual (not TTM).\n\n"
+            )
+            currency = market_metrics.get("currency", "USD")
+            for key, label, unit in [
+                ("latest_close", "Latest Close", currency),
+                ("week52_high", "52-Week High", currency),
+                ("week52_low", "52-Week Low", currency),
+                ("shares_outstanding_mln", "Shares Outstanding", "M"),
+                ("market_cap_mln", "Market Cap (derived)", f"{currency}_m"),
+                ("enterprise_value_mln", "Enterprise Value (derived)", f"{currency}_m"),
+                ("pe_ratio", "P/E (derived)", "x"),
+            ]:
+                val = market_metrics.get(key)
+                if val is not None:
+                    content_md += f"**{label}:** {val} {unit}  \n"
+            if market_metrics.get("pe_basis"):
+                content_md += f"**P/E basis:** {market_metrics['pe_basis']}  \n"
+            content_md += (
+                "**Not derived (never fabricated):** EBITDA, EV/EBITDA, beta.  \n"
+            )
+            mm_warnings = market_metrics.get("warnings") or []
+            if mm_warnings:
+                content_md += "\n**Market metric notes:**\n\n"
+                content_md += "\n".join(f"- {w}" for w in mm_warnings[:8])
             content_md += "\n\n"
 
         # ── Trend Signal Summary (Phase 19.2 — T6_model_estimate) ───────

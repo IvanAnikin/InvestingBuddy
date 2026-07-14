@@ -1,6 +1,6 @@
 # Roadmap
 
-## Current State: Phase 19.3.1 SEC Freshness + Review Consistency Fix — hotfix on top of Phase 19.3 SEC Fundamentals Normalization. The SEC normalizer now selects the **latest annual** filing across all us-gaap alias concepts (filed date breaks fiscal-year ties, full-year periods preferred, stale-year warning), so a stale taxonomy tag can no longer produce an outdated "latest annual FY2018" for AAPL-like data. The Investment Committee markdown now reflects the **canonical** `human_review_required` (never "False" when the page metadata says review is required), and bear-case / risk wording acknowledges **partial** SEC fundamentals instead of claiming all fundamentals are missing. Underlying Phase 19.3: SEC EDGAR XBRL companyfacts normalized into income-statement / cash-flow / balance-sheet metrics + derived margins, ROE, debt-to-equity and YoY growth, injected into the `free_real` snapshot; the FinancialDataAgent narrates them and the ValuationGuardAgent moves `not_ready → partial` while still blocking every valuation conclusion (EBITDA, market cap, shares outstanding and EV remain unavailable and are never fabricated). No BUY/SELL/HOLD/WATCH, price target, fair value or upside; `safety_valid` and `human_review_required` stay true; `schema_valid` may still be false. Next: Phase 19.4 identity/sector/market-metric enrichment, then Phase 23 Auth / Phase 24 News-Catalyst.
+## Current State: Phase 19.4 Identity + Sector + Market-Metric Enrichment — builds on Phase 19.3.1. Two pure enrichment modules now feed the `free_real` snapshot: `company_profile_enrichment` fills sector (DB or **inferred** from SEC SIC, T6), industry/website (SEC, T2) and LEI (GLEIF, T2, name-guarded) — LEI/ISIN/IPO date are never fabricated; `market_metrics_enrichment` derives latest close + **52-week range** (T5), **shares outstanding** (SEC DEI, T2), and **market cap / enterprise value / P/E** as DERIVED ESTIMATES (T6, cited inputs) only when their inputs exist. EBITDA, EV/EBITDA and beta are never fabricated. Resolved fields are pruned from `missing_fields` (AAPL missing-info count drops materially); the FinancialDataAgent narrates the derived metrics and the ValuationGuardAgent recognises them but still blocks every valuation conclusion (readiness stays `partial`). The report markdown gains identity/profile and **Market Metrics (Derived — Internal)** sections. Underlying Phase 19.3(.1): SEC EDGAR XBRL companyfacts normalized into income-statement / cash-flow / balance-sheet metrics + derived margins/ROE/debt-to-equity/YoY growth with latest-annual freshness selection. No BUY/SELL/HOLD/WATCH, price target, fair value or upside; `safety_valid` and `human_review_required` stay true; `schema_valid` may still be false. No paid EODHD `/fundamentals`, no broad discovery. Next: Phase 24 News-Catalyst, Phase 25 discovery, then Phase 23 Auth.
 
 ---
 
@@ -919,23 +919,39 @@ Skills used: `financial-data`, `langgraph-agents`, `backend-fastapi`, `testing-q
 
 ---
 
-## Phase 19.4: Identity + Sector + Market-Metric Enrichment
+## Phase 19.4: Identity + Sector + Market-Metric Enrichment ✅
 
-**Status: Not started**
+**Status: Delivered (2026-07-14)**
 
 Goal: Close the remaining company-identity and market-derived gaps that Phase 19.3 intentionally left open, so the `free_real` report reaches broader completeness without paid EODHD `/fundamentals`.
 
-Deliverables:
-- [ ] Sector / industry / description enrichment from SEC submissions (SIC → sector mapping) or a free classification source
-- [ ] Shares outstanding from SEC `dei:EntityCommonStockSharesOutstanding` (when present) → enables market cap = price × shares
-- [ ] 52-week high/low derived from the existing price history
-- [ ] ISIN / LEI lookup (GLEIF is free, T2) for legal-entity confirmation
-- [ ] Market cap / enterprise value computed only when both price and shares are available — still no valuation conclusion
-- [ ] Feed these into valuation readiness so relative-multiple **inputs** (not conclusions) become partially available
+Two new pure enrichment modules feed the `free_real` / `eodhd_free_real` snapshot after SEC fundamentals and price history are available:
 
-Constraints: no paid EODHD `/fundamentals`, no valuation conclusions, no recommendations, no price targets.
+- **`company_profile_enrichment.py`** — assembles identity/profile from the DB record, SEC EDGAR submissions (website, SIC industry, country — T2) and a best-effort GLEIF LEI lookup (T2). Sector is taken from the DB when present, otherwise **inferred** from the SEC SIC classification and tagged `T6_model_estimate` (labelled "derived"). A GLEIF LEI is only accepted when its legal name matches the company (guards against wrong-entity attribution). **LEI, ISIN, IPO date are never fabricated** — left missing with a warning when unavailable.
+- **`market_metrics_enrichment.py`** — derives, only when the required inputs exist:
+  - latest close + **52-week high/low** (from free price history, T5)
+  - **shares outstanding** from SEC `dei:EntityCommonStockSharesOutstanding` (T2)
+  - **market cap** = latest close × shares (derived estimate, T6)
+  - **enterprise value** = market cap + total debt − cash (derived estimate, T6)
+  - **P/E** = market cap / net income, else latest close / diluted EPS (derived estimate, T6)
+  - profit margin / operating margin / ROE mapped from **annual** SEC figures (never mislabelled TTM)
 
-Skills to use: `financial-data`, `investment-domain`, `backend-fastapi`, `testing-qa`
+Derived market cap / EV / P/E are labelled DERIVED ESTIMATES (T6) with cited inputs — internal review aids, never official figures or a valuation conclusion. **EBITDA, EV/EBITDA and beta are never fabricated** and stay missing. Resolved fields are pruned from the snapshot's `missing_fields`, so the AAPL `free_real` report's missing-information count drops materially. The `FinancialDataAgent` now recognises market cap / EV / P/E as available categories and narrates them as derived estimates; the `ValuationGuardAgent` recognises the derived market metrics but still blocks every valuation conclusion (EBITDA and validated market inputs remain absent → readiness stays `partial`). The report markdown gains a **Company Snapshot** identity/profile block and a **Market Metrics (Derived — Internal)** section.
+
+Safety unchanged: `safety_valid` stays true, `human_review_required` stays true, valuation stays `partial` with conclusions blocked, `schema_valid` may still be false. No BUY/SELL/HOLD/WATCH, price target, fair value or upside. No paid EODHD `/fundamentals`; no broad market discovery.
+
+Tests: `test_phase19_4_identity_sector_market_metrics.py` (24 offline tests) — shares/close/52-week extraction, guarded market cap / EV / P/E derivation, no EBITDA/EV-EBITDA/beta fabrication, source-tier tagging, missing-info reduction, valuation-readiness blocking, safety, graceful degradation, and mock/19.3 regression guards. 944 backend tests passing.
+
+Skills used: `financial-data`, `investment-domain`, `langgraph-agents`, `backend-fastapi`, `testing-qa`, `docs-maintainer`
+
+### What remains after Phase 19.4
+
+- **Phase 24** — news / catalyst discovery (8-K, press releases, optional free news)
+- **Phase 25** — market candidate discovery (broad screening beyond seeded tickers)
+- **Phase 26** — public report publishing
+- **Phase 23** — admin auth hardening
+- **Phase 27–29** — user accounts, paid plans, personalized reports
+- **Phase 30** — monitoring / alerts / thesis tracking
 
 ---
 

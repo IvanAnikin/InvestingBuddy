@@ -62,6 +62,10 @@ _FUNDAMENTALS_TO_CATEGORY = {
     "eps_diluted": "earnings_per_share",
     "return_on_equity_pct": "return_on_equity",
     "debt_to_equity": "debt_to_equity",
+    # Phase 19.4 derived market metrics (T6_model_estimate from T5 price + T2 SEC).
+    # The derived P/E is written to the shared ``pe_ratio`` key mapped below.
+    "market_cap_usd_m": "market_cap",
+    "enterprise_value_usd_m": "enterprise_value",
     # EODHD (Phase 13, T5_api_aggregator)
     "revenue_ttm_mln": "revenue",
     "ebitda_mln": "ebitda",
@@ -187,9 +191,44 @@ def _summarize_fundamentals(fs: dict, legal_name: str) -> str:
             seg += f" (debt/equity {de:.2f}x)"
         parts.append(seg + ".")
 
+    # ── Phase 19.4: derived market metrics (internal estimates) ───────────
+    mktcap = fs.get("market_cap_usd_m")
+    ev = fs.get("enterprise_value_usd_m")
+    pe = fs.get("pe_ratio")
+    shares = fs.get("shares_outstanding_mln")
+    latest_close = fs.get("latest_close")
+    derived_bits: list[str] = []
+    if shares is not None:
+        derived_bits.append(f"shares outstanding {shares:,.0f}M")
+    if mktcap is not None:
+        derived_bits.append(f"market cap ~{_fmt_m(mktcap)}")
+    if ev is not None:
+        derived_bits.append(f"enterprise value ~{_fmt_m(ev)}")
+    if pe is not None:
+        derived_bits.append(f"P/E ~{pe:.1f}x")
+    if derived_bits:
+        close_note = (
+            f" (latest close {latest_close})" if latest_close is not None else ""
+        )
+        parts.append(
+            "Derived market metrics for internal review"
+            f"{close_note}: " + ", ".join(derived_bits) + ". "
+            "These are DERIVED ESTIMATES (T6) from free price data (T5) and SEC "
+            "fundamentals (T2), not official figures and not a valuation conclusion."
+        )
+
+    # ── Honest remaining gaps (annual vs TTM, EBITDA, beta) ──────────────
+    remaining: list[str] = []
+    if fs.get("ebitda_usd_m") is None:
+        remaining.append("EBITDA and EV/EBITDA")
+    if mktcap is None:
+        remaining.append("market capitalization")
+    remaining.append("beta and validated TTM figures")
     parts.append(
-        "Valuation remains incomplete: EBITDA, market capitalization, enterprise "
-        "value and shares outstanding are not available from SEC statement data."
+        "Market-based valuation remains incomplete: "
+        + ", ".join(remaining)
+        + " are not available from the free SEC/price sources at this phase. "
+        "No valuation conclusion is produced at this phase."
     )
     return " ".join(parts)
 

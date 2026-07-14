@@ -1,8 +1,8 @@
 # Gap Analysis
 
-**Last updated:** 2026-07-13  
-**Current state:** Phase 19.3.1 SEC Freshness + Review Consistency Fix delivered (SEC normalizer selects latest annual across alias concepts — no stale FY2018; committee markdown matches canonical `human_review_required`; bear/risk wording acknowledges partial SEC fundamentals); on top of Phase 19.3 SEC Fundamentals Normalization; Phase 19.2.1 observability hardening on staging; Phase 22.1 Admin Backtesting UI live.  
-**Next phase:** Phase 19.4 Identity/Sector/Market-Metric Enrichment, then Phase 23 Auth or Phase 24 News/Catalyst Discovery
+**Last updated:** 2026-07-14  
+**Current state:** Phase 19.4 Identity + Sector + Market-Metric Enrichment delivered (`company_profile_enrichment`: sector from DB or inferred SEC SIC/T6, industry/website SEC/T2, LEI GLEIF/T2 name-guarded; `market_metrics_enrichment`: latest close + 52-week range/T5, shares SEC DEI/T2, market cap/EV/P-E as DERIVED ESTIMATES/T6 when inputs exist; LEI/ISIN/IPO/EBITDA/EV-EBITDA/beta never fabricated; missing-info count reduced; valuation still `partial` with conclusions blocked). On top of Phase 19.3.1 SEC Freshness + Review Consistency and Phase 19.3 SEC Fundamentals Normalization; Phase 22.1 Admin Backtesting UI live.  
+**Next phase:** Phase 24 News/Catalyst Discovery or Phase 25 market candidate discovery, then Phase 23 Auth
 
 This document describes the gap between the current implementation and the target product. Each gap maps to a planned phase.
 
@@ -39,6 +39,7 @@ This document describes the gap between the current implementation and the targe
 - `eodhd_free_real` produced partial real data through SEC EDGAR on staging
 - Final internal report generation works from partial real (SEC EDGAR) data
 - Phase 19.3 SEC fundamentals normalization: `sec_fundamentals_normalizer` maps SEC XBRL companyfacts into normalized income-statement / cash-flow / balance-sheet metrics + derived margins, ROE, debt-to-equity and YoY growth; injected into the `free_real` snapshot and consumed by `FinancialDataAgent` and `ValuationGuardAgent`
+- Phase 19.4 identity/sector/market-metric enrichment: `company_profile_enrichment` (sector from DB or inferred SEC SIC, industry/website from SEC, LEI from GLEIF — name-guarded, never fabricated) + `market_metrics_enrichment` (latest close, 52-week high/low, shares outstanding from SEC DEI, derived market cap / enterprise value / P/E as T6 estimates when inputs exist). Resolved fields pruned from `missing_fields`; EBITDA / EV-EBITDA / beta / LEI / ISIN / IPO date never fabricated; valuation stays `partial` with all conclusions blocked
 
 ### Important caveats
 
