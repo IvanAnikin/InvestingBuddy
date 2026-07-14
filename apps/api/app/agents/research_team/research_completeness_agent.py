@@ -10,11 +10,23 @@ Does not fake missing sections.
 Does not reduce schema strictness.
 schema_valid=false is acceptable at this phase (many sections require LLM agents).
 No investment recommendation.
+
+Phase 19.4.1 — enrichment completeness consistency:
+  The schema draft is built from the raw provider profile and never carries the
+  Phase 19.4 enrichment (LEI/ISIN/sector from GLEIF/SEC, derived market cap / EV
+  / P/E / 52-week range from free price + SEC data). Without accounting for that
+  enrichment this agent would flag LEI, sector classification, market cap and
+  enterprise value as blocking gaps even though the enriched snapshot already
+  carries them. ``_enriched_present_fields`` derives, from the enriched company
+  snapshot, which schema field entries are already satisfied so that a genuinely
+  present field is never reported as a blocking/missing gap. Genuinely absent
+  fields (ISIN, EBITDA, …) remain gaps. No data is fabricated.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 # Top-level sections defined in report_schema.json
 # Grouped by whether they are available from the Phase 8 snapshot or require
@@ -138,6 +150,73 @@ class ResearchCompletenessAgentOutput:
     non_blocking_gaps: list[str]
 
 
+def _first_present(source: dict, *keys: str) -> bool:
+    """True when any of ``keys`` resolves to a non-None value in ``source``."""
+    return any(source.get(k) is not None for k in keys)
+
+
+def _enriched_present_fields(company_snapshot: dict) -> set[str]:
+    """
+    Derive the ``section.field`` schema entries already satisfied by the enriched
+    company snapshot (Phase 19.4 identity/profile + derived market metrics).
+
+    This lets the completeness agent avoid reporting an enriched field as a
+    blocking/missing gap when the snapshot already carries it. Only *present*
+    values count — a None never satisfies a field, so genuinely-absent fields
+    (ISIN, EBITDA, …) remain gaps and nothing is fabricated.
+    """
+    present: set[str] = set()
+    if not company_snapshot:
+        return present
+
+    identity: dict[str, Any] = company_snapshot.get("company_identity") or {}
+    profile: dict[str, Any] = company_snapshot.get("profile") or {}
+    fundamentals: dict[str, Any] = company_snapshot.get("fundamentals_summary") or {}
+    market_metrics: dict[str, Any] = company_snapshot.get("market_metrics_summary") or {}
+
+    # ── identity section ──────────────────────────────────────────────────
+    if identity.get("legal_name") is not None:
+        present.add("identity.legal_name")
+    if identity.get("ticker") is not None:
+        present.add("identity.ticker")
+    if identity.get("exchange") is not None:
+        present.add("identity.exchange")
+    if identity.get("country_domicile") is not None:
+        present.add("identity.country_domicile")
+    if identity.get("isin") is not None:
+        present.add("identity.isin")
+    if identity.get("lei") is not None:
+        present.add("identity.lei")
+    # Sector classification is satisfied by a present or mapped/inferred sector.
+    if profile.get("sector") is not None:
+        present.add("identity.sector_classification")
+
+    # ── snapshot_financials section ───────────────────────────────────────
+    # Values may arrive as SEC-normalized fundamentals or as Phase 19.4 derived
+    # market metrics; either counts as present. EBITDA is never derived here and
+    # therefore remains absent.
+    if _first_present(fundamentals, "market_cap_usd_m", "market_cap_mln") or (
+        market_metrics.get("market_cap_mln") is not None
+    ):
+        present.add("snapshot_financials.market_cap")
+    if _first_present(fundamentals, "enterprise_value_usd_m", "enterprise_value_mln") or (
+        market_metrics.get("enterprise_value_mln") is not None
+    ):
+        present.add("snapshot_financials.enterprise_value")
+    if _first_present(fundamentals, "revenue_usd_m", "revenue_ttm_mln"):
+        present.add("snapshot_financials.revenue")
+    if _first_present(fundamentals, "ebitda_usd_m", "ebitda_mln"):
+        present.add("snapshot_financials.ebitda")
+    if fundamentals.get("net_income_usd_m") is not None:
+        present.add("snapshot_financials.net_income")
+    if _first_present(fundamentals, "total_debt_usd_m"):
+        present.add("snapshot_financials.total_debt")
+    if _first_present(fundamentals, "cash_and_equivalents_usd_m"):
+        present.add("snapshot_financials.cash")
+
+    return present
+
+
 def run_research_completeness_agent(
     company_snapshot: dict,
     schema_draft: dict | None = None,
@@ -157,6 +236,11 @@ def run_research_completeness_agent(
     draft = schema_draft or {}
     errors = set(schema_validation_errors or [])
 
+    # Phase 19.4.1: fields already satisfied by the enriched snapshot must not be
+    # reported as blocking/missing gaps even though the schema draft (built from
+    # the raw provider profile) does not carry them.
+    enriched_present = _enriched_present_fields(company_snapshot)
+
     complete_sections: list[str] = []
     incomplete_sections: list[str] = []
     missing_required_fields: list[str] = []
@@ -170,52 +254,55 @@ def run_research_completeness_agent(
         in_draft = section_key in draft
         is_required = meta["required"]
         phase = meta["phase"]
+        sub_fields = meta["fields"]
+        section_data = draft.get(section_key, {}) if in_draft else {}
 
-        if in_draft:
-            # Section present — check sub-fields
-            section_data = draft[section_key]
-            sub_fields = meta["fields"]
-            absent = [f for f in sub_fields if f not in section_data]
+        # A field counts as present when it is in the draft section OR the
+        # enriched snapshot already carries it.
+        absent = [
+            f for f in sub_fields
+            if f not in section_data
+            and f"{section_key}.{f}" not in enriched_present
+        ]
 
-            if absent:
-                incomplete_sections.append(section_key)
-                phases_needed.add(phase)
-                for f in absent:
-                    entry = f"{section_key}.{f}"
-                    if is_required:
-                        missing_required_fields.append(entry)
-                        blocking_gaps.append(
-                            f"Required field missing: {entry}"
-                        )
-                    else:
-                        non_blocking_gaps.append(
-                            f"Optional field absent: {entry}"
-                        )
-            else:
-                complete_sections.append(section_key)
-        else:
-            # Section not in draft at all
-            incomplete_sections.append(section_key)
-            phases_needed.add(phase)
-            all_fields = meta["fields"]
-            for f in all_fields:
-                entry = f"{section_key}.{f}"
-                if is_required:
-                    missing_required_fields.append(entry)
+        if not absent:
+            complete_sections.append(section_key)
+            continue
+
+        incomplete_sections.append(section_key)
+        phases_needed.add(phase)
+        # "Whole section absent" wording only applies when nothing (draft or
+        # enrichment) satisfies any field of the section.
+        section_fully_absent = not section_data and len(absent) == len(sub_fields)
+        for f in absent:
+            entry = f"{section_key}.{f}"
+            if is_required:
+                missing_required_fields.append(entry)
+                if section_fully_absent:
                     blocking_gaps.append(
                         f"Required section absent: {section_key} (field: {entry})"
                     )
                 else:
-                    non_blocking_gaps.append(
-                        f"Optional section absent: {section_key}"
-                    )
-            # De-duplicate non_blocking_gaps for whole-section absence
-            non_blocking_gaps = list(dict.fromkeys(non_blocking_gaps))
+                    blocking_gaps.append(f"Required field missing: {entry}")
+            else:
+                if section_fully_absent:
+                    non_blocking_gaps.append(f"Optional section absent: {section_key}")
+                else:
+                    non_blocking_gaps.append(f"Optional field absent: {entry}")
+        # De-duplicate non_blocking_gaps for whole-section absence
+        non_blocking_gaps = list(dict.fromkeys(non_blocking_gaps))
 
     # Collect next tasks from phases needed
     for phase in ("snapshot", "research", "financials", "analysis"):
         if phase in phases_needed:
             next_tasks.extend(_PHASE_TASKS[phase])
+
+    # Phase 19.4.1: drop identity-verification tasks the enriched snapshot has
+    # already satisfied (e.g. do not ask to "obtain LEI" when LEI is present).
+    if "identity.lei" in enriched_present:
+        next_tasks = [t for t in next_tasks if "lei" not in t.lower()]
+    if "identity.isin" in enriched_present:
+        next_tasks = [t for t in next_tasks if "isin" not in t.lower()]
 
     # Surface schema validation errors as blocking gaps if not already captured
     for err in errors:

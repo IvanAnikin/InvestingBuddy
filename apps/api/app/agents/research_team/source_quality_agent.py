@@ -69,6 +69,22 @@ class SourceQualityAgentOutput:
     warnings: list[str] = field(default_factory=list)
 
 
+def _has_derived_market_metrics(company_snapshot: dict) -> bool:
+    """
+    True when the snapshot carries a Phase 19.4 derived market metric (market cap
+    or enterprise value) as a present value. Used to recommend upgrading derived
+    estimates to a primary source — without ever asserting they are unavailable.
+    """
+    mm = company_snapshot.get("market_metrics_summary") or {}
+    if mm.get("market_cap_mln") is not None or mm.get("enterprise_value_mln") is not None:
+        return True
+    fs = company_snapshot.get("fundamentals_summary") or {}
+    return (
+        fs.get("market_cap_usd_m") is not None
+        or fs.get("enterprise_value_usd_m") is not None
+    )
+
+
 def _classify_provider(provider_name: str, declared_tier: str | None) -> str:
     """
     Resolve the effective source tier for a provider.
@@ -191,11 +207,26 @@ def run_source_quality_agent(
             f"Upgrade {provider_name} ({effective_tier}) data with T1 primary filing "
             "(annual report, 10-K, prospectus) for financial fundamentals"
         )
+    # Phase 19.4.1: only recommend obtaining the LEI when it is actually missing.
+    # When enrichment has already sourced the LEI (GLEIF, T2) it is present in the
+    # snapshot and pruned from missing_fields, so this recommendation is skipped.
+    if "identity.lei" in missing_fields:
+        recommended_upgrades.append(
+            "Obtain LEI from GLEIF API to confirm legal entity identity"
+        )
     recommended_upgrades.extend([
-        "Obtain LEI from GLEIF API to confirm legal entity identity",
         "Source latest annual report (T1) for revenue, EBITDA, debt metrics",
         "Obtain sell-side coverage data from T3/T4 sources for peer comparison",
     ])
+    # Phase 19.4.1: market cap / EV / P/E may be present only as DERIVED ESTIMATES
+    # (T6, from free price + SEC data). Recommend upgrading them to a primary
+    # source before publication — but never claim they are absent when present.
+    if _has_derived_market_metrics(company_snapshot):
+        recommended_upgrades.append(
+            "Replace derived market metrics (market cap, enterprise value, P/E) — "
+            "currently T6 estimates from free price (T5) and SEC (T2) data — with "
+            "official or primary-sourced market data before publication"
+        )
 
     # ── Overall quality assessment ────────────────────────────────────────
     if len(strong_sources) > 0 and len(weak_sources) == 0:
