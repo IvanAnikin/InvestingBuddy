@@ -109,9 +109,8 @@ test.describe("Report Detail — Markdown Preview", () => {
 });
 
 test.describe("Report Detail — reduced motion", () => {
-  test.use({ reducedMotion: "reduce" });
-
   test("layout still renders under prefers-reduced-motion", async ({ page }) => {
+    await page.emulateMedia({ reducedMotion: "reduce" });
     await page.goto(REPORT_URL);
     await expect(page.locator("h1").first()).toBeVisible();
     await expect(page.locator(PREVIEW)).toBeVisible();
