@@ -14,12 +14,22 @@ import { defineConfig, devices } from "@playwright/test";
  *   npx playwright install --with-deps
  */
 
+// Local e2e uses a dedicated dev-server port so it never collides with a
+// developer's own `next dev` on :3000. Staging runs override this via
+// PLAYWRIGHT_BASE_URL.
+const DEV_PORT = 3100;
+
 const baseURL =
   process.env.PLAYWRIGHT_BASE_URL ||
-  process.env.NEXT_PUBLIC_API_BASE_URL?.replace(":8000", ":3000") ||
-  "http://localhost:3000";
+  process.env.NEXT_PUBLIC_API_BASE_URL?.replace(":8000", `:${DEV_PORT}`) ||
+  `http://localhost:${DEV_PORT}`;
 
 const isStagingRun = process.env.ENABLE_STAGING_E2E === "true";
+
+// Local e2e runs point the dev server's server-side (SSR) fetches at a
+// zero-dependency mock backend so pages like /admin/reports/[id] render with
+// deterministic, offline data. No live staging or provider is contacted.
+const MOCK_BACKEND_PORT = 8799;
 
 export default defineConfig({
   testDir: "./tests/e2e",
@@ -69,17 +79,34 @@ export default defineConfig({
       : []),
   ],
 
-  /* Start Next.js dev server automatically when NOT in staging mode */
+  /* Start the mock backend + Next.js dev server automatically when NOT in
+     staging mode. The dev server's SSR fetches are pointed at the local mock
+     backend so report pages render deterministic, offline data. */
   ...(isStagingRun
     ? {}
     : {
-        webServer: {
-          command: "npm run dev",
-          url: baseURL,
-          reuseExistingServer: !process.env.CI,
-          timeout: 120_000,
-          stdout: "pipe",
-          stderr: "pipe",
-        },
+        webServer: [
+          {
+            command: `node tests/support/mock-backend.mjs`,
+            url: `http://127.0.0.1:${MOCK_BACKEND_PORT}/health`,
+            reuseExistingServer: !process.env.CI,
+            env: { PORT: String(MOCK_BACKEND_PORT) },
+            timeout: 30_000,
+            stdout: "pipe",
+            stderr: "pipe",
+          },
+          {
+            command: `npm run dev -- --port ${DEV_PORT}`,
+            url: baseURL,
+            reuseExistingServer: !process.env.CI,
+            env: {
+              BACKEND_API_BASE_URL: `http://127.0.0.1:${MOCK_BACKEND_PORT}`,
+              BACKEND_BASIC_AUTH: "",
+            },
+            timeout: 120_000,
+            stdout: "pipe",
+            stderr: "pipe",
+          },
+        ],
       }),
 });

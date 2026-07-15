@@ -1,6 +1,8 @@
 # Roadmap
 
-## Current State: Phase 19.4.1 Enrichment Completeness Consistency — a hotfix on top of Phase 19.4. After the Phase 19.4 AAPL `free_real` smoke test, enriched fields that were present in the Company Snapshot (LEI, sector classification, derived market cap / EV / P/E / 52-week range, shares outstanding) were still being reported as **missing / blocking gaps** and still triggered *"Obtain LEI"* recommendations, because `research_completeness_agent` derived its gaps from the raw-profile schema draft (which never carries enrichment) and `source_quality_agent` recommended obtaining the LEI unconditionally. Phase 19.4.1 makes the completeness layer consume the enriched snapshot: a present enriched field is no longer a missing field, a blocking gap, or an "obtain it" next-step — while genuinely-absent fields (ISIN, EBITDA, EV/EBITDA, beta, IPO date, website) stay gaps and nothing is fabricated. Derived market metrics remain labelled **internal T6 estimates**, valuation readiness stays `partial` with all conclusions blocked, `human_review_required` stays true, and `schema_valid` may still be false. No BUY/SELL/HOLD/WATCH, price target, fair value or upside.
+## Current State: Phase 22.3 UI Modernization + Markdown Report Preview — a frontend/UI-only phase on top of the Phase 19.4.1 data stack. The web/admin experience is modernized with a dark glassmorphism design system, a subtle animated aurora background (disabled under `prefers-reduced-motion`), and reusable glass UI primitives. Report content is now rendered through a **safe markdown preview** (`react-markdown` + `remark-gfm` + `rehype-sanitize`, no `dangerouslySetInnerHTML`) with a Preview/Raw toggle and a sticky mini table of contents, replacing the raw `<pre>` block. No backend analysis or report-generation logic changed; no public publishing was added; all mandatory internal-only / not-investment-advice / human-review disclaimers are preserved verbatim, and no BUY/SELL/HOLD/WATCH, price target, fair value or upside is produced. See the Phase 22.3 section below.
+
+## Previous State: Phase 19.4.1 Enrichment Completeness Consistency — a hotfix on top of Phase 19.4. After the Phase 19.4 AAPL `free_real` smoke test, enriched fields that were present in the Company Snapshot (LEI, sector classification, derived market cap / EV / P/E / 52-week range, shares outstanding) were still being reported as **missing / blocking gaps** and still triggered *"Obtain LEI"* recommendations, because `research_completeness_agent` derived its gaps from the raw-profile schema draft (which never carries enrichment) and `source_quality_agent` recommended obtaining the LEI unconditionally. Phase 19.4.1 makes the completeness layer consume the enriched snapshot: a present enriched field is no longer a missing field, a blocking gap, or an "obtain it" next-step — while genuinely-absent fields (ISIN, EBITDA, EV/EBITDA, beta, IPO date, website) stay gaps and nothing is fabricated. Derived market metrics remain labelled **internal T6 estimates**, valuation readiness stays `partial` with all conclusions blocked, `human_review_required` stays true, and `schema_valid` may still be false. No BUY/SELL/HOLD/WATCH, price target, fair value or upside.
 
 ### Phase 19.4 (underlying): Identity + Sector + Market-Metric Enrichment — builds on Phase 19.3.1. Two pure enrichment modules feed the `free_real` snapshot: `company_profile_enrichment` fills sector (DB or **inferred** from SEC SIC, T6), industry/website (SEC, T2) and LEI (GLEIF, T2, name-guarded) — LEI/ISIN/IPO date are never fabricated; `market_metrics_enrichment` derives latest close + **52-week range** (T5), **shares outstanding** (SEC DEI, T2), and **market cap / enterprise value / P/E** as DERIVED ESTIMATES (T6, cited inputs) only when their inputs exist. EBITDA, EV/EBITDA and beta are never fabricated. Resolved fields are pruned from `missing_fields` (AAPL missing-info count drops materially); the FinancialDataAgent narrates the derived metrics and the ValuationGuardAgent recognises them but still blocks every valuation conclusion (readiness stays `partial`). The report markdown gains identity/profile and **Market Metrics (Derived — Internal)** sections. Underlying Phase 19.3(.1): SEC EDGAR XBRL companyfacts normalized into income-statement / cash-flow / balance-sheet metrics + derived margins/ROE/debt-to-equity/YoY growth with latest-annual freshness selection. No paid EODHD `/fundamentals`, no broad discovery. Next: Phase 24 News-Catalyst, Phase 25 discovery, then Phase 23 Auth.
 
@@ -809,6 +811,33 @@ Deliverables:
 - [x] Playwright smoke tests (13 tests) — fully mocked, no live staging required
 - [x] typecheck, lint, build all clean
 - [x] 767 backend tests passing, ruff clean
+
+Skills used: `frontend-nextjs`, `testing-qa`, `docs-maintainer`
+
+---
+
+## Phase 22.3: UI Modernization + Markdown Report Preview ✅
+
+**Status: Complete (2026-07-15)**
+
+Goal: Modernize the web/admin visual experience and make report content readable, **without changing any backend analysis or report-generation logic**. Presentation only.
+
+This is a frontend/UI-only phase. It does not add public publishing, does not change report semantics, and produces no BUY/SELL/HOLD/WATCH recommendations, price targets, fair values, or upside percentages. All outputs remain internal, human-reviewed, and not investment advice.
+
+Deliverables:
+- [x] Modern dark theme with fixed product palette (`globals.css`) — independent of OS light/dark
+- [x] Subtle animated aurora background (`AnimatedBackground`) — pure CSS, `pointer-events:none`, disabled under `prefers-reduced-motion`
+- [x] Glassmorphism UI primitives: `GlassCard`, `StatusPill`, `SafetyBanner`, `AppShell`
+- [x] Smooth hover lift / transitions and card fade-in entrance animations
+- [x] Safe rendered markdown preview (`MarkdownReportPreview`) using `react-markdown` + `remark-gfm` + `rehype-sanitize` — **no `dangerouslySetInnerHTML`**
+- [x] Preview / Raw Markdown toggle preserving the original content for debugging
+- [x] Sticky mini table of contents (`ReportSectionNav`) derived from report headings
+- [x] Report detail: raw `<pre>` block replaced with the sanitized rendered preview; metadata, statuses, warnings, schema errors, and disclaimers all preserved
+- [x] All admin pages (dashboard, run analysis, draft reports, report detail, backtesting, add company) and the public homepage restyled to the dark glass system
+- [x] Public homepage rebuilt as a modern landing page that clearly states internal-only / no public reports yet
+- [x] All mandatory safety copy preserved verbatim (INTERNAL ADMIN ONLY, NOT INVESTMENT ADVICE, NOT FOR PUBLICATION, HUMAN REVIEW REQUIRED); no Buy/Sell/Hold/Watch/Trade/Publish buttons
+- [x] New e2e tests: markdown preview render/raw-toggle, safety copy, mobile-viewport no-overflow, reduced-motion, homepage; local mock backend so SSR report pages render offline (never live staging)
+- [x] typecheck, lint, build clean; 55 Playwright tests passing
 
 Skills used: `frontend-nextjs`, `testing-qa`, `docs-maintainer`
 

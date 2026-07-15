@@ -4,6 +4,10 @@ import { fetchReport, fetchReviewEvents } from "@/lib/api";
 import type { Report, ReviewEvent } from "@/types/api";
 import FinalReportActions from "./FinalReportActions";
 import ReviewPanel from "./ReviewPanel";
+import GlassCard from "@/components/ui/GlassCard";
+import SafetyBanner from "@/components/ui/SafetyBanner";
+import StatusPill, { type PillColor } from "@/components/ui/StatusPill";
+import MarkdownReportPreview from "@/components/reports/MarkdownReportPreview";
 
 // ---------------------------------------------------------------------------
 // Status display helpers
@@ -18,10 +22,7 @@ const STATUS_LABELS: Record<string, string> = {
   archived: "Archived",
 };
 
-const STATUS_COLORS: Record<
-  string,
-  "gray" | "amber" | "green" | "red" | "blue" | "purple"
-> = {
+const STATUS_COLORS: Record<string, PillColor> = {
   draft: "amber",
   under_review: "blue",
   approved_internal: "green",
@@ -30,35 +31,13 @@ const STATUS_COLORS: Record<
   archived: "gray",
 };
 
-function Badge({
-  label,
-  color,
-}: {
-  label: string;
-  color: "gray" | "amber" | "green" | "red" | "blue" | "purple";
-}) {
-  const styles: Record<string, string> = {
-    gray: "bg-gray-100 text-gray-700",
-    amber: "bg-amber-100 text-amber-800",
-    green: "bg-green-100 text-green-800",
-    red: "bg-red-100 text-red-800",
-    blue: "bg-blue-100 text-blue-800",
-    purple: "bg-purple-100 text-purple-800",
-  };
-  return (
-    <span
-      className={`inline-block px-2 py-0.5 rounded text-xs font-semibold ${styles[color]}`}
-    >
-      {label}
-    </span>
-  );
-}
-
 function MetaRow({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex gap-2 text-sm">
-      <span className="text-gray-500 w-48 shrink-0">{label}</span>
-      <span className="text-gray-800 font-mono text-xs break-all">{value}</span>
+      <span className="w-48 shrink-0 text-slate-500">{label}</span>
+      <span className="break-all font-mono text-xs text-slate-300">
+        {value}
+      </span>
     </div>
   );
 }
@@ -77,10 +56,7 @@ function readValidationFlag(
 // Review event timeline item
 // ---------------------------------------------------------------------------
 
-const EVENT_ACTION_COLORS: Record<
-  string,
-  "gray" | "amber" | "green" | "red" | "blue" | "purple"
-> = {
+const EVENT_ACTION_COLORS: Record<string, PillColor> = {
   mark_under_review: "blue",
   approve: "green",
   reject: "red",
@@ -100,32 +76,32 @@ function ReviewEventItem({ event }: { event: ReviewEvent }) {
   return (
     <div className="flex gap-3 text-sm">
       <div className="flex flex-col items-center">
-        <div className="w-2.5 h-2.5 rounded-full bg-gray-300 mt-1 shrink-0" />
-        <div className="flex-1 w-px bg-gray-200 mt-1" />
+        <div className="mt-1 h-2.5 w-2.5 shrink-0 rounded-full bg-sky-400/70" />
+        <div className="mt-1 w-px flex-1 bg-white/10" />
       </div>
-      <div className="pb-4 min-w-0">
+      <div className="min-w-0 pb-4">
         <div className="flex flex-wrap items-center gap-2">
-          <Badge label={label} color={color} />
+          <StatusPill label={label} color={color} />
           {event.from_status && (
             <>
-              <span className="text-xs text-gray-400 font-mono">
+              <span className="font-mono text-xs text-slate-500">
                 {STATUS_LABELS[event.from_status] ?? event.from_status}
               </span>
-              <span className="text-xs text-gray-400">→</span>
+              <span className="text-xs text-slate-600">→</span>
             </>
           )}
-          <span className="text-xs text-gray-700 font-mono font-semibold">
+          <span className="font-mono text-xs font-semibold text-slate-300">
             {STATUS_LABELS[event.to_status] ?? event.to_status}
           </span>
         </div>
-        <p className="text-xs text-gray-400 mt-0.5">
+        <p className="mt-0.5 text-xs text-slate-500">
           {new Date(event.created_at).toLocaleString()}
           {event.actor_label && (
             <span className="ml-2 italic">by {event.actor_label}</span>
           )}
         </p>
         {event.note && (
-          <p className="text-xs text-gray-600 mt-1 bg-gray-50 rounded px-2 py-1 border border-gray-100">
+          <p className="mt-1 rounded border border-white/10 bg-white/5 px-2 py-1 text-xs text-slate-400">
             {event.note}
           </p>
         )}
@@ -179,37 +155,37 @@ export default async function ReportDetailPage({
   const reviewStatusColor = STATUS_COLORS[reviewStatus] ?? "gray";
 
   return (
-    <div className="max-w-3xl space-y-6">
+    <div className="ib-fade-up mx-auto max-w-3xl space-y-6">
       {/* Back */}
       <Link
         href="/admin/reports"
-        className="text-sm text-gray-400 hover:text-gray-700"
+        className="text-sm text-slate-500 transition-colors hover:text-slate-200"
       >
         ← All Reports
       </Link>
 
       {/* Header badges */}
       <div className="flex flex-wrap gap-2">
-        <Badge label="Admin Draft Only" color="red" />
-        <Badge label="Not Investment Advice" color="red" />
-        <Badge label="Not a Public Recommendation" color="red" />
+        <StatusPill label="Admin Draft Only" color="red" />
+        <StatusPill label="Not Investment Advice" color="red" />
+        <StatusPill label="Not a Public Recommendation" color="red" />
         {report.human_review_required && (
-          <Badge label="Human Review Required" color="amber" />
+          <StatusPill label="Human Review Required" color="amber" />
         )}
-        <Badge label={`Status: ${report.status}`} color="amber" />
-        <Badge
+        <StatusPill label={`Status: ${report.status}`} color="amber" />
+        <StatusPill
           label={`Review: ${reviewStatusLabel}`}
           color={reviewStatusColor}
         />
-        <Badge label={report.report_type} color="gray" />
+        <StatusPill label={report.report_type} color="gray" />
       </div>
 
       {/* Safety disclaimer */}
-      <div className="rounded-lg border border-red-200 bg-red-50 p-4">
-        <p className="text-sm font-semibold text-red-800 mb-1">
-          Internal Admin Draft — Not Investment Advice
-        </p>
-        <ul className="text-xs text-red-700 space-y-0.5 list-disc list-inside">
+      <SafetyBanner
+        variant="danger"
+        title="Internal Admin Draft — Not Investment Advice"
+      >
+        <ul className="list-inside list-disc space-y-0.5">
           <li>
             This is an internal draft generated by the AI research workflow.
           </li>
@@ -225,23 +201,27 @@ export default async function ReportDetailPage({
           <li>Human reviewer remains responsible for all review decisions.</li>
           <li>
             Internal workflow statuses (e.g.{" "}
-            <code className="font-mono">research_incomplete</code>) are
-            operational metadata — not public-facing ratings.
+            <code className="rounded bg-white/10 px-1 font-mono">
+              research_incomplete
+            </code>
+            ) are operational metadata — not public-facing ratings.
           </li>
         </ul>
-      </div>
+      </SafetyBanner>
 
       {/* Title */}
       <div>
-        <h1 className="text-2xl font-bold text-gray-900">{report.title}</h1>
+        <h1 className="text-2xl font-bold tracking-tight text-white">
+          {report.title}
+        </h1>
         {report.summary && (
-          <p className="text-sm text-gray-600 mt-2">{report.summary}</p>
+          <p className="mt-2 text-sm text-slate-400">{report.summary}</p>
         )}
       </div>
 
       {/* Metadata */}
-      <div className="rounded-lg border border-gray-200 bg-white p-5 shadow-sm space-y-2">
-        <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">
+      <GlassCard className="space-y-2 p-5">
+        <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500">
           Metadata
         </p>
         <MetaRow label="Report ID" value={report.id} />
@@ -306,7 +286,7 @@ export default async function ReportDetailPage({
           label="Schema Validation is_valid"
           value={readValidationFlag(report.schema_validation_json, "is_valid")}
         />
-      </div>
+      </GlassCard>
 
       <FinalReportActions reportId={report.id} />
 
@@ -314,12 +294,12 @@ export default async function ReportDetailPage({
       <ReviewPanel report={report} />
 
       {/* Review event timeline */}
-      <div className="rounded-lg border border-gray-200 bg-white p-5 shadow-sm">
-        <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-4">
+      <GlassCard className="p-5">
+        <p className="mb-4 text-xs font-semibold uppercase tracking-wide text-slate-500">
           Review Event Timeline
         </p>
         {reviewEvents.length === 0 ? (
-          <p className="text-sm text-gray-400 italic">
+          <p className="text-sm italic text-slate-500">
             No review events yet. Take a review action above to start the audit
             trail.
           </p>
@@ -330,26 +310,18 @@ export default async function ReportDetailPage({
             ))}
           </div>
         )}
-      </div>
+      </GlassCard>
 
-      {/* Markdown content */}
+      {/* Markdown content — rendered preview with raw fallback */}
       {report.content_markdown ? (
-        <div className="rounded-lg border border-gray-200 bg-white p-5 shadow-sm">
-          <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">
-            Report Content (Markdown)
-          </p>
-          <div className="text-xs text-gray-400 mb-3 italic">
-            Raw markdown — content is an unformatted admin draft produced by AI
-            agents. Not validated for accuracy. Not investment advice.
-          </div>
-          <pre className="whitespace-pre-wrap text-xs text-gray-800 font-mono bg-gray-50 rounded p-4 overflow-auto max-h-[600px] border border-gray-100">
-            {report.content_markdown}
-          </pre>
-        </div>
+        <MarkdownReportPreview
+          content={report.content_markdown}
+          title="Report Content"
+        />
       ) : (
-        <div className="rounded-lg border border-gray-100 bg-gray-50 p-5 text-center text-gray-400 text-sm">
+        <GlassCard className="p-5 text-center text-sm text-slate-500">
           No content markdown available for this report.
-        </div>
+        </GlassCard>
       )}
     </div>
   );
