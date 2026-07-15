@@ -1,7 +1,8 @@
 # Gap Analysis
 
-**Last updated:** 2026-07-14  
-**Current state:** Phase 19.4.1 Enrichment Completeness Consistency delivered — `research_completeness_agent` now consumes the enriched snapshot so present enriched fields (LEI, sector classification, derived market cap/EV/P-E, 52-week range, shares) are no longer reported as missing/blocking gaps, and `source_quality_agent` only recommends "Obtain LEI" when the LEI is actually absent; genuinely-missing fields (ISIN, EBITDA, EV/EBITDA, beta, website, IPO date) stay gaps and nothing is fabricated. On top of Phase 19.4 Identity + Sector + Market-Metric Enrichment (`company_profile_enrichment`: sector from DB or inferred SEC SIC/T6, industry/website SEC/T2, LEI GLEIF/T2 name-guarded; `market_metrics_enrichment`: latest close + 52-week range/T5, shares SEC DEI/T2, market cap/EV/P-E as DERIVED ESTIMATES/T6 when inputs exist; valuation still `partial` with conclusions blocked), Phase 19.3.1 SEC Freshness + Review Consistency and Phase 19.3 SEC Fundamentals Normalization; Phase 22.1 Admin Backtesting UI live.  
+**Last updated:** 2026-07-15  
+**Presentation state:** Phase 22.3 UI Modernization + Markdown Report Preview delivered (frontend/UI only) — the web/admin UI now uses a dark glassmorphism design system with a reduced-motion-safe animated background, and report content renders through a sanitized markdown preview (`react-markdown` + `remark-gfm` + `rehype-sanitize`, no `dangerouslySetInnerHTML`) with a Preview/Raw toggle, replacing the raw `<pre>` block. No backend, workflow, or report-generation logic changed; no public publishing added; all internal-only / not-investment-advice / human-review disclaimers preserved; no BUY/SELL/HOLD/WATCH, price target, fair value or upside.  
+**Data state:** Phase 19.4.1 Enrichment Completeness Consistency delivered — `research_completeness_agent` now consumes the enriched snapshot so present enriched fields (LEI, sector classification, derived market cap/EV/P-E, 52-week range, shares) are no longer reported as missing/blocking gaps, and `source_quality_agent` only recommends "Obtain LEI" when the LEI is actually absent; genuinely-missing fields (ISIN, EBITDA, EV/EBITDA, beta, website, IPO date) stay gaps and nothing is fabricated. On top of Phase 19.4 Identity + Sector + Market-Metric Enrichment (`company_profile_enrichment`: sector from DB or inferred SEC SIC/T6, industry/website SEC/T2, LEI GLEIF/T2 name-guarded; `market_metrics_enrichment`: latest close + 52-week range/T5, shares SEC DEI/T2, market cap/EV/P-E as DERIVED ESTIMATES/T6 when inputs exist; valuation still `partial` with conclusions blocked), Phase 19.3.1 SEC Freshness + Review Consistency and Phase 19.3 SEC Fundamentals Normalization; Phase 22.1 Admin Backtesting UI live.  
 **Next phase:** Phase 24 News/Catalyst Discovery or Phase 25 market candidate discovery, then Phase 23 Auth
 
 This document describes the gap between the current implementation and the target product. Each gap maps to a planned phase.
@@ -19,6 +20,7 @@ This document describes the gap between the current implementation and the targe
 - Mock company analysis (all tests offline, CI-safe)
 - Draft reports with full Research Team + Analysis Council summaries
 - Admin reports UI with review status and dynamic rendering (fixed Phase 22.1 maintenance)
+- Modern dark glassmorphism web/admin UI + sanitized markdown report preview with Preview/Raw toggle (Phase 22.3 — presentation only)
 - Admin approve/reject/revision workflow with immutable audit log
 - Internal final report generator (19 sections; safety gate; admin-only)
 - Report validation and safety gates (forbidden-term scan; `human_review_required=True` enforced on safety violations)

@@ -101,7 +101,9 @@ npx playwright install --with-deps
 npm run test:e2e
 ```
 
-Playwright Phase 21 admin smoke tests use mock data/provider by default. Staging E2E execution is opt-in.
+Playwright admin smoke tests use mock data/provider by default. Local runs also start a zero-dependency mock backend (`tests/support/mock-backend.mjs`) so server-rendered report pages render offline — no live staging is contacted. Staging E2E execution is opt-in.
+
+The admin/web UI uses a modern dark glassmorphism design system (Phase 22.3). Report content renders through a sanitized markdown preview (`react-markdown` + `remark-gfm` + `rehype-sanitize`) with a Preview/Raw toggle — presentation only; report semantics are unchanged and all internal-only disclaimers are preserved.
 
 ---
 
@@ -164,6 +166,7 @@ Copy `.env.example` to `.env` and fill in values as needed.
 | Phase 19.3 | Done | SEC Fundamentals Normalization + Report Completeness: `sec_fundamentals_normalizer` maps SEC XBRL companyfacts → normalized income/cash-flow/balance-sheet metrics + derived margins/ROE/debt-to-equity/YoY; injected into `free_real` snapshot; `FinancialDataAgent` narrates real fundamentals; `ValuationGuardAgent` reaches `partial` (conclusions still blocked); EBITDA/market cap/EV never fabricated; 22 offline tests. Remaining identity/sector/market-metric enrichment → Phase 19.4 |
 | Phase 19.3.1 | Done | SEC Freshness + Review Consistency: SEC normalizer selects the latest annual across all us-gaap alias concepts (filed-date tiebreak, full-year preference, stale-year warning) — no stale FY2018; `investment_committee_chair` emits canonical `human_review_required` (markdown never contradicts page metadata); `BearCaseAgent`/`RiskAgent` acknowledge *partial* SEC fundamentals instead of "all missing"; 14 offline tests. `safety_valid`/`human_review_required` stay true; no paid fundamentals, no valuation conclusions |
 | Phase 19.4 | Done | Identity + Sector + Market-Metric Enrichment: `company_profile_enrichment` (sector from DB or inferred SEC SIC/T6, industry/website SEC/T2, LEI GLEIF/T2 name-guarded) + `market_metrics_enrichment` (latest close + 52-week range/T5, shares outstanding SEC DEI/T2, market cap = close × shares, EV = market cap + debt − cash, P/E — all DERIVED ESTIMATES/T6 when inputs exist); resolved fields pruned from `missing_fields`; `FinancialDataAgent` narrates derived metrics; `ValuationGuardAgent` stays `partial`, conclusions blocked; 24 offline tests. LEI/ISIN/IPO/EBITDA/EV-EBITDA/beta never fabricated; no paid fundamentals, no valuation conclusions |
+| Phase 22.3 | Done | UI Modernization + Markdown Report Preview (frontend/UI only): dark glassmorphism design system + reduced-motion-safe animated background; `GlassCard`/`StatusPill`/`SafetyBanner`/`AppShell` primitives; safe `MarkdownReportPreview` (`react-markdown` + `remark-gfm` + `rehype-sanitize`, no `dangerouslySetInnerHTML`) with Preview/Raw toggle + mini TOC replacing the raw `<pre>`; all pages + homepage restyled; disclaimers preserved verbatim; no backend / report-semantics changes; no public publishing; 55 Playwright tests |
 
 ---
 

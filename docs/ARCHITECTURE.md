@@ -36,18 +36,27 @@ Azure Application Insights
 - Next.js 16, React 19, TypeScript, Tailwind CSS v4, App Router
 - Public report pages, admin dashboard, user account (V2)
 - Communicates with backend via server-side proxy (Phase 17+) — credentials never in browser
-- Status: **Phase 22.1 — Admin Backtesting UI live; admin proxy active for all admin routes; dynamic rendering on /admin/reports**
+- Status: **Phase 22.3 — modern dark glassmorphism UI + safe markdown report preview; admin proxy active for all admin routes**
   - `/api/admin/proxy/[...path]` — server-side proxy route; adds `Authorization: Basic` server-side; path allowlist; rejects unknown paths; sanitizes errors; never exposes credentials to browser
   - `src/lib/api.ts` — smart base URL: server components call `BACKEND_API_BASE_URL` directly; client components use `/api/admin/proxy/…`
   - `/admin` — dashboard (health, company count, latest reports)
   - `/admin/companies/new` — create company form
   - `/admin/analysis` — trigger 19-node workflow; full result display
   - `/admin/reports` — draft report list with review_status column (dynamic rendering restored)
-  - `/admin/reports/[id]` — report detail with review action panel + event timeline
+  - `/admin/reports/[id]` — report detail with review action panel + event timeline + **rendered markdown preview**
     - `ReviewPanel` (client component) — interactive review buttons, note textarea, warnings
     - Review event timeline — chronological audit log display
+    - `MarkdownReportPreview` (client component) — safe rendered markdown (`react-markdown` + `remark-gfm` + `rehype-sanitize`, no `dangerouslySetInnerHTML`) with a Preview/Raw toggle
   - `/admin/backtesting` — backtesting runs list; create run form; run detail with evaluate/refresh
   - `src/types/api.ts` — TypeScript types (includes ReviewActionRequest, ReviewEvent, BacktestRun, BacktestResult, etc.)
+
+#### UI Design System (Phase 22.3 — presentation only)
+Modern dark, glassmorphism design system layered over the existing pages. It changes **presentation only** — no analysis, workflow, or report-generation logic, and no public publishing. Shared primitives under `src/components/`:
+  - `ui/AnimatedBackground` — decorative CSS aurora background rendered once at the root layout; `aria-hidden`, `pointer-events:none`, disabled under `prefers-reduced-motion`
+  - `ui/GlassCard`, `ui/StatusPill`, `ui/SafetyBanner` — translucent panels, status pills, and the mandatory-disclaimer banner (safety copy passed in verbatim)
+  - `ui/AppShell` — admin chrome: top compliance strip, glass nav with active-route highlighting, footer disclaimer
+  - `reports/MarkdownReportPreview`, `reports/ReportSectionNav`, `reports/markdownUtils` — the sanitized report preview, sticky mini table of contents, and heading-slug helpers
+  - `src/app/globals.css` — fixed dark theme palette, aurora keyframes, dark markdown ("prose") styles, and a `prefers-reduced-motion` block that disables decorative motion
 
 #### Admin Auth Proxy — Request Flow (Phase 17)
 
@@ -247,6 +256,7 @@ All errors are caught, logged to `agent_runs.error_message`, and returned as HTT
 | Phase 19.2.1 | ✅ Complete | Staging deploy + provider observability hardening: SHA-verified `/health` deploy check, Oryx boot-fail detection, Stooq→EODHD fallback surfaced in provider warnings, `sector=None` scoring fix |
 | Phase 19.3 | ✅ Delivered | SEC Fundamentals Normalization + Report Completeness: `sec_fundamentals_normalizer` maps us-gaap companyfacts → normalized income/cash-flow/balance-sheet metrics + derived margins/ROE/D-E/YoY; injected into `free_real` snapshot; `FinancialDataAgent` narrates fundamentals; `ValuationGuardAgent` reaches `partial`; EBITDA/market cap/EV never fabricated; 22 offline tests. Remaining identity/sector/market-metric enrichment → Phase 19.4 |
 | Phase 19.4 | ✅ Delivered | Identity + Sector + Market-Metric Enrichment: `company_profile_enrichment` (sector from DB or inferred SEC SIC/T6, website/industry SEC/T2, LEI GLEIF/T2 name-guarded; LEI/ISIN/IPO never fabricated) + `market_metrics_enrichment` (latest close + 52-week range/T5, shares SEC DEI/T2, market cap/EV/P-E as DERIVED ESTIMATES/T6 when inputs exist; EBITDA/EV-EBITDA/beta never fabricated). Pruned from `missing_fields`; `FinancialDataAgent` recognises + narrates derived metrics; `ValuationGuardAgent` stays `partial`, conclusions still blocked; report gains identity/profile + Market Metrics sections; 24 offline tests |
+| Phase 22.3 | ✅ Complete | UI Modernization + Markdown Report Preview (frontend/UI only): dark glassmorphism design system, animated aurora background (reduced-motion safe), `GlassCard`/`StatusPill`/`SafetyBanner`/`AppShell` primitives, safe `MarkdownReportPreview` (`react-markdown`+`remark-gfm`+`rehype-sanitize`, no `dangerouslySetInnerHTML`) with Preview/Raw toggle + mini TOC replacing the raw `<pre>`; all pages + homepage restyled; disclaimers preserved verbatim; no backend/report-semantics changes, no public publishing; 55 Playwright tests passing |
 
 ---
 

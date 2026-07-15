@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import AnimatedBackground from "@/components/ui/AnimatedBackground";
 
 export const metadata: Metadata = {
   title: "InvestingBuddy — AI Investment Research",
@@ -14,7 +15,8 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className="h-full antialiased">
-      <body className="min-h-full flex flex-col bg-white text-gray-900">
+      <body className="relative min-h-full bg-[#060913] text-slate-100">
+        <AnimatedBackground />
         {children}
       </body>
     </html>

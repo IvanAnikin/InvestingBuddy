@@ -10,6 +10,9 @@ import type {
   ValuationGuardSummary,
   WorkflowRunResponse,
 } from "@/types/api";
+import GlassCard from "@/components/ui/GlassCard";
+import SafetyBanner from "@/components/ui/SafetyBanner";
+import StatusPill, { type PillColor } from "@/components/ui/StatusPill";
 
 type ProviderTag =
   | "recommended"
@@ -87,7 +90,7 @@ const PROVIDERS: ProviderOption[] = [
 
 const PROVIDER_TAG_STYLES: Record<
   ProviderTag,
-  { label: string; color: "green" | "red" | "amber" | "gray" | "blue" }
+  { label: string; color: PillColor }
 > = {
   recommended: { label: "Recommended", color: "green" },
   paid: { label: "Paid / full provider", color: "red" },
@@ -100,31 +103,7 @@ const PROVIDER_TAG_STYLES: Record<
 const LLM_PROVIDERS = ["mock", "azure_openai"];
 
 const inputCls =
-  "border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent w-full";
-
-function Badge({
-  label,
-  color,
-}: {
-  label: string;
-  color: "green" | "red" | "amber" | "gray" | "blue" | "purple";
-}) {
-  const styles: Record<string, string> = {
-    green: "bg-green-100 text-green-800",
-    red: "bg-red-100 text-red-800",
-    amber: "bg-amber-100 text-amber-800",
-    gray: "bg-gray-100 text-gray-700",
-    blue: "bg-blue-100 text-blue-800",
-    purple: "bg-purple-100 text-purple-800",
-  };
-  return (
-    <span
-      className={`inline-block px-2 py-0.5 rounded text-xs font-semibold ${styles[color]}`}
-    >
-      {label}
-    </span>
-  );
-}
+  "w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-sky-400/50 focus:outline-none focus:ring-2 focus:ring-sky-500/40";
 
 function SummaryRow({
   label,
@@ -135,8 +114,8 @@ function SummaryRow({
 }) {
   return (
     <div className="flex items-start gap-2 text-sm">
-      <span className="text-gray-500 w-44 shrink-0">{label}</span>
-      <span className="text-gray-900">{value}</span>
+      <span className="w-44 shrink-0 text-slate-500">{label}</span>
+      <span className="text-slate-200">{value}</span>
     </div>
   );
 }
@@ -150,14 +129,14 @@ function QualityGate({ gate }: { gate: QualityGateStatus }) {
     { label: "Research complete", ok: gate.research_complete },
   ];
   return (
-    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+    <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
       {items.map(({ label, ok }) => (
         <div
           key={label}
-          className={`rounded px-3 py-2 text-xs font-medium ${
+          className={`rounded-lg border px-3 py-2 text-xs font-medium ${
             ok
-              ? "bg-green-50 text-green-800 border border-green-200"
-              : "bg-red-50 text-red-800 border border-red-200"
+              ? "border-emerald-400/20 bg-emerald-500/10 text-emerald-300"
+              : "border-rose-400/20 bg-rose-500/10 text-rose-300"
           }`}
         >
           {ok ? "✓" : "✗"} {label}
@@ -169,19 +148,19 @@ function QualityGate({ gate }: { gate: QualityGateStatus }) {
 
 function CommitteeBlock({ chair }: { chair: CommitteeChairSummary }) {
   return (
-    <div className="text-xs text-gray-700 space-y-1">
+    <div className="space-y-1 text-xs text-slate-300">
       <p>{chair.committee_summary}</p>
-      <div className="flex flex-wrap gap-2 mt-2">
-        <Badge label={`Balance: ${chair.bull_bear_balance}`} color="gray" />
-        <Badge
+      <div className="mt-2 flex flex-wrap gap-2">
+        <StatusPill label={`Balance: ${chair.bull_bear_balance}`} color="gray" />
+        <StatusPill
           label={`Internal: ${chair.provisional_internal_status}`}
           color="amber"
         />
         {chair.human_review_required && (
-          <Badge label="Human review required" color="red" />
+          <StatusPill label="Human review required" color="red" />
         )}
       </div>
-      <p className="text-gray-500 mt-1">
+      <p className="mt-1 text-slate-500">
         {chair.open_questions_count} open questions ·{" "}
         {chair.research_next_steps_count} next steps
       </p>
@@ -191,9 +170,9 @@ function CommitteeBlock({ chair }: { chair: CommitteeChairSummary }) {
 
 function RiskBlock({ risk }: { risk: RiskSummary }) {
   return (
-    <div className="text-xs text-gray-700 space-y-1">
+    <div className="space-y-1 text-xs text-slate-300">
       <p>{risk.risk_summary}</p>
-      <div className="flex flex-wrap gap-2 mt-1">
+      <div className="mt-1 flex flex-wrap gap-2">
         {(
           [
             ["Business", risk.business_risks_count],
@@ -205,7 +184,7 @@ function RiskBlock({ risk }: { risk: RiskSummary }) {
         ).map(([label, count]) => (
           <span
             key={label}
-            className="bg-gray-100 px-2 py-0.5 rounded text-gray-700"
+            className="rounded bg-white/5 px-2 py-0.5 text-slate-300"
           >
             {label}: {count}
           </span>
@@ -217,14 +196,14 @@ function RiskBlock({ risk }: { risk: RiskSummary }) {
 
 function ValuationBlock({ val }: { val: ValuationGuardSummary }) {
   return (
-    <div className="text-xs text-gray-700 space-y-1">
+    <div className="space-y-1 text-xs text-slate-300">
       <p>
         Readiness:{" "}
         <strong
           className={
             val.valuation_readiness === "ready"
-              ? "text-green-700"
-              : "text-red-700"
+              ? "text-emerald-300"
+              : "text-rose-300"
           }
         >
           {val.valuation_readiness}
@@ -276,21 +255,23 @@ export default function AnalysisPage() {
   }
 
   return (
-    <div className="max-w-2xl space-y-6">
+    <div className="ib-fade-up max-w-2xl space-y-6">
       <div>
-        <h1 className="text-xl font-bold text-gray-900">Run Analysis</h1>
-        <p className="text-sm text-gray-500 mt-1">
+        <h1 className="text-2xl font-bold tracking-tight text-white">
+          Run Analysis
+        </h1>
+        <p className="mt-1 text-sm text-slate-400">
           Trigger the 19-node company analysis workflow. Output is an admin
           draft only — not investment advice.
         </p>
       </div>
 
       {/* Form */}
-      <div className="rounded-lg border border-gray-200 bg-white p-5 shadow-sm">
+      <GlassCard className="p-5">
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="grid grid-cols-2 gap-3">
             <div className="flex flex-col gap-1">
-              <label className="text-sm font-medium text-gray-700">
+              <label className="text-sm font-medium text-slate-300">
                 Ticker
               </label>
               <input
@@ -302,7 +283,7 @@ export default function AnalysisPage() {
               />
             </div>
             <div className="flex flex-col gap-1">
-              <label className="text-sm font-medium text-gray-700">
+              <label className="text-sm font-medium text-slate-300">
                 Exchange
               </label>
               <input
@@ -316,7 +297,7 @@ export default function AnalysisPage() {
           </div>
 
           <div className="flex flex-col gap-1">
-            <label className="text-sm font-medium text-gray-700">
+            <label className="text-sm font-medium text-slate-300">
               Data Provider
             </label>
             <select
@@ -325,31 +306,37 @@ export default function AnalysisPage() {
               onChange={(e) => setProviderName(e.target.value)}
             >
               {PROVIDERS.map((p) => (
-                <option key={p.value} value={p.value}>
+                <option key={p.value} value={p.value} className="bg-slate-900">
                   {p.label}
                 </option>
               ))}
             </select>
 
             {/* Static guidance for the real-data stack */}
-            <p className="text-xs text-gray-500 mt-1">
-              Use <code className="font-mono">free_real</code> for the current
-              free real-data workflow. It combines SEC EDGAR data, price data,
-              and internal trend signals. The <code className="font-mono">eodhd</code>{" "}
+            <p className="mt-1 text-xs text-slate-500">
+              Use{" "}
+              <code className="rounded bg-white/10 px-1 font-mono text-slate-300">
+                free_real
+              </code>{" "}
+              for the current free real-data workflow. It combines SEC EDGAR
+              data, price data, and internal trend signals. The{" "}
+              <code className="rounded bg-white/10 px-1 font-mono text-slate-300">
+                eodhd
+              </code>{" "}
               full provider requires paid Fundamentals access.
             </p>
 
             {/* Per-provider note for the current selection */}
             {selectedProvider && (
-              <div className="flex items-start gap-2 mt-1.5">
+              <div className="mt-1.5 flex items-start gap-2">
                 {selectedProvider.tag && (
-                  <Badge
+                  <StatusPill
                     label={PROVIDER_TAG_STYLES[selectedProvider.tag].label}
                     color={PROVIDER_TAG_STYLES[selectedProvider.tag].color}
                   />
                 )}
                 {selectedProvider.note && (
-                  <p className="text-xs text-gray-600">
+                  <p className="text-xs text-slate-400">
                     {selectedProvider.note}
                   </p>
                 )}
@@ -358,25 +345,25 @@ export default function AnalysisPage() {
           </div>
 
           {/* Advanced options */}
-          <div className="rounded-md border border-gray-100 bg-gray-50 p-3 space-y-3">
-            <p className="text-xs font-semibold text-gray-600 uppercase tracking-wide">
+          <div className="space-y-3 rounded-xl border border-white/10 bg-white/[0.03] p-3">
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
               Advanced Options
             </p>
 
-            <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+            <label className="flex cursor-pointer items-center gap-2 text-sm text-slate-300">
               <input
                 type="checkbox"
                 checked={useLlm}
                 onChange={(e) => setUseLlm(e.target.checked)}
-                className="rounded"
+                className="rounded accent-sky-500"
               />
               Use LLM research sections (optional; requires Azure OpenAI if
               non-mock)
             </label>
 
             {useLlm && (
-              <div className="flex flex-col gap-1 ml-5">
-                <label className="text-xs font-medium text-gray-600">
+              <div className="ml-5 flex flex-col gap-1">
+                <label className="text-xs font-medium text-slate-400">
                   LLM Provider
                 </label>
                 <select
@@ -385,7 +372,7 @@ export default function AnalysisPage() {
                   onChange={(e) => setLlmProvider(e.target.value)}
                 >
                   {LLM_PROVIDERS.map((p) => (
-                    <option key={p} value={p}>
+                    <option key={p} value={p} className="bg-slate-900">
                       {p}
                     </option>
                   ))}
@@ -393,12 +380,12 @@ export default function AnalysisPage() {
               </div>
             )}
 
-            <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+            <label className="flex cursor-pointer items-center gap-2 text-sm text-slate-300">
               <input
                 type="checkbox"
                 checked={requireSchemaValid}
                 onChange={(e) => setRequireSchemaValid(e.target.checked)}
-                className="rounded"
+                className="rounded accent-sky-500"
               />
               Require schema valid (fail workflow if schema draft is invalid)
             </label>
@@ -407,61 +394,64 @@ export default function AnalysisPage() {
           <button
             type="submit"
             disabled={submitting}
-            className="w-full bg-blue-700 text-white rounded-md px-4 py-2 text-sm font-semibold hover:bg-blue-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            className="w-full rounded-lg bg-gradient-to-r from-sky-500 to-blue-600 px-4 py-2.5 text-sm font-semibold text-white shadow-lg shadow-sky-500/20 transition-all hover:-translate-y-0.5 hover:shadow-sky-500/30 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0"
           >
             {submitting ? "Running analysis…" : "Run Analysis"}
           </button>
         </form>
-      </div>
+      </GlassCard>
 
       {/* Error */}
       {error && (
-        <div className="rounded-lg border border-red-200 bg-red-50 p-4">
-          <p className="text-sm text-red-700">
+        <SafetyBanner variant="danger">
+          <p>
             <strong>Error:</strong> {error}
           </p>
-        </div>
+        </SafetyBanner>
       )}
 
       {/* Result */}
       {result && (
         <div className="space-y-4">
           {/* Result header */}
-          <div className="rounded-lg border border-gray-200 bg-white p-5 shadow-sm space-y-3">
+          <GlassCard className="space-y-3 p-5">
             <div className="flex flex-wrap gap-2">
-              <Badge
+              <StatusPill
                 label={result.status}
                 color={result.status === "completed" ? "green" : "red"}
               />
-              <Badge label="Admin Draft Only" color="red" />
-              <Badge label="Not Investment Advice" color="red" />
-              {result.is_mock && <Badge label="Mock Data" color="amber" />}
+              <StatusPill label="Admin Draft Only" color="red" />
+              <StatusPill label="Not Investment Advice" color="red" />
+              {result.is_mock && <StatusPill label="Mock Data" color="amber" />}
               {result.llm_used ? (
-                <Badge label="LLM Used" color="purple" />
+                <StatusPill label="LLM Used" color="purple" />
               ) : (
-                <Badge label="LLM Not Used" color="gray" />
+                <StatusPill label="LLM Not Used" color="gray" />
               )}
               {result.schema_valid ? (
-                <Badge label="Schema Valid" color="green" />
+                <StatusPill label="Schema Valid" color="green" />
               ) : (
-                <Badge label="Schema Invalid" color="amber" />
+                <StatusPill label="Schema Invalid" color="amber" />
               )}
               {result.human_review_required && (
-                <Badge label="Human Review Required" color="red" />
+                <StatusPill label="Human Review Required" color="red" />
               )}
             </div>
 
-            <p className="text-sm text-gray-700">{result.summary}</p>
+            <p className="text-sm text-slate-300">{result.summary}</p>
 
             <div className="space-y-1.5">
               <SummaryRow label="Company" value={result.company_name ?? "—"} />
               <SummaryRow label="Ticker" value={result.ticker ?? "—"} />
-              <SummaryRow label="Provider" value={result.provider_name ?? "—"} />
+              <SummaryRow
+                label="Provider"
+                value={result.provider_name ?? "—"}
+              />
               <SummaryRow
                 label="Internal status"
                 value={
                   result.provisional_internal_status ? (
-                    <span className="font-mono text-xs bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded">
+                    <span className="rounded bg-amber-500/15 px-1.5 py-0.5 font-mono text-xs text-amber-300">
                       {result.provisional_internal_status}
                     </span>
                   ) : (
@@ -475,7 +465,7 @@ export default function AnalysisPage() {
                   value={
                     <Link
                       href={`/admin/reports/${result.draft_report_id}`}
-                      className="text-blue-600 hover:underline text-xs font-mono"
+                      className="font-mono text-xs text-sky-400 hover:text-sky-300 hover:underline"
                     >
                       {result.draft_report_id} →
                     </Link>
@@ -485,35 +475,32 @@ export default function AnalysisPage() {
             </div>
 
             {result.provisional_internal_status && (
-              <p className="text-xs text-gray-500 border-t border-gray-100 pt-2 mt-2">
+              <p className="mt-2 border-t border-white/10 pt-2 text-xs text-slate-500">
                 <strong>Note:</strong>{" "}
-                <code className="font-mono">
+                <code className="rounded bg-white/10 px-1 font-mono text-slate-300">
                   {result.provisional_internal_status}
                 </code>{" "}
                 is an internal workflow status only — not a public
                 recommendation.
               </p>
             )}
-          </div>
+          </GlassCard>
 
           {/* Quality Gate */}
           {result.quality_gate_status && (
-            <div className="rounded-lg border border-gray-200 bg-white p-5 shadow-sm">
-              <p className="text-sm font-semibold text-gray-800 mb-3">
+            <GlassCard className="p-5">
+              <p className="mb-3 text-sm font-semibold text-slate-200">
                 Quality Gate
               </p>
               <QualityGate gate={result.quality_gate_status} />
-            </div>
+            </GlassCard>
           )}
 
           {/* Warnings */}
           {(result.research_team_warnings.length > 0 ||
             result.analysis_council_warnings.length > 0) && (
-            <div className="rounded-lg border border-amber-200 bg-amber-50 p-4">
-              <p className="text-xs font-semibold text-amber-800 mb-2">
-                Workflow Warnings
-              </p>
-              <ul className="text-xs text-amber-700 space-y-0.5 list-disc list-inside">
+            <SafetyBanner variant="warning" title="Workflow Warnings">
+              <ul className="list-inside list-disc space-y-0.5">
                 {[
                   ...result.research_team_warnings,
                   ...result.analysis_council_warnings,
@@ -521,30 +508,30 @@ export default function AnalysisPage() {
                   <li key={i}>{w}</li>
                 ))}
               </ul>
-            </div>
+            </SafetyBanner>
           )}
 
           {/* Committee Chair */}
           {result.committee_chair_summary && (
-            <div className="rounded-lg border border-gray-200 bg-white p-5 shadow-sm">
-              <p className="text-sm font-semibold text-gray-800 mb-3">
+            <GlassCard className="p-5">
+              <p className="mb-3 text-sm font-semibold text-slate-200">
                 Committee Chair Summary
               </p>
               <CommitteeBlock
                 chair={result.committee_chair_summary as CommitteeChairSummary}
               />
-            </div>
+            </GlassCard>
           )}
 
           {/* Bull / Bear */}
           {(result.bull_case_summary ?? result.bear_case_summary) && (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               {result.bull_case_summary && (
-                <div className="rounded-lg border border-green-100 bg-white p-4 shadow-sm">
-                  <p className="text-xs font-semibold text-green-800 mb-2">
+                <GlassCard className="border-emerald-400/15 p-4">
+                  <p className="mb-2 text-xs font-semibold text-emerald-300">
                     Bull Case
                   </p>
-                  <div className="text-xs text-gray-700 space-y-0.5">
+                  <div className="space-y-0.5 text-xs text-slate-300">
                     <p>
                       Confidence:{" "}
                       <strong>
@@ -560,14 +547,14 @@ export default function AnalysisPage() {
                       tailwinds
                     </p>
                   </div>
-                </div>
+                </GlassCard>
               )}
               {result.bear_case_summary && (
-                <div className="rounded-lg border border-red-100 bg-white p-4 shadow-sm">
-                  <p className="text-xs font-semibold text-red-800 mb-2">
+                <GlassCard className="border-rose-400/15 p-4">
+                  <p className="mb-2 text-xs font-semibold text-rose-300">
                     Bear Case
                   </p>
-                  <div className="text-xs text-gray-700 space-y-0.5">
+                  <div className="space-y-0.5 text-xs text-slate-300">
                     <p>
                       Confidence:{" "}
                       <strong>
@@ -579,55 +566,54 @@ export default function AnalysisPage() {
                       thesis points
                     </p>
                     <p>
-                      {result.bear_case_summary.key_unknowns_count}{" "}
-                      unknowns
+                      {result.bear_case_summary.key_unknowns_count} unknowns
                     </p>
                   </div>
-                </div>
+                </GlassCard>
               )}
             </div>
           )}
 
           {/* Risk */}
           {result.risk_summary && (
-            <div className="rounded-lg border border-gray-200 bg-white p-5 shadow-sm">
-              <p className="text-sm font-semibold text-gray-800 mb-3">
+            <GlassCard className="p-5">
+              <p className="mb-3 text-sm font-semibold text-slate-200">
                 Risk Summary
               </p>
               <RiskBlock risk={result.risk_summary as RiskSummary} />
-            </div>
+            </GlassCard>
           )}
 
           {/* Valuation Guard */}
           {result.valuation_guard_summary && (
-            <div className="rounded-lg border border-gray-200 bg-white p-5 shadow-sm">
-              <p className="text-sm font-semibold text-gray-800 mb-3">
+            <GlassCard className="p-5">
+              <p className="mb-3 text-sm font-semibold text-slate-200">
                 Valuation Guard
               </p>
               <ValuationBlock
                 val={result.valuation_guard_summary as ValuationGuardSummary}
               />
-              <p className="text-xs text-gray-500 mt-2">
+              <p className="mt-2 text-xs text-slate-500">
                 No price target or fair value estimate is produced by this
                 platform.
               </p>
-            </div>
+            </GlassCard>
           )}
 
           {/* Validation errors */}
           {result.validation_errors.length > 0 && (
-            <div className="rounded-lg border border-gray-200 bg-white p-5 shadow-sm">
-              <p className="text-xs font-semibold text-gray-700 mb-2">
+            <GlassCard className="p-5">
+              <p className="mb-2 text-xs font-semibold text-slate-400">
                 Schema Validation Errors
               </p>
-              <ul className="text-xs text-red-700 space-y-0.5 list-disc list-inside">
+              <ul className="list-inside list-disc space-y-0.5 text-xs text-rose-300">
                 {result.validation_errors.map((e, i) => (
                   <li key={i} className="font-mono">
                     {e}
                   </li>
                 ))}
               </ul>
-            </div>
+            </GlassCard>
           )}
 
           {/* View full report */}
@@ -635,7 +621,7 @@ export default function AnalysisPage() {
             <div className="pt-2">
               <Link
                 href={`/admin/reports/${result.draft_report_id}`}
-                className="inline-block bg-gray-800 text-white rounded-md px-4 py-2 text-sm font-semibold hover:bg-gray-900 transition-colors"
+                className="inline-block rounded-lg border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-slate-100 transition-colors hover:bg-white/10"
               >
                 View Full Draft Report →
               </Link>

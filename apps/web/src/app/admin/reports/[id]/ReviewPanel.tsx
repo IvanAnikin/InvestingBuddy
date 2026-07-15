@@ -9,6 +9,7 @@ import {
   requestRevision,
 } from "@/lib/api";
 import type { Report } from "@/types/api";
+import StatusPill, { type PillColor } from "@/components/ui/StatusPill";
 
 // ---------------------------------------------------------------------------
 // Status metadata
@@ -23,10 +24,7 @@ const STATUS_LABELS: Record<string, string> = {
   archived: "Archived",
 };
 
-const STATUS_COLORS: Record<
-  string,
-  "gray" | "amber" | "green" | "red" | "blue" | "purple"
-> = {
+const STATUS_COLORS: Record<string, PillColor> = {
   draft: "amber",
   under_review: "blue",
   approved_internal: "green",
@@ -54,42 +52,14 @@ const ACTION_LABELS: Record<string, string> = {
 
 const ACTION_COLORS: Record<string, string> = {
   mark_under_review:
-    "bg-blue-700 hover:bg-blue-800 text-white",
+    "bg-gradient-to-r from-sky-500 to-blue-600 text-white shadow-lg shadow-sky-500/20",
   approve:
-    "bg-green-700 hover:bg-green-800 text-white",
+    "bg-gradient-to-r from-emerald-500 to-green-600 text-white shadow-lg shadow-emerald-500/20",
   reject:
-    "bg-red-700 hover:bg-red-800 text-white",
+    "bg-gradient-to-r from-rose-500 to-red-600 text-white shadow-lg shadow-rose-500/20",
   needs_revision:
-    "bg-purple-700 hover:bg-purple-800 text-white",
+    "bg-gradient-to-r from-violet-500 to-purple-600 text-white shadow-lg shadow-violet-500/20",
 };
-
-// ---------------------------------------------------------------------------
-// Badge
-// ---------------------------------------------------------------------------
-
-function Badge({
-  label,
-  color,
-}: {
-  label: string;
-  color: "gray" | "amber" | "green" | "red" | "blue" | "purple";
-}) {
-  const styles: Record<string, string> = {
-    gray: "bg-gray-100 text-gray-700",
-    amber: "bg-amber-100 text-amber-800",
-    green: "bg-green-100 text-green-800",
-    red: "bg-red-100 text-red-800",
-    blue: "bg-blue-100 text-blue-800",
-    purple: "bg-purple-100 text-purple-800",
-  };
-  return (
-    <span
-      className={`inline-block px-2 py-0.5 rounded text-xs font-semibold ${styles[color]}`}
-    >
-      {label}
-    </span>
-  );
-}
 
 // ---------------------------------------------------------------------------
 // ReviewPanel component
@@ -163,15 +133,15 @@ export default function ReviewPanel({ report }: { report: Report }) {
   }
 
   return (
-    <div className="rounded-lg border border-gray-200 bg-white p-5 shadow-sm space-y-4">
-      <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
+    <div className="space-y-4 rounded-2xl border border-white/10 bg-white/[0.045] p-5 shadow-[0_8px_30px_rgba(2,6,23,0.45)] backdrop-blur-xl">
+      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
         Review Actions
       </p>
 
       {/* Safety disclaimer */}
-      <div className="rounded border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 space-y-1">
+      <div className="space-y-1 rounded-lg border border-amber-400/25 bg-amber-500/[0.09] p-3 text-xs text-amber-200">
         <p className="font-semibold">Before taking any action, confirm:</p>
-        <ul className="list-disc list-inside space-y-0.5">
+        <ul className="list-inside list-disc space-y-0.5">
           <li>
             <strong>Internal approval ≠ public publication.</strong> No publish
             action exists in this phase.
@@ -185,13 +155,13 @@ export default function ReviewPanel({ report }: { report: Report }) {
 
       {/* Current review status */}
       <div className="flex items-center gap-3">
-        <span className="text-sm text-gray-600">Review status:</span>
-        <Badge label={statusLabel} color={statusColor} />
+        <span className="text-sm text-slate-400">Review status:</span>
+        <StatusPill label={statusLabel} color={statusColor} />
       </div>
 
       {/* Warnings */}
       {hasWarnings && (
-        <div className="rounded border border-red-200 bg-red-50 p-3 text-xs text-red-700 space-y-1">
+        <div className="space-y-1 rounded-lg border border-rose-400/25 bg-rose-500/[0.09] p-3 text-xs text-rose-200">
           <p className="font-semibold">Warning: human_review_required = true</p>
           <p>
             The Analysis Council flagged this report as requiring explicit human
@@ -201,7 +171,7 @@ export default function ReviewPanel({ report }: { report: Report }) {
       )}
 
       {availableActions.length === 0 ? (
-        <p className="text-sm text-gray-500 italic">
+        <p className="text-sm italic text-slate-500">
           No review actions available for status{" "}
           <span className="font-mono">{reviewStatus}</span>.
         </p>
@@ -209,16 +179,16 @@ export default function ReviewPanel({ report }: { report: Report }) {
         <>
           {/* Reviewer note */}
           <div>
-            <label className="block text-xs font-medium text-gray-700 mb-1">
+            <label className="mb-1 block text-xs font-medium text-slate-400">
               Reviewer Note
               {availableActions.some(noteRequired) && (
-                <span className="text-gray-400 ml-1">
+                <span className="ml-1 text-slate-500">
                   (required for Reject / Needs Revision)
                 </span>
               )}
             </label>
             <textarea
-              className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+              className="w-full resize-none rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-sky-400/50 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
               rows={3}
               placeholder="Enter your review note..."
               value={note}
@@ -229,12 +199,12 @@ export default function ReviewPanel({ report }: { report: Report }) {
 
           {/* Actor label */}
           <div>
-            <label className="block text-xs font-medium text-gray-700 mb-1">
+            <label className="mb-1 block text-xs font-medium text-slate-400">
               Your Name / Label (optional)
             </label>
             <input
               type="text"
-              className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-sky-400/50 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
               placeholder="e.g. admin@example.com"
               value={actorLabel}
               onChange={(e) => setActorLabel(e.target.value)}
@@ -244,10 +214,10 @@ export default function ReviewPanel({ report }: { report: Report }) {
 
           {/* Acknowledgement (required for approve when warnings exist) */}
           {availableActions.includes("approve") && hasWarnings && (
-            <label className="flex items-start gap-2 text-xs text-gray-700 cursor-pointer">
+            <label className="flex cursor-pointer items-start gap-2 text-xs text-slate-300">
               <input
                 type="checkbox"
-                className="mt-0.5"
+                className="mt-0.5 accent-sky-500"
                 checked={acknowledgeWarnings}
                 onChange={(e) => setAcknowledgeWarnings(e.target.checked)}
                 disabled={isPending}
@@ -255,8 +225,9 @@ export default function ReviewPanel({ report }: { report: Report }) {
               <span>
                 I acknowledge that this report has warnings (
                 <span className="font-mono">human_review_required=true</span>)
-                and I have reviewed all agent outputs before approving internally.
-                This is not public publication and not investment advice.
+                and I have reviewed all agent outputs before approving
+                internally. This is not public publication and not investment
+                advice.
               </span>
             </label>
           )}
@@ -268,7 +239,7 @@ export default function ReviewPanel({ report }: { report: Report }) {
                 key={action}
                 onClick={() => handleAction(action)}
                 disabled={isPending}
-                className={`px-3 py-1.5 text-sm font-medium rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${ACTION_COLORS[action]}`}
+                className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-all hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0 ${ACTION_COLORS[action]}`}
               >
                 {isPending ? "Working…" : ACTION_LABELS[action]}
               </button>
@@ -277,14 +248,14 @@ export default function ReviewPanel({ report }: { report: Report }) {
 
           {/* Error */}
           {error && (
-            <div className="rounded border border-red-200 bg-red-50 p-3 text-xs text-red-700">
+            <div className="rounded-lg border border-rose-400/25 bg-rose-500/[0.09] p-3 text-xs text-rose-200">
               {error}
             </div>
           )}
 
           {/* Success */}
           {successMessage && (
-            <div className="rounded border border-green-200 bg-green-50 p-3 text-xs text-green-800">
+            <div className="rounded-lg border border-emerald-400/25 bg-emerald-500/[0.09] p-3 text-xs text-emerald-200">
               {successMessage}
             </div>
           )}
