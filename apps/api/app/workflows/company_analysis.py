@@ -1534,7 +1534,14 @@ def build_company_analysis_graph(
             }
 
         try:
-            website = (snapshot.get("profile") or {}).get("website")
+            snap_profile = snapshot.get("profile") or {}
+            identity = snapshot.get("company_identity") or {}
+            website = snap_profile.get("website")
+            sector = snap_profile.get("sector") or getattr(company, "sector", None)
+            industry = snap_profile.get("industry") or getattr(company, "industry", None)
+            country = identity.get("country_domicile") or snap_profile.get(
+                "country_domicile"
+            )
             cik = getattr(company, "sec_cik", None) if company else None
             result = await discover_catalysts(
                 ticker=ticker,
@@ -1542,8 +1549,12 @@ def build_company_analysis_graph(
                 company_name=company_name,
                 cik=cik,
                 website=website,
+                sector=sector,
+                industry=industry,
+                country=country,
                 lookback_days=90,
                 max_events=20,
+                include_source_discovery=True,
             )
             agent_output = run_catalyst_agent(result)
 

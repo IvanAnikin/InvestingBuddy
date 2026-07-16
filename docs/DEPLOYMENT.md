@@ -450,6 +450,14 @@ Copy `.env.example` to `.env`. The defaults work for local Docker development.
 | `AZURE_STORAGE_CONNECTION_STRING` | No | 3+ | Use Managed Identity in staging |
 | `AZURE_STORAGE_CONTAINER_NAME` | No | 3+ | `investingbuddy-documents` |
 | `APPLICATIONINSIGHTS_CONNECTION_STRING` | No | 12+ | Injected via App Service config |
+| `NEWS_PROVIDER_NAME` | No | 24.1 | Catalyst news provider selector: unset/`none` → offline `NullNewsProvider` (default, safe); `gdelt` → no-key GDELT adapter; any other name → env-key `ConfigurableWebNewsProvider` (needs the two below) |
+| `NEWS_API_KEY` | No | 24.1 | Secret for env-key news providers — **never commit**; Key Vault reference in staging |
+| `NEWS_API_BASE_URL` | No | 24.1 | Search endpoint for `ConfigurableWebNewsProvider` (also `NEWS_SEARCH_ENDPOINT`) |
+| `NEWS_MAX_RESULTS` | No | 24.1 | Result cap per query (default 10) |
+| `NEWS_LOOKBACK_DAYS` | No | 24.1 | Default news lookback window (default 90) |
+| `NEWS_TIMEOUT_SECONDS` | No | 24.1 | Per-request timeout (default 8) |
+
+> **Phase 24.1 news provider is optional and non-blocking.** With none of the `NEWS_*` vars set, catalyst discovery still runs (SEC filings + curated/discovered company press-release feeds) and the report shows an explicit "news provider not configured" warning — the deploy still passes and coverage may stay `limited`. No paid provider is required; no secret is committed.
 
 ### Frontend (`apps/web`)
 

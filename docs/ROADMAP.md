@@ -1082,6 +1082,30 @@ Skills used: `financial-data`, `langgraph-agents`, `backend-fastapi`, `frontend-
 
 ---
 
+## Phase 24.1: Real News + Company Source Enablement ✅
+
+**Status: Delivered (2026-07-16)**
+
+Goal: Phase 24 shipped the catalyst architecture but the live AAPL `free_real` report showed coverage `filings_only` because no company press-release source was sourced and no news provider was configured. Phase 24.1 adds a source-discovery + news-search layer on top of Phase 24 so richer real-world catalyst evidence (company-owned press releases + reputable company/industry news) can be discovered — while preserving every safety boundary (no recommendations, price targets, fair values, or upside/downside; human review required).
+
+Deliverables:
+- [x] `company_source_discovery_service` — discovers company website / IR / newsroom / press-release feeds from a curated verified issuer registry, identity enrichment (`profile.website`), SEC/GLEIF websites and (optional) a configured search provider; domain-brand verification; social-media / low-quality domains rejected; never fabricates a source
+- [x] `exchange_source_registry` — exchange/country-aware query templates + trusted-media/forbidden-query-phrase lists + a small curated verified issuer-source allowlist (AAPL/MSFT/NVDA/GOOGL/AMZN/TSLA/META). Exchange/listing-venue pages are **T3** (not regulators), never promoted to T1/T2
+- [x] `news_query_planner` — bounded (≤10) company / industry / exchange / primary-source / regulatory queries using exact legal name + ticker; guaranteed free of recommendation / stock-prediction phrases
+- [x] Configurable real news/search providers (`free_news_provider`): `search(query)` primitive, `ConfigurableWebNewsProvider` (generic env-key JSON), no-key `GdeltNewsProvider`; all non-blocking (missing config / HTTP error / rate-limit / malformed → warning, never crash)
+- [x] `news_relevance_scorer` — deterministic 0–1 relevance + level, separating **company-specific** catalysts from **industry-context** items; filters food/brand-ambiguity and stock-prediction spam
+- [x] Industry / sector context news collected separately and **never** treated as a direct company catalyst (category forced `macro_sector`, direction neutral/mixed)
+- [x] `discover_catalysts` integration + source-class-aware coverage status (`filings_only` → `limited`/`adequate`/`strong` when real T1/T4/T5 evidence is present)
+- [x] Report sections: **Company News Sources** + **Industry Context News**; richer machine-readable `news_catalyst_discovery` payload (company sources + industry events + source-class attempted/successful)
+- [x] Env config: `NEWS_PROVIDER_NAME`, `NEWS_API_KEY`, `NEWS_API_BASE_URL`, `NEWS_SEARCH_ENDPOINT`, `NEWS_MAX_RESULTS`, `NEWS_LOOKBACK_DAYS`, `NEWS_TIMEOUT_SECONDS` — optional; no secret committed; no paid provider required for tests
+- [x] 57 backend tests + 10 Playwright catalyst-preview tests; safety gate passes; human review stays required
+
+Skills used: `financial-data`, `langgraph-agents`, `backend-fastapi`, `frontend-nextjs`, `testing-qa`, `security-review`, `docs-maintainer`
+
+**Remaining after Phase 24.1:** Phase 25 market candidate discovery; Phase 23 auth/staging protection; Phase 26 public publishing; optional paid/high-quality news provider + LLM-assisted event summarization.
+
+---
+
 ## Phase 25: Real Market Candidate Discovery Engine
 
 **Status: Not started**

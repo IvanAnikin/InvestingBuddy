@@ -34,13 +34,30 @@ _TRACKING_PARAMS = re.compile(r"^(utm_|fbclid|gclid|mc_|ref|ref_src)", re.IGNORE
 
 
 class NewsProvider(ABC):
-    """Abstract base for company news providers."""
+    """Abstract base for company / general news providers."""
 
     @property
     @abstractmethod
     def provider_name(self) -> str: ...
 
-    @abstractmethod
+    async def search(
+        self,
+        query: str,
+        *,
+        lookback_days: int = 90,
+        max_items: int = 20,
+        query_type: str = "company",
+    ) -> list[NewsItem]:
+        """
+        Core query primitive (Phase 24.1).
+
+        Return normalised NewsItems for a free-text ``query`` (may be empty).
+        Must never raise. The default returns no results so a provider that only
+        implements ``search_company_news`` still works and the null/offline case
+        is safe.
+        """
+        return []
+
     async def search_company_news(
         self,
         ticker: str,
@@ -48,7 +65,15 @@ class NewsProvider(ABC):
         lookback_days: int = 90,
         max_items: int = 20,
     ) -> list[NewsItem]:
-        """Return normalised NewsItems (may be empty). Must never raise."""
+        """Convenience wrapper: build a company query and delegate to ``search``."""
+        name = company_name or ticker
+        query = f'"{name}" {ticker}'.strip()
+        return await self.search(
+            query,
+            lookback_days=lookback_days,
+            max_items=max_items,
+            query_type="company",
+        )
 
 
 def normalize_url(url: str | None) -> str:

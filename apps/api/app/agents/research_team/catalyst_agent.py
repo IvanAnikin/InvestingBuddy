@@ -53,6 +53,15 @@ class CatalystAgentOutput:
     primary_or_regulator_event_count: int
     aggregator_only_count: int
     latest_event_date: str | None
+    # Phase 24.1 — company vs industry breakdown + discovered sources
+    company_specific_count: int = 0
+    industry_context_count: int = 0
+    news_event_count: int = 0
+    press_release_event_count: int = 0
+    filing_event_count: int = 0
+    has_verified_company_source: bool = False
+    source_classes_attempted: list[str] = field(default_factory=list)
+    source_classes_successful: list[str] = field(default_factory=list)
     # Council context
     bull_context: list[str] = field(default_factory=list)
     bear_context: list[str] = field(default_factory=list)
@@ -122,6 +131,73 @@ def _sec_table(events: list[CatalystEvent]) -> str:
     return "\n".join(lines) + "\n\n"
 
 
+def _industry_table(events: list[CatalystEvent]) -> str:
+    if not events:
+        return "_No industry / sector context news found in the lookback window._\n\n"
+    lines = [
+        "| Date | Tier | Source | Category | Relevance | Headline | Link |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    for e in events:
+        lines.append(
+            "| {date} | {tier} | {src} | {cat} | {rel} | {head} | {link} |".format(
+                date=e.event_date or "—",
+                tier=e.source_tier,
+                src=_clean(e.source_name) or e.provider_name,
+                cat=e.catalyst_category,
+                rel=e.relevance_level or "—",
+                head=_clean(e.headline)[:120],
+                link=_short_link(e.source_url),
+            )
+        )
+    return "\n".join(lines) + "\n\n"
+
+
+def _company_sources_section(company_sources: dict | None) -> str:
+    """Render the discovered company sources (website / IR / newsroom / feed)."""
+    md = "## Company News Sources\n\n"
+    if not company_sources:
+        return md + (
+            "_Company source discovery did not run for this analysis._\n\n"
+        )
+    verified = company_sources.get("verified_sources", []) or []
+    website = company_sources.get("company_website")
+    ir = company_sources.get("investor_relations_url")
+    newsroom = company_sources.get("newsroom_url")
+    feed = company_sources.get("press_release_feed_url")
+    exch = company_sources.get("exchange_profile_url")
+    conf = company_sources.get("confidence", 0.0)
+
+    md += (
+        f"- **Company website:** {website or '_not discovered_'}  \n"
+        f"- **Investor relations:** {ir or '_not discovered_'}  \n"
+        f"- **Newsroom:** {newsroom or '_not discovered_'}  \n"
+        f"- **Press-release feed:** {feed or '_not discovered_'}  \n"
+        f"- **Exchange profile (T3 hint, not a regulator):** {exch or '_none_'}  \n"
+        f"- **Discovery confidence:** {conf}  \n"
+    )
+    if verified:
+        md += "\n| Source Type | Tier | Verification | Confidence | URL |\n"
+        md += "|---|---|---|---|---|\n"
+        for c in verified[:12]:
+            md += "| {t} | {tier} | {vm} | {conf} | {url} |\n".format(
+                t=c.get("source_type", "—"),
+                tier=c.get("source_tier", "—"),
+                vm=c.get("verification_method", "—"),
+                conf=c.get("confidence", "—"),
+                url=_short_link(c.get("url")),
+            )
+        md += "\n"
+    else:
+        md += (
+            "\n> Company primary news source unavailable — no company-owned source "
+            "was confidently discovered. Press-release catalysts (T1) were not "
+            "collected; SEC filings (T2) and any configured news provider still "
+            "apply.\n\n"
+        )
+    return md
+
+
 def run_catalyst_agent(result: CatalystDiscoveryResult) -> CatalystAgentOutput:
     """Build the catalyst research summary + council context from a discovery result."""
     s = result.summary
@@ -180,14 +256,49 @@ def run_catalyst_agent(result: CatalystDiscoveryResult) -> CatalystAgentOutput:
             f"{s.aggregator_only_count} catalyst(s) rest on aggregator-only "
             "evidence (T5) — not yet confirmed by a primary/regulator source."
         )
-    if "company_press_release" in result.missing_sources:
-        risk_flags.append(
-            "No company-owned press-release source was available (company primary "
-            "news source unavailable)."
-        )
+    # Company source discovery outcomes (Phase 24.1) — only recommend obtaining
+    # a company source when one was NOT already discovered.
+    company_sources = result.company_sources or {}
+    has_verified_company_source = bool(
+        company_sources.get("has_verified_company_source")
+    )
+    if not has_verified_company_source:
+        if "company_press_release" in result.missing_sources:
+            risk_flags.append(
+                "No company-owned press-release source was available (company "
+                "primary news source unavailable)."
+            )
         source_quality_recommendations.append(
             "Obtain the company's own press-release / investor-relations source "
             "(T1) to confirm catalyst events."
+        )
+    elif not result.press_release_events:
+        risk_flags.append(
+            "A company-owned source was discovered but no readable press-release "
+            "feed items were parsed — verify the company feed manually."
+        )
+
+    # News provider outcomes — only claim the provider is missing when it is.
+    if "news_provider" in result.missing_sources and not result.news_events:
+        source_quality_recommendations.append(
+            "Configure a news/search provider (NEWS_PROVIDER_NAME) to add recent "
+            "company and industry news context."
+        )
+
+    # News-source diversity / quality risks (Phase 24.1).
+    if (
+        result.news_events
+        and not result.press_release_events
+        and s.primary_or_regulator_event_count == 0
+    ):
+        risk_flags.append(
+            "Company news rests on aggregator/media sources without a primary "
+            "company or regulator confirmation — limited source diversity."
+        )
+    if result.industry_events and not result.news_events and not result.press_release_events:
+        risk_flags.append(
+            "Only industry/sector context news is available — it is NOT "
+            "company-specific evidence."
         )
 
     # Source-quality upgrade recommendations
@@ -244,10 +355,16 @@ def run_catalyst_agent(result: CatalystDiscoveryResult) -> CatalystAgentOutput:
 
     md.append("## News & Catalyst Discovery\n")
     md.append(_DISCLAIMER + "\n")
+    attempted = ", ".join(f"`{c}`" for c in result.source_classes_attempted) or "none"
+    successful = ", ".join(f"`{c}`" for c in result.source_classes_successful) or "none"
     md.append(
         f"- **Coverage status:** `{coverage}`  \n"
         f"- **Lookback window:** {result.lookback_days} days  \n"
-        f"- **Total catalyst events:** {s.total_events}  \n"
+        f"- **Total company catalyst events:** {s.total_events}  \n"
+        f"- **Company-specific / industry-context events:** "
+        f"{s.company_specific_count} / {s.industry_context_count}  \n"
+        f"- **Event source classes:** SEC filings {s.filing_event_count} / "
+        f"press releases {s.press_release_event_count} / news {s.news_event_count}  \n"
         f"- **Direction mix:** positive {s.positive_count} / negative "
         f"{s.negative_count} / mixed {s.mixed_count} / neutral {s.neutral_count} / "
         f"unknown {s.unknown_count}  \n"
@@ -256,6 +373,8 @@ def run_catalyst_agent(result: CatalystDiscoveryResult) -> CatalystAgentOutput:
         f"{s.primary_or_regulator_event_count}  \n"
         f"- **Aggregator-only events:** {s.aggregator_only_count}  \n"
         f"- **Latest event date:** {s.latest_event_date or 'N/A'}  \n"
+        f"- **Source classes attempted:** {attempted}  \n"
+        f"- **Source classes successful:** {successful}  \n"
         f"- **Source coverage:** "
         f"{', '.join(f'{k}×{v}' for k, v in sorted(result.source_summary.items())) or 'none'}  \n"
     )
@@ -275,8 +394,17 @@ def run_catalyst_agent(result: CatalystDiscoveryResult) -> CatalystAgentOutput:
     md.append("\n## Recent Catalyst Events\n")
     md.append(_events_table(result.events))
 
+    md.append(_company_sources_section(result.company_sources))
+
     md.append("## SEC Filing Events\n")
     md.append(_sec_table(result.filing_events))
+
+    md.append("## Industry Context News\n")
+    md.append(
+        "> Industry context may be relevant but is NOT company-specific "
+        "evidence. Sector news is never treated as a direct company catalyst.\n\n"
+    )
+    md.append(_industry_table(result.industry_events))
 
     md.append("## Catalyst Evidence Quality\n")
     primary = [
@@ -327,6 +455,14 @@ def run_catalyst_agent(result: CatalystDiscoveryResult) -> CatalystAgentOutput:
         primary_or_regulator_event_count=s.primary_or_regulator_event_count,
         aggregator_only_count=s.aggregator_only_count,
         latest_event_date=s.latest_event_date,
+        company_specific_count=s.company_specific_count,
+        industry_context_count=s.industry_context_count,
+        news_event_count=s.news_event_count,
+        press_release_event_count=s.press_release_event_count,
+        filing_event_count=s.filing_event_count,
+        has_verified_company_source=has_verified_company_source,
+        source_classes_attempted=list(result.source_classes_attempted),
+        source_classes_successful=list(result.source_classes_successful),
         bull_context=bull_context,
         bear_context=bear_context,
         risk_flags=risk_flags,

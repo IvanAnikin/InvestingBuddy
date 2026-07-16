@@ -186,14 +186,26 @@ class CompanyPressReleaseProvider:
         website: str | None = None,
         lookback_days: int = 90,
         max_items: int = 20,
+        feed_urls: list[str] | None = None,
     ) -> PressReleaseResult:
         """
         Attempt to discover and parse the company's own press-release feed.
 
-        Never raises. When no website is known or no feed is found, returns an
-        explicit warning and no items.
+        ``feed_urls`` (Phase 24.1) are explicit candidate feeds from company
+        source discovery (e.g. a curated newsroom RSS). They are tried first,
+        before the website-derived common paths.
+
+        Never raises. When no website / feed is known or no feed is found,
+        returns an explicit warning and no items.
         """
-        candidates = discover_feed_urls(website)
+        # Discovery-provided feeds first, then website-derived common paths.
+        candidates: list[str] = []
+        for u in (feed_urls or []):
+            if u and u not in candidates:
+                candidates.append(u)
+        for u in discover_feed_urls(website):
+            if u not in candidates:
+                candidates.append(u)
         if not candidates:
             return PressReleaseResult(
                 ticker=ticker.upper(),
@@ -224,11 +236,12 @@ class CompanyPressReleaseProvider:
                     feed_url=url,
                 )
 
+        probed = website or "the discovered company feeds"
         return PressReleaseResult(
             ticker=ticker.upper(),
             warnings=[
                 "Company primary news source unavailable: no readable RSS/Atom feed "
-                f"found at common paths for {website}. Press-release catalysts were "
+                f"found at common paths for {probed}. Press-release catalysts were "
                 "not collected."
             ],
         )
