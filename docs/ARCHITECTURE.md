@@ -36,8 +36,9 @@ Azure Application Insights
 - Next.js 16, React 19, TypeScript, Tailwind CSS v4, App Router
 - Public report pages, admin dashboard, user account (V2)
 - Communicates with backend via server-side proxy (Phase 17+) — credentials never in browser
-- Status: **Phase 22.3 — modern dark glassmorphism UI + safe markdown report preview; admin proxy active for all admin routes**
+- Status: **Phase 22.3.1 — web deploy cache hardening on top of Phase 22.3 modern dark glassmorphism UI + safe markdown report preview; admin proxy active for all admin routes**
   - `/api/admin/proxy/[...path]` — server-side proxy route; adds `Authorization: Basic` server-side; path allowlist; rejects unknown paths; sanitizes errors; never exposes credentials to browser
+  - `/api/version` — public build-metadata endpoint (Phase 22.3.1); returns `{ app, commit_sha, build_id, build_time, environment }` for deploy verification; build identifiers only, no secrets; `force-dynamic` + `no-store`
   - `src/lib/api.ts` — smart base URL: server components call `BACKEND_API_BASE_URL` directly; client components use `/api/admin/proxy/…`
   - `/admin` — dashboard (health, company count, latest reports)
   - `/admin/companies/new` — create company form
@@ -73,6 +74,16 @@ Browser (admin UI)
 Required App Service env vars for `ib-stg-web` (server-only, no `NEXT_PUBLIC_` prefix):
 - `BACKEND_API_BASE_URL` — full URL of the FastAPI backend
 - `BACKEND_BASIC_AUTH` — `user:password` matching `STAGING_BASIC_AUTH` on the API
+
+#### Web Deploy Cache Hardening (Phase 22.3.1)
+`ib-stg-web` runs the Next.js standalone bundle with `WEBSITE_RUN_FROM_PACKAGE=1` and `alwaysOn=false`. Under those settings a **statically prerendered homepage `/` could keep serving the previous build** after a deploy until a manual `az webapp restart` flushed it (dynamic routes like `/admin` picked up the new build immediately). Phase 22.3.1 hardens `deploy-web-staging.yml` so a stale homepage is prevented and, if it ever occurs, is caught loudly:
+
+- **Build metadata baked into the bundle** — the workflow injects `NEXT_PUBLIC_COMMIT_SHA` / `NEXT_PUBLIC_BUILD_ID` / `NEXT_PUBLIC_BUILD_TIME` / `NEXT_PUBLIC_APP_ENV` at build time. Next.js statically inlines `NEXT_PUBLIC_*`, so the values are available at runtime on App Service with no runtime configuration. `src/lib/build-info.ts` reads them (with a runtime `COMMIT_SHA` fallback and safe `"unknown"` placeholders).
+- **`/api/version` endpoint** — exposes the baked build metadata (build identifiers only, never secrets) so the deployed web commit can be verified from the app itself.
+- **`x-ib-build-commit` meta tag** — the root layout embeds the build commit into every page's `<head>`, so a stale prerendered `/` is detectable by comparing the served commit to the deployed SHA.
+- **Homepage rendered dynamically** — `src/app/page.tsx` is `force-dynamic`, so `/` always reflects the currently-mounted bundle instead of a cached prerender.
+- **Post-deploy restart (best-effort, optional)** — the workflow restarts `ib-stg-web` after deploy when an `AZURE_CREDENTIALS` service principal is configured. A true restart requires the Azure ARM API (Kudu / publish profile cannot restart the site), so with only a publish profile the step is skipped cleanly. Provision `AZURE_CREDENTIALS` (Website Contributor on `ib-stg-web`) once RBAC/OIDC is granted to automate it.
+- **SHA-verified smoke check** — the deploy is confirmed only when `/api/version` reports the deployed `github.sha` (multiple consecutive matches), `/` and `/admin` return `200` and contain the dark-UI marker (`bg-[#060913]`), and `/` embeds the current build commit. A `403` ("Site Disabled") is surfaced explicitly rather than treated as transient. This never silently false-greens on a stale worker.
 
 ### Backend (`apps/api/`)
 - FastAPI, SQLAlchemy async, Pydantic v2, Alembic
@@ -257,6 +268,7 @@ All errors are caught, logged to `agent_runs.error_message`, and returned as HTT
 | Phase 19.3 | ✅ Delivered | SEC Fundamentals Normalization + Report Completeness: `sec_fundamentals_normalizer` maps us-gaap companyfacts → normalized income/cash-flow/balance-sheet metrics + derived margins/ROE/D-E/YoY; injected into `free_real` snapshot; `FinancialDataAgent` narrates fundamentals; `ValuationGuardAgent` reaches `partial`; EBITDA/market cap/EV never fabricated; 22 offline tests. Remaining identity/sector/market-metric enrichment → Phase 19.4 |
 | Phase 19.4 | ✅ Delivered | Identity + Sector + Market-Metric Enrichment: `company_profile_enrichment` (sector from DB or inferred SEC SIC/T6, website/industry SEC/T2, LEI GLEIF/T2 name-guarded; LEI/ISIN/IPO never fabricated) + `market_metrics_enrichment` (latest close + 52-week range/T5, shares SEC DEI/T2, market cap/EV/P-E as DERIVED ESTIMATES/T6 when inputs exist; EBITDA/EV-EBITDA/beta never fabricated). Pruned from `missing_fields`; `FinancialDataAgent` recognises + narrates derived metrics; `ValuationGuardAgent` stays `partial`, conclusions still blocked; report gains identity/profile + Market Metrics sections; 24 offline tests |
 | Phase 22.3 | ✅ Complete | UI Modernization + Markdown Report Preview (frontend/UI only): dark glassmorphism design system, animated aurora background (reduced-motion safe), `GlassCard`/`StatusPill`/`SafetyBanner`/`AppShell` primitives, safe `MarkdownReportPreview` (`react-markdown`+`remark-gfm`+`rehype-sanitize`, no `dangerouslySetInnerHTML`) with Preview/Raw toggle + mini TOC replacing the raw `<pre>`; all pages + homepage restyled; disclaimers preserved verbatim; no backend/report-semantics changes, no public publishing; 55 Playwright tests passing |
+| Phase 22.3.1 | ✅ Complete | Web Deploy Cache Hardening (deploy/CI + frontend verification only): `/api/version` build-metadata endpoint, `x-ib-build-commit` `<meta>` tag, homepage `force-dynamic`, `deploy-web-staging.yml` bakes `NEXT_PUBLIC_*` build metadata + best-effort (optional `AZURE_CREDENTIALS`) restart + SHA-verified stale-homepage smoke check; prevents/detects the stale prerendered `/` under `WEBSITE_RUN_FROM_PACKAGE`; no backend/report-semantics changes, no secrets, no public publishing |
 
 ---
 

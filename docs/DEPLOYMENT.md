@@ -259,7 +259,9 @@ Expected result after Phase 12: migration `004` is the current head.
 
 Both deployment workflows:
 - Use App Service publish profile credentials (stored as GitHub secrets)
-- Run a post-deploy smoke check (health endpoint / HTTP 200)
+- Run a **SHA-verified** post-deploy smoke check that confirms the new build is
+  serving — API via `/health` `commit_sha` (Phase 19.2.1), web via `/api/version`
+  `commit_sha` + stale-homepage markers (Phase 22.3.1) — never a bare HTTP 200
 - **Do not run Alembic migrations** — run manually after schema changes
 
 ### GitHub Actions Authentication (Publish Profile)
@@ -338,6 +340,44 @@ On detection it prints the signature, HTTP status, and served commit SHA (no
 secrets, no app settings values) and advises **re-running the deploy** — which
 clears the transient Oryx failure. It never silently passes because the old
 container answered.
+
+### Web deploy cache hardening (Phase 22.3.1)
+
+`ib-stg-web` runs the Next.js standalone bundle with `WEBSITE_RUN_FROM_PACKAGE=1`
+and `alwaysOn=false`. Under those settings the **statically prerendered homepage
+`/` could keep serving the previous build** after a deploy until a manual
+`az webapp restart` flushed it — while dynamic routes like `/admin` updated
+immediately. Phase 22.3.1 mirrors the API's SHA-verified pattern for the web app:
+
+1. **Build metadata baked into the bundle** — `deploy-web-staging.yml` injects
+   `NEXT_PUBLIC_COMMIT_SHA` / `NEXT_PUBLIC_BUILD_ID` / `NEXT_PUBLIC_BUILD_TIME` /
+   `NEXT_PUBLIC_APP_ENV` at build time. Next.js statically inlines `NEXT_PUBLIC_*`,
+   so the values are available at runtime on App Service with **no** runtime app
+   setting. These are public build identifiers only — **no secrets**.
+2. **`/api/version` endpoint** — exposes `{ app, commit_sha, build_id, build_time,
+   environment }` (`src/lib/build-info.ts`, `force-dynamic` + `no-store`), so the
+   deployed web commit can be verified from the app itself.
+3. **Stale-homepage prevention + detection** — `src/app/page.tsx` is
+   `force-dynamic` so `/` always reflects the mounted bundle, and the root layout
+   embeds `<meta name="x-ib-build-commit">` so a stale prerender is detectable.
+4. **SHA-matched, stable polling** — the smoke check requires **3 consecutive**
+   `/api/version` responses matching `github.sha`, then checks `/` and `/admin`
+   return `200` with the dark-UI marker (`bg-[#060913]`) and that `/` embeds the
+   current build commit. A `403` "Site Disabled" is surfaced explicitly. It never
+   false-greens on a stale worker.
+5. **Best-effort post-deploy restart** — the workflow restarts `ib-stg-web` after
+   deploy **only** when an optional `AZURE_CREDENTIALS` service principal is set
+   (resource group `ib-stg-rg`, discovered via `az webapp list`). A true restart
+   needs the Azure ARM API — Kudu / the publish profile **cannot** restart the
+   site — so with only a publish profile the step is skipped cleanly and the
+   smoke check remains the enforcement. Provision `AZURE_CREDENTIALS` (Website
+   Contributor on `ib-stg-web`) once RBAC/OIDC is granted to automate it.
+
+Manual flush if a stale homepage is ever reported:
+
+```bash
+az webapp restart --resource-group ib-stg-rg --name ib-stg-web
+```
 
 ---
 
@@ -492,6 +532,10 @@ curl -u admin:<password> $BASE/api/v1/reports
 # 6. Check frontend
 curl -o /dev/null -w "%{http_code}" https://ib-stg-web.azurewebsites.net
 curl -o /dev/null -w "%{http_code}" https://ib-stg-web.azurewebsites.net/admin
+
+# 7. Verify the deployed web build (Phase 22.3.1) — commit_sha should match the
+#    latest deployed GitHub SHA on main; build identifiers only, no secrets.
+curl -s https://ib-stg-web.azurewebsites.net/api/version
 ```
 
 ---

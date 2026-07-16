@@ -1,7 +1,8 @@
 # Gap Analysis
 
-**Last updated:** 2026-07-15  
+**Last updated:** 2026-07-16  
 **Presentation state:** Phase 22.3 UI Modernization + Markdown Report Preview delivered (frontend/UI only) — the web/admin UI now uses a dark glassmorphism design system with a reduced-motion-safe animated background, and report content renders through a sanitized markdown preview (`react-markdown` + `remark-gfm` + `rehype-sanitize`, no `dangerouslySetInnerHTML`) with a Preview/Raw toggle, replacing the raw `<pre>` block. No backend, workflow, or report-generation logic changed; no public publishing added; all internal-only / not-investment-advice / human-review disclaimers preserved; no BUY/SELL/HOLD/WATCH, price target, fair value or upside.  
+**Deploy state:** Phase 22.3.1 Web Deploy Cache Hardening delivered (deploy/CI + frontend verification only) — fixes the stale prerendered homepage `/` seen under `WEBSITE_RUN_FROM_PACKAGE=1` + `alwaysOn=false`: added `/api/version` build-metadata endpoint + `x-ib-build-commit` `<meta>` tag, homepage rendered `force-dynamic`, CI bakes `NEXT_PUBLIC_*` build metadata, best-effort post-deploy restart (optional `AZURE_CREDENTIALS`), and a SHA-verified smoke check that fails loudly on a stale `/` or `/admin`. Build identifiers only, no secrets; no backend/report semantics changed.  
 **Data state:** Phase 19.4.1 Enrichment Completeness Consistency delivered — `research_completeness_agent` now consumes the enriched snapshot so present enriched fields (LEI, sector classification, derived market cap/EV/P-E, 52-week range, shares) are no longer reported as missing/blocking gaps, and `source_quality_agent` only recommends "Obtain LEI" when the LEI is actually absent; genuinely-missing fields (ISIN, EBITDA, EV/EBITDA, beta, website, IPO date) stay gaps and nothing is fabricated. On top of Phase 19.4 Identity + Sector + Market-Metric Enrichment (`company_profile_enrichment`: sector from DB or inferred SEC SIC/T6, industry/website SEC/T2, LEI GLEIF/T2 name-guarded; `market_metrics_enrichment`: latest close + 52-week range/T5, shares SEC DEI/T2, market cap/EV/P-E as DERIVED ESTIMATES/T6 when inputs exist; valuation still `partial` with conclusions blocked), Phase 19.3.1 SEC Freshness + Review Consistency and Phase 19.3 SEC Fundamentals Normalization; Phase 22.1 Admin Backtesting UI live.  
 **Next phase:** Phase 24 News/Catalyst Discovery or Phase 25 market candidate discovery, then Phase 23 Auth
 
@@ -79,7 +80,14 @@ This document describes the gap between the current implementation and the targe
 - Deploy health-check hardened: `/health` exposes `commit_sha`/`build_id`; deploy smoke check requires 3 consecutive SHA-matched responses (no false-green on async recycle) + Oryx/runtime boot-failure detection
 - 20 tests added in `test_phase19_2_1_hardening.py`; `docs/DEPLOYMENT.md` documents the intentional `--workers 1` on B1
 
-**Phase:** 19.2 → 19.2.1
+**Phase 22.3.1 follow-up (web deploy cache hardening):** ✅ 2026-07-16
+- Applies the same SHA-verified deploy pattern to the **web** app: `/api/version` exposes `commit_sha`/`build_id` (baked into the bundle as `NEXT_PUBLIC_*`), and the `deploy-web-staging.yml` smoke check requires 3 consecutive SHA-matched `/api/version` responses before passing — no more false-green on a stale `WEBSITE_RUN_FROM_PACKAGE` worker
+- Stale prerendered homepage `/` fixed at the source (`force-dynamic`) and detected (`x-ib-build-commit` `<meta>` + dark-UI marker check on `/` and `/admin`)
+- Best-effort post-deploy `az webapp restart` gated on an optional `AZURE_CREDENTIALS` service principal (Kudu/publish-profile cannot restart the site); skipped cleanly when absent
+- **Remaining gap:** automatic restart is inert until `AZURE_CREDENTIALS`/OIDC is provisioned (blocked pending Azure Owner/RBAC grant); until then a detected stale homepage fails the deploy with a manual `az webapp restart` hint rather than auto-recovering
+- New `apps/web/tests/e2e/version-endpoint.spec.ts` covers the endpoint contract (app name, all fields, safe placeholders, no-secret allow-list, `no-store`, homepage build-commit meta)
+
+**Phase:** 19.2 → 19.2.1 → 22.3.1
 
 ---
 

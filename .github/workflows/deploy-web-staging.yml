@@ -12,6 +12,20 @@ name: Deploy Web — Staging
 # mounted read-only and the app runs directly from it (node server.js reads JS,
 # no execute bits needed). NodeProjectOptimizer is bypassed when package.json
 # is absent from the ZIP root.
+#
+# Phase 22.3.1 — web deploy cache hardening:
+#   With WEBSITE_RUN_FROM_PACKAGE=1 and alwaysOn=false, a statically prerendered
+#   homepage `/` could keep serving the OLD build after a deploy until a manual
+#   `az webapp restart` flushed it. This workflow now:
+#     1. Bakes commit sha / run id / build time into the bundle as NEXT_PUBLIC_*
+#        values, exposed at /api/version and as an x-ib-build-commit <meta> tag.
+#     2. Best-effort restarts ib-stg-web after deploy IF an AZURE_CREDENTIALS
+#        service principal is configured (optional — skipped cleanly if absent).
+#     3. Runs a SHA-verified smoke check that FAILS LOUDLY if /api/version does
+#        not report the deployed commit, or if `/` / `/admin` are stale — so a
+#        stale homepage is never a silent false-green.
+#   The homepage is also rendered dynamically (force-dynamic) so `/` reflects the
+#   currently-mounted bundle without depending on a restart.
 
 on:
   push:
@@ -39,6 +53,19 @@ jobs:
           cache: "npm"
           cache-dependency-path: apps/web/package-lock.json
 
+      # Build metadata — public identifiers only (commit sha, CI run id, build
+      # time, environment). Baked into the bundle as NEXT_PUBLIC_* so they are
+      # available at runtime on App Service without any runtime configuration.
+      # Exposed at /api/version and as the <meta name="x-ib-build-commit"> tag.
+      - name: Compute build metadata
+        run: |
+          {
+            echo "NEXT_PUBLIC_COMMIT_SHA=${{ github.sha }}"
+            echo "NEXT_PUBLIC_BUILD_ID=${{ github.run_id }}"
+            echo "NEXT_PUBLIC_BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "NEXT_PUBLIC_APP_ENV=staging"
+          } >> "$GITHUB_ENV"
+
       # NEXT_PUBLIC_ variables are baked into the bundle at build time.
       - name: Install and build
         working-directory: apps/web
@@ -47,6 +74,10 @@ jobs:
           npm run build
         env:
           NEXT_PUBLIC_API_BASE_URL: https://ib-stg-api.azurewebsites.net
+          NEXT_PUBLIC_COMMIT_SHA: ${{ env.NEXT_PUBLIC_COMMIT_SHA }}
+          NEXT_PUBLIC_BUILD_ID: ${{ env.NEXT_PUBLIC_BUILD_ID }}
+          NEXT_PUBLIC_BUILD_TIME: ${{ env.NEXT_PUBLIC_BUILD_TIME }}
+          NEXT_PUBLIC_APP_ENV: ${{ env.NEXT_PUBLIC_APP_ENV }}
 
       # Assemble standalone bundle: copy static assets + public dir into the
       # standalone output directory before packaging.
@@ -68,19 +99,133 @@ jobs:
           publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE_WEB }}
           package: deploy-web.zip
 
-      # Allow extra time for WEBSITE_RUN_FROM_PACKAGE mount + node server.js startup.
-      - name: Smoke check — web frontend
+      # Best-effort ARM restart to flush a stale WEBSITE_RUN_FROM_PACKAGE worker.
+      # A true restart needs the Azure ARM API (Kudu/publish-profile cannot do it).
+      # This is OPTIONAL: it only runs when an AZURE_CREDENTIALS service-principal
+      # secret is configured. When absent (current staging), it is skipped cleanly
+      # and the SHA-verified smoke check below still enforces freshness. Provision
+      # AZURE_CREDENTIALS (Website Contributor on ib-stg-web) to automate the
+      # restart once RBAC/OIDC is available.
+      - name: Detect Azure ARM credentials
+        id: azcreds
+        env:
+          AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS }}
         run: |
-          echo "Waiting for App Service to restart..."
+          if [ -n "$AZURE_CREDENTIALS" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+            echo "AZURE_CREDENTIALS detected — will restart ib-stg-web after deploy."
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::AZURE_CREDENTIALS not configured — skipping ARM restart. The SHA-verified smoke check below still enforces freshness and will fail if the homepage is stale (manual fix: az webapp restart --name ib-stg-web)."
+          fi
+
+      - name: Azure login (restart)
+        if: steps.azcreds.outputs.available == 'true'
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Restart ib-stg-web
+        if: steps.azcreds.outputs.available == 'true'
+        run: |
+          RG=$(az webapp list --query "[?name=='ib-stg-web'].resourceGroup | [0]" -o tsv)
+          if [ -z "$RG" ]; then
+            echo "::error::Could not resolve resource group for ib-stg-web."
+            exit 1
+          fi
+          echo "Restarting ib-stg-web in resource group $RG..."
+          az webapp restart --name ib-stg-web --resource-group "$RG"
+          echo "Restart issued; allowing the worker to recycle..."
+          sleep 45
+
+      # Freshness smoke check — proves the NEW build is serving and detects a
+      # stale prerendered homepage. Does not rely on HTTP 200 alone:
+      #   1. /api/version commit_sha must equal this workflow's github.sha
+      #      (multiple consecutive matches, so we never accept a lucky old-worker hit).
+      #   2. `/` must return 200, contain the dark-UI marker, and embed the current
+      #      build commit (x-ib-build-commit) — a stale prerender fails this.
+      #   3. `/admin` must return 200 and contain the dark-UI marker.
+      # Site Disabled / 403 is surfaced explicitly rather than hidden.
+      - name: Smoke check — verify new build is serving (SHA + stale-homepage markers)
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+          BASE_URL: https://ib-stg-web.azurewebsites.net
+        run: |
+          UI_MARKER='bg-[#060913]'      # stable Phase 22.3 dark-UI body class
+          REQUIRED=3                    # consecutive /api/version matches required
+          MAX_ATTEMPTS=16               # ~= 60s initial + 16 * 30s for cold start
+          echo "Expecting /api/version commit_sha=$EXPECTED_SHA at $BASE_URL"
+          echo "Waiting for App Service warm-up (RUN_FROM_PACKAGE mount + node server.js)..."
           sleep 60
-          for i in 1 2 3 4 5; do
-            STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://ib-stg-web.azurewebsites.net)
-            echo "Attempt $i — web frontend HTTP status: $STATUS"
-            if [ "$STATUS" = "200" ]; then
-              echo "Web frontend smoke check passed."
-              exit 0
+
+          CONSECUTIVE=0
+          VSTATUS="000"
+          SERVED_SHA=""
+          for i in $(seq 1 "$MAX_ATTEMPTS"); do
+            VBODY=$(curl -s --max-time 20 "$BASE_URL/api/version" || true)
+            VSTATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 20 "$BASE_URL/api/version" || echo "000")
+            SERVED_SHA=$(printf '%s' "$VBODY" | python3 -c "import sys,json; print(json.load(sys.stdin).get('commit_sha',''))" 2>/dev/null || echo "")
+            echo "Attempt $i/$MAX_ATTEMPTS — /api/version HTTP $VSTATUS — commit_sha=${SERVED_SHA:-<none>}"
+
+            if [ "$VSTATUS" = "403" ]; then
+              echo "::error::/api/version returned 403 — likely 'Site Disabled' (Azure subscription/MSDN disable). Failing loudly (not treating as transient)."
+              exit 1
+            fi
+
+            if [ "$VSTATUS" = "200" ] && [ -n "$SERVED_SHA" ] && [ "$SERVED_SHA" = "$EXPECTED_SHA" ]; then
+              CONSECUTIVE=$((CONSECUTIVE + 1))
+              echo "  stable match #$CONSECUTIVE / $REQUIRED"
+              if [ "$CONSECUTIVE" -ge "$REQUIRED" ]; then
+                break
+              fi
+            else
+              CONSECUTIVE=0
             fi
             sleep 30
           done
-          echo "ERROR: web smoke check failed after 5 attempts"
-          exit 1
+
+          if [ "$CONSECUTIVE" -lt "$REQUIRED" ]; then
+            echo "::error::/api/version never reported the deployed commit $EXPECTED_SHA (last HTTP $VSTATUS, last commit_sha=${SERVED_SHA:-<none>})."
+            echo "The deployed worker is stale or failed to start."
+            echo "Fix: az webapp restart --name ib-stg-web  (or configure AZURE_CREDENTIALS to automate the restart above)."
+            exit 1
+          fi
+          echo "New worker confirmed serving commit $EXPECTED_SHA via /api/version."
+
+          # ── Stale prerendered homepage detection (/) ────────────────────────
+          HOME_HTML=$(curl -s --max-time 20 "$BASE_URL/" || true)
+          HOME_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 20 "$BASE_URL/" || echo "000")
+          echo "Homepage / HTTP $HOME_STATUS"
+          if [ "$HOME_STATUS" != "200" ]; then
+            echo "::error::/ did not return 200 (got $HOME_STATUS)."
+            exit 1
+          fi
+          if ! printf '%s' "$HOME_HTML" | grep -qF "$UI_MARKER"; then
+            echo "::error::/ is missing the dark-UI marker '$UI_MARKER' — homepage is STALE (old build)."
+            exit 1
+          fi
+          if ! printf '%s' "$HOME_HTML" | grep -qF "$EXPECTED_SHA"; then
+            echo "::error::/ does not embed the current build commit $EXPECTED_SHA (x-ib-build-commit) — homepage prerender is STALE."
+            exit 1
+          fi
+          echo "Homepage / is fresh — dark-UI marker and current build commit both present."
+
+          # ── /admin dark-UI marker ───────────────────────────────────────────
+          ADMIN_HTML=$(curl -s --max-time 20 "$BASE_URL/admin" || true)
+          ADMIN_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 20 "$BASE_URL/admin" || echo "000")
+          echo "/admin HTTP $ADMIN_STATUS"
+          if [ "$ADMIN_STATUS" != "200" ]; then
+            echo "::error::/admin did not return 200 (got $ADMIN_STATUS)."
+            exit 1
+          fi
+          if ! printf '%s' "$ADMIN_HTML" | grep -qF "$UI_MARKER"; then
+            echo "::error::/admin is missing the dark-UI marker '$UI_MARKER' — admin is STALE (old build)."
+            exit 1
+          fi
+          echo "/admin is fresh — dark-UI marker present."
+
+          # ── /admin/reports (informational — proxy/auth context may vary) ────
+          RSTATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 20 "$BASE_URL/admin/reports" || echo "000")
+          echo "/admin/reports HTTP $RSTATUS (informational — not gating the deploy)"
+
+          echo "Web deploy freshness smoke check passed."
