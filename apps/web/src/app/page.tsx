@@ -3,6 +3,14 @@ import GlassCard from "@/components/ui/GlassCard";
 import SafetyBanner from "@/components/ui/SafetyBanner";
 import StatusPill from "@/components/ui/StatusPill";
 
+// Phase 22.3.1 — Web Deploy Cache Hardening.
+// Render the homepage per-request instead of statically prerendering it. Under
+// WEBSITE_RUN_FROM_PACKAGE with alwaysOn=false, a prerendered `/` could keep
+// serving the previous build until a manual `az webapp restart`. Rendering
+// dynamically means `/` always reflects the currently-mounted bundle (and the
+// embedded x-ib-build-commit meta), removing the stale-homepage class of bug.
+export const dynamic = "force-dynamic";
+
 const STEPS = [
   {
     title: "Research",

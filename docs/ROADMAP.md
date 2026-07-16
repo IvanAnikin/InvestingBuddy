@@ -1,6 +1,8 @@
 # Roadmap
 
-## Current State: Phase 22.3 UI Modernization + Markdown Report Preview — a frontend/UI-only phase on top of the Phase 19.4.1 data stack. The web/admin experience is modernized with a dark glassmorphism design system, a subtle animated aurora background (disabled under `prefers-reduced-motion`), and reusable glass UI primitives. Report content is now rendered through a **safe markdown preview** (`react-markdown` + `remark-gfm` + `rehype-sanitize`, no `dangerouslySetInnerHTML`) with a Preview/Raw toggle and a sticky mini table of contents, replacing the raw `<pre>` block. No backend analysis or report-generation logic changed; no public publishing was added; all mandatory internal-only / not-investment-advice / human-review disclaimers are preserved verbatim, and no BUY/SELL/HOLD/WATCH, price target, fair value or upside is produced. See the Phase 22.3 section below.
+## Current State: Phase 22.3.1 Web Deploy Cache Hardening — a deploy/CI + frontend-verification hotfix on top of Phase 22.3. Fixes an operational issue found during the Phase 22.3 release: with `WEBSITE_RUN_FROM_PACKAGE=1` and `alwaysOn=false`, the statically prerendered homepage `/` could keep serving the old build after a deploy until a manual `az webapp restart`, while dynamic `/admin` routes updated immediately. Adds a `/api/version` build-metadata endpoint and an `x-ib-build-commit` `<meta>` tag, renders the homepage dynamically so `/` reflects the mounted bundle, bakes `NEXT_PUBLIC_*` build metadata in CI, best-effort restarts `ib-stg-web` after deploy (when an optional `AZURE_CREDENTIALS` service principal exists), and adds a SHA-verified smoke check that fails loudly if `/api/version`, `/`, or `/admin` are stale. No backend analysis or report-generation logic changed; no financial semantics changed; no auth, no public publishing, no recommendation language, and no secrets. See the Phase 22.3.1 section below.
+
+## Previous State: Phase 22.3 UI Modernization + Markdown Report Preview — a frontend/UI-only phase on top of the Phase 19.4.1 data stack. The web/admin experience is modernized with a dark glassmorphism design system, a subtle animated aurora background (disabled under `prefers-reduced-motion`), and reusable glass UI primitives. Report content is now rendered through a **safe markdown preview** (`react-markdown` + `remark-gfm` + `rehype-sanitize`, no `dangerouslySetInnerHTML`) with a Preview/Raw toggle and a sticky mini table of contents, replacing the raw `<pre>` block. No backend analysis or report-generation logic changed; no public publishing was added; all mandatory internal-only / not-investment-advice / human-review disclaimers are preserved verbatim, and no BUY/SELL/HOLD/WATCH, price target, fair value or upside is produced. See the Phase 22.3 section below.
 
 ## Previous State: Phase 19.4.1 Enrichment Completeness Consistency — a hotfix on top of Phase 19.4. After the Phase 19.4 AAPL `free_real` smoke test, enriched fields that were present in the Company Snapshot (LEI, sector classification, derived market cap / EV / P/E / 52-week range, shares outstanding) were still being reported as **missing / blocking gaps** and still triggered *"Obtain LEI"* recommendations, because `research_completeness_agent` derived its gaps from the raw-profile schema draft (which never carries enrichment) and `source_quality_agent` recommended obtaining the LEI unconditionally. Phase 19.4.1 makes the completeness layer consume the enriched snapshot: a present enriched field is no longer a missing field, a blocking gap, or an "obtain it" next-step — while genuinely-absent fields (ISIN, EBITDA, EV/EBITDA, beta, IPO date, website) stay gaps and nothing is fabricated. Derived market metrics remain labelled **internal T6 estimates**, valuation readiness stays `partial` with all conclusions blocked, `human_review_required` stays true, and `schema_valid` may still be false. No BUY/SELL/HOLD/WATCH, price target, fair value or upside.
 
@@ -840,6 +842,30 @@ Deliverables:
 - [x] typecheck, lint, build clean; 55 Playwright tests passing
 
 Skills used: `frontend-nextjs`, `testing-qa`, `docs-maintainer`
+
+---
+
+## Phase 22.3.1: Web Deploy Cache Hardening ✅
+
+**Status: Complete (2026-07-16)**
+
+Goal: Harden the web staging deployment so future frontend deploys reliably serve the newest build — and never silently serve a **stale prerendered homepage**. During the Phase 22.3 release, with `WEBSITE_RUN_FROM_PACKAGE=1` and `alwaysOn=false`, the dynamic `/admin` routes picked up the new build immediately but the statically prerendered `/` kept serving the old page until a manual `az webapp restart`.
+
+Deploy/CI + frontend-verification only. No backend analysis or report-generation logic changed, no financial semantics changed, no auth added, no public publishing, no recommendation language, and no secrets committed.
+
+Deliverables:
+- [x] `/api/version` build-metadata endpoint (`app`, `commit_sha`, `build_id`, `build_time`, `environment`) — build identifiers only, never secrets; `force-dynamic` + `no-store`; safe `"unknown"` placeholders when metadata is missing (`src/lib/build-info.ts`)
+- [x] `x-ib-build-commit` / `x-ib-build-id` `<meta>` tags embedded in every page `<head>` (root layout) so a stale prerendered `/` is detectable
+- [x] Homepage `src/app/page.tsx` set to `force-dynamic` so `/` always reflects the currently-mounted bundle (removes the stale-prerender root cause)
+- [x] `deploy-web-staging.yml` bakes `NEXT_PUBLIC_COMMIT_SHA` / `NEXT_PUBLIC_BUILD_ID` / `NEXT_PUBLIC_BUILD_TIME` / `NEXT_PUBLIC_APP_ENV` into the bundle at build time
+- [x] Best-effort post-deploy `az webapp restart` — runs only when an optional `AZURE_CREDENTIALS` service principal is configured (Kudu/publish-profile cannot restart the site); skipped cleanly otherwise
+- [x] SHA-verified freshness smoke check — requires `/api/version` to report the deployed `github.sha` (3 consecutive matches), `/` + `/admin` to return `200` with the dark-UI marker (`bg-[#060913]`), and `/` to embed the current build commit; a `403` "Site Disabled" is surfaced explicitly; never false-greens on a stale worker
+- [x] New e2e tests for `/api/version` (app name, all fields, safe placeholders, no-secret allow-list, `no-store`, homepage build-commit meta)
+- [x] typecheck, lint, build clean; Playwright suite passing
+
+Known limitation: the automatic restart activates only once an `AZURE_CREDENTIALS` (or OIDC) service principal is provisioned — currently blocked pending the Azure Owner/RBAC grant. Until then, if the smoke check detects a stale homepage it fails loudly with a `az webapp restart --name ib-stg-web` remediation hint instead of silently passing.
+
+Skills used: `azure-deployment`, `frontend-nextjs`, `testing-qa`, `docs-maintainer`
 
 ---
 
