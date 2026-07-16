@@ -1058,21 +1058,27 @@ Skills to use: `security-review`, `backend-fastapi`, `frontend-nextjs`
 
 ---
 
-## Phase 24: News + Catalyst Discovery Agent
+## Phase 24: News + Catalyst Discovery Agent ✅
 
-**Status: Not started**
+**Status: Delivered (2026-07-16)**
 
-Goal: Add a news and catalyst discovery agent that fetches recent 8-K filings, press releases, and optional news signals for research candidates. Surface catalyst signals in the analysis workflow.
+Goal: Add a source-backed news + catalyst discovery subsystem that answers "why now?" — recent SEC filing events, press releases, and optional news — classified into catalyst categories/directions/strengths with explicit evidence quality, surfaced in the internal report. No recommendations, price targets, fair values, or upside/downside.
 
 Deliverables:
-- [ ] `NewsCatalystAgent` node in `company_analysis` workflow
-- [ ] Expand `SecEdgar8KProvider` to parse and classify filing types
-- [ ] Optional: integrate free news API (GDELT, NewsData, or Alpha Vantage News) as T5 source
-- [ ] Catalyst scoring incorporated into `ScoringEngine`
-- [ ] Catalyst signals visible in final internal report
-- [ ] All news data stays T4/T5 — never promoted to T1/T2
+- [x] Catalyst data contracts + enums (`app/schemas/catalyst.py`): `CatalystEvent`, `CatalystDiscoveryResult`, `CatalystSummary`, `NewsItem`, and `CatalystCategory` / `CatalystDirection` / `CatalystStrength` / `EvidenceStrength` / `CatalystCoverageStatus`
+- [x] `SecRecentFilingsProvider` (T2) — recent 8-K/10-Q/10-K/6-K/20-F/DEF 14A/S-registration filings with 8-K item-number parsing + mapping; reuses SEC CIK resolution; offline-parseable
+- [x] Company press-release / IR provider (T1, company-owned primary source) with conservative RSS/Atom feed discovery; graceful "primary source unavailable" when no website/feed
+- [x] News provider abstraction (`NewsProvider` base + `NullNewsProvider` default + env-gated `EnvConfiguredNewsProvider`); URL/title normalisation + dedup; **no paid dependency, no live call in CI**
+- [x] Deterministic `catalyst_classifier` — SEC form/item mapping + headline keywords → category/direction/strength/evidence + bounded confidence
+- [x] `discover_catalysts` orchestration service — non-blocking, capped, dedup + multi-source detection + summary + coverage status
+- [x] `catalyst_agent` node in `company_analysis` workflow (real-data providers only; mock unchanged) → report sections: News & Catalyst Discovery, Recent Catalyst Events, SEC Filing Events, Catalyst Evidence Quality, Catalyst Gaps / Next Research Tasks
+- [x] Catalyst context woven into Bull/Bear/Risk/Committee/Source-Quality; `news_catalyst_discovery` section in Final Report Generator (safety-gated, external headlines neutralised)
+- [x] All SEC events stay T2, company press releases T1, aggregator news T5; catalyst labels are always T6_model_estimate — never promoted
+- [x] 68 backend tests + 8 Playwright catalyst-preview tests; human review stays required; `safety_valid` stays true
 
-Skills to use: `financial-data`, `langgraph-agents`, `backend-fastapi`, `testing-qa`
+Skills used: `financial-data`, `langgraph-agents`, `backend-fastapi`, `frontend-nextjs`, `testing-qa`
+
+**Remaining after Phase 24:** Phase 25 market candidate discovery; Phase 23 auth/staging protection; Phase 26 public publishing; richer peer/governance sections; optional LLM-assisted event summarization; optional paid/high-quality news provider.
 
 ---
 

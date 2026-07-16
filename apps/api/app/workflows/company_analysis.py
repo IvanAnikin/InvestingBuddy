@@ -67,6 +67,10 @@ from app.agents.analysis_council.valuation_guard_agent import (
     valuation_guard_output_to_dict,
 )
 from app.agents.base import CompanyAnalysisState
+from app.agents.research_team.catalyst_agent import (
+    catalyst_agent_output_to_dict,
+    run_catalyst_agent,
+)
 from app.agents.research_team.citation_validator_v2 import (
     run_upgraded_citation_validator,
     upgraded_citation_validation_to_dict,
@@ -107,6 +111,7 @@ from app.services import (
     report_service,
     source_service,
 )
+from app.services.catalyst_discovery_service import discover_catalysts
 from app.services.report_validation_service import validate_real_asset_report
 from app.workflows.snapshot_builder import (
     build_company_snapshot,
@@ -1485,6 +1490,109 @@ def build_company_analysis_graph(
             }
 
     # ------------------------------------------------------------------ #
+    # Node 16b: catalyst_discovery_agent  (Phase 24)                     #
+    # ------------------------------------------------------------------ #
+    async def node_catalyst_discovery(state: CompanyAnalysisState) -> dict:
+        run = _run_holder.get("run")
+        snapshot = _run_holder.get("snapshot", {})
+        company = _run_holder.get("company")
+        pname = state.get("provider_name") or "mock"
+        ticker = state.get("ticker") or "UNKNOWN"
+        exchange = state.get("exchange")
+        company_name = state.get("company_name") or ticker
+
+        step = await agent_run_service.create_agent_step(
+            db,
+            run=run,
+            agent_name="CatalystDiscoveryAgent",
+            step_name="catalyst_discovery",
+            input_data={
+                "ticker": ticker,
+                "provider_name": pname,
+                "is_mock": state.get("is_mock"),
+            },
+        )
+
+        # Phase 24: catalyst discovery runs for real-data providers only. Mock
+        # provider keeps deterministic behaviour with no catalyst data attached.
+        if pname not in ("free_real", "eodhd_free_real"):
+            await agent_run_service.complete_agent_step(
+                db,
+                step,
+                output_data={
+                    "skipped": True,
+                    "reason": f"provider={pname} (no catalyst discovery)",
+                },
+            )
+            return {
+                "catalyst_discovery": None,
+                "catalyst_agent": None,
+                "catalyst_summary": None,
+                "catalyst_warnings": None,
+                "catalyst_citations": None,
+                "catalyst_coverage_status": None,
+            }
+
+        try:
+            website = (snapshot.get("profile") or {}).get("website")
+            cik = getattr(company, "sec_cik", None) if company else None
+            result = await discover_catalysts(
+                ticker=ticker,
+                exchange=exchange,
+                company_name=company_name,
+                cik=cik,
+                website=website,
+                lookback_days=90,
+                max_events=20,
+            )
+            agent_output = run_catalyst_agent(result)
+
+            catalyst_discovery = result.to_report_dict()
+            catalyst_agent = catalyst_agent_output_to_dict(agent_output)
+            catalyst_citations = [
+                e["source_url"] for e in catalyst_discovery["events"] if e.get("source_url")
+            ]
+
+            _run_holder["catalyst_discovery"] = catalyst_discovery
+            _run_holder["catalyst_agent"] = catalyst_agent
+
+            await agent_run_service.complete_agent_step(
+                db,
+                step,
+                output_data={
+                    "coverage_status": result.coverage_quality,
+                    "total_events": result.summary.total_events,
+                    "filing_events": len(result.filing_events),
+                    "news_events": len(result.news_events),
+                    "press_release_events": len(result.press_release_events),
+                    "warnings_count": len(result.warnings),
+                },
+            )
+
+            return {
+                "catalyst_discovery": catalyst_discovery,
+                "catalyst_agent": catalyst_agent,
+                "catalyst_summary": catalyst_discovery["summary"],
+                "catalyst_warnings": result.warnings or None,
+                "catalyst_citations": catalyst_citations or None,
+                "catalyst_coverage_status": result.coverage_quality,
+            }
+
+        except Exception as exc:
+            error_msg = f"catalyst_discovery failed (non-fatal): {exc}"
+            await agent_run_service.fail_agent_step(db, step, error_msg)
+            _run_holder["catalyst_discovery"] = None
+            _run_holder["catalyst_agent"] = None
+            return {
+                "catalyst_discovery": None,
+                "catalyst_agent": None,
+                "catalyst_summary": None,
+                "catalyst_warnings": [error_msg],
+                "catalyst_citations": None,
+                "catalyst_coverage_status": "provider_unavailable",
+            }
+
+    # ------------------------------------------------------------------ #
     # Node 17: score_research_attractiveness  (Phase 15)                 #
     # ------------------------------------------------------------------ #
     async def node_score_research_attractiveness(state: CompanyAnalysisState) -> dict:
@@ -1582,6 +1690,9 @@ def build_company_analysis_graph(
         valuation_guard_summary = _run_holder.get("valuation_guard_summary") or {}
         committee_chair_summary = _run_holder.get("committee_chair_summary") or {}
         analysis_council_warnings = state.get("analysis_council_warnings") or []
+        # Phase 24: News + Catalyst Discovery
+        catalyst_discovery = _run_holder.get("catalyst_discovery")
+        catalyst_agent = _run_holder.get("catalyst_agent") or {}
         provisional_status = state.get("provisional_internal_status") or "research_incomplete"
         human_review_req = state.get("human_review_required", True)
 
@@ -1714,6 +1825,11 @@ def build_company_analysis_graph(
             content_md += "**Recommended source upgrades:**\n\n"
             content_md += "\n".join(f"- {u}" for u in sq_upgrades[:5])
             content_md += "\n\n"
+        cat_sq_recs = catalyst_agent.get("source_quality_recommendations", [])
+        if cat_sq_recs:
+            content_md += "**Catalyst source upgrades (Phase 24):**\n\n"
+            content_md += "\n".join(f"- {u}" for u in cat_sq_recs[:6])
+            content_md += "\n\n"
 
         # ── LLM Research Draft ───────────────────────────────────────
         if llm_used and llm_sections:
@@ -1767,6 +1883,11 @@ def build_company_analysis_graph(
             content_md += "**Warnings:**\n\n"
             content_md += "\n".join(f"> {w}" for w in bc_warnings[:3])
             content_md += "\n\n"
+        cat_bull = catalyst_agent.get("bull_context", [])
+        if cat_bull:
+            content_md += "**Recent Catalyst Context (model-derived — human review required):**\n\n"
+            content_md += "\n".join(f"- {c}" for c in cat_bull[:4])
+            content_md += "\n\n"
 
         # ── Bear Case Draft ───────────────────────────────────────────────
         content_md += "## Bear Case Draft (Analysis Council — Internal)\n\n"
@@ -1782,6 +1903,11 @@ def build_company_analysis_graph(
             content_md += "**Key Unknowns:**\n\n"
             content_md += "\n".join(f"- {u}" for u in br_unknowns[:5])
             content_md += "\n\n"
+        cat_bear = catalyst_agent.get("bear_context", [])
+        if cat_bear:
+            content_md += "**Recent Catalyst Context (model-derived — human review required):**\n\n"
+            content_md += "\n".join(f"- {c}" for c in cat_bear[:4])
+            content_md += "\n\n"
 
         # ── Risk Review ───────────────────────────────────────────────────
         content_md += "## Risk Review (Analysis Council — Internal)\n\n"
@@ -1795,6 +1921,11 @@ def build_company_analysis_graph(
         if sq_risks:
             content_md += "**Source Quality Risks:**\n\n"
             content_md += "\n".join(f"- {r}" for r in sq_risks[:5])
+            content_md += "\n\n"
+        cat_risks = catalyst_agent.get("risk_flags", [])
+        if cat_risks:
+            content_md += "**Catalyst Data-Quality Risks (Phase 24):**\n\n"
+            content_md += "\n".join(f"- {r}" for r in cat_risks[:6])
             content_md += "\n\n"
 
         # ── Valuation Guard ───────────────────────────────────────────────
@@ -1824,6 +1955,11 @@ def build_company_analysis_graph(
         if cc_next:
             content_md += "**Research Next Steps:**\n\n"
             content_md += "\n".join(f"- {s}" for s in cc_next[:6])
+            content_md += "\n\n"
+        cat_questions = catalyst_agent.get("committee_open_questions", [])
+        if cat_questions:
+            content_md += "**Catalyst Open Questions (Phase 24):**\n\n"
+            content_md += "\n".join(f"- {q}" for q in cat_questions[:5])
             content_md += "\n\n"
 
         # ── Research Completeness Review ─────────────────────────────
@@ -1905,6 +2041,11 @@ def build_company_analysis_graph(
                 content_md += "\n".join(f"- {w}" for w in ts_warnings)
             content_md += "\n\n"
 
+        # ── News & Catalyst Discovery (Phase 24) ─────────────────────
+        if catalyst_agent.get("markdown"):
+            content_md += catalyst_agent["markdown"]
+            content_md += "\n"
+
         # ── Provider Warnings (Phase 19.2) ───────────────────────────
         prov_warnings = state.get("provider_warnings") or []
         if prov_warnings:
@@ -1955,6 +2096,25 @@ def build_company_analysis_graph(
             if len(all_missing) > 20:
                 content_md += f"\n- ... ({len(all_missing) - 20} more)\n"
             content_md += "\n\n"
+
+        # ── Machine-readable catalyst data (Phase 24) ────────────────
+        # Embedded as a JSON block so the Final Report Generator can attach the
+        # catalyst section. External headlines are already neutralised via
+        # CatalystDiscoveryResult.to_report_dict(). Emitted only when catalyst
+        # discovery ran (real-data providers); mock reports are unchanged.
+        if catalyst_discovery:
+            import json as _json
+
+            content_md += "## Machine-Readable Catalyst Data (Internal)\n\n"
+            content_md += (
+                "> Machine-readable catalyst payload for the Final Report Generator. "
+                "Model-derived labels (T6). Not investment advice.\n\n"
+            )
+            content_md += "```json\n"
+            content_md += _json.dumps(
+                {"catalyst_discovery": catalyst_discovery}, indent=2, default=str
+            )
+            content_md += "\n```\n\n"
 
         content_md += (
             "---\n\n"
@@ -2089,6 +2249,8 @@ def build_company_analysis_graph(
     graph.add_node("risk_agent", node_risk_agent)
     graph.add_node("valuation_guard_agent", node_valuation_guard_agent)
     graph.add_node("investment_committee_chair", node_investment_committee_chair)
+    # Phase 24: catalyst discovery node (real-data providers only)
+    graph.add_node("catalyst_discovery_agent", node_catalyst_discovery)
     # Phase 15: scoring node
     graph.add_node("score_research_attractiveness", node_score_research_attractiveness)
     graph.add_node("save_draft_report", node_save_draft_report)
@@ -2112,8 +2274,10 @@ def build_company_analysis_graph(
     graph.add_edge("bear_case_agent", "risk_agent")
     graph.add_edge("risk_agent", "valuation_guard_agent")
     graph.add_edge("valuation_guard_agent", "investment_committee_chair")
+    # Phase 24: catalyst discovery after the council, before scoring
+    graph.add_edge("investment_committee_chair", "catalyst_discovery_agent")
+    graph.add_edge("catalyst_discovery_agent", "score_research_attractiveness")
     # Phase 15: insert scoring between council and report save
-    graph.add_edge("investment_committee_chair", "score_research_attractiveness")
     graph.add_edge("score_research_attractiveness", "save_draft_report")
     graph.add_edge("save_draft_report", "log_agent_steps")
     graph.add_edge("log_agent_steps", END)
@@ -2198,6 +2362,13 @@ async def run_company_analysis(
         "free_real_snapshot": None,
         "trend_signal_summary": None,
         "provider_warnings": None,
+        # Phase 24: News + Catalyst Discovery
+        "catalyst_discovery": None,
+        "catalyst_agent": None,
+        "catalyst_summary": None,
+        "catalyst_warnings": None,
+        "catalyst_citations": None,
+        "catalyst_coverage_status": None,
         "error": None,
         "status": "running",
     }

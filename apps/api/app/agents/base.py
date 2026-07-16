@@ -81,6 +81,14 @@ class CompanyAnalysisState(TypedDict):
     trend_signal_summary: dict | None         # TrendSignalResult fields dict
     provider_warnings: list[str] | None       # warnings from composite provider composition
 
+    # --- Phase 24: News + Catalyst Discovery ---
+    catalyst_discovery: dict | None           # CatalystDiscoveryResult.to_report_dict()
+    catalyst_agent: dict | None               # CatalystAgentOutput as dict (markdown + context)
+    catalyst_summary: dict | None             # CatalystSummary dict
+    catalyst_warnings: list[str] | None       # provider/coverage warnings
+    catalyst_citations: list[str] | None      # source URLs backing catalysts
+    catalyst_coverage_status: str | None       # CatalystCoverageStatus value
+
     # --- control ---
     error: str | None
     status: str   # running | completed | failed

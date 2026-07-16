@@ -1135,6 +1135,110 @@ def _build_source_citation_appendix(
     }
 
 
+def _build_news_catalyst_discovery(
+    catalyst_discovery: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """
+    Phase 24 — News & Catalyst Discovery section.
+
+    Uses controlled-vocabulary fields (counts, coverage status, category /
+    direction / strength enum labels, SEC form metadata) plus neutralised
+    external headlines so no recommendation / valuation language can reach the
+    safety-scanned report content. Catalyst labels are model-derived (T6) and
+    require human review; a positive/negative catalyst is never a recommendation.
+    """
+    from app.schemas.catalyst import neutralize_forbidden_terms
+
+    if not catalyst_discovery:
+        return {
+            "type": "news_catalyst_discovery",
+            "available": False,
+            "coverage_status": "provider_unavailable",
+            "note": {
+                "value": (
+                    "No catalyst discovery data was attached to this analysis "
+                    "(mock provider or catalyst discovery not run). The 'why now?' "
+                    "question is unresolved for this report."
+                ),
+                "provenance": "missing_data",
+            },
+            "disclaimer": (
+                "Catalyst labels are model-derived (T6_model_estimate) and are NOT "
+                "recommendations. No valuation conclusion or trading action is "
+                "produced."
+            ),
+            "human_review_required": True,
+        }
+
+    summary = catalyst_discovery.get("summary", {}) or {}
+
+    def _event_row(e: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "event_date": e.get("event_date"),
+            "source_tier": e.get("source_tier"),
+            "source_name": neutralize_forbidden_terms(e.get("source_name")),
+            "provider_name": e.get("provider_name"),
+            "form_type": e.get("form_type"),
+            "item_numbers": e.get("item_numbers", []),
+            "catalyst_category": e.get("catalyst_category"),
+            "catalyst_direction": e.get("catalyst_direction"),
+            "catalyst_strength": e.get("catalyst_strength"),
+            "evidence_strength": e.get("evidence_strength"),
+            "confidence": e.get("confidence"),
+            "model_label_tier": e.get("model_label_tier", "T6_model_estimate"),
+            "headline": neutralize_forbidden_terms(e.get("headline")),
+            "source_url": e.get("source_url"),
+        }
+
+    events = catalyst_discovery.get("events", []) or []
+    filing_events = catalyst_discovery.get("filing_events", []) or []
+
+    return {
+        "type": "news_catalyst_discovery",
+        "available": True,
+        "coverage_status": catalyst_discovery.get("coverage_quality", "none_found"),
+        "lookback_days": catalyst_discovery.get("lookback_days", 90),
+        "summary": {
+            "value": {
+                "total_events": summary.get("total_events", 0),
+                "positive_count": summary.get("positive_count", 0),
+                "negative_count": summary.get("negative_count", 0),
+                "mixed_count": summary.get("mixed_count", 0),
+                "neutral_count": summary.get("neutral_count", 0),
+                "unknown_count": summary.get("unknown_count", 0),
+                "primary_or_regulator_event_count": summary.get(
+                    "primary_or_regulator_event_count", 0
+                ),
+                "aggregator_only_count": summary.get("aggregator_only_count", 0),
+                "high_strength_count": summary.get("high_strength_count", 0),
+                "latest_event_date": summary.get("latest_event_date"),
+            },
+            "provenance": "model_interpretation",
+        },
+        "recent_events": {
+            "value": [_event_row(e) for e in events[:20]],
+            "provenance": "sourced_fact",
+        },
+        "sec_filing_events": {
+            "value": [_event_row(e) for e in filing_events[:20]],
+            "provenance": "sourced_fact",
+        },
+        "missing_sources": catalyst_discovery.get("missing_sources", []),
+        "warnings": [
+            neutralize_forbidden_terms(w)
+            for w in (catalyst_discovery.get("warnings", []) or [])[:10]
+        ],
+        "disclaimer": (
+            "Catalyst categories/directions/strengths are model-derived "
+            "(T6_model_estimate), not sourced facts. A positive catalyst is not a "
+            "reason to act; a negative catalyst is not a reason to act. No "
+            "valuation conclusion or trading action is produced. Human review is "
+            "required."
+        ),
+        "human_review_required": True,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Report content parser — extracts structured data from existing report
 # ---------------------------------------------------------------------------
@@ -1191,9 +1295,13 @@ def _assemble_final_report_content(
     agent_run_id: str | None,
     schema_valid: bool | None,
     human_review_required: bool | None,
+    catalyst_discovery: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
-    Assemble all 19 sections into a structured report dict.
+    Assemble all required sections into a structured report dict.
+
+    Phase 24 adds a ``news_catalyst_discovery`` section. It is additive and does
+    not affect the original required-section set.
     """
     company_name = None
     ticker = None
@@ -1289,6 +1397,8 @@ def _assemble_final_report_content(
         "source_citation_appendix": _build_source_citation_appendix(
             sources, citations
         ),
+        # Phase 24 — News + Catalyst Discovery (additive section)
+        "news_catalyst_discovery": _build_news_catalyst_discovery(catalyst_discovery),
     }
 
 
@@ -1427,6 +1537,7 @@ def _extract_workflow_state_from_report(
         "fundamentals_data": parsed.get("fundamentals_data"),
         "fundamentals_available": parsed.get("fundamentals_available"),
         "schema_validation_result": parsed.get("schema_validation_result"),
+        "catalyst_discovery": parsed.get("catalyst_discovery"),
         "source_tier": (
             parsed.get("company_snapshot", {}).get("source_tier")
             if parsed.get("company_snapshot")
@@ -1872,6 +1983,7 @@ class FinalReportGeneratorService:
         fundamentals_data = state.get("fundamentals_data")
         fundamentals_available = state.get("fundamentals_available")
         schema_validation_result = state.get("schema_validation_result")
+        catalyst_discovery = state.get("catalyst_discovery")
         source_tier = state.get("source_tier") or (
             company_snapshot.get("source_tier") if company_snapshot else None
         )
@@ -1908,6 +2020,7 @@ class FinalReportGeneratorService:
             else None,
             schema_valid=schema_valid,
             human_review_required=human_review_required,
+            catalyst_discovery=catalyst_discovery,
         )
 
         # Run safety gate
