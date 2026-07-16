@@ -198,6 +198,16 @@ class NewsItem(BaseModel):
     summary: str | None = None
     provider_name: str = "unknown"
     source_tier: str = SourceTier.T5_api_aggregator.value
+
+    # Phase 24.1 — query provenance + relevance (populated after scoring).
+    # These are internal research signals; the relevance score/level are
+    # model-derived (T6) and never a recommendation.
+    raw_query: str | None = None
+    query_type: str | None = None  # company | industry | exchange | primary_source | regulatory
+    relevance_score: float | None = None
+    relevance_level: str | None = None
+    is_company_specific: bool | None = None
+    is_industry_context: bool | None = None
     # raw_payload is intentionally omitted from report serialisation.
 
 
@@ -253,6 +263,16 @@ class CatalystEvent(BaseModel):
     related_filing_url: str | None = None
     related_document_url: str | None = None
 
+    # Phase 24.1 — company vs industry-context separation + relevance provenance.
+    # An industry-context event describes the sector/industry, NOT the company
+    # itself; it must never be treated as direct company evidence.
+    is_industry_context: bool = False
+    is_company_specific: bool = True
+    relevance_score: float | None = None
+    relevance_level: str | None = None
+    raw_query: str | None = None
+    query_type: str | None = None
+
     # Review
     requires_human_review: bool = True
     warnings: list[str] = Field(default_factory=list)
@@ -296,6 +316,11 @@ class CatalystEvent(BaseModel):
             "classification_explanation": neutralize_forbidden_terms(
                 self.classification_explanation
             ),
+            "is_industry_context": self.is_industry_context,
+            "is_company_specific": self.is_company_specific,
+            "relevance_score": self.relevance_score,
+            "relevance_level": self.relevance_level,
+            "query_type": self.query_type,
             "requires_human_review": self.requires_human_review,
             "warnings": list(self.warnings),
         }
@@ -318,6 +343,12 @@ class CatalystSummary(BaseModel):
     high_strength_count: int = 0
     latest_event_date: str | None = None
     catalyst_coverage_status: str = CatalystCoverageStatus.none_found.value
+    # Phase 24.1 — company vs industry + source-class breakdown.
+    company_specific_count: int = 0
+    industry_context_count: int = 0
+    news_event_count: int = 0
+    press_release_event_count: int = 0
+    filing_event_count: int = 0
 
 
 class CatalystDiscoveryResult(BaseModel):
@@ -332,6 +363,9 @@ class CatalystDiscoveryResult(BaseModel):
     filing_events: list[CatalystEvent] = Field(default_factory=list)
     news_events: list[CatalystEvent] = Field(default_factory=list)
     press_release_events: list[CatalystEvent] = Field(default_factory=list)
+    # Phase 24.1 — industry/sector context events kept SEPARATE from company
+    # catalysts (they are not company-specific evidence).
+    industry_events: list[CatalystEvent] = Field(default_factory=list)
 
     summary: CatalystSummary = Field(default_factory=CatalystSummary)
     warnings: list[str] = Field(default_factory=list)
@@ -339,6 +373,10 @@ class CatalystDiscoveryResult(BaseModel):
     missing_sources: list[str] = Field(default_factory=list)
     coverage_quality: str = CatalystCoverageStatus.none_found.value
     human_review_required: bool = True
+    # Phase 24.1 — company source discovery + attempted/successful source classes.
+    company_sources: dict | None = None
+    source_classes_attempted: list[str] = Field(default_factory=list)
+    source_classes_successful: list[str] = Field(default_factory=list)
 
     def model_post_init(self, __context: object) -> None:  # noqa: D401
         if not self.generated_at:
@@ -365,6 +403,10 @@ class CatalystDiscoveryResult(BaseModel):
             "press_release_events": [
                 e.to_report_dict() for e in self.press_release_events
             ],
+            "industry_events": [e.to_report_dict() for e in self.industry_events],
+            "company_sources": self.company_sources,
+            "source_classes_attempted": list(self.source_classes_attempted),
+            "source_classes_successful": list(self.source_classes_successful),
         }
 
 
@@ -378,8 +420,21 @@ _PRIMARY_OR_REGULATOR_TIERS = {
 }
 
 
-def summarize_events(events: list[CatalystEvent], lookback_days: int) -> CatalystSummary:
-    """Compute a CatalystSummary from a list of classified catalyst events."""
+_REPUTABLE_NON_FILING_TIERS = {
+    SourceTier.T1_primary_filing.value,
+    SourceTier.T3_industry_specialist.value,
+    SourceTier.T4_quality_media.value,
+}
+
+
+def summarize_events(
+    events: list[CatalystEvent],
+    lookback_days: int,
+    *,
+    industry_events: list[CatalystEvent] | None = None,
+) -> CatalystSummary:
+    """Compute a CatalystSummary from classified company + industry events."""
+    industry_events = industry_events or []
     summary = CatalystSummary(total_events=len(events))
     latest: str | None = None
 
@@ -403,33 +458,53 @@ def summarize_events(events: list[CatalystEvent], lookback_days: int) -> Catalys
         if ev.catalyst_strength == CatalystStrength.high.value:
             summary.high_strength_count += 1
 
+        # Source-class breakdown (company-specific events only).
+        net = ev.normalized_event_type
+        if net == "sec_filing":
+            summary.filing_event_count += 1
+        elif net == "press_release":
+            summary.press_release_event_count += 1
+        elif net == "news_article":
+            summary.news_event_count += 1
+        summary.company_specific_count += 1
+
         ev_date = ev.event_date or ev.filing_date
         if ev_date and (latest is None or ev_date > latest):
             latest = ev_date
 
+    summary.industry_context_count = len(industry_events)
+
     summary.latest_event_date = latest
-    summary.catalyst_coverage_status = _derive_coverage_status(
-        events, latest, lookback_days
+    summary.catalyst_coverage_status = derive_coverage_status(
+        events, latest, lookback_days, has_industry_context=bool(industry_events)
     )
     return summary
 
 
-def _derive_coverage_status(
+def derive_coverage_status(
     events: list[CatalystEvent],
     latest_event_date: str | None,
     lookback_days: int,
+    *,
+    has_industry_context: bool = False,
 ) -> str:
-    """Classify overall catalyst coverage into a CatalystCoverageStatus value."""
-    if not events:
-        return CatalystCoverageStatus.none_found.value
+    """
+    Classify overall catalyst coverage into a CatalystCoverageStatus value.
 
-    has_filing = any(
-        e.source_tier == SourceTier.T2_regulator_or_gov.value for e in events
-    )
-    has_non_filing = any(
-        e.source_tier != SourceTier.T2_regulator_or_gov.value for e in events
-    )
-    total = len(events)
+    Source-class aware (Phase 24.1):
+      - none_found : no company events and no industry context
+      - filings_only : SEC (T2) only, no company/news/industry source
+      - limited : SEC + one weak (e.g. aggregator-only) additional source
+      - adequate : a company-owned (T1) source, OR ≥2 reputable non-filing items
+      - strong : SEC + a company (T1) source + ≥2 reputable independent items
+      - stale : latest company event older than the lookback window
+    """
+    if not events:
+        return (
+            CatalystCoverageStatus.limited.value
+            if has_industry_context
+            else CatalystCoverageStatus.none_found.value
+        )
 
     # Staleness: latest event older than the lookback window.
     if latest_event_date:
@@ -441,10 +516,26 @@ def _derive_coverage_status(
         except ValueError:
             pass
 
-    if has_filing and not has_non_filing:
+    t2 = SourceTier.T2_regulator_or_gov.value
+    t1 = SourceTier.T1_primary_filing.value
+    has_filing = any(e.source_tier == t2 for e in events)
+    has_company_source = any(e.source_tier == t1 for e in events)
+    non_filing = [e for e in events if e.source_tier != t2]
+    reputable_non_filing = [
+        e for e in non_filing if e.source_tier in _REPUTABLE_NON_FILING_TIERS
+    ]
+
+    # Only SEC filings, and no company/news/industry context at all.
+    if has_filing and not non_filing and not has_industry_context:
         return CatalystCoverageStatus.filings_only.value
-    if total >= 6 and has_filing and has_non_filing:
+
+    # Strong: regulator backbone + company-owned source + independent corroboration.
+    if has_filing and has_company_source and len(reputable_non_filing) >= 2:
         return CatalystCoverageStatus.strong.value
-    if total >= 3:
+
+    # Adequate: a company-owned source, or multiple reputable independent items.
+    if has_company_source or len(reputable_non_filing) >= 2:
         return CatalystCoverageStatus.adequate.value
+
+    # Otherwise a real but weak signal beyond filings (aggregator-only / single).
     return CatalystCoverageStatus.limited.value

@@ -28,7 +28,9 @@ test.describe("Report Detail — News & Catalyst Discovery", () => {
     for (const heading of [
       "News & Catalyst Discovery",
       "Recent Catalyst Events",
+      "Company News Sources",
       "SEC Filing Events",
+      "Industry Context News",
       "Catalyst Evidence Quality",
       "Catalyst Gaps / Next Research Tasks",
     ]) {
@@ -36,6 +38,33 @@ test.describe("Report Detail — News & Catalyst Discovery", () => {
         preview.locator("h2", { hasText: heading }),
       ).toBeVisible();
     }
+  });
+
+  test("renders Company News Sources section (Phase 24.1)", async ({ page }) => {
+    await page.goto(REPORT_URL);
+    const preview = page.locator(PREVIEW);
+    await expect(
+      preview.locator("h2", { hasText: "Company News Sources" }),
+    ).toBeVisible();
+    await expect(
+      preview.getByText("Investor relations:", { exact: false }),
+    ).toBeVisible();
+    await expect(
+      preview.getByText("Discovery confidence:", { exact: false }),
+    ).toBeVisible();
+  });
+
+  test("renders Industry Context News section with non-company disclaimer", async ({
+    page,
+  }) => {
+    await page.goto(REPORT_URL);
+    const preview = page.locator(PREVIEW);
+    await expect(
+      preview.locator("h2", { hasText: "Industry Context News" }),
+    ).toBeVisible();
+    await expect(
+      preview.getByText("NOT company-specific evidence", { exact: false }),
+    ).toBeVisible();
   });
 
   test("catalyst tables render as real tables", async ({ page }) => {

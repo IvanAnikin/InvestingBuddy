@@ -1192,15 +1192,38 @@ def _build_news_catalyst_discovery(
 
     events = catalyst_discovery.get("events", []) or []
     filing_events = catalyst_discovery.get("filing_events", []) or []
+    industry_events = catalyst_discovery.get("industry_events", []) or []
+    company_sources = catalyst_discovery.get("company_sources") or {}
+
+    def _source_row(c: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "source_type": c.get("source_type"),
+            "source_tier": c.get("source_tier"),
+            "verification_method": c.get("verification_method"),
+            "verified": c.get("verified"),
+            "confidence": c.get("confidence"),
+            "url": c.get("url"),
+        }
 
     return {
         "type": "news_catalyst_discovery",
         "available": True,
         "coverage_status": catalyst_discovery.get("coverage_quality", "none_found"),
         "lookback_days": catalyst_discovery.get("lookback_days", 90),
+        "source_classes_attempted": catalyst_discovery.get(
+            "source_classes_attempted", []
+        ),
+        "source_classes_successful": catalyst_discovery.get(
+            "source_classes_successful", []
+        ),
         "summary": {
             "value": {
                 "total_events": summary.get("total_events", 0),
+                "company_specific_count": summary.get("company_specific_count", 0),
+                "industry_context_count": summary.get("industry_context_count", 0),
+                "news_event_count": summary.get("news_event_count", 0),
+                "press_release_event_count": summary.get("press_release_event_count", 0),
+                "filing_event_count": summary.get("filing_event_count", 0),
                 "positive_count": summary.get("positive_count", 0),
                 "negative_count": summary.get("negative_count", 0),
                 "mixed_count": summary.get("mixed_count", 0),
@@ -1215,6 +1238,24 @@ def _build_news_catalyst_discovery(
             },
             "provenance": "model_interpretation",
         },
+        "company_sources": {
+            "value": {
+                "company_website": company_sources.get("company_website"),
+                "investor_relations_url": company_sources.get("investor_relations_url"),
+                "newsroom_url": company_sources.get("newsroom_url"),
+                "press_release_feed_url": company_sources.get("press_release_feed_url"),
+                "exchange_profile_url": company_sources.get("exchange_profile_url"),
+                "has_verified_company_source": company_sources.get(
+                    "has_verified_company_source", False
+                ),
+                "confidence": company_sources.get("confidence", 0.0),
+                "verified_sources": [
+                    _source_row(c)
+                    for c in (company_sources.get("verified_sources", []) or [])[:12]
+                ],
+            },
+            "provenance": "sourced_fact",
+        },
         "recent_events": {
             "value": [_event_row(e) for e in events[:20]],
             "provenance": "sourced_fact",
@@ -1222,6 +1263,14 @@ def _build_news_catalyst_discovery(
         "sec_filing_events": {
             "value": [_event_row(e) for e in filing_events[:20]],
             "provenance": "sourced_fact",
+        },
+        "industry_context_events": {
+            "value": [_event_row(e) for e in industry_events[:20]],
+            "provenance": "sourced_fact",
+            "note": (
+                "Industry/sector context — NOT company-specific evidence and never "
+                "a direct company catalyst."
+            ),
         },
         "missing_sources": catalyst_discovery.get("missing_sources", []),
         "warnings": [
