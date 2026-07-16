@@ -56,10 +56,12 @@ test.describe("Report Detail — Markdown Preview", () => {
     await expect(preview.locator("ul li").first()).toContainText(
       "First key research point",
     );
-    await expect(preview.locator("blockquote")).toContainText("Disclaimer");
+    await expect(preview.locator("blockquote").first()).toContainText(
+      "Disclaimer",
+    );
     await expect(preview.locator("strong").first()).toBeVisible();
     // GFM table is rendered as a real table.
-    await expect(preview.locator("table")).toBeVisible();
+    await expect(preview.locator("table").first()).toBeVisible();
   });
 
   test("raw markdown toggle switches between rendered and raw views", async ({
