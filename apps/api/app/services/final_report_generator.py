@@ -1216,6 +1216,25 @@ def _build_news_catalyst_discovery(
         "source_classes_successful": catalyst_discovery.get(
             "source_classes_successful", []
         ),
+        "source_statuses": {
+            "value": {
+                "company_press_release": catalyst_discovery.get(
+                    "company_press_release_status"
+                ),
+                "company_press_release_feed_url": catalyst_discovery.get(
+                    "company_press_release_feed_url"
+                ),
+                "company_press_release_items_seen": catalyst_discovery.get(
+                    "company_press_release_items_seen", 0
+                ),
+                "company_press_release_items_used": catalyst_discovery.get(
+                    "company_press_release_items_used", 0
+                ),
+                "news_provider": catalyst_discovery.get("news_provider_status"),
+                **(catalyst_discovery.get("source_statuses") or {}),
+            },
+            "provenance": "sourced_fact",
+        },
         "summary": {
             "value": {
                 "total_events": summary.get("total_events", 0),

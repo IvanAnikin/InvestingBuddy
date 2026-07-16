@@ -102,6 +102,32 @@ class CatalystCoverageStatus(str, Enum):
     provider_unavailable = "provider_unavailable"
 
 
+class PressReleaseStatus(str, Enum):
+    """
+    Precise state of the company-owned press-release feed (Phase 24.1.1).
+
+    Distinguishes "no company source known" from "feed discovered but unreadable"
+    from "feed readable but no recent items" from "feed contributed events" — so
+    the report never says "no feed found" when a feed URL was in fact discovered
+    and attempted.
+    """
+
+    not_discovered = "not_discovered"
+    feed_discovered_unreadable = "feed_discovered_unreadable"
+    feed_discovered_no_recent_items = "feed_discovered_no_recent_items"
+    feed_discovered_with_items = "feed_discovered_with_items"
+    feed_discovered_items_filtered = "feed_discovered_items_filtered"
+
+
+class NewsProviderStatus(str, Enum):
+    """State of the optional configured news/search provider (Phase 24.1.1)."""
+
+    not_configured = "not_configured"
+    no_results = "no_results"
+    results = "results"
+    error = "error"
+
+
 # ---------------------------------------------------------------------------
 # Forbidden-term neutralisation for external free text
 # ---------------------------------------------------------------------------
@@ -377,6 +403,13 @@ class CatalystDiscoveryResult(BaseModel):
     company_sources: dict | None = None
     source_classes_attempted: list[str] = Field(default_factory=list)
     source_classes_successful: list[str] = Field(default_factory=list)
+    # Phase 24.1.1 — precise per-source status (feed reachable vs items vs used).
+    company_press_release_status: str = PressReleaseStatus.not_discovered.value
+    company_press_release_feed_url: str | None = None
+    company_press_release_items_seen: int = 0
+    company_press_release_items_used: int = 0
+    news_provider_status: str = NewsProviderStatus.not_configured.value
+    source_statuses: dict[str, str] = Field(default_factory=dict)
 
     def model_post_init(self, __context: object) -> None:  # noqa: D401
         if not self.generated_at:
@@ -407,6 +440,12 @@ class CatalystDiscoveryResult(BaseModel):
             "company_sources": self.company_sources,
             "source_classes_attempted": list(self.source_classes_attempted),
             "source_classes_successful": list(self.source_classes_successful),
+            "company_press_release_status": self.company_press_release_status,
+            "company_press_release_feed_url": self.company_press_release_feed_url,
+            "company_press_release_items_seen": self.company_press_release_items_seen,
+            "company_press_release_items_used": self.company_press_release_items_used,
+            "news_provider_status": self.news_provider_status,
+            "source_statuses": dict(self.source_statuses),
         }
 
 

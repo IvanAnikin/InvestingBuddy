@@ -1106,6 +1106,27 @@ Skills used: `financial-data`, `langgraph-agents`, `backend-fastapi`, `frontend-
 
 ---
 
+## Phase 24.1.1: News Provider Activation + Feed-Status Consistency ✅
+
+**Status: Delivered (2026-07-16)**
+
+Goal: The live AAPL `free_real` report discovered Apple's company sources but still showed `coverage_status=filings_only` with a **self-contradictory** warning — Company News Sources listed a press-release feed while the warning claimed "no readable RSS/Atom feed found at common paths for apple.com". Root cause: the curated Apple newsroom RSS URL was **stale (404)**, and the warning wording did not distinguish "no feed discovered" from "discovered feed unreadable / no recent items". Phase 24.1.1 corrects the feed data, fixes the status semantics, and verifies the no-key GDELT path — without weakening any safety constraint.
+
+Deliverables:
+- [x] Fixed stale curated feed URLs: Apple `newsroom/rss-feed.rss` (was `newsroom.rss`, 404) and Amazon `aboutamazon.com/news/feed` (was 404), validated live
+- [x] Precise `PressReleaseStatus` (`not_discovered` / `feed_discovered_unreadable` / `feed_discovered_no_recent_items` / `feed_discovered_with_items` / `feed_discovered_items_filtered`) + `NewsProviderStatus` (`not_configured` / `no_results` / `results`) + per-source `source_statuses`
+- [x] Press provider now tries the **discovered feed URL first**, applies a lookback filter (RFC822 + ISO dates), and emits accurate, non-misleading warnings that name the actual feed URL and state
+- [x] `missing_sources` no longer lists `company_press_release` when a feed was discovered but is merely unreadable/stale — the precise status carries the nuance; coverage improves **only** from usable events, never from discovery alone
+- [x] No-key `GdeltNewsProvider` selected by `NEWS_PROVIDER_NAME=gdelt` (no `NEWS_API_KEY`); `NEWS_MAX_RESULTS`/`NEWS_LOOKBACK_DAYS`/`NEWS_TIMEOUT_SECONDS` respected; all failures non-blocking; results stay T5 (mapped T4 only for trusted-media hosts)
+- [x] Status-aware report wording (Company News Sources feed-status line, precise blockquotes, risk/source-quality context) + richer `news_catalyst_discovery` `source_statuses` payload
+- [x] 33 backend tests + 2 new Playwright tests; safety unchanged (no recommendations/targets/fair-values/upside; human review required; `safety_valid` true)
+
+Skills used: `financial-data`, `backend-fastapi`, `langgraph-agents`, `frontend-nextjs`, `testing-qa`, `docs-maintainer`
+
+**Remaining after Phase 24.1.1:** Phase 25 market candidate discovery; Phase 23 auth/staging protection; Phase 26 public publishing.
+
+---
+
 ## Phase 25: Real Market Candidate Discovery Engine
 
 **Status: Not started**

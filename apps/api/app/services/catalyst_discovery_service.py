@@ -49,6 +49,8 @@ from app.schemas.catalyst import (
     CatalystDiscoveryResult,
     CatalystEvent,
     NewsItem,
+    NewsProviderStatus,
+    PressReleaseStatus,
     make_catalyst_event_id,
     summarize_events,
 )
@@ -208,6 +210,7 @@ async def discover_catalysts(
     sec_website: str | None = None,
     gleif_website: str | None = None,
     lookback_days: int = 90,
+    news_lookback_days: int | None = None,
     max_events: int = 20,
     max_news_events: int = 12,
     max_industry_events: int = 8,
@@ -223,10 +226,19 @@ async def discover_catalysts(
 ) -> CatalystDiscoveryResult:
     """Discover source-backed catalysts for a company. Never raises."""
     ticker_u = ticker.upper()
+    # News/press/industry use their own lookback window (env NEWS_LOOKBACK_DAYS via
+    # the workflow); SEC filings keep ``lookback_days``.
+    news_lb = news_lookback_days or lookback_days
     warnings: list[str] = []
     missing_sources: list[str] = []
     attempted: list[str] = []
     successful: list[str] = []
+    source_statuses: dict[str, str] = {}
+    # Phase 24.1.1 — precise press-release feed status.
+    pr_status = PressReleaseStatus.not_discovered.value
+    pr_feed_url: str | None = None
+    pr_items_seen = 0
+    pr_items_used = 0
 
     n_provider = news_provider or get_news_provider()
 
@@ -259,6 +271,9 @@ async def discover_catalysts(
         website = website or source_discovery.company_website
         if source_discovery.has_verified_company_source:
             successful.append("company_source_discovery")
+            source_statuses["company_source_discovery"] = "verified"
+        else:
+            source_statuses["company_source_discovery"] = "none"
 
     # ── Search plan (Phase 24.1) ──────────────────────────────────────────
     plan: NewsSearchPlan = build_news_search_plan(
@@ -311,7 +326,7 @@ async def discover_catalysts(
                     ticker_u,
                     company_name=company_name,
                     website=website,
-                    lookback_days=lookback_days,
+                    lookback_days=news_lb,
                     max_items=max_events,
                     feed_urls=discovered_feed_urls or None,
                 )
@@ -321,43 +336,74 @@ async def discover_catalysts(
                     ticker_u,
                     company_name=company_name,
                     website=website,
-                    lookback_days=lookback_days,
+                    lookback_days=news_lb,
                     max_items=max_events,
                 )
             press_items = pr_result.items
             warnings.extend(pr_result.warnings)
+            # Phase 24.1.1 — precise status (fall back for older mock providers).
+            pr_status = getattr(
+                pr_result, "status", PressReleaseStatus.not_discovered.value
+            )
+            pr_feed_url = getattr(pr_result, "feed_url", None)
+            pr_items_seen = getattr(pr_result, "items_seen", len(press_items))
+            pr_items_used = getattr(pr_result, "items_used", len(press_items))
+            if pr_items_used and pr_status == PressReleaseStatus.not_discovered.value:
+                # Mock provider returned items without a status — treat as usable.
+                pr_status = PressReleaseStatus.feed_discovered_with_items.value
             if press_items:
                 successful.append("company_press_release")
-            else:
+            elif pr_status == PressReleaseStatus.not_discovered.value:
+                # Only a genuine "no company source" state is a missing source.
                 missing_sources.append("company_press_release")
+            # feed_discovered_unreadable / _no_recent_items are NOT "missing" — a
+            # source WAS discovered; the precise status + warning carry the nuance.
         except Exception as exc:  # defensive
             warnings.append(f"Company press-release provider error (non-fatal): {exc}")
+            pr_status = PressReleaseStatus.feed_discovered_unreadable.value
             missing_sources.append("company_press_release")
+        source_statuses["company_press_release"] = pr_status
     else:
         missing_sources.append("company_press_release")
+        source_statuses["company_press_release"] = "skipped"
 
     # ── Configured news / search provider (T5 aggregator or mapped T4) ────
+    news_configured = getattr(n_provider, "provider_name", "") != "null_news"
+    news_status = NewsProviderStatus.not_configured.value
     if include_news:
         attempted.append("news_provider")
         news_items = await _run_query_plan(
             n_provider,
             plan.all_company_queries(),
-            lookback_days=lookback_days,
+            lookback_days=news_lb,
             max_per_query=plan.max_results_per_query,
             total_cap=max_news_events,
         )
         if news_items:
             successful.append("news_provider")
-        else:
+            news_status = NewsProviderStatus.results.value
+        elif not news_configured:
+            # No provider configured → a genuine missing source.
+            news_status = NewsProviderStatus.not_configured.value
             missing_sources.append("news_provider")
             warnings.append(
-                "News provider not configured or returned no results. Catalyst "
-                "coverage relies on SEC filings and any company press-release "
-                "source. Set NEWS_PROVIDER_NAME (+ NEWS_API_KEY / NEWS_API_BASE_URL "
-                "for keyed providers; 'gdelt' needs no key) to add news context."
+                "News provider not configured. Catalyst coverage relies on SEC "
+                "filings and any company press-release source. Set "
+                "NEWS_PROVIDER_NAME='gdelt' (no key) or a keyed provider "
+                "(NEWS_API_KEY + NEWS_API_BASE_URL) to add news context."
+            )
+        else:
+            # Configured but returned nothing relevant — NOT a missing source.
+            news_status = NewsProviderStatus.no_results.value
+            warnings.append(
+                f"News provider '{getattr(n_provider, 'provider_name', 'unknown')}' "
+                "is configured but returned no company results in the lookback "
+                "window."
             )
     else:
         missing_sources.append("news_provider")
+        news_status = NewsProviderStatus.not_configured.value
+    source_statuses["news_provider"] = news_status
 
     # ── Industry / sector context news (Phase 24.1) ───────────────────────
     if include_industry and include_news:
@@ -365,12 +411,15 @@ async def discover_catalysts(
         industry_items = await _run_query_plan(
             n_provider,
             plan.all_industry_queries(),
-            lookback_days=lookback_days,
+            lookback_days=news_lb,
             max_per_query=plan.max_results_per_query,
             total_cap=max_industry_events,
         )
         if industry_items:
             successful.append("industry_news")
+        source_statuses["industry_news"] = (
+            "results" if industry_items else "no_results"
+        )
 
     # ── Relevance scoring + routing ───────────────────────────────────────
     # Press items are the company's own words → always company-specific (T1).
@@ -389,7 +438,7 @@ async def discover_catalysts(
             ticker=ticker_u,
             sector=sector,
             industry=industry,
-            lookback_days=lookback_days,
+            lookback_days=news_lb,
         )
         level = scored.relevance_level
         if scored.is_industry_context:
@@ -431,6 +480,18 @@ async def discover_catalysts(
         _industry_item_to_event(item, ticker_u, company_name)
         for item in deduped_industry
     ]
+
+    # Phase 24.1.1 — feed had recent items but all were deduped/dropped.
+    if (
+        pr_status == PressReleaseStatus.feed_discovered_with_items.value
+        and not press_release_events
+    ):
+        pr_status = PressReleaseStatus.feed_discovered_items_filtered.value
+        source_statuses["company_press_release"] = pr_status
+        warnings.append(
+            "Company press-release feed was parsed, but no items passed the "
+            "dedup/relevance filters as distinct company events."
+        )
 
     # ── Aggregate + summarise ────────────────────────────────────────────
     all_events = filing_events + press_release_events + news_events
@@ -478,4 +539,10 @@ async def discover_catalysts(
         ),
         source_classes_attempted=sorted(set(attempted)),
         source_classes_successful=sorted(set(successful)),
+        company_press_release_status=pr_status,
+        company_press_release_feed_url=pr_feed_url,
+        company_press_release_items_seen=pr_items_seen,
+        company_press_release_items_used=pr_items_used,
+        news_provider_status=news_status,
+        source_statuses=source_statuses,
     )

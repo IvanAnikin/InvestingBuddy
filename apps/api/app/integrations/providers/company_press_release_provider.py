@@ -28,13 +28,14 @@ from __future__ import annotations
 
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+from email.utils import parsedate_to_datetime
 from urllib.parse import urljoin, urlparse
 
 import httpx
 
 from app.integrations.financial_data_provider import SourceTier
-from app.schemas.catalyst import NewsItem
+from app.schemas.catalyst import NewsItem, PressReleaseStatus
 
 _USER_AGENT = "InvestingBuddy-Research-Platform/1.0 (contact: research@investingbuddy.com)"
 
@@ -58,10 +59,56 @@ class PressReleaseResult:
     feed_url: str | None = None
     retrieved_at: str = ""
     warnings: list[str] = field(default_factory=list)
+    # Phase 24.1.1 — precise feed status + item accounting.
+    status: str = PressReleaseStatus.not_discovered.value
+    items_seen: int = 0  # total items parsed from the feed (any date)
+    items_used: int = 0  # items within the lookback window (returned in `items`)
 
     def __post_init__(self) -> None:
         if not self.retrieved_at:
             self.retrieved_at = datetime.now(timezone.utc).isoformat()
+
+
+def _parse_feed_date(published_at: str | None) -> date | None:
+    """Parse an RSS (RFC822) or ISO-8601 date string into a date. None on failure."""
+    if not published_at:
+        return None
+    raw = published_at.strip()
+    # RFC822 (RSS pubDate), e.g. "Wed, 15 Jul 2026 14:59:11 GMT".
+    try:
+        dt = parsedate_to_datetime(raw)
+        if dt is not None:
+            return dt.date()
+    except (TypeError, ValueError, IndexError):
+        pass
+    # ISO-8601 (Atom updated/published), e.g. "2026-07-15T14:59:11.792Z".
+    iso = raw.replace("Z", "+00:00")
+    for candidate in (iso, iso[:19], raw[:10]):
+        try:
+            return datetime.fromisoformat(candidate).date()
+        except ValueError:
+            try:
+                return date.fromisoformat(candidate[:10])
+            except ValueError:
+                continue
+    return None
+
+
+def _within_lookback(
+    published_at: str | None, lookback_days: int, today: date | None = None
+) -> bool:
+    """
+    True if an item is within the lookback window.
+
+    Items with no parseable date are KEPT (returned True) so a feed that omits
+    dates is not silently discarded — better to surface than to hide.
+    """
+    d = _parse_feed_date(published_at)
+    if d is None:
+        return True
+    ref = today or datetime.now(timezone.utc).date()
+    age = (ref - d).days
+    return -1 <= age <= lookback_days
 
 
 def discover_feed_urls(website: str | None) -> list[str]:
@@ -192,23 +239,22 @@ class CompanyPressReleaseProvider:
         Attempt to discover and parse the company's own press-release feed.
 
         ``feed_urls`` (Phase 24.1) are explicit candidate feeds from company
-        source discovery (e.g. a curated newsroom RSS). They are tried first,
+        source discovery (e.g. a curated newsroom RSS). They are tried FIRST,
         before the website-derived common paths.
 
-        Never raises. When no website / feed is known or no feed is found,
-        returns an explicit warning and no items.
+        Phase 24.1.1: returns a precise ``status`` so the report can distinguish
+        "no feed known" from "feed discovered but unreadable" from "feed readable
+        but no recent items" from "feed contributed events". Never raises.
         """
-        # Discovery-provided feeds first, then website-derived common paths.
-        candidates: list[str] = []
-        for u in (feed_urls or []):
-            if u and u not in candidates:
-                candidates.append(u)
-        for u in discover_feed_urls(website):
-            if u not in candidates:
-                candidates.append(u)
+        explicit = [u for u in (feed_urls or []) if u]
+        derived = [u for u in discover_feed_urls(website) if u not in explicit]
+        candidates = explicit + derived
+        had_explicit = bool(explicit)
+
         if not candidates:
             return PressReleaseResult(
                 ticker=ticker.upper(),
+                status=PressReleaseStatus.not_discovered.value,
                 warnings=[
                     "Company primary news source unavailable: no company website / "
                     "IR feed URL is known for this issuer. Press-release catalysts "
@@ -218,30 +264,81 @@ class CompanyPressReleaseProvider:
             )
 
         source_name = f"{company_name or ticker} newsroom"
+        readable_but_stale_url: str | None = None
+        stale_items_seen = 0
+
         for url in candidates:
             xml_text = await self._fetch(url)
             if not xml_text:
                 continue
-            items = parse_feed(
+            all_items = parse_feed(
                 xml_text,
                 source_name=source_name,
                 feed_url=url,
                 provider_name=self.provider_name,
                 max_items=max_items,
             )
-            if items:
+            if not all_items:
+                # Fetched but unparseable → try the next candidate.
+                continue
+            recent = [
+                it for it in all_items if _within_lookback(it.published_at, lookback_days)
+            ]
+            if recent:
                 return PressReleaseResult(
                     ticker=ticker.upper(),
-                    items=items,
+                    items=recent,
                     feed_url=url,
+                    status=PressReleaseStatus.feed_discovered_with_items.value,
+                    items_seen=len(all_items),
+                    items_used=len(recent),
                 )
+            # Readable feed but all items are older than the lookback window.
+            if readable_but_stale_url is None:
+                readable_but_stale_url = url
+                stale_items_seen = len(all_items)
 
-        probed = website or "the discovered company feeds"
+        # No candidate yielded recent items. Classify precisely.
+        if readable_but_stale_url is not None:
+            return PressReleaseResult(
+                ticker=ticker.upper(),
+                feed_url=readable_but_stale_url,
+                status=PressReleaseStatus.feed_discovered_no_recent_items.value,
+                items_seen=stale_items_seen,
+                items_used=0,
+                warnings=[
+                    "Company press-release feed was discovered at "
+                    f"{readable_but_stale_url}, but no items fell within the last "
+                    f"{lookback_days}-day lookback window. Press-release catalysts "
+                    "were not collected (SEC filings and any news provider still "
+                    "apply)."
+                ],
+            )
+
+        if had_explicit:
+            # A discovered feed URL existed but could not be read/parsed.
+            attempted = explicit[0]
+            return PressReleaseResult(
+                ticker=ticker.upper(),
+                feed_url=attempted,
+                status=PressReleaseStatus.feed_discovered_unreadable.value,
+                warnings=[
+                    "Company press-release feed was discovered at "
+                    f"{attempted}, but it could not be read or parsed (fetch "
+                    "failed, non-feed response, or malformed feed). Press-release "
+                    "catalysts were not collected (SEC filings and any news "
+                    "provider still apply)."
+                ],
+            )
+
+        # Only website-derived common paths were tried and none were readable.
+        probed = website or "the company website"
         return PressReleaseResult(
             ticker=ticker.upper(),
+            status=PressReleaseStatus.not_discovered.value,
             warnings=[
                 "Company primary news source unavailable: no readable RSS/Atom feed "
-                f"found at common paths for {probed}. Press-release catalysts were "
-                "not collected."
+                f"was found at common paths for {probed}. Press-release catalysts "
+                "were not collected."
             ],
         )

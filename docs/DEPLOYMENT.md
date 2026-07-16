@@ -459,6 +459,8 @@ Copy `.env.example` to `.env`. The defaults work for local Docker development.
 
 > **Phase 24.1 news provider is optional and non-blocking.** With none of the `NEWS_*` vars set, catalyst discovery still runs (SEC filings + curated/discovered company press-release feeds) and the report shows an explicit "news provider not configured" warning — the deploy still passes and coverage may stay `limited`. No paid provider is required; no secret is committed.
 
+> **Phase 24.1.1 — no-key news activation (recommended).** To add generic news/industry context on staging without any secret, set only `NEWS_PROVIDER_NAME=gdelt` (plus optional `NEWS_MAX_RESULTS`/`NEWS_LOOKBACK_DAYS`/`NEWS_TIMEOUT_SECONDS`) and restart the API. GDELT needs **no `NEWS_API_KEY`**. `NEWS_LOOKBACK_DAYS` scopes the news/press-release lookback (SEC filings stay at 90 days). Company-owned press-release feeds (Apple/Amazon curated URLs corrected in 24.1.1) contribute T1 events even with no news provider configured.
+
 ### Frontend (`apps/web`)
 
 | Variable | Required | Phase | Notes |
