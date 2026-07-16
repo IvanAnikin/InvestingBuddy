@@ -54,6 +54,34 @@ test.describe("Report Detail — News & Catalyst Discovery", () => {
     ).toBeVisible();
   });
 
+  test("shows precise press-release feed status, not a false 'no feed' warning (Phase 24.1.1)", async ({
+    page,
+  }) => {
+    await page.goto(REPORT_URL);
+    const preview = page.locator(PREVIEW);
+    // A discovered feed URL is shown with a precise status …
+    await expect(
+      preview.getByText("Press-release feed status:", { exact: false }),
+    ).toBeVisible();
+    await expect(
+      preview.getByText("feed_discovered_with_items", { exact: false }),
+    ).toBeVisible();
+    // … and never the misleading "no readable RSS/Atom feed found" wording.
+    await expect(
+      preview.getByText("no readable RSS", { exact: false }),
+    ).toHaveCount(0);
+  });
+
+  test("renders a company press-release (T1) event row (Phase 24.1.1)", async ({
+    page,
+  }) => {
+    await page.goto(REPORT_URL);
+    const preview = page.locator(PREVIEW);
+    await expect(
+      preview.getByText("IBT press release — new product line", { exact: false }),
+    ).toBeVisible();
+  });
+
   test("renders Industry Context News section with non-company disclaimer", async ({
     page,
   }) => {

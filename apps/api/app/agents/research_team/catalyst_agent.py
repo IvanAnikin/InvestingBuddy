@@ -153,8 +153,48 @@ def _industry_table(events: list[CatalystEvent]) -> str:
     return "\n".join(lines) + "\n\n"
 
 
-def _company_sources_section(company_sources: dict | None) -> str:
+# Precise, non-misleading wording for each press-release feed status
+# (Phase 24.1.1). {url} / {seen} are filled in per result.
+_PRESS_STATUS_TEXT: dict[str, str] = {
+    "not_discovered": (
+        "Company primary news source unavailable — no company-owned press-release "
+        "feed was discovered. SEC filings (T2) and any configured news provider "
+        "still apply."
+    ),
+    "feed_discovered_unreadable": (
+        "Company press-release feed was discovered at {url}, but it could not be "
+        "read or parsed. No press-release catalysts were collected."
+    ),
+    "feed_discovered_no_recent_items": (
+        "Company press-release feed was discovered at {url} and parsed ({seen} "
+        "item(s) seen), but no items fell within the lookback window. No "
+        "press-release catalysts were collected."
+    ),
+    "feed_discovered_items_filtered": (
+        "Company press-release feed was parsed, but no items passed the "
+        "dedup/relevance filters as distinct company events."
+    ),
+    "feed_discovered_with_items": (
+        "Company press-release feed at {url} contributed {used} event(s)."
+    ),
+}
+
+
+def _press_status_line(result: CatalystDiscoveryResult) -> str:
+    status = result.company_press_release_status
+    template = _PRESS_STATUS_TEXT.get(status)
+    if not template:
+        return ""
+    return template.format(
+        url=result.company_press_release_feed_url or "the discovered feed",
+        seen=result.company_press_release_items_seen,
+        used=result.company_press_release_items_used,
+    )
+
+
+def _company_sources_section(result: CatalystDiscoveryResult) -> str:
     """Render the discovered company sources (website / IR / newsroom / feed)."""
+    company_sources = result.company_sources
     md = "## Company News Sources\n\n"
     if not company_sources:
         return md + (
@@ -175,6 +215,9 @@ def _company_sources_section(company_sources: dict | None) -> str:
         f"- **Press-release feed:** {feed or '_not discovered_'}  \n"
         f"- **Exchange profile (T3 hint, not a regulator):** {exch or '_none_'}  \n"
         f"- **Discovery confidence:** {conf}  \n"
+        f"- **Press-release feed status:** `{result.company_press_release_status}` "
+        f"(items seen {result.company_press_release_items_seen}, used "
+        f"{result.company_press_release_items_used})  \n"
     )
     if verified:
         md += "\n| Source Type | Tier | Verification | Confidence | URL |\n"
@@ -188,13 +231,9 @@ def _company_sources_section(company_sources: dict | None) -> str:
                 url=_short_link(c.get("url")),
             )
         md += "\n"
-    else:
-        md += (
-            "\n> Company primary news source unavailable — no company-owned source "
-            "was confidently discovered. Press-release catalysts (T1) were not "
-            "collected; SEC filings (T2) and any configured news provider still "
-            "apply.\n\n"
-        )
+    status_line = _press_status_line(result)
+    if status_line:
+        md += f"\n> {status_line}\n\n"
     return md
 
 
@@ -248,8 +287,9 @@ def run_catalyst_agent(result: CatalystDiscoveryResult) -> CatalystAgentOutput:
         )
     if coverage == CatalystCoverageStatus.filings_only.value:
         risk_flags.append(
-            "Catalyst coverage is limited to SEC filing metadata; no company "
-            "press-release or news context was available."
+            "Catalyst coverage is limited to SEC filing metadata; no usable "
+            "company press-release or news events contributed within the lookback "
+            "window (see press-release feed status above)."
         )
     if s.aggregator_only_count > 0:
         risk_flags.append(
@@ -262,6 +302,7 @@ def run_catalyst_agent(result: CatalystDiscoveryResult) -> CatalystAgentOutput:
     has_verified_company_source = bool(
         company_sources.get("has_verified_company_source")
     )
+    pr_status = result.company_press_release_status
     if not has_verified_company_source:
         if "company_press_release" in result.missing_sources:
             risk_flags.append(
@@ -273,16 +314,40 @@ def run_catalyst_agent(result: CatalystDiscoveryResult) -> CatalystAgentOutput:
             "(T1) to confirm catalyst events."
         )
     elif not result.press_release_events:
-        risk_flags.append(
-            "A company-owned source was discovered but no readable press-release "
-            "feed items were parsed — verify the company feed manually."
-        )
+        # A company source WAS discovered — describe the precise feed state
+        # (Phase 24.1.1), never the misleading "no feed found".
+        if pr_status == "feed_discovered_unreadable":
+            risk_flags.append(
+                "Company press-release feed was discovered but could not be "
+                "read/parsed — verify the feed URL manually."
+            )
+        elif pr_status == "feed_discovered_no_recent_items":
+            risk_flags.append(
+                "Company press-release feed was discovered and readable, but had "
+                "no items within the lookback window — the 'why now?' press-release "
+                "signal is absent, not the source."
+            )
+        elif pr_status == "feed_discovered_items_filtered":
+            risk_flags.append(
+                "Company press-release feed parsed items, but none survived "
+                "dedup/relevance filtering as distinct company events."
+            )
+        else:
+            risk_flags.append(
+                "A company-owned source was discovered but produced no "
+                "press-release events — verify the company feed manually."
+            )
 
     # News provider outcomes — only claim the provider is missing when it is.
-    if "news_provider" in result.missing_sources and not result.news_events:
+    if result.news_provider_status == "not_configured":
         source_quality_recommendations.append(
-            "Configure a news/search provider (NEWS_PROVIDER_NAME) to add recent "
-            "company and industry news context."
+            "Configure a news/search provider (NEWS_PROVIDER_NAME='gdelt' needs no "
+            "key) to add recent company and industry news context."
+        )
+    elif result.news_provider_status == "no_results" and not result.news_events:
+        source_quality_recommendations.append(
+            "A news provider is configured but returned no company results in the "
+            "lookback window — broaden the window or verify the provider."
         )
 
     # News-source diversity / quality risks (Phase 24.1).
@@ -394,7 +459,7 @@ def run_catalyst_agent(result: CatalystDiscoveryResult) -> CatalystAgentOutput:
     md.append("\n## Recent Catalyst Events\n")
     md.append(_events_table(result.events))
 
-    md.append(_company_sources_section(result.company_sources))
+    md.append(_company_sources_section(result))
 
     md.append("## SEC Filing Events\n")
     md.append(_sec_table(result.filing_events))

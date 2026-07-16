@@ -136,7 +136,7 @@ KNOWN_ISSUER_SOURCES: dict[str, CuratedIssuerSource] = {
         website="https://www.apple.com",
         investor_relations_url="https://investor.apple.com",
         newsroom_url="https://www.apple.com/newsroom/",
-        press_release_feed_url="https://www.apple.com/newsroom/rss/newsroom.rss",
+        press_release_feed_url="https://www.apple.com/newsroom/rss-feed.rss",
     ),
     "MSFT": CuratedIssuerSource(
         ticker="MSFT",
@@ -164,7 +164,7 @@ KNOWN_ISSUER_SOURCES: dict[str, CuratedIssuerSource] = {
         website="https://www.aboutamazon.com",
         investor_relations_url="https://ir.aboutamazon.com",
         newsroom_url="https://www.aboutamazon.com/news",
-        press_release_feed_url="https://press.aboutamazon.com/rss/pressrelease.aspx",
+        press_release_feed_url="https://www.aboutamazon.com/news/feed",
     ),
     "TSLA": CuratedIssuerSource(
         ticker="TSLA",

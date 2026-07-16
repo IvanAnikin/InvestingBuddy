@@ -35,6 +35,7 @@ Design rules enforced:
 
 from __future__ import annotations
 
+import os
 import pathlib
 import re
 import uuid
@@ -1543,6 +1544,13 @@ def build_company_analysis_graph(
                 "country_domicile"
             )
             cik = getattr(company, "sec_cik", None) if company else None
+            # News/press/industry lookback is configurable (NEWS_LOOKBACK_DAYS);
+            # SEC filings keep the 90-day window. Bounded to a sane range.
+            try:
+                news_lb = int(os.environ.get("NEWS_LOOKBACK_DAYS", "90"))
+            except (TypeError, ValueError):
+                news_lb = 90
+            news_lb = max(1, min(news_lb, 365))
             result = await discover_catalysts(
                 ticker=ticker,
                 exchange=exchange,
@@ -1553,6 +1561,7 @@ def build_company_analysis_graph(
                 industry=industry,
                 country=country,
                 lookback_days=90,
+                news_lookback_days=news_lb,
                 max_events=20,
                 include_source_discovery=True,
             )
