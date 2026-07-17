@@ -1127,6 +1127,27 @@ Skills used: `financial-data`, `backend-fastapi`, `langgraph-agents`, `frontend-
 
 ---
 
+## Phase 24.1.2: Press-Release Canonical Link Fix ✅
+
+**Status: Delivered (2026-07-17)**
+
+Goal: The live AAPL `free_real` report reached `coverage_status=strong` with 19 T1 Apple newsroom press-release events, but many `company_press_release` events used **image URLs** as `source_url` (e.g. `…/tile/…jpg.og.jpg`) instead of canonical Apple Newsroom article pages. This is an evidence/citation-quality issue that Phase 25 candidate discovery will depend on. Phase 24.1.2 makes press-release evidence links canonical, storing media/image URLs separately — no safety change.
+
+Root cause: Apple's newsroom feed is **Atom**, and each `<entry>` has two `<link>` elements — the article (`rel` empty) and an image enclosure (`<link rel="enclosure" type="image/jpeg" href="…jpg.og.jpg">`). The old parser let the **last** `<link>` win, so the image enclosure overwrote the article URL.
+
+Deliverables:
+- [x] `extract_canonical_feed_link()` + `is_media_url()` — priority RSS `<link>` → Atom alternate/html `<link>` → any non-media `<link>` → `<guid>`/`<id>` → feedburner:origLink → relative-resolved-against-feed-base; rejects `.jpg/.jpeg/.png/.gif/.webp/.svg/.avif/.mp4/.mov/.webm`, `/images/`·`/media/`·`/thumbnail/`·`/tile/` paths, `.og.jpg`, `rel="enclosure"` image links, `media:content`/`media:thumbnail`, and description `<img>` URLs
+- [x] `parse_feed` collects every link/guid/enclosure/media field per entry and chooses the canonical article URL; the associated image is kept as `NewsItem.media_url`
+- [x] Schema: `NewsItem.media_url`, `CatalystEvent.media_url` + `source_url_quality` (`canonical_article` / `rejected_media_only` / `missing`); `source_url` stays the canonical article page; final-report `_event_row` carries `source_url_quality` + `media_url`
+- [x] Dedup by canonical article URL; aggregate warning when an item has no canonical URL (media URL is **never** used as evidence); Phase 24.1.1 feed-status semantics preserved
+- [x] 21 backend tests (Apple-like Atom + RSS fixtures, relative/guid/enclosure/description cases) + 1 Playwright test; 1143 backend passed; safety unchanged (no recommendations/targets/fair-values/upside; human review required; `safety_valid` true)
+
+Skills used: `financial-data`, `backend-fastapi`, `frontend-nextjs`, `testing-qa`, `docs-maintainer`
+
+**Remaining after Phase 24.1.2:** Phase 25 market candidate discovery; Phase 23 auth/staging protection; Phase 26 public publishing.
+
+---
+
 ## Phase 25: Real Market Candidate Discovery Engine
 
 **Status: Not started**

@@ -80,6 +80,8 @@ def _news_item_to_event(
         event_date=item.published_at,
         source_name=item.source_name or item.provider_name,
         source_url=item.url,
+        media_url=item.media_url,
+        source_url_quality=_source_url_quality(item),
         source_tier=item.source_tier,
         provider_name=item.provider_name,
         headline=item.headline,
@@ -95,6 +97,15 @@ def _news_item_to_event(
         query_type=item.query_type,
     )
     return apply_classification(event, multi_source=multi_source)
+
+
+def _source_url_quality(item: NewsItem) -> str:
+    """Classify a news item's evidence-link quality (Phase 24.1.2)."""
+    if item.url:
+        return "canonical_article"
+    if item.media_url:
+        return "rejected_media_only"
+    return "missing"
 
 
 def _industry_item_to_event(
@@ -118,6 +129,8 @@ def _industry_item_to_event(
         event_date=item.published_at,
         source_name=item.source_name or item.provider_name,
         source_url=item.url,
+        media_url=item.media_url,
+        source_url_quality=_source_url_quality(item),
         source_tier=item.source_tier,
         provider_name=item.provider_name,
         headline=item.headline,
@@ -341,6 +354,15 @@ async def discover_catalysts(
                 )
             press_items = pr_result.items
             warnings.extend(pr_result.warnings)
+            # Phase 24.1.2 — flag press items with no canonical article URL (a
+            # media/image URL is NEVER used as evidence).
+            no_canonical = sum(1 for it in press_items if not it.url)
+            if no_canonical:
+                warnings.append(
+                    f"{no_canonical} press-release item(s) had no canonical article "
+                    "URL; the associated media/image URL was NOT used as source "
+                    "evidence."
+                )
             # Phase 24.1.1 — precise status (fall back for older mock providers).
             pr_status = getattr(
                 pr_result, "status", PressReleaseStatus.not_discovered.value

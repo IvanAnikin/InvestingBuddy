@@ -135,6 +135,115 @@ def _strip_ns(tag: str) -> str:
     return tag.split("}", 1)[-1] if "}" in tag else tag
 
 
+# ---------------------------------------------------------------------------
+# Phase 24.1.2 — canonical article link extraction (reject media/image URLs)
+# ---------------------------------------------------------------------------
+
+# Image/video file extensions that must never be used as an evidence URL.
+_MEDIA_EXTS: tuple[str, ...] = (
+    ".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".avif",
+    ".mp4", ".mov", ".webm",
+)
+
+# Path fragments that indicate a media/asset URL, not an article page.
+_MEDIA_PATH_MARKERS: tuple[str, ...] = (
+    "/images/", "/image/", "/media/", "/thumbnail/", "/thumbnails/", "/tile/",
+)
+
+
+def _is_http(url: str | None) -> bool:
+    return bool(url) and url.strip().lower().startswith(("http://", "https://"))
+
+
+def is_media_url(url: str | None) -> bool:
+    """True if a URL points at an image/media asset rather than an article page."""
+    if not url:
+        return False
+    low = url.strip().lower()
+    path = low.split("#", 1)[0].split("?", 1)[0]
+    if path.endswith(_MEDIA_EXTS):
+        return True
+    # Apple newsroom tiles look like "...hero-lp.jpg.og.jpg".
+    if ".og.jpg" in low or ".og.png" in low:
+        return True
+    if any(marker in low for marker in _MEDIA_PATH_MARKERS):
+        return True
+    return False
+
+
+@dataclass
+class CanonicalFeedLinkResult:
+    canonical_url: str | None = None
+    media_url: str | None = None
+    quality: str = "missing"  # canonical_article | rejected_media_only | missing
+
+
+def extract_canonical_feed_link(
+    *,
+    rss_link: str | None,
+    atom_links: list[tuple[str, str, str]],  # (rel, type, href)
+    guid: str | None,
+    orig_link: str | None,
+    media_urls: list[str],
+    feed_base: str | None = None,
+) -> CanonicalFeedLinkResult:
+    """
+    Choose the canonical article URL for a feed entry, never a media/image URL.
+
+    Priority: RSS <link> text → Atom alternate/html <link> → any non-media Atom
+    <link> → <guid>/<id> article URL → feedburner:origLink → (relative resolved
+    against the feed base). Image/media URLs are captured in ``media_url`` and
+    are NEVER returned as the canonical evidence link.
+    """
+
+    def _resolve(u: str | None) -> str | None:
+        if not u:
+            return None
+        u = u.strip()
+        if not _is_http(u) and feed_base:
+            return urljoin(feed_base, u)
+        return u
+
+    def _first_media() -> str | None:
+        for m in media_urls:
+            if m:
+                return m.strip()
+        return None
+
+    candidates: list[str | None] = []
+    # 1. RSS <link> text.
+    candidates.append(_resolve(rss_link))
+    # 2. Atom alternate / html-typed <link>.
+    for require_html in (True, False):
+        for rel, typ, href in atom_links:
+            rel_l = (rel or "").lower()
+            if rel_l and rel_l != "alternate":
+                continue
+            if require_html and (typ or "").lower() not in (
+                "text/html", "application/xhtml+xml", ""
+            ):
+                continue
+            candidates.append(_resolve(href))
+    # 3. guid / id, 4. feedburner origLink.
+    candidates.append(_resolve(guid))
+    candidates.append(_resolve(orig_link))
+
+    for cand in candidates:
+        if cand and _is_http(cand) and not is_media_url(cand):
+            return CanonicalFeedLinkResult(
+                canonical_url=cand,
+                media_url=_first_media(),
+                quality="canonical_article",
+            )
+
+    media = _first_media()
+    if media:
+        return CanonicalFeedLinkResult(
+            canonical_url=None, media_url=media, quality="rejected_media_only"
+        )
+    return CanonicalFeedLinkResult(canonical_url=None, media_url=None, quality="missing")
+
+
 def parse_feed(
     xml_text: str,
     source_name: str | None,
@@ -164,17 +273,45 @@ def parse_feed(
 
     for entry in entries[:max_items]:
         title: str | None = None
-        link: str | None = None
         published: str | None = None
         summary: str | None = None
+        rss_link: str | None = None            # RSS <link> text
+        atom_links: list[tuple[str, str, str]] = []  # (rel, type, href)
+        guid: str | None = None
+        orig_link: str | None = None           # feedburner:origLink / originalLink
+        media_urls: list[str] = []
 
         for child in entry:
             ctag = _strip_ns(child.tag).lower()
+            href = child.attrib.get("href")
             if ctag == "title" and title is None:
                 title = _text(child)
             elif ctag == "link":
-                # RSS: text; Atom: href attribute
-                link = _text(child) or child.attrib.get("href") or link
+                if href is not None:
+                    # Atom <link rel=... type=... href=...> (may repeat).
+                    atom_links.append(
+                        (child.attrib.get("rel", "") or "",
+                         child.attrib.get("type", "") or "", href)
+                    )
+                    rel = (child.attrib.get("rel", "") or "").lower()
+                    typ = (child.attrib.get("type", "") or "").lower()
+                    if rel == "enclosure" or typ.startswith(("image/", "video/")) \
+                            or is_media_url(href):
+                        media_urls.append(href)
+                elif rss_link is None:
+                    rss_link = _text(child)  # RSS <link>text</link>
+            elif ctag in ("guid", "id") and guid is None:
+                guid = _text(child)
+            elif ctag in ("origlink", "originallink") and orig_link is None:
+                orig_link = _text(child)
+            elif ctag == "enclosure":
+                url = child.attrib.get("url")
+                etype = (child.attrib.get("type", "") or "").lower()
+                if url and (etype.startswith(("image/", "video/")) or is_media_url(url)):
+                    media_urls.append(url)
+            elif ctag in ("content", "thumbnail") and child.attrib.get("url"):
+                # media:content / media:thumbnail (namespaced) carry a url attr.
+                media_urls.append(child.attrib["url"])
             elif ctag in ("pubdate", "published", "updated", "date") and published is None:
                 published = _text(child)
             elif ctag in ("description", "summary", "content") and summary is None:
@@ -183,15 +320,28 @@ def parse_feed(
         if not title:
             continue
 
+        if guid and is_media_url(guid):
+            media_urls.append(guid)
+
+        link_result = extract_canonical_feed_link(
+            rss_link=rss_link,
+            atom_links=atom_links,
+            guid=guid,
+            orig_link=orig_link,
+            media_urls=media_urls,
+            feed_base=feed_url,
+        )
+
         items.append(
             NewsItem(
                 headline=title,
-                url=link,
+                url=link_result.canonical_url,
                 published_at=published,
                 source_name=source_name,
                 summary=summary,
                 provider_name=provider_name,
                 source_tier=SourceTier.T1_primary_filing.value,
+                media_url=link_result.media_url,
             )
         )
 
