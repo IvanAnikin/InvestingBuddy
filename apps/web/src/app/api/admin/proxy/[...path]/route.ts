@@ -31,6 +31,7 @@ const ALLOWED_PREFIXES = [
   "/api/v1/sources",
   "/api/v1/citations",
   "/api/v1/backtesting",
+  "/api/v1/market-discovery",
 ];
 
 function isAllowed(backendPath: string): boolean {

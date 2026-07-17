@@ -131,19 +131,27 @@ This document describes the gap between the current implementation and the targe
 
 ---
 
-## Gap 3: Real Market Candidate Discovery Engine (Phase 25)
+## Gap 3: Real Market Candidate Discovery Engine (Phase 25) — ✅ Delivered
 
-**Current:** `CompanyScreener` and `CompanyDiscoveryService` exist with mock and EODHD-search-based screening (6 themes). Foundation is solid but discovery is not driven by real price/fundamental signals.
+**Delivered (Phase 25):** A bounded, internal-only market discovery workflow
+now produces an internal research-candidate queue. `discovery_runs` +
+`discovery_candidates` tables (migration 010); a deterministic
+`discovery_scoring_service` (momentum + catalyst + fundamentals + source-quality
++ completeness − risk penalty, 0–100, internal prioritization only); a
+`discovery_signal_extractor` reusing the tested company-analysis workflow per
+ticker (injectable → offline CI); a `market_discovery_service` orchestrator
+(universe validated against `DISCOVERY_MAX_UNIVERSE_SIZE`, non-blocking per-ticker
+failures); 6 admin-only `/api/v1/market-discovery/*` endpoints; and a
+`/admin/discovery` UI with a ranked candidate queue and a "Run Full Analysis"
+promote action. Source tiers preserved end-to-end (T1 company / T2 SEC /
+T5 aggregators / T6 model). Multi-signal ranking is implemented directly on the
+real `free_real` snapshot rather than replacing the Phase 14 EODHD screener.
 
-**Target:** Market-wide candidate ranking using real price momentum, fundamentals quality, catalyst recency, and sector context. Surfaced candidates enter an admin review queue automatically.
+**Remaining (future enhancements):** no full-market crawl or scheduling (curated
+seed + manual tickers only); no automated promote/reject state machine (manual
+"Run Full Analysis" only); free providers remain incomplete.
 
-**Gaps:**
-- Market-wide screener using real price + SEC data (replaces EODHD search discovery)
-- Multi-signal ranking: momentum + fundamentals + catalyst recency + sector context
-- Automated candidate queue with admin review + promote/reject actions
-- Source tier enforced throughout: T5 for aggregated data, T2 for SEC-derived data
-
-**Phase:** 25
+**Phase:** 25 (complete)
 
 ---
 

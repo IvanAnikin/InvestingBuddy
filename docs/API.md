@@ -1036,3 +1036,73 @@ All responses include `disclaimer: "INTERNAL ADMIN USE ONLY. NOT INVESTMENT ADVI
 - Default provider: `mock` (deterministic, no network, no API keys required in CI).
 - Live providers (EODHD, Stooq) can be added later via `BACKTEST_PROVIDER` env var without breaking the interface.
 - Allowed judge statuses: `insufficient_data`, `useful_research`, `needs_better_sources`, `poor_evidence_quality`, `outcome_inconclusive`, `outcome_review_required`.
+
+---
+
+## Phase 25: Market Candidate Discovery (Admin / Internal Only)
+
+Internal-only, bounded market discovery. Produces an **internal research
+candidate queue** — NOT a recommendation engine. All endpoints are
+admin/internal only with no public-facing routes.
+
+**Hard guarantees (enforced across model, service, schema, API, and safety scan):**
+- No BUY/SELL/HOLD/WATCH labels. No price targets, fair values, intrinsic
+  values, upside/downside, or undervalued/overvalued labels. No recommendations.
+- `candidate_score` (and all component scores) are an **internal prioritization
+  signal only** — a high score means "prioritize for internal human research",
+  never "buy".
+- Every candidate is `human_review_required=true` and `is_public=false`.
+- The universe size is validated *before* any work — a run larger than
+  `DISCOVERY_MAX_UNIVERSE_SIZE` is rejected (422), preventing an accidental
+  full-market scan. An empty universe is also rejected (422).
+- Every response includes an internal `disclaimer` field.
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/v1/market-discovery/runs` | List discovery runs |
+| POST | `/api/v1/market-discovery/runs` | Create + synchronously run a bounded discovery scan |
+| GET | `/api/v1/market-discovery/runs/{run_id}` | Get a discovery run |
+| GET | `/api/v1/market-discovery/runs/{run_id}/summary` | Aggregate summary (top score, grade breakdown) |
+| GET | `/api/v1/market-discovery/runs/{run_id}/candidates` | List ranked internal candidates (filter/sort) |
+| GET | `/api/v1/market-discovery/candidates/{candidate_id}` | Candidate detail (score breakdown + signals) |
+| POST | `/api/v1/market-discovery/candidates/{candidate_id}/run-analysis` | Promote a candidate to the full company-analysis workflow |
+
+**Run creation (`POST /runs`) body:**
+```json
+{
+  "provider_name": "free_real",          // free_real | eodhd_free_real | mock
+  "universe_source": "curated_seed",     // curated_seed | manual_tickers
+  "tickers": ["AAPL", "MSFT"],           // only for manual_tickers
+  "exchange": "US",
+  "lookback_days": 90
+}
+```
+
+**Candidate list filters/sorts (`GET /runs/{run_id}/candidates`):**
+- Filters: `sector`, `grade`, `momentum_label`, `catalyst_coverage_status`,
+  `source_quality`, `score_min`, `missing_info_max`, `has_press_releases`,
+  `has_news`, `ticker`.
+- Sort keys: `rank`, `candidate_score` (default), `latest_catalyst_date`,
+  `momentum_score`, `catalyst_score`, `fundamentals_score`, `created_at`.
+
+**Scoring formula (internal prioritization only):**
+```
+candidate_score =
+    0.30 * momentum_score
+  + 0.25 * catalyst_score
+  + 0.20 * fundamentals_score
+  + 0.15 * source_quality_score
+  + 0.10 * data_completeness_score
+  - risk_penalty            (0–40 points)   → clamped to 0–100
+```
+Grades: `high_internal_interest` (≥65), `medium_internal_interest` (≥40),
+`low_internal_interest` (<40), `data_insufficient` (mock / provider failure /
+no fundamentals + no price history + no catalysts).
+
+**Notes:**
+- Default provider: `free_real` (SEC EDGAR + free price + internal trend, no paid access).
+- The scan reuses the existing company-analysis workflow per ticker; for a small
+  bounded universe this is the sanctioned MVP path (it also persists a draft
+  report the candidate links to). "Run Full Analysis" re-runs the workflow.
+- CI runs entirely offline: the per-ticker signal extractor is injectable and
+  tests supply canned signals — no provider/SEC/GDELT/news calls.

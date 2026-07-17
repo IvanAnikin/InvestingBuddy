@@ -6,6 +6,11 @@ import type {
   BacktestRunSummary,
   Company,
   CompanyCreate,
+  DiscoveryCandidateDetail,
+  DiscoveryCandidateListResponse,
+  DiscoveryRun,
+  DiscoveryRunCreate,
+  DiscoveryRunListResponse,
   FinalReportRegenerateSectionResponse,
   FinalReportResponse,
   FinalReportValidateResponse,
@@ -16,6 +21,7 @@ import type {
   ReviewActionRequest,
   ReviewActionResponse,
   ReviewEventList,
+  RunCandidateAnalysisResponse,
   WorkflowRunRequest,
   WorkflowRunResponse,
 } from "@/types/api";
@@ -247,5 +253,54 @@ export async function getBacktestSummary(
 ): Promise<BacktestRunSummary> {
   return apiFetch<BacktestRunSummary>(
     `/api/v1/backtesting/runs/${id}/summary`,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Phase 25: Market Candidate Discovery API helpers (internal only)
+// ---------------------------------------------------------------------------
+
+export async function listDiscoveryRuns(): Promise<DiscoveryRunListResponse> {
+  return apiFetch<DiscoveryRunListResponse>("/api/v1/market-discovery/runs");
+}
+
+export async function createDiscoveryRun(
+  payload: DiscoveryRunCreate,
+): Promise<DiscoveryRun> {
+  return apiFetch<DiscoveryRun>("/api/v1/market-discovery/runs", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function getDiscoveryRun(id: string): Promise<DiscoveryRun> {
+  return apiFetch<DiscoveryRun>(`/api/v1/market-discovery/runs/${id}`);
+}
+
+export async function listDiscoveryCandidates(
+  runId: string,
+  params: Record<string, string> = {},
+): Promise<DiscoveryCandidateListResponse> {
+  const search = new URLSearchParams(params).toString();
+  const suffix = search ? `?${search}` : "";
+  return apiFetch<DiscoveryCandidateListResponse>(
+    `/api/v1/market-discovery/runs/${runId}/candidates${suffix}`,
+  );
+}
+
+export async function getDiscoveryCandidate(
+  candidateId: string,
+): Promise<DiscoveryCandidateDetail> {
+  return apiFetch<DiscoveryCandidateDetail>(
+    `/api/v1/market-discovery/candidates/${candidateId}`,
+  );
+}
+
+export async function runCandidateAnalysis(
+  candidateId: string,
+): Promise<RunCandidateAnalysisResponse> {
+  return apiFetch<RunCandidateAnalysisResponse>(
+    `/api/v1/market-discovery/candidates/${candidateId}/run-analysis`,
+    { method: "POST" },
   );
 }

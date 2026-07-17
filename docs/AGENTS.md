@@ -799,7 +799,7 @@ Every section includes provenance labels on all values: `sourced_fact`, `model_i
 | `backtesting` / `judge_evaluation` | ✅ Phase 22 (internal, mock provider) | `BacktestingService` + `ResearchJudgeService`; historical quality assessment; no public recommendations |
 | `company_analysis` + trend signals | Phase 19.2 | Wire `TrendSignalEngine` as node; Stooq fallback to EODHD price-only on Azure |
 | `news_catalyst_workflow` | Phase 24 | News + catalyst discovery via SEC 8-K + optional news API |
-| `market_discovery` | Phase 25 | Real market-wide candidate ranking using momentum + fundamentals + catalysts |
+| `market_discovery` | ✅ Phase 25 (internal-only) | `market_discovery_service` + `discovery_scoring_service` rank a bounded universe into an internal research-candidate queue (momentum + catalyst + fundamentals + source-quality + completeness − risk penalty). Internal prioritization only — no recommendations, no price targets; human review required. Reuses `company_analysis` per ticker via `discovery_signal_extractor` |
 | `weekly_research` | Future | Scheduled full research pipeline (Azure Functions) |
 | `watchlist_monitoring` | Phase 30 | Monitor research theses; trigger re-analysis on significant events |
 
