@@ -1,6 +1,8 @@
 # Roadmap
 
-## Current State: Phase 22.3.1 Web Deploy Cache Hardening — a deploy/CI + frontend-verification hotfix on top of Phase 22.3. Fixes an operational issue found during the Phase 22.3 release: with `WEBSITE_RUN_FROM_PACKAGE=1` and `alwaysOn=false`, the statically prerendered homepage `/` could keep serving the old build after a deploy until a manual `az webapp restart`, while dynamic `/admin` routes updated immediately. Adds a `/api/version` build-metadata endpoint and an `x-ib-build-commit` `<meta>` tag, renders the homepage dynamically so `/` reflects the mounted bundle, bakes `NEXT_PUBLIC_*` build metadata in CI, best-effort restarts `ib-stg-web` after deploy (when an optional `AZURE_CREDENTIALS` service principal exists), and adds a SHA-verified smoke check that fails loudly if `/api/version`, `/`, or `/admin` are stale. No backend analysis or report-generation logic changed; no financial semantics changed; no auth, no public publishing, no recommendation language, and no secrets. See the Phase 22.3.1 section below.
+## Current State: Phase 25 Real Market Candidate Discovery ✅ — moves InvestingBuddy from manual single-ticker analysis into a **bounded, internal-only market discovery workflow**. Instead of entering tickers one at a time, an admin scans a controlled universe (curated seed or manual comma-separated tickers) and gets an **internal research-candidate queue** ranked by an internal prioritization score. New `discovery_runs` + `discovery_candidates` tables (migration 010), a deterministic `discovery_scoring_service` (momentum 30% + catalyst 25% + fundamentals 20% + source-quality 15% + completeness 10% − risk penalty), a `discovery_signal_extractor` that reuses the tested company-analysis workflow per ticker (injectable/offline for CI), a `market_discovery_service` orchestrator (universe validated against `DISCOVERY_MAX_UNIVERSE_SIZE` so an accidental full-market scan is rejected; per-ticker failures are non-blocking), 6 admin-only `/api/v1/market-discovery/*` endpoints, and a dark-glass `/admin/discovery` UI with a start-run form, runs table, ranked candidate queue and inline candidate detail with a "Run Full Analysis" button. This is **NOT** a recommendation engine: no BUY/SELL/HOLD/WATCH, no price targets, no fair value/upside/downside, no public publishing; the candidate score is an internal prioritization signal only and every candidate is `human_review_required=true` / `is_public=false`. 51 backend + 15 Playwright tests. See the Phase 25 section below. **Next: Phase 23 — Admin/Auth hardening before any external sharing.**
+
+## Previous State: Phase 22.3.1 Web Deploy Cache Hardening — a deploy/CI + frontend-verification hotfix on top of Phase 22.3. Fixes an operational issue found during the Phase 22.3 release: with `WEBSITE_RUN_FROM_PACKAGE=1` and `alwaysOn=false`, the statically prerendered homepage `/` could keep serving the old build after a deploy until a manual `az webapp restart`, while dynamic `/admin` routes updated immediately. Adds a `/api/version` build-metadata endpoint and an `x-ib-build-commit` `<meta>` tag, renders the homepage dynamically so `/` reflects the mounted bundle, bakes `NEXT_PUBLIC_*` build metadata in CI, best-effort restarts `ib-stg-web` after deploy (when an optional `AZURE_CREDENTIALS` service principal exists), and adds a SHA-verified smoke check that fails loudly if `/api/version`, `/`, or `/admin` are stale. No backend analysis or report-generation logic changed; no financial semantics changed; no auth, no public publishing, no recommendation language, and no secrets. See the Phase 22.3.1 section below.
 
 ## Previous State: Phase 22.3 UI Modernization + Markdown Report Preview — a frontend/UI-only phase on top of the Phase 19.4.1 data stack. The web/admin experience is modernized with a dark glassmorphism design system, a subtle animated aurora background (disabled under `prefers-reduced-motion`), and reusable glass UI primitives. Report content is now rendered through a **safe markdown preview** (`react-markdown` + `remark-gfm` + `rehype-sanitize`, no `dangerouslySetInnerHTML`) with a Preview/Raw toggle and a sticky mini table of contents, replacing the raw `<pre>` block. No backend analysis or report-generation logic changed; no public publishing was added; all mandatory internal-only / not-investment-advice / human-review disclaimers are preserved verbatim, and no BUY/SELL/HOLD/WATCH, price target, fair value or upside is produced. See the Phase 22.3 section below.
 
@@ -1258,6 +1260,41 @@ Deliverables:
 - [ ] Backtesting does not predict future results — disclaimer enforced
 
 Skills to use: `langgraph-agents`, `azure-deployment`, `backend-fastapi`, `investment-domain`
+
+---
+
+## Phase 25: Real Market Candidate Discovery ✅
+
+**Status: Complete**
+
+Goal: Move from manual single-ticker analysis to a bounded, internal-only market
+discovery workflow that builds an internal research-candidate queue.
+
+Deliverables:
+- [x] `discovery_runs` + `discovery_candidates` tables (migration 010)
+- [x] Bounded universe (curated seed default `AAPL,MSFT,NVDA,AMZN,GOOGL,META,TSLA`, or manual tickers), validated against `DISCOVERY_MAX_UNIVERSE_SIZE` (default 15) — oversized/empty runs rejected (422)
+- [x] Deterministic `discovery_scoring_service`: `0.30·momentum + 0.25·catalyst + 0.20·fundamentals + 0.15·source_quality + 0.10·completeness − risk_penalty`, clamped 0–100; grades high/medium/low internal interest + data_insufficient
+- [x] `discovery_signal_extractor` reuses the tested company-analysis workflow per ticker (injectable → offline CI)
+- [x] `market_discovery_service` orchestrator: sequential bounded processing, non-blocking per-ticker failures, run status `completed` / `completed_with_warnings` / `failed`, ranked candidate persistence, forbidden-term safety scan
+- [x] 6 admin-only endpoints under `/api/v1/market-discovery/*` (runs, candidates, run-analysis)
+- [x] `/admin/discovery` dark-glass UI: start-run form (provider/universe/lookback + universe-size preview), runs table, ranked candidate queue, inline candidate detail with score breakdown + "Run Full Analysis"
+- [x] Config: `DISCOVERY_DEFAULT_PROVIDER`, `DISCOVERY_MAX_UNIVERSE_SIZE`, `DISCOVERY_MAX_CONCURRENT_REQUESTS`, `DISCOVERY_LOOKBACK_DAYS`, `DISCOVERY_REQUEST_TIMEOUT_SECONDS`, `DISCOVERY_CACHE_TTL_HOURS`, `DISCOVERY_SEED_UNIVERSE`
+- [x] 51 backend + 15 Playwright tests; full suite green; ruff clean
+
+Safety: internal-only, human-review-required, non-public. No BUY/SELL/HOLD/WATCH,
+no price targets, no fair value/intrinsic value/upside/downside/undervalued/
+overvalued, no recommendations. `candidate_score` is an internal prioritization
+signal only.
+
+Known limitations: no full-market crawl; no scheduling; curated feed URLs can go
+stale; free providers are incomplete; generated-report `schema_valid` may remain
+false (expected, non-blocking); auth is still Phase 23; public publishing not
+implemented.
+
+Skills used: `database-design`, `backend-fastapi`, `investment-domain`,
+`financial-data`, `frontend-nextjs`, `testing-qa`, `security-review`, `docs-maintainer`.
+
+**Next recommended phase: Phase 23 — Admin/Auth hardening before any external sharing.**
 
 ---
 

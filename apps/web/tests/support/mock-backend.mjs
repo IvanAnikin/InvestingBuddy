@@ -175,6 +175,17 @@ const server = createServer((req, res) => {
     return send(res, 200, { items: [], total: 0 });
   }
 
+  // Phase 25 — Market Candidate Discovery (internal only).
+  const DISC =
+    "INTERNAL ADMIN USE ONLY. NOT INVESTMENT ADVICE. NOT A PUBLIC RECOMMENDATION.";
+  if (path === "/api/v1/market-discovery/runs") {
+    return send(res, 200, { runs: [], total: 0, disclaimer: DISC });
+  }
+  const discRun = /^\/api\/v1\/market-discovery\/runs\/([^/]+)$/.exec(path);
+  if (discRun) {
+    return send(res, 404, { detail: "Discovery run not found (mock backend)" });
+  }
+
   return send(res, 404, { detail: "Not found (mock backend)" });
 });
 

@@ -9,6 +9,7 @@ const navLinks: NavLink[] = [
   { href: "/admin", label: "Dashboard" },
   { href: "/admin/companies/new", label: "Add Company" },
   { href: "/admin/analysis", label: "Run Analysis" },
+  { href: "/admin/discovery", label: "Discovery" },
   { href: "/admin/reports", label: "Draft Reports" },
   { href: "/admin/backtesting", label: "Backtesting" },
 ];

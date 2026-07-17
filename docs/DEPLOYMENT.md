@@ -548,6 +548,37 @@ curl -o /dev/null -w "%{http_code}" https://ib-stg-web.azurewebsites.net/admin
 curl -s https://ib-stg-web.azurewebsites.net/api/version
 ```
 
+### Phase 25 — Market Candidate Discovery smoke (internal only)
+
+```bash
+BASE=https://ib-stg-api.azurewebsites.net
+
+# 1. Start a bounded discovery run (curated seed, free_real). Keep it small.
+curl -u admin:<password> -X POST $BASE/api/v1/market-discovery/runs \
+  -H "Content-Type: application/json" \
+  -d '{"provider_name":"free_real","universe_source":"manual_tickers","tickers":["AAPL","MSFT","NVDA"],"lookback_days":90}'
+# → returns run id + status (completed / completed_with_warnings) + counts
+
+# 2. List runs and inspect the candidate queue
+curl -u admin:<password> $BASE/api/v1/market-discovery/runs
+curl -u admin:<password> "$BASE/api/v1/market-discovery/runs/<run_id>/candidates?sort=candidate_score"
+
+# 3. Candidate detail + promote to full analysis
+curl -u admin:<password> $BASE/api/v1/market-discovery/candidates/<candidate_id>
+curl -u admin:<password> -X POST $BASE/api/v1/market-discovery/candidates/<candidate_id>/run-analysis
+# → links analysis_report_id; open /admin/reports/<id> to verify validation metadata
+
+# 4. Oversized universe must be rejected (422) — never an uncontrolled scan
+curl -u admin:<password> -o /dev/null -w "%{http_code}" -X POST $BASE/api/v1/market-discovery/runs \
+  -H "Content-Type: application/json" \
+  -d '{"universe_source":"manual_tickers","tickers":["A","B","C","D","E","F","G","H","I","J","K","L","M","N","O","P"]}'
+```
+
+Browser smoke: open `https://ib-stg-web.azurewebsites.net/admin/discovery`, run a
+curated-seed scan (5–7 tickers), confirm ranked candidates, no BUY/SELL/HOLD/WATCH
+or price-target/fair-value text, every candidate human-review-required, and that
+"Run Full Analysis" opens a report under `/admin/reports/<id>`.
+
 ---
 
 ## Security Limitations

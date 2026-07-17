@@ -45,5 +45,27 @@ class Settings(BaseSettings):
     azure_openai_api_version: str = "2024-08-01-preview"
     azure_openai_deployment_name: str = ""
 
+    # ── Market Candidate Discovery (Phase 25) ──────────────────────────────
+    # Internal-only, bounded market scan configuration. Discovery produces
+    # internal research candidates ranked by an internal prioritization score.
+    # It is NOT a recommendation engine and never runs an uncontrolled scan.
+    # Defaults are conservative so a scan stays small and cheap.
+    discovery_default_provider: str = "free_real"
+    # Hard cap on the number of tickers processed in a single run. A run above
+    # this size is rejected — protecting against an accidental full-market scan.
+    discovery_max_universe_size: int = 15
+    # Bounded concurrency for per-ticker processing. Kept small (1–2) to be a
+    # polite consumer of free upstream sources (SEC EDGAR, GDELT, RSS feeds).
+    discovery_max_concurrent_requests: int = 1
+    # Default price/catalyst lookback window (days) used for signal extraction.
+    discovery_lookback_days: int = 90
+    # Per-ticker request timeout budget (seconds).
+    discovery_request_timeout_seconds: int = 30
+    # Optional cache TTL (hours) for repeated discovery scans. 0 disables caching.
+    discovery_cache_ttl_hours: int = 0
+    # Comma-separated curated seed universe (US mega-caps by default). Kept small
+    # so the default run stays well within discovery_max_universe_size.
+    discovery_seed_universe: str = "AAPL,MSFT,NVDA,AMZN,GOOGL,META,TSLA"
+
 
 settings = Settings()

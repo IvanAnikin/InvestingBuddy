@@ -330,3 +330,135 @@ export interface BacktestRunSummary {
   warnings: string[];
   disclaimer: string;
 }
+
+// ---------------------------------------------------------------------------
+// Phase 25: Market Candidate Discovery types (internal only — no recommendations)
+// ---------------------------------------------------------------------------
+
+export interface DiscoveryRunCreate {
+  provider_name?: string;
+  universe_source: "curated_seed" | "manual_tickers";
+  tickers?: string[];
+  exchange?: string;
+  lookback_days?: number;
+  created_by?: string;
+  notes?: string;
+}
+
+export interface DiscoveryRun {
+  id: string;
+  status: string;
+  provider_name: string;
+  universe_source: string;
+  universe_count: number;
+  requested_tickers: string[] | null;
+  processed_count: number;
+  candidate_count: number;
+  error_count: number;
+  lookback_days: number;
+  warnings: string[] | null;
+  config_json: Record<string, unknown> | null;
+  safety_notes: Record<string, unknown> | null;
+  created_by: string | null;
+  human_review_required: boolean;
+  started_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+  updated_at: string;
+  disclaimer: string;
+}
+
+export interface DiscoveryRunListResponse {
+  runs: DiscoveryRun[];
+  total: number;
+  disclaimer: string;
+}
+
+export interface DiscoveryCandidate {
+  id: string;
+  discovery_run_id: string;
+  ticker: string;
+  exchange: string;
+  company_name: string | null;
+  sector: string | null;
+  industry: string | null;
+  country: string | null;
+  candidate_score: number | null;
+  candidate_score_grade: string | null;
+  rank: number | null;
+  momentum_score: number | null;
+  fundamentals_score: number | null;
+  catalyst_score: number | null;
+  source_quality_score: number | null;
+  data_completeness_score: number | null;
+  risk_penalty_score: number | null;
+  labels_json: string[] | null;
+  score_explanation: string | null;
+  momentum_label: string | null;
+  catalyst_coverage_status: string | null;
+  latest_catalyst_date: string | null;
+  positive_catalyst_count: number;
+  high_strength_catalyst_count: number;
+  press_release_event_count: number;
+  news_event_count: number;
+  filing_event_count: number;
+  primary_or_regulator_event_count: number;
+  aggregator_only_event_count: number;
+  source_quality: string | null;
+  missing_info_count: number | null;
+  blocking_gap_count: number | null;
+  analysis_report_id: string | null;
+  agent_run_id: string | null;
+  human_review_required: boolean;
+  is_public: boolean;
+  safety_valid: boolean | null;
+  schema_valid: boolean | null;
+  created_at: string;
+  disclaimer: string;
+}
+
+export interface DiscoveryCandidateDetail extends DiscoveryCandidate {
+  legal_name: string | null;
+  lei: string | null;
+  website: string | null;
+  return_1m: number | null;
+  return_3m: number | null;
+  return_6m: number | null;
+  pct_above_ma50: number | null;
+  pct_above_ma200: number | null;
+  latest_close: number | null;
+  market_cap_mln: number | null;
+  enterprise_value_mln: number | null;
+  pe_ratio: number | null;
+  revenue_mln: number | null;
+  revenue_growth_yoy_pct: number | null;
+  net_income_mln: number | null;
+  free_cash_flow_mln: number | null;
+  total_debt_mln: number | null;
+  cash_mln: number | null;
+  latest_annual_fy: string | null;
+  source_tiers_json: Record<string, number> | null;
+  warnings_json: string[] | null;
+  missing_sources_json: string[] | null;
+  missing_fields_json: string[] | null;
+  raw_signal_json: Record<string, unknown> | null;
+}
+
+export interface DiscoveryCandidateListResponse {
+  candidates: DiscoveryCandidate[];
+  total: number;
+  run_id: string;
+  disclaimer: string;
+}
+
+export interface RunCandidateAnalysisResponse {
+  candidate_id: string;
+  ticker: string;
+  status: string;
+  analysis_report_id: string | null;
+  agent_run_id: string | null;
+  provider_name: string;
+  message: string;
+  human_review_required: boolean;
+  disclaimer: string;
+}

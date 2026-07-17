@@ -51,6 +51,7 @@ alembic revision --autogenerate -m "short description"
 | 007 | `007_add_scorecards.py` | creates scorecards (Phase 15 multi-dimension research attractiveness scoring) |
 | 008 | `008_add_final_report_fields.py` | adds `final_report_version`, `safety_validation_json`, `schema_validation_json`, `source_summary_json`, `scorecard_id` to reports (Phase 16 Final Report Generator) |
 | 009 | `009_add_backtesting_tables.py` | creates `backtest_runs`, `backtest_results`, `thesis_tracking_events` (Phase 22 Judge + Backtesting Framework) |
+| 010 | `010_add_market_discovery.py` | creates `discovery_runs`, `discovery_candidates` (Phase 25 Real Market Candidate Discovery) |
 
 ---
 
@@ -432,6 +433,47 @@ Phase 16 adds 5 columns to the existing **reports** table (migration 008) and do
 
 **Exempt field names** (scanned content but term allowed as meta-documentation):
 `disallowed_outputs`, `blocked_methods`, `forbidden_terms_found`, `forbidden_terms`, `prohibited_outputs`
+
+---
+
+### Market Candidate Discovery (Phase 25)
+
+Migration `010` creates two internal-only tables. No BUY/SELL/HOLD/WATCH labels,
+price targets, fair values, or recommendations are ever stored. Every candidate
+is `human_review_required=true` and `is_public=false`.
+
+**`discovery_runs`** — one execution of a bounded, internal market scan.
+
+| Column | Type | Description |
+|---|---|---|
+| `id` | UUID PK | |
+| `status` | VARCHAR(50) | `pending` / `running` / `completed` / `completed_with_warnings` / `failed` / `cancelled` |
+| `provider_name` | VARCHAR(50) | `free_real` (default) / `eodhd_free_real` / `mock` |
+| `universe_source` | VARCHAR(50) | `curated_seed` / `manual_tickers` |
+| `universe_count` / `processed_count` / `candidate_count` / `error_count` | INT | Run progress counters |
+| `requested_tickers` / `warnings` / `config_json` / `safety_notes` | JSONB | Run inputs, warnings, config, safety metadata |
+| `lookback_days` | INT | Price/catalyst lookback window |
+| `human_review_required` | BOOL (default true) | Always true |
+| `started_at` / `completed_at` / `created_at` / `updated_at` | TIMESTAMPTZ | |
+
+**`discovery_candidates`** — a ranked internal research candidate.
+
+| Group | Columns |
+|---|---|
+| Identity | `ticker`, `exchange`, `company_name`, `legal_name`, `sector`, `industry`, `country`, `lei`, `website` |
+| Scoring (internal only) | `candidate_score`, `candidate_score_grade`, `rank`, `momentum_score`, `fundamentals_score`, `catalyst_score`, `source_quality_score`, `data_completeness_score`, `risk_penalty_score`, `labels_json`, `score_explanation` |
+| Trend (T6) | `momentum_label`, `return_1m/3m/6m`, `pct_above_ma50/ma200` |
+| Catalysts | `catalyst_coverage_status`, `latest_catalyst_date`, `positive_catalyst_count`, `high_strength_catalyst_count`, `press_release_event_count`, `news_event_count`, `filing_event_count`, `primary_or_regulator_event_count`, `aggregator_only_event_count` |
+| Financial/market | `latest_close`, `market_cap_mln`, `enterprise_value_mln`, `pe_ratio`, `revenue_mln`, `revenue_growth_yoy_pct`, `net_income_mln`, `free_cash_flow_mln`, `total_debt_mln`, `cash_mln`, `latest_annual_fy` |
+| Completeness/source | `source_quality`, `missing_info_count`, `blocking_gap_count`, `source_tiers_json`, `warnings_json`, `missing_sources_json`, `missing_fields_json`, `raw_signal_json`, `snapshot_json` |
+| Workflow linkage | `analysis_report_id` (FK reports SET NULL), `agent_run_id` (FK agent_runs SET NULL) |
+| Safety | `human_review_required` (true), `is_public` (false), `safety_valid`, `schema_valid`, `safety_notes` |
+
+Constraint: `UNIQUE(discovery_run_id, ticker, exchange)`. Indexes on
+`discovery_run_id`, `ticker`, `candidate_score`, `sector`, `candidate_score_grade`.
+
+Note: `schema_valid` is expected to be `false` for generated reports at this
+phase and is **not** a blocker for candidate creation.
 
 ---
 
