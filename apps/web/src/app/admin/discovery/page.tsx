@@ -5,6 +5,7 @@ import { Fragment, useEffect, useState } from "react";
 import {
   createDiscoveryRun,
   getDiscoveryCandidate,
+  getDiscoveryRun,
   listDiscoveryCandidates,
   listDiscoveryRuns,
   runCandidateAnalysis,
@@ -22,6 +23,20 @@ import StatusPill, { type PillColor } from "@/components/ui/StatusPill";
 // Mirrors the backend DISCOVERY_MAX_UNIVERSE_SIZE default (client-side preview
 // only — the server always enforces the real limit).
 const CLIENT_MAX_UNIVERSE = 15;
+
+// Phase 25.1 — runs are processed in the background; the UI polls run status
+// until it reaches a terminal state.
+const POLL_INTERVAL_MS = 3000;
+const TERMINAL_STATUSES = new Set([
+  "completed",
+  "completed_with_warnings",
+  "failed",
+  "cancelled",
+]);
+
+function isTerminal(status: string | undefined | null): boolean {
+  return status ? TERMINAL_STATUSES.has(status) : false;
+}
 
 const PROVIDERS = [
   { value: "free_real", label: "free_real — SEC + price + trend (recommended)" },
@@ -313,9 +328,12 @@ export default function DiscoveryPage() {
   const [lookbackDays, setLookbackDays] = useState("90");
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [startedMsg, setStartedMsg] = useState<string | null>(null);
 
-  // Selected run + candidates
+  // Selected run + live detail (polled while processing) + candidates
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const [runDetail, setRunDetail] = useState<DiscoveryRun | null>(null);
+  const [candTick, setCandTick] = useState(0);
   const [candidates, setCandidates] = useState<DiscoveryCandidate[]>([]);
   const [loadingCandidates, setLoadingCandidates] = useState(false);
   const [candidatesError, setCandidatesError] = useState<string | null>(null);
@@ -371,12 +389,48 @@ export default function DiscoveryPage() {
     return () => {
       cancelled = true;
     };
-  }, [selectedRunId, sort]);
+  }, [selectedRunId, sort, candTick]);
+
+  // Poll the selected run's status while it is processing in the background.
+  // Each poll refreshes the live run detail and triggers a candidate refetch so
+  // the queue fills as tickers finish. Polling stops on a terminal status.
+  useEffect(() => {
+    if (!selectedRunId) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    async function poll(runId: string) {
+      let status: string | undefined;
+      try {
+        const detail = await getDiscoveryRun(runId);
+        if (cancelled) return;
+        status = detail.status;
+        setRunDetail(detail);
+        setRuns((prev) =>
+          prev.map((r) => (r.id === runId ? { ...r, ...detail } : r)),
+        );
+        setCandTick((t) => t + 1);
+      } catch {
+        // Non-fatal: keep the last known detail; the manual Refresh still works.
+      }
+      if (cancelled) return;
+      if (!isTerminal(status)) {
+        timer = setTimeout(() => void poll(runId), POLL_INTERVAL_MS);
+      }
+    }
+
+    void poll(selectedRunId);
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [selectedRunId]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setSubmitting(true);
     setSubmitError(null);
+    setStartedMsg(null);
     const payload: DiscoveryRunCreate = {
       provider_name: provider,
       universe_source: universeSource,
@@ -385,17 +439,43 @@ export default function DiscoveryPage() {
       tickers: universeSource === "manual_tickers" ? parsedTickers : undefined,
     };
     try {
+      // Phase 25.1: POST returns immediately with a pending/running run; the
+      // backend processes tickers in the background and the UI polls status.
       const run = await createDiscoveryRun(payload);
       setSelectedRunId(run.id);
+      setRunDetail(run);
+      setExpandedId(null);
+      setStartedMsg(
+        run.message ??
+          "Discovery run started. Processing in the background — progress updates automatically.",
+      );
       setRefreshTick((t) => t + 1);
     } catch (e) {
-      setSubmitError(e instanceof Error ? e.message : "Failed to start run.");
+      // The async POST should not time out, but if the request fails or a
+      // gateway 504 slips through, the backend may still complete the run.
+      setSubmitError(
+        `${e instanceof Error ? e.message : "Failed to start run."} — the ` +
+          "request may have timed out. The backend may still be processing; " +
+          "refresh recent runs below to check.",
+      );
+      setRefreshTick((t) => t + 1);
     } finally {
       setSubmitting(false);
     }
   }
 
-  const selectedRun = runs.find((r) => r.id === selectedRunId) ?? null;
+  const selectedRun =
+    (runDetail && runDetail.id === selectedRunId ? runDetail : null) ??
+    runs.find((r) => r.id === selectedRunId) ??
+    null;
+  const selectedRunning = selectedRun ? !isTerminal(selectedRun.status) : false;
+  const progressPct =
+    selectedRun?.progress_pct ??
+    (selectedRun && selectedRun.universe_count
+      ? Math.round(
+          (selectedRun.processed_count / selectedRun.universe_count) * 100,
+        )
+      : 0);
   const previewCount =
     universeSource === "manual_tickers" ? manualCount : null;
   const overLimit = previewCount !== null && previewCount > CLIENT_MAX_UNIVERSE;
@@ -559,6 +639,12 @@ export default function DiscoveryPage() {
             </SafetyBanner>
           )}
 
+          {startedMsg && !submitError && (
+            <SafetyBanner variant="info" title="Discovery run started">
+              <p data-testid="run-started-msg">{startedMsg}</p>
+            </SafetyBanner>
+          )}
+
           <button
             type="submit"
             disabled={submitting || overLimit}
@@ -700,6 +786,69 @@ export default function DiscoveryPage() {
             </div>
           </div>
 
+          {/* Run progress (Phase 25.1 — background processing + polling) */}
+          <div
+            className="space-y-2 border-b border-white/10 px-5 py-3"
+            data-testid="run-progress"
+          >
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-400">
+              <span className="flex items-center gap-1.5">
+                <StatusPill
+                  label={selectedRun.status}
+                  color={runStatusColor(selectedRun.status)}
+                />
+              </span>
+              <span data-testid="run-progress-counts">
+                Processed{" "}
+                <span className="font-mono text-slate-200">
+                  {selectedRun.processed_count}
+                </span>{" "}
+                / {selectedRun.universe_count}
+              </span>
+              <span>
+                Candidates{" "}
+                <span className="font-mono text-slate-200">
+                  {selectedRun.candidate_count}
+                </span>
+              </span>
+              <span>
+                Errors{" "}
+                <span className="font-mono text-slate-200">
+                  {selectedRun.error_count}
+                </span>
+              </span>
+            </div>
+            <div className="h-2 w-full overflow-hidden rounded-full bg-white/10">
+              <div
+                className={`h-full rounded-full transition-all ${
+                  selectedRun.status === "failed"
+                    ? "bg-rose-500/70"
+                    : "bg-gradient-to-r from-sky-500 to-violet-500"
+                }`}
+                style={{ width: `${Math.max(0, Math.min(100, progressPct))}%` }}
+                data-testid="run-progress-bar"
+              />
+            </div>
+            {selectedRunning && (
+              <p className="text-xs text-slate-500" data-testid="run-processing-note">
+                Processing in the background. Progress updates automatically — you
+                can also refresh this page.
+              </p>
+            )}
+            {selectedRun.warnings && selectedRun.warnings.length > 0 && (
+              <details className="text-xs text-amber-300/80">
+                <summary className="cursor-pointer">
+                  {selectedRun.warnings.length} warning(s)
+                </summary>
+                <ul className="mt-1 list-inside list-disc break-words text-slate-400">
+                  {selectedRun.warnings.slice(0, 12).map((w, i) => (
+                    <li key={i}>{w}</li>
+                  ))}
+                </ul>
+              </details>
+            )}
+          </div>
+
           {candidatesError && (
             <div className="p-4">
               <SafetyBanner variant="warning">
@@ -713,8 +862,13 @@ export default function DiscoveryPage() {
               Loading candidates…
             </div>
           ) : candidates.length === 0 ? (
-            <div className="p-6 text-center text-sm text-slate-500">
-              No candidates for this run.
+            <div
+              className="p-6 text-center text-sm text-slate-500"
+              data-testid="candidates-empty"
+            >
+              {selectedRunning
+                ? "Candidates will appear as tickers finish processing."
+                : "No candidates for this run."}
             </div>
           ) : (
             <div className="overflow-x-auto">

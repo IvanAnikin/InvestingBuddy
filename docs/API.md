@@ -1060,12 +1060,38 @@ admin/internal only with no public-facing routes.
 | Method | Path | Description |
 |---|---|---|
 | GET | `/api/v1/market-discovery/runs` | List discovery runs |
-| POST | `/api/v1/market-discovery/runs` | Create + synchronously run a bounded discovery scan |
-| GET | `/api/v1/market-discovery/runs/{run_id}` | Get a discovery run |
+| POST | `/api/v1/market-discovery/runs` | **Start** a bounded discovery scan asynchronously — returns `run_id` immediately (Phase 25.1) |
+| GET | `/api/v1/market-discovery/runs/{run_id}` | Get a discovery run (poll for status/progress) |
 | GET | `/api/v1/market-discovery/runs/{run_id}/summary` | Aggregate summary (top score, grade breakdown) |
 | GET | `/api/v1/market-discovery/runs/{run_id}/candidates` | List ranked internal candidates (filter/sort) |
 | GET | `/api/v1/market-discovery/candidates/{candidate_id}` | Candidate detail (score breakdown + signals) |
 | POST | `/api/v1/market-discovery/candidates/{candidate_id}/run-analysis` | Promote a candidate to the full company-analysis workflow |
+
+**Async execution (Phase 25.1):** `POST /runs` now **creates the run row and
+returns immediately** (HTTP 201, `status="pending"`) instead of processing the
+whole universe inline. Tickers are processed in the background (FastAPI
+`BackgroundTasks`, using a *fresh* DB session — never the request session);
+progress is committed after every ticker. The admin UI polls `GET /runs/{run_id}`
+until a terminal status is reached. This prevents a gateway/proxy `504` on a
+multi-ticker `free_real` run under a single B1 worker.
+
+- **Statuses:** `pending` → `running` → `completed` | `completed_with_warnings`
+  | `failed`. (`cancelled` is reserved; cancellation is not implemented.)
+- **Progress fields on the run:** `processed_count` / `universe_count`,
+  `candidate_count`, `error_count`, `warnings`, and a computed
+  `progress_pct = round(processed_count / universe_count * 100, 1)` (0 when the
+  universe is empty). The `POST` response also carries `is_async: true` and a
+  human-readable `message`.
+- **Idempotency:** a run already in a terminal state is never reprocessed; a run
+  already `running` (and newer than 30 minutes) is not picked up by a second
+  worker. Candidates are not duplicated for the same run/ticker.
+- **Durability limitation:** `BackgroundTasks` are **process-local** and not
+  durable across an App Service restart. This is acceptable for the Phase 25.1
+  MVP — a future phase can add a durable queue (Service Bus / Functions). If the
+  browser closes mid-run the admin can reopen `/admin/discovery` and the recent
+  run (and its committed progress) is still visible.
+- The oversized/empty universe guard still runs **before** the row is created,
+  so a rejected run (422) schedules no background work.
 
 **Run creation (`POST /runs`) body:**
 ```json
@@ -1075,6 +1101,23 @@ admin/internal only with no public-facing routes.
   "tickers": ["AAPL", "MSFT"],           // only for manual_tickers
   "exchange": "US",
   "lookback_days": 90
+}
+```
+
+**Run creation response (Phase 25.1 — returns fast):**
+```json
+{
+  "id": "…",
+  "status": "pending",
+  "provider_name": "free_real",
+  "universe_count": 3,
+  "processed_count": 0,
+  "candidate_count": 0,
+  "error_count": 0,
+  "progress_pct": 0.0,
+  "is_async": true,
+  "human_review_required": true,
+  "message": "Discovery run started. Processing in the background — refresh or poll run status for progress."
 }
 ```
 

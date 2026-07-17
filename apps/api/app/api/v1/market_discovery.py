@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
@@ -78,25 +78,40 @@ async def list_discovery_runs(
     "/runs",
     response_model=DiscoveryRunRead,
     status_code=status.HTTP_201_CREATED,
-    summary="Create and run an internal discovery scan (admin/internal only)",
+    summary="Start an internal discovery scan asynchronously (admin/internal only)",
     description=(
-        "ADMIN/INTERNAL ONLY. Creates and synchronously executes a bounded "
-        "market discovery run over a curated seed universe or a manual ticker "
-        "list. Rejects (422) an empty universe or one exceeding "
-        "DISCOVERY_MAX_UNIVERSE_SIZE. " + _INTERNAL
+        "ADMIN/INTERNAL ONLY. Creates a bounded market discovery run over a "
+        "curated seed universe or a manual ticker list and returns the run_id "
+        "IMMEDIATELY (status='pending'). Tickers are processed in the "
+        "background — poll GET /runs/{run_id} for progress and "
+        "GET /runs/{run_id}/candidates for results as they appear. Rejects "
+        "(422) an empty universe or one exceeding DISCOVERY_MAX_UNIVERSE_SIZE "
+        "BEFORE any background work is scheduled. " + _INTERNAL
     ),
 )
 async def create_discovery_run(
     payload: DiscoveryRunCreate,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
 ) -> DiscoveryRunRead:
     try:
-        run = await svc.create_discovery_run(db, payload)
+        run = await svc.create_pending_run(db, payload)
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         ) from exc
-    return DiscoveryRunRead.model_validate(run)
+
+    # Process the (already-committed) run in the background using its own DB
+    # session — never the request-scoped one, which is closed after the
+    # response. Only the primitive run_id is handed to the task.
+    background_tasks.add_task(svc.process_discovery_run_task, str(run.id))
+
+    dto = DiscoveryRunRead.model_validate(run)
+    dto.message = (
+        "Discovery run started. Processing in the background — refresh or poll "
+        "run status for progress."
+    )
+    return dto
 
 
 @router.get(

@@ -147,11 +147,21 @@ promote action. Source tiers preserved end-to-end (T1 company / T2 SEC /
 T5 aggregators / T6 model). Multi-signal ranking is implemented directly on the
 real `free_real` snapshot rather than replacing the Phase 14 EODHD screener.
 
+**Async execution (Phase 25.1):** `POST /market-discovery/runs` now returns a
+`pending` run immediately and processes tickers in the background (FastAPI
+`BackgroundTasks` in a fresh DB session, progress committed per ticker); the
+`/admin/discovery` UI polls run status with a live progress bar. This removes the
+gateway `504` a multi-ticker `free_real` run could hit under the single B1
+worker. `BackgroundTasks` are process-local (not durable across an App Service
+restart) — acceptable for the MVP; a durable queue (Service Bus / Functions) is a
+later enhancement. No migration; safety unchanged.
+
 **Remaining (future enhancements):** no full-market crawl or scheduling (curated
 seed + manual tickers only); no automated promote/reject state machine (manual
-"Run Full Analysis" only); free providers remain incomplete.
+"Run Full Analysis" only); no durable background-job queue yet; free providers
+remain incomplete.
 
-**Phase:** 25 (complete)
+**Phase:** 25 (complete) + 25.1 async execution (complete)
 
 ---
 

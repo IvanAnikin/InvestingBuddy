@@ -175,11 +175,51 @@ const server = createServer((req, res) => {
     return send(res, 200, { items: [], total: 0 });
   }
 
-  // Phase 25 — Market Candidate Discovery (internal only).
+  // Phase 25 / 25.1 — Market Candidate Discovery (internal only, async runs).
   const DISC =
     "INTERNAL ADMIN USE ONLY. NOT INVESTMENT ADVICE. NOT A PUBLIC RECOMMENDATION.";
   if (path === "/api/v1/market-discovery/runs") {
+    // GET list / POST create-and-schedule. POST returns a pending run quickly.
+    if (req.method === "POST") {
+      return send(res, 201, {
+        id: "11111111-0000-0000-0000-000000000025",
+        status: "pending",
+        provider_name: "free_real",
+        universe_source: "curated_seed",
+        universe_count: 3,
+        requested_tickers: ["AAPL", "MSFT", "NVDA"],
+        processed_count: 0,
+        candidate_count: 0,
+        error_count: 0,
+        lookback_days: 90,
+        warnings: [],
+        config_json: { provider_name: "free_real" },
+        safety_notes: { internal_only: true },
+        created_by: null,
+        human_review_required: true,
+        started_at: null,
+        completed_at: null,
+        created_at: "2026-07-18T10:00:00Z",
+        updated_at: "2026-07-18T10:00:00Z",
+        is_async: true,
+        progress_pct: 0,
+        message:
+          "Discovery run started. Processing in the background — refresh or poll run status for progress.",
+        disclaimer: DISC,
+      });
+    }
     return send(res, 200, { runs: [], total: 0, disclaimer: DISC });
+  }
+  // Candidates for a run (empty in the mock backend).
+  const discCands =
+    /^\/api\/v1\/market-discovery\/runs\/([^/]+)\/candidates$/.exec(path);
+  if (discCands) {
+    return send(res, 200, {
+      candidates: [],
+      total: 0,
+      run_id: discCands[1],
+      disclaimer: DISC,
+    });
   }
   const discRun = /^\/api\/v1\/market-discovery\/runs\/([^/]+)$/.exec(path);
   if (discRun) {

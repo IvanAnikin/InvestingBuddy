@@ -365,6 +365,10 @@ export interface DiscoveryRun {
   completed_at: string | null;
   created_at: string;
   updated_at: string;
+  // Phase 25.1 — async execution metadata (background processing + polling).
+  is_async?: boolean;
+  message?: string | null;
+  progress_pct?: number;
   disclaimer: string;
 }
 
