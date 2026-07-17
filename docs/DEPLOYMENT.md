@@ -305,6 +305,31 @@ a deliberate reliability trade-off, not an oversight:
 scaling the plan to **B2 / S1 or higher**, where the extra memory headroom exists.
 The startup command is intentionally pinned to `--workers 1` for the current stack.
 
+### Async discovery runs on the single B1 worker (Phase 25.1)
+
+A `free_real` market-discovery run executes the full company-analysis workflow
+per ticker, so a multi-ticker run can take minutes. Under the single B1 worker
+the old synchronous `POST /api/v1/market-discovery/runs` could exceed the
+gateway/proxy timeout and return **`504`** even though the backend kept running
+and eventually persisted the run/candidates.
+
+Phase 25.1 makes run creation **asynchronous**: `POST /runs` creates the run row
+and returns `201` immediately (`status="pending"`), then processes tickers with
+FastAPI `BackgroundTasks`. The background worker opens its **own** DB session
+(never the request session, which is closed once the response is sent) and
+commits progress after every ticker; `/admin/discovery` polls `GET /runs/{run_id}`
+until a terminal status.
+
+Operational notes:
+- `BackgroundTasks` run **in the same worker process** and are **not durable**
+  across an App Service restart / recycle. If the process restarts mid-run the
+  run can stick in `running`; a new worker will restart it only after the 30-min
+  stale threshold, or an admin can start a fresh run. This is acceptable for the
+  Phase 25.1 MVP — a durable queue (Azure Service Bus + Functions) is deferred.
+- This is **not** a reason to raise `--workers`; the single worker still handles
+  background tasks. Adding workers does not make the tasks durable.
+- No new env var and no migration are required for Phase 25.1.
+
 ### Deploy health-check hardening (Phase 19.2.1)
 
 The API deploy previously could report a **false green**: Azure sometimes routed

@@ -22,13 +22,14 @@ from __future__ import annotations
 import logging
 import re
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import settings
+from app.db.session import async_session_factory
 from app.models.discovery import (
     ALLOWED_CANDIDATE_LABELS,
     DiscoveryCandidate,
@@ -286,21 +287,52 @@ def _build_candidate(
 
 
 # ---------------------------------------------------------------------------
-# Run creation + execution (synchronous MVP for a small bounded universe)
+# Run creation + async execution (Phase 25.1)
+#
+# A run is created and committed IMMEDIATELY (status="pending") so the POST
+# endpoint can return a run_id fast — a multi-ticker free_real scan can exceed a
+# gateway/proxy timeout when executed inline. The universe is then processed in
+# the background by ``process_discovery_run_by_id`` using its OWN DB session,
+# committing progress after every ticker so the admin UI can poll for status.
 # ---------------------------------------------------------------------------
 
+# A run in one of these states is finished — a worker must never reprocess it.
+_TERMINAL_STATUSES = {"completed", "completed_with_warnings", "failed", "cancelled"}
 
-async def create_discovery_run(
-    db: AsyncSession,
-    payload: DiscoveryRunCreate,
-    *,
-    extractor: SignalExtractor | None = None,
+# A run stuck in "running" longer than this is treated as abandoned (e.g. the
+# process that owned it restarted — FastAPI BackgroundTasks are process-local
+# and not durable) and may be restarted by a new worker.
+_STALE_RUNNING_MINUTES = 30
+
+
+def _aware(dt: datetime | None) -> datetime | None:
+    """Return ``dt`` as a timezone-aware UTC datetime (assume UTC if naive)."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _run_universe(run: DiscoveryRun) -> list[dict[str, str]]:
+    """Rebuild the (already-bounded) universe from a persisted run row."""
+    exchange = ((run.config_json or {}).get("exchange") or "US").upper()
+    return [
+        {"ticker": t, "exchange": exchange} for t in (run.requested_tickers or [])
+    ]
+
+
+async def create_pending_run(
+    db: AsyncSession, payload: DiscoveryRunCreate
 ) -> DiscoveryRun:
     """
-    Create and synchronously execute a bounded discovery run.
+    Validate and persist a discovery run WITHOUT processing it.
 
-    ``extractor`` is injectable for tests (defaults to the real signal
-    extractor which reuses the company-analysis workflow).
+    Commits the ``discovery_runs`` row (status="pending") and returns quickly so
+    the API can hand back a ``run_id`` immediately. Raises ``ValueError`` on an
+    invalid provider, an empty universe, or one exceeding the configured max
+    size — so an oversized/empty run is rejected BEFORE any background work is
+    scheduled.
     """
     provider = (payload.provider_name or settings.discovery_default_provider).strip()
     if provider not in _ALLOWED_PROVIDERS:
@@ -311,11 +343,10 @@ async def create_discovery_run(
 
     universe = resolve_universe(payload)  # raises ValueError on invalid size
     lookback_days = payload.lookback_days or settings.discovery_lookback_days
-    extract = extractor or extract_signal
 
     run = DiscoveryRun(
         id=uuid.uuid4(),
-        status="running",
+        status="pending",
         provider_name=provider,
         universe_source=payload.universe_source or "curated_seed",
         universe_count=len(universe),
@@ -341,17 +372,71 @@ async def create_discovery_run(
         },
         created_by=payload.created_by,
         human_review_required=True,
-        started_at=datetime.now(timezone.utc),
+        started_at=None,
     )
     db.add(run)
     await db.commit()
     await db.refresh(run)
+    return run
 
-    # ── Process the universe (bounded, sequential; failures are non-blocking) ──
-    warnings: list[str] = []
+
+async def process_run(
+    db: AsyncSession,
+    run: DiscoveryRun,
+    *,
+    extractor: SignalExtractor | None = None,
+) -> DiscoveryRun:
+    """
+    Process an already-loaded discovery run to completion using ``db``.
+
+    Idempotency / concurrency guards (see plan §8):
+      * A run already in a terminal state is NOT reprocessed.
+      * A run already "running" (and not stale) is left to its existing worker.
+
+    Progress is committed after every ticker so a polling UI shows live counts.
+    A per-ticker failure never fails the whole run. ``extractor`` is injectable
+    for tests (defaults to the real signal extractor).
+    """
+    if run.status in _TERMINAL_STATUSES:
+        logger.info(
+            "Discovery run %s already in terminal state '%s' — skipping.",
+            run.id,
+            run.status,
+        )
+        return run
+    if run.status == "running":
+        started = _aware(run.started_at)
+        if started is not None:
+            age = datetime.now(timezone.utc) - started
+            if age < timedelta(minutes=_STALE_RUNNING_MINUTES):
+                logger.info(
+                    "Discovery run %s already running (age %ss) — not starting a "
+                    "second worker.",
+                    run.id,
+                    int(age.total_seconds()),
+                )
+                return run
+            logger.warning(
+                "Discovery run %s stale in 'running' for %s min — restarting.",
+                run.id,
+                int(age.total_seconds() // 60),
+            )
+
+    extract = extractor or extract_signal
+    provider = run.provider_name
+    lookback_days = run.lookback_days
+    universe = _run_universe(run)
+
+    # ── Mark running and persist immediately so pollers see progress ──────
+    run.status = "running"
+    run.started_at = run.started_at or datetime.now(timezone.utc)
+    run.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+
+    warnings: list[str] = list(run.warnings or [])
     error_count = 0
     processed = 0
-    results: list[tuple[ExtractedSignal, dict[str, Any]]] = []
+    created: list[DiscoveryCandidate] = []
 
     for entry in universe:
         ticker = entry["ticker"]
@@ -369,6 +454,11 @@ async def create_discovery_run(
             warnings.append(f"{ticker}: extraction error — {exc}")
             error_count += 1
             processed += 1
+            run.processed_count = processed
+            run.error_count = error_count
+            run.warnings = warnings[:200]
+            run.updated_at = datetime.now(timezone.utc)
+            await db.commit()
             continue
 
         processed += 1
@@ -380,16 +470,24 @@ async def create_discovery_run(
             warnings.append(f"{ticker}: {w}")
 
         score = score_signal(extracted.signal)
-        results.append((extracted, score))
-
-    # ── Rank by internal prioritization score (desc) and persist ──────────
-    results.sort(key=lambda r: (r[1].get("candidate_score") or 0.0), reverse=True)
-    candidate_count = 0
-    for rank, (extracted, score) in enumerate(results, start=1):
         candidate = _build_candidate(run.id, extracted, score)
-        candidate.rank = rank
         db.add(candidate)
-        candidate_count += 1
+        created.append(candidate)
+
+        # ── Persist progress after each ticker (bounded warnings blob) ─────
+        run.processed_count = processed
+        run.candidate_count = len(created)
+        run.error_count = error_count
+        run.warnings = warnings[:200]
+        run.updated_at = datetime.now(timezone.utc)
+        await db.commit()
+
+    # ── Rank by internal prioritization score (desc), in memory ───────────
+    for rank, candidate in enumerate(
+        sorted(created, key=lambda c: (c.candidate_score or 0.0), reverse=True),
+        start=1,
+    ):
+        candidate.rank = rank
 
     # ── Finalize run status ───────────────────────────────────────────────
     if processed == 0:
@@ -403,14 +501,88 @@ async def create_discovery_run(
 
     run.status = final_status
     run.processed_count = processed
-    run.candidate_count = candidate_count
+    run.candidate_count = len(created)
     run.error_count = error_count
-    run.warnings = warnings[:200]  # keep the JSON blob bounded
+    run.warnings = warnings[:200]
     run.completed_at = datetime.now(timezone.utc)
+    run.updated_at = datetime.now(timezone.utc)
 
     await db.commit()
     await db.refresh(run)
     return run
+
+
+async def process_discovery_run_by_id(
+    run_id: uuid.UUID,
+    *,
+    session_factory: async_sessionmaker[AsyncSession] | None = None,
+    extractor: SignalExtractor | None = None,
+) -> None:
+    """
+    Background worker: load a run by id in a FRESH session and process it.
+
+    Must NOT reuse the request-scoped session (the response has already been
+    returned by the time this runs). Opens its own session from the app session
+    factory (injectable for tests). On a fatal error the run is best-effort
+    marked ``failed`` in a separate session so it never sticks in "running".
+    """
+    factory = session_factory or async_session_factory
+    try:
+        async with factory() as session:
+            run = await get_run(session, run_id)
+            if run is None:
+                logger.warning(
+                    "Discovery run %s not found for background processing.", run_id
+                )
+                return
+            await process_run(session, run, extractor=extractor)
+    except Exception as exc:  # noqa: BLE001 — must not crash the worker
+        logger.exception("Discovery run %s failed fatally: %s", run_id, exc)
+        try:
+            async with factory() as session:
+                run = await get_run(session, run_id)
+                if run is not None and run.status not in _TERMINAL_STATUSES:
+                    warnings = list(run.warnings or [])
+                    warnings.append(f"Fatal background processing error: {exc}")
+                    run.status = "failed"
+                    run.warnings = warnings[:200]
+                    run.completed_at = datetime.now(timezone.utc)
+                    run.updated_at = datetime.now(timezone.utc)
+                    await session.commit()
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to mark discovery run %s as failed.", run_id)
+
+
+async def process_discovery_run_task(run_id: str) -> None:
+    """
+    FastAPI ``BackgroundTasks`` entry point.
+
+    Takes only a primitive ``run_id`` (never an ORM object or the request
+    session) and drives the fresh-session worker. Swallows exceptions so a
+    background failure can never surface to (or crash) the request handler.
+    """
+    try:
+        await process_discovery_run_by_id(uuid.UUID(run_id))
+    except Exception:  # noqa: BLE001
+        logger.exception("Background discovery task crashed for run %s", run_id)
+
+
+async def create_discovery_run(
+    db: AsyncSession,
+    payload: DiscoveryRunCreate,
+    *,
+    extractor: SignalExtractor | None = None,
+) -> DiscoveryRun:
+    """
+    Create AND synchronously process a discovery run (create_pending_run +
+    process_run) in a single call.
+
+    Retained for offline tests and any caller that wants an inline run. The API
+    no longer uses this path — it calls ``create_pending_run`` and schedules
+    ``process_discovery_run_task`` so the request returns immediately.
+    """
+    run = await create_pending_run(db, payload)
+    return await process_run(db, run, extractor=extractor)
 
 
 # ---------------------------------------------------------------------------

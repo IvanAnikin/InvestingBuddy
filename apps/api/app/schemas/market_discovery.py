@@ -19,7 +19,7 @@ from __future__ import annotations
 import uuid
 from datetime import date, datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field
 
 INTERNAL_DISCLAIMER = (
     "INTERNAL ADMIN USE ONLY. NOT INVESTMENT ADVICE. NOT A PUBLIC RECOMMENDATION. "
@@ -86,7 +86,21 @@ class DiscoveryRunRead(BaseModel):
     completed_at: datetime | None
     created_at: datetime
     updated_at: datetime
+    # Phase 25.1 — async execution metadata. Runs are created quickly
+    # (status="pending"/"running") and processed in the background; the UI polls
+    # this endpoint for progress.
+    is_async: bool = True
+    message: str | None = None
     disclaimer: str = INTERNAL_DISCLAIMER
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def progress_pct(self) -> float:
+        """Processed fraction of the universe (0–100), rounded to 1 decimal."""
+        if not self.universe_count:
+            return 0.0
+        pct = (self.processed_count / self.universe_count) * 100.0
+        return round(min(100.0, max(0.0, pct)), 1)
 
 
 class DiscoveryRunSummary(BaseModel):
@@ -103,6 +117,15 @@ class DiscoveryRunSummary(BaseModel):
     warnings: list[str]
     human_review_required: bool = True
     disclaimer: str = INTERNAL_DISCLAIMER
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def progress_pct(self) -> float:
+        """Processed fraction of the universe (0–100), rounded to 1 decimal."""
+        if not self.universe_count:
+            return 0.0
+        pct = (self.processed_count / self.universe_count) * 100.0
+        return round(min(100.0, max(0.0, pct)), 1)
 
 
 class DiscoveryRunListResponse(BaseModel):

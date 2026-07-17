@@ -705,30 +705,40 @@ def _candidate_obj(**over) -> DiscoveryCandidate:
 
 @pytest.mark.asyncio
 async def test_29_post_run_returns_run(client) -> None:
-    with patch.object(mds, "create_discovery_run", AsyncMock(return_value=_run_obj())):
+    # Phase 25.1: POST now creates a pending run and returns immediately; the
+    # background task is scheduled (patched to a no-op here).
+    run = _run_obj(status="pending", processed_count=0, candidate_count=0)
+    with patch.object(
+        mds, "create_pending_run", AsyncMock(return_value=run)
+    ), patch.object(mds, "process_discovery_run_task", AsyncMock()):
         res = await client.post(
             "/api/v1/market-discovery/runs",
             json={"universe_source": "curated_seed"},
         )
     assert res.status_code == 201
     body = res.json()
-    assert body["status"] == "completed"
+    assert body["status"] == "pending"
     assert body["human_review_required"] is True
+    assert body["processed_count"] == 0
+    assert "progress_pct" in body
+    assert body.get("message")
 
 
 @pytest.mark.asyncio
 async def test_29b_post_run_rejects_oversized_universe(client) -> None:
     with patch.object(
         mds,
-        "create_discovery_run",
+        "create_pending_run",
         AsyncMock(side_effect=ValueError("universe size 50 exceeds the configured maximum")),
-    ):
+    ), patch.object(mds, "process_discovery_run_task", AsyncMock()) as task:
         res = await client.post(
             "/api/v1/market-discovery/runs",
             json={"universe_source": "manual_tickers", "tickers": ["A"]},
         )
     assert res.status_code == 422
     assert "exceeds" in res.json()["detail"]
+    # No background work is scheduled when the universe is rejected.
+    task.assert_not_called()
 
 
 @pytest.mark.asyncio

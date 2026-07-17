@@ -1,6 +1,6 @@
 # Roadmap
 
-## Current State: Phase 25 Real Market Candidate Discovery ✅ — moves InvestingBuddy from manual single-ticker analysis into a **bounded, internal-only market discovery workflow**. Instead of entering tickers one at a time, an admin scans a controlled universe (curated seed or manual comma-separated tickers) and gets an **internal research-candidate queue** ranked by an internal prioritization score. New `discovery_runs` + `discovery_candidates` tables (migration 010), a deterministic `discovery_scoring_service` (momentum 30% + catalyst 25% + fundamentals 20% + source-quality 15% + completeness 10% − risk penalty), a `discovery_signal_extractor` that reuses the tested company-analysis workflow per ticker (injectable/offline for CI), a `market_discovery_service` orchestrator (universe validated against `DISCOVERY_MAX_UNIVERSE_SIZE` so an accidental full-market scan is rejected; per-ticker failures are non-blocking), 6 admin-only `/api/v1/market-discovery/*` endpoints, and a dark-glass `/admin/discovery` UI with a start-run form, runs table, ranked candidate queue and inline candidate detail with a "Run Full Analysis" button. This is **NOT** a recommendation engine: no BUY/SELL/HOLD/WATCH, no price targets, no fair value/upside/downside, no public publishing; the candidate score is an internal prioritization signal only and every candidate is `human_review_required=true` / `is_public=false`. 51 backend + 15 Playwright tests. See the Phase 25 section below. **Next: Phase 23 — Admin/Auth hardening before any external sharing.**
+## Current State: Phase 25.1 Async Discovery Run Execution ✅ — operational hardening on Phase 25. `POST /api/v1/market-discovery/runs` now **creates the run and returns a `run_id` immediately** (`status="pending"`), then processes the universe in the background (FastAPI `BackgroundTasks` with a *fresh* DB session, progress committed after every ticker) while the `/admin/discovery` UI **polls run status** and shows a live progress bar / counts until a terminal status. This removes the gateway/proxy `504` a multi-ticker `free_real` run could hit under the single B1 worker. No product-scope, safety, schema, or migration change — statuses `pending→running→completed|completed_with_warnings|failed`, oversized/empty universe still rejected (422) before any background work, `human_review_required=true` / `is_public=false` preserved. `BackgroundTasks` are process-local (not durable across restart) — acceptable for this MVP; a durable queue is a later phase. 27 new backend + 9 new Playwright tests. Underlying: Phase 25 Real Market Candidate Discovery — moves InvestingBuddy from manual single-ticker analysis into a **bounded, internal-only market discovery workflow**. Instead of entering tickers one at a time, an admin scans a controlled universe (curated seed or manual comma-separated tickers) and gets an **internal research-candidate queue** ranked by an internal prioritization score. New `discovery_runs` + `discovery_candidates` tables (migration 010), a deterministic `discovery_scoring_service` (momentum 30% + catalyst 25% + fundamentals 20% + source-quality 15% + completeness 10% − risk penalty), a `discovery_signal_extractor` that reuses the tested company-analysis workflow per ticker (injectable/offline for CI), a `market_discovery_service` orchestrator (universe validated against `DISCOVERY_MAX_UNIVERSE_SIZE` so an accidental full-market scan is rejected; per-ticker failures are non-blocking), 6 admin-only `/api/v1/market-discovery/*` endpoints, and a dark-glass `/admin/discovery` UI with a start-run form, runs table, ranked candidate queue and inline candidate detail with a "Run Full Analysis" button. This is **NOT** a recommendation engine: no BUY/SELL/HOLD/WATCH, no price targets, no fair value/upside/downside, no public publishing; the candidate score is an internal prioritization signal only and every candidate is `human_review_required=true` / `is_public=false`. 51 backend + 15 Playwright tests (Phase 25); +27 backend +9 Playwright (Phase 25.1 async). See the Phase 25 section below. **Next: Phase 23 — Admin/Auth hardening before any external sharing.**
 
 ## Previous State: Phase 22.3.1 Web Deploy Cache Hardening — a deploy/CI + frontend-verification hotfix on top of Phase 22.3. Fixes an operational issue found during the Phase 22.3 release: with `WEBSITE_RUN_FROM_PACKAGE=1` and `alwaysOn=false`, the statically prerendered homepage `/` could keep serving the old build after a deploy until a manual `az webapp restart`, while dynamic `/admin` routes updated immediately. Adds a `/api/version` build-metadata endpoint and an `x-ib-build-commit` `<meta>` tag, renders the homepage dynamically so `/` reflects the mounted bundle, bakes `NEXT_PUBLIC_*` build metadata in CI, best-effort restarts `ib-stg-web` after deploy (when an optional `AZURE_CREDENTIALS` service principal exists), and adds a SHA-verified smoke check that fails loudly if `/api/version`, `/`, or `/admin` are stale. No backend analysis or report-generation logic changed; no financial semantics changed; no auth, no public publishing, no recommendation language, and no secrets. See the Phase 22.3.1 section below.
 
@@ -1293,6 +1293,49 @@ implemented.
 
 Skills used: `database-design`, `backend-fastapi`, `investment-domain`,
 `financial-data`, `frontend-nextjs`, `testing-qa`, `security-review`, `docs-maintainer`.
+
+---
+
+## Phase 25.1: Async Discovery Run Execution ✅
+
+**Status: Complete** — UX/operational hardening only (no product-scope, safety,
+schema, or migration change).
+
+Problem: the Phase 25 `POST /runs` processed the whole universe **inline**. On B1
+with a single gunicorn worker a multi-ticker `free_real` run could exceed the
+gateway/proxy timeout and return `504` even though the backend later created the
+run/candidates correctly.
+
+Deliverables:
+- [x] `create_pending_run()` — validate provider/universe/lookback + max-size,
+  insert the `discovery_runs` row (`status="pending"`), commit, return fast.
+- [x] `process_run()` — process an already-loaded run: guard against reprocessing
+  a terminal run / starting a second worker on a fresh `running` run (30-min
+  stale-restart), commit progress after **every** ticker, re-rank in memory,
+  finalize status. Per-ticker failures stay non-blocking.
+- [x] `process_discovery_run_by_id()` / `process_discovery_run_task()` — background
+  worker that opens its **own** DB session (never the request session), driven by
+  a primitive `run_id`; best-effort marks the run `failed` on a fatal error.
+- [x] `POST /runs` uses FastAPI `BackgroundTasks` — returns 201 immediately with
+  `status="pending"`, `is_async=true`, `progress_pct`, and a `message`.
+- [x] Run schema adds computed `progress_pct` + `is_async`/`message`.
+- [x] `/admin/discovery` polls `GET /runs/{run_id}` (every 3 s) until terminal,
+  showing a status badge, progress bar, processed/universe counts, candidate/
+  error counts, warnings, a "processing in background" note, an empty-queue
+  "candidates will appear as tickers finish" placeholder, and a friendly
+  timeout message if the POST ever fails. Manual Refresh retained.
+- [x] 27 new backend + 9 new Playwright tests; full suites green; ruff clean.
+
+Known limitation: `BackgroundTasks` are **process-local** and not durable across
+an App Service restart — acceptable for this MVP. A durable queue (Azure Service
+Bus / Functions) is deferred to a later phase. No new migration.
+
+Explicitly out of scope (unchanged): auth, public publishing, paid plans,
+full-market scan, scheduled/recurring scans, email/Slack alerts, queue
+infrastructure, recommendation logic.
+
+Skills used: `backend-fastapi`, `frontend-nextjs`, `testing-qa`,
+`security-review`, `docs-maintainer`.
 
 **Next recommended phase: Phase 23 — Admin/Auth hardening before any external sharing.**
 
