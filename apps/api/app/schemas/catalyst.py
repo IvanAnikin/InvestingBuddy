@@ -234,6 +234,11 @@ class NewsItem(BaseModel):
     relevance_level: str | None = None
     is_company_specific: bool | None = None
     is_industry_context: bool | None = None
+    # Phase 24.1.2 — canonical vs media link separation. ``url`` is always the
+    # canonical article/press-release page (never an image/media file);
+    # ``media_url`` holds an associated image/media URL when present (internal
+    # metadata only — never used as source evidence).
+    media_url: str | None = None
     # raw_payload is intentionally omitted from report serialisation.
 
 
@@ -288,6 +293,13 @@ class CatalystEvent(BaseModel):
     # Links
     related_filing_url: str | None = None
     related_document_url: str | None = None
+    # Phase 24.1.2 — evidence-link quality. ``source_url`` is the canonical
+    # article/press-release page; ``media_url`` is an optional associated image
+    # (never used as evidence). ``source_url_quality`` records how the link was
+    # resolved: canonical_article | feed_url_fallback | rejected_media_only |
+    # missing.
+    media_url: str | None = None
+    source_url_quality: str | None = None
 
     # Phase 24.1 — company vs industry-context separation + relevance provenance.
     # An industry-context event describes the sector/industry, NOT the company
@@ -324,6 +336,8 @@ class CatalystEvent(BaseModel):
             "summary": neutralize_forbidden_terms(self.summary),
             "source_name": self.source_name,
             "source_url": self.source_url,
+            "media_url": self.media_url,
+            "source_url_quality": self.source_url_quality,
             "source_tier": self.source_tier,
             "provider_name": self.provider_name,
             "raw_event_type": self.raw_event_type,

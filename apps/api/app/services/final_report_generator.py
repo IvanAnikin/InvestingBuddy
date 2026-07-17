@@ -1188,6 +1188,8 @@ def _build_news_catalyst_discovery(
             "model_label_tier": e.get("model_label_tier", "T6_model_estimate"),
             "headline": neutralize_forbidden_terms(e.get("headline")),
             "source_url": e.get("source_url"),
+            "source_url_quality": e.get("source_url_quality"),
+            "media_url": e.get("media_url"),
         }
 
     events = catalyst_discovery.get("events", []) or []

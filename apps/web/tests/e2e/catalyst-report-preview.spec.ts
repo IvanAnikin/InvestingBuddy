@@ -82,6 +82,23 @@ test.describe("Report Detail — News & Catalyst Discovery", () => {
     ).toBeVisible();
   });
 
+  test("press-release event link is a canonical article URL, not an image (Phase 24.1.2)", async ({
+    page,
+  }) => {
+    await page.goto(REPORT_URL);
+    const preview = page.locator(PREVIEW);
+    // The press-release row's link points at the newsroom article page …
+    const link = preview.locator(
+      'a[href="https://www.example.com/newsroom/2026/06/ibt-announces-new-product-line/"]',
+    );
+    await expect(link.first()).toBeVisible();
+    // … and no catalyst source link is an image/media URL.
+    const imageLinks = preview.locator(
+      'a[href$=".jpg"], a[href$=".jpeg"], a[href$=".png"], a[href*=".jpg.og.jpg"], a[href*="/tile/"]',
+    );
+    await expect(imageLinks).toHaveCount(0);
+  });
+
   test("renders Industry Context News section with non-company disclaimer", async ({
     page,
   }) => {
