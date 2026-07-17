@@ -1690,6 +1690,12 @@ async def _save_final_report_draft(
 
     db.add(report)
     await db.flush()
+    # Persist the draft. get_db() does not commit for us (it yields the session
+    # and closes it, which rolls back an uncommitted transaction), so every
+    # write service commits its own work — this one must too, or the generated
+    # final-report draft (and its final_report_version / validation JSON) is
+    # silently discarded when the request ends.
+    await db.commit()
     await db.refresh(report)
     return report
 
@@ -1937,6 +1943,10 @@ class FinalReportGeneratorService:
             "warnings": list(schema_result.warnings or []),
         }
         await db.flush()
+        # Commit so the safety/schema validation JSON actually persists on the
+        # report row. Without this, get_db() rolls back on session close and the
+        # report-detail page keeps showing "Safety/Schema Validation: n/a".
+        await db.commit()
 
         return FinalReportValidateResponse(
             report_id=report.id,
