@@ -1,8 +1,8 @@
 # Roadmap
 
-## Current State: Phase 23 Admin/Auth Hardening ✅ — the internal admin surface is now locked down before any external sharing. `/admin/*` pages and the `/api/admin/proxy/*` API require an authenticated, **allowlisted** admin. Auth is a dependency-free, HMAC-signed **httpOnly** session cookie (`AUTH_SECRET`) issued after **GitHub OAuth** sign-in (the OAuth secret is used only server-side in the token exchange; the access token is read once for the verified email and discarded — never stored or forwarded). Authorization is an env allowlist (`ADMIN_ALLOWED_EMAILS`). Enforcement is defense-in-depth: the Next 16 **Proxy** (`apps/web/src/proxy.ts`, the renamed `middleware`) redirects unauthenticated `/admin/*` to `/login?callbackUrl=…` and non-allowlisted users to `/unauthorized`, and returns **401/403** on the proxy API; the admin proxy **route handler independently re-checks** auth + allowlist before attaching the backend Basic Auth, and adds advisory `X-IB-Admin-Email`/`X-IB-Admin-Name` audit headers (never the OAuth token). New `/login` + `/unauthorized` pages; the admin shell shows the signed-in identity + **Sign out**. Backend **Basic Auth is retained as server-to-server defense** (extracted to `install_staging_basic_auth`; the identity headers are never trusted for auth — read only after Basic Auth passes). Local/CI use `AUTH_TEST_MODE` for deterministic, offline sign-in (hard-gated; 404 in prod). **No migration, no public publishing, no recommendation output, no weakened safety** — all internal-only / not-investment-advice / human-review disclaimers preserved. Backend +13 tests (1236 total, ruff clean); frontend +15 auth Playwright specs (shared auth fixture; existing admin specs sign in first); typecheck + lint + build clean. **Next: Phase 25.2 — Durable Discovery Job Queue, or Phase 26 — Final Report Schema Completion.**
+## Current State: Phase 23 Admin/Auth Hardening ✅ — the internal admin surface is now locked down before any external sharing. `/admin/*` pages and the `/api/admin/proxy/*` API require an authenticated, **allowlisted** admin. Auth is a dependency-free, HMAC-signed **httpOnly** session cookie (`AUTH_SECRET`) issued after **GitHub OAuth** sign-in (the OAuth secret is used only server-side in the token exchange; the access token is read once for the verified email and discarded — never stored or forwarded). Authorization is an env allowlist (`ADMIN_ALLOWED_EMAILS`). Enforcement is defense-in-depth: the Next 16 **Proxy** (`apps/web/src/proxy.ts`, the renamed `middleware`) redirects unauthenticated `/admin/*` to `/login?callbackUrl=…` and non-allowlisted users to `/unauthorized`, and returns **401/403** on the proxy API; the admin proxy **route handler independently re-checks** auth + allowlist before attaching the backend Basic Auth, and adds advisory `X-IB-Admin-Email`/`X-IB-Admin-Name` audit headers (never the OAuth token). New `/login` + `/unauthorized` pages; the admin shell shows the signed-in identity + **Sign out**. Backend **Basic Auth is retained as server-to-server defense** (extracted to `install_staging_basic_auth`; the identity headers are never trusted for auth — read only after Basic Auth passes). Local/CI use `AUTH_TEST_MODE` for deterministic, offline sign-in (hard-gated; 404 in prod). **No migration, no public publishing, no recommendation output, no weakened safety** — all internal-only / not-investment-advice / human-review disclaimers preserved. Backend +13 tests (1236 total, ruff clean); frontend +15 auth Playwright specs (shared auth fixture; existing admin specs sign in first); typecheck + lint + build clean. Post-merge hotfixes were **web-only** (API unchanged at `07f10f2`, final web `86461ef`): the auth-aware web deploy smoke check was corrected after `/admin` began redirecting logged-out users (PR #31), the discovery candidate **Detail** action visibility was restored (PR #32), and auth redirects were anchored to `AUTH_URL` so staging never redirects users to the internal `0.0.0.0:8080` origin (PR #33). **Next recommended phase: Phase 26 — Final Report Schema Completion / Publication-Readiness Pipeline — move generated reports from `schema_valid=false` to `schema_valid=true` without weakening safety gates, recommendation restrictions, or the human-review requirement. Phase 25.2 — Durable Discovery Job Queue (replace the process-local FastAPI `BackgroundTasks` with a durable queue if needed) remains a later infrastructure-backlog item.**
 
-## Previous State: Phase 25.1 Async Discovery Run Execution ✅ — operational hardening on Phase 25. `POST /api/v1/market-discovery/runs` now **creates the run and returns a `run_id` immediately** (`status="pending"`), then processes the universe in the background (FastAPI `BackgroundTasks` with a *fresh* DB session, progress committed after every ticker) while the `/admin/discovery` UI **polls run status** and shows a live progress bar / counts until a terminal status. This removes the gateway/proxy `504` a multi-ticker `free_real` run could hit under the single B1 worker. No product-scope, safety, schema, or migration change — statuses `pending→running→completed|completed_with_warnings|failed`, oversized/empty universe still rejected (422) before any background work, `human_review_required=true` / `is_public=false` preserved. `BackgroundTasks` are process-local (not durable across restart) — acceptable for this MVP; a durable queue is a later phase. 27 new backend + 9 new Playwright tests. Underlying: Phase 25 Real Market Candidate Discovery — moves InvestingBuddy from manual single-ticker analysis into a **bounded, internal-only market discovery workflow**. Instead of entering tickers one at a time, an admin scans a controlled universe (curated seed or manual comma-separated tickers) and gets an **internal research-candidate queue** ranked by an internal prioritization score. New `discovery_runs` + `discovery_candidates` tables (migration 010), a deterministic `discovery_scoring_service` (momentum 30% + catalyst 25% + fundamentals 20% + source-quality 15% + completeness 10% − risk penalty), a `discovery_signal_extractor` that reuses the tested company-analysis workflow per ticker (injectable/offline for CI), a `market_discovery_service` orchestrator (universe validated against `DISCOVERY_MAX_UNIVERSE_SIZE` so an accidental full-market scan is rejected; per-ticker failures are non-blocking), 6 admin-only `/api/v1/market-discovery/*` endpoints, and a dark-glass `/admin/discovery` UI with a start-run form, runs table, ranked candidate queue and inline candidate detail with a "Run Full Analysis" button. This is **NOT** a recommendation engine: no BUY/SELL/HOLD/WATCH, no price targets, no fair value/upside/downside, no public publishing; the candidate score is an internal prioritization signal only and every candidate is `human_review_required=true` / `is_public=false`. 51 backend + 15 Playwright tests (Phase 25); +27 backend +9 Playwright (Phase 25.1 async). See the Phase 25 section below. **Next: Phase 23 — Admin/Auth hardening before any external sharing.**
+## Previous State: Phase 25.1 Async Discovery Run Execution ✅ — operational hardening on Phase 25. `POST /api/v1/market-discovery/runs` now **creates the run and returns a `run_id` immediately** (`status="pending"`), then processes the universe in the background (FastAPI `BackgroundTasks` with a *fresh* DB session, progress committed after every ticker) while the `/admin/discovery` UI **polls run status** and shows a live progress bar / counts until a terminal status. This removes the gateway/proxy `504` a multi-ticker `free_real` run could hit under the single B1 worker. No product-scope, safety, schema, or migration change — statuses `pending→running→completed|completed_with_warnings|failed`, oversized/empty universe still rejected (422) before any background work, `human_review_required=true` / `is_public=false` preserved. `BackgroundTasks` are process-local (not durable across restart) — acceptable for this MVP; a durable queue is a later phase. 27 new backend + 9 new Playwright tests. Underlying: Phase 25 Real Market Candidate Discovery — moves InvestingBuddy from manual single-ticker analysis into a **bounded, internal-only market discovery workflow**. Instead of entering tickers one at a time, an admin scans a controlled universe (curated seed or manual comma-separated tickers) and gets an **internal research-candidate queue** ranked by an internal prioritization score. New `discovery_runs` + `discovery_candidates` tables (migration 010), a deterministic `discovery_scoring_service` (momentum 30% + catalyst 25% + fundamentals 20% + source-quality 15% + completeness 10% − risk penalty), a `discovery_signal_extractor` that reuses the tested company-analysis workflow per ticker (injectable/offline for CI), a `market_discovery_service` orchestrator (universe validated against `DISCOVERY_MAX_UNIVERSE_SIZE` so an accidental full-market scan is rejected; per-ticker failures are non-blocking), 6 admin-only `/api/v1/market-discovery/*` endpoints, and a dark-glass `/admin/discovery` UI with a start-run form, runs table, ranked candidate queue and inline candidate detail with a "Run Full Analysis" button. This is **NOT** a recommendation engine: no BUY/SELL/HOLD/WATCH, no price targets, no fair value/upside/downside, no public publishing; the candidate score is an internal prioritization signal only and every candidate is `human_review_required=true` / `is_public=false`. 51 backend + 15 Playwright tests (Phase 25); +27 backend +9 Playwright (Phase 25.1 async). See the Phase 25 section below. **Phase 23 — Admin/Auth hardening is now complete (see the Current State above); the next recommended phase is Phase 26 — Final Report Schema Completion.**
 
 ## Previous State: Phase 22.3.1 Web Deploy Cache Hardening — a deploy/CI + frontend-verification hotfix on top of Phase 22.3. Fixes an operational issue found during the Phase 22.3 release: with `WEBSITE_RUN_FROM_PACKAGE=1` and `alwaysOn=false`, the statically prerendered homepage `/` could keep serving the old build after a deploy until a manual `az webapp restart`, while dynamic `/admin` routes updated immediately. Adds a `/api/version` build-metadata endpoint and an `x-ib-build-commit` `<meta>` tag, renders the homepage dynamically so `/` reflects the mounted bundle, bakes `NEXT_PUBLIC_*` build metadata in CI, best-effort restarts `ib-stg-web` after deploy (when an optional `AZURE_CREDENTIALS` service principal exists), and adds a SHA-verified smoke check that fails loudly if `/api/version`, `/`, or `/admin` are stale. No backend analysis or report-generation logic changed; no financial semantics changed; no auth, no public publishing, no recommendation language, and no secrets. See the Phase 22.3.1 section below.
 
@@ -10,7 +10,7 @@
 
 ## Previous State: Phase 19.4.1 Enrichment Completeness Consistency — a hotfix on top of Phase 19.4. After the Phase 19.4 AAPL `free_real` smoke test, enriched fields that were present in the Company Snapshot (LEI, sector classification, derived market cap / EV / P/E / 52-week range, shares outstanding) were still being reported as **missing / blocking gaps** and still triggered *"Obtain LEI"* recommendations, because `research_completeness_agent` derived its gaps from the raw-profile schema draft (which never carries enrichment) and `source_quality_agent` recommended obtaining the LEI unconditionally. Phase 19.4.1 makes the completeness layer consume the enriched snapshot: a present enriched field is no longer a missing field, a blocking gap, or an "obtain it" next-step — while genuinely-absent fields (ISIN, EBITDA, EV/EBITDA, beta, IPO date, website) stay gaps and nothing is fabricated. Derived market metrics remain labelled **internal T6 estimates**, valuation readiness stays `partial` with all conclusions blocked, `human_review_required` stays true, and `schema_valid` may still be false. No BUY/SELL/HOLD/WATCH, price target, fair value or upside.
 
-### Phase 19.4 (underlying): Identity + Sector + Market-Metric Enrichment — builds on Phase 19.3.1. Two pure enrichment modules feed the `free_real` snapshot: `company_profile_enrichment` fills sector (DB or **inferred** from SEC SIC, T6), industry/website (SEC, T2) and LEI (GLEIF, T2, name-guarded) — LEI/ISIN/IPO date are never fabricated; `market_metrics_enrichment` derives latest close + **52-week range** (T5), **shares outstanding** (SEC DEI, T2), and **market cap / enterprise value / P/E** as DERIVED ESTIMATES (T6, cited inputs) only when their inputs exist. EBITDA, EV/EBITDA and beta are never fabricated. Resolved fields are pruned from `missing_fields` (AAPL missing-info count drops materially); the FinancialDataAgent narrates the derived metrics and the ValuationGuardAgent recognises them but still blocks every valuation conclusion (readiness stays `partial`). The report markdown gains identity/profile and **Market Metrics (Derived — Internal)** sections. Underlying Phase 19.3(.1): SEC EDGAR XBRL companyfacts normalized into income-statement / cash-flow / balance-sheet metrics + derived margins/ROE/debt-to-equity/YoY growth with latest-annual freshness selection. No paid EODHD `/fundamentals`, no broad discovery. Next: Phase 24 News-Catalyst, Phase 25 discovery, then Phase 23 Auth.
+### Phase 19.4 (underlying): Identity + Sector + Market-Metric Enrichment — builds on Phase 19.3.1. Two pure enrichment modules feed the `free_real` snapshot: `company_profile_enrichment` fills sector (DB or **inferred** from SEC SIC, T6), industry/website (SEC, T2) and LEI (GLEIF, T2, name-guarded) — LEI/ISIN/IPO date are never fabricated; `market_metrics_enrichment` derives latest close + **52-week range** (T5), **shares outstanding** (SEC DEI, T2), and **market cap / enterprise value / P/E** as DERIVED ESTIMATES (T6, cited inputs) only when their inputs exist. EBITDA, EV/EBITDA and beta are never fabricated. Resolved fields are pruned from `missing_fields` (AAPL missing-info count drops materially); the FinancialDataAgent narrates the derived metrics and the ValuationGuardAgent recognises them but still blocks every valuation conclusion (readiness stays `partial`). The report markdown gains identity/profile and **Market Metrics (Derived — Internal)** sections. Underlying Phase 19.3(.1): SEC EDGAR XBRL companyfacts normalized into income-statement / cash-flow / balance-sheet metrics + derived margins/ROE/debt-to-equity/YoY growth with latest-annual freshness selection. No paid EODHD `/fundamentals`, no broad discovery. Subsequently delivered: Phase 24 News-Catalyst, Phase 25 discovery, and Phase 23 Auth — all complete.
 
 ---
 
@@ -1045,20 +1045,28 @@ Genuinely-missing data (kept honestly missing, never fabricated): **ISIN, websit
 
 ---
 
-## Phase 23: Admin Auth Hardening
+## Phase 23: Admin Auth Hardening ✅
 
-**Status: Not started**
+**Status: Complete** — delivered as an authenticated, allowlisted admin session (no migration). See the **Current State** summary at the top of this document, `docs/SECURITY.md`, and `docs/DECISIONS.md` ADR-012 for the full design.
 
-Goal: Replace staging Basic Auth with proper admin-only access control. This phase is about protecting the admin UI — not public user accounts.
+Goal: Protect the admin UI with proper admin-only access control before any external sharing — this phase is about the admin surface, not public user accounts.
 
-Deliverables:
-- [ ] Clerk integration for admin routes (allowlist-based)
-- [ ] Admin route-level authentication middleware
-- [ ] Remove reliance on `STAGING_BASIC_AUTH` for admin access
-- [ ] CI/CD secrets rotation and Key Vault cleanup
-- [ ] Access audit trail for admin actions
+Delivered:
+- [x] Authenticated admin access to `/admin/*` and `/api/admin/proxy/*` — logged-out users are redirected to `/login`, non-allowlisted users to `/unauthorized` (401/403 on the proxy API); sign-out clears the session and re-blocks `/admin`
+- [x] **GitHub OAuth** sign-in + a dependency-free HMAC-SHA256-signed httpOnly session cookie (`AUTH_SECRET`) — chosen over Clerk to avoid a `next-auth` v5 / Next 16 beta dependency on a security-critical phase (ADR-012)
+- [x] Env allowlist authorization (`ADMIN_ALLOWED_EMAILS`); route-level enforcement via the Next 16 **Proxy** (`src/proxy.ts`) plus an independent re-check in the admin proxy route
+- [x] Advisory `X-IB-Admin-Email`/`X-IB-Admin-Name` audit headers for mutating admin actions (attached only after backend Basic Auth passes; never trusted for auth)
+- [x] Backend Basic Auth (`STAGING_BASIC_AUTH`) retained as server-to-server defense, now behind the admin session
+- [x] `AUTH_TEST_MODE` deterministic offline dev/CI sign-in (hard-gated; 404 in prod); 13 backend + 15 auth Playwright specs
 
-Skills to use: `security-review`, `backend-fastapi`, `frontend-nextjs`
+Post-merge hotfixes (web-only, API unchanged at `07f10f2`):
+- [x] Auth-aware web deploy smoke check — corrected after `/admin` began redirecting logged-out users (PR #31)
+- [x] Discovery candidate **Detail** action visibility restored (PR #32)
+- [x] Canonical auth redirect origin — anchored to `AUTH_URL` so staging never redirects users to the internal `0.0.0.0:8080` (PR #33; final web `86461ef`)
+
+Deferred (future, out of Phase 23 scope): Microsoft Entra ID option; moving the allowlist to the database; a persisted per-action audit trail; full Key Vault / CI secret-rotation cleanup.
+
+Skills used: `security-review`, `backend-fastapi`, `frontend-nextjs`, `docs-maintainer`
 
 ---
 
@@ -1152,21 +1160,19 @@ Skills used: `financial-data`, `backend-fastapi`, `frontend-nextjs`, `testing-qa
 
 ---
 
-## Phase 25: Real Market Candidate Discovery Engine
+## Phase 25: Real Market Candidate Discovery Engine ✅
 
-**Status: Not started**
+**Status: Complete** — see the detailed **Phase 25: Real Market Candidate Discovery ✅** and **Phase 25.1: Async Discovery Run Execution ✅** sections below for the shipped implementation. This entry preserves the original plan; the delivered scope is a bounded, internal-only market scan (curated seed / manual universe) producing a ranked internal research-candidate queue — deliberately **not** a full-market crawl.
 
-Goal: Replace mock/EODHD-search-based discovery with a real market-wide candidate ranking pipeline using momentum, fundamentals, catalysts, and sector context.
+Original plan (delivered):
+- [x] Candidate screener using real price + SEC data — delivered as a bounded, admin-controlled universe (validated against `DISCOVERY_MAX_UNIVERSE_SIZE`) rather than an unbounded full-market crawl
+- [x] Multi-signal ranking: price momentum + fundamentals quality + catalyst recency + source-quality + completeness (internal prioritization score only)
+- [x] Automated candidate queue: companies surfaced by discovery enter an internal review queue
+- [x] Admin can review candidates and run full analysis; every candidate stays `human_review_required=true` / `is_public=false`
+- [x] No automatic progression to analysis without admin approval
+- [x] Source tier enforced: T5 for aggregated data; T2 for SEC-derived data
 
-Deliverables:
-- [ ] Market-wide candidate screener using real price + SEC data
-- [ ] Multi-signal ranking: price momentum + fundamentals quality + catalyst recency + sector context
-- [ ] Automated candidate queue: companies surfaced by discovery enter a review queue
-- [ ] Admin can review, promote, or reject candidates
-- [ ] No automatic progression to analysis without admin approval
-- [ ] Source tier enforced: T5 for aggregated data; T2 for SEC-derived data
-
-Skills to use: `financial-data`, `backend-fastapi`, `investment-domain`, `testing-qa`
+Skills used: `financial-data`, `backend-fastapi`, `investment-domain`, `testing-qa`
 
 ---
 
@@ -1290,8 +1296,8 @@ signal only.
 
 Known limitations: no full-market crawl; no scheduling; curated feed URLs can go
 stale; free providers are incomplete; generated-report `schema_valid` may remain
-false (expected, non-blocking); auth is still Phase 23; public publishing not
-implemented.
+false (expected, non-blocking, targeted by Phase 26); public publishing not
+implemented (Phase 26). Admin access is auth-protected (Phase 23 complete).
 
 Skills used: `database-design`, `backend-fastapi`, `investment-domain`,
 `financial-data`, `frontend-nextjs`, `testing-qa`, `security-review`, `docs-maintainer`.
@@ -1339,7 +1345,7 @@ infrastructure, recommendation logic.
 Skills used: `backend-fastapi`, `frontend-nextjs`, `testing-qa`,
 `security-review`, `docs-maintainer`.
 
-**Next recommended phase: Phase 23 — Admin/Auth hardening before any external sharing.**
+**Next recommended phase: Phase 26 — Final Report Schema Completion / Publication-Readiness Pipeline. Objective: move generated reports from `schema_valid=false` to `schema_valid=true` without weakening safety gates, recommendation restrictions, or the human-review requirement. (Phase 23 — Admin/Auth hardening is complete; Phase 25.2 — Durable Discovery Job Queue is a later infrastructure-backlog item.)**
 
 ---
 
