@@ -386,10 +386,14 @@ immediately. Phase 22.3.1 mirrors the API's SHA-verified pattern for the web app
    `force-dynamic` so `/` always reflects the mounted bundle, and the root layout
    embeds `<meta name="x-ib-build-commit">` so a stale prerender is detectable.
 4. **SHA-matched, stable polling** — the smoke check requires **3 consecutive**
-   `/api/version` responses matching `github.sha`, then checks `/` and `/admin`
-   return `200` with the dark-UI marker (`bg-[#060913]`) and that `/` embeds the
-   current build commit. A `403` "Site Disabled" is surfaced explicitly. It never
-   false-greens on a stale worker.
+   `/api/version` responses matching `github.sha`, then checks that `/` returns
+   `200` with the dark-UI marker (`bg-[#060913]`) and embeds the current build
+   commit. Since Phase 23 (Admin/Auth Hardening) `/admin` is auth-protected, so
+   the check now asserts logged-out `/admin` **redirects `307` to `/login`**
+   (proving the auth proxy is deployed — the pre-auth build served `200`),
+   verifies build freshness via the public `/login` page's dark-UI marker, and
+   asserts logged-out `/api/admin/proxy/*` returns `401`. A `403` "Site Disabled"
+   is surfaced explicitly. It never false-greens on a stale worker.
 5. **Best-effort post-deploy restart** — the workflow restarts `ib-stg-web` after
    deploy **only** when an optional `AZURE_CREDENTIALS` service principal is set
    (resource group `ib-stg-rg`, discovered via `az webapp list`). A true restart
