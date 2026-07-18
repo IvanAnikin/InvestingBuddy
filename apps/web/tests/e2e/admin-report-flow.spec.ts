@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { adminTest as test, expect } from "../support/auth";
 
 const MOCK_REPORT_ID = "00000000-0000-0000-0000-000000000099";
 

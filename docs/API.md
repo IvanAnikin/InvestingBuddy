@@ -24,11 +24,27 @@ http://localhost:8000/api/redoc     (ReDoc)
 
 | Prefix | Auth Required | Purpose |
 |---|---|---|
-| `/api/v1/` | No (Phase 2) | Core CRUD and workflow endpoints |
-| `/api/me/` | Yes (Phase 7) | Authenticated user-specific data |
+| `/api/v1/` | Staging Basic Auth (server-to-server) | Core CRUD and workflow endpoints |
+| `/api/me/` | Yes (future) | Authenticated user-specific data |
 | `/api/admin/` | Admin role (future) | Platform management |
 
-Authentication via Clerk JWT is planned for Phase 7. No auth is enforced yet.
+### Admin access (Phase 23 — Admin/Auth Hardening)
+
+The whole admin surface is now gated in front of the backend by the Next.js web
+app. Browsers never call the FastAPI backend directly — they call the Next.js
+admin proxy at `/api/admin/proxy/*`, which:
+
+1. Requires a valid **admin session** (httpOnly HMAC-signed cookie) → **401** if
+   missing.
+2. Requires the session email to be in `ADMIN_ALLOWED_EMAILS` → **403** if not.
+3. Validates the target backend path against an allowlist → **404** otherwise.
+4. Only then attaches the backend **Basic Auth** (`STAGING_BASIC_AUTH`) plus
+   advisory `X-IB-Admin-Email` / `X-IB-Admin-Name` audit headers, server-side.
+
+On the backend, `STAGING_BASIC_AUTH` (when `APP_ENV=staging`) still protects
+every route except `/health`. The `X-IB-Admin-*` headers are **advisory only**
+and are never trusted for authentication — they are read only after Basic Auth
+passes. See `docs/SECURITY.md`.
 
 ---
 

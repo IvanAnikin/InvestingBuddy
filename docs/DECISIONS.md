@@ -251,3 +251,40 @@ the `GlobalStandard` SKU at 10K TPM capacity. Use API version `2025-01-01-previe
 - `AZURE_OPENAI_API_VERSION` bumped from `2024-08-01-preview` to `2025-01-01-preview` to support this model.
 - Deployment name `gpt-4.1-mini` matches the model name — easy to remember and consistent with naming convention.
 - CI is unaffected — CI uses `LLM_PROVIDER=mock` (no Azure credentials, no network calls).
+
+---
+
+## ADR-012: Admin Auth via GitHub OAuth + Custom HMAC Session (Phase 23)
+
+**Date:** 2026-07-18
+**Status:** Accepted
+
+### Context
+Phase 23 must make `/admin/*` and the admin API proxy inaccessible to
+unauthenticated users before any external sharing. The MVP plan (and
+`docs/SECURITY.md`) referenced Clerk; the Phase 23 brief recommended
+Auth.js/NextAuth with Microsoft Entra ID or GitHub. The web app runs **Next.js
+16.2.9 + React 19**, where the `middleware` convention was renamed to `proxy`
+and several APIs changed. CI must stay fully offline and deterministic (no real
+OAuth round-trip).
+
+### Decision
+Implement a **dependency-free admin session** — an HMAC-SHA256-signed, httpOnly,
+`secure`/`sameSite=lax` cookie (`AUTH_SECRET`) verified with Web Crypto — issued
+after **GitHub OAuth** sign-in, with an env allowlist (`ADMIN_ALLOWED_EMAILS`).
+Enforcement is the Next 16 **Proxy** (`src/proxy.ts`) plus an independent
+re-check in the admin proxy route. A hard-gated `AUTH_TEST_MODE` credential
+endpoint provides deterministic local/CI sign-in.
+
+### Consequences
+- No `next-auth` v5 beta dependency → avoids unverified Next 16 / React 19
+  compatibility risk on a security-critical phase; small, auditable surface.
+- Real OAuth on staging via GitHub; the OAuth secret is used only server-side in
+  the token exchange, and the access token is read once for the verified email
+  then discarded (never stored or forwarded to the backend).
+- Backend Basic Auth (`STAGING_BASIC_AUTH`) is retained as server-to-server
+  defense; the advisory `X-IB-Admin-*` headers are never trusted for auth.
+- CI/local sign-in is offline and deterministic; `AUTH_TEST_MODE` must never be
+  set in staging/production (returns 404 otherwise).
+- Microsoft Entra ID can be added later via the same OAuth pattern without
+  changing the session/allowlist model.

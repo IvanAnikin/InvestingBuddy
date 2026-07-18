@@ -491,8 +491,30 @@ Copy `.env.example` to `.env`. The defaults work for local Docker development.
 | Variable | Required | Phase | Notes |
 |---|---|---|---|
 | `NEXT_PUBLIC_API_BASE_URL` | No | 1+ | Defaults to `http://localhost:8000` |
-| `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` | No | 7+ | |
-| `CLERK_SECRET_KEY` | No | 7+ | Stored in Key Vault |
+| `BACKEND_API_BASE_URL` | Yes (staging) | 17+ | Server-only URL of the FastAPI backend the proxy calls |
+| `BACKEND_BASIC_AUTH` | Yes (staging) | 17+ | `user:pass` matching `STAGING_BASIC_AUTH`; server-only, never `NEXT_PUBLIC_` |
+| `AUTH_SECRET` | **Yes** | 23+ | Random string signing the admin session cookie. `openssl rand -base64 32`. Key Vault ref in staging. Never commit. |
+| `AUTH_TRUST_HOST` | Yes (staging) | 23+ | `true` behind the App Service reverse proxy so OAuth redirect URIs resolve to the public host |
+| `AUTH_URL` | No | 23+ | Optional explicit external origin, e.g. `https://ib-stg-web.azurewebsites.net` |
+| `ADMIN_ALLOWED_EMAILS` | **Yes** | 23+ | Comma-separated allowlist of admin emails. Empty = nobody authorized. |
+| `AUTH_GITHUB_ID` | Yes (staging) | 23+ | GitHub OAuth App client ID |
+| `AUTH_GITHUB_SECRET` | Yes (staging) | 23+ | GitHub OAuth App client secret — Key Vault ref; never commit |
+| `AUTH_TEST_MODE` | No | 23+ | `true` enables deterministic `/api/auth/dev-login` for **local/CI only** — MUST stay unset in staging/prod |
+
+> **Phase 23 — Admin authentication.** `/admin/*` and `/api/admin/proxy/*` are
+> protected by an authenticated, allowlisted admin session (httpOnly
+> HMAC-signed cookie). `BACKEND_BASIC_AUTH` is now server-to-server defense only
+> — the browser authenticates against the admin session before the proxy ever
+> attaches it. Configure a GitHub OAuth App with callback
+> `<AUTH_URL>/api/auth/callback/github`. Store `AUTH_SECRET` and
+> `AUTH_GITHUB_SECRET` in Key Vault; never set `AUTH_TEST_MODE` in staging/prod.
+
+**Staging web env checklist (Azure App Service `ib-stg-web` → Configuration):**
+`AUTH_SECRET`, `AUTH_TRUST_HOST=true`, `AUTH_URL=https://ib-stg-web.azurewebsites.net`,
+`ADMIN_ALLOWED_EMAILS=<comma-separated>`, `AUTH_GITHUB_ID`, `AUTH_GITHUB_SECRET`,
+`BACKEND_API_BASE_URL`, `BACKEND_BASIC_AUTH`. Then **restart** `ib-stg-web`.
+Verify: logged-out `/admin` → `/login`; logged-out `GET /api/admin/proxy/health`
+→ 401; `/` and `/api/version` stay public.
 
 ---
 

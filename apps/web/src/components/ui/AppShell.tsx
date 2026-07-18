@@ -9,6 +9,11 @@ export interface NavLink {
   label: string;
 }
 
+export interface AdminUser {
+  email: string;
+  name: string | null;
+}
+
 /**
  * Modernized admin chrome: a fixed top compliance strip, a translucent glass
  * navigation bar with active-route highlighting, the page content area, and a
@@ -22,11 +27,14 @@ export default function AppShell({
   topDisclaimer,
   footer,
   children,
+  user,
 }: {
   navLinks: NavLink[];
   topDisclaimer: ReactNode;
   footer: ReactNode;
   children: ReactNode;
+  /** Signed-in admin identity, shown with a sign-out control. */
+  user?: AdminUser;
 }) {
   const pathname = usePathname();
 
@@ -44,7 +52,7 @@ export default function AppShell({
 
       {/* Glass navigation */}
       <header className="sticky top-0 z-30 border-b border-white/10 bg-slate-950/50 backdrop-blur-xl">
-        <div className="mx-auto flex max-w-6xl items-center gap-5 px-4 py-3">
+        <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-x-5 gap-y-2 px-4 py-3">
           <Link
             href="/"
             className="mr-1 text-sm text-slate-500 transition-colors hover:text-slate-200"
@@ -78,6 +86,31 @@ export default function AppShell({
               );
             })}
           </nav>
+
+          {user && (
+            <div
+              className="ml-auto flex items-center gap-3"
+              data-testid="admin-identity"
+            >
+              <span className="hidden text-right sm:block">
+                <span className="block text-xs font-medium text-slate-200">
+                  {user.name ?? user.email}
+                </span>
+                <span className="block text-[11px] text-slate-500">
+                  {user.email}
+                </span>
+              </span>
+              <form method="POST" action="/api/auth/signout">
+                <button
+                  type="submit"
+                  data-testid="sign-out"
+                  className="rounded-lg border border-white/15 bg-white/5 px-3 py-1.5 text-xs font-semibold text-slate-200 transition-colors hover:bg-white/10"
+                >
+                  Sign out
+                </button>
+              </form>
+            </div>
+          )}
         </div>
       </header>
 
