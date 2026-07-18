@@ -15,7 +15,7 @@ import {
   sessionCookieOptions,
   signSession,
 } from "@/lib/auth/session";
-import { safeCallbackPath } from "@/lib/auth/url";
+import { buildPublicUrl, toSafeInternalPath } from "@/lib/auth/url";
 
 export const dynamic = "force-dynamic";
 
@@ -57,7 +57,9 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
   const isForm = !contentType.includes("application/json");
   const res = isForm
-    ? NextResponse.redirect(new URL(safeCallbackPath(callbackUrl), request.url))
+    ? NextResponse.redirect(
+        buildPublicUrl(toSafeInternalPath(callbackUrl), request),
+      )
     : NextResponse.json({ ok: true, email });
   res.cookies.set(SESSION_COOKIE, token, sessionCookieOptions());
   return res;

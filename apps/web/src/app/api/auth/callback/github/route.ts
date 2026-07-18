@@ -17,7 +17,11 @@ import {
   sessionCookieOptions,
   signSession,
 } from "@/lib/auth/session";
-import { getBaseUrl, safeCallbackPath } from "@/lib/auth/url";
+import {
+  buildPublicUrl,
+  getPublicAuthOrigin,
+  toSafeInternalPath,
+} from "@/lib/auth/url";
 
 export const dynamic = "force-dynamic";
 
@@ -26,7 +30,7 @@ const GITHUB_USER_URL = "https://api.github.com/user";
 const GITHUB_EMAILS_URL = "https://api.github.com/user/emails";
 
 function loginError(request: NextRequest, reason: string): NextResponse {
-  const url = new URL("/login", request.url);
+  const url = buildPublicUrl("/login", request);
   url.searchParams.set("error", reason);
   const res = NextResponse.redirect(url);
   res.cookies.set(OAUTH_STATE_COOKIE, "", {
@@ -64,7 +68,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     try {
       const parsed = JSON.parse(stateCookie);
       expectedState = String(parsed.state ?? "");
-      callbackUrl = safeCallbackPath(parsed.callbackUrl);
+      callbackUrl = toSafeInternalPath(parsed.callbackUrl);
     } catch {
       expectedState = "";
     }
@@ -83,7 +87,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
         client_id: clientId,
         client_secret: clientSecret,
         code,
-        redirect_uri: `${getBaseUrl(request)}/api/auth/callback/github`,
+        redirect_uri: `${getPublicAuthOrigin(request)}/api/auth/callback/github`,
       }),
     });
     const tokenJson = await tokenRes.json();
@@ -131,9 +135,10 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     return loginError(request, "session_unavailable");
   }
 
-  // Redirect to the original destination. If the account is not allowlisted the
-  // Proxy will bounce it to /unauthorized on arrival.
-  const res = NextResponse.redirect(new URL(callbackUrl, request.url));
+  // Redirect to the original destination on the canonical public origin (never
+  // request.url / the internal container origin). If the account is not
+  // allowlisted the Proxy bounces it to /unauthorized on arrival.
+  const res = NextResponse.redirect(buildPublicUrl(callbackUrl, request));
   res.cookies.set(SESSION_COOKIE, token, sessionCookieOptions());
   res.cookies.set(OAUTH_STATE_COOKIE, "", {
     ...sessionCookieOptions(0),

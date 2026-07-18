@@ -10,11 +10,14 @@ import {
   SESSION_COOKIE,
   sessionCookieOptions,
 } from "@/lib/auth/session";
+import { buildPublicUrl } from "@/lib/auth/url";
 
 export const dynamic = "force-dynamic";
 
 function clearAndRedirect(request: NextRequest): NextResponse {
-  const res = NextResponse.redirect(new URL("/login", request.url));
+  // Build on the canonical public origin (AUTH_URL) — never request.url, which
+  // on Azure is the internal container origin (0.0.0.0:8080).
+  const res = NextResponse.redirect(buildPublicUrl("/login", request));
   // Expire both the session and any lingering OAuth-state cookie.
   res.cookies.set(SESSION_COOKIE, "", { ...sessionCookieOptions(0), maxAge: 0 });
   res.cookies.set(OAUTH_STATE_COOKIE, "", {
