@@ -36,8 +36,12 @@ Azure Application Insights
 - Next.js 16, React 19, TypeScript, Tailwind CSS v4, App Router
 - Public report pages, admin dashboard, user account (V2)
 - Communicates with backend via server-side proxy (Phase 17+) — credentials never in browser
-- Status: **Phase 22.3.1 — web deploy cache hardening on top of Phase 22.3 modern dark glassmorphism UI + safe markdown report preview; admin proxy active for all admin routes**
-  - `/api/admin/proxy/[...path]` — server-side proxy route; adds `Authorization: Basic` server-side; path allowlist; rejects unknown paths; sanitizes errors; never exposes credentials to browser
+- Status: **Phase 23 — admin authentication + allowlist enforced on `/admin/*` and the admin proxy, on top of the Phase 22.3 modern dark glassmorphism UI + safe markdown report preview**
+  - `src/proxy.ts` — Next 16 **Proxy** (renamed `middleware`, Node runtime); gates `/admin/:path*` (→ `/login` unauthenticated, `/unauthorized` when not allowlisted) and `/api/admin/proxy/:path*` (401/403); `/`, `/login`, `/unauthorized`, `/api/auth/*`, `/api/version` and static assets stay public
+  - `src/lib/auth/*` — dependency-free HMAC-signed httpOnly session cookie (`session.ts`), server-session reader (`server.ts`), forwarded-host/callback URL helpers (`url.ts`)
+  - `/api/auth/github` + `/api/auth/callback/github` — GitHub OAuth (secret used server-side only; access token read once for the verified email then discarded); `/api/auth/signout`; `/api/auth/dev-login` — deterministic sign-in gated on `AUTH_TEST_MODE` (local/CI only, 404 in prod)
+  - `/login`, `/unauthorized` — public auth pages; the admin shell shows the signed-in identity + Sign out
+  - `/api/admin/proxy/[...path]` — server-side proxy route; **independently re-checks admin session + allowlist (401/403)** before adding `Authorization: Basic` server-side; path allowlist; adds advisory `X-IB-Admin-Email`/`X-IB-Admin-Name` audit headers (never the OAuth token); rejects unknown paths; sanitizes errors; never exposes credentials to browser
   - `/api/version` — public build-metadata endpoint (Phase 22.3.1); returns `{ app, commit_sha, build_id, build_time, environment }` for deploy verification; build identifiers only, no secrets; `force-dynamic` + `no-store`
   - `src/lib/api.ts` — smart base URL: server components call `BACKEND_API_BASE_URL` directly; client components use `/api/admin/proxy/…`
   - `/admin` — dashboard (health, company count, latest reports)
@@ -59,21 +63,36 @@ Modern dark, glassmorphism design system layered over the existing pages. It cha
   - `reports/MarkdownReportPreview`, `reports/ReportSectionNav`, `reports/markdownUtils` — the sanitized report preview, sticky mini table of contents, and heading-slug helpers
   - `src/app/globals.css` — fixed dark theme palette, aurora keyframes, dark markdown ("prose") styles, and a `prefers-reduced-motion` block that disables decorative motion
 
-#### Admin Auth Proxy — Request Flow (Phase 17)
+#### Admin Auth + Proxy — Request Flow (Phase 17 proxy, hardened in Phase 23)
 
 ```text
-Browser (admin UI)
-  → same-origin: /api/admin/proxy/api/v1/companies   (no credentials)
-  → Next.js server route.ts
-       adds Authorization: Basic <base64(BACKEND_BASIC_AUTH)>   [server-only env var]
-  → FastAPI backend: https://ib-stg-api.azurewebsites.net/api/v1/companies
-       checks STAGING_BASIC_AUTH
+Browser → /admin/*  or  /api/admin/proxy/*
+  → Next 16 Proxy (src/proxy.ts)
+       verify httpOnly HMAC session cookie (AUTH_SECRET)
+       no session   → pages redirect to /login?callbackUrl=… ; proxy API → 401
+       not allowlisted (ADMIN_ALLOWED_EMAILS) → /unauthorized ; proxy API → 403
+  → /api/admin/proxy/[...path] route handler
+       re-verify session + allowlist (401/403)   [defense-in-depth]
+       validate backend path against allowlist (404 otherwise)
+       adds Authorization: Basic <base64(BACKEND_BASIC_AUTH)>   [server-only]
+       adds X-IB-Admin-Email / X-IB-Admin-Name (advisory audit; NOT the OAuth token)
+  → FastAPI backend
+       checks STAGING_BASIC_AUTH; reads X-IB-Admin-* only AFTER Basic Auth passes
   → response forwarded back to browser   (Authorization header stripped)
+
+Sign-in:  /login → /api/auth/github → GitHub OAuth → /api/auth/callback/github
+          (server-side token exchange; access token discarded after reading the
+          verified email) → sets ib_admin_session cookie → back to callbackUrl.
 ```
 
 Required App Service env vars for `ib-stg-web` (server-only, no `NEXT_PUBLIC_` prefix):
+- `AUTH_SECRET` — signs the admin session cookie (Key Vault ref)
+- `ADMIN_ALLOWED_EMAILS` — comma-separated admin allowlist
+- `AUTH_GITHUB_ID` / `AUTH_GITHUB_SECRET` — GitHub OAuth App (secret in Key Vault)
+- `AUTH_TRUST_HOST=true` (+ optional `AUTH_URL`) — resolve OAuth redirect URIs
 - `BACKEND_API_BASE_URL` — full URL of the FastAPI backend
 - `BACKEND_BASIC_AUTH` — `user:password` matching `STAGING_BASIC_AUTH` on the API
+  (now server-to-server defense only; the browser authenticates first)
 
 #### Web Deploy Cache Hardening (Phase 22.3.1)
 `ib-stg-web` runs the Next.js standalone bundle with `WEBSITE_RUN_FROM_PACKAGE=1` and `alwaysOn=false`. Under those settings a **statically prerendered homepage `/` could keep serving the previous build** after a deploy until a manual `az webapp restart` flushed it (dynamic routes like `/admin` picked up the new build immediately). Phase 22.3.1 hardens `deploy-web-staging.yml` so a stale homepage is prevented and, if it ever occurs, is caught loudly:
@@ -271,6 +290,7 @@ All errors are caught, logged to `agent_runs.error_message`, and returned as HTT
 | Phase 22.3.1 | ✅ Complete | Web Deploy Cache Hardening (deploy/CI + frontend verification only): `/api/version` build-metadata endpoint, `x-ib-build-commit` `<meta>` tag, homepage `force-dynamic`, `deploy-web-staging.yml` bakes `NEXT_PUBLIC_*` build metadata + best-effort (optional `AZURE_CREDENTIALS`) restart + SHA-verified stale-homepage smoke check; prevents/detects the stale prerendered `/` under `WEBSITE_RUN_FROM_PACKAGE`; no backend/report-semantics changes, no secrets, no public publishing |
 | Phase 25 | ✅ Complete | Real Market Candidate Discovery (internal-only): `discovery_runs` + `discovery_candidates` (migration 010); deterministic `discovery_scoring_service` (momentum/catalyst/fundamentals/source-quality/completeness − risk penalty, internal prioritization only); `discovery_signal_extractor` reusing the company-analysis workflow per ticker (injectable → offline CI); `market_discovery_service` orchestrator (universe validated against `DISCOVERY_MAX_UNIVERSE_SIZE`, non-blocking per-ticker failures, forbidden-term safety scan); 6 admin-only `/api/v1/market-discovery/*` endpoints; `/admin/discovery` dark-glass UI (start-run form + runs table + ranked candidate queue + inline detail + "Run Full Analysis"); 51 backend + 15 Playwright tests; no BUY/SELL/HOLD/WATCH, no price targets/fair value/upside, human review required, non-public |
 | Phase 25.1 | ✅ Complete | Async Discovery Run Execution (UX/ops hardening, no migration): `POST /market-discovery/runs` returns a `pending` run immediately and processes tickers via FastAPI `BackgroundTasks` in a fresh DB session (`create_pending_run` + `process_run` + `process_discovery_run_by_id`), committing progress per ticker; run schema gains computed `progress_pct` + `is_async`/`message`; `/admin/discovery` polls `GET /runs/{run_id}` with a live progress bar; reprocess/double-run guards; removes multi-ticker `504` under the single B1 worker; `BackgroundTasks` process-local (durable queue deferred); 27 backend + 9 Playwright tests; safety unchanged |
+| Phase 23 | ✅ Complete | Admin/Auth Hardening (no migration): `/admin/*` + `/api/admin/proxy/*` require an authenticated, allowlisted admin. Dependency-free HMAC-signed httpOnly session cookie (`src/lib/auth/*`, `AUTH_SECRET`); GitHub OAuth sign-in (`/api/auth/github` + callback; secret server-side only, access token discarded after reading the verified email); env allowlist (`ADMIN_ALLOWED_EMAILS`); Next 16 **Proxy** `src/proxy.ts` (→ `/login` / `/unauthorized`; 401/403 on proxy API); proxy route independently re-checks + adds advisory `X-IB-Admin-*` audit headers before Basic Auth; `/login` + `/unauthorized` pages; admin shell identity + Sign out; `AUTH_TEST_MODE` deterministic dev/CI sign-in. Backend Basic Auth retained (`install_staging_basic_auth`; identity headers never trusted without Basic Auth). 13 backend (1236 total) + 15 auth Playwright specs; no public publishing, no recommendation output, safety unchanged |
 
 ---
 

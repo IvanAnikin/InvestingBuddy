@@ -1,9 +1,15 @@
 import type { ReactNode } from "react";
 import AppShell, { type NavLink } from "@/components/ui/AppShell";
+import { getServerSession } from "@/lib/auth/server";
 
 export const metadata = {
   title: "Admin — InvestingBuddy",
 };
+
+// The Proxy (src/proxy.ts) guarantees an authenticated, allowlisted admin has
+// reached any /admin route. We read the session here only to surface the
+// signed-in identity + sign-out control in the shell.
+export const dynamic = "force-dynamic";
 
 const navLinks: NavLink[] = [
   { href: "/admin", label: "Dashboard" },
@@ -14,10 +20,20 @@ const navLinks: NavLink[] = [
   { href: "/admin/backtesting", label: "Backtesting" },
 ];
 
-export default function AdminLayout({ children }: { children: ReactNode }) {
+export default async function AdminLayout({
+  children,
+}: {
+  children: ReactNode;
+}) {
+  const session = await getServerSession();
   return (
     <AppShell
       navLinks={navLinks}
+      user={
+        session
+          ? { email: session.email, name: session.name }
+          : undefined
+      }
       topDisclaimer={
         <>
           INTERNAL ADMIN ONLY — NOT INVESTMENT ADVICE — NOT FOR PUBLICATION —

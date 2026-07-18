@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { adminTest as test, expect } from "../support/auth";
 
 /**
  * Phase 25 — Admin Market Candidate Discovery UI smoke tests.

@@ -28,7 +28,11 @@ This document describes the gap between the current implementation and the targe
 - Analysis council (bull case, bear case, risk, valuation guard, committee chair)
 - Source taxonomy (T1–T6 tier system)
 - Admin proxy (Next.js server-side; credentials never in browser)
-- Staging Basic Auth
+- **Admin authentication + allowlist (Phase 23):** `/admin/*` and the admin
+  proxy require an authenticated, allowlisted admin (GitHub OAuth → httpOnly
+  HMAC session cookie; `ADMIN_ALLOWED_EMAILS`; Next 16 Proxy redirects/401/403;
+  `/login` + `/unauthorized`; signed-in identity + Sign out)
+- Staging Basic Auth (now server-to-server defense only, behind the admin session)
 - Internal judge + backtesting framework (`BacktestingService`, `ResearchJudgeService`)
 - Admin backtesting UI (`/admin/backtesting`)
 - Phase 19.1 free real-data provider stack:
@@ -183,20 +187,35 @@ remain incomplete.
 
 ---
 
-## Gap 5: Admin Auth Hardening (Phase 23)
+## Gap 5: Admin Auth Hardening (Phase 23) — ✅ RESOLVED
 
-**Current:** Staging uses HTTP Basic Auth + Next.js server-side proxy. `BACKEND_BASIC_AUTH` protects all backend routes. This is functional but not production-grade admin access control.
+**Was:** Staging used HTTP Basic Auth + Next.js server-side proxy only. Anyone
+could load `/admin/*` and the admin proxy without authentication; the browser
+relied on the proxy injecting `BACKEND_BASIC_AUTH` server-side. Functional, but
+not admin access control.
 
-**Target:** Clerk-based admin authentication with allowlist, route-level middleware, and access audit trail. `STAGING_BASIC_AUTH` removed from production path.
+**Delivered (Phase 23):** `/admin/*` and `/api/admin/proxy/*` now require an
+authenticated, allowlisted admin.
 
-**Gaps:**
-- Clerk integration for admin routes
-- Admin allowlist enforcement (not open signup)
-- Route-level authentication middleware
-- Access audit trail for admin actions
-- Key Vault cleanup of Basic Auth credential
+- **GitHub OAuth** sign-in (not Clerk — chosen as the simplest env-configurable
+  provider with no heavy dependency and no Next 16 / `next-auth` beta risk). The
+  OAuth secret is used only in the server-side token exchange; the access token
+  is read once for the verified email then discarded — never stored or forwarded.
+- **Session:** dependency-free HMAC-SHA256-signed **httpOnly** cookie
+  (`AUTH_SECRET`); constant-time verify; fails closed.
+- **Allowlist enforcement** via `ADMIN_ALLOWED_EMAILS` (not open signup);
+  non-allowlisted users → `/unauthorized` (pages) / **403** (proxy API).
+- **Route-level middleware:** the Next 16 **Proxy** (`src/proxy.ts`) plus an
+  independent re-check in the admin proxy route (defense-in-depth).
+- **Audit trail:** advisory `X-IB-Admin-Email`/`X-IB-Admin-Name` headers logged
+  for mutating admin actions (only after backend Basic Auth passes; never
+  trusted for auth).
+- **Backend Basic Auth retained** as server-to-server defense (`STAGING_BASIC_AUTH`).
 
-**Phase:** 23
+**Remaining (future, out of Phase 23 scope):** Microsoft Entra ID option; moving
+Basic Auth entirely out of the production path once mutual auth is in place.
+
+**Phase:** 23 — done.
 
 ---
 

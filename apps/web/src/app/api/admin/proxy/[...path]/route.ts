@@ -1,9 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
+import { SESSION_COOKIE, sessionFromToken } from "@/lib/auth/session";
 
 // This route handler proxies requests from the browser to the protected FastAPI
 // backend.  The Authorization header is added server-side so credentials are
 // never present in browser JS, network payloads sent to the client, or build
 // artefacts.
+//
+// Phase 23 — Admin/Auth Hardening. Every request is independently authenticated
+// and authorized here (defense-in-depth, in addition to the Proxy in
+// src/proxy.ts) BEFORE any backend credential is attached:
+//   - no valid admin session                 → 401
+//   - authenticated but not on the allowlist  → 403
+//   - disallowed backend path                 → 404 (backend never contacted)
+// Only after those checks does it attach the backend Basic Auth + non-sensitive
+// admin identity headers. The auth-provider session token is never forwarded.
 //
 // Required env vars (server-only, no NEXT_PUBLIC_ prefix):
 //   BACKEND_API_BASE_URL  — e.g. https://ib-stg-api.azurewebsites.net
@@ -43,22 +53,51 @@ function isAllowed(backendPath: string): boolean {
   );
 }
 
+// Only ASCII printable, non-control header-safe characters are forwarded as
+// identity headers to the backend (defends against header injection / CRLF).
+function sanitizeHeaderValue(value: string): string {
+  return value.replace(/[^\x20-\x7E]/g, "").slice(0, 320);
+}
+
 async function handle(
   request: NextRequest,
   params: Promise<{ path: string[] }>,
 ): Promise<NextResponse> {
+  // 1. Authenticate + authorize the caller before contacting the backend.
+  const token = request.cookies.get(SESSION_COOKIE)?.value;
+  const session = await sessionFromToken(token);
+  if (!session) {
+    return NextResponse.json(
+      { error: "Authentication required" },
+      { status: 401 },
+    );
+  }
+  if (!session.allowed) {
+    return NextResponse.json(
+      { error: "This account is not authorized for admin access" },
+      { status: 403 },
+    );
+  }
+
   const { path } = await params;
   const backendPath = "/" + path.join("/");
 
+  // 2. Validate the proxied path against the allowlist.
   if (!isAllowed(backendPath)) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
   const backendUrl = `${BACKEND_URL}${backendPath}${request.nextUrl.search}`;
 
+  // 3. Attach backend Basic Auth + non-sensitive admin identity headers.
+  //    The auth-provider session token is NEVER forwarded to the backend.
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
+    "X-IB-Admin-Email": sanitizeHeaderValue(session.email),
   };
+  if (session.name) {
+    headers["X-IB-Admin-Name"] = sanitizeHeaderValue(session.name);
+  }
   if (BACKEND_BASIC_AUTH) {
     headers["Authorization"] = `Basic ${btoa(BACKEND_BASIC_AUTH)}`;
   }

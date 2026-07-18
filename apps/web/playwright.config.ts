@@ -102,6 +102,13 @@ export default defineConfig({
             env: {
               BACKEND_API_BASE_URL: `http://127.0.0.1:${MOCK_BACKEND_PORT}`,
               BACKEND_BASIC_AUTH: "",
+              // Phase 23 — Admin/Auth Hardening. Deterministic, offline auth for
+              // e2e: a fixed signing secret, the test credential sign-in, and a
+              // single allowlisted admin email. No real OAuth is used in CI.
+              AUTH_SECRET: "e2e-test-only-auth-secret-not-for-production",
+              AUTH_TEST_MODE: "true",
+              AUTH_TRUST_HOST: "true",
+              ADMIN_ALLOWED_EMAILS: "test-admin@example.com",
             },
             timeout: 120_000,
             stdout: "pipe",

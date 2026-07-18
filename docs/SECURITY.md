@@ -16,13 +16,41 @@ For security review rules see `.claude/skills/security-review/SKILL.md`.
 
 ## Authentication
 
-MVP authentication uses Clerk.
+### Admin authentication — Phase 23 (implemented)
 
-- JWT tokens issued by Clerk
-- Backend validates tokens on every authenticated request
-- Admin role verified on every admin route request
+The internal admin workspace (`/admin/*`) and its API proxy
+(`/api/admin/proxy/*`) are protected by an authenticated, allowlisted admin
+session enforced at the Next.js layer. This replaces the earlier plan to use
+Clerk for the MVP admin surface.
 
-Future: Microsoft Entra External ID for deeper Azure integration.
+- **Sign-in:** GitHub OAuth (Authorization Code flow). The OAuth *secret* is
+  used only server-side during the token exchange; the GitHub access token is
+  read once to resolve the verified email and is then discarded — it is never
+  stored, cookied, or forwarded to the backend.
+- **Session:** a compact, HMAC-SHA256-signed token in an **httpOnly**, `secure`
+  (in production), `sameSite=lax` cookie (`ib_admin_session`), signed with
+  `AUTH_SECRET`. No token is stored in `localStorage` or exposed to client JS.
+  Verification is constant-time and fails closed when `AUTH_SECRET` is unset.
+- **Authorization:** an env allowlist, `ADMIN_ALLOWED_EMAILS`. Only listed
+  emails may reach `/admin/*`. An empty/unset allowlist authorizes nobody.
+- **Enforcement (defense-in-depth):**
+  - The Next.js **Proxy** (`apps/web/src/proxy.ts`, the Next 16 successor to
+    `middleware`) gates `/admin/:path*` (redirect to `/login` when
+    unauthenticated, `/unauthorized` when not allowlisted) and
+    `/api/admin/proxy/:path*` (401 / 403).
+  - The admin **API proxy route** independently re-checks auth + allowlist
+    before attaching any backend credential (401 unauthenticated, 403 not
+    allowed, 404 for a disallowed backend path).
+- **Backend Basic Auth remains** as a server-to-server defense: the proxy adds
+  it only after the human admin is authenticated and authorized. The browser
+  never calls the backend directly and never sees the credential.
+- **Local/CI auth:** `AUTH_TEST_MODE=true` enables a deterministic credential
+  sign-in (`/api/auth/dev-login`) so Playwright/local dev never need real OAuth.
+  It is hard-gated (returns 404 otherwise) and **must stay unset in
+  staging/production**.
+
+Future: Microsoft Entra ID can be added alongside GitHub via the same OAuth
+pattern; public-user auth (Version 2) remains a later phase.
 
 ---
 
@@ -90,23 +118,43 @@ Required mitigations:
 
 ## Admin API Protection
 
-Every `/api/admin/` endpoint must:
-1. Require valid authentication token
-2. Verify admin or super_admin role
-3. Return 403 Forbidden for insufficient role
-4. Write to admin action log
+Every admin request (browser → `/api/admin/proxy/*` → backend) must:
+1. Present a valid admin session (else **401**).
+2. Carry an email on the `ADMIN_ALLOWED_EMAILS` allowlist (else **403**).
+3. Resolve to an allowlisted backend path prefix (else **404**; backend never
+   contacted).
+4. Only then have the backend Basic Auth attached server-side, plus advisory
+   `X-IB-Admin-Email` / `X-IB-Admin-Name` audit headers.
+
+The backend **never trusts** the `X-IB-Admin-*` headers as authentication: they
+are read only after Basic Auth passes (see `app/core/admin_identity.py` and
+`app/core/staging_auth.py`), and mutating admin actions are logged with the
+admin email for auditability.
+
+### How to verify (staging)
+
+- Logged out: `/admin` and `/admin/discovery` redirect to `/login`;
+  `GET /api/admin/proxy/health` returns **401**.
+- Signed in but not allowlisted: `/admin/*` redirects to `/unauthorized`;
+  proxy returns **403**.
+- Allowlisted admin: `/admin/*` loads; the shell shows the admin identity +
+  Sign out.
+- Public routes stay public: `/` and `/api/version` load without a session.
 
 ---
 
-## Current Security Status (Phase 0)
+## Current Security Status (Phase 23 — Admin/Auth Hardening)
 
-No application code exists yet. Security rules are defined for Phase 1 implementation.
+Implemented: authenticated + allowlisted admin access to `/admin/*` and the
+admin API proxy; httpOnly signed session cookie; backend Basic Auth retained as
+server-to-server defense; no secrets committed (`.env.example` placeholders
+only). No public publishing, no recommendation output, no paid plans, no broker
+integration exist.
 
 Security review should be triggered before:
-- Adding any authentication-related code
-- Adding any admin endpoints
-- Adding any user data storage
-- Adding any document retrieval pipeline
+- Changing the authentication/authorization model or session handling
+- Adding any new admin endpoints or proxy path prefixes
+- Adding any user data storage or document retrieval pipeline
 - Deploying to any public environment
 
 ---
