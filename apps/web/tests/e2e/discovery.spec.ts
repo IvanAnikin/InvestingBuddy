@@ -412,6 +412,41 @@ test.describe("Admin Discovery — page + safety", () => {
     await page.getByRole("button", { name: "Show raw signal JSON" }).click();
     await expect(page.locator("pre")).toContainText("provider_name");
   });
+
+  test("25. Candidate row exposes a visible Detail action within the viewport", async ({
+    page,
+  }) => {
+    // Regression guard: the candidate-level Detail action must be visible on
+    // screen (leftmost column), not scrolled off the right edge of the wide
+    // candidate table — otherwise admins cannot open a candidate or run the
+    // full analysis. (Phase 23 browser-smoke blocker.)
+    await mockDiscoveryRoutes(page);
+    await page.goto("/admin/discovery");
+    const toggle = page.getByTestId("candidate-toggle").first();
+    await expect(toggle).toBeVisible();
+    await expect(toggle).toHaveText(/Detail/);
+    const box = await toggle.boundingBox();
+    const viewport = page.viewportSize();
+    expect(box).not.toBeNull();
+    expect(viewport).not.toBeNull();
+    // Fully inside the viewport horizontally (not clipped off the right edge).
+    expect(box!.x).toBeGreaterThanOrEqual(0);
+    expect(box!.x + box!.width).toBeLessThanOrEqual(viewport!.width + 1);
+  });
+
+  test("26. Clicking a candidate row opens the detail exposing Run Full Analysis", async ({
+    page,
+  }) => {
+    await mockDiscoveryRoutes(page);
+    await page.goto("/admin/discovery");
+    // Click the row body (not the toggle button) — the whole row is clickable.
+    await page.getByTestId("candidate-row").first().click();
+    const detail = page.getByTestId("candidate-detail");
+    await expect(detail).toBeVisible();
+    await expect(
+      detail.getByRole("button", { name: "Run Full Analysis" }),
+    ).toBeVisible();
+  });
 });
 
 test.describe("Admin Discovery — async execution (Phase 25.1)", () => {
