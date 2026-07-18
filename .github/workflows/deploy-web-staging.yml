@@ -210,22 +210,46 @@ jobs:
           fi
           echo "Homepage / is fresh — dark-UI marker and current build commit both present."
 
-          # ── /admin dark-UI marker ───────────────────────────────────────────
-          ADMIN_HTML=$(curl -s --max-time 20 "$BASE_URL/admin" || true)
+          # ── /admin is auth-protected (Phase 23 — Admin/Auth Hardening) ──────
+          # Logged out, /admin must redirect (307) to /login with a callbackUrl.
+          # The pre-auth build served /admin as 200, so a 307 here also proves
+          # the new auth proxy is deployed. Admin HTML is no longer reachable
+          # without a session, so build freshness is verified via the public
+          # /login page's dark-UI marker instead.
           ADMIN_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 20 "$BASE_URL/admin" || echo "000")
-          echo "/admin HTTP $ADMIN_STATUS"
-          if [ "$ADMIN_STATUS" != "200" ]; then
-            echo "::error::/admin did not return 200 (got $ADMIN_STATUS)."
+          ADMIN_LOCATION=$(curl -s -o /dev/null -D - --max-time 20 "$BASE_URL/admin" \
+            | awk 'tolower($1)=="location:"{print $2}' | tr -d '\r')
+          echo "/admin HTTP $ADMIN_STATUS (location: ${ADMIN_LOCATION:-<none>})"
+          if [ "$ADMIN_STATUS" != "307" ]; then
+            echo "::error::/admin should redirect logged-out users to /login (expected 307, got $ADMIN_STATUS) — auth proxy missing or misconfigured."
             exit 1
           fi
-          if ! printf '%s' "$ADMIN_HTML" | grep -qF "$UI_MARKER"; then
-            echo "::error::/admin is missing the dark-UI marker '$UI_MARKER' — admin is STALE (old build)."
-            exit 1
-          fi
-          echo "/admin is fresh — dark-UI marker present."
+          case "$ADMIN_LOCATION" in
+            */login*) : ;;
+            *) echo "::error::/admin redirected but not to /login (location: ${ADMIN_LOCATION:-<none>})."; exit 1 ;;
+          esac
+          echo "/admin correctly redirects logged-out users to /login — auth proxy live."
 
-          # ── /admin/reports (informational — proxy/auth context may vary) ────
+          # Build freshness for the admin bundle is now checked via the public
+          # /login page (admin pages require a session and only redirect here).
+          LOGIN_HTML=$(curl -s --max-time 20 "$BASE_URL/login" || true)
+          if ! printf '%s' "$LOGIN_HTML" | grep -qF "$UI_MARKER"; then
+            echo "::error::/login is missing the dark-UI marker '$UI_MARKER' — build may be STALE (old build)."
+            exit 1
+          fi
+          echo "/login is fresh — dark-UI marker present; admin surface is protected."
+
+          # ── /api/admin/proxy — must reject unauthenticated calls (401) ──────
+          PROXY_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 20 "$BASE_URL/api/admin/proxy/reports" || echo "000")
+          echo "/api/admin/proxy/reports HTTP $PROXY_STATUS (logged out)"
+          if [ "$PROXY_STATUS" != "401" ]; then
+            echo "::error::/api/admin/proxy/* should return 401 when logged out (got $PROXY_STATUS) — admin proxy is not protected."
+            exit 1
+          fi
+          echo "/api/admin/proxy/* correctly returns 401 when logged out."
+
+          # ── /admin/reports (informational — auth redirect expected) ─────────
           RSTATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 20 "$BASE_URL/admin/reports" || echo "000")
-          echo "/admin/reports HTTP $RSTATUS (informational — not gating the deploy)"
+          echo "/admin/reports HTTP $RSTATUS (informational — 307 redirect to /login expected when logged out)"
 
           echo "Web deploy freshness smoke check passed."
