@@ -155,3 +155,55 @@ test.describe("Phase 23 — sign out", () => {
     expect(new URL(page.url()).pathname).toBe("/login");
   });
 });
+
+test.describe("Phase 23 hotfix — canonical redirect origin (never 0.0.0.0)", () => {
+  test("16. unauthenticated /admin redirect targets /login on the public host, not an internal origin", async ({
+    page,
+  }) => {
+    const res = await page.request.get("/admin", { maxRedirects: 0 });
+    expect(res.status()).toBe(307);
+    const loc = res.headers()["location"] ?? "";
+    expect(loc).not.toContain("0.0.0.0");
+    const u = new URL(loc, "http://localhost");
+    expect(u.pathname).toBe("/login");
+    expect(u.searchParams.get("callbackUrl")).toBe("/admin");
+  });
+
+  test("17. sign-out redirect targets /login on the public host, never 0.0.0.0", async ({
+    page,
+  }) => {
+    await signInAsAdmin(page);
+    const res = await page.request.post("/api/auth/signout", {
+      maxRedirects: 0,
+    });
+    expect(res.status()).toBe(307);
+    const loc = res.headers()["location"] ?? "";
+    expect(loc).not.toContain("0.0.0.0");
+    expect(new URL(loc, "http://localhost").pathname).toBe("/login");
+  });
+
+  test("18. dev-login form redirect targets the callback path on the public host, never 0.0.0.0", async ({
+    page,
+  }) => {
+    const res = await page.request.post("/api/auth/dev-login", {
+      form: { email: ADMIN_EMAIL, callbackUrl: "/admin/discovery" },
+      maxRedirects: 0,
+    });
+    expect(res.status()).toBe(307);
+    const loc = res.headers()["location"] ?? "";
+    expect(loc).not.toContain("0.0.0.0");
+    expect(new URL(loc, "http://localhost").pathname).toBe("/admin/discovery");
+  });
+
+  test("19. full sign-in → sign-out cycle never lands the browser on 0.0.0.0", async ({
+    page,
+  }) => {
+    await signInAsAdmin(page);
+    await page.goto("/admin");
+    expect(page.url()).not.toContain("0.0.0.0");
+    // Sign out through the GET route in the browser (follows the redirect).
+    await page.goto("/api/auth/signout");
+    expect(page.url()).not.toContain("0.0.0.0");
+    expect(new URL(page.url()).pathname).toBe("/login");
+  });
+});

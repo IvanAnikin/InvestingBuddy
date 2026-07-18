@@ -18,6 +18,7 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { SESSION_COOKIE, sessionFromToken } from "@/lib/auth/session";
+import { buildPublicUrl } from "@/lib/auth/url";
 
 const PROXY_API_PREFIX = "/api/admin/proxy";
 
@@ -35,7 +36,10 @@ export async function proxy(request: NextRequest): Promise<NextResponse> {
         { status: 401 },
       );
     }
-    const loginUrl = new URL("/login", request.url);
+    // Canonical public origin (AUTH_URL) — never request.url, which on Azure is
+    // the internal container origin (0.0.0.0:8080). callbackUrl stays a
+    // same-site relative path.
+    const loginUrl = buildPublicUrl("/login", request);
     loginUrl.searchParams.set("callbackUrl", pathname + search);
     return NextResponse.redirect(loginUrl);
   }
@@ -47,7 +51,7 @@ export async function proxy(request: NextRequest): Promise<NextResponse> {
         { status: 403 },
       );
     }
-    return NextResponse.redirect(new URL("/unauthorized", request.url));
+    return NextResponse.redirect(buildPublicUrl("/unauthorized", request));
   }
 
   return NextResponse.next();
