@@ -875,6 +875,7 @@ export default function DiscoveryPage() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-white/10 text-xs uppercase tracking-wide text-slate-500">
+                    <th className="px-4 py-2.5 text-left font-medium">Detail</th>
                     <th className="px-4 py-2.5 text-left font-medium">#</th>
                     <th className="px-3 py-2.5 text-left font-medium">Ticker</th>
                     <th className="px-3 py-2.5 text-left font-medium">Company</th>
@@ -887,16 +888,33 @@ export default function DiscoveryPage() {
                     <th className="px-3 py-2.5 text-left font-medium">Source</th>
                     <th className="px-3 py-2.5 text-left font-medium">Missing</th>
                     <th className="px-3 py-2.5 text-left font-medium">Review</th>
-                    <th className="px-3 py-2.5 text-left font-medium"></th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-white/5">
                   {candidates.map((c) => (
                     <Fragment key={c.id}>
                       <tr
-                        className="transition-colors hover:bg-white/5"
+                        className="cursor-pointer transition-colors hover:bg-white/5"
                         data-testid="candidate-row"
+                        onClick={() =>
+                          setExpandedId(expandedId === c.id ? null : c.id)
+                        }
+                        title="Open candidate detail"
                       >
+                        <td className="px-4 py-3">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setExpandedId(expandedId === c.id ? null : c.id);
+                            }}
+                            className="whitespace-nowrap rounded-md border border-sky-400/30 bg-sky-500/10 px-2.5 py-1 text-xs font-medium text-sky-300 transition-colors hover:bg-sky-500/20"
+                            data-testid="candidate-toggle"
+                            aria-expanded={expandedId === c.id}
+                          >
+                            {expandedId === c.id ? "Close ▾" : "Detail ▸"}
+                          </button>
+                        </td>
                         <td className="px-4 py-3 text-xs text-slate-500">
                           {c.rank ?? "—"}
                         </td>
@@ -938,17 +956,6 @@ export default function DiscoveryPage() {
                           {c.human_review_required && (
                             <StatusPill label="required" color="red" />
                           )}
-                        </td>
-                        <td className="whitespace-nowrap px-3 py-3">
-                          <button
-                            onClick={() =>
-                              setExpandedId(expandedId === c.id ? null : c.id)
-                            }
-                            className="text-xs text-sky-400 hover:text-sky-300 hover:underline"
-                            data-testid="candidate-toggle"
-                          >
-                            {expandedId === c.id ? "Close" : "Detail"}
-                          </button>
                         </td>
                       </tr>
                       {expandedId === c.id && (
