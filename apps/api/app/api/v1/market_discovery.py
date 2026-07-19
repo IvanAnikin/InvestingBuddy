@@ -40,6 +40,7 @@ from app.schemas.market_discovery import (
     DiscoveryRunRead,
     DiscoveryRunSummary,
     RunCandidateAnalysisResponse,
+    ThesisDiscoveryRunCreate,
 )
 from app.services import market_discovery_service as svc
 
@@ -112,6 +113,68 @@ async def create_discovery_run(
         "run status for progress."
     )
     return dto
+
+
+# ---------------------------------------------------------------------------
+# Thesis runs (Phase 27 — market segment / thesis-to-universe discovery)
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/thesis-runs",
+    response_model=DiscoveryRunRead,
+    status_code=status.HTTP_201_CREATED,
+    summary="Start an internal thesis-to-universe discovery scan (admin only)",
+    description=(
+        "ADMIN/INTERNAL ONLY. Parses a natural-language market segment / theme / "
+        "region thesis, builds a BOUNDED real-company universe from a curated "
+        "reference registry, and scans it through the existing discovery "
+        "pipeline. Returns the run_id IMMEDIATELY (status='pending') — the scan "
+        "runs in the background; poll GET /runs/{run_id} and "
+        "GET /runs/{run_id}/candidates. Rejects (422) a vague thesis that needs "
+        "narrowing or one that matches no company BEFORE any work is scheduled. "
+        "Produces internal research candidates only — never investment advice, "
+        "never a recommendation, never a public publish action. " + _INTERNAL
+    ),
+)
+async def create_thesis_discovery_run(
+    payload: ThesisDiscoveryRunCreate,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+) -> DiscoveryRunRead:
+    try:
+        run = await svc.create_pending_thesis_run(db, payload)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+
+    background_tasks.add_task(svc.process_discovery_run_task, str(run.id))
+
+    dto = DiscoveryRunRead.model_validate(run)
+    dto.message = (
+        "Thesis discovery run started. A bounded universe was generated and is "
+        "being scanned in the background — poll run status for progress."
+    )
+    return dto
+
+
+@router.get(
+    "/thesis-runs/{run_id}",
+    response_model=DiscoveryRunRead,
+    summary="Get a thesis discovery run incl. parsed thesis + universe (admin)",
+)
+async def get_thesis_discovery_run(
+    run_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+) -> DiscoveryRunRead:
+    run = await svc.get_run(db, run_id)
+    if run is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Discovery run {run_id} not found",
+        )
+    return DiscoveryRunRead.model_validate(run)
 
 
 @router.get(

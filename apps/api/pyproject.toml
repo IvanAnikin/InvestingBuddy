@@ -53,6 +53,9 @@ select = ["E", "F", "I"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["E501"]
+# Curated reference data table (theme -> real-company registry): long, aligned
+# single-line rows are more readable than wrapped ones. Phase 27.
+"app/services/market_universe_builder.py" = ["E501"]
 
 [tool.mypy]
 python_version = "3.12"

@@ -351,13 +351,85 @@ export interface DiscoveryRunCreate {
   notes?: string;
 }
 
+// Phase 27 — structured thesis parse returned on a thesis run.
+export interface ParsedThesis {
+  normalized_text: string;
+  themes: string[];
+  sectors: string[];
+  industries: string[];
+  regions: string[];
+  countries: string[];
+  keywords: string[];
+  exclusion_keywords: string[];
+  size_hints: string[];
+  source_intent_hints: string[];
+  catalyst_hints: string[];
+  risk_hints: string[];
+  unmatched_terms: string[];
+  warnings: string[];
+  confidence: number;
+  needs_narrowing: boolean;
+}
+
+// Phase 27 — one generated universe candidate (pre-scan).
+export interface UniverseItem {
+  ticker: string;
+  company_name: string | null;
+  exchange: string;
+  country: string | null;
+  region: string | null;
+  sector: string | null;
+  industry: string | null;
+  theme: string | null;
+  matched_keywords: string[];
+  relevance_reason: string;
+  universe_source: string;
+  source_tier: string;
+  relevance_score_pre_scan: number;
+  metadata_not_sourced: boolean;
+  warnings: string[];
+}
+
+export interface GeneratedUniverse {
+  items: UniverseItem[];
+  excluded: { ticker: string; company_name: string | null; reason: string }[];
+  source_summary: Record<string, unknown>;
+  warnings: string[];
+  needs_narrowing: boolean;
+  requested_max: number;
+}
+
+// Phase 27 — request payload for a thesis / market-segment discovery run.
+export interface ThesisDiscoveryRunCreate {
+  thesis_text: string;
+  region?: string;
+  country?: string;
+  exchange?: string;
+  sector?: string;
+  industry?: string;
+  industry_keywords?: string[];
+  market_cap_bucket?: string;
+  max_universe_size?: number;
+  max_candidates?: number;
+  provider_name?: string;
+  lookback_days?: number;
+  created_by?: string;
+  notes?: string;
+}
+
 export interface DiscoveryRun {
   id: string;
   status: string;
+  // Phase 27 — "ticker" (manual/curated) | "thesis" (segment-generated).
+  mode?: string;
   provider_name: string;
   universe_source: string;
   universe_count: number;
   requested_tickers: string[] | null;
+  // Phase 27 — thesis inputs + generated universe (null for ticker runs).
+  thesis_text?: string | null;
+  parsed_thesis_json?: ParsedThesis | null;
+  universe_json?: GeneratedUniverse | null;
   processed_count: number;
   candidate_count: number;
   error_count: number;
@@ -396,6 +468,9 @@ export interface DiscoveryCandidate {
   candidate_score: number | null;
   candidate_score_grade: string | null;
   rank: number | null;
+  // Phase 27 — thesis relevance + blended internal score (null for ticker runs).
+  thesis_relevance_score?: number | null;
+  combined_internal_score?: number | null;
   momentum_score: number | null;
   fundamentals_score: number | null;
   catalyst_score: number | null;
@@ -452,6 +527,8 @@ export interface DiscoveryCandidateDetail extends DiscoveryCandidate {
   missing_sources_json: string[] | null;
   missing_fields_json: string[] | null;
   raw_signal_json: Record<string, unknown> | null;
+  // Phase 27 — matched keywords, relevance reason, interest label, source/tier.
+  thesis_match_json?: Record<string, unknown> | null;
 }
 
 export interface DiscoveryCandidateListResponse {

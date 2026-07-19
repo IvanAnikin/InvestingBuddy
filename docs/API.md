@@ -1,6 +1,6 @@
 # API Reference
 
-## Status: Phase 26 — Final Report Schema Completion / Publication-Readiness. **No new API endpoints** and no DB migration. The final-report `generate`/`validate` responses gain `research_complete` and `publication_ready` (both default `false`); the internal admin draft is deterministically completed into the strict `report_schema.json` shape so `schema_valid=true` is achievable via honest `not_sourced` stand-ins (never fabricated data). `safety_valid=true`, `human_review_required=true`, and public publishing remain unchanged (still not implemented). Underlying Phase 24.1.2 — Press-Release Canonical Link Fix. **No new API endpoints** and no request-schema change. The additive `news_catalyst_discovery` event rows now carry `source_url_quality` (`canonical_article` / `rejected_media_only` / `missing`) and an optional `media_url`; `source_url` for company press-release events is always the canonical article page (image/media URLs are never used as evidence). Backward-compatible; `safety_valid=true`; human review required. Underlying Phase 24.1.1 — News Provider Activation + Feed-Status Consistency. **No new API endpoints** and no request/response schema change. The catalyst markdown's **Company News Sources** now carries a precise press-release feed-status line (`feed_discovered_with_items` / `_no_recent_items` / `_unreadable` / `not_discovered`) instead of a contradictory "no feed found" warning, and the additive `news_catalyst_discovery` structured section gains a `source_statuses` block (`company_press_release` status + `items_seen`/`items_used` + `news_provider` status). Backend-only env `NEWS_LOOKBACK_DAYS` now scopes the news/press lookback (SEC stays 90d); `NEWS_PROVIDER_NAME=gdelt` activates a no-key provider. Existing endpoints stay backward-compatible; `safety_valid=true`; human review required. Underlying Phase 24.1 — Real News + Company Source Enablement. **No new API endpoints** were added and no request/response schema changed. On top of Phase 24, `free_real`/`eodhd_free_real` draft reports gain two additional catalyst markdown sections — **Company News Sources** (discovered website / IR / newsroom / press-release feed + verification tier/confidence) and **Industry Context News** (sector news explicitly flagged as NOT company-specific evidence) — and the Final Report Generator's additive `news_catalyst_discovery` section gains `company_sources`, `industry_context_events`, and `source_classes_attempted` / `source_classes_successful` (all controlled-vocabulary + neutralised headlines). Coverage status can now report `limited`/`adequate`/`strong` instead of `filings_only` when real company/news/industry evidence exists. Optional env config (backend only, never a request field, never committed): `NEWS_PROVIDER_NAME`, `NEWS_API_KEY`, `NEWS_API_BASE_URL`, `NEWS_SEARCH_ENDPOINT`, `NEWS_MAX_RESULTS`, `NEWS_LOOKBACK_DAYS`, `NEWS_TIMEOUT_SECONDS`. Existing final-report endpoints stay backward-compatible; the safety gate passes (`safety_valid=true`) and human review stays required. Underlying Phase 24 — News + Catalyst Discovery. **No new API endpoints** were added and no request/response schema changed. For `free_real`/`eodhd_free_real` analyses, the draft report markdown gains catalyst sections (News & Catalyst Discovery, Recent Catalyst Events, SEC Filing Events, Catalyst Evidence Quality, Catalyst Gaps / Next Research Tasks) plus a machine-readable catalyst JSON block, and the Final Report Generator's structured content gains an **additive** `news_catalyst_discovery` section (controlled-vocabulary counts + coverage status + SEC filing metadata + neutralised headlines; catalyst labels are T6 model estimates). Existing final-report endpoints (`from-scorecard`/`from-candidate`/`from-company`/`from-report`/`validate`/`regenerate-section`) are unchanged and stay backward-compatible; the safety gate passes (`safety_valid=true`) and human review stays required. Underlying Phase 19.4 — Identity + Sector + Market-Metric Enrichment. On top of the Phase 19.3 SEC-normalized fundamentals, the `free_real` / `eodhd_free_real` analysis snapshot now carries **additive, non-breaking** enrichment fields: `company_identity` gains `lei` / `isin`, `profile` gains sourced `sector` / `industry` / `website`, `fundamentals_summary` gains derived `market_cap_usd_m` / `enterprise_value_usd_m` / `pe_ratio` / `52_week_high` / `52_week_low` / `shares_outstanding_mln` (all null when not derivable), and two new blocks appear: `identity_profile_enrichment` and `market_metrics_summary` (both carry per-field `source_tiers` + `warnings`). No request schema or existing field changed. `valuation_guard_summary.valuation_readiness` stays `"partial"` when SEC + derived metrics are present; all valuation conclusions remain blocked (derived market cap / EV / P/E are T6 estimates, never official figures). Builds on Phase 19.1 Free Real Data Provider Stack (provider keys: `free_real`, `eodhd_free_real`, `eodhd_price_only`, `sec_edgar_fundamentals`).
+## Status: Phase 27 — Thesis-to-Universe Discovery. Adds a **market-segment / thesis** discovery mode: `POST /api/v1/market-discovery/thesis-runs` (+ `GET /thesis-runs/{run_id}` alias). An admin describes a segment/theme/region in natural language; the backend deterministically parses it, builds a **bounded universe of real public companies** from a curated registry, and scans it through the Phase 25 pipeline. Discovery runs gain `mode` (`ticker`|`thesis`), `thesis_text`, `parsed_thesis_json`, `universe_json`; candidates gain `thesis_relevance_score`, `combined_internal_score`, `thesis_match_json` (migration **011**). Vague/no-match theses are rejected (422, `needs_narrowing`). Same hard safety guarantees — internal only, no BUY/SELL/HOLD/WATCH, no price target/fair value/upside/recommendation, `human_review_required=true`, `is_public=false`, no public publish route. See the Phase 27 section below. Underlying Phase 26 — Final Report Schema Completion / Publication-Readiness. **No new API endpoints** and no DB migration. The final-report `generate`/`validate` responses gain `research_complete` and `publication_ready` (both default `false`); the internal admin draft is deterministically completed into the strict `report_schema.json` shape so `schema_valid=true` is achievable via honest `not_sourced` stand-ins (never fabricated data). `safety_valid=true`, `human_review_required=true`, and public publishing remain unchanged (still not implemented). Underlying Phase 24.1.2 — Press-Release Canonical Link Fix. **No new API endpoints** and no request-schema change. The additive `news_catalyst_discovery` event rows now carry `source_url_quality` (`canonical_article` / `rejected_media_only` / `missing`) and an optional `media_url`; `source_url` for company press-release events is always the canonical article page (image/media URLs are never used as evidence). Backward-compatible; `safety_valid=true`; human review required. Underlying Phase 24.1.1 — News Provider Activation + Feed-Status Consistency. **No new API endpoints** and no request/response schema change. The catalyst markdown's **Company News Sources** now carries a precise press-release feed-status line (`feed_discovered_with_items` / `_no_recent_items` / `_unreadable` / `not_discovered`) instead of a contradictory "no feed found" warning, and the additive `news_catalyst_discovery` structured section gains a `source_statuses` block (`company_press_release` status + `items_seen`/`items_used` + `news_provider` status). Backend-only env `NEWS_LOOKBACK_DAYS` now scopes the news/press lookback (SEC stays 90d); `NEWS_PROVIDER_NAME=gdelt` activates a no-key provider. Existing endpoints stay backward-compatible; `safety_valid=true`; human review required. Underlying Phase 24.1 — Real News + Company Source Enablement. **No new API endpoints** were added and no request/response schema changed. On top of Phase 24, `free_real`/`eodhd_free_real` draft reports gain two additional catalyst markdown sections — **Company News Sources** (discovered website / IR / newsroom / press-release feed + verification tier/confidence) and **Industry Context News** (sector news explicitly flagged as NOT company-specific evidence) — and the Final Report Generator's additive `news_catalyst_discovery` section gains `company_sources`, `industry_context_events`, and `source_classes_attempted` / `source_classes_successful` (all controlled-vocabulary + neutralised headlines). Coverage status can now report `limited`/`adequate`/`strong` instead of `filings_only` when real company/news/industry evidence exists. Optional env config (backend only, never a request field, never committed): `NEWS_PROVIDER_NAME`, `NEWS_API_KEY`, `NEWS_API_BASE_URL`, `NEWS_SEARCH_ENDPOINT`, `NEWS_MAX_RESULTS`, `NEWS_LOOKBACK_DAYS`, `NEWS_TIMEOUT_SECONDS`. Existing final-report endpoints stay backward-compatible; the safety gate passes (`safety_valid=true`) and human review stays required. Underlying Phase 24 — News + Catalyst Discovery. **No new API endpoints** were added and no request/response schema changed. For `free_real`/`eodhd_free_real` analyses, the draft report markdown gains catalyst sections (News & Catalyst Discovery, Recent Catalyst Events, SEC Filing Events, Catalyst Evidence Quality, Catalyst Gaps / Next Research Tasks) plus a machine-readable catalyst JSON block, and the Final Report Generator's structured content gains an **additive** `news_catalyst_discovery` section (controlled-vocabulary counts + coverage status + SEC filing metadata + neutralised headlines; catalyst labels are T6 model estimates). Existing final-report endpoints (`from-scorecard`/`from-candidate`/`from-company`/`from-report`/`validate`/`regenerate-section`) are unchanged and stay backward-compatible; the safety gate passes (`safety_valid=true`) and human review stays required. Underlying Phase 19.4 — Identity + Sector + Market-Metric Enrichment. On top of the Phase 19.3 SEC-normalized fundamentals, the `free_real` / `eodhd_free_real` analysis snapshot now carries **additive, non-breaking** enrichment fields: `company_identity` gains `lei` / `isin`, `profile` gains sourced `sector` / `industry` / `website`, `fundamentals_summary` gains derived `market_cap_usd_m` / `enterprise_value_usd_m` / `pe_ratio` / `52_week_high` / `52_week_low` / `shares_outstanding_mln` (all null when not derivable), and two new blocks appear: `identity_profile_enrichment` and `market_metrics_summary` (both carry per-field `source_tiers` + `warnings`). No request schema or existing field changed. `valuation_guard_summary.valuation_readiness` stays `"partial"` when SEC + derived metrics are present; all valuation conclusions remain blocked (derived market cap / EV / P/E are T6 estimates, never official figures). Builds on Phase 19.1 Free Real Data Provider Stack (provider keys: `free_real`, `eodhd_free_real`, `eodhd_price_only`, `sec_edgar_fundamentals`).
 
 ---
 
@@ -1187,3 +1187,87 @@ no fundamentals + no price history + no catalysts).
   report the candidate links to). "Run Full Analysis" re-runs the workflow.
 - CI runs entirely offline: the per-ticker signal extractor is injectable and
   tests supply canned signals — no provider/SEC/GDELT/news calls.
+
+## Phase 27: Thesis-to-Universe Discovery (Admin / Internal Only)
+
+Extends Phase 25 with a **market-segment / thesis** discovery mode. An admin
+describes a segment / theme / region in natural language; the backend parses it
+deterministically, builds a **bounded universe of real public companies** from a
+curated reference registry, and scans it through the existing Phase 25 pipeline.
+Same hard safety guarantees as Phase 25 (internal only, no BUY/SELL/HOLD/WATCH,
+no price target / fair value / upside / recommendation, `human_review_required=true`,
+`is_public=false`, no public publish route).
+
+| Method | Path | Description |
+|---|---|---|
+| POST | `/api/v1/market-discovery/thesis-runs` | **Start** a thesis discovery run — parses the thesis, builds a bounded universe, returns `run_id` immediately (`status="pending"`); scans in the background |
+| GET | `/api/v1/market-discovery/thesis-runs/{run_id}` | Get a thesis run incl. `parsed_thesis_json` + `universe_json` (alias of `GET /runs/{run_id}`) |
+
+The existing `GET /runs/{run_id}`, `GET /runs/{run_id}/candidates`,
+`GET /candidates/{candidate_id}`, and
+`POST /candidates/{candidate_id}/run-analysis` endpoints serve thesis runs too (a
+thesis run **is** a discovery run with `mode="thesis"`).
+
+**Thesis run creation (`POST /thesis-runs`) body:**
+```json
+{
+  "thesis_text": "European defense suppliers benefiting from NATO spending",
+  "region": "Europe",                 // optional
+  "country": "Germany",               // optional
+  "sector": "Industrials",            // optional
+  "industry": "Aerospace & Defense",  // optional
+  "industry_keywords": ["defense"],   // optional
+  "market_cap_bucket": "large_cap",   // optional
+  "max_universe_size": 25,            // hard cap ≤ 50 (default 25)
+  "max_candidates": 10,
+  "provider_name": "free_real",
+  "lookback_days": 90
+}
+```
+
+**Rejections (422, before any background work):**
+- A **vague thesis** that cannot bound a universe (e.g. "best stocks to buy",
+  "top stocks") → `needs_narrowing`.
+- A thesis that **matched no company** in the curated registry (e.g. after a
+  region filter excludes everything).
+
+**Run read additions (`mode="thesis"`):** `mode`, `thesis_text`,
+`parsed_thesis_json` (themes / sectors / industries / regions / countries /
+keywords / confidence / needs_narrowing), and `universe_json`
+(`items[]` with per-ticker `relevance_score_pre_scan`, `matched_keywords`,
+`relevance_reason`, `universe_source`, `source_tier`; `excluded[]` with reasons;
+`source_summary`).
+
+**Candidate additions (thesis runs only):** `thesis_relevance_score`,
+`combined_internal_score`, and `thesis_match_json` (matched keywords, relevance
+reason, `internal_interest_label`, source/tier). New sort keys:
+`combined_internal_score`, `thesis_relevance_score`. Thesis candidates rank by
+`combined_internal_score`.
+
+**Scoring (internal prioritization only, deterministic):**
+```
+thesis_relevance_score (0–100, pre-scan) — theme/keyword/sector/industry/region
+   match + source confidence + catalyst intent − weak-metadata penalty.
+
+combined_internal_score =
+    0.45 * thesis_relevance_score
+  + 0.35 * discovery_score          (Phase 25 candidate_score)
+  + 0.10 * catalyst_score
+  + 0.10 * source_quality_score
+  - missing_data_penalty            → clamped to 0–100
+```
+Internal-only interest labels (never recommendations):
+`high_internal_research_interest` (≥65), `medium_internal_research_interest`
+(≥40), `low_internal_research_interest` (≥20), `insufficient_data`
+(< 20 or discovery data insufficient).
+
+**Notes:**
+- The parser and universe builder are fully deterministic (keyword tables + a
+  curated registry of **real, non-fabricated** public issuers) — no LLM, no
+  network. Supported themes: defense, semiconductors, nuclear energy,
+  grid/electrification, robotics/automation, biotech/pharma, banks/fintech,
+  mining/materials, AI infrastructure.
+- The curated universe is a bounded research **search space**, not an index and
+  not a recommendation list. Non-US names produce a sparse `free_real` scan
+  (SEC-based); the curated registry still supplies identity metadata (never
+  fabricated) and the candidate is flagged accordingly.
