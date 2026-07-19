@@ -148,17 +148,26 @@ async def test_validate_final_report_commits_and_persists() -> None:
 
 
 @pytest.mark.asyncio
-async def test_validate_schema_false_allowed_with_safety_true() -> None:
+async def test_validate_schema_completed_true_stays_research_incomplete() -> None:
+    # Phase 26: a minimal draft is now completed into the strict schema shape via
+    # honest not_sourced stand-ins, so schema_valid flips True — but it must stay
+    # research-incomplete, not publication-ready, and human-review-required.
     svc = FinalReportGeneratorService()
-    # Minimal content → schema invalid (missing required sections) but safe.
     report = _report_with_content({"executive_summary": {"value": "Internal draft."}})
     db = _db_returning(report)
 
     resp = await svc.validate_final_report(db, report.id)
 
-    assert resp.schema_valid is False
+    assert resp.schema_valid is True
     assert resp.safety_valid is True
     assert resp.human_review_required is True
+    assert resp.research_complete is False
+    assert resp.publication_ready is False
+    # Persisted validation JSON carries the new orthogonal flags.
+    assert report.schema_validation_json["is_valid"] is True
+    assert report.schema_validation_json["research_complete"] is False
+    assert report.schema_validation_json["publication_ready"] is False
+    assert report.schema_validation_json["human_review_required"] is True
     db.commit.assert_awaited()
 
 

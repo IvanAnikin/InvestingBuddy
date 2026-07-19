@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
@@ -39,6 +40,7 @@ from app.models.report import Report
 from app.models.scorecard import Scorecard
 from app.models.screening import ScreeningCandidate
 from app.models.source import Citation, Source
+from app.schemas.catalyst import neutralize_forbidden_terms
 from app.schemas.final_report import (
     FINAL_REPORT_VERSION,
     INTERNAL_DISCLAIMER,
@@ -48,6 +50,7 @@ from app.schemas.final_report import (
     RegenerateSectionResponse,
     SafetyValidationResult,
 )
+from app.services.real_asset_report_completer import build_schema_complete_report
 from app.services.report_validation_service import validate_real_asset_report
 
 logger = logging.getLogger(__name__)
@@ -187,6 +190,113 @@ def run_safety_gate(report_content: dict[str, Any]) -> SafetyValidationResult:
         scanned_sections=scanned_sections,
         warnings=warnings,
         blocks_approval=not passed,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Phase 26 — final-report validation (schema completion + safety + gating)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class FinalReportValidation:
+    """Combined validation outcome for one final-report draft (Phase 26).
+
+    Distinguishes the four orthogonal dimensions the task requires:
+      - ``schema_valid``       — JSON shape satisfies report_schema.json
+      - ``safety_valid``       — no banned recommendation/valuation language
+      - ``research_complete``  — enough SOURCED data exists (no stand-ins)
+      - ``publication_ready``  — always False (public publishing not implemented)
+    ``human_review_required`` is always True.
+    """
+
+    safety_result: SafetyValidationResult
+    schema_valid: bool
+    safety_valid: bool
+    research_complete: bool
+    publication_ready: bool
+    schema_errors: list[str]
+    schema_warnings: list[str]
+    validation_warnings: list[str]
+    placeholder_field_count: int
+    persisted_schema_json: dict[str, Any]
+
+
+def _sanitize_persisted(items: list[str]) -> list[str]:
+    """Guarantee no banned recommendation/valuation substring is persisted.
+
+    Defence-in-depth: curated strings are already clean, but jsonschema error
+    messages could echo a schema key such as ``upside_downside_pct``. Neutralise
+    them before they reach ``schema_validation_json``.
+    """
+    out: list[str] = []
+    for item in items:
+        cleaned = neutralize_forbidden_terms(str(item))
+        out.append(cleaned if cleaned is not None else "")
+    return out
+
+
+def run_final_report_validation(
+    report_content: dict[str, Any],
+    *,
+    report_id: str | None,
+    generated_at: datetime | None,
+) -> FinalReportValidation:
+    """Validate a final-report draft (Phase 26 schema-completion path).
+
+    The stored draft uses the Phase 16 admin shape (executive_summary, …). We (a)
+    safety-scan that draft as before, then (b) deterministically complete it into
+    the strict report_schema.json shape and validate THAT for ``schema_valid``.
+    Missing research becomes honest not_sourced stand-ins — never fabricated data
+    — so a free-provider report reaches ``schema_valid=True`` while staying
+    ``research_complete=False`` and ``publication_ready=False``.
+    """
+    safety_result = run_safety_gate(report_content)
+
+    completion = build_schema_complete_report(
+        report_content, report_id=report_id, generated_at=generated_at
+    )
+    schema_result = validate_real_asset_report(completion.report)
+    completed_safety = run_safety_gate(completion.report)
+
+    schema_valid = schema_result.is_valid
+    safety_valid = safety_result.passed and completed_safety.passed
+    research_complete = bool(completion.research_complete and schema_valid)
+
+    schema_errors = _sanitize_persisted(list(schema_result.errors or []))
+    # Persist the completion's curated, forbidden-substring-safe warnings rather
+    # than the raw jsonschema data-quality strings (which embed banned keys).
+    schema_warnings = list(completion.warnings)
+    if not completed_safety.passed:
+        schema_warnings.append(
+            "Safety gate flagged the completed report; safety_valid is False."
+        )
+
+    validation_warnings = list(schema_warnings)
+    if not safety_result.passed:
+        validation_warnings.extend(safety_result.warnings)
+
+    persisted = {
+        "is_valid": schema_valid,
+        "errors": schema_errors,
+        "warnings": schema_warnings,
+        "research_complete": research_complete,
+        "publication_ready": False,
+        "human_review_required": True,
+        "placeholder_field_count": len(completion.placeholder_fields),
+    }
+
+    return FinalReportValidation(
+        safety_result=safety_result,
+        schema_valid=schema_valid,
+        safety_valid=safety_valid,
+        research_complete=research_complete,
+        publication_ready=False,
+        schema_errors=schema_errors,
+        schema_warnings=schema_warnings,
+        validation_warnings=validation_warnings,
+        placeholder_field_count=len(completion.placeholder_fields),
+        persisted_schema_json=persisted,
     )
 
 
@@ -1922,26 +2032,21 @@ class FinalReportGeneratorService:
                 except (json.JSONDecodeError, ValueError):
                     pass
 
-        safety_result = run_safety_gate(report_content)
-
-        # Schema validation against real-asset schema
-        schema_result = validate_real_asset_report(report_content)
-        schema_valid = schema_result.is_valid
+        # Phase 26: safety-scan the admin draft AND validate a schema-completed
+        # version so a research-incomplete draft can still reach schema_valid=True
+        # via honest not_sourced stand-ins (never fabricated data).
+        validation = run_final_report_validation(
+            report_content,
+            report_id=str(report.id),
+            generated_at=report.created_at,
+        )
 
         sections_present = [k for k in report_content if k in _REQUIRED_SECTIONS]
         missing_sections = [s for s in _REQUIRED_SECTIONS if s not in report_content]
 
-        validation_warnings: list[str] = list(schema_result.warnings or [])
-        if not safety_result.passed:
-            validation_warnings.extend(safety_result.warnings)
-
         # Update the report's validation fields
-        report.safety_validation_json = safety_result.model_dump()
-        report.schema_validation_json = {
-            "is_valid": schema_valid,
-            "errors": list(schema_result.errors or []),
-            "warnings": list(schema_result.warnings or []),
-        }
+        report.safety_validation_json = validation.safety_result.model_dump()
+        report.schema_validation_json = validation.persisted_schema_json
         await db.flush()
         # Commit so the safety/schema validation JSON actually persists on the
         # report row. Without this, get_db() rolls back on session close and the
@@ -1950,13 +2055,15 @@ class FinalReportGeneratorService:
 
         return FinalReportValidateResponse(
             report_id=report.id,
-            schema_valid=schema_valid,
-            safety_valid=safety_result.passed,
+            schema_valid=validation.schema_valid,
+            safety_valid=validation.safety_valid,
             human_review_required=True,
-            safety_validation=safety_result,
-            schema_validation_errors=list(schema_result.errors or []),
-            schema_validation_warnings=list(schema_result.warnings or []),
-            validation_warnings=validation_warnings,
+            research_complete=validation.research_complete,
+            publication_ready=validation.publication_ready,
+            safety_validation=validation.safety_result,
+            schema_validation_errors=validation.schema_errors,
+            schema_validation_warnings=validation.schema_warnings,
+            validation_warnings=validation.validation_warnings,
             sections_present=sections_present,
             missing_sections=missing_sections,
         )
@@ -2103,25 +2210,26 @@ class FinalReportGeneratorService:
             catalyst_discovery=catalyst_discovery,
         )
 
-        # Run safety gate
-        safety_result = run_safety_gate(report_content)
+        # Phase 26: safety-scan the admin draft AND validate a schema-completed
+        # version (honest not_sourced stand-ins fill genuinely-absent fields, so
+        # the draft reaches schema_valid=True while staying research-incomplete).
+        validation = run_final_report_validation(
+            report_content,
+            report_id=str(uuid.uuid4()),
+            generated_at=_utcnow(),
+        )
+        safety_result = validation.safety_result
 
         # Update checklist with actual safety result
         checklist = report_content.get("human_review_checklist", [])
         if checklist and isinstance(checklist[0], dict):
-            checklist[0]["completed"] = safety_result.passed
-            if not safety_result.passed:
+            checklist[0]["completed"] = validation.safety_valid
+            if not validation.safety_valid:
                 checklist[0]["note"] = (
                     "BLOCKED: forbidden terms found. Revise report."
                 )
 
-        # Schema validation
-        schema_check = validate_real_asset_report(report_content)
-        schema_validation_for_save = {
-            "is_valid": schema_check.is_valid,
-            "errors": list(schema_check.errors or []),
-            "warnings": list(schema_check.warnings or []),
-        }
+        schema_validation_for_save = validation.persisted_schema_json
 
         # Source summary
         source_summary_for_save = {
@@ -2168,8 +2276,8 @@ class FinalReportGeneratorService:
             is_mock_val = company_snapshot.get("is_mock", True)
 
         checklist_items = _build_human_review_checklist(
-            safety_valid=safety_result.passed,
-            schema_valid=schema_check.is_valid,
+            safety_valid=validation.safety_valid,
+            schema_valid=validation.schema_valid,
             has_scorecard=scorecard is not None,
             has_bull_bear=bull_case_summary is not None
             and bear_case_summary is not None,
@@ -2189,24 +2297,22 @@ class FinalReportGeneratorService:
         if not provisional_status or provisional_status not in ALLOWED_INTERNAL_STATUSES:
             provisional_status = "not_enough_data"
 
-        validation_warnings: list[str] = list(schema_check.warnings or [])
-        if not safety_result.passed:
-            validation_warnings.extend(safety_result.warnings)
-
         return FinalReportResponse(
             report_id=saved_report.id,
             status="draft",
             review_status="draft",
-            schema_valid=schema_check.is_valid,
-            safety_valid=safety_result.passed,
+            schema_valid=validation.schema_valid,
+            safety_valid=validation.safety_valid,
             human_review_required=True,
+            research_complete=validation.research_complete,
+            publication_ready=validation.publication_ready,
             internal_status=provisional_status,
             sections_generated=sections_generated,
             missing_sections=missing_sections,
             safety_validation=safety_result,
-            schema_validation_errors=list(schema_check.errors or []),
-            schema_validation_warnings=list(schema_check.warnings or []),
-            validation_warnings=validation_warnings,
+            schema_validation_errors=validation.schema_errors,
+            schema_validation_warnings=validation.schema_warnings,
+            validation_warnings=validation.validation_warnings,
             scorecard_id=scorecard.id if scorecard else None,
             source_count=len(sources),
             citation_count=len(citations),

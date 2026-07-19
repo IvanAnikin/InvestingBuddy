@@ -205,4 +205,34 @@ test.describe("Report Detail", () => {
     const isNotFound = bodyText.includes("This page could not be found.");
     expect(hasDisclaimer || isNotFound).toBeTruthy();
   });
+
+  // Phase 26 — a schema-complete report shows the orthogonal validation
+  // dimensions, keeps human review required, is never publication-ready, and
+  // exposes no public publish action. The e2e mock-backend serves a validated
+  // report (schema_valid=true, research_complete=false, publication_ready=false).
+  test("schema-valid report shows Phase 26 validation dimensions and no publish action", async ({
+    page,
+  }) => {
+    await page.goto(`/admin/reports/${MOCK_REPORT_ID}`);
+    const bodyText = await page.locator("body").innerText();
+    if (bodyText.includes("This page could not be found.")) {
+      test.skip(true, "detail page not reachable in this environment");
+    }
+
+    // The four orthogonal validation dimensions are surfaced.
+    await expect(page.locator("body")).toContainText("Schema Valid (structural)");
+    await expect(page.locator("body")).toContainText("Research Complete");
+    await expect(page.locator("body")).toContainText("Publication Ready");
+    await expect(page.locator("body")).toContainText("Human Review Required");
+    // Schema completeness is explicitly not research/publication readiness.
+    await expect(page.locator("body")).toContainText("research-incomplete");
+    await expect(page.locator("body")).toContainText(
+      "public publishing is not implemented",
+    );
+
+    // There must be NO public publish action anywhere on the page.
+    await expect(
+      page.getByRole("button", { name: /publish/i }),
+    ).toHaveCount(0);
+  });
 });
