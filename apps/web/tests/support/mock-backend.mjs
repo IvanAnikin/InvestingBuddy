@@ -125,9 +125,18 @@ function mockReport(id) {
     human_review_required: true,
     approved_by: null,
     rejected_by: null,
-    final_report_version: null,
-    safety_validation_json: null,
-    schema_validation_json: null,
+    final_report_version: "16.0.0",
+    // Phase 26 — a validated draft: schema-complete via not_sourced stand-ins,
+    // still research-incomplete, never publication-ready, human review required.
+    safety_validation_json: { passed: true },
+    schema_validation_json: {
+      is_valid: true,
+      errors: [],
+      research_complete: false,
+      publication_ready: false,
+      human_review_required: true,
+      placeholder_field_count: 18,
+    },
     source_summary_json: null,
     scorecard_id: null,
   };

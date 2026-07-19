@@ -116,6 +116,11 @@ class FinalReportResponse(BaseModel):
     schema_valid: bool
     safety_valid: bool
     human_review_required: bool = True
+    # Phase 26 — orthogonal to schema_valid: whether enough SOURCED data exists.
+    # A schema-complete report built from not_sourced stand-ins is research_complete=False.
+    research_complete: bool = False
+    # Public publishing is not implemented — always False, never set True here.
+    publication_ready: bool = False
 
     # internal status (research queue label — never public recommendation)
     internal_status: str | None = None
@@ -153,6 +158,9 @@ class FinalReportValidateResponse(BaseModel):
     schema_valid: bool
     safety_valid: bool
     human_review_required: bool = True
+    # Phase 26 — structural completeness is not research completeness.
+    research_complete: bool = False
+    publication_ready: bool = False  # public publishing is not implemented
     safety_validation: SafetyValidationResult | None = None
     schema_validation_errors: list[str] = Field(default_factory=list)
     schema_validation_warnings: list[str] = Field(default_factory=list)

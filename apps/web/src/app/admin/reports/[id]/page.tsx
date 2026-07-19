@@ -283,9 +283,44 @@ export default async function ReportDetailPage({
           value={readValidationFlag(report.safety_validation_json, "passed")}
         />
         <MetaRow
-          label="Schema Validation is_valid"
+          label="Schema Valid (structural)"
           value={readValidationFlag(report.schema_validation_json, "is_valid")}
         />
+        <MetaRow
+          label="Research Complete"
+          value={readValidationFlag(
+            report.schema_validation_json,
+            "research_complete",
+          )}
+        />
+        <MetaRow
+          label="Publication Ready"
+          value={readValidationFlag(
+            report.schema_validation_json,
+            "publication_ready",
+          )}
+        />
+      </GlassCard>
+
+      {/* Phase 26 — validation dimensions are orthogonal. Schema completeness is
+          NOT research completeness, and no report is publication-ready. */}
+      <GlassCard className="space-y-1.5 p-5">
+        <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+          Validation Summary
+        </p>
+        <p className="text-xs text-slate-400">
+          <strong className="text-slate-200">Schema valid</strong> means the
+          report satisfies the required JSON shape — genuinely-absent fields are
+          filled with honest{" "}
+          <code className="rounded bg-white/10 px-1 font-mono">not_sourced</code>{" "}
+          stand-ins, never fabricated data.
+        </p>
+        <p className="text-xs text-slate-400">
+          A schema-valid report can still be{" "}
+          <strong className="text-slate-200">research-incomplete</strong>. It is
+          never public-ready: public publishing is not implemented, and human
+          review remains required.
+        </p>
       </GlassCard>
 
       <FinalReportActions reportId={report.id} />

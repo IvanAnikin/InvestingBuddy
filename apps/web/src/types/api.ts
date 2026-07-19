@@ -115,6 +115,9 @@ export interface FinalReportResponse {
   schema_valid: boolean;
   safety_valid: boolean;
   human_review_required: boolean;
+  // Phase 26 — structural completeness is not research completeness.
+  research_complete: boolean;
+  publication_ready: boolean;
   internal_status: string | null;
   sections_generated: string[];
   missing_sections: string[];
@@ -134,6 +137,9 @@ export interface FinalReportValidateResponse {
   schema_valid: boolean;
   safety_valid: boolean;
   human_review_required: boolean;
+  // Phase 26 — orthogonal validation dimensions.
+  research_complete: boolean;
+  publication_ready: boolean;
   safety_validation: Record<string, unknown> | null;
   schema_validation_errors: string[];
   schema_validation_warnings: string[];

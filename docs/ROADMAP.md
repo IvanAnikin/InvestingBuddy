@@ -1349,6 +1349,55 @@ Skills used: `backend-fastapi`, `frontend-nextjs`, `testing-qa`,
 
 ---
 
+## Phase 26: Final Report Schema Completion / Publication-Readiness ✅
+
+**Status: Complete** — internal pipeline only. No public publishing, no
+recommendations, no price targets / fair values / upside-downside, and no DB
+migration. **This is distinct from the earlier-planned "Phase 26 Public Report
+Publishing Website" — public publishing remains NOT implemented.**
+
+Problem: generated internal final-report drafts use the Phase 16 admin shape
+(`executive_summary` / `financial_snapshot` / …), which does not match the strict
+`report_schema.json` shape (`report_meta` / `identity` / `discovery_profile` / …),
+so `validate` always returned `schema_valid=false` on missing required sections.
+
+Deliverables:
+- [x] `real_asset_report_completer.py` — deterministic, no-LLM, no-network layer
+  that maps the admin draft into the strict schema shape. Sourced numbers are
+  carried through (quality `C_inferred`); genuinely-absent fields become honest
+  `not_sourced` stand-ins (a `datapoint` with `value: null`, `data_quality:
+  "D_weak_or_stale"`) — **never fabricated data**. Mock/simulated numbers are
+  never presented as sourced.
+- [x] Required-section behaviour: `peers` → `peers_not_sourced` stand-in rows;
+  `governance` → `not_sourced`; `valuation` → no fair value / price target /
+  upside-downside (the schema-required `upside_downside_pct` is a null stand-in);
+  `catalysts_risks` → catalyst labels stay model-derived (T6); `self_critique`
+  always present; `verdict`/`report_meta` set to the internal triage label `PASS`.
+- [x] `run_final_report_validation()` distinguishes four orthogonal dimensions:
+  `schema_valid` (structural), `safety_valid`, `research_complete` (enough SOURCED
+  data — `false` for free-provider drafts), `publication_ready` (**always false**).
+  `human_review_required` stays `true`.
+- [x] Responses + `schema_validation_json` gain `research_complete` /
+  `publication_ready` / `placeholder_field_count`. Admin report page surfaces all
+  four dimensions and a "schema-complete ≠ research-complete / never public-ready"
+  note. No public publish action anywhere.
+- [x] 16 new backend + 1 new Playwright test; full suites green (1252 backend,
+  133 Playwright); ruff + mypy clean. No migration.
+
+Safety preserved: the app safety gate (pure substring scan) still passes on the
+completed report; all stand-in text avoids banned substrings (`BUY`/`SELL`/`HOLD`/
+`WATCH`/`price target`/`fair value`/`upside`), using the neutral vocabulary
+`not_available` / `not_sourced` / `blocked` / `requires_human_research` instead.
+
+Known limitation: `research_complete` is `false` for every free-provider report
+until primary-source (T1/T2) research is added; peer/governance/valuation sections
+are structural stand-ins pending human research. Public publishing stays deferred.
+
+Skills used: `backend-fastapi`, `frontend-nextjs`, `testing-qa`,
+`security-review`, `docs-maintainer`.
+
+---
+
 ## Out of Scope (All Versions)
 
 - Broker account integration

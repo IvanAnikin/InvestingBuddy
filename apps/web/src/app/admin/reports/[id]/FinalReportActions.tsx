@@ -79,7 +79,13 @@ export default function FinalReportActions({ reportId }: { reportId: string }) {
           onClick={() =>
             runAction(async () => {
               const response = await validateFinalReport(reportId);
-              return `Validation complete: schema_valid=${response.schema_valid}, safety_valid=${response.safety_valid}.`;
+              return (
+                `Validation complete: schema_valid=${response.schema_valid}, ` +
+                `safety_valid=${response.safety_valid}, ` +
+                `research_complete=${response.research_complete}, ` +
+                `publication_ready=${response.publication_ready}, ` +
+                `human_review_required=${response.human_review_required}.`
+              );
             })
           }
           disabled={isPending}
