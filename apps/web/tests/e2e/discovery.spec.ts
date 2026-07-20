@@ -661,3 +661,354 @@ test.describe("Admin Discovery — async execution (Phase 25.1)", () => {
     );
   });
 });
+
+// ===========================================================================
+// Phase 27 — Thesis / market-segment discovery
+// ===========================================================================
+
+const THESIS_RUN_ID = "77777777-0000-0000-0000-000000000027";
+const THESIS_CAND_ID = "88888888-0000-0000-0000-000000000027";
+const THESIS_REPORT_ID = "99999999-0000-0000-0000-000000000027";
+
+const THESIS_PARSED = {
+  normalized_text: "European defense suppliers benefiting from NATO spending",
+  themes: ["defense"],
+  sectors: ["Industrials"],
+  industries: ["Aerospace & Defense"],
+  regions: ["Europe"],
+  countries: [],
+  keywords: ["defense", "nato"],
+  exclusion_keywords: [],
+  size_hints: [],
+  source_intent_hints: [],
+  catalyst_hints: ["spending"],
+  risk_hints: [],
+  unmatched_terms: [],
+  warnings: [],
+  confidence: 1.0,
+  needs_narrowing: false,
+};
+
+const THESIS_UNIVERSE = {
+  items: [
+    {
+      ticker: "RHM",
+      company_name: "Rheinmetall AG",
+      exchange: "XETRA",
+      country: "Germany",
+      region: "Europe",
+      sector: "Industrials",
+      industry: "Aerospace & Defense",
+      theme: "defense",
+      matched_keywords: ["defense"],
+      relevance_reason: "matches theme 'defense'; region 'Europe'",
+      universe_source: "curated_theme_registry",
+      source_tier: "T3_curated_reference_list",
+      relevance_score_pre_scan: 90.0,
+      metadata_not_sourced: false,
+      warnings: [],
+    },
+  ],
+  excluded: [
+    {
+      ticker: "LMT",
+      company_name: "Lockheed Martin Corp.",
+      reason: "region mismatch: United States not in requested ['Europe']",
+    },
+  ],
+  source_summary: { selected: 1, excluded: 1 },
+  warnings: [],
+  needs_narrowing: false,
+  requested_max: 25,
+};
+
+const THESIS_RUN = {
+  ...MOCK_RUN,
+  id: THESIS_RUN_ID,
+  mode: "thesis",
+  status: "completed",
+  universe_source: "thesis_generated",
+  universe_count: 1,
+  requested_tickers: ["RHM"],
+  processed_count: 1,
+  candidate_count: 1,
+  error_count: 0,
+  warnings: [],
+  progress_pct: 100,
+  thesis_text: "European defense suppliers benefiting from NATO spending",
+  parsed_thesis_json: THESIS_PARSED,
+  universe_json: THESIS_UNIVERSE,
+};
+
+const THESIS_CANDIDATE = {
+  ...MOCK_CANDIDATE,
+  id: THESIS_CAND_ID,
+  discovery_run_id: THESIS_RUN_ID,
+  ticker: "RHM",
+  company_name: "Rheinmetall AG",
+  sector: "Industrials",
+  industry: "Aerospace & Defense",
+  country: "Germany",
+  candidate_score: 55.0,
+  candidate_score_grade: "medium_internal_interest",
+  thesis_relevance_score: 90.0,
+  combined_internal_score: 72.0,
+};
+
+const THESIS_CANDIDATE_DETAIL = {
+  ...MOCK_CANDIDATE_DETAIL,
+  id: THESIS_CAND_ID,
+  discovery_run_id: THESIS_RUN_ID,
+  ticker: "RHM",
+  company_name: "Rheinmetall AG",
+  thesis_relevance_score: 90.0,
+  combined_internal_score: 72.0,
+  candidate_score: 55.0,
+  thesis_match_json: {
+    internal_interest_label: "high_internal_research_interest",
+    thesis_relevance_score: 90.0,
+    combined_internal_score: 72.0,
+    matched_keywords: ["defense"],
+    relevance_reason: "matches theme 'defense'; region 'Europe'",
+    universe_source: "curated_theme_registry",
+    source_tier: "T3_curated_reference_list",
+    theme: "defense",
+    metadata_not_sourced: false,
+    explanation:
+      "Internal thesis-relevance prioritization only. Combined internal score 72.0/100 (interest: high_internal_research_interest). Internal human research triage only.",
+    missing_data_penalty: 1.5,
+  },
+};
+
+async function mockThesisRoutes(page: import("@playwright/test").Page) {
+  // Recent runs list returns the thesis run so it auto-selects on load.
+  await page.route("**/api/admin/proxy/api/v1/market-discovery/runs", (route) => {
+    if (route.request().method() === "GET") {
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ runs: [THESIS_RUN], total: 1, disclaimer: DISC }),
+      });
+    }
+    return route.fulfill({ status: 404, body: "{}" });
+  });
+
+  await page.route(
+    "**/api/admin/proxy/api/v1/market-discovery/thesis-runs",
+    (route) =>
+      route.fulfill({
+        status: 201,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ...THESIS_RUN,
+          status: "pending",
+          processed_count: 0,
+          candidate_count: 0,
+          message:
+            "Thesis discovery run started. A bounded universe was generated and is being scanned in the background.",
+        }),
+      }),
+  );
+
+  await page.route(
+    `**/api/admin/proxy/api/v1/market-discovery/runs/${THESIS_RUN_ID}`,
+    (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(THESIS_RUN),
+      }),
+  );
+
+  await page.route(
+    `**/api/admin/proxy/api/v1/market-discovery/runs/${THESIS_RUN_ID}/candidates*`,
+    (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          candidates: [THESIS_CANDIDATE],
+          total: 1,
+          run_id: THESIS_RUN_ID,
+          disclaimer: DISC,
+        }),
+      }),
+  );
+
+  await page.route(
+    `**/api/admin/proxy/api/v1/market-discovery/candidates/${THESIS_CAND_ID}`,
+    (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(THESIS_CANDIDATE_DETAIL),
+      }),
+  );
+
+  await page.route(
+    `**/api/admin/proxy/api/v1/market-discovery/candidates/${THESIS_CAND_ID}/run-analysis`,
+    (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          candidate_id: THESIS_CAND_ID,
+          ticker: "RHM",
+          status: "completed",
+          analysis_report_id: THESIS_REPORT_ID,
+          agent_run_id: "aaaaaaaa-0000-0000-0000-000000000027",
+          provider_name: "free_real",
+          message: "Full analysis workflow completed for RHM. Human review required.",
+          human_review_required: true,
+          disclaimer: DISC,
+        }),
+      }),
+  );
+}
+
+test.describe("Admin Discovery — thesis mode (Phase 27)", () => {
+  test("27. Manual and Thesis mode tabs are present", async ({ page }) => {
+    await mockThesisRoutes(page);
+    await page.goto("/admin/discovery");
+    await expect(page.getByTestId("mode-tab-ticker")).toBeVisible();
+    await expect(page.getByTestId("mode-tab-thesis")).toBeVisible();
+  });
+
+  test("28. Thesis form appears when the Thesis tab is selected", async ({
+    page,
+  }) => {
+    await mockThesisRoutes(page);
+    await page.goto("/admin/discovery");
+    await page.getByTestId("mode-tab-thesis").click();
+    await expect(page.getByTestId("thesis-form")).toBeVisible();
+    await expect(page.getByTestId("thesis-text")).toBeVisible();
+  });
+
+  test("29. Thesis form submits and calls the thesis-runs endpoint", async ({
+    page,
+  }) => {
+    let posted = false;
+    await mockThesisRoutes(page);
+    await page.route(
+      "**/api/admin/proxy/api/v1/market-discovery/thesis-runs",
+      (route) => {
+        posted = true;
+        return route.fulfill({
+          status: 201,
+          contentType: "application/json",
+          body: JSON.stringify({ ...THESIS_RUN, status: "pending", message: "started" }),
+        });
+      },
+    );
+    await page.goto("/admin/discovery");
+    await page.getByTestId("mode-tab-thesis").click();
+    await page
+      .getByTestId("thesis-text")
+      .fill("European defense suppliers benefiting from NATO spending");
+    await page.getByTestId("thesis-submit").click();
+    await expect.poll(() => posted, { timeout: 10_000 }).toBe(true);
+  });
+
+  test("30. Submit button disabled for an empty thesis", async ({ page }) => {
+    await mockThesisRoutes(page);
+    await page.goto("/admin/discovery");
+    await page.getByTestId("mode-tab-thesis").click();
+    await expect(page.getByTestId("thesis-submit")).toBeDisabled();
+  });
+
+  test("31. Parsed thesis renders (themes, regions)", async ({ page }) => {
+    await mockThesisRoutes(page);
+    await page.goto("/admin/discovery");
+    const summary = page.getByTestId("thesis-summary");
+    await expect(summary).toBeVisible();
+    await expect(page.getByTestId("parsed-thesis")).toContainText("defense");
+    await expect(page.getByTestId("parsed-thesis")).toContainText("Europe");
+  });
+
+  test("32. Generated universe renders with source tier", async ({ page }) => {
+    await mockThesisRoutes(page);
+    await page.goto("/admin/discovery");
+    const universe = page.getByTestId("generated-universe");
+    await expect(universe).toBeVisible();
+    await expect(page.getByTestId("universe-item").first()).toContainText("RHM");
+    await expect(universe).toContainText("T3_curated_reference_list");
+  });
+
+  test("33. Candidate row shows relevance + combined internal scores", async ({
+    page,
+  }) => {
+    await mockThesisRoutes(page);
+    await page.goto("/admin/discovery");
+    await expect(page.getByTestId("candidate-relevance").first()).toContainText(
+      "90",
+    );
+    await expect(page.getByTestId("candidate-combined").first()).toContainText(
+      "72",
+    );
+  });
+
+  test("34. Candidate detail shows the thesis relevance card", async ({
+    page,
+  }) => {
+    await mockThesisRoutes(page);
+    await page.goto("/admin/discovery");
+    await page.getByTestId("candidate-toggle").first().click();
+    const card = page.getByTestId("thesis-relevance-card");
+    await expect(card).toBeVisible();
+    await expect(card).toContainText("high_internal_research_interest");
+    await expect(card).toContainText("Why matched");
+    await expect(card).toContainText("not investment advice");
+  });
+
+  test("35. Run Full Analysis works from a thesis candidate", async ({
+    page,
+  }) => {
+    let analysisCalled = false;
+    await mockThesisRoutes(page);
+    await page.route(
+      `**/api/admin/proxy/api/v1/market-discovery/candidates/${THESIS_CAND_ID}/run-analysis`,
+      (route) => {
+        analysisCalled = true;
+        return route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            candidate_id: THESIS_CAND_ID,
+            ticker: "RHM",
+            status: "completed",
+            analysis_report_id: THESIS_REPORT_ID,
+            agent_run_id: "aaaaaaaa-0000-0000-0000-000000000027",
+            provider_name: "free_real",
+            message: "Full analysis workflow completed for RHM.",
+            human_review_required: true,
+            disclaimer: DISC,
+          }),
+        });
+      },
+    );
+    await page.goto("/admin/discovery");
+    await page.getByTestId("candidate-toggle").first().click();
+    await page.getByRole("button", { name: "Run Full Analysis" }).click();
+    await expect.poll(() => analysisCalled, { timeout: 10_000 }).toBe(true);
+    await expect(page.locator("body")).toContainText("View generated report");
+  });
+
+  test("36. Safety banner + no publish action in thesis mode", async ({
+    page,
+  }) => {
+    await mockThesisRoutes(page);
+    await page.goto("/admin/discovery");
+    await expect(page.locator("body")).toContainText("Internal Admin Only");
+    await expect(page.locator("body")).toContainText("Human review required");
+    // No publish action anywhere on the page.
+    const buttons = page.locator("button");
+    const count = await buttons.count();
+    for (let i = 0; i < count; i++) {
+      const text = (await buttons.nth(i).textContent())?.toLowerCase() ?? "";
+      expect(text).not.toContain("publish");
+      for (const bad of ["BUY", "SELL", "HOLD", "WATCH"]) {
+        expect(text.trim().toUpperCase()).not.toBe(bad);
+      }
+    }
+  });
+});

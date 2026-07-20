@@ -4,6 +4,7 @@ import Link from "next/link";
 import { Fragment, useEffect, useState } from "react";
 import {
   createDiscoveryRun,
+  createThesisDiscoveryRun,
   getDiscoveryCandidate,
   getDiscoveryRun,
   listDiscoveryCandidates,
@@ -15,6 +16,7 @@ import type {
   DiscoveryCandidateDetail,
   DiscoveryRun,
   DiscoveryRunCreate,
+  ThesisDiscoveryRunCreate,
 } from "@/types/api";
 import GlassCard from "@/components/ui/GlassCard";
 import SafetyBanner from "@/components/ui/SafetyBanner";
@@ -191,6 +193,65 @@ function CandidateDetailPanel({ candidateId }: { candidateId: string }) {
         )}
       </GlassCard>
 
+      {/* Thesis relevance (Phase 27 — thesis runs only) */}
+      {detail.thesis_match_json && (
+        <GlassCard className="space-y-2 p-4" testId="thesis-relevance-card">
+          <p className="text-sm font-semibold text-slate-200">
+            Thesis relevance — internal prioritization only
+          </p>
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <span className="rounded bg-white/5 px-2 py-1 text-slate-300">
+              Thesis relevance:{" "}
+              <span className="font-mono text-slate-100">
+                {fmt(detail.thesis_relevance_score, 0)}
+              </span>
+            </span>
+            <span className="rounded bg-white/5 px-2 py-1 text-slate-300">
+              Discovery score:{" "}
+              <span className="font-mono text-slate-100">
+                {fmt(detail.candidate_score, 0)}
+              </span>
+            </span>
+            <span className="rounded bg-sky-500/10 px-2 py-1 text-sky-200">
+              Combined internal:{" "}
+              <span className="font-mono">
+                {fmt(detail.combined_internal_score, 0)}
+              </span>
+            </span>
+            <StatusPill
+              label={String(
+                detail.thesis_match_json.internal_interest_label ?? "—",
+              )}
+              color="cyan"
+            />
+          </div>
+          {detail.thesis_match_json.relevance_reason ? (
+            <p className="text-xs text-slate-400">
+              <span className="font-semibold text-slate-300">Why matched:</span>{" "}
+              {String(detail.thesis_match_json.relevance_reason)}
+            </p>
+          ) : null}
+          {Array.isArray(detail.thesis_match_json.matched_keywords) &&
+          detail.thesis_match_json.matched_keywords.length > 0 ? (
+            <div className="flex flex-wrap gap-1">
+              {(detail.thesis_match_json.matched_keywords as string[]).map((k) => (
+                <span
+                  key={k}
+                  className="rounded bg-white/5 px-1.5 py-0.5 font-mono text-[10px] text-slate-300"
+                >
+                  {k}
+                </span>
+              ))}
+            </div>
+          ) : null}
+          <p className="border-t border-white/10 pt-2 text-[11px] text-slate-500">
+            Source: {String(detail.thesis_match_json.universe_source ?? "—")} ·{" "}
+            {String(detail.thesis_match_json.source_tier ?? "—")}. Internal
+            research triage only — not investment advice, not a recommendation.
+          </p>
+        </GlassCard>
+      )}
+
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         {/* Trend */}
         <GlassCard className="space-y-1 p-4 text-xs text-slate-300">
@@ -310,6 +371,157 @@ function CandidateDetailPanel({ candidateId }: { candidateId: string }) {
 }
 
 // ---------------------------------------------------------------------------
+// Thesis summary — parsed thesis + generated universe (Phase 27)
+// ---------------------------------------------------------------------------
+
+function Chips({ items }: { items: string[] | undefined | null }) {
+  if (!items || items.length === 0)
+    return <span className="text-slate-500">—</span>;
+  return (
+    <span className="flex flex-wrap gap-1">
+      {items.map((it) => (
+        <span
+          key={it}
+          className="rounded bg-white/5 px-1.5 py-0.5 font-mono text-[10px] text-slate-300"
+        >
+          {it}
+        </span>
+      ))}
+    </span>
+  );
+}
+
+function ThesisSummaryPanel({ run }: { run: DiscoveryRun }) {
+  const parsed = run.parsed_thesis_json ?? null;
+  const universe = run.universe_json ?? null;
+  if (run.mode !== "thesis") return null;
+
+  return (
+    <GlassCard className="space-y-4 p-5" testId="thesis-summary">
+      <div className="flex items-center justify-between">
+        <p className="text-sm font-semibold text-slate-200">
+          Thesis &amp; generated universe
+        </p>
+        <StatusPill label="Internal only" color="red" />
+      </div>
+
+      {run.thesis_text && (
+        <p className="rounded-lg border border-white/10 bg-white/[0.03] p-3 text-sm text-slate-300">
+          <span className="font-semibold text-slate-200">Thesis:</span>{" "}
+          {run.thesis_text}
+        </p>
+      )}
+
+      {/* Parsed thesis */}
+      {parsed && (
+        <div
+          className="grid grid-cols-1 gap-2 text-xs text-slate-400 sm:grid-cols-2"
+          data-testid="parsed-thesis"
+        >
+          <div className="flex items-start gap-2">
+            <span className="w-24 shrink-0 text-slate-500">Themes</span>
+            <Chips items={parsed.themes} />
+          </div>
+          <div className="flex items-start gap-2">
+            <span className="w-24 shrink-0 text-slate-500">Regions</span>
+            <Chips items={parsed.regions} />
+          </div>
+          <div className="flex items-start gap-2">
+            <span className="w-24 shrink-0 text-slate-500">Sectors</span>
+            <Chips items={parsed.sectors} />
+          </div>
+          <div className="flex items-start gap-2">
+            <span className="w-24 shrink-0 text-slate-500">Industries</span>
+            <Chips items={parsed.industries} />
+          </div>
+          <div className="flex items-start gap-2">
+            <span className="w-24 shrink-0 text-slate-500">Keywords</span>
+            <Chips items={parsed.keywords} />
+          </div>
+          <div className="flex items-start gap-2">
+            <span className="w-24 shrink-0 text-slate-500">Confidence</span>
+            <span className="font-mono text-slate-300">
+              {(parsed.confidence * 100).toFixed(0)}%
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* Universe warnings / needs narrowing */}
+      {universe?.warnings && universe.warnings.length > 0 && (
+        <SafetyBanner variant="warning" title="Universe notes">
+          <ul className="list-inside list-disc break-words">
+            {universe.warnings.slice(0, 6).map((w, i) => (
+              <li key={i}>{w}</li>
+            ))}
+          </ul>
+        </SafetyBanner>
+      )}
+
+      {/* Generated universe */}
+      {universe?.items && universe.items.length > 0 && (
+        <div className="overflow-x-auto" data-testid="generated-universe">
+          <p className="mb-2 text-xs font-semibold text-slate-300">
+            Generated universe — {universe.items.length} bounded candidate(s)
+          </p>
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="border-b border-white/10 text-[10px] uppercase tracking-wide text-slate-500">
+                <th className="px-2 py-1.5 text-left font-medium">Ticker</th>
+                <th className="px-2 py-1.5 text-left font-medium">Company</th>
+                <th className="px-2 py-1.5 text-left font-medium">Country</th>
+                <th className="px-2 py-1.5 text-left font-medium">Sector</th>
+                <th className="px-2 py-1.5 text-left font-medium">Relevance</th>
+                <th className="px-2 py-1.5 text-left font-medium">Why matched</th>
+                <th className="px-2 py-1.5 text-left font-medium">Source</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-white/5">
+              {universe.items.map((it) => (
+                <tr key={`${it.ticker}-${it.exchange}`} data-testid="universe-item">
+                  <td className="px-2 py-1.5 font-semibold text-slate-100">
+                    {it.ticker}
+                  </td>
+                  <td className="max-w-[10rem] px-2 py-1.5 text-slate-400">
+                    <span className="line-clamp-1">{it.company_name ?? "—"}</span>
+                  </td>
+                  <td className="px-2 py-1.5 text-slate-400">{it.country ?? "—"}</td>
+                  <td className="px-2 py-1.5 text-slate-400">{it.sector ?? "—"}</td>
+                  <td className="px-2 py-1.5 font-mono text-slate-300">
+                    {fmt(it.relevance_score_pre_scan, 0)}
+                  </td>
+                  <td className="max-w-[14rem] px-2 py-1.5 text-slate-500">
+                    <span className="line-clamp-1">{it.relevance_reason}</span>
+                  </td>
+                  <td className="px-2 py-1.5 text-slate-500">{it.source_tier}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Excluded companies */}
+      {universe?.excluded && universe.excluded.length > 0 && (
+        <details className="text-xs text-slate-500">
+          <summary className="cursor-pointer">
+            {universe.excluded.length} company/ies excluded from the universe
+          </summary>
+          <ul className="mt-1 list-inside list-disc break-words">
+            {universe.excluded.slice(0, 12).map((e, i) => (
+              <li key={i}>
+                <span className="font-mono text-slate-400">{e.ticker}</span> —{" "}
+                {e.reason}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </GlassCard>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main page
 // ---------------------------------------------------------------------------
 
@@ -319,7 +531,12 @@ export default function DiscoveryPage() {
   const [runsError, setRunsError] = useState<string | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);
 
-  // Form state
+  // Discovery mode: Phase 25 ticker/curated vs Phase 27 thesis/segment.
+  const [discoveryMode, setDiscoveryMode] = useState<"ticker" | "thesis">(
+    "ticker",
+  );
+
+  // Ticker-mode form state
   const [provider, setProvider] = useState("free_real");
   const [universeSource, setUniverseSource] =
     useState<"curated_seed" | "manual_tickers">("curated_seed");
@@ -329,6 +546,15 @@ export default function DiscoveryPage() {
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [startedMsg, setStartedMsg] = useState<string | null>(null);
+
+  // Thesis-mode form state (Phase 27)
+  const [thesisText, setThesisText] = useState("");
+  const [thesisRegion, setThesisRegion] = useState("");
+  const [thesisSector, setThesisSector] = useState("");
+  const [thesisCountry, setThesisCountry] = useState("");
+  const [thesisMaxUniverse, setThesisMaxUniverse] = useState("25");
+  const [thesisMaxCandidates, setThesisMaxCandidates] = useState("10");
+  const [thesisLookback, setThesisLookback] = useState("90");
 
   // Selected run + live detail (polled while processing) + candidates
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
@@ -464,6 +690,42 @@ export default function DiscoveryPage() {
     }
   }
 
+  async function handleThesisSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setSubmitting(true);
+    setSubmitError(null);
+    setStartedMsg(null);
+    const payload: ThesisDiscoveryRunCreate = {
+      thesis_text: thesisText.trim(),
+      region: thesisRegion.trim() || undefined,
+      country: thesisCountry.trim() || undefined,
+      sector: thesisSector.trim() || undefined,
+      max_universe_size: parseInt(thesisMaxUniverse, 10) || 25,
+      max_candidates: parseInt(thesisMaxCandidates, 10) || 10,
+      lookback_days: parseInt(thesisLookback, 10) || 90,
+      provider_name: "free_real",
+    };
+    try {
+      const run = await createThesisDiscoveryRun(payload);
+      setSelectedRunId(run.id);
+      setRunDetail(run);
+      setExpandedId(null);
+      setStartedMsg(
+        run.message ??
+          "Thesis discovery run started. A bounded universe was generated and is being scanned in the background.",
+      );
+      setRefreshTick((t) => t + 1);
+    } catch (e) {
+      // A 422 here means the thesis needs narrowing / matched no company — show
+      // the backend's guidance verbatim.
+      setSubmitError(
+        e instanceof Error ? e.message : "Failed to start thesis run.",
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   const selectedRun =
     (runDetail && runDetail.id === selectedRunId ? runDetail : null) ??
     runs.find((r) => r.id === selectedRunId) ??
@@ -511,9 +773,201 @@ export default function DiscoveryPage() {
 
       {/* Start new run */}
       <GlassCard className="p-5">
-        <p className="mb-4 text-sm font-semibold text-slate-200">
+        <p className="mb-3 text-sm font-semibold text-slate-200">
           Start a new discovery run
         </p>
+
+        {/* Mode tabs — Phase 25 ticker vs Phase 27 thesis */}
+        <div
+          className="mb-4 inline-flex rounded-lg border border-white/10 bg-white/[0.03] p-0.5"
+          role="tablist"
+          aria-label="Discovery mode"
+        >
+          <button
+            type="button"
+            role="tab"
+            aria-selected={discoveryMode === "ticker"}
+            data-testid="mode-tab-ticker"
+            onClick={() => setDiscoveryMode("ticker")}
+            className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+              discoveryMode === "ticker"
+                ? "bg-sky-500/20 text-sky-200"
+                : "text-slate-400 hover:text-slate-200"
+            }`}
+          >
+            Manual / curated tickers
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={discoveryMode === "thesis"}
+            data-testid="mode-tab-thesis"
+            onClick={() => setDiscoveryMode("thesis")}
+            className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+              discoveryMode === "thesis"
+                ? "bg-sky-500/20 text-sky-200"
+                : "text-slate-400 hover:text-slate-200"
+            }`}
+          >
+            Thesis / market segment
+          </button>
+        </div>
+
+        {discoveryMode === "thesis" && (
+          <form
+            onSubmit={handleThesisSubmit}
+            className="space-y-4"
+            data-testid="thesis-form"
+          >
+            <div className="flex flex-col gap-1">
+              <label className="text-sm font-medium text-slate-300">
+                Market segment / thesis
+              </label>
+              <textarea
+                className={`${inputCls} min-h-[80px] resize-y`}
+                value={thesisText}
+                onChange={(e) => setThesisText(e.target.value)}
+                placeholder="European defense suppliers benefiting from NATO spending"
+                maxLength={2000}
+                data-testid="thesis-text"
+              />
+              <p className="text-xs text-slate-500">
+                Describe a market segment, theme, region, sector or industry. The
+                system builds a bounded universe of internal research candidates —
+                not investment advice, not a recommendation.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+              <div className="flex flex-col gap-1">
+                <label className="text-sm font-medium text-slate-300">
+                  Region (optional)
+                </label>
+                <input
+                  className={inputCls}
+                  value={thesisRegion}
+                  onChange={(e) => setThesisRegion(e.target.value)}
+                  placeholder="Europe"
+                  maxLength={100}
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-sm font-medium text-slate-300">
+                  Country (optional)
+                </label>
+                <input
+                  className={inputCls}
+                  value={thesisCountry}
+                  onChange={(e) => setThesisCountry(e.target.value)}
+                  placeholder="Germany"
+                  maxLength={100}
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-sm font-medium text-slate-300">
+                  Sector (optional)
+                </label>
+                <input
+                  className={inputCls}
+                  value={thesisSector}
+                  onChange={(e) => setThesisSector(e.target.value)}
+                  placeholder="Industrials"
+                  maxLength={100}
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-4">
+              <div className="flex flex-col gap-1">
+                <label className="text-sm font-medium text-slate-300">
+                  Max universe
+                </label>
+                <input
+                  type="number"
+                  className={inputCls}
+                  value={thesisMaxUniverse}
+                  onChange={(e) => setThesisMaxUniverse(e.target.value)}
+                  min={1}
+                  max={50}
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-sm font-medium text-slate-300">
+                  Max candidates
+                </label>
+                <input
+                  type="number"
+                  className={inputCls}
+                  value={thesisMaxCandidates}
+                  onChange={(e) => setThesisMaxCandidates(e.target.value)}
+                  min={1}
+                  max={50}
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-sm font-medium text-slate-300">
+                  Lookback days
+                </label>
+                <input
+                  type="number"
+                  className={inputCls}
+                  value={thesisLookback}
+                  onChange={(e) => setThesisLookback(e.target.value)}
+                  min={1}
+                  max={365}
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-sm font-medium text-slate-300">
+                  Provider
+                </label>
+                <input
+                  className={`${inputCls} opacity-60`}
+                  value="free_real"
+                  readOnly
+                  aria-readonly
+                />
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3 text-xs text-slate-400">
+              <p>
+                A bounded real-company universe (max{" "}
+                <span className="text-slate-200">{thesisMaxUniverse}</span>) is
+                generated from a curated reference registry, then scanned with the
+                free real-data stack. Every result is an internal research
+                candidate — human review required. No public output is produced.
+              </p>
+            </div>
+
+            {submitError && (
+              <SafetyBanner variant="danger">
+                <p data-testid="thesis-submit-error">
+                  <strong>Cannot start run:</strong> {submitError}
+                </p>
+              </SafetyBanner>
+            )}
+
+            {startedMsg && !submitError && (
+              <SafetyBanner variant="info" title="Thesis discovery run started">
+                <p data-testid="run-started-msg">{startedMsg}</p>
+              </SafetyBanner>
+            )}
+
+            <button
+              type="submit"
+              disabled={submitting || thesisText.trim().length < 3}
+              className="w-full rounded-lg bg-gradient-to-r from-sky-500 to-blue-600 px-4 py-2.5 text-sm font-semibold text-white shadow-lg shadow-sky-500/20 transition-all hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0"
+              data-testid="thesis-submit"
+            >
+              {submitting
+                ? "Building universe & scanning…"
+                : "Build Universe & Scan (Internal)"}
+            </button>
+          </form>
+        )}
+
+        {discoveryMode === "ticker" && (
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className="flex flex-col gap-1">
@@ -653,6 +1107,7 @@ export default function DiscoveryPage() {
             {submitting ? "Running internal discovery…" : "Start Internal Discovery Run"}
           </button>
         </form>
+        )}
       </GlassCard>
 
       {/* Recent runs */}
@@ -746,6 +1201,11 @@ export default function DiscoveryPage() {
         )}
       </GlassCard>
 
+      {/* Thesis summary (Phase 27 — parsed thesis + generated universe) */}
+      {selectedRun && selectedRun.mode === "thesis" && (
+        <ThesisSummaryPanel run={selectedRun} />
+      )}
+
       {/* Candidate queue */}
       {selectedRun && (
         <GlassCard className="overflow-hidden">
@@ -768,8 +1228,24 @@ export default function DiscoveryPage() {
                 aria-label="Sort candidates"
               >
                 <option value="candidate_score" className="bg-slate-900">
-                  Sort: score
+                  Sort: discovery score
                 </option>
+                {selectedRun.mode === "thesis" && (
+                  <>
+                    <option
+                      value="combined_internal_score"
+                      className="bg-slate-900"
+                    >
+                      Sort: combined internal
+                    </option>
+                    <option
+                      value="thesis_relevance_score"
+                      className="bg-slate-900"
+                    >
+                      Sort: thesis relevance
+                    </option>
+                  </>
+                )}
                 <option value="momentum_score" className="bg-slate-900">
                   Sort: momentum
                 </option>
@@ -880,6 +1356,16 @@ export default function DiscoveryPage() {
                     <th className="px-3 py-2.5 text-left font-medium">Ticker</th>
                     <th className="px-3 py-2.5 text-left font-medium">Company</th>
                     <th className="px-3 py-2.5 text-left font-medium">Sector</th>
+                    {selectedRun.mode === "thesis" && (
+                      <>
+                        <th className="px-3 py-2.5 text-left font-medium">
+                          Relevance
+                        </th>
+                        <th className="px-3 py-2.5 text-left font-medium">
+                          Combined
+                        </th>
+                      </>
+                    )}
                     <th className="px-3 py-2.5 text-left font-medium">Score</th>
                     <th className="px-3 py-2.5 text-left font-medium">Grade</th>
                     <th className="px-3 py-2.5 text-left font-medium">Momentum</th>
@@ -927,6 +1413,22 @@ export default function DiscoveryPage() {
                         <td className="px-3 py-3 text-xs text-slate-400">
                           {c.sector ?? "—"}
                         </td>
+                        {selectedRun.mode === "thesis" && (
+                          <>
+                            <td
+                              className="px-3 py-3 font-mono text-xs text-slate-300"
+                              data-testid="candidate-relevance"
+                            >
+                              {fmt(c.thesis_relevance_score, 0)}
+                            </td>
+                            <td
+                              className="px-3 py-3 font-mono text-sm font-semibold text-slate-100"
+                              data-testid="candidate-combined"
+                            >
+                              {fmt(c.combined_internal_score, 0)}
+                            </td>
+                          </>
+                        )}
                         <td className="px-3 py-3 font-mono text-sm text-slate-200">
                           {fmt(c.candidate_score)}
                         </td>
@@ -960,7 +1462,10 @@ export default function DiscoveryPage() {
                       </tr>
                       {expandedId === c.id && (
                         <tr>
-                          <td colSpan={13} className="bg-black/20 p-0">
+                          <td
+                            colSpan={selectedRun.mode === "thesis" ? 15 : 13}
+                            className="bg-black/20 p-0"
+                          >
                             <CandidateDetailPanel candidateId={c.id} />
                           </td>
                         </tr>

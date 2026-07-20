@@ -52,6 +52,7 @@ alembic revision --autogenerate -m "short description"
 | 008 | `008_add_final_report_fields.py` | adds `final_report_version`, `safety_validation_json`, `schema_validation_json`, `source_summary_json`, `scorecard_id` to reports (Phase 16 Final Report Generator) |
 | 009 | `009_add_backtesting_tables.py` | creates `backtest_runs`, `backtest_results`, `thesis_tracking_events` (Phase 22 Judge + Backtesting Framework) |
 | 010 | `010_add_market_discovery.py` | creates `discovery_runs`, `discovery_candidates` (Phase 25 Real Market Candidate Discovery) |
+| 011 | `011_add_thesis_discovery.py` | adds thesis columns to `discovery_runs` (`mode`, `thesis_text`, `parsed_thesis_json`, `universe_json`) + `discovery_candidates` (`thesis_relevance_score`, `combined_internal_score`, `thesis_match_json`) (Phase 27 Thesis-to-Universe Discovery) |
 
 ---
 
@@ -474,6 +475,36 @@ Constraint: `UNIQUE(discovery_run_id, ticker, exchange)`. Indexes on
 
 Note: `schema_valid` is expected to be `false` for generated reports at this
 phase and is **not** a blocker for candidate creation.
+
+### Thesis-to-Universe Discovery (Phase 27)
+
+Migration `011` extends the two Phase 25 tables (no new tables) so a discovery
+run can be driven by a natural-language **market thesis**. All added fields are
+internal prioritization signals only — never a recommendation, price target,
+fair value, or BUY/SELL/HOLD/WATCH label. Fully reversible.
+
+**`discovery_runs`** — added columns:
+
+| Column | Type | Description |
+|---|---|---|
+| `mode` | VARCHAR(20) NOT NULL default `ticker` | `ticker` (Phase 25 manual/curated) / `thesis` (segment-generated) |
+| `thesis_text` | TEXT (nullable) | Raw admin thesis (NULL for ticker runs) |
+| `parsed_thesis_json` | JSONB (nullable) | Structured parse: themes / sectors / industries / regions / countries / keywords / confidence / needs_narrowing |
+| `universe_json` | JSONB (nullable) | Generated universe (`items[]`, `excluded[]` with reasons, `source_summary`) |
+
+`universe_source` gains a `thesis_generated` value. New index
+`ix_discovery_runs_mode`.
+
+**`discovery_candidates`** — added columns:
+
+| Column | Type | Description |
+|---|---|---|
+| `thesis_relevance_score` | FLOAT (nullable) | Pre-scan thesis match (0–100, internal only) |
+| `combined_internal_score` | FLOAT (nullable) | Blend of thesis relevance + Phase 25 discovery signals (0–100, internal only) |
+| `thesis_match_json` | JSONB (nullable) | Matched keywords, relevance reason, `internal_interest_label`, universe source/tier |
+
+New index `ix_discovery_candidates_combined_score`. All thesis columns are NULL
+for ticker runs.
 
 ---
 

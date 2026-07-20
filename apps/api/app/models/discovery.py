@@ -51,6 +51,15 @@ DISCOVERY_RUN_STATUS_VALUES = {
 UNIVERSE_SOURCE_VALUES = {
     "curated_seed",
     "manual_tickers",
+    # Phase 27 — universe generated from a natural-language market thesis.
+    "thesis_generated",
+}
+
+# Phase 27 — discovery run mode. "ticker" is the Phase 25 manual/curated flow;
+# "thesis" builds the universe from a natural-language market segment thesis.
+DISCOVERY_RUN_MODE_VALUES = {
+    "ticker",
+    "thesis",
 }
 
 # Internal prioritization grade — NOT a recommendation.
@@ -100,12 +109,26 @@ class DiscoveryRun(Base):
     provider_name: Mapped[str] = mapped_column(
         sa.String(50), nullable=False, default="free_real"
     )
-    # curated_seed | manual_tickers
+
+    # Phase 27 — run mode: "ticker" (Phase 25 manual/curated) | "thesis"
+    # (universe generated from a natural-language market segment thesis).
+    mode: Mapped[str] = mapped_column(
+        sa.String(20), nullable=False, default="ticker", server_default="ticker"
+    )
+
+    # curated_seed | manual_tickers | thesis_generated
     universe_source: Mapped[str] = mapped_column(
         sa.String(50), nullable=False, default="curated_seed"
     )
     universe_count: Mapped[int] = mapped_column(sa.Integer, nullable=False, default=0)
     requested_tickers: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+
+    # Phase 27 — thesis inputs + generated universe (thesis runs only; NULL for
+    # ticker runs). The universe JSON holds the generated items, exclusions and
+    # source summary so the run is fully reproducible/auditable.
+    thesis_text: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
+    parsed_thesis_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    universe_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     processed_count: Mapped[int] = mapped_column(sa.Integer, nullable=False, default=0)
     candidate_count: Mapped[int] = mapped_column(sa.Integer, nullable=False, default=0)
@@ -141,6 +164,7 @@ class DiscoveryRun(Base):
         sa.Index("ix_discovery_runs_status", "status"),
         sa.Index("ix_discovery_runs_created_at", "created_at"),
         sa.Index("ix_discovery_runs_provider", "provider_name"),
+        sa.Index("ix_discovery_runs_mode", "mode"),
     )
 
 
@@ -202,6 +226,16 @@ class DiscoveryCandidate(Base):
     # Safe internal labels (subset of ALLOWED_CANDIDATE_LABELS).
     labels_json: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     score_explanation: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
+
+    # ── Phase 27 thesis relevance (thesis runs only; NULL for ticker runs) ─
+    # thesis_relevance_score — pre-scan match of the candidate to the parsed
+    # thesis. combined_internal_score — blend of thesis relevance + the Phase 25
+    # discovery signals. Both are INTERNAL PRIORITIZATION signals only, never a
+    # recommendation. thesis_match_json holds matched keywords, the relevance
+    # reason, the internal-only interest label, and the universe source/tier.
+    thesis_relevance_score: Mapped[float | None] = mapped_column(sa.Float, nullable=True)
+    combined_internal_score: Mapped[float | None] = mapped_column(sa.Float, nullable=True)
+    thesis_match_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     # ── Momentum / trend signals (T6 model-derived) ──────────────────────
     momentum_label: Mapped[str | None] = mapped_column(sa.String(50), nullable=True)
@@ -302,4 +336,7 @@ class DiscoveryCandidate(Base):
         sa.Index("ix_discovery_candidates_score", "candidate_score"),
         sa.Index("ix_discovery_candidates_sector", "sector"),
         sa.Index("ix_discovery_candidates_grade", "candidate_score_grade"),
+        sa.Index(
+            "ix_discovery_candidates_combined_score", "combined_internal_score"
+        ),
     )

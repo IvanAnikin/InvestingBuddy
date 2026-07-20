@@ -187,6 +187,84 @@ const server = createServer((req, res) => {
   // Phase 25 / 25.1 — Market Candidate Discovery (internal only, async runs).
   const DISC =
     "INTERNAL ADMIN USE ONLY. NOT INVESTMENT ADVICE. NOT A PUBLIC RECOMMENDATION.";
+  // Phase 27 — thesis / market-segment discovery run (POST returns pending).
+  if (path === "/api/v1/market-discovery/thesis-runs" && req.method === "POST") {
+    return send(res, 201, {
+      id: "77777777-0000-0000-0000-000000000027",
+      status: "pending",
+      mode: "thesis",
+      provider_name: "free_real",
+      universe_source: "thesis_generated",
+      universe_count: 2,
+      requested_tickers: ["RHM", "BA"],
+      thesis_text: "European defense suppliers benefiting from NATO spending",
+      parsed_thesis_json: {
+        normalized_text: "European defense suppliers benefiting from NATO spending",
+        themes: ["defense"],
+        sectors: ["Industrials"],
+        industries: ["Aerospace & Defense"],
+        regions: ["Europe"],
+        countries: [],
+        keywords: ["defense", "nato"],
+        exclusion_keywords: [],
+        size_hints: [],
+        source_intent_hints: [],
+        catalyst_hints: ["spending"],
+        risk_hints: [],
+        unmatched_terms: [],
+        warnings: [],
+        confidence: 1.0,
+        needs_narrowing: false,
+      },
+      universe_json: {
+        items: [
+          {
+            ticker: "RHM",
+            company_name: "Rheinmetall AG",
+            exchange: "XETRA",
+            country: "Germany",
+            region: "Europe",
+            sector: "Industrials",
+            industry: "Aerospace & Defense",
+            theme: "defense",
+            matched_keywords: ["defense"],
+            relevance_reason: "matches theme 'defense'; region 'Europe'",
+            universe_source: "curated_theme_registry",
+            source_tier: "T3_curated_reference_list",
+            relevance_score_pre_scan: 90.0,
+            metadata_not_sourced: false,
+            warnings: [],
+          },
+        ],
+        excluded: [
+          { ticker: "LMT", company_name: "Lockheed Martin Corp.", reason: "region mismatch" },
+        ],
+        source_summary: { selected: 2, excluded: 1 },
+        warnings: [],
+        needs_narrowing: false,
+        requested_max: 25,
+      },
+      processed_count: 0,
+      candidate_count: 0,
+      error_count: 0,
+      lookback_days: 90,
+      warnings: [],
+      config_json: { mode: "thesis" },
+      safety_notes: { internal_only: true, no_recommendation: true },
+      created_by: null,
+      human_review_required: true,
+      started_at: null,
+      completed_at: null,
+      created_at: "2026-07-19T10:00:00Z",
+      updated_at: "2026-07-19T10:00:00Z",
+      is_async: true,
+      progress_pct: 0,
+      message:
+        "Thesis discovery run started. A bounded universe was generated and is being scanned in the background.",
+      disclaimer: DISC,
+    });
+  }
+
   if (path === "/api/v1/market-discovery/runs") {
     // GET list / POST create-and-schedule. POST returns a pending run quickly.
     if (req.method === "POST") {

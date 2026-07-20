@@ -19,7 +19,7 @@ from __future__ import annotations
 import uuid
 from datetime import date, datetime
 
-from pydantic import BaseModel, Field, computed_field
+from pydantic import BaseModel, Field, computed_field, field_validator
 
 INTERNAL_DISCLAIMER = (
     "INTERNAL ADMIN USE ONLY. NOT INVESTMENT ADVICE. NOT A PUBLIC RECOMMENDATION. "
@@ -64,15 +64,55 @@ class DiscoveryRunCreate(BaseModel):
     notes: str | None = Field(default=None, max_length=2000)
 
 
+class ThesisDiscoveryRunCreate(BaseModel):
+    """
+    Phase 27 — request payload to create a THESIS discovery run.
+
+    An admin describes a market segment / theme / region in natural language;
+    the backend parses it, builds a bounded real-company universe, and scans it
+    through the existing Phase 25 discovery pipeline. This is internal research
+    triage only — never an investment recommendation.
+    """
+
+    thesis_text: str = Field(
+        min_length=3,
+        max_length=2000,
+        description="Natural-language market segment / theme / region to search.",
+    )
+    region: str | None = Field(default=None, max_length=100)
+    country: str | None = Field(default=None, max_length=100)
+    exchange: str | None = Field(default=None, max_length=20)
+    sector: str | None = Field(default=None, max_length=100)
+    industry: str | None = Field(default=None, max_length=100)
+    industry_keywords: list[str] | None = Field(
+        default=None, description="Optional explicit industry/theme keywords."
+    )
+    market_cap_bucket: str | None = Field(default=None, max_length=30)
+    max_universe_size: int = Field(
+        default=25, ge=1, le=50, description="Hard cap on generated universe size."
+    )
+    max_candidates: int = Field(default=10, ge=1, le=50)
+    provider_name: str | None = Field(default="free_real", max_length=50)
+    lookback_days: int | None = Field(default=None, ge=1, le=365)
+    created_by: str | None = Field(default=None, max_length=200)
+    notes: str | None = Field(default=None, max_length=2000)
+
+
 class DiscoveryRunRead(BaseModel):
     model_config = {"from_attributes": True}
 
     id: uuid.UUID
     status: str
+    # Phase 27 — "ticker" (manual/curated) | "thesis" (segment-generated).
+    mode: str = "ticker"
     provider_name: str
     universe_source: str
     universe_count: int
     requested_tickers: list[str] | None
+    # Phase 27 thesis fields (NULL for ticker runs).
+    thesis_text: str | None = None
+    parsed_thesis_json: dict | None = None
+    universe_json: dict | None = None
     processed_count: int
     candidate_count: int
     error_count: int
@@ -92,6 +132,13 @@ class DiscoveryRunRead(BaseModel):
     is_async: bool = True
     message: str | None = None
     disclaimer: str = INTERNAL_DISCLAIMER
+
+    @field_validator("mode", mode="before")
+    @classmethod
+    def _default_mode(cls, v: str | None) -> str:
+        # A transient/legacy ORM row may not have ``mode`` set (the column
+        # server-default applies at INSERT). Default to the ticker flow.
+        return v or "ticker"
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -171,6 +218,11 @@ class DiscoveryCandidateRead(BaseModel):
     candidate_score_grade: str | None
     rank: int | None
 
+    # Phase 27 — thesis relevance + blended internal score (thesis runs only;
+    # NULL for ticker runs). Internal prioritization signals only.
+    thesis_relevance_score: float | None = None
+    combined_internal_score: float | None = None
+
     momentum_score: float | None
     fundamentals_score: float | None
     catalyst_score: float | None
@@ -239,6 +291,9 @@ class DiscoveryCandidateDetail(DiscoveryCandidateRead):
     missing_sources_json: list[str] | None
     missing_fields_json: list[str] | None
     raw_signal_json: dict | None
+    # Phase 27 — matched keywords, relevance reason, internal-only interest
+    # label, and universe source/tier (NULL for ticker runs).
+    thesis_match_json: dict | None = None
 
 
 class DiscoveryCandidateListResponse(BaseModel):

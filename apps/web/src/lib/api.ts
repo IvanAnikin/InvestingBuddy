@@ -11,6 +11,7 @@ import type {
   DiscoveryRun,
   DiscoveryRunCreate,
   DiscoveryRunListResponse,
+  ThesisDiscoveryRunCreate,
   FinalReportRegenerateSectionResponse,
   FinalReportResponse,
   FinalReportValidateResponse,
@@ -275,6 +276,18 @@ export async function createDiscoveryRun(
 
 export async function getDiscoveryRun(id: string): Promise<DiscoveryRun> {
   return apiFetch<DiscoveryRun>(`/api/v1/market-discovery/runs/${id}`);
+}
+
+// Phase 27 — thesis / market-segment discovery. Creates a run from a
+// natural-language thesis; the backend generates a bounded universe and scans
+// it in the background (poll getDiscoveryRun for progress). Internal only.
+export async function createThesisDiscoveryRun(
+  payload: ThesisDiscoveryRunCreate,
+): Promise<DiscoveryRun> {
+  return apiFetch<DiscoveryRun>("/api/v1/market-discovery/thesis-runs", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
 }
 
 export async function listDiscoveryCandidates(

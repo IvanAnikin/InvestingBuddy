@@ -36,10 +36,20 @@ from app.models.discovery import (
     DiscoveryRun,
 )
 from app.schemas.company import CompanyCreate
-from app.schemas.market_discovery import DiscoveryRunCreate, DiscoveryRunSummary
+from app.schemas.market_discovery import (
+    DiscoveryRunCreate,
+    DiscoveryRunSummary,
+    ThesisDiscoveryRunCreate,
+)
 from app.services import company_service
 from app.services.discovery_scoring_service import score_signal
 from app.services.discovery_signal_extractor import ExtractedSignal, extract_signal
+from app.services.discovery_thesis_scoring import (
+    INTERNAL_INTEREST_LABELS,
+    compute_combined_internal_score,
+)
+from app.services.market_thesis_parser import parse_thesis
+from app.services.market_universe_builder import build_universe
 from app.workflows.company_analysis import run_company_analysis
 
 logger = logging.getLogger(__name__)
@@ -103,11 +113,21 @@ def scan_candidate_safety(candidate_payload: dict[str, Any]) -> list[str]:
         parts.append(str(label))
     if candidate_payload.get("score_explanation"):
         parts.append(str(candidate_payload["score_explanation"]))
+    # Phase 27 — thesis relevance explanation + interest label are also authored
+    # by us and persisted, so scan them too.
+    if candidate_payload.get("thesis_explanation"):
+        parts.append(str(candidate_payload["thesis_explanation"]))
+    thesis_label = candidate_payload.get("thesis_interest_label")
+    if thesis_label:
+        parts.append(str(thesis_label))
     violations = scan_forbidden_terms(" ".join(parts))
     # Any label outside the allowed vocabulary is also a violation.
     for label in candidate_payload.get("labels") or []:
         if label not in ALLOWED_CANDIDATE_LABELS:
             violations.append(f"disallowed_label:{label}")
+    # The thesis interest label must be from the internal-only vocabulary.
+    if thesis_label and thesis_label not in INTERNAL_INTEREST_LABELS:
+        violations.append(f"disallowed_interest_label:{thesis_label}")
     return violations
 
 
@@ -185,6 +205,8 @@ def _build_candidate(
     run_id: uuid.UUID,
     extracted: ExtractedSignal,
     score: dict[str, Any],
+    *,
+    thesis_item: dict[str, Any] | None = None,
 ) -> DiscoveryCandidate:
     signal = extracted.signal
     identity = signal.get("identity") or {}
@@ -195,30 +217,81 @@ def _build_candidate(
     source_quality = signal.get("source_quality") or {}
     completeness = signal.get("completeness") or {}
 
+    # ── Phase 27: thesis relevance + combined internal score (thesis runs) ─
+    thesis_relevance_score: float | None = None
+    combined_internal_score: float | None = None
+    thesis_match_json: dict[str, Any] | None = None
+    thesis_interest_label: str | None = None
+    thesis_explanation: str | None = None
+    if thesis_item is not None:
+        thesis_relevance_score = thesis_item.get("relevance_score_pre_scan")
+        combined = compute_combined_internal_score(
+            thesis_relevance_score=thesis_relevance_score,
+            discovery_score=score.get("candidate_score"),
+            catalyst_score=score.get("catalyst_score"),
+            source_quality_score=score.get("source_quality_score"),
+            missing_info_count=completeness.get("missing_info_count"),
+            discovery_grade=score.get("candidate_score_grade"),
+        )
+        combined_internal_score = combined["combined_internal_score"]
+        thesis_interest_label = combined["internal_interest_label"]
+        thesis_explanation = combined["explanation"]
+        thesis_match_json = {
+            "internal_interest_label": thesis_interest_label,
+            "thesis_relevance_score": thesis_relevance_score,
+            "combined_internal_score": combined_internal_score,
+            "matched_keywords": thesis_item.get("matched_keywords") or [],
+            "relevance_reason": thesis_item.get("relevance_reason"),
+            "universe_source": thesis_item.get("universe_source"),
+            "source_tier": thesis_item.get("source_tier"),
+            "theme": thesis_item.get("theme"),
+            "metadata_not_sourced": bool(thesis_item.get("metadata_not_sourced")),
+            "explanation": thesis_explanation,
+            "missing_data_penalty": combined["missing_data_penalty"],
+        }
+
     candidate_payload = {
         "labels": score.get("labels") or [],
         "score_explanation": score.get("explanation"),
+        "thesis_interest_label": thesis_interest_label,
+        "thesis_explanation": thesis_explanation,
     }
     violations = scan_candidate_safety(candidate_payload)
     safety_valid = extracted.safety_valid if extracted.safety_valid is not None else True
     if violations:
         safety_valid = False
 
+    # Prefer curated thesis-universe identity metadata when the live scan could
+    # not source it (never fabricated — it comes from the curated registry).
+    ci_name = identity.get("company_name")
+    ci_sector = identity.get("sector")
+    ci_industry = identity.get("industry")
+    ci_country = identity.get("country")
+    if thesis_item is not None:
+        ci_name = ci_name or thesis_item.get("company_name")
+        ci_sector = ci_sector or thesis_item.get("sector")
+        ci_industry = ci_industry or thesis_item.get("industry")
+        ci_country = ci_country or thesis_item.get("country")
+
     return DiscoveryCandidate(
         id=uuid.uuid4(),
         discovery_run_id=run_id,
         ticker=signal.get("ticker") or extracted.ticker,
         exchange=signal.get("exchange") or extracted.exchange,
-        company_name=identity.get("company_name"),
+        company_name=ci_name,
         legal_name=identity.get("legal_name"),
-        sector=identity.get("sector"),
-        industry=identity.get("industry"),
-        country=identity.get("country"),
+        sector=ci_sector,
+        industry=ci_industry,
+        country=ci_country,
         lei=identity.get("lei"),
         website=identity.get("website"),
         # scores
         candidate_score=score.get("candidate_score"),
         candidate_score_grade=score.get("candidate_score_grade"),
+        # Phase 27 thesis relevance
+        thesis_relevance_score=thesis_relevance_score,
+        combined_internal_score=combined_internal_score,
+        thesis_match_json=thesis_match_json,
         momentum_score=score.get("momentum_score"),
         fundamentals_score=score.get("fundamentals_score"),
         catalyst_score=score.get("catalyst_score"),
@@ -315,11 +388,37 @@ def _aware(dt: datetime | None) -> datetime | None:
 
 
 def _run_universe(run: DiscoveryRun) -> list[dict[str, str]]:
-    """Rebuild the (already-bounded) universe from a persisted run row."""
+    """
+    Rebuild the (already-bounded) universe from a persisted run row.
+
+    For a THESIS run the universe is read from ``universe_json`` so each item
+    keeps its own exchange (a thesis universe can mix exchanges). For a ticker
+    run the single run-level exchange applies to every ticker.
+    """
+    if run.mode == "thesis":
+        items = ((run.universe_json or {}).get("items")) or []
+        universe = [
+            {
+                "ticker": str(it.get("ticker")),
+                "exchange": str(it.get("exchange") or "US"),
+            }
+            for it in items
+            if it.get("ticker")
+        ]
+        if universe:
+            return universe
     exchange = ((run.config_json or {}).get("exchange") or "US").upper()
     return [
         {"ticker": t, "exchange": exchange} for t in (run.requested_tickers or [])
     ]
+
+
+def _thesis_context(run: DiscoveryRun) -> dict[str, dict[str, Any]]:
+    """Map ticker -> its generated universe item for a thesis run (else empty)."""
+    if run.mode != "thesis":
+        return {}
+    items = ((run.universe_json or {}).get("items")) or []
+    return {str(it.get("ticker")): it for it in items if it.get("ticker")}
 
 
 async def create_pending_run(
@@ -347,6 +446,7 @@ async def create_pending_run(
     run = DiscoveryRun(
         id=uuid.uuid4(),
         status="pending",
+        mode="ticker",
         provider_name=provider,
         universe_source=payload.universe_source or "curated_seed",
         universe_count=len(universe),
@@ -369,6 +469,104 @@ async def create_pending_run(
             "internal_only": True,
             "not_investment_advice": True,
             "no_public_publishing": True,
+        },
+        created_by=payload.created_by,
+        human_review_required=True,
+        started_at=None,
+    )
+    db.add(run)
+    await db.commit()
+    await db.refresh(run)
+    return run
+
+
+async def create_pending_thesis_run(
+    db: AsyncSession, payload: ThesisDiscoveryRunCreate
+) -> DiscoveryRun:
+    """
+    Phase 27 — parse a market thesis, build a bounded real-company universe, and
+    persist a ``pending`` thesis discovery run WITHOUT processing it.
+
+    Returns quickly so the API can hand back a ``run_id`` immediately (the scan
+    runs in the background). Raises ``ValueError`` when:
+      * the provider is not permitted,
+      * the thesis is too vague to bound a universe (needs narrowing), or
+      * no company matched the thesis (empty universe).
+
+    These are rejected BEFORE any background work is scheduled — never an
+    accidental full-market scan.
+    """
+    provider = (payload.provider_name or settings.discovery_default_provider).strip()
+    if provider not in _ALLOWED_PROVIDERS:
+        raise ValueError(
+            f"Provider '{provider}' is not permitted for discovery. "
+            f"Allowed: {sorted(_ALLOWED_PROVIDERS)}."
+        )
+
+    parsed = parse_thesis(
+        payload.thesis_text,
+        region=payload.region,
+        country=payload.country,
+        sector=payload.sector,
+        industry=payload.industry,
+        industry_keywords=payload.industry_keywords,
+        market_cap_bucket=payload.market_cap_bucket,
+    )
+    if parsed.needs_narrowing:
+        raise ValueError(
+            "Thesis needs narrowing before a bounded universe can be built: "
+            + " ".join(parsed.warnings)
+        )
+
+    universe = build_universe(parsed.to_dict(), max_universe_size=payload.max_universe_size)
+    if universe.needs_narrowing:
+        raise ValueError(
+            "Thesis needs narrowing: " + " ".join(universe.warnings)
+        )
+    if not universe.items:
+        raise ValueError(
+            "No companies matched this thesis in the curated registry. "
+            + " ".join(universe.warnings)
+        )
+
+    lookback_days = payload.lookback_days or settings.discovery_lookback_days
+    tickers = [str(it["ticker"]) for it in universe.items]
+
+    run = DiscoveryRun(
+        id=uuid.uuid4(),
+        status="pending",
+        mode="thesis",
+        provider_name=provider,
+        universe_source="thesis_generated",
+        universe_count=len(tickers),
+        requested_tickers=tickers,
+        thesis_text=payload.thesis_text,
+        parsed_thesis_json=parsed.to_dict(),
+        universe_json=universe.to_dict(),
+        processed_count=0,
+        candidate_count=0,
+        error_count=0,
+        lookback_days=lookback_days,
+        warnings=list(universe.warnings),
+        config_json={
+            "provider_name": provider,
+            "universe_source": "thesis_generated",
+            "mode": "thesis",
+            "max_universe_size": payload.max_universe_size,
+            "max_candidates": payload.max_candidates,
+            "lookback_days": lookback_days,
+            "region": payload.region,
+            "country": payload.country,
+            "sector": payload.sector,
+            "industry": payload.industry,
+            "market_cap_bucket": payload.market_cap_bucket,
+            "notes": payload.notes,
+        },
+        safety_notes={
+            "internal_only": True,
+            "not_investment_advice": True,
+            "no_public_publishing": True,
+            "no_recommendation": True,
         },
         created_by=payload.created_by,
         human_review_required=True,
@@ -426,6 +624,7 @@ async def process_run(
     provider = run.provider_name
     lookback_days = run.lookback_days
     universe = _run_universe(run)
+    thesis_ctx = _thesis_context(run)
 
     # ── Mark running and persist immediately so pollers see progress ──────
     run.status = "running"
@@ -470,7 +669,9 @@ async def process_run(
             warnings.append(f"{ticker}: {w}")
 
         score = score_signal(extracted.signal)
-        candidate = _build_candidate(run.id, extracted, score)
+        candidate = _build_candidate(
+            run.id, extracted, score, thesis_item=thesis_ctx.get(ticker)
+        )
         db.add(candidate)
         created.append(candidate)
 
@@ -483,8 +684,14 @@ async def process_run(
         await db.commit()
 
     # ── Rank by internal prioritization score (desc), in memory ───────────
+    # Thesis runs rank by the blended combined_internal_score; ticker runs rank
+    # by the Phase 25 discovery candidate_score.
+    if run.mode == "thesis":
+        rank_key = lambda c: (c.combined_internal_score or 0.0)  # noqa: E731
+    else:
+        rank_key = lambda c: (c.candidate_score or 0.0)  # noqa: E731
     for rank, candidate in enumerate(
-        sorted(created, key=lambda c: (c.candidate_score or 0.0), reverse=True),
+        sorted(created, key=rank_key, reverse=True),
         start=1,
     ):
         candidate.rank = rank
@@ -585,6 +792,23 @@ async def create_discovery_run(
     return await process_run(db, run, extractor=extractor)
 
 
+async def create_thesis_discovery_run(
+    db: AsyncSession,
+    payload: ThesisDiscoveryRunCreate,
+    *,
+    extractor: SignalExtractor | None = None,
+) -> DiscoveryRun:
+    """
+    Phase 27 — create AND synchronously process a thesis discovery run.
+
+    Retained for offline tests and any caller that wants an inline run. The API
+    uses ``create_pending_thesis_run`` + a background task so the request
+    returns immediately.
+    """
+    run = await create_pending_thesis_run(db, payload)
+    return await process_run(db, run, extractor=extractor)
+
+
 # ---------------------------------------------------------------------------
 # Queries
 # ---------------------------------------------------------------------------
@@ -655,6 +879,8 @@ async def list_candidates(
     sort_map = {
         "rank": DiscoveryCandidate.rank.asc(),
         "candidate_score": DiscoveryCandidate.candidate_score.desc(),
+        "combined_internal_score": DiscoveryCandidate.combined_internal_score.desc(),
+        "thesis_relevance_score": DiscoveryCandidate.thesis_relevance_score.desc(),
         "latest_catalyst_date": DiscoveryCandidate.latest_catalyst_date.desc(),
         "momentum_score": DiscoveryCandidate.momentum_score.desc(),
         "catalyst_score": DiscoveryCandidate.catalyst_score.desc(),
