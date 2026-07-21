@@ -56,6 +56,10 @@ REASON_EXPLICIT_CIK_MAPPING = "explicit_cik_mapping"
 REASON_NON_US_NO_SEC_MAPPING = "non_us_exchange_no_sec_mapping"
 REASON_TICKER_NOT_IN_SEC_INDEX = "ticker_not_in_sec_index"
 REASON_PROVIDER_ERROR = "provider_error"
+# The venue was expected but absent from provider state — fail closed rather
+# than let the legacy "no exchange means US" default send a foreign ticker into
+# the US-registrant index.
+REASON_EXCHANGE_MISSING_IN_STATE = "exchange_missing_in_provider_state"
 
 SOURCE_NOT_SOURCED = "not_sourced"
 

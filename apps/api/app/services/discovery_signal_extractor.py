@@ -290,9 +290,16 @@ async def extract_signal(
 
     try:
         company = await _ensure_company(db, ticker_u, exchange)
+        # Pass ticker + exchange explicitly, not just company_id. The workflow
+        # can load them from the company row, but the venue decides whether SEC
+        # EDGAR may be consulted at all, so it must be stated at the seam rather
+        # than left to a DB round-trip. Relying on that round-trip is what let
+        # BA.LSE reach the US ticker index and come back as Boeing.
         final_state = await runner(
             db,
             company_id=str(company.id),
+            ticker=ticker_u,
+            exchange=exchange,
             provider_name=provider_name,
         )
     except Exception as exc:  # defensive — a bad ticker must not fail the run
