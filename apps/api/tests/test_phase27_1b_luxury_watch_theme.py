@@ -390,7 +390,21 @@ def _thesis_item(ticker: str, name: str) -> dict:
     }
 
 
-def _extracted_for(ticker: str, *, identity: dict) -> ExtractedSignal:
+def _extracted_for(
+    ticker: str,
+    *,
+    identity: dict,
+    profile_source: str = "not_sourced",
+) -> ExtractedSignal:
+    """
+    Build an extracted signal.
+
+    ``profile_source`` mirrors ``data_coverage.profile_source`` — the provider
+    declaring whether it actually sourced a company profile. It defaults to
+    ``not_sourced`` because that is what the SEC-ineligible European venues in
+    the luxury registry really return (staging: every luxury candidate had
+    ``profile_source="not_sourced"``, ``sec_eligible=false``).
+    """
     signal = {
         "ticker": ticker,
         "exchange": "SW",
@@ -402,6 +416,13 @@ def _extracted_for(ticker: str, *, identity: dict) -> ExtractedSignal:
         "catalyst": {"total_events": 0},
         "source_quality": {"overall": "insufficient"},
         "completeness": {"missing_info_count": 0, "blocking_gap_count": 0},
+        "data_coverage": {
+            "exchange": "SW",
+            "sec_eligible": profile_source != "sourced",
+            "profile_source": profile_source,
+            "fundamentals_source": profile_source,
+            "requires_human_research": profile_source == "not_sourced",
+        },
         "warnings": [],
     }
     return ExtractedSignal(
@@ -459,10 +480,58 @@ def test_28_curated_name_is_never_attributed_to_sec_or_provider() -> None:
     assert identity["company_name_source_tier"].startswith("T3")
 
 
+def test_28b_curated_name_echoed_by_the_company_row_is_still_curated() -> None:
+    """
+    The PIPELINE case, not the injected-placeholder case.
+
+    ``ensure_company`` seeds the stub Company row with the curated name and the
+    workflow echoes it back as ``identity.company_name`` — so the scan returns
+    "Swatch Group AG", never the bare ticker. Deciding provenance by "is this a
+    placeholder?" therefore credited the curated registry's own string to
+    ``provider_profile``, which staging confirmed on all eight European luxury
+    candidates (their provider profile was not_sourced: legal_name == ticker,
+    sec_eligible false).
+
+    Tests 26/27 inject a bare ticker and so never exercise this path. This is
+    the same shape of gap as the Phase 27.1A handoff bug: the leaf function was
+    proven with an input the pipeline does not actually produce.
+    """
+    extracted = _extracted_for(
+        "UHR", identity={"company_name": "Swatch Group AG", "legal_name": "UHR"}
+    )
+    candidate = mds._build_candidate(
+        uuid.uuid4(),
+        extracted,
+        {"candidate_score": 30.0},
+        thesis_item=_thesis_item("UHR", "Swatch Group AG"),
+    )
+    identity = candidate.raw_signal_json["identity"]
+    assert candidate.company_name == "Swatch Group AG"
+    assert identity["company_name_source"] == "curated_theme_registry"
+    assert identity["company_name_source_tier"] == "T3_curated_reference_list"
+
+
+def test_28c_curated_attribution_is_case_and_whitespace_insensitive() -> None:
+    extracted = _extracted_for(
+        "UHR", identity={"company_name": "  swatch group ag  ", "legal_name": "UHR"}
+    )
+    candidate = mds._build_candidate(
+        uuid.uuid4(),
+        extracted,
+        {"candidate_score": 30.0},
+        thesis_item=_thesis_item("UHR", "Swatch Group AG"),
+    )
+    assert candidate.raw_signal_json["identity"]["company_name_source"] == (
+        "curated_theme_registry"
+    )
+
+
 def test_29_real_provider_name_wins_over_curated_name() -> None:
     """A genuinely sourced name must not be overwritten by the registry."""
     extracted = _extracted_for(
-        "UHR", identity={"company_name": "The Swatch Group Ltd (provider)"}
+        "UHR",
+        identity={"company_name": "The Swatch Group Ltd (provider)"},
+        profile_source="sourced",
     )
     candidate = mds._build_candidate(
         uuid.uuid4(),
@@ -474,6 +543,73 @@ def test_29_real_provider_name_wins_over_curated_name() -> None:
     assert candidate.raw_signal_json["identity"]["company_name_source"] == (
         "provider_profile"
     )
+
+
+def test_29b_not_sourced_profile_is_never_credited_to_the_provider() -> None:
+    """
+    When the provider says ``profile_source="not_sourced"``, nothing in the
+    identity block may be attributed to it — even a name that looks real.
+
+    A non-placeholder name can reach a not_sourced candidate via the Company
+    row (seeded by a previous curated run, or entered by hand). Crediting it to
+    the provider would assert a source that explicitly disclaimed producing one.
+    """
+    extracted = _extracted_for(
+        "UHR",
+        identity={"company_name": "Some Other Name Ltd", "legal_name": "UHR"},
+        profile_source="not_sourced",
+    )
+    candidate = mds._build_candidate(
+        uuid.uuid4(),
+        extracted,
+        {"candidate_score": 40.0},
+        thesis_item=_thesis_item("UHR", "Swatch Group AG"),
+    )
+    identity = candidate.raw_signal_json["identity"]
+    assert identity["company_name_source"] != "provider_profile"
+    assert identity["company_name_source"] == "curated_theme_registry"
+    assert candidate.company_name == "Swatch Group AG"
+
+
+def test_29c_staging_shaped_luxury_candidate_is_attributed_to_the_registry() -> None:
+    """
+    Replays the exact identity/data_coverage payload staging produced for
+    CFR.SW after Phase 27.1B, which reported ``provider_profile``.
+
+    Values copied from the live candidate: the provider sourced no profile
+    (``profile_source="not_sourced"``, ``sec_eligible=false``), ``legal_name``
+    is the bare ticker, and ``company_name`` is the curated string echoed back
+    through the Company row that ``ensure_company`` seeded.
+    """
+    extracted = _extracted_for(
+        "CFR",
+        identity={
+            "company_name": "Compagnie Financiere Richemont SA",
+            "legal_name": "CFR",
+            "country": "Switzerland",
+            "lei": "984500A5942FB77F8926",
+            "sector": None,
+            "industry": None,
+            "website": None,
+        },
+        profile_source="not_sourced",
+    )
+    candidate = mds._build_candidate(
+        uuid.uuid4(),
+        extracted,
+        {"candidate_score": 32.0},
+        thesis_item=_thesis_item("CFR", "Compagnie Financiere Richemont SA"),
+    )
+    identity = candidate.raw_signal_json["identity"]
+    assert candidate.company_name == "Compagnie Financiere Richemont SA"
+    assert identity["company_name_source"] == "curated_theme_registry"
+    assert identity["company_name_source_tier"] == "T3_curated_reference_list"
+    # The rest of the not_sourced contract is untouched by this fix.
+    assert candidate.legal_name == "CFR"
+    assert candidate.revenue_mln is None
+    assert candidate.market_cap_mln is None
+    assert candidate.human_review_required is True
+    assert candidate.is_public is False
 
 
 def test_30_ticker_run_candidate_has_no_curated_name_metadata() -> None:
