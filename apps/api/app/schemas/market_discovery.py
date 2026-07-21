@@ -308,6 +308,50 @@ class DiscoveryCandidateListResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class SupportedTheme(BaseModel):
+    """One research theme the thesis parser can match (Phase 27.1B)."""
+
+    id: str
+    label: str
+    keywords: list[str] = Field(default_factory=list)
+    sectors: list[str] = Field(default_factory=list)
+    industries: list[str] = Field(default_factory=list)
+    examples: list[str] = Field(default_factory=list)
+    regions: list[str] = Field(
+        default_factory=list,
+        description="Regions the curated registry actually covers for this theme.",
+    )
+    countries: list[str] = Field(default_factory=list)
+    universe_company_count: int = Field(
+        default=0,
+        description=(
+            "How many curated issuers back this theme. A bounded bootstrap "
+            "count, not full-market coverage."
+        ),
+    )
+
+
+class SupportedSectorAlias(BaseModel):
+    """A canonical sector plus the aliases and industries that resolve to it."""
+
+    sector: str
+    aliases: list[str] = Field(default_factory=list)
+    industries: list[str] = Field(default_factory=list)
+
+
+class SupportedThemesResponse(BaseModel):
+    """Themes + sector taxonomy the admin UI offers as thesis starting points."""
+
+    themes: list[SupportedTheme]
+    sectors: list[SupportedSectorAlias]
+    examples: list[str] = Field(
+        default_factory=list,
+        description="Flattened example thesis queries across all themes.",
+    )
+    coverage_note: str
+    disclaimer: str = INTERNAL_DISCLAIMER
+
+
 class RunCandidateAnalysisResponse(BaseModel):
     candidate_id: uuid.UUID
     ticker: str

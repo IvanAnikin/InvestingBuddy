@@ -848,7 +848,7 @@ async def test_36_run_analysis_stores_report_id() -> None:
 
     company = MagicMock(id=uuid.uuid4())
     with patch.object(mds, "get_candidate", AsyncMock(return_value=candidate)), patch.object(
-        mds.company_service, "get_company_by_ticker", AsyncMock(return_value=company)
+        mds, "ensure_company", AsyncMock(return_value=company)
     ):
         result = await mds.run_candidate_analysis(
             db, candidate.id, run_analysis=fake_runner

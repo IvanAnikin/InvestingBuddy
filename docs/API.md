@@ -1271,3 +1271,101 @@ Internal-only interest labels (never recommendations):
   not a recommendation list. Non-US names produce a sparse `free_real` scan
   (SEC-based); the curated registry still supplies identity metadata (never
   fabricated) and the candidate is flagged accordingly.
+
+---
+
+## Phase 27.1B — Luxury/Watch Theme + Supported Themes (internal admin only)
+
+Adds the `luxury_goods` research theme, a canonical sector taxonomy, and a
+read-only endpoint that tells the admin UI which themes actually resolve.
+**No DB migration** — everything reuses the existing Phase 27 JSONB columns
+(`discovery_runs.universe_json`, `discovery_candidates.thesis_match_json`,
+`raw_signal_json`, `warnings_json`, `missing_fields_json`).
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/v1/market-discovery/supported-themes` | Themes the parser matches, sector aliases, and example thesis queries |
+
+**Response:**
+```json
+{
+  "themes": [
+    {
+      "id": "luxury_goods",
+      "label": "Luxury goods / watches / jewelry",
+      "keywords": ["luxury", "watches", "jewelry", "personal goods"],
+      "sectors": ["Consumer Discretionary"],
+      "industries": ["Luxury Goods", "Watches & Jewelry", "Personal Goods"],
+      "examples": [
+        "European watch producers",
+        "Swiss watch companies",
+        "European luxury goods companies"
+      ],
+      "regions": ["Asia", "Europe", "North America"],
+      "countries": ["Denmark", "France", "..."],
+      "universe_company_count": 11
+    }
+  ],
+  "sectors": [
+    {
+      "sector": "Consumer Discretionary",
+      "aliases": ["luxury", "luxury goods", "watches & jewelry", "..."],
+      "industries": ["Luxury Goods", "Watches & Jewelry", "..."]
+    }
+  ],
+  "examples": ["European watch producers", "..."],
+  "coverage_note": "Thesis discovery runs against a bounded curated universe bootstrap, not a full-market scan. …",
+  "disclaimer": "INTERNAL ADMIN USE ONLY. NOT INVESTMENT ADVICE. …"
+}
+```
+
+The payload is **derived** from the parser's theme table joined with the curated
+registry — never a second hand-maintained list — so the UI can never advertise a
+theme that parses but yields an empty universe. A test asserts every advertised
+example builds a non-empty universe.
+
+**Themes:** `defense`, `semiconductors`, `nuclear_energy`,
+`grid_electrification`, `robotics_automation`, `biotech_pharma`,
+`banks_fintech`, `mining_materials`, `ai_infrastructure`, **`luxury_goods`**
+(new).
+
+**Sector taxonomy.** `app/services/sector_taxonomy.py` maps sector/industry
+aliases to canonical names, so a thesis filtered on `sector="Luxury Goods"`
+matches issuers the registry tags `Consumer Discretionary`. An **unknown**
+sector normalizes to `null` rather than being guessed — a wrong guess would
+silently widen the search beyond what the admin asked for.
+
+**Curated luxury registry (11 real issuers).** `UHR.SW` (Swatch Group),
+`CFR.SW` (Richemont), `MC.PA` (LVMH), `RMS.PA` (Hermes), `KER.PA` (Kering),
+`MONC.MI` (Moncler), `BRBY.LSE` (Burberry), `PNDORA.CO` (Pandora),
+`CPRI.US` (Capri), `TPR.US` (Tapestry), `1913.HK` (Prada). Each carries
+`universe_source="curated_theme_registry"` and
+`source_tier="T3_curated_reference_list"`.
+
+**Company-name provenance (fix).** A discovery scan creates a stub `Company`
+row; before this phase that stub was named after the ticker, and its truthiness
+shadowed the curated registry name — candidates displayed `UHR` instead of
+`Swatch Group AG`. Resolution order is now **live provider name → curated
+registry name → ticker**, tested with
+`is_placeholder_company_name` rather than truthiness. The origin is recorded on
+`raw_signal_json.identity` and `thesis_match_json`:
+
+| Field | Values |
+|---|---|
+| `company_name_source` | `provider_profile` \| `curated_theme_registry` \| `null` |
+| `company_name_source_tier` | `T3_curated_reference_list` \| `null` |
+
+A curated display name is **never** attributed to SEC or a provider, and
+`legal_name` is left exactly as the scan produced it (`null` when not sourced).
+
+**Limitations (stated in `coverage_note`):**
+- Bounded curated bootstrap — **not** a full-market scan of global equities.
+- Each theme is backed by a small hand-curated list of real issuers, not an
+  exhaustive index of the segment.
+- Non-US issuers are not SEC-eligible (Phase 27.1A `exchange_registry` gating),
+  so their fundamentals degrade honestly to `not_sourced` /
+  `requires_human_research` rather than resolving a ticker collision. `MC.PA` is
+  LVMH here and never Moelis.
+- Results are internal research candidates: `human_review_required=true`,
+  `is_public=false`, `publication_ready=false`, no public publish route, no
+  recommendation of any kind.

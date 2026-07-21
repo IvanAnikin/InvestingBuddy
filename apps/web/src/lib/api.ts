@@ -23,6 +23,7 @@ import type {
   ReviewActionResponse,
   ReviewEventList,
   RunCandidateAnalysisResponse,
+  SupportedThemesResponse,
   WorkflowRunRequest,
   WorkflowRunResponse,
 } from "@/types/api";
@@ -288,6 +289,15 @@ export async function createThesisDiscoveryRun(
     method: "POST",
     body: JSON.stringify(payload),
   });
+}
+
+// Phase 27.1B — themes/sectors the thesis parser supports, plus example
+// queries. Backed by the parser + curated registry so the UI can never offer a
+// theme that yields an empty universe.
+export async function listSupportedThemes(): Promise<SupportedThemesResponse> {
+  return apiFetch<SupportedThemesResponse>(
+    "/api/v1/market-discovery/supported-themes",
+  );
 }
 
 export async function listDiscoveryCandidates(

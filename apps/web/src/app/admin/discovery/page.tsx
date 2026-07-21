@@ -9,6 +9,7 @@ import {
   getDiscoveryRun,
   listDiscoveryCandidates,
   listDiscoveryRuns,
+  listSupportedThemes,
   runCandidateAnalysis,
 } from "@/lib/api";
 import type {
@@ -16,6 +17,7 @@ import type {
   DiscoveryCandidateDetail,
   DiscoveryRun,
   DiscoveryRunCreate,
+  SupportedThemesResponse,
   ThesisDiscoveryRunCreate,
 } from "@/types/api";
 import GlassCard from "@/components/ui/GlassCard";
@@ -391,6 +393,54 @@ function Chips({ items }: { items: string[] | undefined | null }) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Supported theme examples (Phase 27.1B)
+//
+// Clickable example queries that fill the thesis textarea. Sourced from
+// GET /market-discovery/supported-themes so the UI cannot offer a theme the
+// parser does not support. Every example describes a SEARCH, never an action.
+// ---------------------------------------------------------------------------
+
+function SupportedThemeExamples({
+  supported,
+  onPick,
+  title,
+}: {
+  supported: SupportedThemesResponse | null;
+  onPick: (example: string) => void;
+  title: string;
+}) {
+  if (!supported || supported.themes.length === 0) return null;
+
+  return (
+    <div
+      className="space-y-2 rounded-xl border border-white/10 bg-white/[0.03] p-3"
+      data-testid="supported-themes"
+    >
+      <p className="text-xs font-semibold text-slate-300">{title}</p>
+      <div className="flex flex-wrap gap-1.5">
+        {supported.themes.map((theme) =>
+          theme.examples.map((example) => (
+            <button
+              key={`${theme.id}-${example}`}
+              type="button"
+              data-testid="theme-example-chip"
+              title={`${theme.label} — ${theme.universe_company_count} curated issuer(s)`}
+              onClick={() => onPick(example)}
+              className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] text-slate-300 transition-colors hover:border-sky-400/40 hover:bg-sky-500/15 hover:text-sky-100"
+            >
+              {example}
+            </button>
+          )),
+        )}
+      </div>
+      <p className="text-[11px] text-slate-500" data-testid="coverage-note">
+        {supported.coverage_note}
+      </p>
+    </div>
+  );
+}
+
 function ThesisSummaryPanel({ run }: { run: DiscoveryRun }) {
   const parsed = run.parsed_thesis_json ?? null;
   const universe = run.universe_json ?? null;
@@ -556,6 +606,12 @@ export default function DiscoveryPage() {
   const [thesisMaxCandidates, setThesisMaxCandidates] = useState("10");
   const [thesisLookback, setThesisLookback] = useState("90");
 
+  // Phase 27.1B — supported themes / example queries, fetched from the backend
+  // so the UI can never advertise a theme the parser does not support.
+  const [supported, setSupported] = useState<SupportedThemesResponse | null>(
+    null,
+  );
+
   // Selected run + live detail (polled while processing) + candidates
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [runDetail, setRunDetail] = useState<DiscoveryRun | null>(null);
@@ -571,6 +627,24 @@ export default function DiscoveryPage() {
     .map((t) => t.trim().toUpperCase())
     .filter(Boolean);
   const manualCount = new Set(parsedTickers).size;
+
+  // Supported themes are static per deploy — fetched once, and a failure is
+  // non-fatal: the thesis form still works, it just offers no example chips.
+  useEffect(() => {
+    let cancelled = false;
+    async function fetchThemes() {
+      try {
+        const data = await listSupportedThemes();
+        if (!cancelled) setSupported(data);
+      } catch {
+        // Non-fatal: examples are a convenience, not a prerequisite.
+      }
+    }
+    void fetchThemes();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -838,6 +912,12 @@ export default function DiscoveryPage() {
               </p>
             </div>
 
+            <SupportedThemeExamples
+              supported={supported}
+              onPick={setThesisText}
+              title="Supported themes — click an example to use it"
+            />
+
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
               <div className="flex flex-col gap-1">
                 <label className="text-sm font-medium text-slate-300">
@@ -932,7 +1012,9 @@ export default function DiscoveryPage() {
 
             <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3 text-xs text-slate-400">
               <p>
-                A bounded real-company universe (max{" "}
+                Current thesis discovery uses a bounded curated universe
+                bootstrap — it does not scan all global equities. A bounded
+                real-company universe (max{" "}
                 <span className="text-slate-200">{thesisMaxUniverse}</span>) is
                 generated from a curated reference registry, then scanned with the
                 free real-data stack. Every result is an internal research
@@ -940,11 +1022,24 @@ export default function DiscoveryPage() {
               </p>
             </div>
 
+            {/* The backend's own guidance is always shown verbatim — the
+                example chips are added alongside it, never in place of it. */}
             {submitError && (
               <SafetyBanner variant="danger">
                 <p data-testid="thesis-submit-error">
                   <strong>Cannot start run:</strong> {submitError}
                 </p>
+                <p className="mt-2" data-testid="thesis-no-match-help">
+                  Could not build a bounded universe for this thesis yet. Try
+                  one of the supported theme examples below.
+                </p>
+                <div className="mt-2">
+                  <SupportedThemeExamples
+                    supported={supported}
+                    onPick={setThesisText}
+                    title="Supported theme examples"
+                  />
+                </div>
               </SafetyBanner>
             )}
 

@@ -22,6 +22,8 @@ import re
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from app.services.sector_taxonomy import normalize_industry, normalize_sector
+
 # ---------------------------------------------------------------------------
 # Keyword mapping tables (deterministic bootstrap)
 #
@@ -175,7 +177,160 @@ _THEME_TABLE: dict[str, dict[str, Any]] = {
         "sectors": ["Technology"],
         "industries": ["Data Centers", "AI Infrastructure"],
     },
+    # Phase 27.1B. "watch"/"watches" are ordinary English, so they are safe to
+    # match here (this table only STRUCTURES a search) but must never leak into
+    # generated prose — see app.services.safety_terms, which is case-sensitive
+    # on the ALL-CAPS rating token precisely so "Swatch" and "Watches &
+    # Jewelry" stay legal while a "WATCH" label stays blocked.
+    "luxury_goods": {
+        "phrases": [
+            "luxury",
+            "luxury goods",
+            "luxury brands",
+            "watch",
+            "watches",
+            "watchmaker",
+            "watchmakers",
+            "watchmaking",
+            "timepiece",
+            "timepieces",
+            "jewelry",
+            "jewellery",
+            "watches & jewelry",
+            "watches and jewelry",
+            "watches & jewellery",
+            "watches and jewellery",
+            "personal goods",
+            "leather goods",
+            "handbag",
+            "handbags",
+            "premium brands",
+            "high-end consumer",
+            "fashion luxury",
+        ],
+        "sectors": ["Consumer Discretionary"],
+        "industries": [
+            "Luxury Goods",
+            "Watches & Jewelry",
+            "Personal Goods",
+            "Apparel & Accessories",
+        ],
+    },
 }
+
+# ---------------------------------------------------------------------------
+# Human-facing theme descriptions (admin UI + supported-themes endpoint).
+#
+# Kept separate from ``_THEME_TABLE`` so the matching rules stay free of
+# presentation concerns. Every key here MUST exist in ``_THEME_TABLE`` —
+# ``get_supported_themes`` iterates the matching table, so a stale entry here is
+# simply never emitted, and a missing one degrades to a generated label rather
+# than hiding a working theme.
+#
+# SAFETY: example queries describe a SEARCH ("European watch producers"), never
+# an action. None of them may read as a recommendation.
+# ---------------------------------------------------------------------------
+
+_THEME_DISPLAY: dict[str, dict[str, Any]] = {
+    "defense": {
+        "label": "Defense / aerospace",
+        "examples": [
+            "European defense suppliers benefiting from NATO spending",
+            "US aerospace and defense primes",
+        ],
+    },
+    "semiconductors": {
+        "label": "Semiconductors / chip equipment",
+        "examples": [
+            "US semiconductor equipment companies with recent positive catalysts",
+            "European semiconductor lithography suppliers",
+        ],
+    },
+    "nuclear_energy": {
+        "label": "Nuclear energy / uranium",
+        "examples": [
+            "US nuclear and uranium companies",
+            "Small modular reactor developers",
+        ],
+    },
+    "grid_electrification": {
+        "label": "Power grid / electrification",
+        "examples": [
+            "Power grid and electrical equipment suppliers",
+            "European electrification and transmission companies",
+        ],
+    },
+    "robotics_automation": {
+        "label": "Robotics / industrial automation",
+        "examples": [
+            "Japanese industrial robotics companies",
+            "Factory automation suppliers",
+        ],
+    },
+    "biotech_pharma": {
+        "label": "Biotech / pharmaceuticals",
+        "examples": [
+            "US biotechnology companies",
+            "Large-cap pharmaceutical companies",
+        ],
+    },
+    "banks_fintech": {
+        "label": "Banks / fintech",
+        "examples": [
+            "US banks and payments companies",
+            "Fintech and payments companies",
+        ],
+    },
+    "mining_materials": {
+        "label": "Mining / materials",
+        "examples": [
+            "Copper and lithium mining companies",
+            "Rare earth and critical metals miners",
+        ],
+    },
+    "ai_infrastructure": {
+        "label": "AI infrastructure / data centers",
+        "examples": [
+            "AI infrastructure and data center companies",
+            "Hyperscaler cloud infrastructure suppliers",
+        ],
+    },
+    "luxury_goods": {
+        "label": "Luxury goods / watches / jewelry",
+        "examples": [
+            "European watch producers",
+            "Swiss watch companies",
+            "European luxury goods companies",
+        ],
+    },
+}
+
+
+def get_supported_themes() -> list[dict[str, Any]]:
+    """
+    Describe every theme the parser can match, for the admin UI / API.
+
+    Derived from the SAME tables ``parse_thesis`` matches on, so the guidance an
+    admin is shown can never claim a theme the parser does not actually
+    support. Returns theme id, display label, trigger keywords, implied
+    sectors/industries, and recommendation-free example queries.
+    """
+    out: list[dict[str, Any]] = []
+    for theme_id, spec in _THEME_TABLE.items():
+        display = _THEME_DISPLAY.get(theme_id, {})
+        out.append(
+            {
+                "id": theme_id,
+                "label": display.get("label") or theme_id.replace("_", " ").title(),
+                "keywords": list(spec.get("phrases", [])),
+                "sectors": list(spec.get("sectors", [])),
+                "industries": list(spec.get("industries", [])),
+                "examples": list(display.get("examples") or []),
+            }
+        )
+    out.sort(key=lambda t: str(t["label"]).lower())
+    return out
+
 
 # ---------------------------------------------------------------------------
 # Region / country tables
@@ -224,6 +379,10 @@ _COUNTRY_TABLE: dict[str, tuple[str, str]] = {
     "dutch": ("Netherlands", "Europe"),
     "switzerland": ("Switzerland", "Europe"),
     "swiss": ("Switzerland", "Europe"),
+    # Phase 27.1B — venues the luxury registry lists on.
+    "denmark": ("Denmark", "Europe"),
+    "danish": ("Denmark", "Europe"),
+    "hong kong": ("Hong Kong", "Asia"),
     "japan": ("Japan", "Japan"),
     "japanese": ("Japan", "Japan"),
     "china": ("China", "China"),
@@ -380,9 +539,31 @@ def parse_thesis(
     padded = f" {normalized.lower()} "
 
     themes: list[str] = []
-    sectors: list[str] = list(filter(None, [sector]))
-    industries: list[str] = list(filter(None, [industry]))
     keywords: list[str] = []
+
+    # ── Structured sector / industry filters, taxonomy-normalized ─────────
+    # The admin's wording is kept AND its canonical form is added, so a thesis
+    # filtered on "Luxury Goods" still reaches companies the registry tags
+    # "Consumer Discretionary". A sector value that is really an industry
+    # ("Watches & Jewelry") seeds BOTH lists — see sector_taxonomy.
+    sectors: list[str] = []
+    industries: list[str] = []
+    if sector:
+        sectors.append(sector.strip())
+        canonical_sector = normalize_sector(sector)
+        if canonical_sector:
+            sectors.append(canonical_sector)
+        sector_as_industry = normalize_industry(sector)
+        if sector_as_industry:
+            industries.append(sector_as_industry)
+    if industry:
+        industries.append(industry.strip())
+        canonical_industry = normalize_industry(industry)
+        if canonical_industry:
+            industries.append(canonical_industry)
+        industry_parent = normalize_sector(industry)
+        if industry_parent:
+            sectors.append(industry_parent)
 
     # ── Themes ────────────────────────────────────────────────────────────
     for theme, spec in _THEME_TABLE.items():
@@ -484,7 +665,9 @@ def parse_thesis(
             warnings.append(
                 "Thesis did not match any known theme, sector, or industry. "
                 "Add a market segment, theme, region, or explicit industry "
-                "keywords to narrow the search."
+                "keywords to narrow the search. Supported themes and example "
+                "queries are listed at "
+                "GET /api/v1/market-discovery/supported-themes."
             )
     if not raw:
         warnings.append("Empty thesis text.")

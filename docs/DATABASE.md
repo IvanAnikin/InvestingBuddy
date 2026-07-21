@@ -506,6 +506,31 @@ fair value, or BUY/SELL/HOLD/WATCH label. Fully reversible.
 New index `ix_discovery_candidates_combined_score`. All thesis columns are NULL
 for ticker runs.
 
+### Phase 27.1B — no migration
+
+Phase 27.1B (luxury/watch theme, sector taxonomy, supported themes,
+company-name backfill fix) adds **no columns and no migration**. It reuses the
+existing JSONB payloads:
+
+| Column | Phase 27.1B additions |
+|---|---|
+| `discovery_runs.universe_json` | `items[]` now include curated luxury issuers (`UHR.SW`, `CFR.SW`, `MC.PA`, …); shape unchanged |
+| `discovery_candidates.thesis_match_json` | `company_name`, `company_name_source`, `company_name_source_tier` |
+| `discovery_candidates.raw_signal_json` | `identity.company_name` (resolved display name), `identity.company_name_source`, `identity.company_name_source_tier` |
+| `discovery_candidates.missing_fields_json` | `fundamentals_not_sourced_non_us_exchange` for non-SEC venues (Phase 27.1A behaviour, now routinely exercised by the mostly-European luxury universe) |
+
+`company_name_source` ∈ `provider_profile` | `curated_theme_registry` | `null`;
+`company_name_source_tier` ∈ `T3_curated_reference_list` | `null`. A curated
+display name is never attributed to SEC or a provider, and
+`discovery_candidates.legal_name` is left exactly as the scan produced it
+(`NULL` when not sourced) — a curated name is not evidence of a legal name.
+
+Existing rows are unaffected: absent keys simply read as `None`.
+
+The `companies.name` column can now be **upgraded in place** when it holds a
+bare-ticker stub (created by a discovery scan) and a curated name is available.
+A name that is not a bare ticker is never overwritten.
+
 ---
 
 ## Planned Tables (Phase 4+)

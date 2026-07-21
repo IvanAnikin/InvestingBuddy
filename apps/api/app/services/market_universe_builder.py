@@ -36,6 +36,7 @@ from typing import Any
 
 from app.services.discovery_thesis_scoring import score_thesis_relevance
 from app.services.exchange_registry import region_for_country
+from app.services.sector_taxonomy import industry_matches, sector_matches
 
 # Absolute ceiling regardless of the requested ``max_universe_size`` — the hard
 # guardrail against an accidental full-market scan.
@@ -149,6 +150,27 @@ THEME_COMPANY_REGISTRY: dict[str, list[dict[str, str]]] = {
         _entry("LAC", "Lithium Americas Corp.", "US", "United States", "Materials", "Metals & Mining"),
         _entry("CLF", "Cleveland-Cliffs Inc.", "US", "United States", "Materials", "Metals & Mining"),
     ],
+    # Phase 27.1B — luxury / watches / jewelry. Predominantly European issuers,
+    # so most of these are NOT SEC-eligible venues: their fundamentals degrade
+    # honestly to ``not_sourced`` rather than resolving a US ticker collision
+    # (MC.PA is LVMH here and must never come back as Moelis — see
+    # app.services.exchange_registry).
+    "luxury_goods": [
+        _entry("UHR", "Swatch Group AG", "SW", "Switzerland", "Consumer Discretionary", "Watches & Jewelry"),
+        _entry("CFR", "Compagnie Financiere Richemont SA", "SW", "Switzerland", "Consumer Discretionary", "Watches & Jewelry"),
+        _entry("MC", "LVMH Moet Hennessy Louis Vuitton SE", "PA", "France", "Consumer Discretionary", "Luxury Goods"),
+        _entry("RMS", "Hermes International SCA", "PA", "France", "Consumer Discretionary", "Luxury Goods"),
+        _entry("KER", "Kering SA", "PA", "France", "Consumer Discretionary", "Luxury Goods"),
+        _entry("MONC", "Moncler S.p.A.", "MI", "Italy", "Consumer Discretionary", "Luxury Apparel"),
+        _entry("BRBY", "Burberry Group plc", "LSE", "United Kingdom", "Consumer Discretionary", "Luxury Apparel"),
+        _entry("PNDORA", "Pandora A/S", "CO", "Denmark", "Consumer Discretionary", "Jewelry"),
+        # Non-European luxury exposure. A Europe-filtered thesis excludes these
+        # (recorded in ``excluded``, never silently dropped); a global thesis
+        # keeps them.
+        _entry("CPRI", "Capri Holdings Limited", "US", "United States", "Consumer Discretionary", "Luxury Goods"),
+        _entry("TPR", "Tapestry, Inc.", "US", "United States", "Consumer Discretionary", "Luxury Goods"),
+        _entry("1913", "Prada S.p.A.", "HK", "Hong Kong", "Consumer Discretionary", "Luxury Goods"),
+    ],
     "ai_infrastructure": [
         _entry("NVDA", "NVIDIA Corp.", "US", "United States", "Technology", "AI Infrastructure"),
         _entry("AVGO", "Broadcom Inc.", "US", "United States", "Technology", "AI Infrastructure"),
@@ -159,6 +181,17 @@ THEME_COMPANY_REGISTRY: dict[str, list[dict[str, str]]] = {
         _entry("ANET", "Arista Networks Inc.", "US", "United States", "Technology", "AI Infrastructure"),
     ],
 }
+
+
+def supported_themes_hint() -> str:
+    """
+    Comma-joined list of themes the registry can actually build a universe for.
+
+    Derived from the registry so the guidance an admin sees can never drift
+    from what the registry contains — the whole reason "European watch
+    producers" used to fail with advice that omitted the theme it needed.
+    """
+    return ", ".join(sorted(THEME_COMPANY_REGISTRY))
 
 
 @dataclass
@@ -217,16 +250,23 @@ def _select_registry_entries(parsed: dict[str, Any]) -> list[tuple[str, dict[str
                 selected.append((theme, entry))
         return selected
 
-    # Fallback: no theme, but a sector/industry filter can still drive selection.
-    parsed_sectors = {s.lower() for s in parsed.get("sectors") or []}
-    parsed_industries = {i.lower() for i in parsed.get("industries") or []}
+    # Fallback: no theme, but a sector/industry filter can still drive
+    # selection. Matching goes through the taxonomy rather than raw string
+    # equality, so a thesis filtered on "Luxury Goods" reaches the entries the
+    # registry tags "Consumer Discretionary".
+    parsed_sectors = [s for s in parsed.get("sectors") or [] if s]
+    parsed_industries = [i for i in parsed.get("industries") or [] if i]
     if parsed_sectors or parsed_industries:
         for theme, entries in THEME_COMPANY_REGISTRY.items():
             for entry in entries:
-                if (
-                    entry["sector"].lower() in parsed_sectors
-                    or entry["industry"].lower() in parsed_industries
-                ):
+                sector_hit = any(
+                    sector_matches(s, entry["sector"], [entry["industry"]])
+                    for s in parsed_sectors
+                )
+                industry_hit = any(
+                    industry_matches(i, entry["industry"]) for i in parsed_industries
+                )
+                if sector_hit or industry_hit:
                     selected.append((theme, entry))
     return selected
 
@@ -341,9 +381,7 @@ def build_universe(
         else:
             warnings.append(
                 "No companies matched this thesis in the curated registry yet. "
-                "Try a supported theme (e.g. defense, semiconductors, nuclear "
-                "energy, grid/electrification, robotics, biotech, banks/fintech, "
-                "mining, AI infrastructure)."
+                "Try a supported theme: " + supported_themes_hint() + "."
             )
 
     source_summary = {
