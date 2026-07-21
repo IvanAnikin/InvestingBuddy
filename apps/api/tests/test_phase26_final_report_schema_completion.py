@@ -32,8 +32,8 @@ import re
 
 import pytest
 
+from app.services import safety_terms
 from app.services.final_report_generator import (
-    _FORBIDDEN_TERMS,
     run_final_report_validation,
     run_safety_gate,
 )
@@ -208,22 +208,11 @@ def test_no_recommendation_label_produced() -> None:
     assert comp.report["verdict"]["recommendation"] == "PASS"
     assert comp.report["report_meta"]["conviction"] == "PASS"
 
-    # No forbidden substring appears in any scanned string VALUE (keys such as
-    # sell_side_estimate_count / watchlist_triggers are schema keys, never scanned).
-    def _scan(node: object) -> list[str]:
-        found: list[str] = []
-        if isinstance(node, str):
-            up = node.upper()
-            found += [t for t in _FORBIDDEN_TERMS if t.upper() in up]
-        elif isinstance(node, dict):
-            for v in node.values():
-                found += _scan(v)
-        elif isinstance(node, list):
-            for v in node:
-                found += _scan(v)
-        return found
-
-    assert _scan(comp.report) == []
+    # No forbidden language appears in any scanned string VALUE (keys such as
+    # sell_side_estimate_count / watchlist_triggers are schema keys, never
+    # scanned). Uses the shared scanner so this test cannot drift from the
+    # gates it is standing in for.
+    assert safety_terms.scan_value(comp.report) == []
 
 
 # ---------------------------------------------------------------------------

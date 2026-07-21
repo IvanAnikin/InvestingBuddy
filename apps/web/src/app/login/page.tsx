@@ -19,6 +19,14 @@ const ERROR_MESSAGES: Record<string, string> = {
   state_mismatch: "Your sign-in request expired or was invalid. Try again.",
   invalid_response: "The sign-in response was invalid. Try again.",
   token_exchange_failed: "Could not complete sign-in with the provider.",
+  token_exchange_unreachable:
+    "Could not reach the sign-in provider. Try again in a moment.",
+  code_already_used:
+    "That sign-in link was already used or has expired. Start again from this page in a fresh tab.",
+  oauth_client_rejected:
+    "The provider rejected this deployment's sign-in credentials. Contact an administrator.",
+  redirect_uri_mismatch:
+    "The sign-in redirect address is misconfigured. Contact an administrator.",
   identity_lookup_failed: "Could not read your account identity. Try again.",
   no_verified_email: "Your provider account has no verified email.",
   session_unavailable: "Sign-in is temporarily unavailable. Try again later.",

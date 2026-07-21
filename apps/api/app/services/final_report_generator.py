@@ -50,6 +50,7 @@ from app.schemas.final_report import (
     RegenerateSectionResponse,
     SafetyValidationResult,
 )
+from app.services import safety_terms
 from app.services.real_asset_report_completer import build_schema_complete_report
 from app.services.report_validation_service import validate_real_asset_report
 
@@ -59,26 +60,19 @@ logger = logging.getLogger(__name__)
 # Safety gate — forbidden output terms
 # ---------------------------------------------------------------------------
 
-_FORBIDDEN_TERMS: list[str] = [
-    "BUY",
-    "SELL",
-    "HOLD",
-    "WATCH",
-    "price target",
-    "target price",
-    "fair value",
-    "intrinsic value",
-    "upside of",
-    "upside percentage",
-    "upside%",
-    "guaranteed return",
-    "will go up",
-    "will go down",
-    "personalized advice",
-    "tailored recommendation",
-    "shortlist_high",
-    "SHORTLIST_HIGH",
-]
+# Forbidden-term definitions live in app.services.safety_terms — the single
+# source of truth shared by every safety gate. Do not reintroduce a local list.
+
+# Fields that enumerate what is NOT allowed — exempt from scanning
+_EXEMPT_FIELD_NAMES = frozenset(
+    {
+        "disallowed_outputs",
+        "blocked_methods",
+        "forbidden_terms_found",
+        "forbidden_terms",
+        "prohibited_outputs",
+    }
+)
 
 # Allowed internal status labels (research queue — never public recommendations)
 ALLOWED_INTERNAL_STATUSES = {
@@ -127,8 +121,9 @@ def run_safety_gate(report_content: dict[str, Any]) -> SafetyValidationResult:
     """
     Scan all text in the report for forbidden output terms.
 
-    Forbidden terms include: BUY, SELL, HOLD, WATCH, price target, fair value,
-    upside percentage, guaranteed return, personalized advice, etc.
+    Delegates to the shared three-tier scanner in ``app.services.safety_terms``:
+    ALL-CAPS rating labels (BUY/SELL/HOLD/...), rating-context phrasing
+    ("Rating: Buy"), and multi-word phrases (price target, fair value, ...).
 
     Returns a SafetyValidationResult. If any forbidden term is found:
       - passed=False
@@ -144,38 +139,17 @@ def run_safety_gate(report_content: dict[str, Any]) -> SafetyValidationResult:
     scanned_sections: list[str] = []
     warnings: list[str] = []
 
-    # Fields that enumerate what is NOT allowed — exempt from scanning
-    _EXEMPT_FIELD_NAMES = frozenset(
-        {
-            "disallowed_outputs",
-            "blocked_methods",
-            "forbidden_terms_found",
-            "forbidden_terms",
-            "prohibited_outputs",
-        }
-    )
-
-    def _scan_value(val: Any, path: str) -> None:
-        # Skip if the leaf key is an exempt field
-        leaf_key = path.rsplit(".", 1)[-1].split("[")[0]
-        if leaf_key in _EXEMPT_FIELD_NAMES:
-            return
-        if isinstance(val, str):
-            upper = val.upper()
-            for term in _FORBIDDEN_TERMS:
-                if term.upper() in upper:
-                    found_terms.append(f"'{term}' in {path}")
-        elif isinstance(val, dict):
-            for k, v in val.items():
-                if k not in _EXEMPT_FIELD_NAMES:
-                    _scan_value(v, f"{path}.{k}")
-        elif isinstance(val, list):
-            for i, item in enumerate(val):
-                _scan_value(item, f"{path}[{i}]")
-
     for section_name, section_content in report_content.items():
         scanned_sections.append(section_name)
-        _scan_value(section_content, section_name)
+        found_terms.extend(
+            safety_terms.hits_to_strings(
+                safety_terms.scan_value(
+                    section_content,
+                    path=section_name,
+                    exempt_keys=_EXEMPT_FIELD_NAMES,
+                )
+            )
+        )
 
     passed = len(found_terms) == 0
     if not passed:

@@ -29,6 +29,14 @@ const GITHUB_TOKEN_URL = "https://github.com/login/oauth/access_token";
 const GITHUB_USER_URL = "https://api.github.com/user";
 const GITHUB_EMAILS_URL = "https://api.github.com/user/emails";
 
+// GitHub's documented token-exchange error slugs → the reason shown on /login.
+// Anything unmapped stays the generic `token_exchange_failed`.
+const TOKEN_ERROR_REASONS: Record<string, string> = {
+  bad_verification_code: "code_already_used",
+  incorrect_client_credentials: "oauth_client_rejected",
+  redirect_uri_mismatch: "redirect_uri_mismatch",
+};
+
 function loginError(request: NextRequest, reason: string): NextResponse {
   const url = buildPublicUrl("/login", request);
   url.searchParams.set("error", reason);
@@ -78,7 +86,17 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   }
 
   // Exchange the authorization code for an access token (server-side only).
-  let accessToken = "";
+  //
+  // GitHub reports OAuth failures as HTTP 200 with an `error` slug in the body,
+  // so the status code alone never says why an exchange failed. Keep the two
+  // failure modes apart — provider unreachable vs provider rejected — and log
+  // GitHub's own slug, otherwise every cause collapses into one opaque error
+  // and the failure is undiagnosable from the logs.
+  let tokenStatus = 0;
+  let tokenJson: {
+    access_token?: string;
+    error?: string;
+  } = {};
   try {
     const tokenRes = await fetch(GITHUB_TOKEN_URL, {
       method: "POST",
@@ -90,13 +108,25 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
         redirect_uri: `${getPublicAuthOrigin(request)}/api/auth/callback/github`,
       }),
     });
-    const tokenJson = await tokenRes.json();
-    accessToken = String(tokenJson.access_token ?? "");
-  } catch {
-    return loginError(request, "token_exchange_failed");
+    tokenStatus = tokenRes.status;
+    tokenJson = await tokenRes.json();
+  } catch (err) {
+    console.error(
+      `[auth] github token exchange unreachable: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+    return loginError(request, "token_exchange_unreachable");
   }
+
+  const accessToken = String(tokenJson.access_token ?? "");
   if (!accessToken) {
-    return loginError(request, "token_exchange_failed");
+    // Only GitHub's error slug is logged — never the code, secret or token.
+    const ghError = String(tokenJson.error ?? "unknown_error");
+    console.error(
+      `[auth] github token exchange rejected: http=${tokenStatus} error=${ghError}`,
+    );
+    return loginError(request, TOKEN_ERROR_REASONS[ghError] ?? "token_exchange_failed");
   }
 
   // Resolve identity. The token is discarded after this block.

@@ -316,6 +316,7 @@ async def discover_catalysts(
                 company_name=company_name,
                 lookback_days=lookback_days,
                 max_events=max_events,
+                exchange=exchange,
             )
             filing_events = sec_result.events
             warnings.extend(sec_result.warnings)

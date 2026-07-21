@@ -85,7 +85,7 @@ class _FakeSec:
         self._events = events
 
     async def get_recent_events(self, ticker, cik=None, company_name=None,
-                                lookback_days=90, max_events=20):
+                                lookback_days=90, max_events=20, exchange=None):
         return RecentFilingsResult(ticker=ticker, cik="320193", events=self._events)
 
 

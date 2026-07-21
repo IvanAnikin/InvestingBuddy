@@ -27,6 +27,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from app.services import safety_terms
+
 # Allowed internal statuses
 ALLOWED_INTERNAL_STATUSES = {
     "research_incomplete",
@@ -36,23 +38,8 @@ ALLOWED_INTERNAL_STATUSES = {
     "watchlist_candidate_for_review",
 }
 
-# Absolutely forbidden in output
-_FORBIDDEN_OUTPUTS = {
-    "BUY",
-    "SELL",
-    "HOLD",
-    "WATCH",
-    "REJECT",
-    "SHORTLIST",
-    "SHORTLIST_HIGH",
-    "price target",
-    "target price",
-    "fair value",
-    "upside of",
-    "downside of",
-    "undervalued",
-    "overvalued",
-}
+# Forbidden output language is defined once in app.services.safety_terms — the
+# single source of truth shared by every safety gate. Do not add a local list.
 
 # Quality gate fields
 _QUALITY_GATE_FIELDS = {
@@ -81,13 +68,10 @@ class CommitteeChairOutput:
 
 def _check_forbidden_output(text: str) -> list[str]:
     """Return list of any forbidden words/phrases found."""
-    found: list[str] = []
-    upper = text.upper()
-    lower = text.lower()
-    for phrase in _FORBIDDEN_OUTPUTS:
-        if phrase.upper() in upper or phrase.lower() in lower:
-            found.append(f"Forbidden content in committee output: '{phrase}'")
-    return found
+    return [
+        f"Forbidden content in committee output: '{term}'"
+        for term in safety_terms.hit_terms(safety_terms.scan_text(text))
+    ]
 
 
 def run_investment_committee_chair(

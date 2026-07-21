@@ -347,9 +347,12 @@ class TestSecEdgarFundamentalsParser:
         tickers_index = load_fixture("sec_tickers_mini.json")
         provider = SecEdgarFundamentalsProvider()
         provider._load_cik_index_sync(tickers_index)
-        assert provider._cik_cache["AAPL"] == "320193"
-        assert provider._cik_cache["MSFT"] == "789019"
-        assert provider._cik_cache["GOOGL"] == "1652044"
+        # Phase 27.1A: the cache is keyed by (ticker, exchange). The SEC index
+        # is US-registrant data, so it loads against the US venue and cannot
+        # answer for the same ticker on a foreign exchange.
+        assert provider._cik_cache[("AAPL", "US")] == "320193"
+        assert provider._cik_cache[("MSFT", "US")] == "789019"
+        assert provider._cik_cache[("GOOGL", "US")] == "1652044"
 
 
 # ============================================================================

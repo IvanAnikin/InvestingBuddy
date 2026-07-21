@@ -912,10 +912,15 @@ def test_42_safety_scan_passes_clean_candidate_payload() -> None:
 
 
 def test_42b_safety_scan_flags_forbidden_text() -> None:
-    payload = {"labels": ["internal_research_candidate"], "score_explanation": "strong buy upside"}
+    payload = {
+        "labels": ["internal_research_candidate"],
+        "score_explanation": "strong buy with upside of 30%",
+    }
     violations = mds.scan_candidate_safety(payload)
-    assert "buy" in violations or "strong buy" in violations
-    assert "upside" in violations
+    assert "strong buy" in violations
+    # Phrase semantics: bare "upside" is legitimate research language ("the
+    # upside case"), so the gate matches "upside of" / "upside to" instead.
+    assert "upside of" in violations
 
 
 async def test_43_schema_invalid_does_not_block_candidate_creation() -> None:

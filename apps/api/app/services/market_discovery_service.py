@@ -20,7 +20,6 @@ SAFETY (enforced here + in the model/schema/API layers):
 from __future__ import annotations
 
 import logging
-import re
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable
@@ -41,7 +40,7 @@ from app.schemas.market_discovery import (
     DiscoveryRunSummary,
     ThesisDiscoveryRunCreate,
 )
-from app.services import company_service
+from app.services import company_service, safety_terms
 from app.services.discovery_scoring_service import score_signal
 from app.services.discovery_signal_extractor import ExtractedSignal, extract_signal
 from app.services.discovery_thesis_scoring import (
@@ -65,40 +64,23 @@ _ALLOWED_PROVIDERS = {"free_real", "eodhd_free_real", "mock"}
 # Safety scan — forbidden investment-action language
 # ---------------------------------------------------------------------------
 
-# Word-boundary patterns so we never false-positive on legitimate substrings
-# (e.g. "household" for "hold"). Applied to the controlled candidate fields
-# (labels + score explanation) which we author to be clean.
-_FORBIDDEN_PATTERNS = [
-    r"\bbuy\b",
-    r"\bsell\b",
-    r"\bhold\b",
-    r"\bwatch\b",
-    r"\bstrong buy\b",
-    r"\boutperform\b",
-    r"\bunderperform\b",
-    r"price target",
-    r"target price",
-    r"fair value",
-    r"intrinsic value",
-    r"\bupside\b",
-    r"\bdownside\b",
-    r"\bundervalued\b",
-    r"\bovervalued\b",
-    r"recommendation",
-]
-_FORBIDDEN_RE = [re.compile(p, re.IGNORECASE) for p in _FORBIDDEN_PATTERNS]
+# Matching is delegated to the shared three-tier scanner in
+# app.services.safety_terms — the single source of truth for every gate.
+#
+# This gate previously used case-insensitive word boundaries, which is stricter
+# on ordinary English than the shared scanner: it rejected the legitimate
+# phrases "watch industry" and "insiders hold 12%", and the bare word
+# "recommendation" that compliant disclaimers require. Those are exactly the
+# false positives Phase 27.1 exists to remove.
 
 
 def scan_forbidden_terms(text: str) -> list[str]:
     """Return the list of forbidden investment-action terms found in ``text``."""
     if not text:
         return []
-    found: list[str] = []
-    for pattern in _FORBIDDEN_RE:
-        m = pattern.search(text)
-        if m:
-            found.append(m.group(0).lower())
-    return found
+    return [
+        hit.matched_text.lower() for hit in safety_terms.scan_text(text)
+    ]
 
 
 def scan_candidate_safety(candidate_payload: dict[str, Any]) -> list[str]:

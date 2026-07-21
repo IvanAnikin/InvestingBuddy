@@ -98,7 +98,7 @@ All providers are registered in `FinancialDataService` and selectable via `FINAN
 |---|---|---|---|---|
 | `MockFinancialDataProvider` | `integrations/providers/mock_provider.py` | T6 | ✅ Active | Deterministic demo data; used in all CI tests; no network calls |
 | `SecEdgarProvider` | `integrations/providers/sec_edgar_provider.py` | T2 | ✅ Live (CIK) | Free; `get_company_by_cik(cik)` fetches from `data.sec.gov`; no API key; ticker→CIK via index |
-| `SecEdgarFundamentalsProvider` | `integrations/providers/sec_edgar_fundamentals.py` | T2 | ✅ Live (Phase 19.1; normalized 19.3) | Free; ticker→CIK resolution via company_tickers.json; XBRL companyfacts; 10 core us-gaap concepts + Phase 19.3 normalized metrics (gross/operating income, capex, FCF, cash, total debt, derived margins/ROE/D-E/YoY); no API key; US only |
+| `SecEdgarFundamentalsProvider` | `integrations/providers/sec_edgar_fundamentals.py` | T2 | ✅ Live (Phase 19.1; normalized 19.3; exchange-aware 27.1A) | Free; `resolve_cik(ticker, exchange)` via company_tickers.json; XBRL companyfacts; 10 core us-gaap concepts + Phase 19.3 normalized metrics; no API key; **US registrants only — see SEC exchange eligibility below** |
 | `sec_fundamentals_normalizer` | `integrations/sec_fundamentals_normalizer.py` | T2 | ✅ Live (Phase 19.3; freshness fix 19.3.1) | Pure/offline; maps us-gaap companyfacts → normalized income-statement / cash-flow / balance-sheet metrics + derived ratios. **19.3.1:** selects the latest annual across ALL alias concepts (filed date breaks fiscal-year ties, so a stale tag like Apple's `Revenues`→FY2018 can no longer shadow the current tag), prefers full-year periods over embedded Q4 slices, warns on stale annual years; 10-Q fallback with warning; EBITDA never fabricated |
 | `GleifProvider` | `integrations/providers/gleif_provider.py` | T2 | ✅ Live | Free; LEI lookup by code or name; `api.gleif.org`; no API key |
 | `StooqProvider` | `integrations/providers/stooq_provider.py` | T5 | ✅ Live | Free; live OHLCV CSV from `stooq.com`; no API key |
@@ -112,6 +112,24 @@ All providers are registered in `FinancialDataService` and selectable via `FINAN
 | `NullNewsProvider` / `EnvConfiguredNewsProvider` / `ConfigurableWebNewsProvider` / `GdeltNewsProvider` | `integrations/providers/free_news_provider.py` | T5 (mapped T4 for trusted media) | ✅ Live (Phase 24 / 24.1) | Optional news abstraction with a `search(query)` primitive; **null by default** (no key, no CI call); env-gated generic JSON provider via `NEWS_PROVIDER_NAME`/`NEWS_API_KEY`/`NEWS_API_BASE_URL` (`NEWS_MAX_RESULTS`/`NEWS_LOOKBACK_DAYS`/`NEWS_TIMEOUT_SECONDS`); no-key GDELT adapter (`NEWS_PROVIDER_NAME=gdelt`) |
 | `CompanySourceDiscoveryService` + `exchange_source_registry` | `services/company_source_discovery_service.py`, `integrations/exchange_source_registry.py` | T1 (company) / T3 (exchange) | ✅ Live (Phase 24.1) | Curated verified issuer allowlist + `profile.website` + SEC/GLEIF + optional search → company website / IR / newsroom / press-release feed; domain-brand verified; social-media/low-quality rejected; **never fabricated** |
 | `NewsQueryPlanner` + `NewsRelevanceScorer` | `services/news_query_planner.py`, `services/news_relevance_scorer.py` | (planning / T6 relevance) | ✅ Live (Phase 24.1) | Bounded recommendation-free query plan (company/industry/exchange/primary-source/regulatory); deterministic 0–1 relevance separating company-specific vs industry-context items; filters food-brand ambiguity + prediction spam |
+
+### SEC exchange eligibility (Phase 27.1A)
+
+SEC's `company_tickers.json` is an index of **US registrants keyed by ticker string alone**. Looking a non-US local ticker up there does not fail — it silently returns an unrelated US issuer:
+
+| Ticker + venue | Actual issuer | What SEC returned before 27.1A |
+|---|---|---|
+| `BA` + `LSE` | BAE Systems plc | Boeing Co (CIK 0000012927) |
+| `MC` + `PA` | LVMH | Moelis & Co |
+| `EL` + `PA` | EssilorLuxottica | Estée Lauder |
+| `CFR` + `SW` | Richemont | Cullen/Frost Bankers |
+
+Publishing another company's financials under this company's name is the most dangerous failure this platform has (CLAUDE.md rule 6). Two modules prevent it:
+
+- **`app/services/exchange_registry.py`** — every venue carries `sec_eligible`. True only for `US/NYSE/NASDAQ/AMEX/ARCA/BATS`. **`OTC` is False** (ADRs trade there and collisions are common). An unknown venue is False — refuse to guess. **`is_sec_eligible(None)` is True**, preserving legacy ticker-only flows (AAPL/MSFT/NVDA).
+- **`app/integrations/sec_issuer_registry.py`** — the only sanctioned way to resolve a non-US listing to a CIK. Keyed `(ticker, exchange)`. **Ships empty**; each entry requires an explicit `cik`, a `source_url` proving it, and a `verified_on` date, added only after a manual check against `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=<cik>`. Guessing a CIK reproduces the bug with extra steps.
+
+`resolve_cik(ticker, exchange)` checks the explicit map first, then raises `SecExchangeNotSupportedError` (a `ValueError` subclass) **before any network call**. The composite providers catch it and return an honest `not_sourced` profile (`legal_name` = ticker, registry-derived country, `D_weak_or_stale`) plus zero-datapoint fundamentals — they never raise, because `workflows/company_analysis` calls the profile unguarded and a raise would fail an entire thesis run. The machine-readable `data_coverage` block (`sec_eligible`, `reason`, `requires_human_research`) is persisted in the candidate's `raw_signal_json`. Non-US names can still receive exchange-aware prices/momentum where the price provider supports them; only SEC-derived fundamentals degrade.
 
 **Phase 24 catalyst tiers.** SEC filing events stay **T2**; company press releases are **T1** (company-owned primary source — `T1_primary_filing` reused, see status note); aggregator/search news is **T5** and is **never promoted** to T1/T2. The model-derived catalyst label (category / direction / strength) is **always T6_model_estimate** and is kept strictly separate from the underlying source evidence. No paid news API is required; `discover_catalysts` is non-blocking and makes no external call in CI.
 
