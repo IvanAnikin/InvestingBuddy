@@ -104,6 +104,7 @@ from app.integrations.free_real_snapshot import (
 from app.integrations.llm_provider import get_llm_client, validate_llm_sections
 from app.integrations.market_metrics_enrichment import derive_market_metrics
 from app.integrations.providers.free_real_provider import (
+    REASON_EXCHANGE_MISSING_IN_STATE,
     REASON_EXPLICIT_CIK_MAPPING,
     REASON_NON_US_NO_SEC_MAPPING,
     REASON_SEC_COVERED,
@@ -249,12 +250,27 @@ def _make_report_slug(ticker: str, run_id: str) -> str:
     return f"company-analysis-{base}-{short_id}"
 
 
+def _clean_exchange(value: object) -> str | None:
+    """
+    Return ``value`` only if it is a usable exchange code.
+
+    SEC eligibility is decided from this value, so anything that is not a
+    non-empty string is treated as "no exchange" rather than being coerced.
+    A non-string here would otherwise flow into ``is_sec_eligible`` and produce
+    an arbitrary answer about whether a foreign ticker may hit the US index.
+    """
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
 def _build_data_coverage(
     *,
     exchange: str | None,
     profile: object,
     fundamentals: object,
     price_source: str | None,
+    exchange_unresolved: bool = False,
 ) -> dict:
     """
     Describe how sourced this company's data actually is.
@@ -271,9 +287,17 @@ def _build_data_coverage(
 
     has_mapping = lookup_sec_issuer(profile.ticker if profile else "", exchange) is not None
 
+    # Fail closed when the venue is unknown. is_sec_eligible(None) is True so
+    # legacy ticker-only callers keep working, but that default is only safe
+    # when the caller genuinely has no exchange concept — never when we expected
+    # one and lost it. An unresolved exchange is reported as not eligible.
+    sec_eligible = (not exchange_unresolved) and is_sec_eligible(exchange)
+
     if has_mapping:
         reason = REASON_EXPLICIT_CIK_MAPPING
-    elif not is_sec_eligible(exchange):
+    elif exchange_unresolved:
+        reason = REASON_EXCHANGE_MISSING_IN_STATE
+    elif not sec_eligible:
         reason = REASON_NON_US_NO_SEC_MAPPING
     elif fundamentals_not_sourced:
         reason = REASON_TICKER_NOT_IN_SEC_INDEX
@@ -282,13 +306,11 @@ def _build_data_coverage(
 
     # Only an unreachable venue counts as requiring human research. A US issuer
     # that simply has thin XBRL data is a different, already-handled case.
-    requires_human_research = profile_not_sourced or (
-        not is_sec_eligible(exchange) and not has_mapping
-    )
+    requires_human_research = profile_not_sourced or (not sec_eligible and not has_mapping)
 
     return {
         "exchange": exchange,
-        "sec_eligible": is_sec_eligible(exchange),
+        "sec_eligible": sec_eligible,
         "has_explicit_cik_mapping": has_mapping,
         "profile_source": SOURCE_NOT_SOURCED if profile_not_sourced else "sec_edgar",
         "fundamentals_source": (
@@ -428,6 +450,18 @@ def build_company_analysis_graph(
             "company_sector": company.sector,
             "company_description": company.description,
             "ticker": company.ticker,
+            # Phase 27.1A hotfix: the exchange MUST be present in state.
+            # Callers that pass only company_id (every discovery run does) left
+            # state["exchange"] as None, so node_fetch_provider_data asked the
+            # providers for a ticker with no venue. is_sec_eligible(None) is
+            # True by design for legacy ticker-only flows, so the SEC gate never
+            # fired and BA.LSE resolved against the US ticker index to Boeing.
+            #
+            # An exchange the caller stated explicitly wins; the company row
+            # (exchange is NOT NULL) only fills the gap. Never overwrite a
+            # caller's venue with the stored one — they may legitimately differ,
+            # and the caller is the more specific intent.
+            "exchange": _clean_exchange(exchange) or _clean_exchange(company.exchange),
             "status": "running",
             "error": None,
         }
@@ -441,7 +475,24 @@ def build_company_analysis_graph(
         # Preserve the originally-requested provider name throughout the workflow.
         requested_pname: str = pname or "mock"
         ticker = state.get("ticker") or "UNKNOWN"
-        exchange = state.get("exchange")
+
+        # Phase 27.1A hotfix — fail-closed exchange resolution.
+        #
+        # The venue decides whether SEC EDGAR may be consulted at all, so it
+        # must never be silently absent here: a missing exchange reads as the
+        # legacy US default and sends a foreign ticker into the US-registrant
+        # index, which is how BA.LSE became Boeing. The loaded Company row is
+        # authoritative (exchange is NOT NULL and the table is keyed on
+        # (ticker, exchange)), so recover from it rather than trusting state.
+        company_row = _run_holder.get("company")
+        state_exchange = _clean_exchange(state.get("exchange"))
+        row_exchange = _clean_exchange(getattr(company_row, "exchange", None))
+        exchange = state_exchange or row_exchange
+        exchange_recovered = bool(not state_exchange and row_exchange)
+        # Only fail closed when we had a company row that should have carried a
+        # venue. A pure ticker-only caller with no company context keeps the
+        # legacy behavior so AAPL/MSFT/NVDA do not regress.
+        exchange_unresolved = bool(not exchange and company_row is not None and row_exchange is None)
 
         step = await agent_run_service.create_agent_step(
             db,
@@ -555,7 +606,21 @@ def build_company_analysis_graph(
                 price_source=(
                     prices.meta.provider_name if (prices and prices.price_points) else None
                 ),
+                exchange_unresolved=exchange_unresolved,
             )
+            if exchange_recovered:
+                provider_warnings = list(provider_warnings) + [
+                    f"exchange_recovered_from_company_record: workflow state carried "
+                    f"no exchange for {ticker}; used '{exchange}' from the company "
+                    "record so SEC eligibility was evaluated against the real venue."
+                ]
+            if exchange_unresolved:
+                provider_warnings = list(provider_warnings) + [
+                    f"exchange_missing_in_provider_state: no exchange could be "
+                    f"determined for {ticker}. SEC data is treated as not_sourced "
+                    "rather than assuming a US listing, because a ticker-only SEC "
+                    "lookup can return an unrelated US issuer."
+                ]
             if data_coverage["requires_human_research"]:
                 provider_warnings = list(provider_warnings) + [
                     f"Fundamentals not_sourced for {ticker} on exchange "
