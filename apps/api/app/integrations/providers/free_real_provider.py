@@ -39,8 +39,111 @@ from app.integrations.financial_data_provider import (
     SourceTier,
 )
 from app.integrations.providers.eodhd_price_only_provider import EodhdPriceOnlyProvider
-from app.integrations.providers.sec_edgar_fundamentals import SecEdgarFundamentalsProvider
+from app.integrations.providers.sec_edgar_fundamentals import (
+    SecEdgarFundamentalsProvider,
+    SecExchangeNotSupportedError,
+)
 from app.integrations.providers.stooq_provider import StooqProvider
+from app.services.exchange_registry import country_for_exchange
+
+# ---------------------------------------------------------------------------
+# Honest degradation for issuers SEC EDGAR cannot cover
+# ---------------------------------------------------------------------------
+
+# Machine-readable reasons carried in the data_coverage contract.
+REASON_SEC_COVERED = "sec_covered"
+REASON_EXPLICIT_CIK_MAPPING = "explicit_cik_mapping"
+REASON_NON_US_NO_SEC_MAPPING = "non_us_exchange_no_sec_mapping"
+REASON_TICKER_NOT_IN_SEC_INDEX = "ticker_not_in_sec_index"
+REASON_PROVIDER_ERROR = "provider_error"
+
+SOURCE_NOT_SOURCED = "not_sourced"
+
+# ProviderStatus.not_implemented is reused rather than adding a not_supported
+# member: the enum is consumed widely (financial_data_service, admin provider
+# UI, tests) and a new member is a cross-cutting change not worth its risk.
+# Machine-readable meaning lives in data_coverage instead.
+_NOT_SOURCED_STATUS = ProviderStatus.not_implemented
+
+
+def _not_sourced_note(exchange: str | None) -> str:
+    """Wording for a degraded result. Must contain no forbidden language."""
+    return (
+        f"not_sourced: SEC EDGAR does not cover exchange '{exchange}'. "
+        "Company identity and fundamentals require human research "
+        "(requires_human_research)."
+    )
+
+
+def _not_sourced_profile(ticker: str, exchange: str | None) -> CompanyProfileData:
+    """
+    A profile that states what is missing instead of guessing.
+
+    legal_name is the ticker, never a fabricated or SEC-derived name — using
+    the SEC index here is exactly how BA.LSE became "THE BOEING COMPANY".
+    country_domicile comes from the exchange registry, which is factual.
+    """
+    return CompanyProfileData(
+        ticker=ticker,
+        exchange=exchange,
+        legal_name=ticker,
+        country_domicile=country_for_exchange(exchange),
+        sector=None,
+        industry=None,
+        website=None,
+        isin=None,
+        lei=None,
+        data_quality=DataQuality.D_weak_or_stale,
+        meta=ProviderResponseMetadata(
+            provider_name="free_real_not_sourced",
+            source_tier=SourceTier.T6_model_estimate,
+            retrieved_at=datetime.now(timezone.utc),
+            is_mock=False,
+            status=_NOT_SOURCED_STATUS,
+            note=_not_sourced_note(exchange),
+        ),
+    )
+
+
+def _not_sourced_fundamentals(ticker: str, exchange: str | None) -> FundamentalsData:
+    """Empty fundamentals — no datapoints beats another company's datapoints."""
+    return FundamentalsData(
+        ticker=ticker,
+        exchange=exchange,
+        datapoints=[],
+        meta=ProviderResponseMetadata(
+            provider_name="free_real_not_sourced",
+            source_tier=SourceTier.T6_model_estimate,
+            retrieved_at=datetime.now(timezone.utc),
+            is_mock=False,
+            status=_NOT_SOURCED_STATUS,
+            note=_not_sourced_note(exchange),
+        ),
+    )
+
+
+def build_data_coverage(
+    exchange: str | None,
+    *,
+    profile_source: str,
+    fundamentals_source: str,
+    reason: str,
+    price_source: str | None = None,
+    has_explicit_cik_mapping: bool = False,
+) -> dict[str, object]:
+    """Build the data_coverage contract describing how sourced a company is."""
+    from app.services.exchange_registry import is_sec_eligible
+
+    return {
+        "exchange": exchange,
+        "sec_eligible": is_sec_eligible(exchange),
+        "has_explicit_cik_mapping": has_explicit_cik_mapping,
+        "profile_source": profile_source,
+        "fundamentals_source": fundamentals_source,
+        "price_source": price_source,
+        "reason": reason,
+        "requires_human_research": fundamentals_source == SOURCE_NOT_SOURCED,
+    }
 
 
 def _make_empty_price_data(ticker: str, exchange: str | None, note: str) -> PriceHistoryData:
@@ -107,9 +210,16 @@ class FreeRealProvider(FinancialDataProvider):
         Fetch company profile from SEC EDGAR submissions (T2).
 
         Resolves ticker → CIK automatically for U.S.-listed companies.
-        For non-U.S. tickers not in the SEC index, raises ValueError.
+
+        Never raises for an unsupported exchange. workflows/company_analysis
+        calls this unguarded, so a raise would abort the whole node and error
+        out the candidate — one non-US name would fail an entire European
+        thesis run. Degrade to an honest not_sourced profile instead.
         """
-        return await self._sec.get_company_profile(ticker, exchange)
+        try:
+            return await self._sec.get_company_profile(ticker, exchange)
+        except SecExchangeNotSupportedError:
+            return _not_sourced_profile(ticker, exchange)
 
     async def get_price_history(
         self,
@@ -182,8 +292,14 @@ class FreeRealProvider(FinancialDataProvider):
         U.S.-listed companies only. Resolves ticker → CIK automatically.
         Returns FundamentalsData with is_mock=False and source_tier=T2_regulator_or_gov.
         Missing concepts produce warnings in the metadata note rather than exceptions.
+
+        An unsupported exchange yields empty fundamentals, not an exception and
+        never another issuer's numbers.
         """
-        return await self._sec.get_fundamentals(ticker, exchange)
+        try:
+            return await self._sec.get_fundamentals(ticker, exchange)
+        except SecExchangeNotSupportedError:
+            return _not_sourced_fundamentals(ticker, exchange)
 
 
 class EodhdFreeRealProvider(FinancialDataProvider):
@@ -229,11 +345,21 @@ class EodhdFreeRealProvider(FinancialDataProvider):
         ticker: str,
         exchange: str | None = None,
     ) -> CompanyProfileData:
-        """SEC EDGAR profile (T2). Falls back to EODHD stub if SEC resolution fails."""
+        """
+        SEC EDGAR profile (T2). Falls back to EODHD stub if SEC resolution fails.
+
+        SecExchangeNotSupportedError subclasses ValueError, so an unsupported
+        exchange still takes the EODHD path — EODHD does cover non-US venues.
+        If that path also fails we degrade to not_sourced rather than raising,
+        because workflows/company_analysis calls this unguarded.
+        """
         try:
             return await self._sec.get_company_profile(ticker, exchange)
         except (ValueError, NotImplementedError):
-            return await self._eodhd.get_company_profile(ticker, exchange)
+            try:
+                return await self._eodhd.get_company_profile(ticker, exchange)
+            except Exception:
+                return _not_sourced_profile(ticker, exchange)
 
     async def get_price_history(
         self,
@@ -250,5 +376,13 @@ class EodhdFreeRealProvider(FinancialDataProvider):
         ticker: str,
         exchange: str | None = None,
     ) -> FundamentalsData:
-        """SEC EDGAR XBRL fundamentals (T2, free, no key)."""
-        return await self._sec.get_fundamentals(ticker, exchange)
+        """
+        SEC EDGAR XBRL fundamentals (T2, free, no key).
+
+        An unsupported exchange yields empty fundamentals, never another
+        issuer's numbers.
+        """
+        try:
+            return await self._sec.get_fundamentals(ticker, exchange)
+        except SecExchangeNotSupportedError:
+            return _not_sourced_fundamentals(ticker, exchange)

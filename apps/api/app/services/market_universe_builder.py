@@ -35,6 +35,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from app.services.discovery_thesis_scoring import score_thesis_relevance
+from app.services.exchange_registry import region_for_country
 
 # Absolute ceiling regardless of the requested ``max_universe_size`` — the hard
 # guardrail against an accidental full-market scan.
@@ -45,21 +46,8 @@ DEFAULT_MAX_UNIVERSE_SIZE = 25
 _CURATED_SOURCE = "curated_theme_registry"
 _CURATED_SOURCE_TIER = "T3_curated_reference_list"
 
-# Country -> canonical region (used to apply a region filter to registry items).
-_COUNTRY_TO_REGION: dict[str, str] = {
-    "United States": "North America",
-    "Canada": "North America",
-    "Germany": "Europe",
-    "France": "Europe",
-    "United Kingdom": "Europe",
-    "Italy": "Europe",
-    "Spain": "Europe",
-    "Sweden": "Europe",
-    "Netherlands": "Europe",
-    "Switzerland": "Europe",
-    "Japan": "Japan",
-    "China": "China",
-}
+# Country -> canonical region is derived from the exchange registry so the two
+# cannot drift. See app.services.exchange_registry.
 
 
 def _entry(
@@ -286,7 +274,7 @@ def build_universe(
             continue
         seen.add(key)
 
-        region = _COUNTRY_TO_REGION.get(entry["country"])
+        region = region_for_country(entry["country"])
 
         # ── Region filter ─────────────────────────────────────────────────
         if region_requested:

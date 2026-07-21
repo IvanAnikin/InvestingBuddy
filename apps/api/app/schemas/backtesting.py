@@ -24,6 +24,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from app.services.safety_terms import FORBIDDEN_PHRASES, RATING_TOKENS
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -51,25 +53,15 @@ ALLOWED_JUDGE_STATUSES = {
     "outcome_review_required",
 }
 
-# Forbidden output terms — judge outputs must not contain these
-FORBIDDEN_OUTPUT_TERMS = [
-    "BUY",
-    "SELL",
-    "HOLD",
-    "WATCH",
-    "price target",
-    "target price",
-    "fair value",
-    "intrinsic value",
-    "upside of",
-    "upside%",
-    "upside percentage",
-    "guaranteed return",
-    "will go up",
-    "will go down",
-    "personalized advice",
-    "tailored recommendation",
-]
+# Forbidden output terms — judge outputs must not contain these.
+#
+# DEPRECATED as a matching source: scanning is done by the shared three-tier
+# scanner in ``app.services.safety_terms``, which knows that a bare substring
+# match flags "ENEOS Holdings" for "HOLD". This name survives because it is
+# part of a published response schema; it is now a flat re-export of the
+# shared vocabulary for documentation and API-shape purposes only. Do not
+# iterate it to implement a new gate — call ``safety_terms.scan_text``.
+FORBIDDEN_OUTPUT_TERMS = list(RATING_TOKENS) + list(FORBIDDEN_PHRASES)
 
 # Supported evaluation horizons (days)
 SUPPORTED_HORIZONS = {30, 90, 180, 365}

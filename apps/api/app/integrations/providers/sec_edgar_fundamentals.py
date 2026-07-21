@@ -56,6 +56,30 @@ from app.integrations.providers.sec_edgar_provider import (
     SecEdgarProvider,
     _pad_cik,
 )
+from app.integrations.sec_issuer_registry import lookup_sec_issuer
+from app.services.exchange_registry import is_sec_eligible, normalize_exchange
+
+
+class SecExchangeNotSupportedError(ValueError):
+    """
+    SEC EDGAR cannot authoritatively resolve this ticker on this exchange.
+
+    Subclasses ValueError deliberately: EodhdFreeRealProvider already catches
+    ValueError to fall back to an EODHD stub, and that path stays valid.
+    """
+
+    def __init__(self, ticker: str, exchange: str | None) -> None:
+        self.ticker = ticker
+        self.exchange = exchange
+        super().__init__(
+            f"SEC EDGAR lookup is not supported for '{ticker}' on exchange "
+            f"'{exchange}'. SEC company_tickers.json indexes US registrants by "
+            "ticker only, so resolving a non-US local-exchange ticker there can "
+            "return an unrelated US issuer (e.g. BA.LSE=BAE Systems vs BA=Boeing). "
+            "Add a verified CIK to sec_issuer_registry to enable this ticker, or "
+            "treat fundamentals as not_sourced."
+        )
+
 
 _TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 _COMPANY_FACTS_URL = f"{_EDGAR_BASE_URL}/api/xbrl/companyfacts/CIK{{cik}}.json"
@@ -228,22 +252,50 @@ class SecEdgarFundamentalsProvider(SecEdgarProvider):
     """
 
     def __init__(self) -> None:
-        self._cik_cache: dict[str, str] = {}
+        # Keyed by (TICKER, NORMALIZED_EXCHANGE) — never ticker alone. A
+        # ticker-only cache lets a US lookup poison the same ticker on another
+        # venue within one provider instance (BA.US would satisfy BA.LSE).
+        self._cik_cache: dict[tuple[str, str], str] = {}
 
     @property
     def provider_name(self) -> str:
         return "sec_edgar_fundamentals"
 
-    async def resolve_cik(self, ticker: str) -> str:
+    async def resolve_cik(self, ticker: str, exchange: str | None = None) -> str:
         """
-        Resolve a US stock ticker to a SEC CIK using the public company_tickers.json index.
+        Resolve a stock ticker to a SEC CIK.
 
-        Performs a case-insensitive search. Caches results for the lifetime of this
-        provider instance. Raises ValueError if ticker is not found.
+        Resolution order:
+          1. An explicit verified mapping in ``sec_issuer_registry`` wins for
+             any exchange (this is how a non-US issuer is enabled).
+          2. Non-SEC-eligible exchanges raise ``SecExchangeNotSupportedError``
+             **before any network call** — SEC's index is US-registrant-only
+             and keyed by ticker string, so searching it for a non-US ticker
+             returns an unrelated US issuer.
+          3. Otherwise the existing company_tickers.json lookup, unchanged.
+
+        ``exchange=None`` is treated as SEC-eligible so legacy ticker-only
+        flows (AAPL/MSFT/NVDA) behave exactly as before.
+
+        Caches results for the lifetime of this provider instance. Raises
+        ValueError if the ticker is not found.
         """
         upper = ticker.upper()
-        if upper in self._cik_cache:
-            return self._cik_cache[upper]
+        # An absent exchange is the legacy US default (mirrors is_sec_eligible
+        # returning True for None), so it shares the US cache slot rather than
+        # opening a second one keyed on "".
+        normalized = normalize_exchange(exchange) or "US"
+        cache_key = (upper, normalized)
+        if cache_key in self._cik_cache:
+            return self._cik_cache[cache_key]
+
+        mapping = lookup_sec_issuer(ticker, exchange)
+        if mapping is not None:
+            self._cik_cache[cache_key] = mapping.cik
+            return mapping.cik
+
+        if not is_sec_eligible(exchange):
+            raise SecExchangeNotSupportedError(ticker, exchange)
 
         async with httpx.AsyncClient(
             headers={"User-Agent": _USER_AGENT},
@@ -257,7 +309,7 @@ class SecEdgarFundamentalsProvider(SecEdgarProvider):
         for entry in index.values():
             if entry.get("ticker", "").upper() == upper:
                 cik = str(entry["cik_str"])
-                self._cik_cache[upper] = cik
+                self._cik_cache[cache_key] = cik
                 return cik
 
         raise ValueError(
@@ -267,12 +319,19 @@ class SecEdgarFundamentalsProvider(SecEdgarProvider):
             f"Check manually: https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&company={ticker}"
         )
 
-    def _load_cik_index_sync(self, raw: dict) -> None:
-        """Populate CIK cache from a pre-loaded index dict (used in tests)."""
+    def _load_cik_index_sync(self, raw: dict, exchange: str | None = None) -> None:
+        """
+        Populate CIK cache from a pre-loaded index dict (used in tests).
+
+        The index is US-registrant data, so entries are cached against the
+        normalized US venue unless an explicit ``exchange`` is given. This
+        keeps a preloaded index from satisfying a non-US lookup.
+        """
+        normalized = normalize_exchange(exchange) if exchange else "US"
         for entry in raw.values():
             ticker = entry.get("ticker", "").upper()
             if ticker:
-                self._cik_cache[ticker] = str(entry["cik_str"])
+                self._cik_cache[(ticker, normalized)] = str(entry["cik_str"])
 
     async def get_company_profile(
         self,
@@ -288,7 +347,7 @@ class SecEdgarFundamentalsProvider(SecEdgarProvider):
         """
         if ticker.strip().isdigit():
             return await self.get_company_by_cik(ticker.strip())
-        cik = await self.resolve_cik(ticker)
+        cik = await self.resolve_cik(ticker, exchange)
         return await self.get_company_by_cik(cik)
 
     async def get_fundamentals(
@@ -308,7 +367,7 @@ class SecEdgarFundamentalsProvider(SecEdgarProvider):
         if ticker.strip().isdigit():
             cik = ticker.strip()
         else:
-            cik = await self.resolve_cik(ticker)
+            cik = await self.resolve_cik(ticker, exchange)
 
         padded = _pad_cik(cik)
         url = _COMPANY_FACTS_URL.format(cik=padded)

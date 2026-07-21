@@ -33,6 +33,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.services import safety_terms
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -50,22 +52,8 @@ ALLOWED_INTERNAL_STATUSES = {
 }
 
 # Forbidden output terms — never appear in any score output
-_FORBIDDEN_TERMS = {
-    "BUY",
-    "SELL",
-    "HOLD",
-    "WATCH",
-    "REJECT",
-    "SHORTLIST",
-    "price target",
-    "target price",
-    "fair value",
-    "upside of",
-    "downside of",
-    "undervalued",
-    "overvalued",
-    "upside_percent",
-}
+# Forbidden-term definitions live in app.services.safety_terms — the single
+# source of truth shared by every safety gate. Do not reintroduce a local list.
 
 # Source tier score multipliers
 _TIER_QUALITY_SCORES: dict[str, int] = {
@@ -1216,13 +1204,10 @@ class ScoringEngine:
 
 def _check_forbidden_terms(text: str) -> list[str]:
     """Return list of any forbidden terms found in text."""
-    found: list[str] = []
-    upper = text.upper()
-    lower = text.lower()
-    for term in _FORBIDDEN_TERMS:
-        if term.upper() in upper or term.lower() in lower:
-            found.append(f"Forbidden content detected: '{term}'")
-    return found
+    return [
+        f"Forbidden content detected: '{term}'"
+        for term in safety_terms.hit_terms(safety_terms.scan_text(text))
+    ]
 
 
 def _source_quality_note(source_tier: str) -> str:

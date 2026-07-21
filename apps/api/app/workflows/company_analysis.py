@@ -103,6 +103,14 @@ from app.integrations.free_real_snapshot import (
 )
 from app.integrations.llm_provider import get_llm_client, validate_llm_sections
 from app.integrations.market_metrics_enrichment import derive_market_metrics
+from app.integrations.providers.free_real_provider import (
+    REASON_EXPLICIT_CIK_MAPPING,
+    REASON_NON_US_NO_SEC_MAPPING,
+    REASON_SEC_COVERED,
+    REASON_TICKER_NOT_IN_SEC_INDEX,
+    SOURCE_NOT_SOURCED,
+)
+from app.integrations.sec_issuer_registry import lookup_sec_issuer
 from app.schemas.report import ReportCreate
 from app.schemas.source import CitationCreate, SourceCreate
 from app.services import (
@@ -113,6 +121,7 @@ from app.services import (
     source_service,
 )
 from app.services.catalyst_discovery_service import discover_catalysts
+from app.services.exchange_registry import is_sec_eligible
 from app.services.report_validation_service import validate_real_asset_report
 from app.workflows.snapshot_builder import (
     build_company_snapshot,
@@ -238,6 +247,58 @@ def _make_report_slug(ticker: str, run_id: str) -> str:
     base = re.sub(r"[^a-z0-9]+", "-", ticker.lower()).strip("-")
     short_id = run_id.replace("-", "")[:8]
     return f"company-analysis-{base}-{short_id}"
+
+
+def _build_data_coverage(
+    *,
+    exchange: str | None,
+    profile: object,
+    fundamentals: object,
+    price_source: str | None,
+) -> dict:
+    """
+    Describe how sourced this company's data actually is.
+
+    Distinguishes "we looked and there is nothing" from "we cannot look here",
+    so downstream scoring never reads an unsupported venue as a negative
+    judgement about the company. See docs/PHASE_27_1_SPEC.md §3.6.
+    """
+    profile_not_sourced = (
+        getattr(profile, "meta", None) is not None
+        and profile.meta.provider_name == "free_real_not_sourced"
+    )
+    fundamentals_not_sourced = fundamentals is None or not fundamentals.datapoints
+
+    has_mapping = lookup_sec_issuer(profile.ticker if profile else "", exchange) is not None
+
+    if has_mapping:
+        reason = REASON_EXPLICIT_CIK_MAPPING
+    elif not is_sec_eligible(exchange):
+        reason = REASON_NON_US_NO_SEC_MAPPING
+    elif fundamentals_not_sourced:
+        reason = REASON_TICKER_NOT_IN_SEC_INDEX
+    else:
+        reason = REASON_SEC_COVERED
+
+    # Only an unreachable venue counts as requiring human research. A US issuer
+    # that simply has thin XBRL data is a different, already-handled case.
+    requires_human_research = profile_not_sourced or (
+        not is_sec_eligible(exchange) and not has_mapping
+    )
+
+    return {
+        "exchange": exchange,
+        "sec_eligible": is_sec_eligible(exchange),
+        "has_explicit_cik_mapping": has_mapping,
+        "profile_source": SOURCE_NOT_SOURCED if profile_not_sourced else "sec_edgar",
+        "fundamentals_source": (
+            SOURCE_NOT_SOURCED if (fundamentals_not_sourced or requires_human_research)
+            else "sec_edgar_xbrl"
+        ),
+        "price_source": price_source,
+        "reason": reason,
+        "requires_human_research": requires_human_research,
+    }
 
 
 def _build_placeholder_analysis(state: CompanyAnalysisState) -> dict:
@@ -482,6 +543,27 @@ def build_company_analysis_graph(
             else:
                 is_mock = profile.meta.is_mock
 
+            # ── Phase 27.1A: data_coverage — how sourced is this company? ──
+            # A non-US venue with no verified CIK mapping degrades to
+            # not_sourced rather than borrowing an unrelated US issuer's data.
+            # Recorded so downstream scoring reads sparse data as "not sourced",
+            # not as a negative judgement about the company.
+            data_coverage = _build_data_coverage(
+                exchange=exchange,
+                profile=profile,
+                fundamentals=fundamentals,
+                price_source=(
+                    prices.meta.provider_name if (prices and prices.price_points) else None
+                ),
+            )
+            if data_coverage["requires_human_research"]:
+                provider_warnings = list(provider_warnings) + [
+                    f"Fundamentals not_sourced for {ticker} on exchange "
+                    f"'{exchange}': {data_coverage['reason']}. SEC EDGAR does not "
+                    "cover this venue and no verified CIK mapping exists. "
+                    "Company identity and financials require human research."
+                ]
+
             await agent_run_service.complete_agent_step(
                 db,
                 step,
@@ -517,8 +599,11 @@ def build_company_analysis_graph(
                 "provider_warnings": provider_warnings or None,
                 "is_mock": is_mock,
                 "analysis_output": _build_placeholder_analysis(state),
-                "fundamentals_available": fundamentals is not None,
+                "fundamentals_available": (
+                    fundamentals is not None and not data_coverage["requires_human_research"]
+                ),
                 "fundamentals_warnings": fundamentals_warnings or None,
+                "data_coverage": data_coverage,
             }
 
         except (ValueError, Exception) as exc:

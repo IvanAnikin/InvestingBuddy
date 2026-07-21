@@ -206,20 +206,31 @@ class SecRecentFilingsProvider:
     provider_name = "sec_recent_filings"
 
     def __init__(self) -> None:
-        self._cik_cache: dict[str, str] = {}
+        # Keyed by (TICKER, EXCHANGE): a ticker-only cache would let a US
+        # lookup answer for the same ticker on a foreign venue.
+        self._cik_cache: dict[tuple[str, str], str] = {}
 
-    async def _resolve_cik(self, ticker: str) -> str | None:
-        """Resolve ticker→CIK, delegating to the SEC fundamentals index."""
+    async def _resolve_cik(self, ticker: str, exchange: str | None = None) -> str | None:
+        """
+        Resolve ticker→CIK, delegating to the SEC fundamentals index.
+
+        The exchange must be forwarded: without it a non-US ticker resolves
+        against the US-registrant index and this provider would attach another
+        company's filings to this company as catalysts (BA.LSE -> Boeing 8-Ks).
+        SecExchangeNotSupportedError is caught here and surfaces as "no CIK",
+        which the caller already reports as an honest warning.
+        """
         upper = ticker.upper()
-        if upper in self._cik_cache:
-            return self._cik_cache[upper]
+        key = (upper, (exchange or "").strip().upper())
+        if key in self._cik_cache:
+            return self._cik_cache[key]
         try:
             from app.integrations.providers.sec_edgar_fundamentals import (
                 SecEdgarFundamentalsProvider,
             )
 
-            cik = await SecEdgarFundamentalsProvider().resolve_cik(ticker)
-            self._cik_cache[upper] = cik
+            cik = await SecEdgarFundamentalsProvider().resolve_cik(ticker, exchange)
+            self._cik_cache[key] = cik
             return cik
         except Exception:
             return None
@@ -240,6 +251,7 @@ class SecRecentFilingsProvider:
         company_name: str | None = None,
         lookback_days: int = 90,
         max_events: int = 20,
+        exchange: str | None = None,
     ) -> RecentFilingsResult:
         """
         Fetch and classify recent SEC filing events for a company.
@@ -247,7 +259,7 @@ class SecRecentFilingsProvider:
         Never raises: missing CIK, 404, network, or parse errors are captured as
         warnings so the surrounding workflow always continues.
         """
-        resolved_cik = cik or await self._resolve_cik(ticker)
+        resolved_cik = cik or await self._resolve_cik(ticker, exchange)
         if not resolved_cik:
             return RecentFilingsResult(
                 ticker=ticker.upper(),

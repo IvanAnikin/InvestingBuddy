@@ -30,9 +30,9 @@ from typing import Any
 
 from app.schemas.backtesting import (
     BACKTESTING_VERSION,
-    FORBIDDEN_OUTPUT_TERMS,
     JudgeEvaluation,
 )
+from app.services import safety_terms
 
 logger = logging.getLogger(__name__)
 
@@ -58,17 +58,11 @@ _MIN_CITATIONS_FOR_FULL_SCORE = 3
 def _scan_for_forbidden_terms(text: str) -> list[str]:
     """Return any forbidden terms found in the text.
 
-    Case-insensitive scan.  Allowed in disclaimer context — we only flag
-    when the term appears outside of the standard no-recommendation disclaimer.
+    Delegates to the shared three-tier scanner in ``app.services.safety_terms``.
+    The previous implementation claimed a word boundary in its comment but did
+    not implement one, so "ENEOS Holdings" was flagged for "HOLD".
     """
-    found: list[str] = []
-    lowered = text.lower()
-    for term in FORBIDDEN_OUTPUT_TERMS:
-        # Use word boundary to avoid false matches inside longer words
-        pattern = re.escape(term.lower())
-        if re.search(pattern, lowered):
-            found.append(term)
-    return found
+    return safety_terms.hit_terms(safety_terms.scan_text(text))
 
 
 def _safety_scan_dict(data: dict[str, Any]) -> list[str]:

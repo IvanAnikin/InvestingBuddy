@@ -81,6 +81,9 @@ class CompanyAnalysisState(TypedDict):
     trend_signal_summary: dict | None         # TrendSignalResult fields dict
     provider_warnings: list[str] | None       # warnings from composite provider composition
 
+    # --- Phase 27.1A: data sourcing coverage ---
+    data_coverage: dict | None                # how sourced this company is (see spec §3.6)
+
     # --- Phase 24: News + Catalyst Discovery ---
     catalyst_discovery: dict | None           # CatalystDiscoveryResult.to_report_dict()
     catalyst_agent: dict | None               # CatalystAgentOutput as dict (markdown + context)

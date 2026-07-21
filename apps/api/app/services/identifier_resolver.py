@@ -26,6 +26,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.services.exchange_registry import normalize_exchange
+
 # ---------------------------------------------------------------------------
 # Output schema
 # ---------------------------------------------------------------------------
@@ -70,20 +72,9 @@ class ResolvedIdentifierList:
 _EODHD_SYMBOL_RE = re.compile(r"^([A-Z0-9\-\.]{1,20})\.([A-Z]{1,10})$")
 _TICKER_ONLY_RE = re.compile(r"^[A-Z0-9\-\.]{1,20}$")
 
-# Common exchange name → EODHD suffix mapping (mirrors eodhd_provider.py)
-_EXCHANGE_TO_SUFFIX: dict[str, str] = {
-    "NASDAQ": "US",
-    "NYSE": "US",
-    "AMEX": "US",
-    "LSE": "LSE",
-    "XETRA": "XETRA",
-    "OSE": "OL",
-    "STO": "ST",
-    "TSX": "TO",
-    "TSXV": "V",
-    "ASX": "AU",
-    "US": "US",
-}
+# Exchange name → EODHD suffix mapping now lives in
+# app.services.exchange_registry.normalize_exchange, so the alias table has a
+# single definition shared with SEC eligibility gating.
 
 
 class CompanyIdentifierResolver:
@@ -183,9 +174,7 @@ class CompanyIdentifierResolver:
 
         # Looks like a pure ticker?
         if _TICKER_ONLY_RE.match(upper):
-            suffix = (
-                _EXCHANGE_TO_SUFFIX.get(exchange.upper(), exchange.upper()) if exchange else "US"
-            )
+            suffix = normalize_exchange(exchange) if exchange else "US"
             symbol = f"{upper}.{suffix}"
             warnings.append(
                 f"Assumed exchange suffix '{suffix}' — live lookup not performed. "
@@ -337,7 +326,7 @@ class CompanyIdentifierResolver:
             hint_upper = exchange_hint.upper()
             if hint_upper == exchange.upper():
                 score += 0.15
-            elif _EXCHANGE_TO_SUFFIX.get(hint_upper, hint_upper) == exchange.upper():
+            elif normalize_exchange(hint_upper) == exchange.upper():
                 score += 0.15
             else:
                 score -= 0.10

@@ -96,8 +96,17 @@ def map_state_to_signal(
     is_mock = bool(final_state.get("is_mock"))
 
     # ── Fundamentals ──────────────────────────────────────────────────────
-    fundamentals_available = bool(final_state.get("fundamentals_available")) or (
-        _num(fundamentals_summary.get("revenue_usd_m")) is not None
+    # Phase 27.1A: a venue SEC cannot cover is reported as unavailable and
+    # flagged in missing_fields, so completeness/source-quality scores degrade
+    # honestly instead of the candidate looking complete.
+    coverage = final_state.get("data_coverage") or {}
+    coverage_not_sourced = bool(coverage.get("requires_human_research"))
+    if coverage_not_sourced:
+        missing_fields.append("fundamentals_not_sourced_non_us_exchange")
+
+    fundamentals_available = (not coverage_not_sourced) and (
+        bool(final_state.get("fundamentals_available"))
+        or (_num(fundamentals_summary.get("revenue_usd_m")) is not None)
     )
     fiscal_year = fundamentals_summary.get("fiscal_year")
     fundamentals = {
@@ -234,6 +243,7 @@ def map_state_to_signal(
         "catalyst": catalyst,
         "source_quality": source_quality,
         "completeness": completeness,
+        "data_coverage": final_state.get("data_coverage"),
         "warnings": warnings,
     }
 
