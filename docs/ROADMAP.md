@@ -1398,6 +1398,40 @@ Skills used: `backend-fastapi`, `frontend-nextjs`, `testing-qa`,
 
 ---
 
+## Phase 27.1C: Stricter Country/Region Filtering Semantics — BACKLOG
+
+**Status: Not started.** Raised during Phase 27.1B staging validation.
+
+**Problem.** A country filter currently admits that country's entire region.
+`build_universe` accepts a candidate when
+`region in parsed_regions OR country in parsed_countries`, and `parse_thesis`
+adds the parent region whenever it recognises a country — so a thesis naming
+`Denmark` also sets `regions=["Europe"]`, and every European issuer passes.
+
+Observed: `"Danish jewelry companies"` returns all eight European luxury names
+(Swatch, Richemont, LVMH, Hermes, Kering, Moncler, Burberry, Pandora), not just
+Pandora. This is pre-existing Phase 27 behaviour; the Phase 27.1B luxury
+registry (issuers spread across CH/FR/IT/UK/DK) simply made it visible, because
+the earlier defense/semiconductor registries were dominated by one or two
+countries.
+
+**Scope.**
+- Treat an explicitly-named country as a *narrowing* filter, not a widening one:
+  when countries are present, require a country match rather than falling back
+  to the region.
+- Keep a bare region filter (`Region=Europe`, no country) behaving exactly as
+  today — that path is what Phase 27.1B validated.
+- Decide the precedence when a request states both a region and a country in
+  *different* regions (currently accepted; should probably 422).
+- Surface the effective filter in `universe_json.source_summary` so an admin can
+  see whether country or region drove selection.
+
+**Not a safety issue** — no fabricated data, no recommendation, and every
+excluded company is still recorded with a reason. It is a relevance/precision
+defect only.
+
+---
+
 ## Out of Scope (All Versions)
 
 - Broker account integration
