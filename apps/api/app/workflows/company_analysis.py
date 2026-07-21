@@ -492,7 +492,9 @@ def build_company_analysis_graph(
         # Only fail closed when we had a company row that should have carried a
         # venue. A pure ticker-only caller with no company context keeps the
         # legacy behavior so AAPL/MSFT/NVDA do not regress.
-        exchange_unresolved = bool(not exchange and company_row is not None and row_exchange is None)
+        exchange_unresolved = bool(
+            not exchange and company_row is not None and row_exchange is None
+        )
 
         step = await agent_run_service.create_agent_step(
             db,
