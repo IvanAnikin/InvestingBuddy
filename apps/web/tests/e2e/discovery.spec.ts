@@ -866,6 +866,466 @@ async function mockThesisRoutes(page: import("@playwright/test").Page) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Phase 27.1B — luxury / watch theme, supported-theme chips, curated names
+// ---------------------------------------------------------------------------
+
+const SUPPORTED_THEMES = {
+  themes: [
+    {
+      id: "defense",
+      label: "Defense / aerospace",
+      keywords: ["defense", "nato"],
+      sectors: ["Industrials"],
+      industries: ["Aerospace & Defense"],
+      examples: ["European defense suppliers benefiting from NATO spending"],
+      regions: ["Europe", "North America"],
+      countries: ["Germany"],
+      universe_company_count: 10,
+    },
+    {
+      id: "semiconductors",
+      label: "Semiconductors / chip equipment",
+      keywords: ["semiconductor"],
+      sectors: ["Technology"],
+      industries: ["Semiconductors"],
+      examples: [
+        "US semiconductor equipment companies with recent positive catalysts",
+      ],
+      regions: ["North America"],
+      countries: ["United States"],
+      universe_company_count: 9,
+    },
+    {
+      id: "luxury_goods",
+      label: "Luxury goods / watches / jewelry",
+      keywords: ["luxury", "watches", "jewelry", "personal goods"],
+      sectors: ["Consumer Discretionary"],
+      industries: ["Luxury Goods", "Watches & Jewelry"],
+      examples: [
+        "European watch producers",
+        "Swiss watch companies",
+        "European luxury goods companies",
+      ],
+      regions: ["Europe"],
+      countries: ["Switzerland", "France"],
+      universe_company_count: 11,
+    },
+  ],
+  sectors: [
+    {
+      sector: "Consumer Discretionary",
+      aliases: ["luxury", "luxury goods", "watches", "jewelry"],
+      industries: ["Luxury Goods", "Watches & Jewelry"],
+    },
+  ],
+  examples: [
+    "European defense suppliers benefiting from NATO spending",
+    "US semiconductor equipment companies with recent positive catalysts",
+    "European watch producers",
+    "Swiss watch companies",
+    "European luxury goods companies",
+  ],
+  coverage_note:
+    "Thesis discovery runs against a bounded curated universe bootstrap, not a full-market scan. Results are internal research candidates requiring human review; they are not investment advice and carry no recommendation.",
+  disclaimer: DISC,
+};
+
+const LUX_RUN_ID = "77777777-0000-0000-0000-00000000271b";
+const LUX_CAND_ID = "88888888-0000-0000-0000-00000000271b";
+
+function luxUniverseItem(
+  ticker: string,
+  exchange: string,
+  companyName: string,
+  country: string,
+  industry: string,
+) {
+  return {
+    ticker,
+    company_name: companyName,
+    exchange,
+    country,
+    region: "Europe",
+    sector: "Consumer Discretionary",
+    industry,
+    theme: "luxury_goods",
+    matched_keywords: ["watch"],
+    relevance_reason: "matches theme 'luxury_goods'; region 'Europe'",
+    universe_source: "curated_theme_registry",
+    source_tier: "T3_curated_reference_list",
+    relevance_score_pre_scan: 85.0,
+    metadata_not_sourced: false,
+    warnings: [],
+  };
+}
+
+const LUX_RUN = {
+  ...MOCK_RUN,
+  id: LUX_RUN_ID,
+  mode: "thesis",
+  status: "completed_with_warnings",
+  universe_source: "thesis_generated",
+  universe_count: 3,
+  requested_tickers: ["UHR", "CFR", "MC"],
+  processed_count: 3,
+  candidate_count: 3,
+  error_count: 0,
+  warnings: ["UHR: fundamentals not sourced for a non-SEC venue"],
+  progress_pct: 100,
+  thesis_text: "European watch producers",
+  parsed_thesis_json: {
+    ...THESIS_PARSED,
+    normalized_text: "European watch producers",
+    themes: ["luxury_goods"],
+    sectors: ["Consumer Discretionary"],
+    industries: ["Luxury Goods", "Watches & Jewelry"],
+    regions: ["Europe"],
+    keywords: ["watch"],
+  },
+  universe_json: {
+    items: [
+      luxUniverseItem("UHR", "SW", "Swatch Group AG", "Switzerland", "Watches & Jewelry"),
+      luxUniverseItem(
+        "CFR",
+        "SW",
+        "Compagnie Financiere Richemont SA",
+        "Switzerland",
+        "Watches & Jewelry",
+      ),
+      luxUniverseItem(
+        "MC",
+        "PA",
+        "LVMH Moet Hennessy Louis Vuitton SE",
+        "France",
+        "Luxury Goods",
+      ),
+    ],
+    excluded: [
+      {
+        ticker: "CPRI",
+        company_name: "Capri Holdings Limited",
+        reason: "region mismatch: United States not in requested ['Europe']",
+      },
+    ],
+    source_summary: { selected: 3, excluded: 1 },
+    warnings: [],
+    needs_narrowing: false,
+    requested_max: 25,
+  },
+};
+
+const LUX_CANDIDATE = {
+  ...MOCK_CANDIDATE,
+  id: LUX_CAND_ID,
+  discovery_run_id: LUX_RUN_ID,
+  ticker: "UHR",
+  exchange: "SW",
+  company_name: "Swatch Group AG",
+  sector: "Consumer Discretionary",
+  industry: "Watches & Jewelry",
+  country: "Switzerland",
+  candidate_score: 32.0,
+  candidate_score_grade: "data_insufficient",
+  thesis_relevance_score: 85.0,
+  combined_internal_score: 49.5,
+};
+
+const LUX_CANDIDATE_DETAIL = {
+  ...MOCK_CANDIDATE_DETAIL,
+  id: LUX_CAND_ID,
+  discovery_run_id: LUX_RUN_ID,
+  ticker: "UHR",
+  exchange: "SW",
+  company_name: "Swatch Group AG",
+  legal_name: null,
+  sector: "Consumer Discretionary",
+  industry: "Watches & Jewelry",
+  country: "Switzerland",
+  candidate_score: 32.0,
+  thesis_relevance_score: 85.0,
+  combined_internal_score: 49.5,
+  revenue_mln: null,
+  net_income_mln: null,
+  market_cap_mln: null,
+  missing_fields_json: ["fundamentals_not_sourced_non_us_exchange"],
+  thesis_match_json: {
+    internal_interest_label: "medium_internal_research_interest",
+    thesis_relevance_score: 85.0,
+    combined_internal_score: 49.5,
+    matched_keywords: ["watch"],
+    relevance_reason: "matches theme 'luxury_goods'; region 'Europe'",
+    universe_source: "curated_theme_registry",
+    source_tier: "T3_curated_reference_list",
+    theme: "luxury_goods",
+    metadata_not_sourced: false,
+    company_name: "Swatch Group AG",
+    company_name_source: "curated_theme_registry",
+    company_name_source_tier: "T3_curated_reference_list",
+    explanation:
+      "Internal thesis-relevance prioritization only. Combined internal score 49.5/100 (interest: medium_internal_research_interest). Internal human research triage only.",
+    missing_data_penalty: 1.5,
+  },
+};
+
+async function mockSupportedThemes(page: import("@playwright/test").Page) {
+  await page.route(
+    "**/api/admin/proxy/api/v1/market-discovery/supported-themes",
+    (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(SUPPORTED_THEMES),
+      }),
+  );
+}
+
+async function mockLuxuryRoutes(page: import("@playwright/test").Page) {
+  await mockSupportedThemes(page);
+  await page.route("**/api/admin/proxy/api/v1/market-discovery/runs", (route) => {
+    if (route.request().method() === "GET") {
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ runs: [LUX_RUN], total: 1, disclaimer: DISC }),
+      });
+    }
+    return route.fulfill({ status: 404, body: "{}" });
+  });
+  await page.route(
+    `**/api/admin/proxy/api/v1/market-discovery/runs/${LUX_RUN_ID}`,
+    (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(LUX_RUN),
+      }),
+  );
+  await page.route(
+    `**/api/admin/proxy/api/v1/market-discovery/runs/${LUX_RUN_ID}/candidates*`,
+    (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          candidates: [LUX_CANDIDATE],
+          total: 1,
+          run_id: LUX_RUN_ID,
+          disclaimer: DISC,
+        }),
+      }),
+  );
+  await page.route(
+    `**/api/admin/proxy/api/v1/market-discovery/candidates/${LUX_CAND_ID}`,
+    (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(LUX_CANDIDATE_DETAIL),
+      }),
+  );
+}
+
+test.describe("Admin Discovery — luxury/watch theme (Phase 27.1B)", () => {
+  test("37. Thesis tab shows supported theme example chips", async ({ page }) => {
+    await mockLuxuryRoutes(page);
+    await page.goto("/admin/discovery");
+    await page.getByTestId("mode-tab-thesis").click();
+    await expect(page.getByTestId("supported-themes").first()).toBeVisible();
+    await expect(
+      page.getByTestId("theme-example-chip").first(),
+    ).toBeVisible();
+  });
+
+  test("38. 'European watch producers' appears as an example", async ({
+    page,
+  }) => {
+    await mockLuxuryRoutes(page);
+    await page.goto("/admin/discovery");
+    await page.getByTestId("mode-tab-thesis").click();
+    await expect(
+      page.getByTestId("theme-example-chip").filter({
+        hasText: "European watch producers",
+      }),
+    ).toBeVisible();
+  });
+
+  test("39. Clicking a chip fills the thesis textarea", async ({ page }) => {
+    await mockLuxuryRoutes(page);
+    await page.goto("/admin/discovery");
+    await page.getByTestId("mode-tab-thesis").click();
+    await page
+      .getByTestId("theme-example-chip")
+      .filter({ hasText: "European watch producers" })
+      .first()
+      .click();
+    await expect(page.getByTestId("thesis-text")).toHaveValue(
+      "European watch producers",
+    );
+  });
+
+  test("40. Submitting the watch thesis starts a thesis run", async ({
+    page,
+  }) => {
+    await mockLuxuryRoutes(page);
+    let body: Record<string, unknown> = {};
+    await page.route(
+      "**/api/admin/proxy/api/v1/market-discovery/thesis-runs",
+      (route) => {
+        body = JSON.parse(route.request().postData() ?? "{}");
+        return route.fulfill({
+          status: 201,
+          contentType: "application/json",
+          body: JSON.stringify({ ...LUX_RUN, status: "pending" }),
+        });
+      },
+    );
+    await page.goto("/admin/discovery");
+    await page.getByTestId("mode-tab-thesis").click();
+    await page
+      .getByTestId("theme-example-chip")
+      .filter({ hasText: "European watch producers" })
+      .first()
+      .click();
+    await page.getByTestId("thesis-submit").click();
+    await expect
+      .poll(() => body.thesis_text, { timeout: 10_000 })
+      .toBe("European watch producers");
+  });
+
+  test("41. Parsed thesis panel shows the luxury/watch theme", async ({
+    page,
+  }) => {
+    await mockLuxuryRoutes(page);
+    await page.goto("/admin/discovery");
+    const parsed = page.getByTestId("parsed-thesis");
+    await expect(parsed).toContainText("luxury_goods");
+    await expect(parsed).toContainText("Europe");
+    await expect(parsed).toContainText("Consumer Discretionary");
+  });
+
+  test("42. Generated universe shows curated luxury issuers", async ({
+    page,
+  }) => {
+    await mockLuxuryRoutes(page);
+    await page.goto("/admin/discovery");
+    const universe = page.getByTestId("generated-universe");
+    await expect(universe).toContainText("Swatch Group AG");
+    await expect(universe).toContainText("Richemont");
+    await expect(universe).toContainText("LVMH");
+  });
+
+  test("43. Candidate row shows the curated name, not just the ticker", async ({
+    page,
+  }) => {
+    await mockLuxuryRoutes(page);
+    await page.goto("/admin/discovery");
+    const row = page.getByTestId("candidate-row").first();
+    await expect(row).toContainText("UHR");
+    await expect(row).toContainText("Swatch Group AG");
+  });
+
+  test("44. Candidate row shows thesis relevance and combined score", async ({
+    page,
+  }) => {
+    await mockLuxuryRoutes(page);
+    await page.goto("/admin/discovery");
+    const row = page.getByTestId("candidate-row").first();
+    await expect(row).toContainText("85");
+    await expect(row).toContainText("50");
+  });
+
+  test("45. Candidate detail opens with internal-only disclaimer", async ({
+    page,
+  }) => {
+    await mockLuxuryRoutes(page);
+    await page.goto("/admin/discovery");
+    await page.getByTestId("candidate-toggle").first().click();
+    const card = page.getByTestId("thesis-relevance-card");
+    await expect(card).toBeVisible();
+    await expect(card).toContainText("Internal");
+    await expect(card).toContainText("not investment advice");
+  });
+
+  test("46. Coverage note states the bounded curated bootstrap", async ({
+    page,
+  }) => {
+    await mockLuxuryRoutes(page);
+    await page.goto("/admin/discovery");
+    await page.getByTestId("mode-tab-thesis").click();
+    await expect(page.getByTestId("coverage-note").first()).toContainText(
+      "bounded curated universe bootstrap",
+    );
+  });
+
+  test("47. A no-match thesis shows the backend error AND theme examples", async ({
+    page,
+  }) => {
+    await mockLuxuryRoutes(page);
+    await page.route(
+      "**/api/admin/proxy/api/v1/market-discovery/thesis-runs",
+      (route) =>
+        route.fulfill({
+          status: 422,
+          contentType: "application/json",
+          body: JSON.stringify({
+            detail:
+              "Thesis needs narrowing before a bounded universe can be built: Thesis did not match any known theme, sector, or industry.",
+          }),
+        }),
+    );
+    await page.goto("/admin/discovery");
+    await page.getByTestId("mode-tab-thesis").click();
+    await page.getByTestId("thesis-text").fill("companies whose logo is a duck");
+    await page.getByTestId("thesis-submit").click();
+    // The backend's own guidance is never hidden…
+    await expect(page.getByTestId("thesis-submit-error")).toContainText(
+      "did not match any known theme",
+    );
+    // …and supported examples are offered alongside it.
+    await expect(page.getByTestId("thesis-no-match-help")).toContainText(
+      "supported theme examples",
+    );
+  });
+
+  test("48. No publish action and no action labels in luxury mode", async ({
+    page,
+  }) => {
+    await mockLuxuryRoutes(page);
+    await page.goto("/admin/discovery");
+    await page.getByTestId("candidate-toggle").first().click();
+
+    // Scope the forbidden-language scan to the CANDIDATE content. The page's
+    // own safety banners legitimately read "No price targets." — a negated
+    // disclaimer is allowed; a generated conclusion is not. Scanning the whole
+    // body would fail on the very copy that proves the guarantee.
+    const candidateText =
+      ((await page.getByTestId("candidate-row").first().textContent()) ?? "") +
+      ((await page.getByTestId("thesis-relevance-card").textContent()) ?? "");
+    for (const forbidden of [
+      "price target",
+      "fair value",
+      "intrinsic value",
+      "undervalued",
+      "overvalued",
+    ]) {
+      expect(candidateText.toLowerCase()).not.toContain(forbidden);
+    }
+    // "Swatch" and "Watches & Jewelry" must survive — only ALL-CAPS action
+    // labels are forbidden (see app/services/safety_terms.py).
+    expect(candidateText).toContain("Swatch Group AG");
+    for (const bad of ["BUY", "SELL", "HOLD", "WATCH"]) {
+      expect(candidateText).not.toMatch(new RegExp(`\\b${bad}\\b`));
+    }
+    const buttons = page.locator("button");
+    const count = await buttons.count();
+    for (let i = 0; i < count; i++) {
+      const text = (await buttons.nth(i).textContent())?.toLowerCase() ?? "";
+      expect(text).not.toContain("publish");
+    }
+  });
+});
+
 test.describe("Admin Discovery — thesis mode (Phase 27)", () => {
   test("27. Manual and Thesis mode tabs are present", async ({ page }) => {
     await mockThesisRoutes(page);

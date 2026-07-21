@@ -34,21 +34,33 @@ from app.models.discovery import (
     DiscoveryCandidate,
     DiscoveryRun,
 )
-from app.schemas.company import CompanyCreate
 from app.schemas.market_discovery import (
     DiscoveryRunCreate,
     DiscoveryRunSummary,
     ThesisDiscoveryRunCreate,
 )
-from app.services import company_service, safety_terms
+from app.services import safety_terms
 from app.services.discovery_scoring_service import score_signal
-from app.services.discovery_signal_extractor import ExtractedSignal, extract_signal
+from app.services.discovery_signal_extractor import (
+    ExtractedSignal,
+    ensure_company,
+    extract_signal,
+    is_placeholder_company_name,
+)
 from app.services.discovery_thesis_scoring import (
     INTERNAL_INTEREST_LABELS,
     compute_combined_internal_score,
 )
+from app.services.exchange_registry import region_for_country
+from app.services.market_thesis_parser import (
+    get_supported_themes as parser_supported_themes,
+)
 from app.services.market_thesis_parser import parse_thesis
-from app.services.market_universe_builder import build_universe
+from app.services.market_universe_builder import (
+    THEME_COMPANY_REGISTRY,
+    build_universe,
+)
+from app.services.sector_taxonomy import get_supported_sector_aliases
 from app.workflows.company_analysis import run_company_analysis
 
 logger = logging.getLogger(__name__)
@@ -245,15 +257,45 @@ def _build_candidate(
 
     # Prefer curated thesis-universe identity metadata when the live scan could
     # not source it (never fabricated — it comes from the curated registry).
+    #
+    # The name test is is_placeholder_company_name, NOT truthiness: the scan
+    # creates a stub company row named after the ticker, so a truthiness check
+    # sees "UHR" as a sourced name and never reaches the curated "Swatch Group
+    # AG". See discovery_signal_extractor.is_placeholder_company_name.
+    ticker_value = str(signal.get("ticker") or extracted.ticker or "")
     ci_name = identity.get("company_name")
     ci_sector = identity.get("sector")
     ci_industry = identity.get("industry")
     ci_country = identity.get("country")
+    name_source: str | None = None
+    name_source_tier: str | None = None
+    if ci_name and not is_placeholder_company_name(ci_name, ticker_value):
+        name_source = "provider_profile"
     if thesis_item is not None:
-        ci_name = ci_name or thesis_item.get("company_name")
+        curated_name = thesis_item.get("company_name")
+        if curated_name and is_placeholder_company_name(ci_name, ticker_value):
+            ci_name = curated_name
+            # Attributed to the curated registry — NOT to SEC or the provider.
+            name_source = thesis_item.get("universe_source") or "curated_theme_registry"
+            name_source_tier = (
+                thesis_item.get("source_tier") or "T3_curated_reference_list"
+            )
         ci_sector = ci_sector or thesis_item.get("sector")
         ci_industry = ci_industry or thesis_item.get("industry")
         ci_country = ci_country or thesis_item.get("country")
+
+    # Mirror the resolved display name (and its provenance) into the persisted
+    # signal so the candidate detail and the row agree. ``legal_name`` is left
+    # exactly as the scan produced it — a curated display name is not evidence
+    # of a legal name and must never be presented as SEC-sourced.
+    if isinstance(signal.get("identity"), dict):
+        signal["identity"]["company_name"] = ci_name
+        signal["identity"]["company_name_source"] = name_source
+        signal["identity"]["company_name_source_tier"] = name_source_tier
+    if thesis_match_json is not None and thesis_item is not None:
+        thesis_match_json["company_name"] = thesis_item.get("company_name")
+        thesis_match_json["company_name_source"] = name_source
+        thesis_match_json["company_name_source_tier"] = name_source_tier
 
     return DiscoveryCandidate(
         id=uuid.uuid4(),
@@ -462,6 +504,52 @@ async def create_pending_run(
     return run
 
 
+def get_supported_themes() -> dict[str, Any]:
+    """
+    Phase 27.1B — the themes/sectors an admin can actually build a universe for.
+
+    Joins the parser's theme table (what will MATCH) with the curated registry
+    (what companies actually BACK the theme), so the UI can never advertise a
+    theme that parses but yields an empty universe. Pure, deterministic, no DB.
+    """
+    themes: list[dict[str, Any]] = []
+    for theme in parser_supported_themes():
+        entries = THEME_COMPANY_REGISTRY.get(str(theme["id"]), [])
+        countries = sorted({e["country"] for e in entries if e.get("country")})
+        regions = sorted(
+            {r for r in (region_for_country(c) for c in countries) if r}
+        )
+        themes.append(
+            {
+                **theme,
+                "regions": regions,
+                "countries": countries,
+                "universe_company_count": len(entries),
+            }
+        )
+
+    examples: list[str] = []
+    for theme in themes:
+        for example in theme.get("examples") or []:
+            if example not in examples:
+                examples.append(example)
+
+    return {
+        "themes": themes,
+        "sectors": get_supported_sector_aliases(),
+        "examples": examples,
+        "coverage_note": (
+            "Thesis discovery runs against a bounded curated universe "
+            "bootstrap, not a full-market scan. Only the themes listed here "
+            "resolve to companies today, and each theme is backed by a small "
+            "hand-curated list of real public issuers — it is not an "
+            "exhaustive index of the segment. Results are internal research "
+            "candidates requiring human review; they are not investment "
+            "advice and carry no recommendation."
+        ),
+    }
+
+
 async def create_pending_thesis_run(
     db: AsyncSession, payload: ThesisDiscoveryRunCreate
 ) -> DiscoveryRun:
@@ -622,14 +710,21 @@ async def process_run(
     for entry in universe:
         ticker = entry["ticker"]
         exchange = entry["exchange"]
+        thesis_item = thesis_ctx.get(ticker)
+        extract_kwargs: dict[str, Any] = {
+            "ticker": ticker,
+            "exchange": exchange,
+            "provider_name": provider,
+            "lookback_days": lookback_days,
+        }
+        # Only thesis runs carry a curated name. Passing it lets the extractor
+        # name the stub company row properly instead of creating it as the bare
+        # ticker — the stub name is what used to shadow the curated one.
+        curated_name = (thesis_item or {}).get("company_name")
+        if curated_name:
+            extract_kwargs["company_name"] = curated_name
         try:
-            extracted = await extract(
-                db,
-                ticker=ticker,
-                exchange=exchange,
-                provider_name=provider,
-                lookback_days=lookback_days,
-            )
+            extracted = await extract(db, **extract_kwargs)
         except Exception as exc:  # defensive — never let one ticker fail the run
             logger.warning("Discovery extraction failed for %s: %s", ticker, exc)
             warnings.append(f"{ticker}: extraction error — {exc}")
@@ -651,9 +746,7 @@ async def process_run(
             warnings.append(f"{ticker}: {w}")
 
         score = score_signal(extracted.signal)
-        candidate = _build_candidate(
-            run.id, extracted, score, thesis_item=thesis_ctx.get(ticker)
-        )
+        candidate = _build_candidate(run.id, extracted, score, thesis_item=thesis_item)
         db.add(candidate)
         created.append(candidate)
 
@@ -937,19 +1030,16 @@ async def run_candidate_analysis(
     provider = candidate.raw_signal_json.get("provider_name") if candidate.raw_signal_json else None
     provider = provider or settings.discovery_default_provider
 
-    # Ensure the company exists so the workflow can resolve it.
-    company = await company_service.get_company_by_ticker(
-        db, candidate.ticker, candidate.exchange
+    # Ensure the company exists so the workflow can resolve it. Routed through
+    # the shared helper so a company row still stuck on its bare-ticker stub
+    # name is upgraded to the candidate's resolved name before the full
+    # analysis (and its report title) is generated.
+    company = await ensure_company(
+        db,
+        candidate.ticker,
+        candidate.exchange,
+        company_name=candidate.company_name,
     )
-    if company is None:
-        company = await company_service.create_company(
-            db,
-            CompanyCreate(
-                ticker=candidate.ticker,
-                exchange=candidate.exchange,
-                name=candidate.company_name or candidate.ticker,
-            ),
-        )
 
     final_state = await runner(
         db,

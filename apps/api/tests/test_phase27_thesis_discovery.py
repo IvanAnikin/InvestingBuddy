@@ -175,7 +175,9 @@ def _extracted(signal: dict, *, status: str = "ok") -> ExtractedSignal:
 def _fake_extractor(strong: set[str] | None = None):
     strong = strong or set()
 
-    async def _extract(db, *, ticker, exchange, provider_name, lookback_days):
+    async def _extract(
+        db, *, ticker, exchange, provider_name, lookback_days, company_name=None
+    ):
         sig = _signal(ticker, strong=(not strong or ticker in strong))
         sig["ticker"] = ticker
         sig["exchange"] = exchange

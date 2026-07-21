@@ -1,9 +1,32 @@
 # Phase 27.1 — Exchange-Aware Thesis Discovery + Luxury/Watch Theme Expansion
 
-**Status:** SPEC — not implemented
+**Status:** PR A ✅ merged (`17e17f7` + handoff hotfix `9f55035`) · PR B ✅ implemented,
+pending review/merge/staging validation
 **Date:** 2026-07-21
 **Baseline:** `main` @ `0329b56` (Phase 27, deployed, staging-verified)
-**Split:** PR A (`feat/phase-27-1a-exchange-aware-sec`) → PR B (`feat/phase-27-1b-luxury-theme`)
+**Split:** PR A (`feature/phase-27-1a-exchange-aware-sec`) → PR B
+(`feature/phase-27-1b-luxury-watch-theme`)
+
+> **As-built deltas from this spec (PR B).** The spec is kept verbatim below as the
+> design record; where the implementation diverged, the implementation is authoritative:
+>
+> | Spec (§4) | As built | Why |
+> |---|---|---|
+> | `EL.PA` (EssilorLuxottica) in the luxury registry | **omitted** | `EL` on `PA` is the exact collision class PR A guards; it adds no luxury coverage the other ten entries lack, and leaving it out keeps the registry free of a ticker whose US homograph (Estée Lauder) is a live hazard. Re-add only with an explicit verified `sec_issuer_registry` mapping. |
+> | `sector_matches(a, b)` | `sector_matches(user_sector, company_sector, company_industries=None)` | Matching "Watches & Jewelry" against a `Consumer Discretionary` issuer needs the company's industry too — a two-argument form cannot express it. |
+> | `SECTOR_ALIASES` / `INDUSTRY_ALIASES` public | private `_SECTOR_ALIASES` / `_INDUSTRY_ALIASES` + `get_supported_sector_aliases()` | Callers need the *derived view* (canonical → aliases + industries), not the raw table; keeping the tables private stops them being mutated in place. |
+> | Response keys `key` / `example_thesis` / `company_count` / `regions_available` / `sample_keywords` / `notice` | `id` / `examples[]` / `universe_company_count` / `regions` / `keywords` / `coverage_note` | Plural `examples` lets one theme offer several starting points (luxury has three); the rest align with the existing schema vocabulary. |
+> | `THEME_LABELS` | `_THEME_DISPLAY` (label + examples) beside `_THEME_TABLE` | Same idea; examples live with the label rather than in a second table. |
+> | UI chip `data-testid="theme-chip-<key>"`, help panel `supported-themes-help` | `theme-example-chip` (one per example) + `supported-themes` / `thesis-no-match-help` | Chips are per-*example*, not per-theme, so a per-theme testid would be ambiguous. |
+> | `company_name_source ∈ {provider, curated_registry, ticker_placeholder}` | `{provider_profile, curated_theme_registry, null}` + `company_name_source_tier` | Values reuse the strings already stored in `universe_source` / `source_tier`, so provenance is one vocabulary rather than two. |
+> | `_ensure_company(..., name=...)` | `ensure_company(..., company_name=...)` (public) | `market_discovery_service.run_candidate_analysis` needs it too, so it stopped being private; it also now **upgrades** an existing bare-ticker stub, not just names new ones. |
+> | Test file `test_phase27_1b_luxury_theme.py` | `test_phase27_1b_luxury_watch_theme.py` | Naming only. |
+>
+> **Added beyond the spec:** `industry_matches()`; a test asserting theme phrase sets stay
+> pairwise disjoint (§4.1 asked for it — it passes); a test asserting **every advertised
+> example builds a non-empty universe**, which caught a spec-authored example
+> ("European fintech and neobank companies") the registry could not satisfy; and
+> `Denmark` / `Hong Kong` country phrases in the parser (§4.3 required them).
 
 Phase 27 shipped thesis-to-universe discovery. Two correctness defects were found in
 use: a safety gate that rejects legitimate company names, and a SEC lookup that

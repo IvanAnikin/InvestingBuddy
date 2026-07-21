@@ -399,6 +399,34 @@ export interface GeneratedUniverse {
   requested_max: number;
 }
 
+// Phase 27.1B — a research theme the thesis parser can match, offered in the
+// admin UI as a starting point. Never a recommendation; describes a search.
+export interface SupportedTheme {
+  id: string;
+  label: string;
+  keywords: string[];
+  sectors: string[];
+  industries: string[];
+  examples: string[];
+  regions: string[];
+  countries: string[];
+  universe_company_count: number;
+}
+
+export interface SupportedSectorAlias {
+  sector: string;
+  aliases: string[];
+  industries: string[];
+}
+
+export interface SupportedThemesResponse {
+  themes: SupportedTheme[];
+  sectors: SupportedSectorAlias[];
+  examples: string[];
+  coverage_note: string;
+  disclaimer?: string;
+}
+
 // Phase 27 — request payload for a thesis / market-segment discovery run.
 export interface ThesisDiscoveryRunCreate {
   thesis_text: string;

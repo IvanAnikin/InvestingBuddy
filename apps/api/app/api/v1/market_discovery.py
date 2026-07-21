@@ -14,6 +14,7 @@ Hard guarantees:
     rejected (422) to prevent an accidental full-market scan.
 
 Endpoints:
+  GET    /api/v1/market-discovery/supported-themes
   GET    /api/v1/market-discovery/runs
   POST   /api/v1/market-discovery/runs
   GET    /api/v1/market-discovery/runs/{run_id}
@@ -40,6 +41,7 @@ from app.schemas.market_discovery import (
     DiscoveryRunRead,
     DiscoveryRunSummary,
     RunCandidateAnalysisResponse,
+    SupportedThemesResponse,
     ThesisDiscoveryRunCreate,
 )
 from app.services import market_discovery_service as svc
@@ -118,6 +120,24 @@ async def create_discovery_run(
 # ---------------------------------------------------------------------------
 # Thesis runs (Phase 27 — market segment / thesis-to-universe discovery)
 # ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/supported-themes",
+    response_model=SupportedThemesResponse,
+    summary="List thesis themes and sector aliases the parser supports (admin)",
+    description=(
+        "ADMIN/INTERNAL ONLY. Returns the research themes a thesis can match, "
+        "the sector aliases that resolve to each canonical sector, and "
+        "recommendation-free example queries the admin UI offers as starting "
+        "points. Derived from the parser and the curated registry, so it can "
+        "never advertise a theme that yields an empty universe. Thesis "
+        "discovery runs against a bounded curated universe bootstrap — not a "
+        "full-market scan. " + _INTERNAL
+    ),
+)
+async def list_supported_themes() -> SupportedThemesResponse:
+    return SupportedThemesResponse.model_validate(svc.get_supported_themes())
 
 
 @router.post(

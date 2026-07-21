@@ -187,6 +187,73 @@ const server = createServer((req, res) => {
   // Phase 25 / 25.1 — Market Candidate Discovery (internal only, async runs).
   const DISC =
     "INTERNAL ADMIN USE ONLY. NOT INVESTMENT ADVICE. NOT A PUBLIC RECOMMENDATION.";
+  // Phase 27.1B — supported themes / sector taxonomy for the thesis form.
+  if (path === "/api/v1/market-discovery/supported-themes") {
+    return send(res, 200, {
+      themes: [
+        {
+          id: "defense",
+          label: "Defense / aerospace",
+          keywords: ["defense", "aerospace", "nato"],
+          sectors: ["Industrials"],
+          industries: ["Aerospace & Defense"],
+          examples: [
+            "European defense suppliers benefiting from NATO spending",
+          ],
+          regions: ["Europe", "North America"],
+          countries: ["Germany", "United States"],
+          universe_company_count: 10,
+        },
+        {
+          id: "semiconductors",
+          label: "Semiconductors / chip equipment",
+          keywords: ["semiconductor", "chip"],
+          sectors: ["Technology"],
+          industries: ["Semiconductors"],
+          examples: [
+            "US semiconductor equipment companies with recent positive catalysts",
+          ],
+          regions: ["North America"],
+          countries: ["United States"],
+          universe_company_count: 9,
+        },
+        {
+          id: "luxury_goods",
+          label: "Luxury goods / watches / jewelry",
+          keywords: ["luxury", "watches", "jewelry", "personal goods"],
+          sectors: ["Consumer Discretionary"],
+          industries: ["Luxury Goods", "Watches & Jewelry"],
+          examples: [
+            "European watch producers",
+            "Swiss watch companies",
+            "European luxury goods companies",
+          ],
+          regions: ["Europe"],
+          countries: ["Switzerland", "France"],
+          universe_company_count: 11,
+        },
+      ],
+      sectors: [
+        {
+          sector: "Consumer Discretionary",
+          aliases: ["luxury", "luxury goods", "watches", "jewelry"],
+          industries: ["Luxury Goods", "Watches & Jewelry"],
+        },
+        { sector: "Industrials", aliases: ["defense"], industries: ["Aerospace & Defense"] },
+      ],
+      examples: [
+        "European defense suppliers benefiting from NATO spending",
+        "US semiconductor equipment companies with recent positive catalysts",
+        "European watch producers",
+        "Swiss watch companies",
+        "European luxury goods companies",
+      ],
+      coverage_note:
+        "Thesis discovery runs against a bounded curated universe bootstrap, not a full-market scan. Results are internal research candidates requiring human review; they are not investment advice and carry no recommendation.",
+      disclaimer: DISC,
+    });
+  }
+
   // Phase 27 — thesis / market-segment discovery run (POST returns pending).
   if (path === "/api/v1/market-discovery/thesis-runs" && req.method === "POST") {
     return send(res, 201, {

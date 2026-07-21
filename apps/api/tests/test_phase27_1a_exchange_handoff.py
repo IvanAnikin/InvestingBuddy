@@ -158,7 +158,7 @@ async def test_extract_signal_passes_exchange_to_the_workflow_runner():
 
     db = AsyncMock()
     with patch(
-        "app.services.discovery_signal_extractor._ensure_company",
+        "app.services.discovery_signal_extractor.ensure_company",
         new=AsyncMock(return_value=_company("BA", "LSE")),
     ):
         await extract_signal(

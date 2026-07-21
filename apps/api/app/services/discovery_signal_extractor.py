@@ -253,14 +253,57 @@ def map_state_to_signal(
 # ---------------------------------------------------------------------------
 
 
-async def _ensure_company(db: AsyncSession, ticker: str, exchange: str):
-    """Return an existing company for (ticker, exchange) or create a stub one."""
+def is_placeholder_company_name(name: str | None, ticker: str) -> bool:
+    """
+    True when ``name`` carries no more information than the ticker itself.
+
+    ``ensure_company`` used to create every stub company as ``name=ticker``.
+    That stub name then flowed back out as ``final_state["company_name"]``,
+    where it was TRUTHY — so the "fall back to the curated registry name" branch
+    downstream never fired and candidates displayed "UHR" instead of "Swatch
+    Group AG". Truthiness was the wrong test; this is the right one.
+    """
+    if not name or not str(name).strip():
+        return True
+    normalized = str(name).strip().upper()
+    bare = ticker.strip().upper()
+    if normalized == bare:
+        return True
+    # "UHR.SW" / "BA.LSE" — the ticker with its venue suffix is equally bare.
+    return normalized.split(".", 1)[0] == bare and "." in normalized
+
+
+async def ensure_company(
+    db: AsyncSession,
+    ticker: str,
+    exchange: str,
+    *,
+    company_name: str | None = None,
+):
+    """
+    Return an existing company for (ticker, exchange) or create a stub one.
+
+    ``company_name`` is an optional curated display name (e.g. from the thesis
+    universe registry). It is used only to avoid creating — or to upgrade — a
+    stub whose name is nothing but the ticker. A real, already-sourced name is
+    never overwritten, and nothing here is fabricated: the caller supplies a
+    name that came from a real source or supplies none at all.
+    """
+    hint = (company_name or "").strip()
     company = await company_service.get_company_by_ticker(db, ticker, exchange)
     if company is not None:
+        if hint and is_placeholder_company_name(company.name, ticker):
+            company.name = hint
+            await db.commit()
+            await db.refresh(company)
         return company
     return await company_service.create_company(
         db,
-        CompanyCreate(ticker=ticker, exchange=exchange, name=ticker),
+        CompanyCreate(
+            ticker=ticker,
+            exchange=exchange,
+            name=hint or ticker,
+        ),
     )
 
 
@@ -276,6 +319,7 @@ async def extract_signal(
     exchange: str,
     provider_name: str,
     lookback_days: int = 90,
+    company_name: str | None = None,
     run_analysis: AnalysisRunner | None = None,
 ) -> ExtractedSignal:
     """
@@ -284,12 +328,17 @@ async def extract_signal(
     Reuses the company-analysis workflow (injectable via ``run_analysis`` for
     tests). Never raises — a per-ticker failure is captured on the result so the
     surrounding run can continue with the other tickers.
+
+    ``company_name`` is an optional curated display name from the thesis
+    universe registry; it only ever replaces a bare-ticker stub name.
     """
     ticker_u = ticker.upper()
     runner = run_analysis or run_company_analysis
 
     try:
-        company = await _ensure_company(db, ticker_u, exchange)
+        company = await ensure_company(
+            db, ticker_u, exchange, company_name=company_name
+        )
         # Pass ticker + exchange explicitly, not just company_id. The workflow
         # can load them from the company row, but the venue decides whether SEC
         # EDGAR may be consulted at all, so it must be stated at the seam rather
