@@ -444,6 +444,16 @@ credential before it can reach a log line, and the structured formatter
 (`app.core.structured_logging`) redacts sensitive field names and collapses
 newlines so one event is always one line (no log forging).
 
+**Third-party request-URL logs.** Setting the root logger to `INFO` also surfaces
+INFO logs from libraries such as `httpx`, which log the full request URL —
+`GET https://eodhd.com/api/eod/AAPL.US?api_token=<key> ...` — embedding the EODHD
+key in the query string. Two guards prevent that leak: `httpx` / `httpcore` /
+`urllib3` are capped at `WARNING` (so those request lines never emit), and a
+`RedactingFilter` on the stdout handler scrubs token-bearing query params and
+Authorization/Cookie echoes out of **every** record — including anything a
+third-party library emits at WARNING/ERROR. Verify with the no-secrets grep below
+(look specifically for `api_token=` returning only `***REDACTED***`, never a key).
+
 ### Controlling verbosity
 
 Two app settings (no code change needed):

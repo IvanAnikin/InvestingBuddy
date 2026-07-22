@@ -26,8 +26,14 @@ from app.core.log_redaction import (
     is_sensitive_key,
     redact_headers,
     redact_mapping,
+    redact_text,
     redact_url,
     redact_value,
+)
+from app.core.logging_config import (
+    _NOISY_URL_LOGGERS,
+    RedactingFilter,
+    configure_logging,
 )
 from app.core.request_logging import route_family
 from app.core.structured_logging import format_event, log_event
@@ -133,6 +139,84 @@ def test_redact_url_strips_token_query_values_only() -> None:
 def test_redact_url_no_query_unchanged() -> None:
     url = "https://ib-stg-api.azurewebsites.net/api/v1/market-discovery/runs"
     assert redact_url(url) == url
+
+
+# ===========================================================================
+# Free-text scrubbing + third-party log suppression (27.1D hotfix)
+# ===========================================================================
+
+
+def test_redact_text_scrubs_eodhd_api_token_in_httpx_url() -> None:
+    # The exact shape httpx logs at INFO for an EODHD price call.
+    line = (
+        'HTTP Request: GET https://eodhd.com/api/eod/AAPL.US'
+        "?api_token=REALEODHDKEY1234567890&fmt=json&order=a "
+        '"HTTP/1.1 200 OK"'
+    )
+    out = redact_text(line)
+    assert "REALEODHDKEY1234567890" not in out
+    assert f"api_token={REDACTED}" in out
+    # Non-secret params + the readable URL structure survive.
+    assert "fmt=json" in out
+    assert "order=a" in out
+    assert "/api/eod/AAPL.US" in out
+
+
+def test_redact_text_scrubs_authorization_and_cookie_echoes() -> None:
+    line = "req headers Authorization: Bearer abc.def.ghi Cookie: ib_session=deadbeef"
+    out = redact_text(line)
+    assert "abc.def.ghi" not in out
+    assert "deadbeef" not in out
+    assert REDACTED in out
+
+
+def test_redact_text_various_secret_query_params() -> None:
+    for name, val in [
+        ("token", "T0kEnValue"),
+        ("api_key", "sk-live-xyz"),
+        ("access_token", "AT-9988"),
+        ("password", "hunter2pw"),
+        ("secret", "sshh-123"),
+    ]:
+        out = redact_text(f"https://x/y?{name}={val}&keep=1")
+        assert val not in out, name
+        assert f"{name}={REDACTED}" in out
+        assert "keep=1" in out
+
+
+def test_redact_text_preserves_nonsecret_lines() -> None:
+    line = "discovery_run_completed run_id=abc status=completed candidate_count=3"
+    assert redact_text(line) == line
+
+
+def test_redacting_filter_rewrites_record_message() -> None:
+    filt = RedactingFilter()
+    record = logging.LogRecord(
+        name="httpx",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg="GET https://eodhd.com/api/eod/AAPL.US?api_token=%s&fmt=json",
+        args=("LEAKYKEY42",),
+        exc_info=None,
+    )
+    assert filt.filter(record) is True
+    rendered = record.getMessage()
+    assert "LEAKYKEY42" not in rendered
+    assert f"api_token={REDACTED}" in rendered
+
+
+def test_configure_logging_suppresses_noisy_url_loggers_and_attaches_filter() -> None:
+    configure_logging()
+    # httpx / httpcore / urllib3 are capped at WARNING so their INFO request-URL
+    # lines (which embed ?api_token=<key>) never emit.
+    for name in _NOISY_URL_LOGGERS:
+        assert logging.getLogger(name).level == logging.WARNING, name
+    # Our stdout handler carries the RedactingFilter as a defense-in-depth net.
+    root = logging.getLogger()
+    ours = [h for h in root.handlers if getattr(h, "name", "") == "investingbuddy-stdout"]
+    assert ours, "investingbuddy stdout handler not attached"
+    assert any(isinstance(f, RedactingFilter) for f in ours[0].filters)
 
 
 # ===========================================================================

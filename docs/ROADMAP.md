@@ -1475,6 +1475,15 @@ Redaction is centralised in `app/core/log_redaction.py` (redacts by key name +
 token-bearing URL query params) and the structured formatter redacts sensitive
 field names and collapses newlines (no log forging).
 
+**Hotfix — third-party request-URL logs (`fix/phase-27-1d-suppress-thirdparty-url-logs`).**
+Staging validation caught that raising the root logger to INFO *newly surfaced*
+`httpx`'s INFO request-URL logs, which embed the EODHD key
+(`?api_token=<key>`) — a leak the pre-27.1D unconfigured root logger had hidden by
+dropping INFO. Fixed by capping `httpx`/`httpcore`/`urllib3` at WARNING and adding
+a `RedactingFilter` on the stdout handler that scrubs token-bearing query params
+and Authorization/Cookie echoes from **every** record (`log_redaction.redact_text`).
+Re-validated on staging: `api_token=` now renders only `***REDACTED***`.
+
 **Config.** `LOG_LEVEL` (default `INFO`; set `WARNING` to reduce verbosity) and
 `REQUEST_LOGGING_ENABLED` (default `true`) — no code change to tune.
 

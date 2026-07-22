@@ -20,6 +20,7 @@ unit-testable and reusable.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Mapping
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -133,6 +134,39 @@ def redact_mapping(data: Mapping[str, Any], *, _depth: int = 0) -> dict[str, Any
             out[key] = redact_mapping(value, _depth=_depth + 1)
         else:
             out[key] = value
+    return out
+
+
+# Free-text scrubbing (Phase 27.1D hotfix) --------------------------------------
+# A defense-in-depth net for arbitrary log lines emitted by ANY code path —
+# including third-party libraries (e.g. httpx logs the full request URL at INFO,
+# which embeds ``?api_token=<key>`` for EODHD price calls). These patterns
+# neutralise the secret VALUE while leaving the surrounding line readable.
+
+# Query-param / key=value secrets: <name>=<value-up-to & space quote < >>.
+_QUERY_SECRET_RE = re.compile(
+    r"(?i)(\b(?:api[_-]?token|api[_-]?key|apikey|access[_-]?token|token|secret"
+    r"|password|passwd|signature|sig|auth[_-]?token|key)=)([^&\s\"'<>]+)"
+)
+# Authorization header echoed into a log line (Bearer/Basic or any scheme).
+_AUTH_HEADER_RE = re.compile(r"(?i)(authorization:\s*)(\S+)(\s+\S+)?")
+# Cookie / Set-Cookie header value echoed into a log line (to end of line).
+_COOKIE_HEADER_RE = re.compile(r"(?i)(\bset-cookie:\s*|\bcookie:\s*)([^\r\n]+)")
+
+
+def redact_text(text: str) -> str:
+    """Scrub secret values out of an arbitrary log message string.
+
+    Redacts token-bearing ``key=value`` pairs (URL query params), Authorization
+    header echoes, and Cookie/Set-Cookie values. Never raises — a non-string or
+    unmatchable input is returned unchanged. Intended for a logging Filter so the
+    guarantee holds for third-party log records too, not only our own events.
+    """
+    if not text or not isinstance(text, str):
+        return text
+    out = _QUERY_SECRET_RE.sub(lambda m: f"{m.group(1)}{REDACTED}", text)
+    out = _AUTH_HEADER_RE.sub(lambda m: f"{m.group(1)}{REDACTED}", out)
+    out = _COOKIE_HEADER_RE.sub(lambda m: f"{m.group(1)}{REDACTED}", out)
     return out
 
 

@@ -17,6 +17,8 @@ from __future__ import annotations
 import logging
 import sys
 
+from app.core.log_redaction import redact_text
+
 # Name tag on our handler so configuration is idempotent — we never attach a
 # second copy, and we never clobber a gunicorn/uvicorn handler that is already
 # present.
@@ -24,6 +26,36 @@ _HANDLER_NAME = "investingbuddy-stdout"
 
 _LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s %(message)s"
 _DATE_FORMAT = "%Y-%m-%dT%H:%M:%S%z"
+
+# Third-party loggers that emit request URLs (with credentials in the query
+# string) at INFO. Before Phase 27.1D the root logger was unconfigured so these
+# were dropped; once we set the root to INFO they surfaced — httpx logs
+# ``GET https://eodhd.com/api/eod/AAPL.US?api_token=<key> ...`` which leaks the
+# EODHD key. Cap them at WARNING so those request lines never emit. The
+# RedactingFilter below is the defense-in-depth net for anything that slips
+# through at WARNING/ERROR.
+_NOISY_URL_LOGGERS = ("httpx", "httpcore", "urllib3")
+
+
+class RedactingFilter(logging.Filter):
+    """Scrub secret values from every record that reaches the handler.
+
+    Applied to our stdout handler so the "no secrets in logs" guarantee holds for
+    ALL log records — our own structured events AND third-party lines (e.g. an
+    httpx request URL echoed at WARNING). Runs the fully-rendered message through
+    :func:`app.core.log_redaction.redact_text` and never raises.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            message = record.getMessage()
+        except Exception:  # noqa: BLE001 — logging must never crash the app
+            return True
+        redacted = redact_text(message)
+        if redacted != message:
+            record.msg = redacted
+            record.args = ()
+        return True
 
 
 def _resolve_level(level: str | int | None) -> int:
@@ -58,8 +90,17 @@ def configure_logging(level: str | int | None = None) -> None:
         stream_handler.name = _HANDLER_NAME
         stream_handler.setFormatter(logging.Formatter(_LOG_FORMAT, datefmt=_DATE_FORMAT))
         stream_handler.setLevel(resolved)
+        stream_handler.addFilter(RedactingFilter())
         root.addHandler(stream_handler)
     else:
         for existing in root.handlers:
             if getattr(existing, "name", "") == _HANDLER_NAME:
                 existing.setLevel(resolved)
+                if not any(isinstance(f, RedactingFilter) for f in existing.filters):
+                    existing.addFilter(RedactingFilter())
+
+    # Silence third-party request-URL logging that would leak query-string
+    # credentials (see _NOISY_URL_LOGGERS). Kept at WARNING regardless of
+    # LOG_LEVEL so a verbose root never re-exposes them.
+    for noisy in _NOISY_URL_LOGGERS:
+        logging.getLogger(noisy).setLevel(logging.WARNING)
