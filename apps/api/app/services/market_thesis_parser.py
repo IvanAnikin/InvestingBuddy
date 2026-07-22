@@ -22,6 +22,8 @@ import re
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from app.services.discovery_filters import canonical_country, canonical_region
+from app.services.exchange_registry import region_for_country
 from app.services.sector_taxonomy import normalize_industry, normalize_sector
 
 # ---------------------------------------------------------------------------
@@ -388,6 +390,12 @@ _COUNTRY_TABLE: dict[str, tuple[str, str]] = {
     "china": ("China", "China"),
     "chinese": ("China", "China"),
     "united states": ("United States", "North America"),
+    # Phase 27.1C — common short forms so "US semiconductor equipment companies"
+    # auto-detects Country=United States (matched whole-word/phrase only).
+    "us": ("United States", "North America"),
+    "usa": ("United States", "North America"),
+    "u.s.": ("United States", "North America"),
+    "u.s.a.": ("United States", "North America"),
     "canada": ("Canada", "North America"),
     "canadian": ("Canada", "North America"),
 }
@@ -479,6 +487,16 @@ class ParsedThesis:
     warnings: list[str] = field(default_factory=list)
     confidence: float = 0.0
     needs_narrowing: bool = False
+    # Phase 27.1C — canonical single-value detections derived from the PROMPT
+    # TEXT, used to auto-fill the admin's Region / Country / Sector / Industry
+    # selectors. These describe what the text says; an explicit form value always
+    # overrides the corresponding detection (see ``parse_thesis`` precedence).
+    region: str | None = None
+    country: str | None = None
+    sector: str | None = None
+    industry: str | None = None
+    theme: str | None = None
+    extraction_source: str = "prompt_text"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -540,6 +558,12 @@ def parse_thesis(
 
     themes: list[str] = []
     keywords: list[str] = []
+    # Sectors/industries implied by the TEXT themes only (kept separate from the
+    # merged ``sectors``/``industries`` lists, which also carry explicit seeds)
+    # so the canonical single-value detections below reflect the prompt, not the
+    # admin's structured filters.
+    text_theme_sectors: list[str] = []
+    text_theme_industries: list[str] = []
 
     # ── Structured sector / industry filters, taxonomy-normalized ─────────
     # The admin's wording is kept AND its canonical form is added, so a thesis
@@ -572,6 +596,8 @@ def parse_thesis(
             themes.append(theme)
             sectors.extend(spec.get("sectors", []))
             industries.extend(spec.get("industries", []))
+            text_theme_sectors.extend(spec.get("sectors", []))
+            text_theme_industries.extend(spec.get("industries", []))
             keywords.extend(matched_phrases)
 
     # ── Explicit industry keywords (structured input) ─────────────────────
@@ -586,21 +612,94 @@ def parse_thesis(
                     sectors.extend(spec.get("sectors", []))
                     industries.extend(spec.get("industries", []))
 
-    # ── Regions ───────────────────────────────────────────────────────────
-    regions: list[str] = []
-    countries: list[str] = []
-    if region:
-        regions.append(region.strip())
-    for canonical, phrases in _REGION_TABLE.items():
+    # ── Regions & countries — prompt-text detection ───────────────────────
+    # First, what the PROMPT TEXT alone says (used to auto-fill the selectors).
+    text_regions: list[str] = []
+    for canon, phrases in _REGION_TABLE.items():
         if any(_contains(padded, p) or padded.strip().startswith(p) for p in phrases):
-            regions.append(canonical)
-    # ── Countries ─────────────────────────────────────────────────────────
-    if country:
-        countries.append(country.strip())
-    for phrase, (canonical_country, canonical_region) in _COUNTRY_TABLE.items():
+            text_regions.append(canon)
+    text_countries: list[str] = []
+    for phrase, (c_country, c_region) in _COUNTRY_TABLE.items():
         if _contains(padded, phrase):
-            countries.append(canonical_country)
-            regions.append(canonical_region)
+            text_countries.append(c_country)
+            text_regions.append(c_region)
+    text_regions = _dedup(text_regions)
+    text_countries = _dedup(text_countries)
+
+    # Canonical single-value detections for selector auto-fill.
+    detected_country = text_countries[0] if text_countries else None
+    detected_region = (
+        region_for_country(detected_country)
+        if detected_country
+        else (text_regions[0] if text_regions else None)
+    )
+    detected_theme = themes[0] if themes else None
+    detected_sector = next(
+        (cs for cs in (normalize_sector(s) for s in text_theme_sectors) if cs),
+        None,
+    )
+    # Prefer an industry implied by a matched keyword (more specific than the
+    # theme's first industry, e.g. "watch" -> "Watches & Jewelry").
+    detected_industry = next(
+        (ci for ci in (normalize_industry(k) for k in keywords) if ci), None
+    ) or next(
+        (normalize_industry(i) or i for i in text_theme_industries if i), None
+    )
+
+    # ── Precedence: an explicit form value overrides the prompt detection ──
+    # Country is strict; when it is set, the region follows the country and the
+    # prompt's own region detection is not allowed to broaden the search.
+    conflict_warnings: list[str] = []
+    explicit_region = canonical_region(region) or (region.strip() if region else None)
+    explicit_country = canonical_country(country) or (
+        country.strip() if country else None
+    )
+    explicit_sector = sector.strip() if sector and sector.strip() else None
+
+    eff_country = explicit_country or detected_country
+    eff_region: str | None
+    if explicit_region:
+        eff_region = explicit_region
+    elif explicit_country:
+        eff_region = region_for_country(explicit_country) or detected_region
+    else:
+        eff_region = detected_region
+    eff_sector = (
+        normalize_sector(explicit_sector) if explicit_sector else detected_sector
+    )
+    explicit_industry = industry.strip() if industry and industry.strip() else None
+    eff_industry = (
+        (normalize_industry(explicit_industry) or explicit_industry)
+        if explicit_industry
+        else detected_industry
+    )
+
+    def _diff(a: str | None, b: str | None) -> bool:
+        return bool(a and b and a.strip().lower() != b.strip().lower())
+
+    if _diff(explicit_country, detected_country):
+        conflict_warnings.append(
+            f"Prompt mentions {detected_country}, but explicit "
+            f"Country={explicit_country} was selected."
+        )
+    if _diff(explicit_region, detected_region):
+        conflict_warnings.append(
+            f"Prompt mentions {detected_region}, but explicit "
+            f"Region={explicit_region} was selected."
+        )
+    if (
+        explicit_sector
+        and detected_sector
+        and normalize_sector(explicit_sector) != detected_sector
+    ):
+        conflict_warnings.append(
+            f"Prompt implies sector {detected_sector}, but explicit "
+            f"Sector={explicit_sector} was selected."
+        )
+
+    # ── Effective filter lists the universe builder acts on ────────────────
+    regions: list[str] = [eff_region] if eff_region else []
+    countries: list[str] = [eff_country] if eff_country else []
 
     # ── Size hints ────────────────────────────────────────────────────────
     size_hints: list[str] = []
@@ -673,6 +772,9 @@ def parse_thesis(
         warnings.append("Empty thesis text.")
         needs_narrowing = True
 
+    # Surface any explicit-vs-prompt conflicts (the explicit choice is kept).
+    warnings.extend(conflict_warnings)
+
     return ParsedThesis(
         normalized_text=normalized,
         themes=_dedup(themes),
@@ -690,4 +792,10 @@ def parse_thesis(
         warnings=warnings,
         confidence=confidence,
         needs_narrowing=needs_narrowing,
+        region=eff_region,
+        country=eff_country,
+        sector=eff_sector,
+        industry=eff_industry,
+        theme=detected_theme,
+        extraction_source="prompt_text",
     )

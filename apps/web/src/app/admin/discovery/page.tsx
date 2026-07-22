@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import {
   createDiscoveryRun,
   createThesisDiscoveryRun,
@@ -9,14 +9,20 @@ import {
   getDiscoveryRun,
   listDiscoveryCandidates,
   listDiscoveryRuns,
+  listSupportedFilters,
   listSupportedThemes,
+  parseThesis,
   runCandidateAnalysis,
 } from "@/lib/api";
 import type {
+  CountryFilterOption,
   DiscoveryCandidate,
   DiscoveryCandidateDetail,
   DiscoveryRun,
   DiscoveryRunCreate,
+  FilterOption,
+  ParseThesisResponse,
+  SupportedFiltersResponse,
   SupportedThemesResponse,
   ThesisDiscoveryRunCreate,
 } from "@/types/api";
@@ -50,6 +56,147 @@ const PROVIDERS = [
 
 const inputCls =
   "w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-sky-400/50 focus:outline-none focus:ring-2 focus:ring-sky-500/40";
+
+// ---------------------------------------------------------------------------
+// Searchable controlled select (Phase 27.1C)
+//
+// A combobox whose allowed values come from the backend. The admin can type to
+// filter, but cannot commit a value outside the option set — arbitrary text is
+// rejected on blur (reverting to the last valid selection). Empty = "not
+// specified" and is always allowed. Selecting/clearing marks the field as
+// manually edited so a later prompt-parse does not overwrite the admin's choice.
+// ---------------------------------------------------------------------------
+
+function SearchableSelect({
+  label,
+  value,
+  options,
+  onChange,
+  onManualEdit,
+  placeholder,
+  testId,
+  filterOption,
+}: {
+  label: string;
+  value: string;
+  options: FilterOption[];
+  onChange: (v: string) => void;
+  onManualEdit?: () => void;
+  placeholder?: string;
+  testId: string;
+  filterOption?: (opt: FilterOption) => boolean;
+}) {
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+  const [focused, setFocused] = useState(false);
+  const [dirty, setDirty] = useState(false);
+
+  const selectedLabel = options.find((o) => o.value === value)?.label ?? value;
+  const display = focused ? query : selectedLabel;
+  const available = options.filter((o) =>
+    filterOption ? filterOption(o) : true,
+  );
+  const filtered = available.filter((o) =>
+    o.label.toLowerCase().includes(query.trim().toLowerCase()),
+  );
+
+  function commit(v: string) {
+    onChange(v);
+    onManualEdit?.();
+  }
+
+  function handleBlur() {
+    // Delay so an option's onClick registers before we close.
+    window.setTimeout(() => {
+      setFocused(false);
+      setOpen(false);
+      if (!dirty) return; // focused and left without typing — keep selection
+      const q = query.trim().toLowerCase();
+      setDirty(false);
+      setQuery("");
+      if (!q) {
+        if (value) commit(""); // cleared the text -> unset
+        return;
+      }
+      const exact = available.find((o) => o.label.toLowerCase() === q);
+      if (exact) {
+        if (exact.value !== value) commit(exact.value);
+      }
+      // Arbitrary text that matches nothing is rejected: value is left unchanged.
+    }, 120);
+  }
+
+  return (
+    <div className="flex flex-col gap-1">
+      <label className="text-sm font-medium text-slate-300">{label}</label>
+      <div className="relative">
+        <input
+          className={inputCls}
+          data-testid={testId}
+          role="combobox"
+          aria-expanded={open}
+          aria-controls={`${testId}-options`}
+          aria-label={label}
+          autoComplete="off"
+          placeholder={placeholder}
+          value={display}
+          onFocus={() => {
+            setFocused(true);
+            setOpen(true);
+            setDirty(false);
+            setQuery("");
+          }}
+          onChange={(e) => {
+            setQuery(e.target.value);
+            setDirty(true);
+            setOpen(true);
+          }}
+          onBlur={handleBlur}
+        />
+        {value && !focused && (
+          <button
+            type="button"
+            aria-label={`Clear ${label}`}
+            data-testid={`${testId}-clear`}
+            onClick={() => commit("")}
+            className="absolute right-2 top-1/2 -translate-y-1/2 px-1 text-slate-500 hover:text-slate-200"
+          >
+            ×
+          </button>
+        )}
+        {open && filtered.length > 0 && (
+          <ul
+            id={`${testId}-options`}
+            className="absolute z-30 mt-1 max-h-56 w-full overflow-auto rounded-lg border border-white/10 bg-slate-900/95 py-1 shadow-xl backdrop-blur"
+            data-testid={`${testId}-options`}
+          >
+            {filtered.slice(0, 40).map((o) => (
+              <li key={o.value}>
+                <button
+                  type="button"
+                  data-testid={`${testId}-option`}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => {
+                    commit(o.value);
+                    setQuery("");
+                    setDirty(false);
+                    setFocused(false);
+                    setOpen(false);
+                  }}
+                  className={`block w-full px-3 py-1.5 text-left text-sm transition-colors hover:bg-sky-500/15 ${
+                    o.value === value ? "text-sky-200" : "text-slate-200"
+                  }`}
+                >
+                  {o.label}
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+}
 
 function runStatusColor(status: string): PillColor {
   if (status === "completed") return "green";
@@ -612,6 +759,14 @@ export default function DiscoveryPage() {
     null,
   );
 
+  // Phase 27.1C — controlled selector options + prompt-derived autofill.
+  const [filters, setFilters] = useState<SupportedFiltersResponse | null>(null);
+  const [detected, setDetected] = useState<ParseThesisResponse | null>(null);
+  // A field the admin has manually set is never overwritten by a later parse.
+  const regionEdited = useRef(false);
+  const countryEdited = useRef(false);
+  const sectorEdited = useRef(false);
+
   // Selected run + live detail (polled while processing) + candidates
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [runDetail, setRunDetail] = useState<DiscoveryRun | null>(null);
@@ -645,6 +800,52 @@ export default function DiscoveryPage() {
       cancelled = true;
     };
   }, []);
+
+  // Phase 27.1C — controlled selector options. Fetched once; a failure is
+  // non-fatal (the selects simply render no options until it succeeds).
+  useEffect(() => {
+    let cancelled = false;
+    async function fetchFilters() {
+      try {
+        const data = await listSupportedFilters();
+        if (!cancelled) setFilters(data);
+      } catch {
+        // Non-fatal.
+      }
+    }
+    void fetchFilters();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Phase 27.1C — debounced prompt-derived autofill. As the admin types (or
+  // pastes) a thesis, detect the Region/Country/Sector and auto-fill any field
+  // the admin has NOT manually edited. Manual edits are preserved.
+  useEffect(() => {
+    const text = thesisText.trim();
+    let cancelled = false;
+    const handle = window.setTimeout(async () => {
+      if (text.length < 3) {
+        if (!cancelled) setDetected(null);
+        return;
+      }
+      try {
+        const d = await parseThesis(text);
+        if (cancelled) return;
+        setDetected(d);
+        if (!regionEdited.current) setThesisRegion(d.region ?? "");
+        if (!countryEdited.current) setThesisCountry(d.country ?? "");
+        if (!sectorEdited.current) setThesisSector(d.sector ?? "");
+      } catch {
+        // Non-fatal: autofill is a convenience, manual entry still works.
+      }
+    }, 400);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(handle);
+    };
+  }, [thesisText]);
 
   useEffect(() => {
     let cancelled = false;
@@ -918,43 +1119,134 @@ export default function DiscoveryPage() {
               title="Supported themes — click an example to use it"
             />
 
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-              <div className="flex flex-col gap-1">
-                <label className="text-sm font-medium text-slate-300">
-                  Region (optional)
-                </label>
-                <input
-                  className={inputCls}
+            {/* Controlled Region / Country / Sector selectors (Phase 27.1C).
+                Values come from the backend; arbitrary text cannot be
+                submitted. Auto-filled from the prompt unless manually edited. */}
+            <div className="space-y-3" data-testid="thesis-filters">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                <SearchableSelect
+                  label="Region (optional)"
+                  testId="thesis-region"
                   value={thesisRegion}
-                  onChange={(e) => setThesisRegion(e.target.value)}
-                  placeholder="Europe"
-                  maxLength={100}
+                  options={filters?.regions ?? []}
+                  onChange={setThesisRegion}
+                  onManualEdit={() => {
+                    regionEdited.current = true;
+                  }}
+                  placeholder="Any region"
                 />
-              </div>
-              <div className="flex flex-col gap-1">
-                <label className="text-sm font-medium text-slate-300">
-                  Country (optional)
-                </label>
-                <input
-                  className={inputCls}
+                <SearchableSelect
+                  label="Country (optional)"
+                  testId="thesis-country"
                   value={thesisCountry}
-                  onChange={(e) => setThesisCountry(e.target.value)}
-                  placeholder="Germany"
-                  maxLength={100}
+                  options={filters?.countries ?? []}
+                  onChange={setThesisCountry}
+                  onManualEdit={() => {
+                    countryEdited.current = true;
+                  }}
+                  placeholder="Any country"
+                  filterOption={(o) =>
+                    !thesisRegion ||
+                    (o as CountryFilterOption).region === thesisRegion
+                  }
                 />
-              </div>
-              <div className="flex flex-col gap-1">
-                <label className="text-sm font-medium text-slate-300">
-                  Sector (optional)
-                </label>
-                <input
-                  className={inputCls}
+                <SearchableSelect
+                  label="Sector (optional)"
+                  testId="thesis-sector"
                   value={thesisSector}
-                  onChange={(e) => setThesisSector(e.target.value)}
-                  placeholder="Industrials"
-                  maxLength={100}
+                  options={filters?.sectors ?? []}
+                  onChange={setThesisSector}
+                  onManualEdit={() => {
+                    sectorEdited.current = true;
+                  }}
+                  placeholder="Any sector"
                 />
               </div>
+
+              {/* Prompt-derived detection preview + reset action. */}
+              {detected &&
+                (detected.region ||
+                  detected.country ||
+                  detected.sector ||
+                  detected.theme) && (
+                  <div
+                    className="flex flex-wrap items-center gap-2 text-xs text-slate-400"
+                    data-testid="thesis-detected"
+                  >
+                    <span className="text-slate-500">Detected:</span>
+                    <span className="text-slate-300">
+                      {[
+                        detected.region,
+                        detected.country,
+                        detected.sector,
+                        detected.theme,
+                      ]
+                        .filter(Boolean)
+                        .join(" · ")}
+                    </span>
+                    <button
+                      type="button"
+                      data-testid="thesis-reset-detected"
+                      onClick={() => {
+                        regionEdited.current = false;
+                        countryEdited.current = false;
+                        sectorEdited.current = false;
+                        setThesisRegion(detected.region ?? "");
+                        setThesisCountry(detected.country ?? "");
+                        setThesisSector(detected.sector ?? "");
+                      }}
+                      className="rounded border border-white/10 px-2 py-0.5 text-[11px] text-sky-300 transition-colors hover:border-sky-400/40 hover:text-sky-200"
+                    >
+                      Reset to detected
+                    </button>
+                  </div>
+                )}
+
+              {/* Conflict: an explicit selection contradicts the prompt. The
+                  explicit choice is kept; the admin is told the prompt differs. */}
+              {detected &&
+                (() => {
+                  const conflicts: string[] = [];
+                  if (
+                    detected.country &&
+                    thesisCountry &&
+                    detected.country !== thesisCountry
+                  )
+                    conflicts.push(
+                      `Prompt mentions ${detected.country}, but Country=${thesisCountry} was selected.`,
+                    );
+                  if (
+                    detected.region &&
+                    thesisRegion &&
+                    detected.region !== thesisRegion
+                  )
+                    conflicts.push(
+                      `Prompt mentions ${detected.region}, but Region=${thesisRegion} was selected.`,
+                    );
+                  if (
+                    detected.sector &&
+                    thesisSector &&
+                    detected.sector !== thesisSector
+                  )
+                    conflicts.push(
+                      `Prompt implies ${detected.sector}, but Sector=${thesisSector} was selected.`,
+                    );
+                  if (conflicts.length === 0) return null;
+                  return (
+                    <div data-testid="thesis-conflict-warning">
+                      <SafetyBanner
+                        variant="warning"
+                        title="Selection differs from the prompt"
+                      >
+                        <ul className="list-inside list-disc break-words">
+                          {conflicts.map((c) => (
+                            <li key={c}>{c}</li>
+                          ))}
+                        </ul>
+                      </SafetyBanner>
+                    </div>
+                  );
+                })()}
             </div>
 
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-4">

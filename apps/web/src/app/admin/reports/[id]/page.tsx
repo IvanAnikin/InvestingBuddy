@@ -155,7 +155,17 @@ export default async function ReportDetailPage({
   const reviewStatusColor = STATUS_COLORS[reviewStatus] ?? "gray";
 
   return (
-    <div className="ib-fade-up mx-auto max-w-3xl space-y-6">
+    // Phase 27.1C polish — reports were cramped in the shell's max-w-3xl column,
+    // making them very long vertically. Widen the report content only (not the
+    // global app shell): full width with safe padding on mobile/tablet, and on
+    // wide screens break out of the shell's max-w-6xl cap to ~90vw via a
+    // margin-based full-bleed (no transform, so the page body never scrolls
+    // horizontally). Wide markdown tables still scroll inside their own
+    // overflow-auto container.
+    <div
+      data-testid="report-detail-container"
+      className="ib-fade-up w-full space-y-6 xl:w-[90vw] xl:max-w-[90vw] xl:ml-[calc(50%_-_45vw)]"
+    >
       {/* Back */}
       <Link
         href="/admin/reports"

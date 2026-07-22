@@ -316,9 +316,18 @@ def build_universe(
 
         region = region_for_country(entry["country"])
 
-        # ── Region filter ─────────────────────────────────────────────────
+        # ── Region / country filter (Phase 27.1C: country is strict) ──────
+        # When a country filter is present, it is the sole geographic filter —
+        # the region is NOT allowed to broaden a country-scoped search (so
+        # "Swiss watch companies" returns only Swiss issuers, never every
+        # European one). Region applies only when no country was requested.
         if region_requested:
-            region_ok = (region in parsed_regions) or (entry["country"] in parsed_countries)
+            if parsed_countries:
+                region_ok = entry["country"] in parsed_countries
+                requested_label = sorted(parsed_countries)
+            else:
+                region_ok = region in parsed_regions
+                requested_label = sorted(parsed_regions)
             if not region_ok:
                 excluded.append(
                     {
@@ -326,7 +335,7 @@ def build_universe(
                         "company_name": entry["company_name"],
                         "reason": (
                             f"region mismatch: {entry['country']} not in requested "
-                            f"{sorted(parsed_regions | parsed_countries)}"
+                            f"{requested_label}"
                         ),
                     }
                 )

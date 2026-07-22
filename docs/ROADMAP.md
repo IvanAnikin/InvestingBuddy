@@ -1398,37 +1398,45 @@ Skills used: `backend-fastapi`, `frontend-nextjs`, `testing-qa`,
 
 ---
 
-## Phase 27.1C: Stricter Country/Region Filtering Semantics — BACKLOG
+## Phase 27.1C: Prompt-Derived Autofill + Controlled Selectors + Strict Country Filtering — ✅ COMPLETE
 
-**Status: Not started.** Raised during Phase 27.1B staging validation.
+**Status: Complete (no migration).** Raised during Phase 27.1B staging
+validation; delivered as one feature covering the strict-filtering fix (the
+original backlog item) plus prompt auto-detection and controlled selector
+values.
 
-**Problem.** A country filter currently admits that country's entire region.
-`build_universe` accepts a candidate when
-`region in parsed_regions OR country in parsed_countries`, and `parse_thesis`
-adds the parent region whenever it recognises a country — so a thesis naming
-`Denmark` also sets `regions=["Europe"]`, and every European issuer passes.
+**Strict country filtering (the original backlog problem).** A country filter
+used to admit that country's entire region — `build_universe` accepted a
+candidate when `region in parsed_regions OR country in parsed_countries`, so
+`"Danish jewelry companies"` returned all eight European luxury names instead of
+just Pandora. Fixed: **country is strict** — when any country filter is present
+it is the sole geographic filter and the region can no longer broaden the search;
+region applies only when no country is set. `"Swiss watch companies"` now returns
+only `UHR`/`CFR`; `"Danish jewelry companies"` returns only `PNDORA`.
 
-Observed: `"Danish jewelry companies"` returns all eight European luxury names
-(Swatch, Richemont, LVMH, Hermes, Kering, Moncler, Burberry, Pandora), not just
-Pandora. This is pre-existing Phase 27 behaviour; the Phase 27.1B luxury
-registry (issuers spread across CH/FR/IT/UK/DK) simply made it visible, because
-the earlier defense/semiconductor registries were dominated by one or two
-countries.
+**Part C — Prompt-derived autofill.** `market_thesis_parser.parse_thesis` now
+returns canonical single-value `region` / `country` / `sector` / `industry` /
+`theme` / `confidence` / `extraction_source` detected from the prompt text
+(e.g. `"US semiconductor equipment companies"` → United States / North America /
+Technology). New `POST /api/v1/market-discovery/parse-thesis` previews these for
+the UI **without creating a run**. Precedence: an explicit form value overrides
+the parsed prompt value; a conflict keeps the explicit choice and surfaces a
+warning (`"Prompt mentions Switzerland, but explicit Country=Denmark was
+selected."`).
 
-**Scope.**
-- Treat an explicitly-named country as a *narrowing* filter, not a widening one:
-  when countries are present, require a country match rather than falling back
-  to the region.
-- Keep a bare region filter (`Region=Europe`, no country) behaving exactly as
-  today — that path is what Phase 27.1B validated.
-- Decide the precedence when a request states both a region and a country in
-  *different* regions (currently accepted; should probably 422).
-- Surface the effective filter in `universe_json.source_summary` so an admin can
-  see whether country or region drove selection.
+**Part D — Controlled selector values.** New `discovery_filters` module +
+`GET /api/v1/market-discovery/supported-filters` expose canonical Region /
+Country / Sector / Industry options (regions/countries derived from the exchange
+registry; sectors canonical, aliases resolved internally). Region/Country/Sector
+outside the supported set are rejected `422` before any work is scheduled.
+`/admin/discovery` renders searchable combobox selectors (options from the
+backend, no arbitrary text), debounce-calls `parse-thesis` to auto-fill
+non-manually-edited fields, shows a "Detected: …" preview + a "Reset to detected"
+action, and warns on a prompt/selection conflict.
 
-**Not a safety issue** — no fabricated data, no recommendation, and every
-excluded company is still recorded with a reason. It is a relevance/precision
-defect only.
+**Not a safety issue** — no fabricated data, no recommendation; every excluded
+company is still recorded with a reason; `human_review_required=true`,
+`is_public=false`, no publish route. ~21 backend + ~9 Playwright tests.
 
 ---
 

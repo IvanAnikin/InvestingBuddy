@@ -1,6 +1,6 @@
 # API Reference
 
-## Status: Phase 27 — Thesis-to-Universe Discovery. Adds a **market-segment / thesis** discovery mode: `POST /api/v1/market-discovery/thesis-runs` (+ `GET /thesis-runs/{run_id}` alias). An admin describes a segment/theme/region in natural language; the backend deterministically parses it, builds a **bounded universe of real public companies** from a curated registry, and scans it through the Phase 25 pipeline. Discovery runs gain `mode` (`ticker`|`thesis`), `thesis_text`, `parsed_thesis_json`, `universe_json`; candidates gain `thesis_relevance_score`, `combined_internal_score`, `thesis_match_json` (migration **011**). Vague/no-match theses are rejected (422, `needs_narrowing`). Same hard safety guarantees — internal only, no BUY/SELL/HOLD/WATCH, no price target/fair value/upside/recommendation, `human_review_required=true`, `is_public=false`, no public publish route. See the Phase 27 section below. Underlying Phase 26 — Final Report Schema Completion / Publication-Readiness. **No new API endpoints** and no DB migration. The final-report `generate`/`validate` responses gain `research_complete` and `publication_ready` (both default `false`); the internal admin draft is deterministically completed into the strict `report_schema.json` shape so `schema_valid=true` is achievable via honest `not_sourced` stand-ins (never fabricated data). `safety_valid=true`, `human_review_required=true`, and public publishing remain unchanged (still not implemented). Underlying Phase 24.1.2 — Press-Release Canonical Link Fix. **No new API endpoints** and no request-schema change. The additive `news_catalyst_discovery` event rows now carry `source_url_quality` (`canonical_article` / `rejected_media_only` / `missing`) and an optional `media_url`; `source_url` for company press-release events is always the canonical article page (image/media URLs are never used as evidence). Backward-compatible; `safety_valid=true`; human review required. Underlying Phase 24.1.1 — News Provider Activation + Feed-Status Consistency. **No new API endpoints** and no request/response schema change. The catalyst markdown's **Company News Sources** now carries a precise press-release feed-status line (`feed_discovered_with_items` / `_no_recent_items` / `_unreadable` / `not_discovered`) instead of a contradictory "no feed found" warning, and the additive `news_catalyst_discovery` structured section gains a `source_statuses` block (`company_press_release` status + `items_seen`/`items_used` + `news_provider` status). Backend-only env `NEWS_LOOKBACK_DAYS` now scopes the news/press lookback (SEC stays 90d); `NEWS_PROVIDER_NAME=gdelt` activates a no-key provider. Existing endpoints stay backward-compatible; `safety_valid=true`; human review required. Underlying Phase 24.1 — Real News + Company Source Enablement. **No new API endpoints** were added and no request/response schema changed. On top of Phase 24, `free_real`/`eodhd_free_real` draft reports gain two additional catalyst markdown sections — **Company News Sources** (discovered website / IR / newsroom / press-release feed + verification tier/confidence) and **Industry Context News** (sector news explicitly flagged as NOT company-specific evidence) — and the Final Report Generator's additive `news_catalyst_discovery` section gains `company_sources`, `industry_context_events`, and `source_classes_attempted` / `source_classes_successful` (all controlled-vocabulary + neutralised headlines). Coverage status can now report `limited`/`adequate`/`strong` instead of `filings_only` when real company/news/industry evidence exists. Optional env config (backend only, never a request field, never committed): `NEWS_PROVIDER_NAME`, `NEWS_API_KEY`, `NEWS_API_BASE_URL`, `NEWS_SEARCH_ENDPOINT`, `NEWS_MAX_RESULTS`, `NEWS_LOOKBACK_DAYS`, `NEWS_TIMEOUT_SECONDS`. Existing final-report endpoints stay backward-compatible; the safety gate passes (`safety_valid=true`) and human review stays required. Underlying Phase 24 — News + Catalyst Discovery. **No new API endpoints** were added and no request/response schema changed. For `free_real`/`eodhd_free_real` analyses, the draft report markdown gains catalyst sections (News & Catalyst Discovery, Recent Catalyst Events, SEC Filing Events, Catalyst Evidence Quality, Catalyst Gaps / Next Research Tasks) plus a machine-readable catalyst JSON block, and the Final Report Generator's structured content gains an **additive** `news_catalyst_discovery` section (controlled-vocabulary counts + coverage status + SEC filing metadata + neutralised headlines; catalyst labels are T6 model estimates). Existing final-report endpoints (`from-scorecard`/`from-candidate`/`from-company`/`from-report`/`validate`/`regenerate-section`) are unchanged and stay backward-compatible; the safety gate passes (`safety_valid=true`) and human review stays required. Underlying Phase 19.4 — Identity + Sector + Market-Metric Enrichment. On top of the Phase 19.3 SEC-normalized fundamentals, the `free_real` / `eodhd_free_real` analysis snapshot now carries **additive, non-breaking** enrichment fields: `company_identity` gains `lei` / `isin`, `profile` gains sourced `sector` / `industry` / `website`, `fundamentals_summary` gains derived `market_cap_usd_m` / `enterprise_value_usd_m` / `pe_ratio` / `52_week_high` / `52_week_low` / `shares_outstanding_mln` (all null when not derivable), and two new blocks appear: `identity_profile_enrichment` and `market_metrics_summary` (both carry per-field `source_tiers` + `warnings`). No request schema or existing field changed. `valuation_guard_summary.valuation_readiness` stays `"partial"` when SEC + derived metrics are present; all valuation conclusions remain blocked (derived market cap / EV / P/E are T6 estimates, never official figures). Builds on Phase 19.1 Free Real Data Provider Stack (provider keys: `free_real`, `eodhd_free_real`, `eodhd_price_only`, `sec_edgar_fundamentals`).
+## Status: Phase 27.1C — Prompt-Derived Autofill + Controlled Selectors + Strict Country Filtering. **No DB migration.** Two new admin endpoints: `POST /api/v1/market-discovery/parse-thesis` (parse a thesis for selector auto-fill — **does not create a run**) and `GET /api/v1/market-discovery/supported-filters` (canonical Region/Country/Sector/Industry selector options). `parse-thesis` returns canonical single-value `region`/`country`/`sector`/`industry`/`theme`/`confidence`/`extraction_source` detected from the prompt text. On `POST /thesis-runs`, explicit form Region/Country/Sector override the parsed prompt values (a conflict keeps the explicit choice and surfaces a warning), values outside the supported options are rejected `422`, and **country filtering is strict** — a country filter is the sole geographic filter, so `"Swiss watch companies"` returns only Swiss issuers. Safety unchanged (internal only, no BUY/SELL/HOLD/WATCH/target/fair-value/upside/recommendation, `human_review_required=true`, `is_public=false`, no publish route). See the Phase 27.1C section below. Underlying Phase 27 — Thesis-to-Universe Discovery. Adds a **market-segment / thesis** discovery mode: `POST /api/v1/market-discovery/thesis-runs` (+ `GET /thesis-runs/{run_id}` alias). An admin describes a segment/theme/region in natural language; the backend deterministically parses it, builds a **bounded universe of real public companies** from a curated registry, and scans it through the Phase 25 pipeline. Discovery runs gain `mode` (`ticker`|`thesis`), `thesis_text`, `parsed_thesis_json`, `universe_json`; candidates gain `thesis_relevance_score`, `combined_internal_score`, `thesis_match_json` (migration **011**). Vague/no-match theses are rejected (422, `needs_narrowing`). Same hard safety guarantees — internal only, no BUY/SELL/HOLD/WATCH, no price target/fair value/upside/recommendation, `human_review_required=true`, `is_public=false`, no public publish route. See the Phase 27 section below. Underlying Phase 26 — Final Report Schema Completion / Publication-Readiness. **No new API endpoints** and no DB migration. The final-report `generate`/`validate` responses gain `research_complete` and `publication_ready` (both default `false`); the internal admin draft is deterministically completed into the strict `report_schema.json` shape so `schema_valid=true` is achievable via honest `not_sourced` stand-ins (never fabricated data). `safety_valid=true`, `human_review_required=true`, and public publishing remain unchanged (still not implemented). Underlying Phase 24.1.2 — Press-Release Canonical Link Fix. **No new API endpoints** and no request-schema change. The additive `news_catalyst_discovery` event rows now carry `source_url_quality` (`canonical_article` / `rejected_media_only` / `missing`) and an optional `media_url`; `source_url` for company press-release events is always the canonical article page (image/media URLs are never used as evidence). Backward-compatible; `safety_valid=true`; human review required. Underlying Phase 24.1.1 — News Provider Activation + Feed-Status Consistency. **No new API endpoints** and no request/response schema change. The catalyst markdown's **Company News Sources** now carries a precise press-release feed-status line (`feed_discovered_with_items` / `_no_recent_items` / `_unreadable` / `not_discovered`) instead of a contradictory "no feed found" warning, and the additive `news_catalyst_discovery` structured section gains a `source_statuses` block (`company_press_release` status + `items_seen`/`items_used` + `news_provider` status). Backend-only env `NEWS_LOOKBACK_DAYS` now scopes the news/press lookback (SEC stays 90d); `NEWS_PROVIDER_NAME=gdelt` activates a no-key provider. Existing endpoints stay backward-compatible; `safety_valid=true`; human review required. Underlying Phase 24.1 — Real News + Company Source Enablement. **No new API endpoints** were added and no request/response schema changed. On top of Phase 24, `free_real`/`eodhd_free_real` draft reports gain two additional catalyst markdown sections — **Company News Sources** (discovered website / IR / newsroom / press-release feed + verification tier/confidence) and **Industry Context News** (sector news explicitly flagged as NOT company-specific evidence) — and the Final Report Generator's additive `news_catalyst_discovery` section gains `company_sources`, `industry_context_events`, and `source_classes_attempted` / `source_classes_successful` (all controlled-vocabulary + neutralised headlines). Coverage status can now report `limited`/`adequate`/`strong` instead of `filings_only` when real company/news/industry evidence exists. Optional env config (backend only, never a request field, never committed): `NEWS_PROVIDER_NAME`, `NEWS_API_KEY`, `NEWS_API_BASE_URL`, `NEWS_SEARCH_ENDPOINT`, `NEWS_MAX_RESULTS`, `NEWS_LOOKBACK_DAYS`, `NEWS_TIMEOUT_SECONDS`. Existing final-report endpoints stay backward-compatible; the safety gate passes (`safety_valid=true`) and human review stays required. Underlying Phase 24 — News + Catalyst Discovery. **No new API endpoints** were added and no request/response schema changed. For `free_real`/`eodhd_free_real` analyses, the draft report markdown gains catalyst sections (News & Catalyst Discovery, Recent Catalyst Events, SEC Filing Events, Catalyst Evidence Quality, Catalyst Gaps / Next Research Tasks) plus a machine-readable catalyst JSON block, and the Final Report Generator's structured content gains an **additive** `news_catalyst_discovery` section (controlled-vocabulary counts + coverage status + SEC filing metadata + neutralised headlines; catalyst labels are T6 model estimates). Existing final-report endpoints (`from-scorecard`/`from-candidate`/`from-company`/`from-report`/`validate`/`regenerate-section`) are unchanged and stay backward-compatible; the safety gate passes (`safety_valid=true`) and human review stays required. Underlying Phase 19.4 — Identity + Sector + Market-Metric Enrichment. On top of the Phase 19.3 SEC-normalized fundamentals, the `free_real` / `eodhd_free_real` analysis snapshot now carries **additive, non-breaking** enrichment fields: `company_identity` gains `lei` / `isin`, `profile` gains sourced `sector` / `industry` / `website`, `fundamentals_summary` gains derived `market_cap_usd_m` / `enterprise_value_usd_m` / `pe_ratio` / `52_week_high` / `52_week_low` / `shares_outstanding_mln` (all null when not derivable), and two new blocks appear: `identity_profile_enrichment` and `market_metrics_summary` (both carry per-field `source_tiers` + `warnings`). No request schema or existing field changed. `valuation_guard_summary.valuation_readiness` stays `"partial"` when SEC + derived metrics are present; all valuation conclusions remain blocked (derived market cap / EV / P/E are T6 estimates, never official figures). Builds on Phase 19.1 Free Real Data Provider Stack (provider keys: `free_real`, `eodhd_free_real`, `eodhd_price_only`, `sec_edgar_fundamentals`).
 
 ---
 
@@ -1389,3 +1389,88 @@ legal name.
 - Results are internal research candidates: `human_review_required=true`,
   `is_public=false`, `publication_ready=false`, no public publish route, no
   recommendation of any kind.
+
+---
+
+## Phase 27.1C — Prompt-Derived Autofill + Controlled Selectors (internal admin only)
+
+Adds prompt-derived auto-detection of Region / Country / Sector from the thesis
+text, plus **controlled** (non-free-text) selector values for those fields. The
+admin no longer has to fill Region/Country/Sector when the thesis already states
+them, and can no longer submit an unsupported value. **No DB migration** —
+purely parser, validation, and two read/preview endpoints.
+
+| Method | Path | Description |
+|---|---|---|
+| POST | `/api/v1/market-discovery/parse-thesis` | Parse a thesis for selector auto-fill — **does not create a run** |
+| GET | `/api/v1/market-discovery/supported-filters` | Canonical Region / Country / Sector / Industry selector options |
+
+**`POST /parse-thesis` request:**
+```json
+{ "thesis": "Swiss watch companies" }
+```
+
+**`POST /parse-thesis` response:**
+```json
+{
+  "themes": ["luxury_goods"],
+  "region": "Europe",
+  "country": "Switzerland",
+  "sector": "Consumer Discretionary",
+  "industry": "Watches & Jewelry",
+  "theme": "luxury_goods",
+  "confidence": 1.0,
+  "extraction_source": "prompt_text",
+  "needs_narrowing": false,
+  "warnings": [],
+  "disclaimer": "INTERNAL ADMIN USE ONLY. NOT INVESTMENT ADVICE. …"
+}
+```
+
+Detection examples: `"European watch producers"` → Region `Europe`, Sector
+`Consumer Discretionary` (Country empty); `"Danish jewelry companies"` → Country
+`Denmark`, Region `Europe`; `"US semiconductor equipment companies"` → Country
+`United States`, Region `North America`, Sector `Technology`. The endpoint is a
+pure, DB-free preview — it never creates a run and never emits a recommendation.
+
+**`GET /supported-filters` response:**
+```json
+{
+  "regions": [{ "value": "Europe", "label": "Europe" }, "…"],
+  "countries": [
+    { "value": "Switzerland", "label": "Switzerland", "region": "Europe" },
+    { "value": "United States", "label": "United States", "region": "North America" }
+  ],
+  "sectors": [{ "value": "Consumer Discretionary", "label": "Consumer Discretionary" }, "…"],
+  "industries": [{ "value": "Watches & Jewelry", "label": "Watches & Jewelry", "sector": "Consumer Discretionary" }],
+  "disclaimer": "INTERNAL ADMIN USE ONLY. …"
+}
+```
+
+Regions and countries are **derived from the exchange registry** (so they can
+never drift from the venues the platform can resolve); sectors are the canonical
+GICS-style sectors — **aliases never appear as selector values** (they resolve
+internally to a canonical sector). The admin UI renders searchable
+select/combobox fields whose options come from here; empty/`null` means "not
+specified".
+
+**Explicit-over-prompt precedence (on `POST /thesis-runs`).**
+- If the admin leaves Region/Country/Sector empty, the **parsed prompt values are
+  used** to filter the universe.
+- If the admin sets a value, the **explicit value overrides** the parsed prompt
+  value.
+- When an explicit value **conflicts** with the prompt, the explicit choice is
+  kept and a warning is surfaced on the run (e.g. `"Prompt mentions Switzerland,
+  but explicit Country=Denmark was selected."`).
+- Region/Country/Sector filters outside the supported options are rejected with
+  a clear `422` (`"Country must be one of the supported options."`, etc.). Values
+  are canonicalized case-insensitively (`"switzerland"` → `"Switzerland"`).
+
+**Strict country filtering (source of truth).** Country is strict: when a country
+filter is present it is the *sole* geographic filter — the region is not allowed
+to broaden a country-scoped search. Region applies only when no country is set.
+So `"Swiss watch companies"` returns only Swiss issuers (`UHR`, `CFR`), never
+every European luxury name; `"Danish jewelry companies"` returns only `PNDORA`.
+Safety guarantees are unchanged (internal only, no BUY/SELL/HOLD/WATCH, no price
+target/fair value/upside/recommendation, `human_review_required=true`,
+`is_public=false`, no public publish route).

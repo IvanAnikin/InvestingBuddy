@@ -1326,6 +1326,283 @@ test.describe("Admin Discovery — luxury/watch theme (Phase 27.1B)", () => {
   });
 });
 
+// ===========================================================================
+// Phase 27.1C — prompt-derived autofill + controlled selectors
+// ===========================================================================
+
+const FILTERS = {
+  regions: [
+    { value: "Europe", label: "Europe" },
+    { value: "North America", label: "North America" },
+    { value: "Asia", label: "Asia" },
+    { value: "Japan", label: "Japan" },
+  ],
+  countries: [
+    { value: "Switzerland", label: "Switzerland", region: "Europe" },
+    { value: "Denmark", label: "Denmark", region: "Europe" },
+    { value: "France", label: "France", region: "Europe" },
+    { value: "United States", label: "United States", region: "North America" },
+  ],
+  sectors: [
+    { value: "Consumer Discretionary", label: "Consumer Discretionary" },
+    { value: "Technology", label: "Technology" },
+    { value: "Industrials", label: "Industrials" },
+  ],
+  industries: [],
+  disclaimer: DISC,
+};
+
+function parseResp(over: Record<string, unknown> = {}) {
+  return {
+    themes: [] as string[],
+    region: null,
+    country: null,
+    sector: null,
+    industry: null,
+    theme: null,
+    confidence: 0.9,
+    extraction_source: "prompt_text",
+    needs_narrowing: false,
+    warnings: [] as string[],
+    disclaimer: DISC,
+    ...over,
+  };
+}
+
+async function mockAutofillRoutes(
+  page: import("@playwright/test").Page,
+  parse: Record<string, unknown> = parseResp(),
+) {
+  await page.route(
+    "**/api/admin/proxy/api/v1/market-discovery/supported-filters",
+    (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(FILTERS),
+      }),
+  );
+  await page.route(
+    "**/api/admin/proxy/api/v1/market-discovery/supported-themes",
+    (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(SUPPORTED_THEMES),
+      }),
+  );
+  await page.route(
+    "**/api/admin/proxy/api/v1/market-discovery/runs",
+    (route) => {
+      if (route.request().method() === "GET") {
+        return route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ runs: [], total: 0, disclaimer: DISC }),
+        });
+      }
+      return route.fulfill({ status: 404, body: "{}" });
+    },
+  );
+  await page.route(
+    "**/api/admin/proxy/api/v1/market-discovery/parse-thesis",
+    (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(parse),
+      }),
+  );
+}
+
+test.describe("Admin Discovery — autofill + selectors (Phase 27.1C)", () => {
+  test("49. Region/Country/Sector render as comboboxes", async ({ page }) => {
+    await mockAutofillRoutes(page);
+    await page.goto("/admin/discovery");
+    await page.getByTestId("mode-tab-thesis").click();
+    await expect(page.getByTestId("thesis-filters")).toBeVisible();
+    for (const id of ["thesis-region", "thesis-country", "thesis-sector"]) {
+      const box = page.getByTestId(id);
+      await expect(box).toBeVisible();
+      await expect(box).toHaveAttribute("role", "combobox");
+    }
+  });
+
+  test("50. Selector options come from the backend", async ({ page }) => {
+    await mockAutofillRoutes(page);
+    await page.goto("/admin/discovery");
+    await page.getByTestId("mode-tab-thesis").click();
+    await page.getByTestId("thesis-region").click();
+    await expect(
+      page.getByTestId("thesis-region-option").filter({ hasText: "Europe" }),
+    ).toBeVisible();
+    await expect(
+      page
+        .getByTestId("thesis-region-option")
+        .filter({ hasText: "North America" }),
+    ).toBeVisible();
+  });
+
+  test("51. Typing filters the options", async ({ page }) => {
+    await mockAutofillRoutes(page);
+    await page.goto("/admin/discovery");
+    await page.getByTestId("mode-tab-thesis").click();
+    await page.getByTestId("thesis-country").fill("Swit");
+    await expect(
+      page.getByTestId("thesis-country-option").filter({ hasText: "Switzerland" }),
+    ).toBeVisible();
+    await expect(
+      page.getByTestId("thesis-country-option").filter({ hasText: "Denmark" }),
+    ).toHaveCount(0);
+  });
+
+  test("52. An arbitrary value cannot be committed", async ({ page }) => {
+    await mockAutofillRoutes(page);
+    await page.goto("/admin/discovery");
+    await page.getByTestId("mode-tab-thesis").click();
+    const country = page.getByTestId("thesis-country");
+    await country.fill("Atlantis");
+    await country.blur();
+    // Rejected on blur — reverts to empty (no unsupported value is kept).
+    await expect(country).toHaveValue("");
+  });
+
+  test("53. 'European watch producers' autofills Region + Sector", async ({
+    page,
+  }) => {
+    await mockAutofillRoutes(
+      page,
+      parseResp({
+        themes: ["luxury_goods"],
+        region: "Europe",
+        sector: "Consumer Discretionary",
+        industry: "Watches & Jewelry",
+        theme: "luxury_goods",
+      }),
+    );
+    await page.goto("/admin/discovery");
+    await page.getByTestId("mode-tab-thesis").click();
+    await page.getByTestId("thesis-text").fill("European watch producers");
+    await expect(page.getByTestId("thesis-region")).toHaveValue("Europe");
+    await expect(page.getByTestId("thesis-sector")).toHaveValue(
+      "Consumer Discretionary",
+    );
+    await expect(page.getByTestId("thesis-country")).toHaveValue("");
+    await expect(page.getByTestId("thesis-detected")).toContainText("Europe");
+  });
+
+  test("54. 'Swiss watch companies' autofills Country=Switzerland", async ({
+    page,
+  }) => {
+    await mockAutofillRoutes(
+      page,
+      parseResp({
+        themes: ["luxury_goods"],
+        region: "Europe",
+        country: "Switzerland",
+        sector: "Consumer Discretionary",
+        theme: "luxury_goods",
+      }),
+    );
+    await page.goto("/admin/discovery");
+    await page.getByTestId("mode-tab-thesis").click();
+    await page.getByTestId("thesis-text").fill("Swiss watch companies");
+    await expect(page.getByTestId("thesis-country")).toHaveValue("Switzerland");
+    await expect(page.getByTestId("thesis-region")).toHaveValue("Europe");
+  });
+
+  test("55. Manual selection is not overwritten and a conflict is shown", async ({
+    page,
+  }) => {
+    await mockAutofillRoutes(
+      page,
+      parseResp({
+        themes: ["luxury_goods"],
+        region: "Europe",
+        country: "Switzerland",
+        sector: "Consumer Discretionary",
+        theme: "luxury_goods",
+      }),
+    );
+    await page.goto("/admin/discovery");
+    await page.getByTestId("mode-tab-thesis").click();
+    // Manually pick Denmark first.
+    await page.getByTestId("thesis-country").fill("Denmark");
+    await page
+      .getByTestId("thesis-country-option")
+      .filter({ hasText: "Denmark" })
+      .click();
+    await expect(page.getByTestId("thesis-country")).toHaveValue("Denmark");
+    // Now type a Swiss thesis — the manual Denmark must survive…
+    await page.getByTestId("thesis-text").fill("Swiss watch companies");
+    await expect(page.getByTestId("thesis-country")).toHaveValue("Denmark");
+    // …and a conflict warning is shown.
+    const warn = page.getByTestId("thesis-conflict-warning");
+    await expect(warn).toBeVisible();
+    await expect(warn).toContainText("Switzerland");
+    await expect(warn).toContainText("Denmark");
+  });
+
+  test("56. Submit sends canonical selected values", async ({ page }) => {
+    await mockAutofillRoutes(
+      page,
+      parseResp({
+        themes: ["luxury_goods"],
+        region: "Europe",
+        country: "Switzerland",
+        sector: "Consumer Discretionary",
+        theme: "luxury_goods",
+      }),
+    );
+    let body: Record<string, unknown> = {};
+    await page.route(
+      "**/api/admin/proxy/api/v1/market-discovery/thesis-runs",
+      (route) => {
+        body = JSON.parse(route.request().postData() ?? "{}");
+        return route.fulfill({
+          status: 201,
+          contentType: "application/json",
+          body: JSON.stringify({ ...THESIS_RUN, status: "pending" }),
+        });
+      },
+    );
+    await page.goto("/admin/discovery");
+    await page.getByTestId("mode-tab-thesis").click();
+    await page.getByTestId("thesis-text").fill("Swiss watch companies");
+    await expect(page.getByTestId("thesis-country")).toHaveValue("Switzerland");
+    await page.getByTestId("thesis-submit").click();
+    await expect
+      .poll(() => body.country, { timeout: 10_000 })
+      .toBe("Switzerland");
+    expect(body.region).toBe("Europe");
+    expect(body.sector).toBe("Consumer Discretionary");
+  });
+
+  test("57. Backend rejection of an invalid value shows a clear error", async ({
+    page,
+  }) => {
+    await mockAutofillRoutes(page);
+    await page.route(
+      "**/api/admin/proxy/api/v1/market-discovery/thesis-runs",
+      (route) =>
+        route.fulfill({
+          status: 422,
+          contentType: "application/json",
+          body: JSON.stringify({
+            detail: "Country must be one of the supported options.",
+          }),
+        }),
+    );
+    await page.goto("/admin/discovery");
+    await page.getByTestId("mode-tab-thesis").click();
+    await page.getByTestId("thesis-text").fill("European watch producers");
+    await page.getByTestId("thesis-submit").click();
+    await expect(page.getByTestId("thesis-submit-error")).toContainText(
+      "Country must be one of the supported options.",
+    );
+  });
+});
+
 test.describe("Admin Discovery — thesis mode (Phase 27)", () => {
   test("27. Manual and Thesis mode tabs are present", async ({ page }) => {
     await mockThesisRoutes(page);

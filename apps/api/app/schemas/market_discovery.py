@@ -352,6 +352,74 @@ class SupportedThemesResponse(BaseModel):
     disclaimer: str = INTERNAL_DISCLAIMER
 
 
+# ---------------------------------------------------------------------------
+# Phase 27.1C — prompt-derived autofill + controlled selector values
+# ---------------------------------------------------------------------------
+
+
+class ParseThesisRequest(BaseModel):
+    """Preview/autofill request. Parses a thesis WITHOUT creating a run."""
+
+    thesis: str = Field(
+        min_length=1,
+        max_length=2000,
+        description="Natural-language thesis text to parse for autofill.",
+    )
+
+
+class ParseThesisResponse(BaseModel):
+    """
+    Canonical single-value detections parsed from the prompt text, for the admin
+    UI to auto-fill the Region / Country / Sector selectors. Never a run, never a
+    recommendation — purely a structured preview of what the text says.
+    """
+
+    themes: list[str] = Field(default_factory=list)
+    region: str | None = None
+    country: str | None = None
+    sector: str | None = None
+    industry: str | None = None
+    theme: str | None = None
+    confidence: float = 0.0
+    extraction_source: str = "prompt_text"
+    needs_narrowing: bool = False
+    warnings: list[str] = Field(default_factory=list)
+    disclaimer: str = INTERNAL_DISCLAIMER
+
+
+class FilterOption(BaseModel):
+    """One controlled selector option (canonical value + human label)."""
+
+    value: str
+    label: str
+
+
+class CountryFilterOption(FilterOption):
+    """A country option tagged with its region (for region-scoped filtering)."""
+
+    region: str | None = None
+
+
+class IndustryFilterOption(FilterOption):
+    """An industry option tagged with its parent canonical sector."""
+
+    sector: str | None = None
+
+
+class SupportedFiltersResponse(BaseModel):
+    """
+    Canonical controlled-selector options for the thesis form. Region / Country /
+    Sector are no longer free text — the UI renders searchable selects whose
+    allowed values come from here, and the backend rejects anything else.
+    """
+
+    regions: list[FilterOption]
+    countries: list[CountryFilterOption]
+    sectors: list[FilterOption]
+    industries: list[IndustryFilterOption] = Field(default_factory=list)
+    disclaimer: str = INTERNAL_DISCLAIMER
+
+
 class RunCandidateAnalysisResponse(BaseModel):
     candidate_id: uuid.UUID
     ticker: str
