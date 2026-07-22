@@ -15,12 +15,15 @@ async def test_health_response_schema(client: AsyncClient) -> None:
     data = response.json()
     # Phase 19.2.1: backward-compatible additive fields — existing consumers keep
     # status/environment/version; commit_sha/build_id were added for deploy checks.
+    # Phase 27.1D: app/build_time added as safe deploy metadata for observability.
     assert set(data.keys()) == {
         "status",
         "environment",
         "version",
         "commit_sha",
         "build_id",
+        "app",
+        "build_time",
     }
 
 

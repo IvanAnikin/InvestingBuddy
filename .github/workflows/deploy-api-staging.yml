@@ -136,6 +136,14 @@ jobs:
               echo "  stable match #$CONSECUTIVE / $REQUIRED"
               if [ "$CONSECUTIVE" -ge "$REQUIRED" ]; then
                 echo "New container confirmed serving commit $EXPECTED_SHA ($REQUIRED stable responses)."
+                # Phase 27.1D: echo safe deploy metadata for the operator record.
+                # Informational only — never fails the deploy (no secrets in /health).
+                SERVED_ENV=$(printf '%s' "$BODY" | python3 -c "import sys,json; print(json.load(sys.stdin).get('environment',''))" 2>/dev/null || echo "")
+                SERVED_BUILD=$(printf '%s' "$BODY" | python3 -c "import sys,json; print(json.load(sys.stdin).get('build_id',''))" 2>/dev/null || echo "")
+                echo "Deploy metadata — environment=${SERVED_ENV:-<none>} build_id=${SERVED_BUILD:-<none>}"
+                if [ -n "$SERVED_ENV" ] && [ "$SERVED_ENV" != "staging" ]; then
+                  echo "::warning::/health reports environment='$SERVED_ENV' (expected 'staging') — check APP_ENV app setting."
+                fi
                 exit 0
               fi
             else

@@ -8,6 +8,16 @@ class Settings(BaseSettings):
     app_env: str = "development"
     debug: bool = False
 
+    # ── Observability / Logging (Phase 27.1D) ──────────────────────────────
+    # Root log level for the app's stdout handler. INFO surfaces the structured
+    # telemetry events (http_request, discovery_run_*, report_validation) in the
+    # staging container log stream. Set to "WARNING" to reduce verbosity later.
+    log_level: str = "INFO"
+    # Emit one structured line per HTTP request (method/path/status/duration).
+    # Never logs headers, bodies, query strings, or secrets. Toggle off to
+    # silence per-request logging without touching code.
+    request_logging_enabled: bool = True
+
     database_url: str = (
         "postgresql+psycopg://investingbuddy:investingbuddy@localhost:5432/investingbuddy"
     )

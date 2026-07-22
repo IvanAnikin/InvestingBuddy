@@ -54,11 +54,20 @@ passes. See `docs/SECURITY.md`.
 
 | Method | Path | Status | Description |
 |---|---|---|---|
-| GET | `/health` | ✅ Live | Application health check |
+| GET | `/health` | ✅ Live | Application health check + safe deploy metadata (exempt from Basic Auth) |
 
-**Response:**
+**Response:** all fields are public build identifiers — never secrets (Phase 19.2.1
+added `commit_sha`/`build_id`; Phase 27.1D added `app`/`build_time`).
 ```json
-{ "status": "ok", "environment": "development", "version": "0.3.0" }
+{
+  "status": "ok",
+  "environment": "development",
+  "version": "0.1.0",
+  "commit_sha": "unknown",
+  "build_id": "unknown",
+  "app": "InvestingBuddy API",
+  "build_time": "unknown"
+}
 ```
 
 ---
