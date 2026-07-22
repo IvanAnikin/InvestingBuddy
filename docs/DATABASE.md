@@ -520,10 +520,19 @@ existing JSONB payloads:
 | `discovery_candidates.missing_fields_json` | `fundamentals_not_sourced_non_us_exchange` for non-SEC venues (Phase 27.1A behaviour, now routinely exercised by the mostly-European luxury universe) |
 
 `company_name_source` ∈ `provider_profile` | `curated_theme_registry` | `null`;
-`company_name_source_tier` ∈ `T3_curated_reference_list` | `null`. A curated
-display name is never attributed to SEC or a provider, and
-`discovery_candidates.legal_name` is left exactly as the scan produced it
-(`NULL` when not sourced) — a curated name is not evidence of a legal name.
+`company_name_source_tier` ∈ `T3_curated_reference_list` | `null`.
+
+Attribution is decided by `data_coverage.profile_source` (a `not_sourced`
+provider is never credited) **and** by value (a name equal to the curated
+registry string is attributed to the registry) — not by whether the stored name
+looks like a bare ticker. `ensure_company` seeds the row with the curated name
+and the workflow echoes it back, so the placeholder test alone mis-credited
+curated names to `provider_profile`; corrected after Phase 27.1B staging.
+
+A curated display name is never attributed to SEC or a provider, and
+`discovery_candidates.legal_name` is left exactly as the scan produced it (the
+bare ticker when the provider sourced no profile) — a curated name is not
+evidence of a legal name.
 
 Existing rows are unaffected: absent keys simply read as `None`.
 

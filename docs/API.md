@@ -1342,21 +1342,41 @@ silently widen the search beyond what the admin asked for.
 `universe_source="curated_theme_registry"` and
 `source_tier="T3_curated_reference_list"`.
 
-**Company-name provenance (fix).** A discovery scan creates a stub `Company`
-row; before this phase that stub was named after the ticker, and its truthiness
+**Company-name provenance.** A discovery scan creates a stub `Company` row;
+before Phase 27.1B that stub was named after the ticker, and its truthiness
 shadowed the curated registry name — candidates displayed `UHR` instead of
-`Swatch Group AG`. Resolution order is now **live provider name → curated
-registry name → ticker**, tested with
-`is_placeholder_company_name` rather than truthiness. The origin is recorded on
-`raw_signal_json.identity` and `thesis_match_json`:
+`Swatch Group AG`. Resolution order is **live provider name → curated registry
+name → ticker**. The origin is recorded on `raw_signal_json.identity` and
+`thesis_match_json`:
 
 | Field | Values |
 |---|---|
 | `company_name_source` | `provider_profile` \| `curated_theme_registry` \| `null` |
 | `company_name_source_tier` | `T3_curated_reference_list` \| `null` |
 
+Attribution is decided by two signals, **not** by whether the incoming name
+looks like a bare ticker:
+
+1. `data_coverage.profile_source` — the provider stating whether it sourced a
+   profile at all. When it is `not_sourced`, nothing in the identity block is
+   credited to the provider.
+2. The **value** — a display name equal to the curated registry string is
+   attributed to the registry, whichever layer handed it over.
+
+`provider_profile` therefore requires the provider to have sourced a profile
+*and* produced a name differing from the curated string.
+
+> Phase 27.1B initially decided this with a placeholder test alone, which was
+> wrong in the real pipeline: `ensure_company` seeds the Company row with the
+> curated name and the workflow echoes it back, so a curated name no longer
+> looks like a placeholder. Staging showed all eight European luxury candidates
+> reporting `provider_profile` while their provider profile was explicitly
+> `not_sourced`. Corrected in `fix: preserve curated company-name provenance`.
+
 A curated display name is **never** attributed to SEC or a provider, and
-`legal_name` is left exactly as the scan produced it (`null` when not sourced).
+`legal_name` is left exactly as the scan produced it (the bare ticker when the
+provider sourced no profile) — a curated display name is not evidence of a
+legal name.
 
 **Limitations (stated in `coverage_note`):**
 - Bounded curated bootstrap — **not** a full-market scan of global equities.

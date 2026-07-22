@@ -269,11 +269,45 @@ def _build_candidate(
     ci_country = identity.get("country")
     name_source: str | None = None
     name_source_tier: str | None = None
-    if ci_name and not is_placeholder_company_name(ci_name, ticker_value):
+    curated_name = (thesis_item or {}).get("company_name")
+
+    # Provenance must NOT be decided by "is the incoming name a bare ticker?".
+    # ``ensure_company`` seeds the stub Company row with the curated name and the
+    # workflow echoes that row back as ``identity.company_name``, so by the time
+    # the scan returns a curated name no longer looks like a placeholder. It was
+    # therefore credited to ``provider_profile`` — on staging, all eight European
+    # luxury candidates reported a provider-sourced display name while their
+    # provider profile was explicitly ``not_sourced``.
+    #
+    # Two independent signals decide this correctly:
+    #   1. ``data_coverage.profile_source`` — the provider stating whether it
+    #      sourced a profile at all. When it says ``not_sourced``, nothing in
+    #      the identity block may be credited to the provider.
+    #   2. The VALUE — a display name equal to the curated registry string came
+    #      from the registry, whichever layer handed it over.
+    # Only a name the provider produced *independently* (profile sourced AND
+    # differing from the curated string) may be attributed to the provider.
+    def _same_name(a: str | None, b: str | None) -> bool:
+        return bool(a and b and a.strip().casefold() == b.strip().casefold())
+
+    profile_source = (signal.get("data_coverage") or {}).get("profile_source")
+    provider_profile_sourced = profile_source != "not_sourced"
+
+    if (
+        ci_name
+        and provider_profile_sourced
+        and not is_placeholder_company_name(ci_name, ticker_value)
+        and not _same_name(ci_name, curated_name)
+    ):
         name_source = "provider_profile"
+
     if thesis_item is not None:
-        curated_name = thesis_item.get("company_name")
-        if curated_name and is_placeholder_company_name(ci_name, ticker_value):
+        curated_applies = curated_name and (
+            is_placeholder_company_name(ci_name, ticker_value)
+            or _same_name(ci_name, curated_name)
+            or not provider_profile_sourced
+        )
+        if curated_applies:
             ci_name = curated_name
             # Attributed to the curated registry — NOT to SEC or the provider.
             name_source = thesis_item.get("universe_source") or "curated_theme_registry"
