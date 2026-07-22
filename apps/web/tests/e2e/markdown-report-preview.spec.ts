@@ -136,3 +136,32 @@ test.describe("Report Detail — mobile viewport", () => {
     expect(overflow).toBeLessThanOrEqual(1);
   });
 });
+
+// Phase 27.1C polish — the report content now widens well beyond the old
+// max-w-3xl (768px) column on desktop, breaking out of the shell's max-w-6xl
+// (≈1152px) cap to ~90vw, without introducing a horizontal page scrollbar.
+test.describe("Report Detail — wide desktop viewport", () => {
+  test.use({ viewport: { width: 1920, height: 1080 } });
+
+  test("report content widens to ~90vw on desktop and does not scroll horizontally", async ({
+    page,
+  }) => {
+    await page.goto(REPORT_URL);
+    const container = page.getByTestId("report-detail-container");
+    await expect(container).toBeVisible();
+
+    const box = await container.boundingBox();
+    expect(box).not.toBeNull();
+    // Far wider than the old 768px column and past the shell's ~1152px cap —
+    // proves the report-only breakout is applied (90vw of 1920 ≈ 1728px).
+    expect(box!.width).toBeGreaterThan(1400);
+    expect(box!.width).toBeLessThanOrEqual(1920);
+
+    // But the page body must never scroll horizontally.
+    const overflow = await page.evaluate(() => {
+      const doc = document.documentElement;
+      return doc.scrollWidth - doc.clientWidth;
+    });
+    expect(overflow).toBeLessThanOrEqual(1);
+  });
+});

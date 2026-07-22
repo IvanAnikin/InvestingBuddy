@@ -369,6 +369,47 @@ export interface ParsedThesis {
   warnings: string[];
   confidence: number;
   needs_narrowing: boolean;
+  // Phase 27.1C — canonical single-value detections for selector auto-fill.
+  region?: string | null;
+  country?: string | null;
+  sector?: string | null;
+  industry?: string | null;
+  theme?: string | null;
+  extraction_source?: string;
+}
+
+// Phase 27.1C — prompt-derived autofill preview (no run created).
+export interface ParseThesisResponse {
+  themes: string[];
+  region: string | null;
+  country: string | null;
+  sector: string | null;
+  industry: string | null;
+  theme: string | null;
+  confidence: number;
+  extraction_source: string;
+  needs_narrowing: boolean;
+  warnings: string[];
+  disclaimer?: string;
+}
+
+// Phase 27.1C — controlled selector options loaded from the backend.
+export interface FilterOption {
+  value: string;
+  label: string;
+}
+export interface CountryFilterOption extends FilterOption {
+  region?: string | null;
+}
+export interface IndustryFilterOption extends FilterOption {
+  sector?: string | null;
+}
+export interface SupportedFiltersResponse {
+  regions: FilterOption[];
+  countries: CountryFilterOption[];
+  sectors: FilterOption[];
+  industries: IndustryFilterOption[];
+  disclaimer?: string;
 }
 
 // Phase 27 — one generated universe candidate (pre-scan).

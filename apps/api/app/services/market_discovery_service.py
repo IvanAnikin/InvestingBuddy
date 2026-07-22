@@ -40,6 +40,14 @@ from app.schemas.market_discovery import (
     ThesisDiscoveryRunCreate,
 )
 from app.services import safety_terms
+from app.services.discovery_filters import (
+    canonical_country,
+    canonical_region,
+    is_supported_sector,
+)
+from app.services.discovery_filters import (
+    get_supported_filters as _get_supported_filters,
+)
 from app.services.discovery_scoring_service import score_signal
 from app.services.discovery_signal_extractor import (
     ExtractedSignal,
@@ -584,6 +592,17 @@ def get_supported_themes() -> dict[str, Any]:
     }
 
 
+def get_supported_filters() -> dict[str, Any]:
+    """
+    Phase 27.1C — canonical controlled-selector options for the thesis form.
+
+    Region / Country / Sector / Industry are no longer arbitrary free text; the
+    admin UI loads its allowed values from here (never hard-coded on the
+    frontend), and the backend rejects anything outside them.
+    """
+    return _get_supported_filters()
+
+
 async def create_pending_thesis_run(
     db: AsyncSession, payload: ThesisDiscoveryRunCreate
 ) -> DiscoveryRun:
@@ -594,6 +613,7 @@ async def create_pending_thesis_run(
     Returns quickly so the API can hand back a ``run_id`` immediately (the scan
     runs in the background). Raises ``ValueError`` when:
       * the provider is not permitted,
+      * a Region/Country/Sector filter is not one of the supported options,
       * the thesis is too vague to bound a universe (needs narrowing), or
       * no company matched the thesis (empty universe).
 
@@ -607,10 +627,22 @@ async def create_pending_thesis_run(
             f"Allowed: {sorted(_ALLOWED_PROVIDERS)}."
         )
 
+    # Phase 27.1C — controlled selectors. Reject any value outside the allowed
+    # options (empty/None means "not specified" and is always allowed), and
+    # canonicalize casing so "switzerland" filters against "Switzerland".
+    if payload.region and not canonical_region(payload.region):
+        raise ValueError("Region must be one of the supported options.")
+    if payload.country and not canonical_country(payload.country):
+        raise ValueError("Country must be one of the supported options.")
+    if payload.sector and not is_supported_sector(payload.sector):
+        raise ValueError("Sector must be one of the supported options.")
+    region = canonical_region(payload.region) or payload.region
+    country = canonical_country(payload.country) or payload.country
+
     parsed = parse_thesis(
         payload.thesis_text,
-        region=payload.region,
-        country=payload.country,
+        region=region,
+        country=country,
         sector=payload.sector,
         industry=payload.industry,
         industry_keywords=payload.industry_keywords,
@@ -651,7 +683,10 @@ async def create_pending_thesis_run(
         candidate_count=0,
         error_count=0,
         lookback_days=lookback_days,
-        warnings=list(universe.warnings),
+        # Phase 27.1C — surface any explicit-vs-prompt conflict warnings from the
+        # parser alongside the universe-build warnings (the explicit choice is
+        # kept; the admin is told the prompt disagreed).
+        warnings=list(universe.warnings) + list(parsed.warnings),
         config_json={
             "provider_name": provider,
             "universe_source": "thesis_generated",

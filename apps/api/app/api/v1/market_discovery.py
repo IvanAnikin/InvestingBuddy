@@ -40,11 +40,15 @@ from app.schemas.market_discovery import (
     DiscoveryRunListResponse,
     DiscoveryRunRead,
     DiscoveryRunSummary,
+    ParseThesisRequest,
+    ParseThesisResponse,
     RunCandidateAnalysisResponse,
+    SupportedFiltersResponse,
     SupportedThemesResponse,
     ThesisDiscoveryRunCreate,
 )
 from app.services import market_discovery_service as svc
+from app.services.market_thesis_parser import parse_thesis
 
 router = APIRouter(prefix="/market-discovery", tags=["market-discovery"])
 
@@ -138,6 +142,52 @@ async def create_discovery_run(
 )
 async def list_supported_themes() -> SupportedThemesResponse:
     return SupportedThemesResponse.model_validate(svc.get_supported_themes())
+
+
+@router.get(
+    "/supported-filters",
+    response_model=SupportedFiltersResponse,
+    summary="Canonical Region/Country/Sector/Industry selector options (admin)",
+    description=(
+        "ADMIN/INTERNAL ONLY. Returns the canonical, controlled selector values "
+        "for the thesis form's Region, Country, Sector and Industry fields. The "
+        "admin UI renders these as searchable selects whose allowed values come "
+        "from here — they are not arbitrary free text, and the backend rejects "
+        "anything outside them. Sector values are canonical (aliases resolve to "
+        "them internally). " + _INTERNAL
+    ),
+)
+async def list_supported_filters() -> SupportedFiltersResponse:
+    return SupportedFiltersResponse.model_validate(svc.get_supported_filters())
+
+
+@router.post(
+    "/parse-thesis",
+    response_model=ParseThesisResponse,
+    summary="Parse a thesis for selector auto-fill — does NOT create a run (admin)",
+    description=(
+        "ADMIN/INTERNAL ONLY. Parses a natural-language thesis and returns the "
+        "canonical single-value Region / Country / Sector / Industry it detects, "
+        "so the admin UI can auto-fill the selectors as the admin types. This "
+        "endpoint does NOT create a run and does NOT touch the database — it is a "
+        "pure preview/autofill helper. It never produces an investment "
+        "recommendation, price target, or BUY/SELL/HOLD/WATCH label. " + _INTERNAL
+    ),
+)
+async def parse_thesis_preview(payload: ParseThesisRequest) -> ParseThesisResponse:
+    parsed = parse_thesis(payload.thesis)
+    return ParseThesisResponse(
+        themes=parsed.themes,
+        region=parsed.region,
+        country=parsed.country,
+        sector=parsed.sector,
+        industry=parsed.industry,
+        theme=parsed.theme,
+        confidence=parsed.confidence,
+        extraction_source=parsed.extraction_source,
+        needs_narrowing=parsed.needs_narrowing,
+        warnings=parsed.warnings,
+    )
 
 
 @router.post(

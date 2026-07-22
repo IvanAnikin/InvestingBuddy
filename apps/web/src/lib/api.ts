@@ -11,6 +11,8 @@ import type {
   DiscoveryRun,
   DiscoveryRunCreate,
   DiscoveryRunListResponse,
+  ParseThesisResponse,
+  SupportedFiltersResponse,
   ThesisDiscoveryRunCreate,
   FinalReportRegenerateSectionResponse,
   FinalReportResponse,
@@ -297,6 +299,25 @@ export async function createThesisDiscoveryRun(
 export async function listSupportedThemes(): Promise<SupportedThemesResponse> {
   return apiFetch<SupportedThemesResponse>(
     "/api/v1/market-discovery/supported-themes",
+  );
+}
+
+// Phase 27.1C — canonical Region/Country/Sector/Industry selector options. The
+// admin UI renders these as searchable selects; values outside them are rejected.
+export async function listSupportedFilters(): Promise<SupportedFiltersResponse> {
+  return apiFetch<SupportedFiltersResponse>(
+    "/api/v1/market-discovery/supported-filters",
+  );
+}
+
+// Phase 27.1C — parse a thesis for selector auto-fill. Does NOT create a run;
+// pure preview/autofill of the detected Region/Country/Sector.
+export async function parseThesis(
+  thesis: string,
+): Promise<ParseThesisResponse> {
+  return apiFetch<ParseThesisResponse>(
+    "/api/v1/market-discovery/parse-thesis",
+    { method: "POST", body: JSON.stringify({ thesis }) },
   );
 }
 

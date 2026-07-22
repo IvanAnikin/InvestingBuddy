@@ -187,6 +187,108 @@ const server = createServer((req, res) => {
   // Phase 25 / 25.1 — Market Candidate Discovery (internal only, async runs).
   const DISC =
     "INTERNAL ADMIN USE ONLY. NOT INVESTMENT ADVICE. NOT A PUBLIC RECOMMENDATION.";
+  // Phase 27.1C — controlled selector options for the thesis form.
+  if (path === "/api/v1/market-discovery/supported-filters") {
+    return send(res, 200, {
+      regions: [
+        { value: "Europe", label: "Europe" },
+        { value: "North America", label: "North America" },
+        { value: "Asia", label: "Asia" },
+        { value: "Japan", label: "Japan" },
+      ],
+      countries: [
+        { value: "Switzerland", label: "Switzerland", region: "Europe" },
+        { value: "Denmark", label: "Denmark", region: "Europe" },
+        { value: "France", label: "France", region: "Europe" },
+        { value: "United Kingdom", label: "United Kingdom", region: "Europe" },
+        { value: "Germany", label: "Germany", region: "Europe" },
+        { value: "United States", label: "United States", region: "North America" },
+        { value: "Japan", label: "Japan", region: "Japan" },
+      ],
+      sectors: [
+        { value: "Consumer Discretionary", label: "Consumer Discretionary" },
+        { value: "Industrials", label: "Industrials" },
+        { value: "Technology", label: "Technology" },
+        { value: "Energy", label: "Energy" },
+        { value: "Financials", label: "Financials" },
+        { value: "Healthcare", label: "Healthcare" },
+        { value: "Materials", label: "Materials" },
+        { value: "Utilities", label: "Utilities" },
+      ],
+      industries: [
+        { value: "Watches & Jewelry", label: "Watches & Jewelry", sector: "Consumer Discretionary" },
+        { value: "Semiconductors", label: "Semiconductors", sector: "Technology" },
+        { value: "Aerospace & Defense", label: "Aerospace & Defense", sector: "Industrials" },
+      ],
+      disclaimer: DISC,
+    });
+  }
+
+  // Phase 27.1C — parse a thesis for selector auto-fill (does NOT create a run).
+  // Naive local-dev keyword detection; e2e tests override this route per-case.
+  if (path === "/api/v1/market-discovery/parse-thesis" && req.method === "POST") {
+    let bodyStr = "";
+    req.on("data", (chunk) => (bodyStr += chunk));
+    req.on("end", () => {
+      let thesis = "";
+      try {
+        thesis = String(JSON.parse(bodyStr || "{}").thesis ?? "");
+      } catch {
+        thesis = "";
+      }
+      const t = thesis.toLowerCase();
+      let region = null;
+      let country = null;
+      let sector = null;
+      let industry = null;
+      let theme = null;
+      const themes = [];
+      if (/watch|jewel|luxur|timepiece/.test(t)) {
+        sector = "Consumer Discretionary";
+        industry = "Watches & Jewelry";
+        theme = "luxury_goods";
+        themes.push("luxury_goods");
+      } else if (/semiconductor|chip|wafer|lithography/.test(t)) {
+        sector = "Technology";
+        industry = "Semiconductors";
+        theme = "semiconductors";
+        themes.push("semiconductors");
+      } else if (/defen[cs]e|aerospace|nato|military/.test(t)) {
+        sector = "Industrials";
+        industry = "Aerospace & Defense";
+        theme = "defense";
+        themes.push("defense");
+      }
+      if (/\bswiss\b/.test(t)) {
+        country = "Switzerland";
+        region = "Europe";
+      } else if (/\bdanish\b|denmark/.test(t)) {
+        country = "Denmark";
+        region = "Europe";
+      } else if (/\bus\b|u\.s\.|\busa\b|united states/.test(t)) {
+        country = "United States";
+        region = "North America";
+      } else if (/europ/.test(t)) {
+        region = "Europe";
+      }
+      const needs_narrowing = themes.length === 0 && !sector;
+      send(res, 200, {
+        themes,
+        region,
+        country,
+        sector,
+        industry,
+        theme,
+        confidence: needs_narrowing ? 0.1 : 0.9,
+        extraction_source: "prompt_text",
+        needs_narrowing,
+        warnings: [],
+        disclaimer: DISC,
+      });
+    });
+    return;
+  }
+
   // Phase 27.1B — supported themes / sector taxonomy for the thesis form.
   if (path === "/api/v1/market-discovery/supported-themes") {
     return send(res, 200, {
