@@ -28,6 +28,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import settings
+from app.core.structured_logging import log_event
 from app.db.session import async_session_factory
 from app.models.discovery import (
     ALLOWED_CANDIDATE_LABELS,
@@ -717,6 +718,32 @@ async def create_pending_thesis_run(
     return run
 
 
+def _log_candidate(
+    run_id: uuid.UUID, candidate: DiscoveryCandidate, signal: dict[str, Any]
+) -> None:
+    """Emit a compact per-candidate telemetry line (no raw payloads).
+
+    Logs only provenance/eligibility booleans a staging operator needs to audit
+    a run — never the full snapshot, fundamentals, or any secret.
+    """
+    identity = signal.get("identity") or {}
+    coverage = signal.get("data_coverage") or {}
+    log_event(
+        logger,
+        "discovery_candidate",
+        run_id=run_id,
+        ticker=candidate.ticker,
+        exchange=candidate.exchange,
+        company_name_source=identity.get("company_name_source"),
+        profile_source=coverage.get("profile_source"),
+        fundamentals_source=coverage.get("fundamentals_source"),
+        sec_eligible=coverage.get("sec_eligible"),
+        reason=coverage.get("reason"),
+        safety_valid=candidate.safety_valid,
+        human_review_required=candidate.human_review_required,
+    )
+
+
 async def process_run(
     db: AsyncSession,
     run: DiscoveryRun,
@@ -771,6 +798,23 @@ async def process_run(
     run.updated_at = datetime.now(timezone.utc)
     await db.commit()
 
+    parsed = run.parsed_thesis_json or {}
+    log_event(
+        logger,
+        "discovery_run_started",
+        run_id=run.id,
+        mode=run.mode,
+        provider=provider,
+        universe_size=len(universe),
+        max_universe=settings.discovery_max_universe_size,
+        max_candidates=len(universe),
+        lookback_days=lookback_days,
+        region=parsed.get("region"),
+        country=parsed.get("country"),
+        sector=parsed.get("sector"),
+        theme=parsed.get("theme"),
+    )
+
     warnings: list[str] = list(run.warnings or [])
     error_count = 0
     processed = 0
@@ -818,6 +862,7 @@ async def process_run(
         candidate = _build_candidate(run.id, extracted, score, thesis_item=thesis_item)
         db.add(candidate)
         created.append(candidate)
+        _log_candidate(run.id, candidate, extracted.signal)
 
         # ── Persist progress after each ticker (bounded warnings blob) ─────
         run.processed_count = processed
@@ -860,6 +905,25 @@ async def process_run(
 
     await db.commit()
     await db.refresh(run)
+
+    started_at = _aware(run.started_at)
+    completed_at = _aware(run.completed_at)
+    duration_ms = (
+        round((completed_at - started_at).total_seconds() * 1000, 2)
+        if started_at and completed_at
+        else None
+    )
+    log_event(
+        logger,
+        "discovery_run_completed",
+        run_id=run.id,
+        status=final_status,
+        processed_count=processed,
+        candidate_count=len(created),
+        error_count=error_count,
+        warning_count=len(warnings),
+        duration_ms=duration_ms,
+    )
     return run
 
 
@@ -888,6 +952,17 @@ async def process_discovery_run_by_id(
                 return
             await process_run(session, run, extractor=extractor)
     except Exception as exc:  # noqa: BLE001 — must not crash the worker
+        # Structured, secret-free failure event. The exception type + str(exc)
+        # are safe to log (never headers/body/credentials); the full traceback
+        # is emitted by logger.exception below for local debugging only.
+        log_event(
+            logger,
+            "discovery_run_failed",
+            level=logging.ERROR,
+            run_id=run_id,
+            exception_type=type(exc).__name__,
+            error=str(exc),
+        )
         logger.exception("Discovery run %s failed fatally: %s", run_id, exc)
         try:
             async with factory() as session:

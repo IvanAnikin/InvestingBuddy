@@ -36,6 +36,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.structured_logging import log_event
 from app.models.report import Report
 from app.models.scorecard import Scorecard
 from app.models.screening import ScreeningCandidate
@@ -2017,6 +2018,23 @@ class FinalReportGeneratorService:
 
         sections_present = [k for k in report_content if k in _REQUIRED_SECTIONS]
         missing_sections = [s for s in _REQUIRED_SECTIONS if s not in report_content]
+
+        # ── Telemetry (Phase 27.1D) — booleans + counts only, never content ──
+        # Emits validation outcomes so a staging operator can confirm the safety
+        # posture (human_review_required stays True, publication_ready stays
+        # False) without opening the report. The report body is never logged.
+        log_event(
+            logger,
+            "report_validation",
+            report_id=report.id,
+            schema_valid=validation.schema_valid,
+            safety_valid=validation.safety_valid,
+            research_complete=validation.research_complete,
+            publication_ready=validation.publication_ready,
+            human_review_required=True,
+            forbidden_terms_count=len(validation.safety_result.forbidden_terms_found),
+            missing_required_sections_count=len(missing_sections),
+        )
 
         # Update the report's validation fields
         report.safety_validation_json = validation.safety_result.model_dump()

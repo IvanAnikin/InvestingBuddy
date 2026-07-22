@@ -410,6 +410,117 @@ az webapp restart --resource-group ib-stg-rg --name ib-stg-web
 
 ---
 
+## Staging Logging & Telemetry (Phase 27.1D)
+
+Before Phase 27.1D, staging validation relied only on observed HTTP status codes
+and persisted run status because `httpLogs.fileSystem` was disabled,
+`containerStream.log` was often empty (INFO app logs were dropped under gunicorn),
+and Application Insights was not wired. Phase 27.1D makes staging validation
+**evidence-based** by emitting safe, structured log events to stdout — which
+Azure App Service captures in the container log stream.
+
+### What is logged (safe, structured, one line per event)
+
+| Event | Emitted by | Fields |
+|---|---|---|
+| `http_request` | `app.core.request_logging` middleware | `method`, `path` (path only — never the query string), `status`, `duration_ms`, `request_id`, `route_family` |
+| `discovery_run_started` | `market_discovery_service.process_run` | `run_id`, `mode`, `provider`, `universe_size`, `max_universe`, `max_candidates`, `lookback_days`, and parsed `region`/`country`/`sector`/`theme` (thesis runs) |
+| `discovery_candidate` | `market_discovery_service.process_run` | `run_id`, `ticker`, `exchange`, `company_name_source`, `profile_source`, `fundamentals_source`, `sec_eligible`, `reason`, `safety_valid`, `human_review_required` |
+| `discovery_run_completed` | `market_discovery_service.process_run` | `run_id`, `status`, `processed_count`, `candidate_count`, `error_count`, `warning_count`, `duration_ms` |
+| `discovery_run_failed` | `market_discovery_service.process_discovery_run_by_id` | `run_id`, `exception_type`, safe `error` message |
+| `report_validation` | `final_report_generator.validate_final_report` | `report_id`, `schema_valid`, `safety_valid`, `research_complete`, `publication_ready`, `human_review_required`, `forbidden_terms_count`, `missing_required_sections_count` |
+
+`/health` also exposes safe deploy metadata: `status`, `environment`, `version`,
+`commit_sha`, `build_id`, `app`, `build_time` — all public build identifiers.
+
+### What is NEVER logged
+
+The `Authorization` / `Cookie` / `Set-Cookie` / `X-API-Key` headers, OAuth tokens,
+the Basic-Auth value, API keys, `DATABASE_URL` / connection strings, request or
+response **bodies**, query strings, and **raw final-report content**. Report
+validation logs booleans and counts only. The redaction helper
+(`app.core.log_redaction`) neutralises any value whose key name looks like a
+credential before it can reach a log line, and the structured formatter
+(`app.core.structured_logging`) redacts sensitive field names and collapses
+newlines so one event is always one line (no log forging).
+
+### Controlling verbosity
+
+Two app settings (no code change needed):
+
+- `LOG_LEVEL` — default `INFO` surfaces every event above; set `WARNING` to keep
+  only 5xx `http_request` lines, `discovery_run_failed`, and errors.
+- `REQUEST_LOGGING_ENABLED` — default `true`; set `false` to silence the
+  per-request `http_request` line while keeping discovery/report events.
+
+```bash
+source ~/.venvs/azure-cli/bin/activate   # this Mac: ~/.venvs/azure-cli/bin/az
+
+# Reduce verbosity later (example only — adjust to taste):
+az webapp config appsettings set --resource-group ib-stg-rg --name ib-stg-api \
+  --settings LOG_LEVEL=WARNING
+# Restart to apply:
+az webapp restart --resource-group ib-stg-rg --name ib-stg-api
+```
+
+### Enable App Service filesystem logs + retention (optional)
+
+The structured events already reach the **container log stream** with no extra
+config. To ALSO capture them to the App Service filesystem (with a retention cap)
+so they survive in `/home/LogFiles`:
+
+```bash
+# Enable filesystem application logging at Information level, cap at 35 MB.
+az webapp log config --resource-group ib-stg-rg --name ib-stg-api \
+  --application-logging filesystem --level information
+
+# HTTP request logs to the filesystem with a retention window (days).
+az webapp log config --resource-group ib-stg-rg --name ib-stg-api \
+  --web-server-logging filesystem
+az webapp config appsettings set --resource-group ib-stg-rg --name ib-stg-api \
+  --settings WEBSITE_HTTPLOGGING_RETENTION_DAYS=7
+```
+
+### Stream logs live
+
+```bash
+# Live tail of the container / application log stream.
+az webapp log tail --resource-group ib-stg-rg --name ib-stg-api
+```
+
+### Query recent logs (download + grep by event name)
+
+```bash
+# Download the current LogFiles as a zip, then grep for a named event.
+az webapp log download --resource-group ib-stg-rg --name ib-stg-api \
+  --log-file ib-stg-api-logs.zip
+unzip -o ib-stg-api-logs.zip -d ib-stg-api-logs
+grep -R "discovery_run_completed" ib-stg-api-logs || true
+```
+
+### Validate a discovery run using logs
+
+1. Start a run from the admin UI (or `POST /api/v1/market-discovery/thesis-runs`).
+2. `az webapp log tail ...` and confirm, in order:
+   `discovery_run_started run_id=<id> …` → one `discovery_candidate … ticker=<T> …`
+   line per ticker → `discovery_run_completed run_id=<id> status=<terminal> …`.
+3. Cross-check `processed_count` / `candidate_count` / `error_count` in the
+   `discovery_run_completed` line against the run row (`GET /runs/{id}`).
+
+### Verify NO secrets are logged
+
+```bash
+# Any hit here (other than a REDACTED marker) is a defect — investigate.
+grep -RiE "Authorization: Bearer|Set-Cookie:|DATABASE_URL=|api_token=[A-Za-z0-9]" \
+  ib-stg-api-logs || echo "OK — no secret values found in logs"
+```
+
+> Do not run appsettings-changing commands (`az webapp config appsettings set`,
+> `az webapp log config`) on staging without explicit approval — they alter the
+> running configuration. The commands above are the reference recipe.
+
+---
+
 ## OIDC Setup (future — blocked on Entra permissions)
 
 Once the Entra ID Application Developer role is granted, replace publish profiles with OIDC:
@@ -479,6 +590,8 @@ Copy `.env.example` to `.env`. The defaults work for local Docker development.
 | `AZURE_STORAGE_CONNECTION_STRING` | No | 3+ | Use Managed Identity in staging |
 | `AZURE_STORAGE_CONTAINER_NAME` | No | 3+ | `investingbuddy-documents` |
 | `APPLICATIONINSIGHTS_CONNECTION_STRING` | No | 12+ | Injected via App Service config |
+| `LOG_LEVEL` | No | 27.1D | Root log level for the stdout handler (default `INFO` surfaces structured telemetry; `WARNING` reduces verbosity). See "Staging Logging & Telemetry". |
+| `REQUEST_LOGGING_ENABLED` | No | 27.1D | Emit one `http_request` line per request (default `true`). Never logs headers/bodies/query strings/secrets. |
 | `NEWS_PROVIDER_NAME` | No | 24.1 | Catalyst news provider selector: unset/`none` → offline `NullNewsProvider` (default, safe); `gdelt` → no-key GDELT adapter; any other name → env-key `ConfigurableWebNewsProvider` (needs the two below) |
 | `NEWS_API_KEY` | No | 24.1 | Secret for env-key news providers — **never commit**; Key Vault reference in staging |
 | `NEWS_API_BASE_URL` | No | 24.1 | Search endpoint for `ConfigurableWebNewsProvider` (also `NEWS_SEARCH_ENDPOINT`) |

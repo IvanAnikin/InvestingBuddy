@@ -16,6 +16,11 @@ class HealthResponse(BaseModel):
     # "unknown" locally; the deploy workflow bundles the real commit SHA.
     commit_sha: str
     build_id: str
+    # Phase 27.1D: additional SAFE deploy metadata for staging observability.
+    # ``app`` names the running service; ``build_time`` is the deploy build
+    # timestamp. Both are public build identifiers — never secrets.
+    app: str
+    build_time: str
 
 
 @router.get("/health", response_model=HealthResponse)
@@ -26,4 +31,6 @@ async def health_check() -> HealthResponse:
         version="0.1.0",
         commit_sha=BUILD_INFO["commit_sha"],
         build_id=BUILD_INFO["build_id"],
+        app=settings.app_name,
+        build_time=BUILD_INFO["build_time"],
     )

@@ -1440,16 +1440,58 @@ company is still recorded with a reason; `human_review_required=true`,
 
 ---
 
-## Phase 27.1D: Staging Telemetry / Logging Cleanup — BACKLOG
+## Phase 27.1D: Staging Telemetry / Logging Cleanup — ✅ COMPLETE
 
-**Status: Not started.** Deferred from Phase 27.1C (the `-telemetry` in that
-branch name was aspirational; no telemetry was implemented in Phase 27.1C).
+**Status: Complete (no migration; API + docs + CI only, web unchanged).**
+Delivers the telemetry deferred from Phase 27.1C so future staging validations are
+**evidence-based** instead of relying only on observed HTTP status codes and
+persisted run status (`httpLogs.fileSystem` was disabled, `containerStream.log`
+was empty because INFO app logs were dropped under gunicorn, and App Insights was
+unwired).
 
-**Scope.** Structured logging + telemetry for thesis discovery on staging:
-surface per-run parse/universe/scan outcomes, effective filter (country vs
-region), rejected-filter `422`s, and per-ticker `error_count`, so staging runs
-can be validated from logs rather than manual observation. No product-surface,
-safety, or publication change; internal-only, human-review-required preserved.
+**What is logged (safe, structured — one line per event).**
+- `http_request` (middleware): `method`, `path` (path only — never the query
+  string), `status`, `duration_ms`, `request_id` (honours an inbound
+  `X-Request-ID`), `route_family`. Added as the OUTERMOST middleware so it also
+  captures Basic-Auth `401`s.
+- `discovery_run_started`: `run_id`, `mode`, `provider`, `universe_size`,
+  `max_universe`, `max_candidates`, `lookback_days`, parsed
+  `region`/`country`/`sector`/`theme`.
+- `discovery_candidate`: `run_id`, `ticker`, `exchange`, `company_name_source`,
+  `profile_source`, `fundamentals_source`, `sec_eligible`, `reason`,
+  `safety_valid`, `human_review_required` (no raw payloads).
+- `discovery_run_completed`: `run_id`, `status`, `processed_count`,
+  `candidate_count`, `error_count`, `warning_count`, `duration_ms`.
+- `discovery_run_failed`: `run_id`, `exception_type`, safe `error` message.
+- `report_validation`: `report_id`, `schema_valid`, `safety_valid`,
+  `research_complete`, `publication_ready`, `human_review_required`,
+  `forbidden_terms_count`, `missing_required_sections_count` (never report body).
+- `/health` gains safe `app` + `build_time` deploy metadata.
+
+**What is NEVER logged.** `Authorization`/`Cookie`/`Set-Cookie`/`X-API-Key`
+headers, OAuth tokens, the Basic-Auth value, API keys, `DATABASE_URL`/connection
+strings, request/response bodies, query strings, and raw final-report content.
+Redaction is centralised in `app/core/log_redaction.py` (redacts by key name +
+token-bearing URL query params) and the structured formatter redacts sensitive
+field names and collapses newlines (no log forging).
+
+**Config.** `LOG_LEVEL` (default `INFO`; set `WARNING` to reduce verbosity) and
+`REQUEST_LOGGING_ENABLED` (default `true`) — no code change to tune.
+
+**Ops docs.** `docs/DEPLOYMENT.md` → "Staging Logging & Telemetry (Phase 27.1D)"
+covers enabling App Service filesystem logs + retention, streaming
+(`az webapp log tail`), downloading + grepping by event name, validating a
+discovery run from the log sequence, and verifying no secrets are logged.
+
+**Tests.** 39 backend tests (redaction, structured formatter, request-logging
+middleware, discovery started/candidate/completed/failed events, report
+validation booleans-not-body, no-publish-route invariant); 1755 total.
+
+**Unchanged.** No auth change, no `AUTH_TEST_MODE`, no public publishing, no
+recommendation / BUY-SELL-HOLD-WATCH / price-target / fair-value / upside
+language; `human_review_required=true`, `publication_ready=false`, no publish
+route. Application Insights / a log-aggregation backend remains a future
+enhancement.
 
 ---
 
