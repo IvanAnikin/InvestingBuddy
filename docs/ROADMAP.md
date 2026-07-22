@@ -1440,6 +1440,19 @@ company is still recorded with a reason; `human_review_required=true`,
 
 ---
 
+## Phase 27.1D: Staging Telemetry / Logging Cleanup — BACKLOG
+
+**Status: Not started.** Deferred from Phase 27.1C (the `-telemetry` in that
+branch name was aspirational; no telemetry was implemented in Phase 27.1C).
+
+**Scope.** Structured logging + telemetry for thesis discovery on staging:
+surface per-run parse/universe/scan outcomes, effective filter (country vs
+region), rejected-filter `422`s, and per-ticker `error_count`, so staging runs
+can be validated from logs rather than manual observation. No product-surface,
+safety, or publication change; internal-only, human-review-required preserved.
+
+---
+
 ## Out of Scope (All Versions)
 
 - Broker account integration
