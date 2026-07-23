@@ -52,6 +52,8 @@ from app.schemas.final_report import (
     SafetyValidationResult,
 )
 from app.services import safety_terms
+from app.services.llm.council import maybe_run_council
+from app.services.llm.schemas import CouncilResult
 from app.services.real_asset_report_completer import build_schema_complete_report
 from app.services.report_validation_service import validate_real_asset_report
 
@@ -2202,6 +2204,43 @@ class FinalReportGeneratorService:
             catalyst_discovery=catalyst_discovery,
         )
 
+        # Derive identity early — needed for both the council and the title.
+        company_name: str | None = None
+        ticker: str | None = None
+        exchange: str | None = None
+        if company_snapshot:
+            ci = company_snapshot.get("company_identity", {})
+            company_name = ci.get("legal_name")
+            ticker = ci.get("ticker")
+            exchange = ci.get("exchange")
+        elif company_record:
+            company_name = company_record.get("name")
+            ticker = company_record.get("ticker")
+            exchange = company_record.get("exchange")
+        elif candidate:
+            company_name = candidate.name
+            ticker = candidate.ticker
+            exchange = candidate.exchange
+
+        # Phase 28A: optional single-company LLM analysis council. Runs ONLY when
+        # LLM_COUNCIL_ENABLED and a provider resolves; otherwise returns a
+        # disabled result and the deterministic path below is unchanged. Council
+        # output is added to report_content BEFORE validation so the existing
+        # safety gate scans it (backstop on top of the council's own quarantine).
+        appendix = report_content.get("source_citation_appendix", {}) or {}
+        source_rows = (appendix.get("sources") or {}).get("value") or []
+        council_result: CouncilResult = await maybe_run_council(
+            report_content=report_content,
+            company_snapshot=company_snapshot,
+            catalyst_discovery=catalyst_discovery,
+            source_rows=source_rows,
+            report_id=None,
+            ticker=ticker,
+            exchange=exchange,
+        )
+        if council_result.llm_used:
+            report_content["llm_council_analysis"] = council_result.to_report_dict()
+
         # Phase 26: safety-scan the admin draft AND validate a schema-completed
         # version (honest not_sourced stand-ins fill genuinely-absent fields, so
         # the draft reaches schema_valid=True while staying research-incomplete).
@@ -2223,26 +2262,15 @@ class FinalReportGeneratorService:
 
         schema_validation_for_save = validation.persisted_schema_json
 
-        # Source summary
+        # Source summary — carries the compact LLM council metadata (Phase 28A)
+        # so the report GET can surface it without a schema migration. When the
+        # council is disabled this is an honest {"llm_used": False}.
         source_summary_for_save = {
             "total_sources": len(sources),
             "total_citations": len(citations),
             "source_types": list({s.source_type for s in sources}),
+            "llm_council": council_result.to_metadata_dict(),
         }
-
-        # Derive company_name + ticker for title
-        company_name: str | None = None
-        ticker: str | None = None
-        if company_snapshot:
-            ci = company_snapshot.get("company_identity", {})
-            company_name = ci.get("legal_name")
-            ticker = ci.get("ticker")
-        elif company_record:
-            company_name = company_record.get("name")
-            ticker = company_record.get("ticker")
-        elif candidate:
-            company_name = candidate.name
-            ticker = candidate.ticker
 
         saved_report = await _save_final_report_draft(
             db=db,
@@ -2308,5 +2336,19 @@ class FinalReportGeneratorService:
             scorecard_id=scorecard.id if scorecard else None,
             source_count=len(sources),
             citation_count=len(citations),
+            llm_used=council_result.llm_used,
+            llm_provider=council_result.provider,
+            llm_model=council_result.model,
+            council_version=(
+                council_result.council_version if council_result.llm_used else None
+            ),
+            council_agents_completed=council_result.agents_completed,
+            council_agents_failed=council_result.agents_failed,
+            council_agents_skipped=council_result.agents_skipped,
+            evidence_pack_version=(
+                council_result.evidence_pack_version if council_result.llm_used else None
+            ),
+            evidence_item_count=council_result.evidence_item_count,
+            committee_label=council_result.committee_label,
             human_review_checklist=checklist_items,
         )

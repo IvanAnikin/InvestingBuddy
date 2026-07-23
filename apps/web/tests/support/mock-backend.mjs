@@ -142,6 +142,64 @@ function mockReport(id) {
   };
 }
 
+// Phase 28A — a report whose LLM council actually ran. The council metadata
+// lives inside source_summary_json.llm_council (no schema migration). All text
+// is bounded, safety-scanned council output — never raw prompts or secrets.
+const COUNCIL_REPORT_ID = "00000000-0000-0000-0000-0000000000c0";
+
+function mockCouncilReport(id) {
+  const base = mockReport(id);
+  base.title = "InvestingBuddy Test Company — LLM Council Draft [MOCK DATA]";
+  base.source_summary_json = {
+    total_sources: 3,
+    total_citations: 2,
+    llm_council: {
+      llm_used: true,
+      council_version: "v1",
+      provider: "fake",
+      model: "fake-council-model",
+      evidence_pack_version: "v1",
+      evidence_item_count: 4,
+      agents_completed: 8,
+      agents_failed: 0,
+      agents_skipped: 0,
+      committee_label: "requires_more_evidence",
+      agents: [
+        {
+          agent_name: "financial_analyst",
+          status: "completed",
+          summary:
+            "Deterministic fake summary for the financial_analyst agent. Internal draft only.",
+          key_points: [
+            {
+              claim: "An evidenced datapoint was observed in the pack.",
+              citation_ids: ["E1"],
+              confidence: "low",
+              data_quality: "C",
+            },
+          ],
+          risks_or_gaps: [
+            { item: "Evidence is bounded and may be incomplete.", citation_ids: ["E2"], severity: "low" },
+          ],
+          unsupported_claims: [],
+          safety_notes: [],
+        },
+        {
+          agent_name: "committee_chair",
+          status: "completed",
+          summary: "Internal synthesis of the council over bounded evidence.",
+          key_points: [],
+          risks_or_gaps: [],
+          unsupported_claims: [],
+          safety_notes: [],
+          committee_label: "requires_more_evidence",
+        },
+      ],
+    },
+  };
+  return base;
+}
+
 function send(res, status, body) {
   res.writeHead(status, { "Content-Type": "application/json" });
   res.end(JSON.stringify(body));
@@ -170,7 +228,11 @@ const server = createServer((req, res) => {
   // Single report (report detail page).
   const reportDetail = /^\/api\/v1\/reports\/([^/]+)$/.exec(path);
   if (reportDetail) {
-    return send(res, 200, mockReport(reportDetail[1]));
+    const rid = reportDetail[1];
+    if (rid === COUNCIL_REPORT_ID) {
+      return send(res, 200, mockCouncilReport(rid));
+    }
+    return send(res, 200, mockReport(rid));
   }
 
   // Report list.

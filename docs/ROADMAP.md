@@ -1504,6 +1504,66 @@ enhancement.
 
 ---
 
+## Phase 28A: Single-Company LLM Analysis Council — ✅ COMPLETE
+
+**Status: Complete (no migration; OFF by default).** Activates a real but
+controlled LLM council for ONE company report. Reports were previously honest
+that "LLM: not used" because they are deterministic assemblies of
+SEC/fundamentals/provider data plus schema completion. Phase 28A makes the LLM a
+genuine, internal-only, citation-bound, safety-gated participant — without
+changing auth, publishing, or the human-review requirement.
+
+**Design.** New `apps/api/app/services/llm/` package, gated by
+`LLM_COUNCIL_ENABLED` (default `false`) + `LLM_PROVIDER_COUNCIL`
+(`fake` | `azure_openai` | `openai`; `fake` is deterministic/offline and the
+only provider used in tests):
+
+- **Evidence Pack Builder** — a bounded (`LLM_COUNCIL_MAX_EVIDENCE_ITEMS`),
+  excerpts-only, stable-id (`E1..En`) pack for one company. Records
+  **`transport_tier` vs `content_tier`**: SEC EDGAR is a T2 transport, a filing
+  pulled through it is T1 content; company press releases are
+  `T1_primary_company_source`. Agents may cite ONLY evidence-pack ids.
+- **LLM client abstraction** — `LLMClient` ABC (JSON parse + one repair,
+  timeout, thin langchain Azure/OpenAI wrappers); `get_llm_client` returns
+  `None` (never raises) when disabled or credentials/deps are missing, so the
+  deterministic path is preserved.
+- **Eight council agents** — Financial Analyst, Business/Moat, Catalyst,
+  Risk/Governance, Valuation Guard (a guard, never a valuator), Source Quality
+  Critic, Red Team, Committee Chair (internal labels only:
+  `internal_research_candidate`/`requires_more_evidence`/`insufficient_data`/
+  `monitor_for_new_evidence`/`reject_for_now`). A single agent failing is
+  isolated; the report still saves.
+- **Citation + safety enforcement** — non-pack citation ids are dropped,
+  un-cited material claims are flagged, and any forbidden rating/valuation
+  language quarantines that agent's whole output before it is saved/displayed;
+  the existing report-level safety gate scans the merged council section as a
+  backstop.
+- **Integration** — inside `FinalReportGeneratorService._generate_and_save`;
+  metadata persists under `source_summary_json.llm_council`; `FinalReportResponse`
+  gains additive `llm_used`/`llm_provider`/`llm_model`/`council_version`/
+  `council_agents_*`/`evidence_pack_version`/`evidence_item_count`/
+  `committee_label`. `/admin/reports/[id]` gains an LLM-used pill + council
+  metadata + an "LLM Council Analysis" section (bounded, safety-scanned output
+  only — never raw prompts/evidence/secrets).
+- **Safe logging** — `llm_council_started`/`evidence_pack_built`/
+  `llm_agent_completed`/`llm_agent_failed`/`llm_council_completed`
+  (ids/provider/model/status/counts/duration only).
+
+**Tests.** 33 backend (fake provider only) + 3 Playwright. Deterministic
+regressions (AAPL/MSFT/NVDA, sparse non-US UHR/CFR, BA.LSE-not-Boeing, Swiss
+watch strict filter, Swatch/Watches-&-Jewelry safety) preserved.
+
+**Unchanged.** No auth change, no `AUTH_TEST_MODE`, no public publishing, no
+recommendation / BUY-SELL-HOLD-WATCH / price-target / fair-value / upside
+language; `human_review_required=true`, `publication_ready=false`, no publish
+route.
+
+**Future (LLM council track).** Phase 28B — discovery-run-level hierarchical
+council; Phase 29 — source-provider expansion; Phase 30 — translation /
+local-language agents. None are started in Phase 28A.
+
+---
+
 ## Out of Scope (All Versions)
 
 - Broker account integration

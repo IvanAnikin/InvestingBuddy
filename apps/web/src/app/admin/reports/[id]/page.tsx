@@ -1,7 +1,12 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { fetchReport, fetchReviewEvents } from "@/lib/api";
-import type { Report, ReviewEvent } from "@/types/api";
+import type {
+  Report,
+  ReviewEvent,
+  LlmCouncilMetadata,
+  LlmCouncilAgent,
+} from "@/types/api";
 import FinalReportActions from "./FinalReportActions";
 import ReviewPanel from "./ReviewPanel";
 import GlassCard from "@/components/ui/GlassCard";
@@ -50,6 +55,87 @@ function readValidationFlag(
   const value = payload[key];
   if (typeof value === "boolean") return value ? "true" : "false";
   return "n/a";
+}
+
+// Phase 28A — read the LLM council metadata out of source_summary_json. Returns
+// null when absent (older reports / deterministic runs) so the page keeps the
+// honest "LLM: Not Used" label.
+function readCouncil(
+  payload: Record<string, unknown> | null,
+): LlmCouncilMetadata | null {
+  if (!payload || typeof payload !== "object") return null;
+  const council = payload["llm_council"];
+  if (!council || typeof council !== "object") return null;
+  return council as LlmCouncilMetadata;
+}
+
+const COUNCIL_AGENT_LABELS: Record<string, string> = {
+  financial_analyst: "Financial Analyst",
+  business_moat: "Business / Moat",
+  catalyst: "Catalysts",
+  risk_governance: "Risks / Governance",
+  valuation_guard: "Valuation Guard",
+  source_quality_critic: "Source Critic",
+  red_team: "Red Team",
+  committee_chair: "Committee Chair",
+};
+
+function CouncilAgentCard({ agent }: { agent: LlmCouncilAgent }) {
+  const label = COUNCIL_AGENT_LABELS[agent.agent_name] ?? agent.agent_name;
+  const failed = agent.status !== "completed";
+  return (
+    <div
+      data-testid={`council-agent-${agent.agent_name}`}
+      className="rounded-lg border border-white/10 bg-white/5 p-4"
+    >
+      <div className="mb-2 flex items-center gap-2">
+        <span className="text-sm font-semibold text-slate-100">{label}</span>
+        <StatusPill
+          label={agent.status}
+          color={failed ? "amber" : "green"}
+        />
+        {agent.committee_label && (
+          <StatusPill label={agent.committee_label} color="blue" />
+        )}
+      </div>
+      {agent.summary && (
+        <p className="text-sm text-slate-300">{agent.summary}</p>
+      )}
+      {agent.key_points.length > 0 && (
+        <ul className="mt-2 space-y-1">
+          {agent.key_points.map((kp, i) => (
+            <li key={i} className="text-xs text-slate-400">
+              • {kp.claim}
+              {kp.citation_ids.length > 0 && (
+                <span className="ml-1 font-mono text-[10px] text-slate-500">
+                  [{kp.citation_ids.join(", ")}]
+                </span>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+      {agent.risks_or_gaps.length > 0 && (
+        <ul className="mt-2 space-y-1">
+          {agent.risks_or_gaps.map((rg, i) => (
+            <li key={i} className="text-xs text-amber-300/80">
+              ⚠ {rg.item}
+              {rg.citation_ids.length > 0 && (
+                <span className="ml-1 font-mono text-[10px] text-slate-500">
+                  [{rg.citation_ids.join(", ")}]
+                </span>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+      {agent.unsupported_claims.length > 0 && (
+        <p className="mt-2 text-[11px] text-slate-500">
+          Un-cited / unsupported claims flagged: {agent.unsupported_claims.length}
+        </p>
+      )}
+    </div>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -154,6 +240,10 @@ export default async function ReportDetailPage({
   const reviewStatusLabel = STATUS_LABELS[reviewStatus] ?? reviewStatus;
   const reviewStatusColor = STATUS_COLORS[reviewStatus] ?? "gray";
 
+  // Phase 28A — LLM council metadata (honest; absent => LLM not used).
+  const council = readCouncil(report.source_summary_json);
+  const llmUsed = Boolean(council?.llm_used);
+
   return (
     // Phase 27.1C polish — reports were cramped in the shell's max-w-3xl column,
     // making them very long vertically. Widen the report content only (not the
@@ -187,6 +277,11 @@ export default async function ReportDetailPage({
           label={`Review: ${reviewStatusLabel}`}
           color={reviewStatusColor}
         />
+        {llmUsed ? (
+          <StatusPill label="LLM Used" color="purple" />
+        ) : (
+          <StatusPill label="LLM: Not Used" color="gray" />
+        )}
         <StatusPill label={report.report_type} color="gray" />
       </div>
 
@@ -310,6 +405,35 @@ export default async function ReportDetailPage({
             "publication_ready",
           )}
         />
+        <MetaRow label="LLM Used" value={llmUsed ? "Yes" : "No"} />
+        {council && llmUsed && (
+          <>
+            <MetaRow label="LLM Provider" value={council.provider ?? "n/a"} />
+            <MetaRow label="LLM Model" value={council.model ?? "n/a"} />
+            <MetaRow
+              label="Council Version"
+              value={council.council_version ?? "n/a"}
+            />
+            <MetaRow
+              label="Evidence Pack Version"
+              value={council.evidence_pack_version ?? "n/a"}
+            />
+            <MetaRow
+              label="Evidence Items"
+              value={String(council.evidence_item_count ?? 0)}
+            />
+            <MetaRow
+              label="Council Agents (done/failed/skipped)"
+              value={`${council.agents_completed ?? 0}/${council.agents_failed ?? 0}/${council.agents_skipped ?? 0}`}
+            />
+            {council.committee_label && (
+              <MetaRow
+                label="Committee Label"
+                value={council.committee_label}
+              />
+            )}
+          </>
+        )}
       </GlassCard>
 
       {/* Phase 26 — validation dimensions are orthogonal. Schema completeness is
@@ -332,6 +456,33 @@ export default async function ReportDetailPage({
           review remains required.
         </p>
       </GlassCard>
+
+      {/* Phase 28A — LLM Council Analysis. Rendered only when the council
+          actually ran. Shows bounded, safety-scanned, citation-bound agent
+          output — never raw prompts, hidden system messages, or the full
+          evidence pack. */}
+      {council && llmUsed && (
+        <GlassCard testId="llm-council-analysis" className="space-y-3 p-5">
+          <div className="flex items-center gap-2">
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+              LLM Council Analysis
+            </p>
+            <StatusPill label="Internal Research Aid" color="purple" />
+            <StatusPill label="Not Investment Advice" color="red" />
+          </div>
+          <p className="text-xs text-slate-400">
+            An internal, citation-bound LLM council analysed a bounded evidence
+            pack ({council.evidence_item_count ?? 0} item(s)). Every claim cites
+            evidence ids. No rating, valuation conclusion, or return projection
+            is produced. Human review is required.
+          </p>
+          <div className="grid gap-3 md:grid-cols-2">
+            {(council.agents ?? []).map((agent) => (
+              <CouncilAgentCard key={agent.agent_name} agent={agent} />
+            ))}
+          </div>
+        </GlassCard>
+      )}
 
       <FinalReportActions reportId={report.id} />
 

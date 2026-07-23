@@ -55,6 +55,35 @@ class Settings(BaseSettings):
     azure_openai_api_version: str = "2024-08-01-preview"
     azure_openai_deployment_name: str = ""
 
+    # ── LLM Analysis Council (Phase 28A) ────────────────────────────────────
+    # A real, controlled LLM council for SINGLE-company report synthesis. It is
+    # internal-only, citation-bound and safety-gated. OFF by default so CI and a
+    # plain deploy stay fully deterministic (report says "LLM: not used").
+    #
+    # When enabled AND a usable provider is configured, the Final Report
+    # Generator builds a bounded evidence pack and runs the council; council
+    # output is safety-validated before it is saved or displayed. If the flag is
+    # off, or no provider resolves, the deterministic path is preserved unchanged
+    # and no fake council output is ever produced.
+    llm_council_enabled: bool = False
+    # Which client backend to use for the council: "fake" | "azure_openai" | "openai".
+    # "fake" is deterministic + offline and is the ONLY provider used in tests.
+    llm_provider_council: str = "fake"
+    # Model / deployment identifier. For azure_openai this is informational (the
+    # deployment name below is what routes the call); for openai it is the model.
+    llm_model: str = ""
+    # Sampling + output controls. Low temperature keeps council output stable.
+    llm_temperature: float = 0.1
+    llm_max_output_tokens: int = 1200
+    llm_request_timeout_seconds: int = 40
+    # Hard cap on evidence items passed to the council (bounds prompt size + cost).
+    llm_council_max_evidence_items: int = 40
+    # Council contract version. Bump when the agent set or output schema changes.
+    llm_council_version: str = "v1"
+    # OpenAI-compatible fallback key — required only when llm_provider_council="openai".
+    # Never hardcode. Never logged. Never exposed in /health.
+    openai_api_key: str = ""
+
     # ── Market Candidate Discovery (Phase 25) ──────────────────────────────
     # Internal-only, bounded market scan configuration. Discovery produces
     # internal research candidates ranked by an internal prioritization score.

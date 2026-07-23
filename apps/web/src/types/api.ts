@@ -74,6 +74,48 @@ export interface ReportList {
   total: number;
 }
 
+// Phase 28A — single-company LLM analysis council metadata. Persisted inside
+// Report.source_summary_json.llm_council (no schema migration). All fields are
+// honest: llm_used is never fabricated. Raw prompts / completions / evidence
+// excerpts are never sent to the client — only bounded, safety-scanned output.
+export interface LlmCouncilKeyPoint {
+  claim: string;
+  citation_ids: string[];
+  confidence?: string;
+  data_quality?: string;
+}
+
+export interface LlmCouncilRiskGap {
+  item: string;
+  citation_ids: string[];
+  severity?: string;
+}
+
+export interface LlmCouncilAgent {
+  agent_name: string;
+  status: string;
+  summary: string;
+  key_points: LlmCouncilKeyPoint[];
+  risks_or_gaps: LlmCouncilRiskGap[];
+  unsupported_claims: string[];
+  safety_notes: string[];
+  committee_label?: string | null;
+}
+
+export interface LlmCouncilMetadata {
+  llm_used: boolean;
+  council_version?: string | null;
+  provider?: string | null;
+  model?: string | null;
+  evidence_pack_version?: string | null;
+  evidence_item_count?: number;
+  agents_completed?: number;
+  agents_failed?: number;
+  agents_skipped?: number;
+  committee_label?: string | null;
+  agents?: LlmCouncilAgent[];
+}
+
 // Phase 11: Review action request/response
 export interface ReviewActionRequest {
   note?: string;
