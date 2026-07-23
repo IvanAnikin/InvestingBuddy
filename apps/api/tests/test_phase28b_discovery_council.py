@@ -518,6 +518,19 @@ async def test_22_disabled_service_raises_disabled_error() -> None:
         await mds.run_discovery_council_review(db, run, cfg=_cfg(enabled=False))
 
 
+@pytest.mark.asyncio
+async def test_22b_disabled_service_emits_discovery_council_disabled(caplog) -> None:
+    run = _orm_run()
+    db = AsyncMock()
+    with caplog.at_level(
+        logging.INFO, logger="app.services.market_discovery_service"
+    ):
+        with pytest.raises(mds.DiscoveryCouncilDisabledError):
+            await mds.run_discovery_council_review(db, run, cfg=_cfg(enabled=False))
+    assert "discovery_council_disabled" in caplog.text
+    assert "reason=flags_off" in caplog.text
+
+
 def test_23_no_publish_route_added() -> None:
     from app.main import app
 
