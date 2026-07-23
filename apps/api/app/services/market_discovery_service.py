@@ -1325,6 +1325,15 @@ async def run_discovery_council_review(
     """
     cfg = cfg or settings
     if not discovery_council_enabled(cfg):
+        # Manual admin-triggered review requested while the council is off. Emit a
+        # safe, secret-free telemetry event (no LLM call is made) and return a
+        # clear disabled response.
+        log_event(
+            logger,
+            "discovery_council_disabled",
+            run_id=run.id,
+            reason="flags_off",
+        )
         raise DiscoveryCouncilDisabledError("Discovery council is disabled.")
 
     # Require something to review: a terminal run or at least one candidate.
@@ -1358,6 +1367,12 @@ async def run_discovery_council_review(
     )
     if not result.llm_used:
         # Flags were on but no provider was available (e.g. missing credentials).
+        log_event(
+            logger,
+            "discovery_council_disabled",
+            run_id=run.id,
+            reason="provider_unavailable",
+        )
         raise DiscoveryCouncilDisabledError(
             "Discovery council provider is not available."
         )
