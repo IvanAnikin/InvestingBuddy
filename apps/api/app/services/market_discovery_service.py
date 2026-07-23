@@ -61,6 +61,7 @@ from app.services.discovery_thesis_scoring import (
     compute_combined_internal_score,
 )
 from app.services.exchange_registry import region_for_country
+from app.services.llm.discovery_council import maybe_run_discovery_council
 from app.services.market_thesis_parser import (
     get_supported_themes as parser_supported_themes,
 )
@@ -1211,3 +1212,172 @@ async def run_candidate_analysis(
         "agent_run_id": uuid.UUID(agent_run_id) if agent_run_id else None,
         "provider_name": provider,
     }
+
+
+# ---------------------------------------------------------------------------
+# Phase 28B — run-level LLM discovery council review
+# ---------------------------------------------------------------------------
+
+# Council output is stored under this key inside the run's existing ``config_json``
+# metadata blob — no schema migration is required. The key is stripped from the
+# config passed back into the evidence pack so a re-run never feeds a prior
+# review to the council.
+COUNCIL_STORAGE_KEY = "discovery_council"
+
+
+class DiscoveryCouncilDisabledError(Exception):
+    """Raised when a council review is requested but the council is disabled.
+
+    The API layer maps this to a clear 409 — no LLM call and no fake result are
+    produced in production when the feature flags are off or no provider is
+    available.
+    """
+
+
+def discovery_council_enabled(cfg: Any | None = None) -> bool:
+    """True only when BOTH the shared council flag and the discovery flag are on."""
+    cfg = cfg or settings
+    return bool(cfg.llm_council_enabled and cfg.llm_discovery_council_enabled)
+
+
+def _run_to_evidence_dict(run: DiscoveryRun) -> dict[str, Any]:
+    """Adapt a run row into the bounded, secret-free dict the pack builder reads."""
+    config = {
+        k: v
+        for k, v in (run.config_json or {}).items()
+        if k != COUNCIL_STORAGE_KEY
+    }
+    return {
+        "run_id": str(run.id),
+        "mode": run.mode,
+        "status": run.status,
+        "thesis_text": run.thesis_text,
+        "parsed_thesis": run.parsed_thesis_json,
+        "config": config,
+        "provider": run.provider_name,
+        "lookback_days": run.lookback_days,
+        "universe_count": run.universe_count,
+        "candidate_count": run.candidate_count,
+        "error_count": run.error_count,
+        "warnings": list(run.warnings or []),
+    }
+
+
+def _candidate_to_evidence_dict(c: DiscoveryCandidate) -> dict[str, Any]:
+    """Adapt a candidate row into the bounded dict the pack builder reads."""
+    raw = c.raw_signal_json if isinstance(c.raw_signal_json, dict) else {}
+    data_coverage = raw.get("data_coverage") if isinstance(raw, dict) else {}
+    return {
+        "candidate_id": str(c.id),
+        "ticker": c.ticker,
+        "exchange": c.exchange,
+        "company_name": c.company_name,
+        "country": c.country,
+        "sector": c.sector,
+        "industry": c.industry,
+        "thesis_relevance_score": c.thesis_relevance_score,
+        "combined_internal_score": c.combined_internal_score,
+        "candidate_score": c.candidate_score,
+        "candidate_score_grade": c.candidate_score_grade,
+        "momentum_score": c.momentum_score,
+        "catalyst_score": c.catalyst_score,
+        "fundamentals_score": c.fundamentals_score,
+        "source_quality_score": c.source_quality_score,
+        "data_completeness_score": c.data_completeness_score,
+        "risk_penalty_score": c.risk_penalty_score,
+        "data_coverage": data_coverage if isinstance(data_coverage, dict) else {},
+        "source_quality": c.source_quality,
+        "missing_info_count": c.missing_info_count,
+        "blocking_gap_count": c.blocking_gap_count,
+        "catalyst_coverage_status": c.catalyst_coverage_status,
+        "momentum_label": c.momentum_label,
+        "positive_catalyst_count": c.positive_catalyst_count,
+        "high_strength_catalyst_count": c.high_strength_catalyst_count,
+        "filing_event_count": c.filing_event_count,
+        "news_event_count": c.news_event_count,
+        "press_release_event_count": c.press_release_event_count,
+        "safety_valid": c.safety_valid,
+        "human_review_required": c.human_review_required,
+        "is_public": c.is_public,
+        "warnings": list(c.warnings_json or []),
+    }
+
+
+def get_stored_council_review(run: DiscoveryRun) -> dict[str, Any] | None:
+    """Return the stored discovery-council review for a run, or None if absent."""
+    config = run.config_json or {}
+    review = config.get(COUNCIL_STORAGE_KEY)
+    return review if isinstance(review, dict) else None
+
+
+async def run_discovery_council_review(
+    db: AsyncSession,
+    run: DiscoveryRun,
+    *,
+    cfg: Any | None = None,
+    client: Any | None = None,
+) -> dict[str, Any]:
+    """Build the run evidence pack, run the discovery council, and store the review.
+
+    Raises ``DiscoveryCouncilDisabledError`` when the council is disabled or no
+    provider resolves — the API maps that to a 409. Stores the review under the
+    run's existing ``config_json`` (no migration) and returns the stored dict.
+    """
+    cfg = cfg or settings
+    if not discovery_council_enabled(cfg):
+        raise DiscoveryCouncilDisabledError("Discovery council is disabled.")
+
+    # Require something to review: a terminal run or at least one candidate.
+    if run.status not in _TERMINAL_STATUSES and (run.candidate_count or 0) <= 0:
+        raise ValueError(
+            "Discovery run is not ready for council review "
+            "(no candidates and not in a terminal state)."
+        )
+
+    sort = "combined_internal_score" if run.mode == "thesis" else "candidate_score"
+    candidates, _ = await list_candidates(
+        db,
+        run.id,
+        limit=max(1, cfg.llm_discovery_council_max_candidates),
+        offset=0,
+        sort=sort,
+    )
+    if not candidates:
+        raise ValueError("Discovery run has no candidates to review.")
+
+    run_dict = _run_to_evidence_dict(run)
+    candidate_dicts = [_candidate_to_evidence_dict(c) for c in candidates]
+
+    result = await maybe_run_discovery_council(
+        run=run_dict,
+        candidates=candidate_dicts,
+        run_id=str(run.id),
+        cfg=cfg,
+        client=client,
+        logger=logger,
+    )
+    if not result.llm_used:
+        # Flags were on but no provider was available (e.g. missing credentials).
+        raise DiscoveryCouncilDisabledError(
+            "Discovery council provider is not available."
+        )
+
+    created_at = datetime.now(timezone.utc).isoformat()
+    stored = result.to_storage_dict(created_at=created_at)
+
+    # Backstop: no forbidden investment-action language may be saved. The council
+    # already quarantines unsafe agent output; this is a defensive re-scan.
+    hits = safety_terms.scan_value(stored, exempt_keys=frozenset({"do_not_infer"}))
+    if hits:
+        stored["safety_valid"] = False
+
+    # Reassign the whole dict so SQLAlchemy detects the JSONB change (in-place
+    # mutation of a JSONB column is not tracked by default).
+    new_config = dict(run.config_json or {})
+    new_config[COUNCIL_STORAGE_KEY] = stored
+    run.config_json = new_config
+    run.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(run)
+
+    return stored

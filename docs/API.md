@@ -1,6 +1,6 @@
 # API Reference
 
-## Status: Phase 28A — Single-Company LLM Analysis Council. **No DB migration.** OFF by default (`LLM_COUNCIL_ENABLED=false`) so CI and a plain deploy stay fully deterministic (`llm_used: false`). When enabled with a usable provider (`fake` | `azure_openai` | `openai`), the final-report `generate` paths build a **bounded, cited evidence pack** for one company and run an internal, **citation-bound, safety-gated** LLM council (Financial Analyst, Business/Moat, Catalyst, Risk/Governance, Valuation Guard, Source Quality Critic, Red Team, Committee Chair). No new endpoints. `FinalReportResponse` gains additive `llm_used`/`llm_provider`/`llm_model`/`council_version`/`council_agents_*`/`evidence_pack_version`/`evidence_item_count`/`committee_label`; council metadata + per-agent output persist under `source_summary_json.llm_council`. Same hard safety guarantees — internal only, no BUY/SELL/HOLD/WATCH, no price target/fair value/upside/recommendation, `human_review_required=true`, `publication_ready=false`, no publish route; raw prompts/completions/secrets are never returned or logged. See the Phase 28A section below. Underlying Phase 27.1C — Prompt-Derived Autofill + Controlled Selectors + Strict Country Filtering. **No DB migration.** Two new admin endpoints: `POST /api/v1/market-discovery/parse-thesis` (parse a thesis for selector auto-fill — **does not create a run**) and `GET /api/v1/market-discovery/supported-filters` (canonical Region/Country/Sector/Industry selector options). `parse-thesis` returns canonical single-value `region`/`country`/`sector`/`industry`/`theme`/`confidence`/`extraction_source` detected from the prompt text. On `POST /thesis-runs`, explicit form Region/Country/Sector override the parsed prompt values (a conflict keeps the explicit choice and surfaces a warning), values outside the supported options are rejected `422`, and **country filtering is strict** — a country filter is the sole geographic filter, so `"Swiss watch companies"` returns only Swiss issuers. Safety unchanged (internal only, no BUY/SELL/HOLD/WATCH/target/fair-value/upside/recommendation, `human_review_required=true`, `is_public=false`, no publish route). See the Phase 27.1C section below. Underlying Phase 27 — Thesis-to-Universe Discovery. Adds a **market-segment / thesis** discovery mode: `POST /api/v1/market-discovery/thesis-runs` (+ `GET /thesis-runs/{run_id}` alias). An admin describes a segment/theme/region in natural language; the backend deterministically parses it, builds a **bounded universe of real public companies** from a curated registry, and scans it through the Phase 25 pipeline. Discovery runs gain `mode` (`ticker`|`thesis`), `thesis_text`, `parsed_thesis_json`, `universe_json`; candidates gain `thesis_relevance_score`, `combined_internal_score`, `thesis_match_json` (migration **011**). Vague/no-match theses are rejected (422, `needs_narrowing`). Same hard safety guarantees — internal only, no BUY/SELL/HOLD/WATCH, no price target/fair value/upside/recommendation, `human_review_required=true`, `is_public=false`, no public publish route. See the Phase 27 section below. Underlying Phase 26 — Final Report Schema Completion / Publication-Readiness. **No new API endpoints** and no DB migration. The final-report `generate`/`validate` responses gain `research_complete` and `publication_ready` (both default `false`); the internal admin draft is deterministically completed into the strict `report_schema.json` shape so `schema_valid=true` is achievable via honest `not_sourced` stand-ins (never fabricated data). `safety_valid=true`, `human_review_required=true`, and public publishing remain unchanged (still not implemented). Underlying Phase 24.1.2 — Press-Release Canonical Link Fix. **No new API endpoints** and no request-schema change. The additive `news_catalyst_discovery` event rows now carry `source_url_quality` (`canonical_article` / `rejected_media_only` / `missing`) and an optional `media_url`; `source_url` for company press-release events is always the canonical article page (image/media URLs are never used as evidence). Backward-compatible; `safety_valid=true`; human review required. Underlying Phase 24.1.1 — News Provider Activation + Feed-Status Consistency. **No new API endpoints** and no request/response schema change. The catalyst markdown's **Company News Sources** now carries a precise press-release feed-status line (`feed_discovered_with_items` / `_no_recent_items` / `_unreadable` / `not_discovered`) instead of a contradictory "no feed found" warning, and the additive `news_catalyst_discovery` structured section gains a `source_statuses` block (`company_press_release` status + `items_seen`/`items_used` + `news_provider` status). Backend-only env `NEWS_LOOKBACK_DAYS` now scopes the news/press lookback (SEC stays 90d); `NEWS_PROVIDER_NAME=gdelt` activates a no-key provider. Existing endpoints stay backward-compatible; `safety_valid=true`; human review required. Underlying Phase 24.1 — Real News + Company Source Enablement. **No new API endpoints** were added and no request/response schema changed. On top of Phase 24, `free_real`/`eodhd_free_real` draft reports gain two additional catalyst markdown sections — **Company News Sources** (discovered website / IR / newsroom / press-release feed + verification tier/confidence) and **Industry Context News** (sector news explicitly flagged as NOT company-specific evidence) — and the Final Report Generator's additive `news_catalyst_discovery` section gains `company_sources`, `industry_context_events`, and `source_classes_attempted` / `source_classes_successful` (all controlled-vocabulary + neutralised headlines). Coverage status can now report `limited`/`adequate`/`strong` instead of `filings_only` when real company/news/industry evidence exists. Optional env config (backend only, never a request field, never committed): `NEWS_PROVIDER_NAME`, `NEWS_API_KEY`, `NEWS_API_BASE_URL`, `NEWS_SEARCH_ENDPOINT`, `NEWS_MAX_RESULTS`, `NEWS_LOOKBACK_DAYS`, `NEWS_TIMEOUT_SECONDS`. Existing final-report endpoints stay backward-compatible; the safety gate passes (`safety_valid=true`) and human review stays required. Underlying Phase 24 — News + Catalyst Discovery. **No new API endpoints** were added and no request/response schema changed. For `free_real`/`eodhd_free_real` analyses, the draft report markdown gains catalyst sections (News & Catalyst Discovery, Recent Catalyst Events, SEC Filing Events, Catalyst Evidence Quality, Catalyst Gaps / Next Research Tasks) plus a machine-readable catalyst JSON block, and the Final Report Generator's structured content gains an **additive** `news_catalyst_discovery` section (controlled-vocabulary counts + coverage status + SEC filing metadata + neutralised headlines; catalyst labels are T6 model estimates). Existing final-report endpoints (`from-scorecard`/`from-candidate`/`from-company`/`from-report`/`validate`/`regenerate-section`) are unchanged and stay backward-compatible; the safety gate passes (`safety_valid=true`) and human review stays required. Underlying Phase 19.4 — Identity + Sector + Market-Metric Enrichment. On top of the Phase 19.3 SEC-normalized fundamentals, the `free_real` / `eodhd_free_real` analysis snapshot now carries **additive, non-breaking** enrichment fields: `company_identity` gains `lei` / `isin`, `profile` gains sourced `sector` / `industry` / `website`, `fundamentals_summary` gains derived `market_cap_usd_m` / `enterprise_value_usd_m` / `pe_ratio` / `52_week_high` / `52_week_low` / `shares_outstanding_mln` (all null when not derivable), and two new blocks appear: `identity_profile_enrichment` and `market_metrics_summary` (both carry per-field `source_tiers` + `warnings`). No request schema or existing field changed. `valuation_guard_summary.valuation_readiness` stays `"partial"` when SEC + derived metrics are present; all valuation conclusions remain blocked (derived market cap / EV / P/E are T6 estimates, never official figures). Builds on Phase 19.1 Free Real Data Provider Stack (provider keys: `free_real`, `eodhd_free_real`, `eodhd_price_only`, `sec_edgar_fundamentals`).
+## Status: Phase 28B — Run-Level LLM Discovery Council. **No DB migration.** OFF by default — the council runs only when **both** `LLM_COUNCIL_ENABLED=true` and `LLM_DISCOVERY_COUNCIL_ENABLED=true` (default `false`) are set **and** a usable provider (`fake` | `azure_openai` | `openai`) resolves; otherwise it is disabled and no LLM call is made. Two new **admin/internal-only** endpoints on the existing market-discovery router (no auth change): `POST /api/v1/market-discovery/runs/{run_id}/council-review` builds a **bounded, cited run evidence pack**, runs an internal, **citation-bound, safety-gated** council over a whole discovery run's candidate set to decide internal research **priority**, and stores + returns the review (`409` when the council is disabled / no provider is available, `422` when the run has no candidates or is not terminal, `404` when the run is not found); `GET /api/v1/market-discovery/runs/{run_id}/council-review` returns the stored review (`404` when none exists yet). The review persists under the run's existing `discovery_runs.config_json["discovery_council"]` JSONB (no new column). **Manual admin-triggered only** — it never runs automatically after a discovery run. Same hard safety guarantees — internal only, no BUY/SELL/HOLD/WATCH, no price target/fair value/upside/recommendation, `human_review_required=true`, `publication_ready=false`, no publish route; raw prompts/completions/evidence/secrets are never returned or logged. See the Phase 28B section below. Underlying Phase 28A — Single-Company LLM Analysis Council. **No DB migration.** OFF by default (`LLM_COUNCIL_ENABLED=false`) so CI and a plain deploy stay fully deterministic (`llm_used: false`). When enabled with a usable provider (`fake` | `azure_openai` | `openai`), the final-report `generate` paths build a **bounded, cited evidence pack** for one company and run an internal, **citation-bound, safety-gated** LLM council (Financial Analyst, Business/Moat, Catalyst, Risk/Governance, Valuation Guard, Source Quality Critic, Red Team, Committee Chair). No new endpoints. `FinalReportResponse` gains additive `llm_used`/`llm_provider`/`llm_model`/`council_version`/`council_agents_*`/`evidence_pack_version`/`evidence_item_count`/`committee_label`; council metadata + per-agent output persist under `source_summary_json.llm_council`. Same hard safety guarantees — internal only, no BUY/SELL/HOLD/WATCH, no price target/fair value/upside/recommendation, `human_review_required=true`, `publication_ready=false`, no publish route; raw prompts/completions/secrets are never returned or logged. See the Phase 28A section below. Underlying Phase 27.1C — Prompt-Derived Autofill + Controlled Selectors + Strict Country Filtering. **No DB migration.** Two new admin endpoints: `POST /api/v1/market-discovery/parse-thesis` (parse a thesis for selector auto-fill — **does not create a run**) and `GET /api/v1/market-discovery/supported-filters` (canonical Region/Country/Sector/Industry selector options). `parse-thesis` returns canonical single-value `region`/`country`/`sector`/`industry`/`theme`/`confidence`/`extraction_source` detected from the prompt text. On `POST /thesis-runs`, explicit form Region/Country/Sector override the parsed prompt values (a conflict keeps the explicit choice and surfaces a warning), values outside the supported options are rejected `422`, and **country filtering is strict** — a country filter is the sole geographic filter, so `"Swiss watch companies"` returns only Swiss issuers. Safety unchanged (internal only, no BUY/SELL/HOLD/WATCH/target/fair-value/upside/recommendation, `human_review_required=true`, `is_public=false`, no publish route). See the Phase 27.1C section below. Underlying Phase 27 — Thesis-to-Universe Discovery. Adds a **market-segment / thesis** discovery mode: `POST /api/v1/market-discovery/thesis-runs` (+ `GET /thesis-runs/{run_id}` alias). An admin describes a segment/theme/region in natural language; the backend deterministically parses it, builds a **bounded universe of real public companies** from a curated registry, and scans it through the Phase 25 pipeline. Discovery runs gain `mode` (`ticker`|`thesis`), `thesis_text`, `parsed_thesis_json`, `universe_json`; candidates gain `thesis_relevance_score`, `combined_internal_score`, `thesis_match_json` (migration **011**). Vague/no-match theses are rejected (422, `needs_narrowing`). Same hard safety guarantees — internal only, no BUY/SELL/HOLD/WATCH, no price target/fair value/upside/recommendation, `human_review_required=true`, `is_public=false`, no public publish route. See the Phase 27 section below. Underlying Phase 26 — Final Report Schema Completion / Publication-Readiness. **No new API endpoints** and no DB migration. The final-report `generate`/`validate` responses gain `research_complete` and `publication_ready` (both default `false`); the internal admin draft is deterministically completed into the strict `report_schema.json` shape so `schema_valid=true` is achievable via honest `not_sourced` stand-ins (never fabricated data). `safety_valid=true`, `human_review_required=true`, and public publishing remain unchanged (still not implemented). Underlying Phase 24.1.2 — Press-Release Canonical Link Fix. **No new API endpoints** and no request-schema change. The additive `news_catalyst_discovery` event rows now carry `source_url_quality` (`canonical_article` / `rejected_media_only` / `missing`) and an optional `media_url`; `source_url` for company press-release events is always the canonical article page (image/media URLs are never used as evidence). Backward-compatible; `safety_valid=true`; human review required. Underlying Phase 24.1.1 — News Provider Activation + Feed-Status Consistency. **No new API endpoints** and no request/response schema change. The catalyst markdown's **Company News Sources** now carries a precise press-release feed-status line (`feed_discovered_with_items` / `_no_recent_items` / `_unreadable` / `not_discovered`) instead of a contradictory "no feed found" warning, and the additive `news_catalyst_discovery` structured section gains a `source_statuses` block (`company_press_release` status + `items_seen`/`items_used` + `news_provider` status). Backend-only env `NEWS_LOOKBACK_DAYS` now scopes the news/press lookback (SEC stays 90d); `NEWS_PROVIDER_NAME=gdelt` activates a no-key provider. Existing endpoints stay backward-compatible; `safety_valid=true`; human review required. Underlying Phase 24.1 — Real News + Company Source Enablement. **No new API endpoints** were added and no request/response schema changed. On top of Phase 24, `free_real`/`eodhd_free_real` draft reports gain two additional catalyst markdown sections — **Company News Sources** (discovered website / IR / newsroom / press-release feed + verification tier/confidence) and **Industry Context News** (sector news explicitly flagged as NOT company-specific evidence) — and the Final Report Generator's additive `news_catalyst_discovery` section gains `company_sources`, `industry_context_events`, and `source_classes_attempted` / `source_classes_successful` (all controlled-vocabulary + neutralised headlines). Coverage status can now report `limited`/`adequate`/`strong` instead of `filings_only` when real company/news/industry evidence exists. Optional env config (backend only, never a request field, never committed): `NEWS_PROVIDER_NAME`, `NEWS_API_KEY`, `NEWS_API_BASE_URL`, `NEWS_SEARCH_ENDPOINT`, `NEWS_MAX_RESULTS`, `NEWS_LOOKBACK_DAYS`, `NEWS_TIMEOUT_SECONDS`. Existing final-report endpoints stay backward-compatible; the safety gate passes (`safety_valid=true`) and human review stays required. Underlying Phase 24 — News + Catalyst Discovery. **No new API endpoints** were added and no request/response schema changed. For `free_real`/`eodhd_free_real` analyses, the draft report markdown gains catalyst sections (News & Catalyst Discovery, Recent Catalyst Events, SEC Filing Events, Catalyst Evidence Quality, Catalyst Gaps / Next Research Tasks) plus a machine-readable catalyst JSON block, and the Final Report Generator's structured content gains an **additive** `news_catalyst_discovery` section (controlled-vocabulary counts + coverage status + SEC filing metadata + neutralised headlines; catalyst labels are T6 model estimates). Existing final-report endpoints (`from-scorecard`/`from-candidate`/`from-company`/`from-report`/`validate`/`regenerate-section`) are unchanged and stay backward-compatible; the safety gate passes (`safety_valid=true`) and human review stays required. Underlying Phase 19.4 — Identity + Sector + Market-Metric Enrichment. On top of the Phase 19.3 SEC-normalized fundamentals, the `free_real` / `eodhd_free_real` analysis snapshot now carries **additive, non-breaking** enrichment fields: `company_identity` gains `lei` / `isin`, `profile` gains sourced `sector` / `industry` / `website`, `fundamentals_summary` gains derived `market_cap_usd_m` / `enterprise_value_usd_m` / `pe_ratio` / `52_week_high` / `52_week_low` / `shares_outstanding_mln` (all null when not derivable), and two new blocks appear: `identity_profile_enrichment` and `market_metrics_summary` (both carry per-field `source_tiers` + `warnings`). No request schema or existing field changed. `valuation_guard_summary.valuation_readiness` stays `"partial"` when SEC + derived metrics are present; all valuation conclusions remain blocked (derived market cap / EV / P/E are T6 estimates, never official figures). Builds on Phase 19.1 Free Real Data Provider Stack (provider keys: `free_real`, `eodhd_free_real`, `eodhd_price_only`, `sec_edgar_fundamentals`).
 
 ---
 
@@ -957,6 +957,126 @@ Response `200 OK`:
 > no DB migration; `schema_validation_json` gains `research_complete`,
 > `publication_ready`, `human_review_required`, and `placeholder_field_count`
 > keys (backward-compatible; `is_valid` unchanged).
+
+> **Phase 28B — Run-Level LLM Discovery Council.** When
+> `LLM_COUNCIL_ENABLED=true` **and** `LLM_DISCOVERY_COUNCIL_ENABLED=true`
+> **and** a usable provider resolves (`LLM_PROVIDER_COUNCIL` = `fake` |
+> `azure_openai` | `openai`), an admin can run a **run-level** LLM council over a
+> whole discovery run's candidate set to decide internal research **priority** —
+> the run-level analog of the Phase 28A single-company council. The service
+> builds a **bounded, cited run evidence pack** (run-level facts get ids
+> `R1, R2, …`; each candidate gets `C1, C2, …`; agents may cite ONLY those ids;
+> bounded by `LLM_DISCOVERY_COUNCIL_MAX_CANDIDATES`, default `25`) and runs eight
+> agents in order — `run_coordinator`, `candidate_prioritization`,
+> `novelty_coverage`, `diversity_anti_convergence`, `evidence_sufficiency`,
+> `risk_gatekeeper`, `run_red_team`, `discovery_chair` (the chair runs last and
+> sees the prior agents' safety-scanned summaries). Output is **citation-bound**
+> and **safety-gated**: per agent, invalid citation ids are dropped, un-cited
+> material claims are moved to `unsupported_claims`, any forbidden
+> investment-action language quarantines the **whole** agent output
+> (`status=failed`, no forbidden term echoed forward — the quarantine note records
+> tier names, not terms), and a bad `internal_action`/`run_quality` is coerced to
+> a safe default; one failing agent never fails the review, and a final backstop
+> re-scan runs before storing. The only per-candidate internal actions are
+> `research_next`, `monitor_for_evidence`, `insufficient_data`, `reject_for_now`;
+> the only `run_quality` labels are `strong`, `adequate`, `thin`, `failed`. The
+> council never emits BUY/SELL/HOLD/WATCH, a price target, fair value, intrinsic
+> value, or upside/downside. It is **manual admin-triggered only** — it never runs
+> automatically after a discovery run. When either flag is off or no provider
+> resolves, the council is disabled, **no fake output is produced in production**,
+> the deterministic discovery result is unchanged, and the review endpoint returns
+> `409`. **No DB migration** — the review persists under the run's existing
+> `discovery_runs.config_json["discovery_council"]` JSONB. `human_review_required`
+> is always `true` and `publication_ready` always `false`. Raw prompts,
+> completions, evidence excerpts, and credentials are never returned or logged.
+
+| Method | Path | Status | Description |
+|---|---|---|---|
+| POST | `/api/v1/market-discovery/runs/{run_id}/council-review` | ✅ Live | Build the run evidence pack, run the discovery council, store + return the review (admin/internal only) |
+| GET | `/api/v1/market-discovery/runs/{run_id}/council-review` | ✅ Live | Return the stored review for a run (admin/internal only) |
+
+**POST /api/v1/market-discovery/runs/{run_id}/council-review** — Run the council
+
+- **200** — the review (`DiscoveryCouncilReviewResponse`, schema below). When the
+  council ran, `llm_used=true` with `provider`/`model` populated.
+- **409** — the council is disabled or no provider is available
+  (`"Discovery council is disabled."` / `"Discovery council provider is not
+  available."`); no LLM call is made.
+- **422** — the run has no candidates or is not terminal.
+- **404** — the run is not found.
+
+**GET /api/v1/market-discovery/runs/{run_id}/council-review** — Fetch the stored review
+
+- **200** — the stored `DiscoveryCouncilReviewResponse`.
+- **404** — no review exists yet for the run (or the run is not found).
+
+**`DiscoveryCouncilReviewResponse`** (`apps/api/app/schemas/market_discovery.py`):
+`run_id`, `llm_used`, `council_version`, `provider`, `model`,
+`evidence_pack_version`, `evidence_item_count`, `candidate_count`,
+`agents_completed` / `agents_failed` / `agents_skipped`, `run_quality`
+(`strong` | `adequate` | `thin` | `failed`), the four candidate buckets
+`candidates_to_research_next` / `candidates_to_monitor` / `candidates_to_reject` /
+`candidates_insufficient_data` (each a list of
+`{candidate_ref, candidate_id, ticker, exchange, rationale, confidence}`),
+`evidence_gaps`, `next_source_tasks`, `agent_outputs`, `warnings`, `safety_valid`,
+`human_review_required` (always `true`), `publication_ready` (always `false`),
+`created_at`, `disclaimer`.
+
+Response (200 for **GET .../council-review**):
+```json
+{
+  "run_id": "uuid",
+  "llm_used": true,
+  "council_version": "v1",
+  "provider": "azure_openai",
+  "model": "gpt-4.1-mini",
+  "evidence_pack_version": "v1",
+  "evidence_item_count": 18,
+  "candidate_count": 7,
+  "agents_completed": 8,
+  "agents_failed": 0,
+  "agents_skipped": 0,
+  "run_quality": "adequate",
+  "candidates_to_research_next": [
+    { "candidate_ref": "C1", "candidate_id": "uuid", "ticker": "AMAT", "exchange": "US", "rationale": "Cited R2, C1: strongest source coverage in the run.", "confidence": 0.72 }
+  ],
+  "candidates_to_monitor": [
+    { "candidate_ref": "C3", "candidate_id": "uuid", "ticker": "UHR", "exchange": "SW", "rationale": "Cited C3: awaiting fundamentals evidence.", "confidence": 0.5 }
+  ],
+  "candidates_to_reject": [],
+  "candidates_insufficient_data": [
+    { "candidate_ref": "C5", "candidate_id": "uuid", "ticker": "BRBY", "exchange": "LSE", "rationale": "Cited C5: profile not_sourced, no fundamentals.", "confidence": 0.4 }
+  ],
+  "evidence_gaps": ["No SEC-eligible fundamentals for non-US venues (R1, C3, C5)."],
+  "next_source_tasks": ["Obtain issuer-filed fundamentals for SW/LSE candidates."],
+  "agent_outputs": [
+    { "agent_name": "run_coordinator", "status": "completed", "summary": "...", "citations": ["R1", "R2"], "unsupported_claims": [] }
+  ],
+  "warnings": [],
+  "safety_valid": true,
+  "human_review_required": true,
+  "publication_ready": false,
+  "created_at": "2026-07-23T00:00:00Z",
+  "disclaimer": "INTERNAL ADMIN DRAFT ONLY. NOT INVESTMENT ADVICE. ..."
+}
+```
+
+> **Phase 28B constraints:**
+> - **Run-level** council — reviews a whole discovery run's candidate set and
+>   decides internal research **priority**; it does not analyse a single company.
+> - Bounded by `LLM_DISCOVERY_COUNCIL_MAX_CANDIDATES` (default `25`); each
+>   candidate in the pack carries `score_breakdown`, `data_coverage`
+>   (`profile_source`/`fundamentals_source`/`sec_eligible`/`reason`/
+>   `requires_human_research`), `catalyst_summary`, `safety_valid`, `warnings`.
+> - Only internal actions: `research_next`, `monitor_for_evidence`,
+>   `insufficient_data`, `reject_for_now`. Only run-quality labels: `strong`,
+>   `adequate`, `thin`, `failed`.
+> - Stored under `discovery_runs.config_json["discovery_council"]` (no migration);
+>   manual admin-triggered only; disabled deployments return `409` with no LLM
+>   call.
+> - No BUY/SELL/HOLD/WATCH, no price target / fair value / intrinsic value /
+>   upside/downside / recommendation; `human_review_required=true`,
+>   `publication_ready=false`, no publish route, no auth change.
 
 > **Phase 28A — Single-Company LLM Analysis Council.** When
 > `LLM_COUNCIL_ENABLED=true` **and** a usable provider resolves

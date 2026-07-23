@@ -1558,9 +1558,83 @@ recommendation / BUY-SELL-HOLD-WATCH / price-target / fair-value / upside
 language; `human_review_required=true`, `publication_ready=false`, no publish
 route.
 
-**Future (LLM council track).** Phase 28B — discovery-run-level hierarchical
-council; Phase 29 — source-provider expansion; Phase 30 — translation /
-local-language agents. None are started in Phase 28A.
+**Future (LLM council track).** Phase 29 — source-provider expansion; Phase 30 —
+translation / local-language agents. Neither is started here.
+
+---
+
+## Phase 28B: Hierarchical Discovery-Run LLM Council — ✅ COMPLETE
+
+Phase 28A made the LLM a controlled, citation-bound, safety-gated council for a
+SINGLE company. Phase 28B adds the **run-level analog**: a council that reviews a
+whole discovery run's candidate set and decides which candidates deserve deeper
+internal research, which need more evidence, and which to monitor or reject. It
+is **internal-only, citation-bound, safety-gated, OFF by default, and manual
+admin-triggered only** — it never runs automatically after a discovery run.
+
+**No DB migration.** The review is persisted under the run's existing JSONB
+column `discovery_runs.config_json["discovery_council"]` (reassigned whole to
+trigger dirty-tracking).
+
+**Gating.** Runs only when BOTH `LLM_COUNCIL_ENABLED` (the shared 28A client
+gate) and new `LLM_DISCOVERY_COUNCIL_ENABLED` are true and a usable provider
+resolves. If either is off, `get_discovery_llm_client` returns `None`, the
+council is disabled, and **no fake output is produced in production** — the
+deterministic discovery result is unchanged.
+
+**Run evidence pack** (`build_discovery_evidence_pack`). Bounded (default 25
+candidates via `LLM_DISCOVERY_COUNCIL_MAX_CANDIDATES`), cited, no raw report
+bodies / no secrets. Run-level facts get ids `R1, R2, …`; each candidate gets
+`C1, C2, …` carrying `score_breakdown`, `data_coverage`
+(`profile_source`/`fundamentals_source`/`sec_eligible`/`reason`/
+`requires_human_research`), `catalyst_summary`, `safety_valid`, `warnings`.
+Agents may cite ONLY those ids.
+
+**Eight agents, in order.** `run_coordinator`, `candidate_prioritization`,
+`novelty_coverage`, `diversity_anti_convergence`, `evidence_sufficiency`,
+`risk_gatekeeper`, `run_red_team`, `discovery_chair` (chair runs last over the
+prior agents' safety-scanned summaries). The ONLY per-candidate internal actions
+are `research_next` / `monitor_for_evidence` / `insufficient_data` /
+`reject_for_now`; the ONLY `run_quality` labels are `strong` / `adequate` /
+`thin` / `failed`. A single failing agent (timeout, malformed JSON, provider
+error) is isolated and never fails the review.
+
+**Citation + safety enforcement** (`discovery_citation_checker.py`). Invalid
+citation ids are dropped; un-cited material claims move to `unsupported_claims`;
+any forbidden investment-action language quarantines the WHOLE agent output
+(`status=failed`) with no forbidden term echoed forward (the note records tier
+names, not terms); bad `internal_action`/`run_quality` are coerced to safe
+defaults. A final backstop re-scan runs before storing.
+
+**API (admin/internal only, no auth change).**
+`POST /api/v1/market-discovery/runs/{run_id}/council-review` builds the pack,
+runs the council, stores + returns the review (`409` when disabled / no provider,
+`422` when the run has no candidates / is not terminal, `404` when not found).
+`GET .../council-review` returns the stored review (`404` when none). Both return
+`DiscoveryCouncilReviewResponse`.
+
+**Frontend.** `/admin/discovery` gains a "Discovery Council Review" panel: a "Run
+Discovery Council Review" button (clear disabled state when the council is off),
+run-quality / agents ok-fail / safety pills, the four candidate buckets, evidence
+gaps, next source tasks, red-team / agent summaries, and an inline internal-action
+pill next to each matching candidate row. No publish action; no
+BUY/SELL/HOLD/WATCH; no price target / fair value / upside / downside.
+
+**Safe logging.** `discovery_council_started` /
+`discovery_council_evidence_built` / `discovery_council_agent_completed` /
+`discovery_council_agent_failed` / `discovery_council_completed` /
+`discovery_council_disabled` — ids / provider / model / counts / durations only;
+never prompts, completions, evidence, or secrets.
+
+**Tests.** 35 backend (fake client only) + 6 Playwright, all green.
+
+**Unchanged.** No auth change, no `AUTH_TEST_MODE`, no public publishing, no
+recommendation / BUY-SELL-HOLD-WATCH / price-target / fair-value / upside
+language; `human_review_required=true`, `publication_ready=false`, no publish
+route.
+
+**Future (LLM council track).** Phase 29 — source-provider expansion; Phase 30 —
+translation / local-language agents. Neither is started in Phase 28B.
 
 ---
 

@@ -1,11 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import {
   createDiscoveryRun,
   createThesisDiscoveryRun,
   getDiscoveryCandidate,
+  getDiscoveryCouncilReview,
   getDiscoveryRun,
   listDiscoveryCandidates,
   listDiscoveryRuns,
@@ -13,11 +14,13 @@ import {
   listSupportedThemes,
   parseThesis,
   runCandidateAnalysis,
+  runDiscoveryCouncilReview,
 } from "@/lib/api";
 import type {
   CountryFilterOption,
   DiscoveryCandidate,
   DiscoveryCandidateDetail,
+  DiscoveryCouncilReview,
   DiscoveryRun,
   DiscoveryRunCreate,
   FilterOption,
@@ -719,6 +722,302 @@ function ThesisSummaryPanel({ run }: { run: DiscoveryRun }) {
 }
 
 // ---------------------------------------------------------------------------
+// Discovery council review (Phase 28B — run-level LLM triage)
+// ---------------------------------------------------------------------------
+
+// Internal research-workflow actions only — NOT recommendations. No BUY / SELL /
+// HOLD / WATCH, no price target / fair value / upside/downside anywhere.
+const COUNCIL_ACTION_LABELS: Record<string, string> = {
+  research_next: "research next",
+  monitor_for_evidence: "monitor",
+  insufficient_data: "insufficient data",
+  reject_for_now: "reject for now",
+};
+
+function councilActionLabel(action: string | null): string {
+  return action ? COUNCIL_ACTION_LABELS[action] ?? action : "";
+}
+
+function councilActionBadgeCls(action: string | null): string {
+  switch (action) {
+    case "research_next":
+      return "border border-emerald-400/30 bg-emerald-500/10 text-emerald-300";
+    case "monitor_for_evidence":
+      return "border border-sky-400/30 bg-sky-500/10 text-sky-300";
+    case "reject_for_now":
+      return "border border-rose-400/30 bg-rose-500/10 text-rose-300";
+    default:
+      return "border border-white/15 bg-white/5 text-slate-300";
+  }
+}
+
+function CouncilStat({
+  label,
+  value,
+  testid,
+}: {
+  label: string;
+  value: string;
+  testid?: string;
+}) {
+  return (
+    <div className="rounded-lg border border-white/10 bg-white/5 px-3 py-2">
+      <p className="text-[10px] uppercase tracking-wide text-slate-500">
+        {label}
+      </p>
+      <p className="text-sm font-semibold text-slate-100" data-testid={testid}>
+        {value}
+      </p>
+    </div>
+  );
+}
+
+function CouncilBucket({
+  title,
+  action,
+  entries,
+  testid,
+}: {
+  title: string;
+  action: string;
+  entries: DiscoveryCouncilReview["candidates_to_research_next"];
+  testid: string;
+}) {
+  if (!entries || entries.length === 0) return null;
+  return (
+    <div data-testid={testid}>
+      <p className="text-xs font-semibold text-slate-200">
+        {title} ({entries.length})
+      </p>
+      <ul className="mt-1 space-y-1">
+        {entries.map((e, i) => (
+          <li key={`${e.ticker ?? "?"}-${i}`} className="text-xs text-slate-400">
+            <span
+              className={`mr-2 rounded px-1.5 py-0.5 text-[10px] font-medium ${councilActionBadgeCls(
+                action,
+              )}`}
+            >
+              {councilActionLabel(action)}
+            </span>
+            <span className="font-semibold text-slate-200">
+              {e.ticker ?? "—"}
+            </span>
+            {e.exchange ? (
+              <span className="text-slate-500">.{e.exchange}</span>
+            ) : null}
+            {e.rationale ? ` — ${e.rationale}` : ""}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function CouncilStringList({
+  title,
+  items,
+  testid,
+}: {
+  title: string;
+  items: string[] | undefined;
+  testid?: string;
+}) {
+  if (!items || items.length === 0) return null;
+  return (
+    <div data-testid={testid}>
+      <p className="text-xs font-semibold text-slate-200">{title}</p>
+      <ul className="mt-1 list-disc space-y-0.5 pl-5">
+        {items.map((it, i) => (
+          <li key={i} className="text-xs text-slate-400">
+            {it}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function DiscoveryCouncilBody({ review }: { review: DiscoveryCouncilReview }) {
+  const agentSummaries = Object.entries(review.agent_outputs ?? {})
+    .map(([name, out]) => {
+      const summary = (out as { summary?: string } | null)?.summary;
+      return summary ? { name, summary } : null;
+    })
+    .filter((x): x is { name: string; summary: string } => x !== null);
+
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
+        <CouncilStat label="LLM used" value={review.llm_used ? "yes" : "no"} />
+        <CouncilStat label="Provider" value={review.provider ?? "—"} />
+        <CouncilStat label="Model" value={review.model ?? "—"} />
+        <CouncilStat label="Council" value={review.council_version ?? "—"} />
+        <CouncilStat
+          label="Run quality"
+          value={review.run_quality ?? "—"}
+          testid="council-run-quality"
+        />
+        <CouncilStat
+          label="Agents ok/fail"
+          value={`${review.agents_completed ?? 0}/${review.agents_failed ?? 0}`}
+        />
+        <CouncilStat
+          label="Evidence items"
+          value={String(review.evidence_item_count ?? 0)}
+        />
+        <CouncilStat
+          label="Safety"
+          value={review.safety_valid ? "valid" : "flagged"}
+        />
+        <CouncilStat
+          label="Human review"
+          value={review.human_review_required === false ? "—" : "required"}
+        />
+        <CouncilStat
+          label="Publishable"
+          value={review.publication_ready ? "yes" : "no"}
+        />
+      </div>
+
+      <CouncilBucket
+        title="Research next"
+        action="research_next"
+        entries={review.candidates_to_research_next}
+        testid="council-research-next"
+      />
+      <CouncilBucket
+        title="Monitor for evidence"
+        action="monitor_for_evidence"
+        entries={review.candidates_to_monitor}
+        testid="council-monitor"
+      />
+      <CouncilBucket
+        title="Insufficient data"
+        action="insufficient_data"
+        entries={review.candidates_insufficient_data}
+        testid="council-insufficient"
+      />
+      <CouncilBucket
+        title="Rejected for now"
+        action="reject_for_now"
+        entries={review.candidates_to_reject}
+        testid="council-reject"
+      />
+
+      <CouncilStringList
+        title="Evidence gaps"
+        items={review.evidence_gaps}
+        testid="council-evidence-gaps"
+      />
+      <CouncilStringList
+        title="Next source tasks"
+        items={review.next_source_tasks}
+        testid="council-next-tasks"
+      />
+      <CouncilStringList
+        title="Council notes"
+        items={review.warnings}
+        testid="council-warnings"
+      />
+
+      {agentSummaries.length > 0 && (
+        <details data-testid="council-agent-summaries">
+          <summary className="cursor-pointer text-xs font-semibold text-slate-200">
+            Agent summaries ({agentSummaries.length})
+          </summary>
+          <ul className="mt-1 space-y-1">
+            {agentSummaries.map(({ name, summary }) => (
+              <li key={name} className="text-xs text-slate-400">
+                <span className="font-semibold text-slate-300">{name}:</span>{" "}
+                {summary}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+
+      <p className="text-[11px] text-slate-500">{review.disclaimer}</p>
+    </div>
+  );
+}
+
+function DiscoveryCouncilPanel({
+  review,
+  loading,
+  error,
+  disabled,
+  onRun,
+}: {
+  review: DiscoveryCouncilReview | null;
+  loading: boolean;
+  error: string | null;
+  disabled: boolean;
+  onRun: () => void;
+}) {
+  return (
+    <GlassCard className="overflow-hidden" testId="council-review-panel">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/10 px-5 py-3">
+        <div>
+          <p className="text-sm font-semibold text-slate-200">
+            Discovery Council Review
+          </p>
+          <p className="text-xs text-slate-500">
+            Internal, citation-bound run-level LLM triage — human review
+            required. Not investment advice.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <StatusPill label="Internal only" color="red" />
+          <button
+            type="button"
+            onClick={onRun}
+            disabled={loading || disabled}
+            title={
+              disabled
+                ? "Discovery council is disabled on this environment."
+                : undefined
+            }
+            data-testid="council-run-button"
+            className="rounded-lg bg-gradient-to-r from-violet-500 to-indigo-600 px-4 py-2 text-sm font-semibold text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {loading
+              ? "Running council…"
+              : review
+                ? "Re-run Discovery Council Review"
+                : "Run Discovery Council Review"}
+          </button>
+        </div>
+      </div>
+      <div className="space-y-3 px-5 py-4">
+        {disabled && (
+          <p
+            data-testid="council-disabled"
+            className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200"
+          >
+            {error || "Discovery council is disabled."}
+          </p>
+        )}
+        {!disabled && error && (
+          <p
+            data-testid="council-error"
+            className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-200"
+          >
+            {error}
+          </p>
+        )}
+        {!review && !disabled && !error && (
+          <p data-testid="council-empty" className="text-xs text-slate-500">
+            No council review yet. Run the council to generate an internal
+            research-priority review of this run&apos;s candidate set.
+          </p>
+        )}
+        {review && <DiscoveryCouncilBody review={review} />}
+      </div>
+    </GlassCard>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main page
 // ---------------------------------------------------------------------------
 
@@ -776,6 +1075,13 @@ export default function DiscoveryPage() {
   const [candidatesError, setCandidatesError] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [sort, setSort] = useState("candidate_score");
+
+  // Phase 28B — run-level LLM discovery council review (manual admin-triggered).
+  const [councilReview, setCouncilReview] =
+    useState<DiscoveryCouncilReview | null>(null);
+  const [councilLoading, setCouncilLoading] = useState(false);
+  const [councilError, setCouncilError] = useState<string | null>(null);
+  const [councilDisabled, setCouncilDisabled] = useState(false);
 
   const parsedTickers = manualTickers
     .split(",")
@@ -891,6 +1197,32 @@ export default function DiscoveryPage() {
       cancelled = true;
     };
   }, [selectedRunId, sort, candTick]);
+
+  // Phase 28B — load any stored discovery-council review for the selected run.
+  // A 404 (no review yet) is not an error; other failures are ignored so the
+  // rest of the page keeps working. State is reset whenever the run changes.
+  useEffect(() => {
+    if (!selectedRunId) return;
+    let cancelled = false;
+    async function fetchReview(runId: string) {
+      // Reset prior run's review state, then load any stored review.
+      if (!cancelled) {
+        setCouncilReview(null);
+        setCouncilError(null);
+        setCouncilDisabled(false);
+      }
+      try {
+        const review = await getDiscoveryCouncilReview(runId);
+        if (!cancelled) setCouncilReview(review);
+      } catch {
+        // No stored review (404) or transient error — leave the panel empty.
+      }
+    }
+    void fetchReview(selectedRunId);
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedRunId]);
 
   // Poll the selected run's status while it is processing in the background.
   // Each poll refreshes the live run detail and triggers a candidate refetch so
@@ -1016,6 +1348,58 @@ export default function DiscoveryPage() {
   const previewCount =
     universeSource === "manual_tickers" ? manualCount : null;
   const overLimit = previewCount !== null && previewCount > CLIENT_MAX_UNIVERSE;
+
+  // Phase 28B — manually trigger the run-level discovery council. A disabled
+  // response (409) flips the panel into a clearly-labelled disabled state; no
+  // fake result is ever fabricated on the client.
+  async function handleRunCouncilReview() {
+    if (!selectedRunId) return;
+    setCouncilLoading(true);
+    setCouncilError(null);
+    try {
+      const review = await runDiscoveryCouncilReview(selectedRunId);
+      setCouncilReview(review);
+      setCouncilDisabled(false);
+    } catch (err) {
+      const msg =
+        err instanceof Error ? err.message : "Discovery council review failed.";
+      setCouncilError(msg);
+      if (/disabled|not available/i.test(msg)) setCouncilDisabled(true);
+    } finally {
+      setCouncilLoading(false);
+    }
+  }
+
+  // Map a candidate (ticker+exchange) to the council's internal action, so the
+  // candidate table can show it inline. Keyed precisely, with a ticker-only
+  // fallback. Internal research-workflow states only — never a recommendation.
+  const councilActionByKey = useMemo(() => {
+    const m = new Map<string, string>();
+    if (!councilReview) return m;
+    const add = (
+      entries: DiscoveryCouncilReview["candidates_to_research_next"],
+      action: string,
+    ) => {
+      for (const e of entries ?? []) {
+        if (!e.ticker) continue;
+        m.set(`${e.ticker}:${e.exchange ?? ""}`, action);
+        if (!m.has(e.ticker)) m.set(e.ticker, action);
+      }
+    };
+    add(councilReview.candidates_to_research_next, "research_next");
+    add(councilReview.candidates_to_monitor, "monitor_for_evidence");
+    add(councilReview.candidates_insufficient_data, "insufficient_data");
+    add(councilReview.candidates_to_reject, "reject_for_now");
+    return m;
+  }, [councilReview]);
+
+  function councilActionFor(c: DiscoveryCandidate): string | null {
+    return (
+      councilActionByKey.get(`${c.ticker}:${c.exchange ?? ""}`) ??
+      councilActionByKey.get(c.ticker) ??
+      null
+    );
+  }
 
   return (
     <div className="ib-fade-up space-y-6">
@@ -1593,6 +1977,17 @@ export default function DiscoveryPage() {
         <ThesisSummaryPanel run={selectedRun} />
       )}
 
+      {/* Discovery council review (Phase 28B — run-level LLM triage) */}
+      {selectedRun && (
+        <DiscoveryCouncilPanel
+          review={councilReview}
+          loading={councilLoading}
+          error={councilError}
+          disabled={councilDisabled}
+          onRun={handleRunCouncilReview}
+        />
+      )}
+
       {/* Candidate queue */}
       {selectedRun && (
         <GlassCard className="overflow-hidden">
@@ -1793,6 +2188,17 @@ export default function DiscoveryPage() {
                         </td>
                         <td className="whitespace-nowrap px-3 py-3 font-semibold text-slate-100">
                           {c.ticker}
+                          {councilActionFor(c) && (
+                            <span
+                              data-testid="council-action"
+                              className={`ml-2 rounded px-1.5 py-0.5 text-[10px] font-medium ${councilActionBadgeCls(
+                                councilActionFor(c),
+                              )}`}
+                              title="Internal research action (LLM discovery council)"
+                            >
+                              {councilActionLabel(councilActionFor(c))}
+                            </span>
+                          )}
                         </td>
                         <td className="max-w-[10rem] px-3 py-3 text-xs text-slate-400">
                           <span className="line-clamp-1">{c.company_name ?? "—"}</span>

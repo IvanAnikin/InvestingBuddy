@@ -594,6 +594,68 @@ backstop, would flip `safety_valid=false` without ever publishing.
 
 ---
 
+## LLM Discovery Council (Phase 28B)
+
+The **run-level** discovery council reviews a whole discovery run's candidate set
+and decides internal research **priority**. It is **OFF by default**, **manual
+admin-triggered only** (never automatic), and needs **no DB migration** — the
+review is stored under the run's existing `config_json` JSONB. A plain deploy is
+unchanged.
+
+### Feature flag + settings (app settings)
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `LLM_DISCOVERY_COUNCIL_ENABLED` | `false` | Discovery-council switch. Requires `LLM_COUNCIL_ENABLED=true` as well |
+| `LLM_DISCOVERY_COUNCIL_MAX_CANDIDATES` | `25` | Bounds candidates in the evidence pack (cost) |
+| `LLM_DISCOVERY_COUNCIL_VERSION` | `v1` | Discovery-council contract version |
+
+Gated by **both** `LLM_COUNCIL_ENABLED` (the shared 28A client gate) **and**
+`LLM_DISCOVERY_COUNCIL_ENABLED`. It **reuses** the Phase 28A provider settings
+(`LLM_PROVIDER_COUNCIL` / `LLM_MODEL` / `LLM_TEMPERATURE` /
+`LLM_MAX_OUTPUT_TOKENS` / `LLM_REQUEST_TIMEOUT_SECONDS`) and the same provider
+credentials (Azure OpenAI settings / `OPENAI_API_KEY`). No separate credentials.
+
+### Enabling on staging (only with a securely-provided provider)
+
+```bash
+source ~/.venvs/azure-cli/bin/activate   # this Mac: ~/.venvs/azure-cli/bin/az
+
+# Requires explicit approval — alters running config. Enable BOTH flags; the
+# provider creds must already exist in Key Vault / app settings.
+az webapp config appsettings set --resource-group ib-stg-rg --name ib-stg-api \
+  --settings LLM_COUNCIL_ENABLED=true LLM_DISCOVERY_COUNCIL_ENABLED=true \
+             LLM_PROVIDER_COUNCIL=azure_openai
+az webapp restart --resource-group ib-stg-rg --name ib-stg-api
+```
+
+### Triggering + validation
+
+The council is **not** run automatically. Trigger it per run:
+
+```bash
+# POST the council-review endpoint for a completed run (admin/internal only).
+#   POST /api/v1/market-discovery/runs/{run_id}/council-review
+# When DISABLED it returns 409 ("Discovery council is disabled.") with NO LLM
+# call; when enabled it returns the stored DiscoveryCouncilReviewResponse.
+az webapp log tail --resource-group ib-stg-rg --name ib-stg-api
+# Expect, for one enabled council-review:
+#   discovery_council_evidence_built … evidence_item_count=<n> candidate_count=<c>
+#   discovery_council_started provider=<p> model=<m> …
+#   discovery_council_agent_completed agent_name=<a> status=completed …  (x8, or agent_failed)
+#   discovery_council_completed run_quality=<q> agents_completed=<c> safety_valid=true
+```
+
+Council events carry ids/provider/model/status/counts/duration **only** — never
+prompts, completions, evidence excerpts, or credentials (the Phase 27.1D "Verify
+NO secrets are logged" grep applies unchanged). A stored review keeps
+`safety_valid=true`, `human_review_required=true`, `publication_ready=false`, and
+only ever uses the internal actions `research_next` / `monitor_for_evidence` /
+`insufficient_data` / `reject_for_now` — never a recommendation, price target,
+fair value, or upside/downside. No public publish route is added.
+
+---
+
 ## OIDC Setup (future — blocked on Entra permissions)
 
 Once the Entra ID Application Developer role is granted, replace publish profiles with OIDC:

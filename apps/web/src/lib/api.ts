@@ -8,6 +8,7 @@ import type {
   CompanyCreate,
   DiscoveryCandidateDetail,
   DiscoveryCandidateListResponse,
+  DiscoveryCouncilReview,
   DiscoveryRun,
   DiscoveryRunCreate,
   DiscoveryRunListResponse,
@@ -346,5 +347,23 @@ export async function runCandidateAnalysis(
   return apiFetch<RunCandidateAnalysisResponse>(
     `/api/v1/market-discovery/candidates/${candidateId}/run-analysis`,
     { method: "POST" },
+  );
+}
+
+// Phase 28B — run-level LLM discovery council review (manual admin-triggered).
+export async function runDiscoveryCouncilReview(
+  runId: string,
+): Promise<DiscoveryCouncilReview> {
+  return apiFetch<DiscoveryCouncilReview>(
+    `/api/v1/market-discovery/runs/${runId}/council-review`,
+    { method: "POST" },
+  );
+}
+
+export async function getDiscoveryCouncilReview(
+  runId: string,
+): Promise<DiscoveryCouncilReview> {
+  return apiFetch<DiscoveryCouncilReview>(
+    `/api/v1/market-discovery/runs/${runId}/council-review`,
   );
 }

@@ -660,3 +660,46 @@ export interface RunCandidateAnalysisResponse {
   human_review_required: boolean;
   disclaimer: string;
 }
+
+// Phase 28B — run-level LLM discovery council review. Persisted inside
+// DiscoveryRun.config_json.discovery_council (no schema migration). Internal
+// research PRIORITY only — allowed per-candidate actions are research_next /
+// monitor_for_evidence / insufficient_data / reject_for_now. Never a
+// recommendation, price target, fair value, or upside/downside. Raw prompts /
+// completions are never sent to the client — only bounded, safety-scanned output.
+export interface DiscoveryCouncilCandidateEntry {
+  candidate_ref?: string | null;
+  candidate_id?: string | null;
+  ticker?: string | null;
+  exchange?: string | null;
+  rationale?: string | null;
+  confidence?: string | null;
+}
+
+export interface DiscoveryCouncilReview {
+  run_id: string;
+  llm_used: boolean;
+  council_version?: string | null;
+  provider?: string | null;
+  model?: string | null;
+  evidence_pack_version?: string | null;
+  evidence_item_count?: number;
+  candidate_count?: number;
+  agents_completed?: number;
+  agents_failed?: number;
+  agents_skipped?: number;
+  run_quality?: string | null;
+  candidates_to_research_next?: DiscoveryCouncilCandidateEntry[];
+  candidates_to_monitor?: DiscoveryCouncilCandidateEntry[];
+  candidates_to_reject?: DiscoveryCouncilCandidateEntry[];
+  candidates_insufficient_data?: DiscoveryCouncilCandidateEntry[];
+  evidence_gaps?: string[];
+  next_source_tasks?: string[];
+  agent_outputs?: Record<string, unknown>;
+  warnings?: string[];
+  safety_valid?: boolean;
+  human_review_required?: boolean;
+  publication_ready?: boolean;
+  created_at?: string | null;
+  disclaimer: string;
+}

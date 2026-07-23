@@ -36,6 +36,7 @@ from app.schemas.market_discovery import (
     DiscoveryCandidateDetail,
     DiscoveryCandidateListResponse,
     DiscoveryCandidateRead,
+    DiscoveryCouncilReviewResponse,
     DiscoveryRunCreate,
     DiscoveryRunListResponse,
     DiscoveryRunRead,
@@ -48,6 +49,7 @@ from app.schemas.market_discovery import (
     ThesisDiscoveryRunCreate,
 )
 from app.services import market_discovery_service as svc
+from app.services.market_discovery_service import DiscoveryCouncilDisabledError
 from app.services.market_thesis_parser import parse_thesis
 
 router = APIRouter(prefix="/market-discovery", tags=["market-discovery"])
@@ -397,3 +399,77 @@ async def run_candidate_analysis(
             "Internal admin draft only — human review required."
         ),
     )
+
+
+# ---------------------------------------------------------------------------
+# Discovery council review (Phase 28B — run-level LLM council)
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/runs/{run_id}/council-review",
+    response_model=DiscoveryCouncilReviewResponse,
+    summary="Run the run-level LLM discovery council over a run (admin only)",
+    description=(
+        "ADMIN/INTERNAL ONLY. Manually triggers the run-level LLM discovery "
+        "council over one discovery run's whole candidate set and stores the "
+        "review. The council decides internal research PRIORITY only "
+        "(research_next / monitor_for_evidence / insufficient_data / "
+        "reject_for_now) — never investment advice, never a recommendation, "
+        "never a price target, fair value, or upside/downside. Disabled by "
+        "default: returns 409 when LLM_COUNCIL_ENABLED or "
+        "LLM_DISCOVERY_COUNCIL_ENABLED is off or no provider is available (no "
+        "LLM call, no fake result in production). Requires a terminal run or at "
+        "least one candidate. " + _INTERNAL
+    ),
+)
+async def create_discovery_council_review(
+    run_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+) -> DiscoveryCouncilReviewResponse:
+    run = await svc.get_run(db, run_id)
+    if run is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Discovery run {run_id} not found",
+        )
+    try:
+        stored = await svc.run_discovery_council_review(db, run)
+    except DiscoveryCouncilDisabledError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+    return DiscoveryCouncilReviewResponse.from_storage(run_id, stored)
+
+
+@router.get(
+    "/runs/{run_id}/council-review",
+    response_model=DiscoveryCouncilReviewResponse,
+    summary="Get the stored LLM discovery council review for a run (admin only)",
+    description=(
+        "ADMIN/INTERNAL ONLY. Returns the stored run-level discovery council "
+        "review if one has been generated. 404 when no review exists yet. "
+        + _INTERNAL
+    ),
+)
+async def get_discovery_council_review(
+    run_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+) -> DiscoveryCouncilReviewResponse:
+    run = await svc.get_run(db, run_id)
+    if run is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Discovery run {run_id} not found",
+        )
+    stored = svc.get_stored_council_review(run)
+    if stored is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No discovery council review found for this run.",
+        )
+    return DiscoveryCouncilReviewResponse.from_storage(run_id, stored)

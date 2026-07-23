@@ -116,6 +116,52 @@ const MOCK_CANDIDATE_DETAIL = {
   raw_signal_json: { provider_name: "free_real", ticker: "AAPL" },
 };
 
+// Phase 28B — a stored run-level discovery council review. Internal research
+// PRIORITY only — no recommendation, price target, fair value, or
+// upside/downside anywhere.
+const MOCK_COUNCIL_REVIEW = {
+  run_id: RUN_ID,
+  llm_used: true,
+  council_version: "v1",
+  provider: "fake",
+  model: "fake-discovery-council-model",
+  evidence_pack_version: "v1",
+  evidence_item_count: 7,
+  candidate_count: 1,
+  agents_completed: 8,
+  agents_failed: 0,
+  agents_skipped: 0,
+  run_quality: "adequate",
+  candidates_to_research_next: [
+    {
+      candidate_ref: "C1",
+      candidate_id: CAND_ID,
+      ticker: "AAPL",
+      exchange: "US",
+      rationale: "Strong internal signals and adequate source coverage.",
+      confidence: "low",
+    },
+  ],
+  candidates_to_monitor: [],
+  candidates_to_reject: [],
+  candidates_insufficient_data: [],
+  evidence_gaps: ["Sell-side analyst coverage is not available in this pack."],
+  next_source_tasks: ["Obtain additional primary sourcing for sparse names."],
+  agent_outputs: {
+    run_red_team: {
+      agent_name: "run_red_team",
+      status: "completed",
+      summary: "The run may be over-concentrated in obvious mega-caps.",
+    },
+  },
+  warnings: [],
+  safety_valid: true,
+  human_review_required: true,
+  publication_ready: false,
+  created_at: "2026-07-23T10:00:00Z",
+  disclaimer: DISC,
+};
+
 // A "pending" run as returned by the async POST (Phase 25.1) — processing has
 // not started yet, so no candidates exist.
 const MOCK_RUN_PENDING = {
@@ -204,6 +250,26 @@ async function mockDiscoveryRoutes(page: import("@playwright/test").Page) {
           disclaimer: DISC,
         }),
       }),
+  );
+
+  // Phase 28B — default: no stored council review yet (404). Individual tests
+  // override this to return a review or a 409 (disabled).
+  await page.route(
+    `**/api/admin/proxy/api/v1/market-discovery/runs/${RUN_ID}/council-review`,
+    (route) => {
+      if (route.request().method() === "GET") {
+        return route.fulfill({
+          status: 404,
+          contentType: "application/json",
+          body: JSON.stringify({ detail: "No discovery council review found for this run." }),
+        });
+      }
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(MOCK_COUNCIL_REVIEW),
+      });
+    },
   );
 }
 
@@ -1746,6 +1812,126 @@ test.describe("Admin Discovery — thesis mode (Phase 27)", () => {
       for (const bad of ["BUY", "SELL", "HOLD", "WATCH"]) {
         expect(text.trim().toUpperCase()).not.toBe(bad);
       }
+    }
+  });
+});
+
+// ===========================================================================
+// Phase 28B — run-level discovery council review
+// ===========================================================================
+
+test.describe("Admin Discovery — council review (Phase 28B)", () => {
+  const COUNCIL_URL = `**/api/admin/proxy/api/v1/market-discovery/runs/${RUN_ID}/council-review`;
+
+  async function mockStoredReview(page: import("@playwright/test").Page) {
+    await page.route(COUNCIL_URL, (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(MOCK_COUNCIL_REVIEW),
+      }),
+    );
+  }
+
+  test("C1. Run Discovery Council Review button renders on a completed run", async ({
+    page,
+  }) => {
+    await mockDiscoveryRoutes(page);
+    await page.goto("/admin/discovery");
+    await expect(page.getByTestId("council-review-panel")).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Run Discovery Council Review" }),
+    ).toBeVisible();
+    await expect(page.getByTestId("council-empty")).toBeVisible();
+  });
+
+  test("C2. Disabled council shows a clear disabled state (409)", async ({
+    page,
+  }) => {
+    await mockDiscoveryRoutes(page);
+    await page.route(COUNCIL_URL, (route) => {
+      if (route.request().method() === "GET") {
+        return route.fulfill({
+          status: 404,
+          contentType: "application/json",
+          body: JSON.stringify({ detail: "No review yet." }),
+        });
+      }
+      return route.fulfill({
+        status: 409,
+        contentType: "application/json",
+        body: JSON.stringify({ detail: "Discovery council is disabled." }),
+      });
+    });
+    await page.goto("/admin/discovery");
+    await page
+      .getByRole("button", { name: "Run Discovery Council Review" })
+      .click();
+    await expect(page.getByTestId("council-disabled")).toContainText("disabled");
+    await expect(page.getByTestId("council-run-button")).toBeDisabled();
+  });
+
+  test("C3. Panel renders a stored review (run quality + buckets + red team)", async ({
+    page,
+  }) => {
+    await mockDiscoveryRoutes(page);
+    await mockStoredReview(page);
+    await page.goto("/admin/discovery");
+    await expect(page.getByTestId("council-run-quality")).toHaveText("adequate");
+    await expect(page.getByTestId("council-research-next")).toContainText(
+      "AAPL",
+    );
+    await expect(page.getByTestId("council-review-panel")).toContainText(
+      "run_red_team",
+    );
+  });
+
+  test("C4. Internal action pill renders on the matching candidate row", async ({
+    page,
+  }) => {
+    await mockDiscoveryRoutes(page);
+    await mockStoredReview(page);
+    await page.goto("/admin/discovery");
+    await expect(page.getByTestId("council-action").first()).toContainText(
+      "research next",
+    );
+  });
+
+  test("C5. No publish action in the council panel", async ({ page }) => {
+    await mockDiscoveryRoutes(page);
+    await mockStoredReview(page);
+    await page.goto("/admin/discovery");
+    const panel = page.getByTestId("council-review-panel");
+    await expect(panel).toBeVisible();
+    const buttons = panel.locator("button");
+    const count = await buttons.count();
+    for (let i = 0; i < count; i++) {
+      const text = (await buttons.nth(i).textContent())?.toLowerCase() ?? "";
+      expect(text).not.toContain("publish");
+    }
+  });
+
+  test("C6. No recommendation / valuation language rendered in the review", async ({
+    page,
+  }) => {
+    await mockDiscoveryRoutes(page);
+    await mockStoredReview(page);
+    await page.goto("/admin/discovery");
+    const panelText =
+      (await page.getByTestId("council-review-panel").textContent()) ?? "";
+    for (const bad of [
+      "price target",
+      "fair value",
+      "intrinsic value",
+      "upside",
+      "downside",
+      "undervalued",
+      "overvalued",
+    ]) {
+      expect(panelText.toLowerCase()).not.toContain(bad);
+    }
+    for (const bad of ["BUY", "SELL", "HOLD", "WATCH"]) {
+      expect(panelText).not.toMatch(new RegExp(`\\b${bad}\\b`));
     }
   });
 });

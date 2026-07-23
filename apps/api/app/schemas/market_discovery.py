@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import date, datetime
+from typing import Any
 
 from pydantic import BaseModel, Field, computed_field, field_validator
 
@@ -430,3 +431,79 @@ class RunCandidateAnalysisResponse(BaseModel):
     message: str
     human_review_required: bool = True
     disclaimer: str = INTERNAL_DISCLAIMER
+
+
+# ---------------------------------------------------------------------------
+# Phase 28B — run-level LLM discovery council review
+# ---------------------------------------------------------------------------
+
+
+class DiscoveryCouncilCandidateEntry(BaseModel):
+    """One candidate placed into an internal-action bucket by the council.
+
+    Internal research-workflow reference only — never a public recommendation,
+    price target, fair value, or upside/downside.
+    """
+
+    candidate_ref: str | None = None
+    candidate_id: str | None = None
+    ticker: str | None = None
+    exchange: str | None = None
+    rationale: str | None = None
+    confidence: str | None = None
+
+
+class DiscoveryCouncilReviewResponse(BaseModel):
+    """
+    A run-level LLM discovery council review (Phase 28B).
+
+    INTERNAL ADMIN ONLY. Not investment advice, not a public recommendation. The
+    council decides internal research PRIORITY only — the allowed per-candidate
+    actions are research_next / monitor_for_evidence / insufficient_data /
+    reject_for_now. No rating, price target, fair value, or upside/downside is
+    ever produced. Always human-review-required and never publication-ready.
+    """
+
+    run_id: uuid.UUID
+    llm_used: bool = False
+    council_version: str | None = None
+    provider: str | None = None
+    model: str | None = None
+    evidence_pack_version: str | None = None
+    evidence_item_count: int = 0
+    candidate_count: int = 0
+    agents_completed: int = 0
+    agents_failed: int = 0
+    agents_skipped: int = 0
+    run_quality: str | None = None
+    candidates_to_research_next: list[DiscoveryCouncilCandidateEntry] = Field(
+        default_factory=list
+    )
+    candidates_to_monitor: list[DiscoveryCouncilCandidateEntry] = Field(
+        default_factory=list
+    )
+    candidates_to_reject: list[DiscoveryCouncilCandidateEntry] = Field(
+        default_factory=list
+    )
+    candidates_insufficient_data: list[DiscoveryCouncilCandidateEntry] = Field(
+        default_factory=list
+    )
+    evidence_gaps: list[str] = Field(default_factory=list)
+    next_source_tasks: list[str] = Field(default_factory=list)
+    agent_outputs: dict[str, Any] = Field(default_factory=dict)
+    warnings: list[str] = Field(default_factory=list)
+    safety_valid: bool = True
+    human_review_required: bool = True
+    publication_ready: bool = False
+    created_at: str | None = None
+    disclaimer: str = INTERNAL_DISCLAIMER
+
+    @classmethod
+    def from_storage(
+        cls, run_id: uuid.UUID, stored: dict[str, Any]
+    ) -> "DiscoveryCouncilReviewResponse":
+        """Build the response from the stored council dict (config_json blob)."""
+        data = dict(stored or {})
+        data.pop("type", None)
+        data.pop("disclaimer", None)
+        return cls(run_id=run_id, **data)
