@@ -409,22 +409,31 @@ async def run_candidate_analysis(
 @router.post(
     "/runs/{run_id}/council-review",
     response_model=DiscoveryCouncilReviewResponse,
-    summary="Run the run-level LLM discovery council over a run (admin only)",
+    summary="Start an async run-level LLM discovery council job (admin only)",
     description=(
-        "ADMIN/INTERNAL ONLY. Manually triggers the run-level LLM discovery "
-        "council over one discovery run's whole candidate set and stores the "
-        "review. The council decides internal research PRIORITY only "
-        "(research_next / monitor_for_evidence / insufficient_data / "
-        "reject_for_now) — never investment advice, never a recommendation, "
-        "never a price target, fair value, or upside/downside. Disabled by "
+        "ADMIN/INTERNAL ONLY. Starts the run-level LLM discovery council over one "
+        "discovery run's whole candidate set ASYNCHRONOUSLY and returns "
+        "IMMEDIATELY with a job status (pending) — it does NOT block until every "
+        "LLM agent finishes. Poll GET /runs/{run_id}/council-review for progress "
+        "and the completed review. The council decides internal research PRIORITY "
+        "only (research_next / monitor_for_evidence / insufficient_data / "
+        "reject_for_now) — never investment advice, never a recommendation, never "
+        "a price target, fair value, or upside/downside. If a job is already "
+        "running the current status is returned (no second job starts); if a "
+        "completed review exists it is returned unless force=true. Disabled by "
         "default: returns 409 when LLM_COUNCIL_ENABLED or "
-        "LLM_DISCOVERY_COUNCIL_ENABLED is off or no provider is available (no "
-        "LLM call, no fake result in production). Requires a terminal run or at "
-        "least one candidate. " + _INTERNAL
+        "LLM_DISCOVERY_COUNCIL_ENABLED is off (or no provider is available) and no "
+        "prior review exists — no LLM call, no fake result in production. Requires "
+        "a terminal run or at least one candidate. " + _INTERNAL
     ),
 )
 async def create_discovery_council_review(
     run_id: uuid.UUID,
+    background_tasks: BackgroundTasks,
+    force: bool = Query(
+        default=False,
+        description="Re-run even if a completed review already exists.",
+    ),
     db: AsyncSession = Depends(get_db),
 ) -> DiscoveryCouncilReviewResponse:
     run = await svc.get_run(db, run_id)
@@ -434,7 +443,9 @@ async def create_discovery_council_review(
             detail=f"Discovery run {run_id} not found",
         )
     try:
-        stored = await svc.run_discovery_council_review(db, run)
+        envelope, scheduled = await svc.start_discovery_council_review(
+            db, run, force=force
+        )
     except DiscoveryCouncilDisabledError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail=str(exc)
@@ -443,17 +454,34 @@ async def create_discovery_council_review(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         ) from exc
-    return DiscoveryCouncilReviewResponse.from_storage(run_id, stored)
+
+    if scheduled:
+        # Run the (already-committed pending) job in the background using its own
+        # DB session — never the request-scoped one. Only the primitive run_id is
+        # handed to the task.
+        background_tasks.add_task(svc.process_discovery_council_task, str(run_id))
+        message = "Discovery council review started."
+    elif envelope.get("status") in {"pending", "running"}:
+        message = "Discovery council review already in progress."
+    else:
+        message = "Returning the existing discovery council review."
+    return DiscoveryCouncilReviewResponse.from_envelope(
+        run_id, envelope, message=message
+    )
 
 
 @router.get(
     "/runs/{run_id}/council-review",
     response_model=DiscoveryCouncilReviewResponse,
-    summary="Get the stored LLM discovery council review for a run (admin only)",
+    summary="Get the async LLM discovery council job status / review (admin only)",
     description=(
-        "ADMIN/INTERNAL ONLY. Returns the stored run-level discovery council "
-        "review if one has been generated. 404 when no review exists yet. "
-        + _INTERNAL
+        "ADMIN/INTERNAL ONLY. Returns the current run-level discovery council job "
+        "state: pending/running while a background job is in flight, the completed "
+        "review when done, or a failed status with a safe reason. A completed "
+        "review stays readable even after the council flags are later turned off. "
+        "When no job has ever run and the council is disabled, a 'disabled' "
+        "response is returned; when no job has run and the council is enabled, "
+        "404. " + _INTERNAL
     ),
 )
 async def get_discovery_council_review(
@@ -466,10 +494,14 @@ async def get_discovery_council_review(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Discovery run {run_id} not found",
         )
-    stored = svc.get_stored_council_review(run)
-    if stored is None:
+    envelope = svc.get_council_envelope(run)
+    if envelope is None:
+        # No council job has ever run for this run. If the council is disabled,
+        # surface a clear disabled state for the polling UI; otherwise 404.
+        if not svc.discovery_council_enabled():
+            return DiscoveryCouncilReviewResponse.disabled_response(run_id)
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="No discovery council review found for this run.",
         )
-    return DiscoveryCouncilReviewResponse.from_storage(run_id, stored)
+    return DiscoveryCouncilReviewResponse.from_envelope(run_id, envelope)

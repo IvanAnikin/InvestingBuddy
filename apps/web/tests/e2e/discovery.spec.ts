@@ -121,6 +121,12 @@ const MOCK_CANDIDATE_DETAIL = {
 // upside/downside anywhere.
 const MOCK_COUNCIL_REVIEW = {
   run_id: RUN_ID,
+  status: "completed",
+  review_available: true,
+  message: null,
+  started_at: "2026-07-23T09:59:00Z",
+  completed_at: "2026-07-23T10:00:00Z",
+  error: null,
   llm_used: true,
   council_version: "v1",
   provider: "fake",
@@ -1933,5 +1939,143 @@ test.describe("Admin Discovery — council review (Phase 28B)", () => {
     for (const bad of ["BUY", "SELL", "HOLD", "WATCH"]) {
       expect(panelText).not.toMatch(new RegExp(`\\b${bad}\\b`));
     }
+  });
+});
+
+// ===========================================================================
+// Phase 28B.2 — asynchronous discovery council execution + polling
+// ===========================================================================
+
+test.describe("Admin Discovery — async council review (Phase 28B.2)", () => {
+  const COUNCIL_URL = `**/api/admin/proxy/api/v1/market-discovery/runs/${RUN_ID}/council-review`;
+
+  const PENDING = {
+    run_id: RUN_ID,
+    status: "pending",
+    review_available: false,
+    message: "Discovery council review started.",
+    started_at: "2026-07-24T00:00:00Z",
+    completed_at: null,
+    error: null,
+    llm_used: false,
+    agents_completed: 0,
+    agents_failed: 0,
+    disclaimer: DISC,
+  };
+  const RUNNING = { ...PENDING, status: "running", message: null };
+  const FAILED = {
+    ...PENDING,
+    status: "failed",
+    message: null,
+    error: "no_agents_completed",
+    agents_failed: 8,
+  };
+
+  test("C7. Clicking Run starts an async job and shows in-progress status", async ({
+    page,
+  }) => {
+    await mockDiscoveryRoutes(page);
+    // GET starts 404 (no job), POST returns pending, subsequent GET returns running.
+    let started = false;
+    await page.route(COUNCIL_URL, (route) => {
+      if (route.request().method() === "POST") {
+        started = true;
+        return route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify(PENDING),
+        });
+      }
+      // GET
+      if (!started) {
+        return route.fulfill({
+          status: 404,
+          contentType: "application/json",
+          body: JSON.stringify({ detail: "No review yet." }),
+        });
+      }
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(RUNNING),
+      });
+    });
+    await page.goto("/admin/discovery");
+    await page
+      .getByRole("button", { name: "Run Discovery Council Review" })
+      .click();
+    await expect(page.getByTestId("council-progress")).toBeVisible();
+    await expect(page.getByTestId("council-run-button")).toBeDisabled();
+  });
+
+  test("C8. Polling drives an in-flight job to a completed review", async ({
+    page,
+  }) => {
+    await mockDiscoveryRoutes(page);
+    // First GET → running, subsequent GETs → completed. The poll effect fetches
+    // until terminal and then renders the review body.
+    let getCount = 0;
+    await page.route(COUNCIL_URL, (route) => {
+      if (route.request().method() === "POST") {
+        return route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify(RUNNING),
+        });
+      }
+      getCount += 1;
+      const body = getCount <= 1 ? RUNNING : MOCK_COUNCIL_REVIEW;
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(body),
+      });
+    });
+    await page.goto("/admin/discovery");
+    // The initial GET returns running → polling begins → eventually completed.
+    await expect(page.getByTestId("council-run-quality")).toHaveText(
+      "adequate",
+      { timeout: 15000 },
+    );
+    await expect(page.getByTestId("council-research-next")).toContainText(
+      "AAPL",
+    );
+  });
+
+  test("C9. A failed job shows a safe failure message and allows re-run", async ({
+    page,
+  }) => {
+    await mockDiscoveryRoutes(page);
+    await page.route(COUNCIL_URL, (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(FAILED),
+      }),
+    );
+    await page.goto("/admin/discovery");
+    await expect(page.getByTestId("council-failed")).toContainText("failed");
+    // A failed job is re-runnable — the button is enabled and not "Running…".
+    await expect(page.getByTestId("council-run-button")).toBeEnabled();
+    await expect(page.getByTestId("council-run-button")).toHaveText(
+      "Run Discovery Council Review",
+    );
+  });
+
+  test("C10. No publish action anywhere in the async council panel", async ({
+    page,
+  }) => {
+    await mockDiscoveryRoutes(page);
+    await page.route(COUNCIL_URL, (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(MOCK_COUNCIL_REVIEW),
+      }),
+    );
+    await page.goto("/admin/discovery");
+    const panelText =
+      (await page.getByTestId("council-review-panel").textContent()) ?? "";
+    expect(panelText.toLowerCase()).not.toContain("publish");
   });
 });

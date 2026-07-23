@@ -1647,10 +1647,67 @@ the council-review endpoint is still synchronous, so a large candidate set under
 low provider quota may leave some agents failed. The robust fix is **async
 execution** (return a pending review, run the council in a background task with a
 fresh DB session, poll `GET` — mirroring Phase 25.1), which also allows restoring
-retries.
+retries. → **Resolved in Phase 28B.2 (async execution) — see below.**
 
 **Future (LLM council track).** Phase 29 — source-provider expansion; Phase 30 —
 translation / local-language agents. Neither is started in Phase 28B.
+
+---
+
+## Phase 28B.2: Async Discovery Council Execution — ✅ COMPLETE
+
+Delivers the Phase 28B.1 recommended follow-up: the run-level discovery council
+now runs **asynchronously and pollably**, the run-level analog of the Phase 25.1
+async discovery-run pattern. On a large candidate set under a low Azure OpenAI
+quota the synchronous endpoint could rate-limit agents or approach the gateway
+timeout (staging: a European 8-candidate run completed only 1/8 agents while a
+smaller Swiss run completed 8/8). **No DB migration.** Flags unchanged and still
+OFF by default (`LLM_COUNCIL_ENABLED` + `LLM_DISCOVERY_COUNCIL_ENABLED`).
+
+**Async lifecycle.** `POST /api/v1/market-discovery/runs/{run_id}/council-review`
+validates + writes a `pending` **status envelope** and returns **immediately** —
+it no longer blocks on all eight LLM calls. A FastAPI `BackgroundTask`
+(`process_discovery_council_task` → `process_discovery_council_by_id`) opens its
+**own fresh DB session**, transitions the job to `running`, runs the sequential,
+per-agent-isolated (Phase 28B.1) council, and persists a terminal envelope. Every
+failure path is caught and stored, so a job never sticks in `running`. Terminal
+statuses: `completed` (all agents ok), `completed_with_warnings` (some agents
+failed or the safety re-scan flagged output — a partial, still-safe review is
+stored), `failed` (no agent completed, or a disabled/not-ready/internal error,
+with a short safe `error` reason code — never an exception string).
+
+**Polling.** `GET .../council-review` returns the current status: `pending` /
+`running` while the job runs, the completed review (`review_available=true`) when
+done, `failed` with a safe reason, or `disabled` when no job has ever run and the
+council is off. `/admin/discovery` polls every 3 s (mirroring the run-status poll)
+and shows an in-progress banner (agents ok / failed), a failure banner, or the
+completed review panel — the page never blocks.
+
+**Storage.** The value under `discovery_runs.config_json["discovery_council"]` is
+now a status envelope (`status`/`started_at`/`completed_at`/`llm_used`/
+`agents_completed`/`agents_failed`/`safety_valid`/`error`/`review`) wrapping the
+Phase 28B review payload. `get_council_envelope` normalises a legacy Phase 28B raw
+review into a completed envelope, and a **completed review stays readable after
+the flags are turned off**.
+
+**No duplicate jobs.** A queued/running job returns its current status (no second
+job is started); a completed review is returned unless `force=true`.
+
+**Safe logging.** New events `discovery_council_job_queued` /
+`discovery_council_job_started` / `discovery_council_job_completed` /
+`discovery_council_job_failed` / `discovery_council_job_duplicate` (ids / status /
+counts / duration only) alongside the existing Phase 28B council events. Prompts,
+completions, evidence excerpts and secrets are never logged.
+
+**Limitation.** `BackgroundTasks` are **process-local, not a durable queue** —
+same limitation as Phase 25.1 async discovery runs. An app restart mid-job is
+surfaced as stale/failed on the next poll. Future improvement: Azure Queue /
+Celery / a durable worker (would also allow re-enabling provider retries).
+
+**Unchanged.** No auth change, no `AUTH_TEST_MODE`, no public publishing, no
+recommendation / BUY-SELL-HOLD-WATCH / price-target / fair-value / upside
+language; `human_review_required=true`, `publication_ready=false`, no publish
+route. ~28 new backend + 4 new Playwright tests.
 
 ---
 
