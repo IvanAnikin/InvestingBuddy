@@ -1633,6 +1633,22 @@ recommendation / BUY-SELL-HOLD-WATCH / price-target / fair-value / upside
 language; `human_review_required=true`, `publication_ready=false`, no publish
 route.
 
+**Phase 28B.1 — council resilience (staging follow-up).** Staging validation with
+a real Azure OpenAI deployment surfaced that a provider rate-limit error escaped
+the per-agent isolation and crashed the whole council (misleading "provider not
+available"), and that langchain's internal retry/backoff made 8 sequential agents
+exceed the synchronous HTTP gateway timeout (504, nothing stored). Fixes: the
+shared client wraps ANY provider error as a recoverable `LLMError` (a rate-limited
+agent fails in isolation; the council still returns `llm_used=true`), council
+clients use `max_retries=0` (fast-fail — no backoff that blows the gateway
+budget), and `run_quality` always falls back to an allowed label (`failed` when
+nothing completed) instead of null. **Known limitation / recommended follow-up:**
+the council-review endpoint is still synchronous, so a large candidate set under a
+low provider quota may leave some agents failed. The robust fix is **async
+execution** (return a pending review, run the council in a background task with a
+fresh DB session, poll `GET` — mirroring Phase 25.1), which also allows restoring
+retries.
+
 **Future (LLM council track).** Phase 29 — source-provider expansion; Phase 30 —
 translation / local-language agents. Neither is started in Phase 28B.
 

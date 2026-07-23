@@ -384,6 +384,45 @@ async def test_18_safety_valid_false_for_unsafe_output() -> None:
     assert result.safety_valid is False
 
 
+@pytest.mark.asyncio
+async def test_ainvoke_chat_wraps_provider_error_as_llm_error() -> None:
+    """A raw provider error (e.g. rate limit) must become a recoverable LLMError.
+
+    Otherwise it escapes the council's per-agent ``except LLMError`` isolation and
+    crashes the whole run (observed on staging: a RateLimitError degraded the
+    council to llm_used=False).
+    """
+    from app.services.llm.azure_openai_client import _ainvoke_chat
+    from app.services.llm.client import LLMError
+
+    class _RateLimitError(Exception):
+        pass
+
+    class _LLM:
+        async def ainvoke(self, messages):
+            # A message that echoes a URL/key must NOT be carried forward.
+            raise _RateLimitError(
+                "429 rate limit https://x.openai.azure.com/?api-key=SECRETKEY"
+            )
+
+    with pytest.raises(LLMError) as ei:
+        await _ainvoke_chat(_LLM(), "sys", "usr", 5)
+    msg = str(ei.value)
+    assert "_RateLimitError" in msg  # only the type name is carried forward
+    assert "api-key" not in msg and "SECRETKEY" not in msg
+
+
+@pytest.mark.asyncio
+async def test_run_quality_falls_back_to_allowed_value_when_chair_fails() -> None:
+    """run_quality must always be one of the allowed labels, even if the chair
+    (and every agent) failed — never null."""
+    run, cands = _europe_luxury()
+    result = await _run_fake(run, cands, client=FakeDiscoveryLLMClient(mode="timeout"))
+    assert result.agents_completed == 0
+    assert result.run_quality == "failed"
+    assert result.run_quality in ALLOWED_RUN_QUALITY
+
+
 def test_citation_checker_coerces_bad_internal_action() -> None:
     out = DiscoveryCouncilAgentOutput(
         agent_name="candidate_prioritization",

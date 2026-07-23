@@ -19,6 +19,7 @@ import asyncio
 from app.core.config import Settings
 from app.services.llm.client import (
     LLMClient,
+    LLMError,
     LLMTimeoutError,
     LLMUnavailableError,
 )
@@ -55,7 +56,13 @@ class AzureOpenAILLMClient(LLMClient):
             temperature=cfg.llm_temperature,
             max_tokens=cfg.llm_max_output_tokens,
             timeout=cfg.llm_request_timeout_seconds,
-            max_retries=1,
+            # Fast-fail: no internal backoff/retry. The council runs 8 agents
+            # sequentially behind a synchronous HTTP gateway with a fixed
+            # timeout; a per-agent rate-limit backoff (tens of seconds each)
+            # would blow that budget. A rate-limited agent instead fails fast and
+            # is isolated, and the council still returns with the agents that did
+            # complete. (Retries belong to a future async execution model.)
+            max_retries=0,
         )
 
     @property
@@ -99,7 +106,13 @@ class OpenAILLMClient(LLMClient):
             temperature=cfg.llm_temperature,
             max_tokens=cfg.llm_max_output_tokens,
             timeout=cfg.llm_request_timeout_seconds,
-            max_retries=1,
+            # Fast-fail: no internal backoff/retry. The council runs 8 agents
+            # sequentially behind a synchronous HTTP gateway with a fixed
+            # timeout; a per-agent rate-limit backoff (tens of seconds each)
+            # would blow that budget. A rate-limited agent instead fails fast and
+            # is isolated, and the council still returns with the agents that did
+            # complete. (Retries belong to a future async execution model.)
+            max_retries=0,
         )
 
     @property
@@ -122,13 +135,24 @@ class OpenAILLMClient(LLMClient):
         return await _ainvoke_chat(self._llm, system, user, timeout)
 
 
-async def _ainvoke_chat(llm, system: str, user: str, timeout: int) -> str:  # pragma: no cover
-    """Invoke a langchain chat model with a hard timeout; return text content."""
+async def _ainvoke_chat(llm, system: str, user: str, timeout: int) -> str:
+    """Invoke a langchain chat model with a hard timeout; return text content.
+
+    Any provider error (rate limit, API error, connection failure) is wrapped as
+    a recoverable ``LLMError`` — never allowed to escape raw — so the council can
+    isolate a single failed agent instead of crashing the whole run. Only the
+    error *type name* is carried forward (never the message, which could echo a
+    URL/header); nothing here is logged.
+    """
     messages = [("system", system), ("human", user)]
     try:
         result = await asyncio.wait_for(llm.ainvoke(messages), timeout=timeout)
     except (asyncio.TimeoutError, TimeoutError) as exc:
         raise LLMTimeoutError("LLM call timed out") from exc
+    except LLMError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - any provider error -> recoverable
+        raise LLMError(f"provider call failed ({type(exc).__name__})") from exc
     content = getattr(result, "content", result)
     if isinstance(content, list):
         # Some providers return a list of content blocks.
