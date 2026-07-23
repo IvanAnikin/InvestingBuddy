@@ -531,6 +531,69 @@ grep -RiE "Authorization: Bearer|Set-Cookie:|DATABASE_URL=|api_token=[A-Za-z0-9]
 
 ---
 
+## LLM Analysis Council (Phase 28A)
+
+The single-company LLM council is **OFF by default** and **fully deterministic**
+without it — a plain deploy needs no LLM credentials and every report honestly
+reports `llm_used: false`.
+
+### Feature flag + provider settings (app settings)
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `LLM_COUNCIL_ENABLED` | `false` | Master switch. `false` → deterministic path only |
+| `LLM_PROVIDER_COUNCIL` | `fake` | `fake` (offline, tests only) \| `azure_openai` \| `openai` |
+| `LLM_MODEL` | *(empty)* | Model id (OpenAI) / informational (Azure) |
+| `LLM_TEMPERATURE` | `0.1` | Low → stable council output |
+| `LLM_MAX_OUTPUT_TOKENS` | `1200` | Per-agent output cap |
+| `LLM_REQUEST_TIMEOUT_SECONDS` | `40` | Per-agent hard timeout |
+| `LLM_COUNCIL_MAX_EVIDENCE_ITEMS` | `40` | Bounds evidence-pack size + cost |
+| `LLM_COUNCIL_VERSION` | `v1` | Council contract version |
+| `OPENAI_API_KEY` | *(empty)* | Only for `LLM_PROVIDER_COUNCIL=openai` |
+
+The `azure_openai` council **reuses** the existing `AZURE_OPENAI_ENDPOINT` /
+`AZURE_OPENAI_API_KEY` / `AZURE_OPENAI_API_VERSION` /
+`AZURE_OPENAI_DEPLOYMENT_NAME` settings (Phase 7). No separate council
+credentials. **Never** print, echo, or commit these values; store them in Key
+Vault (`ib-stg-kv`). They are never exposed on `/health`.
+
+### Enabling on staging (only with a securely-provided provider)
+
+```bash
+source ~/.venvs/azure-cli/bin/activate   # this Mac: ~/.venvs/azure-cli/bin/az
+
+# Requires explicit approval — alters running config. Azure OpenAI creds must
+# already exist in Key Vault / app settings (do NOT paste secrets on the CLI).
+az webapp config appsettings set --resource-group ib-stg-rg --name ib-stg-api \
+  --settings LLM_COUNCIL_ENABLED=true LLM_PROVIDER_COUNCIL=azure_openai
+az webapp restart --resource-group ib-stg-rg --name ib-stg-api
+```
+
+### Validation from logs (safe events)
+
+```bash
+az webapp log tail --resource-group ib-stg-rg --name ib-stg-api
+# Expect, for one final-report generation with the council enabled:
+#   evidence_pack_built … evidence_item_count=<n>
+#   llm_council_started provider=<p> model=<m> …
+#   llm_agent_completed agent_name=<a> status=completed …   (x8, or agent_failed)
+#   llm_council_completed agents_completed=<c> agents_failed=<f> …
+```
+
+Council events carry ids/provider/model/status/counts/duration **only** — never
+prompts, completions, evidence excerpts, or credentials. The Phase 27.1D
+"Verify NO secrets are logged" grep applies unchanged.
+
+### Report expectations (enabled)
+
+A generated final report should report `llm_used: true`, show provider/model
+(no secrets) and the council sections, and keep `schema_valid=true`,
+`safety_valid=true`, `human_review_required=true`, `publication_ready=false`.
+Any forbidden rating/valuation language is quarantined by the council and, as a
+backstop, would flip `safety_valid=false` without ever publishing.
+
+---
+
 ## OIDC Setup (future — blocked on Entra permissions)
 
 Once the Entra ID Application Developer role is granted, replace publish profiles with OIDC:

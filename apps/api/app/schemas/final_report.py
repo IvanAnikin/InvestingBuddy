@@ -140,6 +140,20 @@ class FinalReportResponse(BaseModel):
     source_count: int = 0
     citation_count: int = 0
 
+    # Phase 28A — LLM analysis council metadata (honest; llm_used is never
+    # fabricated). When the council is disabled/unavailable these keep their
+    # defaults and the report says the LLM was not used.
+    llm_used: bool = False
+    llm_provider: str | None = None
+    llm_model: str | None = None
+    council_version: str | None = None
+    council_agents_completed: int = 0
+    council_agents_failed: int = 0
+    council_agents_skipped: int = 0
+    evidence_pack_version: str | None = None
+    evidence_item_count: int = 0
+    committee_label: str | None = None
+
     # human review checklist
     human_review_checklist: list[HumanReviewChecklistItem] = Field(
         default_factory=list
