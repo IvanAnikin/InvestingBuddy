@@ -36,6 +36,8 @@ from app.services.llm.discovery_citation_checker import check_and_sanitize
 from app.services.llm.discovery_evidence_pack import build_discovery_evidence_pack
 from app.services.llm.discovery_schemas import (
     AGENT_DISCOVERY_CHAIR,
+    ALLOWED_RUN_QUALITY,
+    DEFAULT_RUN_QUALITY,
     DISCOVERY_COUNCIL_AGENT_ORDER,
     STATUS_FAILED,
     DiscoveryCouncilAgentOutput,
@@ -276,7 +278,15 @@ async def run_discovery_council(
     chair = next(
         (a for a in result.agents if a.agent_name == AGENT_DISCOVERY_CHAIR), None
     )
-    result.run_quality = chair.run_quality if chair else None
+    chair_quality = chair.run_quality if chair else None
+    if chair_quality not in ALLOWED_RUN_QUALITY:
+        # The chair did not (or could not — e.g. it failed) set a valid label.
+        # Fall back to an honest run_quality that is always in the allowed set:
+        # "failed" when no agent completed, else the neutral default.
+        chair_quality = (
+            DEFAULT_RUN_QUALITY if result.agents_completed else "failed"
+        )
+    result.run_quality = chair_quality
     buckets = _aggregate_chair(evidence_pack, chair)
     for field, entries in buckets.items():
         setattr(result, field, entries[:_MAX_AGG_LIST])
