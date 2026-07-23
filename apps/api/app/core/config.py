@@ -84,6 +84,26 @@ class Settings(BaseSettings):
     # Never hardcode. Never logged. Never exposed in /health.
     openai_api_key: str = ""
 
+    # ── LLM Discovery Council (Phase 28B) ───────────────────────────────────
+    # A real, controlled, run-LEVEL LLM council that reviews the whole candidate
+    # set produced by ONE discovery run and decides which candidates deserve
+    # deeper internal research, which need more evidence, and which to reject or
+    # monitor. Internal-only, citation-bound, safety-gated. Manual admin-triggered
+    # only — it never runs automatically after a discovery run.
+    #
+    # Gated by BOTH flags: the discovery council runs only when
+    # ``llm_council_enabled`` (the shared client gate) AND
+    # ``llm_discovery_council_enabled`` are true and a usable provider resolves.
+    # If either is off, the council is disabled and no fake output is produced in
+    # production; the deterministic discovery result is unchanged.
+    llm_discovery_council_enabled: bool = False
+    # Hard cap on the number of candidates included in the council evidence pack
+    # (bounds prompt size + cost). Candidates beyond the cap are summarized-out.
+    llm_discovery_council_max_candidates: int = 25
+    # Discovery-council contract version. Bump when the agent set or output schema
+    # changes. Independent of the single-company council version.
+    llm_discovery_council_version: str = "v1"
+
     # ── Market Candidate Discovery (Phase 25) ──────────────────────────────
     # Internal-only, bounded market scan configuration. Discovery produces
     # internal research candidates ranked by an internal prioritization score.
