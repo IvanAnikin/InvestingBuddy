@@ -26,6 +26,8 @@ import type {
   ReviewActionResponse,
   ReviewEventList,
   RunCandidateAnalysisResponse,
+  SourceHealthResponse,
+  SourceRegistryResponse,
   SupportedThemesResponse,
   WorkflowRunRequest,
   WorkflowRunResponse,
@@ -366,4 +368,14 @@ export async function getDiscoveryCouncilReview(
   return apiFetch<DiscoveryCouncilReview>(
     `/api/v1/market-discovery/runs/${runId}/council-review`,
   );
+}
+
+// ── Source Registry + Connector Framework (Phase 29A) ──────────────────────
+
+export async function fetchSourceRegistry(): Promise<SourceRegistryResponse> {
+  return apiFetch<SourceRegistryResponse>("/api/v1/sources/registry");
+}
+
+export async function fetchSourceHealth(): Promise<SourceHealthResponse> {
+  return apiFetch<SourceHealthResponse>("/api/v1/sources/health");
 }

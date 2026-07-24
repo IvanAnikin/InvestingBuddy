@@ -32,6 +32,7 @@ from app.services.llm.schemas import (
     EvidencePack,
     SourcePolicy,
 )
+from app.services.sources.redaction import strip_url_secrets
 
 _EXCERPT_MAX = 280
 _SEC_TRANSPORT = "SEC EDGAR / data.sec.gov"
@@ -129,6 +130,8 @@ class _Builder:
             transport_tier, content_tier, provider = _tier_pair(source_tier, source_type, url)
             provider_transport = provider_transport or provider
         self._n += 1
+        # Phase 29A: strip any credential-bearing query params before storing a
+        # URL, so a ``?api_token=…`` can never survive into an evidence pack.
         self.items.append(
             EvidenceItem(
                 id=f"E{self._n}",
@@ -138,7 +141,7 @@ class _Builder:
                 transport_tier=transport_tier,
                 content_tier=content_tier,
                 title=title,
-                url=url,
+                url=strip_url_secrets(url),
                 date=date,
                 excerpt=_excerpt(excerpt),
                 data_quality=data_quality,
@@ -323,8 +326,14 @@ def build_evidence_pack(
     catalyst_discovery: dict[str, Any] | None = None,
     source_rows: list[dict[str, Any]] | None = None,
     max_items: int = 40,
+    extra_known_gaps: list[str] | None = None,
 ) -> EvidencePack:
-    """Build a bounded, cited evidence pack for one company."""
+    """Build a bounded, cited evidence pack for one company.
+
+    ``extra_known_gaps`` (Phase 29A) appends source-framework gaps — e.g. planned
+    external connectors whose evidence is not yet sourced — so the source critic
+    sees missing coverage as an explicit, honest gap rather than silent absence.
+    """
     builder = _Builder(max_items=max(1, max_items))
 
     # Fall back to the report's own source appendix when explicit rows are not
@@ -349,6 +358,11 @@ def build_evidence_pack(
     if is_mock:
         do_not_infer.append("Data is mock/placeholder — treat all values as non-factual.")
 
+    known_gaps = _known_gaps(report_content)
+    for g in extra_known_gaps or []:
+        if g and g not in known_gaps:
+            known_gaps.append(g)
+
     return EvidencePack(
         evidence_pack_version=EVIDENCE_PACK_VERSION,
         company=_company_from(report_content, company_snapshot),
@@ -357,6 +371,6 @@ def build_evidence_pack(
             excluded_sources=["uncited_web_search", "social_media", "anonymous_forums"],
         ),
         evidence_items=builder.items,
-        known_gaps=_known_gaps(report_content),
+        known_gaps=known_gaps,
         do_not_infer=do_not_infer,
     )

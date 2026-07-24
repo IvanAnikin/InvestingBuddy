@@ -44,6 +44,7 @@ from app.services.llm.discovery_schemas import (
     DiscoveryCouncilResult,
     DiscoveryEvidencePack,
 )
+from app.services.sources.registry import build_registry, registry_gap_messages
 
 __all__ = [
     "get_discovery_llm_client",
@@ -337,6 +338,8 @@ async def maybe_run_discovery_council(
             run=run,
             candidates=candidates,
             max_candidates=cfg.llm_discovery_council_max_candidates,
+            # Phase 29A: surface planned-source coverage gaps to the council.
+            extra_known_gaps=registry_gap_messages(build_registry(cfg)),
         )
         log_event(
             log,

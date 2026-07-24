@@ -722,3 +722,69 @@ export interface DiscoveryCouncilReview {
   created_at?: string | null;
   disclaimer: string;
 }
+
+// ── Source Registry + Connector Framework (Phase 29A) ──────────────────────
+// Read-only, secret-free views of the unified source registry. Mirrors
+// apps/api/app/schemas/source_registry.py.
+
+export type SourceStatus = "enabled" | "planned" | "disabled" | "error";
+
+export interface SourceTierInfo {
+  code: string;
+  rank: number;
+  label: string;
+  description: string;
+}
+
+export interface RegisteredSource {
+  source_id: string;
+  name: string;
+  provider_type: string;
+  tier: string;
+  status: SourceStatus;
+  enabled: boolean;
+  jurisdiction?: string | null;
+  region?: string | null;
+  language: string;
+  cost_model: string;
+  access_mode: string;
+  connector_key?: string | null;
+  connector_implemented: boolean;
+  planned_phase?: string | null;
+  capabilities: string[];
+  rate_limit?: string | null;
+  reliability_note?: string | null;
+}
+
+export interface SourceGap {
+  source_id?: string | null;
+  connector_key?: string | null;
+  gap_type: string;
+  severity: string;
+  message: string;
+  suggested_followup_phase?: string | null;
+  blocks_research_complete: boolean;
+}
+
+export interface SourceRegistryResponse {
+  generated_at: string;
+  summary: Record<string, number>;
+  tiers: SourceTierInfo[];
+  sources: RegisteredSource[];
+  gaps: SourceGap[];
+  disclaimer: string;
+}
+
+export interface ConnectorHealth {
+  connector_key: string;
+  status: string;
+  enabled: boolean;
+  last_checked_at: string;
+  detail?: string | null;
+  latency_ms?: number | null;
+}
+
+export interface SourceHealthResponse {
+  generated_at: string;
+  connectors: ConnectorHealth[];
+}
