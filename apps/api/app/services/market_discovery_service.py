@@ -36,9 +36,11 @@ from app.models.discovery import (
     DiscoveryCandidate,
     DiscoveryRun,
 )
+from app.models.report import Report
 from app.schemas.market_discovery import (
     DiscoveryRunCreate,
     DiscoveryRunSummary,
+    ReportLinkSummary,
     ThesisDiscoveryRunCreate,
 )
 from app.services import safety_terms
@@ -79,6 +81,10 @@ logger = logging.getLogger(__name__)
 # Injectable signal extractor type (tests supply canned signals, no network).
 SignalExtractor = Callable[..., Awaitable[ExtractedSignal]]
 AnalysisRunner = Callable[..., Awaitable[dict[str, Any]]]
+# Phase 28A.1 — injectable final-report generator (tests supply a fake; the
+# default routes to the Phase 28A FinalReportGeneratorService). Returns a
+# FinalReportResponse.
+FinalReportRunner = Callable[..., Awaitable[Any]]
 
 _ALLOWED_PROVIDERS = {"free_real", "eodhd_free_real", "mock"}
 
@@ -1156,17 +1162,127 @@ async def summarize_run(db: AsyncSession, run: DiscoveryRun) -> DiscoveryRunSumm
 # ---------------------------------------------------------------------------
 
 
+async def get_report_for_candidate(
+    db: AsyncSession, report_id: uuid.UUID
+) -> Report | None:
+    """Load a report row by id (used to summarise a candidate's linked report)."""
+    result = await db.execute(select(Report).where(Report.id == report_id))
+    return result.scalar_one_or_none()
+
+
+def report_link_summary_from_report(report: Report | None) -> ReportLinkSummary | None:
+    """
+    Build a compact :class:`ReportLinkSummary` from a persisted report row.
+
+    Phase 28A.1 — ``report_kind`` is derived from ``final_report_version``: a
+    report written by the final-report generator always carries a version, so a
+    NULL version marks a legacy deterministic "Phase 9" Analysis Council draft.
+    LLM / council metadata is read from ``source_summary_json.llm_council`` and
+    the validation flags from the persisted validation JSON — never fabricated.
+    """
+    if report is None:
+        return None
+    source_summary = report.source_summary_json or {}
+    council = source_summary.get("llm_council") if isinstance(source_summary, dict) else None
+    council = council if isinstance(council, dict) else {}
+    schema_json = report.schema_validation_json or {}
+    safety_json = report.safety_validation_json or {}
+    is_final = bool(report.final_report_version)
+    return ReportLinkSummary(
+        report_id=report.id,
+        report_kind="final" if is_final else "legacy",
+        title=report.title,
+        llm_used=bool(council.get("llm_used", False)),
+        llm_provider=council.get("provider"),
+        llm_model=council.get("model"),
+        council_version=council.get("council_version"),
+        agents_completed=council.get("agents_completed"),
+        agents_failed=council.get("agents_failed"),
+        evidence_item_count=council.get("evidence_item_count"),
+        schema_valid=(schema_json.get("is_valid") if isinstance(schema_json, dict) else None),
+        safety_valid=(safety_json.get("passed") if isinstance(safety_json, dict) else None),
+        final_report_version=report.final_report_version,
+        generated_at=report.created_at,
+    )
+
+
+def _summary_from_final_response(resp: Any) -> ReportLinkSummary:
+    """Build a "final" report summary from a fresh FinalReportResponse."""
+    from app.services.final_report_generator import FINAL_REPORT_VERSION
+
+    return ReportLinkSummary(
+        report_id=resp.report_id,
+        report_kind="final",
+        llm_used=bool(resp.llm_used),
+        llm_provider=resp.llm_provider,
+        llm_model=resp.llm_model,
+        council_version=resp.council_version,
+        agents_completed=resp.council_agents_completed,
+        agents_failed=resp.council_agents_failed,
+        evidence_item_count=resp.evidence_item_count,
+        schema_valid=resp.schema_valid,
+        safety_valid=resp.safety_valid,
+        final_report_version=FINAL_REPORT_VERSION,
+    )
+
+
+async def _default_generate_final_report(db: AsyncSession, **kwargs: Any) -> Any:
+    """Default final-report runner — the Phase 28A generator from live state."""
+    from app.services.final_report_generator import FinalReportGeneratorService
+
+    return await FinalReportGeneratorService().generate_from_workflow_state(db, **kwargs)
+
+
+async def _load_final_report_inputs(
+    db: AsyncSession, legacy_draft_id: str | None
+) -> tuple[Report | None, list[Any], list[Any]]:
+    """
+    Best-effort load of the intermediate workflow draft plus its citations and
+    sources, used as additional evidence for the final report. Never fatal — a
+    failure here just means the final report is built from the in-memory state
+    alone.
+    """
+    if not legacy_draft_id:
+        return None, [], []
+    try:
+        from app.services.final_report_generator import (
+            _load_citations_for_report,
+            _load_report_by_id,
+            _load_sources_for_citations,
+        )
+
+        source_report = await _load_report_by_id(db, uuid.UUID(legacy_draft_id))
+        if source_report is None:
+            return None, [], []
+        citations = await _load_citations_for_report(db, source_report.id)
+        sources = await _load_sources_for_citations(db, citations)
+        return source_report, citations, sources
+    except Exception:  # noqa: BLE001 - evidence enrichment is best-effort
+        return None, [], []
+
+
 async def run_candidate_analysis(
     db: AsyncSession,
     candidate_id: uuid.UUID,
     *,
     run_analysis: AnalysisRunner | None = None,
+    generate_final_report: FinalReportRunner | None = None,
 ) -> dict[str, Any]:
     """
-    Run the full company-analysis workflow for a candidate and link the report.
+    Run the full analysis for a candidate and link the FINAL report.
 
-    Reuses the existing workflow (injectable for tests). Returns a summary dict
-    including the produced ``analysis_report_id`` and ``agent_run_id``.
+    Phase 28A.1 — the single-company "Run Full Analysis" flow now routes through
+    the Phase 28A final-report generator so the candidate links to a real final
+    report (LLM analysis council when ``LLM_COUNCIL_ENABLED`` and a provider
+    resolve; honest ``llm_used=False`` otherwise) — NEVER a legacy "Phase 9"
+    deterministic Analysis Council draft. The deterministic workflow still runs
+    first to produce the raw research artefact (retained as
+    ``legacy_draft_report_id``); its output state feeds the final report.
+
+    Both the workflow runner and the final-report generator are injectable for
+    tests. If final-report generation fails the candidate falls back to linking
+    the deterministic draft and a warning is surfaced — the run never fails
+    purely because of the routing step.
     """
     candidate = await get_candidate(db, candidate_id)
     if candidate is None:
@@ -1193,12 +1309,56 @@ async def run_candidate_analysis(
         provider_name=provider,
     )
 
-    report_id = final_state.get("draft_report_id")
+    legacy_draft_id = final_state.get("draft_report_id")
     agent_run_id = final_state.get("agent_run_id")
     status = final_state.get("status", "completed")
 
-    if report_id:
-        candidate.analysis_report_id = uuid.UUID(report_id)
+    warnings: list[str] = []
+    report_summary: ReportLinkSummary | None = None
+    linked_report_id: uuid.UUID | None = None
+
+    company_record = {
+        "id": str(company.id),
+        "name": company.name,
+        "ticker": company.ticker,
+        "exchange": company.exchange,
+        "country": getattr(company, "country", None),
+        "sector": getattr(company, "sector", None),
+        "industry": getattr(company, "industry", None),
+    }
+    try:
+        gen = generate_final_report or _default_generate_final_report
+        source_report, citations, sources = await _load_final_report_inputs(
+            db, legacy_draft_id
+        )
+        final_resp = await gen(
+            db,
+            state=final_state,
+            company_record=company_record,
+            candidate=candidate,
+            source_report=source_report,
+            citations=citations,
+            sources=sources,
+        )
+        linked_report_id = final_resp.report_id
+        report_summary = _summary_from_final_response(final_resp)
+    except Exception as exc:  # noqa: BLE001 - never fail the whole run on routing
+        logger.warning(
+            "final_report_routing_failed candidate=%s error=%s",
+            str(candidate_id),
+            type(exc).__name__,
+        )
+        warnings.append("final_report_generation_failed")
+        if legacy_draft_id:
+            linked_report_id = uuid.UUID(legacy_draft_id)
+            report_summary = ReportLinkSummary(
+                report_id=linked_report_id,
+                report_kind="legacy",
+                llm_used=False,
+            )
+
+    if linked_report_id:
+        candidate.analysis_report_id = linked_report_id
     if agent_run_id:
         candidate.agent_run_id = uuid.UUID(agent_run_id)
     candidate.updated_at = datetime.now(timezone.utc)
@@ -1209,9 +1369,14 @@ async def run_candidate_analysis(
         "candidate_id": candidate.id,
         "ticker": candidate.ticker,
         "status": status,
-        "analysis_report_id": uuid.UUID(report_id) if report_id else None,
+        "analysis_report_id": linked_report_id,
         "agent_run_id": uuid.UUID(agent_run_id) if agent_run_id else None,
         "provider_name": provider,
+        "report": report_summary,
+        "legacy_draft_report_id": (
+            uuid.UUID(legacy_draft_id) if legacy_draft_id else None
+        ),
+        "warnings": warnings,
     }
 
 

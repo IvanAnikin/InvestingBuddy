@@ -104,7 +104,9 @@ const REPORT_MARKDOWN = [
 function mockReport(id) {
   return {
     id,
-    title: "InvestingBuddy Test Company — Analysis Council Draft [MOCK DATA]",
+    // Phase 28A.1 — a final-report-generator draft with the council OFF: honest
+    // "Internal Analysis Draft" title, never "Phase 9".
+    title: "Internal Analysis Draft — IBTEST — InvestingBuddy Test Company [MOCK DATA]",
     slug: "company-analysis-ibtest-mock",
     report_type: "company_deep_dive",
     period_start: null,
@@ -149,7 +151,8 @@ const COUNCIL_REPORT_ID = "00000000-0000-0000-0000-0000000000c0";
 
 function mockCouncilReport(id) {
   const base = mockReport(id);
-  base.title = "InvestingBuddy Test Company — LLM Council Draft [MOCK DATA]";
+  base.title =
+    "LLM Council Analysis Draft — IBTEST — InvestingBuddy Test Company [MOCK DATA]";
   base.source_summary_json = {
     total_sources: 3,
     total_citations: 2,
@@ -200,6 +203,30 @@ function mockCouncilReport(id) {
   return base;
 }
 
+// Phase 28A.1 — a legacy deterministic "Phase 9" Analysis Council draft. It has
+// NO final_report_version (that is the legacy marker) and its historical
+// markdown still says "Phase 9" / "[LLM: not used]". The UI must keep it
+// readable but badge it clearly as legacy — never rewrite the stored content.
+const LEGACY_REPORT_ID = "00000000-0000-0000-0000-0000000000e9";
+
+function mockLegacyReport(id) {
+  const base = mockReport(id);
+  base.title = "InvestingBuddy Test Company — Analysis Council Draft [MOCK DATA]";
+  base.final_report_version = null;
+  base.source_summary_json = null;
+  base.schema_validation_json = null;
+  base.safety_validation_json = null;
+  base.content_markdown = [
+    "# InvestingBuddy Test Company — Phase 9 Analysis Council Draft [MOCK DATA]",
+    "",
+    "**LLM:** [LLM: not used]",
+    "**Schema Validation:** SCHEMA INVALID",
+    "",
+    "> INTERNAL ADMIN DRAFT — PHASE 9 ANALYSIS COUNCIL. Not investment advice.",
+  ].join("\n");
+  return base;
+}
+
 function send(res, status, body) {
   res.writeHead(status, { "Content-Type": "application/json" });
   res.end(JSON.stringify(body));
@@ -231,6 +258,9 @@ const server = createServer((req, res) => {
     const rid = reportDetail[1];
     if (rid === COUNCIL_REPORT_ID) {
       return send(res, 200, mockCouncilReport(rid));
+    }
+    if (rid === LEGACY_REPORT_ID) {
+      return send(res, 200, mockLegacyReport(rid));
     }
     return send(res, 200, mockReport(rid));
   }

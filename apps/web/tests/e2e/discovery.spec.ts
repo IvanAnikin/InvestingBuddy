@@ -251,8 +251,19 @@ async function mockDiscoveryRoutes(page: import("@playwright/test").Page) {
           analysis_report_id: REPORT_ID,
           agent_run_id: "44444444-0000-0000-0000-000000000025",
           provider_name: "free_real",
-          message: "Full analysis workflow completed for AAPL. Human review required.",
+          message:
+            "Full analysis completed for AAPL. LLM council analysis draft. Internal admin draft only — human review required.",
           human_review_required: true,
+          report: {
+            report_id: REPORT_ID,
+            report_kind: "final",
+            llm_used: true,
+            schema_valid: true,
+            safety_valid: true,
+            final_report_version: "16.0.0",
+          },
+          legacy_draft_report_id: "55555555-0000-0000-0000-000000000025",
+          warnings: [],
           disclaimer: DISC,
         }),
       }),
@@ -426,8 +437,17 @@ test.describe("Admin Discovery — page + safety", () => {
             analysis_report_id: REPORT_ID,
             agent_run_id: "44444444-0000-0000-0000-000000000025",
             provider_name: "free_real",
-            message: "Full analysis workflow completed for AAPL.",
+            message: "Full analysis completed for AAPL. LLM council analysis draft.",
             human_review_required: true,
+            report: {
+              report_id: REPORT_ID,
+              report_kind: "final",
+              llm_used: true,
+              schema_valid: true,
+              safety_valid: true,
+              final_report_version: "16.0.0",
+            },
+            warnings: [],
             disclaimer: DISC,
           }),
         });
@@ -437,7 +457,57 @@ test.describe("Admin Discovery — page + safety", () => {
     await page.getByTestId("candidate-toggle").first().click();
     await page.getByRole("button", { name: "Run Full Analysis" }).click();
     await expect.poll(() => analysisCalled, { timeout: 10_000 }).toBe(true);
-    await expect(page.locator("body")).toContainText("View generated report");
+    // Phase 28A.1 — links to the FINAL report, labelled honestly.
+    await expect(page.getByTestId("candidate-report-link")).toContainText(
+      "View Latest Final Report",
+    );
+    await expect(page.getByTestId("candidate-report-summary")).toContainText(
+      "LLM Council: Used",
+    );
+  });
+
+  test("11b. Legacy-linked candidate shows a 'View Legacy Draft' warning", async ({
+    page,
+  }) => {
+    await mockDiscoveryRoutes(page);
+    await page.route(
+      `**/api/admin/proxy/api/v1/market-discovery/candidates/${CAND_ID}`,
+      (route) =>
+        route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            ...MOCK_CANDIDATE_DETAIL,
+            analysis_report_id: REPORT_ID,
+            latest_report: {
+              report_id: REPORT_ID,
+              report_kind: "legacy",
+              llm_used: false,
+            },
+          }),
+        }),
+    );
+    await page.goto("/admin/discovery");
+    await page.getByTestId("candidate-toggle").first().click();
+    await expect(page.getByTestId("candidate-report-link")).toContainText(
+      "View Legacy Draft",
+    );
+    await expect(
+      page.getByTestId("candidate-legacy-warning"),
+    ).toContainText("predates LLM council generation");
+  });
+
+  test("11c. Discovery Council status is shown separately from candidates", async ({
+    page,
+  }) => {
+    await mockDiscoveryRoutes(page);
+    await page.goto("/admin/discovery");
+    // Candidates exist, but the council status is explicitly "Not run".
+    await expect(page.locator("body")).toContainText("AAPL");
+    await expect(page.getByTestId("council-status-pill")).toContainText(
+      "Council Review: Not run",
+    );
+    await expect(page.getByTestId("council-run-button")).toBeVisible();
   });
 
   test("12. API error state renders clearly", async ({ page }) => {
@@ -1788,8 +1858,17 @@ test.describe("Admin Discovery — thesis mode (Phase 27)", () => {
             analysis_report_id: THESIS_REPORT_ID,
             agent_run_id: "aaaaaaaa-0000-0000-0000-000000000027",
             provider_name: "free_real",
-            message: "Full analysis workflow completed for RHM.",
+            message: "Full analysis completed for RHM. LLM council analysis draft.",
             human_review_required: true,
+            report: {
+              report_id: THESIS_REPORT_ID,
+              report_kind: "final",
+              llm_used: true,
+              schema_valid: true,
+              safety_valid: true,
+              final_report_version: "16.0.0",
+            },
+            warnings: [],
             disclaimer: DISC,
           }),
         });
@@ -1799,7 +1878,9 @@ test.describe("Admin Discovery — thesis mode (Phase 27)", () => {
     await page.getByTestId("candidate-toggle").first().click();
     await page.getByRole("button", { name: "Run Full Analysis" }).click();
     await expect.poll(() => analysisCalled, { timeout: 10_000 }).toBe(true);
-    await expect(page.locator("body")).toContainText("View generated report");
+    await expect(page.getByTestId("candidate-report-link")).toContainText(
+      "View Latest Final Report",
+    );
   });
 
   test("36. Safety banner + no publish action in thesis mode", async ({

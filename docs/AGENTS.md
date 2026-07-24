@@ -48,6 +48,15 @@ Optional: `provider_name` (default: `mock`), `require_schema_valid` (default: `f
 
 **Purpose:** 19-node workflow (v6.0.0). Fetches provider data (including SEC EDGAR XBRL fundamentals and EODHD /eod prices via Phase 19.1 providers), builds a structured company snapshot, runs four deterministic Research Team agents, optionally runs an LLM node, stores source + citation records, validates the schema, runs Research Completeness and Citation Validator v2 agents, then runs five deterministic Analysis Council agents (no LLM calls), scores research attractiveness, and saves a draft report. `investment_committee_chair` forces `human_review_required=True` when safety guard triggers. `TrendSignalEngine` is available but not yet wired as a workflow node (Phase 19.2).
 
+> **Phase 28A.1 routing note.** This workflow's "Phase 9 Analysis Council Draft"
+> is now an **intermediate** artefact when triggered via the discovery
+> **"Run Full Analysis"** flow (`POST /market-discovery/candidates/{id}/run-analysis`).
+> That endpoint feeds this workflow's final state into the Phase 28A
+> `FinalReportGeneratorService.generate_from_workflow_state`, and the candidate
+> links to the resulting **final report** (LLM council when enabled) — not the
+> Phase 9 draft. The direct `POST /workflows/company-analysis/run` endpoint still
+> returns the Phase 9 draft unchanged. See `docs/API.md` → Phase 28A.1 / 28B.3.
+
 - `use_llm=false` (default): no LLM calls, fully offline, CI-safe.
 - `use_llm=true` with `llm_provider=mock`: mock LLM, still offline, no Azure credentials.
 - `use_llm=true` with `llm_provider=azure_openai`: calls Azure OpenAI (requires env vars).

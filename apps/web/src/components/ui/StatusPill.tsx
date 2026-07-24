@@ -26,13 +26,16 @@ export default function StatusPill({
   label,
   color = "gray",
   className = "",
+  testId,
 }: {
   label: string;
   color?: PillColor;
   className?: string;
+  testId?: string;
 }) {
   return (
     <span
+      data-testid={testId}
       className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs font-semibold ${STYLES[color]} ${className}`.trim()}
     >
       {label}

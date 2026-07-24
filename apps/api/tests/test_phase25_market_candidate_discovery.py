@@ -834,27 +834,49 @@ async def test_35_run_analysis_from_candidate(client) -> None:
 
 @pytest.mark.asyncio
 async def test_36_run_analysis_stores_report_id() -> None:
+    """Phase 28A.1 — the candidate links to the FINAL report, not the legacy
+    workflow draft. The deterministic draft id is retained separately."""
+    from app.schemas.final_report import FinalReportResponse
+
     db, _ = _mock_session_with_capture()
     candidate = _candidate_obj(raw_signal_json={"provider_name": "free_real"})
-    report_id = str(uuid.uuid4())
+    legacy_draft_id = str(uuid.uuid4())
     agent_run_id = str(uuid.uuid4())
+    final_report_id = uuid.uuid4()
 
     async def fake_runner(db_, **kwargs):
         return {
             "status": "completed",
-            "draft_report_id": report_id,
+            "draft_report_id": legacy_draft_id,
             "agent_run_id": agent_run_id,
         }
 
-    company = MagicMock(id=uuid.uuid4())
-    with patch.object(mds, "get_candidate", AsyncMock(return_value=candidate)), patch.object(
+    async def fake_generate(db_, **kwargs):
+        return FinalReportResponse(
+            report_id=final_report_id,
+            schema_valid=True,
+            safety_valid=True,
+            llm_used=False,
+        )
+
+    company = MagicMock(id=uuid.uuid4(), name="Apple Inc.", ticker="AAPL", exchange="US")
+    with patch.object(
+        mds, "_load_final_report_inputs", AsyncMock(return_value=(None, [], []))
+    ), patch.object(mds, "get_candidate", AsyncMock(return_value=candidate)), patch.object(
         mds, "ensure_company", AsyncMock(return_value=company)
     ):
         result = await mds.run_candidate_analysis(
-            db, candidate.id, run_analysis=fake_runner
+            db,
+            candidate.id,
+            run_analysis=fake_runner,
+            generate_final_report=fake_generate,
         )
-    assert str(result["analysis_report_id"]) == report_id
-    assert candidate.analysis_report_id == uuid.UUID(report_id)
+    # Candidate now links to the final report, not the legacy draft.
+    assert result["analysis_report_id"] == final_report_id
+    assert candidate.analysis_report_id == final_report_id
+    # The deterministic draft is retained for audit.
+    assert str(result["legacy_draft_report_id"]) == legacy_draft_id
+    assert result["report"].report_kind == "final"
 
 
 @pytest.mark.asyncio

@@ -1719,15 +1719,26 @@ async def _save_final_report_draft(
     company_name: str | None,
     ticker: str | None,
     source_report_id: uuid.UUID | None,
+    llm_used: bool = False,
 ) -> Report:
     """
     Save the assembled final report as a new draft report record.
+
+    Phase 28A.1 — the title honestly reflects whether the LLM analysis council
+    ran ("LLM Council Analysis Draft" vs "Internal Analysis Draft"). It NEVER
+    says "Phase 9" — this is the final-report-generator path, not the legacy
+    deterministic Analysis Council draft. Legacy reports are identified by a
+    NULL ``final_report_version``; every report saved here carries a version.
     """
     import json
 
-    title_prefix = f"Final Report Draft — {company_name or 'Unknown'}"
+    # Phase 28A.1 — honest, non-"Phase 9" title. The council-ran variant makes
+    # the LLM involvement obvious in report lists without opening the report.
+    kind_label = "LLM Council Analysis Draft" if llm_used else "Internal Analysis Draft"
+    who = company_name or "Unknown"
+    title_prefix = f"{kind_label} — {who}"
     if ticker:
-        title_prefix = f"Final Report Draft — {ticker} — {company_name or 'Unknown'}"
+        title_prefix = f"{kind_label} — {ticker} — {who}"
 
     slug = (
         f"final-report-{ticker or 'unknown'}-{uuid.uuid4().hex[:8]}"
@@ -1761,7 +1772,8 @@ async def _save_final_report_draft(
         report_type="company_deep_dive",
         status="draft",
         summary=(
-            f"Phase 16 final report draft for {company_name or 'Unknown'}. "
+            f"{kind_label} for {company_name or 'Unknown'}. "
+            f"LLM council: {'used' if llm_used else 'not used'}. "
             f"Safety: {'PASSED' if safety_result.passed else 'FAILED'}. "
             f"Schema: {'valid' if schema_valid else 'invalid'}. "
             f"Human review required."
@@ -1982,6 +1994,43 @@ class FinalReportGeneratorService:
             company_record=None,
             citations=citations,
             sources=sources,
+            state=state,
+        )
+
+    async def generate_from_workflow_state(
+        self,
+        db: AsyncSession,
+        *,
+        state: dict[str, Any],
+        company_record: dict[str, Any] | None = None,
+        candidate: ScreeningCandidate | None = None,
+        source_report: Report | None = None,
+        scorecard: Scorecard | None = None,
+        citations: list[Citation] | None = None,
+        sources: list[Source] | None = None,
+    ) -> FinalReportResponse:
+        """
+        Generate a final report draft directly from an in-memory workflow state.
+
+        Phase 28A.1 — this is the entry point the single-company "Run Full
+        Analysis" flow uses. The company-analysis workflow already ran and its
+        rich final ``state`` (company snapshot, catalysts, council summaries…)
+        is passed straight in, so the final report is built from live data
+        instead of being reconstructed by re-parsing the legacy draft markdown.
+
+        Runs the Phase 28A LLM analysis council iff ``LLM_COUNCIL_ENABLED`` and
+        a provider resolve (honest ``llm_used=False`` otherwise). The produced
+        report is a real final-report-generator draft (carries a
+        ``final_report_version``), never a legacy "Phase 9" deterministic draft.
+        """
+        return await self._generate_and_save(
+            db=db,
+            scorecard=scorecard,
+            candidate=candidate,
+            source_report=source_report,
+            company_record=company_record,
+            citations=citations or [],
+            sources=sources or [],
             state=state,
         )
 
@@ -2292,6 +2341,7 @@ class FinalReportGeneratorService:
             company_name=company_name,
             ticker=ticker,
             source_report_id=source_report.id if source_report else None,
+            llm_used=council_result.llm_used,
         )
 
         sections_generated = list(report_content.keys())

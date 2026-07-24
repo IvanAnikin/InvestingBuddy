@@ -357,7 +357,13 @@ async def get_discovery_candidate(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Discovery candidate {candidate_id} not found",
         )
-    return DiscoveryCandidateDetail.model_validate(candidate)
+    detail = DiscoveryCandidateDetail.model_validate(candidate)
+    # Phase 28A.1 — attach compact metadata about the linked report so the UI can
+    # honestly label "View Latest Final Report" vs "View Legacy Draft".
+    if candidate.analysis_report_id is not None:
+        report = await svc.get_report_for_candidate(db, candidate.analysis_report_id)
+        detail.latest_report = svc.report_link_summary_from_report(report)
+    return detail
 
 
 @router.post(
@@ -387,6 +393,23 @@ async def run_candidate_analysis(
             detail=f"Candidate analysis failed: {exc}",
         ) from exc
 
+    report_summary = result.get("report")
+    warnings = result.get("warnings") or []
+    if report_summary is not None and report_summary.report_kind == "final":
+        llm_note = (
+            "LLM council analysis draft."
+            if report_summary.llm_used
+            else "Internal analysis draft (LLM council not used)."
+        )
+    else:
+        llm_note = "Legacy deterministic draft (predates LLM council generation)."
+    message = (
+        f"Full analysis completed for {result['ticker']}. {llm_note} "
+        "Internal admin draft only — human review required."
+    )
+    if warnings:
+        message += " Note: final-report generation degraded to the deterministic draft."
+
     return RunCandidateAnalysisResponse(
         candidate_id=result["candidate_id"],
         ticker=result["ticker"],
@@ -394,10 +417,10 @@ async def run_candidate_analysis(
         analysis_report_id=result["analysis_report_id"],
         agent_run_id=result["agent_run_id"],
         provider_name=result["provider_name"],
-        message=(
-            f"Full analysis workflow completed for {result['ticker']}. "
-            "Internal admin draft only — human review required."
-        ),
+        message=message,
+        report=report_summary,
+        legacy_draft_report_id=result.get("legacy_draft_report_id"),
+        warnings=warnings,
     )
 
 
