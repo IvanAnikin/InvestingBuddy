@@ -584,29 +584,36 @@ def test_23_no_publish_route_added() -> None:
 
 @pytest.mark.asyncio
 async def test_api_post_council_review_success(client, mock_db) -> None:
+    """POST starts an async job and returns a pending status immediately."""
     run = _orm_run()
-    stored = {
-        "llm_used": True,
-        "council_version": "v1",
-        "provider": "fake",
-        "run_quality": "adequate",
-        "candidates_to_research_next": [{"ticker": "UHR", "exchange": "SW"}],
-        "safety_valid": True,
-        "human_review_required": True,
-        "publication_ready": False,
+    pending = {
+        "status": "pending",
+        "started_at": "2026-07-24T00:00:00+00:00",
+        "completed_at": None,
+        "llm_used": None,
+        "agents_completed": 0,
+        "agents_failed": 0,
+        "safety_valid": None,
+        "error": None,
+        "review": None,
     }
     with patch.object(mds, "get_run", AsyncMock(return_value=run)), patch.object(
-        mds, "run_discovery_council_review", AsyncMock(return_value=stored)
+        mds,
+        "start_discovery_council_review",
+        AsyncMock(return_value=(pending, True)),
+    ), patch.object(
+        mds, "process_discovery_council_task", AsyncMock()
     ):
         resp = await client.post(
             f"/api/v1/market-discovery/runs/{run.id}/council-review"
         )
     assert resp.status_code == 200
     body = resp.json()
-    assert body["llm_used"] is True
-    assert body["run_quality"] == "adequate"
-    assert body["publication_ready"] is False
+    assert body["status"] == "pending"
+    assert body["review_available"] is False
+    assert body["message"] == "Discovery council review started."
     assert body["human_review_required"] is True
+    assert body["publication_ready"] is False
 
 
 @pytest.mark.asyncio
@@ -614,8 +621,12 @@ async def test_api_post_council_review_disabled_returns_409(client, mock_db) -> 
     run = _orm_run()
     with patch.object(mds, "get_run", AsyncMock(return_value=run)), patch.object(
         mds,
-        "run_discovery_council_review",
-        AsyncMock(side_effect=mds.DiscoveryCouncilDisabledError("Discovery council is disabled.")),
+        "start_discovery_council_review",
+        AsyncMock(
+            side_effect=mds.DiscoveryCouncilDisabledError(
+                "Discovery council is disabled."
+            )
+        ),
     ):
         resp = await client.post(
             f"/api/v1/market-discovery/runs/{run.id}/council-review"
@@ -635,6 +646,7 @@ async def test_api_post_council_review_missing_run_404(client, mock_db) -> None:
 
 @pytest.mark.asyncio
 async def test_api_get_council_review_success(client, mock_db) -> None:
+    """A legacy raw review is normalised into a completed envelope for GET."""
     review = {
         "llm_used": True,
         "council_version": "v1",
@@ -647,17 +659,24 @@ async def test_api_get_council_review_success(client, mock_db) -> None:
             f"/api/v1/market-discovery/runs/{run.id}/council-review"
         )
     assert resp.status_code == 200
-    assert resp.json()["run_quality"] == "thin"
+    body = resp.json()
+    assert body["run_quality"] == "thin"
+    assert body["status"] == "completed"
+    assert body["review_available"] is True
 
 
 @pytest.mark.asyncio
-async def test_api_get_council_review_absent_404(client, mock_db) -> None:
+async def test_api_get_council_review_absent_returns_disabled(client, mock_db) -> None:
+    """No job has run and the council is disabled by default → disabled response."""
     run = _orm_run(config_json={"region": "Europe"})
     with patch.object(mds, "get_run", AsyncMock(return_value=run)):
         resp = await client.get(
             f"/api/v1/market-discovery/runs/{run.id}/council-review"
         )
-    assert resp.status_code == 404
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "disabled"
+    assert body["review_available"] is False
 
 
 # ===========================================================================

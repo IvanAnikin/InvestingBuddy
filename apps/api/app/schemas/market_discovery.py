@@ -465,6 +465,17 @@ class DiscoveryCouncilReviewResponse(BaseModel):
     """
 
     run_id: uuid.UUID
+    # Async council job lifecycle (Phase 28B.2). ``status`` is the single source
+    # of truth for the UI: pending/running while the background job works,
+    # completed/completed_with_warnings/failed when terminal, disabled when the
+    # feature is off and no review exists. ``review_available`` is True only when a
+    # usable completed review is attached.
+    status: str | None = None
+    review_available: bool = False
+    message: str | None = None
+    started_at: str | None = None
+    completed_at: str | None = None
+    error: str | None = None
     llm_used: bool = False
     council_version: str | None = None
     provider: str | None = None
@@ -502,8 +513,62 @@ class DiscoveryCouncilReviewResponse(BaseModel):
     def from_storage(
         cls, run_id: uuid.UUID, stored: dict[str, Any]
     ) -> "DiscoveryCouncilReviewResponse":
-        """Build the response from the stored council dict (config_json blob)."""
+        """Build the response from a stored raw review dict (config_json blob)."""
         data = dict(stored or {})
         data.pop("type", None)
         data.pop("disclaimer", None)
         return cls(run_id=run_id, **data)
+
+    @classmethod
+    def from_envelope(
+        cls,
+        run_id: uuid.UUID,
+        envelope: dict[str, Any],
+        *,
+        message: str | None = None,
+    ) -> "DiscoveryCouncilReviewResponse":
+        """Build the response from an async council job envelope.
+
+        When the envelope carries a completed ``review`` its fields are spread at
+        the top level (so the existing UI keeps reading them). For a queued/running
+        job the review fields fall back to their defaults and only the lifecycle
+        fields (status, counts, timestamps) are populated.
+        """
+        env = dict(envelope or {})
+        status = env.get("status")
+        review = env.get("review")
+        if isinstance(review, dict):
+            data = dict(review)
+            data.pop("type", None)
+            data.pop("disclaimer", None)
+        else:
+            data = {}
+        # Prefer envelope lifecycle counts (authoritative for in-flight jobs and
+        # equal to the review's for a completed one). Skip Nones — the model's
+        # count/flag fields are non-nullable.
+        for key in ("llm_used", "agents_completed", "agents_failed", "safety_valid"):
+            if env.get(key) is not None:
+                data[key] = env[key]
+        resp = cls(run_id=run_id, **data)
+        resp.status = status
+        resp.review_available = status in {"completed", "completed_with_warnings"} and (
+            isinstance(review, dict) and bool(review)
+        )
+        resp.started_at = env.get("started_at")
+        resp.completed_at = env.get("completed_at")
+        resp.error = env.get("error")
+        resp.message = message
+        return resp
+
+    @classmethod
+    def disabled_response(
+        cls, run_id: uuid.UUID, *, message: str | None = None
+    ) -> "DiscoveryCouncilReviewResponse":
+        """A ``disabled`` lifecycle response — the council is off and no review exists."""
+        return cls(
+            run_id=run_id,
+            status="disabled",
+            review_available=False,
+            llm_used=False,
+            message=message or "Discovery council is disabled.",
+        )

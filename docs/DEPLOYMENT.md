@@ -594,13 +594,28 @@ backstop, would flip `safety_valid=false` without ever publishing.
 
 ---
 
-## LLM Discovery Council (Phase 28B)
+## LLM Discovery Council (Phase 28B; async in Phase 28B.2)
 
 The **run-level** discovery council reviews a whole discovery run's candidate set
 and decides internal research **priority**. It is **OFF by default**, **manual
 admin-triggered only** (never automatic), and needs **no DB migration** — the
 review is stored under the run's existing `config_json` JSONB. A plain deploy is
 unchanged.
+
+**Phase 28B.2 — async execution.** The council now runs **asynchronously** (the
+run-level analog of the Phase 25.1 async discovery-run pattern), so a large
+candidate set under a low Azure OpenAI quota no longer rate-limits agents or
+approaches the gateway timeout. `POST .../council-review` starts a background job
+and returns immediately (`status=pending`); the agents run **sequentially** in a
+FastAPI `BackgroundTask` on a **fresh DB session** with per-agent failure
+isolation. Clients **poll** `GET .../council-review` until a terminal status
+(`completed` / `completed_with_warnings` / `failed`); `/admin/discovery` polls
+every 3 s and shows in-progress → completed. The value under
+`config_json["discovery_council"]` is a **status envelope** wrapping the review;
+a completed review stays readable after the flags are turned off. `BackgroundTasks`
+are **process-local, not a durable queue** — an app restart mid-job surfaces as
+stale/failed on the next poll (future work: Azure Queue / Celery / a durable
+worker).
 
 ### Feature flag + settings (app settings)
 
@@ -634,19 +649,28 @@ az webapp restart --resource-group ib-stg-rg --name ib-stg-api
 The council is **not** run automatically. Trigger it per run:
 
 ```bash
-# POST the council-review endpoint for a completed run (admin/internal only).
-#   POST /api/v1/market-discovery/runs/{run_id}/council-review
-# When DISABLED it returns 409 ("Discovery council is disabled.") with NO LLM
-# call; when enabled it returns the stored DiscoveryCouncilReviewResponse.
+# Phase 28B.2 (async): POST STARTS a background job and returns immediately with
+# status=pending. Poll GET for the result — it does NOT block until the agents
+# finish.
+#   POST /api/v1/market-discovery/runs/{run_id}/council-review   → 200 {status:"pending"}
+#         (?force=true re-runs a completed review; a running job returns its status)
+#   GET  /api/v1/market-discovery/runs/{run_id}/council-review   → poll until terminal
+# When DISABLED and no prior review: POST returns 409 ("Discovery council is
+# disabled.") with NO LLM call, and GET returns {status:"disabled"}. A completed
+# review stays readable via GET even after the flags are turned off.
 az webapp log tail --resource-group ib-stg-rg --name ib-stg-api
-# Expect, for one enabled council-review:
+# Expect, for one enabled async council-review job:
+#   discovery_council_job_queued status=pending run_id=<id>
+#   discovery_council_job_started status=running run_id=<id>
 #   discovery_council_evidence_built … evidence_item_count=<n> candidate_count=<c>
 #   discovery_council_started provider=<p> model=<m> …
 #   discovery_council_agent_completed agent_name=<a> status=completed …  (x8, or agent_failed)
 #   discovery_council_completed run_quality=<q> agents_completed=<c> safety_valid=true
+#   discovery_council_job_completed status=completed agents_completed=<c> duration_ms=<d>
+# (A second POST while running logs discovery_council_job_duplicate and starts no job.)
 ```
 
-Council events carry ids/provider/model/status/counts/duration **only** — never
+Council + job events carry ids/status/provider/model/counts/duration **only** — never
 prompts, completions, evidence excerpts, or credentials (the Phase 27.1D "Verify
 NO secrets are logged" grep applies unchanged). A stored review keeps
 `safety_valid=true`, `human_review_required=true`, `publication_ready=false`, and

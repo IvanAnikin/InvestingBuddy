@@ -20,6 +20,7 @@ SAFETY (enforced here + in the model/schema/API layers):
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable
@@ -1303,31 +1304,152 @@ def _candidate_to_evidence_dict(c: DiscoveryCandidate) -> dict[str, Any]:
     }
 
 
-def get_stored_council_review(run: DiscoveryRun) -> dict[str, Any] | None:
-    """Return the stored discovery-council review for a run, or None if absent."""
+# ---------------------------------------------------------------------------
+# Async council job state (Phase 28B.2)
+#
+# The value stored under ``config_json["discovery_council"]`` is an ENVELOPE that
+# wraps the lifecycle of one async council job around the actual review payload:
+#
+#   {
+#     "status": "pending|running|completed|completed_with_warnings|failed",
+#     "started_at": ISO | None,
+#     "completed_at": ISO | None,
+#     "llm_used": bool | None,
+#     "agents_completed": int,
+#     "agents_failed": int,
+#     "safety_valid": bool | None,
+#     "error": str | None,          # short, safe reason code — never an exc str
+#     "review": {...} | None,       # the Phase 28B to_storage_dict payload
+#   }
+#
+# A run whose council job is still queued/running has ``review=None``. This is a
+# JSONB-only change — no schema migration is required. Legacy Phase 28B rows that
+# stored the RAW review dict directly (no envelope) are read transparently via
+# ``get_council_envelope`` (normalised to a completed envelope).
+# ---------------------------------------------------------------------------
+
+# Terminal envelope statuses — the job has finished (successfully or not).
+_COUNCIL_TERMINAL = {"completed", "completed_with_warnings", "failed"}
+# Non-terminal envelope statuses — a job is queued or in flight.
+_COUNCIL_IN_FLIGHT = {"pending", "running"}
+# A completed review exists (usable) in one of these states.
+_COUNCIL_HAS_REVIEW = {"completed", "completed_with_warnings"}
+
+
+def _new_council_envelope(
+    *,
+    status: str,
+    started_at: str | None = None,
+    completed_at: str | None = None,
+    llm_used: bool | None = None,
+    agents_completed: int = 0,
+    agents_failed: int = 0,
+    safety_valid: bool | None = None,
+    review: dict[str, Any] | None = None,
+    error: str | None = None,
+) -> dict[str, Any]:
+    """Build a council job envelope dict for storage under ``config_json``."""
+    return {
+        "status": status,
+        "started_at": started_at,
+        "completed_at": completed_at,
+        "llm_used": llm_used,
+        "agents_completed": agents_completed,
+        "agents_failed": agents_failed,
+        "safety_valid": safety_valid,
+        "error": error,
+        "review": review,
+    }
+
+
+def _store_council_envelope(run: DiscoveryRun, envelope: dict[str, Any]) -> None:
+    """Persist ``envelope`` under the run's existing config_json (no migration).
+
+    Reassigns the whole dict so SQLAlchemy detects the JSONB change — an in-place
+    mutation of a JSONB column is not tracked by default.
+    """
+    new_config = dict(run.config_json or {})
+    new_config[COUNCIL_STORAGE_KEY] = envelope
+    run.config_json = new_config
+
+
+def get_council_envelope(run: DiscoveryRun) -> dict[str, Any] | None:
+    """Return the run's council job envelope, or None if no job has ever run.
+
+    A legacy Phase 28B row that stored the RAW review dict (no ``status``/
+    ``review`` keys) is normalised into a completed envelope so it keeps
+    rendering after the async migration.
+    """
     config = run.config_json or {}
-    review = config.get(COUNCIL_STORAGE_KEY)
+    raw = config.get(COUNCIL_STORAGE_KEY)
+    if not isinstance(raw, dict):
+        return None
+    if "status" in raw and "review" in raw:
+        return raw  # already an async envelope
+    # Legacy raw review → wrap as a completed envelope.
+    return _new_council_envelope(
+        status="completed",
+        started_at=None,
+        completed_at=raw.get("created_at"),
+        llm_used=raw.get("llm_used"),
+        agents_completed=raw.get("agents_completed", 0) or 0,
+        agents_failed=raw.get("agents_failed", 0) or 0,
+        safety_valid=raw.get("safety_valid"),
+        review=raw,
+    )
+
+
+def get_stored_council_review(run: DiscoveryRun) -> dict[str, Any] | None:
+    """Return the stored discovery-council review payload, or None if absent.
+
+    Reads the review out of the async envelope (or a legacy raw review). Returns
+    None when no council job has run — this includes a queued/running job that
+    has not yet produced a review.
+    """
+    envelope = get_council_envelope(run)
+    if envelope is None:
+        return None
+    review = envelope.get("review")
     return review if isinstance(review, dict) else None
 
 
-async def run_discovery_council_review(
+def _classify_council_status(
+    result: Any, stored_review: dict[str, Any]
+) -> str:
+    """Map a completed council result to a terminal envelope status.
+
+    - No agent completed at all → ``failed`` (thin — the review still documents
+      the failures, but there is nothing usable to act on).
+    - Some agents failed, or the safety re-scan flagged the output →
+      ``completed_with_warnings``.
+    - Otherwise → ``completed``.
+    """
+    if (result.agents_completed or 0) <= 0:
+        return "failed"
+    if (result.agents_failed or 0) > 0 or not stored_review.get("safety_valid", True):
+        return "completed_with_warnings"
+    return "completed"
+
+
+async def _compute_council_result(
     db: AsyncSession,
     run: DiscoveryRun,
     *,
     cfg: Any | None = None,
     client: Any | None = None,
-) -> dict[str, Any]:
-    """Build the run evidence pack, run the discovery council, and store the review.
+) -> Any:
+    """Run the discovery council for a run and return the raw result (no store).
 
     Raises ``DiscoveryCouncilDisabledError`` when the council is disabled or no
-    provider resolves — the API maps that to a 409. Stores the review under the
-    run's existing ``config_json`` (no migration) and returns the stored dict.
+    provider resolves, and ``ValueError`` when the run is not ready. The council
+    agents run sequentially (one LLM call at a time inside ``run_discovery_council``)
+    with per-agent failure isolation (Phase 28B.1), so a rate-limited agent never
+    crashes the job — it is recorded as ``failed`` and the review still returns.
     """
     cfg = cfg or settings
     if not discovery_council_enabled(cfg):
         # Manual admin-triggered review requested while the council is off. Emit a
-        # safe, secret-free telemetry event (no LLM call is made) and return a
-        # clear disabled response.
+        # safe, secret-free telemetry event (no LLM call is made).
         log_event(
             logger,
             "discovery_council_disabled",
@@ -1376,23 +1498,297 @@ async def run_discovery_council_review(
         raise DiscoveryCouncilDisabledError(
             "Discovery council provider is not available."
         )
+    return result
 
+
+def _finalize_council_review(run: DiscoveryRun, result: Any) -> dict[str, Any]:
+    """Build + persist the terminal envelope for a completed council result.
+
+    Runs the defensive safety re-scan, classifies the terminal status, stores the
+    envelope on ``run.config_json`` (caller commits) and returns it.
+    """
     created_at = datetime.now(timezone.utc).isoformat()
-    stored = result.to_storage_dict(created_at=created_at)
+    stored_review = result.to_storage_dict(created_at=created_at)
 
     # Backstop: no forbidden investment-action language may be saved. The council
     # already quarantines unsafe agent output; this is a defensive re-scan.
-    hits = safety_terms.scan_value(stored, exempt_keys=frozenset({"do_not_infer"}))
+    hits = safety_terms.scan_value(
+        stored_review, exempt_keys=frozenset({"do_not_infer"})
+    )
     if hits:
-        stored["safety_valid"] = False
+        stored_review["safety_valid"] = False
 
-    # Reassign the whole dict so SQLAlchemy detects the JSONB change (in-place
-    # mutation of a JSONB column is not tracked by default).
-    new_config = dict(run.config_json or {})
-    new_config[COUNCIL_STORAGE_KEY] = stored
-    run.config_json = new_config
+    status = _classify_council_status(result, stored_review)
+    existing = get_council_envelope(run) or {}
+    envelope = _new_council_envelope(
+        status=status,
+        started_at=existing.get("started_at") or created_at,
+        completed_at=created_at,
+        llm_used=result.llm_used,
+        agents_completed=result.agents_completed,
+        agents_failed=result.agents_failed,
+        safety_valid=stored_review.get("safety_valid"),
+        review=stored_review,
+        error="no_agents_completed" if status == "failed" else None,
+    )
+    _store_council_envelope(run, envelope)
+    run.updated_at = datetime.now(timezone.utc)
+    return envelope
+
+
+async def run_discovery_council_review(
+    db: AsyncSession,
+    run: DiscoveryRun,
+    *,
+    cfg: Any | None = None,
+    client: Any | None = None,
+) -> dict[str, Any]:
+    """Synchronous inline path: run the council and store the result envelope.
+
+    Retained for inline callers and tests. The API no longer uses this path — it
+    schedules the council with ``start_discovery_council_review`` +
+    ``process_discovery_council_task`` so the request returns immediately.
+
+    Raises ``DiscoveryCouncilDisabledError`` (→ 409) when disabled/unavailable and
+    ``ValueError`` (→ 422) when the run is not ready. Returns the stored envelope.
+    """
+    cfg = cfg or settings
+    result = await _compute_council_result(db, run, cfg=cfg, client=client)
+    envelope = _finalize_council_review(run, result)
+    await db.commit()
+    await db.refresh(run)
+    return envelope
+
+
+async def start_discovery_council_review(
+    db: AsyncSession,
+    run: DiscoveryRun,
+    *,
+    force: bool = False,
+    cfg: Any | None = None,
+) -> tuple[dict[str, Any], bool]:
+    """Start (or return the current state of) an async council job for a run.
+
+    Returns ``(envelope, scheduled)`` where ``scheduled`` tells the API whether a
+    background task must be launched. Never runs the council itself — that happens
+    in ``process_discovery_council_by_id``.
+
+    Job-lifecycle rules (no duplicate jobs):
+      * A queued/running job → returns the current envelope, ``scheduled=False``
+        (a ``discovery_council_job_duplicate`` event is logged).
+      * A completed review and not ``force`` → returns it, ``scheduled=False``.
+      * Otherwise a fresh ``pending`` envelope is written and ``scheduled=True``.
+
+    Raises ``DiscoveryCouncilDisabledError`` (→ 409) when a (re)start is requested
+    while the council is disabled and no completed review exists, and ``ValueError``
+    (→ 422) when the run is not ready to review.
+    """
+    cfg = cfg or settings
+    envelope = get_council_envelope(run)
+    status = (envelope or {}).get("status")
+
+    # A job is already queued/running — never launch a second one.
+    if status in _COUNCIL_IN_FLIGHT:
+        log_event(
+            logger,
+            "discovery_council_job_duplicate",
+            run_id=run.id,
+            status=status,
+        )
+        return envelope or {}, False
+
+    have_completed = status in _COUNCIL_HAS_REVIEW
+
+    # A completed review already exists and no explicit re-run was requested.
+    if have_completed and not force:
+        return envelope or {}, False
+
+    # From here we intend to (re)start the job — the council must be enabled.
+    if not discovery_council_enabled(cfg):
+        if have_completed:
+            # Cannot re-run while disabled, but the prior review is still valid.
+            return envelope or {}, False
+        log_event(
+            logger,
+            "discovery_council_disabled",
+            run_id=run.id,
+            reason="flags_off",
+        )
+        raise DiscoveryCouncilDisabledError("Discovery council is disabled.")
+
+    # Require something to review: a terminal run or at least one candidate.
+    if run.status not in _TERMINAL_STATUSES and (run.candidate_count or 0) <= 0:
+        raise ValueError(
+            "Discovery run is not ready for council review "
+            "(no candidates and not in a terminal state)."
+        )
+
+    started_at = datetime.now(timezone.utc).isoformat()
+    pending = _new_council_envelope(status="pending", started_at=started_at)
+    _store_council_envelope(run, pending)
     run.updated_at = datetime.now(timezone.utc)
     await db.commit()
     await db.refresh(run)
+    log_event(
+        logger,
+        "discovery_council_job_queued",
+        run_id=run.id,
+        status="pending",
+    )
+    return pending, True
 
-    return stored
+
+async def _mark_council_failed(
+    session: AsyncSession, run: DiscoveryRun, *, reason: str
+) -> None:
+    """Persist a ``failed`` envelope for a run, preserving any prior fields."""
+    existing = get_council_envelope(run) or {}
+    if existing.get("status") in _COUNCIL_HAS_REVIEW:
+        # Never clobber a good stored review with a failure.
+        return
+    failed = _new_council_envelope(
+        status="failed",
+        started_at=existing.get("started_at"),
+        completed_at=datetime.now(timezone.utc).isoformat(),
+        llm_used=existing.get("llm_used"),
+        agents_completed=existing.get("agents_completed", 0) or 0,
+        agents_failed=existing.get("agents_failed", 0) or 0,
+        safety_valid=existing.get("safety_valid"),
+        review=existing.get("review"),
+        error=reason,
+    )
+    _store_council_envelope(run, failed)
+    run.updated_at = datetime.now(timezone.utc)
+    await session.commit()
+
+
+async def _mark_council_failed_fresh(
+    factory: async_sessionmaker[AsyncSession], run_id: uuid.UUID, *, reason: str
+) -> None:
+    """Best-effort: mark a run's council job ``failed`` in a fresh session."""
+    try:
+        async with factory() as session:
+            run = await get_run(session, run_id)
+            if run is not None:
+                await _mark_council_failed(session, run, reason=reason)
+    except Exception:  # noqa: BLE001 — must not crash the worker
+        logger.exception(
+            "Failed to mark discovery council job for run %s as failed.", run_id
+        )
+
+
+async def process_discovery_council_by_id(
+    run_id: uuid.UUID,
+    *,
+    session_factory: async_sessionmaker[AsyncSession] | None = None,
+    cfg: Any | None = None,
+    client: Any | None = None,
+) -> None:
+    """Background worker: load a run in a FRESH session and run its council job.
+
+    Must NOT reuse the request-scoped session (the response has already been
+    returned). Every failure path persists a terminal envelope so a job can never
+    stick in ``running``. Only ids/statuses/counts/durations are logged — never
+    prompts, completions, evidence excerpts, or credentials.
+    """
+    factory = session_factory or async_session_factory
+    cfg = cfg or settings
+    start = time.perf_counter()
+    try:
+        async with factory() as session:
+            run = await get_run(session, run_id)
+            if run is None:
+                logger.warning(
+                    "Discovery council: run %s not found for background job.", run_id
+                )
+                return
+
+            # Transition pending → running (preserve started_at).
+            existing = get_council_envelope(run) or {}
+            started_at = existing.get("started_at") or datetime.now(
+                timezone.utc
+            ).isoformat()
+            _store_council_envelope(
+                run, _new_council_envelope(status="running", started_at=started_at)
+            )
+            run.updated_at = datetime.now(timezone.utc)
+            await session.commit()
+            log_event(
+                logger,
+                "discovery_council_job_started",
+                run_id=run_id,
+                status="running",
+            )
+
+            # Compute (may raise disabled/ValueError). Persist a terminal envelope
+            # for every outcome — success or handled failure.
+            try:
+                result = await _compute_council_result(
+                    session, run, cfg=cfg, client=client
+                )
+            except DiscoveryCouncilDisabledError:
+                await _mark_council_failed(session, run, reason="disabled")
+                log_event(
+                    logger,
+                    "discovery_council_job_failed",
+                    level=logging.WARNING,
+                    run_id=run_id,
+                    status="failed",
+                    reason="disabled",
+                    duration_ms=int((time.perf_counter() - start) * 1000),
+                )
+                return
+            except ValueError:
+                await _mark_council_failed(session, run, reason="not_ready")
+                log_event(
+                    logger,
+                    "discovery_council_job_failed",
+                    level=logging.WARNING,
+                    run_id=run_id,
+                    status="failed",
+                    reason="not_ready",
+                    duration_ms=int((time.perf_counter() - start) * 1000),
+                )
+                return
+
+            envelope = _finalize_council_review(run, result)
+            await session.commit()
+            log_event(
+                logger,
+                "discovery_council_job_completed",
+                run_id=run_id,
+                status=envelope["status"],
+                agents_completed=envelope["agents_completed"],
+                agents_failed=envelope["agents_failed"],
+                safety_valid=envelope["safety_valid"],
+                duration_ms=int((time.perf_counter() - start) * 1000),
+            )
+    except Exception as exc:  # noqa: BLE001 — must not crash the worker
+        # Structured, secret-free failure event — never the raw exception string.
+        log_event(
+            logger,
+            "discovery_council_job_failed",
+            level=logging.ERROR,
+            run_id=run_id,
+            status="failed",
+            reason="internal_error",
+            exception_type=type(exc).__name__,
+            duration_ms=int((time.perf_counter() - start) * 1000),
+        )
+        logger.exception("Discovery council job crashed for run %s: %s", run_id, exc)
+        await _mark_council_failed_fresh(factory, run_id, reason="internal_error")
+
+
+async def process_discovery_council_task(run_id: str) -> None:
+    """FastAPI ``BackgroundTasks`` entry point for an async council job.
+
+    Takes only a primitive ``run_id`` (never an ORM object or the request
+    session) and drives the fresh-session worker. Swallows exceptions so a
+    background failure can never surface to (or crash) the request handler.
+    """
+    try:
+        await process_discovery_council_by_id(uuid.UUID(run_id))
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "Background discovery council task crashed for run %s", run_id
+        )

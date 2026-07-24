@@ -954,6 +954,16 @@ function DiscoveryCouncilPanel({
   disabled: boolean;
   onRun: () => void;
 }) {
+  const status = review?.status ?? null;
+  const inFlight = status === "pending" || status === "running";
+  const failed = status === "failed";
+  // A usable completed review is attached. Fall back to detecting review content
+  // for a legacy response that predates the async `review_available` flag.
+  const hasReview =
+    (review?.review_available ?? false) ||
+    (review != null && status == null && review.run_quality != null);
+  const busy = loading || inFlight;
+
   return (
     <GlassCard className="overflow-hidden" testId="council-review-panel">
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/10 px-5 py-3">
@@ -962,8 +972,8 @@ function DiscoveryCouncilPanel({
             Discovery Council Review
           </p>
           <p className="text-xs text-slate-500">
-            Internal, citation-bound run-level LLM triage — human review
-            required. Not investment advice.
+            Internal, citation-bound run-level LLM triage — runs asynchronously,
+            human review required. Not investment advice.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -971,7 +981,7 @@ function DiscoveryCouncilPanel({
           <button
             type="button"
             onClick={onRun}
-            disabled={loading || disabled}
+            disabled={busy || disabled}
             title={
               disabled
                 ? "Discovery council is disabled on this environment."
@@ -980,9 +990,9 @@ function DiscoveryCouncilPanel({
             data-testid="council-run-button"
             className="rounded-lg bg-gradient-to-r from-violet-500 to-indigo-600 px-4 py-2 text-sm font-semibold text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {loading
+            {busy
               ? "Running council…"
-              : review
+              : hasReview
                 ? "Re-run Discovery Council Review"
                 : "Run Discovery Council Review"}
           </button>
@@ -1005,13 +1015,42 @@ function DiscoveryCouncilPanel({
             {error}
           </p>
         )}
-        {!review && !disabled && !error && (
+        {!disabled && inFlight && (
+          <p
+            data-testid="council-progress"
+            className="rounded-lg border border-indigo-500/30 bg-indigo-500/10 px-3 py-2 text-xs text-indigo-200"
+          >
+            Council review in progress ({status})
+            {(review?.agents_completed ?? 0) + (review?.agents_failed ?? 0) > 0
+              ? ` — agents ${review?.agents_completed ?? 0} ok / ${review?.agents_failed ?? 0} failed`
+              : "…"}
+          </p>
+        )}
+        {!disabled && failed && !hasReview && (
+          <p
+            data-testid="council-failed"
+            className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-200"
+          >
+            Council review failed
+            {review?.error ? ` (${review.error})` : ""}. You can re-run it.
+          </p>
+        )}
+        {!disabled && status === "completed_with_warnings" && (
+          <p
+            data-testid="council-completed-warnings"
+            className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200"
+          >
+            Completed with warnings — some agents failed or output was flagged.
+            Review the notes below.
+          </p>
+        )}
+        {!review && !disabled && !error && !inFlight && (
           <p data-testid="council-empty" className="text-xs text-slate-500">
             No council review yet. Run the council to generate an internal
             research-priority review of this run&apos;s candidate set.
           </p>
         )}
-        {review && <DiscoveryCouncilBody review={review} />}
+        {hasReview && review && <DiscoveryCouncilBody review={review} />}
       </div>
     </GlassCard>
   );
@@ -1198,14 +1237,16 @@ export default function DiscoveryPage() {
     };
   }, [selectedRunId, sort, candTick]);
 
-  // Phase 28B — load any stored discovery-council review for the selected run.
-  // A 404 (no review yet) is not an error; other failures are ignored so the
-  // rest of the page keeps working. State is reset whenever the run changes.
+  // Phase 28B / 28B.2 — load the current discovery-council job state for the
+  // selected run. A 404 (no job has run and the council is enabled) is not an
+  // error; a `disabled` status flips the panel into its disabled state; a
+  // pending/running status hands off to the poll effect below. State is reset
+  // whenever the run changes.
   useEffect(() => {
     if (!selectedRunId) return;
     let cancelled = false;
     async function fetchReview(runId: string) {
-      // Reset prior run's review state, then load any stored review.
+      // Reset prior run's review state, then load the current job state.
       if (!cancelled) {
         setCouncilReview(null);
         setCouncilError(null);
@@ -1213,9 +1254,14 @@ export default function DiscoveryPage() {
       }
       try {
         const review = await getDiscoveryCouncilReview(runId);
-        if (!cancelled) setCouncilReview(review);
+        if (cancelled) return;
+        if (review.status === "disabled") {
+          setCouncilDisabled(true);
+        } else {
+          setCouncilReview(review);
+        }
       } catch {
-        // No stored review (404) or transient error — leave the panel empty.
+        // No job yet (404) or transient error — leave the panel empty.
       }
     }
     void fetchReview(selectedRunId);
@@ -1223,6 +1269,39 @@ export default function DiscoveryPage() {
       cancelled = true;
     };
   }, [selectedRunId]);
+
+  // Phase 28B.2 — poll the async council job while it is in flight. Each GET
+  // returns the current job envelope; polling stops once the status is terminal
+  // (completed / completed_with_warnings / failed). Mirrors the run-status poll.
+  useEffect(() => {
+    if (!selectedRunId) return;
+    const status = councilReview?.status;
+    if (status !== "pending" && status !== "running") return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    function schedule(runId: string) {
+      timer = setTimeout(async () => {
+        try {
+          const next = await getDiscoveryCouncilReview(runId);
+          if (cancelled) return;
+          setCouncilReview(next);
+          if (next.status === "pending" || next.status === "running") {
+            schedule(runId);
+          }
+        } catch {
+          // Transient error — keep polling; the job is still running server-side.
+          if (!cancelled) schedule(runId);
+        }
+      }, POLL_INTERVAL_MS);
+    }
+
+    schedule(selectedRunId);
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [selectedRunId, councilReview?.status]);
 
   // Poll the selected run's status while it is processing in the background.
   // Each poll refreshes the live run detail and triggers a candidate refetch so
@@ -1349,17 +1428,25 @@ export default function DiscoveryPage() {
     universeSource === "manual_tickers" ? manualCount : null;
   const overLimit = previewCount !== null && previewCount > CLIENT_MAX_UNIVERSE;
 
-  // Phase 28B — manually trigger the run-level discovery council. A disabled
-  // response (409) flips the panel into a clearly-labelled disabled state; no
-  // fake result is ever fabricated on the client.
+  // Phase 28B.2 — start the async run-level discovery council job. POST returns
+  // immediately with a pending/running status (or an existing completed review);
+  // the poll effect then drives it to a terminal state. A disabled response (409,
+  // or a `disabled` status) flips the panel into a clearly-labelled disabled
+  // state; no fake result is ever fabricated on the client.
   async function handleRunCouncilReview() {
     if (!selectedRunId) return;
     setCouncilLoading(true);
     setCouncilError(null);
+    setCouncilDisabled(false);
     try {
-      const review = await runDiscoveryCouncilReview(selectedRunId);
-      setCouncilReview(review);
-      setCouncilDisabled(false);
+      const resp = await runDiscoveryCouncilReview(selectedRunId);
+      if (resp.status === "disabled") {
+        setCouncilDisabled(true);
+        setCouncilReview(null);
+      } else {
+        // pending/running → the poll effect takes over; completed → shown now.
+        setCouncilReview(resp);
+      }
     } catch (err) {
       const msg =
         err instanceof Error ? err.message : "Discovery council review failed.";

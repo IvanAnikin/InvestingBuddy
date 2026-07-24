@@ -676,8 +676,27 @@ export interface DiscoveryCouncilCandidateEntry {
   confidence?: string | null;
 }
 
+// Phase 28B.2 — the council review is produced by an asynchronous job. The
+// response doubles as the job-status envelope: `status` drives the UI
+// (pending/running while the background job works, completed/…/failed when
+// terminal, disabled when the feature is off and no review exists) and
+// `review_available` is true only once a usable completed review is attached.
+export type DiscoveryCouncilStatus =
+  | "pending"
+  | "running"
+  | "completed"
+  | "completed_with_warnings"
+  | "failed"
+  | "disabled";
+
 export interface DiscoveryCouncilReview {
   run_id: string;
+  status?: DiscoveryCouncilStatus | null;
+  review_available?: boolean;
+  message?: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+  error?: string | null;
   llm_used: boolean;
   council_version?: string | null;
   provider?: string | null;
