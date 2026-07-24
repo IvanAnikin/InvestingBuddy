@@ -1331,11 +1331,18 @@ async def run_candidate_analysis(
         source_report, citations, sources = await _load_final_report_inputs(
             db, legacy_draft_id
         )
+        # NOTE: the final-report generator's ``candidate`` arg is a
+        # ScreeningCandidate (it reads ``candidate.name`` / discovery-rationale
+        # fields). This flow has a DiscoveryCandidate — a different model — so
+        # passing it would AttributeError and silently degrade every run to the
+        # legacy draft. Identity + research data already come from
+        # ``company_record`` (built from the Company) and the workflow state's
+        # ``company_snapshot``, so we pass ``candidate=None``.
         final_resp = await gen(
             db,
             state=final_state,
             company_record=company_record,
-            candidate=candidate,
+            candidate=None,
             source_report=source_report,
             citations=citations,
             sources=sources,
