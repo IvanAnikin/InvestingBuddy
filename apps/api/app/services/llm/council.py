@@ -39,9 +39,34 @@ from app.services.llm.schemas import (
     CouncilResult,
     EvidencePack,
 )
+from app.services.sources.company_evidence import (
+    collect_company_source_evidence,
+    press_items_from_catalyst,
+    sec_filings_from_catalyst,
+)
+from app.services.sources.connector_base import CompanyContext
 from app.services.sources.registry import build_registry, registry_gap_messages
 
 _logger = logging.getLogger("app.services.llm.council")
+
+
+def _company_context(
+    company_snapshot: dict[str, Any] | None,
+    ticker: str | None,
+    exchange: str | None,
+) -> CompanyContext:
+    """Derive the connector CompanyContext from report identity (no secrets)."""
+    ci = (company_snapshot or {}).get("company_identity") or {}
+    profile = (company_snapshot or {}).get("profile") or {}
+    return CompanyContext(
+        ticker=ticker or ci.get("ticker"),
+        exchange=exchange or ci.get("exchange"),
+        company_name=ci.get("legal_name") or ci.get("name"),
+        country=ci.get("country_domicile") or ci.get("country"),
+        sector=ci.get("sector") or profile.get("sector"),
+        industry=profile.get("industry"),
+        cik=ci.get("cik"),
+    )
 
 
 def _coerce_output(agent_name: str, raw: dict[str, Any]) -> CouncilAgentOutput:
@@ -238,6 +263,43 @@ async def maybe_run_council(
     try:
         # Phase 29A: surface planned-source coverage gaps to the source critic.
         source_gaps = registry_gap_messages(build_registry(cfg))
+
+        # Phase 29B: optionally run the source-registry connectors over
+        # already-fetched deterministic data (no new network calls) and inject
+        # their tiered evidence + honest gaps. Gated by ``source_connector_enabled``
+        # so a plain deploy keeps the exact Phase 29A behaviour. Never crashes the
+        # council: a failure degrades to no connector evidence.
+        connector_evidence = None
+        connector_gap_messages = None
+        if cfg.source_connector_enabled:
+            try:
+                collected = await collect_company_source_evidence(
+                    company=_company_context(company_snapshot, ticker, exchange),
+                    filings=sec_filings_from_catalyst(catalyst_discovery),
+                    press_items=press_items_from_catalyst(catalyst_discovery),
+                    cfg=cfg,
+                )
+                connector_evidence = collected.evidence_items
+                connector_gap_messages = collected.gap_messages()
+                log_event(
+                    log,
+                    "source_connector_evidence_collected",
+                    report_id=report_id,
+                    ticker=ticker,
+                    exchange=exchange,
+                    connector_item_count=len(connector_evidence),
+                    connector_gap_count=len(connector_gap_messages),
+                )
+            except Exception as exc:  # noqa: BLE001 - connectors never crash a report
+                log_event(
+                    log,
+                    "source_connector_evidence_failed",
+                    level=logging.WARNING,
+                    report_id=report_id,
+                    ticker=ticker,
+                    exception_type=type(exc).__name__,
+                )
+
         pack = build_evidence_pack(
             report_content=report_content,
             company_snapshot=company_snapshot,
@@ -245,6 +307,8 @@ async def maybe_run_council(
             source_rows=source_rows,
             max_items=cfg.llm_council_max_evidence_items,
             extra_known_gaps=source_gaps,
+            connector_evidence=connector_evidence,
+            connector_gap_messages=connector_gap_messages,
         )
         log_event(
             log,

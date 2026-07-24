@@ -160,10 +160,13 @@ def test_registry_returns_enabled_and_planned():
     reg = build_registry()
     enabled_ids = {s.source_id for s in reg.enabled_sources()}
     planned_ids = {s.source_id for s in reg.planned_sources()}
+    scaffolded_ids = {s.source_id for s in reg.scaffolded_sources()}
     # Migrated, enabled sources.
     assert {"sec_edgar", "company_ir", "gleif", "eodhd", "stooq", "gdelt"} <= enabled_ids
-    # A representative sample of planned placeholders.
-    assert {"sedar_plus", "asx_announcements", "uk_fca_nsm", "fred", "openbb"} <= planned_ids
+    # Filing/regulator connectors are now scaffolded (Phase 29B), not planned.
+    assert {"sedar_plus", "asx_announcements", "uk_fca_nsm"} <= scaffolded_ids
+    # The macro/patent long tail stays planned.
+    assert {"fred", "openbb"} <= planned_ids
     assert reg.summary()["total"] == len(reg.all_sources())
     # Every source carries a valid tier.
     for s in reg.all_sources():
@@ -261,11 +264,12 @@ def test_sec_connector_maps_filings_with_tier_pair():
 
 
 def test_sec_connector_without_fetcher_returns_info_gap():
+    # No fetcher + SEC-eligible (ticker-only) → an honest metadata-unavailable gap.
     conn = SecEdgarConnector()
     result = asyncio.run(conn.fetch_filings(CompanyContext(), QueryContext()))
     assert result.evidence_items == []
     assert result.source_gaps
-    assert result.source_gaps[0].suggested_followup_phase == "Phase 29B"
+    assert result.source_gaps[0].gap_type == GapType.primary_filing_unavailable
 
 
 # ---------------------------------------------------------------------------
@@ -278,7 +282,8 @@ def test_registry_endpoint_returns_sources_and_no_secrets():
     assert resp.status_code == 200
     body = resp.json()
     assert body["summary"]["enabled"] >= 6
-    assert body["summary"]["planned"] >= 20
+    assert body["summary"]["scaffolded"] >= 6
+    assert body["summary"]["planned"] >= 15
     assert len(body["tiers"]) == 6
     ids = {s["source_id"] for s in body["sources"]}
     assert "sec_edgar" in ids

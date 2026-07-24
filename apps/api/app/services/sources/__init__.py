@@ -21,6 +21,12 @@ discovery evidence flow — the councils still read the existing deterministic
 evidence packs. Connectors land per-source in Phase 29B+.
 """
 
+from app.services.sources.company_evidence import (
+    CompanySourceEvidence,
+    collect_company_source_evidence,
+    press_items_from_catalyst,
+    sec_filings_from_catalyst,
+)
 from app.services.sources.connector_base import (
     CompanyContext,
     ConnectorHealth,
@@ -78,6 +84,11 @@ __all__ = [
     "ConnectorResult",
     "ConnectorError",
     "ConnectorErrorCode",
+    # company evidence (Phase 29B)
+    "CompanySourceEvidence",
+    "collect_company_source_evidence",
+    "sec_filings_from_catalyst",
+    "press_items_from_catalyst",
     # gaps
     "SourceGap",
     "GapType",

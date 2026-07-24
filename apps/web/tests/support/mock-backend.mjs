@@ -773,7 +773,14 @@ const server = createServer((req, res) => {
   if (path === "/api/v1/sources/registry") {
     return send(res, 200, {
       generated_at: "2026-07-24T00:00:00Z",
-      summary: { enabled: 2, planned: 1, disabled: 0, total: 3 },
+      summary: {
+        enabled: 2,
+        configured: 1,
+        scaffolded: 1,
+        planned: 0,
+        disabled: 0,
+        total: 3,
+      },
       tiers: [
         {
           code: "T1_primary_filing",
@@ -833,28 +840,29 @@ const server = createServer((req, res) => {
           name: "SEDAR+ (Canada)",
           provider_type: "regulator",
           tier: "T2_regulator_or_gov",
-          status: "planned",
+          status: "scaffolded",
           enabled: false,
           jurisdiction: "CA",
           region: "North America",
           language: "en",
           cost_model: "free",
-          access_mode: "rest_api",
+          access_mode: "web_scrape",
           connector_key: "sedar_plus",
-          connector_implemented: false,
+          connector_implemented: true,
           planned_phase: "Phase 29B",
-          capabilities: ["fetch_filings"],
+          capabilities: ["fetch_filings", "fetch_events"],
           rate_limit: null,
-          reliability_note: null,
+          reliability_note:
+            "Scaffolded — no live fetch yet; produces honest gaps, never evidence.",
         },
       ],
       gaps: [
         {
           source_id: "sedar_plus",
           connector_key: "sedar_plus",
-          gap_type: "connector_planned",
+          gap_type: "connector_scaffolded",
           severity: "info",
-          message: "SEDAR+ (Canada) connector is planned but not implemented yet.",
+          message: "SEDAR+ (Canada) connector scaffold present; live fetch pending.",
           suggested_followup_phase: "Phase 29B",
           blocks_research_complete: false,
         },
@@ -878,14 +886,69 @@ const server = createServer((req, res) => {
         },
         {
           connector_key: "sedar_plus",
-          status: "planned",
+          status: "scaffolded",
           enabled: false,
           last_checked_at: "2026-07-24T00:00:00Z",
-          detail: "Planned for Phase 29B.",
+          detail: "Scaffolded (Phase 29B); returns honest gaps, no evidence.",
           latency_ms: null,
         },
       ],
     });
+  }
+
+  // Source evidence preview (Phase 29B). Read-only, identity-only, secret-free.
+  if (
+    path === "/api/v1/sources/evidence-preview" &&
+    req.method === "POST"
+  ) {
+    let bodyStr = "";
+    req.on("data", (chunk) => (bodyStr += chunk));
+    req.on("end", () => {
+      const parsed = JSON.parse(bodyStr || "{}");
+      const ids = parsed.source_ids ?? ["sec_edgar", "company_ir"];
+      const unknown = ids.filter(
+        (s) =>
+          ![
+            "sec_edgar",
+            "company_ir",
+            "sedar_plus",
+            "asx_announcements",
+            "uk_fca_nsm",
+            "euronext_regulated_info",
+            "deutsche_boerse",
+            "nordic_disclosures",
+          ].includes(s),
+      );
+      if (unknown.length) {
+        return send(res, 400, {
+          detail: `Unknown source_id(s): ${unknown.join(", ")}`,
+        });
+      }
+      send(res, 200, {
+        generated_at: "2026-07-24T00:00:00Z",
+        ticker: parsed.ticker ?? null,
+        exchange: parsed.exchange ?? null,
+        connector_layer_enabled: false,
+        live_fetch_performed: false,
+        evidence_items: [],
+        source_gaps: [
+          {
+            source_id: "sec_edgar",
+            connector_key: "sec_edgar",
+            gap_type: "primary_filing_unavailable",
+            severity: "info",
+            message:
+              "No SEC filing metadata was available in this context (offline preview).",
+            suggested_followup_phase: null,
+            blocks_research_complete: false,
+          },
+        ],
+        warnings: ["SEC EDGAR fetcher not bound; no filing metadata."],
+        disclaimer:
+          "Read-only source evidence preview. Not investment advice, no rating, no valuation. Human review required.",
+      });
+    });
+    return;
   }
 
   return send(res, 404, { detail: "Not found (mock backend)" });

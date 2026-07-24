@@ -150,6 +150,27 @@ class _Builder:
         )
         return True
 
+    def add_framework_item(self, item: Any) -> bool:
+        """Add a Phase 29B framework ``EvidenceItem`` (from a connector).
+
+        Maps its transport-vs-content tiers straight through so the connector's
+        provenance is preserved. The item's URL was already secret-stripped by
+        the framework model; ``add`` strips again defensively.
+        """
+        return self.add(
+            source_tier=item.content_source_tier,
+            source_type=item.source_type or "source",
+            transport_tier=item.provider_transport_tier or item.content_source_tier,
+            content_tier=item.content_source_tier,
+            provider_transport=item.provider_transport,
+            title=item.title,
+            url=item.url,
+            date=item.date,
+            excerpt=item.excerpt,
+            data_quality=item.data_quality,
+            fields_supported=list(item.fields_supported),
+        )
+
 
 def _company_from(
     report_content: dict[str, Any], company_snapshot: dict[str, Any] | None
@@ -327,12 +348,19 @@ def build_evidence_pack(
     source_rows: list[dict[str, Any]] | None = None,
     max_items: int = 40,
     extra_known_gaps: list[str] | None = None,
+    connector_evidence: list[Any] | None = None,
+    connector_gap_messages: list[str] | None = None,
 ) -> EvidencePack:
     """Build a bounded, cited evidence pack for one company.
 
     ``extra_known_gaps`` (Phase 29A) appends source-framework gaps — e.g. planned
     external connectors whose evidence is not yet sourced — so the source critic
     sees missing coverage as an explicit, honest gap rather than silent absence.
+
+    ``connector_evidence`` / ``connector_gap_messages`` (Phase 29B) inject the
+    source-registry connector output (SEC filing metadata, company-IR press
+    releases, and honest scaffold/eligibility gaps). Connector evidence is added
+    first so its primary filings survive the cap.
     """
     builder = _Builder(max_items=max(1, max_items))
 
@@ -342,8 +370,13 @@ def build_evidence_pack(
         appendix = report_content.get("source_citation_appendix") or {}
         source_rows = ((appendix.get("sources") or {}).get("value")) or []
 
-    # Order matters: primary filings first, then snapshot metrics, sources,
-    # catalysts — so that if the cap truncates, the highest-value evidence stays.
+    # Order matters: connector primary filings first, then SEC fundamentals,
+    # snapshot metrics, sources, catalysts — so that if the cap truncates, the
+    # highest-value evidence stays.
+    for fw_item in connector_evidence or []:
+        if builder.full:
+            break
+        builder.add_framework_item(fw_item)
     _add_sec_fundamentals(builder, company_snapshot)
     _add_financial_snapshot(builder, report_content)
     _add_sources(builder, source_rows)
@@ -359,7 +392,7 @@ def build_evidence_pack(
         do_not_infer.append("Data is mock/placeholder — treat all values as non-factual.")
 
     known_gaps = _known_gaps(report_content)
-    for g in extra_known_gaps or []:
+    for g in list(extra_known_gaps or []) + list(connector_gap_messages or []):
         if g and g not in known_gaps:
             known_gaps.append(g)
 

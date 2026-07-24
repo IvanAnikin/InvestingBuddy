@@ -28,7 +28,9 @@ from app.core.config import settings as default_settings
 from app.core.log_redaction import SENSITIVE_QUERY_SUBSTRINGS
 from app.services.sources.connector_base import ConnectorHealth, SourceConnector
 from app.services.sources.connectors import (
+    CompanyIrConnector,
     PlannedConnector,
+    ScaffoldConnector,
     SecEdgarConnector,
     WrappedProviderConnector,
 )
@@ -42,6 +44,7 @@ from app.services.sources.taxonomy import (
     T4_QUALITY_MEDIA,
     T5_API_AGGREGATOR,
     AccessMode,
+    ConnectorStatus,
     CostModel,
     ProviderType,
     SourceStatus,
@@ -98,6 +101,11 @@ class SourceRegistry:
     def enabled_sources(self) -> list[RegisteredSource]:
         return [s for s in self._sources.values() if s.status == SourceStatus.enabled]
 
+    def scaffolded_sources(self) -> list[RegisteredSource]:
+        return [
+            s for s in self._sources.values() if s.status == SourceStatus.scaffolded
+        ]
+
     def planned_sources(self) -> list[RegisteredSource]:
         return [s for s in self._sources.values() if s.status == SourceStatus.planned]
 
@@ -122,8 +130,22 @@ class SourceRegistry:
     # -- Gaps ---------------------------------------------------------------
 
     def source_gaps(self) -> list[SourceGap]:
-        """Normalized gaps for every planned/disabled source."""
+        """Normalized gaps for every scaffolded/planned/disabled source."""
         gaps: list[SourceGap] = []
+        for s in self.scaffolded_sources():
+            gaps.append(
+                SourceGap(
+                    source_id=s.source_id,
+                    connector_key=s.connector_key,
+                    gap_type=GapType.connector_scaffolded,
+                    severity=GapSeverity.info,
+                    message=(
+                        f"{s.name} connector scaffold present; live fetch pending."
+                    ),
+                    suggested_followup_phase=s.planned_phase,
+                    blocks_research_complete=False,
+                )
+            )
         for s in self.planned_sources():
             gaps.append(
                 SourceGap(
@@ -150,8 +172,17 @@ class SourceRegistry:
         return gaps
 
     def summary(self) -> dict[str, int]:
+        # ``configured`` is a connector-health property, not a source lifecycle
+        # state — count connectors whose health reports credentials present.
+        configured = sum(
+            1
+            for c in self._connectors.values()
+            if c.healthcheck().status == ConnectorStatus.configured
+        )
         return {
             "enabled": len(self.enabled_sources()),
+            "configured": configured,
+            "scaffolded": len(self.scaffolded_sources()),
             "planned": len(self.planned_sources()),
             "disabled": len(self.disabled_sources()),
             "total": len(self._sources),
@@ -196,6 +227,59 @@ def _planned(
         capabilities=capabilities or [],
         reliability_note=reliability_note,
     )
+
+
+def _scaffolded(
+    *,
+    source_id: str,
+    name: str,
+    provider_type: ProviderType,
+    tier: str,
+    phase: str,
+    capabilities: list[str],
+    jurisdiction: str | None = None,
+    region: str | None = None,
+    cost_model: CostModel = CostModel.free,
+    access_mode: AccessMode = AccessMode.web_scrape,
+    reliability_note: str | None = None,
+) -> RegisteredSource:
+    """A scaffolded source: connector class exists, returns honest gaps only."""
+    return RegisteredSource(
+        source_id=source_id,
+        name=name,
+        provider_type=provider_type,
+        tier=tier,
+        status=SourceStatus.scaffolded,
+        enabled=False,
+        jurisdiction=jurisdiction,
+        region=region,
+        cost_model=cost_model,
+        access_mode=access_mode,
+        connector_key=source_id,
+        connector_implemented=True,
+        planned_phase=phase,
+        capabilities=capabilities,
+        reliability_note=reliability_note
+        or "Scaffolded — no live fetch yet; produces honest gaps, never evidence.",
+    )
+
+
+# Phase 29B filing / regulator scaffolds. Columns:
+#   (source_id, name, provider_type, phase, jurisdiction, region, note)
+_SCAFFOLD_TABLE: list[tuple[str, str, str | None, str | None, str | None]] = [
+    ("sedar_plus", "SEDAR+ (Canada)", "CA", "North America",
+     "Canadian issuer filings; no fabricated filings."),
+    ("asx_announcements", "ASX Announcements", "AU", "Oceania",
+     "ASX company announcements; no fabricated JORC / Appendix 5B data."),
+    ("uk_fca_nsm", "UK FCA National Storage Mechanism", "GB", "Europe",
+     "UK regulated disclosures (RNS/NSM); no fabricated RNS notices."),
+    ("euronext_regulated_info", "Euronext Regulated Information", None, "Europe",
+     "European regulated-info disclosures."),
+    ("deutsche_boerse", "Deutsche Börse Disclosures", "DE", "Europe",
+     "German regulated-info disclosures."),
+    ("nordic_disclosures", "Nordic (Nasdaq Nordic) Disclosures", None, "Europe",
+     "Nordic regulated-info disclosures."),
+]
 
 
 def build_registry(cfg: Settings | None = None) -> SourceRegistry:
@@ -310,14 +394,30 @@ def build_registry(cfg: Settings | None = None) -> SourceRegistry:
         ),
     ]
 
+    # -- Scaffolded filing / regulator connectors (Phase 29B) --------------
+    # Connector classes exist and are wired; they return honest gaps, never
+    # fabricated filings. Live fetch is a Phase 29B.x follow-up.
+    _FILINGS_EVENTS = ["fetch_filings", "fetch_events"]
+    scaffolded: list[RegisteredSource] = [
+        _scaffolded(
+            source_id=sid,
+            name=nm,
+            provider_type=ProviderType.regulator,
+            tier=T2_REGULATOR_OR_GOV,
+            phase=PHASE_29B,
+            capabilities=_FILINGS_EVENTS,
+            jurisdiction=juris,
+            region=region,
+            reliability_note=note,
+        )
+        for sid, nm, juris, region, note in _SCAFFOLD_TABLE
+    ]
+
     # -- Planned placeholders (disabled by default) ------------------------
     # A compact table keeps the long tail readable. Columns:
     #   (source_id, name, provider_type, tier, phase, extra_kwargs)
-    _FILINGS = ["fetch_filings"]
-    _FILINGS_EVENTS = ["fetch_filings", "fetch_events"]
     _MACRO = ["fetch_macro_context"]
     _SEARCH = ["search_company"]
-    reg = ProviderType.regulator
     com = ProviderType.commodity
     mac = ProviderType.macro_statistics
     trd = ProviderType.trade_policy
@@ -325,19 +425,6 @@ def build_registry(cfg: Settings | None = None) -> SourceRegistry:
     pat = ProviderType.patents
     t2, t3, t5 = T2_REGULATOR_OR_GOV, T3_INDUSTRY_SPECIALIST, T5_API_AGGREGATOR
     planned_table: list[tuple[str, str, ProviderType, str, str, dict]] = [
-        # Filing / regulator disclosure (Phase 29B)
-        ("sedar_plus", "SEDAR+ (Canada)", reg, t2, PHASE_29B,
-         {"jurisdiction": "CA", "region": "North America", "capabilities": _FILINGS_EVENTS}),
-        ("asx_announcements", "ASX Announcements", reg, t2, PHASE_29B,
-         {"jurisdiction": "AU", "region": "Asia-Pacific", "capabilities": _FILINGS_EVENTS}),
-        ("uk_fca_nsm", "UK FCA National Storage Mechanism", reg, t2, PHASE_29B,
-         {"jurisdiction": "GB", "region": "Europe", "capabilities": _FILINGS}),
-        ("euronext_regulated_info", "Euronext Regulated Information", reg, t2, PHASE_29B,
-         {"region": "Europe", "capabilities": _FILINGS}),
-        ("deutsche_boerse", "Deutsche Börse Disclosures", reg, t2, PHASE_29B,
-         {"jurisdiction": "DE", "region": "Europe", "capabilities": _FILINGS}),
-        ("nordic_disclosures", "Nordic (Nasdaq Nordic) Disclosures", reg, t2, PHASE_29B,
-         {"region": "Europe", "capabilities": _FILINGS}),
         # Macro / commodity / policy (Phase 29C)
         ("usgs", "USGS Mineral Commodity Summaries", com, t3, PHASE_29C,
          {"jurisdiction": "US", "capabilities": _MACRO}),
@@ -389,16 +476,12 @@ def build_registry(cfg: Settings | None = None) -> SourceRegistry:
         for sid, nm, pt, tr, ph, extra in planned_table
     ]
 
-    sources = enabled + planned
+    sources = enabled + scaffolded + planned
 
     # -- Connectors ---------------------------------------------------------
     connectors: dict[str, SourceConnector] = {
         "sec_edgar": SecEdgarConnector(),
-        "company_ir": WrappedProviderConnector(
-            connector_key="company_ir",
-            source_ids=("company_ir",),
-            configured=True,
-        ),
+        "company_ir": CompanyIrConnector(),
         "gleif": WrappedProviderConnector(
             connector_key="gleif",
             source_ids=("gleif",),
@@ -423,6 +506,15 @@ def build_registry(cfg: Settings | None = None) -> SourceRegistry:
             configured=True,
         ),
     }
+    for s in scaffolded:
+        note = next((n for sid, _, _, _, n in _SCAFFOLD_TABLE if sid == s.source_id), None)
+        connectors[s.source_id] = ScaffoldConnector(
+            connector_key=s.source_id,
+            source_ids=(s.source_id,),
+            display_name=s.name,
+            planned_phase=s.planned_phase,
+            note=note,
+        )
     for s in planned:
         connectors[s.source_id] = PlannedConnector(
             connector_key=s.source_id,
@@ -468,25 +560,23 @@ def registry_gap_messages(registry: SourceRegistry, *, limit: int = 6) -> list[s
     message is recommendation-free and contains no rating / price-target
     vocabulary, so it passes the report safety gate unchanged.
     """
+    scaffolded = registry.scaffolded_sources()
     planned = registry.planned_sources()
-    if not planned:
+    if not scaffolded and not planned:
         return []
-    filing_ct = sum(
-        1
-        for s in planned
-        if s.provider_type in {ProviderType.regulator, ProviderType.primary_filing}
-    )
-    names = ", ".join(s.name for s in planned[:3])
-    messages = [
-        (
-            f"{len(planned)} external source connectors are planned but not "
-            f"implemented yet (e.g. {names}); their evidence is not yet sourced."
-        )
-    ]
-    if filing_ct:
+    messages: list[str] = []
+    if scaffolded:
+        names = ", ".join(s.name for s in scaffolded[:3])
         messages.append(
-            f"Non-US primary filings are not yet sourced ({filing_ct} regulator "
-            "connectors planned for Phase 29B)."
+            f"{len(scaffolded)} regulated-disclosure connectors are scaffolded "
+            f"(e.g. {names}); their live fetch is pending, so non-US primary "
+            "filings are not yet sourced for those venues."
+        )
+    if planned:
+        names = ", ".join(s.name for s in planned[:3])
+        messages.append(
+            f"{len(planned)} further external source connectors are planned but "
+            f"not implemented yet (e.g. {names}); their evidence is not yet sourced."
         )
     messages.append(
         "Local-language sources require the translation agent planned for Phase "

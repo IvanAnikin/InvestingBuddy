@@ -531,6 +531,38 @@ grep -RiE "Authorization: Bearer|Set-Cookie:|DATABASE_URL=|api_token=[A-Za-z0-9]
 
 ---
 
+## Filing & Regulator Connectors — Batch 1 (Phase 29B)
+
+- **No DB migration** — everything is code-defined; the DB head stays at `011`.
+- **New settings (all optional, conservative defaults):**
+
+  | Setting | Default | Meaning |
+  |---|---|---|
+  | `SOURCE_CONNECTOR_ENABLED` | `false` | Gate for feeding connector evidence into the evidence pack + council, and for live fetch in `evidence-preview`. `false` → exact Phase 29A behaviour (gaps recorded, no connector evidence, **no report-time network calls**). |
+  | `SOURCE_CONNECTOR_MAX_ITEMS_PER_SOURCE` | `5` | Hard per-connector evidence cap. |
+  | `SOURCE_CONNECTOR_TIMEOUT_SECONDS` | `10` | Per-connector live-fetch timeout (preview path only). |
+
+- **Connector statuses now include `scaffolded`** — SEDAR+, ASX, UK FCA NSM,
+  Euronext, Deutsche Börse, Nordic have real connector classes that return honest
+  gaps but perform **no live fetch** (never a fabricated filing). `sec_edgar` and
+  `company_ir` are the live-evidence connectors this phase.
+- **New endpoint** `POST /api/v1/sources/evidence-preview` — read-only,
+  admin/internal, behind the same staging Basic Auth + admin proxy as every other
+  `/api/v1/sources/*` route. The request is **identity-only (no URL field)**; the
+  live path (flag on) reaches **fixed known hosts only** (SEC EDGAR + curated
+  verified-issuer feeds) — there is no open proxy / SSRF surface. Unknown
+  `source_id`s → `400`.
+- **Staging validation plan:** with `SOURCE_CONNECTOR_ENABLED=true` (LLM councils
+  already enabled on staging for demo), (A) `POST /evidence-preview` for a US
+  issuer (`AAPL`) → `live_fetch_performed:true`, SEC `T2`/`T1` items +
+  company-IR `T1_primary_company_source` items, secret-free; (B) a non-US issuer
+  (`UHR.SW`, `BA.LSE`) → zero evidence + `source_not_eligible` + scaffold gaps,
+  **no Boeing confusion** for `BA.LSE`; (C) a from-company `AAPL` final report with
+  the council on → evidence pack `known_gaps` carry connector + scaffold gaps,
+  `safety_valid=true`, `human_review_required=true`, `publication_ready=false`;
+  (D) grep the container log — **zero** `api_token`/secret occurrences.
+- No auth change, no public publishing, no recommendation output, no publish route.
+
 ## Source Registry + Connector Framework (Phase 29A)
 
 - **No DB migration** — the source registry (`app/services/sources/`) is
