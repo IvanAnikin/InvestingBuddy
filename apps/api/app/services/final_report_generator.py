@@ -56,6 +56,7 @@ from app.services.llm.council import maybe_run_council
 from app.services.llm.schemas import CouncilResult
 from app.services.real_asset_report_completer import build_schema_complete_report
 from app.services.report_validation_service import validate_real_asset_report
+from app.services.sources.registry import build_registry, registry_gap_messages
 
 logger = logging.getLogger(__name__)
 
@@ -2265,11 +2266,20 @@ class FinalReportGeneratorService:
         # Source summary — carries the compact LLM council metadata (Phase 28A)
         # so the report GET can surface it without a schema migration. When the
         # council is disabled this is an honest {"llm_used": False}.
+        # Phase 29A: additive source-framework block. It records which external
+        # source connectors are wired vs planned, and the planned-source gaps —
+        # honest, recommendation-free metadata (never safety-scanned report body).
+        _registry = build_registry()
+        source_framework_summary = {
+            "registry": _registry.summary(),
+            "planned_source_gaps": registry_gap_messages(_registry),
+        }
         source_summary_for_save = {
             "total_sources": len(sources),
             "total_citations": len(citations),
             "source_types": list({s.source_type for s in sources}),
             "llm_council": council_result.to_metadata_dict(),
+            "source_framework": source_framework_summary,
         }
 
         saved_report = await _save_final_report_draft(

@@ -39,6 +39,7 @@ from app.services.llm.schemas import (
     CouncilResult,
     EvidencePack,
 )
+from app.services.sources.registry import build_registry, registry_gap_messages
 
 _logger = logging.getLogger("app.services.llm.council")
 
@@ -235,12 +236,15 @@ async def maybe_run_council(
         return CouncilResult.disabled()
 
     try:
+        # Phase 29A: surface planned-source coverage gaps to the source critic.
+        source_gaps = registry_gap_messages(build_registry(cfg))
         pack = build_evidence_pack(
             report_content=report_content,
             company_snapshot=company_snapshot,
             catalyst_discovery=catalyst_discovery,
             source_rows=source_rows,
             max_items=cfg.llm_council_max_evidence_items,
+            extra_known_gaps=source_gaps,
         )
         log_event(
             log,

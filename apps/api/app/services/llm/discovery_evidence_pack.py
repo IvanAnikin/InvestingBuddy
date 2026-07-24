@@ -262,8 +262,14 @@ def build_discovery_evidence_pack(
     run: dict[str, Any],
     candidates: list[dict[str, Any]],
     max_candidates: int = 25,
+    extra_known_gaps: list[str] | None = None,
 ) -> DiscoveryEvidencePack:
-    """Build a bounded, cited evidence pack for one discovery run."""
+    """Build a bounded, cited evidence pack for one discovery run.
+
+    ``extra_known_gaps`` (Phase 29A) appends source-framework gaps — e.g. planned
+    external connectors whose evidence is not yet sourced — so the discovery
+    council sees missing coverage explicitly.
+    """
     ctx = _run_context(run)
     facts = _run_facts(run, ctx)
 
@@ -286,6 +292,9 @@ def build_discovery_evidence_pack(
             f"Only the top {cap} of {len(candidates)} candidates were included in "
             "this evidence pack (bounded for cost).",
         )
+    for g in extra_known_gaps or []:
+        if g and g not in known_gaps:
+            known_gaps.append(g)
 
     return DiscoveryEvidencePack(
         evidence_pack_version=DISCOVERY_EVIDENCE_PACK_VERSION,

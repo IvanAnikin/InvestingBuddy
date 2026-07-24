@@ -531,6 +531,26 @@ grep -RiE "Authorization: Bearer|Set-Cookie:|DATABASE_URL=|api_token=[A-Za-z0-9]
 
 ---
 
+## Source Registry + Connector Framework (Phase 29A)
+
+- **No DB migration** — the source registry (`app/services/sources/`) is
+  code-defined and in-memory; the DB head stays at `011`.
+- **No new environment variables and no new secrets are required.** Connector
+  health is derived from *existing* settings without exposing any value — e.g.
+  the `eodhd` connector reports `configured` / `not_configured` from
+  `EODHD_API_KEY`; it never returns the key.
+- Two new **read-only, secret-free** endpoints are added to the existing sources
+  router: `GET /api/v1/sources/registry` and `GET /api/v1/sources/health`. Both
+  are behind the same staging Basic Auth + admin proxy as every other
+  `/api/v1/*` route (already allowlisted under the `/api/v1/sources` prefix).
+- **Deploy smoke check:** after deploy, `GET /api/v1/sources/registry` should
+  return `summary.enabled >= 6` and `summary.planned >= 20`, and neither
+  endpoint's body should contain `api_token`, `bearer`, `authorization`, or a
+  connection string (a backend test — `test_registry_endpoint_returns_sources_and_no_secrets`
+  — enforces this, and `assert_registry_safe()` is a runtime backstop).
+- No auth change, no public publishing, no recommendation output. `/admin/sources`
+  is a read-only admin page (no settings editing in 29A).
+
 ## LLM Analysis Council (Phase 28A)
 
 The single-company LLM council is **OFF by default** and **fully deterministic**

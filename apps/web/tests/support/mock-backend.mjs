@@ -544,6 +544,125 @@ const server = createServer((req, res) => {
     return send(res, 404, { detail: "Discovery run not found (mock backend)" });
   }
 
+  // Source registry + connector framework (Phase 29A). Secret-free by design.
+  if (path === "/api/v1/sources/registry") {
+    return send(res, 200, {
+      generated_at: "2026-07-24T00:00:00Z",
+      summary: { enabled: 2, planned: 1, disabled: 0, total: 3 },
+      tiers: [
+        {
+          code: "T1_primary_filing",
+          rank: 1,
+          label: "Primary filing",
+          description: "The company's own regulatory filing content.",
+        },
+        {
+          code: "T2_regulator_or_gov",
+          rank: 2,
+          label: "Regulator or government",
+          description: "A regulator or government transport/publisher.",
+        },
+      ],
+      sources: [
+        {
+          source_id: "sec_edgar",
+          name: "SEC EDGAR",
+          provider_type: "primary_filing",
+          tier: "T2_regulator_or_gov",
+          status: "enabled",
+          enabled: true,
+          jurisdiction: "US",
+          region: "North America",
+          language: "en",
+          cost_model: "free",
+          access_mode: "rest_api",
+          connector_key: "sec_edgar",
+          connector_implemented: true,
+          planned_phase: null,
+          capabilities: ["fetch_filings"],
+          rate_limit: "30/min",
+          reliability_note:
+            "Transport tier T2; filing content is T1_primary_filing.",
+        },
+        {
+          source_id: "gleif",
+          name: "GLEIF (Legal Entity Identifier)",
+          provider_type: "identity",
+          tier: "T2_regulator_or_gov",
+          status: "enabled",
+          enabled: true,
+          jurisdiction: "Global",
+          region: null,
+          language: "en",
+          cost_model: "free",
+          access_mode: "rest_api",
+          connector_key: "gleif",
+          connector_implemented: true,
+          planned_phase: null,
+          capabilities: ["search_company"],
+          rate_limit: null,
+          reliability_note: null,
+        },
+        {
+          source_id: "sedar_plus",
+          name: "SEDAR+ (Canada)",
+          provider_type: "regulator",
+          tier: "T2_regulator_or_gov",
+          status: "planned",
+          enabled: false,
+          jurisdiction: "CA",
+          region: "North America",
+          language: "en",
+          cost_model: "free",
+          access_mode: "rest_api",
+          connector_key: "sedar_plus",
+          connector_implemented: false,
+          planned_phase: "Phase 29B",
+          capabilities: ["fetch_filings"],
+          rate_limit: null,
+          reliability_note: null,
+        },
+      ],
+      gaps: [
+        {
+          source_id: "sedar_plus",
+          connector_key: "sedar_plus",
+          gap_type: "connector_planned",
+          severity: "info",
+          message: "SEDAR+ (Canada) connector is planned but not implemented yet.",
+          suggested_followup_phase: "Phase 29B",
+          blocks_research_complete: false,
+        },
+      ],
+      disclaimer:
+        "Source registry is an internal capability catalogue. No secrets are exposed.",
+    });
+  }
+
+  if (path === "/api/v1/sources/health") {
+    return send(res, 200, {
+      generated_at: "2026-07-24T00:00:00Z",
+      connectors: [
+        {
+          connector_key: "sec_edgar",
+          status: "enabled",
+          enabled: true,
+          last_checked_at: "2026-07-24T00:00:00Z",
+          detail: null,
+          latency_ms: null,
+        },
+        {
+          connector_key: "sedar_plus",
+          status: "planned",
+          enabled: false,
+          last_checked_at: "2026-07-24T00:00:00Z",
+          detail: "Planned for Phase 29B.",
+          latency_ms: null,
+        },
+      ],
+    });
+  }
+
   return send(res, 404, { detail: "Not found (mock backend)" });
 });
 
