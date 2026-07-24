@@ -116,6 +116,27 @@ export interface LlmCouncilMetadata {
   agents?: LlmCouncilAgent[];
 }
 
+// Phase 28A.1 — compact metadata about the report a discovery candidate is
+// linked to. `report_kind` distinguishes a modern final-report-generator draft
+// ("final") from a legacy deterministic "Phase 9" Analysis Council draft
+// ("legacy"). Internal research metadata only — never a recommendation.
+export interface ReportLinkSummary {
+  report_id: string;
+  report_kind: "final" | "legacy";
+  title?: string | null;
+  llm_used: boolean;
+  llm_provider?: string | null;
+  llm_model?: string | null;
+  council_version?: string | null;
+  agents_completed?: number | null;
+  agents_failed?: number | null;
+  evidence_item_count?: number | null;
+  schema_valid?: boolean | null;
+  safety_valid?: boolean | null;
+  final_report_version?: string | null;
+  generated_at?: string | null;
+}
+
 // Phase 11: Review action request/response
 export interface ReviewActionRequest {
   note?: string;
@@ -640,6 +661,9 @@ export interface DiscoveryCandidateDetail extends DiscoveryCandidate {
   raw_signal_json: Record<string, unknown> | null;
   // Phase 27 — matched keywords, relevance reason, interest label, source/tier.
   thesis_match_json?: Record<string, unknown> | null;
+  // Phase 28A.1 — the report this candidate links to (if any). Drives the
+  // "View Latest Final Report" vs "View Legacy Draft" label.
+  latest_report?: ReportLinkSummary | null;
 }
 
 export interface DiscoveryCandidateListResponse {
@@ -658,6 +682,10 @@ export interface RunCandidateAnalysisResponse {
   provider_name: string;
   message: string;
   human_review_required: boolean;
+  // Phase 28A.1 — metadata about the (final) report the run produced/linked.
+  report?: ReportLinkSummary | null;
+  legacy_draft_report_id?: string | null;
+  warnings?: string[];
   disclaimer: string;
 }
 

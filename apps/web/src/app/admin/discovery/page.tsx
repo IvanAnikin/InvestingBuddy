@@ -25,6 +25,7 @@ import type {
   DiscoveryRunCreate,
   FilterOption,
   ParseThesisResponse,
+  ReportLinkSummary,
   SupportedFiltersResponse,
   SupportedThemesResponse,
   ThesisDiscoveryRunCreate,
@@ -257,6 +258,9 @@ function CandidateDetailPanel({ candidateId }: { candidateId: string }) {
   const [analysing, setAnalysing] = useState(false);
   const [analysisMsg, setAnalysisMsg] = useState<string | null>(null);
   const [reportId, setReportId] = useState<string | null>(null);
+  const [reportSummary, setReportSummary] = useState<ReportLinkSummary | null>(
+    null,
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -265,6 +269,7 @@ function CandidateDetailPanel({ candidateId }: { candidateId: string }) {
         if (!cancelled) {
           setDetail(d);
           setReportId(d.analysis_report_id);
+          setReportSummary(d.latest_report ?? null);
         }
       })
       .catch((e) => {
@@ -285,6 +290,7 @@ function CandidateDetailPanel({ candidateId }: { candidateId: string }) {
     try {
       const res = await runCandidateAnalysis(candidateId);
       setReportId(res.analysis_report_id);
+      setReportSummary(res.report ?? null);
       setAnalysisMsg(res.message);
     } catch (e) {
       setAnalysisMsg(e instanceof Error ? e.message : "Analysis failed.");
@@ -511,13 +517,62 @@ function CandidateDetailPanel({ candidateId }: { candidateId: string }) {
         {reportId && (
           <Link
             href={`/admin/reports/${reportId}`}
+            data-testid="candidate-report-link"
             className="text-sm text-sky-400 hover:text-sky-300 hover:underline"
           >
-            View generated report →
+            {reportSummary?.report_kind === "legacy"
+              ? "View Legacy Draft →"
+              : "View Latest Final Report →"}
           </Link>
         )}
         {analysisMsg && <p className="text-xs text-slate-400">{analysisMsg}</p>}
       </div>
+
+      {/* Phase 28A.1 — honest label for the linked report so the reviewer knows
+          whether they're opening a modern final report or an old draft. */}
+      {reportId && reportSummary && (
+        <div
+          data-testid="candidate-report-summary"
+          className="flex flex-wrap items-center gap-2 text-xs text-slate-400"
+        >
+          {reportSummary.report_kind === "final" ? (
+            <>
+              <StatusPill label="Final Internal Report Draft" color="blue" />
+              <StatusPill
+                label={
+                  reportSummary.llm_used
+                    ? "LLM Council: Used"
+                    : "LLM Council: Not Used"
+                }
+                color={reportSummary.llm_used ? "purple" : "gray"}
+              />
+              {reportSummary.schema_valid != null && (
+                <span>
+                  schema {reportSummary.schema_valid ? "valid" : "invalid"}
+                </span>
+              )}
+              {reportSummary.safety_valid != null && (
+                <span>
+                  · safety {reportSummary.safety_valid ? "passed" : "failed"}
+                </span>
+              )}
+              {reportSummary.generated_at && (
+                <span>
+                  · {new Date(reportSummary.generated_at).toLocaleString()}
+                </span>
+              )}
+            </>
+          ) : (
+            <>
+              <StatusPill label="Legacy deterministic draft" color="amber" />
+              <span data-testid="candidate-legacy-warning">
+                This draft predates LLM council generation. Re-run Full Analysis
+                to produce a final report.
+              </span>
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -964,6 +1019,27 @@ function DiscoveryCouncilPanel({
     (review != null && status == null && review.run_quality != null);
   const busy = loading || inFlight;
 
+  // Phase 28B.3 — explicit, deterministic-vs-council status so the reviewer
+  // never assumes the LLM council already ran just because candidates exist.
+  const councilStatusLabel = disabled
+    ? "Disabled"
+    : inFlight
+      ? "Running"
+      : failed && !hasReview
+        ? "Failed"
+        : hasReview
+          ? "Completed"
+          : "Not run";
+  const councilStatusColor: PillColor = disabled
+    ? "gray"
+    : inFlight
+      ? "blue"
+      : failed && !hasReview
+        ? "red"
+        : hasReview
+          ? "green"
+          : "gray";
+
   return (
     <GlassCard className="overflow-hidden" testId="council-review-panel">
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/10 px-5 py-3">
@@ -973,10 +1049,17 @@ function DiscoveryCouncilPanel({
           </p>
           <p className="text-xs text-slate-500">
             Internal, citation-bound run-level LLM triage — runs asynchronously,
-            human review required. Not investment advice.
+            human review required. Not investment advice. The candidate queue
+            below is deterministic; the LLM council runs only when triggered
+            here.
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <StatusPill
+            label={`Council Review: ${councilStatusLabel}`}
+            color={councilStatusColor}
+            testId="council-status-pill"
+          />
           <StatusPill label="Internal only" color="red" />
           <button
             type="button"

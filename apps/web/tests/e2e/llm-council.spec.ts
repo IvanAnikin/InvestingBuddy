@@ -11,6 +11,7 @@ import { adminTest as test, expect } from "../support/auth";
 
 const NO_COUNCIL_URL = "/admin/reports/00000000-0000-0000-0000-000000000099";
 const COUNCIL_URL = "/admin/reports/00000000-0000-0000-0000-0000000000c0";
+const LEGACY_URL = "/admin/reports/00000000-0000-0000-0000-0000000000e9";
 
 const FORBIDDEN_BUTTONS = ["BUY", "SELL", "HOLD", "WATCH", "TRADE", "PUBLISH"];
 
@@ -20,8 +21,13 @@ test.describe("Report Detail — LLM Council", () => {
   }) => {
     await page.goto(COUNCIL_URL);
 
-    // Header pill + metadata reflect that the LLM was used.
-    await expect(page.getByText("LLM Used", { exact: true }).first()).toBeVisible();
+    // Phase 28A.1 — header badges reflect a final report whose council ran.
+    await expect(
+      page.getByText("LLM Council: Used", { exact: true }).first(),
+    ).toBeVisible();
+    await expect(page.getByTestId("report-kind-final")).toBeVisible();
+    // A final-report-generator draft never says "Phase 9".
+    await expect(page.getByText("Phase 9")).toHaveCount(0);
 
     const council = page.getByTestId("llm-council-analysis");
     await expect(council).toBeVisible();
@@ -48,15 +54,38 @@ test.describe("Report Detail — LLM Council", () => {
     }
   });
 
-  test("keeps the honest 'LLM: Not Used' label when the council did not run", async ({
+  test("keeps the honest 'LLM Council: Not Used' label when the council did not run", async ({
     page,
   }) => {
     await page.goto(NO_COUNCIL_URL);
 
     await expect(
-      page.getByText("LLM: Not Used", { exact: true }).first(),
+      page.getByText("LLM Council: Not Used", { exact: true }).first(),
     ).toBeVisible();
+    // Still a modern final report (not a legacy draft) — and never "Phase 9".
+    await expect(page.getByTestId("report-kind-final")).toBeVisible();
+    await expect(page.getByText("Phase 9")).toHaveCount(0);
     // No council analysis section for a deterministic report.
+    await expect(page.getByTestId("llm-council-analysis")).toHaveCount(0);
+  });
+
+  test("marks a legacy Phase 9 draft clearly and keeps it readable", async ({
+    page,
+  }) => {
+    await page.goto(LEGACY_URL);
+
+    // Legacy marker badge + honest 'not used' label.
+    await expect(page.getByTestId("report-kind-legacy")).toBeVisible();
+    await expect(
+      page.getByText("LLM Council: Not Used", { exact: true }).first(),
+    ).toBeVisible();
+    // The historical content is preserved (not rewritten), so it still shows
+    // its original "Phase 9" heading — that's expected for a legacy report.
+    await expect(page.getByTestId("report-detail-container")).toContainText(
+      "Phase 9 Analysis Council Draft",
+    );
+    // But the modern "final" badge is NOT shown for a legacy report.
+    await expect(page.getByTestId("report-kind-final")).toHaveCount(0);
     await expect(page.getByTestId("llm-council-analysis")).toHaveCount(0);
   });
 

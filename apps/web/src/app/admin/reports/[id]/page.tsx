@@ -244,6 +244,11 @@ export default async function ReportDetailPage({
   const council = readCouncil(report.source_summary_json);
   const llmUsed = Boolean(council?.llm_used);
 
+  // Phase 28A.1 — a report written by the final-report generator always carries
+  // a final_report_version. A NULL version marks a legacy deterministic
+  // "Phase 9" Analysis Council draft, which is surfaced with a clear badge.
+  const isFinalReport = Boolean(report.final_report_version);
+
   return (
     // Phase 27.1C polish — reports were cramped in the shell's max-w-3xl column,
     // making them very long vertically. Widen the report content only (not the
@@ -277,10 +282,23 @@ export default async function ReportDetailPage({
           label={`Review: ${reviewStatusLabel}`}
           color={reviewStatusColor}
         />
-        {llmUsed ? (
-          <StatusPill label="LLM Used" color="purple" />
+        {isFinalReport ? (
+          <StatusPill
+            label="Final Internal Report Draft"
+            color="blue"
+            testId="report-kind-final"
+          />
         ) : (
-          <StatusPill label="LLM: Not Used" color="gray" />
+          <StatusPill
+            label="Legacy deterministic draft"
+            color="amber"
+            testId="report-kind-legacy"
+          />
+        )}
+        {llmUsed ? (
+          <StatusPill label="LLM Council: Used" color="purple" />
+        ) : (
+          <StatusPill label="LLM Council: Not Used" color="gray" />
         )}
         <StatusPill label={report.report_type} color="gray" />
       </div>
