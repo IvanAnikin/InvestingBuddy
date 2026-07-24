@@ -495,17 +495,35 @@ async def test_23_thesis_candidate_uses_curated_identity_when_scan_sparse() -> N
 
 @pytest.mark.asyncio
 async def test_24_run_full_analysis_from_thesis_candidate() -> None:
-    report_id = str(uuid.uuid4())
+    # Phase 28A.1 — the thesis (DiscoveryCandidate) flow routes through the
+    # final-report generator, so the candidate links to the FINAL report; the
+    # deterministic workflow draft is retained as legacy_draft_report_id.
+    from app.schemas.final_report import FinalReportResponse
+
+    legacy_draft_id = str(uuid.uuid4())
     agent_run_id = str(uuid.uuid4())
+    final_report_id = uuid.uuid4()
 
     async def fake_runner(db, **kwargs):
         return {
-            "draft_report_id": report_id,
+            "draft_report_id": legacy_draft_id,
             "agent_run_id": agent_run_id,
             "status": "completed",
             "schema_valid": True,
             "safety_validation_json": {"passed": True},
         }
+
+    async def fake_generate(db, **kwargs):
+        # Guard: the generator's candidate arg must be a ScreeningCandidate or
+        # None — never a DiscoveryCandidate (that used to AttributeError and
+        # silently fall back to the legacy draft).
+        assert kwargs.get("candidate") is None
+        return FinalReportResponse(
+            report_id=final_report_id,
+            schema_valid=True,
+            safety_valid=True,
+            llm_used=False,
+        )
 
     candidate = DiscoveryCandidate(
         id=uuid.uuid4(),
@@ -533,15 +551,21 @@ async def test_24_run_full_analysis_from_thesis_candidate() -> None:
     mds.get_candidate = AsyncMock(return_value=candidate)  # type: ignore[assignment]
     try:
         result = await mds.run_candidate_analysis(
-            db, candidate.id, run_analysis=fake_runner
+            db,
+            candidate.id,
+            run_analysis=fake_runner,
+            generate_final_report=fake_generate,
         )
     finally:
         company_service.get_company_by_ticker = orig_get
         company_service.create_company = orig_create
 
     assert result["status"] == "completed"
-    assert str(result["analysis_report_id"]) == report_id
-    assert candidate.analysis_report_id == uuid.UUID(report_id)
+    # Candidate links to the FINAL report, not the legacy draft.
+    assert result["analysis_report_id"] == final_report_id
+    assert candidate.analysis_report_id == final_report_id
+    assert str(result["legacy_draft_report_id"]) == legacy_draft_id
+    assert result["report"].report_kind == "final"
 
 
 # ===========================================================================

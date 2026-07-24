@@ -139,6 +139,45 @@ async def _run(mock_db: AsyncMock, *, candidate: MagicMock, company: MagicMock, 
 # ---------------------------------------------------------------------------
 
 
+def _real_discovery_candidate(**over: Any):
+    """A REAL DiscoveryCandidate ORM object (not a MagicMock).
+
+    Regression guard: a MagicMock answers every attribute, so it hides the fact
+    that a DiscoveryCandidate is NOT a ScreeningCandidate — the type the
+    final-report generator expects.
+    """
+    from app.models.discovery import DiscoveryCandidate
+
+    return DiscoveryCandidate(
+        id=over.get("id", uuid.uuid4()),
+        discovery_run_id=uuid.uuid4(),
+        ticker=over.get("ticker", "AAPL"),
+        exchange="US",
+        company_name="Apple Inc.",
+        raw_signal_json={"provider_name": "free_real"},
+    )
+
+
+async def test_real_discovery_candidate_routes_to_final_not_legacy(
+    mock_db, enable_council
+) -> None:
+    """
+    Regression for the staging AttributeError: run_candidate_analysis passes a
+    DiscoveryCandidate, but the generator's ``candidate`` arg is a
+    ScreeningCandidate (reads ``candidate.name`` / discovery-rationale fields).
+    Passing the wrong type used to AttributeError and silently degrade EVERY run
+    to a legacy draft. The routing must reach a real final report instead.
+    """
+    candidate = _real_discovery_candidate()
+    result = await _run(
+        mock_db, candidate=candidate, company=_company(), state=_final_state()
+    )
+    assert result["warnings"] == []  # no fallback
+    assert result["report"].report_kind == "final"
+    assert result["report"].llm_used is True
+    assert candidate.analysis_report_id == result["analysis_report_id"]
+
+
 async def test_run_analysis_routes_to_llm_council(mock_db, enable_council) -> None:
     candidate = _candidate()
     company = _company()
