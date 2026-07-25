@@ -43,4 +43,34 @@ test.describe("Admin Source Registry", () => {
       page.locator('a[href="/admin/sources"]').first(),
     ).toBeVisible();
   });
+
+  // ── Phase 29B ────────────────────────────────────────────────────────────
+
+  test("scaffolded status + count are shown honestly", async ({ page }) => {
+    await page.goto("/admin/sources");
+    await expect(page.locator("body")).toContainText("Scaffolded");
+    await expect(page.locator("body")).toContainText("Scaffolded Sources");
+    // The scaffold copy makes clear it never fabricates a filing.
+    await expect(page.locator("body")).toContainText("never fabricates");
+    // SEDAR+ is now a scaffold, surfaced with its honest gap wording.
+    await expect(page.locator("body")).toContainText("scaffold present");
+  });
+
+  test("evidence preview form renders bounded, secret-free result", async ({
+    page,
+  }) => {
+    await page.goto("/admin/sources");
+    await expect(page.getByTestId("evidence-preview")).toBeVisible();
+    await page.getByTestId("preview-ticker").fill("AAPL");
+    await page.getByTestId("preview-exchange").fill("US");
+    await page.getByTestId("preview-submit").click();
+    await expect(page.getByTestId("preview-result")).toBeVisible();
+    // Offline preview → gaps only, no leaked credentials. (The page's own copy
+    // says "No secrets are exposed", so assert on concrete leak patterns.)
+    await expect(page.getByTestId("preview-result")).toContainText("gap(s)");
+    const body = (await page.locator("body").innerText()).toLowerCase();
+    expect(body).not.toContain("api_token");
+    expect(body).not.toContain("bearer ");
+    expect(body).not.toContain("postgresql://");
+  });
 });

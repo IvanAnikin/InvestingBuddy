@@ -755,7 +755,12 @@ export interface DiscoveryCouncilReview {
 // Read-only, secret-free views of the unified source registry. Mirrors
 // apps/api/app/schemas/source_registry.py.
 
-export type SourceStatus = "enabled" | "planned" | "disabled" | "error";
+export type SourceStatus =
+  | "enabled"
+  | "scaffolded"
+  | "planned"
+  | "disabled"
+  | "error";
 
 export interface SourceTierInfo {
   code: string;
@@ -815,4 +820,43 @@ export interface ConnectorHealth {
 export interface SourceHealthResponse {
   generated_at: string;
   connectors: ConnectorHealth[];
+}
+
+// ── Source Evidence Preview (Phase 29B) ────────────────────────────────────
+// Read-only, admin/internal. Identity-only request — never a URL. Mirrors
+// apps/api/app/schemas/source_evidence_preview.py.
+
+export interface EvidencePreviewRequest {
+  ticker?: string | null;
+  exchange?: string | null;
+  company_name?: string | null;
+  country?: string | null;
+  source_ids?: string[] | null;
+}
+
+export interface EvidencePreviewItem {
+  id: string;
+  source_id: string;
+  source_name?: string | null;
+  provider_transport?: string | null;
+  provider_transport_tier?: string | null;
+  content_source?: string | null;
+  content_source_tier: string;
+  source_type?: string | null;
+  title?: string | null;
+  url?: string | null;
+  date?: string | null;
+  excerpt?: string | null;
+}
+
+export interface EvidencePreviewResponse {
+  generated_at: string;
+  ticker?: string | null;
+  exchange?: string | null;
+  connector_layer_enabled: boolean;
+  live_fetch_performed: boolean;
+  evidence_items: EvidencePreviewItem[];
+  source_gaps: SourceGap[];
+  warnings: string[];
+  disclaimer: string;
 }

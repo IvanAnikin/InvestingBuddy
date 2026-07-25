@@ -193,18 +193,27 @@ class AccessMode(str, Enum):
 class SourceStatus(str, Enum):
     """Registry-level lifecycle status for a source."""
 
-    enabled = "enabled"      # wired + usable now
+    enabled = "enabled"      # wired + usable now (live evidence path)
+    scaffolded = "scaffolded"  # connector class exists, returns honest gaps only
     planned = "planned"      # placeholder for a future phase, not wired
     disabled = "disabled"    # wired but intentionally turned off
     error = "error"          # wired but currently unhealthy
 
 
 class ConnectorStatus(str, Enum):
-    """Connector health status. Never leaks secrets or raw error bodies."""
+    """Connector health status. Never leaks secrets or raw error bodies.
+
+    ``scaffolded`` (Phase 29B) is distinct from ``planned``: a scaffolded
+    connector has a real class that returns honest ``SourceGap`` objects (never
+    fabricated evidence), whereas a planned connector is a bare registry
+    placeholder. Neither is "live" — only ``enabled`` / ``configured`` produce
+    evidence.
+    """
 
     enabled = "enabled"              # implemented + usable
     configured = "configured"        # implemented + credentials present
     not_configured = "not_configured"  # implemented, credentials missing
+    scaffolded = "scaffolded"        # class exists, returns honest gaps only
     planned = "planned"              # placeholder, not implemented yet
     disabled = "disabled"            # implemented, intentionally off
     not_implemented = "not_implemented"

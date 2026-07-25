@@ -23,10 +23,12 @@ from pydantic import BaseModel
 class GapType(str, Enum):
     connector_not_implemented = "connector_not_implemented"
     connector_planned = "connector_planned"
+    connector_scaffolded = "connector_scaffolded"
     connector_disabled = "connector_disabled"
     connector_error = "connector_error"
     data_not_sourced = "data_not_sourced"
     primary_filing_unavailable = "primary_filing_unavailable"
+    source_not_eligible = "source_not_eligible"
     translation_required = "translation_required"
 
 
@@ -90,10 +92,35 @@ def disabled_connector_gap(*, source_id: str, name: str, connector_key: str | No
     )
 
 
+def scaffolded_connector_gap(
+    *,
+    source_id: str,
+    name: str,
+    connector_key: str | None,
+    phase: str | None,
+    for_issuer: bool = False,
+) -> SourceGap:
+    """Honest gap for a scaffolded connector (class exists, no live fetch yet).
+
+    Never implies data was fetched — a scaffolded connector fabricates nothing.
+    """
+    suffix = " for this issuer" if for_issuer else ""
+    return SourceGap(
+        source_id=source_id,
+        connector_key=connector_key,
+        gap_type=GapType.connector_scaffolded,
+        severity=GapSeverity.info,
+        message=f"{name} connector scaffold present; live fetch pending{suffix}.",
+        suggested_followup_phase=phase,
+        blocks_research_complete=False,
+    )
+
+
 __all__ = [
     "GapType",
     "GapSeverity",
     "SourceGap",
     "planned_connector_gap",
     "disabled_connector_gap",
+    "scaffolded_connector_gap",
 ]

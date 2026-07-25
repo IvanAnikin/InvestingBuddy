@@ -4,14 +4,26 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.db.session import get_db
 from app.schemas.source import SourceCreate, SourceList, SourceRead
+from app.schemas.source_evidence_preview import (
+    MAX_PREVIEW_ITEMS,
+    EvidencePreviewRequest,
+    EvidencePreviewResponse,
+)
 from app.schemas.source_registry import (
     SourceHealthResponse,
     SourceRegistryResponse,
     TierInfo,
 )
 from app.services import source_service
+from app.services.sources.company_evidence import collect_company_source_evidence
+from app.services.sources.connector_base import CompanyContext
+from app.services.sources.live_fetchers import (
+    live_ir_press_fetcher,
+    live_sec_filings_fetcher,
+)
 from app.services.sources.registry import build_registry, tier_legend
 
 router = APIRouter(prefix="/sources", tags=["sources"])
@@ -54,6 +66,58 @@ async def get_source_health() -> SourceHealthResponse:
     return SourceHealthResponse(
         generated_at=datetime.now(timezone.utc),
         connectors=registry.health(),
+    )
+
+
+@router.post("/evidence-preview", response_model=EvidencePreviewResponse)
+async def preview_source_evidence(
+    payload: EvidencePreviewRequest,
+) -> EvidencePreviewResponse:
+    """Run the source-registry connectors for one issuer and return their
+    bounded, tiered evidence + honest gaps (Phase 29B).
+
+    Internal admin / validation aid — protected the same way as every other
+    ``/api/v1`` route (staging Basic Auth + the web admin proxy). It is NOT a URL
+    fetcher: the request carries only issuer identity, and connectors reach only
+    fixed, known hosts (SEC EDGAR; the curated verified-issuer feed allowlist).
+    A live fetch is performed only when ``source_connector_enabled`` is set;
+    otherwise the connectors run offline and return honest coverage gaps.
+    """
+    registry = build_registry()
+    known_ids = {s.source_id for s in registry.all_sources()}
+    if payload.source_ids:
+        unknown = [sid for sid in payload.source_ids if sid not in known_ids]
+        if unknown:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Unknown source_id(s): {', '.join(sorted(unknown))}",
+            )
+
+    company = CompanyContext(
+        ticker=payload.ticker,
+        exchange=payload.exchange,
+        company_name=payload.company_name,
+        country=payload.country,
+    )
+
+    live = bool(settings.source_connector_enabled)
+    collected = await collect_company_source_evidence(
+        company=company,
+        source_ids=payload.source_ids,
+        registry=registry,
+        filings_fetcher=live_sec_filings_fetcher if live else None,
+        press_fetcher=live_ir_press_fetcher if live else None,
+    )
+
+    return EvidencePreviewResponse(
+        generated_at=datetime.now(timezone.utc),
+        ticker=payload.ticker,
+        exchange=payload.exchange,
+        connector_layer_enabled=live,
+        live_fetch_performed=live,
+        evidence_items=collected.evidence_items[:MAX_PREVIEW_ITEMS],
+        source_gaps=collected.source_gaps,
+        warnings=collected.warnings,
     )
 
 

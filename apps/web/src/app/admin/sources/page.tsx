@@ -8,6 +8,7 @@ import type {
 import GlassCard from "@/components/ui/GlassCard";
 import StatusPill, { type PillColor } from "@/components/ui/StatusPill";
 import SafetyBanner from "@/components/ui/SafetyBanner";
+import EvidencePreviewForm from "./EvidencePreviewForm";
 
 export const dynamic = "force-dynamic";
 
@@ -37,6 +38,8 @@ function statusColor(status: string): PillColor {
     case "enabled":
     case "configured":
       return "green";
+    case "scaffolded":
+      return "cyan";
     case "planned":
       return "amber";
     case "not_configured":
@@ -100,6 +103,8 @@ export default async function SourcesPage() {
 
   const enabled =
     registry?.sources.filter((s) => s.status === "enabled") ?? [];
+  const scaffolded =
+    registry?.sources.filter((s) => s.status === "scaffolded") ?? [];
   const planned =
     registry?.sources.filter((s) => s.status === "planned") ?? [];
 
@@ -144,7 +149,7 @@ export default async function SourcesPage() {
       {registry && (
         <>
           {/* Summary */}
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
             <GlassCard hover className="p-5">
               <p className="mb-2 text-xs uppercase tracking-wide text-slate-500">
                 Enabled Sources
@@ -152,6 +157,18 @@ export default async function SourcesPage() {
               <p className="text-3xl font-bold text-emerald-300">
                 {registry.summary.enabled ?? 0}
               </p>
+              <p className="mt-1 text-xs text-slate-500">
+                {registry.summary.configured ?? 0} configured
+              </p>
+            </GlassCard>
+            <GlassCard hover className="p-5">
+              <p className="mb-2 text-xs uppercase tracking-wide text-slate-500">
+                Scaffolded
+              </p>
+              <p className="text-3xl font-bold text-cyan-300">
+                {registry.summary.scaffolded ?? 0}
+              </p>
+              <p className="mt-1 text-xs text-slate-500">honest gaps, no fetch</p>
             </GlassCard>
             <GlassCard hover className="p-5">
               <p className="mb-2 text-xs uppercase tracking-wide text-slate-500">
@@ -170,6 +187,9 @@ export default async function SourcesPage() {
               </p>
             </GlassCard>
           </div>
+
+          {/* Evidence preview (read-only) */}
+          <EvidencePreviewForm />
 
           {/* Tier legend */}
           <GlassCard className="p-5">
@@ -210,6 +230,35 @@ export default async function SourcesPage() {
               ))}
             </ul>
           </GlassCard>
+
+          {/* Scaffolded sources */}
+          {scaffolded.length > 0 && (
+            <GlassCard className="overflow-hidden">
+              <div className="border-b border-white/10 px-5 py-4">
+                <p className="text-sm font-semibold text-slate-200">
+                  Scaffolded Sources ({scaffolded.length})
+                </p>
+                <p className="mt-0.5 text-xs text-slate-500">
+                  Filing / regulator connectors (Phase 29B). The connector class
+                  exists and returns honest gaps — it never fabricates a filing —
+                  but live fetch is not implemented yet.
+                </p>
+              </div>
+              <ul className="divide-y divide-white/5">
+                {scaffolded.map((s) => (
+                  <SourceRow
+                    key={s.source_id}
+                    source={s}
+                    health={
+                      s.connector_key
+                        ? healthByKey.get(s.connector_key)
+                        : undefined
+                    }
+                  />
+                ))}
+              </ul>
+            </GlassCard>
+          )}
 
           {/* Planned sources */}
           <GlassCard className="overflow-hidden">

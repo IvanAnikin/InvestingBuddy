@@ -36,6 +36,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.structured_logging import log_event
 from app.models.report import Report
 from app.models.scorecard import Scorecard
@@ -2322,6 +2323,8 @@ class FinalReportGeneratorService:
         source_framework_summary = {
             "registry": _registry.summary(),
             "planned_source_gaps": registry_gap_messages(_registry),
+            # Phase 29B: whether the connector layer fed evidence into the pack.
+            "connector_layer_enabled": bool(settings.source_connector_enabled),
         }
         source_summary_for_save = {
             "total_sources": len(sources),

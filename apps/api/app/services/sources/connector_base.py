@@ -124,6 +124,11 @@ class SourceConnector(ABC):
             ConnectorStatus.not_implemented,
         }
 
+    @property
+    def is_scaffolded(self) -> bool:
+        """True when a real connector class exists but returns only honest gaps."""
+        return self.status == ConnectorStatus.scaffolded
+
     # -- Fetch surface (override the ones a connector supports) -------------
 
     async def search_company(
@@ -161,10 +166,29 @@ class SourceConnector(ABC):
     def _default_result(self, method: str) -> ConnectorResult:
         """Safe default for an unimplemented method.
 
-        Planned/disabled connectors return a source gap so the critic sees the
-        missing coverage; a live connector that simply does not offer this
-        method returns an empty result with no gap.
+        Planned / scaffolded / disabled connectors return a source gap so the
+        critic sees the missing coverage; a live connector that simply does not
+        offer this method returns an empty result with no gap.
         """
+        if self.is_scaffolded:
+            gap = SourceGap(
+                connector_key=self.connector_key,
+                source_id=self.supported_source_ids[0]
+                if self.supported_source_ids
+                else None,
+                gap_type=GapType.connector_scaffolded,
+                severity=GapSeverity.info,
+                message=(
+                    f"{self.connector_key} connector scaffold present; live fetch "
+                    f"pending ({method} not implemented yet)."
+                ),
+                blocks_research_complete=False,
+            )
+            return ConnectorResult(
+                connector_key=self.connector_key,
+                warnings=[f"{self.connector_key} is scaffolded; no live fetch yet."],
+                source_gaps=[gap],
+            )
         if self.is_planned:
             gap = SourceGap(
                 connector_key=self.connector_key,

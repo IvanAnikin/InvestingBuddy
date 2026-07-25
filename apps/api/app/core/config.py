@@ -126,5 +126,24 @@ class Settings(BaseSettings):
     # so the default run stays well within discovery_max_universe_size.
     discovery_seed_universe: str = "AAPL,MSFT,NVDA,AMZN,GOOGL,META,TSLA"
 
+    # ── Source Connector Framework (Phase 29B) ─────────────────────────────
+    # Gate for wiring the source-registry connectors (SEC EDGAR, company IR,
+    # regulator scaffolds) into the single-company evidence pack. OFF by default
+    # so CI and a plain deploy keep the exact Phase 29A behaviour (the evidence
+    # pack still records planned-source gaps, but adds no connector evidence).
+    # When ON, the evidence pack additionally includes bounded, tiered connector
+    # EvidenceItems built from already-fetched deterministic data plus honest
+    # SourceGap objects for unavailable / non-US sources. No new report-time
+    # network calls are made — connectors re-express data the workflow already
+    # retrieved. The read-only evidence-preview endpoint may do bounded live
+    # fetches only when this flag is on.
+    source_connector_enabled: bool = False
+    # Hard cap on evidence items taken from ANY single connector (bounds prompt
+    # size + cost, and keeps one source from dominating the pack).
+    source_connector_max_items_per_source: int = 5
+    # Per-connector live-fetch timeout budget (seconds). Only relevant to the
+    # evidence-preview live path; deterministic report-time use makes no calls.
+    source_connector_timeout_seconds: int = 10
+
 
 settings = Settings()

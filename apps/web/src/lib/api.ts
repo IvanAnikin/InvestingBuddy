@@ -26,6 +26,8 @@ import type {
   ReviewActionResponse,
   ReviewEventList,
   RunCandidateAnalysisResponse,
+  EvidencePreviewRequest,
+  EvidencePreviewResponse,
   SourceHealthResponse,
   SourceRegistryResponse,
   SupportedThemesResponse,
@@ -378,4 +380,15 @@ export async function fetchSourceRegistry(): Promise<SourceRegistryResponse> {
 
 export async function fetchSourceHealth(): Promise<SourceHealthResponse> {
   return apiFetch<SourceHealthResponse>("/api/v1/sources/health");
+}
+
+// ── Source Evidence Preview (Phase 29B) ────────────────────────────────────
+
+export async function previewSourceEvidence(
+  data: EvidencePreviewRequest,
+): Promise<EvidencePreviewResponse> {
+  return apiFetch<EvidencePreviewResponse>("/api/v1/sources/evidence-preview", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
 }
