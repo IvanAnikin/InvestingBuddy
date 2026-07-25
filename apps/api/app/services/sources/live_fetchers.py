@@ -21,6 +21,11 @@ from __future__ import annotations
 from typing import Any
 
 from app.services.sources.connector_base import CompanyContext, QueryContext
+from app.services.sources.safe_web_fetcher import (
+    ANNUAL_REPORT_KEYWORDS,
+    SafeFetchResult,
+    safe_fetch_page,
+)
 
 
 def _filing_dict(event: Any) -> dict[str, Any]:
@@ -108,4 +113,30 @@ async def live_ir_press_fetcher(
     return [_press_dict(i) for i in result.items]
 
 
-__all__ = ["live_sec_filings_fetcher", "live_ir_press_fetcher"]
+async def live_ir_page_fetcher(
+    url: str,
+    *,
+    allowed_domains: tuple[str, ...],
+    keywords: tuple[str, ...] = ANNUAL_REPORT_KEYWORDS,
+    fallback_keywords: tuple[str, ...] = (),
+) -> SafeFetchResult:
+    """Bounded, SSRF-safe fetch of ONE allowlisted issuer page (preview path).
+
+    The URL is never caller-supplied — it originates from the code-defined
+    verified-issuer registry (or a link already extracted from an allowlisted
+    page) and is re-checked against ``allowed_domains`` before the request. Never
+    raises: every failure degrades to a ``SafeFetchResult`` with ``error`` set.
+    """
+    return await safe_fetch_page(
+        url,
+        allowed_domains=allowed_domains,
+        keywords=keywords,
+        fallback_keywords=fallback_keywords,
+    )
+
+
+__all__ = [
+    "live_sec_filings_fetcher",
+    "live_ir_press_fetcher",
+    "live_ir_page_fetcher",
+]

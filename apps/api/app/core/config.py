@@ -144,6 +144,22 @@ class Settings(BaseSettings):
     # Per-connector live-fetch timeout budget (seconds). Only relevant to the
     # evidence-preview live path; deterministic report-time use makes no calls.
     source_connector_timeout_seconds: int = 10
+    # ── Bounded live web fetcher (Phase 29B.1) ─────────────────────────────
+    # These only ever apply to the read-only evidence-preview live path (the
+    # deterministic report/council path makes no network calls — it re-expresses
+    # already-fetched data plus code-defined verified-issuer registry metadata).
+    # Hard byte ceiling for a single fetched page — a page larger than this is
+    # truncated, never fully buffered (bounds memory + protects against a huge
+    # response). ~1 MB is ample for an IR / annual-reports landing page.
+    source_connector_max_bytes: int = 1_000_000
+    # When True (default), the safe fetcher will only ever fetch HTTPS URLs whose
+    # host is inside a verified issuer's ``allowed_domains`` allowlist. There is
+    # no arbitrary-URL fetch surface; this flag exists so the guard can never be
+    # silently loosened by config drift.
+    source_connector_allowlist_only: bool = True
+    # Hard cap on links extracted from a single fetched page (bounds annual-report
+    # / press-release link discovery). Excess links are dropped, not followed.
+    source_connector_max_links_per_page: int = 25
 
 
 settings = Settings()

@@ -37,11 +37,17 @@ from app.services.exchange_registry import (
     region_for_exchange,
 )
 from app.services.sources.connector_base import CompanyContext, QueryContext
-from app.services.sources.connectors.company_ir import CompanyIrConnector, PressFetcher
+from app.services.sources.connectors.company_ir import (
+    _LOCAL_LANGUAGE_COUNTRIES,
+    CompanyIrConnector,
+    PageFetcher,
+    PressFetcher,
+)
 from app.services.sources.connectors.sec_edgar import FilingsFetcher, SecEdgarConnector
 from app.services.sources.evidence import EvidenceItem
-from app.services.sources.gaps import SourceGap
+from app.services.sources.gaps import GapSeverity, GapType, SourceGap
 from app.services.sources.registry import SourceRegistry, build_registry
+from app.services.sources.verified_issuer_sources import get_verified_issuer_source
 
 # Source ids whose connectors can produce live company evidence in this phase.
 SEC_ID = "sec_edgar"
@@ -70,6 +76,19 @@ def _static_fetcher(items: list[dict] | None):
         return list(items or [])
 
     return _fetch
+
+
+def _dedup_evidence(items: list[EvidenceItem]) -> list[EvidenceItem]:
+    """De-duplicate evidence by URL (fallback: id), preserving first-seen order."""
+    seen: set[str] = set()
+    out: list[EvidenceItem] = []
+    for it in items:
+        key = it.url or it.id
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(it)
+    return out
 
 
 def _relevant_scaffold_ids(
@@ -109,6 +128,7 @@ async def collect_company_source_evidence(
     press_items: list[dict] | None = None,
     filings_fetcher: FilingsFetcher | None = None,
     press_fetcher: PressFetcher | None = None,
+    ir_page_fetcher: PageFetcher | None = None,
     cfg: Settings | None = None,
     registry: SourceRegistry | None = None,
 ) -> CompanySourceEvidence:
@@ -116,8 +136,11 @@ async def collect_company_source_evidence(
 
     ``filings`` / ``press_items`` are already-fetched deterministic data (report
     path). ``filings_fetcher`` / ``press_fetcher`` are live fetchers (preview
-    path) and take precedence when supplied. ``source_ids`` restricts which
-    connectors run; when ``None`` a sensible default set runs.
+    path) and take precedence when supplied. ``ir_page_fetcher`` (preview path
+    only) enables live annual-report / press-link extraction; when None the
+    company-IR connector still emits verified-issuer *metadata* evidence with no
+    network call. ``source_ids`` restricts which connectors run; when ``None`` a
+    sensible default set runs.
     """
     cfg = cfg or default_settings
     registry = registry or build_registry(cfg)
@@ -128,6 +151,7 @@ async def collect_company_source_evidence(
         country=company.country,
     )
     requested = list(source_ids) if source_ids is not None else None
+    verified = get_verified_issuer_source(company.ticker, company.exchange)
 
     def want(sid: str) -> bool:
         return requested is None or sid in requested
@@ -148,15 +172,58 @@ async def collect_company_source_evidence(
         warnings.extend(res.warnings)
 
     # -- Company IR / newsroom ---------------------------------------------
+    # Verified-issuer metadata (profile / annual-reports index / press index)
+    # comes from ``search_company`` + ``fetch_filings`` + ``fetch_events``; live
+    # annual-report / press links are added only when ``ir_page_fetcher`` is set.
+    # The merged company-IR item set is capped at ``max_items``.
     if want(COMPANY_IR_ID):
         fetcher = press_fetcher or (
             _static_fetcher(press_items) if press_items is not None else None
         )
-        ir = CompanyIrConnector(press_fetcher=fetcher)
-        res = await ir.call_safe(ir.fetch_events, company, query)
-        items.extend(res.evidence_items[:max_items])
-        gaps.extend(res.source_gaps)
-        warnings.extend(res.warnings)
+        ir = CompanyIrConnector(
+            press_fetcher=fetcher,
+            verified_source=verified,
+            page_fetcher=ir_page_fetcher,
+        )
+        ir_items: list[EvidenceItem] = []
+        for method in (ir.search_company, ir.fetch_filings, ir.fetch_events):
+            res = await ir.call_safe(method, company, query)
+            ir_items.extend(res.evidence_items)
+            gaps.extend(res.source_gaps)
+            warnings.extend(res.warnings)
+        items.extend(_dedup_evidence(ir_items)[:max_items])
+
+    # -- Non-US primary-disclosure context (Phase 29B.1) -------------------
+    # For a verified non-US issuer, home-regulator connectors are still
+    # scaffolded — say so honestly, and note the translation limitation.
+    if verified and not (is_us_exchange(company.exchange) or is_sec_eligible(company.exchange)):
+        gaps.append(
+            SourceGap(
+                connector_key="company_ir",
+                source_id="company_ir",
+                gap_type=GapType.connector_scaffolded,
+                severity=GapSeverity.info,
+                message=(
+                    f"{verified.country} regulated-disclosure connector scaffolded; "
+                    "company IR annual report used as primary source pending "
+                    "regulator integration."
+                ),
+                suggested_followup_phase="Phase 29B.x",
+                blocks_research_complete=False,
+            )
+        )
+        if verified.country in _LOCAL_LANGUAGE_COUNTRIES:
+            gaps.append(
+                SourceGap(
+                    connector_key="company_ir",
+                    source_id="company_ir",
+                    gap_type=GapType.translation_required,
+                    severity=GapSeverity.info,
+                    message="Local-language filing extraction pending Phase 30 translation.",
+                    suggested_followup_phase="Phase 30",
+                    blocks_research_complete=False,
+                )
+            )
 
     # -- Regulated-disclosure scaffolds (honest gaps only) -----------------
     for sid in _relevant_scaffold_ids(registry, company, requested):

@@ -152,6 +152,31 @@ test.describe("Report Detail — readable final report (Phase 28A.2)", () => {
     await assertNoForbiddenButtons(page);
   });
 
+  // Phase 29B.1 — the readable renderer must never leak a raw "[object Object]"
+  // for an unavailable section whose `note` is a {value, provenance} envelope
+  // (the "Discovery Rationale: Not available. [object Object]" bug), and the
+  // T1/T2 data-quality checklist item must not be falsely marked complete when
+  // only weak evidence is present.
+  test("renders unavailable-section notes cleanly and keeps the T1/T2 checklist honest", async ({
+    page,
+  }) => {
+    await page.goto(NO_COUNCIL_URL);
+
+    const readable = page.getByTestId("readable-report");
+    await expect(readable).toBeVisible();
+    // No [object Object] anywhere in the readable report.
+    await expect(readable).not.toContainText("[object Object]");
+    // The unwrapped note text is shown instead.
+    await expect(readable).toContainText("No screening candidate linked to this report.");
+    await expect(readable).toContainText("Scorecard not available");
+    // The T1/T2 data-quality item is present and NOT marked completed (○, not ✓).
+    const dqItem = readable
+      .locator("li")
+      .filter({ hasText: "Data quality: T1/T2 sources present" });
+    await expect(dqItem).toContainText("○");
+    await expect(dqItem).not.toContainText("✓");
+  });
+
   test("preserves the ~90vw report width on wide desktop", async ({ page }) => {
     await page.setViewportSize({ width: 1600, height: 1000 });
     await page.goto(COUNCIL_URL);

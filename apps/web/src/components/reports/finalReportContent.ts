@@ -60,6 +60,27 @@ export function unwrap(field: unknown): Unwrapped {
   return { value: field };
 }
 
+/**
+ * Coerce a section `note` / `disclaimer` to a display string. These are
+ * sometimes bare strings and sometimes `{value, provenance}` envelopes — the
+ * latter must be unwrapped, otherwise `String(obj)` renders "[object Object]"
+ * (the "Discovery Rationale: Not available. [object Object]" bug). Returns null
+ * when there is nothing safe to show (e.g. a nested object value).
+ */
+export function noteText(field: unknown): string | null {
+  if (field === null || field === undefined) return null;
+  if (typeof field === "string") return field.trim() || null;
+  if (typeof field === "number" || typeof field === "boolean") return String(field);
+  if (typeof field === "object" && !Array.isArray(field)) {
+    const u = unwrap(field);
+    if (typeof u.value === "string") return u.value.trim() || null;
+    if (u.value === null || u.value === undefined) return null;
+    if (typeof u.value === "object") return null; // never stringify an object
+    return String(u.value);
+  }
+  return null;
+}
+
 export function isEmptyValue(v: unknown): boolean {
   return (
     v === null ||

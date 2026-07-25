@@ -21,6 +21,7 @@ from app.services import source_service
 from app.services.sources.company_evidence import collect_company_source_evidence
 from app.services.sources.connector_base import CompanyContext
 from app.services.sources.live_fetchers import (
+    live_ir_page_fetcher,
     live_ir_press_fetcher,
     live_sec_filings_fetcher,
 )
@@ -107,6 +108,7 @@ async def preview_source_evidence(
         registry=registry,
         filings_fetcher=live_sec_filings_fetcher if live else None,
         press_fetcher=live_ir_press_fetcher if live else None,
+        ir_page_fetcher=live_ir_page_fetcher if live else None,
     )
 
     return EvidencePreviewResponse(

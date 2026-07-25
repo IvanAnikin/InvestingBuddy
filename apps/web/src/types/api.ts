@@ -847,6 +847,9 @@ export interface EvidencePreviewItem {
   url?: string | null;
   date?: string | null;
   excerpt?: string | null;
+  data_quality?: string | null;
+  requires_translation?: boolean;
+  warnings?: string[];
 }
 
 export interface EvidencePreviewResponse {

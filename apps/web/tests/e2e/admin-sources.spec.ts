@@ -73,4 +73,39 @@ test.describe("Admin Source Registry", () => {
     expect(body).not.toContain("bearer ");
     expect(body).not.toContain("postgresql://");
   });
+
+  // ── Phase 29B.1 ──────────────────────────────────────────────────────────
+
+  test("evidence preview surfaces non-US company IR metadata + honest SEC gap", async ({
+    page,
+  }) => {
+    await page.goto("/admin/sources");
+    await expect(page.getByTestId("evidence-preview")).toBeVisible();
+    // Use the Kering (KER.PA) quick-fill example.
+    await page.getByRole("button", { name: /Kering \(KER\.PA\)/ }).click();
+    await page.getByTestId("preview-submit").click();
+
+    const result = page.getByTestId("preview-result");
+    await expect(result).toBeVisible();
+    // Company-IR metadata is shown, honestly labelled metadata-only.
+    await expect(result).toContainText("Investor Relations");
+    await expect(result).toContainText("metadata-only");
+    await expect(result).toContainText("kering.com");
+    // SEC is honestly not eligible for the non-US venue — no Boeing confusion.
+    await expect(result).toContainText("not SEC-eligible");
+    const body = (await page.locator("body").innerText()).toLowerCase();
+    expect(body).not.toContain("boeing");
+    expect(body).not.toContain("api_token");
+  });
+
+  test("BA.LSE preview is BAE Systems, never Boeing", async ({ page }) => {
+    await page.goto("/admin/sources");
+    await page.getByRole("button", { name: /BAE Systems \(BA\.LSE\)/ }).click();
+    await page.getByTestId("preview-submit").click();
+    const result = page.getByTestId("preview-result");
+    await expect(result).toBeVisible();
+    await expect(result).toContainText("BAE Systems");
+    const body = (await page.locator("body").innerText()).toLowerCase();
+    expect(body).not.toContain("boeing");
+  });
 });
