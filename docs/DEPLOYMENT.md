@@ -531,6 +531,41 @@ grep -RiE "Authorization: Bearer|Set-Cookie:|DATABASE_URL=|api_token=[A-Za-z0-9]
 
 ---
 
+## Non-US Company IR Evidence (Phase 29B.1)
+
+- **No DB migration** — everything is code-defined; the DB head stays at `011`.
+- **What changed:** for a **verified issuer** (code-defined `verified_issuer_sources`
+  allowlist — Richemont/Swatch/LVMH/Hermès/Kering/Burberry/Pandora/Moncler +
+  BAE/ASML/SAP/Nestlé), the `company_ir` connector now emits bounded
+  **metadata-only** T1 company-source evidence (IR profile / annual-reports index
+  / press index) at report time **with no network call**, so non-US full-analysis
+  packs carry citeable company evidence beyond price/model (T5/T6). With
+  `SOURCE_CONNECTOR_ENABLED=true`, `evidence-preview` additionally does a
+  **bounded, SSRF-safe** live fetch of the issuer's own annual-reports / newsroom
+  pages (HTTPS + allowlisted domains only) to extract real annual-report / press
+  links.
+- **New settings (all optional, conservative defaults):**
+
+  | Setting | Default | Meaning |
+  |---|---|---|
+  | `SOURCE_CONNECTOR_MAX_BYTES` | `1000000` | Hard byte ceiling per fetched page (live preview path only). |
+  | `SOURCE_CONNECTOR_ALLOWLIST_ONLY` | `true` | Fetch only allowlisted issuer domains (guard against config drift). |
+  | `SOURCE_CONNECTOR_MAX_LINKS_PER_PAGE` | `25` | Hard cap on links extracted per fetched page. |
+
+- **Staging validation plan (29B.1):** with `SOURCE_CONNECTOR_ENABLED=true`,
+  (A) `POST /evidence-preview` `{ticker:"KER",exchange:"PA"}` → company-IR
+  metadata items (`content_source_tier:T1_primary_company_source`,
+  `data_quality:metadata_only`) + `source_not_eligible` (SEC) + scaffold +
+  `translation_required` gaps, secret-free; (B) `{ticker:"BA",exchange:"LSE"}` →
+  BAE Systems company-IR evidence, **no Boeing**, SEC not eligible; (C) a
+  `from-company` non-US final report with the council on → pack `known_gaps`
+  carry the company-IR + scaffold gaps, `safety_valid=true`,
+  `human_review_required=true`, `publication_ready=false`; (D) grep the container
+  log — **zero** `api_token`/secret occurrences; (E) the report readable view
+  shows unavailable sections without `[object Object]` and the T1/T2 checklist
+  item stays unchecked on T5/T6-only reports.
+- No auth change, no public publishing, no recommendation output, no publish route.
+
 ## Filing & Regulator Connectors — Batch 1 (Phase 29B)
 
 - **No DB migration** — everything is code-defined; the DB head stays at `011`.

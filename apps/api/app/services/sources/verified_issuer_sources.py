@@ -1,0 +1,372 @@
+"""
+Verified issuer source registry — Phase 29B.1.
+
+A small, explicit, **code-defined** allowlist of company-owned primary sources
+for a handful of well-known non-US (and a few US) issuers. It is a *bootstrap*,
+not a crawler: it names an issuer's own investor-relations, annual-reports and
+newsroom pages so the company-IR connector can surface real, verified,
+company-owned T1 evidence instead of only price-derived T5/T6 data.
+
+Why this exists
+---------------
+European luxury / watch names (Richemont, Swatch, LVMH, Hermès, Kering,
+Burberry, Pandora, Moncler, …) produce LLM reports, but the council correctly
+returns *insufficient_data* because the evidence pack has no annual reports,
+IR pages, or company press releases — only price/model items. SEC EDGAR does not
+cover them, and their home-regulator connectors are still scaffolded. This
+registry lets the platform cite the issuer's *own* primary material now.
+
+Hard safety rules (enforced by ``validate_registry`` + tests)
+------------------------------------------------------------
+  * Every URL is HTTPS.
+  * Every URL's host is inside that issuer's ``allowed_domains`` allowlist.
+  * No URL carries a credential / token query parameter.
+  * Every entry has ticker + exchange + company_name.
+  * (ticker, exchange) is unique.
+  * ``allowed_domains`` is the minimum set required to reach the listed URLs.
+
+This is maintained reference data — an allowlist — NOT model-fabricated. When a
+URL is uncertain it is omitted and the connector emits an honest ``SourceGap``
+rather than guessing. The registry never stores secrets and never accepts a
+user-supplied URL.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from urllib.parse import urlsplit
+
+from app.services.sources.redaction import url_has_secret
+
+# Confidence in an entry's URLs.
+CONFIDENCE_VERIFIED_LIVE = "verified_live"        # a URL was fetched & confirmed
+CONFIDENCE_VERIFIED_REFERENCE = "verified_reference"  # known-stable reference URL
+
+
+@dataclass(frozen=True)
+class VerifiedIssuerSource:
+    """Curated, verified company-owned sources for one issuer.
+
+    Stores only safe metadata (identity + public page URLs + an allowlist). No
+    secrets, no tokenized URLs, no user-supplied URLs.
+    """
+
+    ticker: str
+    exchange: str
+    company_name: str
+    country: str
+    official_website_domain: str
+    allowed_domains: tuple[str, ...]
+    investor_relations_url: str | None = None
+    annual_reports_url: str | None = None
+    press_releases_url: str | None = None
+    source_confidence: str = CONFIDENCE_VERIFIED_REFERENCE
+    last_verified_note: str = ""
+    warnings: tuple[str, ...] = field(default_factory=tuple)
+
+    def urls(self) -> list[str]:
+        """All non-null page URLs on this entry."""
+        return [
+            u
+            for u in (
+                self.investor_relations_url,
+                self.annual_reports_url,
+                self.press_releases_url,
+            )
+            if u
+        ]
+
+
+def _key(ticker: str | None, exchange: str | None) -> str:
+    return f"{(ticker or '').strip().upper()}:{(exchange or '').strip().upper()}"
+
+
+def registrable_host_allowed(host: str | None, allowed_domains: tuple[str, ...]) -> bool:
+    """True when ``host`` equals or is a sub-domain of an allowed domain.
+
+    ``news.example.com`` is allowed by ``example.com``; ``evil-example.com`` and
+    ``example.com.attacker.net`` are not. Empty / missing hosts are rejected.
+    """
+    if not host:
+        return False
+    h = host.strip().lower()
+    if h.startswith("www."):
+        h = h[4:]
+    for dom in allowed_domains:
+        d = dom.strip().lower()
+        if not d:
+            continue
+        if h == d or h.endswith("." + d):
+            return True
+    return False
+
+
+def host_of(url: str | None) -> str | None:
+    """Lower-case host of a URL (no port), or None when unparseable."""
+    if not url:
+        return None
+    try:
+        return (urlsplit(url).hostname or "").lower() or None
+    except (ValueError, TypeError):
+        return None
+
+
+# --------------------------------------------------------------------------- #
+# The registry. Target non-US luxury / watch issuers first, then a few
+# follow-up test issuers. URLs marked verified_live were fetched and confirmed
+# on 2026-07-25; the rest are known-stable reference URLs (the connector degrades
+# to an honest gap if a path has since moved — it never fabricates a filing).
+# --------------------------------------------------------------------------- #
+_ISSUERS: tuple[VerifiedIssuerSource, ...] = (
+    VerifiedIssuerSource(
+        ticker="CFR",
+        exchange="SW",
+        company_name="Compagnie Financière Richemont SA",
+        country="Switzerland",
+        official_website_domain="richemont.com",
+        allowed_domains=("richemont.com",),
+        investor_relations_url="https://www.richemont.com/en/home/investors/",
+        annual_reports_url=(
+            "https://www.richemont.com/en/home/investors/results-reports-presentations/"
+        ),
+        press_releases_url="https://www.richemont.com/en/home/media/",
+        source_confidence=CONFIDENCE_VERIFIED_LIVE,
+        last_verified_note="IR + results/reports index confirmed 2026-07-25.",
+        warnings=("Reports are metadata-only; PDF text is not extracted in this phase.",),
+    ),
+    VerifiedIssuerSource(
+        ticker="UHR",
+        exchange="SW",
+        company_name="The Swatch Group AG",
+        country="Switzerland",
+        official_website_domain="swatchgroup.com",
+        allowed_domains=("swatchgroup.com",),
+        investor_relations_url="https://www.swatchgroup.com/en/investors",
+        annual_reports_url="https://www.swatchgroup.com/en/investors/annual-report",
+        press_releases_url="https://www.swatchgroup.com/en/services/archive",
+        source_confidence=CONFIDENCE_VERIFIED_REFERENCE,
+        last_verified_note="Known-stable IR reference URLs; live fetch may be JS-gated.",
+        warnings=("Live fetch may be blocked or JavaScript-gated; treat as metadata.",),
+    ),
+    VerifiedIssuerSource(
+        ticker="MC",
+        exchange="PA",
+        company_name="LVMH Moët Hennessy Louis Vuitton SE",
+        country="France",
+        official_website_domain="lvmh.com",
+        allowed_domains=("lvmh.com",),
+        investor_relations_url="https://www.lvmh.com/en/investors",
+        annual_reports_url="https://www.lvmh.com/en/publications",
+        press_releases_url="https://www.lvmh.com/en/news-lvmh",
+        source_confidence=CONFIDENCE_VERIFIED_REFERENCE,
+        last_verified_note="Known-stable IR / publications (URD) reference URLs.",
+        warnings=(
+            "Universal Registration Document is French primary disclosure; "
+            "local-language extraction pending Phase 30 translation.",
+        ),
+    ),
+    VerifiedIssuerSource(
+        ticker="RMS",
+        exchange="PA",
+        company_name="Hermès International SCA",
+        country="France",
+        official_website_domain="hermes.com",
+        allowed_domains=("hermes.com", "finance.hermes.com", "assets-finance.hermes.com"),
+        investor_relations_url="https://www.hermes.com/en/investors/",
+        annual_reports_url="https://www.hermes.com/en/financial-publications/",
+        press_releases_url="https://www.hermes.com/en/press-releases-and-news/",
+        source_confidence=CONFIDENCE_VERIFIED_LIVE,
+        last_verified_note="IR, financial-publications + press index confirmed 2026-07-25.",
+        warnings=(
+            "Universal Registration Document is French primary disclosure; "
+            "local-language extraction pending Phase 30 translation.",
+        ),
+    ),
+    VerifiedIssuerSource(
+        ticker="KER",
+        exchange="PA",
+        company_name="Kering SA",
+        country="France",
+        official_website_domain="kering.com",
+        allowed_domains=("kering.com",),
+        investor_relations_url="https://www.kering.com/en/finance/",
+        annual_reports_url="https://www.kering.com/en/finance/publications/",
+        press_releases_url="https://www.kering.com/en/news/",
+        source_confidence=CONFIDENCE_VERIFIED_REFERENCE,
+        last_verified_note="Known-stable finance/publications URLs; site uses bot protection.",
+        warnings=(
+            "Site uses bot protection; live fetch is often blocked (honest gap "
+            "returned). Universal Registration Document is French primary disclosure.",
+        ),
+    ),
+    VerifiedIssuerSource(
+        ticker="BRBY",
+        exchange="LSE",
+        company_name="Burberry Group plc",
+        country="United Kingdom",
+        official_website_domain="burberryplc.com",
+        allowed_domains=("burberryplc.com",),
+        investor_relations_url="https://www.burberryplc.com/investors",
+        annual_reports_url="https://www.burberryplc.com/investors/results-reports",
+        press_releases_url="https://www.burberryplc.com/news",
+        source_confidence=CONFIDENCE_VERIFIED_REFERENCE,
+        last_verified_note="Known-stable IR URLs; site uses bot protection.",
+        warnings=("Site uses bot protection; live fetch may be blocked (honest gap).",),
+    ),
+    VerifiedIssuerSource(
+        ticker="PNDORA",
+        exchange="CO",
+        company_name="Pandora A/S",
+        country="Denmark",
+        official_website_domain="pandoragroup.com",
+        allowed_domains=("pandoragroup.com",),
+        investor_relations_url="https://pandoragroup.com/investor",
+        annual_reports_url="https://pandoragroup.com/investor/news-and-reports/reports",
+        press_releases_url="https://pandoragroup.com/investor/news-and-reports/news",
+        source_confidence=CONFIDENCE_VERIFIED_LIVE,
+        last_verified_note="IR landing confirmed 2026-07-25; reports index reference URL.",
+        warnings=("Reports are metadata-only; PDF text is not extracted in this phase.",),
+    ),
+    VerifiedIssuerSource(
+        ticker="MONC",
+        exchange="MI",
+        company_name="Moncler S.p.A.",
+        country="Italy",
+        official_website_domain="monclergroup.com",
+        allowed_domains=("monclergroup.com",),
+        investor_relations_url="https://www.monclergroup.com/en/investors",
+        annual_reports_url="https://www.monclergroup.com/en/investors/results-and-reports",
+        press_releases_url="https://www.monclergroup.com/en/media/press-releases",
+        source_confidence=CONFIDENCE_VERIFIED_REFERENCE,
+        last_verified_note="Known-stable IR URLs; site returned 403 to research bot.",
+        warnings=("Site returned 403 to the research bot; live fetch may be blocked.",),
+    ),
+    # ── Optional follow-up test issuers ──────────────────────────────────────
+    VerifiedIssuerSource(
+        ticker="BA",
+        exchange="LSE",
+        company_name="BAE Systems plc",
+        country="United Kingdom",
+        official_website_domain="baesystems.com",
+        allowed_domains=("baesystems.com", "investors.baesystems.com"),
+        investor_relations_url="https://www.baesystems.com/en/investors",
+        annual_reports_url="https://www.baesystems.com/en/investors/annual-report",
+        press_releases_url="https://www.baesystems.com/en/our-company/newsroom",
+        source_confidence=CONFIDENCE_VERIFIED_REFERENCE,
+        last_verified_note="Known-stable IR URLs. Distinct from US BA (Boeing).",
+        warnings=(
+            "BA on LSE is BAE Systems (UK), NOT Boeing (US NYSE) — company IR is "
+            "the correct primary source; SEC EDGAR is not eligible.",
+        ),
+    ),
+    VerifiedIssuerSource(
+        ticker="ASML",
+        exchange="AS",
+        company_name="ASML Holding N.V.",
+        country="Netherlands",
+        official_website_domain="asml.com",
+        allowed_domains=("asml.com",),
+        investor_relations_url="https://www.asml.com/en/investors",
+        annual_reports_url="https://www.asml.com/en/investors/annual-report",
+        press_releases_url="https://www.asml.com/en/news/press-releases",
+        source_confidence=CONFIDENCE_VERIFIED_REFERENCE,
+        last_verified_note="Known-stable IR URLs.",
+    ),
+    VerifiedIssuerSource(
+        ticker="SAP",
+        exchange="DE",
+        company_name="SAP SE",
+        country="Germany",
+        official_website_domain="sap.com",
+        allowed_domains=("sap.com",),
+        investor_relations_url="https://www.sap.com/investors",
+        annual_reports_url="https://www.sap.com/investors/en/reports.html",
+        press_releases_url="https://news.sap.com/",
+        source_confidence=CONFIDENCE_VERIFIED_REFERENCE,
+        last_verified_note="Known-stable IR URLs.",
+    ),
+    VerifiedIssuerSource(
+        ticker="NESN",
+        exchange="SW",
+        company_name="Nestlé S.A.",
+        country="Switzerland",
+        official_website_domain="nestle.com",
+        allowed_domains=("nestle.com",),
+        investor_relations_url="https://www.nestle.com/investors",
+        annual_reports_url="https://www.nestle.com/investors/annual-report",
+        press_releases_url="https://www.nestle.com/media/pressreleases",
+        source_confidence=CONFIDENCE_VERIFIED_REFERENCE,
+        last_verified_note="Known-stable IR URLs.",
+    ),
+)
+
+
+def _build_index() -> dict[str, VerifiedIssuerSource]:
+    index: dict[str, VerifiedIssuerSource] = {}
+    for issuer in _ISSUERS:
+        k = _key(issuer.ticker, issuer.exchange)
+        if k in index:
+            raise ValueError(f"Duplicate verified issuer (ticker, exchange): {k}")
+        index[k] = issuer
+    return index
+
+
+_INDEX: dict[str, VerifiedIssuerSource] = _build_index()
+
+
+def get_verified_issuer_source(
+    ticker: str | None, exchange: str | None = None
+) -> VerifiedIssuerSource | None:
+    """Look up a verified issuer by (ticker, exchange).
+
+    Tolerates a ``TICKER.EXCHANGE`` combined ticker (e.g. ``"CFR.SW"``) when
+    ``exchange`` is not given separately. Returns None for unknown issuers — the
+    caller then emits an honest coverage gap, never fabricated evidence.
+    """
+    if not ticker:
+        return None
+    t = ticker.strip().upper()
+    if exchange is None and "." in t:
+        t, _, ex = t.partition(".")
+        exchange = ex
+    return _INDEX.get(_key(t, exchange))
+
+
+def all_verified_issuer_sources() -> list[VerifiedIssuerSource]:
+    """Every registry entry (stable order)."""
+    return list(_ISSUERS)
+
+
+def validate_registry(issuers: tuple[VerifiedIssuerSource, ...] = _ISSUERS) -> None:
+    """Assert the registry's hard safety invariants. Raises on any violation.
+
+    Called by tests; kept importable so a future CI check can run it too.
+    """
+    seen: set[str] = set()
+    for it in issuers:
+        assert it.ticker and it.exchange and it.company_name, (
+            f"entry missing ticker/exchange/company_name: {it!r}"
+        )
+        k = _key(it.ticker, it.exchange)
+        assert k not in seen, f"duplicate (ticker, exchange): {k}"
+        seen.add(k)
+        assert it.allowed_domains, f"{k}: allowed_domains must not be empty"
+        for url in it.urls():
+            assert url.startswith("https://"), f"{k}: non-HTTPS URL: {url}"
+            assert not url_has_secret(url), f"{k}: URL carries a secret param: {url}"
+            host = host_of(url)
+            assert registrable_host_allowed(host, it.allowed_domains), (
+                f"{k}: URL host {host!r} not in allowed_domains {it.allowed_domains}"
+            )
+
+
+__all__ = [
+    "VerifiedIssuerSource",
+    "CONFIDENCE_VERIFIED_LIVE",
+    "CONFIDENCE_VERIFIED_REFERENCE",
+    "get_verified_issuer_source",
+    "all_verified_issuer_sources",
+    "registrable_host_allowed",
+    "host_of",
+    "validate_registry",
+]

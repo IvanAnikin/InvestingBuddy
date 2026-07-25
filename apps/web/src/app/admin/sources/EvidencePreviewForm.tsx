@@ -22,6 +22,26 @@ const SELECTABLE = [
   "nordic_disclosures",
 ];
 
+// Verified non-US issuers whose company-IR evidence this preview can surface
+// (Phase 29B.1). Identity-only — no URL input.
+const EXAMPLES: { label: string; ticker: string; exchange: string }[] = [
+  { label: "Richemont (CFR.SW)", ticker: "CFR", exchange: "SW" },
+  { label: "Swatch (UHR.SW)", ticker: "UHR", exchange: "SW" },
+  { label: "Kering (KER.PA)", ticker: "KER", exchange: "PA" },
+  { label: "Burberry (BRBY.LSE)", ticker: "BRBY", exchange: "LSE" },
+  { label: "BAE Systems (BA.LSE)", ticker: "BA", exchange: "LSE" },
+];
+
+/** Show only the host of a URL — never a query string / secret. */
+function urlDomain(url?: string | null): string | null {
+  if (!url) return null;
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return null;
+  }
+}
+
 export default function EvidencePreviewForm() {
   const [ticker, setTicker] = useState("");
   const [exchange, setExchange] = useState("");
@@ -66,6 +86,22 @@ export default function EvidencePreviewForm() {
           no settings editing. Live fetch happens only when the connector layer
           is enabled; otherwise connectors return honest coverage gaps.
         </p>
+      </div>
+
+      <div className="mb-3 flex flex-wrap gap-1.5" data-testid="preview-examples">
+        {EXAMPLES.map((ex) => (
+          <button
+            key={ex.ticker + ex.exchange}
+            type="button"
+            onClick={() => {
+              setTicker(ex.ticker);
+              setExchange(ex.exchange);
+            }}
+            className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] text-slate-400 transition-colors hover:bg-white/10"
+          >
+            {ex.label}
+          </button>
+        ))}
       </div>
 
       <form onSubmit={handleSubmit} className="space-y-3">
@@ -167,12 +203,29 @@ export default function EvidencePreviewForm() {
                           color="gray"
                         />
                       )}
+                      {(it.data_quality === "metadata_only" ||
+                        it.data_quality === "link_metadata_only") && (
+                        <StatusPill label="metadata-only" color="amber" />
+                      )}
+                      {it.requires_translation && (
+                        <StatusPill label="translation pending" color="purple" />
+                      )}
                       <span className="text-sm text-slate-200">
                         {it.title ?? it.source_type ?? it.source_id}
                       </span>
                     </div>
+                    {urlDomain(it.url) && (
+                      <p className="mt-0.5 text-[11px] text-slate-500">
+                        {urlDomain(it.url)}
+                      </p>
+                    )}
                     {it.excerpt && (
                       <p className="mt-1 text-xs text-slate-500">{it.excerpt}</p>
+                    )}
+                    {it.warnings && it.warnings.length > 0 && (
+                      <p className="mt-1 text-[11px] italic text-amber-300/70">
+                        {it.warnings.join(" · ")}
+                      </p>
                     )}
                   </li>
                 ))}

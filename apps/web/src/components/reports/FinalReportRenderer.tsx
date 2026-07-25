@@ -16,6 +16,7 @@ import {
   SECTION_ORDER,
   humanizeKey,
   isEmptyValue,
+  noteText,
   unwrap,
 } from "./finalReportContent";
 
@@ -66,9 +67,11 @@ function ObjectLine({ obj }: { obj: Record<string, unknown> }) {
       </span>
     );
   }
+  const scalar = (v: unknown): string =>
+    isEmptyValue(v) ? "—" : typeof v === "object" ? "…" : String(v);
   const parts = Object.entries(obj)
     .filter(([k]) => k !== "type")
-    .map(([k, v]) => `${humanizeKey(k)}: ${isEmptyValue(v) ? "—" : String(v)}`);
+    .map(([k, v]) => `${humanizeKey(k)}: ${scalar(v)}`);
   return <span className="text-slate-300">{parts.join(" · ")}</span>;
 }
 
@@ -134,8 +137,8 @@ function SectionShell({
 
 function GenericSection({ title, section }: { title: string; section: Record<string, unknown> }) {
   const available = section.available;
-  const note = section.note;
-  const disclaimer = section.disclaimer;
+  const note = noteText(section.note);
+  const disclaimer = noteText(section.disclaimer);
   const fields = Object.entries(section).filter(([k]) => !META_KEYS.has(k) && k !== "note" && k !== "disclaimer");
 
   return (
@@ -143,7 +146,7 @@ function GenericSection({ title, section }: { title: string; section: Record<str
       {available === false ? (
         <p className="text-sm text-slate-400">
           Not available.{" "}
-          {note ? <span className="text-slate-500">{String(note)}</span> : null}
+          {note ? <span className="text-slate-500">{note}</span> : null}
         </p>
       ) : fields.length === 0 ? (
         <p className="text-sm">
@@ -157,7 +160,7 @@ function GenericSection({ title, section }: { title: string; section: Record<str
         </div>
       )}
       {disclaimer ? (
-        <p className="mt-3 text-[11px] italic text-slate-500">{String(disclaimer)}</p>
+        <p className="mt-3 text-[11px] italic text-slate-500">{disclaimer}</p>
       ) : null}
     </SectionShell>
   );

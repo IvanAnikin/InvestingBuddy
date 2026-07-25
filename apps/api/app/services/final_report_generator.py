@@ -1086,6 +1086,29 @@ def _build_workflow_status(
     }
 
 
+def _has_t1_t2_evidence(
+    source_tier: str | None,
+    citations: list[Citation],
+) -> bool:
+    """True only when a genuine T1/T2 (primary filing / regulator) source backs a
+    claim.
+
+    Metadata-only connector items (an IR / annual-reports *index* URL with no
+    extracted content) are NOT persisted as citations, so this deliberately keys
+    off real DB citations plus the report's overall source tier — a report whose
+    only evidence is T5/T6 (price/model) or metadata-only never counts as having
+    T1/T2 data present. ``T1_primary_company_source`` (a real, content-bearing
+    company primary source) does count.
+    """
+
+    def _is_t1_t2(tier: str | None) -> bool:
+        return bool(tier) and (str(tier).startswith("T1") or str(tier).startswith("T2"))
+
+    if any(_is_t1_t2(c.source_tier) for c in citations):
+        return True
+    return _is_t1_t2(source_tier)
+
+
 def _build_human_review_checklist(
     safety_valid: bool,
     schema_valid: bool,
@@ -1095,6 +1118,7 @@ def _build_human_review_checklist(
     has_citations: bool,
     missing_count: int,
     is_mock: bool,
+    has_t1_t2: bool = False,
 ) -> list[HumanReviewChecklistItem]:
     items = [
         HumanReviewChecklistItem(
@@ -1150,11 +1174,19 @@ def _build_human_review_checklist(
         HumanReviewChecklistItem(
             item="Data quality: T1/T2 sources present (not mock/T5/T6 only)",
             required=True,
-            completed=not is_mock,
+            completed=(not is_mock) and has_t1_t2,
             note=(
                 "Mock or T5/T6-only data detected. Primary source validation required."
                 if is_mock
-                else None
+                else (
+                    None
+                    if has_t1_t2
+                    else (
+                        "Only T5/T6 or metadata-only evidence present — no T1/T2 "
+                        "primary/regulator source backs a claim yet. Primary source "
+                        "validation required."
+                    )
+                )
             ),
         ),
         HumanReviewChecklistItem(
@@ -1551,6 +1583,7 @@ def _assemble_final_report_content(
                 has_citations=len(citations) > 0,
                 missing_count=missing_count,
                 is_mock=is_mock,
+                has_t1_t2=_has_t1_t2_evidence(source_tier, citations),
             )
         ],
         "source_citation_appendix": _build_source_citation_appendix(
@@ -2368,6 +2401,7 @@ class FinalReportGeneratorService:
             has_citations=len(citations) > 0,
             missing_count=missing_count_val,
             is_mock=is_mock_val,
+            has_t1_t2=_has_t1_t2_evidence(source_tier, citations),
         )
 
         provisional_status = None

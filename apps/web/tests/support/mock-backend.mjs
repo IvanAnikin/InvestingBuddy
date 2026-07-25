@@ -133,6 +133,27 @@ function sampleReportContent({ withCouncil }) {
       lei: { value: "HWUPKR0MPOU8FGXBT394", provenance: "sourced_fact" },
       sector: { value: "Information Technology", provenance: "sourced_fact" },
     },
+    // Phase 29B.1 — sections with `available: false` + an OBJECT `note` envelope.
+    // These reproduce the "[object Object]" render bug: the readable renderer
+    // must unwrap the note's value, never String(note).
+    discovery_rationale: {
+      type: "discovery_rationale",
+      available: false,
+      note: {
+        value: "No screening candidate linked to this report.",
+        provenance: "missing_data",
+      },
+      human_review_required: true,
+    },
+    internal_scorecard: {
+      type: "internal_scorecard",
+      available: false,
+      note: {
+        value: "Scorecard not available — run scoring workflow.",
+        provenance: "missing_data",
+      },
+      human_review_required: true,
+    },
     data_availability_summary: {
       type: "data_availability_summary",
       source_tier: "T2_regulator_or_gov",
@@ -216,6 +237,13 @@ function sampleReportContent({ withCouncil }) {
         required: false,
         completed: true,
         note: null,
+      },
+      {
+        // Phase 29B.1 — only T5/T6 evidence present → must NOT be marked done.
+        item: "Data quality: T1/T2 sources present (not mock/T5/T6 only)",
+        required: true,
+        completed: false,
+        note: "Only T5/T6 or metadata-only evidence present — no T1/T2 primary/regulator source backs a claim yet. Primary source validation required.",
       },
     ],
     source_citation_appendix: {
@@ -924,21 +952,72 @@ const server = createServer((req, res) => {
           detail: `Unknown source_id(s): ${unknown.join(", ")}`,
         });
       }
+      // Phase 29B.1 — known non-US issuers surface company-IR metadata evidence
+      // (offline, metadata-only). Everything else is honest gaps only.
+      const t = (parsed.ticker ?? "").toUpperCase();
+      const KNOWN_IR = {
+        CFR: {
+          name: "Compagnie Financière Richemont SA",
+          domain: "richemont.com",
+        },
+        KER: { name: "Kering SA", domain: "kering.com" },
+        UHR: { name: "The Swatch Group AG", domain: "swatchgroup.com" },
+        BRBY: { name: "Burberry Group plc", domain: "burberryplc.com" },
+        BA: { name: "BAE Systems plc", domain: "baesystems.com" },
+      };
+      const known = KNOWN_IR[t];
+      const evidence_items = known
+        ? [
+            {
+              id: "IRPROFILE",
+              source_id: "company_ir",
+              source_name: known.name,
+              provider_transport_tier: "T1_primary_company_source",
+              content_source_tier: "T1_primary_company_source",
+              source_type: "company_ir_profile",
+              title: `${known.name} — Investor Relations`,
+              url: `https://www.${known.domain}/investors/`,
+              excerpt: "Issuer investor-relations landing page (company-owned).",
+              data_quality: "metadata_only",
+              requires_translation: false,
+              warnings: [
+                "Metadata only — page content / document text is not extracted.",
+              ],
+            },
+            {
+              id: "IRANNUALIDX",
+              source_id: "company_ir",
+              source_name: known.name,
+              provider_transport_tier: "T1_primary_company_source",
+              content_source_tier: "T1_primary_company_source",
+              source_type: "company_ir_annual_reports_index",
+              title: `${known.name} — Annual reports & results`,
+              url: `https://www.${known.domain}/investors/reports/`,
+              excerpt: "Issuer annual-reports / results index (company-owned).",
+              data_quality: "metadata_only",
+              requires_translation: false,
+              warnings: [
+                "Metadata only — page content / document text is not extracted.",
+              ],
+            },
+          ]
+        : [];
       send(res, 200, {
         generated_at: "2026-07-24T00:00:00Z",
         ticker: parsed.ticker ?? null,
         exchange: parsed.exchange ?? null,
         connector_layer_enabled: false,
         live_fetch_performed: false,
-        evidence_items: [],
+        evidence_items,
         source_gaps: [
           {
             source_id: "sec_edgar",
             connector_key: "sec_edgar",
-            gap_type: "primary_filing_unavailable",
+            gap_type: known ? "source_not_eligible" : "primary_filing_unavailable",
             severity: "info",
-            message:
-              "No SEC filing metadata was available in this context (offline preview).",
+            message: known
+              ? `SEC EDGAR covers US issuers only; ${t} on exchange '${parsed.exchange ?? ""}' is not SEC-eligible. Its primary filings are sourced through the issuer's home regulator (scaffolded, not yet live).`
+              : "No SEC filing metadata was available in this context (offline preview).",
             suggested_followup_phase: null,
             blocks_research_complete: false,
           },

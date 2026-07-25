@@ -312,7 +312,11 @@ def test_uhr_evidence_pack_includes_non_us_gaps():
     msgs = " ".join(collected.gap_messages()).lower()
     assert "sec edgar covers us issuers only" in msgs
     assert "scaffold present" in msgs
-    assert collected.evidence_items == []
+    # Phase 29B.1: UHR is a verified issuer, so company-IR *metadata* evidence is
+    # now present (no SEC filing is fabricated — every item is company_ir).
+    assert collected.evidence_items != []
+    assert all(it.source_id == "company_ir" for it in collected.evidence_items)
+    assert all(it.data_quality == "metadata_only" for it in collected.evidence_items)
     # gaps flow into the pack known_gaps.
     pack = build_evidence_pack(
         report_content={"company_identity": {"ticker": {"value": "UHR"}}},
@@ -471,14 +475,23 @@ def test_connector_layer_off_adds_no_connector_evidence():
 
 
 def test_ba_lse_not_sec_eligible_no_boeing_confusion():
-    # BA on the LSE is non-US → SEC connector must not run a US lookup.
+    # BA on the LSE is BAE Systems (UK), NOT Boeing. The SEC connector must not
+    # run a US lookup (honest source_not_eligible gap), and any evidence produced
+    # must be BAE's own company-IR material — never a Boeing SEC filing.
     collected = asyncio.run(
         collect_company_source_evidence(
             company=CompanyContext(ticker="BA", exchange="LSE"),
             cfg=_enabled_cfg(),
         )
     )
-    assert collected.evidence_items == []
     assert any(
         g.gap_type == GapType.source_not_eligible for g in collected.source_gaps
     )
+    # No SEC / Boeing evidence: every item is BAE Systems company-IR metadata.
+    assert all(it.source_id == "company_ir" for it in collected.evidence_items)
+    blob = " ".join(
+        f"{it.source_name} {it.title} {it.url}" for it in collected.evidence_items
+    ).lower()
+    assert "boeing" not in blob
+    assert "sec.gov" not in blob
+    assert any("bae" in (it.source_name or "").lower() for it in collected.evidence_items)
