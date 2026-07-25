@@ -28,9 +28,12 @@ function headingId(children: ReactNode): string {
 export default function MarkdownReportPreview({
   content,
   title = "Report Content",
+  subtitle,
 }: {
   content: string;
   title?: string;
+  /** Overrides the default draft subtitle (Phase 28A.2). */
+  subtitle?: string;
 }) {
   const [view, setView] = useState<View>("preview");
   const headings = useMemo(() => extractHeadings(content), [content]);
@@ -43,8 +46,8 @@ export default function MarkdownReportPreview({
             {title}
           </p>
           <p className="mt-0.5 text-[11px] italic text-slate-500">
-            Unvalidated internal admin draft produced by AI agents — not
-            reviewed for accuracy, not investment advice.
+            {subtitle ??
+              "Unvalidated internal admin draft produced by AI agents — not reviewed for accuracy, not investment advice."}
           </p>
         </div>
         {/* Preview / Raw toggle */}

@@ -1,0 +1,158 @@
+// Phase 28A.2 — helpers for the readable final-report renderer.
+//
+// A final-report-generator draft stores its structured `report_content` as a
+// single fenced ```json block inside `content_markdown` (see
+// `_save_final_report_draft` in the backend). These helpers extract and shape
+// that data for a human-readable view — no raw JSON dump in the product UI.
+//
+// Everything here is honest: values are unwrapped from their `{value, …}`
+// envelopes but never fabricated, and provenance (sourced_fact /
+// model_interpretation / missing_data) is preserved so the reader can tell
+// real data from model interpretation. No recommendation/valuation logic.
+
+export type ReportContent = Record<string, unknown>;
+
+/**
+ * Extract the structured report_content object from a final report's
+ * `content_markdown`. Returns null when absent or unparseable (the caller then
+ * falls back to the markdown preview).
+ */
+export function extractFinalReportContent(
+  markdown: string | null | undefined,
+): ReportContent | null {
+  if (!markdown) return null;
+  const start = markdown.indexOf("```json");
+  const end = markdown.lastIndexOf("```");
+  if (start === -1 || end <= start) return null;
+  const jsonStr = markdown.slice(start + "```json".length, end).trim();
+  try {
+    const obj = JSON.parse(jsonStr);
+    return obj && typeof obj === "object" && !Array.isArray(obj)
+      ? (obj as ReportContent)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+export interface Unwrapped {
+  value: unknown;
+  provenance?: string;
+  source?: string;
+  currency?: string;
+  asOf?: string;
+  total?: number;
+}
+
+/** Unwrap a `{value, provenance, source, …}` envelope, or pass a bare value. */
+export function unwrap(field: unknown): Unwrapped {
+  if (field && typeof field === "object" && !Array.isArray(field) && "value" in field) {
+    const f = field as Record<string, unknown>;
+    return {
+      value: f.value,
+      provenance: typeof f.provenance === "string" ? f.provenance : undefined,
+      source: typeof f.source === "string" ? f.source : undefined,
+      currency: typeof f.currency === "string" ? f.currency : undefined,
+      asOf: typeof f.as_of === "string" ? f.as_of : undefined,
+      total: typeof f.total === "number" ? f.total : undefined,
+    };
+  }
+  return { value: field };
+}
+
+export function isEmptyValue(v: unknown): boolean {
+  return (
+    v === null ||
+    v === undefined ||
+    v === "" ||
+    (Array.isArray(v) && v.length === 0)
+  );
+}
+
+/** snake_case / dotted key -> "Title Case" label. */
+export function humanizeKey(key: string): string {
+  return key
+    .replace(/[._]+/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase())
+    .replace(/\bTtm\b/g, "TTM")
+    .replace(/\bLei\b/g, "LEI")
+    .replace(/\bIsin\b/g, "ISIN")
+    .replace(/\bLlm\b/g, "LLM")
+    .replace(/\bUsd\b/g, "USD");
+}
+
+// Sections rendered, in product order. `committee_chair_summary` is folded in
+// after the executive summary; `admin_disclaimer` and `workflow_status` are
+// intentionally omitted (shown as the page disclaimer / metadata card).
+export const SECTION_ORDER: string[] = [
+  "executive_summary",
+  "committee_chair_summary",
+  "company_identity",
+  "data_availability_summary",
+  "financial_snapshot",
+  "discovery_rationale",
+  "internal_scorecard",
+  "llm_council_analysis",
+  "bull_case",
+  "bear_case",
+  "risk_analysis",
+  "valuation_readiness",
+  "source_quality_review",
+  "citation_validation_review",
+  "research_completeness_review",
+  "missing_information",
+  "news_catalyst_discovery",
+  "human_review_checklist",
+  "source_citation_appendix",
+];
+
+export const SECTION_LABELS: Record<string, string> = {
+  executive_summary: "Executive Summary",
+  committee_chair_summary: "Committee Summary",
+  company_identity: "Company Identity",
+  data_availability_summary: "Data Availability Summary",
+  financial_snapshot: "Financial Snapshot",
+  discovery_rationale: "Discovery Rationale",
+  internal_scorecard: "Internal Scorecard",
+  llm_council_analysis: "LLM Council Analysis",
+  bull_case: "Bull Case",
+  bear_case: "Bear Case",
+  risk_analysis: "Risk Analysis",
+  valuation_readiness: "Valuation Readiness",
+  source_quality_review: "Source Quality Review",
+  citation_validation_review: "Citation Validation",
+  research_completeness_review: "Research Completeness",
+  missing_information: "Missing Information",
+  news_catalyst_discovery: "News & Catalyst Discovery",
+  human_review_checklist: "Human Review Checklist",
+  source_citation_appendix: "Source Citation Appendix",
+};
+
+// Keys that are section-level metadata — not rendered as fields by the generic
+// renderer (they are surfaced separately or intentionally hidden).
+export const META_KEYS = new Set([
+  "type",
+  "available",
+  "is_mock",
+  "human_review_required",
+  "retrieved_at",
+  "source_tier",
+  "source",
+  "provenance",
+]);
+
+export interface CitationSource {
+  source_type?: string;
+  source_tier?: string;
+  title?: string;
+  url?: string;
+  source_quote?: string;
+}
+
+export interface ChecklistItem {
+  item?: string;
+  label?: string;
+  required?: boolean;
+  completed?: boolean;
+  note?: string | null;
+}
