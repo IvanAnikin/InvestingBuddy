@@ -69,6 +69,71 @@ function CouncilAgentCard({ agent }: { agent: LlmCouncilAgent }) {
   );
 }
 
+// Phase 28A.2 amendment — a compact, safe-metadata-only summary pinned ABOVE the
+// tabs so the LLM council (the main product value) is visible immediately. It
+// shows metadata only — never per-agent details, prompts, completions, or
+// secrets (full agent analysis stays in the LLM Council tab). No
+// recommendation/rating/price-target/fair-value.
+function SummaryStat({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <div className="text-sm">
+      <span className="text-slate-500">{label}: </span>
+      <span className="text-slate-200">{value}</span>
+    </div>
+  );
+}
+
+export function LlmCouncilSummaryCard({
+  council,
+  schemaValid,
+  safetyValid,
+  onViewFull,
+}: {
+  council: LlmCouncilMetadata;
+  schemaValid: boolean;
+  safetyValid: boolean;
+  onViewFull: () => void;
+}) {
+  return (
+    <GlassCard testId="llm-council-summary" className="space-y-3 p-5">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <StatusPill label="LLM Council: Used" color="purple" />
+          <StatusPill label="Internal Research Aid" color="purple" />
+          <StatusPill label="Not Investment Advice" color="red" />
+        </div>
+        <button
+          type="button"
+          onClick={onViewFull}
+          data-testid="view-full-council"
+          className="rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-semibold text-sky-300 transition hover:bg-white/10"
+        >
+          View full LLM Council analysis →
+        </button>
+      </div>
+      <div className="grid grid-cols-2 gap-x-6 gap-y-1 md:grid-cols-3 lg:grid-cols-4">
+        <SummaryStat label="Provider" value={council.provider ?? "n/a"} />
+        <SummaryStat label="Model" value={council.model ?? "n/a"} />
+        <SummaryStat label="Council" value={council.council_version ?? "n/a"} />
+        <SummaryStat label="Evidence Items" value={council.evidence_item_count ?? 0} />
+        <SummaryStat
+          label="Agents (done/failed/skipped)"
+          value={`${council.agents_completed ?? 0}/${council.agents_failed ?? 0}/${council.agents_skipped ?? 0}`}
+        />
+        <SummaryStat label="Committee Label" value={council.committee_label ?? "n/a"} />
+        <SummaryStat label="Schema" value={schemaValid ? "valid" : "invalid"} />
+        <SummaryStat label="Safety" value={safetyValid ? "passed" : "warning"} />
+        <SummaryStat label="Human Review" value="required" />
+        <SummaryStat label="Publication Ready" value="false" />
+      </div>
+      <p className="text-[11px] italic text-slate-500">
+        Metadata only. Every council claim cites evidence ids; no rating, valuation
+        conclusion, or return projection is produced. Human review is required.
+      </p>
+    </GlassCard>
+  );
+}
+
 export default function LlmCouncilAnalysis({ council }: { council: LlmCouncilMetadata }) {
   return (
     <GlassCard testId="llm-council-analysis" className="space-y-3 p-5">

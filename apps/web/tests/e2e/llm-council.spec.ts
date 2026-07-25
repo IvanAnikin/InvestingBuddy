@@ -48,6 +48,15 @@ test.describe("Report Detail — readable final report (Phase 28A.2)", () => {
       page.getByText("Publication ready: false", { exact: true }),
     ).toBeVisible();
 
+    // Phase 28A.2 amendment — the compact LLM Council summary is pinned above
+    // the tabs (metadata only, no per-agent detail here).
+    const summary = page.getByTestId("llm-council-summary");
+    await expect(summary).toBeVisible();
+    await expect(summary).toContainText("LLM Council: Used");
+    await expect(summary).toContainText("fake-council-model");
+    // The pinned card is metadata-only — no agent cards live here.
+    await expect(summary.getByTestId("council-agent-financial_analyst")).toHaveCount(0);
+
     // Default tab is the readable report — with human sections, not a JSON dump.
     const readable = page.getByTestId("readable-report");
     await expect(readable).toBeVisible();
@@ -80,16 +89,17 @@ test.describe("Report Detail — readable final report (Phase 28A.2)", () => {
   test("LLM Council tab reveals the per-agent analysis", async ({ page }) => {
     await page.goto(COUNCIL_URL);
 
-    // Council detail is behind its tab (not the default readable view).
+    // Full per-agent detail is behind its tab (not the default readable view).
     await expect(page.getByTestId("llm-council-analysis")).toHaveCount(0);
-    await page.getByTestId("report-tab-council").click();
+    // The pinned summary's "View full" button jumps to the LLM Council tab.
+    await page.getByTestId("view-full-council").click();
 
     const council = page.getByTestId("llm-council-analysis");
     await expect(council).toBeVisible();
     await expect(page.getByTestId("council-agent-financial_analyst")).toBeVisible();
     await expect(page.getByTestId("council-agent-committee_chair")).toBeVisible();
-    // Provider/model shown, never secrets.
-    await expect(page.getByText("fake-council-model")).toBeVisible();
+    // Committee label surfaces on the chair's agent card.
+    await expect(council.getByText("requires_more_evidence").first()).toBeVisible();
   });
 
   test("Raw JSON tab exposes the structured content for debugging", async ({
@@ -114,8 +124,9 @@ test.describe("Report Detail — readable final report (Phase 28A.2)", () => {
       page.getByText("LLM Council: Not Used", { exact: true }).first(),
     ).toBeVisible();
     await expect(page.getByTestId("report-kind-final")).toBeVisible();
-    // Still readable-by-default; no council tab when the council did not run.
+    // Still readable-by-default; no pinned summary, no council tab, no council.
     await expect(page.getByTestId("readable-report")).toBeVisible();
+    await expect(page.getByTestId("llm-council-summary")).toHaveCount(0);
     await expect(page.getByTestId("report-tab-council")).toHaveCount(0);
     await expect(page.getByTestId("llm-council-analysis")).toHaveCount(0);
     await expect(page.getByText("Phase 9")).toHaveCount(0);

@@ -11,7 +11,7 @@ import { useState } from "react";
 import type { LlmCouncilMetadata, Report } from "@/types/api";
 import type { ReportContent } from "./finalReportContent";
 import FinalReportRenderer from "./FinalReportRenderer";
-import LlmCouncilAnalysis from "./LlmCouncilAnalysis";
+import LlmCouncilAnalysis, { LlmCouncilSummaryCard } from "./LlmCouncilAnalysis";
 import MarkdownReportPreview from "./MarkdownReportPreview";
 
 type TabId = "readable" | "council" | "json" | "markdown";
@@ -40,7 +40,19 @@ export default function ReportContentTabs({
   ];
 
   return (
-    <section data-testid="report-content-tabs">
+    <section data-testid="report-content-tabs" className="space-y-4">
+      {/* Phase 28A.2 amendment — pin the compact LLM Council summary above the
+          tabs so the council (the main product value) is visible immediately.
+          Full per-agent detail stays in the LLM Council tab. */}
+      {llmUsed && council && (
+        <LlmCouncilSummaryCard
+          council={council}
+          schemaValid={schemaValid}
+          safetyValid={safetyValid}
+          onViewFull={() => setTab("council")}
+        />
+      )}
+
       <div className="mb-4 flex flex-wrap gap-1 border-b border-white/10">
         {tabs.map((t) => (
           <button
