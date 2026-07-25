@@ -1,18 +1,15 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { fetchReport, fetchReviewEvents } from "@/lib/api";
-import type {
-  Report,
-  ReviewEvent,
-  LlmCouncilMetadata,
-  LlmCouncilAgent,
-} from "@/types/api";
+import type { Report, ReviewEvent, LlmCouncilMetadata } from "@/types/api";
 import FinalReportActions from "./FinalReportActions";
 import ReviewPanel from "./ReviewPanel";
 import GlassCard from "@/components/ui/GlassCard";
 import SafetyBanner from "@/components/ui/SafetyBanner";
 import StatusPill, { type PillColor } from "@/components/ui/StatusPill";
 import MarkdownReportPreview from "@/components/reports/MarkdownReportPreview";
+import ReportContentTabs from "@/components/reports/ReportContentTabs";
+import { extractFinalReportContent } from "@/components/reports/finalReportContent";
 
 // ---------------------------------------------------------------------------
 // Status display helpers
@@ -67,75 +64,6 @@ function readCouncil(
   const council = payload["llm_council"];
   if (!council || typeof council !== "object") return null;
   return council as LlmCouncilMetadata;
-}
-
-const COUNCIL_AGENT_LABELS: Record<string, string> = {
-  financial_analyst: "Financial Analyst",
-  business_moat: "Business / Moat",
-  catalyst: "Catalysts",
-  risk_governance: "Risks / Governance",
-  valuation_guard: "Valuation Guard",
-  source_quality_critic: "Source Critic",
-  red_team: "Red Team",
-  committee_chair: "Committee Chair",
-};
-
-function CouncilAgentCard({ agent }: { agent: LlmCouncilAgent }) {
-  const label = COUNCIL_AGENT_LABELS[agent.agent_name] ?? agent.agent_name;
-  const failed = agent.status !== "completed";
-  return (
-    <div
-      data-testid={`council-agent-${agent.agent_name}`}
-      className="rounded-lg border border-white/10 bg-white/5 p-4"
-    >
-      <div className="mb-2 flex items-center gap-2">
-        <span className="text-sm font-semibold text-slate-100">{label}</span>
-        <StatusPill
-          label={agent.status}
-          color={failed ? "amber" : "green"}
-        />
-        {agent.committee_label && (
-          <StatusPill label={agent.committee_label} color="blue" />
-        )}
-      </div>
-      {agent.summary && (
-        <p className="text-sm text-slate-300">{agent.summary}</p>
-      )}
-      {agent.key_points.length > 0 && (
-        <ul className="mt-2 space-y-1">
-          {agent.key_points.map((kp, i) => (
-            <li key={i} className="text-xs text-slate-400">
-              • {kp.claim}
-              {kp.citation_ids.length > 0 && (
-                <span className="ml-1 font-mono text-[10px] text-slate-500">
-                  [{kp.citation_ids.join(", ")}]
-                </span>
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
-      {agent.risks_or_gaps.length > 0 && (
-        <ul className="mt-2 space-y-1">
-          {agent.risks_or_gaps.map((rg, i) => (
-            <li key={i} className="text-xs text-amber-300/80">
-              ⚠ {rg.item}
-              {rg.citation_ids.length > 0 && (
-                <span className="ml-1 font-mono text-[10px] text-slate-500">
-                  [{rg.citation_ids.join(", ")}]
-                </span>
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
-      {agent.unsupported_claims.length > 0 && (
-        <p className="mt-2 text-[11px] text-slate-500">
-          Un-cited / unsupported claims flagged: {agent.unsupported_claims.length}
-        </p>
-      )}
-    </div>
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -249,6 +177,17 @@ export default async function ReportDetailPage({
   // "Phase 9" Analysis Council draft, which is surfaced with a clear badge.
   const isFinalReport = Boolean(report.final_report_version);
 
+  // Phase 28A.2 — validation flags + parsed structured content for the readable
+  // renderer. Legacy reports keep the markdown preview and are never forced
+  // through the final-report JSON renderer.
+  const schemaValid =
+    readValidationFlag(report.schema_validation_json, "is_valid") === "true";
+  const safetyValid =
+    readValidationFlag(report.safety_validation_json, "passed") === "true";
+  const structuredContent = isFinalReport
+    ? extractFinalReportContent(report.content_markdown)
+    : null;
+
   return (
     // Phase 27.1C polish — reports were cramped in the shell's max-w-3xl column,
     // making them very long vertically. Widen the report content only (not the
@@ -299,6 +238,19 @@ export default async function ReportDetailPage({
           <StatusPill label="LLM Council: Used" color="purple" />
         ) : (
           <StatusPill label="LLM Council: Not Used" color="gray" />
+        )}
+        {isFinalReport && (
+          <>
+            <StatusPill
+              label={schemaValid ? "Schema valid" : "Schema invalid"}
+              color={schemaValid ? "green" : "amber"}
+            />
+            <StatusPill
+              label={safetyValid ? "Safety passed" : "Safety warning"}
+              color={safetyValid ? "green" : "red"}
+            />
+            <StatusPill label="Publication ready: false" color="gray" />
+          </>
         )}
         <StatusPill label={report.report_type} color="gray" />
       </div>
@@ -475,33 +427,6 @@ export default async function ReportDetailPage({
         </p>
       </GlassCard>
 
-      {/* Phase 28A — LLM Council Analysis. Rendered only when the council
-          actually ran. Shows bounded, safety-scanned, citation-bound agent
-          output — never raw prompts, hidden system messages, or the full
-          evidence pack. */}
-      {council && llmUsed && (
-        <GlassCard testId="llm-council-analysis" className="space-y-3 p-5">
-          <div className="flex items-center gap-2">
-            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-              LLM Council Analysis
-            </p>
-            <StatusPill label="Internal Research Aid" color="purple" />
-            <StatusPill label="Not Investment Advice" color="red" />
-          </div>
-          <p className="text-xs text-slate-400">
-            An internal, citation-bound LLM council analysed a bounded evidence
-            pack ({council.evidence_item_count ?? 0} item(s)). Every claim cites
-            evidence ids. No rating, valuation conclusion, or return projection
-            is produced. Human review is required.
-          </p>
-          <div className="grid gap-3 md:grid-cols-2">
-            {(council.agents ?? []).map((agent) => (
-              <CouncilAgentCard key={agent.agent_name} agent={agent} />
-            ))}
-          </div>
-        </GlassCard>
-      )}
-
       <FinalReportActions reportId={report.id} />
 
       {/* Review action panel — client component */}
@@ -526,8 +451,19 @@ export default async function ReportDetailPage({
         )}
       </GlassCard>
 
-      {/* Markdown content — rendered preview with raw fallback */}
-      {report.content_markdown ? (
+      {/* Report content. Phase 28A.2 — final reports render readable sections
+          by default (raw JSON + markdown behind developer tabs). Legacy
+          deterministic drafts keep the plain markdown preview and are never
+          forced through the final-report JSON renderer. */}
+      {isFinalReport ? (
+        <ReportContentTabs
+          report={report}
+          content={structuredContent}
+          council={council && llmUsed ? council : null}
+          schemaValid={schemaValid}
+          safetyValid={safetyValid}
+        />
+      ) : report.content_markdown ? (
         <MarkdownReportPreview
           content={report.content_markdown}
           title="Report Content"

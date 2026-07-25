@@ -101,6 +101,180 @@ const REPORT_MARKDOWN = [
   "",
 ].join("\n");
 
+// Phase 28A.2 — a realistic structured report_content, matching the shape the
+// backend final-report generator produces. Values are honest (no BUY/SELL/HOLD/
+// WATCH, no price target / fair value / upside). withCouncil adds the compact
+// llm_council_analysis section.
+function sampleReportContent({ withCouncil }) {
+  const rc = {
+    admin_disclaimer: {
+      type: "admin_disclaimer",
+      content: "INTERNAL ADMIN DRAFT ONLY. NOT INVESTMENT ADVICE.",
+    },
+    executive_summary: {
+      type: "executive_summary",
+      company_name: "InvestingBuddy Test Company",
+      ticker: "IBTEST",
+      overall_score: null,
+      internal_status: "research_incomplete",
+      committee_note: {
+        value:
+          "INTERNAL COMMITTEE DRAFT — InvestingBuddy Test Company (IBTEST). Provisional status: 'research_incomplete'. Source quality: strong. Human review required. This is not an investment recommendation.",
+        provenance: "model_interpretation",
+      },
+      score_note: { value: "Scorecard not available.", provenance: "missing_data" },
+    },
+    company_identity: {
+      type: "company_identity",
+      legal_name: { value: "InvestingBuddy Test Company", provenance: "sourced_fact" },
+      ticker: { value: "IBTEST", provenance: "sourced_fact" },
+      exchange: { value: "Nasdaq", provenance: "sourced_fact" },
+      isin: { value: null, provenance: "missing_data" },
+      lei: { value: "HWUPKR0MPOU8FGXBT394", provenance: "sourced_fact" },
+      sector: { value: "Information Technology", provenance: "sourced_fact" },
+    },
+    data_availability_summary: {
+      type: "data_availability_summary",
+      source_tier: "T2_regulator_or_gov",
+      is_mock: false,
+      available_count: 6,
+      missing_count: 3,
+      warnings_count: 1,
+    },
+    financial_snapshot: {
+      type: "financial_snapshot",
+      source_tier: "T2_regulator_or_gov",
+      latest_close: { value: 190.5, currency: "USD", provenance: "sourced_fact", as_of: "2026-07-24" },
+      fundamentals_note: {
+        value: "Fundamentals not available. Run with EODHD provider or add T1 filings.",
+        provenance: "missing_data",
+      },
+    },
+    bull_case: {
+      type: "bull_case",
+      available: true,
+      positive_thesis_points: {
+        value: [
+          "Operates in the Information Technology sector; sector-level tailwinds may be relevant pending further research.",
+          "Price data available — enables tracking of recent price movement.",
+        ],
+        provenance: "model_interpretation",
+      },
+    },
+    bear_case: {
+      type: "bear_case",
+      available: true,
+      negative_thesis_points: {
+        value: ["Fundamentals not yet sourced — thesis cannot be validated."],
+        provenance: "model_interpretation",
+      },
+    },
+    risk_analysis: {
+      type: "risk_analysis",
+      available: true,
+      data_quality_risks: {
+        value: ["Fundamentals missing; conclusions are provisional."],
+        provenance: "model_interpretation",
+      },
+    },
+    valuation_readiness: {
+      type: "valuation_readiness",
+      disclaimer:
+        "Valuation readiness check only. No valuation estimates or return projections are produced here.",
+      readiness: { value: "partial", provenance: "sourced_fact" },
+      available_inputs: { value: ["price_history.latest_close"], provenance: "sourced_fact" },
+      missing_inputs: { value: ["financials.ebitda"], provenance: "sourced_fact" },
+    },
+    missing_information: {
+      type: "missing_information",
+      total_missing_items: 3,
+      missing_items: {
+        value: [
+          { field: "fundamentals.ebitda_mln", source: "company_snapshot" },
+          { field: "identity.isin", source: "company_snapshot" },
+          { field: "profile.website", source: "company_snapshot" },
+        ],
+      },
+    },
+    news_catalyst_discovery: {
+      type: "news_catalyst_discovery",
+      available: true,
+      coverage_status: "adequate",
+      lookback_days: 90,
+      disclaimer:
+        "Catalyst categories/directions/strengths are model-derived (T6_model_estimate), not sourced facts. No valuation conclusion or trading action is produced. Human review is required.",
+    },
+    human_review_checklist: [
+      {
+        item: "Safety gate passed: no prohibited investment recommendation language detected",
+        required: true,
+        completed: true,
+        note: null,
+      },
+      {
+        item: "Schema validation passed: report structure conforms to real-asset schema",
+        required: false,
+        completed: true,
+        note: null,
+      },
+    ],
+    source_citation_appendix: {
+      type: "source_citation_appendix",
+      sources: {
+        value: [
+          {
+            source_type: "sec_filing",
+            source_tier: "T2_regulator_or_gov",
+            title: "IBTEST 10-K FY2025",
+            url: "https://www.sec.gov/cgi-bin/browse-edgar",
+            source_quote: "Total net sales were reported.",
+          },
+        ],
+        total: 1,
+      },
+      citations: { value: [], total: 0 },
+    },
+    workflow_status: {
+      type: "workflow_status",
+      schema_valid: true,
+      human_review_required: true,
+      final_report_version: "16.0.0",
+    },
+  };
+  if (withCouncil) {
+    rc.llm_council_analysis = {
+      type: "llm_council_analysis",
+      council_version: "v1",
+      llm_used: true,
+      provider: "fake",
+      model: "fake-council-model",
+      evidence_pack_version: "v1",
+      evidence_item_count: 4,
+      agents_completed: 8,
+      committee_label: "requires_more_evidence",
+    };
+  }
+  return rc;
+}
+
+// Wrap a report_content object in the final-report markdown envelope the backend
+// produces (a single fenced ```json block). The readable renderer parses this.
+function finalReportMarkdown(reportContent) {
+  return [
+    "# INTERNAL ADMIN DRAFT — FINAL REPORT",
+    "",
+    "NOT INVESTMENT ADVICE. NOT A PUBLIC TRADING RECOMMENDATION. Human review required.",
+    "",
+    "---",
+    "",
+    "## Report Sections (Structured JSON — see safety_validation_json and schema_validation_json for validation status)",
+    "",
+    "```json",
+    JSON.stringify(reportContent, null, 2),
+    "```",
+  ].join("\n");
+}
+
 function mockReport(id) {
   return {
     id,
@@ -114,7 +288,7 @@ function mockReport(id) {
     status: "draft",
     summary:
       "Mock report for Playwright markdown preview test. Internal only. Not investment advice.",
-    content_markdown: REPORT_MARKDOWN,
+    content_markdown: finalReportMarkdown(sampleReportContent({ withCouncil: false })),
     content_html: null,
     created_by_agent_run_id: "aaaaaaaa-0000-0000-0000-000000000001",
     published_at: null,
@@ -153,6 +327,7 @@ function mockCouncilReport(id) {
   const base = mockReport(id);
   base.title =
     "LLM Council Analysis Draft — IBTEST — InvestingBuddy Test Company [MOCK DATA]";
+  base.content_markdown = finalReportMarkdown(sampleReportContent({ withCouncil: true }));
   base.source_summary_json = {
     total_sources: 3,
     total_citations: 2,
@@ -223,7 +398,24 @@ function mockLegacyReport(id) {
     "**Schema Validation:** SCHEMA INVALID",
     "",
     "> INTERNAL ADMIN DRAFT — PHASE 9 ANALYSIS COUNCIL. Not investment advice.",
+    "",
+    REPORT_MARKDOWN,
   ].join("\n");
+  return base;
+}
+
+// Phase 28A.2 — a markdown report used by the markdown-preview / catalyst-preview
+// tests. It has NO final_report_version, so the page renders it via the plain
+// markdown preview (not the final-report readable renderer) — exactly what those
+// tests exercise. Content is the rich human-readable REPORT_MARKDOWN.
+const MARKDOWN_REPORT_ID = "00000000-0000-0000-0000-0000000000d0";
+
+function mockMarkdownReport(id) {
+  const base = mockReport(id);
+  base.title = "InvestingBuddy Test Company — Internal Draft [MOCK DATA]";
+  base.final_report_version = null;
+  base.source_summary_json = null;
+  base.content_markdown = REPORT_MARKDOWN;
   return base;
 }
 
@@ -261,6 +453,9 @@ const server = createServer((req, res) => {
     }
     if (rid === LEGACY_REPORT_ID) {
       return send(res, 200, mockLegacyReport(rid));
+    }
+    if (rid === MARKDOWN_REPORT_ID) {
+      return send(res, 200, mockMarkdownReport(rid));
     }
     return send(res, 200, mockReport(rid));
   }

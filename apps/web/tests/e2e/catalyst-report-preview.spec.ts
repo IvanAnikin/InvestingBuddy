@@ -11,7 +11,7 @@ import { adminTest as test, expect } from "../support/auth";
  * buttons, make no direct staging API calls, and do not overflow on mobile.
  */
 
-const REPORT_ID = "00000000-0000-0000-0000-000000000099";
+const REPORT_ID = "00000000-0000-0000-0000-0000000000d0"; // Phase 28A.2 markdown/legacy fixture (renders the markdown preview)
 const REPORT_URL = `/admin/reports/${REPORT_ID}`;
 
 const PREVIEW = '[data-testid="report-markdown-preview"]';
