@@ -864,6 +864,39 @@ def test_29_completer_does_not_convert_non_usd_revenue_into_usd_field():
     assert comp.report["identity"]["reporting_currency"]["source_tier"] == "T1_primary_filing"
 
 
+def test_29b_completer_requires_explicit_usd_currency_for_usd_field():
+    # A high-confidence revenue fact whose currency is UNKNOWN (None) or blank ("")
+    # must NOT be written into the USD-denominated ``revenue_ttm_usd_m`` field —
+    # a currency-less amount would be mislabelled as USD. It stays not_sourced.
+    for missing_currency in (None, ""):
+        no_currency_revenue = _fact(
+            "revenue",
+            "Revenue: 391,035 million",
+            numeric_value=391035.0,
+            unit="currency_amount",
+            currency=missing_currency,
+            scale="million",
+            period="2024",
+            source_url=_US_AR_URL,
+        )
+        admin = _completer_admin([no_currency_revenue], [])
+        comp = build_schema_complete_report(admin, report_id="r-29b3-2b")
+        rev = comp.report["snapshot_financials"]["revenue_ttm_usd_m"]
+        assert rev["source_tier"] != "T1_primary_filing"
+        assert rev["value"] is None  # not_sourced stand-in, never a fabricated USD figure
+        # Publication / research posture stays honest and off.
+        assert comp.publication_ready is False
+        assert comp.research_complete is False
+
+    # The identical fact with an EXPLICIT USD currency IS mapped as a T1 datapoint.
+    admin_usd = _completer_admin([_usd_revenue_fact()], [_usd_currency_fact()])
+    comp_usd = build_schema_complete_report(admin_usd, report_id="r-29b3-2c")
+    rev_usd = comp_usd.report["snapshot_financials"]["revenue_ttm_usd_m"]
+    assert rev_usd["source_tier"] == "T1_primary_filing"
+    assert rev_usd["value"] == 391035.0
+    assert rev_usd["source_url"] == _US_AR_URL
+
+
 def test_30_completer_still_never_presents_mock_numbers_as_sourced():
     # No primary facts at all: the mock market cap must stay null (unchanged).
     admin = _completer_admin([], [])

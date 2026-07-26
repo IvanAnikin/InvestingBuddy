@@ -58,11 +58,13 @@ _AGGREGATOR_TIER = "T5_api_aggregator"
 _PRIMARY_FILING_TIER = "T1_primary_filing"  # Phase 29B.3 — parsed primary-fact tier
 _Q_INFERRED = "C_inferred"   # sourced-but-unverified value (no data-quality warning)
 _Q_WEAK = "D_weak_or_stale"  # not-sourced stand-in (surfaced as a data-quality warning)
-# USD-compatible currency / scale for a ``*_usd_m`` schema field. A genuine T1
+# Explicit millions scale accepted for a ``*_usd_m`` schema field. A genuine T1
 # revenue fact is only mapped into the (USD-denominated) revenue field when it is
-# already USD at a millions scale — never converted (hard constraint).
-_USD_OK = frozenset({None, "", "USD", "usd"})
-_MILLION_SCALE_OK = frozenset({None, "", "million", "millions", "mln", "m"})
+# EXPLICITLY USD at an explicit millions scale — never converted (hard
+# constraint). A currency-less or scale-less amount is deliberately NOT accepted:
+# writing it into a USD_m field would mislabel currency or fabricate magnitude, so
+# None / "" are excluded and the field falls back to its not_sourced behaviour.
+_MILLION_SCALE_OK = frozenset({"million", "millions", "mln", "m"})
 
 # A single theme_tag is structurally required (minItems 1) with no neutral enum
 # member. We emit one deterministic umbrella tag and disclose in report_meta /
@@ -393,23 +395,26 @@ class _ReportCompleter:
         """Revenue datapoint for the (USD-denominated) ``revenue_ttm_usd_m`` field.
 
         Phase 29B.3: a genuine T1 primary-filing revenue fact is mapped as a
-        properly-sourced T1 datapoint — but ONLY when it is already USD at a
-        millions scale, because this schema field is USD-denominated and no
-        currency conversion is ever performed (hard constraint). A non-USD fact
-        (e.g. EUR millions) is deliberately NOT injected here; it would misrepresent
-        the value, so the field falls back to the existing sourced/not_sourced
-        behaviour rather than fabricate a USD figure.
+        properly-sourced T1 datapoint — but ONLY when it is EXPLICITLY USD at an
+        explicit millions scale, because this schema field is USD-denominated and
+        no currency conversion is ever performed (hard constraint). A non-USD fact
+        (e.g. EUR millions), or a currency-less / scale-less amount, is
+        deliberately NOT injected here; it would misrepresent the value, so the
+        field falls back to the existing sourced/not_sourced behaviour rather than
+        fabricate (or mislabel) a USD figure.
         """
         node = self._primary_filing_node(fin, "revenue_primary_filing")
-        if (
-            node is not None
-            and node.get("numeric_value") is not None
-            and node.get("currency") in _USD_OK
-            and node.get("scale") in _MILLION_SCALE_OK
-        ):
-            return self._t1_fact_dp(
-                node, value=node.get("numeric_value"), unit="USD_m"
-            )
+        if node is not None and node.get("numeric_value") is not None:
+            currency = str(node.get("currency") or "").strip().upper()
+            scale = str(node.get("scale") or "").strip().lower()
+            # Map into the USD-denominated field ONLY when the fact is EXPLICITLY
+            # USD (case-insensitive) at an explicit millions scale. A currency-less
+            # ("" / None) amount is never mislabelled as USD, and a scale-less
+            # amount never has its magnitude guessed; no conversion is performed.
+            if currency == "USD" and scale in _MILLION_SCALE_OK:
+                return self._t1_fact_dp(
+                    node, value=node.get("numeric_value"), unit="USD_m"
+                )
         revenue_dp, _ = self._sourced_number(
             fin, "revenue_ttm_usd_m", "snapshot_financials.revenue_ttm_usd_m", unit="USD_m"
         )
