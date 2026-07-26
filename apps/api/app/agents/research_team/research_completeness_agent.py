@@ -155,7 +155,44 @@ def _first_present(source: dict, *keys: str) -> bool:
     return any(source.get(k) is not None for k in keys)
 
 
-def _enriched_present_fields(company_snapshot: dict) -> set[str]:
+# Phase 29B.3 — parsed primary-fact fields → the schema ``section.field`` they
+# satisfy. Only fields that genuinely map onto a schema entry are listed; a
+# high-confidence T1 primary-filing fact for one of these satisfies that entry.
+_PRIMARY_FACT_SCHEMA_FIELDS: dict[str, str] = {
+    "revenue": "snapshot_financials.revenue",
+    "net_income": "snapshot_financials.net_income",
+    "total_debt": "snapshot_financials.total_debt",
+    "cash_and_equivalents": "snapshot_financials.cash",
+}
+
+
+def _primary_fact_present_fields(primary_facts: list[dict] | None) -> set[str]:
+    """``section.field`` entries satisfied by real high-confidence T1 primary facts.
+
+    Only a genuine fact counts — high confidence AND carrying its own real
+    source_url (a structured datapoint parsed from an actual filing). Mock /
+    aggregator-only data never produces such a fact, so it can never mark a field
+    satisfied here. With no facts this returns an empty set and nothing changes.
+    """
+    present: set[str] = set()
+    for fact in primary_facts or []:
+        if not isinstance(fact, dict):
+            continue
+        if fact.get("confidence") != "high" or not fact.get("source_url"):
+            continue
+        field = fact.get("field")
+        if not isinstance(field, str):
+            continue
+        entry = _PRIMARY_FACT_SCHEMA_FIELDS.get(field)
+        if entry is not None:
+            present.add(entry)
+    return present
+
+
+def _enriched_present_fields(
+    company_snapshot: dict,
+    primary_facts: list[dict] | None = None,
+) -> set[str]:
     """
     Derive the ``section.field`` schema entries already satisfied by the enriched
     company snapshot (Phase 19.4 identity/profile + derived market metrics).
@@ -214,6 +251,11 @@ def _enriched_present_fields(company_snapshot: dict) -> set[str]:
     if _first_present(fundamentals, "cash_and_equivalents_usd_m"):
         present.add("snapshot_financials.cash")
 
+    # Phase 29B.3 — real high-confidence T1 primary-filing facts (revenue, …)
+    # satisfy their schema field so a genuinely-sourced field is not reported as
+    # a blocking/missing gap. Only genuine facts count (never mock/aggregator).
+    present |= _primary_fact_present_fields(primary_facts)
+
     return present
 
 
@@ -221,6 +263,7 @@ def run_research_completeness_agent(
     company_snapshot: dict,
     schema_draft: dict | None = None,
     schema_validation_errors: list[str] | None = None,
+    primary_facts: list[dict] | None = None,
 ) -> ResearchCompletenessAgentOutput:
     """
     Compare snapshot and draft against the report schema; identify gaps.
@@ -229,6 +272,10 @@ def run_research_completeness_agent(
         company_snapshot: dict from build_company_snapshot().
         schema_draft: the partial schema draft dict (may be None).
         schema_validation_errors: error list from validate_real_asset_report().
+        primary_facts: Phase 29B.3 — high-confidence T1 primary-filing facts
+            surfaced by the council (each with its own source_url). When present,
+            the schema fields they source (e.g. snapshot_financials.revenue) are
+            no longer reported as gaps. Defaults to ``None`` (no change).
 
     Returns:
         ResearchCompletenessAgentOutput — always returns, never raises.
@@ -239,7 +286,8 @@ def run_research_completeness_agent(
     # Phase 19.4.1: fields already satisfied by the enriched snapshot must not be
     # reported as blocking/missing gaps even though the schema draft (built from
     # the raw provider profile) does not carry them.
-    enriched_present = _enriched_present_fields(company_snapshot)
+    # Phase 29B.3: genuine T1 primary-filing facts likewise satisfy their field.
+    enriched_present = _enriched_present_fields(company_snapshot, primary_facts)
 
     complete_sections: list[str] = []
     incomplete_sections: list[str] = []

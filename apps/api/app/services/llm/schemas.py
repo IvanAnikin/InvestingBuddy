@@ -220,6 +220,12 @@ class CouncilResult(BaseModel):
     # Empty unless both the connector + document-extraction flags are on. Carries
     # no raw document text — only counts, domain, tier, warnings.
     primary_documents: list[dict[str, Any]] = Field(default_factory=list)
+    # Phase 29B.3: structured, bounded HIGH-CONFIDENCE primary facts parsed from
+    # the annual-report document (field / value / numeric_value / unit / currency
+    # / scale / period + short page/excerpt provenance + confidence). Empty unless
+    # a real high-confidence fact exists. Carries no raw document text or excerpt
+    # body — only the fact fields + short provenance.
+    primary_facts: list[dict[str, Any]] = Field(default_factory=list)
 
     def recount(self) -> None:
         """Refresh the completed/failed/skipped tallies from ``agents``."""
@@ -279,6 +285,7 @@ class CouncilResult(BaseModel):
             "committee_label": self.committee_label,
             "agents": [a.to_dict() for a in self.agents],
             "primary_documents": list(self.primary_documents),
+            "primary_facts": list(self.primary_facts),
         }
 
     @classmethod

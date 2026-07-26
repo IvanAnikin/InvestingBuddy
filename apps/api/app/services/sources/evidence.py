@@ -73,6 +73,51 @@ class EvidenceSource(BaseModel):
         return v
 
 
+PRIMARY_FACT_VALUE_MAX = 160
+
+
+class PrimaryFactRef(BaseModel):
+    """A bounded, structured reference to one parsed primary fact — Phase 29B.3.
+
+    Carried on the ``EvidenceItem`` that cites it (only on
+    ``company_ir_financial_fact`` items). It holds ONLY the fact's structured
+    fields plus a short provenance (page / excerpt id / confidence) — never the
+    raw document text or the full excerpt body. This is what lets the final
+    report surface a real T1 primary-filing datapoint (revenue, reporting
+    currency, fiscal year, …) without re-parsing an excerpt string, while every
+    inserted value keeps its own source URL + provenance and stays
+    ``needs_human_review``.
+    """
+
+    field: str
+    value: str
+    numeric_value: float | None = None
+    unit: str | None = None
+    currency: str | None = None
+    scale: str | None = None
+    period: str | None = None
+    source_url: str | None = None
+    excerpt_id: str | None = None
+    page_number: int | None = None
+    confidence: str = "medium"  # low | medium | high
+    needs_human_review: bool = True
+
+    @field_validator("source_url")
+    @classmethod
+    def _strip_fact_url(cls, v: str | None) -> str | None:
+        return strip_url_secrets(v)
+
+    @field_validator("value")
+    @classmethod
+    def _bound_value(cls, v: str) -> str:
+        """A fact value is short by construction; bound it so no excerpt body
+        can ever ride along here."""
+        s = str(v).strip()
+        if len(s) <= PRIMARY_FACT_VALUE_MAX:
+            return s
+        return s[: PRIMARY_FACT_VALUE_MAX - 1].rstrip() + "…"
+
+
 class EvidenceItem(BaseModel):
     """One bounded, cited piece of evidence.
 
@@ -112,6 +157,11 @@ class EvidenceItem(BaseModel):
 
     provenance: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+
+    # Phase 29B.3: structured, bounded parsed-fact payload — set ONLY on
+    # ``company_ir_financial_fact`` items. Carries no raw excerpt body / document
+    # text (see PrimaryFactRef). Absent on every other evidence item.
+    primary_fact: PrimaryFactRef | None = None
 
     @field_validator("content_source_tier")
     @classmethod
@@ -209,7 +259,9 @@ def build_evidence_item(
 
 __all__ = [
     "EXCERPT_MAX",
+    "PRIMARY_FACT_VALUE_MAX",
     "EvidenceSource",
     "EvidenceItem",
+    "PrimaryFactRef",
     "build_evidence_item",
 ]

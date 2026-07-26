@@ -55,8 +55,14 @@ _VALID_SOURCE_TIERS = frozenset(
 )
 _MODEL_TIER = "T6_model_estimate"
 _AGGREGATOR_TIER = "T5_api_aggregator"
+_PRIMARY_FILING_TIER = "T1_primary_filing"  # Phase 29B.3 — parsed primary-fact tier
 _Q_INFERRED = "C_inferred"   # sourced-but-unverified value (no data-quality warning)
 _Q_WEAK = "D_weak_or_stale"  # not-sourced stand-in (surfaced as a data-quality warning)
+# USD-compatible currency / scale for a ``*_usd_m`` schema field. A genuine T1
+# revenue fact is only mapped into the (USD-denominated) revenue field when it is
+# already USD at a millions scale — never converted (hard constraint).
+_USD_OK = frozenset({None, "", "USD", "usd"})
+_MILLION_SCALE_OK = frozenset({None, "", "million", "millions", "mln", "m"})
 
 # A single theme_tag is structurally required (minItems 1) with no neutral enum
 # member. We emit one deterministic umbrella tag and disclose in report_meta /
@@ -221,6 +227,65 @@ class _ReportCompleter:
             note="Sourced from the internal analysis snapshot; requires human confirmation.",
         )
 
+    # ── Phase 29B.3 — genuine T1 primary-filing fact datapoints ───────────────
+
+    def _primary_filing_node(
+        self, section: Any, key: str
+    ) -> dict[str, Any] | None:
+        """Return ``section[key]`` IFF it is a genuine T1 primary-filing fact.
+
+        A genuine fact carries ``source_tier == "T1_primary_filing"``, its own
+        real ``source_url`` and a value — i.e. a datapoint parsed from an actual
+        company filing (Phase 29B.3). Such a fact is real evidence even when the
+        base snapshot is mock, so it is deliberately NOT suppressed by
+        ``self._is_mock``. Mock / aggregator data never carries this tier plus a
+        source_url, so it can never reach this path — mock numbers are never
+        presented as sourced.
+        """
+        if not isinstance(section, dict):
+            return None
+        node = section.get(key)
+        if not isinstance(node, dict):
+            return None
+        if node.get("source_tier") != _PRIMARY_FILING_TIER:
+            return None
+        if not node.get("source_url"):
+            return None
+        if node.get("value") is None and node.get("numeric_value") is None:
+            return None
+        return node
+
+    def _t1_fact_dp(
+        self, node: dict[str, Any], *, value: Any, unit: str | None = None
+    ) -> dict[str, Any]:
+        """A properly-sourced datapoint for a genuine T1 primary-filing fact.
+
+        Carries the fact's own ``source_url`` and ``source_tier`` (never the
+        generic "internal analysis snapshot" source, never a not_sourced
+        stand-in). ``as_of`` stays a valid ISO date (the fact's raw reporting
+        period, e.g. "2024", is disclosed in the note instead — no fabrication).
+        """
+        note_bits = [
+            "Extracted from a company primary filing (T1); requires human "
+            "confirmation and has not been reconciled against a filed statement."
+        ]
+        period = node.get("period")
+        if period:
+            note_bits.append(f"Reported period: {period}.")
+        confidence = node.get("confidence")
+        if confidence:
+            note_bits.append(f"Extraction confidence: {confidence}.")
+        dp = self._dp(
+            value,
+            source_name="company primary document (annual report filing)",
+            data_quality=_Q_INFERRED,
+            source_tier=_PRIMARY_FILING_TIER,
+            unit=unit,
+            note=" ".join(note_bits),
+        )
+        dp["source_url"] = node.get("source_url")
+        return dp
+
     # ── section builders ─────────────────────────────────────────────────────
 
     def _report_meta(self) -> dict[str, Any]:
@@ -282,7 +347,17 @@ class _ReportCompleter:
             out["country_domicile"] = self._sourced_string(
                 country, "identity.country_domicile", source_name="internal analysis snapshot"
             )
-        if currency is not None and not self._is_mock:
+        # Phase 29B.3 — a genuine T1 primary-filing reporting-currency fact is
+        # carried as a properly-sourced T1 datapoint (its own source_url), even
+        # when the base snapshot is mock. It is a plain currency code, so no
+        # conversion or numeric fabrication is involved. Falls back to the
+        # existing snapshot-sourced string when no such fact is present.
+        currency_fact = self._primary_filing_node(ident, "reporting_currency")
+        if currency_fact is not None:
+            out["reporting_currency"] = self._t1_fact_dp(
+                currency_fact, value=_clean(str(currency_fact.get("value")))
+            )
+        elif currency is not None and not self._is_mock:
             out["reporting_currency"] = self._sourced_string(
                 currency,
                 "identity.reporting_currency",
@@ -314,6 +389,32 @@ class _ReportCompleter:
             ),
         }
 
+    def _revenue_datapoint(self, fin: dict[str, Any]) -> dict[str, Any]:
+        """Revenue datapoint for the (USD-denominated) ``revenue_ttm_usd_m`` field.
+
+        Phase 29B.3: a genuine T1 primary-filing revenue fact is mapped as a
+        properly-sourced T1 datapoint — but ONLY when it is already USD at a
+        millions scale, because this schema field is USD-denominated and no
+        currency conversion is ever performed (hard constraint). A non-USD fact
+        (e.g. EUR millions) is deliberately NOT injected here; it would misrepresent
+        the value, so the field falls back to the existing sourced/not_sourced
+        behaviour rather than fabricate a USD figure.
+        """
+        node = self._primary_filing_node(fin, "revenue_primary_filing")
+        if (
+            node is not None
+            and node.get("numeric_value") is not None
+            and node.get("currency") in _USD_OK
+            and node.get("scale") in _MILLION_SCALE_OK
+        ):
+            return self._t1_fact_dp(
+                node, value=node.get("numeric_value"), unit="USD_m"
+            )
+        revenue_dp, _ = self._sourced_number(
+            fin, "revenue_ttm_usd_m", "snapshot_financials.revenue_ttm_usd_m", unit="USD_m"
+        )
+        return revenue_dp
+
     def _snapshot_financials(self) -> dict[str, Any]:
         fin = self._admin.get("financial_snapshot") or {}
 
@@ -335,9 +436,7 @@ class _ReportCompleter:
         market_cap_dp, market_cap_val = self._sourced_number(
             fin, "market_cap_usd_m", "snapshot_financials.market_cap_usd_m", unit="USD_m"
         )
-        revenue_dp, _ = self._sourced_number(
-            fin, "revenue_ttm_usd_m", "snapshot_financials.revenue_ttm_usd_m", unit="USD_m"
-        )
+        revenue_dp = self._revenue_datapoint(fin)
         ebitda_dp, _ = self._sourced_number(
             fin, "ebitda_ttm_usd_m", "snapshot_financials.ebitda_ttm_usd_m", unit="USD_m"
         )

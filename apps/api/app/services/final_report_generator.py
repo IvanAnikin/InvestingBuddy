@@ -342,9 +342,93 @@ def _build_executive_summary(
     }
 
 
+# Phase 29B.3 — which parsed primary-fact fields belong to which report section.
+# Financial-statement facts flow into the financial snapshot; identity facts flow
+# into company identity. A fact is only ever inserted when it is high-confidence.
+_PRIMARY_FINANCIAL_FACT_FIELDS: frozenset[str] = frozenset(
+    {
+        "revenue",
+        "operating_profit",
+        "net_income",
+        "free_cash_flow",
+        "total_assets",
+        "total_debt",
+        "cash_and_equivalents",
+    }
+)
+_PRIMARY_IDENTITY_FACT_FIELDS: frozenset[str] = frozenset(
+    {
+        "reporting_currency",
+        "fiscal_year",
+        "employees",
+        "business_profile",
+        "segments",
+    }
+)
+
+
+def _primary_fact_dp(fact: dict[str, Any]) -> dict[str, Any]:
+    """Datapoint for a parsed T1 primary-filing fact — Phase 29B.3.
+
+    Unlike ``_fund_dp`` (which stamps an EODHD / T5 aggregator value), this stamps
+    the fact's OWN token-stripped source URL, ``source_tier="T1_primary_filing"``,
+    a short provenance (page / excerpt id / confidence), and is always
+    ``human_review_required``. ``provenance="sourced_fact"`` is only emitted when
+    the fact actually carries its source URL — never a bare "sourced_fact".
+    """
+    source_url = fact.get("source_url")
+    prov_bits: list[str] = []
+    page = fact.get("page_number")
+    if page is not None:
+        prov_bits.append(f"page={page}")
+    if fact.get("excerpt_id"):
+        prov_bits.append(f"excerpt={fact['excerpt_id']}")
+    if fact.get("confidence"):
+        prov_bits.append(f"confidence={fact['confidence']}")
+    return {
+        "value": fact.get("value"),
+        "numeric_value": fact.get("numeric_value"),
+        "unit": fact.get("unit"),
+        "currency": fact.get("currency"),
+        "scale": fact.get("scale"),
+        "period": fact.get("period"),
+        "provenance": "sourced_fact" if source_url else "missing_data",
+        "source_tier": "T1_primary_filing",
+        "source": "company_ir_primary_document",
+        "source_url": source_url,
+        "fact_provenance": prov_bits,
+        "confidence": fact.get("confidence"),
+        "needs_human_review": True,
+        "human_review_required": True,
+    }
+
+
+def _high_confidence_facts_for(
+    primary_facts: list[dict[str, Any]] | None,
+    fields: frozenset[str],
+) -> list[tuple[str, dict[str, Any]]]:
+    """(field, fact) pairs for high-confidence facts whose field is in ``fields``.
+
+    De-duplicates on field (first high-confidence fact wins) so a section never
+    grows two datapoints for the same field.
+    """
+    out: list[tuple[str, dict[str, Any]]] = []
+    seen: set[str] = set()
+    for fact in primary_facts or []:
+        field = fact.get("field")
+        if field not in fields or field in seen:
+            continue
+        if fact.get("confidence") != "high":
+            continue
+        seen.add(field)  # type: ignore[arg-type]
+        out.append((field, fact))  # type: ignore[arg-type]
+    return out
+
+
 def _build_company_identity(
     company_snapshot: dict[str, Any] | None,
     company_record: dict[str, Any] | None,
+    primary_facts: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     identity: dict[str, Any] = {"type": "company_identity"}
 
@@ -401,6 +485,15 @@ def _build_company_identity(
         identity["legal_name"] = _dp(None, "unavailable", "missing_data")
         identity["source_tier"] = "T6_model_estimate"
         identity["is_mock"] = True
+
+    # Phase 29B.3 — add/override identity datapoints from real high-confidence
+    # primary facts (reporting_currency, fiscal_year, employees, …). Each carries
+    # the fact's OWN source_url + T1 tier + needs_human_review. With no such fact
+    # this loop is a no-op and the section is byte-for-byte unchanged.
+    for field, fact in _high_confidence_facts_for(
+        primary_facts, _PRIMARY_IDENTITY_FACT_FIELDS
+    ):
+        identity[field] = _primary_fact_dp(fact)
 
     identity["human_review_required"] = True
     return identity
@@ -497,6 +590,7 @@ def _build_data_availability_summary(
 def _build_financial_snapshot(
     company_snapshot: dict[str, Any] | None,
     fundamentals_data: dict[str, Any] | None,
+    primary_facts: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     section: dict[str, Any] = {
         "type": "financial_snapshot",
@@ -560,6 +654,16 @@ def _build_financial_snapshot(
         }
         section["source_tier"] = "T6_model_estimate"
         section["is_mock"] = True
+
+    # Phase 29B.3 — present real high-confidence T1 primary-filing facts (revenue,
+    # …) as their own datapoints, keyed ``<field>_primary_filing`` so the existing
+    # T5 eodhd values are preserved untouched. Each carries the fact's OWN
+    # source_url + T1 tier + provenance + needs_human_review. With no matching
+    # high-confidence fact this loop is a no-op and the section is unchanged.
+    for field, fact in _high_confidence_facts_for(
+        primary_facts, _PRIMARY_FINANCIAL_FACT_FIELDS
+    ):
+        section[f"{field}_primary_filing"] = _primary_fact_dp(fact)
 
     return section
 
@@ -824,6 +928,7 @@ def _build_risk_analysis(risk_summary: dict[str, Any] | None) -> dict[str, Any]:
 def _build_source_quality_review(
     source_quality_summary: dict[str, Any] | None,
     sources: list[Source],
+    primary_facts: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     section: dict[str, Any] = {
         "type": "source_quality_review",
@@ -886,6 +991,33 @@ def _build_source_quality_review(
         section["note_no_sources"] = {
             "value": "No sources found in DB for this report.",
             "provenance": "missing_data",
+        }
+
+    # Phase 29B.3 — distinguish EXTRACTED T1 primary facts from metadata-only IR
+    # evidence. A metadata-only IR / annual-reports *index* link carries no
+    # content; an extracted primary fact is a structured T1 datapoint (field,
+    # value, page, source_url) parsed from an actual filing. Only genuine
+    # high-confidence facts (with a real source_url) are counted here, so overall
+    # source quality only improves when a primary source truly backs a claim.
+    # With zero facts this block is skipped and the section is byte-for-byte
+    # unchanged.
+    high_conf_facts = [
+        f
+        for f in (primary_facts or [])
+        if isinstance(f, dict) and f.get("confidence") == "high" and f.get("source_url")
+    ]
+    if high_conf_facts:
+        section["extracted_primary_facts"] = {
+            "value": len(high_conf_facts),
+            "provenance": "sourced_fact",
+            "source": "company_ir_primary_document",
+            "fields": sorted({str(f.get("field")) for f in high_conf_facts}),
+            "note": (
+                "Structured T1 primary-filing datapoints (field / value / page / "
+                "source_url) extracted from a company filing — distinct from "
+                "metadata-only IR index links, which carry no content. Each "
+                "extracted fact still requires human confirmation."
+            ),
         }
 
     return section
@@ -1086,9 +1218,28 @@ def _build_workflow_status(
     }
 
 
+def _has_high_confidence_primary_facts(
+    primary_facts: list[dict[str, Any]] | None,
+) -> bool:
+    """True when the council surfaced at least one genuine T1 primary-filing fact.
+
+    A fact only counts when it is high-confidence AND carries its own real
+    source_url — i.e. a structured datapoint parsed from an actual company filing.
+    Metadata-only IR index links never produce such a fact, and mock / T5 / T6
+    data never carries one, so this stays ``False`` for the zero-fact reality.
+    """
+    for fact in primary_facts or []:
+        if not isinstance(fact, dict):
+            continue
+        if fact.get("confidence") == "high" and fact.get("source_url"):
+            return True
+    return False
+
+
 def _has_t1_t2_evidence(
     source_tier: str | None,
     citations: list[Citation],
+    primary_facts: list[dict[str, Any]] | None = None,
 ) -> bool:
     """True only when a genuine T1/T2 (primary filing / regulator) source backs a
     claim.
@@ -1099,12 +1250,19 @@ def _has_t1_t2_evidence(
     only evidence is T5/T6 (price/model) or metadata-only never counts as having
     T1/T2 data present. ``T1_primary_company_source`` (a real, content-bearing
     company primary source) does count.
+
+    Phase 29B.3: a high-confidence primary-filing fact extracted by the council
+    (revenue / reporting currency / … with its own source_url) is genuine T1
+    evidence and also counts. With zero facts this argument is ``None`` and the
+    result is byte-for-byte identical to the pre-29B.3 behaviour.
     """
 
     def _is_t1_t2(tier: str | None) -> bool:
         return bool(tier) and (str(tier).startswith("T1") or str(tier).startswith("T2"))
 
     if any(_is_t1_t2(c.source_tier) for c in citations):
+        return True
+    if _has_high_confidence_primary_facts(primary_facts):
         return True
     return _is_t1_t2(source_tier)
 
@@ -1203,6 +1361,44 @@ def _build_human_review_checklist(
         ),
     ]
     return items
+
+
+_T1_T2_CHECKLIST_PREFIX = "Data quality: T1/T2 sources present"
+
+
+def _patch_t1_t2_checklist_item(
+    checklist: list[dict[str, Any]],
+    is_mock: bool,
+    has_t1_t2: bool,
+) -> None:
+    """Recompute the T1/T2 data-quality checklist item in place — Phase 29B.3.
+
+    The report's checklist is assembled before the LLM council runs, so its
+    T1/T2 item cannot yet see council-extracted primary facts. This re-derives
+    ``completed`` / ``note`` with the same honest rule used at assembly time:
+    the item is only completed when the dataset is not mock AND a genuine T1/T2
+    source (citation, tier, or extracted primary fact) backs a claim. Mock data
+    keeps the item incomplete regardless of a handful of extracted facts.
+    """
+    for item in checklist:
+        if not isinstance(item, dict):
+            continue
+        if not str(item.get("item", "")).startswith(_T1_T2_CHECKLIST_PREFIX):
+            continue
+        item["completed"] = (not is_mock) and has_t1_t2
+        if is_mock:
+            item["note"] = (
+                "Mock or T5/T6-only data detected. Primary source validation required."
+            )
+        elif has_t1_t2:
+            item["note"] = None
+        else:
+            item["note"] = (
+                "Only T5/T6 or metadata-only evidence present — no T1/T2 "
+                "primary/regulator source backs a claim yet. Primary source "
+                "validation required."
+            )
+        return
 
 
 def _build_source_citation_appendix(
@@ -2325,6 +2521,39 @@ class FinalReportGeneratorService:
         if council_result.llm_used:
             report_content["llm_council_analysis"] = council_result.to_report_dict()
 
+        # Phase 29B.3: when the council surfaced real high-confidence primary facts
+        # (annual-report revenue / reporting currency / fiscal year / …), re-render
+        # the financial-snapshot + company-identity sections so each fact appears
+        # as a T1 datapoint carrying its OWN source_url + tier + provenance +
+        # needs_human_review. The existing T5 eodhd datapoints are preserved. With
+        # zero facts (the scanned-PDF reality) both sections stay byte-for-byte
+        # identical. This runs BEFORE validation so the safety gate scans it.
+        primary_facts = council_result.primary_facts
+        if primary_facts:
+            report_content["financial_snapshot"] = _build_financial_snapshot(
+                company_snapshot, fundamentals_data, primary_facts=primary_facts
+            )
+            report_content["company_identity"] = _build_company_identity(
+                company_snapshot, company_record, primary_facts=primary_facts
+            )
+            # Phase 29B.3: the quality gates were assembled before the council ran,
+            # so re-derive the ones that recognise real T1 primary facts. The
+            # source-quality review now flags EXTRACTED primary facts (distinct
+            # from metadata-only IR links), and the T1/T2 data-quality checklist
+            # item is recomputed (still gated on not-mock). With zero facts none
+            # of this runs and the report is byte-for-byte unchanged.
+            report_content["source_quality_review"] = _build_source_quality_review(
+                source_quality_summary, sources, primary_facts=primary_facts
+            )
+            _snapshot_is_mock = (
+                company_snapshot.get("is_mock", True) if company_snapshot else True
+            )
+            _patch_t1_t2_checklist_item(
+                report_content.get("human_review_checklist", []),
+                is_mock=_snapshot_is_mock,
+                has_t1_t2=_has_t1_t2_evidence(source_tier, citations, primary_facts),
+            )
+
         # Phase 26: safety-scan the admin draft AND validate a schema-completed
         # version (honest not_sourced stand-ins fill genuinely-absent fields, so
         # the draft reaches schema_valid=True while staying research-incomplete).
@@ -2401,7 +2630,7 @@ class FinalReportGeneratorService:
             has_citations=len(citations) > 0,
             missing_count=missing_count_val,
             is_mock=is_mock_val,
-            has_t1_t2=_has_t1_t2_evidence(source_tier, citations),
+            has_t1_t2=_has_t1_t2_evidence(source_tier, citations, primary_facts),
         )
 
         provisional_status = None

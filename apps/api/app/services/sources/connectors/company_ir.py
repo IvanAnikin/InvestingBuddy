@@ -55,7 +55,11 @@ from app.services.sources.document_text_extractor import (
     EVIDENCE_TYPE_RISK,
     DocumentTextExtraction,
 )
-from app.services.sources.evidence import EvidenceItem, build_evidence_item
+from app.services.sources.evidence import (
+    EvidenceItem,
+    PrimaryFactRef,
+    build_evidence_item,
+)
 from app.services.sources.gaps import GapSeverity, GapType, SourceGap
 from app.services.sources.primary_fact_parser import PrimaryFact
 from app.services.sources.safe_web_fetcher import (
@@ -471,7 +475,9 @@ class CompanyIrConnector(SourceConnector):
                 )
             )
 
-        # High-confidence parsed facts become their own T1 fact evidence.
+        # High-confidence parsed facts become their own T1 fact evidence. Each
+        # item also carries the STRUCTURED fact payload (Phase 29B.3) so the final
+        # report can surface a real T1 datapoint without re-parsing the excerpt.
         for j, fact in enumerate(bundle.facts[:cap], start=1):
             unit_bits = " ".join(
                 b for b in (fact.scale, fact.currency, fact.unit) if b
@@ -481,6 +487,9 @@ class CompanyIrConnector(SourceConnector):
                 + (f" ({unit_bits})" if unit_bits else "")
                 + (f" [{fact.period}]" if fact.period else "")
             )
+            # The effective, token-stripped source URL used for both the item and
+            # the structured fact's own provenance.
+            fact_url = fact.source_url or ext.source_url or target.url
             items.append(
                 build_evidence_item(
                     id=f"IRFACT{j}",
@@ -492,7 +501,7 @@ class CompanyIrConnector(SourceConnector):
                     content_source_tier=T1_PRIMARY_FILING,
                     source_type="company_ir_financial_fact",
                     title=f"{doc_title}: {fact.field}",
-                    url=fact.source_url or ext.source_url or target.url,
+                    url=fact_url,
                     date=fact.period or year,
                     excerpt=excerpt,
                     requires_translation=requires_tr,
@@ -507,6 +516,20 @@ class CompanyIrConnector(SourceConnector):
                     warnings=(
                         [w for w in [fact.parser_warning] if w]
                         + ["Parsed primary fact — unverified; human review required."]
+                    ),
+                    primary_fact=PrimaryFactRef(
+                        field=fact.field,
+                        value=fact.value,
+                        numeric_value=fact.numeric_value,
+                        unit=fact.unit,
+                        currency=fact.currency,
+                        scale=fact.scale,
+                        period=fact.period,
+                        source_url=fact_url,
+                        excerpt_id=fact.excerpt_id,
+                        page_number=fact.page_number,
+                        confidence=fact.confidence,
+                        needs_human_review=fact.needs_human_review,
                     ),
                 )
             )
