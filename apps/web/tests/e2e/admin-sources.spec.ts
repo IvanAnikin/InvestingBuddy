@@ -108,4 +108,35 @@ test.describe("Admin Source Registry", () => {
     const body = (await page.locator("body").innerText()).toLowerCase();
     expect(body).not.toContain("boeing");
   });
+
+  // ── Phase 29B.2 ──────────────────────────────────────────────────────────
+
+  test("document-text toggle surfaces extracted excerpts + parsed facts", async ({
+    page,
+  }) => {
+    await page.goto("/admin/sources");
+    await expect(page.getByTestId("evidence-preview")).toBeVisible();
+    await page.getByRole("button", { name: /Richemont \(CFR\.SW\)/ }).click();
+    // Opt into bounded annual-report document extraction.
+    await page
+      .getByTestId("preview-include-document-text")
+      .locator("input")
+      .check();
+    await page.getByTestId("preview-submit").click();
+
+    const result = page.getByTestId("preview-result");
+    await expect(result).toBeVisible();
+    // The document-extraction pill + the extracted-text / parsed-fact badges.
+    await expect(result).toContainText("document extraction");
+    await expect(result.getByText("extracted text").first()).toBeVisible();
+    await expect(result.getByText("parsed fact").first()).toBeVisible();
+    // The excerpt/fact evidence renders with its bounded text.
+    await expect(result).toContainText("20,616 million");
+    await expect(result.getByTestId("preview-extracted-item").first()).toBeVisible();
+    // Still secret-free and no leaked raw object.
+    const body = (await page.locator("body").innerText()).toLowerCase();
+    expect(body).not.toContain("api_token");
+    expect(body).not.toContain("[object object]");
+    expect(body).not.toContain("boeing");
+  });
 });

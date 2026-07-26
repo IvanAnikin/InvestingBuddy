@@ -350,6 +350,8 @@ def build_evidence_pack(
     extra_known_gaps: list[str] | None = None,
     connector_evidence: list[Any] | None = None,
     connector_gap_messages: list[str] | None = None,
+    apply_budget: bool = False,
+    budget_cfg: Any | None = None,
 ) -> EvidencePack:
     """Build a bounded, cited evidence pack for one company.
 
@@ -361,6 +363,12 @@ def build_evidence_pack(
     source-registry connector output (SEC filing metadata, company-IR press
     releases, and honest scaffold/eligibility gaps). Connector evidence is added
     first so its primary filings survive the cap.
+
+    ``apply_budget`` (Phase 29B.2) runs the deterministic evidence budgeter as a
+    final step so a larger primary-source pack cannot balloon the council prompt.
+    It de-duplicates, prefers higher-tier factual excerpts, and bounds item count
+    + total chars while never dropping all source gaps. Off by default so the
+    Phase 28A/29B tests keep their exact item counts.
     """
     builder = _Builder(max_items=max(1, max_items))
 
@@ -396,7 +404,7 @@ def build_evidence_pack(
         if g and g not in known_gaps:
             known_gaps.append(g)
 
-    return EvidencePack(
+    pack = EvidencePack(
         evidence_pack_version=EVIDENCE_PACK_VERSION,
         company=_company_from(report_content, company_snapshot),
         source_policy=SourcePolicy(
@@ -407,3 +415,9 @@ def build_evidence_pack(
         known_gaps=known_gaps,
         do_not_infer=do_not_infer,
     )
+    if apply_budget:
+        # Local import avoids any import-time coupling to the budgeter/config.
+        from app.services.llm.evidence_budget import apply_evidence_budget
+
+        pack = apply_evidence_budget(pack, cfg=budget_cfg)
+    return pack

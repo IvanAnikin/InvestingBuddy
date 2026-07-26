@@ -177,6 +177,30 @@ test.describe("Report Detail — readable final report (Phase 28A.2)", () => {
     await expect(dqItem).not.toContainText("✓");
   });
 
+  // Phase 29B.2 — the readable report surfaces the bounded primary-document
+  // (annual report) evidence the connector layer extracted: counts, domain, tier
+  // and the honest "not the full document / human review" framing — never raw
+  // text and never "[object Object]".
+  test("shows extracted primary-document excerpts/facts cleanly", async ({
+    page,
+  }) => {
+    await page.goto(COUNCIL_URL);
+
+    const docs = page.getByTestId("primary-documents").first();
+    await expect(docs).toBeVisible();
+    await expect(docs).toContainText("Primary Documents (extracted)");
+    await expect(docs).toContainText("Annual Report 2024");
+    await expect(docs).toContainText("3 excerpt(s)");
+    await expect(docs).toContainText("2 fact(s)");
+    await expect(docs).toContainText("richemont.com");
+    await expect(docs).toContainText("T1 primary filing");
+    // Honest framing + no leaked raw object.
+    await expect(docs).toContainText("not the full");
+    await expect(docs).not.toContainText("[object Object]");
+    // No forbidden action buttons introduced by the new card.
+    await assertNoForbiddenButtons(page);
+  });
+
   test("preserves the ~90vw report width on wide desktop", async ({ page }) => {
     await page.setViewportSize({ width: 1600, height: 1000 });
     await page.goto(COUNCIL_URL);

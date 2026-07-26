@@ -5,7 +5,65 @@
 
 import GlassCard from "@/components/ui/GlassCard";
 import StatusPill from "@/components/ui/StatusPill";
-import type { LlmCouncilAgent, LlmCouncilMetadata } from "@/types/api";
+import type {
+  LlmCouncilAgent,
+  LlmCouncilMetadata,
+  PrimaryDocumentSummary,
+} from "@/types/api";
+
+// Phase 29B.2 — compact, read-only summary of the bounded primary-document
+// (annual report) evidence the connector layer extracted for the council.
+// Counts / domain / tier / warnings only — never raw document text.
+export function PrimaryDocumentsCard({
+  documents,
+}: {
+  documents: PrimaryDocumentSummary[];
+}) {
+  if (!documents.length) return null;
+  return (
+    <div data-testid="primary-documents" className="space-y-2">
+      <div className="flex items-center gap-2">
+        <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+          Primary Documents (extracted)
+        </p>
+        <StatusPill label="T1 primary filing" color="blue" />
+      </div>
+      <ul className="space-y-2">
+        {documents.map((doc, i) => (
+          <li
+            key={`${doc.title}-${i}`}
+            className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2"
+          >
+            <div className="flex flex-wrap items-center gap-2">
+              <StatusPill
+                label={`${doc.excerpt_count} excerpt(s)`}
+                color="green"
+              />
+              <StatusPill label={`${doc.fact_count} fact(s)`} color="green" />
+              {doc.requires_translation && (
+                <StatusPill label="translation pending" color="purple" />
+              )}
+              <span className="text-sm text-slate-200">{doc.title}</span>
+            </div>
+            {doc.domain && (
+              <p className="mt-0.5 text-[11px] text-slate-500">{doc.domain}</p>
+            )}
+            {doc.warnings && doc.warnings.length > 0 && (
+              <p className="mt-1 text-[11px] italic text-amber-300/70">
+                {doc.warnings.join(" · ")}
+              </p>
+            )}
+          </li>
+        ))}
+      </ul>
+      <p className="text-[11px] italic text-slate-500">
+        Bounded excerpts of the issuer&apos;s own annual report — not the full
+        filing. Parsed facts are unverified until reviewed. Human review is
+        required.
+      </p>
+    </div>
+  );
+}
 
 const COUNCIL_AGENT_LABELS: Record<string, string> = {
   financial_analyst: "Financial Analyst",
@@ -126,6 +184,9 @@ export function LlmCouncilSummaryCard({
         <SummaryStat label="Human Review" value="required" />
         <SummaryStat label="Publication Ready" value="false" />
       </div>
+      {council.primary_documents && council.primary_documents.length > 0 && (
+        <PrimaryDocumentsCard documents={council.primary_documents} />
+      )}
       <p className="text-[11px] italic text-slate-500">
         Metadata only. Every council claim cites evidence ids; no rating, valuation
         conclusion, or return projection is produced. Human review is required.
@@ -150,6 +211,9 @@ export default function LlmCouncilAnalysis({ council }: { council: LlmCouncilMet
         rating, valuation conclusion, or return projection is produced. Human review is
         required.
       </p>
+      {council.primary_documents && council.primary_documents.length > 0 && (
+        <PrimaryDocumentsCard documents={council.primary_documents} />
+      )}
       <div className="grid gap-3 md:grid-cols-2">
         {(council.agents ?? []).map((agent) => (
           <CouncilAgentCard key={agent.agent_name} agent={agent} />

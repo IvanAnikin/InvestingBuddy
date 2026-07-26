@@ -161,5 +161,48 @@ class Settings(BaseSettings):
     # / press-release link discovery). Excess links are dropped, not followed.
     source_connector_max_links_per_page: int = 25
 
+    # ── Primary-document extraction (Phase 29B.2) ──────────────────────────
+    # Bounded extraction of an issuer's OWN annual-report / registration-document
+    # text so LLM councils can reason from real T1 primary evidence — not only
+    # metadata + price/model data. OFF by default: with the flag off, the exact
+    # Phase 29B.1 behaviour is preserved (company-IR metadata evidence + honest
+    # gaps only, no document fetch). When ON *and* ``source_connector_enabled``
+    # is also on, the company-IR connector may fetch one already-discovered,
+    # allowlisted annual-report document, extract a bounded set of excerpts, and
+    # parse only high-confidence primary facts. Never fabricates a filing: a
+    # blocked / JS-gated / scanned document degrades to an honest SourceGap.
+    # Only ever fetches a URL that came from the code-defined verified-issuer
+    # registry (or a link already extracted from an allowlisted page) — there is
+    # no arbitrary-URL fetch surface.
+    source_document_extraction_enabled: bool = False
+    # Hard byte ceiling for a single fetched document. A larger document is
+    # truncated, never fully buffered. ~5 MB covers a typical results PDF.
+    source_document_extraction_max_bytes: int = 5_000_000
+    # Per-document fetch timeout budget (seconds).
+    source_document_extraction_timeout_seconds: int = 15
+    # Maximum number of leading pages read from a PDF (bounds extraction cost;
+    # no OCR in this phase — a scanned PDF returns an honest empty-text gap).
+    source_document_extraction_max_pages: int = 20
+    # Maximum number of bounded excerpts produced from one document.
+    source_document_extraction_max_excerpts: int = 8
+    # Hard cap on characters per excerpt (a whole filing is never carried around).
+    source_document_extraction_max_chars_per_excerpt: int = 1200
+    # Content types the document fetcher will accept. Anything else is rejected
+    # with an honest gap (no partial download).
+    source_document_extraction_allowed_content_types: str = (
+        "application/pdf,text/html,text/plain"
+    )
+
+    # ── LLM council evidence budget (Phase 29B.2) ──────────────────────────
+    # A deterministic budgeter compresses the evidence pack before it reaches the
+    # council so larger primary-source packs cannot balloon the prompt and trip
+    # the Azure OpenAI TPM quota (which was partially failing large AAPL packs).
+    # It de-duplicates, prefers higher tiers + factual excerpts over metadata, and
+    # bounds item count / total characters / per-item characters — while never
+    # dropping all source gaps and always preserving stable citation ids.
+    llm_council_evidence_max_items: int = 20
+    llm_council_evidence_max_chars: int = 24000
+    llm_council_evidence_max_chars_per_item: int = 1200
+
 
 settings = Settings()

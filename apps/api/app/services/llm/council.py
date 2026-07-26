@@ -69,6 +69,66 @@ def _company_context(
     )
 
 
+_DOCUMENT_SOURCE_TYPES = frozenset(
+    {
+        "company_ir_annual_report_text",
+        "company_ir_annual_report_excerpt",
+        "company_ir_business_description",
+        "company_ir_risk_excerpt",
+        "company_ir_financial_fact",
+    }
+)
+
+
+def _primary_document_summary(evidence_items: list[Any]) -> list[dict[str, Any]]:
+    """Compact, secret-free summary of extracted primary-document evidence.
+
+    Groups document-derived EvidenceItems by (url, title) and reports counts,
+    domain, tier, translation flag and de-duplicated warnings — never raw text.
+    """
+    from urllib.parse import urlsplit
+
+    groups: dict[tuple[str, str], dict[str, Any]] = {}
+    for it in evidence_items:
+        stype = getattr(it, "source_type", None)
+        if stype not in _DOCUMENT_SOURCE_TYPES:
+            continue
+        url = getattr(it, "url", None) or ""
+        title = getattr(it, "title", None) or ""
+        key = (url.split("?")[0], (title.split(" — ")[0]).split(":")[0].strip())
+        domain = ""
+        try:
+            domain = (urlsplit(url).hostname or "").replace("www.", "")
+        except (ValueError, TypeError):
+            domain = ""
+        g = groups.setdefault(
+            key,
+            {
+                "title": key[1] or "Annual report",
+                "domain": domain,
+                "tier": getattr(it, "content_source_tier", None),
+                "excerpt_count": 0,
+                "fact_count": 0,
+                "requires_translation": bool(getattr(it, "requires_translation", False)),
+                "warnings": [],
+            },
+        )
+        if stype == "company_ir_financial_fact":
+            g["fact_count"] += 1
+        else:
+            g["excerpt_count"] += 1
+        g["requires_translation"] = g["requires_translation"] or bool(
+            getattr(it, "requires_translation", False)
+        )
+        for w in getattr(it, "warnings", None) or []:
+            if w not in g["warnings"]:
+                g["warnings"].append(w)
+    # Bound warnings per document so the metadata stays compact.
+    for g in groups.values():
+        g["warnings"] = g["warnings"][:4]
+    return list(groups.values())
+
+
 def _coerce_output(agent_name: str, raw: dict[str, Any]) -> CouncilAgentOutput:
     """Validate the model's dict into CouncilAgentOutput, tolerating drift.
 
@@ -271,16 +331,34 @@ async def maybe_run_council(
         # council: a failure degrades to no connector evidence.
         connector_evidence = None
         connector_gap_messages = None
+        primary_documents: list[dict[str, Any]] = []
         if cfg.source_connector_enabled:
             try:
+                # Phase 29B.2: when document extraction is also enabled, inject the
+                # bounded live IR-page fetcher + document extractor so the council
+                # reasons from real annual-report excerpts + parsed facts — not only
+                # metadata. Off by default (both flags), preserving 29B.1 behaviour.
+                extract_kwargs: dict[str, Any] = {}
+                if cfg.source_document_extraction_enabled:
+                    from app.services.sources.live_fetchers import (
+                        live_document_extractor,
+                        live_ir_page_fetcher,
+                    )
+
+                    extract_kwargs = {
+                        "ir_page_fetcher": live_ir_page_fetcher,
+                        "document_extractor": live_document_extractor,
+                    }
                 collected = await collect_company_source_evidence(
                     company=_company_context(company_snapshot, ticker, exchange),
                     filings=sec_filings_from_catalyst(catalyst_discovery),
                     press_items=press_items_from_catalyst(catalyst_discovery),
                     cfg=cfg,
+                    **extract_kwargs,
                 )
                 connector_evidence = collected.evidence_items
                 connector_gap_messages = collected.gap_messages()
+                primary_documents = _primary_document_summary(collected.evidence_items)
                 log_event(
                     log,
                     "source_connector_evidence_collected",
@@ -289,6 +367,7 @@ async def maybe_run_council(
                     exchange=exchange,
                     connector_item_count=len(connector_evidence),
                     connector_gap_count=len(connector_gap_messages),
+                    primary_document_count=len(primary_documents),
                 )
             except Exception as exc:  # noqa: BLE001 - connectors never crash a report
                 log_event(
@@ -309,6 +388,10 @@ async def maybe_run_council(
             extra_known_gaps=source_gaps,
             connector_evidence=connector_evidence,
             connector_gap_messages=connector_gap_messages,
+            # Compress the pack when the connector layer is on (staging) so a
+            # larger primary-source pack cannot balloon the prompt / TPM budget.
+            apply_budget=cfg.source_connector_enabled,
+            budget_cfg=cfg,
         )
         log_event(
             log,
@@ -320,7 +403,7 @@ async def maybe_run_council(
             evidence_item_count=pack.item_count,
             known_gap_count=len(pack.known_gaps),
         )
-        return await run_council(
+        result = await run_council(
             pack,
             resolved,
             cfg=cfg,
@@ -329,6 +412,11 @@ async def maybe_run_council(
             exchange=exchange,
             logger=log,
         )
+        # Attach the bounded primary-document summary so the report can surface
+        # which annual-report excerpts/facts backed the council (metadata only).
+        if primary_documents:
+            result.primary_documents = primary_documents
+        return result
     except Exception as exc:  # noqa: BLE001 - never let the council crash a report
         log_event(
             log,

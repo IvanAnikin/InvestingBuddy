@@ -531,6 +531,64 @@ grep -RiE "Authorization: Bearer|Set-Cookie:|DATABASE_URL=|api_token=[A-Za-z0-9]
 
 ---
 
+## Annual-Report Document Extraction + Primary-Fact Parsing (Phase 29B.2)
+
+> **PR open — pre-staging.** Not yet merged / deployed / staging-validated. Do
+> **not** treat this section as a closed/validated deployment record until the
+> merge SHA + deployed SHA + staging validation result are on file.
+
+- **No DB migration** — everything is code-defined; the DB head stays at `011`.
+- **New dependency:** `pypdf>=4.0,<6` (pure-Python PDF text extraction, **no
+  OCR**) — added to `pyproject.toml` + `requirements.txt`. Confirm it is present
+  in the deployed image before enabling document extraction.
+- **What changed:** with `SOURCE_DOCUMENT_EXTRACTION_ENABLED=true` **and**
+  `SOURCE_CONNECTOR_ENABLED=true`, the `company_ir` connector fetches ONE
+  discovered annual-report link, extracts bounded excerpts, and parses
+  high-confidence primary facts into tiered `T1_primary_filing` evidence — so
+  non-US councils reason from real primary text instead of metadata-only items. A
+  deterministic **evidence budgeter** bounds the council pack to keep larger
+  primary-source packs under the Azure OpenAI TPM ceiling. With the flag **OFF**
+  (default) behaviour is **exactly Phase 29B.1** (metadata evidence + honest gaps,
+  no document fetch).
+- **New settings (all optional, default OFF / conservative):**
+
+  | Setting | Default | Meaning |
+  |---|---|---|
+  | `SOURCE_DOCUMENT_EXTRACTION_ENABLED` | `false` | Master gate for fetching + extracting an issuer annual-report document (report-time + `evidence-preview`). `false` → exact Phase 29B.1 behaviour. |
+  | `SOURCE_DOCUMENT_EXTRACTION_MAX_BYTES` | `5000000` | Hard byte ceiling for a fetched document. |
+  | `SOURCE_DOCUMENT_EXTRACTION_TIMEOUT_SECONDS` | `15` | Per-document fetch timeout. |
+  | `SOURCE_DOCUMENT_EXTRACTION_MAX_PAGES` | `20` | Max PDF pages read (no OCR). |
+  | `SOURCE_DOCUMENT_EXTRACTION_MAX_EXCERPTS` | `8` | Max bounded excerpts kept. |
+  | `SOURCE_DOCUMENT_EXTRACTION_MAX_CHARS_PER_EXCERPT` | `1200` | Per-excerpt char cap. |
+  | `SOURCE_DOCUMENT_EXTRACTION_ALLOWED_CONTENT_TYPES` | `application/pdf,text/html,text/plain` | Content-types the fetcher accepts. |
+  | `LLM_COUNCIL_EVIDENCE_MAX_ITEMS` | `20` | Deterministic evidence-budget item cap (keeps larger packs under Azure OpenAI TPM quota). |
+  | `LLM_COUNCIL_EVIDENCE_MAX_CHARS` | `24000` | Evidence-budget total-char cap. |
+  | `LLM_COUNCIL_EVIDENCE_MAX_CHARS_PER_ITEM` | `1200` | Evidence-budget per-item char cap. |
+
+  All of these **flag KEYS are already added to `.env.example`** with empty /
+  placeholder values — never a real secret.
+- **Planned staging validation (run BEFORE marking closed):** with
+  `SOURCE_CONNECTOR_ENABLED=true` + `SOURCE_DOCUMENT_EXTRACTION_ENABLED=true`,
+  (A) `POST /evidence-preview`
+  `{ticker:"CFR",exchange:"SW",include_document_text:true}` →
+  `document_extraction_performed:true`, `company_ir_annual_report_excerpt` +
+  `company_ir_financial_fact` (`T1_primary_filing`, `needs_human_review:true`)
+  items **or an honest gap**, secret-free; (B) a scanned/encrypted PDF → **no
+  excerpts + honest `document_not_extractable` gap** (no OCR); (C) a French URD →
+  items flagged `requires_translation` (no fabricated translation); (D) a non-US
+  `from-company` final report with the council on →
+  `source_summary_json.llm_council.primary_documents` carries a **text-free**
+  summary, `safety_valid=true`, `human_review_required=true`,
+  `publication_ready=false`; (E) grep the container log — **zero**
+  `api_token`/secret occurrences and **no raw document text**; (F) confirm larger
+  packs trip the TPM quota less often (evidence budgeter active) — any remaining
+  gpt-4.1-mini TPM agent failures are an environmental limit, **not** a 29B.2
+  defect.
+- **Rollback:** set `SOURCE_DOCUMENT_EXTRACTION_ENABLED=false` (or
+  `SOURCE_CONNECTOR_ENABLED=false`) to return to exact Phase 29B.1 behaviour with
+  no code change.
+- No auth change, no public publishing, no recommendation output, no publish route.
+
 ## Non-US Company IR Evidence (Phase 29B.1)
 
 - **No DB migration** — everything is code-defined; the DB head stays at `011`.
