@@ -40,6 +40,7 @@ from app.services.sources.connector_base import CompanyContext, QueryContext
 from app.services.sources.connectors.company_ir import (
     _LOCAL_LANGUAGE_COUNTRIES,
     CompanyIrConnector,
+    DocumentExtractor,
     PageFetcher,
     PressFetcher,
 )
@@ -78,17 +79,59 @@ def _static_fetcher(items: list[dict] | None):
     return _fetch
 
 
+# Document-derived company-IR source types (Phase 29B.2). These legitimately
+# share the annual-report URL with the link item, so dedup must key on more than
+# the URL, and they must be prioritised ahead of metadata-only items.
+_DOCUMENT_SOURCE_TYPES = frozenset(
+    {
+        "company_ir_annual_report_text",
+        "company_ir_annual_report_excerpt",
+        "company_ir_business_description",
+        "company_ir_risk_excerpt",
+        "company_ir_financial_fact",
+    }
+)
+
+
 def _dedup_evidence(items: list[EvidenceItem]) -> list[EvidenceItem]:
-    """De-duplicate evidence by URL (fallback: id), preserving first-seen order."""
-    seen: set[str] = set()
+    """De-duplicate by (URL, source_type, excerpt-snippet), preserving order.
+
+    Keying on the URL alone would collapse the annual-report *link* and the
+    bounded *excerpts* / *facts* extracted from that same document (Phase 29B.2)
+    into one item. Including source_type + a short excerpt snippet keeps those
+    distinct while still dropping true duplicates.
+    """
+    seen: set[tuple[str, str, str]] = set()
     out: list[EvidenceItem] = []
     for it in items:
-        key = it.url or it.id
+        key = (
+            (it.url or it.id or ""),
+            it.source_type or "",
+            (it.excerpt or "")[:60],
+        )
         if key in seen:
             continue
         seen.add(key)
         out.append(it)
     return out
+
+
+def _prioritize_ir_items(items: list[EvidenceItem]) -> list[EvidenceItem]:
+    """Stable sort so extracted document excerpts/facts survive the per-source cap.
+
+    Bucket order: document excerpts + parsed facts (highest value) → annual-report
+    link → everything else (profile / index metadata). Order within a bucket is
+    preserved, so this never reorders same-value items.
+    """
+
+    def bucket(it: EvidenceItem) -> int:
+        if it.source_type in _DOCUMENT_SOURCE_TYPES:
+            return 0
+        if it.source_type == "company_ir_annual_report":
+            return 1
+        return 2
+
+    return sorted(items, key=bucket)
 
 
 def _relevant_scaffold_ids(
@@ -129,6 +172,7 @@ async def collect_company_source_evidence(
     filings_fetcher: FilingsFetcher | None = None,
     press_fetcher: PressFetcher | None = None,
     ir_page_fetcher: PageFetcher | None = None,
+    document_extractor: DocumentExtractor | None = None,
     cfg: Settings | None = None,
     registry: SourceRegistry | None = None,
 ) -> CompanySourceEvidence:
@@ -139,8 +183,12 @@ async def collect_company_source_evidence(
     path) and take precedence when supplied. ``ir_page_fetcher`` (preview path
     only) enables live annual-report / press-link extraction; when None the
     company-IR connector still emits verified-issuer *metadata* evidence with no
-    network call. ``source_ids`` restricts which connectors run; when ``None`` a
-    sensible default set runs.
+    network call. ``document_extractor`` (Phase 29B.2, preview path or the council
+    path when both connector + document-extraction flags are on) enables bounded
+    fetch + text-extraction + fact-parsing of ONE discovered annual-report
+    document; when None no document is fetched (Phase 29B.1 behaviour preserved).
+    ``source_ids`` restricts which connectors run; when ``None`` a sensible
+    default set runs.
     """
     cfg = cfg or default_settings
     registry = registry or build_registry(cfg)
@@ -184,6 +232,7 @@ async def collect_company_source_evidence(
             press_fetcher=fetcher,
             verified_source=verified,
             page_fetcher=ir_page_fetcher,
+            document_extractor=document_extractor,
         )
         ir_items: list[EvidenceItem] = []
         for method in (ir.search_company, ir.fetch_filings, ir.fetch_events):
@@ -191,7 +240,9 @@ async def collect_company_source_evidence(
             ir_items.extend(res.evidence_items)
             gaps.extend(res.source_gaps)
             warnings.extend(res.warnings)
-        items.extend(_dedup_evidence(ir_items)[:max_items])
+        # Prioritise extracted document excerpts/facts so they survive the
+        # per-source cap (Phase 29B.2), then de-dup, then bound.
+        items.extend(_prioritize_ir_items(_dedup_evidence(ir_items))[:max_items])
 
     # -- Non-US primary-disclosure context (Phase 29B.1) -------------------
     # For a verified non-US issuer, home-regulator connectors are still

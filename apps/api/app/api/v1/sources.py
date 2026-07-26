@@ -21,6 +21,7 @@ from app.services import source_service
 from app.services.sources.company_evidence import collect_company_source_evidence
 from app.services.sources.connector_base import CompanyContext
 from app.services.sources.live_fetchers import (
+    live_document_extractor,
     live_ir_page_fetcher,
     live_ir_press_fetcher,
     live_sec_filings_fetcher,
@@ -28,6 +29,37 @@ from app.services.sources.live_fetchers import (
 from app.services.sources.registry import build_registry, tier_legend
 
 router = APIRouter(prefix="/sources", tags=["sources"])
+
+# Document-derived evidence source types (Phase 29B.2) — bounded by max_excerpts.
+_DOCUMENT_SOURCE_TYPES = frozenset(
+    {
+        "company_ir_annual_report_text",
+        "company_ir_annual_report_excerpt",
+        "company_ir_business_description",
+        "company_ir_risk_excerpt",
+        "company_ir_financial_fact",
+    }
+)
+
+
+def _bound_preview_items(items, item_cap, max_excerpts):
+    """Cap total items, and (optionally) the number of extracted-excerpt items.
+
+    Non-document evidence (metadata, links, filings) is preserved; only the
+    extracted-excerpt / parsed-fact items are additionally capped by
+    ``max_excerpts`` so a request can keep the preview compact.
+    """
+    if max_excerpts is not None:
+        kept = []
+        excerpt_seen = 0
+        for it in items:
+            if getattr(it, "source_type", None) in _DOCUMENT_SOURCE_TYPES:
+                if excerpt_seen >= max_excerpts:
+                    continue
+                excerpt_seen += 1
+            kept.append(it)
+        items = kept
+    return items[:item_cap]
 
 
 # ── Source registry + connector framework (Phase 29A) ───────────────────────
@@ -102,6 +134,14 @@ async def preview_source_evidence(
     )
 
     live = bool(settings.source_connector_enabled)
+    # Phase 29B.2: bounded annual-report document extraction on the preview live
+    # path when the admin opts in (``include_document_text``) or the global
+    # document-extraction flag is on. The document URL still comes only from the
+    # verified-issuer registry / already-extracted allowlisted links — never the
+    # request — so there is no arbitrary-URL fetch surface.
+    extract_docs = live and (
+        payload.include_document_text or settings.source_document_extraction_enabled
+    )
     collected = await collect_company_source_evidence(
         company=company,
         source_ids=payload.source_ids,
@@ -109,6 +149,12 @@ async def preview_source_evidence(
         filings_fetcher=live_sec_filings_fetcher if live else None,
         press_fetcher=live_ir_press_fetcher if live else None,
         ir_page_fetcher=live_ir_page_fetcher if live else None,
+        document_extractor=live_document_extractor if extract_docs else None,
+    )
+
+    item_cap = min(payload.max_items or MAX_PREVIEW_ITEMS, MAX_PREVIEW_ITEMS)
+    items = _bound_preview_items(
+        collected.evidence_items, item_cap, payload.max_excerpts
     )
 
     return EvidencePreviewResponse(
@@ -117,7 +163,8 @@ async def preview_source_evidence(
         exchange=payload.exchange,
         connector_layer_enabled=live,
         live_fetch_performed=live,
-        evidence_items=collected.evidence_items[:MAX_PREVIEW_ITEMS],
+        document_extraction_performed=extract_docs,
+        evidence_items=items,
         source_gaps=collected.source_gaps,
         warnings=collected.warnings,
     )

@@ -137,6 +137,11 @@ class EvidencePack(BaseModel):
     evidence_items: list[EvidenceItem] = Field(default_factory=list)
     known_gaps: list[str] = Field(default_factory=list)
     do_not_infer: list[str] = Field(default_factory=list)
+    # Phase 29B.2: set by the deterministic evidence budgeter when it compresses
+    # the pack (de-dup + tier-preferring truncation) so the omission is honest,
+    # not silent. 0 / None when no budgeting was applied.
+    omitted_evidence_count: int = 0
+    omitted_reason: str | None = None
 
     @property
     def item_count(self) -> int:
@@ -210,6 +215,11 @@ class CouncilResult(BaseModel):
     agents_skipped: int = 0
     committee_label: str | None = None
     warnings: list[str] = Field(default_factory=list)
+    # Phase 29B.2: compact, secret-free summary of any bounded primary-document
+    # (annual-report) evidence the connector layer extracted for this company.
+    # Empty unless both the connector + document-extraction flags are on. Carries
+    # no raw document text — only counts, domain, tier, warnings.
+    primary_documents: list[dict[str, Any]] = Field(default_factory=list)
 
     def recount(self) -> None:
         """Refresh the completed/failed/skipped tallies from ``agents``."""
@@ -268,6 +278,7 @@ class CouncilResult(BaseModel):
             "agents_skipped": self.agents_skipped,
             "committee_label": self.committee_label,
             "agents": [a.to_dict() for a in self.agents],
+            "primary_documents": list(self.primary_documents),
         }
 
     @classmethod

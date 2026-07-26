@@ -401,6 +401,21 @@ function mockCouncilReport(id) {
           committee_label: "requires_more_evidence",
         },
       ],
+      // Phase 29B.2 — bounded primary-document (annual report) evidence the
+      // connector layer extracted. Counts / domain / tier only — no raw text.
+      primary_documents: [
+        {
+          title: "Annual Report 2024",
+          domain: "richemont.com",
+          tier: "T1_primary_filing",
+          excerpt_count: 3,
+          fact_count: 2,
+          requires_translation: false,
+          warnings: [
+            "Bounded excerpt from the issuer's own annual report; not the full document. Human review required.",
+          ],
+        },
+      ],
     },
   };
   return base;
@@ -966,6 +981,44 @@ const server = createServer((req, res) => {
         BA: { name: "BAE Systems plc", domain: "baesystems.com" },
       };
       const known = KNOWN_IR[t];
+      // Phase 29B.2 — when document extraction is requested for a known issuer,
+      // add bounded annual-report excerpt + parsed-fact evidence (offline mock).
+      const wantDocs = Boolean(parsed.include_document_text) && Boolean(known);
+      const documentItems = wantDocs
+        ? [
+            {
+              id: "IRDOC1",
+              source_id: "company_ir",
+              source_name: known.name,
+              provider_transport_tier: "T1_primary_company_source",
+              content_source_tier: "T1_primary_filing",
+              source_type: "company_ir_annual_report_excerpt",
+              title: `${known.name} — Annual Report 2024 — excerpt`,
+              url: `https://www.${known.domain}/reports/ar2024.pdf`,
+              excerpt:
+                "Revenue reached 20,616 million for the fiscal year. The Group operates a portfolio of luxury Maisons.",
+              data_quality: "B",
+              requires_translation: false,
+              warnings: [
+                "Bounded excerpt from the issuer's own annual report; not the full document. Human review required.",
+              ],
+            },
+            {
+              id: "IRFACT1",
+              source_id: "company_ir",
+              source_name: known.name,
+              provider_transport_tier: "T1_primary_company_source",
+              content_source_tier: "T1_primary_filing",
+              source_type: "company_ir_financial_fact",
+              title: `${known.name} — Annual Report 2024: revenue`,
+              url: `https://www.${known.domain}/reports/ar2024.pdf`,
+              excerpt: "revenue = 20,616 million (million EUR) [2024]",
+              data_quality: "B",
+              requires_translation: false,
+              warnings: ["Parsed primary fact — unverified; human review required."],
+            },
+          ]
+        : [];
       const evidence_items = known
         ? [
             {
@@ -1006,9 +1059,10 @@ const server = createServer((req, res) => {
         generated_at: "2026-07-24T00:00:00Z",
         ticker: parsed.ticker ?? null,
         exchange: parsed.exchange ?? null,
-        connector_layer_enabled: false,
-        live_fetch_performed: false,
-        evidence_items,
+        connector_layer_enabled: wantDocs,
+        live_fetch_performed: wantDocs,
+        document_extraction_performed: wantDocs,
+        evidence_items: [...documentItems, ...evidence_items],
         source_gaps: [
           {
             source_id: "sec_edgar",

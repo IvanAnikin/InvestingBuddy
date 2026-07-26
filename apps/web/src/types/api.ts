@@ -102,6 +102,19 @@ export interface LlmCouncilAgent {
   committee_label?: string | null;
 }
 
+// Phase 29B.2 — compact, secret-free summary of any bounded primary-document
+// (annual report) evidence the connector layer extracted. Carries counts /
+// domain / tier / warnings only — never raw document text.
+export interface PrimaryDocumentSummary {
+  title: string;
+  domain?: string | null;
+  tier?: string | null;
+  excerpt_count: number;
+  fact_count: number;
+  requires_translation?: boolean;
+  warnings?: string[];
+}
+
 export interface LlmCouncilMetadata {
   llm_used: boolean;
   council_version?: string | null;
@@ -114,6 +127,7 @@ export interface LlmCouncilMetadata {
   agents_skipped?: number;
   committee_label?: string | null;
   agents?: LlmCouncilAgent[];
+  primary_documents?: PrimaryDocumentSummary[];
 }
 
 // Phase 28A.1 — compact metadata about the report a discovery candidate is
@@ -832,6 +846,11 @@ export interface EvidencePreviewRequest {
   company_name?: string | null;
   country?: string | null;
   source_ids?: string[] | null;
+  // Phase 29B.2 — opt into bounded annual-report document extraction (still
+  // identity-only; the document URL comes from the verified-issuer registry).
+  include_document_text?: boolean;
+  max_items?: number;
+  max_excerpts?: number;
 }
 
 export interface EvidencePreviewItem {
@@ -858,6 +877,7 @@ export interface EvidencePreviewResponse {
   exchange?: string | null;
   connector_layer_enabled: boolean;
   live_fetch_performed: boolean;
+  document_extraction_performed?: boolean;
   evidence_items: EvidencePreviewItem[];
   source_gaps: SourceGap[];
   warnings: string[];

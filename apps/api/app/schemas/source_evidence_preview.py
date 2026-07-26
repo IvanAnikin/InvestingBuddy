@@ -24,13 +24,23 @@ MAX_PREVIEW_ITEMS = 40
 
 
 class EvidencePreviewRequest(BaseModel):
-    """Identity-only request. No URL field — this is not a fetch proxy."""
+    """Identity-only request. No URL field — this is not a fetch proxy.
+
+    ``include_document_text`` (Phase 29B.2) opts this preview into bounded
+    annual-report document extraction (fetch one already-discovered, allowlisted
+    document; extract excerpts; parse high-confidence facts). It is still
+    identity-only — the document URL comes from the verified-issuer registry, not
+    the request. ``max_items`` / ``max_excerpts`` bound the response.
+    """
 
     ticker: str | None = None
     exchange: str | None = None
     company_name: str | None = None
     country: str | None = None
     source_ids: list[str] | None = Field(default=None)
+    include_document_text: bool = False
+    max_items: int | None = Field(default=None, ge=1, le=MAX_PREVIEW_ITEMS)
+    max_excerpts: int | None = Field(default=None, ge=1, le=40)
 
     @field_validator("ticker", "exchange", "company_name", "country")
     @classmethod
@@ -62,6 +72,7 @@ class EvidencePreviewResponse(BaseModel):
     exchange: str | None = None
     connector_layer_enabled: bool
     live_fetch_performed: bool
+    document_extraction_performed: bool = False
     evidence_items: list[EvidenceItem] = Field(default_factory=list)
     source_gaps: list[SourceGap] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
@@ -69,8 +80,9 @@ class EvidencePreviewResponse(BaseModel):
         "Read-only source evidence preview. Connector output is internal, "
         "citation-bound research material — not investment advice, not a "
         "recommendation, and no rating, valuation, or return projection is "
-        "produced. Non-US primary filings are not yet live-sourced. Human review "
-        "is required."
+        "produced. Any extracted annual-report text is a bounded excerpt of the "
+        "issuer's own document — not the full filing — and parsed facts are "
+        "unverified until reviewed. Human review is required."
     )
 
 

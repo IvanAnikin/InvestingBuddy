@@ -20,7 +20,13 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.core.config import Settings
+from app.core.config import settings as default_settings
 from app.services.sources.connector_base import CompanyContext, QueryContext
+from app.services.sources.connectors.company_ir import PrimaryDocumentBundle
+from app.services.sources.document_fetcher import safe_fetch_document
+from app.services.sources.document_text_extractor import extract_document_text
+from app.services.sources.primary_fact_parser import parse_primary_facts
 from app.services.sources.safe_web_fetcher import (
     ANNUAL_REPORT_KEYWORDS,
     SafeFetchResult,
@@ -135,8 +141,51 @@ async def live_ir_page_fetcher(
     )
 
 
+async def live_document_extractor(
+    url: str,
+    *,
+    allowed_domains: tuple[str, ...],
+    title_hint: str | None = None,
+    original_language: str | None = None,
+    cfg: Settings | None = None,
+) -> PrimaryDocumentBundle:
+    """Fetch + extract + parse ONE allowlisted annual-report document (Phase 29B.2).
+
+    The URL is never caller-supplied — it is an annual-report link already
+    extracted from an allowlisted issuer page (or the verified-issuer registry)
+    and is re-checked against ``allowed_domains`` inside ``safe_fetch_document``.
+    Bounded and SSRF-safe; never raises — every failure degrades to a bundle with
+    honest ``source_gaps``.
+    """
+    cfg = cfg or default_settings
+    fetched = await safe_fetch_document(url, allowed_domains=allowed_domains, cfg=cfg)
+    bundle = PrimaryDocumentBundle(
+        source_url=fetched.final_url or fetched.requested_url,
+        document_type=fetched.document_type,
+        warnings=list(fetched.warnings),
+        source_gaps=list(fetched.source_gaps),
+    )
+    if not fetched.ok or fetched.content is None or fetched.document_type is None:
+        return bundle
+
+    extraction = extract_document_text(
+        fetched.content,
+        document_type=fetched.document_type,
+        source_url=bundle.source_url,
+        title_hint=title_hint,
+        original_language=original_language,
+        cfg=cfg,
+    )
+    bundle.extraction = extraction
+    bundle.warnings.extend(extraction.warnings)
+    if extraction.excerpts:
+        bundle.facts = parse_primary_facts(extraction)
+    return bundle
+
+
 __all__ = [
     "live_sec_filings_fetcher",
     "live_ir_press_fetcher",
     "live_ir_page_fetcher",
+    "live_document_extractor",
 ]

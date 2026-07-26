@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
 from typing import Any
 
 from app.services.sources.connector_base import (
@@ -49,12 +50,19 @@ from app.services.sources.connector_base import (
     QueryContext,
     SourceConnector,
 )
+from app.services.sources.document_text_extractor import (
+    EVIDENCE_TYPE_BUSINESS,
+    EVIDENCE_TYPE_RISK,
+    DocumentTextExtraction,
+)
 from app.services.sources.evidence import EvidenceItem, build_evidence_item
 from app.services.sources.gaps import GapSeverity, GapType, SourceGap
+from app.services.sources.primary_fact_parser import PrimaryFact
 from app.services.sources.safe_web_fetcher import (
     ANNUAL_REPORT_KEYWORDS,
     FALLBACK_REPORT_KEYWORDS,
     SafeFetchResult,
+    SafeLink,
 )
 from app.services.sources.taxonomy import (
     T1_PRIMARY_COMPANY_SOURCE,
@@ -74,7 +82,37 @@ PressFetcher = Callable[
 # injected only on the live preview path; the report path never binds one.
 PageFetcher = Callable[..., Awaitable[SafeFetchResult]]
 
+
+@dataclass
+class PrimaryDocumentBundle:
+    """The bounded result of fetching + extracting + parsing ONE primary document.
+
+    Produced by an injected ``DocumentExtractor`` (Phase 29B.2). Carries only
+    bounded excerpts + high-confidence facts + honest gaps — never a raw document.
+    """
+
+    source_url: str
+    document_type: str | None = None
+    extraction: DocumentTextExtraction | None = None
+    facts: list[PrimaryFact] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    source_gaps: list[SourceGap] = field(default_factory=list)
+
+
+# A document extractor fetches ONE allowlisted annual-report document and returns
+# a bounded ``PrimaryDocumentBundle``. Injected only when document extraction is
+# enabled (evidence-preview live path, or the council path when both connector +
+# document-extraction flags are on). Never raises.
+DocumentExtractor = Callable[..., Awaitable[PrimaryDocumentBundle]]
+
 _IR_TRANSPORT_LABEL = "Company IR / newsroom (issuer-published)"
+
+# Map an extraction excerpt's evidence_type to an EvidenceItem source_type.
+_EXCERPT_SOURCE_TYPE = {
+    EVIDENCE_TYPE_BUSINESS: "company_ir_business_description",
+    EVIDENCE_TYPE_RISK: "company_ir_risk_excerpt",
+}
+_DEFAULT_EXCERPT_SOURCE_TYPE = "company_ir_annual_report_excerpt"
 
 # Countries whose primary regulatory disclosures are typically local-language.
 _LOCAL_LANGUAGE_COUNTRIES = frozenset(
@@ -93,10 +131,12 @@ class CompanyIrConnector(SourceConnector):
         *,
         verified_source: VerifiedIssuerSource | None = None,
         page_fetcher: PageFetcher | None = None,
+        document_extractor: DocumentExtractor | None = None,
     ) -> None:
         self._fetcher = press_fetcher
         self._verified = verified_source
         self._page_fetcher = page_fetcher
+        self._document_extractor = document_extractor
 
     # -- Helpers -----------------------------------------------------------
 
@@ -106,6 +146,16 @@ class CompanyIrConnector(SourceConnector):
 
     def _requires_translation(self) -> bool:
         return bool(self._verified and self._verified.country in _LOCAL_LANGUAGE_COUNTRIES)
+
+    def _original_language(self) -> str | None:
+        """Best-guess primary-disclosure language from the issuer's country."""
+        if not self._verified:
+            return None
+        return {
+            "France": "fr",
+            "Italy": "it",
+            "Germany": "de",
+        }.get(self._verified.country)
 
     def _metadata_item(
         self,
@@ -310,12 +360,157 @@ class CompanyIrConnector(SourceConnector):
                     blocks_research_complete=False,
                 )
             )
+
+        # Phase 29B.2: bounded document extraction. When a document extractor is
+        # injected (both connector + document-extraction flags on), fetch ONE
+        # already-discovered annual-report document, extract bounded excerpts and
+        # parse high-confidence primary facts into tiered T1 evidence. A blocked /
+        # scanned / JS-gated document degrades to an honest gap — never fabricated.
+        if self._document_extractor is not None and fetched.links:
+            doc_items, doc_gaps = await self._extract_primary_document(
+                fetched.links, query
+            )
+            items.extend(doc_items)
+            gaps.extend(doc_gaps)
+
         return ConnectorResult(
             connector_key=self.connector_key,
             evidence_items=items,
             source_gaps=gaps,
             latency_ms=latency_ms,
         )
+
+    async def _extract_primary_document(
+        self, links: list[SafeLink], query: QueryContext
+    ) -> tuple[list[EvidenceItem], list[SourceGap]]:
+        """Extract one annual-report document into bounded T1 evidence + facts."""
+        assert self._document_extractor is not None
+        v = self._verified
+        allowed = v.allowed_domains if v else ()
+        # Prefer a downloadable document link (PDF); else the first report link.
+        target = next((ln for ln in links if ln.is_document), links[0])
+
+        bundle = await self._document_extractor(
+            target.url,
+            allowed_domains=allowed,
+            title_hint=target.text or None,
+            original_language=self._original_language(),
+        )
+        items: list[EvidenceItem] = []
+        gaps: list[SourceGap] = list(bundle.source_gaps)
+        ext = bundle.extraction
+
+        if ext is None or not ext.excerpts:
+            for msg in (ext.source_gaps if ext else []) or [
+                "Annual-report document text could not be extracted; company IR "
+                "index and link remain as metadata evidence."
+            ]:
+                gaps.append(
+                    SourceGap(
+                        connector_key=self.connector_key,
+                        source_id="company_ir",
+                        gap_type=GapType.primary_filing_unavailable,
+                        severity=GapSeverity.info,
+                        message=msg,
+                        blocks_research_complete=False,
+                    )
+                )
+            return items, gaps
+
+        requires_tr = ext.requires_translation or self._requires_translation()
+        year = str(ext.inferred_year) if ext.inferred_year else None
+        doc_title = ext.title or target.text or "Annual report"
+        cap = max(1, query.max_items)
+
+        # One bounded excerpt per evidence item (each already length-bounded).
+        for i, exc in enumerate(ext.excerpts[:cap], start=1):
+            source_type = _EXCERPT_SOURCE_TYPE.get(
+                exc.evidence_type, _DEFAULT_EXCERPT_SOURCE_TYPE
+            )
+            data_quality = {"high": "B", "medium": "C", "low": "C"}.get(
+                exc.confidence, "C"
+            )
+            items.append(
+                build_evidence_item(
+                    id=f"IRDOC{i}",
+                    source_id="company_ir",
+                    source_name=self._issuer_name or "Company IR",
+                    provider_transport=_IR_TRANSPORT_LABEL,
+                    provider_transport_tier=T1_PRIMARY_COMPANY_SOURCE,
+                    content_source=doc_title,
+                    content_source_tier=T1_PRIMARY_FILING,
+                    source_type=source_type,
+                    title=(
+                        f"{doc_title} — excerpt"
+                        if year is None
+                        else f"{doc_title} ({year}) — excerpt"
+                    ),
+                    url=ext.source_url or target.url,
+                    date=year,
+                    excerpt=exc.text,
+                    requires_translation=requires_tr,
+                    original_language=ext.original_language,
+                    language=ext.language,
+                    data_quality=data_quality,
+                    confidence=exc.confidence,
+                    fields_supported=[exc.evidence_type],
+                    provenance=[
+                        "Extracted from issuer annual-report document (bounded text)",
+                        f"page={exc.page_number}" if exc.page_number else "page=unknown",
+                    ],
+                    warnings=(
+                        ["Bounded excerpt from the issuer's own annual report; "
+                         "not the full document. Human review required."]
+                        + (
+                            ["Local-language primary disclosure; machine translation "
+                             "pending Phase 30 — excerpt is unmodified source text."]
+                            if requires_tr
+                            else []
+                        )
+                    ),
+                )
+            )
+
+        # High-confidence parsed facts become their own T1 fact evidence.
+        for j, fact in enumerate(bundle.facts[:cap], start=1):
+            unit_bits = " ".join(
+                b for b in (fact.scale, fact.currency, fact.unit) if b
+            )
+            excerpt = (
+                f"{fact.field} = {fact.value}"
+                + (f" ({unit_bits})" if unit_bits else "")
+                + (f" [{fact.period}]" if fact.period else "")
+            )
+            items.append(
+                build_evidence_item(
+                    id=f"IRFACT{j}",
+                    source_id="company_ir",
+                    source_name=self._issuer_name or "Company IR",
+                    provider_transport=_IR_TRANSPORT_LABEL,
+                    provider_transport_tier=T1_PRIMARY_COMPANY_SOURCE,
+                    content_source=doc_title,
+                    content_source_tier=T1_PRIMARY_FILING,
+                    source_type="company_ir_financial_fact",
+                    title=f"{doc_title}: {fact.field}",
+                    url=fact.source_url or ext.source_url or target.url,
+                    date=fact.period or year,
+                    excerpt=excerpt,
+                    requires_translation=requires_tr,
+                    data_quality="B" if fact.confidence == "high" else "C",
+                    confidence=fact.confidence,
+                    fields_supported=[fact.field],
+                    provenance=[
+                        "Parsed from issuer annual-report excerpt "
+                        f"({fact.excerpt_id or 'excerpt'})",
+                        "needs_human_review=true",
+                    ],
+                    warnings=(
+                        [w for w in [fact.parser_warning] if w]
+                        + ["Parsed primary fact — unverified; human review required."]
+                    ),
+                )
+            )
+        return items, gaps
 
     # -- fetch_events → press / newsroom -----------------------------------
 
@@ -414,4 +609,10 @@ class CompanyIrConnector(SourceConnector):
         )
 
 
-__all__ = ["CompanyIrConnector", "PressFetcher", "PageFetcher"]
+__all__ = [
+    "CompanyIrConnector",
+    "PressFetcher",
+    "PageFetcher",
+    "DocumentExtractor",
+    "PrimaryDocumentBundle",
+]

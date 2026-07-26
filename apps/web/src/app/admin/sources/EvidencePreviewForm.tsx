@@ -32,6 +32,16 @@ const EXAMPLES: { label: string; ticker: string; exchange: string }[] = [
   { label: "BAE Systems (BA.LSE)", ticker: "BA", exchange: "LSE" },
 ];
 
+// Document-derived evidence source types (Phase 29B.2) — extracted excerpts and
+// parsed facts, as opposed to metadata-only registry/link items.
+const DOCUMENT_SOURCE_TYPES = new Set([
+  "company_ir_annual_report_text",
+  "company_ir_annual_report_excerpt",
+  "company_ir_business_description",
+  "company_ir_risk_excerpt",
+  "company_ir_financial_fact",
+]);
+
 /** Show only the host of a URL — never a query string / secret. */
 function urlDomain(url?: string | null): string | null {
   if (!url) return null;
@@ -46,6 +56,7 @@ export default function EvidencePreviewForm() {
   const [ticker, setTicker] = useState("");
   const [exchange, setExchange] = useState("");
   const [selected, setSelected] = useState<string[]>(["sec_edgar", "company_ir"]);
+  const [includeDocumentText, setIncludeDocumentText] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<EvidencePreviewResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -66,6 +77,7 @@ export default function EvidencePreviewForm() {
         ticker: ticker.trim().toUpperCase() || undefined,
         exchange: exchange.trim().toUpperCase() || undefined,
         source_ids: selected.length ? selected : undefined,
+        include_document_text: includeDocumentText || undefined,
       });
       setResult(res);
     } catch (err) {
@@ -153,6 +165,24 @@ export default function EvidencePreviewForm() {
           </div>
         </div>
 
+        <label
+          className="flex items-start gap-2 text-xs text-slate-400"
+          data-testid="preview-include-document-text"
+        >
+          <input
+            type="checkbox"
+            checked={includeDocumentText}
+            onChange={(e) => setIncludeDocumentText(e.target.checked)}
+            className="mt-0.5 accent-sky-500"
+          />
+          <span>
+            Include annual-report text (bounded extraction). Fetches one
+            already-discovered, allowlisted issuer document, extracts bounded
+            excerpts and parses high-confidence facts. Still identity-only — no
+            URL input. Requires the connector layer to be enabled.
+          </span>
+        </label>
+
         <button
           type="submit"
           disabled={submitting}
@@ -178,6 +208,9 @@ export default function EvidencePreviewForm() {
               }
               color={result.live_fetch_performed ? "green" : "gray"}
             />
+            {result.document_extraction_performed && (
+              <StatusPill label="document extraction" color="blue" />
+            )}
             <span>
               {result.evidence_items.length} evidence item(s) ·{" "}
               {result.source_gaps.length} gap(s)
@@ -190,10 +223,21 @@ export default function EvidencePreviewForm() {
                 Evidence Items
               </p>
               <ul className="space-y-2">
-                {result.evidence_items.map((it) => (
+                {result.evidence_items.map((it) => {
+                  const isDocument = DOCUMENT_SOURCE_TYPES.has(
+                    it.source_type ?? "",
+                  );
+                  const isFact = it.source_type === "company_ir_financial_fact";
+                  const isMetadata =
+                    it.data_quality === "metadata_only" ||
+                    it.data_quality === "link_metadata_only";
+                  return (
                   <li
                     key={it.id}
                     className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2"
+                    data-testid={
+                      isDocument ? "preview-extracted-item" : "preview-metadata-item"
+                    }
                   >
                     <div className="flex flex-wrap items-center gap-2">
                       <StatusPill label={it.content_source_tier} color="blue" />
@@ -203,10 +247,13 @@ export default function EvidencePreviewForm() {
                           color="gray"
                         />
                       )}
-                      {(it.data_quality === "metadata_only" ||
-                        it.data_quality === "link_metadata_only") && (
+                      {isFact ? (
+                        <StatusPill label="parsed fact" color="green" />
+                      ) : isDocument ? (
+                        <StatusPill label="extracted text" color="green" />
+                      ) : isMetadata ? (
                         <StatusPill label="metadata-only" color="amber" />
-                      )}
+                      ) : null}
                       {it.requires_translation && (
                         <StatusPill label="translation pending" color="purple" />
                       )}
@@ -228,7 +275,8 @@ export default function EvidencePreviewForm() {
                       </p>
                     )}
                   </li>
-                ))}
+                  );
+                })}
               </ul>
             </div>
           )}
