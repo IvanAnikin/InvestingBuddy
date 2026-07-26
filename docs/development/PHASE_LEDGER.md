@@ -16,7 +16,7 @@ Legend: ✅ closed+validated · 🔜 next · 🟡 in progress · ⛔ blocked
 | 29A | Source registry + connector framework | ✅ | #49 `3ff96f6` | no | taxonomy T1–T6, /sources/registry |
 | 29B | Filing/regulator connectors batch 1 | ✅ | #50 `a94e34b` | no | SEC + company_ir live, 6 scaffolds |
 | 29B.1 | Non-US company IR evidence | ✅ | #54 `6046011` | no | verified issuer allowlist, safe fetcher |
-| 29B.2 | Primary document text extraction | 🟡 | branch `feature/phase-29b2-primary-document-extraction` (WIP stashed) | tbd | annual-report/filing text extraction |
+| 29B.2 | Primary document text extraction | ✅ | #56 `793e0a7` | no | bounded annual-report PDF/HTML text extraction (no-OCR) + primary-fact parser + evidence budgeter, all off-by-default; staging-validated. Env note: every live issuer report reached is scanned/index-only → degrades to honest source-gaps, `primary_documents` present-but-empty (0 fabricated) |
 | 29B.3 | Primary-fact integration | 🔜 | — | tbd | extracted facts → pack/council evidence |
 | 29B.4 | EU/UK regulated-disclosure connectors | 🔜 | — | tbd | live fetch for scaffolded connectors |
 | 29C | Macro/commodity/policy connectors | 🔜 | — | tbd | USGS/IEA/EIA/FRED/IMF/Eurostat/… |
@@ -24,7 +24,7 @@ Legend: ✅ closed+validated · 🔜 next · 🟡 in progress · ⛔ blocked
 | 30 | Translation / local-language + PDF extraction | 🔜 | — | tbd | non-English primary sources usable |
 | 31 | Source-aware research memo | 🔜 | — | tbd | memo cites source tier per claim |
 | 32 | Durable queues / cost / observability | 🔜 | — | tbd | reliable async, cost ceilings, telemetry |
-| tooling | Claude Code agents + phase workflow skills | 🟡 | branch `tooling/claude-code-agents-and-skills` | no | this dev-workflow system; no app runtime change |
+| tooling | Claude Code agents + phase workflow skills | ✅ | #55 `c98adca` | no | this dev-workflow system; no app runtime change; merged |
 
 DB head baseline: **011** (unchanged since discovery/scoring migrations). Confirm
 `alembic current` when validating any phase that claims a schema change.
