@@ -17,7 +17,7 @@ Legend: ✅ closed+validated · 🔜 next · 🟡 in progress · ⛔ blocked
 | 29B | Filing/regulator connectors batch 1 | ✅ | #50 `a94e34b` | no | SEC + company_ir live, 6 scaffolds |
 | 29B.1 | Non-US company IR evidence | ✅ | #54 `6046011` | no | verified issuer allowlist, safe fetcher |
 | 29B.2 | Primary document text extraction | ✅ | #56 `793e0a7` | no | bounded annual-report PDF/HTML text extraction (no-OCR) + primary-fact parser + evidence budgeter, all off-by-default; staging-validated. Env note: every live issuer report reached is scanned/index-only → degrades to honest source-gaps, `primary_documents` present-but-empty (0 fabricated) |
-| 29B.3 | Primary-fact integration | 🔜 | — | tbd | extracted facts → pack/council evidence |
+| 29B.3 | Primary-fact integration | 🟡 | `feature/phase-29b3-primary-facts-integration` `2d58ce3` — PR pending | no | high-confidence T1 facts → `PrimaryFactRef` on `EvidenceItem` → council metadata (`source_summary_json.llm_council.primary_facts`, `to_report_dict` unchanged) → report `T1_primary_filing` datapoints + `extracted_primary_facts` + recomputed T1/T2 checklist + strict-schema completer (refuses non-USD revenue, no conversion). Scoring/completeness credit = capability-only (not wired to a production caller). Backend 2033 pass / 12 skip / 0 fail, security PASS. Caveat: staging reaches only scanned/index-only PDFs (no-OCR) → 0 facts materialize, fields present-but-empty (proven via unit fixtures) |
 | 29B.4 | EU/UK regulated-disclosure connectors | 🔜 | — | tbd | live fetch for scaffolded connectors |
 | 29C | Macro/commodity/policy connectors | 🔜 | — | tbd | USGS/IEA/EIA/FRED/IMF/Eurostat/… |
 | 29D | Event-trigger / patents / local press | 🔜 | — | tbd | timely sourced event signals |
