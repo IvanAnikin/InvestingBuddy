@@ -27,11 +27,21 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from typing import Any
+from unittest.mock import patch
 
 import pytest
 
 from app.core.config import Settings
 from app.services import safety_terms
+from app.services.final_report_generator import FinalReportGeneratorService
+from app.services.llm import discovery_council as discovery_council_mod
+from app.services.llm.discovery_council import (
+    _event_discovery_facts,
+    maybe_run_discovery_council,
+)
+from app.services.llm.discovery_evidence_pack import build_discovery_evidence_pack
+from app.services.llm.fake_discovery_client import FakeDiscoveryLLMClient
 from app.services.sources import (
     ThemeEventEvidence,
     build_registry,
@@ -348,3 +358,321 @@ def test_collect_theme_event_evidence_secret_free():
     blob = json.dumps(ev.model_dump(mode="json")).lower()
     for needle in ("api_token", "bearer ", "authorization", "password", "secret"):
         assert needle not in blob
+
+
+# ===========================================================================
+# Task 2 — discovery council cites event references (as run facts R#)
+# ===========================================================================
+
+
+def _discovery_cfg(
+    event: bool = True, macro: bool = False, max_items: int = 3
+) -> Settings:
+    return Settings(
+        llm_council_enabled=True,
+        llm_discovery_council_enabled=True,
+        llm_provider_council="fake",
+        source_event_enabled=event,
+        source_event_max_items=max_items,
+        source_macro_enabled=macro,
+    )
+
+
+def _event_run(
+    theme: str = "defense", region: str | None = "Europe"
+) -> dict[str, Any]:
+    return {
+        "run_id": "event-run",
+        "mode": "thesis",
+        "status": "completed",
+        "thesis_text": f"{theme} procurement exposed producers",
+        "parsed_thesis": {"theme": theme, "region": region},
+        "config": {"region": region},
+        "provider": "free_real",
+        "lookback_days": 90,
+        "universe_count": 3,
+        "candidate_count": 1,
+        "error_count": 0,
+        "warnings": [],
+    }
+
+
+def _event_cands() -> list[dict[str, Any]]:
+    return [
+        {
+            "candidate_id": "cand-1",
+            "ticker": "XYZ",
+            "exchange": "US",
+            "company_name": "XYZ Defense Corp",
+            "country": "United States",
+            "sector": "Industrials",
+            "data_coverage": {},
+        }
+    ]
+
+
+def _spy_builder():
+    """A side_effect wrapper capturing the pack + event/macro_evidence kwargs."""
+    captured: dict[str, Any] = {}
+    real = discovery_council_mod.build_discovery_evidence_pack
+
+    def _spy(**kwargs: Any):
+        pack = real(**kwargs)
+        captured["pack"] = pack
+        captured["event_evidence"] = kwargs.get("event_evidence")
+        captured["macro_evidence"] = kwargs.get("macro_evidence")
+        return pack
+
+    return captured, _spy
+
+
+def test_event_discovery_facts_are_weak_context():
+    cfg = _discovery_cfg()
+    events = asyncio.run(collect_theme_event_evidence("defense", "Europe", cfg))
+    facts = _event_discovery_facts(events)
+    assert facts  # defense is a procurement-relevant theme
+    for f in facts:
+        assert f["label"] == "event_context"
+        detail = f["detail"].lower()
+        assert "weak" in detail
+        assert "not a candidate" in detail
+        assert "no specific award" in detail
+        # The only digit permitted in the detail is the "(T2)" tier label; no
+        # fabricated award amount / contract number / date leaks (the reference
+        # excerpt itself is proven digit-free at the connector level above).
+        assert not _DIGIT_RE.search(f["detail"].replace("(T2)", "")), f["detail"]
+        # Recommendation-free.
+        assert safety_terms.scan_text(f["detail"]) == []
+
+
+def test_discovery_pack_appends_citeable_event_run_facts():
+    cfg = _discovery_cfg()
+    run, cands = _event_run("defense"), _event_cands()
+    events = asyncio.run(collect_theme_event_evidence("defense", "Europe", cfg))
+    event_facts = _event_discovery_facts(events)
+    assert event_facts
+
+    pack = build_discovery_evidence_pack(
+        run=run,
+        candidates=cands,
+        event_evidence=event_facts,
+        extra_known_gaps=events.gap_messages(),
+    )
+    event_rf = [f for f in pack.run_facts if f.label == "event_context"]
+    assert event_rf
+    ids = pack.evidence_ids()
+    for f in event_rf:
+        # Every event reference is a citeable R# run fact.
+        assert re.fullmatch(r"R\d+", f.id)
+        assert f.id in ids
+        assert "no specific award" in (f.detail or "").lower()
+        assert safety_terms.scan_text(f.detail or "") == []
+    # Honest "tenders / awards not fetched" gaps are threaded into known_gaps.
+    assert any("not fetched at report time" in g.lower() for g in pack.known_gaps)
+
+
+def test_discovery_pack_byte_identical_without_event():
+    run, cands = _event_run("defense"), _event_cands()
+    base = build_discovery_evidence_pack(run=run, candidates=cands)
+    with_none = build_discovery_evidence_pack(
+        run=run, candidates=cands, event_evidence=None
+    )
+    assert base.model_dump() == with_none.model_dump()
+    assert not any(f.label == "event_context" for f in base.run_facts)
+
+
+def test_maybe_run_discovery_council_threads_event_when_enabled():
+    run, cands = _event_run("defense"), _event_cands()
+    captured, spy = _spy_builder()
+    with patch.object(
+        discovery_council_mod, "build_discovery_evidence_pack", side_effect=spy
+    ):
+        result = asyncio.run(
+            maybe_run_discovery_council(
+                run=run,
+                candidates=cands,
+                cfg=_discovery_cfg(event=True),
+                client=FakeDiscoveryLLMClient(),
+            )
+        )
+    assert result.llm_used is True
+    assert captured["event_evidence"]  # non-empty event references were passed
+    pack = captured["pack"]
+    event_rf = [f for f in pack.run_facts if f.label == "event_context"]
+    assert event_rf
+    ids = pack.evidence_ids()
+    assert all(f.id in ids for f in event_rf)  # citeable
+    assert any("not fetched at report time" in g.lower() for g in pack.known_gaps)
+
+
+def test_maybe_run_discovery_council_dark_when_event_disabled():
+    run, cands = _event_run("defense"), _event_cands()
+    captured, spy = _spy_builder()
+    with patch.object(
+        discovery_council_mod, "build_discovery_evidence_pack", side_effect=spy
+    ):
+        asyncio.run(
+            maybe_run_discovery_council(
+                run=run,
+                candidates=cands,
+                cfg=_discovery_cfg(event=False),
+                client=FakeDiscoveryLLMClient(),
+            )
+        )
+    # No event references passed and no event run facts in the pack.
+    assert captured["event_evidence"] is None
+    assert not [f for f in captured["pack"].run_facts if f.label == "event_context"]
+
+
+def test_maybe_run_discovery_council_macro_unchanged_when_only_event_toggles():
+    """Independence: toggling ONLY the event flag never adds macro run facts."""
+    run, cands = _event_run("defense"), _event_cands()
+    # Macro off + event on: event facts present, macro NOT threaded (None).
+    captured, spy = _spy_builder()
+    with patch.object(
+        discovery_council_mod, "build_discovery_evidence_pack", side_effect=spy
+    ):
+        asyncio.run(
+            maybe_run_discovery_council(
+                run=run,
+                candidates=cands,
+                cfg=_discovery_cfg(event=True, macro=False),
+                client=FakeDiscoveryLLMClient(),
+            )
+        )
+    assert captured["event_evidence"]
+    assert captured["macro_evidence"] is None
+    assert not [
+        f for f in captured["pack"].run_facts if f.label == "macro_context"
+    ]
+
+
+# ===========================================================================
+# Task 2 — company report optional event-context block
+# ===========================================================================
+
+
+def _defense_snapshot() -> dict[str, Any]:
+    """A defense contractor: its sector/industry make the procurement venues
+    relevant, so an event reference surfaces for the company theme."""
+    return {
+        "is_mock": False,
+        "source_tier": "T6_model_estimate",
+        "company_identity": {
+            "ticker": "DEF",
+            "legal_name": "Defense Systems PLC",
+            "exchange": "LSE",
+            "country_domicile": "United Kingdom",
+        },
+        "profile": {"sector": "Industrials", "industry": "Aerospace & Defense"},
+    }
+
+
+@pytest.fixture
+def enable_council(monkeypatch):
+    from app.core import config
+
+    monkeypatch.setattr(config.settings, "llm_council_enabled", True)
+    monkeypatch.setattr(config.settings, "llm_provider_council", "fake")
+    yield
+
+
+@pytest.fixture
+def enable_council_and_event(monkeypatch):
+    from app.core import config
+
+    monkeypatch.setattr(config.settings, "llm_council_enabled", True)
+    monkeypatch.setattr(config.settings, "llm_provider_council", "fake")
+    monkeypatch.setattr(config.settings, "source_event_enabled", True)
+    yield
+
+
+async def _generate(mock_db, snapshot):
+    service = FinalReportGeneratorService()
+    return await service._generate_and_save(
+        db=mock_db,
+        scorecard=None,
+        candidate=None,
+        source_report=None,
+        company_record=None,
+        citations=[],
+        sources=[],
+        state={"company_snapshot": snapshot, "catalyst_discovery": None},
+    )
+
+
+def _captured_report_content(mock_db) -> dict[str, Any]:
+    assert mock_db.add.called, "expected a report to be saved"
+    report = mock_db.add.call_args[0][0]
+    content: dict[str, Any] = {}
+    pattern = re.compile(r"```json\s*(.*?)\s*```", re.DOTALL)
+    for match in pattern.finditer(report.content_markdown or ""):
+        block = json.loads(match.group(1))
+        if isinstance(block, dict):
+            content.update(block)
+    return content
+
+
+async def test_company_report_renders_event_block_when_enabled(
+    mock_db, enable_council_and_event
+) -> None:
+    resp = await _generate(mock_db, _defense_snapshot())
+    # Invariants hold on the event-on path.
+    assert resp.schema_valid is True
+    assert resp.safety_valid is True
+    assert resp.publication_ready is False
+    assert resp.human_review_required is True
+
+    content = _captured_report_content(mock_db)
+    block = content.get("industry_event_context")
+    assert block is not None, "event-on report must carry an industry_event_context block"
+    assert block["value"], "expected at least one procurement / tender reference"
+    assert block["human_review_required"] is True
+    # Honest WEAK CONTEXT note — not company-specific, not a catalyst/trade signal.
+    note = block["note"].lower()
+    assert "not " in note and "company-specific evidence" in note
+    assert "never a direct company catalyst" in note
+    assert "trade signal" in note
+    assert "weak" in note
+    # Reference-only: a URL + tenders reference but NO specific award / amount /
+    # contract number / date (which would surface as digits) in the reference text.
+    for item in block["value"]:
+        assert item["url"]
+        assert item["tenders_reference"]
+        assert not _DIGIT_RE.search(item["tenders_reference"])
+    # No forbidden rating / valuation vocab anywhere in the block.
+    assert safety_terms.scan_value(block) == []
+
+    # The compact council metadata path also carries the event context.
+    report = mock_db.add.call_args[0][0]
+    assert report.source_summary_json["llm_council"]["event_context"]
+
+
+async def test_company_report_no_event_block_when_disabled(
+    mock_db, enable_council
+) -> None:
+    """Council on but event flag off → block absent, report unchanged + safe."""
+    resp = await _generate(mock_db, _defense_snapshot())
+    assert resp.schema_valid is True
+    assert resp.safety_valid is True
+    assert resp.publication_ready is False
+    assert resp.human_review_required is True
+
+    content = _captured_report_content(mock_db)
+    assert "industry_event_context" not in content
+    report = mock_db.add.call_args[0][0]
+    assert report.source_summary_json["llm_council"]["event_context"] == []
+
+
+async def test_company_report_macro_untouched_when_only_event_toggles(
+    mock_db, enable_council_and_event
+) -> None:
+    """Independence: with only the event flag on, the macro block/context stay
+    absent/empty while the event block/context are present."""
+    await _generate(mock_db, _defense_snapshot())
+    content = _captured_report_content(mock_db)
+    assert "industry_event_context" in content
+    assert "industry_macro_context" not in content
+    report = mock_db.add.call_args[0][0]
+    assert report.source_summary_json["llm_council"]["event_context"]
+    assert report.source_summary_json["llm_council"]["macro_context"] == []

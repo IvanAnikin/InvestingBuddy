@@ -28,6 +28,7 @@ from app.services.llm.discovery_schemas import (
 
 _TEXT_MAX = 240
 _MACRO_TEXT_MAX = 320
+_EVENT_TEXT_MAX = 320
 _MAX_WARNINGS_PER_CANDIDATE = 4
 _MAX_KNOWN_GAPS = 20
 
@@ -179,6 +180,33 @@ def _macro_run_facts(
     return facts
 
 
+def _event_run_facts(
+    event_evidence: list[dict[str, Any]] | None, start_index: int
+) -> list[RunFact]:
+    """Append procurement / tender EVENT references as cited run facts — 29D.1.
+
+    The event analog of ``_macro_run_facts``: each item is a reference-only event
+    fact (venue name + landing URL + which tenders / awards it publishes) with NO
+    specific award / contractor / amount / contract number / date. Numbering
+    continues from the existing run facts (``start_index`` is the current fact
+    count) so the ids stay ``R1, R2, …`` and every event reference becomes a
+    CITEABLE thesis-level research-priority CONTEXT signal — a WEAK signal only,
+    never a candidate, catalyst, or recommendation. ``None`` adds nothing (the
+    pack stays byte-identical when the event layer is off).
+    """
+    facts: list[RunFact] = []
+    n = start_index
+    for e in event_evidence or []:
+        detail = _clip(e.get("detail"), _EVENT_TEXT_MAX)
+        if detail is None:
+            continue
+        n += 1
+        facts.append(
+            RunFact(id=f"R{n}", label=str(e.get("label") or "event_context"), detail=detail)
+        )
+    return facts
+
+
 def _score_breakdown(cand: dict[str, Any]) -> dict[str, Any]:
     return _compact(
         {
@@ -289,6 +317,7 @@ def build_discovery_evidence_pack(
     max_candidates: int = 25,
     extra_known_gaps: list[str] | None = None,
     macro_evidence: list[dict[str, Any]] | None = None,
+    event_evidence: list[dict[str, Any]] | None = None,
 ) -> DiscoveryEvidencePack:
     """Build a bounded, cited evidence pack for one discovery run.
 
@@ -300,10 +329,18 @@ def build_discovery_evidence_pack(
     SOURCE dicts (``{"label", "detail"}``) for the run's theme/region. They are
     appended as extra run facts (R#) so the council can CITE macro context. When
     None (the default / macro flag off) the pack is byte-identical to before.
+
+    ``event_evidence`` (Phase 29D.1) is the procurement / tender EVENT analog: a
+    bounded list of reference-only event SOURCE dicts (``{"label", "detail"}``)
+    for the run's theme/region, appended as further run facts (R#) so the council
+    can CITE event context — a WEAK thesis-level research-priority signal, never a
+    candidate / catalyst / recommendation. When None (the default / event flag
+    off) the pack is byte-identical to before, independent of ``macro_evidence``.
     """
     ctx = _run_context(run)
     facts = _run_facts(run, ctx)
     facts += _macro_run_facts(macro_evidence, len(facts))
+    facts += _event_run_facts(event_evidence, len(facts))
 
     cap = max(1, max_candidates)
     evidence_candidates = [

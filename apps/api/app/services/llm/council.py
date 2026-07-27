@@ -45,6 +45,10 @@ from app.services.sources.company_evidence import (
     sec_filings_from_catalyst,
 )
 from app.services.sources.connector_base import CompanyContext
+from app.services.sources.event_evidence import (
+    ThemeEventEvidence,
+    collect_theme_event_evidence,
+)
 from app.services.sources.macro_evidence import (
     ThemeMacroEvidence,
     collect_theme_macro_evidence,
@@ -186,6 +190,48 @@ def _macro_context_summary(macro: ThemeMacroEvidence) -> list[dict[str, Any]]:
         gap_by_source.setdefault(g.source_id, g.as_message())
     out: list[dict[str, Any]] = []
     for it in macro.evidence_items:
+        out.append(
+            {
+                "source_id": it.source_id,
+                "source_name": it.source_name,
+                "title": it.title,
+                "url": it.url,
+                "tier": it.content_source_tier,
+                "reference": it.excerpt,
+                "gap": gap_by_source.get(it.source_id),
+            }
+        )
+    return out
+
+
+def _company_event_theme(company: CompanyContext) -> str | None:
+    """A broad procurement / tender theme for a company: its sector/industry.
+
+    The event analog of ``_company_macro_theme``. Procurement / tender references
+    are matched against this theme's keywords, so a defense contractor (industry
+    "Aerospace & Defense") surfaces the procurement venues, an infrastructure /
+    rail name surfaces the same, etc. Deliberately coarse: event context is
+    thesis-level background, never a company-specific award or catalyst.
+    """
+    theme = " ".join(x for x in (company.sector, company.industry) if x).strip()
+    return theme or None
+
+
+def _event_context_summary(events: ThemeEventEvidence) -> list[dict[str, Any]]:
+    """Compact, secret-free EVENT CONTEXT reference summary — Phase 29D.1.
+
+    The event analog of ``_macro_context_summary``. One entry per procurement /
+    tender source reference: its identity, official landing URL, tier, which
+    tenders / awards the venue publishes (reference text only — NO specific award
+    / contractor / amount / contract number / date), and the honest "live tenders
+    / awards not fetched" gap. A WEAK thesis-level research-priority signal —
+    never a company-specific claim, catalyst, materiality claim, or trade signal.
+    """
+    gap_by_source: dict[str | None, str] = {}
+    for g in events.source_gaps:
+        gap_by_source.setdefault(g.source_id, g.as_message())
+    out: list[dict[str, Any]] = []
+    for it in events.evidence_items:
         out.append(
             {
                 "source_id": it.source_id,
@@ -483,6 +529,38 @@ async def maybe_run_council(
                     exception_type=type(exc).__name__,
                 )
 
+        # Phase 29D.1: optional EVENT CONTEXT. When ``source_event_enabled`` is on,
+        # collect bounded, reference-only procurement / tender sources for the
+        # company's broad theme (sector/industry, else country/region). Dark by
+        # default and independent of the macro flag (event off → empty,
+        # byte-identical behaviour); never fetches an award; never crashes the
+        # council. WEAK research-priority CONTEXT only — never a company catalyst.
+        event_context: list[dict[str, Any]] = []
+        if cfg.source_event_enabled:
+            try:
+                company_ctx = _company_context(company_snapshot, ticker, exchange)
+                events = await collect_theme_event_evidence(
+                    _company_event_theme(company_ctx), company_ctx.country, cfg
+                )
+                event_context = _event_context_summary(events)
+                log_event(
+                    log,
+                    "event_context_collected",
+                    report_id=report_id,
+                    ticker=ticker,
+                    exchange=exchange,
+                    event_item_count=len(event_context),
+                )
+            except Exception as exc:  # noqa: BLE001 - event layer never crashes a report
+                log_event(
+                    log,
+                    "event_context_failed",
+                    level=logging.WARNING,
+                    report_id=report_id,
+                    ticker=ticker,
+                    exception_type=type(exc).__name__,
+                )
+
         pack = build_evidence_pack(
             report_content=report_content,
             company_snapshot=company_snapshot,
@@ -528,6 +606,11 @@ async def maybe_run_council(
         # render an optional macro-context block (background only, never a catalyst).
         if macro_context:
             result.macro_context = macro_context
+        # Phase 29D.1: attach the bounded EVENT CONTEXT references so the report can
+        # render an optional event-context block (WEAK research-priority background
+        # only, never a company-specific award, catalyst, or trade signal).
+        if event_context:
+            result.event_context = event_context
         return result
     except Exception as exc:  # noqa: BLE001 - never let the council crash a report
         log_event(
