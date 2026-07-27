@@ -28,7 +28,7 @@ from app.core.config import settings as default_settings
 from app.core.log_redaction import SENSITIVE_QUERY_SUBSTRINGS
 from app.services.sources.connector_base import ConnectorHealth, SourceConnector
 from app.services.sources.connectors import (
-    MACRO_SOURCES,
+    ALL_MACRO_SOURCES,
     CompanyIrConnector,
     DeutscheBoerseConnector,
     EuronextRegulatedConnector,
@@ -48,7 +48,6 @@ from app.services.sources.taxonomy import (
     CANONICAL_TIERS,
     T1_PRIMARY_COMPANY_SOURCE,
     T2_REGULATOR_OR_GOV,
-    T3_INDUSTRY_SPECIALIST,
     T4_QUALITY_MEDIA,
     T5_API_AGGREGATOR,
     AccessMode,
@@ -273,18 +272,20 @@ def _scaffolded(
 
 
 def _macro_reference_source(spec: MacroSourceSpec) -> RegisteredSource:
-    """An enabled reference-only macro source (Phase 29C.1).
+    """An enabled reference-only macro / commodity-energy source (Phase 29C).
 
-    Built from the single ``MACRO_SOURCES`` table so the registry and the
-    connectors never drift. It is a T2 macro reference: the connector emits a
+    Built from the single ``ALL_MACRO_SOURCES`` table so the registry and the
+    connectors never drift. It is a T2/T3 macro reference: the connector emits a
     bounded SOURCE REFERENCE (which official dataset covers which indicators)
-    plus an honest gap; live figures are not fetched at report time.
+    plus an honest gap; live figures are not fetched at report time. The tier is
+    the source's own (T2 for a regulator/government publisher, T3 for an
+    industry-specialist agency such as USGS / IEA / IRENA / ENTSO-E).
     """
     return RegisteredSource(
         source_id=spec.source_id,
         name=spec.display_name,
         provider_type=spec.provider,
-        tier=T2_REGULATOR_OR_GOV,
+        tier=spec.tier,
         status=SourceStatus.enabled,
         enabled=True,
         jurisdiction=spec.jurisdiction,
@@ -568,26 +569,17 @@ def build_registry(cfg: Settings | None = None) -> SourceRegistry:
     #   (source_id, name, provider_type, tier, phase, extra_kwargs)
     _MACRO = ["fetch_macro_context"]
     _SEARCH = ["search_company"]
-    com = ProviderType.commodity
     trd = ProviderType.trade_policy
     proc = ProviderType.procurement
     pat = ProviderType.patents
-    t2, t3, t5 = T2_REGULATOR_OR_GOV, T3_INDUSTRY_SPECIALIST, T5_API_AGGREGATOR
+    t2, t5 = T2_REGULATOR_OR_GOV, T5_API_AGGREGATOR
     planned_table: list[tuple[str, str, ProviderType, str, str, dict]] = [
-        # Macro / commodity / policy (Phase 29C). NOTE: fred, imf, eurostat,
-        # world_bank_pink_sheet and national_stats_central_banks were promoted to
-        # enabled reference-only macro sources (Phase 29C.1, see MACRO_SOURCES);
-        # the remaining commodity / trade / procurement venues stay planned.
-        ("usgs", "USGS Mineral Commodity Summaries", com, t3, PHASE_29C,
-         {"jurisdiction": "US", "capabilities": _MACRO}),
-        ("iea", "IEA (International Energy Agency)", com, t3, PHASE_29C,
-         {"capabilities": _MACRO}),
-        ("irena", "IRENA (Renewable Energy)", com, t3, PHASE_29C,
-         {"capabilities": _MACRO}),
-        ("eia", "US EIA (Energy Information Administration)", com, t2, PHASE_29C,
-         {"jurisdiction": "US", "capabilities": _MACRO}),
-        ("entsoe", "ENTSO-E Transparency Platform", com, t3, PHASE_29C,
-         {"region": "Europe", "capabilities": _MACRO}),
+        # Macro / commodity / policy (Phase 29C). NOTE: the reference-only macro
+        # publishers (29C.1: fred, imf, eurostat, world_bank_pink_sheet,
+        # national_stats_central_banks) and the commodity / energy references
+        # (29C.2: usgs, iea, irena, eia, entsoe) were promoted to enabled
+        # reference-only sources (see ALL_MACRO_SOURCES). The remaining trade /
+        # procurement venues and the OpenBB aggregator toolkit stay planned.
         ("ustr_taric", "USTR / EU TARIC (tariffs)", trd, t2, PHASE_29C,
          {"capabilities": _MACRO}),
         ("usaspending", "USAspending.gov", proc, t2, PHASE_29C,
@@ -619,11 +611,12 @@ def build_registry(cfg: Settings | None = None) -> SourceRegistry:
         for sid, nm, pt, tr, ph, extra in planned_table
     ]
 
-    # -- Enabled reference-only macro sources (Phase 29C.1) ----------------
-    # Reference-only: a bounded T2 macro SOURCE REFERENCE + honest gap, no live
-    # figures, no network at report time, no API key. Built from MACRO_SOURCES.
+    # -- Enabled reference-only macro sources (Phase 29C.1 + 29C.2) --------
+    # Reference-only: a bounded T2/T3 macro SOURCE REFERENCE + honest gap, no live
+    # figures, no network at report time, no API key. Built from ALL_MACRO_SOURCES
+    # (the 29C.1 macro publishers + the 29C.2 commodity / energy references).
     macro_enabled: list[RegisteredSource] = [
-        _macro_reference_source(spec) for spec in MACRO_SOURCES
+        _macro_reference_source(spec) for spec in ALL_MACRO_SOURCES
     ]
 
     sources = enabled + macro_enabled + scaffolded + planned
@@ -661,7 +654,8 @@ def build_registry(cfg: Settings | None = None) -> SourceRegistry:
             configured=True,
         ),
     }
-    # Reference-only macro connectors (Phase 29C.1), one per MACRO_SOURCES spec.
+    # Reference-only macro / commodity-energy connectors (Phase 29C.1 + 29C.2),
+    # one per ALL_MACRO_SOURCES spec.
     connectors.update(build_macro_connectors())
     for s in scaffolded:
         note = next((n for sid, _, _, _, n in _SCAFFOLD_TABLE if sid == s.source_id), None)

@@ -10,6 +10,8 @@ from app.services.sources.connectors.generic import (
     WrappedProviderConnector,
 )
 from app.services.sources.connectors.macro_reference import (
+    ALL_MACRO_SOURCES,
+    COMMODITY_ENERGY_SOURCES,
     MACRO_SOURCES,
     MacroReferenceConnector,
     MacroSourceSpec,
@@ -37,5 +39,7 @@ __all__ = [
     "MacroReferenceConnector",
     "MacroSourceSpec",
     "MACRO_SOURCES",
+    "COMMODITY_ENERGY_SOURCES",
+    "ALL_MACRO_SOURCES",
     "build_macro_connectors",
 ]
