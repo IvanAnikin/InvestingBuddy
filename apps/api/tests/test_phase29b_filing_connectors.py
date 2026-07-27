@@ -93,14 +93,16 @@ def test_registry_sec_and_company_ir_are_live():
 def test_regulator_connectors_are_scaffolded_honestly():
     reg = build_registry()
     scaffolded_ids = {s.source_id for s in reg.scaffolded_sources()}
+    # uk_fca_nsm was promoted to a dedicated connector (Phase 29B.4A); these five
+    # remain honest scaffolds.
     assert {
         "sedar_plus",
         "asx_announcements",
-        "uk_fca_nsm",
         "euronext_regulated_info",
         "deutsche_boerse",
         "nordic_disclosures",
     } <= scaffolded_ids
+    assert "uk_fca_nsm" not in scaffolded_ids
     for sid in scaffolded_ids:
         conn = reg.connectors()[sid]
         assert conn.status == ConnectorStatus.scaffolded
@@ -233,7 +235,7 @@ def test_company_ir_bounds_item_count():
 
 @pytest.mark.parametrize(
     "sid",
-    ["sedar_plus", "asx_announcements", "uk_fca_nsm", "euronext_regulated_info"],
+    ["sedar_plus", "asx_announcements", "deutsche_boerse", "euronext_regulated_info"],
 )
 def test_scaffold_connector_returns_gap_no_fake_evidence(sid: str):
     reg = build_registry()
@@ -487,8 +489,12 @@ def test_ba_lse_not_sec_eligible_no_boeing_confusion():
     assert any(
         g.gap_type == GapType.source_not_eligible for g in collected.source_gaps
     )
-    # No SEC / Boeing evidence: every item is BAE Systems company-IR metadata.
-    assert all(it.source_id == "company_ir" for it in collected.evidence_items)
+    # No SEC / Boeing evidence: every item is BAE Systems' own company-IR metadata
+    # or the UK FCA NSM regulator-transport reference (Phase 29B.4A) — never SEC.
+    assert all(
+        it.source_id in ("company_ir", "uk_fca_nsm")
+        for it in collected.evidence_items
+    )
     blob = " ".join(
         f"{it.source_name} {it.title} {it.url}" for it in collected.evidence_items
     ).lower()

@@ -32,8 +32,10 @@ from pydantic import BaseModel, Field
 from app.core.config import Settings
 from app.core.config import settings as default_settings
 from app.services.exchange_registry import (
+    country_for_exchange,
     is_sec_eligible,
     is_us_exchange,
+    normalize_exchange,
     region_for_exchange,
 )
 from app.services.sources.connector_base import CompanyContext, QueryContext
@@ -53,6 +55,35 @@ from app.services.sources.verified_issuer_sources import get_verified_issuer_sou
 # Source ids whose connectors can produce live company evidence in this phase.
 SEC_ID = "sec_edgar"
 COMPANY_IR_ID = "company_ir"
+
+# Dedicated regulator connectors (Phase 29B.4A). Unlike the generic scaffolds,
+# these are real connectors that emit a bounded T2 regulator-transport SOURCE
+# REFERENCE (plus an honest content gap), so their evidence items are kept — not
+# just their gaps. They are still run through the same regulator loop.
+REGULATOR_REFERENCE_IDS = frozenset({"uk_fca_nsm"})
+
+# Explicit, minimal venue/country -> dedicated regulator connector. Keeps a
+# UK/LSE issuer mapped to the UK FCA NSM connector specifically instead of
+# every Europe-region scaffold (the previous over-match).
+_EXCHANGE_TO_REGULATOR: dict[str, str] = {"LSE": "uk_fca_nsm"}
+_COUNTRY_TO_REGULATOR: dict[str, str] = {"United Kingdom": "uk_fca_nsm"}
+
+
+def regulator_connector_for(
+    exchange: str | None, country: str | None = None
+) -> str | None:
+    """Return the dedicated regulator connector id for a venue, or None.
+
+    Resolves by exchange first (``LSE`` -> ``uk_fca_nsm``), then falls back to
+    the venue's country (or the caller-supplied country). Explicit and minimal
+    by design — a venue with no mapping falls through to the region-scaffold
+    behaviour unchanged.
+    """
+    code = normalize_exchange(exchange)
+    if code in _EXCHANGE_TO_REGULATOR:
+        return _EXCHANGE_TO_REGULATOR[code]
+    resolved_country = country_for_exchange(exchange) or (country or "").strip()
+    return _COUNTRY_TO_REGULATOR.get(resolved_country)
 
 
 class CompanySourceEvidence(BaseModel):
@@ -139,20 +170,34 @@ def _relevant_scaffold_ids(
     company: CompanyContext,
     requested: Sequence[str] | None,
 ) -> list[str]:
-    """Scaffold source ids whose honest gaps are relevant to this issuer.
+    """Regulator connector/scaffold source ids relevant to this issuer.
 
-    - Explicit request: only the requested ids that are actually scaffolded.
-    - Default: none for US / SEC-eligible issuers; for a non-US issuer, the
-      scaffolds whose region matches the issuer's venue, falling back to *all*
-      scaffolds when the region can't be resolved (honest over-disclosure).
+    - Explicit request: only the requested ids that are runnable regulator
+      connectors or scaffolds.
+    - Default: none for US / SEC-eligible issuers. For a non-US issuer with an
+      explicit venue -> regulator mapping (Phase 29B.4A), just that dedicated
+      connector (a UK/LSE issuer maps to ``uk_fca_nsm`` specifically, dropping
+      the other Europe scaffolds). Otherwise the scaffolds whose region matches
+      the issuer's venue, falling back to *all* scaffolds when the region can't
+      be resolved (honest over-disclosure).
     """
     scaffold_ids = [s.source_id for s in registry.scaffolded_sources()]
+    # Dedicated regulator connectors are real (no longer scaffolds) but still run
+    # through this loop, so they must be runnable when explicitly requested.
+    runnable = set(scaffold_ids) | {
+        sid for sid in REGULATOR_REFERENCE_IDS if sid in registry.connectors()
+    }
     if requested is not None:
-        return [sid for sid in requested if sid in scaffold_ids]
+        return [sid for sid in requested if sid in runnable]
 
-    # US / SEC-eligible issuers need no non-US regulator scaffolds.
+    # US / SEC-eligible issuers need no non-US regulator connectors.
     if is_us_exchange(company.exchange) or is_sec_eligible(company.exchange):
         return []
+
+    # Explicit venue -> regulator mapping wins (e.g. UK/LSE -> uk_fca_nsm only).
+    regulator = regulator_connector_for(company.exchange, company.country)
+    if regulator and regulator in registry.connectors():
+        return [regulator]
 
     region = (region_for_exchange(company.exchange) or "").strip().lower()
     matched = [
@@ -276,13 +321,16 @@ async def collect_company_source_evidence(
                 )
             )
 
-    # -- Regulated-disclosure scaffolds (honest gaps only) -----------------
+    # -- Regulated-disclosure connectors / scaffolds -----------------------
+    # Generic scaffolds yield honest gaps only; the dedicated regulator
+    # connectors (e.g. uk_fca_nsm, Phase 29B.4A) additionally yield a bounded
+    # T2 regulator-transport SOURCE REFERENCE (never a fabricated filing).
     for sid in _relevant_scaffold_ids(registry, company, requested):
         conn = registry.connectors().get(sid)
         if conn is None:
             continue
         res = await conn.call_safe(conn.fetch_filings, company, query)
-        # Scaffolds never yield evidence — collect only their gaps/warnings.
+        items.extend(res.evidence_items[:max_items])
         gaps.extend(res.source_gaps)
         warnings.extend(res.warnings)
 
@@ -339,6 +387,8 @@ __all__ = [
     "collect_company_source_evidence",
     "sec_filings_from_catalyst",
     "press_items_from_catalyst",
+    "regulator_connector_for",
     "SEC_ID",
     "COMPANY_IR_ID",
+    "REGULATOR_REFERENCE_IDS",
 ]
