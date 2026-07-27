@@ -285,7 +285,9 @@ def test_registry_endpoint_returns_sources_and_no_secrets():
     assert resp.status_code == 200
     body = resp.json()
     assert body["summary"]["enabled"] >= 6
-    assert body["summary"]["scaffolded"] >= 5
+    # euronext_regulated_info (29B.4B) and uk_fca_nsm (29B.4A) were promoted out
+    # of the scaffold set, leaving four honest regulator scaffolds.
+    assert body["summary"]["scaffolded"] >= 4
     assert body["summary"]["planned"] >= 15
     assert len(body["tiers"]) == 6
     ids = {s["source_id"] for s in body["sources"]}

@@ -29,6 +29,7 @@ from app.core.log_redaction import SENSITIVE_QUERY_SUBSTRINGS
 from app.services.sources.connector_base import ConnectorHealth, SourceConnector
 from app.services.sources.connectors import (
     CompanyIrConnector,
+    EuronextRegulatedConnector,
     PlannedConnector,
     ScaffoldConnector,
     SecEdgarConnector,
@@ -267,16 +268,15 @@ def _scaffolded(
 
 # Phase 29B filing / regulator scaffolds. Columns:
 #   (source_id, name, provider_type, phase, jurisdiction, region, note)
-# Note: uk_fca_nsm is no longer a generic scaffold — Phase 29B.4A promoted it to
-# a dedicated ``UkFcaNsmConnector`` that emits a T2 regulator-transport source
-# reference (see the enabled sources below). These five remain honest scaffolds.
+# Note: uk_fca_nsm (Phase 29B.4A) and euronext_regulated_info (Phase 29B.4B) are
+# no longer generic scaffolds — they were promoted to dedicated connectors that
+# emit a T2 regulator-transport source reference (see the enabled sources below).
+# These four remain honest scaffolds.
 _SCAFFOLD_TABLE: list[tuple[str, str, str | None, str | None, str | None]] = [
     ("sedar_plus", "SEDAR+ (Canada)", "CA", "North America",
      "Canadian issuer filings; no fabricated filings."),
     ("asx_announcements", "ASX Announcements", "AU", "Oceania",
      "ASX company announcements; no fabricated JORC / Appendix 5B data."),
-    ("euronext_regulated_info", "Euronext Regulated Information", None, "Europe",
-     "European regulated-info disclosures."),
     ("deutsche_boerse", "Deutsche Börse Disclosures", "DE", "Europe",
      "German regulated-info disclosures."),
     ("nordic_disclosures", "Nordic (Nasdaq Nordic) Disclosures", None, "Europe",
@@ -349,6 +349,29 @@ def build_registry(cfg: Settings | None = None) -> SourceRegistry:
                 "T1 primary filing CONTENT is not fetched at report time — live "
                 "content retrieval is a Phase 29B.4 follow-up. No fabricated "
                 "filings, notices, or RNS numbers."
+            ),
+        ),
+        RegisteredSource(
+            source_id="euronext_regulated_info",
+            name="Euronext Regulated Information",
+            provider_type=ProviderType.regulator,
+            tier=T2_REGULATOR_OR_GOV,
+            status=SourceStatus.enabled,
+            enabled=True,
+            region="Europe",
+            language="mixed",
+            cost_model=CostModel.free,
+            access_mode=AccessMode.web_scrape,
+            connector_key="euronext_regulated_info",
+            connector_implemented=True,
+            capabilities=["fetch_filings", "fetch_events"],
+            reliability_note=(
+                "Emits a T2 regulator-transport SOURCE REFERENCE to a verified "
+                "Euronext Paris (FR) / Amsterdam (NL) issuer's regulated-disclosure "
+                "venue (Euronext Regulated Information + AMF/AFM; metadata only). "
+                "The T1 primary filing CONTENT is not fetched at report time — live "
+                "content retrieval is a Phase 29B.4 follow-up. French docs require "
+                "translation (Phase 30). No fabricated filings, notices, or dates."
             ),
         ),
         RegisteredSource(
@@ -507,6 +530,7 @@ def build_registry(cfg: Settings | None = None) -> SourceRegistry:
         "sec_edgar": SecEdgarConnector(),
         "company_ir": CompanyIrConnector(),
         "uk_fca_nsm": UkFcaNsmConnector(),
+        "euronext_regulated_info": EuronextRegulatedConnector(),
         "gleif": WrappedProviderConnector(
             connector_key="gleif",
             source_ids=("gleif",),
