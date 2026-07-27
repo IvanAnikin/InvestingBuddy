@@ -554,6 +554,31 @@ grep -RiE "Authorization: Bearer|Set-Cookie:|DATABASE_URL=|api_token=[A-Za-z0-9]
 - No auth change, no public publishing, no recommendation/valuation output, no
   publish route.
 
+## Procurement / Tender Event-Trigger Reference Layer (Phase 29D.1)
+
+> **PR open — pre-staging.** Not yet merged / deployed / staging-validated. Do
+> **not** treat this section as a closed/validated deployment record until the
+> merge SHA + deployed SHA + staging validation result are on file.
+
+- **No DB migration** (DB head stays `011`); **no new allowlisted host, no new
+  endpoint, no new secret** (the EU TED / USAspending event connectors are
+  network-free and use **no API key**).
+- **New app settings (both OFF/conservative by default), INDEPENDENT of the
+  Phase 29C `SOURCE_MACRO_ENABLED` flag:**
+
+  | Setting | Default | Meaning |
+  |---|---|---|
+  | `SOURCE_EVENT_ENABLED` | `false` | Master gate for the reference-only procurement/tender event-trigger layer. `false` → completely dark (no event evidence, no event gaps). `true` → per relevant theme, ONE bounded T2 procurement/tender SOURCE REFERENCE + an honest "live tenders/awards not fetched at report time" gap threaded into the discovery council (as `R#` run facts) and the optional company-report `industry_event_context` block. **Reference-only — no specific award/tender/contractor/amount/date fetched; WEAK signal, needs human review.** |
+  | `SOURCE_EVENT_MAX_ITEMS` | `3` | Hard cap on event-trigger source references collected per theme/region. |
+
+  Both flag KEYS are already added to `.env.example` with default values — never a
+  real secret. Leave `SOURCE_EVENT_ENABLED=false` on staging until 29D.1 is
+  validated. **Rollback:** set `SOURCE_EVENT_ENABLED=false` to return to the exact
+  macro-only-layer behaviour with no code change.
+- **Deliberate deferral:** live EU TED / USAspending tender/award FETCH is a Phase
+  29D follow-up (reference-only this subphase). No auth change, no public
+  publishing, no recommendation/valuation output, no publish route.
+
 ## Annual-Report Document Extraction + Primary-Fact Parsing (Phase 29B.2)
 
 > **PR open — pre-staging.** Not yet merged / deployed / staging-validated. Do
