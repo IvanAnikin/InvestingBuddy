@@ -1,36 +1,35 @@
-# Session State — Phase 29B.4C CLOSED + Phase 29B.4 umbrella COMPLETE (updated 2026-07-27)
+# Session State — Phase 29C.1 Macro Reference Evidence Connectors (stage: PR about to open) (updated 2026-07-27)
 
 > Resumable snapshot. Overwrite at each checkpoint (context-compaction skill).
 > Keep decisions + evidence, not raw logs.
 
 ## Current position
-- Branch: `main` (clean, HEAD `1daccc8`). Autonomous multi-phase campaign (Phase 0 → 31).
-- Phase / subphase: **Phase 29C — NEXT (stage: not-started).** No branch, no PR, no code yet.
-- Just closed: **Phase 29B.4C CLOSED + validated**, which **completes the entire Phase 29B.4 umbrella** (4A + 4B + 4C all closed).
+- Branch: `feature/phase-29c1-macro-connectors`, HEAD **`bee8af3`** (clean). Autonomous multi-phase campaign (Phase 0 → 31).
+- Phase / subphase: **Phase 29C.1 — IN PROGRESS (stage: PR about to open).** First Phase 29C subphase; the platform's first macro / thematic evidence layer. **NOT merged / deployed / staging-validated.**
+- Umbrella: **Phase 29C 🟡 in progress** (29C.1 open; 29C.2 commodity+energy + 29C.3 policy+government still upcoming).
+- Just finished (previous): **Phase 29B.4 umbrella COMPLETE** (4A `5138725` + 4B `1d97612` + 4C `de126ee`, all merged + deployed + staging-validated).
 
-## Campaign progress (all CLOSED unless noted)
-- Phase 0 (close 29B.2): CLOSED — PR #56 → `793e0a7`.
-- 29B.3 (primary facts → reports/gates): CLOSED — PR #57 → `29f4a84`.
-- 29B.4A (UK FCA NSM): CLOSED — PR #58 → `5138725` (closure `phase-29b4a.md`).
-- 29B.4B (Euronext): CLOSED — PR #59 → `1d97612` (closure `phase-29b4b.md`).
-- 29B.4C (Swiss/Nordic/DE): **CLOSED — PR #60 → `de126ee` (closure `phase-29b4c.md`).**
-- **29B.4 umbrella: COMPLETE** (4A `5138725` + 4B `1d97612` + 4C `de126ee`).
-- Next: **Phase 29C** (macro/commodity/policy), then 29D, 30, 31, final report.
+## What 29C.1 shipped (backend-only, 15 files incl. tests, NO migration — DB head `011`)
+- Generic `MacroReferenceConnector` (`apps/api/app/services/sources/connectors/macro_reference.py`) over 5 official public sources: FRED (`fred.stlouisfed.org`), IMF, Eurostat, World Bank Commodity 'Pink Sheet', national statistics offices / central banks. `fetch_macro_context` (was a dead hook) emits ONE bounded **T2 `macro_report` SOURCE REFERENCE** (fixed public token-free landing URL + which indicators the dataset covers) + honest `data_not_sourced` gap. **Reference-only: no indicator value / index level / release date / forecast; network-free; NO API key.** `MACRO_SOURCES` is the single source of truth (registry + connectors built from it).
+- `collect_theme_macro_evidence(theme, region, cfg)` (`sources/macro_evidence.py`): theme collector, DARK when `source_macro_enabled` False, bounded by `source_macro_max_items` (default 3).
+- Registry: 5 macro sources promoted PLANNED → **enabled** → registry now **16 enabled / 2 scaffolded** (only SEDAR+/ASX remain; total 32). `fred`/`imf`/`eurostat`/`national_stats_central_banks` = `macro_statistics`; `world_bank_pink_sheet` = `commodity`; all `T2_regulator_or_gov`.
+- Discovery council: `build_discovery_evidence_pack` threads macro refs as citeable `R#` run facts (in `evidence_ids()`) + honest gaps when `source_macro_enabled`.
+- Company report: OPTIONAL `industry_macro_context` block in `report_content` (beside `industry_context_events`), each item labelled macro CONTEXT (NOT company-specific evidence, never a catalyst, no figures). `CouncilResult.macro_context` via `to_metadata_dict` (empty `[]` off, mirrors `primary_documents`). schema/safety valid, publication_ready false, human_review_required true.
+- New flags in `core/config.py`: `source_macro_enabled` (bool `False`) + `source_macro_max_items` (int `3`). **Dark-by-default: discovery pack + report body byte-identical when off.**
 
-## 29B.4C closure evidence (condensed — full validation on file)
-- Merge SHA `de126ee66b1242f336f57c0ae2a9f31a1f7941d9`; API `/health commit_sha=de126ee` (3 stable polls); web unchanged `793e0a7` (backend-only); no migration (head `011`); AUTH_TEST_MODE absent.
-- Tests: backend **2071 pass / 12 skip / 0 fail** (+16 `test_phase29b4c`; adjacent scaffold-count tests updated, no ripple), ruff clean, mypy `71` baseline no-new, frontend N/A. Security PASS; pre-PR review APPROVED 10/10.
-- Staging VALIDATED (full): C — registry/health show `deutsche_boerse` + `nordic_disclosures` + `six_swiss` all enabled `regulator`/T2, **11 enabled / 2 scaffolded** (only SEDAR+/ASX remain), honest content-not-fetched notes, `six_swiss` asserts NO translation, secret-free. D — `SAP.DE`→`deutsche_boerse` ref (`bundesanzeiger.de`) + German `requires_translation` + honest gap; `company_ir` present. E — `PNDORA.CO`→`nordic_disclosures` ref (`nasdaqomxnordic.com`) + Danish `requires_translation` + honest gap; `company_ir` present. F — `CFR.SW`+`UHR.SW`→`six_swiss` ref `requires_translation`=false (the `translation_required` gap present is the pre-existing `company_ir`'s, honest); `company_ir` present. G — `BA.LSE` still `uk_fca_nsm` (no DE/Nordic/Swiss item), `MC.PA` still `euronext` (no leakage), AAPL guardrail → 3 new connectors `source_not_eligible`/0 items. B — logs current-build clean (sole `api_token=` is known 2026-07-22 historical). schema/safety valid, publication_ready false, human_review_required true, publication admin-gated.
+## Verification (pre-staging)
+- Tests: backend **2092 pass / 12 skip / 0 fail** (+`test_phase29c1_macro_connectors.py`), ruff clean, mypy **71** baseline (no new). Security scan **PASS** (network-free, no fabricated macro data, fixed public token-free URLs, honest gaps, OFF-by-default, no reco/valuation).
+- No migration, no new host, no new endpoint.
 
 ## Decisions made (carried)
-- Regulator connectors emit T2 venue REFERENCE + honest `primary_filing_unavailable` gap; **live venue-CONTENT fetch DEFERRED (reference-only) across all 29B.4 connectors** (SPA/scrape risk). Registry now **11 enabled / 2 scaffolded** (SEDAR+/ASX remain).
-- Per-jurisdiction translation semantics: Germany/Danish/French/other non-English → `requires_translation` (pending Phase 30); Switzerland → NO translation claim (multilingual, English published), neutral multilingual warning only.
-- 29B.3 scoring/completeness credit is capability-only (not wired); primary-fact happy path is unit-fixture-proven (staging issuer reports are scanned/no-OCR → 0 facts).
-- Final staging flags KEPT ON: `LLM_COUNCIL_ENABLED`, `LLM_DISCOVERY_COUNCIL_ENABLED`, `SOURCE_CONNECTOR_ENABLED`, `SOURCE_DOCUMENT_EXTRACTION_ENABLED`.
+- **DELIBERATE: live macro-FIGURE fetch DEFERRED (reference-only).** Mirrors the 29B.4 regulator content-fetch deferral — no API keys, no report-time network, evidence-first, honest gaps. A live keyless official-data-API fetch (World Bank / Eurostat / IMF etc.) is a documented **29C follow-up**. This satisfies all seven 29C.1 acceptance criteria.
+- New OFF-by-default flags `source_macro_enabled` (`False`) + `source_macro_max_items` (`3`); with the flag off the platform is byte-identical to Phase 29B.
+- Macro is thesis-level / industry CONTEXT only — never a company-specific claim, never a catalyst, never a recommendation; no figures carried anywhere.
+- Prior staging flags KEPT ON (from 29B): `LLM_COUNCIL_ENABLED`, `LLM_DISCOVERY_COUNCIL_ENABLED`, `SOURCE_CONNECTOR_ENABLED`, `SOURCE_DOCUMENT_EXTRACTION_ENABLED`. `SOURCE_MACRO_ENABLED` stays OFF until validated.
 
-## Phase 29C scope (planned, next)
-- Widen evidence into macro / commodity-energy / policy-government. Likely split: **29C.1 macro baseline** (FRED/IMF/Eurostat/World Bank), **29C.2 commodity+energy** (USGS/IEA/EIA/IRENA/ENTSO-E/World Bank Pink Sheet), **29C.3 policy+government** (USTR-TARIC/USAspending/EU TED/UN Comtrade).
-- Discipline: evidence-first, **no recommendations/valuations/price-targets**, prefer official/government sources, use source registry + `EvidenceItem` tiers + explicit `SourceGap`s (honest gaps, never fabricated), **no broad web search**, network-safe/allowlisted, OFF-by-default flags, human review required.
+## Phase 29C remaining (upcoming)
+- **29C.2 commodity + energy** (USGS / IEA / EIA / IRENA / ENTSO-E / World Bank Pink Sheet — incl. live commodity/energy figures).
+- **29C.3 policy + government** (USTR-TARIC / USAspending / EU TED / UN Comtrade).
 
 ## Next exact command / action
-- **scope Phase 29C.1 (macro baseline connectors) and create branch `feature/phase-29c1-macro-connectors`.**
+- **run `ib-pr-review-agent`, then `gh pr create` for Phase 29C.1; STOP at the merge gate** (no merge/deploy without review + human approval).

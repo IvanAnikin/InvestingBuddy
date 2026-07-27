@@ -531,6 +531,29 @@ grep -RiE "Authorization: Bearer|Set-Cookie:|DATABASE_URL=|api_token=[A-Za-z0-9]
 
 ---
 
+## Macro Reference Evidence Layer (Phase 29C.1)
+
+> **PR open — pre-staging.** Not yet merged / deployed / staging-validated. Do
+> **not** treat this section as a closed/validated deployment record until the
+> merge SHA + deployed SHA + staging validation result are on file.
+
+- **No DB migration** (DB head stays `011`); **no new allowlisted host, no new
+  endpoint, no new secret** (the macro connectors are network-free and use **no
+  API key** — FRED-style keys are deliberately not introduced).
+- **New app settings (both OFF/conservative by default):**
+
+  | Setting | Default | Meaning |
+  |---|---|---|
+  | `SOURCE_MACRO_ENABLED` | `false` | Master gate for the reference-only macro evidence layer. `false` → completely dark (no macro evidence, no macro gaps); discovery pack + report body byte-identical to Phase 29B. `true` → bounded T2 `macro_report` SOURCE REFERENCES + honest `data_not_sourced` gaps threaded into the discovery council (as `R#` run facts) and the optional company-report `industry_macro_context` block. **Reference-only — no live figures fetched.** |
+  | `SOURCE_MACRO_MAX_ITEMS` | `3` | Hard cap on macro source references collected per theme/region. |
+
+  Both flag KEYS are already added to `.env.example` with default values — never a
+  real secret. Leave `SOURCE_MACRO_ENABLED=false` on staging until 29C.1 is
+  validated. **Rollback:** set `SOURCE_MACRO_ENABLED=false` to return to exact
+  Phase 29B behaviour with no code change.
+- No auth change, no public publishing, no recommendation/valuation output, no
+  publish route.
+
 ## Annual-Report Document Extraction + Primary-Fact Parsing (Phase 29B.2)
 
 > **PR open — pre-staging.** Not yet merged / deployed / staging-validated. Do
