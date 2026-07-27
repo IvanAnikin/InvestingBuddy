@@ -29,10 +29,13 @@ from app.core.log_redaction import SENSITIVE_QUERY_SUBSTRINGS
 from app.services.sources.connector_base import ConnectorHealth, SourceConnector
 from app.services.sources.connectors import (
     CompanyIrConnector,
+    DeutscheBoerseConnector,
     EuronextRegulatedConnector,
+    NordicDisclosuresConnector,
     PlannedConnector,
     ScaffoldConnector,
     SecEdgarConnector,
+    SixSwissConnector,
     UkFcaNsmConnector,
     WrappedProviderConnector,
 )
@@ -268,19 +271,16 @@ def _scaffolded(
 
 # Phase 29B filing / regulator scaffolds. Columns:
 #   (source_id, name, provider_type, phase, jurisdiction, region, note)
-# Note: uk_fca_nsm (Phase 29B.4A) and euronext_regulated_info (Phase 29B.4B) are
-# no longer generic scaffolds — they were promoted to dedicated connectors that
-# emit a T2 regulator-transport source reference (see the enabled sources below).
-# These four remain honest scaffolds.
+# Note: uk_fca_nsm (29B.4A), euronext_regulated_info (29B.4B) and
+# deutsche_boerse / nordic_disclosures (29B.4C) are no longer generic scaffolds —
+# they were promoted to dedicated connectors that emit a T2 regulator-transport
+# source reference (see the enabled sources below). These two remain honest
+# scaffolds.
 _SCAFFOLD_TABLE: list[tuple[str, str, str | None, str | None, str | None]] = [
     ("sedar_plus", "SEDAR+ (Canada)", "CA", "North America",
      "Canadian issuer filings; no fabricated filings."),
     ("asx_announcements", "ASX Announcements", "AU", "Oceania",
      "ASX company announcements; no fabricated JORC / Appendix 5B data."),
-    ("deutsche_boerse", "Deutsche Börse Disclosures", "DE", "Europe",
-     "German regulated-info disclosures."),
-    ("nordic_disclosures", "Nordic (Nasdaq Nordic) Disclosures", None, "Europe",
-     "Nordic regulated-info disclosures."),
 ]
 
 
@@ -372,6 +372,79 @@ def build_registry(cfg: Settings | None = None) -> SourceRegistry:
                 "The T1 primary filing CONTENT is not fetched at report time — live "
                 "content retrieval is a Phase 29B.4 follow-up. French docs require "
                 "translation (Phase 30). No fabricated filings, notices, or dates."
+            ),
+        ),
+        RegisteredSource(
+            source_id="deutsche_boerse",
+            name="Deutsche Börse / Bundesanzeiger Disclosures",
+            provider_type=ProviderType.regulator,
+            tier=T2_REGULATOR_OR_GOV,
+            status=SourceStatus.enabled,
+            enabled=True,
+            jurisdiction="DE",
+            region="Europe",
+            language="de",
+            cost_model=CostModel.free,
+            access_mode=AccessMode.web_scrape,
+            connector_key="deutsche_boerse",
+            connector_implemented=True,
+            capabilities=["fetch_filings", "fetch_events"],
+            reliability_note=(
+                "Emits a T2 regulator-transport SOURCE REFERENCE to a verified "
+                "German (Xetra / Frankfurt) issuer's regulated-disclosure venue "
+                "(Deutsche Börse + Bundesanzeiger / BaFin; metadata only). The T1 "
+                "primary filing CONTENT is not fetched at report time — live content "
+                "retrieval is a Phase 29B.4 follow-up. German docs require "
+                "translation (Phase 30). No fabricated filings, notices, or dates."
+            ),
+        ),
+        RegisteredSource(
+            source_id="nordic_disclosures",
+            name="Nasdaq Nordic Disclosures",
+            provider_type=ProviderType.regulator,
+            tier=T2_REGULATOR_OR_GOV,
+            status=SourceStatus.enabled,
+            enabled=True,
+            region="Europe",
+            language="mixed",
+            cost_model=CostModel.free,
+            access_mode=AccessMode.web_scrape,
+            connector_key="nordic_disclosures",
+            connector_implemented=True,
+            capabilities=["fetch_filings", "fetch_events"],
+            reliability_note=(
+                "Emits a T2 regulator-transport SOURCE REFERENCE to a verified "
+                "Nasdaq Nordic (Copenhagen / Stockholm / Helsinki / Oslo) issuer's "
+                "regulated-disclosure venue (Nasdaq Nordic + national FSA, e.g. "
+                "Finanstilsynet; metadata only). The T1 primary filing CONTENT is "
+                "not fetched at report time — live content retrieval is a Phase "
+                "29B.4 follow-up. Local-language docs require translation (Phase 30). "
+                "No fabricated filings, notices, or dates."
+            ),
+        ),
+        RegisteredSource(
+            source_id="six_swiss",
+            name="SIX Swiss Exchange Regulatory Disclosures",
+            provider_type=ProviderType.regulator,
+            tier=T2_REGULATOR_OR_GOV,
+            status=SourceStatus.enabled,
+            enabled=True,
+            jurisdiction="CH",
+            region="Europe",
+            language="mixed",
+            cost_model=CostModel.free,
+            access_mode=AccessMode.web_scrape,
+            connector_key="six_swiss",
+            connector_implemented=True,
+            capabilities=["fetch_filings", "fetch_events"],
+            reliability_note=(
+                "Emits a T2 regulator-transport SOURCE REFERENCE to a verified Swiss "
+                "(SIX Swiss Exchange) issuer's regulated-disclosure venue (SIX "
+                "Exchange Regulation; metadata only). The T1 primary filing CONTENT "
+                "is not fetched at report time — live content retrieval is a Phase "
+                "29B.4 follow-up. No translation is asserted (Swiss majors publish "
+                "English reports); original filings may be in a Swiss national "
+                "language. No fabricated filings, notices, or dates."
             ),
         ),
         RegisteredSource(
@@ -531,6 +604,9 @@ def build_registry(cfg: Settings | None = None) -> SourceRegistry:
         "company_ir": CompanyIrConnector(),
         "uk_fca_nsm": UkFcaNsmConnector(),
         "euronext_regulated_info": EuronextRegulatedConnector(),
+        "deutsche_boerse": DeutscheBoerseConnector(),
+        "nordic_disclosures": NordicDisclosuresConnector(),
+        "six_swiss": SixSwissConnector(),
         "gleif": WrappedProviderConnector(
             connector_key="gleif",
             source_ids=("gleif",),

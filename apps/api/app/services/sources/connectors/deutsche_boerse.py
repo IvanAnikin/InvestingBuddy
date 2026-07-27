@@ -1,0 +1,278 @@
+"""
+Deutsche Börse regulated-disclosure reference connector — Phase 29B.4C.
+
+Mirrors the Phase 29B.4A (UK FCA NSM) / 29B.4B (Euronext) connectors, one venue
+over: it upgrades the former generic ``deutsche_boerse`` *scaffold* into a
+dedicated connector for German issuers on Xetra / Frankfurt. Its report-time job
+is honest and bounded:
+
+  * For a company that resolves to a **verified German issuer** (its venue is a
+    German venue *and* ``get_verified_issuer_source`` resolves it to a German
+    entity), it emits ONE bounded **T2 regulator-transport SOURCE REFERENCE** —
+    a pointer to the issuer's regulated-disclosure venue (the German
+    regulated-information service: Deutsche Börse's regulated market, with
+    mandatory financial reports published via the Bundesanzeiger / German Federal
+    Gazette and supervised by BaFin), carrying the issuer's identity and a fixed
+    public venue URL. It is deliberately **not a filing**: no specific
+    disclosure, headline, date, or notice number is invented. The same call also
+    emits an explicit honest ``SourceGap`` recording that the actual T1 filing
+    *content* is not fetched at report time (live content retrieval is a Phase
+    29B.4 follow-up, Task 2).
+
+  * German regulated disclosures (Geschäftsbericht / annual report) are
+    German-language, so the reference item is marked ``requires_translation`` and
+    an honest ``translation_required`` gap is added — translation is a Phase 30
+    follow-up.
+
+  * For anything that does not resolve to a verified German issuer, it returns an
+    honest ``source_not_eligible`` gap and **no** reference — never a US SEC
+    lookup, never a fabricated German notice.
+
+Guarantees (mirrors the company-IR static/metadata report path):
+  * **No network call at report time.** Identity + the disclosure-venue
+    reference come from the code-defined verified-issuer registry and fixed
+    public constants; nothing is fetched here.
+  * **No fabrication.** Only the venue is cited; no filing/notice is
+    manufactured.
+  * URLs are stripped of any credential-bearing query parameter by
+    ``EvidenceItem`` before storage; the Deutsche Börse reference carries none.
+"""
+
+from __future__ import annotations
+
+from app.services.exchange_registry import normalize_exchange
+from app.services.sources.connector_base import (
+    CompanyContext,
+    ConnectorHealth,
+    ConnectorResult,
+    QueryContext,
+    SourceConnector,
+    _now,
+)
+from app.services.sources.evidence import EvidenceItem, build_evidence_item
+from app.services.sources.gaps import GapSeverity, GapType, SourceGap
+from app.services.sources.taxonomy import T2_REGULATOR_OR_GOV, ConnectorStatus
+from app.services.sources.verified_issuer_sources import (
+    VerifiedIssuerSource,
+    get_verified_issuer_source,
+)
+
+# Public, fixed reference to the German regulated-information venue. This is the
+# German Federal Gazette's own landing page (the statutory publication platform
+# for German companies' financial reports), NOT a per-filing URL — no notice is
+# fabricated.
+DEUTSCHE_BOERSE_DISCLOSURE_NAME = (
+    "German regulated-information venue (Deutsche Börse / Bundesanzeiger)"
+)
+DEUTSCHE_BOERSE_DISCLOSURE_URL = "https://www.bundesanzeiger.de/"
+_TRANSPORT_LABEL = "German regulated-information venue (gazette/regulator-operated)"
+
+# German venues this connector is eligible for (Xetra / Frankfurt) and the home
+# regulator that oversees each issuer's regulated disclosures.
+_GERMAN_VENUES = frozenset({"XETRA", "F", "DE"})
+_COUNTRY_REGULATOR: dict[str, str] = {
+    "Germany": "Bundesanzeiger (German Federal Gazette) / BaFin",
+}
+# Eligible countries are exactly those with a mapped home regulator above.
+_GERMAN_COUNTRIES = frozenset(_COUNTRY_REGULATOR)
+# German regulated disclosures are German-language and not translated this phase.
+_ORIGINAL_LANGUAGE = "German"
+
+# Follow-up phase that will bind the flag-gated live content fetch (Task 2).
+_CONTENT_FOLLOWUP_PHASE = "Phase 29B.4"
+
+
+class DeutscheBoerseConnector(SourceConnector):
+    """Dedicated Deutsche Börse / Bundesanzeiger regulated-disclosure reference connector.
+
+    Emits a bounded T2 regulator-transport *source reference* (not filing
+    content) for a verified German issuer, plus an honest content gap and an
+    honest ``translation_required`` gap. It is a live evidence path for that
+    *reference* only; the honest limitation that the primary filing *content* is
+    not fetched is carried on every result as a gap.
+    """
+
+    connector_key = "deutsche_boerse"
+    supported_source_ids = ("deutsche_boerse",)
+    status = ConnectorStatus.enabled
+
+    def __init__(self, *, verified_source: VerifiedIssuerSource | None = None) -> None:
+        # An explicitly injected verified source (tests / preview) takes
+        # precedence; otherwise the connector resolves identity itself.
+        self._verified = verified_source
+
+    # -- Eligibility -------------------------------------------------------
+
+    def _german_issuer(self, company: CompanyContext) -> VerifiedIssuerSource | None:
+        """Resolve a company to a verified German issuer, or None.
+
+        Requires BOTH a German venue (Xetra / Frankfurt) and a verified-registry
+        match whose country is Germany. Refuses to guess — an unresolvable issuer
+        yields None (the caller emits an honest ``source_not_eligible`` gap),
+        never a fabricated notice.
+        """
+        verified = self._verified or get_verified_issuer_source(
+            company.ticker, company.exchange
+        )
+        if verified is None:
+            return None
+        country_ok = (verified.country or "").strip() in _GERMAN_COUNTRIES
+        venue_ok = (
+            normalize_exchange(company.exchange or verified.exchange) in _GERMAN_VENUES
+        )
+        return verified if (country_ok and venue_ok) else None
+
+    @staticmethod
+    def _regulator(verified: VerifiedIssuerSource) -> str:
+        return _COUNTRY_REGULATOR.get((verified.country or "").strip(), "")
+
+    # -- Result builders ---------------------------------------------------
+
+    def _reference_item(self, verified: VerifiedIssuerSource) -> EvidenceItem:
+        """One bounded T2 source reference to the issuer's German disclosure venue."""
+        ident = verified.company_name
+        regulator = self._regulator(verified)
+        excerpt = (
+            f"Regulated disclosures for {ident} ({verified.ticker}.{verified.exchange}) "
+            "— annual reports (Geschäftsbericht) and regulated announcements — are "
+            f"published via {DEUTSCHE_BOERSE_DISCLOSURE_NAME}. This item is a source "
+            "reference to that regulated-disclosure venue only: no individual "
+            "filing, announcement, headline, date, or notice number is fetched or "
+            "fabricated."
+        )
+        warnings = [
+            "Source reference to the German regulated-disclosure venue "
+            f"({DEUTSCHE_BOERSE_DISCLOSURE_NAME} / {regulator}); the primary filing "
+            "CONTENT is not fetched at report time. Human review required.",
+            "German regulated disclosures are German-language and are not "
+            "translated in this phase; translation is a Phase 30 follow-up.",
+        ]
+        provenance = [
+            f"{DEUTSCHE_BOERSE_DISCLOSURE_NAME} + {regulator} (regulated-disclosure venue)",
+            "Source reference only — no filing content retrieved",
+            "needs_human_review=true",
+        ]
+        content_source = (
+            f"{DEUTSCHE_BOERSE_DISCLOSURE_NAME} + {regulator} "
+            "— regulated-disclosure venue"
+        )
+        return build_evidence_item(
+            id="DEBOERSEREF",
+            source_id="deutsche_boerse",
+            source_name=ident,
+            provider_transport=_TRANSPORT_LABEL,
+            provider_transport_tier=T2_REGULATOR_OR_GOV,
+            content_source=content_source,
+            content_source_tier=T2_REGULATOR_OR_GOV,
+            source_type="deutsche_boerse_reference",
+            title=(
+                f"{ident} — {verified.country} regulated disclosures via "
+                f"{DEUTSCHE_BOERSE_DISCLOSURE_NAME} ({regulator})"
+            ),
+            url=DEUTSCHE_BOERSE_DISCLOSURE_URL,
+            excerpt=excerpt,
+            data_quality="metadata_only",
+            confidence=verified.source_confidence,
+            requires_translation=True,
+            original_language=_ORIGINAL_LANGUAGE,
+            provenance=provenance,
+            warnings=warnings,
+        )
+
+    def _content_gap(self, verified: VerifiedIssuerSource) -> SourceGap:
+        """Honest gap: the T1 filing content behind the venue is not fetched."""
+        return SourceGap(
+            connector_key=self.connector_key,
+            source_id="deutsche_boerse",
+            gap_type=GapType.primary_filing_unavailable,
+            severity=GapSeverity.info,
+            message=(
+                f"{verified.country} primary filing content for "
+                f"{verified.company_name} is published via "
+                f"{DEUTSCHE_BOERSE_DISCLOSURE_NAME} ({self._regulator(verified)}) "
+                "but is not fetched at report time; only a source reference to the "
+                "regulated-disclosure venue is provided."
+            ),
+            suggested_followup_phase=_CONTENT_FOLLOWUP_PHASE,
+            blocks_research_complete=False,
+        )
+
+    def _translation_gap(self, verified: VerifiedIssuerSource) -> SourceGap:
+        """Honest gap: German regulated disclosures are not translated this phase."""
+        return SourceGap(
+            connector_key=self.connector_key,
+            source_id="deutsche_boerse",
+            gap_type=GapType.translation_required,
+            severity=GapSeverity.info,
+            message=(
+                f"German regulated disclosures for {verified.company_name} "
+                "(e.g. the annual report / Geschäftsbericht) are German-language "
+                "and are not translated in this phase."
+            ),
+            suggested_followup_phase="Phase 30",
+            blocks_research_complete=False,
+        )
+
+    def _not_eligible_gap(self) -> SourceGap:
+        return SourceGap(
+            connector_key=self.connector_key,
+            source_id="deutsche_boerse",
+            gap_type=GapType.source_not_eligible,
+            severity=GapSeverity.info,
+            message=(
+                f"The {DEUTSCHE_BOERSE_DISCLOSURE_NAME} covers German issuers on "
+                "Xetra / Frankfurt only; this issuer does not resolve to a verified "
+                "German issuer, so no German regulated-disclosure reference is "
+                "provided."
+            ),
+            blocks_research_complete=False,
+        )
+
+    def _reference_result(self, company: CompanyContext) -> ConnectorResult:
+        verified = self._german_issuer(company)
+        if verified is None:
+            return ConnectorResult(
+                connector_key=self.connector_key,
+                source_gaps=[self._not_eligible_gap()],
+            )
+        return ConnectorResult(
+            connector_key=self.connector_key,
+            evidence_items=[self._reference_item(verified)],
+            source_gaps=[self._content_gap(verified), self._translation_gap(verified)],
+        )
+
+    # -- Fetch surface -----------------------------------------------------
+
+    async def fetch_filings(
+        self, company: CompanyContext, query: QueryContext
+    ) -> ConnectorResult:
+        return self._reference_result(company)
+
+    async def fetch_events(
+        self, company: CompanyContext, query: QueryContext
+    ) -> ConnectorResult:
+        return self._reference_result(company)
+
+    # -- Health ------------------------------------------------------------
+
+    def healthcheck(self) -> ConnectorHealth:
+        return ConnectorHealth(
+            connector_key=self.connector_key,
+            status=self.status,
+            enabled=self.is_live,
+            last_checked_at=_now(),
+            detail=(
+                "Emits a T2 regulator-transport source reference to the German "
+                "regulated-information venue (Deutsche Börse / Bundesanzeiger / "
+                "BaFin) for verified German issuers; German docs require "
+                "translation. Primary filing CONTENT is not fetched at report time "
+                f"({_CONTENT_FOLLOWUP_PHASE} follow-up)."
+            ),
+        )
+
+
+__all__ = [
+    "DeutscheBoerseConnector",
+    "DEUTSCHE_BOERSE_DISCLOSURE_NAME",
+    "DEUTSCHE_BOERSE_DISCLOSURE_URL",
+]

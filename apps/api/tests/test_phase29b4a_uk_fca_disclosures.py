@@ -149,9 +149,10 @@ def test_5_exchange_regulator_mapping_uk_only():
     # Euronext Paris/Amsterdam map to the Euronext connector (Phase 29B.4B),
     # never to the UK connector.
     assert regulator_connector_for("PA", "France") == "euronext_regulated_info"
-    # Other European venues still have no dedicated regulator mapping.
-    assert regulator_connector_for("XETRA", "Germany") is None
-    assert regulator_connector_for("SW", "Switzerland") is None
+    # German / Swiss venues now map to their own dedicated connectors (29B.4C),
+    # never to the UK connector.
+    assert regulator_connector_for("XETRA", "Germany") == "deutsche_boerse"
+    assert regulator_connector_for("SW", "Switzerland") == "six_swiss"
 
 
 def test_6_lse_issuer_maps_to_uk_fca_nsm_only():
@@ -167,10 +168,8 @@ def test_6_lse_issuer_maps_to_uk_fca_nsm_only():
 
 def test_7_de_fr_issuer_mapping_unchanged():
     reg = build_registry()
-    # A German issuer still surfaces its European scaffolds (not narrowed to the
-    # UK connector) — the tightening applies only to UK. euronext_regulated_info
-    # was promoted to a dedicated FR/NL connector (Phase 29B.4B), so it no longer
-    # appears in a German issuer's region scaffolds.
+    # A German issuer maps to its own dedicated connector (Phase 29B.4C promoted
+    # deutsche_boerse), never to the UK connector — the UK tightening is unchanged.
     de = _relevant_scaffold_ids(reg, CompanyContext(ticker="SAP", exchange="XETRA"), None)
     assert "deutsche_boerse" in de
     assert "euronext_regulated_info" not in de

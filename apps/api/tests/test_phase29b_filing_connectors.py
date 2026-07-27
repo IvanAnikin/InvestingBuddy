@@ -93,16 +93,18 @@ def test_registry_sec_and_company_ir_are_live():
 def test_regulator_connectors_are_scaffolded_honestly():
     reg = build_registry()
     scaffolded_ids = {s.source_id for s in reg.scaffolded_sources()}
-    # uk_fca_nsm (Phase 29B.4A) and euronext_regulated_info (Phase 29B.4B) were
-    # promoted to dedicated connectors; these four remain honest scaffolds.
-    assert {
-        "sedar_plus",
-        "asx_announcements",
+    # uk_fca_nsm (29B.4A), euronext_regulated_info (29B.4B) and deutsche_boerse /
+    # nordic_disclosures (29B.4C) were promoted to dedicated connectors; only
+    # these two remain honest scaffolds.
+    assert {"sedar_plus", "asx_announcements"} <= scaffolded_ids
+    for promoted in (
+        "uk_fca_nsm",
+        "euronext_regulated_info",
         "deutsche_boerse",
         "nordic_disclosures",
-    } <= scaffolded_ids
-    assert "uk_fca_nsm" not in scaffolded_ids
-    assert "euronext_regulated_info" not in scaffolded_ids
+        "six_swiss",
+    ):
+        assert promoted not in scaffolded_ids
     for sid in scaffolded_ids:
         conn = reg.connectors()[sid]
         assert conn.status == ConnectorStatus.scaffolded
@@ -235,7 +237,7 @@ def test_company_ir_bounds_item_count():
 
 @pytest.mark.parametrize(
     "sid",
-    ["sedar_plus", "asx_announcements", "deutsche_boerse", "nordic_disclosures"],
+    ["sedar_plus", "asx_announcements"],
 )
 def test_scaffold_connector_returns_gap_no_fake_evidence(sid: str):
     reg = build_registry()
@@ -313,18 +315,26 @@ def test_uhr_evidence_pack_includes_non_us_gaps():
     )
     msgs = " ".join(collected.gap_messages()).lower()
     assert "sec edgar covers us issuers only" in msgs
-    assert "scaffold present" in msgs
+    # The non-US home-regulator honesty gap (company_ir path, unchanged) is present.
+    assert "regulated-disclosure connector scaffolded" in msgs
     # Phase 29B.1: UHR is a verified issuer, so company-IR *metadata* evidence is
-    # now present (no SEC filing is fabricated — every item is company_ir).
+    # present. Phase 29B.4C additionally routes a verified Swiss issuer to the
+    # dedicated SIX Swiss regulator-transport reference (metadata only). No SEC
+    # filing is fabricated — every item is company_ir or the six_swiss reference.
     assert collected.evidence_items != []
-    assert all(it.source_id == "company_ir" for it in collected.evidence_items)
+    assert all(
+        it.source_id in ("company_ir", "six_swiss") for it in collected.evidence_items
+    )
     assert all(it.data_quality == "metadata_only" for it in collected.evidence_items)
     # gaps flow into the pack known_gaps.
     pack = build_evidence_pack(
         report_content={"company_identity": {"ticker": {"value": "UHR"}}},
         connector_gap_messages=collected.gap_messages(),
     )
-    assert any("scaffold present" in g.lower() for g in pack.known_gaps)
+    assert any(
+        "regulated-disclosure connector scaffolded" in g.lower()
+        for g in pack.known_gaps
+    )
 
 
 def test_discovery_pack_includes_run_level_source_gaps():
