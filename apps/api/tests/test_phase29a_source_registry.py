@@ -182,8 +182,13 @@ def test_registry_returns_enabled_and_planned():
     # they are no longer planned.
     assert {"usgs", "iea", "irena", "eia", "entsoe"} <= enabled_ids
     assert not {"usgs", "iea", "eia", "entsoe"} & planned_ids
-    # The trade / procurement / patent long tail + OpenBB toolkit stay planned.
-    assert {"openbb", "ustr_taric"} <= planned_ids
+    # The policy / government references were promoted to enabled (Phase 29C.3);
+    # they are no longer planned.
+    assert {"ustr_taric", "un_comtrade", "nato", "sipri", "oecd"} <= enabled_ids
+    assert not {"ustr_taric", "un_comtrade", "nato", "sipri", "oecd"} & planned_ids
+    # The procurement / tender EVENT venues + patent long tail + OpenBB toolkit
+    # stay planned (Phase 29C procurement / Phase 29D patents).
+    assert {"openbb", "eu_ted", "usaspending"} <= planned_ids
     assert reg.summary()["total"] == len(reg.all_sources())
     # Every source carries a valid tier.
     for s in reg.all_sources():
@@ -303,9 +308,10 @@ def test_registry_endpoint_returns_sources_and_no_secrets():
     # nordic_disclosures (29B.4C) were promoted out of the scaffold set, leaving
     # two honest regulator scaffolds (SEDAR+, ASX).
     assert body["summary"]["scaffolded"] >= 2
-    # Phase 29C.1 promoted 5 macro sources and 29C.2 promoted 5 commodity /
-    # energy sources out of the planned set.
-    assert body["summary"]["planned"] >= 9
+    # Phase 29C.1 promoted 5 macro sources, 29C.2 promoted 5 commodity / energy
+    # sources, and 29C.3 promoted 5 policy / government sources (ustr_taric,
+    # un_comtrade, nato, sipri, oecd) out of the planned set.
+    assert body["summary"]["planned"] >= 7
     assert len(body["tiers"]) == 6
     ids = {s["source_id"] for s in body["sources"]}
     assert "sec_edgar" in ids

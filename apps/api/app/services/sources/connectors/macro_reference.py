@@ -1,5 +1,6 @@
 """
-Macro reference connectors — Phase 29C.1 (macro) + 29C.2 (commodity / energy).
+Macro reference connectors — Phase 29C.1 (macro) + 29C.2 (commodity / energy)
++ 29C.3 (policy / government).
 
 Establishes the MACRO evidence category as a set of **reference-only** sources.
 Mirroring the 29B.4 regulator-reference connectors, a macro connector is
@@ -15,6 +16,17 @@ differ only in tier (T3 industry-specialist for the specialist agencies, T2 for
 the US EIA) and in the commodity / energy themes they cover; they carry no
 tonnage, price, capacity, production, or reserve figure — only the dataset
 identity and an honest "figures not fetched" gap.
+
+Phase 29C.3 extends the table again with POLICY + GOVERNMENT reference sources
+(USTR / EU TARIC, UN Comtrade, NATO defence expenditure, SIPRI military
+expenditure, OECD) for the campaign's policy themes — defense / NATO spending,
+tariffs, subsidies, industrial policy, grid investment and energy transition.
+They are driven by the *same* generic connector class and carry the same hard
+guarantees: policy / government is thematic CONTEXT only, never a company
+recommendation, catalyst, or trading signal on geopolitics. They emit no defence
+budget, spending percentage, tariff rate, subsidy amount, or date — only the
+official reference identity and an honest "figures not fetched" gap. Procurement
+/ tender EVENT venues (EU TED, USAspending) and patents stay PLANNED (Phase 29D).
 
 Hard guarantees:
   * **No fabricated macro data.** No numeric value, no index level, no release
@@ -355,11 +367,158 @@ COMMODITY_ENERGY_SOURCES: tuple[MacroSourceSpec, ...] = (
 )
 
 
+# Phase 29C.3 — POLICY + GOVERNMENT reference sources. Same generic connector,
+# same guarantees (reference-only, network-free, no figures/rates/amounts/dates,
+# no API key). They cover the campaign's policy themes (tariffs / trade policy,
+# defense / NATO spending, subsidies / industrial policy, energy transition /
+# grid investment) as thematic CONTEXT only — never a company recommendation,
+# catalyst, or geopolitical trading signal. ``provider`` uses an existing
+# ``ProviderType`` member (there is no dedicated government_data type): the
+# trade / tariff / policy sources map to ``trade_policy`` and the OECD statistics
+# hub to ``macro_statistics``. Every URL is a fixed, public, token-free official
+# landing page. Procurement / tender EVENT venues and patents stay PLANNED (29D).
+POLICY_GOVERNMENT_SOURCES: tuple[MacroSourceSpec, ...] = (
+    MacroSourceSpec(
+        source_id="ustr_taric",
+        display_name="USTR / EU TARIC (tariffs)",
+        url="https://ustr.gov/",
+        provider=ProviderType.trade_policy,
+        jurisdiction=None,
+        region=None,
+        broad_macro=False,
+        indicators=(
+            "US and EU tariff and trade-policy references — US Trade "
+            "Representative tariff actions and the EU TARIC integrated tariff "
+            "schedule covering customs duties, tariff classifications and "
+            "import / export measures"
+        ),
+        theme_keywords=(
+            "tariff", "tariffs", "trade policy", "trade", "customs",
+            "import", "export", "duty", "duties", "trade barrier",
+            "trade barriers",
+        ),
+        reliability_note=(
+            "Policy / government reference only; live figures not fetched at "
+            "report time; 29C follow-up. USTR / EU TARIC tariff and "
+            "trade-policy landing pages — thematic context only, no tariff "
+            "rates, duty percentages, or dates emitted."
+        ),
+        tier=T2_REGULATOR_OR_GOV,
+    ),
+    MacroSourceSpec(
+        source_id="un_comtrade",
+        display_name="UN Comtrade",
+        url="https://comtrade.un.org/",
+        provider=ProviderType.trade_policy,
+        jurisdiction=None,
+        region=None,
+        broad_macro=False,
+        indicators=(
+            "United Nations international trade statistics database — reported "
+            "merchandise trade flows by reporter, partner and commodity "
+            "classification (import and export values)"
+        ),
+        theme_keywords=(
+            "trade", "tariff", "tariffs", "customs", "import", "export",
+            "trade flow", "trade flows", "trade statistics", "trade balance",
+        ),
+        reliability_note=(
+            "Policy / government reference only; live figures not fetched at "
+            "report time; 29C follow-up. UN Comtrade international trade "
+            "statistics catalog — thematic context only, no trade values, "
+            "tariff rates, or dates emitted."
+        ),
+        tier=T2_REGULATOR_OR_GOV,
+    ),
+    MacroSourceSpec(
+        source_id="nato",
+        display_name="NATO defence expenditure",
+        url="https://www.nato.int/cps/en/natohq/topics_49198.htm",
+        provider=ProviderType.trade_policy,
+        jurisdiction=None,
+        region=None,
+        broad_macro=False,
+        indicators=(
+            "NATO member defence-expenditure and burden-sharing references — "
+            "aggregate and per-member defence spending relative to gross "
+            "domestic product and the share allocated to major equipment"
+        ),
+        theme_keywords=(
+            "defense", "defence", "nato", "military spending", "military",
+            "defense budget", "defence budget", "defense spending",
+            "defence spending", "procurement", "burden sharing",
+            "burden-sharing",
+        ),
+        reliability_note=(
+            "Policy / government reference only; live figures not fetched at "
+            "report time; 29C follow-up. NATO defence-expenditure and "
+            "burden-sharing publication — thematic context only, no defence "
+            "budget figures, spending percentages, or dates emitted."
+        ),
+        tier=T2_REGULATOR_OR_GOV,
+    ),
+    MacroSourceSpec(
+        source_id="sipri",
+        display_name="SIPRI military expenditure database",
+        url="https://www.sipri.org/databases/milex",
+        provider=ProviderType.trade_policy,
+        jurisdiction=None,
+        region=None,
+        broad_macro=False,
+        indicators=(
+            "SIPRI Military Expenditure Database references — national and "
+            "regional military spending series and arms-industry / "
+            "arms-transfer indicators compiled by the Stockholm International "
+            "Peace Research Institute"
+        ),
+        theme_keywords=(
+            "defense", "defence", "military expenditure", "military spending",
+            "military", "arms", "defense spending", "defence spending",
+            "weapons", "arms trade",
+        ),
+        reliability_note=(
+            "Policy / government reference only; live figures not fetched at "
+            "report time; 29C follow-up. SIPRI military-expenditure and "
+            "arms-industry catalog — thematic context only, no spending "
+            "figures, amounts, or dates emitted."
+        ),
+        tier=T3_INDUSTRY_SPECIALIST,
+    ),
+    MacroSourceSpec(
+        source_id="oecd",
+        display_name="OECD (industrial policy & trade)",
+        url="https://www.oecd.org/",
+        provider=ProviderType.macro_statistics,
+        jurisdiction=None,
+        region=None,
+        broad_macro=False,
+        indicators=(
+            "OECD policy and statistics references — industrial policy, "
+            "subsidies and state aid, trade and tariff analysis, and "
+            "energy-transition and grid-investment indicators across member "
+            "and partner economies"
+        ),
+        theme_keywords=(
+            "subsidy", "subsidies", "industrial policy", "state aid",
+            "tariff", "tariffs", "trade", "energy transition",
+            "grid investment", "grid",
+        ),
+        reliability_note=(
+            "Policy / government reference only; live figures not fetched at "
+            "report time; 29C follow-up. OECD industrial-policy, subsidy, "
+            "trade and energy-transition catalog — thematic context only, no "
+            "subsidy amounts, tariff rates, or dates emitted."
+        ),
+        tier=T2_REGULATOR_OR_GOV,
+    ),
+)
+
+
 # The full macro reference table the registry, collector and connector builder
-# all iterate: the 29C.1 macro publishers plus the 29C.2 commodity / energy
-# reference sources.
+# all iterate: the 29C.1 macro publishers, the 29C.2 commodity / energy
+# reference sources, and the 29C.3 policy / government reference sources.
 ALL_MACRO_SOURCES: tuple[MacroSourceSpec, ...] = (
-    MACRO_SOURCES + COMMODITY_ENERGY_SOURCES
+    MACRO_SOURCES + COMMODITY_ENERGY_SOURCES + POLICY_GOVERNMENT_SOURCES
 )
 
 
@@ -515,6 +674,7 @@ __all__ = [
     "MacroSourceSpec",
     "MACRO_SOURCES",
     "COMMODITY_ENERGY_SOURCES",
+    "POLICY_GOVERNMENT_SOURCES",
     "ALL_MACRO_SOURCES",
     "MacroReferenceConnector",
     "macro_spec_for",
