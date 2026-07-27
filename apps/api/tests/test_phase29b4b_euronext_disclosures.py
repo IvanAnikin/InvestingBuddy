@@ -212,11 +212,11 @@ def test_8_registry_promotes_euronext_to_enabled_reference_connector():
     assert "euronext_regulated_info" not in {
         s.source_id for s in reg.scaffolded_sources()
     }
-    # Registry now reports 11 enabled / 2 scaffolded regulator-layer sources
-    # (Phase 29B.4C promoted deutsche_boerse + nordic_disclosures and added
-    # six_swiss to the enabled set).
+    # Registry reports 16 enabled / 2 scaffolded sources: 11 regulator-layer
+    # enabled sources (29B.4C promoted deutsche_boerse + nordic_disclosures and
+    # added six_swiss) plus 5 reference-only macro sources (Phase 29C.1).
     summary = reg.summary()
-    assert summary["enabled"] == 11
+    assert summary["enabled"] == 16
     assert summary["scaffolded"] == 2
 
 

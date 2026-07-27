@@ -161,6 +161,22 @@ class Settings(BaseSettings):
     # / press-release link discovery). Excess links are dropped, not followed.
     source_connector_max_links_per_page: int = 25
 
+    # ── Macro reference layer (Phase 29C.1) ────────────────────────────────
+    # Gate for the reference-only macro source layer (FRED, IMF, Eurostat, World
+    # Bank commodity pink sheet, national statistics offices / central banks).
+    # OFF by default so CI and the Phase 29A/29B behaviour are unchanged — with
+    # the flag off, ``collect_theme_macro_evidence`` is completely dark (no macro
+    # evidence, no macro gaps). When ON, that collector emits bounded T2 macro
+    # SOURCE REFERENCES (which official dataset covers which indicators) plus an
+    # honest ``data_not_sourced`` gap for each — never a fabricated figure, date,
+    # or release. NO network is used at report time and NO API key is introduced
+    # (FRED-style keys are deliberately not supported); the connectors point only
+    # at fixed, public, token-free official dataset landing pages.
+    source_macro_enabled: bool = False
+    # Hard cap on macro source references collected for one theme/region (bounds
+    # prompt size + keeps one macro source from dominating the pack).
+    source_macro_max_items: int = 3
+
     # ── Primary-document extraction (Phase 29B.2) ──────────────────────────
     # Bounded extraction of an issuer's OWN annual-report / registration-document
     # text so LLM councils can reason from real T1 primary evidence — not only

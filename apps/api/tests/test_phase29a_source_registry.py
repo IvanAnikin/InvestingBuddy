@@ -168,8 +168,18 @@ def test_registry_returns_enabled_and_planned():
     # The remaining filing/regulator connectors are scaffolded (Phase 29B).
     assert {"sedar_plus", "asx_announcements"} <= scaffolded_ids
     assert "uk_fca_nsm" not in scaffolded_ids
-    # The macro/patent long tail stays planned.
-    assert {"fred", "openbb"} <= planned_ids
+    # The reference-only macro sources were promoted to enabled (Phase 29C.1);
+    # they are no longer planned.
+    assert {
+        "fred",
+        "imf",
+        "eurostat",
+        "world_bank_pink_sheet",
+        "national_stats_central_banks",
+    } <= enabled_ids
+    assert not {"fred", "imf", "eurostat"} & planned_ids
+    # The commodity / trade / patent long tail stays planned.
+    assert {"openbb", "usgs"} <= planned_ids
     assert reg.summary()["total"] == len(reg.all_sources())
     # Every source carries a valid tier.
     for s in reg.all_sources():
@@ -289,7 +299,8 @@ def test_registry_endpoint_returns_sources_and_no_secrets():
     # nordic_disclosures (29B.4C) were promoted out of the scaffold set, leaving
     # two honest regulator scaffolds (SEDAR+, ASX).
     assert body["summary"]["scaffolded"] >= 2
-    assert body["summary"]["planned"] >= 15
+    # Phase 29C.1 promoted 5 macro sources out of the planned set.
+    assert body["summary"]["planned"] >= 14
     assert len(body["tiers"]) == 6
     ids = {s["source_id"] for s in body["sources"]}
     assert "sec_edgar" in ids

@@ -41,6 +41,10 @@ from app.services.sources.evidence import (
     build_evidence_item,
 )
 from app.services.sources.gaps import GapSeverity, GapType, SourceGap
+from app.services.sources.macro_evidence import (
+    ThemeMacroEvidence,
+    collect_theme_macro_evidence,
+)
 from app.services.sources.registry import (
     RegisteredSource,
     SourceRegistry,
@@ -89,6 +93,9 @@ __all__ = [
     "collect_company_source_evidence",
     "sec_filings_from_catalyst",
     "press_items_from_catalyst",
+    # macro evidence (Phase 29C.1)
+    "ThemeMacroEvidence",
+    "collect_theme_macro_evidence",
     # gaps
     "SourceGap",
     "GapType",

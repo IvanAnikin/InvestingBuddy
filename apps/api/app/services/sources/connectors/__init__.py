@@ -9,6 +9,12 @@ from app.services.sources.connectors.generic import (
     PlannedConnector,
     WrappedProviderConnector,
 )
+from app.services.sources.connectors.macro_reference import (
+    MACRO_SOURCES,
+    MacroReferenceConnector,
+    MacroSourceSpec,
+    build_macro_connectors,
+)
 from app.services.sources.connectors.nordic_disclosures import (
     NordicDisclosuresConnector,
 )
@@ -28,4 +34,8 @@ __all__ = [
     "DeutscheBoerseConnector",
     "NordicDisclosuresConnector",
     "SixSwissConnector",
+    "MacroReferenceConnector",
+    "MacroSourceSpec",
+    "MACRO_SOURCES",
+    "build_macro_connectors",
 ]
