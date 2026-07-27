@@ -1,13 +1,20 @@
 """
-Macro reference connectors — Phase 29C.1.
+Macro reference connectors — Phase 29C.1 (macro) + 29C.2 (commodity / energy).
 
 Establishes the MACRO evidence category as a set of **reference-only** sources.
 Mirroring the 29B.4 regulator-reference connectors, a macro connector is
 network-free at report time and fabricates nothing: for a relevant theme /
-region it emits ONE bounded **T2 macro SOURCE REFERENCE** — a pointer to a fixed,
-public, token-free official dataset landing page plus a short description of
-*which indicators that source covers* — and an explicit honest ``SourceGap``
+region it emits ONE bounded **T2/T3 macro SOURCE REFERENCE** — a pointer to a
+fixed, public, token-free official dataset landing page plus a short description
+of *which indicators that source covers* — and an explicit honest ``SourceGap``
 recording that the live figures / release dates were NOT fetched.
+
+Phase 29C.2 extends the table with COMMODITY + ENERGY reference sources (USGS,
+IEA, IRENA, US EIA, ENTSO-E) driven by the *same* generic connector class. They
+differ only in tier (T3 industry-specialist for the specialist agencies, T2 for
+the US EIA) and in the commodity / energy themes they cover; they carry no
+tonnage, price, capacity, production, or reserve figure — only the dataset
+identity and an honest "figures not fetched" gap.
 
 Hard guarantees:
   * **No fabricated macro data.** No numeric value, no index level, no release
@@ -43,6 +50,7 @@ from app.services.sources.evidence import EvidenceItem, build_evidence_item
 from app.services.sources.gaps import GapSeverity, GapType, SourceGap
 from app.services.sources.taxonomy import (
     T2_REGULATOR_OR_GOV,
+    T3_INDUSTRY_SPECIALIST,
     ConnectorStatus,
     ProviderType,
 )
@@ -63,7 +71,9 @@ class MacroSourceSpec:
     fixed public landing page, and (as plain English) *which indicators / themes*
     it publishes. ``theme_keywords`` are lower-case substrings matched against a
     query's theme; ``broad_macro`` marks a source that answers a generic macro
-    ask even with no explicit theme.
+    ask even with no explicit theme. ``tier`` is the source's transport/content
+    tier — T2 for a regulator/government publisher (e.g. FRED, US EIA), T3 for an
+    industry-specialist agency (e.g. USGS, IEA, IRENA, ENTSO-E).
     """
 
     source_id: str
@@ -76,6 +86,7 @@ class MacroSourceSpec:
     indicators: str
     theme_keywords: tuple[str, ...]
     reliability_note: str
+    tier: str = T2_REGULATOR_OR_GOV
 
 
 # The single source of truth for the macro reference layer. The registry builds
@@ -209,9 +220,152 @@ MACRO_SOURCES: tuple[MacroSourceSpec, ...] = (
 )
 
 
+# Phase 29C.2 — COMMODITY + ENERGY reference sources. Same generic connector,
+# same guarantees (reference-only, network-free, no figures/dates, no API key);
+# they differ only in tier and in the commodity / energy themes they cover. Every
+# URL is a fixed, public, token-free official landing page.
+COMMODITY_ENERGY_SOURCES: tuple[MacroSourceSpec, ...] = (
+    MacroSourceSpec(
+        source_id="usgs",
+        display_name="USGS Mineral Commodity Summaries",
+        url=(
+            "https://www.usgs.gov/centers/national-minerals-information-center/"
+            "mineral-commodity-summaries"
+        ),
+        provider=ProviderType.commodity,
+        jurisdiction="US",
+        region="North America",
+        broad_macro=False,
+        indicators=(
+            "US and global mineral commodity supply statistics — production, "
+            "reserves and net import reliance for critical minerals and metals "
+            "including copper, lithium, cobalt, nickel, rare earths and uranium"
+        ),
+        theme_keywords=(
+            "copper", "lithium", "rare earth", "rare-earth", "critical mineral",
+            "critical minerals", "critical metal", "critical metals", "cobalt",
+            "nickel", "mining", "uranium",
+        ),
+        reliability_note=(
+            "Macro reference only; live figures not fetched at report time; "
+            "29C follow-up. USGS National Minerals Information Center Mineral "
+            "Commodity Summaries catalog of mineral supply statistics — no "
+            "tonnage, reserves, or production figures emitted."
+        ),
+        tier=T3_INDUSTRY_SPECIALIST,
+    ),
+    MacroSourceSpec(
+        source_id="eia",
+        display_name="US EIA (Energy Information Administration)",
+        url="https://www.eia.gov/",
+        provider=ProviderType.commodity,
+        jurisdiction="US",
+        region="North America",
+        broad_macro=False,
+        indicators=(
+            "US and international energy statistics — crude oil, natural gas, "
+            "coal, nuclear and uranium, electricity generation and power-sector "
+            "data"
+        ),
+        theme_keywords=(
+            "uranium", "nuclear", "oil", "crude", "natural gas", "gas",
+            "energy", "electricity", "power",
+        ),
+        reliability_note=(
+            "Macro reference only; live figures not fetched at report time; "
+            "29C follow-up. US EIA (Energy Information Administration) catalog "
+            "of US / international energy statistics — no price, production, or "
+            "generation figures emitted."
+        ),
+        tier=T2_REGULATOR_OR_GOV,
+    ),
+    MacroSourceSpec(
+        source_id="iea",
+        display_name="IEA (International Energy Agency)",
+        url="https://www.iea.org/",
+        provider=ProviderType.commodity,
+        jurisdiction=None,
+        region=None,
+        broad_macro=False,
+        indicators=(
+            "Global energy statistics and analysis — electricity demand, power "
+            "generation, nuclear and renewables capacity trends, power grids and "
+            "energy-transition indicators"
+        ),
+        theme_keywords=(
+            "energy", "electricity", "nuclear", "renewable", "renewables",
+            "power grid", "power", "grid", "energy transition",
+        ),
+        reliability_note=(
+            "Macro reference only; live figures not fetched at report time; "
+            "29C follow-up. IEA (International Energy Agency) catalog of global "
+            "energy statistics — no demand, generation, or capacity figures "
+            "emitted."
+        ),
+        tier=T3_INDUSTRY_SPECIALIST,
+    ),
+    MacroSourceSpec(
+        source_id="irena",
+        display_name="IRENA (Renewable Energy)",
+        url="https://www.irena.org/",
+        provider=ProviderType.commodity,
+        jurisdiction=None,
+        region=None,
+        broad_macro=False,
+        indicators=(
+            "Global renewable-energy statistics — installed capacity and "
+            "generation trends for solar, wind, hydrogen and other renewable "
+            "sources, and energy-transition indicators"
+        ),
+        theme_keywords=(
+            "renewable", "renewables", "solar", "wind", "energy transition",
+            "hydrogen",
+        ),
+        reliability_note=(
+            "Macro reference only; live figures not fetched at report time; "
+            "29C follow-up. IRENA renewable-energy statistics catalog — no "
+            "capacity or generation figures emitted."
+        ),
+        tier=T3_INDUSTRY_SPECIALIST,
+    ),
+    MacroSourceSpec(
+        source_id="entsoe",
+        display_name="ENTSO-E Transparency Platform",
+        url="https://transparency.entsoe.eu/",
+        provider=ProviderType.commodity,
+        jurisdiction=None,
+        region="Europe",
+        broad_macro=False,
+        indicators=(
+            "European electricity transmission-system statistics — power "
+            "generation, cross-border flows, load and grid transparency data for "
+            "the ENTSO-E area"
+        ),
+        theme_keywords=(
+            "power grid", "electricity", "grid", "transmission", "power",
+        ),
+        reliability_note=(
+            "Macro reference only; live figures not fetched at report time; "
+            "29C follow-up. ENTSO-E Transparency Platform catalog of European "
+            "electricity / grid statistics — no generation, load, or flow "
+            "figures emitted."
+        ),
+        tier=T3_INDUSTRY_SPECIALIST,
+    ),
+)
+
+
+# The full macro reference table the registry, collector and connector builder
+# all iterate: the 29C.1 macro publishers plus the 29C.2 commodity / energy
+# reference sources.
+ALL_MACRO_SOURCES: tuple[MacroSourceSpec, ...] = (
+    MACRO_SOURCES + COMMODITY_ENERGY_SOURCES
+)
+
+
 def macro_spec_for(source_id: str) -> MacroSourceSpec | None:
-    """Return the macro spec for ``source_id``, or None."""
-    return next((s for s in MACRO_SOURCES if s.source_id == source_id), None)
+    """Return the macro / commodity-energy spec for ``source_id``, or None."""
+    return next((s for s in ALL_MACRO_SOURCES if s.source_id == source_id), None)
 
 
 class MacroReferenceConnector(SourceConnector):
@@ -261,9 +415,9 @@ class MacroReferenceConnector(SourceConnector):
             source_id=spec.source_id,
             source_name=spec.display_name,
             provider_transport=f"{spec.display_name} (official statistics publisher)",
-            provider_transport_tier=T2_REGULATOR_OR_GOV,
+            provider_transport_tier=spec.tier,
             content_source=f"{spec.display_name} — macro indicator catalog",
-            content_source_tier=T2_REGULATOR_OR_GOV,
+            content_source_tier=spec.tier,
             source_type=_MACRO_SOURCE_TYPE,
             title=f"{spec.display_name} — macro source reference",
             url=spec.url,
@@ -344,22 +498,24 @@ class MacroReferenceConnector(SourceConnector):
             enabled=self.is_live,
             last_checked_at=_now(),
             detail=(
-                f"Emits a T2 macro SOURCE REFERENCE to {self._spec.display_name} "
-                "(which indicators it covers) for a relevant theme/region; live "
-                f"figures are not fetched at report time ({_MACRO_FOLLOWUP_PHASE} "
-                "follow-up). No API key used."
+                f"Emits a {self._spec.tier} macro SOURCE REFERENCE to "
+                f"{self._spec.display_name} (which indicators it covers) for a "
+                "relevant theme/region; live figures are not fetched at report "
+                f"time ({_MACRO_FOLLOWUP_PHASE} follow-up). No API key used."
             ),
         )
 
 
 def build_macro_connectors() -> dict[str, MacroReferenceConnector]:
-    """One reference-only connector per macro source, keyed by source_id."""
-    return {s.source_id: MacroReferenceConnector(s) for s in MACRO_SOURCES}
+    """One reference-only connector per macro / commodity-energy source."""
+    return {s.source_id: MacroReferenceConnector(s) for s in ALL_MACRO_SOURCES}
 
 
 __all__ = [
     "MacroSourceSpec",
     "MACRO_SOURCES",
+    "COMMODITY_ENERGY_SOURCES",
+    "ALL_MACRO_SOURCES",
     "MacroReferenceConnector",
     "macro_spec_for",
     "build_macro_connectors",

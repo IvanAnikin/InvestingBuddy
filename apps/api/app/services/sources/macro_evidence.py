@@ -1,11 +1,13 @@
 """
-Theme macro-evidence collector — Phase 29C.1.
+Theme macro-evidence collector — Phase 29C.1 (macro) + 29C.2 (commodity / energy).
 
 The macro analog of ``collect_company_source_evidence``: given a discovery theme
 (and optional region) it runs the reference-only macro connectors and returns
 bounded, tiered ``EvidenceItem`` **source references** plus honest ``SourceGap``s
 ("live figures not fetched at report time"). It never fetches and never
-fabricates a macro number.
+fabricates a macro number. It iterates the full ``ALL_MACRO_SOURCES`` table, so
+the 29C.2 commodity / energy references (USGS, IEA, IRENA, US EIA, ENTSO-E)
+surface automatically for a relevant commodity / energy theme.
 
 Design guarantees:
   * **Dark by default.** When ``cfg.source_macro_enabled`` is False the collector
@@ -28,7 +30,7 @@ from pydantic import BaseModel, Field
 from app.core.config import Settings
 from app.core.config import settings as default_settings
 from app.services.sources.connector_base import QueryContext
-from app.services.sources.connectors.macro_reference import MACRO_SOURCES
+from app.services.sources.connectors.macro_reference import ALL_MACRO_SOURCES
 from app.services.sources.evidence import EvidenceItem
 from app.services.sources.gaps import SourceGap
 from app.services.sources.registry import SourceRegistry, build_registry
@@ -79,7 +81,7 @@ async def collect_theme_macro_evidence(
     gaps: list[SourceGap] = []
     warnings: list[str] = []
 
-    for spec in MACRO_SOURCES:
+    for spec in ALL_MACRO_SOURCES:
         if len(items) >= cap:
             break
         conn = registry.connectors().get(spec.source_id)
