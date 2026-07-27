@@ -1,35 +1,36 @@
-# Session State — Phase 29B.4C validation PAUSED (session limit) (updated 2026-07-27)
+# Session State — Phase 29B.4C CLOSED + Phase 29B.4 umbrella COMPLETE (updated 2026-07-27)
 
 > Resumable snapshot. Overwrite at each checkpoint (context-compaction skill).
 > Keep decisions + evidence, not raw logs.
 
 ## Current position
-- Branch: `main` (clean). Autonomous multi-phase campaign (Phase 0 → 31).
-- Phase / subphase: **Phase 29B.4C — MERGED + DEPLOYED, staging validation PARTIAL/PAUSED**.
-- Blocker: the ib-staging-validator subagent hit a **session usage limit** (resets ~15:30 Europe/Prague) mid-validation. NOT a validation failure. Do not spam retries.
+- Branch: `main` (clean, HEAD `1daccc8`). Autonomous multi-phase campaign (Phase 0 → 31).
+- Phase / subphase: **Phase 29C — NEXT (stage: not-started).** No branch, no PR, no code yet.
+- Just closed: **Phase 29B.4C CLOSED + validated**, which **completes the entire Phase 29B.4 umbrella** (4A + 4B + 4C all closed).
 
 ## Campaign progress (all CLOSED unless noted)
-- Phase 0 (close 29B.2): CLOSED — PR #56 → `793e0a7`, closure `6d44c55`.
-- 29B.3 (primary facts → reports/gates): CLOSED — PR #57 → `29f4a84`, closure `831c21a`.
-- 29B.4A (UK FCA NSM): CLOSED — PR #58 → `5138725`, closure `8ebf40d`.
-- 29B.4B (Euronext): CLOSED — PR #59 → `1d97612`, closure `a5a4746`.
-- 29B.4C (Swiss/Nordic/DE): **PR #60 → `de126ee` MERGED+DEPLOYED (API /health=de126ee, 3 stable polls; Web unchanged; head 011). Validation PARTIAL — NOT closed.**
-- Next after 29B.4C closes: **Phase 29C** (macro/commodity/policy), then 29D, 30A, 30B, 31, final report.
+- Phase 0 (close 29B.2): CLOSED — PR #56 → `793e0a7`.
+- 29B.3 (primary facts → reports/gates): CLOSED — PR #57 → `29f4a84`.
+- 29B.4A (UK FCA NSM): CLOSED — PR #58 → `5138725` (closure `phase-29b4a.md`).
+- 29B.4B (Euronext): CLOSED — PR #59 → `1d97612` (closure `phase-29b4b.md`).
+- 29B.4C (Swiss/Nordic/DE): **CLOSED — PR #60 → `de126ee` (closure `phase-29b4c.md`).**
+- **29B.4 umbrella: COMPLETE** (4A `5138725` + 4B `1d97612` + 4C `de126ee`).
+- Next: **Phase 29C** (macro/commodity/policy), then 29D, 30, 31, final report.
 
-## 29B.4C partial validation (before the limit — all PASS so far)
-- Flags KEPT ON (SOURCE_CONNECTOR + SOURCE_DOCUMENT_EXTRACTION + LLM_COUNCIL + LLM_DISCOVERY_COUNCIL).
-- AUTH_TEST_MODE absent (settings + 401 challenge).
-- AAPL guardrail: deutsche_boerse / nordic_disclosures / six_swiss → source_not_eligible, 0 items for US issuer.
-- REMAINING (to finish before closing 29B.4C): registry authed = 11 enabled/2 scaffolded + honest "content not fetched" notes; SAP.DE→deutsche_boerse ref+gap+German requires_translation; PNDORA.CO→nordic ref+gap+Danish requires_translation; CFR.SW+UHR.SW→six_swiss ref+gap+NO translation claim; BA.LSE still uk_fca_nsm / MC.PA still euronext (no leakage); log secret-scan (current build).
-
-## Test / scan state (29B.4C, pre-merge — on file)
-- backend 2071 passed / 12 skipped / 0 failed; ruff clean; mypy 71 baseline no-new; frontend N/A (backend-only).
-- security scan PASS; pre-PR review APPROVED (10/10). No migration (head 011).
+## 29B.4C closure evidence (condensed — full validation on file)
+- Merge SHA `de126ee66b1242f336f57c0ae2a9f31a1f7941d9`; API `/health commit_sha=de126ee` (3 stable polls); web unchanged `793e0a7` (backend-only); no migration (head `011`); AUTH_TEST_MODE absent.
+- Tests: backend **2071 pass / 12 skip / 0 fail** (+16 `test_phase29b4c`; adjacent scaffold-count tests updated, no ripple), ruff clean, mypy `71` baseline no-new, frontend N/A. Security PASS; pre-PR review APPROVED 10/10.
+- Staging VALIDATED (full): C — registry/health show `deutsche_boerse` + `nordic_disclosures` + `six_swiss` all enabled `regulator`/T2, **11 enabled / 2 scaffolded** (only SEDAR+/ASX remain), honest content-not-fetched notes, `six_swiss` asserts NO translation, secret-free. D — `SAP.DE`→`deutsche_boerse` ref (`bundesanzeiger.de`) + German `requires_translation` + honest gap; `company_ir` present. E — `PNDORA.CO`→`nordic_disclosures` ref (`nasdaqomxnordic.com`) + Danish `requires_translation` + honest gap; `company_ir` present. F — `CFR.SW`+`UHR.SW`→`six_swiss` ref `requires_translation`=false (the `translation_required` gap present is the pre-existing `company_ir`'s, honest); `company_ir` present. G — `BA.LSE` still `uk_fca_nsm` (no DE/Nordic/Swiss item), `MC.PA` still `euronext` (no leakage), AAPL guardrail → 3 new connectors `source_not_eligible`/0 items. B — logs current-build clean (sole `api_token=` is known 2026-07-22 historical). schema/safety valid, publication_ready false, human_review_required true, publication admin-gated.
 
 ## Decisions made (carried)
-- Regulator connectors emit T2 venue REFERENCE + honest primary_filing_unavailable gap; live venue-CONTENT fetch DEFERRED (SPA/scrape risk). Registry now 11 enabled/2 scaffolded (SEDAR+/ASX remain).
+- Regulator connectors emit T2 venue REFERENCE + honest `primary_filing_unavailable` gap; **live venue-CONTENT fetch DEFERRED (reference-only) across all 29B.4 connectors** (SPA/scrape risk). Registry now **11 enabled / 2 scaffolded** (SEDAR+/ASX remain).
+- Per-jurisdiction translation semantics: Germany/Danish/French/other non-English → `requires_translation` (pending Phase 30); Switzerland → NO translation claim (multilingual, English published), neutral multilingual warning only.
 - 29B.3 scoring/completeness credit is capability-only (not wired); primary-fact happy path is unit-fixture-proven (staging issuer reports are scanned/no-OCR → 0 facts).
-- Final staging flags KEPT ON: LLM_COUNCIL, LLM_DISCOVERY_COUNCIL, SOURCE_CONNECTOR, SOURCE_DOCUMENT_EXTRACTION.
+- Final staging flags KEPT ON: `LLM_COUNCIL_ENABLED`, `LLM_DISCOVERY_COUNCIL_ENABLED`, `SOURCE_CONNECTOR_ENABLED`, `SOURCE_DOCUMENT_EXTRACTION_ENABLED`.
+
+## Phase 29C scope (planned, next)
+- Widen evidence into macro / commodity-energy / policy-government. Likely split: **29C.1 macro baseline** (FRED/IMF/Eurostat/World Bank), **29C.2 commodity+energy** (USGS/IEA/EIA/IRENA/ENTSO-E/World Bank Pink Sheet), **29C.3 policy+government** (USTR-TARIC/USAspending/EU TED/UN Comtrade).
+- Discipline: evidence-first, **no recommendations/valuations/price-targets**, prefer official/government sources, use source registry + `EvidenceItem` tiers + explicit `SourceGap`s (honest gaps, never fabricated), **no broad web search**, network-safe/allowlisted, OFF-by-default flags, human review required.
 
 ## Next exact command / action
-- When the session limit resets: re-run the 29B.4C staging validation REMAINING checks (ib-staging-validator or direct authed evidence-preview curls), confirm VALIDATED, then close 29B.4C (closure report + PHASE_LEDGER 29B.4C→✅ + 29B.4 umbrella→✅), then start Phase 29C.
+- **scope Phase 29C.1 (macro baseline connectors) and create branch `feature/phase-29c1-macro-connectors`.**
