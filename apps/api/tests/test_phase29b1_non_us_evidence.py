@@ -21,7 +21,10 @@ from app.main import app
 from app.services.llm.council import run_council
 from app.services.llm.evidence_pack import build_evidence_pack
 from app.services.llm.fake_client import FakeLLMClient
-from app.services.sources.company_evidence import collect_company_source_evidence
+from app.services.sources.company_evidence import (
+    REGULATOR_REFERENCE_IDS,
+    collect_company_source_evidence,
+)
 from app.services.sources.connector_base import CompanyContext, QueryContext
 from app.services.sources.connectors.company_ir import CompanyIrConnector
 from app.services.sources.gaps import GapType
@@ -482,9 +485,13 @@ def test_26_27_non_us_evidence_honest_no_fakes_no_forbidden():
             cfg=_enabled_cfg(),
         )
     )
-    # No fabricated SEC filing / fundamentals — every evidence item is company_ir
-    # metadata; no filing content is claimed.
-    assert all(i.source_id == "company_ir" for i in collected.evidence_items)
+    # No fabricated SEC filing / fundamentals — every evidence item is either
+    # company_ir metadata or an honest regulator-transport reference (Phase 29B.4B
+    # promoted euronext_regulated_info / uk_fca_nsm to dedicated connectors, so a
+    # Euronext/UK issuer like MC/PA now also gets a metadata-only T2 regulator
+    # reference item). No filing content is claimed for either.
+    allowed_source_ids = {"company_ir"} | REGULATOR_REFERENCE_IDS
+    assert all(i.source_id in allowed_source_ids for i in collected.evidence_items)
     assert all(i.data_quality == "metadata_only" for i in collected.evidence_items)
     # Safety: no recommendation / valuation vocabulary in items or gaps.
     for it in collected.evidence_items:
