@@ -1,42 +1,42 @@
-# Session State — Phase 29C.2 Commodity + Energy Evidence Connectors (stage: NOT STARTED / next) (updated 2026-07-27)
+# Session State — Phase 29C.2 Commodity + Energy Reference Connectors (stage: PR — about to open) (updated 2026-07-27)
 
 > Resumable snapshot. Overwrite at each checkpoint (context-compaction skill).
 > Keep decisions + evidence, not raw logs.
 
 ## Current position
-- Branch: `main` @ **`a8ac580`** (clean). Autonomous multi-phase campaign (Phase 0 → 31).
-- Phase / subphase: **Phase 29C.2 — NEXT (stage: not-started).** Second Phase 29C subphase (commodity + energy evidence connectors). No branch yet.
-- Umbrella: **Phase 29C 🟡 in progress** (29C.1 CLOSED; 29C.2 next; 29C.3 policy+government still upcoming).
-- Just closed (previous): **Phase 29C.1 macro baseline — CLOSED + deployed + staging-validated** (see below).
+- Branch: `feature/phase-29c2-commodity-energy-connectors` @ **`8c62297`** (clean; committed, NOT pushed). Autonomous multi-phase campaign (Phase 0 → 31).
+- Phase / subphase: **Phase 29C.2 — commodity + energy reference connectors. Stage: PR (about to open); NOT merged/deployed/validated.**
+- Umbrella: **Phase 29C 🟡 in progress** (29C.1 CLOSED; 29C.2 in review; 29C.3 policy + government still upcoming).
+- Just implemented (this phase): the 29C.2 commodity/energy layer on top of the closed 29C.1 macro layer.
 
-## Phase 29C.1 — CLOSED (condensed evidence)
-- **PR #61 `a8ac580`** squash-merged to `main`; "Deploy API — Staging" success; API `/health commit_sha=a8ac580` (3 stable polls); web unchanged (backend-only). **No migration** (DB head `011`).
-- Shipped **reference-only + OFF-by-default** macro layer: `MacroReferenceConnector` (`connectors/macro_reference.py`) over 5 official sources (FRED/IMF/Eurostat/World Bank Pink Sheet/national stats+central banks) → `fetch_macro_context` emits ONE bounded **T2 `macro_report` SOURCE REFERENCE** (fixed token-free URL + indicators covered) + honest `data_not_sourced` gap; **no figures/index/dates/forecasts, network-free, no API key**. `collect_theme_macro_evidence` (`sources/macro_evidence.py`) dark when `source_macro_enabled` off, bounded by `source_macro_max_items` (3). Registry: 5 macro sources PLANNED→enabled → **16 enabled / 2 scaffolded** (only SEDAR+/ASX remain; total 32). Discovery cites macro as `R#` facts; company report gains OPTIONAL `industry_macro_context` block (macro CONTEXT, not company evidence, never a catalyst, no figures); `CouncilResult.macro_context` via `to_metadata_dict`. New flags `SOURCE_MACRO_ENABLED`(false)/`SOURCE_MACRO_MAX_ITEMS`(3); **dark-by-default byte-identical when off**.
-- Tests backend **2092 pass / 12 skip / 0 fail** (+21 net `test_phase29c1`), ruff clean, mypy `71` baseline no-new, security PASS (pre-PR review 10/10).
-- **Staging: OFF-state VALIDATED (clean)** (registry 16/2, 5 macro enabled/T2/reference-only, fully dark at runtime, no regression, logs clean, AUTH_TEST_MODE absent). **ON-state (human-approved `az` flip `SOURCE_MACRO_ENABLED=true`) VALIDATED-WITH-ENVIRONMENTAL-NOTE:** SCCO (Southern Copper) report gains `industry_macro_context` (`world_bank_pink_sheet`, T2, token-free, NO figures/dates, "not company-specific/not a catalyst"), `llm_council.macro_context` non-empty, schema/safety valid, publication_ready false, human_review_required true; discovery "copper mining" cites macro (World Bank ×3, Pink Sheet ×2) + honest gaps, candidate returned, macro is CONTEXT not a candidate; safety clean (no fabricated figures; forbidden terms only in negated disclaimers); council discovery 8/8, company report 7/8 (1 failed = Azure gpt-4.1-mini TPM ENVIRONMENTAL, not a code defect); publication admin-gated.
-- **Architecture:** macro is **theme-scoped** (reports + discovery), **NOT issuer-scoped** (correctly absent from per-issuer company evidence-preview).
-- **`SOURCE_MACRO_ENABLED` KEPT ON** on staging (validation clean; reference-only low-risk; matches keeping SOURCE_CONNECTOR/SOURCE_DOCUMENT_EXTRACTION on).
-- Closure report: `docs/development/closures/phase-29c1.md`.
-
-## Final staging flags (all 5 ON now)
-`LLM_COUNCIL_ENABLED`=on · `LLM_DISCOVERY_COUNCIL_ENABLED`=on · `SOURCE_CONNECTOR_ENABLED`=on · `SOURCE_DOCUMENT_EXTRACTION_ENABLED`=on · **`SOURCE_MACRO_ENABLED`=on (NEW this phase, kept ON)**.
-
-## Phase 29C.2 (NEXT) — scope notes
-- **Commodity + energy** evidence connectors: copper / lithium / rare-earths / uranium / nuclear / power-grid / electricity-demand.
-- Official sources: **USGS / EIA / IEA / IRENA / ENTSO-E / World Bank Pink Sheet** (+ OpenBB). Several are **already registered**: `usgs` / `iea` / `irena` / `eia` / `entsoe` PLANNED, `world_bank_pink_sheet` **already enabled** (from 29C.1) — reuse, do not duplicate.
-- **Same reference-only pattern as 29C.1**: bounded T2 SOURCE REFERENCE (fixed token-free URL + which indicators/datasets covered) + honest `data_not_sourced` gap; network-free; no API key; OFF-by-default flag; dark-by-default byte-identical when off.
-- German / other-language official docs (e.g. ENTSO-E national portals) → flag `requires_translation` where applicable (pending Phase 30 — not a translation claim).
-- Reuse the `MACRO_SOURCES`-style single-source-of-truth table + `collect_theme_macro_evidence` collector pattern; keep macro/commodity **theme-scoped**, never issuer-scoped, never a catalyst, never a recommendation.
+## Phase 29C.2 — what was built (backend-only, NO migration, HEAD `8c62297`)
+- Extends the 29C.1 reference-only macro layer to **commodity + energy** with **ZERO new wiring** — reuses the SAME generic `MacroReferenceConnector`, the `collect_theme_macro_evidence` collector (now iterates `ALL_MACRO_SOURCES`), the discovery-council `R#` citation path, the report `industry_macro_context` block, and the existing `SOURCE_MACRO_ENABLED` flag. **No new flag / host / endpoint.**
+- New `COMMODITY_ENERGY_SOURCES` table (+ combined `ALL_MACRO_SOURCES`) in `connectors/macro_reference.py`, 5 official public agencies:
+  - **USGS** — `usgs.gov`, **T3** — copper / lithium / rare-earths / critical minerals / cobalt / nickel / mining / uranium.
+  - **US EIA** — `eia.gov`, **T2**, **NO API key** — uranium / nuclear / oil / gas / energy / electricity.
+  - **IEA** — `iea.org`, **T3** — energy / power-grid / nuclear / renewables / energy-transition.
+  - **IRENA** — `irena.org`, **T3** — renewables / solar / wind / hydrogen.
+  - **ENTSO-E** — `transparency.entsoe.eu`, **T3** — power-grid / electricity / grid / transmission.
+  - Each emits ONE bounded **T2/T3 `macro_report` SOURCE REFERENCE** (fixed official URL + which datasets covered) + honest `data_not_sourced` gap. **No tonnage / price / capacity / production / reserve figures or dates. Network-free. No API key.**
+- Registry: promotes the 5 commodity/energy rows PLANNED→**enabled** (built from `ALL_MACRO_SOURCES`) → **21 enabled / 2 scaffolded / 9 planned** (only SEDAR+/ASX scaffolds; openbb + trade/procurement/patent rows stay planned; total 32). All `commodity` provider type; `usgs`/`iea`/`irena`/`entsoe` = `T3_industry_specialist`, `eia` = `T2_regulator_or_gov`.
+- Behaviour: a **copper company report** surfaces up to 2 macro refs (World Bank Pink Sheet + USGS) when the flag is on; **dark-by-default byte-identical when off**. schema/safety valid, publication_ready false, human_review_required true.
+- 9 files incl. tests (no migration): `connectors/__init__.py`, `connectors/macro_reference.py`, `macro_evidence.py`, `registry.py` + 5 test files (new `test_phase29c2_commodity_energy_connectors.py`; adjacent 29a/29b4b/29b4c/29c1 count tests updated for the promotions).
+- Tests **GREEN (pre-staging)**: backend **2119 pass / 12 skip / 0 fail**, ruff clean, mypy `71` baseline (no new), **security scan PASS**.
 
 ## Decisions made (carried)
-- **DELIBERATE: live macro/commodity-FIGURE fetch DEFERRED (reference-only)** across 29C — no API keys, no report-time network, evidence-first, honest gaps. A live **keyless official-data-API fetch** (World Bank / Eurostat / IMF / USGS / EIA etc.) is a documented **29C follow-up**.
-- OFF-by-default flags per connector layer; with the flag off the platform is byte-identical to the prior phase.
-- Macro / commodity is thesis-level / industry CONTEXT only — never company-specific, never a catalyst, never a recommendation; no figures carried anywhere.
-- Prior staging flags KEPT ON (all 5, listed above).
+- **DELIBERATE: live commodity / energy FIGURE fetch DEFERRED (reference-only)** — same posture as 29C.1: no API keys, no report-time network, evidence-first, honest `data_not_sourced` gaps. A keyless official-data-API fetch (USGS / EIA / IEA / IRENA / ENTSO-E) is a documented **29C follow-up**.
+- **REUSE the existing `SOURCE_MACRO_ENABLED` flag — NO new flag** (and no new host/endpoint/migration). Zero new wiring; the generic `MacroReferenceConnector` + `ALL_MACRO_SOURCES` single-source-of-truth pattern absorbs commodity/energy.
+- Macro / commodity / energy is thesis-level / industry **CONTEXT only** — never company-specific, never a catalyst, never a recommendation; **no figures carried anywhere**; theme-scoped, not issuer-scoped.
+- Prior staging flags stay KEPT ON (all 5): `LLM_COUNCIL_ENABLED` · `LLM_DISCOVERY_COUNCIL_ENABLED` · `SOURCE_CONNECTOR_ENABLED` · `SOURCE_DOCUMENT_EXTRACTION_ENABLED` · `SOURCE_MACRO_ENABLED`.
+
+## Phase 29C.1 — CLOSED (condensed, for context)
+- **PR #61 `a8ac580`** merged + deployed + staging-validated (OFF-state clean; ON-state VALIDATED-WITH-ENVIRONMENTAL-NOTE after approved `SOURCE_MACRO_ENABLED` flip, kept ON). Reference-only macro layer (FRED/IMF/Eurostat/World Bank Pink Sheet/national stats+central banks) → 16 enabled/2 scaffolded at the time; SCCO report `industry_macro_context` + copper-mining discovery macro citations, no fabricated figures. Closure: `docs/development/closures/phase-29c1.md`.
 
 ## Phase 29C remaining (upcoming)
-- **29C.2 commodity + energy** (this next) — USGS / EIA / IEA / IRENA / ENTSO-E / World Bank Pink Sheet (+ OpenBB).
-- **29C.3 policy + government** — USTR-TARIC / USAspending / EU TED / UN Comtrade.
+- **29C.3 policy + government** — defense / NATO / tariffs / subsidies / industrial-policy / grid-investment / energy-transition, official / government sources (USTR-TARIC / USAspending / EU TED / UN Comtrade) — same reference-only, OFF-by-default pattern.
+
+## Docs updated this checkpoint (ib-docs-agent)
+- `docs/ARCHITECTURE.md` (Status → 29C.2, macro layer + registry 21/2/9, Phase History row; 29C.1 reconciled to ✅ merged/validated), `docs/API.md` (Status + `/sources/registry` + `/sources/health` + macro section: commodity/energy enabled, 21/2/9), `docs/ROADMAP.md` (29C.2 Current State 🟡 PR-open, 29C.1 demoted to Previously), `docs/development/PHASE_LEDGER.md` (29C.2 row 🟡, umbrella note), this `session_state.md`. `.env.example` / `DEPLOYMENT.md`: **n/a** (no new flag/host/key). Not committed — user reviews and commits.
 
 ## Next exact command / action
-- **Scope Phase 29C.2 (commodity + energy connectors) and create branch `feature/phase-29c2-commodity-energy-connectors`.**
+- **Run `ib-pr-review-agent`, then `gh pr create` for Phase 29C.2. STOP at the merge gate** (human approval required before merge; do NOT mark ✅ / closed until merge SHA + deployed SHA + staging validation are on file).
