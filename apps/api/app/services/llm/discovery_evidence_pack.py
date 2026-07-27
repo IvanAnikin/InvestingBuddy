@@ -27,6 +27,7 @@ from app.services.llm.discovery_schemas import (
 )
 
 _TEXT_MAX = 240
+_MACRO_TEXT_MAX = 320
 _MAX_WARNINGS_PER_CANDIDATE = 4
 _MAX_KNOWN_GAPS = 20
 
@@ -154,6 +155,30 @@ def _run_facts(run: dict[str, Any], ctx: RunContext) -> list[RunFact]:
     return facts
 
 
+def _macro_run_facts(
+    macro_evidence: list[dict[str, Any]] | None, start_index: int
+) -> list[RunFact]:
+    """Append macro SOURCE REFERENCES as cited run facts (R#) — Phase 29C.1.
+
+    Each item is a reference-only macro fact (source name + landing URL + the
+    indicators it covers) with NO figures and NO dates. Numbering continues from
+    the existing run facts (``start_index`` is the current fact count) so the ids
+    stay ``R1, R2, …`` and every macro reference becomes CITEABLE thesis-level
+    context — never a candidate and never a recommendation.
+    """
+    facts: list[RunFact] = []
+    n = start_index
+    for m in macro_evidence or []:
+        detail = _clip(m.get("detail"), _MACRO_TEXT_MAX)
+        if detail is None:
+            continue
+        n += 1
+        facts.append(
+            RunFact(id=f"R{n}", label=str(m.get("label") or "macro_context"), detail=detail)
+        )
+    return facts
+
+
 def _score_breakdown(cand: dict[str, Any]) -> dict[str, Any]:
     return _compact(
         {
@@ -263,15 +288,22 @@ def build_discovery_evidence_pack(
     candidates: list[dict[str, Any]],
     max_candidates: int = 25,
     extra_known_gaps: list[str] | None = None,
+    macro_evidence: list[dict[str, Any]] | None = None,
 ) -> DiscoveryEvidencePack:
     """Build a bounded, cited evidence pack for one discovery run.
 
     ``extra_known_gaps`` (Phase 29A) appends source-framework gaps — e.g. planned
     external connectors whose evidence is not yet sourced — so the discovery
     council sees missing coverage explicitly.
+
+    ``macro_evidence`` (Phase 29C.1) is a bounded list of reference-only macro
+    SOURCE dicts (``{"label", "detail"}``) for the run's theme/region. They are
+    appended as extra run facts (R#) so the council can CITE macro context. When
+    None (the default / macro flag off) the pack is byte-identical to before.
     """
     ctx = _run_context(run)
     facts = _run_facts(run, ctx)
+    facts += _macro_run_facts(macro_evidence, len(facts))
 
     cap = max(1, max_candidates)
     evidence_candidates = [

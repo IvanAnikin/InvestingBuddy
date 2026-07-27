@@ -28,9 +28,11 @@ from app.core.config import settings as default_settings
 from app.core.log_redaction import SENSITIVE_QUERY_SUBSTRINGS
 from app.services.sources.connector_base import ConnectorHealth, SourceConnector
 from app.services.sources.connectors import (
+    MACRO_SOURCES,
     CompanyIrConnector,
     DeutscheBoerseConnector,
     EuronextRegulatedConnector,
+    MacroSourceSpec,
     NordicDisclosuresConnector,
     PlannedConnector,
     ScaffoldConnector,
@@ -38,6 +40,7 @@ from app.services.sources.connectors import (
     SixSwissConnector,
     UkFcaNsmConnector,
     WrappedProviderConnector,
+    build_macro_connectors,
 )
 from app.services.sources.gaps import GapSeverity, GapType, SourceGap
 from app.services.sources.rate_limit import RateLimitPolicy
@@ -266,6 +269,33 @@ def _scaffolded(
         capabilities=capabilities,
         reliability_note=reliability_note
         or "Scaffolded — no live fetch yet; produces honest gaps, never evidence.",
+    )
+
+
+def _macro_reference_source(spec: MacroSourceSpec) -> RegisteredSource:
+    """An enabled reference-only macro source (Phase 29C.1).
+
+    Built from the single ``MACRO_SOURCES`` table so the registry and the
+    connectors never drift. It is a T2 macro reference: the connector emits a
+    bounded SOURCE REFERENCE (which official dataset covers which indicators)
+    plus an honest gap; live figures are not fetched at report time.
+    """
+    return RegisteredSource(
+        source_id=spec.source_id,
+        name=spec.display_name,
+        provider_type=spec.provider,
+        tier=T2_REGULATOR_OR_GOV,
+        status=SourceStatus.enabled,
+        enabled=True,
+        jurisdiction=spec.jurisdiction,
+        region=spec.region,
+        cost_model=CostModel.free,
+        access_mode=AccessMode.rest_api,
+        connector_key=spec.source_id,
+        connector_implemented=True,
+        planned_phase=PHASE_29C,
+        capabilities=["fetch_macro_context"],
+        reliability_note=spec.reliability_note,
     )
 
 
@@ -539,13 +569,15 @@ def build_registry(cfg: Settings | None = None) -> SourceRegistry:
     _MACRO = ["fetch_macro_context"]
     _SEARCH = ["search_company"]
     com = ProviderType.commodity
-    mac = ProviderType.macro_statistics
     trd = ProviderType.trade_policy
     proc = ProviderType.procurement
     pat = ProviderType.patents
     t2, t3, t5 = T2_REGULATOR_OR_GOV, T3_INDUSTRY_SPECIALIST, T5_API_AGGREGATOR
     planned_table: list[tuple[str, str, ProviderType, str, str, dict]] = [
-        # Macro / commodity / policy (Phase 29C)
+        # Macro / commodity / policy (Phase 29C). NOTE: fred, imf, eurostat,
+        # world_bank_pink_sheet and national_stats_central_banks were promoted to
+        # enabled reference-only macro sources (Phase 29C.1, see MACRO_SOURCES);
+        # the remaining commodity / trade / procurement venues stay planned.
         ("usgs", "USGS Mineral Commodity Summaries", com, t3, PHASE_29C,
          {"jurisdiction": "US", "capabilities": _MACRO}),
         ("iea", "IEA (International Energy Agency)", com, t3, PHASE_29C,
@@ -556,13 +588,6 @@ def build_registry(cfg: Settings | None = None) -> SourceRegistry:
          {"jurisdiction": "US", "capabilities": _MACRO}),
         ("entsoe", "ENTSO-E Transparency Platform", com, t3, PHASE_29C,
          {"region": "Europe", "capabilities": _MACRO}),
-        ("world_bank_pink_sheet", "World Bank Commodity Pink Sheet", com, t2, PHASE_29C,
-         {"capabilities": _MACRO}),
-        ("fred", "FRED (St. Louis Fed)", mac, t2, PHASE_29C,
-         {"jurisdiction": "US", "capabilities": _MACRO}),
-        ("imf", "IMF Data", mac, t2, PHASE_29C, {"capabilities": _MACRO}),
-        ("eurostat", "Eurostat", mac, t2, PHASE_29C,
-         {"region": "Europe", "capabilities": _MACRO}),
         ("ustr_taric", "USTR / EU TARIC (tariffs)", trd, t2, PHASE_29C,
          {"capabilities": _MACRO}),
         ("usaspending", "USAspending.gov", proc, t2, PHASE_29C,
@@ -570,8 +595,6 @@ def build_registry(cfg: Settings | None = None) -> SourceRegistry:
         ("eu_ted", "EU TED (Tenders Electronic Daily)", proc, t2, PHASE_29C,
          {"region": "Europe", "capabilities": ["fetch_events"]}),
         ("un_comtrade", "UN Comtrade", trd, t2, PHASE_29C, {"capabilities": _MACRO}),
-        ("national_stats_central_banks", "National statistics offices / central banks",
-         mac, t2, PHASE_29C, {"capabilities": _MACRO}),
         ("openbb", "OpenBB Platform", ProviderType.aggregator_toolkit, t5, PHASE_29C,
          {"cost_model": CostModel.freemium, "access_mode": AccessMode.sdk,
           "capabilities": ["search_company", "fetch_macro_context"]}),
@@ -596,7 +619,14 @@ def build_registry(cfg: Settings | None = None) -> SourceRegistry:
         for sid, nm, pt, tr, ph, extra in planned_table
     ]
 
-    sources = enabled + scaffolded + planned
+    # -- Enabled reference-only macro sources (Phase 29C.1) ----------------
+    # Reference-only: a bounded T2 macro SOURCE REFERENCE + honest gap, no live
+    # figures, no network at report time, no API key. Built from MACRO_SOURCES.
+    macro_enabled: list[RegisteredSource] = [
+        _macro_reference_source(spec) for spec in MACRO_SOURCES
+    ]
+
+    sources = enabled + macro_enabled + scaffolded + planned
 
     # -- Connectors ---------------------------------------------------------
     connectors: dict[str, SourceConnector] = {
@@ -631,6 +661,8 @@ def build_registry(cfg: Settings | None = None) -> SourceRegistry:
             configured=True,
         ),
     }
+    # Reference-only macro connectors (Phase 29C.1), one per MACRO_SOURCES spec.
+    connectors.update(build_macro_connectors())
     for s in scaffolded:
         note = next((n for sid, _, _, _, n in _SCAFFOLD_TABLE if sid == s.source_id), None)
         connectors[s.source_id] = ScaffoldConnector(

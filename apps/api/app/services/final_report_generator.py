@@ -1626,6 +1626,52 @@ def _build_news_catalyst_discovery(
     }
 
 
+def _build_industry_macro_context(
+    macro_context: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Optional MACRO CONTEXT block — Phase 29C.1.
+
+    Mirrors ``industry_context_events``: reference-only macro sources for the
+    company's broad theme (sector/industry), each labelled macro CONTEXT with an
+    honest note that it is NOT company-specific evidence and never a direct
+    company catalyst, and that no figures / index levels / release dates are
+    carried. Background context only — never a trading signal or a recommendation.
+    Rendered only when the macro layer surfaced references; empty otherwise, so
+    with the flag off the block is absent and the report is unchanged.
+    """
+    items: list[dict[str, Any]] = []
+    for m in macro_context[:8]:
+        items.append(
+            {
+                "source_id": m.get("source_id"),
+                "source_name": m.get("source_name"),
+                "title": m.get("title"),
+                "url": m.get("url"),
+                "tier": m.get("tier"),
+                "indicators_reference": m.get("reference"),
+                "figures_gap": m.get("gap"),
+            }
+        )
+    return {
+        "type": "industry_macro_context",
+        "value": items,
+        "provenance": "sourced_fact",
+        "note": (
+            "Macro / industry CONTEXT references only — NOT company-specific "
+            "evidence and never a direct company catalyst. Each item points to an "
+            "official macro statistics dataset and the indicators it publishes; no "
+            "figures, index levels, or release dates are fetched or fabricated. "
+            "Live macro data is not fetched at report time."
+        ),
+        "disclaimer": (
+            "Macro context is background only. It is not a company catalyst and "
+            "not a trading signal. No valuation conclusion or trading action is "
+            "produced. Human review is required."
+        ),
+        "human_review_required": True,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Report content parser — extracts structured data from existing report
 # ---------------------------------------------------------------------------
@@ -2552,6 +2598,20 @@ class FinalReportGeneratorService:
                 report_content.get("human_review_checklist", []),
                 is_mock=_snapshot_is_mock,
                 has_t1_t2=_has_t1_t2_evidence(source_tier, citations, primary_facts),
+            )
+
+        # Phase 29C.1: optional MACRO CONTEXT block. When ``source_macro_enabled``
+        # is on and the council surfaced reference-only macro sources for this
+        # company's broad theme, render them as an OPTIONAL industry_macro_context
+        # block (background only — never a company catalyst or recommendation, no
+        # figures). Not a required section and not part of the schema-complete
+        # shape, so schema_valid is unaffected. Dark by default: with the flag off
+        # macro_context is empty and no block is added, so the report is
+        # byte-for-byte unchanged. Added BEFORE validation so the safety gate
+        # scans it.
+        if council_result.macro_context:
+            report_content["industry_macro_context"] = _build_industry_macro_context(
+                council_result.macro_context
             )
 
         # Phase 26: safety-scan the admin draft AND validate a schema-completed

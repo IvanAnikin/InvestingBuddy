@@ -1,0 +1,366 @@
+"""
+Macro reference connectors — Phase 29C.1.
+
+Establishes the MACRO evidence category as a set of **reference-only** sources.
+Mirroring the 29B.4 regulator-reference connectors, a macro connector is
+network-free at report time and fabricates nothing: for a relevant theme /
+region it emits ONE bounded **T2 macro SOURCE REFERENCE** — a pointer to a fixed,
+public, token-free official dataset landing page plus a short description of
+*which indicators that source covers* — and an explicit honest ``SourceGap``
+recording that the live figures / release dates were NOT fetched.
+
+Hard guarantees:
+  * **No fabricated macro data.** No numeric value, no index level, no release
+    date, no forecast is ever emitted — only the identity of the dataset and the
+    indicators it publishes, plus an honest "figures not fetched" gap.
+  * **No network at report time.** The reference URL + indicator description come
+    from the code-defined ``MACRO_SOURCES`` table; nothing is fetched here.
+  * **No API keys / secrets / tokenised URLs.** FRED-style API keys are
+    deliberately not introduced; every URL is a fixed public landing page with no
+    query string. ``EvidenceItem`` strips any credential-bearing query param as a
+    backstop anyway.
+  * **Recommendation-free.** The reference text carries no rating / valuation /
+    trading-signal language, so it passes the report safety gate unchanged; a
+    macro reference must never read as a company recommendation.
+
+One generic ``MacroReferenceConnector`` is parameterised by a small immutable
+``MacroSourceSpec`` so the registry can register one connector per macro source
+from a single source of truth (``MACRO_SOURCES``).
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from app.services.sources.connector_base import (
+    ConnectorHealth,
+    ConnectorResult,
+    QueryContext,
+    SourceConnector,
+    _now,
+)
+from app.services.sources.evidence import EvidenceItem, build_evidence_item
+from app.services.sources.gaps import GapSeverity, GapType, SourceGap
+from app.services.sources.taxonomy import (
+    T2_REGULATOR_OR_GOV,
+    ConnectorStatus,
+    ProviderType,
+)
+
+# Follow-up phase that will (optionally) bind bounded live macro figures.
+_MACRO_FOLLOWUP_PHASE = "Phase 29C"
+
+# The evidence source_type stamped on macro references (both are accepted by the
+# source schema's ``VALID_SOURCE_TYPES``).
+_MACRO_SOURCE_TYPE = "macro_report"
+
+
+@dataclass(frozen=True)
+class MacroSourceSpec:
+    """Immutable identity + coverage of one reference-only macro source.
+
+    Carries no secret and no figure — only *which official dataset* it is, the
+    fixed public landing page, and (as plain English) *which indicators / themes*
+    it publishes. ``theme_keywords`` are lower-case substrings matched against a
+    query's theme; ``broad_macro`` marks a source that answers a generic macro
+    ask even with no explicit theme.
+    """
+
+    source_id: str
+    display_name: str
+    url: str
+    provider: ProviderType
+    jurisdiction: str | None
+    region: str | None
+    broad_macro: bool
+    indicators: str
+    theme_keywords: tuple[str, ...]
+    reliability_note: str
+
+
+# The single source of truth for the macro reference layer. The registry builds
+# its enabled macro rows AND its connectors from this table; the theme collector
+# iterates it. Every URL is a fixed, public, token-free official landing page.
+MACRO_SOURCES: tuple[MacroSourceSpec, ...] = (
+    MacroSourceSpec(
+        source_id="fred",
+        display_name="FRED (Federal Reserve Bank of St. Louis)",
+        url="https://fred.stlouisfed.org/",
+        provider=ProviderType.macro_statistics,
+        jurisdiction="US",
+        region="North America",
+        broad_macro=True,
+        indicators=(
+            "US and selected global macro indicator series — consumer price "
+            "inflation (CPI, PCE), policy and market interest rates, exchange "
+            "rates, GDP, industrial production and employment"
+        ),
+        theme_keywords=(
+            "inflation", "cpi", "pce", "interest rate", "interest rates",
+            "rates", "yield", "fx", "exchange rate", "gdp", "growth",
+            "industrial production", "unemployment", "employment", "labor",
+            "macro", "monetary", "recession", "money supply",
+        ),
+        reliability_note=(
+            "Macro reference only; live figures not fetched at report time; "
+            "29C follow-up. Federal Reserve (St. Louis Fed) catalog of US / "
+            "global macro indicator series — no figures or release dates emitted."
+        ),
+    ),
+    MacroSourceSpec(
+        source_id="imf",
+        display_name="IMF Data (World Economic Outlook)",
+        url="https://www.imf.org/en/Data",
+        provider=ProviderType.macro_statistics,
+        jurisdiction=None,
+        region=None,
+        broad_macro=True,
+        indicators=(
+            "Global macroeconomic aggregates — GDP growth, consumer price "
+            "inflation, current-account and fiscal balances and commodity price "
+            "index series — from the IMF World Economic Outlook and related "
+            "databases"
+        ),
+        theme_keywords=(
+            "inflation", "gdp", "growth", "macro", "current account",
+            "fiscal", "commodity", "commodities", "global economy", "imf",
+            "weo", "emerging market", "sovereign",
+        ),
+        reliability_note=(
+            "Macro reference only; live figures not fetched at report time; "
+            "29C follow-up. IMF World Economic Outlook catalog of global "
+            "macro aggregates — no figures or forecast values emitted."
+        ),
+    ),
+    MacroSourceSpec(
+        source_id="eurostat",
+        display_name="Eurostat",
+        url="https://ec.europa.eu/eurostat",
+        provider=ProviderType.macro_statistics,
+        jurisdiction=None,
+        region="Europe",
+        broad_macro=True,
+        indicators=(
+            "European Union macro and industry statistics — HICP inflation, "
+            "GDP, industrial production, unemployment and external trade"
+        ),
+        theme_keywords=(
+            "inflation", "hicp", "gdp", "growth", "industrial production",
+            "unemployment", "employment", "macro", "europe", "eu",
+            "euro area", "trade", "eurozone",
+        ),
+        reliability_note=(
+            "Macro reference only; live figures not fetched at report time; "
+            "29C follow-up. Eurostat catalog of EU macro / industry statistics "
+            "— no figures or release dates emitted."
+        ),
+    ),
+    MacroSourceSpec(
+        source_id="world_bank_pink_sheet",
+        display_name="World Bank Commodity Markets (Pink Sheet)",
+        url="https://www.worldbank.org/en/research/commodity-markets",
+        provider=ProviderType.commodity,
+        jurisdiction=None,
+        region=None,
+        broad_macro=False,
+        indicators=(
+            "Global commodity price benchmark series — energy (crude oil, "
+            "natural gas, coal), metals and minerals (copper, aluminum, nickel, "
+            "zinc, iron ore, lead, tin) and agricultural commodities"
+        ),
+        theme_keywords=(
+            "commodity", "commodities", "copper", "aluminum", "aluminium",
+            "nickel", "zinc", "iron ore", "lead", "tin", "gold", "silver",
+            "metal", "metals", "mining", "oil", "crude", "brent", "natural gas",
+            "gas", "coal", "energy", "agriculture", "grain", "wheat",
+            "fertilizer", "food",
+        ),
+        reliability_note=(
+            "Macro reference only; live figures not fetched at report time; "
+            "29C follow-up. World Bank commodity price 'Pink Sheet' catalog — "
+            "no price levels or dates emitted."
+        ),
+    ),
+    MacroSourceSpec(
+        source_id="national_stats_central_banks",
+        display_name="National statistics offices / central banks",
+        url="https://www.bis.org/cbanks.htm",
+        provider=ProviderType.macro_statistics,
+        jurisdiction=None,
+        region=None,
+        broad_macro=True,
+        indicators=(
+            "Country-level macro series published by national statistics "
+            "offices and central banks — CPI inflation, GDP, industrial "
+            "production, employment, policy rates and trade balances"
+        ),
+        theme_keywords=(
+            "inflation", "cpi", "interest rate", "interest rates", "rates",
+            "policy rate", "gdp", "growth", "industrial production",
+            "unemployment", "employment", "macro", "central bank",
+            "monetary", "trade balance", "current account",
+        ),
+        reliability_note=(
+            "Macro reference only; live figures not fetched at report time; "
+            "29C follow-up. Pointer to national statistics offices / central "
+            "banks (via the BIS central-bank hub) — no figures emitted."
+        ),
+    ),
+)
+
+
+def macro_spec_for(source_id: str) -> MacroSourceSpec | None:
+    """Return the macro spec for ``source_id``, or None."""
+    return next((s for s in MACRO_SOURCES if s.source_id == source_id), None)
+
+
+class MacroReferenceConnector(SourceConnector):
+    """A reference-only macro connector for ONE macro source.
+
+    ``fetch_macro_context`` emits a bounded T2 macro *source reference* plus an
+    honest "figures not fetched" gap when the query theme / region is relevant;
+    otherwise it returns an empty result (no evidence, no gap). It never fetches
+    and never fabricates a figure. ``fetch_filings`` / ``fetch_events`` are not a
+    macro path and return an honest not-eligible gap.
+    """
+
+    status = ConnectorStatus.enabled
+
+    def __init__(self, spec: MacroSourceSpec) -> None:
+        self._spec = spec
+        self.connector_key = spec.source_id
+        self.supported_source_ids = (spec.source_id,)
+
+    # -- Relevance ---------------------------------------------------------
+
+    def covers(self, query: QueryContext) -> bool:
+        """True when this macro source is relevant to the query theme / region."""
+        theme = (query.query or "").strip().lower()
+        region = (query.region or "").strip().lower()
+        if theme and any(kw in theme for kw in self._spec.theme_keywords):
+            return True
+        if region and self._spec.region and self._spec.region.lower() in region:
+            return True
+        # A generic macro ask (no theme, no region) is answered by the broad
+        # macro publishers only — commodity-specific sources stay quiet.
+        if not theme and not region:
+            return self._spec.broad_macro
+        return False
+
+    # -- Result builders ---------------------------------------------------
+
+    def _reference_item(self) -> EvidenceItem:
+        spec = self._spec
+        excerpt = (
+            f"{spec.display_name} publishes {spec.indicators}. This item is a "
+            "source reference to that official dataset only: no indicator value, "
+            "index level, release date, or forecast is fetched or fabricated."
+        )
+        return build_evidence_item(
+            id=f"MACRO_{spec.source_id.upper()}",
+            source_id=spec.source_id,
+            source_name=spec.display_name,
+            provider_transport=f"{spec.display_name} (official statistics publisher)",
+            provider_transport_tier=T2_REGULATOR_OR_GOV,
+            content_source=f"{spec.display_name} — macro indicator catalog",
+            content_source_tier=T2_REGULATOR_OR_GOV,
+            source_type=_MACRO_SOURCE_TYPE,
+            title=f"{spec.display_name} — macro source reference",
+            url=spec.url,
+            excerpt=excerpt,
+            data_quality="reference_only",
+            confidence="medium",
+            provenance=[
+                f"{spec.display_name} (official macro statistics publisher)",
+                "Macro source reference only — no indicator values or release "
+                "dates fetched",
+                "needs_human_review=true",
+            ],
+            warnings=[
+                "Macro source reference only; live macro figures and release "
+                "dates are not fetched at report time. Human review required.",
+            ],
+        )
+
+    def _figures_gap(self) -> SourceGap:
+        spec = self._spec
+        return SourceGap(
+            connector_key=self.connector_key,
+            source_id=spec.source_id,
+            gap_type=GapType.data_not_sourced,
+            severity=GapSeverity.info,
+            message=(
+                f"{spec.display_name}: macro reference only; live figures not "
+                "fetched at report time. Only a pointer to the dataset and the "
+                "indicators it covers is provided."
+            ),
+            suggested_followup_phase=_MACRO_FOLLOWUP_PHASE,
+            blocks_research_complete=False,
+        )
+
+    def _not_company_source_gap(self, method: str) -> SourceGap:
+        return SourceGap(
+            connector_key=self.connector_key,
+            source_id=self._spec.source_id,
+            gap_type=GapType.source_not_eligible,
+            severity=GapSeverity.info,
+            message=(
+                f"{self._spec.display_name} is a macro reference source; "
+                f"company {method.replace('fetch_', '')} are not provided by this "
+                "connector."
+            ),
+            blocks_research_complete=False,
+        )
+
+    # -- Fetch surface -----------------------------------------------------
+
+    async def fetch_macro_context(self, query: QueryContext) -> ConnectorResult:
+        if not self.covers(query):
+            return ConnectorResult(connector_key=self.connector_key)
+        return ConnectorResult(
+            connector_key=self.connector_key,
+            evidence_items=[self._reference_item()],
+            source_gaps=[self._figures_gap()],
+        )
+
+    async def fetch_filings(self, company, query) -> ConnectorResult:  # type: ignore[no-untyped-def]
+        return ConnectorResult(
+            connector_key=self.connector_key,
+            source_gaps=[self._not_company_source_gap("fetch_filings")],
+        )
+
+    async def fetch_events(self, company, query) -> ConnectorResult:  # type: ignore[no-untyped-def]
+        return ConnectorResult(
+            connector_key=self.connector_key,
+            source_gaps=[self._not_company_source_gap("fetch_events")],
+        )
+
+    # -- Health ------------------------------------------------------------
+
+    def healthcheck(self) -> ConnectorHealth:
+        return ConnectorHealth(
+            connector_key=self.connector_key,
+            status=self.status,
+            enabled=self.is_live,
+            last_checked_at=_now(),
+            detail=(
+                f"Emits a T2 macro SOURCE REFERENCE to {self._spec.display_name} "
+                "(which indicators it covers) for a relevant theme/region; live "
+                f"figures are not fetched at report time ({_MACRO_FOLLOWUP_PHASE} "
+                "follow-up). No API key used."
+            ),
+        )
+
+
+def build_macro_connectors() -> dict[str, MacroReferenceConnector]:
+    """One reference-only connector per macro source, keyed by source_id."""
+    return {s.source_id: MacroReferenceConnector(s) for s in MACRO_SOURCES}
+
+
+__all__ = [
+    "MacroSourceSpec",
+    "MACRO_SOURCES",
+    "MacroReferenceConnector",
+    "macro_spec_for",
+    "build_macro_connectors",
+]

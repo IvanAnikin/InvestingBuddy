@@ -226,6 +226,13 @@ class CouncilResult(BaseModel):
     # a real high-confidence fact exists. Carries no raw document text or excerpt
     # body — only the fact fields + short provenance.
     primary_facts: list[dict[str, Any]] = Field(default_factory=list)
+    # Phase 29C.1: bounded, reference-only MACRO CONTEXT for this company's broad
+    # theme (sector/industry → official macro statistics publishers). Each entry
+    # is a source reference (identity + landing URL + the indicators it covers)
+    # plus an honest "figures not fetched" gap. Empty unless ``source_macro_enabled``
+    # is on. Carries NO figures, NO dates, and is never a company catalyst or a
+    # recommendation — thesis-level background context only.
+    macro_context: list[dict[str, Any]] = Field(default_factory=list)
 
     def recount(self) -> None:
         """Refresh the completed/failed/skipped tallies from ``agents``."""
@@ -286,6 +293,7 @@ class CouncilResult(BaseModel):
             "agents": [a.to_dict() for a in self.agents],
             "primary_documents": list(self.primary_documents),
             "primary_facts": list(self.primary_facts),
+            "macro_context": list(self.macro_context),
         }
 
     @classmethod
