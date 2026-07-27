@@ -45,6 +45,10 @@ from app.services.sources.company_evidence import (
     sec_filings_from_catalyst,
 )
 from app.services.sources.connector_base import CompanyContext
+from app.services.sources.macro_evidence import (
+    ThemeMacroEvidence,
+    collect_theme_macro_evidence,
+)
 from app.services.sources.registry import build_registry, registry_gap_messages
 
 _logger = logging.getLogger("app.services.llm.council")
@@ -154,6 +158,45 @@ def _primary_facts(evidence_items: list[Any]) -> list[dict[str, Any]]:
         if url:
             data["source_url"] = url
         out.append(data)
+    return out
+
+
+def _company_macro_theme(company: CompanyContext) -> str | None:
+    """A broad macro theme for a company: its sector/industry (else None).
+
+    Macro references are matched against this theme's keywords, so a copper miner
+    (industry "Copper Mining") surfaces the commodity Pink Sheet, an energy name
+    surfaces energy series, etc. This is deliberately coarse: macro context is
+    thesis-level background, never a company-specific claim.
+    """
+    theme = " ".join(x for x in (company.sector, company.industry) if x).strip()
+    return theme or None
+
+
+def _macro_context_summary(macro: ThemeMacroEvidence) -> list[dict[str, Any]]:
+    """Compact, secret-free MACRO CONTEXT reference summary — Phase 29C.1.
+
+    One entry per macro source reference: its identity, official landing URL,
+    tier, the indicators it publishes (reference text only — NO figures / index
+    levels / dates), and the honest "figures not fetched" gap. Never a company
+    catalyst and never a recommendation.
+    """
+    gap_by_source: dict[str | None, str] = {}
+    for g in macro.source_gaps:
+        gap_by_source.setdefault(g.source_id, g.as_message())
+    out: list[dict[str, Any]] = []
+    for it in macro.evidence_items:
+        out.append(
+            {
+                "source_id": it.source_id,
+                "source_name": it.source_name,
+                "title": it.title,
+                "url": it.url,
+                "tier": it.content_source_tier,
+                "reference": it.excerpt,
+                "gap": gap_by_source.get(it.source_id),
+            }
+        )
     return out
 
 
@@ -410,6 +453,36 @@ async def maybe_run_council(
                     exception_type=type(exc).__name__,
                 )
 
+        # Phase 29C.1: optional MACRO CONTEXT. When ``source_macro_enabled`` is on,
+        # collect bounded, reference-only macro sources for the company's broad
+        # theme (sector/industry). Dark by default (flag off → empty, byte-identical
+        # behaviour); never fetches figures; never crashes the council.
+        macro_context: list[dict[str, Any]] = []
+        if cfg.source_macro_enabled:
+            try:
+                company_ctx = _company_context(company_snapshot, ticker, exchange)
+                macro = await collect_theme_macro_evidence(
+                    _company_macro_theme(company_ctx), company_ctx.country, cfg
+                )
+                macro_context = _macro_context_summary(macro)
+                log_event(
+                    log,
+                    "macro_context_collected",
+                    report_id=report_id,
+                    ticker=ticker,
+                    exchange=exchange,
+                    macro_item_count=len(macro_context),
+                )
+            except Exception as exc:  # noqa: BLE001 - macro layer never crashes a report
+                log_event(
+                    log,
+                    "macro_context_failed",
+                    level=logging.WARNING,
+                    report_id=report_id,
+                    ticker=ticker,
+                    exception_type=type(exc).__name__,
+                )
+
         pack = build_evidence_pack(
             report_content=report_content,
             company_snapshot=company_snapshot,
@@ -451,6 +524,10 @@ async def maybe_run_council(
         # report can present real T1 datapoints (with each fact's own provenance).
         if primary_facts:
             result.primary_facts = primary_facts
+        # Phase 29C.1: attach the bounded macro CONTEXT references so the report can
+        # render an optional macro-context block (background only, never a catalyst).
+        if macro_context:
+            result.macro_context = macro_context
         return result
     except Exception as exc:  # noqa: BLE001 - never let the council crash a report
         log_event(

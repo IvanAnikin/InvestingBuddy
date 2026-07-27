@@ -44,6 +44,10 @@ from app.services.llm.discovery_schemas import (
     DiscoveryCouncilResult,
     DiscoveryEvidencePack,
 )
+from app.services.sources.macro_evidence import (
+    ThemeMacroEvidence,
+    collect_theme_macro_evidence,
+)
 from app.services.sources.registry import build_registry, registry_gap_messages
 
 __all__ = [
@@ -312,6 +316,53 @@ async def run_discovery_council(
     return result
 
 
+def _run_theme_region(run: dict[str, Any]) -> tuple[str | None, str | None]:
+    """Extract the macro theme + region for a run from its parsed thesis / config.
+
+    Theme = parsed_thesis theme (else first of parsed themes, else the raw thesis
+    text); region = config region (else parsed region). Both may be None (a plain
+    ticker run has no theme) — the macro collector then stays quiet.
+    """
+    parsed = run.get("parsed_thesis")
+    parsed = parsed if isinstance(parsed, dict) else {}
+    config = run.get("config")
+    config = config if isinstance(config, dict) else {}
+
+    theme = parsed.get("theme")
+    if not theme:
+        themes = parsed.get("themes")
+        if isinstance(themes, list) and themes:
+            theme = themes[0]
+    if not theme:
+        theme = run.get("thesis_text")
+    region = config.get("region") or parsed.get("region")
+    return (str(theme) if theme else None, str(region) if region else None)
+
+
+def _macro_discovery_facts(macro: ThemeMacroEvidence) -> list[dict[str, str]]:
+    """Turn macro references into bounded, honest run-fact dicts for the pack.
+
+    Each dict is ``{"label", "detail"}`` where the detail names the source + its
+    official landing URL and states, honestly, that it is thesis-level macro
+    CONTEXT only: which indicators the dataset covers, with NO figures / index
+    levels / dates fetched or fabricated, and that it is neither a candidate nor a
+    recommendation.
+    """
+    facts: list[dict[str, str]] = []
+    for it in macro.evidence_items:
+        name = it.source_name or it.source_id
+        url = it.url or ""
+        detail = (
+            f"{name} — official macro statistics source reference (T2). "
+            "Thesis-level macro CONTEXT only: which indicators this dataset "
+            "publishes; no figures, index levels, or dates are fetched or "
+            "fabricated. Not a candidate and not a trading signal. "
+            f"{url}"
+        ).strip()
+        facts.append({"label": "macro_context", "detail": detail})
+    return facts
+
+
 async def maybe_run_discovery_council(
     *,
     run: dict[str, Any],
@@ -334,12 +385,28 @@ async def maybe_run_discovery_council(
         return DiscoveryCouncilResult.disabled()
 
     try:
+        # Phase 29A: surface planned-source coverage gaps to the council.
+        extra_known_gaps = registry_gap_messages(build_registry(cfg))
+        # Phase 29C.1: when the macro layer is on, collect bounded reference-only
+        # macro sources for the run's theme/region and thread them into the pack
+        # as extra run facts (R#, so they are citeable) plus honest gaps. Dark by
+        # default (flag off → the collector is not called and the pack is
+        # byte-identical to Phase 29A/29B). Macro is thesis-level CONTEXT — never
+        # a candidate and never a recommendation.
+        macro_facts: list[dict[str, Any]] | None = None
+        if cfg.source_macro_enabled:
+            theme, region = _run_theme_region(run)
+            macro = await collect_theme_macro_evidence(theme, region, cfg)
+            if macro.evidence_items:
+                macro_facts = _macro_discovery_facts(macro)
+            extra_known_gaps = extra_known_gaps + macro.gap_messages()
+
         pack = build_discovery_evidence_pack(
             run=run,
             candidates=candidates,
             max_candidates=cfg.llm_discovery_council_max_candidates,
-            # Phase 29A: surface planned-source coverage gaps to the council.
-            extra_known_gaps=registry_gap_messages(build_registry(cfg)),
+            extra_known_gaps=extra_known_gaps,
+            macro_evidence=macro_facts,
         )
         log_event(
             log,
@@ -349,6 +416,7 @@ async def maybe_run_discovery_council(
             evidence_item_count=pack.item_count,
             candidate_count=pack.candidate_count,
             known_gap_count=len(pack.known_gaps),
+            macro_reference_count=len(macro_facts or []),
         )
         return await run_discovery_council(
             pack,

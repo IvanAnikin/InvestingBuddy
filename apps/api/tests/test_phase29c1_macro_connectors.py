@@ -17,9 +17,22 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from typing import Any
+from unittest.mock import patch
+
+import pytest
 
 from app.core.config import Settings
 from app.services import safety_terms
+from app.services.final_report_generator import FinalReportGeneratorService
+from app.services.llm import discovery_council as discovery_council_mod
+from app.services.llm.discovery_council import (
+    _macro_discovery_facts,
+    _run_theme_region,
+    maybe_run_discovery_council,
+)
+from app.services.llm.discovery_evidence_pack import build_discovery_evidence_pack
+from app.services.llm.fake_discovery_client import FakeDiscoveryLLMClient
 from app.services.sources import (
     build_registry,
     collect_company_source_evidence,
@@ -276,3 +289,268 @@ def test_company_evidence_unaffected_by_macro_layer():
     # No macro gap bleeds into the single-company gap set either.
     gap_sids = {g.source_id for g in ev.source_gaps}
     assert not (MACRO_IDS & gap_sids)
+
+
+# ===========================================================================
+# Task 2 — discovery council cites macro references (as run facts R#)
+# ===========================================================================
+
+
+def _discovery_cfg(macro: bool = True, max_items: int = 3) -> Settings:
+    return Settings(
+        llm_council_enabled=True,
+        llm_discovery_council_enabled=True,
+        llm_provider_council="fake",
+        source_macro_enabled=macro,
+        source_macro_max_items=max_items,
+    )
+
+
+def _macro_run(theme: str = "inflation", region: str | None = "North America") -> dict[str, Any]:
+    return {
+        "run_id": "macro-run",
+        "mode": "thesis",
+        "status": "completed",
+        "thesis_text": f"{theme} exposed producers",
+        "parsed_thesis": {"theme": theme, "region": region},
+        "config": {"region": region},
+        "provider": "free_real",
+        "lookback_days": 90,
+        "universe_count": 3,
+        "candidate_count": 1,
+        "error_count": 0,
+        "warnings": [],
+    }
+
+
+def _macro_cands() -> list[dict[str, Any]]:
+    return [
+        {
+            "candidate_id": "cand-1",
+            "ticker": "XYZ",
+            "exchange": "US",
+            "company_name": "XYZ Corp",
+            "country": "United States",
+            "sector": "Basic Materials",
+            "data_coverage": {},
+        }
+    ]
+
+
+def _spy_builder():
+    """A side_effect wrapper capturing the pack + macro_evidence kwarg."""
+    captured: dict[str, Any] = {}
+    real = discovery_council_mod.build_discovery_evidence_pack
+
+    def _spy(**kwargs: Any):
+        pack = real(**kwargs)
+        captured["pack"] = pack
+        captured["macro_evidence"] = kwargs.get("macro_evidence")
+        return pack
+
+    return captured, _spy
+
+
+def test_run_theme_region_extraction():
+    theme, region = _run_theme_region(_macro_run("copper", "North America"))
+    assert theme == "copper"
+    assert region == "North America"
+    # A plain ticker run with no parsed thesis has no theme (macro stays quiet).
+    theme2, region2 = _run_theme_region({"mode": "ticker", "parsed_thesis": None})
+    assert theme2 is None
+    assert region2 is None
+
+
+def test_discovery_pack_appends_citeable_macro_run_facts():
+    cfg = _discovery_cfg()
+    run, cands = _macro_run("inflation"), _macro_cands()
+    macro = asyncio.run(collect_theme_macro_evidence("inflation", "North America", cfg))
+    macro_facts = _macro_discovery_facts(macro)
+    assert macro_facts  # inflation is a macro-relevant theme
+
+    pack = build_discovery_evidence_pack(
+        run=run,
+        candidates=cands,
+        macro_evidence=macro_facts,
+        extra_known_gaps=macro.gap_messages(),
+    )
+    macro_rf = [f for f in pack.run_facts if f.label == "macro_context"]
+    assert macro_rf
+    ids = pack.evidence_ids()
+    for f in macro_rf:
+        # Every macro reference is a citeable R# run fact.
+        assert re.fullmatch(r"R\d+", f.id)
+        assert f.id in ids
+        # Reference-only + recommendation-free: the detail states figures are not
+        # fetched/fabricated and carries no forbidden rating / valuation vocab.
+        assert "no figures" in (f.detail or "").lower()
+        assert safety_terms.scan_text(f.detail or "") == []
+    # Honest "figures not fetched" gaps are threaded into known_gaps.
+    assert any("not fetched at report time" in g.lower() for g in pack.known_gaps)
+
+
+def test_discovery_pack_byte_identical_without_macro():
+    run, cands = _macro_run("inflation"), _macro_cands()
+    base = build_discovery_evidence_pack(run=run, candidates=cands)
+    with_none = build_discovery_evidence_pack(
+        run=run, candidates=cands, macro_evidence=None
+    )
+    assert base.model_dump() == with_none.model_dump()
+    assert not any(f.label == "macro_context" for f in base.run_facts)
+
+
+def test_maybe_run_discovery_council_threads_macro_when_enabled():
+    run, cands = _macro_run("inflation"), _macro_cands()
+    captured, spy = _spy_builder()
+    with patch.object(
+        discovery_council_mod, "build_discovery_evidence_pack", side_effect=spy
+    ):
+        result = asyncio.run(
+            maybe_run_discovery_council(
+                run=run,
+                candidates=cands,
+                cfg=_discovery_cfg(macro=True),
+                client=FakeDiscoveryLLMClient(),
+            )
+        )
+    assert result.llm_used is True
+    assert captured["macro_evidence"]  # non-empty macro references were passed
+    pack = captured["pack"]
+    macro_rf = [f for f in pack.run_facts if f.label == "macro_context"]
+    assert macro_rf
+    ids = pack.evidence_ids()
+    assert all(f.id in ids for f in macro_rf)  # citeable
+    assert any("not fetched at report time" in g.lower() for g in pack.known_gaps)
+
+
+def test_maybe_run_discovery_council_dark_when_macro_disabled():
+    run, cands = _macro_run("inflation"), _macro_cands()
+    captured, spy = _spy_builder()
+    with patch.object(
+        discovery_council_mod, "build_discovery_evidence_pack", side_effect=spy
+    ):
+        asyncio.run(
+            maybe_run_discovery_council(
+                run=run,
+                candidates=cands,
+                cfg=_discovery_cfg(macro=False),
+                client=FakeDiscoveryLLMClient(),
+            )
+        )
+    # No macro references passed and no macro run facts in the pack.
+    assert captured["macro_evidence"] is None
+    assert not [f for f in captured["pack"].run_facts if f.label == "macro_context"]
+
+
+# ===========================================================================
+# Task 2 — company report optional macro-context block
+# ===========================================================================
+
+
+def _copper_snapshot() -> dict[str, Any]:
+    """A commodity producer: its sector/industry make the Pink Sheet relevant."""
+    return {
+        "is_mock": False,
+        "source_tier": "T6_model_estimate",
+        "company_identity": {
+            "ticker": "COPX",
+            "legal_name": "Copper Mines PLC",
+            "exchange": "LSE",
+            "country_domicile": "United Kingdom",
+        },
+        "profile": {"sector": "Basic Materials", "industry": "Copper Mining"},
+    }
+
+
+@pytest.fixture
+def enable_council(monkeypatch):
+    from app.core import config
+
+    monkeypatch.setattr(config.settings, "llm_council_enabled", True)
+    monkeypatch.setattr(config.settings, "llm_provider_council", "fake")
+    yield
+
+
+@pytest.fixture
+def enable_council_and_macro(monkeypatch):
+    from app.core import config
+
+    monkeypatch.setattr(config.settings, "llm_council_enabled", True)
+    monkeypatch.setattr(config.settings, "llm_provider_council", "fake")
+    monkeypatch.setattr(config.settings, "source_macro_enabled", True)
+    yield
+
+
+async def _generate(mock_db, snapshot):
+    service = FinalReportGeneratorService()
+    return await service._generate_and_save(
+        db=mock_db,
+        scorecard=None,
+        candidate=None,
+        source_report=None,
+        company_record=None,
+        citations=[],
+        sources=[],
+        state={"company_snapshot": snapshot, "catalyst_discovery": None},
+    )
+
+
+def _captured_report_content(mock_db) -> dict[str, Any]:
+    assert mock_db.add.called, "expected a report to be saved"
+    report = mock_db.add.call_args[0][0]
+    content: dict[str, Any] = {}
+    pattern = re.compile(r"```json\s*(.*?)\s*```", re.DOTALL)
+    for match in pattern.finditer(report.content_markdown or ""):
+        block = json.loads(match.group(1))
+        if isinstance(block, dict):
+            content.update(block)
+    return content
+
+
+async def test_company_report_renders_macro_block_when_enabled(
+    mock_db, enable_council_and_macro
+) -> None:
+    resp = await _generate(mock_db, _copper_snapshot())
+    # Invariants hold on the macro-on path.
+    assert resp.schema_valid is True
+    assert resp.safety_valid is True
+    assert resp.publication_ready is False
+    assert resp.human_review_required is True
+
+    content = _captured_report_content(mock_db)
+    block = content.get("industry_macro_context")
+    assert block is not None, "macro-on report must carry an industry_macro_context block"
+    assert block["value"], "expected at least one macro reference (Pink Sheet for copper)"
+    # Honest CONTEXT note — not company-specific evidence, not a catalyst.
+    note = block["note"].lower()
+    assert "not company-specific evidence" in note
+    assert "never a direct company catalyst" in note
+    # Reference-only: a URL + indicator text but NO figures / index levels / dates
+    # in the indicator reference itself (the honest gap may name the "Phase 29C"
+    # follow-up, which is not a macro figure).
+    for item in block["value"]:
+        assert item["url"]
+        assert item["indicators_reference"]
+        assert not _DIGIT_RE.search(item["indicators_reference"])
+    # No forbidden rating / valuation vocab anywhere in the block.
+    assert safety_terms.scan_value(block) == []
+
+    # The compact council metadata path also carries the macro context.
+    report = mock_db.add.call_args[0][0]
+    assert report.source_summary_json["llm_council"]["macro_context"]
+
+
+async def test_company_report_no_macro_block_when_disabled(
+    mock_db, enable_council
+) -> None:
+    """Council on but macro flag off → block absent, report unchanged + safe."""
+    resp = await _generate(mock_db, _copper_snapshot())
+    assert resp.schema_valid is True
+    assert resp.safety_valid is True
+    assert resp.publication_ready is False
+    assert resp.human_review_required is True
+
+    content = _captured_report_content(mock_db)
+    assert "industry_macro_context" not in content
+    report = mock_db.add.call_args[0][0]
+    assert report.source_summary_json["llm_council"]["macro_context"] == []
