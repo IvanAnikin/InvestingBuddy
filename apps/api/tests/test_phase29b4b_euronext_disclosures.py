@@ -163,9 +163,10 @@ def test_5_exchange_regulator_mapping_euronext():
     assert regulator_connector_for("AS") == "euronext_regulated_info"
     assert regulator_connector_for(None, "France") == "euronext_regulated_info"
     assert regulator_connector_for(None, "Netherlands") == "euronext_regulated_info"
-    # UK behaviour unchanged (Phase 29B.4A); other venues stay unmapped.
+    # UK behaviour unchanged (Phase 29B.4A); Germany now maps to its own dedicated
+    # connector (Phase 29B.4C).
     assert regulator_connector_for("LSE") == "uk_fca_nsm"
-    assert regulator_connector_for("XETRA", "Germany") is None
+    assert regulator_connector_for("XETRA", "Germany") == "deutsche_boerse"
 
 
 def test_6_fr_nl_issuer_maps_to_euronext_only():
@@ -186,10 +187,10 @@ def test_7_uk_and_de_mapping_unchanged():
     uk = _relevant_scaffold_ids(reg, CompanyContext(ticker="BRBY", exchange="LSE"), None)
     assert uk == ["uk_fca_nsm"]
     assert "euronext_regulated_info" not in uk
-    # A German issuer still surfaces its region scaffolds via the fallback (not
-    # narrowed to a dedicated connector); euronext is no longer among them.
+    # A German issuer maps to its own dedicated connector (Phase 29B.4C);
+    # euronext / uk are not among the resolved ids.
     de = _relevant_scaffold_ids(reg, CompanyContext(ticker="SAP", exchange="XETRA"), None)
-    assert "deutsche_boerse" in de
+    assert de == ["deutsche_boerse"]
     assert "euronext_regulated_info" not in de and "uk_fca_nsm" not in de
 
 
@@ -211,10 +212,12 @@ def test_8_registry_promotes_euronext_to_enabled_reference_connector():
     assert "euronext_regulated_info" not in {
         s.source_id for s in reg.scaffolded_sources()
     }
-    # Registry now reports 8 enabled / 4 scaffolded regulator-layer sources.
+    # Registry now reports 11 enabled / 2 scaffolded regulator-layer sources
+    # (Phase 29B.4C promoted deutsche_boerse + nordic_disclosures and added
+    # six_swiss to the enabled set).
     summary = reg.summary()
-    assert summary["enabled"] == 8
-    assert summary["scaffolded"] == 4
+    assert summary["enabled"] == 11
+    assert summary["scaffolded"] == 2
 
 
 def test_9_registry_and_health_secret_free_and_honest_about_content():

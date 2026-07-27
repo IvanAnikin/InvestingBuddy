@@ -1,97 +1,81 @@
-# Session State — Phase 29B.4B CLOSED · next: Phase 29B.4C · stage: not-started (updated 2026-07-27)
+# Session State — Phase 29B.4C IN PROGRESS · stage: PR (about to open) (updated 2026-07-27)
 
 > Resumable snapshot for the current Claude Code session. Overwrite this file at
 > each checkpoint (see the `context-compaction` skill). Keep decisions + evidence,
 > not raw logs.
 
 ## Current position
-- On `main`, HEAD `1d97612`, clean tree.
-- **Phase 29B.4B — Euronext regulated-disclosure connector: ✅ CLOSED** (merged + deployed +
-  staging-validated). PR #59 squash-merged to `main` at `1d97612`; API `commit_sha=1d97612`
-  (3 stable polls); web unchanged `793e0a7` (backend-only); DB head `011` (no migration).
-  Closure report: `docs/development/closures/phase-29b4b.md`.
-- **Next: Phase 29B.4C — Swiss / Nordic / Germany regulated-disclosure connectors. Stage:
-  not-started (no branch yet).** The final planned subphase of the Phase 29B.4 umbrella.
-- Umbrella **Phase 29B.4** stays 🟡: 4A ✅ (#58 `5138725`), 4B ✅ (#59 `1d97612`),
-  **4C (Swiss / Nordic / Germany)** remaining.
+- On branch `feature/phase-29b4c-swiss-nordic-de-disclosures`, HEAD `4eb4054`.
+- **Phase 29B.4C — Swiss / Nordic / Germany regulated-disclosure connectors: 🟡 IN PROGRESS.**
+  Stage: **PR about to open (pre-staging).** NOT merged, NOT deployed, NOT validated —
+  do NOT mark ✅.
+- Backend-only, **11 files incl. tests**, **NO migration** (still DB head `011`), no new
+  flag/host/endpoint.
+- Umbrella **Phase 29B.4** stays 🟡 until 4C is validated: 4A ✅ (#58 `5138725`),
+  4B ✅ (#59 `1d97612`), **4C in review**. **4C is the LAST 29B.4 subphase** — once it
+  merges + validates the whole 29B.4 umbrella completes and **Phase 29C (macro/commodity/
+  policy)** is next.
 
-## Phase 29B.4B — condensed closure evidence
-- Promoted the `euronext_regulated_info` scaffold → dedicated `EuronextRegulatedConnector`
-  (`apps/api/app/services/sources/connectors/euronext_regulated_info.py`): for a verified
-  Euronext issuer — Euronext Paris FR (`MC.PA` LVMH / `RMS.PA` Hermès / `KER.PA` Kering) or
-  Amsterdam NL (`ASML.AS` ASML), resolved via `verified_issuer_sources`, **never a fabricated
-  filing/headline/date/notice number** — emits ONE bounded **T2 Euronext regulated-information
-  venue *reference*** (+ regulator AMF France / AFM Netherlands) at the fixed public URL
-  `https://www.euronext.com/en/regulated-information` + honest `primary_filing_unavailable`
-  content gap; **network-free at report time**. FR issuers (MC/RMS/KER) carry a
-  `requires_translation` (`GapType.translation_required`) marker — honest "not translated this
-  phase", not an official-translation claim.
-- `company_evidence.py` extended the exchange→regulator map (Euronext Paris PA/FR + Amsterdam
-  AS/NL → euronext_regulated_info; added to `REGULATOR_REFERENCE_IDS`) + tightened
-  `_relevant_scaffold_ids` (UK still uk_fca_nsm; DE unchanged); `registry.py` moved the scaffold
-  → enabled `regulator`/`T2_regulator_or_gov` (registry now **8 enabled / 4 scaffolded**:
-  SEDAR+/ASX/Deutsche Börse/Nordic). Non-Euronext → honest `source_not_eligible` gap.
-- Tests: backend **2058 pass / 12 skip / 0 fail** (+12 `test_phase29b4b_euronext_disclosures.py`;
-  +1 regression fix in `test_phase29b1` `test_26_27`), ruff clean, mypy `71` baseline (no new).
-  Frontend N/A. Security: ib-security-agent PASS; pre-PR review APPROVED 10/10.
-- Staging VALIDATED (2026-07-27): C — registry/health show euronext_regulated_info=enabled
-  regulator/T2, 8 enabled/4 scaffolded, honest content-not-fetched note, secret-free.
-  D — MC.PA (LVMH FR) T2 venue reference + honest `primary_filing_unavailable` gap +
-  `requires_translation`=true/French + `translation_required` gap; company_ir present.
-  E — ASML.AS (NL) T2 reference **without** `requires_translation`; company_ir present.
-  F — BA.LSE still uk_fca_nsm, no euronext, BA→BAE no Boeing (4A unaffected). G — AAPL/AMAT
-  no euronext item, SEC/company_ir unchanged. H — CFR.SW no euronext, honest not-eligible gap.
-  I — schema/safety valid, publication_ready false, human_review true, flags KEPT ON,
-  publication admin-gated.
-- **Honest scoping note:** connector delta directly observed via authed evidence-preview on all
-  6 issuers; report-body/safety/publication fields validated by the untouched-code invariant
-  (diff touches only connector+wiring+registry; 29B.4A already proved a regulator reference
-  flows into a full council FINAL report via the identical path). Fresh full-council runs
-  deliberately skipped to avoid Azure OpenAI TPM burn re-testing unchanged code.
+## Phase 29B.4C — what was built (verified GREEN, pre-staging)
+Three new dedicated regulator connectors following the same **T2 venue-reference + honest
+`primary_filing_unavailable` content-gap, network-free, verified-issuer-gated** pattern as
+29B.4A/4B:
+- **`DeutscheBoerseConnector`** (`app/services/sources/connectors/deutsche_boerse.py`, promotes
+  the `deutsche_boerse` scaffold): `SAP.DE` (Germany / Xetra) → ONE bounded **T2 reference** to
+  the German regulated-info venue (Bundesanzeiger / Deutsche Börse / BaFin), fixed URL
+  `https://www.bundesanzeiger.de`, + German `requires_translation` (`GapType.translation_required`).
+- **`NordicDisclosuresConnector`** (`connectors/nordic_disclosures.py`, promotes the
+  `nordic_disclosures` scaffold): `PNDORA.CO` (Denmark / Nasdaq Copenhagen) → **T2 reference**
+  (Nasdaq Nordic company news `https://www.nasdaqomxnordic.com/news/companynews` / Finanstilsynet)
+  + Danish `requires_translation` (generalizes to ST / HE / OL Nordic venues).
+- **`SixSwissConnector`** (`connectors/six_swiss.py`, **NEW `six_swiss` source — no Swiss scaffold
+  existed**; resolves the honest Swiss/SIX gap the 4B plan flagged): `CFR.SW` Richemont + `UHR.SW`
+  Swatch on SIX (SW / VX) → **T2 reference** (SIX Swiss Exchange / SIX Exchange Regulation official
+  notices `https://www.six-group.com/…/official-notices.html`) + honest content gap. **NO
+  `requires_translation` claim** — Switzerland is multilingual and major issuers publish English;
+  only a neutral DE/FR/IT multilingual note in warnings.
 
-## Phase 29B.4C — plan (not started)
-- Continue the promote-scaffold→connector pattern (4A UK, 4B Euronext): promote the
-  `deutsche_boerse` and `nordic_disclosures` scaffolds → dedicated connectors.
-- Targets: `SAP.DE` SAP (Deutsche Börse / Xetra DE → Bundesanzeiger / BaFin regulated-info
-  venue); `PNDORA.CO` Pandora (Nasdaq Copenhagen / Nordic DK). German- and Danish-jurisdiction
-  issuers → flagged `requires_translation` (`GapType.translation_required`, pending Phase 30).
-- **Honest gap — Swiss / SIX:** the intended Swiss targets `UHR.SW` Swatch and `CFR.SW`
-  Richemont trade on SIX Swiss Exchange, for which there is currently **NO scaffold** (scaffold
-  set is SEDAR+ / ASX / Deutsche Börse / Nordic). Covering them requires a **new SIX/Swiss
-  connector from scratch (not a promotion)** or an honest deferral — do not promise a promotion
-  that has no scaffold to promote.
-- Same shipped posture as 4A/4B: ONE bounded T2 venue *reference* + honest content gap,
-  network-free at report time; live regulator-venue CONTENT fetch stays DEFERRED.
+Wiring:
+- `company_evidence.py`: extended exchange/country→regulator mapping (DE/Xetra/Frankfurt+Germany
+  → `deutsche_boerse`; CO/Nasdaq-Copenhagen+Denmark → `nordic_disclosures`; SW/VX/SIX+Switzerland
+  → `six_swiss`) + `REGULATOR_REFERENCE_IDS` + tightened `_relevant_scaffold_ids`.
+- `registry.py`: `deutsche_boerse` + `nordic_disclosures` promoted out of the scaffold table;
+  `six_swiss` added as a **NEW enabled `regulator` / `T2_regulator_or_gov`** source →
+  **registry now 11 enabled / 2 scaffolded** (remaining scaffolds: **SEDAR+, ASX only**).
+- Adjacent test updates for the promotions / counts (no production ripple).
+
+## Tests / checks (GREEN)
+- Backend **2071 pass / 12 skip / 0 fail**; ruff clean; mypy `71` baseline (no new); security PASS.
+- No web change (backend-only).
 
 ## Decisions
-- **Live regulator-venue CONTENT fetch DEFERRED (deliberate, carried forward from 29B.4A/4B).**
-  A bounded server-side fetch of the regulator venue reads essentially nothing while adding
-  external-regulator fetch surface. The shipped posture is the **honest T2 venue reference +
-  explicit `primary_filing_unavailable` content gap** at report time. Live content fetch is a
-  future Phase 29B.4 follow-up (applies to 4C too).
-- **`requires_translation` is an honesty marker, not a translation.** Non-English-jurisdiction
-  issuers (FR in 4B; DE/DK in 4C) carry `GapType.translation_required` = "docs not translated
-  in this phase" (pending Phase 30). Never a claim that official English translations exist.
-- Scope stays one region per subphase: 4A = UK ✅, 4B = Euronext ✅, 4C = Swiss/Nordic/Germany.
-- **Full-council staging re-runs are skipped when a PR's diff is connector/wiring/registry-only**
-  (untouched-code invariant) to avoid Azure OpenAI TPM burn — connector delta is proven via
-  authed evidence-preview instead.
+- **SIX Swiss carries NO `requires_translation`.** Switzerland is multilingual (DE/FR/IT) and
+  major SIX issuers publish English annual reports, so a blanket translation-required marker would
+  be misleading. Only a neutral DE/FR/IT multilingual note in `warnings` — honest, not a
+  translation claim. (Germany → German, Nordic → Danish DO carry `requires_translation`.)
+- **Live regulator-venue CONTENT fetch DEFERRED (carried from 29B.4A/4B).** Shipped posture is the
+  honest T2 venue *reference* + explicit `primary_filing_unavailable` content gap at report time;
+  live content fetch is a future follow-up (not this subphase).
+- **`requires_translation` is an honesty marker, not a translation** (pending Phase 30).
+- One region per subphase: 4A UK ✅, 4B Euronext ✅, 4C Swiss/Nordic/Germany (in review).
 
 ## Staging flags (unchanged — all ON, KEEP)
 `LLM_COUNCIL_ENABLED`=true · `LLM_DISCOVERY_COUNCIL_ENABLED`=true ·
 `SOURCE_CONNECTOR_ENABLED`=true · `SOURCE_DOCUMENT_EXTRACTION_ENABLED`=true
 
 ## Carry-forward limitations
-1. Euronext (and UK FCA NSM) T1 filing CONTENT is not fetched — venue *reference* + honest
-   content gap only (deferred; see Decisions).
-2. Regulator connectors SEDAR+ / ASX / Deutsche Börse / Nordic remain scaffolded (honest
-   gaps) — 4C + later batches. No SIX/Swiss scaffold exists (see 4C honest gap).
-3. No local-language translation yet — FR/DE/DK/other non-English primary docs flagged
-   `requires_translation` pending Phase 30.
-4. (From 29B.3) primary-fact happy path is unit-fixture-proven only; scoring/completeness
-   numeric uplift is capability-only (not wired to a production caller).
+1. All regulated-disclosure connectors (UK FCA NSM, Euronext, Deutsche Börse, Nordic, SIX Swiss)
+   emit a T1-filing-content gap — venue *reference* + honest content gap only (live content fetch
+   deferred).
+2. SEDAR+ / ASX remain scaffolded (honest gaps) — later batches.
+3. No local-language translation yet — DE/DK/other non-English primary docs flagged
+   `requires_translation` pending Phase 30 (SIX Swiss deliberately excluded — multilingual, English
+   available).
+4. (From 29B.3) primary-fact happy path is unit-fixture-proven only; scoring/completeness numeric
+   uplift is capability-only (not wired to a production caller).
 
 ## Next exact command / action
-- **Create branch `feature/phase-29b4c-swiss-nordic-de-disclosures` and scope 29B.4C**
-  (Swiss / Nordic / Germany regulated-disclosure connectors). Promote `deutsche_boerse` +
-  `nordic_disclosures` scaffolds; decide new-SIX-connector-vs-defer for the Swiss targets.
+- **Run `ib-pr-review-agent`, then `gh pr create` for 29B.4C** (branch
+  `feature/phase-29b4c-swiss-nordic-de-disclosures`, HEAD `4eb4054`).
+- **STOP at the merge gate** — do NOT merge/deploy/validate/close without human approval +
+  staging validation evidence (merge SHA + deployed SHA + validation result).

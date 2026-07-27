@@ -17,10 +17,10 @@ Design guarantees:
     is gated by ``source_connector_enabled``.
   * **Exchange-aware.** SEC runs only for SEC-eligible issuers (Phase 27.1A);
     non-US issuers instead route to their home-regulator connector — the
-    dedicated UK FCA NSM (29B.4A) and Euronext (29B.4B) connectors emit a bounded
-    T2 regulator-transport SOURCE REFERENCE plus an honest content gap, while the
-    remaining venues (SEDAR+, ASX, Deutsche Börse, Nordic) surface honest scaffold
-    gaps only.
+    dedicated UK FCA NSM (29B.4A), Euronext (29B.4B), Deutsche Börse, Nordic and
+    SIX Swiss (29B.4C) connectors emit a bounded T2 regulator-transport SOURCE
+    REFERENCE plus an honest content gap, while the remaining venues (SEDAR+, ASX)
+    surface honest scaffold gaps only.
   * **Bounded.** Every connector is capped at
     ``source_connector_max_items_per_source`` items.
   * **Never raises.** Each connector call goes through ``call_safe``.
@@ -59,25 +59,44 @@ from app.services.sources.verified_issuer_sources import get_verified_issuer_sou
 SEC_ID = "sec_edgar"
 COMPANY_IR_ID = "company_ir"
 
-# Dedicated regulator connectors (Phase 29B.4A/29B.4B). Unlike the generic
+# Dedicated regulator connectors (Phase 29B.4A/29B.4B/29B.4C). Unlike the generic
 # scaffolds, these are real connectors that emit a bounded T2 regulator-transport
 # SOURCE REFERENCE (plus an honest content gap), so their evidence items are kept
 # — not just their gaps. They are still run through the same regulator loop.
-REGULATOR_REFERENCE_IDS = frozenset({"uk_fca_nsm", "euronext_regulated_info"})
+REGULATOR_REFERENCE_IDS = frozenset(
+    {
+        "uk_fca_nsm",
+        "euronext_regulated_info",
+        "deutsche_boerse",
+        "nordic_disclosures",
+        "six_swiss",
+    }
+)
 
-# Explicit, minimal venue/country -> dedicated regulator connector. Keeps a
-# UK/LSE issuer mapped to the UK FCA NSM connector specifically, and a Euronext
-# Paris (FR) / Amsterdam (NL) issuer to the Euronext connector specifically,
-# instead of every Europe-region scaffold (the previous over-match).
+# Explicit, minimal venue/country -> dedicated regulator connector. Keeps each
+# issuer mapped to its own home-regulator connector specifically (UK/LSE ->
+# uk_fca_nsm; Euronext Paris/Amsterdam -> euronext_regulated_info; German
+# Xetra/Frankfurt -> deutsche_boerse; Nasdaq Copenhagen -> nordic_disclosures;
+# SIX Swiss -> six_swiss), instead of every Europe-region scaffold (the previous
+# over-match).
 _EXCHANGE_TO_REGULATOR: dict[str, str] = {
     "LSE": "uk_fca_nsm",
     "PA": "euronext_regulated_info",  # Euronext Paris
     "AS": "euronext_regulated_info",  # Euronext Amsterdam
+    "XETRA": "deutsche_boerse",  # Deutsche Börse Xetra
+    "F": "deutsche_boerse",  # Frankfurt Stock Exchange
+    "DE": "deutsche_boerse",  # EODHD Germany suffix
+    "CO": "nordic_disclosures",  # Nasdaq Copenhagen
+    "SW": "six_swiss",  # SIX Swiss Exchange
+    "VX": "six_swiss",  # SIX Swiss (blue chip)
 }
 _COUNTRY_TO_REGULATOR: dict[str, str] = {
     "United Kingdom": "uk_fca_nsm",
     "France": "euronext_regulated_info",
     "Netherlands": "euronext_regulated_info",
+    "Germany": "deutsche_boerse",
+    "Denmark": "nordic_disclosures",
+    "Switzerland": "six_swiss",
 }
 
 
@@ -187,12 +206,14 @@ def _relevant_scaffold_ids(
     - Explicit request: only the requested ids that are runnable regulator
       connectors or scaffolds.
     - Default: none for US / SEC-eligible issuers. For a non-US issuer with an
-      explicit venue -> regulator mapping (Phase 29B.4A/29B.4B), just that
+      explicit venue -> regulator mapping (Phase 29B.4A/29B.4B/29B.4C), just that
       dedicated connector (a UK/LSE issuer maps to ``uk_fca_nsm``; a Euronext
-      Paris/Amsterdam FR/NL issuer maps to ``euronext_regulated_info`` — both
-      dropping the other Europe scaffolds). Otherwise the scaffolds whose region
-      matches the issuer's venue, falling back to *all* scaffolds when the region
-      can't be resolved (honest over-disclosure).
+      Paris/Amsterdam FR/NL issuer to ``euronext_regulated_info``; a German
+      Xetra/Frankfurt issuer to ``deutsche_boerse``; a Nasdaq Copenhagen issuer to
+      ``nordic_disclosures``; a SIX Swiss issuer to ``six_swiss`` — each dropping
+      the other Europe scaffolds). Otherwise the scaffolds whose region matches
+      the issuer's venue, falling back to *all* scaffolds when the region can't be
+      resolved (honest over-disclosure).
     """
     scaffold_ids = [s.source_id for s in registry.scaffolded_sources()]
     # Dedicated regulator connectors are real (no longer scaffolds) but still run
