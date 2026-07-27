@@ -272,14 +272,16 @@ def _scaffolded(
 
 
 def _macro_reference_source(spec: MacroSourceSpec) -> RegisteredSource:
-    """An enabled reference-only macro / commodity-energy source (Phase 29C).
+    """An enabled reference-only macro / commodity-energy / policy source (29C).
 
     Built from the single ``ALL_MACRO_SOURCES`` table so the registry and the
     connectors never drift. It is a T2/T3 macro reference: the connector emits a
     bounded SOURCE REFERENCE (which official dataset covers which indicators)
     plus an honest gap; live figures are not fetched at report time. The tier is
     the source's own (T2 for a regulator/government publisher, T3 for an
-    industry-specialist agency such as USGS / IEA / IRENA / ENTSO-E).
+    industry-specialist agency such as USGS / IEA / IRENA / ENTSO-E / SIPRI). The
+    29C.3 policy / government references (USTR / EU TARIC, UN Comtrade, NATO,
+    SIPRI, OECD) are thematic CONTEXT only, never a company recommendation.
     """
     return RegisteredSource(
         source_id=spec.source_id,
@@ -567,26 +569,24 @@ def build_registry(cfg: Settings | None = None) -> SourceRegistry:
     # -- Planned placeholders (disabled by default) ------------------------
     # A compact table keeps the long tail readable. Columns:
     #   (source_id, name, provider_type, tier, phase, extra_kwargs)
-    _MACRO = ["fetch_macro_context"]
     _SEARCH = ["search_company"]
-    trd = ProviderType.trade_policy
     proc = ProviderType.procurement
     pat = ProviderType.patents
     t2, t5 = T2_REGULATOR_OR_GOV, T5_API_AGGREGATOR
     planned_table: list[tuple[str, str, ProviderType, str, str, dict]] = [
         # Macro / commodity / policy (Phase 29C). NOTE: the reference-only macro
         # publishers (29C.1: fred, imf, eurostat, world_bank_pink_sheet,
-        # national_stats_central_banks) and the commodity / energy references
-        # (29C.2: usgs, iea, irena, eia, entsoe) were promoted to enabled
-        # reference-only sources (see ALL_MACRO_SOURCES). The remaining trade /
-        # procurement venues and the OpenBB aggregator toolkit stay planned.
-        ("ustr_taric", "USTR / EU TARIC (tariffs)", trd, t2, PHASE_29C,
-         {"capabilities": _MACRO}),
+        # national_stats_central_banks), the commodity / energy references
+        # (29C.2: usgs, iea, irena, eia, entsoe) and the policy / government
+        # references (29C.3: ustr_taric, un_comtrade, nato, sipri, oecd) were
+        # promoted to enabled reference-only sources (see ALL_MACRO_SOURCES).
+        # The remaining procurement / tender EVENT venues (usaspending, eu_ted)
+        # and the OpenBB aggregator toolkit stay planned (procurement/patents are
+        # Phase 29D).
         ("usaspending", "USAspending.gov", proc, t2, PHASE_29C,
          {"jurisdiction": "US", "capabilities": ["fetch_events", "fetch_macro_context"]}),
         ("eu_ted", "EU TED (Tenders Electronic Daily)", proc, t2, PHASE_29C,
          {"region": "Europe", "capabilities": ["fetch_events"]}),
-        ("un_comtrade", "UN Comtrade", trd, t2, PHASE_29C, {"capabilities": _MACRO}),
         ("openbb", "OpenBB Platform", ProviderType.aggregator_toolkit, t5, PHASE_29C,
          {"cost_model": CostModel.freemium, "access_mode": AccessMode.sdk,
           "capabilities": ["search_company", "fetch_macro_context"]}),
@@ -611,10 +611,12 @@ def build_registry(cfg: Settings | None = None) -> SourceRegistry:
         for sid, nm, pt, tr, ph, extra in planned_table
     ]
 
-    # -- Enabled reference-only macro sources (Phase 29C.1 + 29C.2) --------
+    # -- Enabled reference-only macro sources (Phase 29C.1 + 29C.2 + 29C.3) -
     # Reference-only: a bounded T2/T3 macro SOURCE REFERENCE + honest gap, no live
     # figures, no network at report time, no API key. Built from ALL_MACRO_SOURCES
-    # (the 29C.1 macro publishers + the 29C.2 commodity / energy references).
+    # (the 29C.1 macro publishers + the 29C.2 commodity / energy references + the
+    # 29C.3 policy / government references — USTR / EU TARIC, UN Comtrade, NATO,
+    # SIPRI, OECD).
     macro_enabled: list[RegisteredSource] = [
         _macro_reference_source(spec) for spec in ALL_MACRO_SOURCES
     ]

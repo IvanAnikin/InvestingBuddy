@@ -13,6 +13,7 @@ from app.services.sources.connectors.macro_reference import (
     ALL_MACRO_SOURCES,
     COMMODITY_ENERGY_SOURCES,
     MACRO_SOURCES,
+    POLICY_GOVERNMENT_SOURCES,
     MacroReferenceConnector,
     MacroSourceSpec,
     build_macro_connectors,
@@ -40,6 +41,7 @@ __all__ = [
     "MacroSourceSpec",
     "MACRO_SOURCES",
     "COMMODITY_ENERGY_SOURCES",
+    "POLICY_GOVERNMENT_SOURCES",
     "ALL_MACRO_SOURCES",
     "build_macro_connectors",
 ]
