@@ -129,6 +129,34 @@ def _primary_document_summary(evidence_items: list[Any]) -> list[dict[str, Any]]
     return list(groups.values())
 
 
+def _primary_facts(evidence_items: list[Any]) -> list[dict[str, Any]]:
+    """Structured, bounded HIGH-CONFIDENCE primary facts — Phase 29B.3.
+
+    Reads the STRUCTURED ``primary_fact`` payload each ``company_ir_financial_fact``
+    EvidenceItem carries (field / value / numeric_value / unit / currency / scale /
+    period + short page/excerpt provenance) — never the raw excerpt body or
+    document text. Only ``confidence == "high"`` facts are surfaced: a matching
+    high-confidence fact is precisely what lets the final report present a real
+    T1 primary-filing datapoint. The item's own token-stripped URL is preferred
+    as the fact's provenance URL.
+    """
+    out: list[dict[str, Any]] = []
+    for it in evidence_items:
+        if getattr(it, "source_type", None) != "company_ir_financial_fact":
+            continue
+        pf = getattr(it, "primary_fact", None)
+        if pf is None:
+            continue
+        if getattr(pf, "confidence", None) != "high":
+            continue
+        data = pf.model_dump(mode="json") if hasattr(pf, "model_dump") else dict(pf)
+        url = getattr(it, "url", None)
+        if url:
+            data["source_url"] = url
+        out.append(data)
+    return out
+
+
 def _coerce_output(agent_name: str, raw: dict[str, Any]) -> CouncilAgentOutput:
     """Validate the model's dict into CouncilAgentOutput, tolerating drift.
 
@@ -332,6 +360,7 @@ async def maybe_run_council(
         connector_evidence = None
         connector_gap_messages = None
         primary_documents: list[dict[str, Any]] = []
+        primary_facts: list[dict[str, Any]] = []
         if cfg.source_connector_enabled:
             try:
                 # Phase 29B.2: when document extraction is also enabled, inject the
@@ -359,6 +388,7 @@ async def maybe_run_council(
                 connector_evidence = collected.evidence_items
                 connector_gap_messages = collected.gap_messages()
                 primary_documents = _primary_document_summary(collected.evidence_items)
+                primary_facts = _primary_facts(collected.evidence_items)
                 log_event(
                     log,
                     "source_connector_evidence_collected",
@@ -368,6 +398,7 @@ async def maybe_run_council(
                     connector_item_count=len(connector_evidence),
                     connector_gap_count=len(connector_gap_messages),
                     primary_document_count=len(primary_documents),
+                    primary_fact_count=len(primary_facts),
                 )
             except Exception as exc:  # noqa: BLE001 - connectors never crash a report
                 log_event(
@@ -416,6 +447,10 @@ async def maybe_run_council(
         # which annual-report excerpts/facts backed the council (metadata only).
         if primary_documents:
             result.primary_documents = primary_documents
+        # Phase 29B.3: attach the structured high-confidence primary facts so the
+        # report can present real T1 datapoints (with each fact's own provenance).
+        if primary_facts:
+            result.primary_facts = primary_facts
         return result
     except Exception as exc:  # noqa: BLE001 - never let the council crash a report
         log_event(

@@ -65,6 +65,13 @@ _TIER_QUALITY_SCORES: dict[str, int] = {
     "T6_model_estimate": 15,
 }
 
+# Phase 29B.3 — bounded source-quality uplift when the council extracted genuine
+# T1 primary-filing facts. A single fact does not turn a T5/T6 dataset into a
+# fully T1 one, so the credit scales with the fact count and is capped well
+# inside the T1 ceiling. With zero facts no uplift is applied (unchanged).
+_PRIMARY_FACT_UPLIFT_PER = 15
+_PRIMARY_FACT_MAX_UPLIFT = 45
+
 # Expected financial data fields for completeness scoring (candidate context)
 _EXPECTED_CANDIDATE_FIELDS = [
     "ticker",
@@ -398,6 +405,8 @@ class ScoringEngine:
     def score_candidate(
         self,
         candidate_data: dict[str, Any],
+        *,
+        t1_primary_fact_count: int = 0,
     ) -> ScorecardResult:
         """
         Score a screening candidate.
@@ -407,6 +416,11 @@ class ScoringEngine:
           source_tier, data_quality, discovery_reasons (list[str]),
           available_data (list[str]), missing_data (list[str]),
           warnings (list[str])
+
+        Phase 29B.3: ``t1_primary_fact_count`` is the number of genuine
+        high-confidence T1 primary-filing facts (each with its own source_url)
+        that back this candidate. When > 0 it credits source quality and data
+        completeness honestly; the default 0 leaves scoring byte-identical.
         """
         warnings: list[str] = []
 
@@ -425,9 +439,14 @@ class ScoringEngine:
         is_mock = source_tier == "T6_model_estimate" or data_quality == "D_weak_or_stale"
 
         # ── Individual dimension scores ───────────────────────────────────────
-        source_quality = self._score_source_quality(source_tier, is_mock, warnings)
+        source_quality = self._score_source_quality(
+            source_tier, is_mock, warnings, t1_primary_fact_count=t1_primary_fact_count
+        )
         data_completeness = self._score_data_completeness(
-            available_data, missing_data, _EXPECTED_CANDIDATE_FIELDS
+            available_data,
+            missing_data,
+            _EXPECTED_CANDIDATE_FIELDS,
+            t1_primary_fact_count=t1_primary_fact_count,
         )
         theme_alignment = self._score_theme_alignment(
             discovery_reasons, name, sector
@@ -542,12 +561,18 @@ class ScoringEngine:
         risk_summary: dict[str, Any] | None = None,
         valuation_guard_summary: dict[str, Any] | None = None,
         committee_chair_summary: dict[str, Any] | None = None,
+        t1_primary_fact_count: int = 0,
     ) -> ScorecardResult:
         """
         Score a company from the full company-analysis workflow outputs.
 
         Consumes all Analysis Council outputs to produce a research
         attractiveness score.  No final valuation or recommendation is made.
+
+        Phase 29B.3: ``t1_primary_fact_count`` is the number of genuine
+        high-confidence T1 primary-filing facts (each with its own source_url)
+        surfaced for this company. When > 0 it credits source quality and data
+        completeness honestly; the default 0 leaves scoring byte-identical.
         """
         warnings: list[str] = []
 
@@ -583,9 +608,14 @@ class ScoringEngine:
         ]
 
         # ── Individual dimension scores ───────────────────────────────────────
-        source_quality = self._score_source_quality_from_summary(sq, source_tier, is_mock)
+        source_quality = self._score_source_quality_from_summary(
+            sq, source_tier, is_mock, t1_primary_fact_count=t1_primary_fact_count
+        )
         data_completeness = self._score_data_completeness(
-            available_data, missing_data_list, list(range(available_count + missing_count))
+            available_data,
+            missing_data_list,
+            list(range(available_count + missing_count)),
+            t1_primary_fact_count=t1_primary_fact_count,
         )
         theme_alignment = self._score_theme_alignment_from_context(
             bc, br, sector
@@ -677,34 +707,74 @@ class ScoringEngine:
 
     # ── Dimension scorers (candidate context) ────────────────────────────────
 
+    def _credit_t1_primary_facts(
+        self, base: DimensionScore, t1_primary_fact_count: int
+    ) -> DimensionScore:
+        """Apply a bounded T1 source-quality uplift for extracted primary facts.
+
+        Phase 29B.3. Genuine high-confidence T1 primary-filing facts (revenue,
+        reporting currency, … each with its own source_url) mean a primary source
+        now backs at least one claim, even when the base snapshot tier is T5/T6.
+        The uplift is bounded and never exceeds the T1 ceiling. With a count of
+        zero this returns ``base`` unchanged, so behaviour is byte-identical.
+        """
+        if t1_primary_fact_count <= 0:
+            return base
+        ceiling = _TIER_QUALITY_SCORES["T1_primary_filing"]
+        uplift = min(_PRIMARY_FACT_MAX_UPLIFT, t1_primary_fact_count * _PRIMARY_FACT_UPLIFT_PER)
+        new_score = min(ceiling, base.score + uplift)
+        evidence = list(base.evidence_used) + [
+            f"{t1_primary_fact_count} T1 primary-filing fact(s) extracted from "
+            "company filings (require human confirmation)"
+        ]
+        return DimensionScore(
+            score=new_score,
+            explanation=(
+                f"{base.explanation} Credited {t1_primary_fact_count} extracted "
+                "T1 primary-filing fact(s)."
+            ),
+            evidence_used=evidence,
+            missing_data=list(base.missing_data),
+            warnings=list(base.warnings),
+        )
+
     def _score_source_quality(
-        self, source_tier: str, is_mock: bool, warnings: list[str]
+        self,
+        source_tier: str,
+        is_mock: bool,
+        warnings: list[str],
+        *,
+        t1_primary_fact_count: int = 0,
     ) -> DimensionScore:
         if is_mock:
-            return DimensionScore(
+            base = DimensionScore(
                 score=5,
                 explanation="Mock/synthetic data — source quality is not meaningful.",
                 warnings=["Source quality cannot be assessed with mock data."],
             )
-        base = _TIER_QUALITY_SCORES.get(source_tier, 10)
+            return self._credit_t1_primary_facts(base, t1_primary_fact_count)
+        base_score = _TIER_QUALITY_SCORES.get(source_tier, 10)
         evidence = [f"Source tier: {source_tier}"]
         warn: list[str] = []
         if source_tier in ("T5_api_aggregator", "T6_model_estimate"):
             warn.append(
                 f"{source_tier} data only. Primary source (T1/T2) validation required."
             )
-        return DimensionScore(
-            score=base,
+        base = DimensionScore(
+            score=base_score,
             explanation=f"Source quality score for tier {source_tier}.",
             evidence_used=evidence,
             warnings=warn,
         )
+        return self._credit_t1_primary_facts(base, t1_primary_fact_count)
 
     def _score_data_completeness(
         self,
         available: list[str],
         missing: list[str],
         expected: list,
+        *,
+        t1_primary_fact_count: int = 0,
     ) -> DimensionScore:
         total = len(available) + len(missing)
         if total == 0:
@@ -714,15 +784,21 @@ class ScoringEngine:
                 missing_data=["all fields"],
                 warnings=["No data available to assess completeness."],
             )
-        completeness_ratio = len(available) / total
+        # Phase 29B.3: genuine T1 primary facts fill previously-missing fields, so
+        # move that many items from missing → available (bounded, total preserved).
+        # A count of zero leaves everything byte-identical.
+        shift = min(max(t1_primary_fact_count, 0), len(missing))
+        n_available = len(available) + shift
+        remaining_missing = missing[shift:] if shift else missing
+        completeness_ratio = n_available / total
         score = int(completeness_ratio * 100)
         return DimensionScore(
             score=score,
-            explanation=f"{len(available)}/{total} expected fields available ({score}%).",
+            explanation=f"{n_available}/{total} expected fields available ({score}%).",
             evidence_used=[f"Available: {', '.join(available[:5])}"]
             if available
             else [],
-            missing_data=missing[:10],
+            missing_data=remaining_missing[:10],
         )
 
     def _score_theme_alignment(
@@ -958,14 +1034,20 @@ class ScoringEngine:
     # ── Dimension scorers (company analysis context) ─────────────────────────
 
     def _score_source_quality_from_summary(
-        self, sq: dict, source_tier: str, is_mock: bool
+        self,
+        sq: dict,
+        source_tier: str,
+        is_mock: bool,
+        *,
+        t1_primary_fact_count: int = 0,
     ) -> DimensionScore:
         if is_mock:
-            return DimensionScore(
+            base = DimensionScore(
                 score=5,
                 explanation="Mock provider — source quality not meaningful.",
                 warnings=["Source quality cannot be assessed with mock data."],
             )
+            return self._credit_t1_primary_facts(base, t1_primary_fact_count)
         overall_sq = sq.get("overall_source_quality", "insufficient")
         sq_scores = {
             "strong": 90, "adequate": 65, "weak": 30, "insufficient": 10
@@ -974,12 +1056,13 @@ class ScoringEngine:
         warn: list[str] = []
         if overall_sq in ("weak", "insufficient"):
             warn.append(f"Source quality is '{overall_sq}' — primary source validation required.")
-        return DimensionScore(
+        base = DimensionScore(
             score=score,
             explanation=f"Source quality from Research Team assessment: {overall_sq}.",
             evidence_used=[f"overall_source_quality={overall_sq}"],
             warnings=warn,
         )
+        return self._credit_t1_primary_facts(base, t1_primary_fact_count)
 
     def _score_financial_strength_from_summary(
         self, fd: dict, source_tier: str
