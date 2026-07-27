@@ -16,8 +16,11 @@ Design guarantees:
     ever done by the evidence-preview endpoint, which injects a live fetcher and
     is gated by ``source_connector_enabled``.
   * **Exchange-aware.** SEC runs only for SEC-eligible issuers (Phase 27.1A);
-    non-US issuers instead surface honest scaffold gaps for their home-regulator
-    connectors (SEDAR+, ASX, UK FCA NSM, Euronext, Deutsche Börse, Nordic).
+    non-US issuers instead route to their home-regulator connector — the
+    dedicated UK FCA NSM (29B.4A) and Euronext (29B.4B) connectors emit a bounded
+    T2 regulator-transport SOURCE REFERENCE plus an honest content gap, while the
+    remaining venues (SEDAR+, ASX, Deutsche Börse, Nordic) surface honest scaffold
+    gaps only.
   * **Bounded.** Every connector is capped at
     ``source_connector_max_items_per_source`` items.
   * **Never raises.** Each connector call goes through ``call_safe``.
@@ -56,17 +59,26 @@ from app.services.sources.verified_issuer_sources import get_verified_issuer_sou
 SEC_ID = "sec_edgar"
 COMPANY_IR_ID = "company_ir"
 
-# Dedicated regulator connectors (Phase 29B.4A). Unlike the generic scaffolds,
-# these are real connectors that emit a bounded T2 regulator-transport SOURCE
-# REFERENCE (plus an honest content gap), so their evidence items are kept — not
-# just their gaps. They are still run through the same regulator loop.
-REGULATOR_REFERENCE_IDS = frozenset({"uk_fca_nsm"})
+# Dedicated regulator connectors (Phase 29B.4A/29B.4B). Unlike the generic
+# scaffolds, these are real connectors that emit a bounded T2 regulator-transport
+# SOURCE REFERENCE (plus an honest content gap), so their evidence items are kept
+# — not just their gaps. They are still run through the same regulator loop.
+REGULATOR_REFERENCE_IDS = frozenset({"uk_fca_nsm", "euronext_regulated_info"})
 
 # Explicit, minimal venue/country -> dedicated regulator connector. Keeps a
-# UK/LSE issuer mapped to the UK FCA NSM connector specifically instead of
-# every Europe-region scaffold (the previous over-match).
-_EXCHANGE_TO_REGULATOR: dict[str, str] = {"LSE": "uk_fca_nsm"}
-_COUNTRY_TO_REGULATOR: dict[str, str] = {"United Kingdom": "uk_fca_nsm"}
+# UK/LSE issuer mapped to the UK FCA NSM connector specifically, and a Euronext
+# Paris (FR) / Amsterdam (NL) issuer to the Euronext connector specifically,
+# instead of every Europe-region scaffold (the previous over-match).
+_EXCHANGE_TO_REGULATOR: dict[str, str] = {
+    "LSE": "uk_fca_nsm",
+    "PA": "euronext_regulated_info",  # Euronext Paris
+    "AS": "euronext_regulated_info",  # Euronext Amsterdam
+}
+_COUNTRY_TO_REGULATOR: dict[str, str] = {
+    "United Kingdom": "uk_fca_nsm",
+    "France": "euronext_regulated_info",
+    "Netherlands": "euronext_regulated_info",
+}
 
 
 def regulator_connector_for(
@@ -175,11 +187,12 @@ def _relevant_scaffold_ids(
     - Explicit request: only the requested ids that are runnable regulator
       connectors or scaffolds.
     - Default: none for US / SEC-eligible issuers. For a non-US issuer with an
-      explicit venue -> regulator mapping (Phase 29B.4A), just that dedicated
-      connector (a UK/LSE issuer maps to ``uk_fca_nsm`` specifically, dropping
-      the other Europe scaffolds). Otherwise the scaffolds whose region matches
-      the issuer's venue, falling back to *all* scaffolds when the region can't
-      be resolved (honest over-disclosure).
+      explicit venue -> regulator mapping (Phase 29B.4A/29B.4B), just that
+      dedicated connector (a UK/LSE issuer maps to ``uk_fca_nsm``; a Euronext
+      Paris/Amsterdam FR/NL issuer maps to ``euronext_regulated_info`` — both
+      dropping the other Europe scaffolds). Otherwise the scaffolds whose region
+      matches the issuer's venue, falling back to *all* scaffolds when the region
+      can't be resolved (honest over-disclosure).
     """
     scaffold_ids = [s.source_id for s in registry.scaffolded_sources()]
     # Dedicated regulator connectors are real (no longer scaffolds) but still run
@@ -194,7 +207,8 @@ def _relevant_scaffold_ids(
     if is_us_exchange(company.exchange) or is_sec_eligible(company.exchange):
         return []
 
-    # Explicit venue -> regulator mapping wins (e.g. UK/LSE -> uk_fca_nsm only).
+    # Explicit venue -> regulator mapping wins (e.g. UK/LSE -> uk_fca_nsm,
+    # Euronext Paris/Amsterdam -> euronext_regulated_info).
     regulator = regulator_connector_for(company.exchange, company.country)
     if regulator and regulator in registry.connectors():
         return [regulator]

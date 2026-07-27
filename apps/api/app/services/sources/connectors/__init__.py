@@ -1,6 +1,9 @@
 """Concrete source connectors — Phase 29A framework wiring + Phase 29B connectors."""
 
 from app.services.sources.connectors.company_ir import CompanyIrConnector
+from app.services.sources.connectors.euronext_regulated_info import (
+    EuronextRegulatedConnector,
+)
 from app.services.sources.connectors.generic import (
     PlannedConnector,
     WrappedProviderConnector,
@@ -16,4 +19,5 @@ __all__ = [
     "CompanyIrConnector",
     "ScaffoldConnector",
     "UkFcaNsmConnector",
+    "EuronextRegulatedConnector",
 ]

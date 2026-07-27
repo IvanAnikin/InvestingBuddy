@@ -146,8 +146,10 @@ def test_4_non_uk_or_unresolvable_issuer_returns_only_honest_gap():
 def test_5_exchange_regulator_mapping_uk_only():
     assert regulator_connector_for("LSE") == "uk_fca_nsm"
     assert regulator_connector_for(None, "United Kingdom") == "uk_fca_nsm"
-    # Non-UK venues have no dedicated regulator mapping.
-    assert regulator_connector_for("PA", "France") is None
+    # Euronext Paris/Amsterdam map to the Euronext connector (Phase 29B.4B),
+    # never to the UK connector.
+    assert regulator_connector_for("PA", "France") == "euronext_regulated_info"
+    # Other European venues still have no dedicated regulator mapping.
     assert regulator_connector_for("XETRA", "Germany") is None
     assert regulator_connector_for("SW", "Switzerland") is None
 
@@ -166,13 +168,17 @@ def test_6_lse_issuer_maps_to_uk_fca_nsm_only():
 def test_7_de_fr_issuer_mapping_unchanged():
     reg = build_registry()
     # A German issuer still surfaces its European scaffolds (not narrowed to the
-    # UK connector) — the tightening applies only to UK.
+    # UK connector) — the tightening applies only to UK. euronext_regulated_info
+    # was promoted to a dedicated FR/NL connector (Phase 29B.4B), so it no longer
+    # appears in a German issuer's region scaffolds.
     de = _relevant_scaffold_ids(reg, CompanyContext(ticker="SAP", exchange="XETRA"), None)
-    assert "deutsche_boerse" in de and "euronext_regulated_info" in de
+    assert "deutsche_boerse" in de
+    assert "euronext_regulated_info" not in de
     assert de != ["uk_fca_nsm"] and "uk_fca_nsm" not in de
-    # A French issuer likewise keeps its region scaffolds.
+    # A French Euronext issuer now maps to the Euronext connector specifically
+    # (Phase 29B.4B tightening), never to the UK connector.
     fr = _relevant_scaffold_ids(reg, CompanyContext(ticker="MC", exchange="PA"), None)
-    assert "euronext_regulated_info" in fr and "uk_fca_nsm" not in fr
+    assert fr == ["euronext_regulated_info"] and "uk_fca_nsm" not in fr
 
 
 # ---------------------------------------------------------------------------
