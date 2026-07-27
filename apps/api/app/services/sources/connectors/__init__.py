@@ -7,6 +7,7 @@ from app.services.sources.connectors.generic import (
 )
 from app.services.sources.connectors.scaffolds import ScaffoldConnector
 from app.services.sources.connectors.sec_edgar import SecEdgarConnector
+from app.services.sources.connectors.uk_fca_nsm import UkFcaNsmConnector
 
 __all__ = [
     "PlannedConnector",
@@ -14,4 +15,5 @@ __all__ = [
     "SecEdgarConnector",
     "CompanyIrConnector",
     "ScaffoldConnector",
+    "UkFcaNsmConnector",
 ]

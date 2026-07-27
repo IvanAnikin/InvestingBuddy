@@ -32,6 +32,7 @@ from app.services.sources.connectors import (
     PlannedConnector,
     ScaffoldConnector,
     SecEdgarConnector,
+    UkFcaNsmConnector,
     WrappedProviderConnector,
 )
 from app.services.sources.gaps import GapSeverity, GapType, SourceGap
@@ -266,13 +267,14 @@ def _scaffolded(
 
 # Phase 29B filing / regulator scaffolds. Columns:
 #   (source_id, name, provider_type, phase, jurisdiction, region, note)
+# Note: uk_fca_nsm is no longer a generic scaffold — Phase 29B.4A promoted it to
+# a dedicated ``UkFcaNsmConnector`` that emits a T2 regulator-transport source
+# reference (see the enabled sources below). These five remain honest scaffolds.
 _SCAFFOLD_TABLE: list[tuple[str, str, str | None, str | None, str | None]] = [
     ("sedar_plus", "SEDAR+ (Canada)", "CA", "North America",
      "Canadian issuer filings; no fabricated filings."),
     ("asx_announcements", "ASX Announcements", "AU", "Oceania",
      "ASX company announcements; no fabricated JORC / Appendix 5B data."),
-    ("uk_fca_nsm", "UK FCA National Storage Mechanism", "GB", "Europe",
-     "UK regulated disclosures (RNS/NSM); no fabricated RNS notices."),
     ("euronext_regulated_info", "Euronext Regulated Information", None, "Europe",
      "European regulated-info disclosures."),
     ("deutsche_boerse", "Deutsche Börse Disclosures", "DE", "Europe",
@@ -326,6 +328,28 @@ def build_registry(cfg: Settings | None = None) -> SourceRegistry:
             connector_implemented=True,
             capabilities=["fetch_events", "search_company"],
             reliability_note="Issuer's own primary material (verified-issuer allowlist).",
+        ),
+        RegisteredSource(
+            source_id="uk_fca_nsm",
+            name="UK FCA National Storage Mechanism",
+            provider_type=ProviderType.regulator,
+            tier=T2_REGULATOR_OR_GOV,
+            status=SourceStatus.enabled,
+            enabled=True,
+            jurisdiction="GB",
+            region="Europe",
+            cost_model=CostModel.free,
+            access_mode=AccessMode.web_scrape,
+            connector_key="uk_fca_nsm",
+            connector_implemented=True,
+            capabilities=["fetch_filings", "fetch_events"],
+            reliability_note=(
+                "Emits a T2 regulator-transport SOURCE REFERENCE to a verified "
+                "UK issuer's FCA NSM / RNS disclosure venue (metadata only). The "
+                "T1 primary filing CONTENT is not fetched at report time — live "
+                "content retrieval is a Phase 29B.4 follow-up. No fabricated "
+                "filings, notices, or RNS numbers."
+            ),
         ),
         RegisteredSource(
             source_id="gleif",
@@ -482,6 +506,7 @@ def build_registry(cfg: Settings | None = None) -> SourceRegistry:
     connectors: dict[str, SourceConnector] = {
         "sec_edgar": SecEdgarConnector(),
         "company_ir": CompanyIrConnector(),
+        "uk_fca_nsm": UkFcaNsmConnector(),
         "gleif": WrappedProviderConnector(
             connector_key="gleif",
             source_ids=("gleif",),

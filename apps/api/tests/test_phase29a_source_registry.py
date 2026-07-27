@@ -161,10 +161,13 @@ def test_registry_returns_enabled_and_planned():
     enabled_ids = {s.source_id for s in reg.enabled_sources()}
     planned_ids = {s.source_id for s in reg.planned_sources()}
     scaffolded_ids = {s.source_id for s in reg.scaffolded_sources()}
-    # Migrated, enabled sources.
+    # Migrated, enabled sources. uk_fca_nsm was promoted to a dedicated
+    # regulator-reference connector (Phase 29B.4A), so it is now enabled.
     assert {"sec_edgar", "company_ir", "gleif", "eodhd", "stooq", "gdelt"} <= enabled_ids
-    # Filing/regulator connectors are now scaffolded (Phase 29B), not planned.
-    assert {"sedar_plus", "asx_announcements", "uk_fca_nsm"} <= scaffolded_ids
+    assert "uk_fca_nsm" in enabled_ids
+    # The remaining filing/regulator connectors are scaffolded (Phase 29B).
+    assert {"sedar_plus", "asx_announcements"} <= scaffolded_ids
+    assert "uk_fca_nsm" not in scaffolded_ids
     # The macro/patent long tail stays planned.
     assert {"fred", "openbb"} <= planned_ids
     assert reg.summary()["total"] == len(reg.all_sources())
@@ -282,7 +285,7 @@ def test_registry_endpoint_returns_sources_and_no_secrets():
     assert resp.status_code == 200
     body = resp.json()
     assert body["summary"]["enabled"] >= 6
-    assert body["summary"]["scaffolded"] >= 6
+    assert body["summary"]["scaffolded"] >= 5
     assert body["summary"]["planned"] >= 15
     assert len(body["tiers"]) == 6
     ids = {s["source_id"] for s in body["sources"]}
