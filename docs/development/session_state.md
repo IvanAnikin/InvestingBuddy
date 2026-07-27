@@ -1,54 +1,51 @@
-# Session State — Phase 29C.3 CLOSED + Phase 29C umbrella COMPLETE · Phase 29D NEXT (not started) (updated 2026-07-27)
+# Session State — Phase 29D.1 Procurement / Tender Event-Trigger Reference Connectors · Stage: PR (about to open) (updated 2026-07-28)
 
 > Resumable snapshot. Overwrite at each checkpoint (context-compaction skill).
 > Keep decisions + evidence, not raw logs.
 
 ## Current position
-- Branch: `main` @ **`ad6dde5`** (clean). Autonomous multi-phase campaign (Phase 0 → 31).
-- Phase / subphase: **Phase 29C.3 — policy + government reference connectors: CLOSED + staging-validated (VALIDATED-WITH-ENVIRONMENTAL-NOTE).** Its closure **COMPLETES the entire Phase 29C umbrella** (macro + commodity/energy + policy/government reference connectors).
-- Umbrella: **Phase 29C ✅ COMPLETE** — 29C.1 (macro baseline) `a8ac580` + 29C.2 (commodity + energy) `80c8454` + 29C.3 (policy + government) `ad6dde5`, all merged + deployed + staging-validated.
-- **Next: Phase 29D — event-trigger connectors. Stage: NOT STARTED.** Likely split (metadata-first): **29D.1 procurement / tenders** (promote the `eu_ted` + `usaspending` PLANNED registry rows), **29D.2 patents** (promote the `google_patents` / `uspto` / `epo_espacenet` PLANNED rows), **29D.3 permits / regulatory-event metadata**. Then Phase 30 (translation / local-language + PDF table extraction / OCR).
+- Branch: `feature/phase-29d1-procurement-tender-connectors` @ **`63eafa3`** (clean). Autonomous multi-phase campaign (Phase 0 → 31).
+- Phase / subphase: **Phase 29D.1 — procurement / tender event-trigger reference connectors.** **Stage: PR — about to open. NOT merged / deployed / staging-validated.**
+- Umbrella: **Phase 29D — event-trigger connectors: 🟡 IN PROGRESS** (29D.1 is the first subphase). Prior umbrella **Phase 29C ✅ COMPLETE** (29C.1 `a8ac580` + 29C.2 `80c8454` + 29C.3 `ad6dde5`, all merged + staging-validated).
+- Verified GREEN (pre-staging): backend **2184 pass / 12 skip / 0 fail**, ruff clean, mypy `71` baseline no-new, **security PASS**. 18 files (incl. tests), backend-only, **NO migration** (DB head stays `011`).
 
-## Phase 29C.3 — closure evidence (condensed)
-- **PR #63** "Phase 29C.3: add policy and government reference connectors (USTR-TARIC/UN Comtrade/NATO/SIPRI/OECD)" — squash-merged to `main`. **Merge SHA `ad6dde504d9c4a317cb0de2aeddf95ba66b9803b`.** API `/health` `commit_sha=ad6dde5` (3 stable polls). Web unchanged (backend-only). **Migration: NONE (DB head `011`).**
-- Backend-only, **NO migration, no new host/endpoint, NO new flag** — reuses the existing OFF-by-default `SOURCE_MACRO_ENABLED` (already ON on staging from 29C.1). New `POLICY_GOVERNMENT_SOURCES` table folded into `ALL_MACRO_SOURCES`, served by the SAME generic `MacroReferenceConnector`:
-  - **USTR / EU TARIC** (`ustr_taric`, `trade_policy`, **T2**) — tariffs / trade / customs — **promoted PLANNED→enabled**.
-  - **UN Comtrade** (`un_comtrade`, `trade_policy`, **T2**) — tariffs / trade / customs — **promoted PLANNED→enabled**.
-  - **NATO defence expenditure** (`nato`, `trade_policy`, **T2**, `nato.int`) — defense / military-spending / procurement / arms — **new**.
-  - **SIPRI military expenditure** (`sipri`, `trade_policy`, **T3**, `sipri.org`) — defense / military-spending / procurement / arms — **new**.
-  - **OECD** (`oecd`, `macro_statistics`, **T2**, `oecd.org`) — subsidies / industrial-policy / state-aid / energy-transition / grid-investment — **new**.
-- Each emits ONE bounded **T2/T3 `macro_report` SOURCE REFERENCE** (fixed official public URL + which datasets it covers) + honest `data_not_sourced` gap. **No budget / spending-% / tariff-rate / subsidy / arms figure or date; network-free; no API key.** Reuses `collect_theme_macro_evidence` (iterates `ALL_MACRO_SOURCES`), the discovery-council `R#` path and the report `industry_macro_context` block. Registry: **26 enabled / 2 scaffolded (SEDAR+/ASX) / 7 planned (USAspending/EU TED/OpenBB + patent rows → 29D) / 35 total.**
-- Tests **backend 2150 pass / 12 skip / 0 fail** (new `test_phase29c3`; two stale `enabled==21` count tests fixed to `26`, no functional ripple), ruff clean, mypy `71` baseline no-new. **Security PASS** (ib-security-agent + pre-PR review APPROVED 10/10). Frontend N/A.
-- **Staging validation — VALIDATED-WITH-ENVIRONMENTAL-NOTE** (no app-setting flip; `SOURCE_MACRO_ENABLED` already ON):
-  - **B (registry/health):** `ustr_taric`/`un_comtrade`/`nato`/`oecd` (T2) + `sipri` (T3) all enabled; **26/2/7/35**; honest "reference only; live figures not fetched" notes; secret-free.
-  - **C (discovery):** defense-themed run (Thales/BAE/Rheinmetall) cites **NATO ×13 + USTR-TARIC ×3** as macro `R#` facts + honest gaps; macro is CONTEXT not a candidate. **SIPRI/OECD/UN-Comtrade did NOT surface for this theme** (coarse theme→source keyword map — same carry-forward as 29C.2; citation mechanism proven).
-  - **D (safety):** `safety_valid` true, no fabricated figures, no recommendation language.
-  - **E (discovery council):** 6/8 agents (2 failed = Azure gpt-4.1-mini TPM = ENVIRONMENTAL).
-  - **F (ops):** logs clean, AUTH_TEST_MODE absent, admin-gated, 5 flags ON.
-  - **G (company render):** `industry_macro_context` render inferred from 31 unit tests + reference-only behaviour (full-council company run skipped to avoid TPM burn on unchanged render).
-- Closure report: `docs/development/closures/phase-29c3.md`.
+## Phase 29D.1 — what shipped (pre-PR, condensed)
+- First Phase 29D subphase: a NEW **event-trigger** evidence category (parallel to the 29C macro layer), **reference-only, OFF by default**.
+- New `EventReferenceConnector` (`sources/connectors/event_reference.py`) over 2 procurement/tender venues — **EU TED** (`ted.europa.eu`) + **USAspending.gov** (`usaspending.gov`). The previously theme-dead `fetch_events` hook now emits, per relevant theme, ONE bounded **T2 SOURCE REFERENCE** (`source_type="government_data"` — deliberately NOT "government_contract"; `ProviderType` `procurement`; fixed official public URL, no API key, **NO specific tender/award/contractor/amount/contract-number/date**) + honest `data_not_sourced` gap ("live tenders/awards not fetched at report time"). Each item is a **WEAK** internal research-priority signal + `needs_human_review`, records freshness via `stale_after_days`, and is **NOT a materiality claim / candidate / catalyst / trade signal**. Network-free.
+- `collect_theme_event_evidence(theme, region, cfg)` (`sources/event_evidence.py`): theme-keyed collector, **DARK** when `source_event_enabled` False, bounded by `source_event_max_items`.
+- Registry: `eu_ted` + `usaspending` promoted PLANNED→**enabled** event-reference sources → **28 enabled / 2 scaffolded (SEDAR+/ASX) / 5 planned (google_patents/uspto/epo_espacenet + openbb + local-language press → 29D.2/later) / 35 total**.
+- Discovery council: when `source_event_enabled`, event references are threaded into `build_discovery_evidence_pack` as citeable `R#` run facts (in `evidence_ids()`) + honest gaps → discovery can cite event-trigger context (weak).
+- Company report: OPTIONAL `industry_event_context` block in `report_content` (beside `industry_macro_context`), rendered only when `source_event_enabled` + a reference exists; labeled **WEAK event CONTEXT** — not company-specific, not a catalyst/materiality/trade signal, no figures. `CouncilResult.event_context` via `to_metadata_dict` (empty `[]` when off). schema/safety valid, `publication_ready` false, `human_review_required` true.
+- New OFF-by-default flags `SOURCE_EVENT_ENABLED`(false) + `SOURCE_EVENT_MAX_ITEMS`(3) in `core/config.py`, **INDEPENDENT of `SOURCE_MACRO_ENABLED`**. Dark-by-default: discovery pack + report body + macro layer byte-identical when off.
 
 ## Decisions (carried)
-- **Phase 29C umbrella pattern (all 3 subphases):** one generic `MacroReferenceConnector` over a single-source-of-truth `ALL_MACRO_SOURCES` table; reference-only, network-free, no API key; ONE OFF-by-default flag `SOURCE_MACRO_ENABLED`; macro/commodity/policy is theme-scoped CONTEXT (never company-specific, never a catalyst, never a recommendation); dark-by-default byte-identical when off.
-- **`ProviderType` has NO `government_data` member** — government sources reuse `trade_policy` (USTR-TARIC / UN Comtrade / NATO / SIPRI) and `macro_statistics` (OECD). Intentional; avoids an enum/schema change.
-- **No app-setting flip needed / made for 29C.3** — `SOURCE_MACRO_ENABLED` already ON from 29C.1, KEPT ON.
+- **New event-trigger category, parallel to the 29C macro layer** — reference-only, network-free, no API key; ONE OFF-by-default flag `SOURCE_EVENT_ENABLED` (+ `SOURCE_EVENT_MAX_ITEMS`), INDEPENDENT of the macro flag; an event reference is theme-scoped **WEAK CONTEXT** (never company-specific, never a catalyst/materiality/trade signal, never a candidate, never a recommendation); dark-by-default byte-identical when off.
+- **`source_type="government_data"` (deliberately NOT "government_contract"); `ProviderType` `procurement`** — the reference points at the venue, it does NOT assert a specific contract/award exists.
+- **Weak + freshness labeling** — every event reference carries `needs_human_review` + records freshness via `stale_after_days`; labeled WEAK research-priority signal.
 
 ## Deferrals (recorded — Decisions)
-- **Live macro / commodity / policy FIGURE fetch DEFERRED (reference-only) across the whole 29C umbrella** — no API keys, no report-time network, evidence-first, honest `data_not_sourced` gaps. A keyless official-data-API fetch is a documented follow-up.
+- **Live tender/award FETCH DEFERRED (reference-only)** — live EU TED / USAspending API fetch is a Phase 29D follow-up, mirroring the 29B.4 regulator content-fetch and 29C figure-fetch deferrals. No API keys, no report-time network.
+- **Full candidate-generation-from-events deferred** — AC1 satisfied at the *context* level (discovery can cite event-trigger context); candidates still come from the curated registry.
+
+## AC coverage (29D.1)
+- AC1 discovery can cite event-trigger context (at context level; candidate-generation-from-events deferred) · AC2 event evidence source-tiered + citeable · AC3 freshness via `stale_after_days` · AC4 weak/needs-review labeling · AC5 `human_review_required=true` · AC6 no recommendation.
 
 ## Carry-forward (open — NOT a defect)
-- **Coarse company / discovery theme→source keyword mapping** means not every specialist source surfaces for every theme (e.g. defense run surfaced NATO + USTR-TARIC but not SIPRI / OECD / UN-Comtrade). The **citation mechanism + registry are proven**; refine the theme→source mapping in a follow-up. Same limitation first recorded at 29C.2.
-- **Standing Azure OpenAI gpt-4.1-mini TPM quota** is a staging **environmental** limiter (partial council-agent failures under large real-data packs), NOT a code defect.
+- **Coarse theme→source keyword mapping** (carried from 29C.2/29C.3) — not every event source surfaces for every theme; citation mechanism + registry are proven, refine mapping in a follow-up.
+- **Standing Azure OpenAI gpt-4.1-mini TPM quota** — staging environmental limiter (partial council-agent failures under large real-data packs), NOT a code defect.
 
-## Final staging flags (all 5 ON — UNCHANGED)
-`LLM_COUNCIL_ENABLED` · `LLM_DISCOVERY_COUNCIL_ENABLED` · `SOURCE_CONNECTOR_ENABLED` · `SOURCE_DOCUMENT_EXTRACTION_ENABLED` · `SOURCE_MACRO_ENABLED`.
+## Final staging flags (current: all 5 ON; NEW 29D.1 flag stays OFF until validated)
+`LLM_COUNCIL_ENABLED` · `LLM_DISCOVERY_COUNCIL_ENABLED` · `SOURCE_CONNECTOR_ENABLED` · `SOURCE_DOCUMENT_EXTRACTION_ENABLED` · `SOURCE_MACRO_ENABLED`. **New:** `SOURCE_EVENT_ENABLED` (OFF by default — leave OFF on staging until 29D.1 is validated).
 
-## Docs updated this checkpoint (ib-docs-agent — 29C.3 CLOSED + umbrella COMPLETE)
-- `docs/development/closures/phase-29c3.md` (NEW closure report — merge/deploy/validation evidence + umbrella-complete section).
-- `docs/development/PHASE_LEDGER.md` (29C.3 row → ✅ `#63`/`ad6dde5`; **Phase 29C umbrella row → ✅ COMPLETE**; 29D row → 🔜 NEXT with the split plan).
-- `docs/ROADMAP.md` (new Current State = Phase 29D 🔜 NEXT / not started with the umbrella marked COMPLETE; 29C.3 demoted to `### Previously … ✅ COMPLETE` with full validation results; Phase 29D set as next phase, then Phase 30).
+## Docs updated this checkpoint (ib-docs-agent — 29D.1 PR-open, NOT closed)
+- `docs/ARCHITECTURE.md` (Status prepend for 29D.1; Source Framework layer gains `EventReferenceConnector` + `event_evidence` collector + `fetch_events`-now-live + discovery `R#` event facts + `industry_event_context` block; registry line 28/2/5/35; Phase History row `Phase 29D.1 | 🟡 PR open / pre-staging`).
+- `docs/API.md` (Status prepend; `/sources/registry` + `/sources/health` show `eu_ted` + `usaspending` enabled procurement/T2; summary `enabled:28`/`scaffolded:2`/`planned:5`/`total:35`; event references + `industry_event_context` + discovery-council event citations + `SOURCE_EVENT_ENABLED` gate — NO new endpoint).
+- `docs/ROADMAP.md` (Current State → Phase 29D.1 in progress / PR-open, NOT complete; 29D.2 patents + 29D.3 permits upcoming; live-fetch deferral noted).
+- `docs/development/PHASE_LEDGER.md` (29D umbrella → 🟡; new 29D.1 row → 🟡 in progress, branch + PR pending; NOT ✅).
+- `.env.example` (`SOURCE_EVENT_ENABLED`=false + `SOURCE_EVENT_MAX_ITEMS`=3, honest comment, no secret).
+- `docs/DEPLOYMENT.md` (new "Procurement / Tender Event-Trigger Reference Layer (Phase 29D.1)" flag section — OFF by default, no new host/secret, PR-open caveat).
 - `docs/development/session_state.md` (this file — overwritten).
-- `docs/ARCHITECTURE.md` / `docs/API.md` / `.env.example` / `docs/DEPLOYMENT.md`: **n/a this checkpoint** — no new flag/host/key/endpoint/migration (29C.3 already documented at PR-open; only status flips this checkpoint). NOT committed — user reviews and commits.
+- NOT committed — user reviews and commits.
 
 ## Next exact command / action
-- **Scope Phase 29D.1 (procurement / tenders connectors) and create branch `feature/phase-29d1-procurement-tender-connectors`.** Promote the `eu_ted` + `usaspending` PLANNED registry rows to metadata-first event-trigger connectors (honest gaps, no fake awards/contracts/tenders, no broad crawling, event = internal research-priority evidence only, no recommendation). STOP at each phase gate — do NOT merge/deploy/mark closed until human approval + staging validation is on file.
+- **run `ib-pr-review-agent` then `gh pr create` for 29D.1; STOP at merge gate.** Do NOT merge / deploy / mark closed until human approval + staging validation is on file.

@@ -35,6 +35,10 @@ from app.services.sources.connector_base import (
     SourceConnector,
 )
 from app.services.sources.errors import ConnectorError, ConnectorErrorCode
+from app.services.sources.event_evidence import (
+    ThemeEventEvidence,
+    collect_theme_event_evidence,
+)
 from app.services.sources.evidence import (
     EvidenceItem,
     EvidenceSource,
@@ -96,6 +100,9 @@ __all__ = [
     # macro evidence (Phase 29C.1)
     "ThemeMacroEvidence",
     "collect_theme_macro_evidence",
+    # procurement / tender event evidence (Phase 29D.1)
+    "ThemeEventEvidence",
+    "collect_theme_event_evidence",
     # gaps
     "SourceGap",
     "GapType",

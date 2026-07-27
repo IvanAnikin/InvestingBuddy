@@ -1672,6 +1672,57 @@ def _build_industry_macro_context(
     }
 
 
+def _build_industry_event_context(
+    event_context: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Optional EVENT CONTEXT block — Phase 29D.1.
+
+    The event analog of ``_build_industry_macro_context``: reference-only
+    procurement / tender venues for the company's broad theme (sector/industry),
+    each labelled WEAK event CONTEXT with an honest note that it is NOT
+    company-specific evidence, never a direct company catalyst, materiality
+    claim, or trade signal, and that no specific award / contractor / amount /
+    contract number / date is carried — a reference and an honest gap only.
+    Weak thesis-level research-priority background only. Rendered only when the
+    event layer surfaced references; empty otherwise, so with the flag off the
+    block is absent and the report is unchanged.
+    """
+    items: list[dict[str, Any]] = []
+    for e in event_context[:8]:
+        items.append(
+            {
+                "source_id": e.get("source_id"),
+                "source_name": e.get("source_name"),
+                "title": e.get("title"),
+                "url": e.get("url"),
+                "tier": e.get("tier"),
+                "tenders_reference": e.get("reference"),
+                "tenders_gap": e.get("gap"),
+            }
+        )
+    return {
+        "type": "industry_event_context",
+        "value": items,
+        "provenance": "sourced_fact",
+        "note": (
+            "Procurement / tender EVENT CONTEXT references only — NOT "
+            "company-specific evidence and never a direct company catalyst, "
+            "materiality claim, or trade signal. Each item points to an official "
+            "public procurement / tender venue and the tenders / awards it "
+            "publishes; no specific award, contractor, amount, contract number, "
+            "or date is fetched or fabricated. Live tenders / awards are not "
+            "fetched at report time. A WEAK internal research-priority signal."
+        ),
+        "disclaimer": (
+            "Event context is weak background only. It is not company-specific "
+            "evidence, not a company catalyst, and not a trading signal. No "
+            "valuation conclusion or trading action is produced. Human review is "
+            "required."
+        ),
+        "human_review_required": True,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Report content parser — extracts structured data from existing report
 # ---------------------------------------------------------------------------
@@ -2612,6 +2663,21 @@ class FinalReportGeneratorService:
         if council_result.macro_context:
             report_content["industry_macro_context"] = _build_industry_macro_context(
                 council_result.macro_context
+            )
+
+        # Phase 29D.1: optional EVENT CONTEXT block. When ``source_event_enabled``
+        # is on and the council surfaced reference-only procurement / tender
+        # sources for this company's broad theme, render them as an OPTIONAL
+        # industry_event_context block (WEAK research-priority background only —
+        # never a company-specific award, catalyst, materiality claim, or trade
+        # signal; no figures / dates). Not a required section and not part of the
+        # schema-complete shape, so schema_valid is unaffected. Dark by default and
+        # independent of the macro flag: with the event flag off event_context is
+        # empty and no block is added, so the report is byte-for-byte unchanged.
+        # Added BEFORE validation so the safety gate scans it.
+        if council_result.event_context:
+            report_content["industry_event_context"] = _build_industry_event_context(
+                council_result.event_context
             )
 
         # Phase 26: safety-scan the admin draft AND validate a schema-completed

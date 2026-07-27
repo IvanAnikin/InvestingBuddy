@@ -233,6 +233,15 @@ class CouncilResult(BaseModel):
     # is on. Carries NO figures, NO dates, and is never a company catalyst or a
     # recommendation — thesis-level background context only.
     macro_context: list[dict[str, Any]] = Field(default_factory=list)
+    # Phase 29D.1: bounded, reference-only EVENT CONTEXT for this company's broad
+    # theme (sector/industry → official procurement / tender venues, e.g. EU TED /
+    # USAspending.gov). Each entry is a WEAK source reference (identity + landing
+    # URL + which tenders / awards the venue publishes) plus an honest "live
+    # tenders / awards not fetched" gap. Empty unless ``source_event_enabled`` is
+    # on. Carries NO specific award, contractor, amount, contract number, or date,
+    # and is never a company-specific claim, catalyst, materiality claim, or trade
+    # signal — weak thesis-level research-priority background context only.
+    event_context: list[dict[str, Any]] = Field(default_factory=list)
 
     def recount(self) -> None:
         """Refresh the completed/failed/skipped tallies from ``agents``."""
@@ -294,6 +303,7 @@ class CouncilResult(BaseModel):
             "primary_documents": list(self.primary_documents),
             "primary_facts": list(self.primary_facts),
             "macro_context": list(self.macro_context),
+            "event_context": list(self.event_context),
         }
 
     @classmethod

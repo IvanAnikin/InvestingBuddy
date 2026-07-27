@@ -44,6 +44,10 @@ from app.services.llm.discovery_schemas import (
     DiscoveryCouncilResult,
     DiscoveryEvidencePack,
 )
+from app.services.sources.event_evidence import (
+    ThemeEventEvidence,
+    collect_theme_event_evidence,
+)
 from app.services.sources.macro_evidence import (
     ThemeMacroEvidence,
     collect_theme_macro_evidence,
@@ -363,6 +367,33 @@ def _macro_discovery_facts(macro: ThemeMacroEvidence) -> list[dict[str, str]]:
     return facts
 
 
+def _event_discovery_facts(events: ThemeEventEvidence) -> list[dict[str, str]]:
+    """Turn procurement / tender references into bounded, honest run-fact dicts.
+
+    The event analog of ``_macro_discovery_facts``. Each dict is
+    ``{"label", "detail"}`` where the detail names the venue + its official
+    landing URL and states, honestly, that it is a WEAK thesis-level
+    research-priority CONTEXT signal only: which tenders / awards the venue
+    publishes, with NO specific award / contractor / amount / contract number /
+    date fetched or fabricated, and that it is neither a candidate, a catalyst,
+    nor a trading signal.
+    """
+    facts: list[dict[str, str]] = []
+    for it in events.evidence_items:
+        name = it.source_name or it.source_id
+        url = it.url or ""
+        detail = (
+            f"{name} — official public procurement / tender venue reference (T2). "
+            "WEAK thesis-level research-priority CONTEXT only: which tenders / "
+            "awards this venue publishes; no specific award, contractor, amount, "
+            "contract number, or date is fetched or fabricated. Not a candidate, "
+            "not a catalyst, and not a trading signal. "
+            f"{url}"
+        ).strip()
+        facts.append({"label": "event_context", "detail": detail})
+    return facts
+
+
 async def maybe_run_discovery_council(
     *,
     run: dict[str, Any],
@@ -401,12 +432,28 @@ async def maybe_run_discovery_council(
                 macro_facts = _macro_discovery_facts(macro)
             extra_known_gaps = extra_known_gaps + macro.gap_messages()
 
+        # Phase 29D.1: when the EVENT layer is on, collect bounded reference-only
+        # procurement / tender sources for the run's theme/region and thread them
+        # into the pack as further run facts (R#, so they are citeable) plus honest
+        # gaps. Dark by default and independent of the macro flag (event off → the
+        # collector is not called and the pack is byte-identical). Events are WEAK
+        # thesis-level research-priority CONTEXT — never a candidate, never a
+        # recommendation.
+        event_facts: list[dict[str, Any]] | None = None
+        if cfg.source_event_enabled:
+            theme, region = _run_theme_region(run)
+            events = await collect_theme_event_evidence(theme, region, cfg)
+            if events.evidence_items:
+                event_facts = _event_discovery_facts(events)
+            extra_known_gaps = extra_known_gaps + events.gap_messages()
+
         pack = build_discovery_evidence_pack(
             run=run,
             candidates=candidates,
             max_candidates=cfg.llm_discovery_council_max_candidates,
             extra_known_gaps=extra_known_gaps,
             macro_evidence=macro_facts,
+            event_evidence=event_facts,
         )
         log_event(
             log,
@@ -417,6 +464,7 @@ async def maybe_run_discovery_council(
             candidate_count=pack.candidate_count,
             known_gap_count=len(pack.known_gaps),
             macro_reference_count=len(macro_facts or []),
+            event_reference_count=len(event_facts or []),
         )
         return await run_discovery_council(
             pack,
