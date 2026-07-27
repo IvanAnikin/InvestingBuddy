@@ -1,40 +1,44 @@
-# Session State — Phase 29C.2 CLOSED · Phase 29C.3 NEXT (policy + government connectors) (updated 2026-07-27)
+# Session State — Phase 29C.3 STAGE: PR (about to open) · policy + government reference connectors (updated 2026-07-27)
 
 > Resumable snapshot. Overwrite at each checkpoint (context-compaction skill).
 > Keep decisions + evidence, not raw logs.
 
 ## Current position
-- Branch: `main` @ **`80c8454`** (clean; 29C.2 merged). Autonomous multi-phase campaign (Phase 0 → 31).
-- Phase / subphase: **Phase 29C.2 CLOSED + validated.** Current position = **Phase 29C.3 NEXT — policy + government reference connectors. Stage: NOT STARTED** (no branch, no PR).
-- Umbrella: **Phase 29C 🟡 in progress** — 29C.1 CLOSED + 29C.2 CLOSED; **only 29C.3 (policy + government) remains — the LAST 29C subphase.**
+- Branch: `feature/phase-29c3-policy-government-connectors` @ **`2318a9b`** (clean). Autonomous multi-phase campaign (Phase 0 → 31).
+- Phase / subphase: **Phase 29C.3 — policy + government reference connectors. Stage: PR (about to open).** Implementation committed + GREEN; **NOT merged/deployed/validated — do NOT mark ✅.**
+- Umbrella: **Phase 29C 🟡 in progress** — 29C.1 CLOSED + 29C.2 CLOSED; **29C.3 (policy + government) is the LAST 29C subphase, now PR-open.** On 29C.3 merge + staging validation the whole 29C umbrella (macro + commodity/energy + policy/government) closes.
+- Recent commits on branch: `2318a9b` (test: update stale registry enabled-count assertions 21→26) · `374d204` (Phase 29C.3: add policy + government reference connectors USTR-TARIC/UN Comtrade/NATO/SIPRI/OECD) · `21f808b` (docs: close 29C.2) · `80c8454` (29C.2 PR #62).
 
-## Phase 29C.2 — CLOSED (condensed evidence)
-- **PR #62 `80c8454`** "add commodity and energy reference connectors (USGS/EIA/IEA/IRENA/ENTSO-E)" squash-merged to `main`; **Deploy API — Staging** success, API `/health` `commit_sha=80c8454` (3 stable polls); web unchanged (backend-only); **NO migration (head 011)**; **no new flag/host/endpoint**.
-- Extended the 29C.1 reference-only macro layer to **commodity + energy** with **zero new wiring** — SAME generic `MacroReferenceConnector`, `collect_theme_macro_evidence` collector (now iterates `ALL_MACRO_SOURCES`), discovery-council `R#` path, report `industry_macro_context` block, existing `SOURCE_MACRO_ENABLED` flag. New `COMMODITY_ENERGY_SOURCES` table (+ combined `ALL_MACRO_SOURCES`), 5 official public agencies, all `commodity` provider type: **USGS** (`usgs.gov`, T3), **US EIA** (`eia.gov`, T2, no API key), **IEA** (`iea.org`, T3), **IRENA** (`irena.org`, T3), **ENTSO-E** (`transparency.entsoe.eu`, T3). Each emits ONE bounded **T2/T3 `macro_report` SOURCE REFERENCE** + honest `data_not_sourced` gap — **no figures/dates, network-free, no API key**. Registry promotes the 5 rows PLANNED→enabled → **21 enabled / 2 scaffolded / 9 planned** (only SEDAR+/ASX scaffolds; openbb + trade/procurement/patent stay planned; total 32).
-- Tests **backend 2119 pass / 12 skip / 0 fail** (+27 net; adjacent count tests updated, no ripple), ruff clean, mypy `71` baseline no-new. Security PASS (pre-PR review APPROVED 10/10). Frontend N/A.
-- **Staging VALIDATED-WITH-ENVIRONMENTAL-NOTE (2026-07-27):** no app-setting flip (`SOURCE_MACRO_ENABLED` already ON from 29C.1). **B:** registry/health show usgs/iea/irena/entsoe (commodity, T3) + eia (commodity, T2) enabled, 21/2/9, honest "reference only, no figures, no API key" notes, secret-free. **C:** uranium discovery run cites US EIA + IEA as `R#` macro refs + honest gaps, 0 figure tokens, candidates returned (CCJ/UEC/UUUU/FCX), macro is CONTEXT not a candidate, discovery council 8/8 — proves new sources surface. **D (PARTIAL, environmental):** Cameco + UEC reports render `industry_macro_context` reference-only (no figures), macro_context non-empty, schema/safety valid, publication_ready false, company_ir/SEC present — but the NEW specialist sources did NOT surface for these two (see carry-forward). **E:** no fabricated figures, forbidden terms only in negated disclaimers. **F:** company council 7/8 (1 agent Azure TPM ENVIRONMENTAL). **G:** logs clean, AUTH_TEST_MODE absent, admin-gated, 5 flags ON.
-- Closure report: `docs/development/closures/phase-29c2.md`.
-
-## ⚠️ CARRY-FORWARD classification note (KNOWN LIMITATION, NOT a defect)
-- The **company-report** macro theme is derived from the company's **sector / industry**, which is **coarse for commodity / energy names** — `free_real` frequently returns `sector="Materials"` / no-industry, so the coarse company→theme derivation matches only the pre-existing 29C.1 World Bank 'Pink Sheet' keywords, not the new specialist commodity/energy keywords. So specialist sources (USGS / EIA / IEA) may **UNDER-SURFACE in company reports** until company→theme derivation is improved (e.g. map `sector + ticker/name` → the right specialist). **The sources are wired correctly and work at the discovery-council + registry level** (proven B + C; render unit-test-covered). **Future refinement** (Phase 29C follow-up / later) — record as a known limitation, do NOT treat as a bug.
+## Phase 29C.3 — what was built (condensed)
+- Backend-only, ~9 files incl. tests, **NO migration** (DB head `011`), **no new host/endpoint, NO new flag** — reuses the existing OFF-by-default `SOURCE_MACRO_ENABLED`.
+- New `POLICY_GOVERNMENT_SOURCES` table folded into the combined `ALL_MACRO_SOURCES`, served by the SAME generic `MacroReferenceConnector` (zero new wiring):
+  - **USTR / EU TARIC** (`ustr_taric`, `trade_policy`, **T2**) — tariffs / trade / customs — **promoted PLANNED→enabled**.
+  - **UN Comtrade** (`un_comtrade`, `trade_policy`, **T2**) — tariffs / trade / customs — **promoted PLANNED→enabled**.
+  - **NATO defence expenditure** (`nato`, `trade_policy`, **T2**, `nato.int`) — defense / military-spending / procurement / arms — **new**.
+  - **SIPRI military expenditure** (`sipri`, `trade_policy`, **T3**, `sipri.org`) — defense / military-spending / procurement / arms — **new**.
+  - **OECD** (`oecd`, `macro_statistics`, **T2**, `oecd.org`) — subsidies / industrial-policy / state-aid / energy-transition / grid-investment — **new**.
+- Each emits ONE bounded **T2/T3 `macro_report` SOURCE REFERENCE** (fixed official public URL + which datasets it covers) + honest `data_not_sourced` gap. **No budget / spending-% / tariff-rate / subsidy figure or date is ever emitted; network-free; no API key.**
+- Reuses the SAME collector (`collect_theme_macro_evidence` iterates `ALL_MACRO_SOURCES`), discovery-council `R#` citation path, report `industry_macro_context` block. Registry: enabled **21→26**, scaffolded **2** (SEDAR+/ASX only), planned **9→7** (USAspending/EU TED/OpenBB + patent rows stay planned → 29D), total **32→35**.
+- Tests **backend 2150 pass / 12 skip / 0 fail**, ruff clean, mypy `71` baseline no-new. **Security PASS.** Frontend N/A.
 
 ## Decisions made (carried)
-- **DEFERRAL: live commodity / energy FIGURE fetch DEFERRED (reference-only)** — no API keys (incl. EIA), no report-time network, evidence-first, honest `data_not_sourced` gaps. Keyless official-data-API fetch (USGS/EIA/IEA/IRENA/ENTSO-E) is a documented 29C follow-up.
-- **REUSE the existing `SOURCE_MACRO_ENABLED` flag — NO new flag** (and no new host/endpoint/migration). The generic `MacroReferenceConnector` + `ALL_MACRO_SOURCES` single-source-of-truth pattern absorbs commodity/energy (and will absorb policy/government the same way).
-- Macro / commodity / energy / policy is thesis-level / industry **CONTEXT only** — never company-specific, never a catalyst, never a recommendation; **no figures carried anywhere**; theme-scoped, not issuer-scoped.
-- **Final staging flags KEPT ON (all 5, UNCHANGED):** `LLM_COUNCIL_ENABLED` · `LLM_DISCOVERY_COUNCIL_ENABLED` · `SOURCE_CONNECTOR_ENABLED` · `SOURCE_DOCUMENT_EXTRACTION_ENABLED` · `SOURCE_MACRO_ENABLED`.
+- **REUSE the existing `SOURCE_MACRO_ENABLED` flag — NO new flag/host/endpoint/migration.** The generic `MacroReferenceConnector` + `ALL_MACRO_SOURCES` single-source-of-truth pattern absorbs policy/government exactly like it absorbed commodity/energy in 29C.2.
+- **`ProviderType` has NO `government_data` member** — so government sources use the existing `trade_policy` (USTR-TARIC / UN Comtrade / NATO / SIPRI) and `macro_statistics` (OECD) members. Intentional, avoids an enum/schema change.
+- **DEFERRAL: live policy / government FIGURE fetch DEFERRED (reference-only)** — no API keys, no report-time network, evidence-first, honest `data_not_sourced` gaps. Keyless official-data-API fetch (USTR-TARIC / UN Comtrade / NATO / SIPRI / OECD) is a documented follow-up.
+- Macro / commodity / energy / policy / government is thesis-level / industry **CONTEXT only** — never company-specific, never a catalyst, never a recommendation; **no figures carried anywhere**; theme-scoped, not issuer-scoped.
+- **Dark-by-default** — with `SOURCE_MACRO_ENABLED` off the discovery pack + report body are byte-identical to Phase 29C.2.
+- Staging flags currently ON (unchanged from 29C.2, all 5): `LLM_COUNCIL_ENABLED` · `LLM_DISCOVERY_COUNCIL_ENABLED` · `SOURCE_CONNECTOR_ENABLED` · `SOURCE_DOCUMENT_EXTRACTION_ENABLED` · `SOURCE_MACRO_ENABLED`.
 
-## Phase 29C.1 — CLOSED (condensed, for context)
-- **PR #61 `a8ac580`** merged + deployed + staging-validated (OFF-state clean; ON-state VALIDATED-WITH-ENVIRONMENTAL-NOTE after approved `SOURCE_MACRO_ENABLED` flip, kept ON). Reference-only macro layer (FRED/IMF/Eurostat/World Bank Pink Sheet/national stats+central banks). Closure: `docs/development/closures/phase-29c1.md`.
+## Carry-forward (from 29C.2, still open — NOT a 29C.3 defect)
+- Company-report macro theme is derived from the company's **sector / industry**, which is **coarse for commodity / energy names** (`free_real` often returns `sector="Materials"`/no-industry), so specialist sources may **UNDER-SURFACE in company reports** until company→theme derivation is improved. Sources work correctly at discovery-council + registry level. Future refinement, not a bug.
 
-## Phase 29C.3 — NEXT (the LAST 29C subphase)
-- **Scope:** policy + government reference connectors — defense / NATO spending, tariffs, subsidies, industrial policy, grid investment, energy transition. **Prefer official / government sources.**
-- **Likely sources to promote** (currently PLANNED in the registry — check `/sources/registry` for the exact planned `trade_policy` / `procurement` / `government` rows): **USTR-TARIC**, **USAspending**, **EU TED**, **UN Comtrade** (national stats / central banks already enabled in 29C.1).
-- **Same reference-only, OFF-by-default pattern** — reuse the generic `MacroReferenceConnector` + `ALL_MACRO_SOURCES` + existing `SOURCE_MACRO_ENABLED` flag (expect NO new flag/host/endpoint/migration); ONE bounded T2/T3 `macro_report` SOURCE REFERENCE + honest `data_not_sourced` gap per source; **no figures/dates, network-free, no API key, no fabricated data**; theme-scoped CONTEXT only; **no recommendations / valuations**; `human_review_required=true` / `publication_ready=false` unchanged; `/admin/*` OAuth-gated.
-- **After 29C.3 the entire Phase 29C umbrella closes**; then Phase 29D (event-trigger/patents/local press), 30 (translation/local-language + PDF table extraction/OCR).
-
-## Docs updated this checkpoint (ib-docs-agent, closure)
-- `docs/development/closures/phase-29c2.md` (NEW closure report, carry-forward classification note prominent), `docs/development/PHASE_LEDGER.md` (29C.2 row → ✅ #62 `80c8454`; 29C umbrella note updated, stays 🟡), `docs/ROADMAP.md` (Current State: 29C.2 → ✅ COMPLETE deployed `80c8454`; 29C.3 set as next AND the LAST 29C subphase), this `session_state.md` (overwritten). `docs/API.md` / `docs/ARCHITECTURE.md` / `.env.example` / `DEPLOYMENT.md`: **n/a** (no API contract / architecture / flag / host / key change — they were already updated to 29C.2 during the PR checkpoint). Not committed — user reviews and commits.
+## Docs updated this checkpoint (ib-docs-agent — PR-open, NOT closed)
+- `docs/ARCHITECTURE.md` (Status → Phase 29C.3 🟡 PR-open; demoted 29C.2 lead-in to merged+validated `80c8454`; registry 26 enabled / 2 scaffolded / 7 planned / 35 total; added 5 policy/gov sources + `ProviderType` note to the source-framework layer; Phase History: 29C.2 row → ✅ Complete + new 🟡 29C.3 row).
+- `docs/API.md` (Status → 29C.3; `/sources/registry` summary `enabled:26 / scaffolded:2 / planned:7 / total:35`; registry + health + macro Sources section list `ustr_taric`/`un_comtrade`/`nato`/`sipri`/`oecd` enabled with tiers + `ProviderType` note; deferral extended to policy/government; no new endpoint).
+- `docs/ROADMAP.md` (new Current State: 29C.3 🟡 PR-open / pre-staging — NOT complete; 29C.2 demoted to Previously ✅; noted 29C.3 is the LAST 29C subphase, Phase 29D next once umbrella validates; live-figure deferral noted).
+- `docs/development/PHASE_LEDGER.md` (new 29C.3 row 🟡 in progress; 29C umbrella note updated, stays 🟡 until 29C.3 validates; NOT ✅).
+- `.env.example` / `docs/DEPLOYMENT.md`: **n/a** — no new flag/host/key/migration (reuses `SOURCE_MACRO_ENABLED`, already present).
+- NOT committed — user reviews and commits.
 
 ## Next exact command / action
-- **Scope Phase 29C.3 (policy + government connectors) and create branch `feature/phase-29c3-policy-government-connectors`.** Check the source registry for the planned `trade_policy` / `procurement` / `government` rows to promote (USTR-TARIC / USAspending / EU TED / UN Comtrade); apply the same reference-only, OFF-by-default pattern; prefer official / government sources.
+- **Run `ib-pr-review-agent` on the 29C.3 diff, then `gh pr create` for `feature/phase-29c3-policy-government-connectors` (base `main`).** STOP at the merge gate — do NOT merge/deploy/mark closed until human approval + staging validation is on file. After validation: close 29C.3, then close the whole Phase 29C umbrella, then scope Phase 29D (event-trigger: procurement/tenders/patents/permits).
