@@ -177,6 +177,24 @@ class Settings(BaseSettings):
     # prompt size + keeps one macro source from dominating the pack).
     source_macro_max_items: int = 3
 
+    # ── Procurement / tender event-trigger layer (Phase 29D.1) ─────────────
+    # Gate for the reference-only procurement / tender EVENT layer (EU TED,
+    # USAspending.gov). Independent of ``source_macro_enabled`` and OFF by default
+    # so CI and the existing behaviour are unchanged — with the flag off,
+    # ``collect_theme_event_evidence`` is completely dark (no event evidence, no
+    # event gaps). When ON, that collector emits bounded T2 procurement / tender
+    # SOURCE REFERENCES (which tenders / awards a venue publishes for a theme) plus
+    # an honest ``data_not_sourced`` gap for each — never a fabricated tender,
+    # award, contractor, amount, contract number, or date. Every reference is a
+    # WEAK, needs-human-review internal research-priority signal, never a
+    # materiality claim or trade signal. NO network is used at report time and NO
+    # API key is introduced; the connectors point only at fixed, public,
+    # token-free official venue landing pages.
+    source_event_enabled: bool = False
+    # Hard cap on procurement / tender event references collected for one
+    # theme/region (bounds prompt size + keeps one venue from dominating the pack).
+    source_event_max_items: int = 3
+
     # ── Primary-document extraction (Phase 29B.2) ──────────────────────────
     # Bounded extraction of an issuer's OWN annual-report / registration-document
     # text so LLM councils can reason from real T1 primary evidence — not only

@@ -5,6 +5,13 @@ from app.services.sources.connectors.deutsche_boerse import DeutscheBoerseConnec
 from app.services.sources.connectors.euronext_regulated_info import (
     EuronextRegulatedConnector,
 )
+from app.services.sources.connectors.event_reference import (
+    EVENT_SOURCES,
+    EventReferenceConnector,
+    EventSourceSpec,
+    build_event_connectors,
+    event_spec_for,
+)
 from app.services.sources.connectors.generic import (
     PlannedConnector,
     WrappedProviderConnector,
@@ -44,4 +51,9 @@ __all__ = [
     "POLICY_GOVERNMENT_SOURCES",
     "ALL_MACRO_SOURCES",
     "build_macro_connectors",
+    "EventReferenceConnector",
+    "EventSourceSpec",
+    "EVENT_SOURCES",
+    "event_spec_for",
+    "build_event_connectors",
 ]

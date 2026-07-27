@@ -17,8 +17,9 @@ Covers:
     subsidies / industrial policy / energy transition) and stays quiet for an
     unrelated (pure-macro) theme.
   * ustr_taric + un_comtrade were promoted OUT of the planned set; nato / sipri /
-    oecd are new enabled reference sources. The registry summary is now
-    26 enabled / 2 scaffolded / 7 planned and everything stays secret-free.
+    oecd are new enabled reference sources. After Phase 29D.1 promoted the two
+    procurement / tender event venues, the registry summary is 28 enabled /
+    2 scaffolded / 5 planned and everything stays secret-free.
   * ``collect_theme_macro_evidence`` returns these references for a relevant
     policy theme when ``source_macro_enabled`` is True, and is completely DARK
     when False.
@@ -241,10 +242,20 @@ def test_policy_sources_enabled_in_registry_with_honest_note():
 
 
 def test_procurement_and_patents_stay_planned():
-    """Procurement / tender EVENT venues + patents are Phase 29D — still planned."""
+    """Patents stay Phase 29D planned; procurement EVENT venues are now enabled.
+
+    The procurement / tender EVENT venues (eu_ted, usaspending) were promoted to
+    enabled reference-only event sources in Phase 29D.1; the patent long tail and
+    the OpenBB toolkit remain planned.
+    """
     reg = build_registry()
     planned_ids = {s.source_id for s in reg.planned_sources()}
-    assert {"usaspending", "eu_ted", "openbb"} <= planned_ids
+    enabled_ids = {s.source_id for s in reg.enabled_sources()}
+    # Procurement now enabled (29D.1), no longer planned.
+    assert {"usaspending", "eu_ted"} <= enabled_ids
+    assert not ({"usaspending", "eu_ted"} & planned_ids)
+    # Patents + OpenBB toolkit stay planned.
+    assert "openbb" in planned_ids
     assert {"google_patents", "uspto", "epo_espacenet"} <= planned_ids
 
 
@@ -252,10 +263,11 @@ def test_registry_summary_counts_after_policy_layer():
     reg = build_registry()
     summary = reg.summary()
     # 11 regulator-layer + 5 macro (29C.1) + 5 commodity / energy (29C.2)
-    # + 5 policy / government (29C.3) = 26 enabled.
-    assert summary["enabled"] == 26
+    # + 5 policy / government (29C.3) + 2 procurement / tender events (29D.1)
+    # = 28 enabled.
+    assert summary["enabled"] == 28
     assert summary["scaffolded"] == 2
-    assert summary["planned"] == 7
+    assert summary["planned"] == 5
     assert summary["total"] == len(reg.all_sources())
     # Health covers every policy / government connector, network-free.
     keys = {h.connector_key for h in reg.health()}

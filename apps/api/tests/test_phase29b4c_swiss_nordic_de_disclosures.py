@@ -294,12 +294,13 @@ def test_8_registry_promotes_three_connectors_to_enabled():
         assert conn.status == ConnectorStatus.enabled
         # No longer grouped with the honest scaffolds.
         assert sid not in scaffolded_ids
-    # Registry now reports 26 enabled / 2 scaffolded sources (Phase 29C.1 added
+    # Registry now reports 28 enabled / 2 scaffolded sources (Phase 29C.1 added
     # 5 reference-only macro sources, 29C.2 added 5 reference-only commodity /
-    # energy sources, and 29C.3 added 5 reference-only policy / government sources
-    # to the 11 regulator-layer enabled sources).
+    # energy sources, 29C.3 added 5 reference-only policy / government sources,
+    # and 29D.1 added 2 reference-only procurement / tender event sources to the
+    # 11 regulator-layer enabled sources).
     summary = reg.summary()
-    assert summary["enabled"] == 26
+    assert summary["enabled"] == 28
     assert summary["scaffolded"] == 2
     assert scaffolded_ids == {"sedar_plus", "asx_announcements"}
 

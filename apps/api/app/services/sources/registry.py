@@ -29,9 +29,11 @@ from app.core.log_redaction import SENSITIVE_QUERY_SUBSTRINGS
 from app.services.sources.connector_base import ConnectorHealth, SourceConnector
 from app.services.sources.connectors import (
     ALL_MACRO_SOURCES,
+    EVENT_SOURCES,
     CompanyIrConnector,
     DeutscheBoerseConnector,
     EuronextRegulatedConnector,
+    EventSourceSpec,
     MacroSourceSpec,
     NordicDisclosuresConnector,
     PlannedConnector,
@@ -40,6 +42,7 @@ from app.services.sources.connectors import (
     SixSwissConnector,
     UkFcaNsmConnector,
     WrappedProviderConnector,
+    build_event_connectors,
     build_macro_connectors,
 )
 from app.services.sources.gaps import GapSeverity, GapType, SourceGap
@@ -298,6 +301,35 @@ def _macro_reference_source(spec: MacroSourceSpec) -> RegisteredSource:
         connector_implemented=True,
         planned_phase=PHASE_29C,
         capabilities=["fetch_macro_context"],
+        reliability_note=spec.reliability_note,
+    )
+
+
+def _event_reference_source(spec: EventSourceSpec) -> RegisteredSource:
+    """An enabled reference-only procurement / tender EVENT source (29D.1).
+
+    Built from the single ``EVENT_SOURCES`` table so the registry and the
+    connectors never drift. It is a T2 procurement reference: the connector emits
+    a bounded SOURCE REFERENCE (which tenders / awards a venue publishes for a
+    theme) plus an honest gap; live tenders / awards are not fetched at report
+    time. The reference is a WEAK internal research-priority signal, never a
+    company recommendation, catalyst, materiality claim, or trade signal.
+    """
+    return RegisteredSource(
+        source_id=spec.source_id,
+        name=spec.display_name,
+        provider_type=spec.provider_type,
+        tier=spec.tier,
+        status=SourceStatus.enabled,
+        enabled=True,
+        jurisdiction=spec.jurisdiction,
+        region=spec.region,
+        cost_model=CostModel.free,
+        access_mode=AccessMode.rest_api,
+        connector_key=spec.source_id,
+        connector_implemented=True,
+        planned_phase=PHASE_29D,
+        capabilities=["fetch_events"],
         reliability_note=spec.reliability_note,
     )
 
@@ -570,7 +602,6 @@ def build_registry(cfg: Settings | None = None) -> SourceRegistry:
     # A compact table keeps the long tail readable. Columns:
     #   (source_id, name, provider_type, tier, phase, extra_kwargs)
     _SEARCH = ["search_company"]
-    proc = ProviderType.procurement
     pat = ProviderType.patents
     t2, t5 = T2_REGULATOR_OR_GOV, T5_API_AGGREGATOR
     planned_table: list[tuple[str, str, ProviderType, str, str, dict]] = [
@@ -579,14 +610,10 @@ def build_registry(cfg: Settings | None = None) -> SourceRegistry:
         # national_stats_central_banks), the commodity / energy references
         # (29C.2: usgs, iea, irena, eia, entsoe) and the policy / government
         # references (29C.3: ustr_taric, un_comtrade, nato, sipri, oecd) were
-        # promoted to enabled reference-only sources (see ALL_MACRO_SOURCES).
-        # The remaining procurement / tender EVENT venues (usaspending, eu_ted)
-        # and the OpenBB aggregator toolkit stay planned (procurement/patents are
-        # Phase 29D).
-        ("usaspending", "USAspending.gov", proc, t2, PHASE_29C,
-         {"jurisdiction": "US", "capabilities": ["fetch_events", "fetch_macro_context"]}),
-        ("eu_ted", "EU TED (Tenders Electronic Daily)", proc, t2, PHASE_29C,
-         {"region": "Europe", "capabilities": ["fetch_events"]}),
+        # promoted to enabled reference-only sources (see ALL_MACRO_SOURCES). The
+        # procurement / tender EVENT venues (29D.1: usaspending, eu_ted) were
+        # promoted to enabled reference-only event sources (see EVENT_SOURCES).
+        # The OpenBB aggregator toolkit stays planned.
         ("openbb", "OpenBB Platform", ProviderType.aggregator_toolkit, t5, PHASE_29C,
          {"cost_model": CostModel.freemium, "access_mode": AccessMode.sdk,
           "capabilities": ["search_company", "fetch_macro_context"]}),
@@ -621,7 +648,16 @@ def build_registry(cfg: Settings | None = None) -> SourceRegistry:
         _macro_reference_source(spec) for spec in ALL_MACRO_SOURCES
     ]
 
-    sources = enabled + macro_enabled + scaffolded + planned
+    # -- Enabled reference-only procurement / tender event sources (29D.1) --
+    # Reference-only: a bounded T2 procurement SOURCE REFERENCE + honest gap, no
+    # live tenders / awards, no network at report time, no API key. Each is a WEAK
+    # internal research-priority signal. Built from EVENT_SOURCES (EU TED,
+    # USAspending.gov), promoted out of the planned set.
+    event_enabled: list[RegisteredSource] = [
+        _event_reference_source(spec) for spec in EVENT_SOURCES
+    ]
+
+    sources = enabled + macro_enabled + event_enabled + scaffolded + planned
 
     # -- Connectors ---------------------------------------------------------
     connectors: dict[str, SourceConnector] = {
@@ -659,6 +695,9 @@ def build_registry(cfg: Settings | None = None) -> SourceRegistry:
     # Reference-only macro / commodity-energy connectors (Phase 29C.1 + 29C.2),
     # one per ALL_MACRO_SOURCES spec.
     connectors.update(build_macro_connectors())
+    # Reference-only procurement / tender event connectors (Phase 29D.1), one per
+    # EVENT_SOURCES spec.
+    connectors.update(build_event_connectors())
     for s in scaffolded:
         note = next((n for sid, _, _, _, n in _SCAFFOLD_TABLE if sid == s.source_id), None)
         connectors[s.source_id] = ScaffoldConnector(
