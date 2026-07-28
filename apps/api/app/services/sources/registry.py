@@ -306,17 +306,20 @@ def _macro_reference_source(spec: MacroSourceSpec) -> RegisteredSource:
 
 
 def _event_reference_source(spec: EventSourceSpec) -> RegisteredSource:
-    """An enabled reference-only EVENT source — 29D.1 procurement + 29D.2 patents.
+    """An enabled reference-only EVENT source — 29D.1 procurement + 29D.2 patents
+    + 29D.3 permits / regulatory-event venues.
 
     Built from the single ``ALL_EVENT_SOURCES`` table so the registry and the
     connectors never drift. It is a reference-only venue at the source's own tier
-    (T2 for a government procurement venue or patent office, T5 for the Google
-    Patents aggregator index): the connector emits a bounded SOURCE REFERENCE
-    (which tenders / awards or patent filings a venue publishes for a theme) plus
-    an honest gap; live records are not fetched at report time. The reference is a
-    WEAK internal research-priority signal, never a company recommendation,
-    catalyst, materiality claim, or trade signal; a patent reference additionally
-    draws no legal / infringement / validity conclusion.
+    (T2 for a government procurement venue, patent office, or permit / regulatory
+    venue; T5 for the Google Patents aggregator index): the connector emits a
+    bounded SOURCE REFERENCE (which tenders / awards, patent filings, or permit /
+    docket categories a venue publishes for a theme) plus an honest gap; live
+    records are not fetched at report time. The reference is a WEAK internal
+    research-priority signal, never a company recommendation, catalyst, materiality
+    claim, or trade signal; a patent reference additionally draws no legal /
+    infringement / validity conclusion, and a permit reference draws no
+    regulatory-outcome / approval conclusion.
     """
     return RegisteredSource(
         source_id=spec.source_id,
@@ -612,9 +615,10 @@ def build_registry(cfg: Settings | None = None) -> SourceRegistry:
         # (29C.2: usgs, iea, irena, eia, entsoe) and the policy / government
         # references (29C.3: ustr_taric, un_comtrade, nato, sipri, oecd) were
         # promoted to enabled reference-only sources (see ALL_MACRO_SOURCES). The
-        # procurement / tender EVENT venues (29D.1: usaspending, eu_ted) and the
+        # procurement / tender EVENT venues (29D.1: usaspending, eu_ted), the
         # patent office / index venues (29D.2: google_patents, uspto,
-        # epo_espacenet) were promoted to enabled reference-only event sources
+        # epo_espacenet) and the permit / regulatory-event venues (29D.3: ferc,
+        # us_nrc, us_epa) were promoted to enabled reference-only event sources
         # (see ALL_EVENT_SOURCES). The OpenBB aggregator toolkit and the
         # local-language business press stay planned.
         ("openbb", "OpenBB Platform", ProviderType.aggregator_toolkit, t5, PHASE_29C,
@@ -647,14 +651,17 @@ def build_registry(cfg: Settings | None = None) -> SourceRegistry:
         _macro_reference_source(spec) for spec in ALL_MACRO_SOURCES
     ]
 
-    # -- Enabled reference-only event sources (29D.1 procurement + 29D.2 patents) -
+    # -- Enabled reference-only event sources -------------------------------
+    # (29D.1 procurement + 29D.2 patents + 29D.3 permits / regulatory-event venues)
     # Reference-only: a bounded SOURCE REFERENCE + honest gap, no live tenders /
-    # awards / patent filings, no network at report time, no API key. Each is a
-    # WEAK internal research-priority signal. Built from ALL_EVENT_SOURCES: the
-    # 29D.1 procurement / tender venues (EU TED, USAspending.gov) and the 29D.2
-    # patent office / index venues (Google Patents, USPTO, EPO Espacenet),
-    # promoted out of the planned set. A patent reference draws no legal /
-    # infringement / validity conclusion.
+    # awards / patent filings / permit dockets, no network at report time, no API
+    # key. Each is a WEAK internal research-priority signal. Built from
+    # ALL_EVENT_SOURCES: the 29D.1 procurement / tender venues (EU TED,
+    # USAspending.gov), the 29D.2 patent office / index venues (Google Patents,
+    # USPTO, EPO Espacenet), and the 29D.3 US-federal permit / regulatory-event
+    # venues (FERC, US NRC, US EPA), promoted out of the planned set. A patent
+    # reference draws no legal / infringement / validity conclusion; a permit
+    # reference draws no regulatory-outcome / approval conclusion.
     event_enabled: list[RegisteredSource] = [
         _event_reference_source(spec) for spec in ALL_EVENT_SOURCES
     ]

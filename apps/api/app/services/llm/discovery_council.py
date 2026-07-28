@@ -44,6 +44,7 @@ from app.services.llm.discovery_schemas import (
     DiscoveryCouncilResult,
     DiscoveryEvidencePack,
 )
+from app.services.sources.connectors.event_reference import event_spec_for
 from app.services.sources.event_evidence import (
     ThemeEventEvidence,
     collect_theme_event_evidence,
@@ -53,6 +54,7 @@ from app.services.sources.macro_evidence import (
     collect_theme_macro_evidence,
 )
 from app.services.sources.registry import build_registry, registry_gap_messages
+from app.services.sources.taxonomy import ProviderType
 
 __all__ = [
     "get_discovery_llm_client",
@@ -367,29 +369,67 @@ def _macro_discovery_facts(macro: ThemeMacroEvidence) -> list[dict[str, str]]:
     return facts
 
 
+def _event_provider_type(source_id: str) -> ProviderType | None:
+    """The provider_type (procurement / patents / permits) for an event source."""
+    spec = event_spec_for(source_id)
+    return spec.provider_type if spec else None
+
+
 def _event_discovery_facts(events: ThemeEventEvidence) -> list[dict[str, str]]:
-    """Turn procurement / tender references into bounded, honest run-fact dicts.
+    """Turn event references into bounded, honest run-fact dicts.
 
     The event analog of ``_macro_discovery_facts``. Each dict is
     ``{"label", "detail"}`` where the detail names the venue + its official
     landing URL and states, honestly, that it is a WEAK thesis-level
-    research-priority CONTEXT signal only: which tenders / awards the venue
-    publishes, with NO specific award / contractor / amount / contract number /
-    date fetched or fabricated, and that it is neither a candidate, a catalyst,
-    nor a trading signal.
+    research-priority CONTEXT signal only, neither a candidate, a catalyst, nor a
+    trading signal. The kind-specific wording is driven by the source's
+    ``provider_type`` so the label is honest for each event kind:
+
+      * procurement / tender → "procurement / tender venue reference" (no specific
+        award / contractor / amount / contract number / date);
+      * patents → "patent office / index venue reference" (no specific patent /
+        inventor / assignee / date, no legal / ownership conclusion);
+      * permits → "permit / regulatory-event venue reference" (no specific docket /
+        permit number / applicant / date, no regulatory-outcome conclusion).
+
+    Procurement wording is intentionally byte-identical to Phase 29D.1; only the
+    patent and permit labels are corrected here (the cosmetic 29D.2/29D.3 tidy).
     """
     facts: list[dict[str, str]] = []
     for it in events.evidence_items:
         name = it.source_name or it.source_id
         url = it.url or ""
-        detail = (
-            f"{name} — official public procurement / tender venue reference (T2). "
-            "WEAK thesis-level research-priority CONTEXT only: which tenders / "
-            "awards this venue publishes; no specific award, contractor, amount, "
-            "contract number, or date is fetched or fabricated. Not a candidate, "
-            "not a catalyst, and not a trading signal. "
-            f"{url}"
-        ).strip()
+        provider = _event_provider_type(it.source_id)
+        if provider == ProviderType.patents:
+            tier_short = (it.content_source_tier or "").split("_", 1)[0] or "T2"
+            detail = (
+                f"{name} — official public patent office / index venue reference "
+                f"({tier_short}). WEAK thesis-level research-priority CONTEXT "
+                "only: which patent filings this venue publishes; no specific "
+                "patent number, inventor, assignee, or date is fetched or "
+                "fabricated, and no legal or ownership conclusion is drawn. Not a "
+                "candidate, not a catalyst, and not a trading signal. "
+                f"{url}"
+            ).strip()
+        elif provider == ProviderType.permits:
+            detail = (
+                f"{name} — official public permit / regulatory-event venue "
+                "reference (T2). WEAK thesis-level research-priority CONTEXT only: "
+                "which permit / docket categories this venue publishes; no "
+                "specific docket, permit number, applicant, or date is fetched or "
+                "fabricated, and no regulatory-outcome conclusion is drawn. Not a "
+                "candidate, not a catalyst, and not a trading signal. "
+                f"{url}"
+            ).strip()
+        else:
+            detail = (
+                f"{name} — official public procurement / tender venue reference (T2). "
+                "WEAK thesis-level research-priority CONTEXT only: which tenders / "
+                "awards this venue publishes; no specific award, contractor, amount, "
+                "contract number, or date is fetched or fabricated. Not a candidate, "
+                "not a catalyst, and not a trading signal. "
+                f"{url}"
+            ).strip()
         facts.append({"label": "event_context", "detail": detail})
     return facts
 

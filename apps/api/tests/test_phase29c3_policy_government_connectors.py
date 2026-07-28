@@ -266,8 +266,9 @@ def test_registry_summary_counts_after_policy_layer():
     summary = reg.summary()
     # 11 regulator-layer + 5 macro (29C.1) + 5 commodity / energy (29C.2)
     # + 5 policy / government (29C.3) + 2 procurement / tender events (29D.1)
-    # + 3 patent office / index events (29D.2) = 31 enabled.
-    assert summary["enabled"] == 31
+    # + 3 patent office / index events (29D.2) + 3 permit / regulatory-event
+    # sources (29D.3) = 34 enabled.
+    assert summary["enabled"] == 34
     assert summary["scaffolded"] == 2
     assert summary["planned"] == 2
     assert summary["total"] == len(reg.all_sources())

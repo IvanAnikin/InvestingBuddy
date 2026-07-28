@@ -21,8 +21,9 @@ Covers:
     region query. ``fetch_macro_context`` / ``fetch_filings`` / ``search_company``
     return an honest not-eligible gap.
   * google_patents + uspto + epo_espacenet are enabled patent sources in the
-    registry with honest notes and the correct per-source tier; the summary is 31
-    enabled / 2 scaffolded / 2 planned / 35 total.
+    registry with honest notes and the correct per-source tier; after Phase 29D.3
+    added the three permit / regulatory-event venues the summary is 34 enabled / 2
+    scaffolded / 2 planned / 38 total.
   * ``collect_theme_event_evidence`` returns patent refs for a relevant theme when
     ``source_event_enabled`` is True and is completely DARK when False; secret-free.
 """
@@ -47,6 +48,7 @@ from app.services.sources.connectors.event_reference import (
     ALL_EVENT_SOURCES,
     EVENT_SOURCES,
     PATENT_SOURCES,
+    PERMIT_SOURCES,
     EventReferenceConnector,
     build_event_connectors,
     event_spec_for,
@@ -266,13 +268,17 @@ def test_patent_connector_not_a_macro_or_company_source():
 
 
 def test_patent_sources_are_separate_from_procurement():
-    """The patent layer is additive: procurement stays 29D.1, ALL = both."""
+    """The patent layer is additive: procurement stays 29D.1, patents 29D.2, and
+    (Phase 29D.3) permits are a third additive kind; ALL = the union of the three."""
     assert {s.source_id for s in PATENT_SOURCES} == PATENT_IDS
     assert {s.source_id for s in EVENT_SOURCES} == {"eu_ted", "usaspending"}
-    assert set(ALL_EVENT_SOURCES) == set(EVENT_SOURCES) | set(PATENT_SOURCES)
+    assert {s.source_id for s in PERMIT_SOURCES} == {"ferc", "us_nrc", "us_epa"}
+    assert set(ALL_EVENT_SOURCES) == (
+        set(EVENT_SOURCES) | set(PATENT_SOURCES) | set(PERMIT_SOURCES)
+    )
     # No source_id collisions.
     ids = [s.source_id for s in ALL_EVENT_SOURCES]
-    assert len(ids) == len(set(ids)) == 5
+    assert len(ids) == len(set(ids)) == 8
 
 
 # ---------------------------------------------------------------------------
@@ -310,12 +316,13 @@ def test_registry_summary_counts_after_patent_layer():
     reg = build_registry()
     summary = reg.summary()
     # 11 regulator-layer + 15 macro/commodity/policy (29C) + 2 procurement /
-    # tender (29D.1) + 3 patent office / index (29D.2) = 31 enabled.
-    assert summary["enabled"] == 31
+    # tender (29D.1) + 3 patent office / index (29D.2) + 3 permit /
+    # regulatory-event (29D.3) = 34 enabled.
+    assert summary["enabled"] == 34
     assert summary["scaffolded"] == 2
     # Only OpenBB + the local-language business press remain planned.
     assert summary["planned"] == 2
-    assert summary["total"] == 35
+    assert summary["total"] == 38
     assert summary["total"] == len(reg.all_sources())
     # Health covers every patent connector, network-free.
     keys = {h.connector_key for h in reg.health()}

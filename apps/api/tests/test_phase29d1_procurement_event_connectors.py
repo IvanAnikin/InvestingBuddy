@@ -17,8 +17,9 @@ Covers:
     ``fetch_macro_context`` / ``fetch_filings`` / ``search_company`` return an
     honest not-eligible gap.
   * eu_ted + usaspending are enabled procurement / T2 sources in the registry with
-    honest notes; after Phase 29D.2 promoted the three patent venues the summary is
-    31 enabled / 2 scaffolded / 2 planned / 35 total.
+    honest notes; after Phase 29D.2 promoted the three patent venues and 29D.3 the
+    three permit venues the summary is 34 enabled / 2 scaffolded / 2 planned / 38
+    total.
   * ``collect_theme_event_evidence`` returns event refs for a relevant theme when
     ``source_event_enabled`` is True and is completely DARK when False; secret-free.
 """
@@ -262,12 +263,12 @@ def test_registry_summary_counts_after_event_layer():
     reg = build_registry()
     summary = reg.summary()
     # 11 regulator-layer + 15 macro/commodity/policy (29C) + 2 procurement /
-    # tender event venues (29D.1) + 3 patent office / index venues (29D.2) = 31
-    # enabled.
-    assert summary["enabled"] == 31
+    # tender event venues (29D.1) + 3 patent office / index venues (29D.2) + 3
+    # permit / regulatory-event venues (29D.3) = 34 enabled.
+    assert summary["enabled"] == 34
     assert summary["scaffolded"] == 2
     assert summary["planned"] == 2
-    assert summary["total"] == 35
+    assert summary["total"] == 38
     assert summary["total"] == len(reg.all_sources())
     # Health covers every event connector, network-free.
     keys = {h.connector_key for h in reg.health()}
