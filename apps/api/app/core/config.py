@@ -238,5 +238,28 @@ class Settings(BaseSettings):
     llm_council_evidence_max_chars: int = 24000
     llm_council_evidence_max_chars_per_item: int = 1200
 
+    # ── Source translation (Phase 30A — foundation) ────────────────────────
+    # Bounded, machine-assisted translation of a single non-English evidence
+    # excerpt into English so a council can read a foreign-language T1 primary
+    # source for research context. OFF by default: with the flag off, the
+    # translation provider factory returns the deterministic *fake* provider and
+    # nothing is wired into the council / report / evidence collection (that is
+    # Phase 30A Task 2). A translation is NEVER presented as official — every
+    # result is machine-assisted, needs human review, and carries an honest
+    # warning; the original text + source URL are always preserved. Whole
+    # documents are never translated — only one bounded excerpt at a time.
+    source_translation_enabled: bool = False
+    # Hard cap on characters per translated excerpt (bounds both the input and
+    # the output so a whole filing is never sent to a translation provider).
+    source_translation_max_chars: int = 400
+    # Maximum number of excerpts translated for one company/source (bounds cost
+    # and keeps one foreign-language source from dominating the pack).
+    source_translation_max_excerpts: int = 3
+    # Which translation backend to use: "fake" (deterministic honest placeholder,
+    # the default and the only one used in tests/CI) or "llm" (composes the shared
+    # LLM client). The "llm" provider is only ever resolved when this is "llm"
+    # AND ``source_translation_enabled`` is True AND an LLM client is available.
+    translation_provider: str = "fake"
+
 
 settings = Settings()

@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field
 
 from app.core.config import Settings
 from app.core.config import settings as default_settings
+from app.services.sources.language import detect_language
 
 # Evidence-type tags for an excerpt (mapped to EvidenceItem source_types by the
 # connector). Deliberately factual/neutral — never a rating vocabulary.
@@ -81,16 +82,6 @@ _BUSINESS_KEYWORDS = (
     "employees",
     "segment",
 )
-
-# Very small language heuristic: presence of common non-English function words.
-# Used ONLY to set ``requires_translation`` honestly — never to translate.
-_LANG_HINTS: dict[str, tuple[str, ...]] = {
-    "fr": (" le ", " la ", " les ", " des ", " et ", " société", " exercice",
-           " chiffre d'affaires"),
-    "de": (" der ", " die ", " und ", " das ", " geschäftsjahr", " umsatz", " gesellschaft"),
-    "it": (" il ", " la ", " che ", " gli ", " ricavi", " società", " esercizio"),
-}
-
 
 class DocumentExcerpt(BaseModel):
     """One bounded, citeable excerpt from a primary document."""
@@ -199,22 +190,13 @@ def _relevance(text: str) -> int:
 def _detect_language(text: str, original_language: str | None) -> tuple[str, bool]:
     """Return (language_code, requires_translation).
 
-    A cheap heuristic honouring an ``original_language`` hint (from the issuer's
-    country). Defaults to English. Never blocks extraction — only labels it.
+    Delegates to the shared, dependency-free ``detect_language`` heuristic
+    (Phase 30A) — honouring an ``original_language`` hint (from the issuer's
+    country) and defaulting to English. ``requires_translation`` is simply
+    "detected language is not English". Never blocks extraction — only labels it.
     """
-    if original_language and original_language.lower().startswith(("fr", "de", "it")):
-        # Trust the registry hint but still verify against content when possible.
-        code = original_language.lower()[:2]
-        return code, True
-    low = f" {text[:4000].lower()} "
-    best_lang, best_hits = "en", 0
-    for lang, hints in _LANG_HINTS.items():
-        hits = sum(1 for h in hints if h in low)
-        if hits > best_hits:
-            best_lang, best_hits = lang, hits
-    if best_hits >= 3:
-        return best_lang, True
-    return "en", False
+    code = detect_language(text, hint=original_language)
+    return code, code != "en"
 
 
 def _infer_year(*texts: str | None) -> int | None:
