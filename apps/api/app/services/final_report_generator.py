@@ -58,6 +58,7 @@ from app.services.llm.schemas import CouncilResult
 from app.services.real_asset_report_completer import build_schema_complete_report
 from app.services.report_validation_service import validate_real_asset_report
 from app.services.sources.registry import build_registry, registry_gap_messages
+from app.services.sources.translation import MACHINE_TRANSLATION_WARNING
 
 logger = logging.getLogger(__name__)
 
@@ -1723,6 +1724,54 @@ def _build_industry_event_context(
     }
 
 
+def _build_translated_evidence(
+    translated_excerpts: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Optional TRANSLATED EVIDENCE block — Phase 30A.
+
+    Renders bounded, MACHINE-ASSISTED English renderings of non-English source
+    excerpts as additional research context. Each entry ALWAYS keeps the original
+    excerpt and its source URL — the ORIGINAL remains the citation of record — and
+    is clearly marked NOT an official translation (human review required). The
+    original evidence is never removed or replaced; the translation is additive.
+    Rendered only when the translation layer produced excerpts; empty otherwise, so
+    with the flag off the block is absent and the report is byte-for-byte unchanged.
+    """
+    items: list[dict[str, Any]] = []
+    for t in translated_excerpts[:8]:
+        items.append(
+            {
+                "source": t.get("source_url"),
+                "title": t.get("title"),
+                "original_language": t.get("original_language"),
+                "original_language_name": t.get("original_language_name"),
+                "original_excerpt": t.get("original_excerpt"),
+                "translated_excerpt": t.get("translated_excerpt"),
+                "target_language": t.get("target_language") or "en",
+                "provider": t.get("provider"),
+                "warning": t.get("warning") or MACHINE_TRANSLATION_WARNING,
+                "human_review_required": True,
+            }
+        )
+    return {
+        "type": "translated_evidence",
+        "value": items,
+        "provenance": "sourced_fact",
+        "note": (
+            "Machine-assisted English renderings of non-English source excerpts, "
+            "provided only as additional research context. The original excerpt and "
+            "its source URL are always preserved and remain the citation of record; "
+            "the translation is machine-generated, may be inaccurate, and is NOT an "
+            "official translation."
+        ),
+        "disclaimer": (
+            "Machine-assisted translation, NOT an official translation; human "
+            "review required. No valuation conclusion or trading action is produced."
+        ),
+        "human_review_required": True,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Report content parser — extracts structured data from existing report
 # ---------------------------------------------------------------------------
@@ -2678,6 +2727,22 @@ class FinalReportGeneratorService:
         if council_result.event_context:
             report_content["industry_event_context"] = _build_industry_event_context(
                 council_result.event_context
+            )
+
+        # Phase 30A: optional TRANSLATED EVIDENCE block. When
+        # ``source_translation_enabled`` is on and the council produced bounded,
+        # machine-assisted English renderings of non-English source excerpts, render
+        # them as an OPTIONAL translated_evidence block. Each entry preserves the
+        # original excerpt + source URL (the citation of record) and is clearly
+        # marked NOT an official translation (human review required) — additive
+        # context, never a replacement for the original evidence. Not a required
+        # section, so schema_valid is unaffected. Dark by default: with the flag off
+        # translated_excerpts is empty and no block is added, so the report is
+        # byte-for-byte unchanged. Added BEFORE validation so the safety gate scans
+        # it.
+        if council_result.translated_excerpts:
+            report_content["translated_evidence"] = _build_translated_evidence(
+                council_result.translated_excerpts
             )
 
         # Phase 26: safety-scan the admin draft AND validate a schema-completed

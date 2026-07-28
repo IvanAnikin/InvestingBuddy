@@ -231,6 +231,11 @@ class EvidenceItem(BaseModel):
             "excerpt": self.excerpt,
             "data_quality": self.data_quality,
             "fields_supported": list(self.fields_supported),
+            # Phase 30A: surface the honest language labels so a downstream
+            # consumer (the translation layer) can see which excerpts are
+            # non-English without re-detecting. Additive + safe.
+            "original_language": self.original_language,
+            "requires_translation": self.requires_translation,
         }
 
 

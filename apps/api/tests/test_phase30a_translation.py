@@ -24,16 +24,28 @@ No real network / LLM call is ever made (the fake LLM client is injected).
 from __future__ import annotations
 
 import asyncio
+import json
+import re
 from typing import Any
 
+import pytest
+
 from app.core.config import Settings
+from app.services import safety_terms
+from app.services.final_report_generator import FinalReportGeneratorService
+from app.services.llm import council as council_mod
 from app.services.llm.client import LLMClient
+from app.services.llm.council import _collect_translated_excerpts, maybe_run_council
+from app.services.llm.fake_client import FakeLLMClient
+from app.services.sources.company_evidence import CompanySourceEvidence
 from app.services.sources.document_text_extractor import _detect_language
+from app.services.sources.evidence import EvidenceItem
 from app.services.sources.language import (
     LANGUAGE_NAMES,
     detect_language,
     language_name,
 )
+from app.services.sources.taxonomy import T1_PRIMARY_FILING
 from app.services.sources.translation import (
     FAKE_TRANSLATION_MARKER,
     MACHINE_TRANSLATION_WARNING,
@@ -336,3 +348,356 @@ def test_config_translation_defaults_off():
     assert cfg.translation_provider == "fake"
     assert cfg.source_translation_max_chars == 400
     assert cfg.source_translation_max_excerpts == 3
+
+
+# =========================================================================== #
+# Task 2 — wiring: evidence adapter, council collection, report block         #
+# =========================================================================== #
+
+
+def _fr_evidence_item(
+    url: str = "https://issuer.example.fr/rapport?api_token=SECRET",
+) -> EvidenceItem:
+    """A French T1 annual-report excerpt with a credential-bearing URL."""
+    return EvidenceItem(
+        id="ev-fr-1",
+        source_id="company_ir",
+        source_name="Issuer IR",
+        source_type="company_ir_annual_report_excerpt",
+        content_source_tier=T1_PRIMARY_FILING,
+        provider_transport_tier=T1_PRIMARY_FILING,
+        title="Rapport annuel",
+        url=url,
+        excerpt=_FR,
+        original_language="fr",
+        requires_translation=True,
+    )
+
+
+def _de_evidence_item() -> EvidenceItem:
+    return EvidenceItem(
+        id="ev-de-1",
+        source_id="company_ir",
+        source_type="company_ir_risk_excerpt",
+        content_source_tier=T1_PRIMARY_FILING,
+        provider_transport_tier=T1_PRIMARY_FILING,
+        title="Geschäftsbericht",
+        url="https://issuer.example.de/bericht",
+        excerpt=_DE,
+        original_language="de",
+        requires_translation=True,
+    )
+
+
+def _en_evidence_item() -> EvidenceItem:
+    """An English excerpt that must NOT be translated even with the flag on."""
+    return EvidenceItem(
+        id="ev-en-1",
+        source_id="company_ir",
+        source_type="company_ir_business_description",
+        content_source_tier=T1_PRIMARY_FILING,
+        provider_transport_tier=T1_PRIMARY_FILING,
+        title="Annual report",
+        url="https://issuer.example.com/annual",
+        excerpt=_EN,
+        original_language="en",
+        requires_translation=False,
+    )
+
+
+def _fr_snapshot() -> dict[str, Any]:
+    return {
+        "is_mock": False,
+        "source_tier": "T6_model_estimate",
+        "company_identity": {
+            "ticker": "FRX",
+            "legal_name": "Ma Société SA",
+            "exchange": "PAR",
+            "country_domicile": "France",
+        },
+        "profile": {"sector": "Consumer Cyclical", "industry": "Luxury Goods"},
+    }
+
+
+def _fake_collect(items: list[EvidenceItem]):
+    """An async stand-in for ``collect_company_source_evidence`` (no network)."""
+
+    async def _collect(**_kwargs: Any) -> CompanySourceEvidence:
+        return CompanySourceEvidence(evidence_items=list(items))
+
+    return _collect
+
+
+# --------------------------------------------------------------------------- #
+# EvidenceItem.to_council_item exposes the language labels
+# --------------------------------------------------------------------------- #
+
+
+def test_to_council_item_exposes_language_flags():
+    council_item = _fr_evidence_item().to_council_item()
+    assert council_item["original_language"] == "fr"
+    assert council_item["requires_translation"] is True
+    # The source URL is secret-stripped by the model.
+    assert "api_token" not in (council_item["url"] or "")
+
+    # An English item keeps requires_translation False.
+    en_item = _en_evidence_item().to_council_item()
+    assert en_item["original_language"] == "en"
+    assert en_item["requires_translation"] is False
+
+
+# --------------------------------------------------------------------------- #
+# _collect_translated_excerpts
+# --------------------------------------------------------------------------- #
+
+
+def test_collect_translated_excerpts_translates_non_english_only():
+    cfg = Settings(source_translation_enabled=True)  # fake provider by default
+    out = asyncio.run(
+        _collect_translated_excerpts([_fr_evidence_item(), _en_evidence_item()], cfg)
+    )
+    # Only the French excerpt is translated; the English one is left alone.
+    assert len(out) == 1
+    entry = out[0]
+    assert entry["original_language"] == "fr"
+    assert entry["original_language_name"] == "French"
+    # The ORIGINAL text is preserved verbatim and stays the citation of record.
+    assert entry["original_excerpt"] == _FR
+    # A clearly-marked machine placeholder — never fabricated fluent English.
+    assert entry["translated_excerpt"].startswith(FAKE_TRANSLATION_MARKER)
+    assert entry["provider"] == "fake"
+    assert entry["needs_human_review"] is True
+    assert entry["warning"] == MACHINE_TRANSLATION_WARNING
+    # Source URL preserved + secret-stripped (never a tokenized URL).
+    assert entry["source_url"] and "api_token" not in entry["source_url"]
+    # Bounded per-excerpt (never a whole document).
+    assert len(entry["translated_excerpt"]) <= cfg.source_translation_max_chars
+
+
+def test_collect_translated_excerpts_detects_non_english_without_flag():
+    """A non-English excerpt is translated by DETECTION even when the item does
+    not declare requires_translation."""
+    cfg = Settings(source_translation_enabled=True)
+    item = EvidenceItem(
+        id="ev-fr-2",
+        source_id="company_ir",
+        source_type="company_ir_annual_report_excerpt",
+        content_source_tier=T1_PRIMARY_FILING,
+        provider_transport_tier=T1_PRIMARY_FILING,
+        url="https://issuer.example.fr/doc",
+        excerpt=_FR,
+        requires_translation=False,
+    )
+    out = asyncio.run(_collect_translated_excerpts([item], cfg))
+    assert len(out) == 1
+    assert out[0]["original_language"] == "fr"
+
+
+def test_collect_translated_excerpts_bounded_by_max_excerpts():
+    cfg = Settings(source_translation_enabled=True, source_translation_max_excerpts=1)
+    out = asyncio.run(
+        _collect_translated_excerpts([_fr_evidence_item(), _de_evidence_item()], cfg)
+    )
+    assert len(out) == 1
+
+
+def test_collect_translated_excerpts_english_only_is_empty():
+    cfg = Settings(source_translation_enabled=True)
+    out = asyncio.run(_collect_translated_excerpts([_en_evidence_item()], cfg))
+    assert out == []
+
+
+# --------------------------------------------------------------------------- #
+# maybe_run_council attaches result.translated_excerpts (dark by default)
+# --------------------------------------------------------------------------- #
+
+
+def _council_cfg(**over: Any) -> Settings:
+    base = dict(
+        llm_council_enabled=True,
+        llm_provider_council="fake",
+        source_connector_enabled=True,
+    )
+    base.update(over)
+    return Settings(**base)
+
+
+async def test_maybe_run_council_attaches_translated_excerpts(monkeypatch):
+    monkeypatch.setattr(
+        council_mod,
+        "collect_company_source_evidence",
+        _fake_collect([_fr_evidence_item(), _en_evidence_item()]),
+    )
+    result = await maybe_run_council(
+        report_content={"company_identity": {}},
+        company_snapshot=_fr_snapshot(),
+        cfg=_council_cfg(source_translation_enabled=True),
+        client=FakeLLMClient(),
+    )
+    assert result.llm_used is True
+    assert len(result.translated_excerpts) == 1
+    entry = result.translated_excerpts[0]
+    assert entry["original_language"] == "fr"
+    assert entry["original_excerpt"] == _FR
+    assert entry["translated_excerpt"].startswith(FAKE_TRANSLATION_MARKER)
+    assert entry["needs_human_review"] is True
+    assert entry["warning"] == MACHINE_TRANSLATION_WARNING
+    assert "api_token" not in entry["source_url"]
+    # Persisted metadata carries the translated excerpts.
+    assert result.to_metadata_dict()["translated_excerpts"]
+
+
+async def test_maybe_run_council_translation_dark_when_off(monkeypatch):
+    monkeypatch.setattr(
+        council_mod,
+        "collect_company_source_evidence",
+        _fake_collect([_fr_evidence_item()]),
+    )
+    result = await maybe_run_council(
+        report_content={"company_identity": {}},
+        company_snapshot=_fr_snapshot(),
+        cfg=_council_cfg(source_translation_enabled=False),  # OFF
+        client=FakeLLMClient(),
+    )
+    assert result.translated_excerpts == []
+    assert result.to_metadata_dict()["translated_excerpts"] == []
+
+
+async def test_maybe_run_council_logs_no_excerpt_text(monkeypatch):
+    monkeypatch.setattr(
+        council_mod,
+        "collect_company_source_evidence",
+        _fake_collect([_fr_evidence_item()]),
+    )
+    captured: list[tuple[str, dict[str, Any]]] = []
+
+    def _spy_log_event(logger, event, *, level=20, **fields):
+        captured.append((event, dict(fields)))
+
+    monkeypatch.setattr(council_mod, "log_event", _spy_log_event)
+
+    await maybe_run_council(
+        report_content={"company_identity": {}},
+        company_snapshot=_fr_snapshot(),
+        cfg=_council_cfg(source_translation_enabled=True),
+        client=FakeLLMClient(),
+    )
+    events = {e for e, _ in captured}
+    assert "translated_excerpts_collected" in events
+    # NO raw original / translated excerpt text ever appears in any log payload —
+    # only counts + language codes.
+    blob = " ".join(str(v) for _, f in captured for v in f.values()).lower()
+    for needle in ("chiffre", "société", "perspectives", _FR.lower()):
+        assert needle not in blob
+
+
+# --------------------------------------------------------------------------- #
+# Company report renders an optional translated_evidence block
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+def enable_translation(monkeypatch):
+    from app.core import config
+
+    monkeypatch.setattr(config.settings, "llm_council_enabled", True)
+    monkeypatch.setattr(config.settings, "llm_provider_council", "fake")
+    monkeypatch.setattr(config.settings, "source_connector_enabled", True)
+    monkeypatch.setattr(config.settings, "source_translation_enabled", True)
+    monkeypatch.setattr(
+        council_mod,
+        "collect_company_source_evidence",
+        _fake_collect([_fr_evidence_item(), _en_evidence_item()]),
+    )
+    yield
+
+
+@pytest.fixture
+def enable_council_connector_no_translation(monkeypatch):
+    from app.core import config
+
+    monkeypatch.setattr(config.settings, "llm_council_enabled", True)
+    monkeypatch.setattr(config.settings, "llm_provider_council", "fake")
+    monkeypatch.setattr(config.settings, "source_connector_enabled", True)
+    # source_translation_enabled stays False (default) — the dark path.
+    monkeypatch.setattr(
+        council_mod,
+        "collect_company_source_evidence",
+        _fake_collect([_fr_evidence_item()]),
+    )
+    yield
+
+
+async def _generate_report(mock_db, snapshot):
+    service = FinalReportGeneratorService()
+    return await service._generate_and_save(
+        db=mock_db,
+        scorecard=None,
+        candidate=None,
+        source_report=None,
+        company_record=None,
+        citations=[],
+        sources=[],
+        state={"company_snapshot": snapshot, "catalyst_discovery": None},
+    )
+
+
+def _captured_report_content(mock_db) -> dict[str, Any]:
+    assert mock_db.add.called, "expected a report to be saved"
+    report = mock_db.add.call_args[0][0]
+    content: dict[str, Any] = {}
+    pattern = re.compile(r"```json\s*(.*?)\s*```", re.DOTALL)
+    for match in pattern.finditer(report.content_markdown or ""):
+        block = json.loads(match.group(1))
+        if isinstance(block, dict):
+            content.update(block)
+    return content
+
+
+async def test_company_report_renders_translated_evidence_block(
+    mock_db, enable_translation
+) -> None:
+    resp = await _generate_report(mock_db, _fr_snapshot())
+    # Invariants hold on the translation-on path.
+    assert resp.schema_valid is True
+    assert resp.safety_valid is True
+    assert resp.publication_ready is False
+    assert resp.human_review_required is True
+
+    content = _captured_report_content(mock_db)
+    block = content.get("translated_evidence")
+    assert block is not None, "translation-on report must carry a translated_evidence block"
+    assert block["value"], "expected at least one translated excerpt (the French one)"
+    entry = block["value"][0]
+    assert entry["original_language"] == "fr"
+    # Original excerpt + source URL preserved (the citation of record).
+    assert entry["original_excerpt"] == _FR
+    assert entry["source"] and "api_token" not in entry["source"]
+    # A clearly-marked machine placeholder + human-review flag.
+    assert entry["translated_excerpt"].startswith(FAKE_TRANSLATION_MARKER)
+    assert entry["human_review_required"] is True
+    # Honest, never-official disclaimer on the block.
+    assert "not an official translation" in block["disclaimer"].lower()
+    assert block["human_review_required"] is True
+    # No forbidden rating / valuation vocab anywhere in the block.
+    assert safety_terms.scan_value(block) == []
+
+    # The compact council metadata path also carries the translated excerpts.
+    report = mock_db.add.call_args[0][0]
+    assert report.source_summary_json["llm_council"]["translated_excerpts"]
+
+
+async def test_company_report_no_translated_block_when_off(
+    mock_db, enable_council_connector_no_translation
+) -> None:
+    """Council + connector on but translation flag off → block absent + safe."""
+    resp = await _generate_report(mock_db, _fr_snapshot())
+    assert resp.schema_valid is True
+    assert resp.safety_valid is True
+    assert resp.publication_ready is False
+    assert resp.human_review_required is True
+
+    content = _captured_report_content(mock_db)
+    assert "translated_evidence" not in content
+    report = mock_db.add.call_args[0][0]
+    assert report.source_summary_json["llm_council"]["translated_excerpts"] == []
