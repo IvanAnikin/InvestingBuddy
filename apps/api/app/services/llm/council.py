@@ -49,11 +49,13 @@ from app.services.sources.event_evidence import (
     ThemeEventEvidence,
     collect_theme_event_evidence,
 )
+from app.services.sources.language import detect_language, language_name
 from app.services.sources.macro_evidence import (
     ThemeMacroEvidence,
     collect_theme_macro_evidence,
 )
 from app.services.sources.registry import build_registry, registry_gap_messages
+from app.services.sources.translation import get_translation_provider
 
 _logger = logging.getLogger("app.services.llm.council")
 
@@ -241,6 +243,69 @@ def _event_context_summary(events: ThemeEventEvidence) -> list[dict[str, Any]]:
                 "tier": it.content_source_tier,
                 "reference": it.excerpt,
                 "gap": gap_by_source.get(it.source_id),
+            }
+        )
+    return out
+
+
+async def _collect_translated_excerpts(
+    evidence_items: list[Any],
+    cfg: Settings,
+    *,
+    client: LLMClient | None = None,
+) -> list[dict[str, Any]]:
+    """Bounded, machine-assisted English renderings of non-English excerpts — 30A.
+
+    For each connector ``EvidenceItem`` whose excerpt is non-English — declared via
+    ``requires_translation`` OR detected by ``language.detect_language`` — produce
+    ONE bounded translated excerpt via the configured provider (the deterministic
+    *fake* provider by default). The ORIGINAL excerpt and its token-stripped source
+    URL are ALWAYS preserved so a council / report can cite the original source; the
+    translation is clearly marked machine-assisted and needs human review — never an
+    official translation, and the original evidence is never removed or replaced.
+
+    Bounded by ``source_translation_max_excerpts`` items, each excerpt bounded by
+    ``source_translation_max_chars`` (both input and output) — never a whole
+    document. Text-free by construction here: only counts + language codes are
+    logged by the caller; the provider itself never logs prompts / original /
+    translated text.
+    """
+    max_excerpts = max(0, int(cfg.source_translation_max_excerpts))
+    if max_excerpts == 0:
+        return []
+    max_chars = cfg.source_translation_max_chars
+    provider = get_translation_provider(cfg, client=client)
+    out: list[dict[str, Any]] = []
+    for it in evidence_items:
+        if len(out) >= max_excerpts:
+            break
+        excerpt = (getattr(it, "excerpt", None) or "").strip()
+        if not excerpt:
+            continue
+        original_language = getattr(it, "original_language", None)
+        detected = detect_language(excerpt, hint=original_language)
+        needs = bool(getattr(it, "requires_translation", False)) or detected != "en"
+        if not needs:
+            continue
+        source_language = (original_language or detected or "und").strip().lower()[:2]
+        translation = await provider.translate(
+            excerpt, source_language, max_chars=max_chars
+        )
+        out.append(
+            {
+                # Token-stripped by the EvidenceItem model already; preserved so the
+                # ORIGINAL source stays the citation of record.
+                "source_url": getattr(it, "url", None),
+                "title": getattr(it, "title", None),
+                "source_type": getattr(it, "source_type", None),
+                "original_language": translation.source_language,
+                "original_language_name": language_name(translation.source_language),
+                "original_excerpt": translation.original_text,
+                "translated_excerpt": translation.translated_text,
+                "target_language": translation.target_language,
+                "provider": translation.provider_name,
+                "needs_human_review": True,
+                "warning": translation.warning,
             }
         )
     return out
@@ -561,6 +626,40 @@ async def maybe_run_council(
                     exception_type=type(exc).__name__,
                 )
 
+        # Phase 30A: optional TRANSLATED EVIDENCE. When ``source_translation_enabled``
+        # is on, machine-translate any non-English connector excerpt into bounded
+        # English research CONTEXT, ALWAYS preserving the original text + source URL
+        # (the citation of record) and clearly marking it machine-assisted / needs
+        # human review. Dark by default (flag off → empty, byte-identical behaviour);
+        # never a whole document; never crashes the council. Additive only — the
+        # original evidence in the pack is untouched.
+        translated_excerpts: list[dict[str, Any]] = []
+        if cfg.source_translation_enabled:
+            try:
+                translated_excerpts = await _collect_translated_excerpts(
+                    connector_evidence or [], cfg, client=resolved
+                )
+                log_event(
+                    log,
+                    "translated_excerpts_collected",
+                    report_id=report_id,
+                    ticker=ticker,
+                    exchange=exchange,
+                    translated_excerpt_count=len(translated_excerpts),
+                    source_languages=sorted(
+                        {t["original_language"] for t in translated_excerpts}
+                    ),
+                )
+            except Exception as exc:  # noqa: BLE001 - translation never crashes a report
+                log_event(
+                    log,
+                    "translated_excerpts_failed",
+                    level=logging.WARNING,
+                    report_id=report_id,
+                    ticker=ticker,
+                    exception_type=type(exc).__name__,
+                )
+
         pack = build_evidence_pack(
             report_content=report_content,
             company_snapshot=company_snapshot,
@@ -611,6 +710,11 @@ async def maybe_run_council(
         # only, never a company-specific award, catalyst, or trade signal).
         if event_context:
             result.event_context = event_context
+        # Phase 30A: attach the bounded machine-assisted translated excerpts so the
+        # report can render an optional translated-evidence block. Each entry keeps
+        # the original text + source URL and is clearly marked NOT official.
+        if translated_excerpts:
+            result.translated_excerpts = translated_excerpts
         return result
     except Exception as exc:  # noqa: BLE001 - never let the council crash a report
         log_event(

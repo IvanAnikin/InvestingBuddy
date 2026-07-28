@@ -531,6 +531,36 @@ grep -RiE "Authorization: Bearer|Set-Cookie:|DATABASE_URL=|api_token=[A-Za-z0-9]
 
 ---
 
+## Language Detection + Machine-Translation Foundation (Phase 30A)
+
+> **PR open — pre-staging.** Not yet merged / deployed / staging-validated. Do
+> **not** treat this section as a closed/validated deployment record until the
+> merge SHA + deployed SHA + staging validation result are on file.
+
+- **No DB migration** (DB head stays `011`); **no new allowlisted host, no new
+  endpoint, no new secret.** When `TRANSLATION_PROVIDER=llm`, translation reuses
+  the **existing Azure OpenAI client** (the same one the LLM council already
+  uses) — **no new model deployment, host, or secret** is introduced; logging is
+  **text-free** (only counts + language codes, never the prompt / original /
+  translated text).
+- **New app settings (all OFF / conservative by default):**
+
+  | Setting | Default | Meaning |
+  |---|---|---|
+  | `SOURCE_TRANSLATION_ENABLED` | `false` | Master gate for the language-detection + machine-translation foundation. `false` → completely dark (`translated_excerpts` empty `[]`, no `translated_evidence` report block); council pack + report body byte-identical. `true` → per non-English evidence excerpt, ONE bounded machine-assisted translation surfaced as `source_summary_json.llm_council.translated_excerpts` metadata + an optional `report_content["translated_evidence"]` block. **Bounded per-excerpt (never whole-document); original text + source URL preserved; machine-assisted, NOT an official translation; human review required.** |
+  | `SOURCE_TRANSLATION_MAX_CHARS` | `400` | Hard char cap per translated excerpt (bounds both input and output). |
+  | `SOURCE_TRANSLATION_MAX_EXCERPTS` | `3` | Max excerpts translated per company / source. |
+  | `TRANSLATION_PROVIDER` | `fake` | Backend: `fake` (deterministic honest placeholder — the default, never fabricates fluent English) or `llm` (composes the existing Azure OpenAI client — no new host/secret; text-free logging). `llm` is only ever resolved when this is `llm` AND `SOURCE_TRANSLATION_ENABLED=true` AND an LLM client is available. |
+
+  All four flag KEYS are already added to `.env.example` with default values —
+  never a real secret. Leave `SOURCE_TRANSLATION_ENABLED=false` on staging until
+  Phase 30A is validated. **Rollback:** set `SOURCE_TRANSLATION_ENABLED=false`
+  (or `TRANSLATION_PROVIDER=fake`) to return to the exact prior behaviour with no
+  code change.
+- **Foundation only:** LLM-backed translation is OFF by default; Phase 30B
+  (local-language evidence sources) will consume this layer. No auth change, no
+  public publishing, no recommendation / valuation output, no publish route.
+
 ## Macro Reference Evidence Layer (Phase 29C.1)
 
 > **PR open — pre-staging.** Not yet merged / deployed / staging-validated. Do

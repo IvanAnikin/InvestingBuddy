@@ -242,6 +242,15 @@ class CouncilResult(BaseModel):
     # and is never a company-specific claim, catalyst, materiality claim, or trade
     # signal — weak thesis-level research-priority background context only.
     event_context: list[dict[str, Any]] = Field(default_factory=list)
+    # Phase 30A: bounded, MACHINE-ASSISTED English renderings of non-English
+    # evidence excerpts. Each entry ALWAYS preserves the original excerpt + its
+    # token-stripped source URL (the citation of record) and is clearly marked
+    # machine-assisted / needs human review — NEVER an official translation.
+    # Additive context only (the original evidence is never removed or replaced).
+    # Empty unless ``source_translation_enabled`` is on and a non-English excerpt
+    # was found. Bounded per-excerpt and by ``source_translation_max_excerpts`` —
+    # never a whole document.
+    translated_excerpts: list[dict[str, Any]] = Field(default_factory=list)
 
     def recount(self) -> None:
         """Refresh the completed/failed/skipped tallies from ``agents``."""
@@ -304,6 +313,7 @@ class CouncilResult(BaseModel):
             "primary_facts": list(self.primary_facts),
             "macro_context": list(self.macro_context),
             "event_context": list(self.event_context),
+            "translated_excerpts": list(self.translated_excerpts),
         }
 
     @classmethod
