@@ -22,6 +22,7 @@ from app.services.llm.council import run_council
 from app.services.llm.evidence_pack import build_evidence_pack
 from app.services.llm.fake_client import FakeLLMClient
 from app.services.sources.company_evidence import (
+    LOCAL_LANGUAGE_REFERENCE_IDS,
     REGULATOR_REFERENCE_IDS,
     collect_company_source_evidence,
 )
@@ -486,11 +487,14 @@ def test_26_27_non_us_evidence_honest_no_fakes_no_forbidden():
         )
     )
     # No fabricated SEC filing / fundamentals — every evidence item is either
-    # company_ir metadata or an honest regulator-transport reference (Phase 29B.4B
+    # company_ir metadata, an honest regulator-transport reference (Phase 29B.4B
     # promoted euronext_regulated_info / uk_fca_nsm to dedicated connectors, so a
     # Euronext/UK issuer like MC/PA now also gets a metadata-only T2 regulator
-    # reference item). No filing content is claimed for either.
-    allowed_source_ids = {"company_ir"} | REGULATOR_REFERENCE_IDS
+    # reference item), or the Phase 30B local-language business-press reference
+    # (T4, metadata-only). No filing content is claimed for any of them.
+    allowed_source_ids = (
+        {"company_ir"} | REGULATOR_REFERENCE_IDS | LOCAL_LANGUAGE_REFERENCE_IDS
+    )
     assert all(i.source_id in allowed_source_ids for i in collected.evidence_items)
     assert all(i.data_quality == "metadata_only" for i in collected.evidence_items)
     # Safety: no recommendation / valuation vocabulary in items or gaps.

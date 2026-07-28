@@ -314,11 +314,11 @@ def test_registry_endpoint_returns_sources_and_no_secrets():
     # nordic_disclosures (29B.4C) were promoted out of the scaffold set, leaving
     # two honest regulator scaffolds (SEDAR+, ASX).
     assert body["summary"]["scaffolded"] >= 2
-    # Phase 29C promoted 15 macro / commodity / policy sources, Phase 29D.1
-    # promoted the 2 procurement / tender event venues (eu_ted, usaspending) and
-    # Phase 29D.2 promoted the 3 patent office / index venues out of the planned
-    # set, leaving only OpenBB + the local-language business press.
-    assert body["summary"]["planned"] >= 2
+    # Phase 29C promoted 15 macro / commodity / policy sources, Phase 29D.1/29D.2/
+    # 29D.3 promoted the procurement / patent / permit event venues, and Phase 30B
+    # promoted the local-language business press out of the planned set, leaving
+    # only OpenBB planned.
+    assert body["summary"]["planned"] >= 1
     assert len(body["tiers"]) == 6
     ids = {s["source_id"] for s in body["sources"]}
     assert "sec_edgar" in ids

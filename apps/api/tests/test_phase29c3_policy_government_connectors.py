@@ -257,8 +257,9 @@ def test_procurement_and_patents_now_enabled():
     assert {"google_patents", "uspto", "epo_espacenet"} <= enabled_ids
     assert not ({"usaspending", "eu_ted"} & planned_ids)
     assert not ({"google_patents", "uspto", "epo_espacenet"} & planned_ids)
-    # Only the OpenBB toolkit + local-language business press stay planned.
-    assert planned_ids == {"openbb", "local_language_business_press"}
+    # Only the OpenBB toolkit stays planned (Phase 30B promoted the local-language
+    # business press to enabled).
+    assert planned_ids == {"openbb"}
 
 
 def test_registry_summary_counts_after_policy_layer():
@@ -268,9 +269,9 @@ def test_registry_summary_counts_after_policy_layer():
     # + 5 policy / government (29C.3) + 2 procurement / tender events (29D.1)
     # + 3 patent office / index events (29D.2) + 3 permit / regulatory-event
     # sources (29D.3) = 34 enabled.
-    assert summary["enabled"] == 34
+    assert summary["enabled"] == 35  # +1: local-language business press (Phase 30B)
     assert summary["scaffolded"] == 2
-    assert summary["planned"] == 2
+    assert summary["planned"] == 1  # only OpenBB remains planned (Phase 30B)
     assert summary["total"] == len(reg.all_sources())
     # Health covers every policy / government connector, network-free.
     keys = {h.connector_key for h in reg.health()}

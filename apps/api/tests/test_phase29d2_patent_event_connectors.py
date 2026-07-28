@@ -318,10 +318,10 @@ def test_registry_summary_counts_after_patent_layer():
     # 11 regulator-layer + 15 macro/commodity/policy (29C) + 2 procurement /
     # tender (29D.1) + 3 patent office / index (29D.2) + 3 permit /
     # regulatory-event (29D.3) = 34 enabled.
-    assert summary["enabled"] == 34
+    assert summary["enabled"] == 35  # +1: local-language business press (Phase 30B)
     assert summary["scaffolded"] == 2
-    # Only OpenBB + the local-language business press remain planned.
-    assert summary["planned"] == 2
+    # Only OpenBB remains planned (Phase 30B promoted the local-language press).
+    assert summary["planned"] == 1
     assert summary["total"] == 38
     assert summary["total"] == len(reg.all_sources())
     # Health covers every patent connector, network-free.
@@ -329,10 +329,12 @@ def test_registry_summary_counts_after_patent_layer():
     assert PATENT_IDS <= keys
 
 
-def test_only_openbb_and_local_press_stay_planned():
+def test_only_openbb_stays_planned():
     reg = build_registry()
     planned_ids = {s.source_id for s in reg.planned_sources()}
-    assert planned_ids == {"openbb", "local_language_business_press"}
+    # Phase 30B promoted the local-language business press to enabled, leaving only
+    # the OpenBB toolkit planned.
+    assert planned_ids == {"openbb"}
     # Patents are no longer planned.
     assert not (PATENT_IDS & planned_ids)
 

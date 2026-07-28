@@ -43,6 +43,7 @@ from app.services.sources.connectors import (
     UkFcaNsmConnector,
     WrappedProviderConnector,
     build_event_connectors,
+    build_local_language_press_connectors,
     build_macro_connectors,
 )
 from app.services.sources.gaps import GapSeverity, GapType, SourceGap
@@ -65,6 +66,7 @@ from app.services.sources.taxonomy import (
 PHASE_29B = "Phase 29B"  # filing / regulator connectors
 PHASE_29C = "Phase 29C"  # macro / commodity / policy connectors
 PHASE_29D = "Phase 29D"  # event-trigger / patents / local press connectors
+PHASE_30B = "Phase 30B"  # allowlisted local-language business-press references
 
 
 class RegisteredSource(BaseModel):
@@ -583,6 +585,32 @@ def build_registry(cfg: Settings | None = None) -> SourceRegistry:
                 "media tier (typically T4)."
             ),
         ),
+        RegisteredSource(
+            source_id="local_language_business_press",
+            name="Local-language business press",
+            provider_type=ProviderType.news,
+            tier=T4_QUALITY_MEDIA,
+            status=SourceStatus.enabled,
+            enabled=True,
+            region="Europe",
+            language="mixed",
+            cost_model=CostModel.free,
+            access_mode=AccessMode.web_scrape,
+            connector_key="local_language_business_press",
+            connector_implemented=True,
+            capabilities=["fetch_filings", "fetch_events"],
+            reliability_note=(
+                "Emits a bounded T4 quality-media SOURCE REFERENCE to an "
+                "allowlisted local-language business-press venue (French / German "
+                "/ Italian / Danish) for a verified issuer, with a genuine "
+                "local-language descriptive excerpt (metadata only). The article "
+                "CONTENT is not fetched at report time and no news / headline / "
+                "quote / figure / date is fabricated. The reference requires "
+                "machine-assisted translation (Phase 30A) plus human review "
+                "before use, and deliberately lowers source quality (low "
+                "confidence)."
+            ),
+        ),
     ]
 
     # -- Scaffolded filing / regulator connectors (Phase 29B) --------------
@@ -619,22 +647,12 @@ def build_registry(cfg: Settings | None = None) -> SourceRegistry:
         # patent office / index venues (29D.2: google_patents, uspto,
         # epo_espacenet) and the permit / regulatory-event venues (29D.3: ferc,
         # us_nrc, us_epa) were promoted to enabled reference-only event sources
-        # (see ALL_EVENT_SOURCES). The OpenBB aggregator toolkit and the
-        # local-language business press stay planned.
+        # (see ALL_EVENT_SOURCES). The local-language business press was promoted
+        # (Phase 30B) to an enabled reference-only source (see the enabled sources
+        # above). The OpenBB aggregator toolkit stays planned.
         ("openbb", "OpenBB Platform", ProviderType.aggregator_toolkit, t5, PHASE_29C,
          {"cost_model": CostModel.freemium, "access_mode": AccessMode.sdk,
           "capabilities": ["search_company", "fetch_macro_context"]}),
-        # Local-language business press (Phase 29D) — still needs the Phase 30
-        # translation agent before ingestion.
-        ("local_language_business_press", "Local-language business press",
-         ProviderType.news, T4_QUALITY_MEDIA, PHASE_29D,
-         {"language": "mixed", "cost_model": CostModel.freemium,
-          "access_mode": AccessMode.web_scrape,
-          "capabilities": ["fetch_events", "search_company"],
-          "reliability_note": (
-              "Non-English coverage; requires the translation agent planned for "
-              "Phase 30 before ingestion."
-          )}),
     ]
     planned: list[RegisteredSource] = [
         _planned(source_id=sid, name=nm, provider_type=pt, tier=tr, phase=ph, **extra)
@@ -707,6 +725,10 @@ def build_registry(cfg: Settings | None = None) -> SourceRegistry:
     # Reference-only event connectors — 29D.1 procurement / tender + 29D.2 patent
     # office / index venues, one per ALL_EVENT_SOURCES spec.
     connectors.update(build_event_connectors())
+    # Reference-only local-language business-press connector (Phase 30B): a
+    # bounded T4 quality-media SOURCE REFERENCE with a genuine local-language
+    # excerpt for verified FR / DE / IT / DA issuers. No news is fabricated.
+    connectors.update(build_local_language_press_connectors())
     for s in scaffolded:
         note = next((n for sid, _, _, _, n in _SCAFFOLD_TABLE if sid == s.source_id), None)
         connectors[s.source_id] = ScaffoldConnector(

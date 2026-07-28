@@ -19,6 +19,13 @@ from app.services.sources.connectors.generic import (
     PlannedConnector,
     WrappedProviderConnector,
 )
+from app.services.sources.connectors.local_language_press import (
+    LOCAL_LANGUAGE_PRESS_SOURCES,
+    LocalLanguagePressConnector,
+    LocalLanguagePressSource,
+    build_local_language_press_connectors,
+    local_language_press_source_for,
+)
 from app.services.sources.connectors.macro_reference import (
     ALL_MACRO_SOURCES,
     COMMODITY_ENERGY_SOURCES,
@@ -47,6 +54,11 @@ __all__ = [
     "DeutscheBoerseConnector",
     "NordicDisclosuresConnector",
     "SixSwissConnector",
+    "LocalLanguagePressConnector",
+    "LocalLanguagePressSource",
+    "LOCAL_LANGUAGE_PRESS_SOURCES",
+    "local_language_press_source_for",
+    "build_local_language_press_connectors",
     "MacroReferenceConnector",
     "MacroSourceSpec",
     "MACRO_SOURCES",
