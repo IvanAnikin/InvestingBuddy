@@ -241,22 +241,24 @@ def test_policy_sources_enabled_in_registry_with_honest_note():
         assert conn.is_live
 
 
-def test_procurement_and_patents_stay_planned():
-    """Patents stay Phase 29D planned; procurement EVENT venues are now enabled.
+def test_procurement_and_patents_now_enabled():
+    """Procurement (29D.1) and patents (29D.2) are now enabled EVENT venues.
 
     The procurement / tender EVENT venues (eu_ted, usaspending) were promoted to
-    enabled reference-only event sources in Phase 29D.1; the patent long tail and
-    the OpenBB toolkit remain planned.
+    enabled reference-only event sources in Phase 29D.1 and the patent office /
+    index venues in Phase 29D.2; only the OpenBB toolkit and the local-language
+    business press remain planned.
     """
     reg = build_registry()
     planned_ids = {s.source_id for s in reg.planned_sources()}
     enabled_ids = {s.source_id for s in reg.enabled_sources()}
-    # Procurement now enabled (29D.1), no longer planned.
+    # Procurement (29D.1) + patents (29D.2) now enabled, no longer planned.
     assert {"usaspending", "eu_ted"} <= enabled_ids
+    assert {"google_patents", "uspto", "epo_espacenet"} <= enabled_ids
     assert not ({"usaspending", "eu_ted"} & planned_ids)
-    # Patents + OpenBB toolkit stay planned.
-    assert "openbb" in planned_ids
-    assert {"google_patents", "uspto", "epo_espacenet"} <= planned_ids
+    assert not ({"google_patents", "uspto", "epo_espacenet"} & planned_ids)
+    # Only the OpenBB toolkit + local-language business press stay planned.
+    assert planned_ids == {"openbb", "local_language_business_press"}
 
 
 def test_registry_summary_counts_after_policy_layer():
@@ -264,10 +266,10 @@ def test_registry_summary_counts_after_policy_layer():
     summary = reg.summary()
     # 11 regulator-layer + 5 macro (29C.1) + 5 commodity / energy (29C.2)
     # + 5 policy / government (29C.3) + 2 procurement / tender events (29D.1)
-    # = 28 enabled.
-    assert summary["enabled"] == 28
+    # + 3 patent office / index events (29D.2) = 31 enabled.
+    assert summary["enabled"] == 31
     assert summary["scaffolded"] == 2
-    assert summary["planned"] == 5
+    assert summary["planned"] == 2
     assert summary["total"] == len(reg.all_sources())
     # Health covers every policy / government connector, network-free.
     keys = {h.connector_key for h in reg.health()}

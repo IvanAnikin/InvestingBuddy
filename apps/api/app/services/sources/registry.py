@@ -28,8 +28,8 @@ from app.core.config import settings as default_settings
 from app.core.log_redaction import SENSITIVE_QUERY_SUBSTRINGS
 from app.services.sources.connector_base import ConnectorHealth, SourceConnector
 from app.services.sources.connectors import (
+    ALL_EVENT_SOURCES,
     ALL_MACRO_SOURCES,
-    EVENT_SOURCES,
     CompanyIrConnector,
     DeutscheBoerseConnector,
     EuronextRegulatedConnector,
@@ -306,14 +306,17 @@ def _macro_reference_source(spec: MacroSourceSpec) -> RegisteredSource:
 
 
 def _event_reference_source(spec: EventSourceSpec) -> RegisteredSource:
-    """An enabled reference-only procurement / tender EVENT source (29D.1).
+    """An enabled reference-only EVENT source — 29D.1 procurement + 29D.2 patents.
 
-    Built from the single ``EVENT_SOURCES`` table so the registry and the
-    connectors never drift. It is a T2 procurement reference: the connector emits
-    a bounded SOURCE REFERENCE (which tenders / awards a venue publishes for a
-    theme) plus an honest gap; live tenders / awards are not fetched at report
-    time. The reference is a WEAK internal research-priority signal, never a
-    company recommendation, catalyst, materiality claim, or trade signal.
+    Built from the single ``ALL_EVENT_SOURCES`` table so the registry and the
+    connectors never drift. It is a reference-only venue at the source's own tier
+    (T2 for a government procurement venue or patent office, T5 for the Google
+    Patents aggregator index): the connector emits a bounded SOURCE REFERENCE
+    (which tenders / awards or patent filings a venue publishes for a theme) plus
+    an honest gap; live records are not fetched at report time. The reference is a
+    WEAK internal research-priority signal, never a company recommendation,
+    catalyst, materiality claim, or trade signal; a patent reference additionally
+    draws no legal / infringement / validity conclusion.
     """
     return RegisteredSource(
         source_id=spec.source_id,
@@ -601,9 +604,7 @@ def build_registry(cfg: Settings | None = None) -> SourceRegistry:
     # -- Planned placeholders (disabled by default) ------------------------
     # A compact table keeps the long tail readable. Columns:
     #   (source_id, name, provider_type, tier, phase, extra_kwargs)
-    _SEARCH = ["search_company"]
-    pat = ProviderType.patents
-    t2, t5 = T2_REGULATOR_OR_GOV, T5_API_AGGREGATOR
+    t5 = T5_API_AGGREGATOR
     planned_table: list[tuple[str, str, ProviderType, str, str, dict]] = [
         # Macro / commodity / policy (Phase 29C). NOTE: the reference-only macro
         # publishers (29C.1: fred, imf, eurostat, world_bank_pink_sheet,
@@ -611,18 +612,16 @@ def build_registry(cfg: Settings | None = None) -> SourceRegistry:
         # (29C.2: usgs, iea, irena, eia, entsoe) and the policy / government
         # references (29C.3: ustr_taric, un_comtrade, nato, sipri, oecd) were
         # promoted to enabled reference-only sources (see ALL_MACRO_SOURCES). The
-        # procurement / tender EVENT venues (29D.1: usaspending, eu_ted) were
-        # promoted to enabled reference-only event sources (see EVENT_SOURCES).
-        # The OpenBB aggregator toolkit stays planned.
+        # procurement / tender EVENT venues (29D.1: usaspending, eu_ted) and the
+        # patent office / index venues (29D.2: google_patents, uspto,
+        # epo_espacenet) were promoted to enabled reference-only event sources
+        # (see ALL_EVENT_SOURCES). The OpenBB aggregator toolkit and the
+        # local-language business press stay planned.
         ("openbb", "OpenBB Platform", ProviderType.aggregator_toolkit, t5, PHASE_29C,
          {"cost_model": CostModel.freemium, "access_mode": AccessMode.sdk,
           "capabilities": ["search_company", "fetch_macro_context"]}),
-        # Event-trigger / patents / local press (Phase 29D)
-        ("google_patents", "Google Patents", pat, t5, PHASE_29D, {"capabilities": _SEARCH}),
-        ("uspto", "USPTO (PatentsView)", pat, t2, PHASE_29D,
-         {"jurisdiction": "US", "capabilities": _SEARCH}),
-        ("epo_espacenet", "EPO Espacenet", pat, t2, PHASE_29D,
-         {"region": "Europe", "capabilities": _SEARCH}),
+        # Local-language business press (Phase 29D) — still needs the Phase 30
+        # translation agent before ingestion.
         ("local_language_business_press", "Local-language business press",
          ProviderType.news, T4_QUALITY_MEDIA, PHASE_29D,
          {"language": "mixed", "cost_model": CostModel.freemium,
@@ -648,13 +647,16 @@ def build_registry(cfg: Settings | None = None) -> SourceRegistry:
         _macro_reference_source(spec) for spec in ALL_MACRO_SOURCES
     ]
 
-    # -- Enabled reference-only procurement / tender event sources (29D.1) --
-    # Reference-only: a bounded T2 procurement SOURCE REFERENCE + honest gap, no
-    # live tenders / awards, no network at report time, no API key. Each is a WEAK
-    # internal research-priority signal. Built from EVENT_SOURCES (EU TED,
-    # USAspending.gov), promoted out of the planned set.
+    # -- Enabled reference-only event sources (29D.1 procurement + 29D.2 patents) -
+    # Reference-only: a bounded SOURCE REFERENCE + honest gap, no live tenders /
+    # awards / patent filings, no network at report time, no API key. Each is a
+    # WEAK internal research-priority signal. Built from ALL_EVENT_SOURCES: the
+    # 29D.1 procurement / tender venues (EU TED, USAspending.gov) and the 29D.2
+    # patent office / index venues (Google Patents, USPTO, EPO Espacenet),
+    # promoted out of the planned set. A patent reference draws no legal /
+    # infringement / validity conclusion.
     event_enabled: list[RegisteredSource] = [
-        _event_reference_source(spec) for spec in EVENT_SOURCES
+        _event_reference_source(spec) for spec in ALL_EVENT_SOURCES
     ]
 
     sources = enabled + macro_enabled + event_enabled + scaffolded + planned
@@ -695,8 +697,8 @@ def build_registry(cfg: Settings | None = None) -> SourceRegistry:
     # Reference-only macro / commodity-energy connectors (Phase 29C.1 + 29C.2),
     # one per ALL_MACRO_SOURCES spec.
     connectors.update(build_macro_connectors())
-    # Reference-only procurement / tender event connectors (Phase 29D.1), one per
-    # EVENT_SOURCES spec.
+    # Reference-only event connectors — 29D.1 procurement / tender + 29D.2 patent
+    # office / index venues, one per ALL_EVENT_SOURCES spec.
     connectors.update(build_event_connectors())
     for s in scaffolded:
         note = next((n for sid, _, _, _, n in _SCAFFOLD_TABLE if sid == s.source_id), None)

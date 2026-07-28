@@ -186,11 +186,14 @@ def test_registry_returns_enabled_and_planned():
     # they are no longer planned.
     assert {"ustr_taric", "un_comtrade", "nato", "sipri", "oecd"} <= enabled_ids
     assert not {"ustr_taric", "un_comtrade", "nato", "sipri", "oecd"} & planned_ids
-    # The procurement / tender EVENT venues were promoted to enabled (Phase 29D.1);
+    # The procurement / tender EVENT venues were promoted to enabled (Phase 29D.1)
+    # and the patent office / index venues were promoted to enabled (Phase 29D.2);
     # they are no longer planned.
     assert {"eu_ted", "usaspending"} <= enabled_ids
     assert not {"eu_ted", "usaspending"} & planned_ids
-    # The OpenBB toolkit + patent long tail stay planned (Phase 29D patents).
+    assert {"google_patents", "uspto", "epo_espacenet"} <= enabled_ids
+    assert not {"google_patents", "uspto", "epo_espacenet"} & planned_ids
+    # Only the OpenBB toolkit + local-language business press stay planned.
     assert {"openbb"} <= planned_ids
     assert reg.summary()["total"] == len(reg.all_sources())
     # Every source carries a valid tier.
@@ -311,10 +314,11 @@ def test_registry_endpoint_returns_sources_and_no_secrets():
     # nordic_disclosures (29B.4C) were promoted out of the scaffold set, leaving
     # two honest regulator scaffolds (SEDAR+, ASX).
     assert body["summary"]["scaffolded"] >= 2
-    # Phase 29C promoted 15 macro / commodity / policy sources and Phase 29D.1
-    # promoted the 2 procurement / tender event venues (eu_ted, usaspending) out
-    # of the planned set.
-    assert body["summary"]["planned"] >= 5
+    # Phase 29C promoted 15 macro / commodity / policy sources, Phase 29D.1
+    # promoted the 2 procurement / tender event venues (eu_ted, usaspending) and
+    # Phase 29D.2 promoted the 3 patent office / index venues out of the planned
+    # set, leaving only OpenBB + the local-language business press.
+    assert body["summary"]["planned"] >= 2
     assert len(body["tiers"]) == 6
     ids = {s["source_id"] for s in body["sources"]}
     assert "sec_edgar" in ids

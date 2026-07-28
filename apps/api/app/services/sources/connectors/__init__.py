@@ -6,7 +6,9 @@ from app.services.sources.connectors.euronext_regulated_info import (
     EuronextRegulatedConnector,
 )
 from app.services.sources.connectors.event_reference import (
+    ALL_EVENT_SOURCES,
     EVENT_SOURCES,
+    PATENT_SOURCES,
     EventReferenceConnector,
     EventSourceSpec,
     build_event_connectors,
@@ -54,6 +56,8 @@ __all__ = [
     "EventReferenceConnector",
     "EventSourceSpec",
     "EVENT_SOURCES",
+    "PATENT_SOURCES",
+    "ALL_EVENT_SOURCES",
     "event_spec_for",
     "build_event_connectors",
 ]
