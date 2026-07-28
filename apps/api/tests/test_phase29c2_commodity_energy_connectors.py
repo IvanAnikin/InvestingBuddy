@@ -223,11 +223,11 @@ def test_registry_summary_counts_after_commodity_layer():
     summary = reg.summary()
     # 11 regulator-layer + 5 macro (29C.1) + 5 commodity / energy (29C.2)
     # + 5 policy / government (29C.3) + 2 procurement / tender events (29D.1)
-    # = 28 enabled; eu_ted + usaspending were promoted out of the planned set
-    # (7 -> 5).
-    assert summary["enabled"] == 28
+    # + 3 patent office / index events (29D.2) = 31 enabled; the procurement and
+    # patent venues were promoted out of the planned set (7 -> 2).
+    assert summary["enabled"] == 31
     assert summary["scaffolded"] == 2
-    assert summary["planned"] == 5
+    assert summary["planned"] == 2
     assert summary["total"] == len(reg.all_sources())
     # Health covers every commodity / energy connector, network-free.
     keys = {h.connector_key for h in reg.health()}

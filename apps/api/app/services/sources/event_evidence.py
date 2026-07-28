@@ -1,13 +1,16 @@
 """
-Theme procurement / tender event-evidence collector — Phase 29D.1.
+Theme event-evidence collector — Phase 29D.1 (procurement) + 29D.2 (patents).
 
 The event analog of ``collect_theme_macro_evidence``: given a discovery theme
-(and optional region) it runs the reference-only procurement / tender event
-connectors and returns bounded, tiered ``EvidenceItem`` **source references**
-plus honest ``SourceGap``s ("live tenders / awards not fetched at report time").
-It never fetches and never fabricates a tender, award, contractor, amount,
-contract number, or date. Each reference is a WEAK internal research-priority
-signal (``needs_human_review``), never a materiality claim or trade signal.
+(and optional region) it runs the reference-only event connectors (procurement /
+tender venues plus patent office / index venues) and returns bounded, tiered
+``EvidenceItem`` **source references** plus honest ``SourceGap``s ("live tenders /
+awards / patent filings not fetched at report time"). It never fetches and never
+fabricates a tender, award, contractor, amount, contract number, date, or any
+patent number / inventor / assignee / claim; a patent reference additionally
+draws no legal / infringement / validity conclusion. Each reference is a WEAK
+internal research-priority signal (``needs_human_review``), never a materiality
+claim or trade signal.
 
 Design guarantees:
   * **Dark by default.** When ``cfg.source_event_enabled`` is False the collector
@@ -32,7 +35,7 @@ from app.core.config import Settings
 from app.core.config import settings as default_settings
 from app.services.sources.connector_base import QueryContext
 from app.services.sources.connectors.event_reference import (
-    EVENT_SOURCES,
+    ALL_EVENT_SOURCES,
     EventReferenceConnector,
 )
 from app.services.sources.evidence import EvidenceItem
@@ -85,7 +88,7 @@ async def collect_theme_event_evidence(
     gaps: list[SourceGap] = []
     warnings: list[str] = []
 
-    for spec in EVENT_SOURCES:
+    for spec in ALL_EVENT_SOURCES:
         if len(items) >= cap:
             break
         conn = registry.connectors().get(spec.source_id)

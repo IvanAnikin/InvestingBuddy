@@ -17,7 +17,8 @@ Covers:
     ``fetch_macro_context`` / ``fetch_filings`` / ``search_company`` return an
     honest not-eligible gap.
   * eu_ted + usaspending are enabled procurement / T2 sources in the registry with
-    honest notes; the summary is 28 enabled / 2 scaffolded / 5 planned / 35 total.
+    honest notes; after Phase 29D.2 promoted the three patent venues the summary is
+    31 enabled / 2 scaffolded / 2 planned / 35 total.
   * ``collect_theme_event_evidence`` returns event refs for a relevant theme when
     ``source_event_enabled`` is True and is completely DARK when False; secret-free.
 """
@@ -261,10 +262,11 @@ def test_registry_summary_counts_after_event_layer():
     reg = build_registry()
     summary = reg.summary()
     # 11 regulator-layer + 15 macro/commodity/policy (29C) + 2 procurement /
-    # tender event venues (29D.1) = 28 enabled.
-    assert summary["enabled"] == 28
+    # tender event venues (29D.1) + 3 patent office / index venues (29D.2) = 31
+    # enabled.
+    assert summary["enabled"] == 31
     assert summary["scaffolded"] == 2
-    assert summary["planned"] == 5
+    assert summary["planned"] == 2
     assert summary["total"] == 35
     assert summary["total"] == len(reg.all_sources())
     # Health covers every event connector, network-free.
@@ -272,12 +274,15 @@ def test_registry_summary_counts_after_event_layer():
     assert EVENT_IDS <= keys
 
 
-def test_patents_stay_planned_after_event_layer():
-    """Patents remain Phase 29D planned; only procurement was promoted."""
+def test_patents_promoted_by_phase_29d2():
+    """The patent venues were promoted to enabled in Phase 29D.2; only OpenBB and
+    the local-language business press remain planned."""
     reg = build_registry()
     planned_ids = {s.source_id for s in reg.planned_sources()}
-    assert {"google_patents", "uspto", "epo_espacenet"} <= planned_ids
-    assert "openbb" in planned_ids
+    enabled_ids = {s.source_id for s in reg.enabled_sources()}
+    assert {"google_patents", "uspto", "epo_espacenet"} <= enabled_ids
+    assert not ({"google_patents", "uspto", "epo_espacenet"} & planned_ids)
+    assert planned_ids == {"openbb", "local_language_business_press"}
     assert not (EVENT_IDS & planned_ids)
 
 
