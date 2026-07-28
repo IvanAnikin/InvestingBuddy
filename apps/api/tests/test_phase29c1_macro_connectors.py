@@ -203,9 +203,9 @@ def test_registry_summary_counts_include_macro_layer():
     # 11 regulator-layer enabled + 5 reference-only macro sources (29C.1) + 5
     # reference-only commodity / energy sources (29C.2) + 5 reference-only policy /
     # government sources (29C.3) + 2 reference-only procurement / tender event
-    # sources (29D.1) + 3 reference-only patent office / index sources (29D.2) = 31
-    # enabled.
-    assert summary["enabled"] == 31
+    # sources (29D.1) + 3 reference-only patent office / index sources (29D.2) + 3
+    # reference-only permit / regulatory-event sources (29D.3) = 34 enabled.
+    assert summary["enabled"] == 34
     assert summary["scaffolded"] == 2
     assert summary["total"] == len(reg.all_sources())
     # Health covers every macro connector, network-free.

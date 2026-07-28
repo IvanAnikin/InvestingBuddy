@@ -171,6 +171,7 @@ class ProviderType(str, Enum):
     trade_policy = "trade_policy"               # trade / tariff / policy
     procurement = "procurement"                 # public procurement / spending
     patents = "patents"                         # patents / IP
+    permits = "permits"                         # permits / regulatory-event venues
     aggregator_toolkit = "aggregator_toolkit"   # multi-source toolkit (OpenBB)
 
 

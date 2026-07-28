@@ -1,5 +1,6 @@
 """
-Event-trigger reference connectors — Phase 29D.1 (procurement) + 29D.2 (patents).
+Event-trigger reference connectors — Phase 29D.1 (procurement) + 29D.2 (patents)
++ 29D.3 (permits / regulatory-event venues).
 
 Establishes the EVENT-TRIGGER evidence category as a set of **reference-only**
 venues, mirroring the 29C macro reference layer but with an EVENT flavour. An
@@ -9,7 +10,7 @@ a fixed, public, token-free official venue plus a short description of *which
 records that venue publishes for the theme* — and an explicit honest
 ``SourceGap`` recording that the live records were NOT fetched.
 
-Two kinds of event venue share this one generic connector:
+Three kinds of event venue share this one generic connector:
 
   * **Procurement / tender venues (29D.1)** — EU TED, USAspending.gov. Reference
     text names *which tenders / awards a venue publishes*; never a specific
@@ -20,12 +21,21 @@ Two kinds of event venue share this one generic connector:
     IP theme*; never a specific patent number, title, inventor, assignee, claim,
     filing date, or grant date, and — critically — **never a legal, infringement,
     validity, priority, or patentability conclusion or any materiality claim**.
+  * **Permit / regulatory-event venues (29D.3)** — US federal, official/government
+    only: FERC (energy / grid / transmission / pipeline / LNG dockets & permits),
+    US NRC (nuclear reactor licensing / permits), US EPA (environmental /
+    emissions / industrial permitting). Reference text names *which permit /
+    docket categories a venue publishes for a theme*; never a specific docket,
+    case, permit number, applicant, or date, and — critically — **never a
+    regulatory-outcome, approval, or materiality conclusion** about any docket or
+    permit.
 
-Crucially, EVERY event reference (procurement or patent) is a **WEAK internal
-research-priority signal only**. It says "this theme has a public venue worth
-checking", never that a specific award happened or a specific patent was filed,
-never a materiality claim, and never a trade signal. Every reference is stamped
-``needs_human_review`` and carries an explicit weak-signal marker.
+Crucially, EVERY event reference (procurement, patent, or permit) is a **WEAK
+internal research-priority signal only**. It says "this theme has a public venue
+worth checking", never that a specific award happened, a specific patent was
+filed, or a specific permit was decided, never a materiality claim, and never a
+trade signal. Every reference is stamped ``needs_human_review`` and carries an
+explicit weak-signal marker.
 
 Hard guarantees:
   * **No fabricated specifics.** No contractor / award amount / contract number
@@ -205,10 +215,55 @@ _PATENT_FLAVOR = _EventFlavor(
 )
 
 
+# Permit flavour (29D.3). Like the patent flavour it is thematic and WEAK, and it
+# deliberately avoids every positive regulatory-outcome word ("approved",
+# "denied", "granted", "revoked", "decision", …) — even inside a negated
+# disclaimer — so the reference text can never read as a regulatory ruling;
+# instead it states, plainly, that NO regulatory-outcome, approval, or materiality
+# conclusion of any kind is drawn about any docket or permit.
+_PERMIT_FLAVOR = _EventFlavor(
+    kind="permit / regulatory-event",
+    venue_desc="official public permit / regulatory-event venue",
+    catalog="permit / regulatory docket venue catalog",
+    # Kept concise so the "no regulatory-outcome conclusion" disclaimer survives
+    # the 400-char excerpt bound; the full field enumeration lives in the
+    # (unbounded) provenance + warning.
+    excerpt_scope=(
+        "official permit venue only: no specific docket, permit, or applicant is "
+        "fetched, and no regulatory-outcome conclusion is drawn."
+    ),
+    provenance_disclaimer=(
+        "Permit / regulatory-event source reference only — no specific docket, "
+        "case, permit number, applicant, or date fetched, and no "
+        "regulatory-outcome or materiality conclusion drawn"
+    ),
+    warning=(
+        "Permit / regulatory-event source reference only; live permit filings / "
+        "dockets are not fetched at report time. Weak internal research-priority "
+        "signal — not a materiality claim, not a trade signal, and not a "
+        "regulatory-outcome or materiality conclusion about any docket or permit. "
+        "Human review required."
+    ),
+    gap_scope=(
+        "permit / regulatory-event venue reference only; live permit filings / "
+        "dockets not fetched at report time. Only a pointer to the venue and the "
+        "permit / regulatory-event themes it covers is provided."
+    ),
+    health_publishes="permit filings / dockets",
+    health_extra=(
+        " No regulatory-outcome or materiality conclusion about any docket or "
+        "permit is drawn."
+    ),
+)
+
+
 def _flavor_for(provider_type: ProviderType) -> _EventFlavor:
-    """Select the reference vocabulary for a spec's kind (patent vs procurement)."""
+    """Select the reference vocabulary for a spec's kind (procurement / patent /
+    permit)."""
     if provider_type == ProviderType.patents:
         return _PATENT_FLAVOR
+    if provider_type == ProviderType.permits:
+        return _PERMIT_FLAVOR
     return _PROCUREMENT_FLAVOR
 
 
@@ -363,29 +418,115 @@ PATENT_SOURCES: tuple[EventSourceSpec, ...] = (
 )
 
 
+# The permit / regulatory-event venue event layer (29D.3). US federal, official /
+# government only. Every URL is a fixed, public, token-free official landing page
+# (no query string, no API key). Permits are a WEAK regulatory-event / theme
+# research-priority signal only — a permit reference is never a candidate, a
+# catalyst, a materiality claim, a trade signal, or a regulatory-outcome /
+# approval conclusion. Live permit filings / dockets are NOT fetched at report
+# time; the keyed FERC eLibrary / EPA / NRC ADAMS APIs are NOT used.
+#
+# Each venue carries its OWN thematic keywords (energy / grid vs nuclear vs
+# environmental) rather than one shared set, so a theme surfaces only the venue
+# whose regulatory domain it belongs to. The generic permit / licensing keywords
+# are shared because all three are permit venues.
+_PERMIT_LICENSING_KEYWORDS: tuple[str, ...] = ("permit", "permitting", "licensing")
+
+# Permit dockets turn over roughly daily; a 1-day freshness hint is honest for the
+# venue reference (used only to stamp stale_after_days).
+_PERMIT_REFRESH_DAYS = 1
+
+_PERMIT_RELIABILITY_NOTE_TAIL = (
+    "permit / regulatory-event venue reference; live permit filings / dockets not "
+    "fetched at report time; no regulatory-outcome conclusions; weak internal "
+    "research-priority signal — Phase 29D follow-up for live fetch. No specific "
+    "docket, case, permit number, applicant, or date emitted."
+)
+
+PERMIT_SOURCES: tuple[EventSourceSpec, ...] = (
+    EventSourceSpec(
+        source_id="ferc",
+        display_name="FERC (Federal Energy Regulatory Commission)",
+        url="https://www.ferc.gov/",
+        provider_type=ProviderType.permits,
+        jurisdiction="US",
+        region="North America",
+        publishes=(
+            "US energy, grid, transmission, pipeline and LNG dockets, for a grid / "
+            "energy theme"
+        ),
+        theme_keywords=(
+            "energy", "grid", "transmission", "pipeline", "lng", "power plant",
+            "electricity", "hydropower", *_PERMIT_LICENSING_KEYWORDS,
+        ),
+        refresh_cadence_days=_PERMIT_REFRESH_DAYS,
+        reliability_note="Energy / grid " + _PERMIT_RELIABILITY_NOTE_TAIL,
+    ),
+    EventSourceSpec(
+        source_id="us_nrc",
+        display_name="US NRC (Nuclear Regulatory Commission)",
+        url="https://www.nrc.gov/",
+        provider_type=ProviderType.permits,
+        jurisdiction="US",
+        region="North America",
+        publishes=(
+            "US nuclear reactor licensing and permit dockets, for a nuclear power "
+            "theme"
+        ),
+        theme_keywords=(
+            "nuclear", "reactor", "radioactive", *_PERMIT_LICENSING_KEYWORDS,
+        ),
+        refresh_cadence_days=_PERMIT_REFRESH_DAYS,
+        reliability_note="Nuclear " + _PERMIT_RELIABILITY_NOTE_TAIL,
+    ),
+    EventSourceSpec(
+        source_id="us_epa",
+        display_name="US EPA (Environmental Protection Agency)",
+        url="https://www.epa.gov/",
+        provider_type=ProviderType.permits,
+        jurisdiction="US",
+        region="North America",
+        publishes=(
+            "US environmental, emissions and industrial permitting programs, for "
+            "an environmental / emissions theme"
+        ),
+        theme_keywords=(
+            "environmental", "emissions", "pollution", "air quality", "mining",
+            *_PERMIT_LICENSING_KEYWORDS,
+        ),
+        refresh_cadence_days=_PERMIT_REFRESH_DAYS,
+        reliability_note="Environmental " + _PERMIT_RELIABILITY_NOTE_TAIL,
+    ),
+)
+
+
 # The full event reference table the registry, collector and connector builder all
-# iterate: the 29D.1 procurement / tender venues plus the 29D.2 patent office /
-# index venues.
-ALL_EVENT_SOURCES: tuple[EventSourceSpec, ...] = EVENT_SOURCES + PATENT_SOURCES
+# iterate: the 29D.1 procurement / tender venues, the 29D.2 patent office / index
+# venues, plus the 29D.3 permit / regulatory-event venues.
+ALL_EVENT_SOURCES: tuple[EventSourceSpec, ...] = (
+    EVENT_SOURCES + PATENT_SOURCES + PERMIT_SOURCES
+)
 
 
 def event_spec_for(source_id: str) -> EventSourceSpec | None:
-    """Return the event spec (procurement or patent) for ``source_id``, or None."""
+    """Return the event spec (procurement / patent / permit) for ``source_id``."""
     return next((s for s in ALL_EVENT_SOURCES if s.source_id == source_id), None)
 
 
 class EventReferenceConnector(SourceConnector):
-    """A reference-only EVENT connector for ONE venue (procurement or patent).
+    """A reference-only EVENT connector for ONE venue (procurement / patent / permit).
 
     ``fetch_events`` emits a bounded ``government_data`` *source reference* plus an
     honest "live records not fetched" gap when the query theme / region is
     relevant; otherwise it returns an empty result (no evidence, no gap). It never
-    fetches and never fabricates a tender / award (procurement) or a patent
-    number / inventor / assignee / date (patents), and a patent reference draws no
-    legal / infringement / validity conclusion. The reference is a WEAK internal
-    research-priority signal, stamped ``needs_human_review`` and carrying no
-    materiality claim. ``fetch_macro_context`` / ``fetch_filings`` /
-    ``search_company`` are not an event path and return an honest not-eligible gap.
+    fetches and never fabricates a tender / award (procurement), a patent number /
+    inventor / assignee / date (patents), or a docket / permit number / applicant /
+    date (permits); a patent reference draws no legal / infringement / validity
+    conclusion and a permit reference draws no regulatory-outcome / approval
+    conclusion. The reference is a WEAK internal research-priority signal, stamped
+    ``needs_human_review`` and carrying no materiality claim.
+    ``fetch_macro_context`` / ``fetch_filings`` / ``search_company`` are not an
+    event path and return an honest not-eligible gap.
     """
 
     status = ConnectorStatus.enabled
@@ -404,14 +545,15 @@ class EventReferenceConnector(SourceConnector):
         A generic ask with no theme and no region is NOT answered — event venues
         are always theme-specific, never a default reference. Region-based
         surfacing applies to region-scoped procurement / tender venues only; patent
-        venues are purely thematic (innovation / R&D / IP) and never surface on a
-        bare region query, so their office's home region is metadata, not a match.
+        venues (innovation / R&D / IP) and permit venues (US-federal regulatory
+        events) are purely thematic and never surface on a bare region query, so
+        their home region is metadata, not a match.
         """
         theme = (query.query or "").strip().lower()
         region = (query.region or "").strip().lower()
         if theme and any(kw in theme for kw in self._spec.theme_keywords):
             return True
-        if self._spec.provider_type != ProviderType.patents:
+        if self._spec.provider_type == ProviderType.procurement:
             if region and self._spec.region and self._spec.region.lower() in region:
                 return True
         return False
@@ -527,7 +669,7 @@ class EventReferenceConnector(SourceConnector):
 
 
 def build_event_connectors() -> dict[str, EventReferenceConnector]:
-    """One reference-only connector per event source (procurement + patents)."""
+    """One reference-only connector per event source (procurement + patents + permits)."""
     return {s.source_id: EventReferenceConnector(s) for s in ALL_EVENT_SOURCES}
 
 
@@ -535,6 +677,7 @@ __all__ = [
     "EventSourceSpec",
     "EVENT_SOURCES",
     "PATENT_SOURCES",
+    "PERMIT_SOURCES",
     "ALL_EVENT_SOURCES",
     "EventReferenceConnector",
     "event_spec_for",
