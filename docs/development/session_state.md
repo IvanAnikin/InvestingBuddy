@@ -1,38 +1,34 @@
-# Session State — Phase 29D.2 Patent Event-Trigger Reference Connectors · Stage: PR (about to open) · updated 2026-07-28
+# Session State — Phase 29D.2 CLOSED · Next: Phase 29D.3 Permit / Regulatory-Event Reference Connectors · Stage: not-started · updated 2026-07-28
 
 > Resumable snapshot. Overwrite at each checkpoint (context-compaction skill).
 > Keep decisions + evidence, not raw logs.
 
 ## Current position
-- On branch **`feature/phase-29d2-patent-event-connectors`** @ **`42f80a7`** (implementation committed; docs updated in the working tree, not yet committed). Autonomous multi-phase campaign (Phase 0 → 31).
-- Active: **Phase 29D.2 — patent event-trigger reference connectors. Stage: PR — about to open** (backend + docs done; **NOT merged / deployed / validated**).
-- Prior: **Phase 29D.1 ✅ CLOSED + staging-validated** (PR #64 → `main` `a671e97`, `SOURCE_EVENT_ENABLED` kept ON).
-- Umbrella: **Phase 29D — event-trigger connectors: 🟡 IN PROGRESS** (29D.1 ✅ closed; 29D.2 patents = current, PR-open; 29D.3 permits / regulatory-event metadata = the LAST 29D subphase, after). Prior umbrella **Phase 29C ✅ COMPLETE** (`a8ac580` + `80c8454` + `ad6dde5`).
+- On **`main`** @ **`1c6b1c9`** (Phase 29D.2 squash-merged). Clean tree. Autonomous multi-phase campaign (Phase 0 → 31).
+- **Phase 29D.2 — patent event-trigger reference connectors: ✅ CLOSED + staging-validated (VALIDATED-WITH-ENVIRONMENTAL-NOTE)** — PR #65 → `main` `1c6b1c9`, `SOURCE_EVENT_ENABLED` already ON (kept ON), NO migration (head `011`).
+- **Active: Phase 29D.3 — permit / regulatory-event reference connectors. Stage: NOT STARTED** (the **LAST** Phase 29D subphase).
+- Umbrella: **Phase 29D — event-trigger connectors: 🟡 IN PROGRESS** (29D.1 ✅ `a671e97`; 29D.2 ✅ `1c6b1c9`; 29D.3 permits = next + LAST). Prior umbrella **Phase 29C ✅ COMPLETE** (`a8ac580` + `80c8454` + `ad6dde5`).
 
-## Phase 29D.2 — what shipped in `42f80a7` (backend-only, 12 files incl. tests, NO migration)
-- Extends the 29D.1 reference-only **event-trigger** layer to **patents** with **zero new wiring, NO new flag** (reuses `SOURCE_EVENT_ENABLED`).
-- New `PATENT_SOURCES` table added into the combined `ALL_EVENT_SOURCES`, served by the SAME generic `EventReferenceConnector` (`sources/connectors/event_reference.py`): **Google Patents** (`patents.google.com`, **T5** aggregator index, provider `patents`), **USPTO** (`uspto.gov`, **T2** government, provider `patents`), **EPO Espacenet** (`worldwide.espacenet.com`, **T2** government, provider `patents`).
-- A per-kind `_EventFlavor` makes patent references **PURELY THEMATIC** (innovation / R&D / patent / IP / technology / semiconductor / pharma / battery / EV / materials), `source_type="government_data"`. Each `fetch_events` emits, per relevant theme, ONE bounded **T2/T5 SOURCE REFERENCE** (fixed official public URL, **no API key**, **NO specific patent number / title / inventor / assignee / claim / filing-or-grant date**) + an honest `data_not_sourced` gap + an explicit disclaimer that **NO legal / infringement / validity / patentability / ownership / competitive-strength conclusion is drawn**. Each is **WEAK internal research-priority CONTEXT only** + `needs_human_review` + `stale_after_days` freshness; network-free.
-- Reuses the SAME collector (`collect_theme_event_evidence` now iterates `ALL_EVENT_SOURCES`), the discovery-council `R#` event-citation path, the `industry_event_context` report block, and the existing `SOURCE_EVENT_ENABLED` flag.
-- Registry: `google_patents` + `uspto` + `epo_espacenet` promoted PLANNED→**enabled** → **31 enabled / 2 scaffolded / 2 planned / 35 total** (only `openbb` + `local_language_business_press` remain planned; SEDAR+/ASX are the 2 scaffolds).
+## Phase 29D.2 — condensed closure evidence (backend-only, NO migration)
+- Extended the 29D.1 reference-only **event-trigger** layer to **patents** with **zero new wiring, NO new flag** (reuses `SOURCE_EVENT_ENABLED`). New `PATENT_SOURCES` (into combined `ALL_EVENT_SOURCES`) served by the SAME generic `EventReferenceConnector`: **Google Patents** (`patents.google.com`, T5, provider `patents`), **USPTO** (`uspto.gov`, T2, provider `patents`), **EPO Espacenet** (`worldwide.espacenet.com`, T2, provider `patents`) — all promoted PLANNED→**enabled**. Per-kind `_EventFlavor` = purely thematic (innovation/R&D/patent/IP/tech/semi/pharma/battery/EV/materials), `source_type="government_data"`; ONE bounded T2/T5 SOURCE REFERENCE (fixed official URL, no API key, NO specific patent number/title/inventor/assignee/claim/date) + honest `data_not_sourced` gap + explicit **NO legal/infringement/validity/patentability/ownership conclusion** disclaimer; WEAK + `needs_human_review`; network-free. Registry → **31 enabled / 2 scaffolded (SEDAR+/ASX) / 2 planned (`openbb` + local-language business press) / 35 total**.
+- **Tests/security:** backend **2210 pass / 12 skip / 0 fail** (+26; adjacent count tests → 31/2, no ripple); ruff clean; mypy **71** baseline (no new); security PASS (reference-only, network-free, no API keys, no legal/infringement conclusions); pre-PR review APPROVED 10/10.
+- **Staging (2026-07-28) VALIDATED-WITH-ENVIRONMENTAL-NOTE:** API `commit_sha=1c6b1c9` (3 stable polls), web unchanged, head `011`, AUTH_TEST_MODE absent, admin-gated; no app-setting flip (`SOURCE_EVENT_ENABLED` already ON). **B:** registry/health show the 3 patent sources enabled (T5/T2/T2), 31/2/2/35, honest "live filings not fetched; no legal/infringement conclusions; WEAK" notes, secret-free. **C:** a "semiconductor innovation" run (3 real semis incl. **AMAT**) cites Google Patents/USPTO/Espacenet (×11 each) as reference-only `R#` facts + honest "not fetched" gaps; patents = CONTEXT not a candidate. **D:** no fabricated patent numbers, no legal/validity conclusions, forbidden terms only negated; `safety_valid` true. **F:** council `llm_used`, `completed_with_warnings` (Azure TPM ENVIRONMENTAL). **G:** 6 flags ON.
 
-## Tests / security (pre-staging, GREEN)
-- Backend **2210 pass / 12 skip / 0 fail**; ruff clean; mypy **71** baseline (no new); security PASS (reference-only, network-free, no API keys, purely thematic, no fabricated patents, no legal/infringement conclusions, reuses the event flag).
+## ⚠️ Follow-up recorded for 29D.3 (patent-label tidy — NON-BLOCKING, NOT a defect)
+- At `1c6b1c9`, **`_event_discovery_facts`** (`apps/api/app/services/llm/discovery_council.py`) labels **patent** event references with generic **"procurement/tender venue reference (T2)"** boilerplate — a **cosmetic mislabel** in the discovery-pack narration. NOT a safety issue (no fabrication, no legal conclusion; patent-specific honesty carried by the gap messages + registry `reliability_note`). **FIX = label per `provider_type` (procurement vs patents); FOLD INTO Phase 29D.3.**
+
+## ⚠️ az-log-timeout note (operational, recorded — NOT a defect)
+- Staging **log secret-scan UNKNOWN** — the `az` log download **timed out >90s** this session. Mitigated: (1) API response surface scanned clean; (2) **29D.2 adds no logging** (reference-only, keyless). Re-run opportunistically.
 
 ## Decisions (carried / this phase)
-- **Reference-only + deferred fetch:** live patent-filing FETCH is DEFERRED (reference-only) — a Phase 29D follow-up, mirroring the 29B.4 / 29C / 29D.1 deferrals. No API keys, no report-time network.
-- **Reuse the event flag:** NO new flag — reuses the existing OFF-by-default `SOURCE_EVENT_ENABLED` / `SOURCE_EVENT_MAX_ITEMS` (INDEPENDENT of `SOURCE_MACRO_ENABLED`). No new host/endpoint/secret/migration.
-- **NO legal conclusions:** a patent reference is theme-scoped **WEAK CONTEXT** — never company-specific, never a catalyst / materiality / trade signal, never a candidate, never a recommendation, and **never a legal / infringement / validity / patentability / ownership conclusion**. `source_type="government_data"`, provider `patents`.
+- **Reference-only + deferred fetch:** live patent-filing FETCH DEFERRED (reference-only) — a Phase 29D follow-up, mirroring the 29B.4 / 29C / 29D.1 deferrals. No API keys, no report-time network.
+- **Reuse the event flag:** 29D.2 added NO new flag — reuses the existing OFF-by-default `SOURCE_EVENT_ENABLED` / `SOURCE_EVENT_MAX_ITEMS` (INDEPENDENT of `SOURCE_MACRO_ENABLED`); `SOURCE_EVENT_ENABLED` KEPT ON on staging. 29D.3 should reuse the SAME event layer (no new flag).
+- **NO legal / regulatory conclusions:** a patent (29D.2) / permit (29D.3) reference is theme-scoped **WEAK CONTEXT** — never company-specific, never a catalyst / materiality / trade signal, never a candidate, never a recommendation, and never a legal / infringement / validity / regulatory-approval conclusion.
+- **Company→theme carry-forward (open, NOT a defect):** company-report event / macro context blocks depend on a non-thin company sector / industry classification (`free_real`) to derive a theme; thin / mock profiles → collectors stay dark → blocks don't render (keys present-but-empty). First noted **29C.2** (and 29C.3 / 29D.1). Registry + discovery-council citeability are proven; refine the company→theme derivation in a follow-up.
+- **Azure OpenAI gpt-4.1-mini TPM quota** — standing staging environmental limiter (partial council completion under large real-data packs), NOT a code defect.
 
-## Known reuse-consequence (recorded — NOT a defect)
-- The `industry_event_context` narration is procurement-flavored, so a patent surfaced there is described generically ("venue reference … not a candidate / catalyst / trade signal"). The patent-specific "no legal conclusion" disclaimer lives in the item excerpt / gap.
-
-## Carry-forward (open — NOT a defect)
-- **Company→theme derivation depends on a non-thin company sector / industry classification** (`free_real`) — thin / mock profiles → the event / macro context blocks stay dark and don't render (keys present-but-empty). Same coarse / thin company→theme carry-forward first noted in **29C.2** (and 29C.3 / 29D.1). Registry + discovery-council citeability are proven; refine the company→theme derivation in a follow-up.
-- **Azure OpenAI gpt-4.1-mini TPM quota** — standing staging environmental limiter (partial council-agent failures under large real-data packs), NOT a code defect.
-
-## Staging flags (unchanged by 29D.2 — all 6 ON from prior phases)
-`LLM_COUNCIL_ENABLED` · `LLM_DISCOVERY_COUNCIL_ENABLED` · `SOURCE_CONNECTOR_ENABLED` · `SOURCE_DOCUMENT_EXTRACTION_ENABLED` · `SOURCE_MACRO_ENABLED` · `SOURCE_EVENT_ENABLED`. 29D.2 reuses `SOURCE_EVENT_ENABLED` (already ON) — no new app setting.
+## Staging flags (unchanged — all 6 ON)
+`LLM_COUNCIL_ENABLED` · `LLM_DISCOVERY_COUNCIL_ENABLED` · `SOURCE_CONNECTOR_ENABLED` · `SOURCE_DOCUMENT_EXTRACTION_ENABLED` · `SOURCE_MACRO_ENABLED` · `SOURCE_EVENT_ENABLED`. 29D.3 should reuse `SOURCE_EVENT_ENABLED` (already ON) — no new app setting expected.
 
 ## Next exact command / action
-- **Run ib-pr-review-agent, then `gh pr create` for Phase 29D.2** (branch `feature/phase-29d2-patent-event-connectors`). **STOP at the merge gate** — do not merge / deploy / mark closed until human approval + staging validation is on file.
+- **Scope Phase 29D.3 (permits / regulatory-event connectors) and create branch `feature/phase-29d3-permit-event-connectors`.** Extend the event layer with permit / regulatory-event *references* (energy / mining / grid / industrial permits where safe) — metadata-first, honest gaps, **no fake permits**, reference-only, reuse `SOURCE_EVENT_ENABLED`, no legal / regulatory-approval conclusions. **Also FOLD IN** the `_event_discovery_facts` per-provider label tidy (procurement vs patents vs permits). It is the **LAST 29D subphase** — after it, Phase 30 (translation / local-language + PDF table extraction / OCR). **STOP at the merge gate** — do not merge / deploy / mark closed until human approval + staging validation is on file.
