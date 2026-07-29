@@ -108,6 +108,10 @@ export function humanizeKey(key: string): string {
 export const SECTION_ORDER: string[] = [
   "executive_summary",
   "committee_chair_summary",
+  // Phase 31 — the internal research memo is a prominent synthesis block placed
+  // near the top (it condenses the sections below). Present only when the
+  // OFF-by-default backend flag is enabled; legacy reports omit the key entirely.
+  "research_memo",
   "company_identity",
   "data_availability_summary",
   "financial_snapshot",
@@ -130,6 +134,7 @@ export const SECTION_ORDER: string[] = [
 export const SECTION_LABELS: Record<string, string> = {
   executive_summary: "Executive Summary",
   committee_chair_summary: "Committee Summary",
+  research_memo: "Internal Research Memo",
   company_identity: "Company Identity",
   data_availability_summary: "Data Availability Summary",
   financial_snapshot: "Financial Snapshot",
