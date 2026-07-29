@@ -195,7 +195,13 @@ def _press_status_line(result: CatalystDiscoveryResult) -> str:
 def _company_sources_section(result: CatalystDiscoveryResult) -> str:
     """Render the discovered company sources (website / IR / newsroom / feed)."""
     company_sources = result.company_sources
-    md = "## Company News Sources\n\n"
+    md = "## Company News Sources (Catalyst / News Discovery)\n\n"
+    md += (
+        "_Scope: sources resolved by the news / catalyst-discovery pass. Verified "
+        "issuer primary sources (investor relations, filings), when available, are "
+        "surfaced by the source-connector layer and the Internal Research Memo — "
+        "not here._\n\n"
+    )
     if not company_sources:
         return md + (
             "_Company source discovery did not run for this analysis._\n\n"

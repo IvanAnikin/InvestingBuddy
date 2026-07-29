@@ -2557,3 +2557,23 @@ conclusion**; it is internal-admin-only, always `human_review_required`, never
 `publication_ready`, and never emits a recommendation or valuation. With the flag
 off the report body is **byte-identical** to Phase 30B; when on, the memo derives
 entirely from existing report data, so the happy path is directly demonstrable.
+
+> **Pending hotfix (pre-merge — branch `hotfix/phase-31-source-reference-surfacing`;
+> NOT yet merged / deployed / staging-validated).** When `company_ir` returns
+> verified **metadata-only** T1 primary-source references (issuer IR page /
+> annual-report index / press index) with **no** extracted document text and **no**
+> parsed primary facts (scanned / JS-gated PDFs, no OCR), the hotfix makes those
+> references **visible** instead of showing `0` primary documents / `0` primary
+> facts / a `0/0` source appendix. It extends `primary_evidence_summary` with a
+> **third honest branch** (references-available while extracted-text / facts-
+> unavailable) carrying `primary_source_reference_count`,
+> `primary_document_reference_count`, `extracted_primary_document_count`,
+> `primary_fact_count`, `metadata_only_source_count`, `source_gap_count` and the
+> booleans `extracted_document_text_available` / `primary_facts_available`; the
+> memo `source_appendix` sub-block and the top-level `source_citation_appendix`
+> gain an honest `primary_source_reference_count` + note (**no fabricated `Source`
+> / `Citation` rows**). Metadata-only references **never** become primary facts;
+> `schema_valid` / `safety_valid` stay true, `publication_ready` false,
+> `human_review_required` true; still **no OCR / extraction** is added. This
+> re-presents references the evidence layer already holds — validation follows a
+> human-approved merge + deploy (see PHASE_LEDGER row `31-hotfix`).

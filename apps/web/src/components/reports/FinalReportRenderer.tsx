@@ -227,15 +227,35 @@ function AppendixSection({ section }: { section: Record<string, unknown> }) {
   const sources = (unwrap(section.sources).value as CitationSource[] | null) ?? [];
   const citations = unwrap(section.citations);
   const total = unwrap(section.sources).total ?? sources.length;
+  // Phase 31 hotfix — the appendix now carries a metadata-only PRIMARY-SOURCE
+  // REFERENCE count (issuer IR / annual-report index / regulator venue) even when
+  // there are 0 DB-persisted citations. When those references exist, the card must
+  // NOT imply "zero sources" — it points the reader to the memo's Primary Evidence.
+  const primaryRefCount =
+    typeof section.primary_source_reference_count === "number"
+      ? section.primary_source_reference_count
+      : 0;
+  const appendixNote = noteText(section.note);
   return (
     <SectionShell title="Source Citation Appendix" testId="report-section-source_citation_appendix">
       <p className="mb-2 text-xs text-slate-500">
         {total} source(s){citations.total != null ? ` · ${citations.total} citation(s)` : ""}
+        {primaryRefCount > 0 ? ` · ${primaryRefCount} primary-source reference(s)` : ""}
       </p>
       {sources.length === 0 ? (
-        <p className="text-sm">
-          <Muted>No sources cited yet — human review required to source claims.</Muted>
-        </p>
+        primaryRefCount > 0 ? (
+          <p className="text-sm" data-testid="appendix-primary-references">
+            <Muted>
+              {primaryRefCount} primary-source reference(s) located — see the
+              Internal Research Memo (Primary Evidence). No DB-persisted citations
+              yet; human review required.
+            </Muted>
+          </p>
+        ) : (
+          <p className="text-sm">
+            <Muted>No sources cited yet — human review required to source claims.</Muted>
+          </p>
+        )
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full min-w-[520px] text-left text-xs">
@@ -276,6 +296,9 @@ function AppendixSection({ section }: { section: Record<string, unknown> }) {
           </table>
         </div>
       )}
+      {appendixNote ? (
+        <p className="mt-2 text-[11px] italic text-slate-500">{appendixNote}</p>
+      ) : null}
     </SectionShell>
   );
 }

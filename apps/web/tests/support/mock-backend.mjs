@@ -502,6 +502,67 @@ function sampleResearchMemo() {
   };
 }
 
+// Phase 31 hotfix — the metadata-only PRIMARY-SOURCE REFERENCE case. The
+// source-connector layer located verified issuer IR / annual-report index /
+// regulator-venue REFERENCES, but did NOT fetch document text and parsed NO
+// primary facts. Counts (including 0) render as numbers; the reference rows are
+// FLAT scalar objects (title/domain/url/tier/reference_type/requires_translation)
+// that the generic ObjectLine renders cleanly (no "[object Object]").
+function sampleMetadataOnlyPrimaryEvidence() {
+  return {
+    primary_source_reference_count: 3,
+    primary_document_reference_count: 1,
+    extracted_primary_document_count: 0,
+    primary_document_count: 0,
+    primary_fact_count: 0,
+    metadata_only_source_count: 3,
+    source_gap_count: 2,
+    extracted_document_text_available: false,
+    primary_facts_available: false,
+    primary_source_references: {
+      value: [
+        {
+          title: "Richemont — Investor Relations",
+          domain: "richemont.com",
+          url: "https://www.richemont.com/en/home/investors/",
+          tier: "T1_primary_company_source",
+          reference_type: "ir_profile",
+          requires_translation: false,
+        },
+        {
+          title: "Richemont — Annual reports & results",
+          domain: "richemont.com",
+          url: "https://www.richemont.com/en/home/investors/reports/",
+          tier: "T1_primary_company_source",
+          reference_type: "filing_index",
+          requires_translation: false,
+        },
+        {
+          title: "SIX Swiss Exchange — Richemont issuer page",
+          domain: "six-group.com",
+          url: "https://www.six-group.com/en/market-data/shares.html",
+          tier: "T2_regulator_or_gov",
+          // Real backend label for a non-company_ir (regulator venue) reference —
+          // `_reference_type_for` falls back to "source_reference".
+          reference_type: "source_reference",
+          requires_translation: false,
+        },
+      ],
+      provenance: "sourced_fact",
+      note: "Verified primary-source REFERENCES located by the source-connector layer (issuer IR / annual-report index / regulator venue). Metadata only — the underlying document text was not fetched. Each requires human review before it counts as a persisted citation.",
+    },
+    source_gaps: {
+      value: [
+        "Company IR source found but individual annual-report links are not identified without live extraction (metadata only).",
+        "No regulator filing document was fetched; only the venue reference is recorded.",
+      ],
+      provenance: "missing_data",
+    },
+    note: "3 primary-source reference(s) are available (issuer IR / annual-report index / regulator venue). However, document TEXT was NOT extracted and NO primary financial facts were parsed. References require human review before they are treated as citations.",
+    human_review_required: true,
+  };
+}
+
 // Wrap a report_content object in the final-report markdown envelope the backend
 // produces (a single fenced ```json block). The readable renderer parses this.
 function finalReportMarkdown(reportContent) {
@@ -655,6 +716,45 @@ function mockMemoReport(id) {
   return base;
 }
 
+// Phase 31 hotfix — a report whose source-connector layer located verified
+// PRIMARY-SOURCE REFERENCES (metadata only) but has 0 DB-persisted citations.
+// The memo's Primary Evidence sub-block lists the references, and the top-level
+// Source Citation Appendix carries `primary_source_reference_count` + a note so
+// it no longer implies "zero sources" ("No sources cited yet") when references
+// exist. No document text was fetched and no primary facts were parsed.
+const METADATA_REFS_REPORT_ID = "00000000-0000-0000-0000-0000000000a2";
+
+function mockMetadataRefsReport(id) {
+  const base = mockCouncilReport(id);
+  base.title =
+    "Internal Research Memo Draft (metadata-only references) — IBTEST — InvestingBuddy Test Company [MOCK DATA]";
+  const rc = sampleReportContent({ withCouncil: true });
+
+  // Top-level appendix: 0 DB-persisted citations, but 3 verified references.
+  rc.source_citation_appendix = {
+    type: "source_citation_appendix",
+    sources: { value: [], total: 0 },
+    citations: { value: [], total: 0 },
+    primary_source_reference_count: 3,
+    note: "3 verified primary-source reference(s) (issuer investor relations / annual-report index / regulator venue) were located by the source-connector layer and are listed in the Internal Research Memo (Primary Evidence). DB-persisted workflow citations remain as counted above; a metadata-only reference is not yet a persisted citation and requires human review.",
+  };
+
+  const memo = sampleResearchMemo();
+  memo.primary_evidence_summary = sampleMetadataOnlyPrimaryEvidence();
+  memo.source_appendix = {
+    reference: "See report_content.source_citation_appendix.",
+    total_sources: 0,
+    total_citations: 0,
+    primary_source_reference_count: 3,
+    metadata_only_source_count: 3,
+    note: "3 primary-source reference(s) were located (metadata only). They are not yet persisted citations and require human review.",
+  };
+  rc.research_memo = memo;
+
+  base.content_markdown = finalReportMarkdown(rc);
+  return base;
+}
+
 // Phase 28A.1 — a legacy deterministic "Phase 9" Analysis Council draft. It has
 // NO final_report_version (that is the legacy marker) and its historical
 // markdown still says "Phase 9" / "[LLM: not used]". The UI must keep it
@@ -730,6 +830,9 @@ const server = createServer((req, res) => {
     }
     if (rid === MEMO_REPORT_ID) {
       return send(res, 200, mockMemoReport(rid));
+    }
+    if (rid === METADATA_REFS_REPORT_ID) {
+      return send(res, 200, mockMetadataRefsReport(rid));
     }
     if (rid === LEGACY_REPORT_ID) {
       return send(res, 200, mockLegacyReport(rid));

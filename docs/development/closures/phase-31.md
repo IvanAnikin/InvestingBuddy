@@ -126,6 +126,7 @@ the UI is validated via SHA + e2e + API data rather than a live browser walk.
    the upstream evidence layers to surface more (primary facts need digital-text /
    OCR sources; macro/event context needs a non-thin company→theme classification
    — the standing carry-forwards from 29B.3 / 29C.2 / 29D.1).
+   - *Follow-up (pre-merge hotfix — branch `hotfix/phase-31-source-reference-surfacing`, NOT yet merged/validated):* addresses the report/memo **surfacing** of verified METADATA-ONLY primary-source references (issuer IR / annual-report / press index) so they are no longer shown as `0` primary documents / `0/0` source appendix when no text/facts are extracted. It still does **not** add OCR / extraction — it re-presents references the evidence layer already holds. See PHASE_LEDGER row `31-hotfix`.
 3. **No new fetch surface** — deterministic, no external call / no LLM / no ORM /
    no recompute; no SSRF surface added.
 
