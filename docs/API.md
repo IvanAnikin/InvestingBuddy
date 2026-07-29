@@ -2483,3 +2483,77 @@ quality and always carries `needs_human_review`; translation (when enabled) is
 machine-assisted, bounded (400 chars), unverified until human review, and never
 an official translation. `schema_valid` / `safety_valid` stay true,
 `publication_ready` false, `human_review_required` true.
+
+## Phase 31 — Internal Research Memo Section (internal admin only)
+
+> **Status: PR open — pre-staging.** This section documents merged-branch
+> behaviour; it is **not yet merged / deployed / staging-validated** (branch
+> `feature/phase-31-research-memo-builder` @ `618344d`). **No new endpoint, no DB
+> migration.** One new OFF-by-default flag `SOURCE_RESEARCH_MEMO_ENABLED`
+> (`source_research_memo_enabled=false`). **This is the FINAL campaign phase.**
+
+Phase 31 adds a **source-aware INTERNAL research memo** as an additional section
+of the existing final report — **not** a new endpoint. When
+`SOURCE_RESEARCH_MEMO_ENABLED` is on, the final-report generator attaches a
+`research_memo` block to `report_content` (the same `report_content` returned by
+the existing internal report/analysis endpoints). It is produced by a
+**deterministic synthesis** of the already-assembled report sections + LLM
+`CouncilResult` metadata + known source gaps — **no external call, no LLM, no
+ORM, no recompute** — so it introduces **no new request field, no new response
+envelope, and no new route**. Admin/internal only; there is **no public
+publishing surface**.
+
+**Shape of `report_content["research_memo"]`** (a section object, `type:
+"research_memo"`):
+
+```json
+{
+  "type": "research_memo",
+  "header": { "value": "<internal-only / not-advice disclaimer>", "provenance": "static_system_text" },
+  "company_identity": { "...": "..." },
+  "why_surfaced": { "...": "..." },
+  "what_is_sourced": { "...": "..." },
+  "what_is_missing": { "...": "..." },
+  "primary_evidence_summary": { "primary_documents": [], "primary_facts": [] },
+  "catalyst_event_evidence": { "...": "..." },
+  "financial_facts_summary": { "...": "..." },
+  "business_risk_summary": { "...": "..." },
+  "council_disagreement_red_team": { "...": "..." },
+  "research_next_steps": { "...": "..." },
+  "human_review_checklist": { "value": "See report_content.human_review_checklist ..." },
+  "source_appendix": { "...": "..." },
+  "disallowed_outputs": { "notice": "<negated notice>", "forbidden_terms": ["BUY", "SELL", "..."] },
+  "note": "<deterministic-synthesis note>",
+  "disclaimer": "<INTERNAL ADMIN DRAFT. NOT INVESTMENT ADVICE ...>",
+  "human_review_required": true
+}
+```
+
+- **Citation-bound.** Each claim ties back to an existing provenance / source /
+  citation already present in `report_content` or the council metadata; primary
+  evidence is cited with **token-stripped `source_urls`**. Financial facts come
+  only from existing datapoints (T5 EODHD + T1 `*_primary_filing`) — **no derived
+  valuation** is produced.
+- **`what_is_missing` is PROMINENT** and the memo **degrades honestly** on thin
+  evidence (`provenance=missing_data`, honest-empty sub-sections) — it never
+  fabricates a figure, quote, or citation.
+- **Safety.** The forbidden `BUY` / `SELL` / `HOLD` / `WATCH` labels and the
+  `price target` / `fair value` / `upside` / `downside` literals appear **only**
+  inside the scanner-exempt `disallowed_outputs` notice (which must name them in
+  order to disclaim them); **every other memo field is safety-clean**. The memo
+  is attached **before** the safety gate.
+- **Schema / gating.** `research_memo` is **not** a required section — it does
+  **not** affect `schema_valid`. `publication_ready` stays `false`;
+  `human_review_required` stays `true`.
+- **Rendering.** The web report view lists `research_memo` in `SECTION_ORDER`
+  under an **"Internal Research Memo"** label and renders its sub-blocks readably
+  in the **Readable** tab; `disallowed_outputs` renders as a plain NOTICE (never a
+  rating / BUY-SELL UI). **Raw JSON stays the hidden-by-default developer tab.**
+  Legacy reports without the memo render unchanged.
+
+**Honest limitations.** The memo is a **deterministic re-presentation** of data
+the system already holds — it adds **no new evidence, no new source, and no new
+conclusion**; it is internal-admin-only, always `human_review_required`, never
+`publication_ready`, and never emits a recommendation or valuation. With the flag
+off the report body is **byte-identical** to Phase 30B; when on, the memo derives
+entirely from existing report data, so the happy path is directly demonstrable.

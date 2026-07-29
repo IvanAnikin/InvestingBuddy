@@ -531,6 +531,21 @@ grep -RiE "Authorization: Bearer|Set-Cookie:|DATABASE_URL=|api_token=[A-Za-z0-9]
 
 ---
 
+## Internal Research Memo Builder (Phase 31 — FINAL phase)
+
+> **PR open — pre-staging.** Not yet merged / deployed / staging-validated. Do
+> **not** treat this section as a closed/validated deployment record until the
+> merge SHA + deployed SHA + staging validation result are on file.
+
+- **No DB migration** (DB head stays `011`); **no new host, no new endpoint, no
+  new secret.** One new app setting `SOURCE_RESEARCH_MEMO_ENABLED` (default
+  `false`). When **off**, the final report is byte-identical to the prior
+  behaviour; when **on**, the final report includes an internal `research_memo`
+  section derived deterministically from data the system already holds (no new
+  fetch/compute), internal-admin-only, `human_review_required=true` /
+  `publication_ready=false`, no recommendation/valuation, no publish route.
+  **Rollback:** set `SOURCE_RESEARCH_MEMO_ENABLED=false`.
+
 ## Language Detection + Machine-Translation Foundation (Phase 30A)
 
 > **PR open — pre-staging.** Not yet merged / deployed / staging-validated. Do
