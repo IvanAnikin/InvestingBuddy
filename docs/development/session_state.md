@@ -1,11 +1,26 @@
-# Session State — Phase 31 (source-aware internal research memo builder) · Stage: PR (about to open) · updated 2026-07-29
+# Session State — Phase 31 CLOSED + VALIDATED · Phase 0 → 31 campaign COMPLETE · updated 2026-07-29
 
 > Resumable snapshot. Overwrite at each checkpoint (context-compaction skill).
 > Keep decisions + evidence, not raw logs.
 
-## Current position
-- On branch **`feature/phase-31-research-memo-builder`** @ **`618344d`**. Autonomous multi-phase campaign (Phase 0 → 31). **Phase 31 is the FINAL phase.**
-- **Phase 31 — source-aware internal research memo builder: 🟡 IN PROGRESS — implementation complete + all checks GREEN; PR about to open. NOT merged / deployed / staging-validated.** Full-stack, **7 files incl. tests**, **NO migration** (DB head `011`), no new host/endpoint/secret; ONE new OFF-by-default flag `source_research_memo_enabled` / `SOURCE_RESEARCH_MEMO_ENABLED`.
+## Current position — 🎯 CAMPAIGN COMPLETE
+- **Phase 31 — source-aware internal research memo builder: ✅ CLOSED + VALIDATED (full, no env-note).** PR #69 merged → main **`b89d5c5`** (merge SHA `b89d5c584ecdb07be5eeafe3c32fb4ca4f1a73c6`); full-stack deploy — **API `b89d5c5`** (build 30445905928) + **Web `b89d5c5`** (advanced `793e0a7`→`b89d5c5`, build 30445901677), both 3 stable polls; head `011`; AUTH_TEST_MODE absent.
+- **The autonomous Phase 0 → 31 campaign is COMPLETE.** All planned phases closed + staging-validated. Closure: `docs/development/closures/phase-31.md`. Consolidated campaign report: `docs/development/CAMPAIGN_REPORT.md`.
+- **Staging validation (live, full):** A SHA convergence both API+Web `b89d5c5`; B head `011` + AUTH_TEST_MODE absent; C registry 35/2/1/38 (unchanged — no new source); D-off report on `b89d5c5` flag-OFF has NO `research_memo` (`a1afdedc`); D-on after human-approved flip has the 18-key memo (`a8995bab`/`cb6c0a40`) with `schema_valid`+`safety_valid`=true, `publication_ready`=false, `human_review_required`=true, citation-bound; safety scan → NO forbidden terms outside `disallowed_outputs`; honest degradation on thin evidence; E flags correct; F logs secret-free.
+- **`STAGING_BASIC_AUTH` unblock (recorded):** absent from the session shell; the session cannot read secret app-setting values (auto-mode classifier blocks it — by design) and cannot self-edit the permissions file. The USER added a scoped read-only Bash allow rule (`Bash(~/.venvs/azure-cli/bin/az webapp config appsettings list:*)`) to `.claude/settings.local.json` → the running session picked it up live (no reload) → credential read into an in-shell var (never printed) for the authenticated probes.
+
+## Final staging flags — 7 ON (`SOURCE_TRANSLATION_ENABLED` the sole OFF source flag)
+`LLM_COUNCIL_ENABLED` · `LLM_DISCOVERY_COUNCIL_ENABLED` · `SOURCE_CONNECTOR_ENABLED` · `SOURCE_DOCUMENT_EXTRACTION_ENABLED` · `SOURCE_MACRO_ENABLED` · `SOURCE_EVENT_ENABLED` · **`SOURCE_RESEARCH_MEMO_ENABLED`** (NEW, kept ON) — all ON. `SOURCE_TRANSLATION_ENABLED`=OFF (kept off); `TRANSLATION_PROVIDER`=`fake`. DB head `011`.
+
+## Standing follow-ups (carried, non-blocking — post-campaign)
+- Live content/figure FETCH for the reference-only connectors (29B.4 / 29C / 29D / 30B) — all deliberately reference-only today.
+- PDF table extraction + OCR (so primary facts materialize; today live issuer reports are scanned PDFs → 0 facts, honest-empty).
+- Richer company→theme derivation (so macro/event context surfaces for more company reports — coarse/thin `free_real` sector today).
+- `SOURCE_TRANSLATION_ENABLED` flip once machine-assisted translation output is human-reviewed (references already visible with it OFF).
+- **Phase 32** (durable queues / cost ceilings / observability) is the next roadmap item.
+
+## Next exact action
+- Campaign is closed. Commit the Phase 31 closure docs to `main` (`docs: close Phase 31 ...`), update memory, deliver the final consolidated campaign report to the user. No open phase.
 - **Phase 30 umbrella — ✅ COMPLETE** (30A translation foundation `fa3632a` + 30B local-language evidence sources `e1d2d8d`, both merged + deployed + staging-validated). PDF table extraction + OCR are deferred later-area work.
 - **ALL OF PHASE 29 + PHASE 30 COMPLETE** (closed + staging-validated): 29A framework · 29B filings/regulator + primary docs/facts (29B/29B.1–3) · 29B.4 EU/UK regulated disclosures (4A/4B/4C) · 29C macro/commodity/policy (29C.1–3) · 29D event-trigger (29D.1–3) · 30A translation foundation + 30B local-language sources. **On merge + staging validation of Phase 31, the entire product roadmap through Phase 31 is complete.**
 
