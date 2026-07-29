@@ -54,9 +54,10 @@ from app.schemas.final_report import (
 )
 from app.services import safety_terms
 from app.services.llm.council import maybe_run_council
-from app.services.llm.schemas import CouncilResult
+from app.services.llm.schemas import AGENT_RED_TEAM, CouncilResult
 from app.services.real_asset_report_completer import build_schema_complete_report
 from app.services.report_validation_service import validate_real_asset_report
+from app.services.sources.redaction import strip_url_secrets
 from app.services.sources.registry import build_registry, registry_gap_messages
 from app.services.sources.translation import MACHINE_TRANSLATION_WARNING
 
@@ -1773,6 +1774,567 @@ def _build_translated_evidence(
 
 
 # ---------------------------------------------------------------------------
+# Internal research memo — Phase 31 (DETERMINISTIC synthesis, no LLM / no fetch)
+# ---------------------------------------------------------------------------
+
+
+def _memo_get(obj: Any, key: str, default: Any = None) -> Any:
+    """Read ``key`` from a dict OR a pydantic model — never raises.
+
+    ``council_result`` and its agents are pydantic objects, but a caller may pass
+    already-serialised dicts. This accessor supports both so the memo builder
+    never depends on the exact runtime shape.
+    """
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
+
+def _memo_datapoint_value(section: dict[str, Any] | None, key: str) -> Any:
+    """Pull ``section[key]['value']`` when it is a datapoint dict, else the raw."""
+    if not isinstance(section, dict):
+        return None
+    dp = section.get(key)
+    if isinstance(dp, dict) and "value" in dp:
+        return dp.get("value")
+    return dp
+
+
+def _memo_safe_text(text: Any) -> Any:
+    """Neutralise forbidden language in model-generated free text (no-op if clean).
+
+    Applied only to LLM/model-derived free text copied into the memo. Deterministic
+    controlled-vocabulary text is left untouched. Every such source is already
+    scanned by the report safety gate, so this is defence-in-depth that guarantees
+    the memo is self-safe.
+    """
+    return neutralize_forbidden_terms(text) if isinstance(text, str) else text
+
+
+def _memo_safe_list(items: Any) -> list[Any]:
+    return [_memo_safe_text(x) for x in (items or [])]
+
+
+def _memo_carry_identity(
+    company_identity: dict[str, Any], key: str
+) -> dict[str, Any]:
+    """Condense one identity datapoint, carrying its underlying provenance."""
+    dp = company_identity.get(key)
+    if isinstance(dp, dict):
+        return {
+            "value": dp.get("value"),
+            "source": dp.get("source"),
+            "provenance": dp.get("provenance", "missing_data"),
+        }
+    return {"value": dp, "provenance": "missing_data"}
+
+
+def _build_research_memo(
+    report_content: dict[str, Any],
+    council_result: Any,
+    *,
+    source_tier: str | None,
+) -> dict[str, Any]:
+    """Optional INTERNAL RESEARCH MEMO block — Phase 31.
+
+    A DETERMINISTIC, citation-bound synthesis of the ALREADY-ASSEMBLED
+    ``report_content`` sections plus ``council_result`` metadata. It performs NO
+    ORM query, NO LLM call, NO external fetch, and NO recompute — it only reads,
+    condenses, and cross-references data the report already contains. Every claim
+    ties back to an existing sourced datapoint, provenance, or citation; nothing
+    is fabricated.
+
+    Honest degradation: when evidence is thin (no primary facts, no council,
+    blocked extraction), the memo still renders — ``what_is_missing`` is
+    prominent, and the primary-evidence / council-disagreement sections are
+    honest-empty (e.g. "council did not run") rather than filled with invented
+    content.
+
+    Safety: the memo NEVER produces a recommendation (BUY/SELL/HOLD/WATCH) or a
+    valuation conclusion (price target / fair value / intrinsic value / upside /
+    downside). Those literal forbidden terms are listed ONLY inside the
+    ``disallowed_outputs`` field, whose key is exempt from the safety scanner so
+    the negated notice does not self-trip. Every OTHER memo field is scanned by
+    the report safety gate and must be clean.
+    """
+    company_identity = report_content.get("company_identity", {}) or {}
+    discovery_rationale = report_content.get("discovery_rationale", {}) or {}
+    data_availability = report_content.get("data_availability_summary", {}) or {}
+    source_quality = report_content.get("source_quality_review", {}) or {}
+    missing_information = report_content.get("missing_information", {}) or {}
+    financial_snapshot = report_content.get("financial_snapshot", {}) or {}
+    bull_case = report_content.get("bull_case", {}) or {}
+    bear_case = report_content.get("bear_case", {}) or {}
+    risk_analysis = report_content.get("risk_analysis", {}) or {}
+    committee_chair = report_content.get("committee_chair_summary", {}) or {}
+    checklist = report_content.get("human_review_checklist", []) or []
+    appendix = report_content.get("source_citation_appendix", {}) or {}
+    news_catalyst = report_content.get("news_catalyst_discovery", {}) or {}
+    event_context = report_content.get("industry_event_context")
+
+    # Council metadata (dict- or object-shaped, never fabricated).
+    agents = list(_memo_get(council_result, "agents", []) or [])
+    primary_facts = list(_memo_get(council_result, "primary_facts", []) or [])
+    primary_documents = list(_memo_get(council_result, "primary_documents", []) or [])
+    committee_label = _memo_get(council_result, "committee_label", None)
+    llm_used = bool(_memo_get(council_result, "llm_used", False))
+
+    # -- company_identity: condensed, provenance-carrying ------------------
+    identity_block = {
+        "legal_name": _memo_carry_identity(company_identity, "legal_name"),
+        "ticker": _memo_carry_identity(company_identity, "ticker"),
+        "exchange": _memo_carry_identity(company_identity, "exchange"),
+        "sector": _memo_carry_identity(company_identity, "sector"),
+        "reporting_currency": _memo_carry_identity(
+            company_identity, "reporting_currency"
+        ),
+        "isin": _memo_carry_identity(company_identity, "isin"),
+        "lei": _memo_carry_identity(company_identity, "lei"),
+        "source_tier": company_identity.get("source_tier", source_tier),
+        "is_mock": company_identity.get("is_mock", True),
+    }
+
+    # -- why_surfaced: from discovery rationale ----------------------------
+    if discovery_rationale.get("available"):
+        why_surfaced = {
+            "available": True,
+            "discovery_reasons": {
+                "value": _memo_datapoint_value(discovery_rationale, "discovery_reasons")
+                or [],
+                "provenance": "sourced_fact",
+            },
+            "available_data_at_discovery": {
+                "value": _memo_datapoint_value(
+                    discovery_rationale, "available_data_at_discovery"
+                )
+                or [],
+                "provenance": "sourced_fact",
+            },
+            "missing_data_at_discovery": {
+                "value": _memo_datapoint_value(
+                    discovery_rationale, "missing_data_at_discovery"
+                )
+                or [],
+                "provenance": "missing_data",
+            },
+        }
+    else:
+        why_surfaced = {
+            "available": False,
+            "note": {
+                "value": "No screening candidate is linked — discovery rationale "
+                "is not available for this report.",
+                "provenance": "missing_data",
+            },
+        }
+
+    # -- what_is_sourced: present fields + source tier mix -----------------
+    what_is_sourced = {
+        "source_tier": data_availability.get("source_tier", source_tier),
+        "fundamentals_available": bool(
+            data_availability.get("fundamentals_available", False)
+        ),
+        "available_count": data_availability.get("available_count", 0),
+        "available_fields": {
+            "value": _memo_datapoint_value(data_availability, "available_fields") or [],
+            "provenance": "sourced_fact",
+        },
+        "overall_source_quality": {
+            "value": _memo_datapoint_value(source_quality, "overall_source_quality"),
+            "provenance": "sourced_fact",
+        },
+        "source_type_distribution": {
+            "value": _memo_datapoint_value(source_quality, "source_type_distribution")
+            or {},
+            "provenance": "sourced_fact",
+        },
+        "strong_sources_count": source_quality.get("strong_sources_count", 0),
+        "weak_sources_count": source_quality.get("weak_sources_count", 0),
+        "total_sources": source_quality.get("total_sources", 0),
+    }
+
+    # -- what_is_missing: PROMINENT ----------------------------------------
+    what_is_missing = {
+        "prominent": True,
+        "total_missing_items": missing_information.get("total_missing_items", 0),
+        "missing_items": {
+            "value": _memo_datapoint_value(missing_information, "missing_items") or [],
+            "provenance": "missing_data",
+        },
+        "missing_data_fields": {
+            "value": _memo_datapoint_value(data_availability, "missing_fields") or [],
+            "provenance": "missing_data",
+        },
+        "note": (
+            "What is NOT yet sourced. Thin or absent items are marked "
+            "provenance=missing_data and must be resolved or explicitly "
+            "acknowledged before internal approval — they are never filled with a "
+            "fabricated value."
+        ),
+        "human_review_required": True,
+    }
+
+    # -- primary_evidence_summary: council primary docs + facts ------------
+    fact_rows: list[dict[str, Any]] = []
+    for f in primary_facts:
+        if not isinstance(f, dict):
+            continue
+        f_url = strip_url_secrets(f.get("source_url"))
+        fact_rows.append(
+            {
+                "field": f.get("field"),
+                "value": f.get("value"),
+                "numeric_value": f.get("numeric_value"),
+                "unit": f.get("unit"),
+                "currency": f.get("currency"),
+                "period": f.get("period"),
+                "confidence": f.get("confidence"),
+                "source_url": f_url,
+                "provenance": "sourced_fact" if f_url else "missing_data",
+            }
+        )
+    doc_rows: list[dict[str, Any]] = []
+    for d in primary_documents:
+        if not isinstance(d, dict):
+            continue
+        doc_rows.append(
+            {
+                "title": _memo_safe_text(d.get("title")),
+                "domain": d.get("domain"),
+                "tier": d.get("tier"),
+                "excerpt_count": d.get("excerpt_count", 0),
+                "fact_count": d.get("fact_count", 0),
+                "requires_translation": bool(d.get("requires_translation", False)),
+                "warnings": _memo_safe_list(d.get("warnings")),
+            }
+        )
+    if fact_rows or doc_rows:
+        primary_evidence_summary = {
+            "primary_document_count": len(doc_rows),
+            "primary_fact_count": len(fact_rows),
+            "primary_documents": doc_rows,
+            "primary_facts": {
+                "value": fact_rows,
+                "provenance": "sourced_fact",
+                "note": (
+                    "Each fact's source_url is the citation of record. Facts still "
+                    "require human confirmation against the underlying filing."
+                ),
+            },
+            "human_review_required": True,
+        }
+    else:
+        primary_evidence_summary = {
+            "primary_document_count": 0,
+            "primary_fact_count": 0,
+            "note": {
+                "value": (
+                    "0 primary facts — no issuer primary document was extracted, or "
+                    "the reports were scanned / JS-gated (no OCR in this phase). "
+                    "Primary-source validation is still outstanding."
+                ),
+                "provenance": "missing_data",
+            },
+            "human_review_required": True,
+        }
+
+    # -- catalyst_event_evidence: news + industry event context ------------
+    catalyst_event_evidence = {
+        "available": bool(news_catalyst.get("available", False)),
+        "coverage_status": news_catalyst.get("coverage_status"),
+        "summary": {
+            "value": _memo_datapoint_value(news_catalyst, "summary") or {},
+            "provenance": "model_interpretation",
+        },
+        "event_context_present": bool(event_context),
+        "event_context_note": (
+            (event_context or {}).get("note") if event_context else None
+        ),
+        "note": (
+            "Catalyst categories/directions/strengths are model-derived (T6) and "
+            "weak; industry / event context is NOT company-specific evidence and "
+            "never a direct company catalyst. Human review required."
+        ),
+        "human_review_required": True,
+    }
+
+    # -- financial_facts_summary: T5 aggregator + T1 primary-filing --------
+    t5_metrics: dict[str, Any] = {}
+    for key in (
+        "latest_close",
+        "market_cap_usd_m",
+        "ebitda_ttm_usd_m",
+        "revenue_ttm_usd_m",
+        "pe_ratio",
+    ):
+        dp = financial_snapshot.get(key)
+        if isinstance(dp, dict):
+            t5_metrics[key] = {
+                "value": dp.get("value"),
+                "unit": dp.get("unit"),
+                "currency": dp.get("currency"),
+                "source": dp.get("source"),
+                "source_tier": dp.get("source_tier"),
+                "provenance": dp.get("provenance", "missing_data"),
+            }
+    t1_primary_facts: dict[str, Any] = {}
+    for key, dp in financial_snapshot.items():
+        if key.endswith("_primary_filing") and isinstance(dp, dict):
+            t1_primary_facts[key] = {
+                "value": dp.get("value"),
+                "currency": dp.get("currency"),
+                "period": dp.get("period"),
+                "source_url": strip_url_secrets(dp.get("source_url")),
+                "source_tier": dp.get("source_tier"),
+                "provenance": dp.get("provenance", "missing_data"),
+            }
+    financial_facts_summary = {
+        "source_tier": financial_snapshot.get("source_tier", source_tier),
+        "is_mock": financial_snapshot.get("is_mock", True),
+        "t5_aggregator_metrics": {
+            "value": t5_metrics,
+            "provenance": "sourced_fact" if t5_metrics else "missing_data",
+        },
+        "t1_primary_filing_facts": {
+            "value": t1_primary_facts,
+            "provenance": "sourced_fact" if t1_primary_facts else "missing_data",
+        },
+        "note": (
+            "T5 aggregator (EODHD) values must be validated against T1 filings "
+            "before use. No derived valuation is produced."
+        ),
+        "human_review_required": True,
+    }
+
+    # -- business_risk_summary: bull / bear / risk -------------------------
+    business_risk_summary = {
+        "bull_available": bool(bull_case.get("available", False)),
+        "bull_points": {
+            "value": _memo_safe_list(
+                _memo_datapoint_value(bull_case, "positive_thesis_points")
+            ),
+            "provenance": "model_interpretation",
+        },
+        "bear_available": bool(bear_case.get("available", False)),
+        "bear_points": {
+            "value": _memo_safe_list(
+                _memo_datapoint_value(bear_case, "negative_thesis_points")
+            ),
+            "provenance": "model_interpretation",
+        },
+        "risk_available": bool(risk_analysis.get("available", False)),
+        "key_business_risks": {
+            "value": _memo_safe_list(
+                _memo_datapoint_value(risk_analysis, "business_risks")
+            ),
+            "provenance": "model_interpretation",
+        },
+        "risk_summary_text": {
+            "value": _memo_safe_text(
+                _memo_datapoint_value(risk_analysis, "risk_summary_text") or ""
+            ),
+            "provenance": "model_interpretation",
+        },
+        "human_review_required": True,
+    }
+
+    # -- council_disagreement_red_team: the dissent surface ----------------
+    unsupported_claims: list[dict[str, Any]] = []
+    for a in agents:
+        for claim in _memo_get(a, "unsupported_claims", []) or []:
+            unsupported_claims.append(
+                {
+                    "agent": _memo_get(a, "agent_name", None),
+                    "claim": _memo_safe_text(claim),
+                }
+            )
+    if agents:
+        red_team = next(
+            (a for a in agents if _memo_get(a, "agent_name", None) == AGENT_RED_TEAM),
+            None,
+        )
+        red_team_key_points: list[dict[str, Any]] = []
+        red_team_risks: list[dict[str, Any]] = []
+        if red_team is not None:
+            for kp in _memo_get(red_team, "key_points", []) or []:
+                red_team_key_points.append(
+                    {
+                        "claim": _memo_safe_text(_memo_get(kp, "claim", "")),
+                        "citation_ids": list(_memo_get(kp, "citation_ids", []) or []),
+                        "confidence": _memo_get(kp, "confidence", None),
+                        "data_quality": _memo_get(kp, "data_quality", None),
+                        "is_limitation": bool(_memo_get(kp, "is_limitation", False)),
+                        "is_model_inference": bool(
+                            _memo_get(kp, "is_model_inference", False)
+                        ),
+                    }
+                )
+            for rg in _memo_get(red_team, "risks_or_gaps", []) or []:
+                red_team_risks.append(
+                    {
+                        "item": _memo_safe_text(_memo_get(rg, "item", "")),
+                        "citation_ids": list(_memo_get(rg, "citation_ids", []) or []),
+                        "severity": _memo_get(rg, "severity", None),
+                    }
+                )
+        council_disagreement_red_team = {
+            "council_ran": llm_used,
+            "committee_label": committee_label,
+            "red_team_present": red_team is not None,
+            "red_team_summary": {
+                "value": _memo_safe_text(_memo_get(red_team, "summary", ""))
+                if red_team is not None
+                else "",
+                "provenance": "model_interpretation",
+            },
+            "red_team_key_points": {
+                "value": red_team_key_points,
+                "provenance": "model_interpretation",
+            },
+            "red_team_risks_or_gaps": {
+                "value": red_team_risks,
+                "provenance": "model_interpretation",
+            },
+            "unsupported_claims_across_agents": {
+                "value": unsupported_claims,
+                "provenance": "sourced_fact",
+            },
+            "note": (
+                "Dissent surface — the red-team critique plus any agent claims the "
+                "citation checker flagged as unsupported. Human review required."
+            ),
+            "human_review_required": True,
+        }
+    else:
+        council_disagreement_red_team = {
+            "council_ran": False,
+            "note": {
+                "value": (
+                    "LLM council did not run for this report — no council "
+                    "disagreement or red-team dissent is available."
+                ),
+                "provenance": "missing_data",
+            },
+            "human_review_required": True,
+        }
+
+    # -- research_next_steps: from committee chair -------------------------
+    research_next_steps = {
+        "research_next_steps": {
+            "value": _memo_safe_list(
+                _memo_datapoint_value(committee_chair, "research_next_steps")
+            ),
+            "provenance": "model_interpretation",
+        },
+        "primary_open_questions": {
+            "value": _memo_safe_list(
+                _memo_datapoint_value(committee_chair, "primary_open_questions")
+            ),
+            "provenance": "model_interpretation",
+        },
+        "human_review_required": True,
+    }
+
+    # -- human_review_checklist: reference, do NOT recompute ---------------
+    not_completed = [
+        {
+            "item": i.get("item"),
+            "required": i.get("required"),
+            "note": i.get("note"),
+        }
+        for i in checklist
+        if isinstance(i, dict) and not i.get("completed")
+    ]
+    human_review_checklist = {
+        "reference": (
+            "See report_content.human_review_checklist — this memo does not "
+            "recompute a second checklist."
+        ),
+        "total_items": len(checklist),
+        "not_completed_count": len(not_completed),
+        "not_completed_items": {
+            "value": not_completed,
+            "provenance": "sourced_fact",
+        },
+        "human_review_required": True,
+    }
+
+    # -- source_appendix: reference + primary-fact source URLs -------------
+    fact_source_urls = [
+        strip_url_secrets(f.get("source_url"))
+        for f in primary_facts
+        if isinstance(f, dict) and f.get("source_url")
+    ]
+    source_appendix = {
+        "reference": "See report_content.source_citation_appendix.",
+        "total_sources": (appendix.get("sources") or {}).get("total", 0),
+        "total_citations": (appendix.get("citations") or {}).get("total", 0),
+        "primary_fact_source_urls": {
+            "value": fact_source_urls,
+            "provenance": "sourced_fact" if fact_source_urls else "missing_data",
+        },
+    }
+
+    return {
+        "type": "research_memo",
+        "header": {
+            "value": INTERNAL_DISCLAIMER,
+            "provenance": "static_system_text",
+        },
+        "company_identity": identity_block,
+        "why_surfaced": why_surfaced,
+        "what_is_sourced": what_is_sourced,
+        "what_is_missing": what_is_missing,
+        "primary_evidence_summary": primary_evidence_summary,
+        "catalyst_event_evidence": catalyst_event_evidence,
+        "financial_facts_summary": financial_facts_summary,
+        "business_risk_summary": business_risk_summary,
+        "council_disagreement_red_team": council_disagreement_red_team,
+        "research_next_steps": research_next_steps,
+        "human_review_checklist": human_review_checklist,
+        "source_appendix": source_appendix,
+        # `disallowed_outputs` is EXEMPT from the safety scanner (its key is in
+        # _EXEMPT_FIELD_NAMES) precisely so this negated notice — which must name
+        # the forbidden terms in order to disclaim them — does not self-trip. Every
+        # OTHER field above must contain NONE of these tokens.
+        "disallowed_outputs": {
+            "notice": (
+                "This internal memo NEVER produces a public recommendation or a "
+                "valuation conclusion. It does not and will not output any BUY, "
+                "SELL, HOLD, or WATCH rating label, a price target, a fair value, "
+                "an intrinsic value, or any upside / downside claim. No trading "
+                "action is implied and no return is projected."
+            ),
+            "forbidden_terms": [
+                "BUY",
+                "SELL",
+                "HOLD",
+                "WATCH",
+                "price target",
+                "fair value",
+                "intrinsic value",
+                "upside",
+                "downside",
+            ],
+        },
+        "note": (
+            "Machine-assembled INTERNAL research memo — a deterministic synthesis "
+            "of the already-assembled report sections, LLM council metadata, and "
+            "known gaps. No new data was fetched, computed, or inferred; every "
+            "claim ties back to an existing sourced datapoint, provenance, or "
+            "citation. What is missing is surfaced prominently and is never filled "
+            "with a fabricated value."
+        ),
+        "disclaimer": (
+            "INTERNAL ADMIN DRAFT. NOT INVESTMENT ADVICE. NOT A PUBLIC "
+            "RECOMMENDATION. No rating, no valuation conclusion, and no return "
+            "projection is produced. Human review is required."
+        ),
+        "human_review_required": True,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Report content parser — extracts structured data from existing report
 # ---------------------------------------------------------------------------
 
@@ -2743,6 +3305,23 @@ class FinalReportGeneratorService:
         if council_result.translated_excerpts:
             report_content["translated_evidence"] = _build_translated_evidence(
                 council_result.translated_excerpts
+            )
+
+        # Phase 31: optional INTERNAL RESEARCH MEMO block. When
+        # ``source_research_memo_enabled`` is on, synthesise a DETERMINISTIC,
+        # citation-bound memo from the already-assembled report_content sections +
+        # council_result metadata + known gaps — no ORM query, no LLM call, no
+        # external fetch, no recompute. ``what_is_missing`` is prominent and the
+        # memo degrades honestly when evidence is thin (no primary facts / no
+        # council / blocked extraction). Additive (not a required section) so
+        # schema_valid is unaffected; publication stays impossible and human review
+        # is always required. Dark by default: with the flag off no block is added
+        # and the report is byte-for-byte unchanged. Added BEFORE validation so the
+        # safety gate scans it (its forbidden-term notice lives only in the exempt
+        # ``disallowed_outputs`` field, so it does not self-trip).
+        if settings.source_research_memo_enabled:
+            report_content["research_memo"] = _build_research_memo(
+                report_content, council_result, source_tier=source_tier
             )
 
         # Phase 26: safety-scan the admin draft AND validate a schema-completed

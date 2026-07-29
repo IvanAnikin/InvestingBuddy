@@ -261,5 +261,24 @@ class Settings(BaseSettings):
     # AND ``source_translation_enabled`` is True AND an LLM client is available.
     translation_provider: str = "fake"
 
+    # ── Internal research memo builder (Phase 31) ──────────────────────────
+    # Gate for the DETERMINISTIC, source-aware internal research MEMO — a
+    # citation-bound synthesis of the ALREADY-ASSEMBLED report content + LLM
+    # council metadata + gaps. OFF by default so the existing report body is
+    # byte-for-byte unchanged: with the flag off no ``research_memo`` block is
+    # attached and legacy output is identical. When ON, ``_build_research_memo``
+    # reads ONLY the assembled ``report_content`` sections + ``council_result``
+    # metadata (no ORM query, no LLM call, no external fetch, no recompute) and
+    # emits a structured memo whose ``what_is_missing`` is prominent and whose
+    # sections degrade honestly when evidence is thin (no primary facts / no
+    # council / blocked extraction) — never fabricating a figure. The memo NEVER
+    # produces a rating (BUY/SELL/HOLD/WATCH) or a valuation conclusion (price
+    # target / fair value / intrinsic value / upside / downside); those literal
+    # forbidden terms appear ONLY inside its ``disallowed_outputs`` notice, which
+    # is exempt from the safety scanner. The memo is additive (not a required
+    # section) so ``schema_valid`` is unaffected, and it is always
+    # human-review-required and never publication-ready.
+    source_research_memo_enabled: bool = False
+
 
 settings = Settings()
