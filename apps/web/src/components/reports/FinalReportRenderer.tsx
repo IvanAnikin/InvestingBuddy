@@ -310,6 +310,184 @@ function CouncilSummarySection({ section }: { section: Record<string, unknown> }
 }
 
 // --------------------------------------------------------------------------
+// Phase 31 — Internal Research Memo
+//
+// The memo is an OFF-by-default synthesis of the sections above: a set of nested
+// sub-blocks, each holding `{value, provenance}` leaf fields. The generic
+// renderer collapses those nested objects to "…", so this bespoke component
+// renders each sub-block as a labelled group (reusing the shared FieldRow /
+// provenance-chip styling). It surfaces the human-review + disclaimer
+// prominently, makes "what is missing" visually distinct, and renders the
+// `disallowed_outputs` block as a plain NOTICE — never as a rating/BUY/SELL UI.
+// --------------------------------------------------------------------------
+
+// Keys handled specially (header/notice/badges) or intentionally hidden — not
+// rendered as generic leaf fields inside a memo sub-block.
+const MEMO_SUB_META = new Set([
+  "type",
+  "note",
+  "disclaimer",
+  "prominent",
+  "human_review_required",
+]);
+
+const MEMO_SUBSECTION_ORDER: string[] = [
+  "company_identity",
+  "why_surfaced",
+  "what_is_sourced",
+  "what_is_missing",
+  "primary_evidence_summary",
+  "catalyst_event_evidence",
+  "financial_facts_summary",
+  "business_risk_summary",
+  "council_disagreement_red_team",
+  "research_next_steps",
+  "human_review_checklist",
+  "source_appendix",
+];
+
+const MEMO_SUBSECTION_LABELS: Record<string, string> = {
+  company_identity: "Company Identity",
+  why_surfaced: "Why It Surfaced",
+  what_is_sourced: "What Is Sourced",
+  what_is_missing: "What Is Missing",
+  primary_evidence_summary: "Primary Evidence",
+  catalyst_event_evidence: "Catalyst & Event Evidence",
+  financial_facts_summary: "Financial Facts",
+  business_risk_summary: "Business & Risk",
+  council_disagreement_red_team: "Council Disagreement / Red Team",
+  research_next_steps: "Research Next Steps",
+  human_review_checklist: "Human Review Checklist",
+  source_appendix: "Source Appendix",
+};
+
+function MemoSubBlock({
+  label,
+  data,
+  prominent = false,
+  testId,
+}: {
+  label: string;
+  data: Record<string, unknown>;
+  prominent?: boolean;
+  testId?: string;
+}) {
+  const note = noteText(data.note);
+  const humanReview = data.human_review_required === true;
+  const fields = Object.entries(data).filter(([k]) => !MEMO_SUB_META.has(k));
+  return (
+    <div
+      data-testid={testId}
+      className={`rounded-lg border px-3 py-2 ${
+        prominent
+          ? "border-amber-400/30 bg-amber-500/[0.06]"
+          : "border-white/10 bg-white/[0.02]"
+      }`}
+    >
+      <div className="mb-1 flex items-center gap-2">
+        <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-300">
+          {label}
+        </h4>
+        {humanReview ? <StatusPill label="human review" color="amber" /> : null}
+      </div>
+      {fields.length === 0 ? (
+        note ? null : (
+          <p className="text-sm">
+            <Muted>No data.</Muted>
+          </p>
+        )
+      ) : (
+        <div>
+          {fields.map(([k, v]) => (
+            <FieldRow key={k} label={humanizeKey(k)} field={v} />
+          ))}
+        </div>
+      )}
+      {note ? (
+        <p className="mt-2 text-[11px] italic text-slate-500">{note}</p>
+      ) : null}
+    </div>
+  );
+}
+
+function DisallowedOutputsNotice({ data }: { data: Record<string, unknown> }) {
+  const notice = noteText(data.notice);
+  const terms = Array.isArray(data.forbidden_terms)
+    ? (data.forbidden_terms as unknown[]).map((t) => String(t))
+    : [];
+  // Rendered as plain, muted NOTICE text only — never as buttons/pills that
+  // could read as a recommendation. This lists what the memo will NOT produce.
+  return (
+    <div
+      data-testid="memo-disallowed-outputs"
+      className="rounded-lg border border-white/10 bg-white/[0.02] px-3 py-2"
+    >
+      <div className="mb-1 flex items-center gap-2">
+        <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-300">
+          Disallowed Outputs
+        </h4>
+        <StatusPill label="notice" color="gray" />
+      </div>
+      {notice ? <p className="text-xs text-slate-400">{notice}</p> : null}
+      {terms.length > 0 ? (
+        <p className="mt-1 text-[11px] italic text-slate-500">
+          Never produced: {terms.join(", ")}.
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function ResearchMemoSection({ section }: { section: Record<string, unknown> }) {
+  const header = noteText(section.header);
+  const memoNote = noteText(section.note);
+  const disclaimer = noteText(section.disclaimer);
+  const disallowed = section.disallowed_outputs;
+  return (
+    <SectionShell title="Internal Research Memo" testId="report-section-research_memo">
+      <div className="mb-3 flex flex-wrap gap-2">
+        <StatusPill label="Internal Research Aid" color="purple" />
+        <StatusPill label="Not Investment Advice" color="red" />
+        {section.human_review_required === true ? (
+          <StatusPill label="Human Review Required" color="amber" />
+        ) : null}
+      </div>
+      {header ? (
+        <p className="mb-3 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-xs text-slate-400">
+          {header}
+        </p>
+      ) : null}
+      <div className="space-y-2">
+        {MEMO_SUBSECTION_ORDER.map((key) => {
+          const sub = section[key];
+          if (sub == null || typeof sub !== "object" || Array.isArray(sub)) return null;
+          return (
+            <MemoSubBlock
+              key={key}
+              label={MEMO_SUBSECTION_LABELS[key] ?? humanizeKey(key)}
+              data={sub as Record<string, unknown>}
+              prominent={key === "what_is_missing"}
+              testId={`memo-subsection-${key}`}
+            />
+          );
+        })}
+        {disallowed && typeof disallowed === "object" && !Array.isArray(disallowed) ? (
+          <DisallowedOutputsNotice data={disallowed as Record<string, unknown>} />
+        ) : null}
+      </div>
+      {memoNote ? (
+        <p className="mt-3 text-[11px] italic text-slate-500">{memoNote}</p>
+      ) : null}
+      {disclaimer ? (
+        <p className="mt-2 text-[11px] font-medium italic text-amber-300/80">
+          {disclaimer}
+        </p>
+      ) : null}
+    </SectionShell>
+  );
+}
+
+// --------------------------------------------------------------------------
 // Renderer
 // --------------------------------------------------------------------------
 
@@ -341,6 +519,8 @@ export default function FinalReportRenderer({
         if (section == null) return null;
         if (key === "executive_summary")
           return <ExecutiveSummary key={key} section={section as Record<string, unknown>} />;
+        if (key === "research_memo")
+          return <ResearchMemoSection key={key} section={section as Record<string, unknown>} />;
         if (key === "human_review_checklist")
           return <ChecklistSection key={key} section={section as Record<string, unknown>} />;
         if (key === "source_citation_appendix")

@@ -285,6 +285,223 @@ function sampleReportContent({ withCouncil }) {
   return rc;
 }
 
+// Phase 31 — an OFF-by-default INTERNAL RESEARCH MEMO block (report_content
+// .research_memo). A deterministic synthesis of the already-assembled sections:
+// nested sub-blocks of {value, provenance} leaves, a prominent "what is missing"
+// block, a couple of cited claims, and a `disallowed_outputs` notice. It never
+// produces a recommendation/valuation — the forbidden terms appear ONLY inside
+// the negated disallowed_outputs notice. Legacy reports simply omit this key.
+function sampleResearchMemo() {
+  return {
+    type: "research_memo",
+    header: {
+      value:
+        "INTERNAL ADMIN DRAFT ONLY. NOT INVESTMENT ADVICE. NOT A PUBLIC RECOMMENDATION. All sections are AI-generated internal research notes. Human review is required before any action.",
+      provenance: "static_system_text",
+    },
+    company_identity: {
+      legal_name: {
+        value: "InvestingBuddy Test Company",
+        source: "gleif",
+        provenance: "sourced_fact",
+      },
+      ticker: { value: "IBTEST", provenance: "sourced_fact" },
+      exchange: { value: "Nasdaq", provenance: "sourced_fact" },
+      sector: { value: "Information Technology", provenance: "sourced_fact" },
+      reporting_currency: { value: "USD", provenance: "sourced_fact" },
+      isin: { value: null, provenance: "missing_data" },
+      lei: { value: "HWUPKR0MPOU8FGXBT394", provenance: "sourced_fact" },
+      source_tier: "T2_regulator_or_gov",
+      is_mock: false,
+    },
+    why_surfaced: {
+      available: false,
+      note: {
+        value:
+          "No screening candidate is linked — discovery rationale is not available for this report.",
+        provenance: "missing_data",
+      },
+    },
+    what_is_sourced: {
+      source_tier: "T2_regulator_or_gov",
+      fundamentals_available: false,
+      available_count: 6,
+      available_fields: {
+        value: [
+          "identity.legal_name",
+          "identity.ticker",
+          "price_history.latest_close",
+        ],
+        provenance: "sourced_fact",
+      },
+      overall_source_quality: { value: "strong", provenance: "sourced_fact" },
+      strong_sources_count: 1,
+      weak_sources_count: 0,
+      total_sources: 1,
+    },
+    what_is_missing: {
+      prominent: true,
+      total_missing_items: 2,
+      missing_items: {
+        value: [
+          { field: "fundamentals.ebitda_mln", source: "company_snapshot" },
+          { field: "identity.isin", source: "company_snapshot" },
+        ],
+        provenance: "missing_data",
+      },
+      missing_data_fields: {
+        value: ["financials.ebitda", "identity.isin"],
+        provenance: "missing_data",
+      },
+      note:
+        "What is NOT yet sourced. Thin or absent items are marked provenance=missing_data and must be resolved or explicitly acknowledged before internal approval — they are never filled with a fabricated value.",
+      human_review_required: true,
+    },
+    primary_evidence_summary: {
+      primary_document_count: 1,
+      primary_fact_count: 1,
+      primary_documents: [
+        {
+          title: "Annual Report 2024",
+          domain: "example.com",
+          tier: "T1_primary_filing",
+          excerpt_count: 3,
+          fact_count: 1,
+          requires_translation: false,
+          warnings: [
+            "Bounded excerpt from the issuer's own annual report; not the full document. Human review required.",
+          ],
+        },
+      ],
+      primary_facts: {
+        value: [
+          {
+            field: "revenue",
+            value: "20,616 million",
+            currency: "USD",
+            period: "2024",
+            confidence: "medium",
+            source_url: "https://www.example.com/reports/ar2024.pdf",
+            provenance: "sourced_fact",
+          },
+        ],
+        provenance: "sourced_fact",
+        note: "Each fact's source_url is the citation of record. Facts still require human confirmation against the underlying filing.",
+      },
+      human_review_required: true,
+    },
+    catalyst_event_evidence: {
+      available: true,
+      coverage_status: "adequate",
+      event_context_present: false,
+      note: "Catalyst categories/directions/strengths are model-derived (T6) and weak; industry / event context is NOT company-specific evidence and never a direct company catalyst. Human review required.",
+      human_review_required: true,
+    },
+    financial_facts_summary: {
+      source_tier: "T2_regulator_or_gov",
+      is_mock: false,
+      note: "T5 aggregator values must be validated against T1 filings before use. No derived valuation is produced.",
+      human_review_required: true,
+    },
+    business_risk_summary: {
+      bull_available: true,
+      bear_available: true,
+      risk_available: true,
+      key_business_risks: {
+        value: ["Fundamentals missing; conclusions are provisional."],
+        provenance: "model_interpretation",
+      },
+      human_review_required: true,
+    },
+    council_disagreement_red_team: {
+      council_ran: true,
+      committee_label: "requires_more_evidence",
+      red_team_present: true,
+      red_team_summary: {
+        value: "The evidence pack is thin; several claims rest on aggregator data.",
+        provenance: "model_interpretation",
+      },
+      red_team_key_points: {
+        value: [
+          {
+            claim: "An evidenced datapoint was observed in the pack.",
+            citation_ids: ["E1"],
+            confidence: "low",
+            data_quality: "C",
+            is_limitation: false,
+            is_model_inference: false,
+          },
+        ],
+        provenance: "model_interpretation",
+      },
+      unsupported_claims_across_agents: { value: [], provenance: "sourced_fact" },
+      note: "Dissent surface — the red-team critique plus any agent claims the citation checker flagged as unsupported. Human review required.",
+      human_review_required: true,
+    },
+    research_next_steps: {
+      research_next_steps: {
+        value: [
+          "Source primary fundamentals from the latest 10-K.",
+          "Verify ISIN via a primary registry.",
+        ],
+        provenance: "model_interpretation",
+      },
+      primary_open_questions: {
+        value: ["Is the aggregator revenue consistent with the filed accounts?"],
+        provenance: "model_interpretation",
+      },
+      human_review_required: true,
+    },
+    human_review_checklist: {
+      reference:
+        "See report_content.human_review_checklist — this memo does not recompute a second checklist.",
+      total_items: 3,
+      not_completed_count: 1,
+      not_completed_items: {
+        value: [
+          {
+            item: "Data quality: T1/T2 sources present (not mock/T5/T6 only)",
+            required: true,
+            note: "Primary source validation required.",
+          },
+        ],
+        provenance: "sourced_fact",
+      },
+      human_review_required: true,
+    },
+    source_appendix: {
+      reference: "See report_content.source_citation_appendix.",
+      total_sources: 1,
+      total_citations: 0,
+      primary_fact_source_urls: {
+        value: ["https://www.example.com/reports/ar2024.pdf"],
+        provenance: "sourced_fact",
+      },
+    },
+    // `disallowed_outputs` is the ONLY field allowed to name the forbidden terms
+    // (in order to disclaim them). Rendered as a plain NOTICE, never rating UI.
+    disallowed_outputs: {
+      notice:
+        "This internal memo NEVER produces a public recommendation or a valuation conclusion. It does not and will not output any BUY, SELL, HOLD, or WATCH rating label, a price target, a fair value, an intrinsic value, or any upside / downside claim. No trading action is implied and no return is projected.",
+      forbidden_terms: [
+        "BUY",
+        "SELL",
+        "HOLD",
+        "WATCH",
+        "price target",
+        "fair value",
+        "intrinsic value",
+        "upside",
+        "downside",
+      ],
+    },
+    note: "Machine-assembled INTERNAL research memo — a deterministic synthesis of the already-assembled report sections, LLM council metadata, and known gaps. No new data was fetched, computed, or inferred; every claim ties back to an existing sourced datapoint, provenance, or citation. What is missing is surfaced prominently and is never filled with a fabricated value.",
+    disclaimer:
+      "INTERNAL ADMIN DRAFT. NOT INVESTMENT ADVICE. NOT A PUBLIC RECOMMENDATION. No rating, no valuation conclusion, and no return projection is produced. Human review is required.",
+    human_review_required: true,
+  };
+}
+
 // Wrap a report_content object in the final-report markdown envelope the backend
 // produces (a single fenced ```json block). The readable renderer parses this.
 function finalReportMarkdown(reportContent) {
@@ -421,6 +638,23 @@ function mockCouncilReport(id) {
   return base;
 }
 
+// Phase 31 — a final report whose report_content carries the OFF-by-default
+// INTERNAL RESEARCH MEMO block. Built on the council fixture (so council metadata
+// + primary-documents render too); the readable renderer must surface the memo
+// section (prominent "what is missing", cited claims, disallowed-outputs notice)
+// without a raw "[object Object]" leak, and never as a rating/BUY-SELL UI.
+const MEMO_REPORT_ID = "00000000-0000-0000-0000-0000000000a1";
+
+function mockMemoReport(id) {
+  const base = mockCouncilReport(id);
+  base.title =
+    "Internal Research Memo Draft — IBTEST — InvestingBuddy Test Company [MOCK DATA]";
+  const rc = sampleReportContent({ withCouncil: true });
+  rc.research_memo = sampleResearchMemo();
+  base.content_markdown = finalReportMarkdown(rc);
+  return base;
+}
+
 // Phase 28A.1 — a legacy deterministic "Phase 9" Analysis Council draft. It has
 // NO final_report_version (that is the legacy marker) and its historical
 // markdown still says "Phase 9" / "[LLM: not used]". The UI must keep it
@@ -493,6 +727,9 @@ const server = createServer((req, res) => {
     const rid = reportDetail[1];
     if (rid === COUNCIL_REPORT_ID) {
       return send(res, 200, mockCouncilReport(rid));
+    }
+    if (rid === MEMO_REPORT_ID) {
+      return send(res, 200, mockMemoReport(rid));
     }
     if (rid === LEGACY_REPORT_ID) {
       return send(res, 200, mockLegacyReport(rid));

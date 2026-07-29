@@ -16,6 +16,8 @@ import { adminTest as test, expect } from "../support/auth";
 const NO_COUNCIL_URL = "/admin/reports/00000000-0000-0000-0000-000000000099";
 const COUNCIL_URL = "/admin/reports/00000000-0000-0000-0000-0000000000c0";
 const LEGACY_URL = "/admin/reports/00000000-0000-0000-0000-0000000000e9";
+// Phase 31 — a final report whose report_content carries the research_memo block.
+const MEMO_URL = "/admin/reports/00000000-0000-0000-0000-0000000000a1";
 
 const FORBIDDEN_BUTTONS = ["BUY", "SELL", "HOLD", "WATCH", "TRADE", "PUBLISH"];
 
@@ -199,6 +201,66 @@ test.describe("Report Detail — readable final report (Phase 28A.2)", () => {
     await expect(docs).not.toContainText("[object Object]");
     // No forbidden action buttons introduced by the new card.
     await assertNoForbiddenButtons(page);
+  });
+
+  // Phase 31 — the readable report renders the OFF-by-default internal research
+  // memo when report_content includes it: prominent "what is missing", cited
+  // claims, and the disallowed-outputs NOTICE — in the default readable tab, with
+  // Raw JSON still hidden and no rating/BUY-SELL UI.
+  test("renders the internal research memo in the readable tab by default", async ({
+    page,
+  }) => {
+    await page.goto(MEMO_URL);
+
+    const readable = page.getByTestId("readable-report");
+    await expect(readable).toBeVisible();
+
+    // The memo heading renders in the default (readable) tab.
+    await expect(
+      readable.getByRole("heading", { name: "Internal Research Memo" }),
+    ).toBeVisible();
+
+    const memo = page.getByTestId("report-section-research_memo");
+    await expect(memo).toBeVisible();
+
+    // The prominent "what is missing" block is clearly visible with its text.
+    await expect(
+      memo.getByTestId("memo-subsection-what_is_missing"),
+    ).toBeVisible();
+    await expect(memo).toContainText("What is NOT yet sourced");
+
+    // The memo disclaimer + human-review framing are prominent.
+    await expect(memo).toContainText("NOT A PUBLIC RECOMMENDATION");
+
+    // disallowed_outputs renders as a plain NOTICE (never rating/BUY-SELL UI).
+    await expect(memo.getByTestId("memo-disallowed-outputs")).toContainText(
+      "NEVER produces",
+    );
+
+    // No leaked raw object; Raw JSON is NOT the default view; no forbidden buttons.
+    await expect(readable).not.toContainText("[object Object]");
+    await expect(page.getByTestId("report-raw-json")).toHaveCount(0);
+    await assertNoForbiddenButtons(page);
+  });
+
+  test("a final report without a research memo renders readable sections and no memo heading", async ({
+    page,
+  }) => {
+    await page.goto(NO_COUNCIL_URL);
+
+    const readable = page.getByTestId("readable-report");
+    await expect(readable).toBeVisible();
+    // Existing readable sections still render unchanged.
+    await expect(
+      readable.getByRole("heading", { name: "Company Identity" }),
+    ).toBeVisible();
+    // No memo section is rendered when the key is absent (legacy/additive-safe).
+    await expect(page.getByTestId("report-section-research_memo")).toHaveCount(0);
+    await expect(
+      readable.getByRole("heading", { name: "Internal Research Memo" }),
+    ).toHaveCount(0);
+    // Raw JSON stays hidden by default.
+    await expect(page.getByTestId("report-raw-json")).toHaveCount(0);
   });
 
   test("preserves the ~90vw report width on wide desktop", async ({ page }) => {
