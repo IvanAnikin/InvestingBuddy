@@ -49,6 +49,13 @@ from app.services.sources.connectors.company_ir import (
     PageFetcher,
     PressFetcher,
 )
+from app.services.sources.connectors.local_language_press import (
+    SOURCE_ID as LOCAL_LANGUAGE_PRESS_ID,
+)
+from app.services.sources.connectors.local_language_press import (
+    LocalLanguagePressConnector,
+    local_language_press_source_for,
+)
 from app.services.sources.connectors.sec_edgar import FilingsFetcher, SecEdgarConnector
 from app.services.sources.evidence import EvidenceItem
 from app.services.sources.gaps import GapSeverity, GapType, SourceGap
@@ -72,6 +79,13 @@ REGULATOR_REFERENCE_IDS = frozenset(
         "six_swiss",
     }
 )
+
+# Allowlisted local-language business-press reference connector (Phase 30B). Not a
+# regulator: it emits a bounded T4 quality-media SOURCE REFERENCE with a genuine
+# local-language excerpt for a verified FR / DE / IT / DA issuer (never a
+# fabricated news story), consumed by the Phase 30A translation layer. Kept in its
+# own set so ``REGULATOR_REFERENCE_IDS`` stays regulator-only.
+LOCAL_LANGUAGE_REFERENCE_IDS = frozenset({LOCAL_LANGUAGE_PRESS_ID})
 
 # Explicit, minimal venue/country -> dedicated regulator connector. Keeps each
 # issuer mapped to its own home-regulator connector specifically (UK/LSE ->
@@ -369,6 +383,24 @@ async def collect_company_source_evidence(
         gaps.extend(res.source_gaps)
         warnings.extend(res.warnings)
 
+    # -- Local-language business-press reference (Phase 30B) ---------------
+    # For a verified non-US issuer whose home market is FR / DE / IT / DA, add a
+    # bounded T4 quality-media SOURCE REFERENCE with a genuine local-language
+    # excerpt (never a fabricated news story), alongside the regulator reference.
+    # It carries requires_translation for the Phase 30A translation layer and
+    # deliberately lowers source quality (low confidence, needs human review).
+    if (
+        want(LOCAL_LANGUAGE_PRESS_ID)
+        and verified
+        and not (is_us_exchange(company.exchange) or is_sec_eligible(company.exchange))
+        and local_language_press_source_for(company, verified=verified) is not None
+    ):
+        press = LocalLanguagePressConnector(verified_source=verified)
+        res = await press.call_safe(press.fetch_filings, company, query)
+        items.extend(res.evidence_items[:max_items])
+        gaps.extend(res.source_gaps)
+        warnings.extend(res.warnings)
+
     return CompanySourceEvidence(
         evidence_items=items, source_gaps=gaps, warnings=warnings
     )
@@ -426,4 +458,6 @@ __all__ = [
     "SEC_ID",
     "COMPANY_IR_ID",
     "REGULATOR_REFERENCE_IDS",
+    "LOCAL_LANGUAGE_REFERENCE_IDS",
+    "LOCAL_LANGUAGE_PRESS_ID",
 ]

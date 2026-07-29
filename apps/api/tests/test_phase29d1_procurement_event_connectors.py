@@ -265,9 +265,9 @@ def test_registry_summary_counts_after_event_layer():
     # 11 regulator-layer + 15 macro/commodity/policy (29C) + 2 procurement /
     # tender event venues (29D.1) + 3 patent office / index venues (29D.2) + 3
     # permit / regulatory-event venues (29D.3) = 34 enabled.
-    assert summary["enabled"] == 34
+    assert summary["enabled"] == 35  # +1: local-language business press (Phase 30B)
     assert summary["scaffolded"] == 2
-    assert summary["planned"] == 2
+    assert summary["planned"] == 1  # only OpenBB remains planned (Phase 30B)
     assert summary["total"] == 38
     assert summary["total"] == len(reg.all_sources())
     # Health covers every event connector, network-free.
@@ -276,14 +276,14 @@ def test_registry_summary_counts_after_event_layer():
 
 
 def test_patents_promoted_by_phase_29d2():
-    """The patent venues were promoted to enabled in Phase 29D.2; only OpenBB and
-    the local-language business press remain planned."""
+    """The patent venues were promoted to enabled in Phase 29D.2; after Phase 30B
+    promoted the local-language business press, only OpenBB remains planned."""
     reg = build_registry()
     planned_ids = {s.source_id for s in reg.planned_sources()}
     enabled_ids = {s.source_id for s in reg.enabled_sources()}
     assert {"google_patents", "uspto", "epo_espacenet"} <= enabled_ids
     assert not ({"google_patents", "uspto", "epo_espacenet"} & planned_ids)
-    assert planned_ids == {"openbb", "local_language_business_press"}
+    assert planned_ids == {"openbb"}
     assert not (EVENT_IDS & planned_ids)
 
 
