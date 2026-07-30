@@ -18,6 +18,9 @@ const COUNCIL_URL = "/admin/reports/00000000-0000-0000-0000-0000000000c0";
 const LEGACY_URL = "/admin/reports/00000000-0000-0000-0000-0000000000e9";
 // Phase 31 — a final report whose report_content carries the research_memo block.
 const MEMO_URL = "/admin/reports/00000000-0000-0000-0000-0000000000a1";
+// Phase 31 hotfix — a report whose source-connector layer located verified
+// metadata-only PRIMARY-SOURCE REFERENCES but has 0 DB-persisted citations.
+const METADATA_REFS_URL = "/admin/reports/00000000-0000-0000-0000-0000000000a2";
 
 const FORBIDDEN_BUTTONS = ["BUY", "SELL", "HOLD", "WATCH", "TRADE", "PUBLISH"];
 
@@ -238,6 +241,55 @@ test.describe("Report Detail — readable final report (Phase 28A.2)", () => {
     );
 
     // No leaked raw object; Raw JSON is NOT the default view; no forbidden buttons.
+    await expect(readable).not.toContainText("[object Object]");
+    await expect(page.getByTestId("report-raw-json")).toHaveCount(0);
+    await assertNoForbiddenButtons(page);
+  });
+
+  // Phase 31 hotfix — the readable report surfaces verified metadata-only
+  // PRIMARY-SOURCE REFERENCES (issuer IR / annual-report index / regulator venue)
+  // that previously showed as "0" everywhere. The memo's Primary Evidence
+  // sub-block lists the references cleanly, and the top-level Source Citation
+  // Appendix no longer implies zero sources when references exist.
+  test("surfaces metadata-only primary-source references in the memo and appendix", async ({
+    page,
+  }) => {
+    await page.goto(METADATA_REFS_URL);
+
+    const readable = page.getByTestId("readable-report");
+    await expect(readable).toBeVisible();
+
+    // Primary Evidence memo sub-block shows the reference count + a reference row.
+    const primaryEvidence = page.getByTestId(
+      "memo-subsection-primary_evidence_summary",
+    );
+    await expect(primaryEvidence).toBeVisible();
+    await expect(primaryEvidence).toContainText("Primary Source Reference Count");
+    await expect(primaryEvidence).toContainText("richemont.com");
+    // The regulator-venue reference renders with the real backend label
+    // (`_reference_type_for` falls back to "source_reference" for non-company_ir).
+    await expect(primaryEvidence).toContainText("source_reference");
+    // "references available / facts unavailable" is legible: the honest note and
+    // the boolean flags (rendered "No") make the missing-facts state explicit.
+    await expect(primaryEvidence).toContainText("Primary Facts Available");
+    await expect(primaryEvidence).toContainText(
+      "NO primary financial facts were parsed",
+    );
+    // A reference row is not leaked as a raw object.
+    await expect(primaryEvidence).not.toContainText("[object Object]");
+
+    // Source Citation Appendix now shows the primary-source-reference count/note,
+    // and does NOT claim "No sources cited yet".
+    const appendix = page.getByTestId("report-section-source_citation_appendix");
+    await expect(appendix).toBeVisible();
+    await expect(appendix).toContainText("primary-source reference(s)");
+    await expect(
+      appendix.getByTestId("appendix-primary-references"),
+    ).toContainText("primary-source reference(s) located");
+    await expect(appendix).not.toContainText("No sources cited yet");
+
+    // No leaked raw object anywhere; Raw JSON hidden by default; no publish/BUY-SELL
+    // buttons introduced.
     await expect(readable).not.toContainText("[object Object]");
     await expect(page.getByTestId("report-raw-json")).toHaveCount(0);
     await assertNoForbiddenButtons(page);

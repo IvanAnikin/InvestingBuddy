@@ -251,6 +251,18 @@ class CouncilResult(BaseModel):
     # was found. Bounded per-excerpt and by ``source_translation_max_excerpts`` —
     # never a whole document.
     translated_excerpts: list[dict[str, Any]] = Field(default_factory=list)
+    # Phase 31 hotfix: bounded, secret-free PRIMARY-SOURCE REFERENCES — verified
+    # metadata-only items (issuer IR page / annual-report index / regulator venue)
+    # that LOCATE a primary source but are NOT extracted document text and NOT a
+    # parsed financial fact. Empty unless the connector layer surfaced references.
+    primary_source_references: list[dict[str, Any]] = Field(default_factory=list)
+    # Phase 31 hotfix: counts distinguishing reference availability from extraction:
+    # primary_source_reference_count / primary_document_reference_count /
+    # metadata_only_source_count / extracted_primary_document_count / source_gap_count.
+    source_reference_counts: dict[str, int] = Field(default_factory=dict)
+    # Phase 31 hotfix: bounded, de-duplicated honest connector source-gap messages
+    # (e.g. "annual-report links not identified without live extraction"). No secrets.
+    source_gaps: list[str] = Field(default_factory=list)
 
     def recount(self) -> None:
         """Refresh the completed/failed/skipped tallies from ``agents``."""
@@ -314,6 +326,9 @@ class CouncilResult(BaseModel):
             "macro_context": list(self.macro_context),
             "event_context": list(self.event_context),
             "translated_excerpts": list(self.translated_excerpts),
+            "primary_source_references": list(self.primary_source_references),
+            "source_reference_counts": dict(self.source_reference_counts),
+            "source_gaps": list(self.source_gaps),
         }
 
     @classmethod

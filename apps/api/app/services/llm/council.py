@@ -167,6 +167,93 @@ def _primary_facts(evidence_items: list[Any]) -> list[dict[str, Any]]:
     return out
 
 
+# Phase 31 hotfix: extracted document TEXT excerpt types (exclude the parsed
+# financial fact, which is handled by ``_primary_facts``).
+_EXTRACTED_EXCERPT_TYPES = _DOCUMENT_SOURCE_TYPES - {"company_ir_financial_fact"}
+# The data-quality labels the connector layer stamps on metadata-only items —
+# a located primary-source REFERENCE, not extracted text and not a parsed fact.
+_METADATA_ONLY_QUALITIES = frozenset({"metadata_only", "link_metadata_only"})
+# Reference source_types that specifically locate an issuer DOCUMENT (report /
+# index) as opposed to an IR profile / press index.
+_DOCUMENT_REFERENCE_TYPES = frozenset(
+    {"company_ir_annual_report", "company_ir_annual_reports_index"}
+)
+
+
+def _reference_type_for(source_type: str | None) -> str:
+    return {
+        "company_ir_profile": "ir_profile",
+        "company_ir_annual_reports_index": "filing_index",
+        "company_ir_annual_report": "filing_link",
+        "company_ir_press_release_index": "press_index",
+    }.get(source_type or "", "source_reference")
+
+
+def _source_reference_summary(evidence_items: list[Any]) -> dict[str, Any]:
+    """Bounded, secret-free summary of metadata-only PRIMARY-source references.
+
+    A *reference* locates a verified primary source (issuer IR page / annual-report
+    index / regulator venue) but is NOT extracted document text and NOT a parsed
+    financial fact. Counts every metadata-only item; the reference LIST is limited
+    to T1/T2 (primary/regulated) references. Never emits raw document text.
+    """
+    from urllib.parse import urlsplit
+
+    references: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    metadata_only = 0
+    document_references = 0
+    extracted_documents = 0
+    for it in evidence_items:
+        stype = getattr(it, "source_type", None)
+        dq = getattr(it, "data_quality", None)
+        tier = getattr(it, "content_source_tier", None) or ""
+        if stype in _EXTRACTED_EXCERPT_TYPES:
+            extracted_documents += 1
+            continue
+        if dq in _METADATA_ONLY_QUALITIES:
+            metadata_only += 1
+            if stype in _DOCUMENT_REFERENCE_TYPES:
+                document_references += 1
+            # Reference LIST: primary/regulated tiers only (T1/T2).
+            if tier.startswith(("T1", "T2")):
+                url = getattr(it, "url", None) or ""
+                title = (getattr(it, "title", None) or "").strip()
+                key = (title, url.split("?")[0])
+                if key in seen:
+                    continue
+                seen.add(key)
+                domain = ""
+                try:
+                    domain = (urlsplit(url).hostname or "").replace("www.", "")
+                except (ValueError, TypeError):
+                    domain = ""
+                references.append(
+                    {
+                        "title": title or "Primary source reference",
+                        "domain": domain,
+                        "url": url or None,
+                        "tier": tier,
+                        "source_type": stype,
+                        "reference_type": _reference_type_for(stype),
+                        "requires_translation": bool(
+                            getattr(it, "requires_translation", False)
+                        ),
+                        "warnings": list(getattr(it, "warnings", None) or [])[:2],
+                    }
+                )
+    references = references[:8]
+    return {
+        "references": references,
+        "counts": {
+            "primary_source_reference_count": len(references),
+            "primary_document_reference_count": document_references,
+            "metadata_only_source_count": metadata_only,
+            "extracted_primary_document_count": extracted_documents,
+        },
+    }
+
+
 def _company_macro_theme(company: CompanyContext) -> str | None:
     """A broad macro theme for a company: its sector/industry (else None).
 
@@ -515,6 +602,12 @@ async def maybe_run_council(
         connector_gap_messages = None
         primary_documents: list[dict[str, Any]] = []
         primary_facts: list[dict[str, Any]] = []
+        # Phase 31 hotfix: bounded, secret-free PRIMARY-source references (verified
+        # metadata-only items) + their counts + honest source-gap strings. Stay
+        # empty (and unattached) when the connector layer is off → byte-identical.
+        primary_source_references: list[dict[str, Any]] = []
+        source_reference_counts: dict[str, int] = {}
+        source_gap_messages_bounded: list[str] = []
         if cfg.source_connector_enabled:
             try:
                 # Phase 29B.2: when document extraction is also enabled, inject the
@@ -543,6 +636,16 @@ async def maybe_run_council(
                 connector_gap_messages = collected.gap_messages()
                 primary_documents = _primary_document_summary(collected.evidence_items)
                 primary_facts = _primary_facts(collected.evidence_items)
+                # Phase 31 hotfix: classify metadata-only PRIMARY-source references
+                # (issuer IR / annual-report index / regulator venue) so the report
+                # can surface them, distinct from extracted text and parsed facts.
+                reference_summary = _source_reference_summary(collected.evidence_items)
+                primary_source_references = reference_summary["references"]
+                source_reference_counts = dict(reference_summary["counts"])
+                source_reference_counts["source_gap_count"] = len(
+                    connector_gap_messages or []
+                )
+                source_gap_messages_bounded = list(connector_gap_messages or [])[:8]
                 log_event(
                     log,
                     "source_connector_evidence_collected",
@@ -553,6 +656,12 @@ async def maybe_run_council(
                     connector_gap_count=len(connector_gap_messages),
                     primary_document_count=len(primary_documents),
                     primary_fact_count=len(primary_facts),
+                    primary_source_reference_count=source_reference_counts[
+                        "primary_source_reference_count"
+                    ],
+                    metadata_only_source_count=source_reference_counts[
+                        "metadata_only_source_count"
+                    ],
                 )
             except Exception as exc:  # noqa: BLE001 - connectors never crash a report
                 log_event(
@@ -701,6 +810,16 @@ async def maybe_run_council(
         # report can present real T1 datapoints (with each fact's own provenance).
         if primary_facts:
             result.primary_facts = primary_facts
+        # Phase 31 hotfix: attach the bounded metadata-only PRIMARY-source
+        # references + counts + honest gaps so the report / memo can surface which
+        # verified primary sources were located (distinct from extracted text and
+        # parsed facts). Attach only when non-empty → dark-by-default byte-identical.
+        if primary_source_references:
+            result.primary_source_references = primary_source_references
+        if any(source_reference_counts.values()):
+            result.source_reference_counts = source_reference_counts
+        if source_gap_messages_bounded:
+            result.source_gaps = source_gap_messages_bounded
         # Phase 29C.1: attach the bounded macro CONTEXT references so the report can
         # render an optional macro-context block (background only, never a catalyst).
         if macro_context:

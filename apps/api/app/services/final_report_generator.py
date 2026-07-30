@@ -1876,6 +1876,14 @@ def _build_research_memo(
     agents = list(_memo_get(council_result, "agents", []) or [])
     primary_facts = list(_memo_get(council_result, "primary_facts", []) or [])
     primary_documents = list(_memo_get(council_result, "primary_documents", []) or [])
+    # Phase 31 hotfix: metadata-only PRIMARY-source references + counts + gaps.
+    primary_source_references = list(
+        _memo_get(council_result, "primary_source_references", []) or []
+    )
+    reference_counts = dict(
+        _memo_get(council_result, "source_reference_counts", {}) or {}
+    )
+    source_gaps = list(_memo_get(council_result, "source_gaps", []) or [])
     committee_label = _memo_get(council_result, "committee_label", None)
     llm_used = bool(_memo_get(council_result, "llm_used", False))
 
@@ -2008,10 +2016,41 @@ def _build_research_memo(
                 "warnings": _memo_safe_list(d.get("warnings")),
             }
         )
+    # Phase 31 hotfix: metadata-only PRIMARY-source reference rows + honest gaps.
+    ref_rows: list[dict[str, Any]] = []
+    for r in primary_source_references:
+        if not isinstance(r, dict):
+            continue
+        ref_rows.append(
+            {
+                "title": _memo_safe_text(r.get("title")),
+                "domain": r.get("domain"),
+                "url": strip_url_secrets(r.get("url")),
+                "tier": r.get("tier"),
+                "reference_type": r.get("reference_type"),
+                "requires_translation": bool(r.get("requires_translation", False)),
+            }
+        )
+    gap_rows = _memo_safe_list(source_gaps)[:6]
+    primary_source_reference_count = reference_counts.get(
+        "primary_source_reference_count", len(ref_rows)
+    )
+    primary_document_reference_count = reference_counts.get(
+        "primary_document_reference_count", 0
+    )
+    metadata_only_source_count = reference_counts.get("metadata_only_source_count", 0)
+    source_gap_count = reference_counts.get("source_gap_count", len(gap_rows))
     if fact_rows or doc_rows:
         primary_evidence_summary = {
             "primary_document_count": len(doc_rows),
             "primary_fact_count": len(fact_rows),
+            "primary_source_reference_count": primary_source_reference_count,
+            "primary_document_reference_count": primary_document_reference_count,
+            "extracted_primary_document_count": len(doc_rows),
+            "metadata_only_source_count": metadata_only_source_count,
+            "source_gap_count": source_gap_count,
+            "extracted_document_text_available": bool(doc_rows),
+            "primary_facts_available": bool(fact_rows),
             "primary_documents": doc_rows,
             "primary_facts": {
                 "value": fact_rows,
@@ -2023,10 +2062,70 @@ def _build_research_memo(
             },
             "human_review_required": True,
         }
+        if ref_rows:
+            primary_evidence_summary["primary_source_references"] = {
+                "value": ref_rows,
+                "provenance": "sourced_fact",
+                "note": (
+                    "Verified primary-source REFERENCES (issuer investor relations, "
+                    "annual-report index, or regulator venue). A reference LOCATES a "
+                    "primary source; it is not extracted document text and not a "
+                    "verified financial fact."
+                ),
+            }
+        if gap_rows:
+            primary_evidence_summary["source_gaps"] = {
+                "value": gap_rows,
+                "provenance": "missing_data",
+            }
+    elif ref_rows:
+        primary_evidence_summary = {
+            "primary_source_reference_count": primary_source_reference_count,
+            "primary_document_reference_count": primary_document_reference_count,
+            "extracted_primary_document_count": 0,
+            "primary_document_count": 0,
+            "primary_fact_count": 0,
+            "metadata_only_source_count": metadata_only_source_count,
+            "source_gap_count": source_gap_count,
+            "extracted_document_text_available": False,
+            "primary_facts_available": False,
+            "primary_source_references": {
+                "value": ref_rows,
+                "provenance": "sourced_fact",
+                "note": (
+                    "Verified primary-source REFERENCES (issuer investor relations, "
+                    "annual-report index, or regulator venue). A reference LOCATES a "
+                    "primary source; it is not extracted document text and not a "
+                    "verified financial fact."
+                ),
+            },
+            "note": (
+                f"{primary_source_reference_count} primary-source reference(s) are "
+                "available and are listed above. However, issuer document TEXT was "
+                "NOT extracted (the reports are scanned or JS-gated; no OCR in this "
+                "phase) and NO primary financial facts were parsed. References locate "
+                "verified primary sources for human review; they are not yet extracted "
+                "evidence or confirmed facts, so primary-source validation remains "
+                "outstanding."
+            ),
+            "human_review_required": True,
+        }
+        if gap_rows:
+            primary_evidence_summary["source_gaps"] = {
+                "value": gap_rows,
+                "provenance": "missing_data",
+            }
     else:
         primary_evidence_summary = {
             "primary_document_count": 0,
             "primary_fact_count": 0,
+            "primary_source_reference_count": 0,
+            "primary_document_reference_count": 0,
+            "extracted_primary_document_count": 0,
+            "metadata_only_source_count": 0,
+            "source_gap_count": source_gap_count,
+            "extracted_document_text_available": False,
+            "primary_facts_available": False,
             "note": {
                 "value": (
                     "0 primary facts — no issuer primary document was extracted, or "
@@ -2273,7 +2372,18 @@ def _build_research_memo(
             "value": fact_source_urls,
             "provenance": "sourced_fact" if fact_source_urls else "missing_data",
         },
+        "primary_source_reference_count": primary_source_reference_count,
+        "metadata_only_source_count": metadata_only_source_count,
     }
+    # Only add the "listed under Primary Evidence" note when references actually
+    # exist — otherwise it reads oddly against a zero count.
+    if primary_source_reference_count > 0:
+        source_appendix["note"] = (
+            "total_sources / total_citations count DB-persisted workflow citations "
+            "only. Primary-source references located by the connector layer are "
+            "listed under Primary Evidence above; a metadata-only reference is not "
+            "yet a persisted citation."
+        )
 
     return {
         "type": "research_memo",
@@ -3260,6 +3370,36 @@ class FinalReportGeneratorService:
                 report_content.get("human_review_checklist", []),
                 is_mock=_snapshot_is_mock,
                 has_t1_t2=_has_t1_t2_evidence(source_tier, citations, primary_facts),
+            )
+
+        # Phase 31 hotfix: when the connector layer located verified PRIMARY-SOURCE
+        # REFERENCES (metadata-only issuer IR / filing-index / regulator venues) but
+        # no DB citation was persisted, record the reference COUNT on the source
+        # citation appendix so the report does not imply there are zero source
+        # references. This never fabricates a Source/Citation row — it is an honest
+        # count + note pointing at the research memo's Primary Evidence. Dark by
+        # default: with the connector layer off there are no references and the
+        # appendix is byte-for-byte unchanged.
+        _refs = getattr(council_result, "primary_source_references", None) or []
+        _appendix = report_content.get("source_citation_appendix")
+        if _refs and isinstance(_appendix, dict):
+            _ref_count = (
+                getattr(council_result, "source_reference_counts", {}) or {}
+            ).get("primary_source_reference_count", len(_refs))
+            _appendix["primary_source_reference_count"] = _ref_count
+            # Only point at the research memo when it is actually rendered; with the
+            # memo flag off the references are surfaced by the count alone.
+            _memo_pointer = (
+                " and are listed in the Internal Research Memo (Primary Evidence)"
+                if settings.source_research_memo_enabled
+                else ""
+            )
+            _appendix["note"] = (
+                f"{_ref_count} verified primary-source reference(s) (issuer investor "
+                "relations / annual-report index / regulator venue) were located by "
+                f"the source-connector layer{_memo_pointer}. DB-persisted workflow "
+                "citations remain as counted above; a metadata-only reference is not "
+                "yet a persisted citation and requires human review."
             )
 
         # Phase 29C.1: optional MACRO CONTEXT block. When ``source_macro_enabled``
