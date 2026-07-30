@@ -2486,11 +2486,12 @@ an official translation. `schema_valid` / `safety_valid` stay true,
 
 ## Phase 31 — Internal Research Memo Section (internal admin only)
 
-> **Status: PR open — pre-staging.** This section documents merged-branch
-> behaviour; it is **not yet merged / deployed / staging-validated** (branch
-> `feature/phase-31-research-memo-builder` @ `618344d`). **No new endpoint, no DB
-> migration.** One new OFF-by-default flag `SOURCE_RESEARCH_MEMO_ENABLED`
-> (`source_research_memo_enabled=false`). **This is the FINAL campaign phase.**
+> **Status: merged + deployed + staging-validated (`b89d5c5`, PR #69).** Phase 31
+> shipped full-stack (API + Web both at `b89d5c5`) and is staging-validated (see
+> `docs/development/closures/phase-31.md`). **No new endpoint, no DB migration.**
+> One new OFF-by-default flag `SOURCE_RESEARCH_MEMO_ENABLED`
+> (`source_research_memo_enabled=false`; kept ON on staging after validation).
+> **This was the FINAL campaign phase (Phase 0 → 31 complete).**
 
 Phase 31 adds a **source-aware INTERNAL research memo** as an additional section
 of the existing final report — **not** a new endpoint. When
@@ -2558,8 +2559,8 @@ conclusion**; it is internal-admin-only, always `human_review_required`, never
 off the report body is **byte-identical** to Phase 30B; when on, the memo derives
 entirely from existing report data, so the happy path is directly demonstrable.
 
-> **Pending hotfix (pre-merge — branch `hotfix/phase-31-source-reference-surfacing`;
-> NOT yet merged / deployed / staging-validated).** When `company_ir` returns
+> **Hotfix (shipped `8cc21a6`, PR #70 — merged + deployed + staging-validated
+> 2026-07-30, VALIDATED — WITH ENVIRONMENTAL NOTES).** When `company_ir` returns
 > verified **metadata-only** T1 primary-source references (issuer IR page /
 > annual-report index / press index) with **no** extracted document text and **no**
 > parsed primary facts (scanned / JS-gated PDFs, no OCR), the hotfix makes those
@@ -2575,5 +2576,12 @@ entirely from existing report data, so the happy path is directly demonstrable.
 > / `Citation` rows**). Metadata-only references **never** become primary facts;
 > `schema_valid` / `safety_valid` stay true, `publication_ready` false,
 > `human_review_required` true; still **no OCR / extraction** is added. This
-> re-presents references the evidence layer already holds — validation follows a
-> human-approved merge + deploy (see PHASE_LEDGER row `31-hotfix`).
+> re-presents references the evidence layer already holds. On staging, a new
+> CFR/SW report `1e18aa4d-d6f4-4865-ae40-93984c10032c` surfaces
+> `primary_source_reference_count=6` (5 richemont.com + 1 six-group.com T2 venue)
+> while honestly reporting `extracted_primary_document_count=0` /
+> `primary_fact_count=0` (`extracted_document_text_available=false` /
+> `primary_facts_available=false`); forbidden terms remain only inside the exempt
+> `disallowed_outputs` notice; regressions (AAPL / BA / KER / UHR) pass. See
+> PHASE_LEDGER row `31-hotfix` and closure
+> `docs/development/closures/phase-31-hotfix.md`.

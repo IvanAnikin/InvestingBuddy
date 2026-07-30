@@ -533,18 +533,27 @@ grep -RiE "Authorization: Bearer|Set-Cookie:|DATABASE_URL=|api_token=[A-Za-z0-9]
 
 ## Internal Research Memo Builder (Phase 31 — FINAL phase)
 
-> **PR open — pre-staging.** Not yet merged / deployed / staging-validated. Do
-> **not** treat this section as a closed/validated deployment record until the
-> merge SHA + deployed SHA + staging validation result are on file.
+> **Merged + deployed + staging-validated (`b89d5c5`, PR #69).** Full-stack deploy
+> (API + Web both at `b89d5c5`, 3 stable polls each); DB head `011`; staging
+> validation on file — see `docs/development/closures/phase-31.md`.
 
 - **No DB migration** (DB head stays `011`); **no new host, no new endpoint, no
   new secret.** One new app setting `SOURCE_RESEARCH_MEMO_ENABLED` (default
-  `false`). When **off**, the final report is byte-identical to the prior
-  behaviour; when **on**, the final report includes an internal `research_memo`
-  section derived deterministically from data the system already holds (no new
-  fetch/compute), internal-admin-only, `human_review_required=true` /
-  `publication_ready=false`, no recommendation/valuation, no publish route.
-  **Rollback:** set `SOURCE_RESEARCH_MEMO_ENABLED=false`.
+  `false`; **kept ON on staging after validation**). When **off**, the final
+  report is byte-identical to the prior behaviour; when **on**, the final report
+  includes an internal `research_memo` section derived deterministically from data
+  the system already holds (no new fetch/compute), internal-admin-only,
+  `human_review_required=true` / `publication_ready=false`, no
+  recommendation/valuation, no publish route. **Rollback:** set
+  `SOURCE_RESEARCH_MEMO_ENABLED=false`.
+- **Hotfix (`8cc21a6`, PR #70 — merged + deployed + staging-validated
+  2026-07-30):** surfaces verified metadata-only primary-source references in the
+  report/memo when no document text/facts are extracted. Full-stack deploy (Deploy
+  API run `30521771452` + Deploy Web run `30521771446`, both success at
+  `8cc21a6`); API `/health` + Web `/api/version` `commit_sha=8cc21a6` (3/3 stable).
+  **No new app setting, no new host/endpoint/secret, no DB migration** (head stays
+  `011`). Still no OCR / extraction added. See
+  `docs/development/closures/phase-31-hotfix.md`.
 
 ## Language Detection + Machine-Translation Foundation (Phase 30A)
 
