@@ -1879,6 +1879,42 @@ def _memo_carry_identity(
     return {"value": dp, "provenance": "missing_data"}
 
 
+def _memo_human_review_checklist_snapshot(checklist: list[Any]) -> dict[str, Any]:
+    """Build the memo's embedded, reference-only checklist snapshot.
+
+    The memo REFERENCES the authoritative ``report_content.human_review_checklist``
+    and does NOT recompute a second checklist — it only re-presents the
+    not-completed items from the checklist it is given. Deterministic controlled
+    vocabulary (item labels + notes), a strict subset of the source checklist, so
+    it introduces no new content. Extracted as a module-level helper so the memo's
+    embedded snapshot can be refreshed from the FINAL authoritative checklist after
+    the Phase 32A RC-6 recompute without rebuilding (and re-safety-scanning) the
+    rest of the memo.
+    """
+    not_completed = [
+        {
+            "item": i.get("item"),
+            "required": i.get("required"),
+            "note": i.get("note"),
+        }
+        for i in checklist
+        if isinstance(i, dict) and not i.get("completed")
+    ]
+    return {
+        "reference": (
+            "See report_content.human_review_checklist — this memo does not "
+            "recompute a second checklist."
+        ),
+        "total_items": len(checklist),
+        "not_completed_count": len(not_completed),
+        "not_completed_items": {
+            "value": not_completed,
+            "provenance": "sourced_fact",
+        },
+        "human_review_required": True,
+    }
+
+
 def _build_research_memo(
     report_content: dict[str, Any],
     council_result: Any,
@@ -2388,28 +2424,11 @@ def _build_research_memo(
     }
 
     # -- human_review_checklist: reference, do NOT recompute ---------------
-    not_completed = [
-        {
-            "item": i.get("item"),
-            "required": i.get("required"),
-            "note": i.get("note"),
-        }
-        for i in checklist
-        if isinstance(i, dict) and not i.get("completed")
-    ]
-    human_review_checklist = {
-        "reference": (
-            "See report_content.human_review_checklist — this memo does not "
-            "recompute a second checklist."
-        ),
-        "total_items": len(checklist),
-        "not_completed_count": len(not_completed),
-        "not_completed_items": {
-            "value": not_completed,
-            "provenance": "sourced_fact",
-        },
-        "human_review_required": True,
-    }
+    # Snapshot the not-completed items from the checklist as read at memo-build
+    # time. This is refreshed from the FINAL authoritative checklist after the
+    # Phase 32A RC-6 recompute (see _generate_and_save) so the memo can never
+    # contradict the header.
+    human_review_checklist = _memo_human_review_checklist_snapshot(checklist)
 
     # -- source_appendix: reference + primary-fact source URLs -------------
     fact_source_urls = [
@@ -3661,6 +3680,25 @@ class FinalReportGeneratorService:
         _workflow_status = report_content.get("workflow_status")
         if isinstance(_workflow_status, dict):
             _workflow_status["schema_valid"] = validation.schema_valid
+
+        # Phase 32A Slice-1 hotfix — refresh the Phase-31 memo's EMBEDDED checklist
+        # snapshot from the FINAL authoritative checklist above. The memo is built
+        # (and safety-scanned) BEFORE validation, so its embedded snapshot would
+        # otherwise be stale (e.g. still list the schema item as "Schema invalid"
+        # after RC-6 flipped schema_valid true), contradicting the header. Only the
+        # ``human_review_checklist`` sub-field is refreshed — deterministic checklist
+        # labels/notes that are a strict SUBSET of the already-scanned content (no
+        # new terms, no fabrication) — the memo prose is NOT rebuilt, so nothing
+        # moves past the safety gate. Dark-safe: only runs when a memo exists (i.e.
+        # SOURCE_RESEARCH_MEMO_ENABLED on). publication_ready / human_review_required
+        # are untouched.
+        _memo = report_content.get("research_memo")
+        if isinstance(_memo, dict) and isinstance(
+            _memo.get("human_review_checklist"), dict
+        ):
+            _memo["human_review_checklist"] = _memo_human_review_checklist_snapshot(
+                report_content["human_review_checklist"]
+            )
 
         schema_validation_for_save = validation.persisted_schema_json
 
