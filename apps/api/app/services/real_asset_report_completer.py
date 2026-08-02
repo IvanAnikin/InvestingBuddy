@@ -41,6 +41,11 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app.schemas.catalyst import neutralize_forbidden_terms
+from app.services.data_provenance import (
+    MOCK,
+    derive_data_provenance,
+    normalise_provenance,
+)
 
 # Provenance enums from report_schema.json ($defs.sourceTier / $defs.dataQuality)
 _VALID_SOURCE_TIERS = frozenset(
@@ -131,11 +136,20 @@ class _ReportCompleter:
 
         ident = self._admin.get("company_identity") or {}
         fin = self._admin.get("financial_snapshot") or {}
-        # Never present mock / fabricated numbers as sourced data. Treat the draft
-        # as mock unless a section explicitly says otherwise.
-        self._is_mock = bool(
-            fin.get("is_mock", ident.get("is_mock", True))
-        )
+        # Phase 32A AD-2 — derive tri-state provenance from EXPLICIT signals only:
+        # prefer an explicit ``data_provenance`` label (financial governs), else
+        # the tri-state ``is_mock``. Absence ⇒ "unknown", NEVER coerced to mock.
+        _fin_prov = fin.get("data_provenance") if isinstance(fin, dict) else None
+        _ident_prov = ident.get("data_provenance") if isinstance(ident, dict) else None
+        if _fin_prov or _ident_prov:
+            self._data_provenance = normalise_provenance(_fin_prov or _ident_prov)
+        else:
+            _raw = fin.get("is_mock") if "is_mock" in fin else ident.get("is_mock")
+            self._data_provenance = derive_data_provenance(_raw)
+        # Suppress sourced numbers ONLY when the data is EXPLICITLY mock. An
+        # "unknown" or "real" provenance keeps numbers that carry their own real
+        # source (a lost snapshot must NOT erase a real company's figures).
+        self._is_mock = self._data_provenance == MOCK
         self._data_tier = _normalise_tier(
             fin.get("source_tier") or ident.get("source_tier")
         )

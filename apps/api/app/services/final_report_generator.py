@@ -53,6 +53,10 @@ from app.schemas.final_report import (
     SafetyValidationResult,
 )
 from app.services import safety_terms
+from app.services.data_provenance import (
+    derive_data_provenance,
+    provenance_to_is_mock,
+)
 from app.services.llm.council import maybe_run_council
 from app.services.llm.schemas import AGENT_RED_TEAM, CouncilResult
 from app.services.real_asset_report_completer import build_schema_complete_report
@@ -117,6 +121,27 @@ _REQUIRED_SECTIONS = [
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _derive_report_provenance(
+    company_snapshot: dict[str, Any] | None,
+    scorecard: Scorecard | None,
+) -> str:
+    """Derive the report-level data provenance from EXPLICIT signals only.
+
+    Phase 32A AD-2: the financial-data provenance governs number suppression.
+    Prefer the snapshot's explicit ``is_mock`` (real provider ⇒ ``False``, mock
+    provider ⇒ ``True``); fall back to the scorecard's recorded ``is_mock``.
+    When neither carries an explicit signal the provenance is ``"unknown"`` —
+    NEVER silently coerced to ``"mock"``.
+    """
+    if company_snapshot is not None and "is_mock" in company_snapshot:
+        return derive_data_provenance(company_snapshot.get("is_mock"))
+    if scorecard is not None:
+        source_q = scorecard.source_quality_summary_json or {}
+        if "is_mock" in source_q:
+            return derive_data_provenance(source_q.get("is_mock"))
+    return "unknown"
 
 
 # ---------------------------------------------------------------------------
@@ -470,7 +495,10 @@ def _build_company_identity(
         identity["source_tier"] = company_snapshot.get(
             "source_tier", "T6_model_estimate"
         )
-        identity["is_mock"] = company_snapshot.get("is_mock", True)
+        # Phase 32A AD-2 — tri-state provenance from the EXPLICIT snapshot signal.
+        _prov = derive_data_provenance(company_snapshot.get("is_mock"))
+        identity["data_provenance"] = _prov
+        identity["is_mock"] = provenance_to_is_mock(_prov)
     elif company_record:
         identity["legal_name"] = _dp(company_record.get("name"), "company_db_record")
         identity["ticker"] = _dp(company_record.get("ticker"), "company_db_record")
@@ -482,11 +510,19 @@ def _build_company_identity(
             company_record.get("sector"), "company_db_record"
         )
         identity["source_tier"] = "T6_model_estimate"
-        identity["is_mock"] = True
+        # Phase 32A RC-2/RC-5 — a real, known parent recovered from the DB is
+        # REAL identity, never mock. A missing financial snapshot does NOT make a
+        # known company "mock" (the number-suppression provenance is separate).
+        identity["data_provenance"] = "real"
+        identity["is_mock"] = False
     else:
         identity["legal_name"] = _dp(None, "unavailable", "missing_data")
         identity["source_tier"] = "T6_model_estimate"
-        identity["is_mock"] = True
+        # Phase 32A AD-2 — no snapshot and no DB parent: provenance is genuinely
+        # UNKNOWN (is_mock None, honoured), never coerced to mock. Identity stays
+        # honestly unresolved + human-review flagged (set below), never fabricated.
+        identity["data_provenance"] = "unknown"
+        identity["is_mock"] = None
 
     # Phase 29B.3 — add/override identity datapoints from real high-confidence
     # primary facts (reporting_currency, fiscal_year, employees, …). Each carries
@@ -549,15 +585,22 @@ def _build_data_availability_summary(
     financial_data_summary: dict[str, Any] | None,
     fundamentals_available: bool | None,
     source_tier: str | None,
+    *,
+    data_provenance: str = "unknown",
 ) -> dict[str, Any]:
     tier = source_tier or "T6_model_estimate"
-    is_mock = tier == "T6_model_estimate"
+    # Phase 32A RC-2 — stop conflating tier==T6 with mock. A real T6-derived
+    # metric is NOT mock; is_mock comes from the report-level provenance
+    # (True only for explicit mock, None for unknown), never from the tier.
+    is_mock = provenance_to_is_mock(data_provenance)
+    review_for_mock = data_provenance == "mock"
 
     if financial_data_summary:
         return {
             "type": "data_availability_summary",
             "source_tier": tier,
             "is_mock": is_mock,
+            "data_provenance": data_provenance,
             "fundamentals_available": fundamentals_available or False,
             "available_count": financial_data_summary.get("available_count", 0),
             "missing_count": financial_data_summary.get("missing_count", 0),
@@ -571,13 +614,14 @@ def _build_data_availability_summary(
                 "provenance": "sourced_fact",
             },
             "warnings": financial_data_summary.get("warnings", []),
-            "human_review_required": is_mock or not fundamentals_available,
+            "human_review_required": review_for_mock or not fundamentals_available,
         }
 
     return {
         "type": "data_availability_summary",
         "source_tier": tier,
         "is_mock": is_mock,
+        "data_provenance": data_provenance,
         "fundamentals_available": fundamentals_available or False,
         "available_count": 0,
         "missing_count": 0,
@@ -601,7 +645,10 @@ def _build_financial_snapshot(
 
     if company_snapshot:
         section["source_tier"] = company_snapshot.get("source_tier", "T6_model_estimate")
-        section["is_mock"] = company_snapshot.get("is_mock", True)
+        # Phase 32A AD-2 — tri-state provenance from the EXPLICIT snapshot signal.
+        _prov = derive_data_provenance(company_snapshot.get("is_mock"))
+        section["data_provenance"] = _prov
+        section["is_mock"] = provenance_to_is_mock(_prov)
         section["retrieved_at"] = company_snapshot.get("retrieved_at")
 
         price_history = company_snapshot.get("price_history_summary", {})
@@ -655,7 +702,10 @@ def _build_financial_snapshot(
             "provenance": "missing_data",
         }
         section["source_tier"] = "T6_model_estimate"
-        section["is_mock"] = True
+        # Phase 32A AD-2 — snapshot absent ⇒ financial-data provenance UNKNOWN
+        # (is_mock None), never mock. No numbers exist to suppress here anyway.
+        section["data_provenance"] = "unknown"
+        section["is_mock"] = None
 
     # Phase 29B.3 — present real high-confidence T1 primary-filing facts (revenue,
     # …) as their own datapoints, keyed ``<field>_primary_filing`` so the existing
@@ -1899,7 +1949,9 @@ def _build_research_memo(
         "isin": _memo_carry_identity(company_identity, "isin"),
         "lei": _memo_carry_identity(company_identity, "lei"),
         "source_tier": company_identity.get("source_tier", source_tier),
-        "is_mock": company_identity.get("is_mock", True),
+        # Phase 32A RC-2 — honour the tri-state is_mock (None ⇒ unknown), never
+        # default to True. Re-presents the already-derived identity provenance.
+        "is_mock": company_identity.get("is_mock"),
     }
 
     # -- why_surfaced: from discovery rationale ----------------------------
@@ -2189,7 +2241,8 @@ def _build_research_memo(
             }
     financial_facts_summary = {
         "source_tier": financial_snapshot.get("source_tier", source_tier),
-        "is_mock": financial_snapshot.get("is_mock", True),
+        # Phase 32A RC-2 — honour the tri-state is_mock (None ⇒ unknown).
+        "is_mock": financial_snapshot.get("is_mock"),
         "t5_aggregator_metrics": {
             "value": t5_metrics,
             "provenance": "sourced_fact" if t5_metrics else "missing_data",
@@ -2536,12 +2589,11 @@ def _assemble_final_report_content(
     )
     missing_count = missing_section.get("total_missing_items", 0)
 
-    is_mock = True
-    if company_snapshot:
-        is_mock = company_snapshot.get("is_mock", True)
-    elif scorecard:
-        source_q = scorecard.source_quality_summary_json or {}
-        is_mock = source_q.get("is_mock", True)
+    # Phase 32A AD-2 — ONE report-level provenance from explicit signals only
+    # (snapshot ⇒ scorecard ⇒ unknown). ``is_mock`` for the checklist is True
+    # ONLY for explicit mock; unknown never counts as mock.
+    report_provenance = _derive_report_provenance(company_snapshot, scorecard)
+    is_mock = report_provenance == "mock"
 
     return {
         "admin_disclaimer": _build_admin_disclaimer(),
@@ -2557,7 +2609,10 @@ def _assemble_final_report_content(
         ),
         "discovery_rationale": _build_discovery_rationale(candidate),
         "data_availability_summary": _build_data_availability_summary(
-            financial_data_summary, fundamentals_available, source_tier
+            financial_data_summary,
+            fundamentals_available,
+            source_tier,
+            data_provenance=report_provenance,
         ),
         "financial_snapshot": _build_financial_snapshot(
             company_snapshot, fundamentals_data
@@ -2719,6 +2774,95 @@ async def _load_sources_for_citations(
         select(Source).where(Source.id.in_(source_ids))
     )
     return list(result.scalars().all())
+
+
+async def _resolve_company_record_from_lineage(
+    db: AsyncSession,
+    source_report: Report | None,
+    scorecard: Scorecard | None,
+) -> dict[str, Any] | None:
+    """Best-effort identity recovery from PUBLIC research lineage (Phase 32A RC-5).
+
+    Used by ``generate_from_report`` when the re-parsed markdown carries no
+    company snapshot, so a KNOWN parent never silently degrades to "Unknown".
+    Reads only public research entities (discovery candidates, scorecard→company)
+    — NEVER personalized / portfolio / private tables (rule 10). ``AgentRun`` has
+    no ``company_id`` column, so the run is resolved via the discovery candidate.
+    Priority:
+
+      1. source_report.created_by_agent_run_id → DiscoveryCandidate.agent_run_id
+      2. scorecard.company_id → Company
+      3. DiscoveryCandidate.analysis_report_id == source_report.id
+
+    Returns a ``company_record`` dict, or ``None`` when identity is genuinely
+    unresolvable (the caller then leaves it honestly unresolved + human-review
+    flagged — it is never fabricated and never relabelled as mock). Identity
+    only is recovered; the candidate's ``snapshot_json`` is deliberately NOT
+    promoted to a financial snapshot here, so stale candidate numbers are never
+    presented as sourced (the report-level provenance stays ``unknown``).
+    """
+    from app.models.company import Company
+    from app.models.discovery import DiscoveryCandidate
+
+    def _record_from_candidate(cand: DiscoveryCandidate) -> dict[str, Any] | None:
+        name = cand.legal_name or cand.company_name
+        if not name and not cand.ticker:
+            return None
+        return {
+            "name": name,
+            "ticker": cand.ticker,
+            "exchange": cand.exchange,
+            "country": cand.country,
+            "sector": cand.sector,
+        }
+
+    # 1. source report's agent run → discovery candidate (identity + lineage).
+    if source_report is not None and source_report.created_by_agent_run_id:
+        cand_result = await db.execute(
+            select(DiscoveryCandidate)
+            .where(
+                DiscoveryCandidate.agent_run_id
+                == source_report.created_by_agent_run_id
+            )
+            .order_by(DiscoveryCandidate.created_at.desc())
+            .limit(1)
+        )
+        cand = cand_result.scalar_one_or_none()
+        if cand is not None:
+            rec = _record_from_candidate(cand)
+            if rec is not None:
+                return rec
+
+    # 2. scorecard.company_id → Company (public research entity).
+    if scorecard is not None and scorecard.company_id:
+        company_result = await db.execute(
+            select(Company).where(Company.id == scorecard.company_id)
+        )
+        company = company_result.scalar_one_or_none()
+        if company is not None:
+            return {
+                "id": str(company.id),
+                "name": company.name,
+                "ticker": company.ticker,
+                "exchange": company.exchange,
+                "country": company.country,
+                "sector": company.sector,
+                "industry": company.industry,
+            }
+
+    # 3. discovery candidate whose analysis_report_id links back to this report.
+    if source_report is not None:
+        link_result = await db.execute(
+            select(DiscoveryCandidate)
+            .where(DiscoveryCandidate.analysis_report_id == source_report.id)
+            .order_by(DiscoveryCandidate.created_at.desc())
+            .limit(1)
+        )
+        cand = link_result.scalar_one_or_none()
+        if cand is not None:
+            return _record_from_candidate(cand)
+
+    return None
 
 
 def _extract_workflow_state_from_report(
@@ -3034,12 +3178,23 @@ class FinalReportGeneratorService:
         citations = await _load_citations_for_report(db, report_id)
         sources = await _load_sources_for_citations(db, citations)
 
+        # Phase 32A RC-5 — when the re-parsed markdown carries no company
+        # snapshot (a legacy pre-envelope draft), hydrate identity from PUBLIC
+        # research lineage so a KNOWN parent never degrades to "Unknown". Only
+        # takes effect when the state lacks identity — the assembler prefers the
+        # snapshot's own identity when present. Never fabricates a name.
+        company_record = None
+        if not state.get("company_snapshot"):
+            company_record = await _resolve_company_record_from_lineage(
+                db, source_report, scorecard
+            )
+
         return await self._generate_and_save(
             db=db,
             scorecard=scorecard,
             candidate=None,
             source_report=source_report,
-            company_record=None,
+            company_record=company_record,
             citations=citations,
             sources=sources,
             state=state,
@@ -3274,6 +3429,11 @@ class FinalReportGeneratorService:
         )
         human_review_required = True
 
+        # Phase 32A AD-2 — one report-level provenance from explicit signals only
+        # (snapshot ⇒ scorecard ⇒ unknown). Reused for the checklist mock flag and
+        # the auditable source-summary metadata; never coerced to mock on absence.
+        report_provenance = _derive_report_provenance(company_snapshot, scorecard)
+
         report_content = _assemble_final_report_content(
             company_snapshot=company_snapshot,
             company_record=company_record,
@@ -3363,12 +3523,10 @@ class FinalReportGeneratorService:
             report_content["source_quality_review"] = _build_source_quality_review(
                 source_quality_summary, sources, primary_facts=primary_facts
             )
-            _snapshot_is_mock = (
-                company_snapshot.get("is_mock", True) if company_snapshot else True
-            )
+            # Phase 32A RC-2 — mock ONLY on explicit provenance; unknown ≠ mock.
             _patch_t1_t2_checklist_item(
                 report_content.get("human_review_checklist", []),
-                is_mock=_snapshot_is_mock,
+                is_mock=(report_provenance == "mock"),
                 has_t1_t2=_has_t1_t2_evidence(source_tier, citations, primary_facts),
             )
 
@@ -3474,14 +3632,35 @@ class FinalReportGeneratorService:
         )
         safety_result = validation.safety_result
 
-        # Update checklist with actual safety result
-        checklist = report_content.get("human_review_checklist", [])
-        if checklist and isinstance(checklist[0], dict):
-            checklist[0]["completed"] = validation.safety_valid
-            if not validation.safety_valid:
-                checklist[0]["note"] = (
-                    "BLOCKED: forbidden terms found. Revise report."
-                )
+        # Phase 32A RC-6 — recompute the persisted human-review checklist +
+        # workflow status from the FINAL validation flags, BEFORE saving, so the
+        # stored report body can never contradict the header. The safety item is
+        # sourced from the real gate (validation.safety_valid) — never the
+        # assembly-time placeholder at safety_valid=True — and the schema item now
+        # reflects the post-completion schema_valid, eliminating the stale
+        # "Schema invalid" note. publication_ready (stays False) and
+        # human_review_required (stays True) are NOT touched.
+        missing_count_val = report_content.get("missing_information", {}).get(
+            "total_missing_items", 0
+        )
+        checklist_items = _build_human_review_checklist(
+            safety_valid=validation.safety_valid,
+            schema_valid=validation.schema_valid,
+            has_scorecard=scorecard is not None,
+            has_bull_bear=bull_case_summary is not None
+            and bear_case_summary is not None,
+            has_risk=risk_summary is not None,
+            has_citations=len(citations) > 0,
+            missing_count=missing_count_val,
+            is_mock=(report_provenance == "mock"),
+            has_t1_t2=_has_t1_t2_evidence(source_tier, citations, primary_facts),
+        )
+        report_content["human_review_checklist"] = [
+            item.model_dump() for item in checklist_items
+        ]
+        _workflow_status = report_content.get("workflow_status")
+        if isinstance(_workflow_status, dict):
+            _workflow_status["schema_valid"] = validation.schema_valid
 
         schema_validation_for_save = validation.persisted_schema_json
 
@@ -3504,6 +3683,10 @@ class FinalReportGeneratorService:
             "source_types": list({s.source_type for s in sources}),
             "llm_council": council_result.to_metadata_dict(),
             "source_framework": source_framework_summary,
+            # Phase 32A AD-2 — auditable report-level provenance (real / mock /
+            # mixed / unknown). Stored in this flexible metadata dict, so no
+            # schema/migration change is needed.
+            "data_provenance": report_provenance,
         }
 
         saved_report = await _save_final_report_draft(
@@ -3522,26 +3705,9 @@ class FinalReportGeneratorService:
         sections_generated = list(report_content.keys())
         missing_sections = [s for s in _REQUIRED_SECTIONS if s not in report_content]
 
-        # Build human review checklist items for response
-        missing_count_val = report_content.get("missing_information", {}).get(
-            "total_missing_items", 0
-        )
-        is_mock_val = True
-        if company_snapshot:
-            is_mock_val = company_snapshot.get("is_mock", True)
-
-        checklist_items = _build_human_review_checklist(
-            safety_valid=validation.safety_valid,
-            schema_valid=validation.schema_valid,
-            has_scorecard=scorecard is not None,
-            has_bull_bear=bull_case_summary is not None
-            and bear_case_summary is not None,
-            has_risk=risk_summary is not None,
-            has_citations=len(citations) > 0,
-            missing_count=missing_count_val,
-            is_mock=is_mock_val,
-            has_t1_t2=_has_t1_t2_evidence(source_tier, citations, primary_facts),
-        )
+        # ``checklist_items`` was recomputed from the final validation flags above
+        # (Phase 32A RC-6) and already persisted into ``report_content``; the same
+        # objects are returned on the response so body and response agree.
 
         provisional_status = None
         if committee_chair_summary:
