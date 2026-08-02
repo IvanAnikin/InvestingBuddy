@@ -156,3 +156,45 @@ Do NOT print a CLOSED verdict, and do NOT mark this slice ✅ in
 `docs/development/PHASE_LEDGER.md` / `docs/ROADMAP.md`, until the merge SHA,
 converged API SHA, the OFF-state dark check, the ON-state (post-flip) AAPL
 acceptance criteria, the CFR contrast, and the log-scan results are real.
+
+---
+
+## Execution results — 2026-08-02 (merge `3237d27a3a7d076019ab67d922618732af0f05f4`)
+
+PR #73 squash-merged to `main` (`3237d27`); API deploy run `30757018955` + Web deploy run
+`30757048621` both success. `/health` (API) + `/api/version` (Web) both `3237d27`, stable ×3,
+`environment=staging`. Human-approved flip `LLM_COUNCIL_EVIDENCE_BUDGETS_ENABLED` OFF→`true`
+(confirmed `true`; app warm on `3237d27` ×3 after ~18s). Auth via scoped `STAGING_BASIC_AUTH`
+(never printed). Council provider `azure_openai`; data provider override `free_real`.
+
+Reports (AAPL company `5d36744d-…`, CFR company `041cc7e4-…`):
+- **OFF baseline:** draft `cb45dbc4` → final **`74dac609`** (flag OFF).
+- **ON primary:** draft `1be6b2e4` → final **`104ecb50`** (flag ON). [first run 502'd/no-draft — transient
+  worker recycle right after restart; retried cleanly.]
+- **ON repro:** draft `7d3bfe4c` → final `42848523` (flag ON).
+- **CFR fallback:** draft `6237a9c5` (Richemont, `fundamentals_available=false`) → final **`a39ac390`** (flag ON).
+
+| Check | Result |
+|---|---|
+| A API SHA = merge | PASS — `3237d27` ×3, env=staging |
+| B Web SHA | PASS — `3237d27` ×3 (web redeployed per deploy-both) |
+| C Migration | PASS — no alembic in merge diff; head `011` |
+| D AUTH_TEST_MODE absent | PASS — unauth from-report/run/GET → 401 |
+| E OFF-state dark | PASS — `74dac609` Apple/AAPL/Nasdaq, is_mock=false, schema+safety valid, pub_ready=false; FA (completed) cites ONE blob `E8`, states margins/FCF/capex/debt NOT provided; council 4/8 (TPM) |
+| F.1 SEC/XBRL facts in pack | PASS — ON `104ecb50` FA cites tier-split `E8` income / `E9` cash-flow / `E10` balance-sheet (reproduced `42848523`) |
+| F.2 FA acknowledges financials | PASS — revenue $265.6B / gross $195.2B / op $133.1B / net $112.0B / OCF $111.5B / capex $12.7B / assets $359.2B / liab $285.5B / equity $73.7B / cash $35.9B / LT-debt $90.7B / shares 14.8B |
+| F.3 financials survive 20+ news | PASS — `financial_floor=3` → E8/E9/E10 survive among 20 items alongside news E11–E20 |
+| F.4 primary outranks aggregators | PASS — financial E8–E10 ahead of news E11–E20 |
+| F.5 tiers honest (T5 price / T6 derived / never TTM) | PASS — FA cites "fiscal 2025" annual; CFR council labels price/momentum "model estimates and aggregators… not primary financial facts" |
+| F.6 no fabricated EBITDA/EV-EBITDA/beta/TTM | PASS — literals only in disclaimer text; CFR VG notes their absence |
+| F.7 provenance / flags | PASS — data_provenance=real, is_mock=false, schema_valid=true, safety_valid=true (gate passed, 0 warnings), human_review_required=true, publication_ready=false |
+| F.8 Valuation Guard receives inputs | PASS (conditional) — demonstrated on CFR (8/8, VG completed + reasoned over pack + withheld valuation); on AAPL VG receives the identical pack but TMP-fails (env note) |
+| G CFR metadata-only stays refs | PASS — `a39ac390` `sec_financial_statement`=0, `primary_facts`=0, `metadata_only_source_count`=6; FA/VG honest, no fabricated Swiss financials |
+| H logs / secrets | CLEAN (fallback) — response-surface secret scan clean; runtime log tail not read-only accessible under scoped allow rule; Slice 2 adds counts-only logging |
+| I safety / publication | PASS — safety_valid=true; forbidden literals only in exempt disallowed_outputs/research_memo + benign terms (sell-side, insider buy); publication_ready=false, admin-gated, no public route |
+
+**Verdict: VALIDATED — WITH ENVIRONMENTAL NOTE.** All acceptance criteria met. Sole caveat:
+valuation_guard TMP-fails on the larger 20-item AAPL pack (AAPL councils 4/8; smaller CFR pack 8/8)
+— the documented Azure `gpt-4.1-mini` TPM limiter that **Slice 4** (retry/backoff/reserved
+critical-agent budget) will resolve; VG's correct behavior over the Slice-2 pack IS shown on CFR.
+`LLM_COUNCIL_EVIDENCE_BUDGETS_ENABLED` KEPT ON. Closure: `docs/development/closures/phase-32a-slice2.md`.
