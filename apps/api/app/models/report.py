@@ -61,6 +61,21 @@ class Report(Base):
         index=True,
     )
 
+    # Phase 32A hotfix: first-class link to the company this report is about, so
+    # ``from-company`` final-report selection is company-scoped (not the global
+    # newest). SET NULL preserves research history on company deletion. The index
+    # is declared in ``__table_args__`` (not ``index=True``) so its name matches
+    # migration 012 (``ix_reports_company_id``) exactly.
+    company_id: Mapped[uuid.UUID | None] = mapped_column(
+        sa.Uuid(as_uuid=True),
+        sa.ForeignKey(
+            "companies.id",
+            ondelete="SET NULL",
+            name="fk_reports_company_id_companies",
+        ),
+        nullable=True,
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True), default=_utcnow, server_default=sa.func.now()
     )
@@ -77,4 +92,6 @@ class Report(Base):
         sa.Index("ix_reports_review_status", "review_status"),
         sa.Index("ix_reports_report_type", "report_type"),
         sa.Index("ix_reports_published_at", "published_at"),
+        # Name MUST match migration 012 exactly.
+        sa.Index("ix_reports_company_id", "company_id"),
     )

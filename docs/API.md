@@ -1645,9 +1645,27 @@ Response (200 for **GET .../council-review**):
 |---|---|---|---|
 | POST | `/api/v1/final-reports/from-scorecard/{scorecard_id}` | ✅ Live | Generate final report from scored candidate |
 | POST | `/api/v1/final-reports/from-candidate/{candidate_id}` | ✅ Live | Generate final report from discovery candidate |
-| POST | `/api/v1/final-reports/from-company/{company_id}` | ✅ Live | Generate final report from company record |
+| POST | `/api/v1/final-reports/from-company/{company_id}` | ✅ Live | Generate final report from the company's own most-recent completed analysis (company-scoped; 404 when none) |
 | POST | `/api/v1/final-reports/{report_id}/validate` | ✅ Live | Re-validate an existing report |
 | POST | `/api/v1/final-reports/{report_id}/regenerate-section` | ✅ Live | Regenerate a single section of an existing report |
+
+**POST /api/v1/final-reports/from-company/{company_id}** — Generate from a company
+
+Phase 32A hotfix: the source analysis report is now selected **company-scoped**.
+The route picks the most recent **completed** analysis report whose
+`reports.company_id` equals the requested company (deterministic tie-break:
+newest by `created_at`, then `id`). It **never** falls back to another company's
+report. Returns **404** when the company id is unknown, and **404** when the
+company exists but has no eligible completed analysis report (no cross-company
+fallback). Report is saved with `status=draft`, `review_status=draft`,
+`human_review_required=true`, `publication_ready=false`. NOT investment advice;
+no BUY/SELL/HOLD/WATCH, price target, or fair value is produced.
+
+> **Operator note (migration 012):** reports created *before* migration 012 have
+> `company_id = NULL` and are therefore **not reachable** via `from-company` — it
+> will return 404 even if the company clearly has older reports. Run a fresh
+> company analysis to produce a company-linked report, or use
+> `from-report/{report_id}` to regenerate from a specific pre-existing report.
 
 **POST /api/v1/final-reports/from-scorecard/{scorecard_id}** — Generate from scorecard
 

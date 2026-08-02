@@ -142,6 +142,7 @@ def _make_mock_report(report_id: uuid.UUID = _REPORT_ID) -> MagicMock:
     report.schema_validation_json = {"is_valid": True}
     report.source_summary_json = {"source_count": 6, "citation_count": 4}
     report.scorecard_id = None
+    report.company_id = None
     return report
 
 

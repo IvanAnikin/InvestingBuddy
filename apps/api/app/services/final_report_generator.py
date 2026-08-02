@@ -3149,17 +3149,33 @@ class FinalReportGeneratorService:
         scorecard = await _load_scorecard_for_company(db, company_id)
         candidate = await _load_candidate_for_company(db, company_id)
 
-        # Find most recent completed report via agent_runs
+        # Phase 32A hotfix — select the most recent COMPLETED analysis report FOR
+        # THIS COMPANY. The predicate ``Report.company_id == company_id`` (a
+        # first-class FK added in migration 012) scopes the query to the requested
+        # company; ordering by (created_at desc, id desc) makes the pick
+        # deterministic when several completed reports share a timestamp.
+        #
+        # If the company has no eligible completed report we FAIL CLEARLY rather
+        # than fall back to the globally-newest completed report — the old
+        # behaviour returned another company's analysis (e.g. Apple for a
+        # Richemont request). The ValueError is mapped to a 404 by the route.
         from app.models.agent_run import AgentRun
 
         report_result = await db.execute(
             select(Report)
             .join(AgentRun, Report.created_by_agent_run_id == AgentRun.id)
-            .where(AgentRun.status == "completed")
-            .order_by(Report.created_at.desc())
+            .where(
+                Report.company_id == company_id,
+                AgentRun.status == "completed",
+            )
+            .order_by(Report.created_at.desc(), Report.id.desc())
             .limit(1)
         )
         source_report = report_result.scalar_one_or_none()
+        if source_report is None:
+            raise ValueError(
+                f"No eligible completed analysis report found for company {company_id}."
+            )
 
         state: dict[str, Any] = {}
         citations: list[Citation] = []

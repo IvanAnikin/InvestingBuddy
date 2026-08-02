@@ -53,6 +53,7 @@ alembic revision --autogenerate -m "short description"
 | 009 | `009_add_backtesting_tables.py` | creates `backtest_runs`, `backtest_results`, `thesis_tracking_events` (Phase 22 Judge + Backtesting Framework) |
 | 010 | `010_add_market_discovery.py` | creates `discovery_runs`, `discovery_candidates` (Phase 25 Real Market Candidate Discovery) |
 | 011 | `011_add_thesis_discovery.py` | adds thesis columns to `discovery_runs` (`mode`, `thesis_text`, `parsed_thesis_json`, `universe_json`) + `discovery_candidates` (`thesis_relevance_score`, `combined_internal_score`, `thesis_match_json`) (Phase 27 Thesis-to-Universe Discovery) |
+| 012 | `012_add_report_company_id.py` | adds `company_id` (UUID FK → companies.id, SET NULL) + index `ix_reports_company_id` to `reports` (Phase 32A hotfix — company-scoped `from-company` final-report selection) |
 
 ---
 
@@ -163,10 +164,13 @@ schema_validation_json      JSONB NULLABLE          -- schema validation errors 
 source_summary_json         JSONB NULLABLE          -- aggregated source/citation counts
 scorecard_id                UUID FK → scorecards.id (SET NULL) NULLABLE
 
+-- Phase 32A hotfix column (migration 012)
+company_id                  UUID FK → companies.id (SET NULL) NULLABLE  -- company this report is about; enables company-scoped from-company selection
+
 created_at                  TIMESTAMP WITH TIME ZONE
 updated_at                  TIMESTAMP WITH TIME ZONE
 
-INDEX: slug, status, review_status, report_type, published_at, scorecard_id
+INDEX: slug, status, review_status, report_type, published_at, scorecard_id, company_id
 ```
 
 Report types: `weekly`, `monthly`, `quarterly`, `yearly`,

@@ -41,6 +41,10 @@ class ReportCreate(BaseModel):
     period_start: date | None = None
     period_end: date | None = None
     created_by_agent_run_id: uuid.UUID | None = None
+    # Phase 32A hotfix: the company this report is about (enables company-scoped
+    # ``from-company`` final-report selection). Optional for legacy/non-company
+    # reports.
+    company_id: uuid.UUID | None = None
     human_review_required: bool = True
 
 
@@ -77,6 +81,8 @@ class ReportRead(BaseModel):
     schema_validation_json: dict | None = None
     source_summary_json: dict | None = None
     scorecard_id: uuid.UUID | None = None
+    # Phase 32A hotfix: the company this report is about.
+    company_id: uuid.UUID | None = None
 
 
 class ReportList(BaseModel):
