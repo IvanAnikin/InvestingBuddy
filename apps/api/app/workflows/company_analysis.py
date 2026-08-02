@@ -35,6 +35,7 @@ Design rules enforced:
 
 from __future__ import annotations
 
+import json
 import os
 import pathlib
 import re
@@ -88,6 +89,7 @@ from app.agents.research_team.source_quality_agent import (
     run_source_quality_agent,
     source_quality_output_to_dict,
 )
+from app.core.log_redaction import REDACTED, is_sensitive_key, redact_mapping
 from app.integrations.company_profile_enrichment import enrich_company_profile
 from app.integrations.financial_data_provider import (
     DataQuality,
@@ -124,6 +126,7 @@ from app.services import (
 from app.services.catalyst_discovery_service import discover_catalysts
 from app.services.exchange_registry import is_sec_eligible
 from app.services.report_validation_service import validate_real_asset_report
+from app.services.sources.redaction import strip_url_secrets
 from app.workflows.snapshot_builder import (
     build_company_snapshot,
     build_schema_draft,
@@ -136,6 +139,148 @@ from app.workflows.snapshot_builder import (
 
 WORKFLOW_NAME = "company_analysis"
 WORKFLOW_VERSION = "5.0.0"
+
+
+# ---------------------------------------------------------------------------
+# Phase 32A — machine-readable analysis-state envelope (lossless round-trip)
+# ---------------------------------------------------------------------------
+#
+# Historically the Phase-9 draft serialised ONLY the catalyst JSON block, so
+# regenerating a current-schema report by re-parsing this markdown lost the
+# company snapshot, real/mock provenance, deterministic council sections and
+# financial facts. This bounded, secret-stripped envelope carries exactly the
+# structured keys the final-report adapter reads
+# (``_extract_workflow_state_from_report``) so the round-trip is lossless.
+#
+# Controls: the block is FLAT (adapter keys at the top level, so a plain
+# ``content.update(block)`` merges them), it EXCLUDES ``catalyst_discovery``
+# (that stays in its own block — RC-3), it fetches no network, and it serialises
+# only structured/bounded fields — never raw document text, prompts or evidence
+# bodies. Forbidden-term neutralisation is deliberately NOT applied: the restored
+# sections stay UNDER the final-report safety gate so a poisoned council summary
+# is caught there (RC-1).
+
+# Keys the adapter reads, minus catalyst_discovery (its own block, RC-3).
+_STATE_ENVELOPE_KEYS: tuple[str, ...] = (
+    "company_snapshot",
+    "financial_data_summary",
+    "source_quality_summary",
+    "research_completeness_summary",
+    "upgraded_citation_validation",
+    "bull_case_summary",
+    "bear_case_summary",
+    "risk_summary",
+    "valuation_guard_summary",
+    "committee_chair_summary",
+    "fundamentals_data",
+    "fundamentals_available",
+    "schema_validation_result",
+    "source_tier",
+)
+
+_ENVELOPE_LIST_CAP = 20             # mirror the [:20] cap the writer already uses
+_ENVELOPE_STR_CAP = 4000            # bound any single string (no raw document bodies)
+_ENVELOPE_MAX_DEPTH = 8             # bound recursion on pathological structures
+_ENVELOPE_TOTAL_CHAR_CAP = 120_000  # bound the whole serialised block
+# Heaviest-first shed order when the whole block is over the size cap. Identity /
+# provenance-critical keys (company_snapshot, schema_validation_result,
+# fundamentals_available, source_tier) are never shed.
+_ENVELOPE_SHED_ORDER: tuple[str, ...] = (
+    "research_completeness_summary",
+    "upgraded_citation_validation",
+    "source_quality_summary",
+    "financial_data_summary",
+    "valuation_guard_summary",
+    "risk_summary",
+    "bear_case_summary",
+    "bull_case_summary",
+    "committee_chair_summary",
+    "fundamentals_data",
+)
+
+
+def _bound_envelope_value(value, *, depth: int = 0):
+    """Recursively bound one structured value.
+
+    Truncates lists and strings, strips credential query params from URL-bearing
+    strings, redacts sensitive-keyed dict values (defence in depth beyond the
+    top-level ``redact_mapping``), and drops over-deep branches. Never raises.
+    """
+    if depth > _ENVELOPE_MAX_DEPTH:
+        return None
+    if isinstance(value, str):
+        stripped = strip_url_secrets(value) if "://" in value else value
+        if stripped and len(stripped) > _ENVELOPE_STR_CAP:
+            return stripped[:_ENVELOPE_STR_CAP] + "…[truncated]"
+        return stripped
+    if isinstance(value, dict):
+        out: dict = {}
+        for key, sub in value.items():
+            ks = str(key)
+            if is_sensitive_key(ks):
+                out[ks] = REDACTED
+            else:
+                out[ks] = _bound_envelope_value(sub, depth=depth + 1)
+        return out
+    if isinstance(value, list):
+        return [
+            _bound_envelope_value(item, depth=depth + 1)
+            for item in value[:_ENVELOPE_LIST_CAP]
+        ]
+    if isinstance(value, bool) or value is None:
+        return value
+    if isinstance(value, (int, float)):
+        return value
+    # Anything else (datetime, UUID, custom object) → stringified + bounded.
+    return _bound_envelope_value(str(value), depth=depth + 1)
+
+
+def _envelope_size(obj) -> int:
+    try:
+        return len(json.dumps(obj, default=str))
+    except (TypeError, ValueError):
+        return _ENVELOPE_TOTAL_CHAR_CAP + 1
+
+
+def build_analysis_state_envelope(state) -> dict:
+    """Build the bounded, secret-stripped structured-state envelope (Phase 32A).
+
+    Reads the same ``state`` keys the live final-report path consumes, so a
+    regenerated report is byte-equivalent to the live one for these sections.
+    Applies ``redact_mapping`` (null sensitive-keyed values) then a recursive
+    URL-secret strip + list/string/depth/size bound. Absent keys are omitted so
+    the adapter's ``.get`` reads see ``None`` (honest degradation).
+
+    Dark-safe: returns an empty dict for a mock / unknown-provenance run (only an
+    EXPLICIT real-data run, ``state["is_mock"] is False``, emits the envelope) or
+    when the state carries none of the envelope keys — so the Phase-9 markdown
+    stays byte-identical to the pre-Phase-32A output for those runs.
+    """
+    if state.get("is_mock") is not False:
+        return {}
+    raw: dict = {}
+    for key in _STATE_ENVELOPE_KEYS:
+        val = state.get(key)
+        if val is not None:
+            raw[key] = val
+    if not raw:
+        return {}
+    # (a) redact values whose KEY name is sensitive (tokens / secrets / …).
+    redacted = redact_mapping(raw)
+    # (b) bound lists/strings/depth + strip credential query params from URLs.
+    envelope = {k: _bound_envelope_value(v) for k, v in redacted.items()}
+    # (c) bound the whole serialised block — shed the heaviest optional keys
+    # honestly rather than emit an unbounded payload.
+    dropped: list[str] = []
+    shed = list(_ENVELOPE_SHED_ORDER)
+    while _envelope_size(envelope) > _ENVELOPE_TOTAL_CHAR_CAP and shed:
+        key = shed.pop(0)
+        if key in envelope:
+            del envelope[key]
+            dropped.append(key)
+    if dropped:
+        envelope["_envelope_truncated_keys"] = dropped
+    return envelope
 
 
 async def _lookup_gleif_profile(legal_name: str | None):
@@ -2288,6 +2433,27 @@ def build_company_analysis_graph(
             )
             content_md += "\n```\n\n"
 
+        # ── Machine-readable analysis state (Phase 32A) ──────────────
+        # A SECOND JSON block carrying the bounded, secret-stripped structured
+        # state the final-report adapter needs to regenerate a current-schema
+        # report losslessly (identity, provenance, deterministic council
+        # sections, financial snapshot). FLAT keys + excludes catalyst_discovery
+        # (RC-3). ``build_analysis_state_envelope`` self-gates on real data, so
+        # mock/catalyst-only drafts get {} here and stay byte-identical to the
+        # pre-Phase-32A markdown (dark-safe).
+        state_envelope = build_analysis_state_envelope(state)
+        if state_envelope:
+            content_md += "## Machine-Readable Analysis State (Internal)\n\n"
+            content_md += (
+                "> Machine-readable analysis-state payload for the Final Report "
+                "Generator (identity, provenance, council sections, financial "
+                "snapshot). Secret-stripped and size-bounded. Internal artefact; "
+                "not investment advice.\n\n"
+            )
+            content_md += "```json\n"
+            content_md += json.dumps(state_envelope, indent=2, default=str)
+            content_md += "\n```\n\n"
+
         content_md += (
             "---\n\n"
             "> **INTERNAL ADMIN DRAFT — PHASE 9 ANALYSIS COUNCIL.** "
@@ -2341,6 +2507,11 @@ def build_company_analysis_graph(
                 "source_quality": source_quality,
                 "citation_v2_status": citation_v2_status,
                 "research_team_warnings_count": len(research_team_warnings),
+                # Phase 32A — counts/labels only, NEVER the envelope content/URLs.
+                "state_envelope_keys": len(state_envelope),
+                "state_envelope_bytes": (
+                    _envelope_size(state_envelope) if state_envelope else 0
+                ),
             },
         )
 
