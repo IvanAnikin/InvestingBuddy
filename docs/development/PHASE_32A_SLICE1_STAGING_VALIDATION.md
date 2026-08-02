@@ -125,3 +125,47 @@ Fill `docs/development/templates/closure_report.md` from the A–I outcomes abov
 Do NOT print a CLOSED verdict, and do NOT mark this slice ✅ in
 `docs/development/PHASE_LEDGER.md` / `docs/ROADMAP.md`, until the merge SHA,
 converged API SHA, and the golden-path + dark-safety + log-scan results are real.
+
+---
+
+## Execution results — 2026-08-02 (merge `a26be3070c0f3dda8db499f95878bacaab1b85ac`)
+
+PR #71 squash-merged to main (`a26be30`); API deploy run `30744460879` + Web deploy
+run `30744498753` both success. `/health` (API) and `/api/version` (Web) both report
+`a26be30`, stable ×5. Validation run against deployed staging (auth via scoped
+`STAGING_BASIC_AUTH`, never printed).
+
+Reports generated:
+- **E (free_real, use_llm):** agent_run `6906a7d4-3dad-4eb4-b7bc-803ed4836cd6`,
+  new legacy draft `d147cdd2-f713-4244-a869-138a6abdde06`,
+  **final report `f5fedc5c-e847-43c2-9f89-2f04c1b8d6e7`**.
+- **F.1 (mock):** legacy `dcf7dce9-5cb4-44e5-aa28-4f83381545f2` → final `8cf6c29b-ba5d-453d-9e7c-79ac62b5209a`.
+- **F.2 (old pre-envelope `23cc7a2f`):** final `b56bed23-2eb4-43f4-85f1-8b5bc1c5cd1f`.
+
+Route note: live run route is `POST /api/v1/workflows/company-analysis/run` (the plan
+said `/api/v1/company-analysis/run`).
+
+| Check | Result |
+|---|---|
+| A API SHA = merge | PASS (a26be30 ×3, env=staging) |
+| B Web SHA | PASS — web redeployed to a26be30 (per explicit deploy-both instruction) |
+| C Migration | PASS — no alembic in merge diff; head 011 unchanged (inferred) |
+| D AUTH_TEST_MODE absent | PASS — unauth protected routes → 401 |
+| E identity | PASS — Apple Inc. / AAPL / Nasdaq / US, no "Unknown" in identity/snapshot |
+| E is_mock / provenance | PASS — is_mock=false, data_provenance=real (identity + snapshot + data_availability + source_summary_json) |
+| E lineage | PASS — workflow_status.report_id=d147cdd2 + agent_run_id=6906a7d4 preserved |
+| E sections populated | PASS — Financial snapshot, Bull, Bear, Risk, Valuation Readiness, Committee all available=true; missing_sections=[] |
+| E flags | PASS — schema_valid=true, safety_valid=true, human_review_required=true, publication_ready=false |
+| E no-contradiction (authoritative) | PASS — authoritative checklist schema item completed=true/note=null == workflow_status.schema_valid == header |
+| **E no-contradiction (research_memo copy)** | **FINDING — the Phase-31 research_memo embeds a STALE checklist copy still noting "Schema invalid" (not_completed_count=6 vs authoritative 5). Addressed by hotfix branch `phase-32a-slice1-hotfix-memo-checklist`.** |
+| E council | PASS w/ env caveat — 4/8 agents (Azure gpt-4.1-mini TPM); deterministic sections rendered from envelope-restored summaries regardless |
+| F dark-safety | PASS — mock draft has 0 JSON blocks (envelope absent, self-gated); from-report on mock → data_provenance=unknown (NOT mock), no fabricated numbers, no crash |
+| F old-report `23cc7a2f` | PASS (safe) — identity honestly degraded to unknown (no DiscoveryCandidate/Scorecard lineage to key on: scorecard_id=None, empty source_summary_json); no fabrication. Recoverable parents are protected; unrecoverable stay honest. |
+| H logs / secrets | CLEAN (fallback) — response surface of 10 report JSONs secret-free; runtime app stream not in downloadable LogFiles (App Insights/stdout); only historical Jul-11..27 kudu deploy-trace secret-pattern hits (redacted, pre-run). Slice adds no new network + counts-only logging. |
+| I safety / publication | PASS — safety_valid=true; recommendation/valuation terms only in exempt negated/disallowed_outputs context; publication_ready=false, human_review_required=true, no public publish route |
+
+**Verdict: VALIDATED — WITH ONE FINDING.** All core Slice-1 acceptance criteria pass.
+The single finding (stale research_memo checklist copy) is a non-safety within-report
+contradiction on the "no stale schema-invalid note" criterion; it is fixed by the
+closing hotfix. **Slice 1 is NOT recorded as fully CLOSED until the hotfix is merged,
+deployed, and the memo-checklist consistency is re-confirmed on staging.**

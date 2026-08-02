@@ -551,3 +551,110 @@ async def test_live_path_real_snapshot_unchanged(mock_db) -> None:
     assert resp.human_review_required is True
     assert resp.publication_ready is False
     assert _saved_report(mock_db).source_summary_json["data_provenance"] == "real"
+
+
+# ---------------------------------------------------------------------------
+# 8. Slice-1 hotfix: Phase-31 memo's embedded checklist snapshot stays fresh
+#    (RC-6 refreshes the memo's snapshot too, so it can never contradict the
+#     header). The memo is built + safety-scanned BEFORE validation; the fix
+#     re-presents ONLY the not-completed sub-field from the FINAL authoritative
+#     checklist — a strict, safety-clean subset.
+# ---------------------------------------------------------------------------
+
+
+def test_memo_checklist_snapshot_excludes_completed_schema_item() -> None:
+    """Direct unit: a COMPLETED schema item is not listed as not-completed and
+    no stale 'Schema invalid' note survives in the memo snapshot."""
+    checklist = [
+        {"item": "Safety gate passed", "required": True, "completed": True, "note": None},
+        {"item": "Schema validation", "required": True, "completed": True, "note": None},
+        {
+            "item": "Human analyst review",
+            "required": True,
+            "completed": False,
+            "note": "Pending analyst sign-off.",
+        },
+    ]
+    snap = frg._memo_human_review_checklist_snapshot(checklist)
+
+    assert snap["total_items"] == 3
+    assert snap["not_completed_count"] == 1
+    items = snap["not_completed_items"]["value"]
+    assert all("Schema validation" not in (i["item"] or "") for i in items)
+    assert all("Schema invalid" not in (i.get("note") or "") for i in items)
+    # References the authoritative checklist; does not recompute a second one.
+    assert "does not" in snap["reference"]
+    assert snap["human_review_required"] is True
+
+
+def test_memo_checklist_snapshot_preserves_incomplete_item_note() -> None:
+    """Extraction is behaviour-identical: an INCOMPLETE item keeps its note
+    (this is what the memo shows at initial build before RC-6)."""
+    checklist = [
+        {
+            "item": "Schema validation",
+            "required": True,
+            "completed": False,
+            "note": "Schema invalid — review validation errors and add missing fields",
+        },
+    ]
+    snap = frg._memo_human_review_checklist_snapshot(checklist)
+    assert snap["not_completed_count"] == 1
+    assert snap["not_completed_items"]["value"][0]["note"].startswith("Schema invalid")
+
+
+async def test_memo_embedded_checklist_refreshed_after_validation(
+    mock_db, monkeypatch
+) -> None:
+    """With the memo enabled and schema_valid flipping True at RC-6, the memo's
+    EMBEDDED checklist snapshot agrees with the authoritative checklist — no
+    stale 'Schema invalid', no contradiction with the header."""
+    monkeypatch.setattr(frg.settings, "source_research_memo_enabled", True)
+    source_report = _report_with_markdown(_envelope_markdown(_real_state()))
+    resp = await _run_from_report(mock_db, source_report)
+    content = _saved_report_content(_saved_report(mock_db))
+
+    memo = content.get("research_memo")
+    assert memo is not None, "memo-on report must carry a research_memo block"
+    memo_checklist = memo["human_review_checklist"]
+
+    # Authoritative (post-RC-6) checklist.
+    authoritative = content["human_review_checklist"]
+    auth_not_completed = [c for c in authoritative if not c.get("completed")]
+
+    # Embedded snapshot count agrees with the authoritative checklist.
+    assert memo_checklist["not_completed_count"] == len(auth_not_completed)
+    # The completed schema item is not re-listed as not-completed, and no stale
+    # 'Schema invalid' note remains anywhere in the memo snapshot.
+    for item in memo_checklist["not_completed_items"]["value"]:
+        assert "Schema validation" not in (item.get("item") or "")
+        assert "Schema invalid" not in (item.get("note") or "")
+
+    # Regression guard: RC-6 still holds on the authoritative checklist.
+    schema_item = next(c for c in authoritative if "Schema validation" in c["item"])
+    assert resp.schema_valid is True
+    assert schema_item["completed"] is True
+    assert schema_item["note"] is None
+
+    # The refresh touches ONLY the checklist sub-field — invariants unchanged.
+    assert memo["human_review_required"] is True
+    assert resp.publication_ready is False
+    assert resp.human_review_required is True
+
+
+async def test_memo_absent_and_rc6_unchanged_when_flag_off(
+    mock_db, monkeypatch
+) -> None:
+    """Dark-safe: with the memo flag OFF no research_memo key is added and the
+    refresh is a no-op — RC-6 behaviour is unchanged."""
+    monkeypatch.setattr(frg.settings, "source_research_memo_enabled", False)
+    source_report = _report_with_markdown(_envelope_markdown(_real_state()))
+    resp = await _run_from_report(mock_db, source_report)
+    content = _saved_report_content(_saved_report(mock_db))
+
+    assert "research_memo" not in content
+    schema_item = next(
+        c for c in content["human_review_checklist"] if "Schema validation" in c["item"]
+    )
+    assert resp.schema_valid is True
+    assert schema_item["completed"] is True
