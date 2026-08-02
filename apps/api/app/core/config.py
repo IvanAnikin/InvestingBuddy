@@ -238,6 +238,30 @@ class Settings(BaseSettings):
     llm_council_evidence_max_chars: int = 24000
     llm_council_evidence_max_chars_per_item: int = 1200
 
+    # ── Category-aware evidence budgets (Phase 32A Slice 2) ────────────────
+    # The Phase 29B.2 budgeter above is category-BLIND: it de-dups then re-ranks
+    # ALL items by tier and truncates, so a flood of catalyst/news events can
+    # crowd structured SEC/XBRL financial facts out of the pack (the AAPL
+    # "financial data unavailable" defect). This flag turns on a category-aware
+    # selection path that (a) tier-splits the SEC fundamentals blob into
+    # correctly-tiered items at build time, (b) carries news materiality onto the
+    # pack, and (c) reserves a floor of financial-fact slots + caps price/trend
+    # and news categories so news volume can never consume the whole pack. OFF by
+    # default → the evidence pack + budgeter behave byte-for-byte as before (dark
+    # -safe). This flag ONLY changes behaviour where the Phase 29B.2 budgeter
+    # already runs (``source_connector_enabled`` — i.e. staging). No new network,
+    # no fabrication, no schema/migration change.
+    llm_council_evidence_budgets_enabled: bool = False
+    # Guaranteed number of SEC/XBRL financial-fact slots reserved before the
+    # global fill, so higher-tier catalysts cannot evict every financial datapoint.
+    llm_council_evidence_financial_floor: int = 3
+    # Ceiling on price / market / trend (T5/T6) metric items.
+    llm_council_evidence_price_trend_cap: int = 3
+    # Combined ceiling across all news-ish categories (quality media + aggregator).
+    llm_council_evidence_news_cap: int = 8
+    # Stricter ceiling on low-tier (T5/T6) aggregator news specifically.
+    llm_council_evidence_low_tier_news_cap: int = 4
+
     # ── Source translation (Phase 30A — foundation) ────────────────────────
     # Bounded, machine-assisted translation of a single non-English evidence
     # excerpt into English so a council can read a foreign-language T1 primary

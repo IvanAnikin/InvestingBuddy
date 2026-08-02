@@ -126,6 +126,12 @@ class EvidenceItem(BaseModel):
     excerpt: str | None = None
     data_quality: str | None = None
     fields_supported: list[str] = Field(default_factory=list)
+    # Phase 32A Slice 2: news materiality carried from the upstream deterministic
+    # relevance scorer (high | medium | low | irrelevant). Only populated for
+    # news/catalyst items when the category-budget flag is on; ``None`` otherwise
+    # (and for every non-news item). Additive + defaulted so the off-state pack is
+    # unchanged. Never a claim — purely a ranking signal for the budgeter.
+    relevance_level: str | None = None
 
 
 class EvidencePack(BaseModel):
