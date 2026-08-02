@@ -19,6 +19,7 @@ assembled ``report_content`` always; the richer ``company_snapshot``,
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from app.services.llm.schemas import (
@@ -26,6 +27,7 @@ from app.services.llm.schemas import (
     TIER_T1_PRIMARY_COMPANY_SOURCE,
     TIER_T1_PRIMARY_FILING,
     TIER_T2_REGULATOR_OR_GOV,
+    TIER_T5_API_AGGREGATOR,
     TIER_T6_MODEL_ESTIMATE,
     EvidenceCompany,
     EvidenceItem,
@@ -36,6 +38,80 @@ from app.services.sources.redaction import strip_url_secrets
 
 _EXCERPT_MAX = 280
 _SEC_TRANSPORT = "SEC EDGAR / data.sec.gov"
+
+# Phase 32A Slice 2 — tier-split SEC/XBRL fundamentals. The keys below come from
+# ``company_snapshot["fundamentals_summary"]`` (SEC path, snapshot_builder). Every
+# statement fact is ANNUAL (10-K / 20-F) — NEVER TTM — so no value here is mapped
+# into any ``*_ttm`` field. Derived ratios/margins/growth are model-computed and
+# labelled T6 (never T1/T2). Price/market metrics come from
+# ``market_metrics_summary`` (per-field ``source_tiers``): market cap / EV / P/E
+# are T6 (derived), latest close / 52-week range are T5 (price aggregator).
+_SEC_INCOME_KEYS = (
+    "revenue_usd_m",
+    "gross_profit_usd_m",
+    "operating_income_usd_m",
+    "net_income_usd_m",
+    "eps_basic",
+    "eps_diluted",
+)
+_SEC_CASH_FLOW_KEYS = (
+    "operating_cash_flow_usd_m",
+    "capital_expenditures_usd_m",
+)
+_SEC_BALANCE_KEYS = (
+    "total_assets_usd_m",
+    "total_liabilities_usd_m",
+    "shareholders_equity_usd_m",
+    "cash_and_equivalents_usd_m",
+    "short_term_debt_usd_m",
+    "long_term_debt_usd_m",
+    "shares_outstanding_mln",
+)
+_SEC_DERIVED_KEYS = (
+    "gross_margin_pct",
+    "operating_margin_pct",
+    "net_margin_pct",
+    "free_cash_flow_usd_m",
+    "free_cash_flow_margin_pct",
+    "return_on_equity_pct",
+    "total_debt_usd_m",
+    "debt_to_equity",
+    "revenue_yoy_growth_pct",
+    "net_income_yoy_growth_pct",
+    "free_cash_flow_yoy_growth_pct",
+)
+# (market_metrics_summary key, fundamentals_summary fallback key)
+_MARKET_METRIC_KEYS = (
+    ("market_cap_mln", "market_cap_usd_m"),
+    ("enterprise_value_mln", "enterprise_value_usd_m"),
+    ("pe_ratio", "pe_ratio"),
+)
+_PRICE_METRIC_KEYS = (
+    ("latest_close", "latest_close"),
+    ("week52_high", "52_week_high"),
+    ("week52_low", "52_week_low"),
+)
+_DERIVED_QUALITY = "C_inferred"
+
+# Conservative, deterministic derivative-instrument (leveraged/inverse single-
+# stock ETF) noise detector for catalyst/news items — e.g. an ``AAPD`` / ``AAPU``
+# story surfacing under an ``AAPL`` analysis. NOT a news-platform rewrite: an item
+# is only down-ranked when BOTH a near-ticker symbol AND a leverage/inverse cue
+# are present in its text.
+_LEVERAGE_CUES = (
+    "leverag",
+    "inverse",
+    "2x",
+    "3x",
+    "-1x",
+    "1.5x",
+    "bull ",
+    "bear ",
+    "daily ",
+    "single-stock",
+    "single stock",
+)
+_SYMBOL_RE = re.compile(r"[(\$]([A-Z]{2,6})\)?")
 
 # Aggregators / model estimates are allowed as evidence but must be labelled so
 # agents down-weight them. Model estimates are never treated as primary facts.
@@ -123,6 +199,7 @@ class _Builder:
         transport_tier: str | None = None,
         content_tier: str | None = None,
         provider_transport: str | None = None,
+        relevance_level: str | None = None,
     ) -> bool:
         if self.full:
             return False
@@ -146,6 +223,7 @@ class _Builder:
                 excerpt=_excerpt(excerpt),
                 data_quality=data_quality,
                 fields_supported=fields_supported or [],
+                relevance_level=relevance_level,
             )
         )
         return True
@@ -205,40 +283,223 @@ def _company_from(
     )
 
 
-def _add_sec_fundamentals(builder: _Builder, company_snapshot: dict[str, Any] | None) -> None:
-    """Add SEC filing facts as T1 content pulled through the T2 EDGAR transport."""
+def _present_pairs(fs: dict[str, Any], keys: tuple[str, ...]) -> list[tuple[str, Any]]:
+    """Return ``(key, value)`` for numeric keys actually present (no fabrication)."""
+    out: list[tuple[str, Any]] = []
+    for k in keys:
+        v = fs.get(k)
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            out.append((k, v))
+    return out
+
+
+def _period_label(fs: dict[str, Any]) -> str:
+    """Honest fiscal label — honours ``period_basis`` (never assumes annual/TTM)."""
+    form = fs.get("form_type") or "SEC filing"
+    basis = str(fs.get("period_basis") or "annual").upper()
+    fiscal = fs.get("fiscal_year")
+    if fiscal:
+        return f"FY{fiscal} {basis} {form}".strip()
+    return f"{basis} {form}".strip()
+
+
+def _add_sec_fundamentals(
+    builder: _Builder,
+    company_snapshot: dict[str, Any] | None,
+    *,
+    tier_split: bool = False,
+) -> None:
+    """Add SEC filing facts as T1 content pulled through the T2 EDGAR transport.
+
+    When ``tier_split`` is off (default / dark path) this emits the ORIGINAL
+    single wholesale item, byte-for-byte as before. When on (Phase 32A Slice 2)
+    it emits MULTIPLE correctly-tiered items: SEC statement facts stay T1/T2, but
+    model-derived ratios/margins/growth are labelled T6 (DERIVED) and price /
+    market metrics are sourced at their true T5 / T6 tier, so the council never
+    sees a derived or price value stamped as a primary filing.
+    """
     if not company_snapshot:
         return
     fs = company_snapshot.get("fundamentals_summary") or {}
     if not isinstance(fs, dict) or not fs:
         return
-    # Only the metric fields carry filing facts; the rest is filing metadata.
-    metric_keys = [
-        k
-        for k, v in fs.items()
-        if isinstance(v, (int, float))
-        and not k.endswith("_year")
-        and k not in {"source_tier"}
-    ]
-    if not metric_keys:
+
+    if not tier_split:
+        # Only the metric fields carry filing facts; the rest is filing metadata.
+        metric_keys = [
+            k
+            for k, v in fs.items()
+            if isinstance(v, (int, float))
+            and not k.endswith("_year")
+            and k not in {"source_tier"}
+        ]
+        if not metric_keys:
+            return
+        form = fs.get("form_type") or "SEC filing"
+        fiscal = fs.get("fiscal_year")
+        period = fs.get("fiscal_period")
+        excerpt_bits = [f"{k}={fs.get(k)}" for k in metric_keys[:8]]
+        builder.add(
+            source_tier=TIER_T1_PRIMARY_FILING,
+            source_type="company_filing",
+            transport_tier=TIER_T2_REGULATOR_OR_GOV,
+            content_tier=TIER_T1_PRIMARY_FILING,
+            provider_transport=_SEC_TRANSPORT,
+            title=f"{form} filing facts (FY{fiscal} {period})".strip(),
+            url=None,
+            date=str(fs.get("filed_date")) if fs.get("filed_date") else None,
+            excerpt="; ".join(excerpt_bits),
+            data_quality=fs.get("data_quality"),
+            fields_supported=metric_keys,
+        )
         return
-    form = fs.get("form_type") or "SEC filing"
-    fiscal = fs.get("fiscal_year")
-    period = fs.get("fiscal_period")
-    excerpt_bits = [f"{k}={fs.get(k)}" for k in metric_keys[:8]]
-    builder.add(
-        source_tier=TIER_T1_PRIMARY_FILING,
-        source_type="company_filing",
-        transport_tier=TIER_T2_REGULATOR_OR_GOV,
-        content_tier=TIER_T1_PRIMARY_FILING,
-        provider_transport=_SEC_TRANSPORT,
-        title=f"{form} filing facts (FY{fiscal} {period})".strip(),
-        url=None,
-        date=str(fs.get("filed_date")) if fs.get("filed_date") else None,
-        excerpt="; ".join(excerpt_bits),
-        data_quality=fs.get("data_quality"),
-        fields_supported=metric_keys,
-    )
+
+    # ── Tier-split path (Phase 32A Slice 2) ──────────────────────────────
+    label = _period_label(fs)
+    filed = str(fs.get("filed_date")) if fs.get("filed_date") else None
+    quality = fs.get("data_quality") or "B_single_credible"
+
+    def _add_statement(keys: tuple[str, ...], statement: str) -> None:
+        pairs = _present_pairs(fs, keys)
+        if not pairs:
+            return
+        builder.add(
+            source_tier=TIER_T1_PRIMARY_FILING,
+            source_type="sec_financial_statement",
+            transport_tier=TIER_T2_REGULATOR_OR_GOV,
+            content_tier=TIER_T1_PRIMARY_FILING,
+            provider_transport=_SEC_TRANSPORT,
+            title=f"{label} — {statement}",
+            url=None,
+            date=filed,
+            excerpt="; ".join(f"{k}={v}" for k, v in pairs),
+            data_quality=quality,
+            fields_supported=[k for k, _ in pairs],
+        )
+
+    _add_statement(_SEC_INCOME_KEYS, "income statement")
+    _add_statement(_SEC_CASH_FLOW_KEYS, "cash flow statement")
+    _add_statement(_SEC_BALANCE_KEYS, "balance sheet")
+
+    # Derived metrics — computed, not reported. NEVER T1/T2.
+    derived = _present_pairs(fs, _SEC_DERIVED_KEYS)
+    if derived:
+        builder.add(
+            source_tier=TIER_T6_MODEL_ESTIMATE,
+            source_type="derived_financial_metric",
+            transport_tier=TIER_T6_MODEL_ESTIMATE,
+            content_tier=TIER_T6_MODEL_ESTIMATE,
+            provider_transport=None,
+            title=f"{label} — derived metrics (DERIVED, computed not reported)",
+            url=None,
+            date=filed,
+            excerpt="; ".join(f"{k}={v}" for k, v in derived),
+            data_quality=_DERIVED_QUALITY,
+            fields_supported=[k for k, _ in derived],
+        )
+
+    _add_market_and_price(builder, company_snapshot, fs)
+
+
+def _add_market_and_price(
+    builder: _Builder,
+    company_snapshot: dict[str, Any],
+    fs: dict[str, Any],
+) -> None:
+    """Emit a T6 market-metrics item + a T5 price item at their TRUE tiers."""
+    raw_mm = company_snapshot.get("market_metrics_summary")
+    mm: dict[str, Any] = raw_mm if isinstance(raw_mm, dict) else {}
+    raw_tiers = mm.get("source_tiers")
+    tiers: dict[str, Any] = raw_tiers if isinstance(raw_tiers, dict) else {}
+
+    def _collect(pairs_def: tuple[tuple[str, str], ...]) -> list[tuple[str, Any]]:
+        out: list[tuple[str, Any]] = []
+        for mm_key, fs_key in pairs_def:
+            v = mm.get(mm_key)
+            if not isinstance(v, (int, float)) or isinstance(v, bool):
+                v = fs.get(fs_key)
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                out.append((mm_key, v))
+        return out
+
+    market = _collect(_MARKET_METRIC_KEYS)
+    if market:
+        builder.add(
+            source_tier=TIER_T6_MODEL_ESTIMATE,
+            source_type="market_metric",
+            transport_tier=TIER_T6_MODEL_ESTIMATE,
+            content_tier=TIER_T6_MODEL_ESTIMATE,
+            provider_transport=None,
+            title="Market metrics (DERIVED — market cap / EV / P/E)",
+            excerpt="; ".join(f"{k}={v}" for k, v in market),
+            data_quality=_DERIVED_QUALITY,
+            fields_supported=[k for k, _ in market],
+        )
+
+    price = _collect(_PRICE_METRIC_KEYS)
+    if price:
+        # All price fields are T5; honour a per-field tier if one is recorded.
+        price_tier = tiers.get("latest_close") or TIER_T5_API_AGGREGATOR
+        builder.add(
+            source_tier=price_tier,
+            source_type="price_metric",
+            transport_tier=price_tier,
+            content_tier=price_tier,
+            provider_transport=None,
+            title="Price snapshot (latest close / 52-week range)",
+            excerpt="; ".join(f"{k}={v}" for k, v in price),
+            data_quality=None,
+            fields_supported=[k for k, _ in price],
+        )
+
+
+def _add_financial_context(
+    builder: _Builder,
+    report_content: dict[str, Any],
+    company_snapshot: dict[str, Any] | None,
+) -> None:
+    """Surface ``financial_data_summary`` / ``trend_signal_summary`` as bounded,
+    honestly-tiered items — ONLY when actually populated (never fabricated)."""
+    snap = company_snapshot or {}
+
+    fds = report_content.get("financial_data_summary") or snap.get("financial_data_summary")
+    if isinstance(fds, dict) and fds:
+        context = (
+            fds.get("financial_context_summary")
+            or fds.get("summary")
+            or ", ".join(str(x) for x in (fds.get("available_financial_data") or [])[:8])
+        )
+        if context:
+            builder.add(
+                source_tier=TIER_T6_MODEL_ESTIMATE,
+                source_type="financial_data_summary",
+                transport_tier=TIER_T6_MODEL_ESTIMATE,
+                content_tier=TIER_T6_MODEL_ESTIMATE,
+                provider_transport=None,
+                title="Financial data availability summary (re-presentation)",
+                excerpt=context,
+                data_quality=None,
+                fields_supported=["financial_data_summary"],
+            )
+
+    trend = snap.get("trend_signal_summary")
+    if isinstance(trend, dict) and trend.get("momentum_label"):
+        bits = [f"momentum={trend.get('momentum_label')}"]
+        for k in ("return_1m", "return_3m", "return_6m", "pct_above_ma200"):
+            v = trend.get(k)
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                bits.append(f"{k}={v}")
+        builder.add(
+            source_tier=trend.get("source_tier") or TIER_T6_MODEL_ESTIMATE,
+            source_type="trend_signal",
+            transport_tier=TIER_T6_MODEL_ESTIMATE,
+            content_tier=TIER_T6_MODEL_ESTIMATE,
+            provider_transport=None,
+            title="Trend signals (DERIVED momentum — T6, from T5 price)",
+            excerpt="; ".join(bits),
+            data_quality=None,
+            fields_supported=["trend_signal"],
+        )
 
 
 def _add_financial_snapshot(builder: _Builder, report_content: dict[str, Any]) -> None:
@@ -294,9 +555,40 @@ def _add_sources(builder: _Builder, source_rows: list[dict[str, Any]] | None) ->
         )
 
 
-def _add_catalysts(builder: _Builder, catalyst_discovery: dict[str, Any] | None) -> None:
+def _looks_like_derivative_of(text: str | None, analyzed_ticker: str | None) -> bool:
+    """True when ``text`` looks like a leveraged/inverse derivative-instrument
+    story about a NEAR-ticker symbol (e.g. ``AAPD`` / ``AAPU`` under ``AAPL``).
+
+    Deterministic + conservative: requires BOTH a leverage/inverse cue AND a
+    parenthesised/``$``-prefixed symbol that shares the analysed ticker's prefix
+    but is not the ticker itself. Avoids reclassifying genuine company news.
+    """
+    if not text or not analyzed_ticker or len(analyzed_ticker) < 3:
+        return False
+    low = text.lower()
+    if not any(cue in low for cue in _LEVERAGE_CUES):
+        return False
+    prefix = analyzed_ticker[:3]
+    for match in _SYMBOL_RE.finditer(text):
+        sym = match.group(1)
+        if sym != analyzed_ticker and sym.startswith(prefix):
+            return True
+    return False
+
+
+def _add_catalysts(
+    builder: _Builder,
+    catalyst_discovery: dict[str, Any] | None,
+    *,
+    carry_relevance: bool = False,
+) -> None:
+    """Add catalyst/news events. When ``carry_relevance`` is on (Phase 32A Slice
+    2) each item carries its upstream ``relevance_level`` so the budgeter can rank
+    by materiality, and obvious leveraged/inverse derivative-instrument noise is
+    down-ranked to low-tier / irrelevant. Dark path (off) is byte-identical."""
     if not catalyst_discovery:
         return
+    analyzed_ticker = str(catalyst_discovery.get("ticker") or "").upper() or None
     events: list[Any] = []
     for key in ("filing_events", "events", "industry_events"):
         events.extend(catalyst_discovery.get(key) or [])
@@ -305,8 +597,30 @@ def _add_catalysts(builder: _Builder, catalyst_discovery: dict[str, Any] | None)
             return
         if not isinstance(e, dict):
             continue
+        if not carry_relevance:
+            builder.add(
+                source_tier=e.get("source_tier") or TIER_T6_MODEL_ESTIMATE,
+                source_type=e.get("source_type") or "catalyst_event",
+                title=e.get("headline") or e.get("form_type") or "Catalyst event",
+                url=e.get("source_url"),
+                date=e.get("event_date"),
+                excerpt=e.get("summary") or e.get("headline"),
+                data_quality=e.get("evidence_strength"),
+                fields_supported=["catalyst"],
+            )
+            continue
+
+        source_tier = e.get("source_tier") or TIER_T6_MODEL_ESTIMATE
+        relevance_level = e.get("relevance_level")
+        text = f"{e.get('headline') or ''} {e.get('summary') or ''}"
+        if _looks_like_derivative_of(text, analyzed_ticker):
+            # Not the analysed company — a leveraged/inverse instrument tracking
+            # it. Demote to low-tier aggregator noise + mark irrelevant so the
+            # budgeter caps it, but keep it (honest, never silently dropped).
+            source_tier = TIER_T6_MODEL_ESTIMATE
+            relevance_level = "irrelevant"
         builder.add(
-            source_tier=e.get("source_tier") or TIER_T6_MODEL_ESTIMATE,
+            source_tier=source_tier,
             source_type=e.get("source_type") or "catalyst_event",
             title=e.get("headline") or e.get("form_type") or "Catalyst event",
             url=e.get("source_url"),
@@ -314,6 +628,7 @@ def _add_catalysts(builder: _Builder, catalyst_discovery: dict[str, Any] | None)
             excerpt=e.get("summary") or e.get("headline"),
             data_quality=e.get("evidence_strength"),
             fields_supported=["catalyst"],
+            relevance_level=relevance_level,
         )
 
 
@@ -372,6 +687,13 @@ def build_evidence_pack(
     """
     builder = _Builder(max_items=max(1, max_items))
 
+    # Phase 32A Slice 2: the same flag gates the build-time tier-split + news
+    # materiality here AND the category-aware selection inside the budgeter. Off
+    # by default → byte-identical dark path. Read defensively from ``budget_cfg``.
+    budgets_enabled = bool(
+        getattr(budget_cfg, "llm_council_evidence_budgets_enabled", False)
+    )
+
     # Fall back to the report's own source appendix when explicit rows are not
     # supplied, so the builder works from report_content alone.
     if source_rows is None:
@@ -385,10 +707,12 @@ def build_evidence_pack(
         if builder.full:
             break
         builder.add_framework_item(fw_item)
-    _add_sec_fundamentals(builder, company_snapshot)
+    _add_sec_fundamentals(builder, company_snapshot, tier_split=budgets_enabled)
     _add_financial_snapshot(builder, report_content)
+    if budgets_enabled:
+        _add_financial_context(builder, report_content, company_snapshot)
     _add_sources(builder, source_rows)
-    _add_catalysts(builder, catalyst_discovery)
+    _add_catalysts(builder, catalyst_discovery, carry_relevance=budgets_enabled)
 
     is_mock = bool((company_snapshot or {}).get("is_mock")) if company_snapshot else False
     do_not_infer = [

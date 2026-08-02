@@ -276,3 +276,61 @@ web typecheck/lint/build pass; Playwright **e2e 197/197**. New Slice-1 tests mus
   `generate_from_workflow_state` + a persisted `analysis_state_json` JSONB column (future migration).
 - Surface `data_provenance` + `research_complete` + sourced/total section counts in the web header
   (deferred to a small follow-up so readers never conflate structural vs semantic completeness).
+
+---
+
+## 8. Slice 2 — Category evidence budgets & financial-fact wiring (IMPLEMENTED)
+
+Backend-only, dark-safe behind ONE new default-False flag
+(`llm_council_evidence_budgets_enabled`). NO migration, NO new network,
+counts-only logging. Flag OFF ⇒ evidence pack + budgeter behave byte-for-byte as
+Phase 29B.2 (all prior tests green). The same flag also gates the build-time
+tier-split, so both halves move together.
+
+**Root cause repaired (assembly half):**
+1. `_add_sec_fundamentals` stamped EVERY numeric key of `fundamentals_summary`
+   (including merged-in T5 price + T6 market/derived values) as ONE
+   `T1_primary_filing` blob → provenance defect + a single enumerable fact.
+2. `apply_evidence_budget` did a global cross-category tier re-rank + truncate
+   with NO per-category floor → catalyst/news volume evicted financial datapoints.
+3. `_add_catalysts` dropped the upstream `relevance_level`/`relevance_score`, so
+   there was no materiality signal (an `AAPD`/`AAPU` derivative story was
+   indistinguishable from an SEC filing).
+
+**What Slice 2 does (all gated):**
+- **Tier-split fundamentals** (`evidence_pack.py`): sourced from
+  `company_snapshot["fundamentals_summary"]` (SEC EDGAR XBRL, ALL ANNUAL 10-K —
+  never TTM) + `market_metrics_summary.source_tiers`. Emits separate items:
+  income-statement / cash-flow / balance-sheet facts at **T1 content / T2 EDGAR
+  transport**; derived margins/ROE/FCF/YoY labelled **DERIVED, T6** (never T1/T2);
+  market cap/EV/P-E at **T6**; latest close / 52-week range at **T5**. Only
+  fields actually present are emitted (missing ⇒ omitted, never fabricated);
+  `period_basis` is honoured (labels quarterly on a 10-Q fallback). Defensively
+  surfaces `financial_data_summary` / `trend_signal_summary` only when populated.
+- **News materiality** (`evidence_pack.py` + additive `EvidenceItem.relevance_level`):
+  carries the upstream relevance level onto each catalyst item; a conservative,
+  deterministic derivative-instrument detector (near-ticker symbol **AND** a
+  leverage/inverse cue, e.g. `(AAPU)` + "leveraged") demotes such noise to
+  low-tier / irrelevant rather than dropping it.
+- **Category-aware budgeter** (`evidence_budget.py`): pure `evidence_category()`
+  classifier → reserve a FLOOR of `financial_fact` slots, near-dup-dedup news by
+  normalised title, rank within category by `(tier, materiality, factual, order)`,
+  then fill by global rank while enforcing caps
+  (`price_trend_cap`, aggregate `news_cap`, strict `low_tier_news_cap`). Total /
+  per-item char budgets + stable `E1..En` re-id + honest
+  `omitted_evidence_count`/`omitted_reason` are preserved.
+
+**Config knobs (config.py, near the Phase 29B.2 budgeter block; the pinned
+20 / 24000 / 1200 are UNCHANGED):** `llm_council_evidence_budgets_enabled=False`,
+`llm_council_evidence_financial_floor=3`, `llm_council_evidence_price_trend_cap=3`,
+`llm_council_evidence_news_cap=8`, `llm_council_evidence_low_tier_news_cap=4`.
+
+**Invariants held:** identity (`EvidencePack.company`) always built; structured
+SEC/XBRL facts get a guaranteed floor and outrank aggregator news; news can never
+consume the whole pack; low-tier news strict cap; near-duplicate events removed;
+selection deterministic; metadata-only references (`metadata_only` /
+`link_metadata_only`) NEVER become facts (CFR `_source_reference_summary`
+untouched); derived metrics never T1/T2; annual never confused with TTM; Slice-1
+provenance untouched (absence⇒unknown, is_mock never coerced True);
+`publication_ready`=False / `human_review_required`=True unchanged. Tests:
+`apps/api/tests/test_phase32a_slice2_evidence_budgets.py`.
