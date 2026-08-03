@@ -573,6 +573,36 @@ grep -RiE "Authorization: Bearer|Set-Cookie:|DATABASE_URL=|api_token=[A-Za-z0-9]
   evidence projection / prompt trimming (would risk evidence loss / reopen Slice
   2). Sequential execution + bounded retry + reserved budget is the Slice-4 lever.
 
+### Staging validation checklist (run AFTER merge + deploy; flag flipped ON under the human gate)
+
+Do not mark Slice 4 ✅ until these pass. `LLM_COUNCIL_RETRY_ENABLED` ships `false`;
+flip it to `true` on staging only after merge/deploy approval, then:
+
+- **A. Deploy identity.** API + Web serve the merged commit SHA (stable polls); DB head
+  stays `012` (no migration); `AUTH_TEST_MODE` absent.
+- **B. Flag state.** Confirm `LLM_COUNCIL_RETRY_ENABLED=true` is the only Slice-4 change;
+  the 7 tuning knobs read their safe defaults (or intended staging overrides).
+- **C. AAPL / US / free_real / LLM-enabled fresh run.** Evidence pack stays financially
+  complete (Slice 2 unchanged); completed agents retained; transiently-failed agents
+  retried; successful agents not re-run; council completion improves over the historical
+  4/8 baseline **where provider capacity allows** (provider exhaustion is not a failure
+  if D–F hold).
+- **D. Committee Chair.** Either the LLM chair completes, **or** the deterministic fallback
+  appears (`chair_fallback_used=true`, `committee_label="insufficient_data"`, no
+  recommendation/valuation/price language, no citations).
+- **E. Red Team.** Completes, or its absence is explicit in counts + warnings.
+- **F. Report integrity.** `schema_valid=true`, `safety_valid=true`,
+  `human_review_required=true`, `publication_ready=false`; report remains useful and
+  visibly partial under partial failure; **no duplicate Source/Citation rows**; failed-agent
+  placeholders create no citations.
+- **G. CFR (metadata-only).** 8/8 path still functional where capacity permits;
+  metadata-only references stay honest; no fabricated financial facts.
+- **H. Logs.** Secret grep over the run's structured logs is clean (no prompts /
+  completions / evidence / credentials / app-setting values); retry events carry only the
+  safe scalar fields.
+- **I. Idempotency.** Re-generating the final report yields stable counts and no duplicated
+  agent outputs, Sources, or Citations.
+
 ## Internal Research Memo Builder (Phase 31 — FINAL phase)
 
 > **Merged + deployed + staging-validated (`b89d5c5`, PR #69).** Full-stack deploy
