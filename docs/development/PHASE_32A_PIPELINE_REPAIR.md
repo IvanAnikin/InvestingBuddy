@@ -195,7 +195,7 @@ ranking, dedup, materiality, low-tier caps. Metadata-only refs never become extr
 ### Slice 3 — Source/citation integration + honest display
 Replace the `pass` backfill with a real `report_id` UPDATE + an `agent_run_id` fallback loader; make
 the appendix distinguish DB citations from council E# evidence (invariant 9). Largely independent of
-Slice 1. **→ IMPLEMENTED (pre-merge / at PR gate — NOT yet staging-validated); see §9.**
+Slice 1. **→ ✅ CLOSED + STAGING-VALIDATED (`3efda60`, 2026-08-03, PR #75); see §9.**
 
 ### Slice 4 — Council retry / fallback / critical-agent reliability
 Bounded retries + exponential backoff; lower concurrency + pacing; retry-only-failed-agents; reserved
@@ -337,7 +337,7 @@ provenance untouched (absence⇒unknown, is_mock never coerced True);
 
 ---
 
-## 9. Slice 3 — Source/citation integration + honest display (IMPLEMENTED — pre-merge / at PR gate)
+## 9. Slice 3 — Source/citation integration + honest display (✅ CLOSED + STAGING-VALIDATED `3efda60`, 2026-08-03)
 
 Backend + frontend, dark-safe behind ONE new default-False flag
 (`report_citation_persistence_enabled`, env `REPORT_CITATION_PERSISTENCE_ENABLED`).
