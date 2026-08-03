@@ -200,6 +200,9 @@ class _Builder:
         content_tier: str | None = None,
         provider_transport: str | None = None,
         relevance_level: str | None = None,
+        source_id: str | None = None,
+        primary_fact: dict[str, Any] | None = None,
+        provenance: list[str] | None = None,
     ) -> bool:
         if self.full:
             return False
@@ -224,6 +227,11 @@ class _Builder:
                 data_quality=data_quality,
                 fields_supported=fields_supported or [],
                 relevance_level=relevance_level,
+                # Phase 32A Slice 3: runtime-only persistence carriers (excluded
+                # from serialization) — preserve upstream provenance for persist time.
+                source_id=source_id,
+                primary_fact=primary_fact,
+                provenance=provenance or [],
             )
         )
         return True
@@ -234,7 +242,19 @@ class _Builder:
         Maps its transport-vs-content tiers straight through so the connector's
         provenance is preserved. The item's URL was already secret-stripped by
         the framework model; ``add`` strips again defensively.
+
+        Phase 32A Slice 3: also carries the framework item's stable ``source_id``,
+        structured ``primary_fact`` (PrimaryFactRef, dumped) and ``provenance``
+        onto the (runtime-only, excluded) council-item carriers so a cited E# can
+        resolve to a canonical source at persist time. These never reach the LLM
+        prompt (excluded from serialization).
         """
+        pf = getattr(item, "primary_fact", None)
+        pf_dump = (
+            pf.model_dump(mode="json")
+            if pf is not None and hasattr(pf, "model_dump")
+            else None
+        )
         return self.add(
             source_tier=item.content_source_tier,
             source_type=item.source_type or "source",
@@ -247,6 +267,9 @@ class _Builder:
             excerpt=item.excerpt,
             data_quality=item.data_quality,
             fields_supported=list(item.fields_supported),
+            source_id=getattr(item, "source_id", None),
+            primary_fact=pf_dump,
+            provenance=list(getattr(item, "provenance", None) or []),
         )
 
 

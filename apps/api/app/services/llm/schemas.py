@@ -132,6 +132,16 @@ class EvidenceItem(BaseModel):
     # (and for every non-news item). Additive + defaulted so the off-state pack is
     # unchanged. Never a claim — purely a ranking signal for the budgeter.
     relevance_level: str | None = None
+    # Phase 32A Slice 3: runtime-ONLY persistence carriers, EXCLUDED from every
+    # serialization (``model_dump`` / ``model_dump_json``) so the evidence-pack
+    # JSON the council reads and everything persisted/logged is byte-identical.
+    # They preserve the upstream framework item's stable ``source_id`` + structured
+    # ``primary_fact`` + ``provenance`` — which ``add_framework_item`` otherwise
+    # drops — so a cited E# can resolve to a canonical Source/Citation at persist
+    # time. Read only when ``report_citation_persistence_enabled`` is on.
+    source_id: str | None = Field(default=None, exclude=True)
+    primary_fact: dict[str, Any] | None = Field(default=None, exclude=True)
+    provenance: list[str] = Field(default_factory=list, exclude=True)
 
 
 class EvidencePack(BaseModel):
@@ -198,6 +208,38 @@ class CouncilAgentOutput(BaseModel):
 
     def to_dict(self) -> dict[str, Any]:
         return self.model_dump(mode="json")
+
+
+class PersistableEvidence(BaseModel):
+    """A runtime snapshot of ONE council evidence-pack item (Phase 32A Slice 3).
+
+    Retained on ``CouncilResult`` so a claim's run-local ``E#`` alias can be
+    resolved to a canonical Source + Citation at persist time. ``uid`` is a stable
+    per-item identity; ``alias`` is the run-local presentation ``E#`` (positional,
+    never a cross-run key). Populated only when
+    ``report_citation_persistence_enabled`` is on — empty otherwise, so nothing new
+    is serialized/persisted in the dark path. Carries only bounded, secret-stripped
+    fields (no raw document body).
+    """
+
+    uid: str
+    alias: str
+    source_tier: str | None = None
+    source_type: str | None = None
+    provider_transport: str | None = None
+    transport_tier: str | None = None
+    content_tier: str | None = None
+    title: str | None = None
+    url: str | None = None
+    date: str | None = None
+    excerpt: str | None = None
+    data_quality: str | None = None
+    fields_supported: list[str] = Field(default_factory=list)
+    relevance_level: str | None = None
+    # Preserved upstream framework provenance (present only for connector items).
+    source_id: str | None = None
+    primary_fact: dict[str, Any] | None = None
+    provenance: list[str] = Field(default_factory=list)
 
 
 class CouncilResult(BaseModel):
@@ -269,6 +311,15 @@ class CouncilResult(BaseModel):
     # Phase 31 hotfix: bounded, de-duplicated honest connector source-gap messages
     # (e.g. "annual-report links not identified without live extraction"). No secrets.
     source_gaps: list[str] = Field(default_factory=list)
+    # Phase 32A Slice 3: runtime-ONLY snapshot of the (post-budget) evidence pack
+    # so a cited ``E#`` alias can be resolved to a canonical Source/Citation at
+    # persist time. EXCLUDED from serialization (``to_report_dict`` /
+    # ``to_metadata_dict`` build explicit dicts and never include it), so the
+    # persisted report body + source-summary JSON are byte-identical. Populated by
+    # ``run_council`` only when ``report_citation_persistence_enabled`` is on.
+    persistable_evidence: list[PersistableEvidence] = Field(
+        default_factory=list, exclude=True
+    )
 
     def recount(self) -> None:
         """Refresh the completed/failed/skipped tallies from ``agents``."""

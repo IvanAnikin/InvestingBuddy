@@ -304,5 +304,27 @@ class Settings(BaseSettings):
     # human-review-required and never publication-ready.
     source_research_memo_enabled: bool = False
 
+    # ── Report source/citation persistence + reconciliation (Phase 32A Slice 3)
+    # Gate for PERSISTING the source/citation lineage of a report and RECONCILING
+    # the honest source counts on the final-report appendix. OFF by default so the
+    # existing report body + appendix wording are byte-for-byte unchanged: with the
+    # flag off the draft-citation backfill stays the historic no-op, the appendix
+    # loader is unchanged (report_id filter only), and no council claim→evidence
+    # citations are persisted. When ON: (a) the company-analysis draft links its
+    # deterministic profile/price/SEC-XBRL citations to the report it produced
+    # (idempotent UPDATE scoped by this run's agent_run_id); (b) the final report
+    # carries its lineage (company_id + created_by_agent_run_id from the source
+    # report or workflow state — never fabricated); (c) the appendix loader falls
+    # back to the lineage agent_run when no citation matches by report_id (so the
+    # draft's deterministic citations surface WITHOUT duplicating rows); (d) each
+    # COMPLETED council agent's cited evidence (E# → canonical Source + Citation)
+    # is persisted in the SAME transaction, deduped by a synthesized content_hash
+    # so re-runs never accumulate duplicate sources; and (e) the appendix reports
+    # SIX honest side-by-side counts (never summed). No schema/migration change, no
+    # new network fetch, no fabrication: metadata-only references are persisted as
+    # references and NEVER counted or labelled as financial facts. publication_ready
+    # stays False and human_review_required stays True.
+    report_citation_persistence_enabled: bool = False
+
 
 settings = Settings()

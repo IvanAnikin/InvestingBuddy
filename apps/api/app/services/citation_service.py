@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.source import Citation
@@ -46,6 +46,32 @@ async def count_citations_for_report(db: AsyncSession, report_id: uuid.UUID) -> 
         select(Citation).where(Citation.report_id == report_id)
     )
     return len(result.scalars().all())
+
+
+async def link_citations_to_report(
+    db: AsyncSession, agent_run_id: uuid.UUID, report_id: uuid.UUID
+) -> int:
+    """Backfill ``report_id`` on this run's not-yet-linked citations (Phase 32A
+    Slice 3).
+
+    The workflow creates deterministic citations at Node 8 (before the report
+    row exists) with ``agent_run_id`` set and ``report_id`` NULL. Once the draft
+    report exists, this links them with a single scoped UPDATE: keyed by the run's
+    ``agent_run_id`` (which pins the run ⇒ company-safe) and guarded by
+    ``report_id IS NULL`` (⇒ idempotent — a re-run links nothing new, never a
+    duplicate). Returns the number of rows linked. The caller commits.
+    """
+    result = await db.execute(
+        update(Citation)
+        .where(
+            Citation.agent_run_id == agent_run_id,
+            Citation.report_id.is_(None),
+        )
+        .values(report_id=report_id)
+    )
+    # ``rowcount`` is present on the CursorResult an UPDATE yields but is not
+    # declared on the generic async ``Result[Any]`` type stub.
+    return int(result.rowcount or 0)  # type: ignore[attr-defined]
 
 
 async def list_citations_for_agent_run(

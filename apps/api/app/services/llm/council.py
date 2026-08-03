@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import time
+import uuid
 from typing import Any
 
 from app.core.config import Settings
@@ -38,6 +39,7 @@ from app.services.llm.schemas import (
     CouncilAgentOutput,
     CouncilResult,
     EvidencePack,
+    PersistableEvidence,
 )
 from app.services.sources.company_evidence import (
     collect_company_source_evidence,
@@ -546,6 +548,35 @@ async def run_council(
         (a for a in result.agents if a.agent_name == AGENT_COMMITTEE_CHAIR), None
     )
     result.committee_label = chair.committee_label if chair else None
+
+    # Phase 32A Slice 3: retain a runtime-only snapshot of the (post-budget)
+    # evidence pack so a cited ``E#`` alias can be resolved to a canonical
+    # Source/Citation when the report is persisted. E# is a run-local presentation
+    # alias only; ``uid`` is a stable per-item identity. Gated on the flag +
+    # excluded from serialization ⇒ the dark path is byte-identical.
+    if cfg.report_citation_persistence_enabled:
+        result.persistable_evidence = [
+            PersistableEvidence(
+                uid=uuid.uuid4().hex,
+                alias=item.id,
+                source_tier=item.source_tier,
+                source_type=item.source_type,
+                provider_transport=item.provider_transport,
+                transport_tier=item.transport_tier,
+                content_tier=item.content_tier,
+                title=item.title,
+                url=item.url,
+                date=item.date,
+                excerpt=item.excerpt,
+                data_quality=item.data_quality,
+                fields_supported=list(item.fields_supported),
+                relevance_level=item.relevance_level,
+                source_id=item.source_id,
+                primary_fact=item.primary_fact,
+                provenance=list(item.provenance),
+            )
+            for item in evidence_pack.evidence_items
+        ]
 
     log_event(
         log,

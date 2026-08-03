@@ -231,10 +231,36 @@ function AppendixSection({ section }: { section: Record<string, unknown> }) {
   // REFERENCE count (issuer IR / annual-report index / regulator venue) even when
   // there are 0 DB-persisted citations. When those references exist, the card must
   // NOT imply "zero sources" — it points the reader to the memo's Primary Evidence.
-  const primaryRefCount =
-    typeof section.primary_source_reference_count === "number"
-      ? section.primary_source_reference_count
-      : 0;
+  // Optional integer reads — undefined when a key is absent (legacy / flag-off
+  // reports, which must render exactly as before).
+  const numCount = (key: string): number | undefined =>
+    typeof section[key] === "number" ? (section[key] as number) : undefined;
+  const primaryRefCount = numCount("primary_source_reference_count") ?? 0;
+  // Phase 32A Slice 3 — six honest, side-by-side reconciliation counts. They are
+  // NEVER summed (each measures a different thing); rendered as a labelled stat
+  // grid, with the backend `note` as the authoritative reconciling caption. Only
+  // present when the persistence flag is on — absent ⇒ this whole block is skipped
+  // and the appendix renders byte-identically to before.
+  const reconcile: [string, number | undefined][] = [
+    ["Primary-source references", numCount("primary_source_reference_count")],
+    ["Extracted evidence items", numCount("extracted_evidence_count")],
+    ["Structured financial facts", numCount("structured_financial_fact_count")],
+    ["DB-persisted sources", numCount("db_persisted_source_count")],
+    ["DB-persisted citations", numCount("db_persisted_citation_count")],
+    ["Council claim citations", numCount("council_claim_citation_count")],
+  ];
+  const hasReconcile = reconcile.some(([, v]) => v != null);
+  const councilClaimCitations = numCount("council_claim_citation_count") ?? 0;
+  const dbCitationCount = numCount("db_persisted_citation_count") ?? 0;
+  const dbSourceCount = numCount("db_persisted_source_count") ?? 0;
+  // Honest empty-state guard: never imply "no sources" when the council cited
+  // evidence or any source/citation is persisted or a primary-source reference
+  // was located.
+  const hasAnyEvidence =
+    primaryRefCount > 0 ||
+    councilClaimCitations > 0 ||
+    dbCitationCount > 0 ||
+    dbSourceCount > 0;
   const appendixNote = noteText(section.note);
   return (
     <SectionShell title="Source Citation Appendix" testId="report-section-source_citation_appendix">
@@ -242,13 +268,30 @@ function AppendixSection({ section }: { section: Record<string, unknown> }) {
         {total} source(s){citations.total != null ? ` · ${citations.total} citation(s)` : ""}
         {primaryRefCount > 0 ? ` · ${primaryRefCount} primary-source reference(s)` : ""}
       </p>
+      {hasReconcile ? (
+        <dl
+          className="mb-3 grid grid-cols-2 gap-x-4 gap-y-1 text-[11px] sm:grid-cols-3"
+          data-testid="appendix-reconcile-counts"
+        >
+          {reconcile.map(([label, val]) => (
+            <div key={label} className="flex items-baseline justify-between gap-2">
+              <dt className="text-slate-500">{label}</dt>
+              <dd className="font-mono text-slate-300">{val ?? 0}</dd>
+            </div>
+          ))}
+        </dl>
+      ) : null}
       {sources.length === 0 ? (
-        primaryRefCount > 0 ? (
+        hasAnyEvidence ? (
           <p className="text-sm" data-testid="appendix-primary-references">
             <Muted>
-              {primaryRefCount} primary-source reference(s) located — see the
-              Internal Research Memo (Primary Evidence). No DB-persisted citations
-              yet; human review required.
+              {councilClaimCitations > 0
+                ? `${councilClaimCitations} council claim citation(s) link to evidence-pack items` +
+                  (dbCitationCount > 0
+                    ? ` · ${dbCitationCount} DB-persisted citation(s)`
+                    : " · DB citation persistence incomplete") +
+                  `. ${primaryRefCount} primary-source reference(s) located (metadata only — not extracted facts). Human review required.`
+                : `${primaryRefCount} primary-source reference(s) located — see the Internal Research Memo (Primary Evidence). Metadata-only references are not extracted facts; human review required.`}
             </Muted>
           </p>
         ) : (
