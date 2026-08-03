@@ -288,3 +288,61 @@ endpoint provides deterministic local/CI sign-in.
   set in staging/production (returns 404 otherwise).
 - Microsoft Entra ID can be added later via the same OAuth pattern without
   changing the session/allowlist model.
+
+---
+
+## ADR-013: LLM Council Reliability — Bounded Retry Under a Wall-Time Budget, Reserved Critical Budget, and a Deterministic Chair Fallback (Phase 32A Slice 4)
+
+**Date:** 2026-08-04
+**Status:** Accepted (implemented on branch `phase-32a-slice4-council-reliability`
+`5bbaaf4`; **PR open, pending staging validation** — not yet merged / deployed /
+validated)
+
+### Context
+Under Azure `gpt-4.1-mini` TPM limits, a large evidence pack (e.g. AAPL) is
+embedded into all 8 single-company council agents' prompts and sent strictly
+sequentially. The council had no retry: one 429 marked an agent `failed`, so
+whichever agents landed in a TPM window completed (~4/8) and the rest failed —
+and because the committee chair runs last with no fallback, the synthesis
+(`committee_label`) was frequently lost. Critically, the single-company council
+runs INLINE in the HTTP request handler (no background task), so total wall-time
+is bounded only by the ~230s Azure App Service gateway timeout. This is the
+"Azure-TPM partial councils" environmental note carried forward from Slices 2–3.
+
+### Decision
+1. **Retries are bounded by a strict TOTAL wall-time budget/deadline.** Because
+   the council is inline in the request, every retry lives under a hard council
+   deadline (`llm_council_total_budget_seconds`, default 150s) kept well below the
+   ~230s gateway. Attempts are additionally capped per agent, backoff is capped +
+   jittered, and an honored provider `retry-after` is capped — so there is no
+   uncontrolled loop or DoS amplification. Only transient errors (429 / 5xx /
+   timeout) are retried; schema / safety / auth failures are permanent.
+2. **A wall-time reserve protects `red_team` + `committee_chair`.** A reserve
+   (`llm_council_critical_reserve_seconds`, default 45s) is held back so earlier
+   (non-reserved) agents draining the shared budget can never starve the
+   adversarial check or the synthesis. Critical agents also get more attempts.
+3. **The committee-chair fallback is deterministic and never fabricates
+   consensus.** If the LLM chair still fails, a deterministic, non-consensus
+   summary is attached (`committee_label="insufficient_data"`, empty `key_points`
+   ⇒ no citations), built only from already-validated stored council outputs,
+   stating no recommendation / valuation / price objective. The failed LLM-chair
+   entry is kept so the council is visibly partial.
+4. **Concurrency and per-agent evidence projection are deliberately DEFERRED
+   (out of scope).** Concurrent execution is declined: on the inline path under
+   Azure TPM limits, concurrency worsens 429s — sequential execution + bounded
+   retry + reserved budget is the correct lever. Per-agent evidence projection /
+   prompt trimming is declined: it cannot be done without risking evidence loss
+   and reopening the Slice 2 evidence-budget contract.
+
+### Consequences
+- Gated by a new default-OFF master flag `LLM_COUNCIL_RETRY_ENABLED`; flag-off is
+  byte-identical to the prior behaviour. No DB migration (head stays `012`); no
+  auth / publishing / SSRF change; `publication_ready` stays False and
+  `human_review_required` stays True; failed agents still create no citations.
+- A partial council is now more likely to recover the chair synthesis; when it
+  cannot, the report/memo renders an honest deterministic "LLM chair unavailable"
+  marker instead of a null label.
+- Retry logging carries SAFE fields only (attempt / agent / error_type /
+  durations / backoff / capped retry-after) — never prompts, evidence, or secrets.
+- Not yet staging-validated — the flag ships OFF and will be flipped ON on staging
+  (human-approved) for validation as a later step.

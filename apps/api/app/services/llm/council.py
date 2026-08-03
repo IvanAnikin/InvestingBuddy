@@ -20,9 +20,12 @@ Entry points:
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import random
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from app.core.config import Settings
@@ -30,16 +33,34 @@ from app.core.config import settings as default_settings
 from app.core.structured_logging import log_event
 from app.services.llm import prompts
 from app.services.llm.citation_checker import check_and_sanitize
-from app.services.llm.client import LLMClient, LLMError, get_llm_client
+from app.services.llm.client import (
+    LLMClient,
+    LLMError,
+    LLMRateLimitError,
+    get_llm_client,
+    is_transient_llm_error,
+)
 from app.services.llm.evidence_pack import build_evidence_pack
 from app.services.llm.schemas import (
+    AGENT_BUSINESS_MOAT,
+    AGENT_CATALYST,
     AGENT_COMMITTEE_CHAIR,
+    AGENT_FINANCIAL_ANALYST,
+    AGENT_RED_TEAM,
+    AGENT_RISK_GOVERNANCE,
+    AGENT_SOURCE_QUALITY_CRITIC,
+    AGENT_VALUATION_GUARD,
     COUNCIL_AGENT_ORDER,
+    CRITICAL_ALWAYS,
+    DEFAULT_COMMITTEE_LABEL,
+    RESERVED_AGENTS,
+    STATUS_COMPLETED,
     STATUS_FAILED,
     CouncilAgentOutput,
     CouncilResult,
     EvidencePack,
     PersistableEvidence,
+    has_financial_evidence,
 )
 from app.services.sources.company_evidence import (
     collect_company_source_evidence,
@@ -430,6 +451,513 @@ def _prior_summaries(outputs: list[CouncilAgentOutput]) -> str:
     return "\n".join(lines)
 
 
+# ---------------------------------------------------------------------------
+# Phase 32A Slice 4 — single-agent attempt + retry orchestration
+# ---------------------------------------------------------------------------
+
+
+def _messages_for(
+    agent_name: str, evidence_json: str, result: CouncilResult
+) -> tuple[str, str]:
+    """Build (system, user) for one agent from the CURRENT council state.
+
+    The committee chair's user message is rebuilt from the current (possibly
+    recovered) prior summaries every time it is called, so a chair retry
+    synthesizes over agents that recovered in the retry pass (req #10).
+    """
+    if agent_name == AGENT_COMMITTEE_CHAIR:
+        system = prompts.committee_chair_system_prompt()
+        user = prompts.build_user_message(
+            evidence_json, _prior_summaries(result.agents)
+        )
+    else:
+        system = prompts.system_prompt_for(agent_name)
+        user = prompts.build_user_message(evidence_json)
+    return system, user
+
+
+async def _run_agent_attempt(
+    agent_name: str,
+    evidence_json: str,
+    evidence_ids: set[str],
+    result: CouncilResult,
+    client: LLMClient,
+    cfg: Settings,
+) -> tuple[CouncilAgentOutput, list[str], Exception | None]:
+    """Run ONE attempt for an agent. Never raises.
+
+    Returns ``(output, issues, exc)``. On success ``output`` is the sanitized
+    agent output and ``exc`` is None (``output.status`` may still be ``failed``
+    if the safety gate quarantined it — a PERMANENT outcome). On an ``LLMError``
+    ``output`` is the failed placeholder and ``exc`` is the (possibly transient)
+    exception. This is the single-agent primitive BOTH the OFF path and the
+    ON (retry) path call.
+    """
+    system, user = _messages_for(agent_name, evidence_json, result)
+    try:
+        raw = await client.complete_json(
+            system,
+            user,
+            max_tokens=cfg.llm_max_output_tokens,
+            temperature=cfg.llm_temperature,
+            timeout=cfg.llm_request_timeout_seconds,
+            repair_instruction=prompts.REPAIR_INSTRUCTION,
+        )
+    except LLMError as exc:
+        placeholder = CouncilAgentOutput(
+            agent_name=agent_name,
+            status=STATUS_FAILED,
+            summary="[Agent did not complete: provider error or timeout.]",
+            safety_notes=[f"Agent failed ({type(exc).__name__})."],
+        )
+        return placeholder, [f"{agent_name}: {type(exc).__name__}"], exc
+    output = _coerce_output(agent_name, raw)
+    sanitized, issues = check_and_sanitize(output, evidence_ids)
+    return sanitized, issues, None
+
+
+async def _timed_attempt(
+    agent_name: str,
+    evidence_json: str,
+    evidence_ids: set[str],
+    result: CouncilResult,
+    client: LLMClient,
+    cfg: Settings,
+) -> tuple[CouncilAgentOutput, list[str], Exception | None, int]:
+    """``_run_agent_attempt`` plus a wall-clock duration_ms for logging."""
+    started = time.perf_counter()
+    output, issues, exc = await _run_agent_attempt(
+        agent_name, evidence_json, evidence_ids, result, client, cfg
+    )
+    duration_ms = int((time.perf_counter() - started) * 1000)
+    return output, issues, exc, duration_ms
+
+
+def _log_agent_outcome(
+    log: logging.Logger,
+    agent_name: str,
+    output: CouncilAgentOutput,
+    exc: Exception | None,
+    duration_ms: int,
+    *,
+    cfg: Settings,
+    client: LLMClient,
+    report_id: str | None,
+    ticker: str | None,
+    attempt: int | None = None,
+) -> None:
+    """Emit the safe completed/failed telemetry for one attempt (no prompts)."""
+    if exc is not None:
+        log_event(
+            log,
+            "llm_agent_failed",
+            level=logging.WARNING,
+            report_id=report_id,
+            ticker=ticker,
+            agent_name=agent_name,
+            provider=client.provider_name,
+            council_version=cfg.llm_council_version,
+            duration_ms=duration_ms,
+            status=STATUS_FAILED,
+            reason=type(exc).__name__,
+            attempt=attempt,
+        )
+    elif output.status == STATUS_FAILED:
+        log_event(
+            log,
+            "llm_agent_failed",
+            level=logging.WARNING,
+            report_id=report_id,
+            ticker=ticker,
+            agent_name=agent_name,
+            provider=client.provider_name,
+            council_version=cfg.llm_council_version,
+            duration_ms=duration_ms,
+            status=STATUS_FAILED,
+            reason="quarantined_or_unparsed",
+            attempt=attempt,
+        )
+    else:
+        log_event(
+            log,
+            "llm_agent_completed",
+            report_id=report_id,
+            ticker=ticker,
+            agent_name=agent_name,
+            provider=client.provider_name,
+            council_version=cfg.llm_council_version,
+            duration_ms=duration_ms,
+            status=output.status,
+            key_point_count=len(output.key_points),
+            attempt=attempt,
+        )
+
+
+def _budget_exhausted_output(agent_name: str) -> CouncilAgentOutput:
+    """A failed placeholder for an agent that could not START before the deadline."""
+    return CouncilAgentOutput(
+        agent_name=agent_name,
+        status=STATUS_FAILED,
+        summary="[Agent did not run: council time budget exhausted before it could start.]",
+        safety_notes=["Agent did not run: council total time budget exhausted."],
+    )
+
+
+def _critical_agents(evidence_pack: EvidencePack) -> frozenset[str]:
+    """The critical-agent set for this pack (valuation_guard only if financial)."""
+    if has_financial_evidence(evidence_pack):
+        return CRITICAL_ALWAYS | {AGENT_VALUATION_GUARD}
+    return CRITICAL_ALWAYS
+
+
+def _retry_priority_order(critical: frozenset[str]) -> list[str]:
+    """Order transiently-failed agents are retried in (chair last).
+
+    Critical analytics first, then optional context agents, then the reserved
+    red_team, then the committee chair. ``valuation_guard`` is retried ONLY when
+    it is critical (the pack has financial evidence).
+    """
+    order = [AGENT_FINANCIAL_ANALYST]
+    if AGENT_VALUATION_GUARD in critical:
+        order.append(AGENT_VALUATION_GUARD)
+    order.append(AGENT_SOURCE_QUALITY_CRITIC)
+    order.extend([AGENT_BUSINESS_MOAT, AGENT_CATALYST, AGENT_RISK_GOVERNANCE])
+    order.append(AGENT_RED_TEAM)
+    order.append(AGENT_COMMITTEE_CHAIR)
+    return order
+
+
+def _replace_agent(
+    result: CouncilResult,
+    agent_name: str,
+    output: CouncilAgentOutput,
+    issues: list[str],
+) -> None:
+    """Replace a failed placeholder IN PLACE (never append) and refresh warnings.
+
+    The agent's earlier per-agent warnings are removed so ``result.warnings``
+    reflects the FINAL state — a recovered agent leaves no stale failure note and
+    honest counts are preserved. ``len(result.agents)`` is unchanged (idempotent:
+    exactly one entry per agent name).
+    """
+    for i, existing in enumerate(result.agents):
+        if existing.agent_name == agent_name:
+            result.agents[i] = output
+            break
+    prefix = f"{agent_name}: "
+    result.warnings = [w for w in result.warnings if not w.startswith(prefix)]
+    result.warnings.extend(issues)
+
+
+def _deterministic_chair_fallback(
+    agents: list[CouncilAgentOutput], order: tuple[str, ...]
+) -> CouncilAgentOutput:
+    """A deterministic, non-consensus committee summary (req #11-12).
+
+    Built only from ALREADY-VALIDATED stored council outputs. It NEVER makes a
+    recommendation, valuation conclusion, or numeric price objective: the label is
+    the honest ``insufficient_data`` and ``key_points`` is empty (so it carries no
+    citations). The wording deliberately avoids the forbidden safety substrings
+    (e.g. "price target", "fair value") so it survives ``check_and_sanitize``.
+    """
+    completed = [
+        a.agent_name
+        for a in agents
+        if a.status == STATUS_COMPLETED and a.agent_name != AGENT_COMMITTEE_CHAIR
+    ]
+    failed = [
+        a.agent_name
+        for a in agents
+        if a.status == STATUS_FAILED and a.agent_name != AGENT_COMMITTEE_CHAIR
+    ]
+    non_chair_total = len(order) - 1
+    summary = (
+        "Deterministic committee summary (LLM committee chair unavailable). "
+        f"{len(completed)} of {non_chair_total} non-chair council agents completed. "
+        f"Completed: {', '.join(completed) or 'none'}. "
+        f"Did not complete: {', '.join(failed) or 'none'}. "
+        "This is a partial, non-consensus internal summary. It states no "
+        "recommendation, no valuation conclusion, and no numeric price objective. "
+        "Further evidence and human review are required."
+    )
+    return CouncilAgentOutput(
+        agent_name=AGENT_COMMITTEE_CHAIR,
+        status=STATUS_COMPLETED,
+        committee_label=DEFAULT_COMMITTEE_LABEL,
+        summary=summary,
+        key_points=[],
+        risks_or_gaps=[],
+        unsupported_claims=[],
+        safety_notes=[
+            "Deterministic fallback: the LLM committee chair did not complete. No "
+            "consensus, no recommendation, and no valuation conclusion is implied; "
+            "human review is required."
+        ],
+    )
+
+
+async def _run_offline_pass(
+    *,
+    evidence_json: str,
+    evidence_ids: set[str],
+    result: CouncilResult,
+    client: LLMClient,
+    cfg: Settings,
+    log: logging.Logger,
+    report_id: str | None,
+    ticker: str | None,
+) -> None:
+    """The OFF path: one attempt per agent, no retries — byte-identical to pre-Slice-4."""
+    for agent_name in COUNCIL_AGENT_ORDER:
+        output, issues, exc, duration_ms = await _timed_attempt(
+            agent_name, evidence_json, evidence_ids, result, client, cfg
+        )
+        result.agents.append(output)
+        result.warnings.extend(issues)
+        _log_agent_outcome(
+            log,
+            agent_name,
+            output,
+            exc,
+            duration_ms,
+            cfg=cfg,
+            client=client,
+            report_id=report_id,
+            ticker=ticker,
+        )
+
+
+async def _retry_agent(
+    agent_name: str,
+    *,
+    is_critical: bool,
+    is_reserved: bool,
+    evidence_json: str,
+    evidence_ids: set[str],
+    result: CouncilResult,
+    client: LLMClient,
+    cfg: Settings,
+    log: logging.Logger,
+    report_id: str | None,
+    ticker: str | None,
+    deadline: float,
+    reserve: float,
+    clock: Callable[[], float],
+    sleeper: Callable[[float], Awaitable[Any]],
+    rng: random.Random,
+    transient_failures: dict[str, Exception],
+) -> None:
+    """Bounded retry loop for ONE transiently-failed agent.
+
+    Attempt caps, a total-deadline budget gate (with a reserve protecting the two
+    RESERVED agents), a capped honored retry-after, and capped jittered
+    exponential backoff make this strictly bounded — no uncontrolled loop. On
+    success the placeholder is REPLACED in place; on exhaustion/permanent error
+    the agent stays failed.
+    """
+    max_extra = (
+        cfg.llm_council_critical_max_retries
+        if is_critical
+        else cfg.llm_council_max_retries
+    )
+    base = cfg.llm_council_retry_base_backoff_seconds
+    max_backoff = cfg.llm_council_retry_max_backoff_seconds
+    max_retry_after = cfg.llm_council_retry_max_retry_after_seconds
+
+    for attempt in range(1, max_extra + 1):
+        effective_deadline = deadline if is_reserved else deadline - reserve
+        remaining = effective_deadline - clock()
+        if remaining <= 0:
+            log_event(
+                log,
+                "llm_agent_retry_skipped",
+                level=logging.WARNING,
+                report_id=report_id,
+                ticker=ticker,
+                agent_name=agent_name,
+                provider=client.provider_name,
+                council_version=cfg.llm_council_version,
+                attempt=attempt,
+                reason="budget_exhausted",
+            )
+            return
+
+        last_exc = transient_failures.get(agent_name)
+        capped_retry_after: float | None = None
+        if isinstance(last_exc, LLMRateLimitError) and last_exc.retry_after is not None:
+            capped_retry_after = min(float(last_exc.retry_after), max_retry_after)
+            wait = capped_retry_after
+        else:
+            backoff = min(base * (2 ** (attempt - 1)), max_backoff)
+            wait = backoff + rng.uniform(0, base)
+        wait = min(wait, remaining)
+        if wait <= 0:
+            return
+
+        log_event(
+            log,
+            "llm_agent_retry",
+            level=logging.WARNING,
+            report_id=report_id,
+            ticker=ticker,
+            agent_name=agent_name,
+            provider=client.provider_name,
+            council_version=cfg.llm_council_version,
+            attempt=attempt,
+            max_attempts=max_extra,
+            error_type=type(last_exc).__name__ if last_exc is not None else None,
+            retry_after=capped_retry_after,
+            backoff_ms=int(wait * 1000),
+        )
+        await sleeper(wait)
+
+        output, issues, exc, duration_ms = await _timed_attempt(
+            agent_name, evidence_json, evidence_ids, result, client, cfg
+        )
+        if exc is None and output.status == STATUS_COMPLETED:
+            _replace_agent(result, agent_name, output, issues)
+            transient_failures.pop(agent_name, None)
+            _log_agent_outcome(
+                log,
+                agent_name,
+                output,
+                None,
+                duration_ms,
+                cfg=cfg,
+                client=client,
+                report_id=report_id,
+                ticker=ticker,
+                attempt=attempt,
+            )
+            return
+        if exc is None:
+            # Quarantined / unparsable on retry — a PERMANENT outcome. Keep the
+            # honest failed result and stop retrying.
+            _replace_agent(result, agent_name, output, issues)
+            transient_failures.pop(agent_name, None)
+            _log_agent_outcome(
+                log,
+                agent_name,
+                output,
+                None,
+                duration_ms,
+                cfg=cfg,
+                client=client,
+                report_id=report_id,
+                ticker=ticker,
+                attempt=attempt,
+            )
+            return
+        _log_agent_outcome(
+            log,
+            agent_name,
+            output,
+            exc,
+            duration_ms,
+            cfg=cfg,
+            client=client,
+            report_id=report_id,
+            ticker=ticker,
+            attempt=attempt,
+        )
+        if not is_transient_llm_error(exc):
+            # Permanent provider error — stop; leave the failed placeholder.
+            return
+        # Transient again — record for the next backoff and keep looping.
+        transient_failures[agent_name] = exc
+
+
+async def _run_council_with_retries(
+    *,
+    evidence_pack: EvidencePack,
+    evidence_json: str,
+    evidence_ids: set[str],
+    result: CouncilResult,
+    client: LLMClient,
+    cfg: Settings,
+    log: logging.Logger,
+    report_id: str | None,
+    ticker: str | None,
+    clock: Callable[[], float],
+    sleeper: Callable[[float], Awaitable[Any]],
+    rng: random.Random,
+) -> None:
+    """The ON path: initial pass under a deadline + a priority retry pass."""
+    start = clock()
+    deadline = start + cfg.llm_council_total_budget_seconds
+    reserve = cfg.llm_council_critical_reserve_seconds
+    critical = _critical_agents(evidence_pack)
+    transient_failures: dict[str, Exception] = {}
+
+    # --- Initial pass: attempt every agent once, in order, honoring the deadline.
+    for agent_name in COUNCIL_AGENT_ORDER:
+        if clock() >= deadline:
+            placeholder = _budget_exhausted_output(agent_name)
+            result.agents.append(placeholder)
+            result.warnings.append(f"{agent_name}: budget_exhausted")
+            log_event(
+                log,
+                "llm_agent_failed",
+                level=logging.WARNING,
+                report_id=report_id,
+                ticker=ticker,
+                agent_name=agent_name,
+                provider=client.provider_name,
+                council_version=cfg.llm_council_version,
+                duration_ms=0,
+                status=STATUS_FAILED,
+                reason="budget_exhausted",
+            )
+            continue
+        output, issues, exc, duration_ms = await _timed_attempt(
+            agent_name, evidence_json, evidence_ids, result, client, cfg
+        )
+        result.agents.append(output)
+        result.warnings.extend(issues)
+        _log_agent_outcome(
+            log,
+            agent_name,
+            output,
+            exc,
+            duration_ms,
+            cfg=cfg,
+            client=client,
+            report_id=report_id,
+            ticker=ticker,
+        )
+        if exc is not None and is_transient_llm_error(exc):
+            transient_failures[agent_name] = exc
+
+    # --- Retry pass: only transiently-failed agents, in priority order.
+    for agent_name in _retry_priority_order(critical):
+        if agent_name not in transient_failures:
+            continue
+        entry = next(
+            (a for a in result.agents if a.agent_name == agent_name), None
+        )
+        if entry is None or entry.status != STATUS_FAILED:
+            continue
+        await _retry_agent(
+            agent_name,
+            is_critical=agent_name in critical,
+            is_reserved=agent_name in RESERVED_AGENTS,
+            evidence_json=evidence_json,
+            evidence_ids=evidence_ids,
+            result=result,
+            client=client,
+            cfg=cfg,
+            log=log,
+            report_id=report_id,
+            ticker=ticker,
+            deadline=deadline,
+            reserve=reserve,
+            clock=clock,
+            sleeper=sleeper,
+            rng=rng,
+            transient_failures=transient_failures,
+        )
+
+
 async def run_council(
     evidence_pack: EvidencePack,
     client: LLMClient,
@@ -439,10 +967,24 @@ async def run_council(
     ticker: str | None = None,
     exchange: str | None = None,
     logger: logging.Logger | None = None,
+    clock: Callable[[], float] = time.monotonic,
+    sleeper: Callable[[float], Awaitable[Any]] = asyncio.sleep,
+    rng: random.Random | None = None,
 ) -> CouncilResult:
-    """Run every council agent over the evidence pack and return the result."""
+    """Run every council agent over the evidence pack and return the result.
+
+    When ``cfg.llm_council_retry_enabled`` is False (default) the OFF path runs:
+    one attempt per agent, no retries, no chair fallback — behaviorally identical
+    to pre-Slice-4. When True, an initial pass plus a bounded, priority-ordered
+    retry pass runs under a strict total wall-time budget, and a deterministic
+    committee-chair fallback is attached if the LLM chair still fails.
+
+    ``clock`` / ``sleeper`` / ``rng`` are injectable so tests can drive the budget
+    and backoff deterministically (a fake clock advanced by a fake sleeper).
+    """
     cfg = cfg or default_settings
     log = logger or _logger
+    rng = rng if rng is not None else random.Random()
     evidence_ids = evidence_pack.evidence_ids()
     evidence_json = evidence_pack.model_dump_json()
 
@@ -468,86 +1010,68 @@ async def run_council(
         evidence_item_count=evidence_pack.item_count,
     )
 
-    for agent_name in COUNCIL_AGENT_ORDER:
-        started = time.perf_counter()
-        if agent_name == AGENT_COMMITTEE_CHAIR:
-            system = prompts.committee_chair_system_prompt()
-            user = prompts.build_user_message(evidence_json, _prior_summaries(result.agents))
-        else:
-            system = prompts.system_prompt_for(agent_name)
-            user = prompts.build_user_message(evidence_json)
-
-        try:
-            raw = await client.complete_json(
-                system,
-                user,
-                max_tokens=cfg.llm_max_output_tokens,
-                temperature=cfg.llm_temperature,
-                timeout=cfg.llm_request_timeout_seconds,
-                repair_instruction=prompts.REPAIR_INSTRUCTION,
-            )
-            output = _coerce_output(agent_name, raw)
-            sanitized, issues = check_and_sanitize(output, evidence_ids)
-            result.agents.append(sanitized)
-            result.warnings.extend(issues)
-            duration_ms = int((time.perf_counter() - started) * 1000)
-            if sanitized.status == STATUS_FAILED:
-                log_event(
-                    log,
-                    "llm_agent_failed",
-                    level=logging.WARNING,
-                    report_id=report_id,
-                    ticker=ticker,
-                    agent_name=agent_name,
-                    provider=client.provider_name,
-                    council_version=cfg.llm_council_version,
-                    duration_ms=duration_ms,
-                    status=STATUS_FAILED,
-                    reason="quarantined_or_unparsed",
-                )
-            else:
-                log_event(
-                    log,
-                    "llm_agent_completed",
-                    report_id=report_id,
-                    ticker=ticker,
-                    agent_name=agent_name,
-                    provider=client.provider_name,
-                    council_version=cfg.llm_council_version,
-                    duration_ms=duration_ms,
-                    status=sanitized.status,
-                    key_point_count=len(sanitized.key_points),
-                )
-        except LLMError as exc:
-            duration_ms = int((time.perf_counter() - started) * 1000)
-            result.agents.append(
-                CouncilAgentOutput(
-                    agent_name=agent_name,
-                    status=STATUS_FAILED,
-                    summary="[Agent did not complete: provider error or timeout.]",
-                    safety_notes=[f"Agent failed ({type(exc).__name__})."],
-                )
-            )
-            result.warnings.append(f"{agent_name}: {type(exc).__name__}")
-            log_event(
-                log,
-                "llm_agent_failed",
-                level=logging.WARNING,
-                report_id=report_id,
-                ticker=ticker,
-                agent_name=agent_name,
-                provider=client.provider_name,
-                council_version=cfg.llm_council_version,
-                duration_ms=duration_ms,
-                status=STATUS_FAILED,
-                reason=type(exc).__name__,
-            )
+    if cfg.llm_council_retry_enabled:
+        await _run_council_with_retries(
+            evidence_pack=evidence_pack,
+            evidence_json=evidence_json,
+            evidence_ids=evidence_ids,
+            result=result,
+            client=client,
+            cfg=cfg,
+            log=log,
+            report_id=report_id,
+            ticker=ticker,
+            clock=clock,
+            sleeper=sleeper,
+            rng=rng,
+        )
+    else:
+        await _run_offline_pass(
+            evidence_json=evidence_json,
+            evidence_ids=evidence_ids,
+            result=result,
+            client=client,
+            cfg=cfg,
+            log=log,
+            report_id=report_id,
+            ticker=ticker,
+        )
 
     result.recount()
     chair = next(
         (a for a in result.agents if a.agent_name == AGENT_COMMITTEE_CHAIR), None
     )
     result.committee_label = chair.committee_label if chair else None
+
+    # Phase 32A Slice 4: when the retry bundle is on and the LLM committee chair
+    # still did not complete, attach a DETERMINISTIC, non-consensus committee
+    # summary so the report/memo has an honest synthesis to render — without
+    # inventing a recommendation, valuation conclusion, or price objective. The
+    # failed LLM chair entry is KEPT in ``agents`` (so the counts + warnings show
+    # the council is visibly partial); the fallback is attached separately and is
+    # excluded from the is_mock / recount tallies. It never flips
+    # research_complete / publication_ready / human_review_required.
+    if cfg.llm_council_retry_enabled and (
+        chair is None or chair.status != STATUS_COMPLETED
+    ):
+        fallback = _deterministic_chair_fallback(result.agents, COUNCIL_AGENT_ORDER)
+        # Defense-in-depth: run the fallback through the same safety/citation gate.
+        sanitized_fallback, _fb_issues = check_and_sanitize(fallback, evidence_ids)
+        result.deterministic_chair = sanitized_fallback
+        result.chair_fallback_used = True
+        result.committee_label = sanitized_fallback.committee_label
+        log_event(
+            log,
+            "llm_committee_chair_fallback",
+            level=logging.WARNING,
+            report_id=report_id,
+            ticker=ticker,
+            provider=client.provider_name,
+            council_version=cfg.llm_council_version,
+            committee_label=sanitized_fallback.committee_label,
+            agents_completed=result.agents_completed,
+            agents_failed=result.agents_failed,
+        )
 
     # Phase 32A Slice 3: retain a runtime-only snapshot of the (post-budget)
     # evidence pack so a cited ``E#`` alias can be resolved to a canonical

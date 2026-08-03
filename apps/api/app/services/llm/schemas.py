@@ -80,6 +80,24 @@ STATUS_COMPLETED = "completed"
 STATUS_FAILED = "failed"
 STATUS_SKIPPED = "skipped"
 
+# Phase 32A Slice 4 — council reliability. Agents that are ALWAYS treated as
+# critical for retry prioritization + the reserved-budget guarantee.
+# ``valuation_guard`` is critical ONLY when the pack carries financial evidence
+# (see ``has_financial_evidence``).
+CRITICAL_ALWAYS: frozenset[str] = frozenset(
+    {
+        AGENT_FINANCIAL_ANALYST,
+        AGENT_SOURCE_QUALITY_CRITIC,
+        AGENT_RED_TEAM,
+        AGENT_COMMITTEE_CHAIR,
+    }
+)
+# The two agents the total-budget reserve specifically protects, so they retain
+# retry capacity after earlier (non-reserved) agents drain the shared budget.
+RESERVED_AGENTS: frozenset[str] = frozenset(
+    {AGENT_RED_TEAM, AGENT_COMMITTEE_CHAIR}
+)
+
 
 # ---------------------------------------------------------------------------
 # Evidence pack
@@ -320,6 +338,18 @@ class CouncilResult(BaseModel):
     persistable_evidence: list[PersistableEvidence] = Field(
         default_factory=list, exclude=True
     )
+    # Phase 32A Slice 4: set True only when the LLM committee chair did not
+    # complete AND the retry bundle (``llm_council_retry_enabled``) is on, so a
+    # DETERMINISTIC, non-consensus committee summary was attached below. Default
+    # False keeps the OFF path identical.
+    chair_fallback_used: bool = False
+    # Phase 32A Slice 4: the deterministic committee-chair synthesis attached when
+    # the LLM chair failed. It is NEVER a recommendation/valuation/price objective
+    # (committee_label="insufficient_data", empty key_points ⇒ no citations). Kept
+    # SEPARATE from ``agents`` so the failed LLM chair still shows in the honest
+    # completed/failed counts (the council is visibly partial); default None keeps
+    # the OFF path identical and it is excluded from is_mock / recount tallies.
+    deterministic_chair: CouncilAgentOutput | None = None
 
     def recount(self) -> None:
         """Refresh the completed/failed/skipped tallies from ``agents``."""
@@ -336,7 +366,7 @@ class CouncilResult(BaseModel):
         must already be safe (the council quarantines unsafe agent output before
         it reaches this point).
         """
-        return {
+        payload: dict[str, Any] = {
             "type": "llm_council_analysis",
             "council_version": self.council_version,
             "llm_used": self.llm_used,
@@ -359,6 +389,15 @@ class CouncilResult(BaseModel):
             ),
             "human_review_required": True,
         }
+        # Phase 32A Slice 4: surface the deterministic chair fallback ONLY when it
+        # fired (keeps the OFF path + the retried-and-completed path byte-identical).
+        if self.chair_fallback_used:
+            payload["chair_fallback_used"] = True
+            if self.deterministic_chair is not None:
+                payload["deterministic_committee_chair"] = (
+                    self.deterministic_chair.to_dict()
+                )
+        return payload
 
     def to_metadata_dict(self) -> dict[str, Any]:
         """Compact metadata for the report's source-summary JSON + API response.
@@ -366,7 +405,7 @@ class CouncilResult(BaseModel):
         Deployment is intentionally omitted here — it can name an internal Azure
         resource, so it never leaves the process in persisted metadata.
         """
-        return {
+        payload: dict[str, Any] = {
             "llm_used": self.llm_used,
             "council_version": self.council_version,
             "provider": self.provider,
@@ -387,8 +426,54 @@ class CouncilResult(BaseModel):
             "source_reference_counts": dict(self.source_reference_counts),
             "source_gaps": list(self.source_gaps),
         }
+        # Phase 32A Slice 4: surface the deterministic chair fallback ONLY when it
+        # fired (additive; keeps the OFF path metadata byte-identical).
+        if self.chair_fallback_used:
+            payload["chair_fallback_used"] = True
+            if self.deterministic_chair is not None:
+                payload["deterministic_committee_chair"] = (
+                    self.deterministic_chair.to_dict()
+                )
+        return payload
 
     @classmethod
     def disabled(cls) -> "CouncilResult":
         """The honest 'LLM not used' result (deterministic path)."""
         return cls(llm_used=False, provider=None, model=None)
+
+
+# Source types that represent structured financial evidence (statements / facts /
+# primary company filings). Used by ``has_financial_evidence`` to decide whether
+# ``valuation_guard`` is a CRITICAL agent for Slice-4 retry prioritization.
+_FINANCIAL_SOURCE_TYPES: frozenset[str] = frozenset(
+    {
+        "sec_financial_statement",
+        "company_filing",
+        "company_ir_financial_fact",
+        "sec_filing",
+    }
+)
+
+
+def has_financial_evidence(pack: "EvidencePack") -> bool:
+    """True when the evidence pack carries structured financial evidence.
+
+    A parsed primary financial fact, an explicit financial-statement / company-
+    filing source type, or a T1/T2 item whose source type names a financial
+    statement/fact makes the valuation-input critique material — so
+    ``valuation_guard`` is protected as a critical agent. A metadata-only /
+    reference-only pack (e.g. a small non-US company with IR links but no
+    statements) returns False and valuation_guard stays optional.
+    """
+    for item in pack.evidence_items:
+        if getattr(item, "primary_fact", None):
+            return True
+        source_type = (item.source_type or "").lower()
+        if source_type in _FINANCIAL_SOURCE_TYPES:
+            return True
+        tier = item.content_tier or item.source_tier or ""
+        if tier.startswith(("T1", "T2")) and (
+            "financial" in source_type or "statement" in source_type
+        ):
+            return True
+    return False

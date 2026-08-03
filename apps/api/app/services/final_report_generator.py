@@ -2278,6 +2278,11 @@ def _build_research_memo(
     source_gaps = list(_memo_get(council_result, "source_gaps", []) or [])
     committee_label = _memo_get(council_result, "committee_label", None)
     llm_used = bool(_memo_get(council_result, "llm_used", False))
+    # Phase 32A Slice 4: deterministic committee-chair fallback (only set when the
+    # LLM chair failed and the retry bundle is on). Surfaced below so the memo
+    # renders an honest synthesis + a clear "LLM chair unavailable" marker.
+    chair_fallback_used = bool(_memo_get(council_result, "chair_fallback_used", False))
+    deterministic_chair = _memo_get(council_result, "deterministic_chair", None)
 
     # -- company_identity: condensed, provenance-carrying ------------------
     identity_block = {
@@ -2710,6 +2715,25 @@ def _build_research_memo(
                 "provenance": "missing_data",
             },
             "human_review_required": True,
+        }
+
+    # Phase 32A Slice 4: when the LLM committee chair failed, surface the
+    # DETERMINISTIC fallback synthesis + a clear "LLM chair unavailable" marker.
+    # Additive + conditional, so with the retry bundle off (or the chair having
+    # completed) the memo shape is unchanged. The fallback text is already
+    # safety-scanned and makes no recommendation/valuation conclusion.
+    if chair_fallback_used:
+        council_disagreement_red_team["committee_chair_fallback_used"] = True
+        council_disagreement_red_team["committee_chair_synthesis"] = {
+            "value": _memo_safe_text(_memo_get(deterministic_chair, "summary", ""))
+            if deterministic_chair is not None
+            else "",
+            "provenance": "deterministic_fallback",
+            "note": (
+                "The LLM committee chair did not complete; a deterministic, "
+                "non-consensus committee summary is shown. It makes no "
+                "recommendation or valuation conclusion. Human review required."
+            ),
         }
 
     # -- research_next_steps: from committee chair -------------------------

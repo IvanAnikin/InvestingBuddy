@@ -20,6 +20,8 @@ from app.core.config import Settings
 from app.services.llm.client import (
     LLMClient,
     LLMError,
+    LLMRateLimitError,
+    LLMServerError,
     LLMTimeoutError,
     LLMUnavailableError,
 )
@@ -135,14 +137,76 @@ class OpenAILLMClient(LLMClient):
         return await _ainvoke_chat(self._llm, system, user, timeout)
 
 
+def _coerce_retry_after(exc: Exception) -> float | None:
+    """Best-effort, NEVER-logged extraction of a numeric retry-after (seconds).
+
+    Reads only NUMBERS from a provider exception — a ``retry_after`` attribute or
+    a ``retry-after`` / ``retry-after-ms`` response header. A non-numeric value
+    (e.g. an HTTP-date) or a missing header yields ``None``. Fully guarded: never
+    raises, never logs, and never returns the raw header text.
+    """
+    try:
+        direct = getattr(exc, "retry_after", None)
+        if isinstance(direct, (int, float)):
+            return float(direct)
+        response = getattr(exc, "response", None)
+        headers = getattr(response, "headers", None)
+        getter = getattr(headers, "get", None)
+        if callable(getter):
+            ms = getter("retry-after-ms")
+            if ms is not None:
+                return float(ms) / 1000.0
+            secs = getter("retry-after")
+            if secs is not None:
+                return float(secs)
+    except (ValueError, TypeError, AttributeError):
+        return None
+    return None
+
+
+def _classify_provider_error(exc: Exception) -> LLMError:
+    """Duck-type a raw provider exception into a recoverable ``LLMError``.
+
+    Never imports the provider SDK (it is optional) and never logs: it reads only
+    a status code and the exception class name, plus a bounded numeric
+    retry-after. A 429 or a ``*RateLimitError`` class → ``LLMRateLimitError``; a
+    status >= 500 or a server-error class name → ``LLMServerError``; everything
+    else → a generic (permanent) ``LLMError`` carrying only the type name.
+    """
+    name = type(exc).__name__
+    status: int | None = None
+    try:
+        raw_status = getattr(exc, "status_code", None)
+        if raw_status is None:
+            response = getattr(exc, "response", None)
+            raw_status = getattr(response, "status_code", None)
+        if isinstance(raw_status, int):
+            status = raw_status
+    except (AttributeError, TypeError):
+        status = None
+
+    if status == 429 or name.endswith("RateLimitError"):
+        return LLMRateLimitError(
+            f"provider rate limited ({name})", retry_after=_coerce_retry_after(exc)
+        )
+    if (status is not None and status >= 500) or name.endswith(
+        ("APIError", "InternalServerError", "ServiceUnavailableError")
+    ):
+        return LLMServerError(f"provider server error ({name})")
+    return LLMError(f"provider call failed ({name})")
+
+
 async def _ainvoke_chat(llm, system: str, user: str, timeout: int) -> str:
     """Invoke a langchain chat model with a hard timeout; return text content.
 
     Any provider error (rate limit, API error, connection failure) is wrapped as
     a recoverable ``LLMError`` — never allowed to escape raw — so the council can
-    isolate a single failed agent instead of crashing the whole run. Only the
-    error *type name* is carried forward (never the message, which could echo a
-    URL/header); nothing here is logged.
+    isolate (and, when enabled, retry) a single failed agent instead of crashing
+    the whole run. A 429 becomes ``LLMRateLimitError`` (with a bounded numeric
+    retry-after), a 5xx becomes ``LLMServerError``, a timeout becomes
+    ``LLMTimeoutError``. Only the error *type name* (and, for a rate limit, a
+    numeric retry-after) is carried forward — never the message, headers, or URL;
+    nothing here is logged.
     """
     messages = [("system", system), ("human", user)]
     try:
@@ -152,7 +216,7 @@ async def _ainvoke_chat(llm, system: str, user: str, timeout: int) -> str:
     except LLMError:
         raise
     except Exception as exc:  # noqa: BLE001 - any provider error -> recoverable
-        raise LLMError(f"provider call failed ({type(exc).__name__})") from exc
+        raise _classify_provider_error(exc) from exc
     content = getattr(result, "content", result)
     if isinstance(content, list):
         # Some providers return a list of content blocks.

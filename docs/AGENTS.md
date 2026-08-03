@@ -873,3 +873,70 @@ To wire Azure OpenAI into the Phase 2 workflow:
 The graph structure, persistence and error handling do not need to change.
 
 See `.claude/skills/langgraph-agents/SKILL.md` for agent output schema requirements.
+
+---
+
+## LLM Council Reliability (Phase 32A Slice 4)
+
+> **Status: implemented on branch `phase-32a-slice4-council-reliability` (`5bbaaf4`)
+> — PR open, NOT yet merged / deployed / staging-validated.** Gated by a new
+> default-OFF master flag `LLM_COUNCIL_RETRY_ENABLED`; with it off the council is
+> byte-for-byte identical to today (one attempt per agent, no retry, no fallback,
+> null `committee_label` on chair failure).
+
+The single-company LLM council (`run_council` — 8 agents: `financial_analyst`,
+`business_moat`, `catalyst`, `risk_governance`, `source_quality_critic`,
+`valuation_guard`, `red_team`, `committee_chair`) runs **strictly sequentially**
+and **inline in the HTTP request handler**, so total wall-time must stay under the
+~230s Azure App Service gateway timeout. Under Azure `gpt-4.1-mini` TPM limits a
+large evidence pack (e.g. AAPL) previously left ~4/8 agents `failed` on a single
+429, and the chair (last, no fallback) frequently produced a null
+`committee_label`.
+
+**Transient vs permanent classification.** A provider error is duck-typed into
+`LLMRateLimitError` (HTTP 429; carries a bounded numeric `retry_after`),
+`LLMServerError` (HTTP 5xx) or `LLMTimeoutError` — these three are the ONLY
+retryable (transient) errors (`is_transient_llm_error`). Everything else is
+PERMANENT and never retried: a schema-invalid completion after the single JSON
+repair (`LLMJsonError`), missing provider/credentials (`LLMUnavailableError`), a
+generic `LLMError`, and a safety quarantine (which yields a `failed` STATUS, not
+an exception). Classification reads only a status code + the exception class name
++ a bounded numeric retry-after — never the message, headers, or URL; nothing is
+logged there.
+
+**Bounded retry + reserved critical budget.** When the flag is on, `run_council`
+runs an initial single pass (every agent once, in order) then a priority-ordered
+retry pass over **only** the transiently-failed agents. Extra attempts are capped
+(`llm_council_max_retries` for optional agents; `llm_council_critical_max_retries`
+for critical ones), with capped jittered exponential backoff, honoring a capped
+provider `retry_after`. The whole council lives under a strict total wall-time
+deadline (`llm_council_total_budget_seconds`). CRITICAL agents (`financial_analyst`,
+`source_quality_critic`, `red_team`, `committee_chair` — plus `valuation_guard`
+only when the pack carries financial evidence) get more attempts, and a wall-time
+RESERVE (`llm_council_critical_reserve_seconds`) is held back for the two RESERVED
+agents (**`red_team` + `committee_chair`**) so earlier agents draining the shared
+budget can never starve the adversarial check or the synthesis. Already-completed
+outputs are untouched (no duplicate work, no duplicate citations); a recovered
+agent's failed placeholder is REPLACED in place (never appended) and its failure
+warning is cleared so `result.warnings` and the completed/failed counts reflect
+the FINAL state. Before each chair retry the chair's prompt is rebuilt from the
+current (possibly recovered) agent summaries.
+
+**Deterministic committee-chair fallback.** If the LLM chair still does not
+complete, a deterministic, non-consensus committee summary is attached
+(`chair_fallback_used=true`, `committee_label="insufficient_data"`). It is built
+ONLY from already-validated stored council outputs and states no recommendation,
+no valuation conclusion, and no numeric price objective; `key_points` is empty so
+it carries **no citations**. The failed LLM-chair entry is KEPT in `agents`, so
+the completed/failed counts and warnings honestly show the council is **visibly
+partial**; the fallback is attached separately and excluded from the is_mock /
+recount tallies. It is run through the same `check_and_sanitize` safety/citation
+gate as any agent output.
+
+**A partial council stays useful and honest.** Reliability changes execution
+ONLY. It never flips `publication_ready` (stays `false`) or `human_review_required`
+(stays `true`), never fabricates evidence or consensus, and failed agents still
+create no citations. Retry telemetry (`llm_agent_retry` / `llm_agent_retry_skipped`
+/ `llm_committee_chair_fallback`) carries SAFE fields only — attempt, agent_name,
+error_type, duration_ms, backoff_ms, capped retry_after, counts — never prompts,
+completions, evidence, or secrets.
