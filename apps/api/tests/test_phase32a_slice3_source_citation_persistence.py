@@ -617,6 +617,91 @@ async def test_regeneration_dedups_sources_and_council_citations(
     assert len(await _council_citations(session, r2.report_id)) == 3
 
 
+async def test_from_company_regeneration_sources_draft_and_count_is_honest(
+    session, flag_on, monkeypatch
+) -> None:
+    """B1 regression: the 2nd ``from-company`` must source from the analysis DRAFT
+    (which carries the analysis-state envelope + only deterministic citations), NOT
+    from the 1st generated final report. Otherwise the prior final report's own
+    ``council:%`` citations pollute the reconciliation counts and the stored
+    ``db_persisted_citation_count`` diverges from a fresh loader read."""
+    _patch_council(monkeypatch, {"AAPL": _aapl_council()})
+    aapl = await _add_company(session, ticker="AAPL", exchange="NASDAQ", name="Apple Inc.")
+    run = await _add_completed_run(session)
+    draft = await _add_draft_report(
+        session, company_id=aapl.id, agent_run_id=run.id, title="AAPL draft"
+    )
+    prof_src = await _add_source(
+        session, source_type="financial_data_api", title="Profile", url="https://p"
+    )
+    await _add_citation(
+        session, source_id=prof_src.id, report_id=draft.id, agent_run_id=run.id,
+        claim_text="identity.legal_name", field_path="identity.legal_name",
+        source_tier="T5_api_aggregator",
+    )
+    await session.commit()
+
+    svc = FinalReportGeneratorService()
+    r1 = await svc.generate_from_company(session, aapl.id)
+    r2 = await svc.generate_from_company(session, aapl.id)
+    assert r1.report_id != r2.report_id
+
+    final2 = await _load_report(session, r2.report_id)
+    # Sourced from the DRAFT (not r1): the final report carries a version; the
+    # draft's lineage/company are preserved, and r2 owns exactly its own 3 council
+    # citations.
+    assert final2.company_id == aapl.id
+    assert final2.created_by_agent_run_id == run.id
+    r2_council = await _council_citations(session, final2.id)
+    assert len(r2_council) == 3
+
+    # The stored appendix count equals a fresh loader read — never inflated by r1's
+    # council rows (the B1 symptom was stored=7 vs fresh=4).
+    ap2 = _appendix(_parse_report_content(final2))
+    fresh2 = await final_report_generator._load_citations_for_report(
+        session, final2.id, run.id
+    )
+    assert ap2["db_persisted_citation_count"] == len(fresh2)
+    assert ap2["db_persisted_citation_count"] == 3 + 1  # council + 1 deterministic
+    assert ap2["db_persisted_source_count"] == 3 + 1
+
+    # r2's loaded citations never include r1's council rows (no cross-report leak).
+    r1_council_ids = {c.id for c in await _council_citations(session, r1.report_id)}
+    assert not ({c.id for c in fresh2} & r1_council_ids)
+
+
+async def test_repeated_citation_id_on_one_claim_dedups(session, flag_on) -> None:
+    """N3 regression: a claim that repeats the same citation_id (``["E1", "E1"]``)
+    persists ONE citation, not two — a claim cannot cite the same evidence twice."""
+    aapl = await _add_company(session, ticker="AAPL", exchange="NASDAQ", name="Apple Inc.")
+    run = await _add_completed_run(session)
+    report = await _add_draft_report(
+        session, company_id=aapl.id, agent_run_id=run.id, title="final"
+    )
+    await session.commit()
+
+    cr = _council(
+        persistable=[
+            _pe("E1", source_type="company_filing", source_tier="T1_primary_filing",
+                title="10-K", url="https://www.sec.gov/x", excerpt="Filed."),
+        ],
+        agents=[
+            CouncilAgentOutput(
+                agent_name="financial_analyst", status="completed", summary="ok",
+                key_points=[
+                    AgentKeyPoint(claim="Filed the annual report.", citation_ids=["E1", "E1"]),
+                ],
+            )
+        ],
+    )
+    _, citations_added = await final_report_generator._persist_council_evidence_citations(
+        session, report.id, run.id, cr
+    )
+    await session.commit()
+    assert citations_added == 1
+    assert len(await _council_citations(session, report.id)) == 1
+
+
 async def test_persist_helper_delete_before_insert_is_idempotent(
     session, flag_on
 ) -> None:

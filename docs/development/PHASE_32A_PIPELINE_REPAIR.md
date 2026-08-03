@@ -405,6 +405,22 @@ is byte-identical to today. The OFF→ON contrast IS the fix.
   fallback loader. The frontend renders the six counts and no longer says
   "No sources cited yet" when council claim citations / DB citations exist.
 
+**Merge-gate review hardening (B1 + N3).** Because Slice 3 stamps `company_id` +
+`created_by_agent_run_id` on the final report (for lineage), a generated final
+report would otherwise satisfy the `generate_from_company` source-selection query
+and — being newer than the draft — be picked on a 2nd `from-company` call,
+re-introducing the Slice-1 lossy markdown re-parse (final reports carry no
+analysis-state envelope) AND polluting the reconciliation counts with the prior
+final's own `council:%` citations (observed: stored `db_persisted_citation_count`=7
+vs a fresh loader read=4). **Fixed** by scoping that query to analysis DRAFTS only
+(`final_report_version IS NULL` — generated final reports always carry a version).
+Defense-in-depth: `_evidence_reconciliation_counts` counts only non-`council:%`
+rows as deterministic, so the stored `db_persisted_citation_count` always equals a
+fresh `_load_citations_for_report(final.id, lineage)`; and `_council_evidence_links`
+dedups a repeated `citation_id` on a single claim (one citation per claim→evidence).
+Regression tests: `test_from_company_regeneration_sources_draft_and_count_is_honest`,
+`test_repeated_citation_id_on_one_claim_dedups`.
+
 **Migration decision — NONE (`013` not required).** All needed columns already
 exist (`citations.report_id`/`agent_run_id`/`source_tier`/`data_quality` [002/003],
 `reports.company_id`/`created_by_agent_run_id` [012/earlier], `sources.content_hash`

@@ -235,19 +235,31 @@ def _council_evidence_links(
     links: list[tuple[str, str, PersistableEvidence]] = []
     if not by_alias:
         return links
+    # Dedup identical (agent, claim, alias) triples so a claim that repeats the
+    # same citation_id (e.g. ["E1", "E1"]) yields ONE citation, not two — the
+    # same claim cannot cite the same evidence item twice. Distinct claims that
+    # cite the same alias still each produce a link (one citation per claim).
+    seen: set[tuple[str, str, str]] = set()
+
+    def _emit(agent_name: str, claim: str, cid: str) -> None:
+        item = by_alias.get(cid)
+        if item is None:
+            return
+        key = (agent_name, claim, item.alias)
+        if key in seen:
+            return
+        seen.add(key)
+        links.append((agent_name, claim, item))
+
     for agent in getattr(council_result, "agents", None) or []:
         if getattr(agent, "status", None) != STATUS_COMPLETED:
             continue
         for kp in getattr(agent, "key_points", None) or []:
             for cid in getattr(kp, "citation_ids", None) or []:
-                item = by_alias.get(cid)
-                if item is not None:
-                    links.append((agent.agent_name, kp.claim, item))
+                _emit(agent.agent_name, kp.claim, cid)
         for rg in getattr(agent, "risks_or_gaps", None) or []:
             for cid in getattr(rg, "citation_ids", None) or []:
-                item = by_alias.get(cid)
-                if item is not None:
-                    links.append((agent.agent_name, rg.item, item))
+                _emit(agent.agent_name, rg.item, cid)
     return links
 
 
@@ -377,7 +389,19 @@ def _evidence_reconciliation_counts(
         _evidence_content_hash(it, canonicalize_source_url(it.url))
         for _, _, it in links
     }
-    det_source_ids = {c.source_id for c in deterministic_citations}
+    # Count ONLY genuinely-deterministic (non-council) lineage citations here.
+    # ``council:%`` rows are this report's own council links and are already
+    # counted via ``council_link_count`` / ``council_source_hashes``; counting
+    # them again as "deterministic" would double-count. This also fails safe if a
+    # source report ever carries council citations (defense-in-depth beyond the
+    # ``generate_from_company`` draft-only selection). Keeps the STORED appendix
+    # count equal to a fresh ``_load_citations_for_report(final.id, lineage)``.
+    det_rows = [
+        c
+        for c in deterministic_citations
+        if not (c.field_path or "").startswith(_COUNCIL_FIELD_PATH_PREFIX)
+    ]
+    det_source_ids = {c.source_id for c in det_rows}
     ref_count = (source_reference_counts or {}).get(
         "primary_source_reference_count", len(references)
     )
@@ -386,8 +410,7 @@ def _evidence_reconciliation_counts(
         "extracted_evidence_count": extracted,
         "structured_financial_fact_count": financial,
         "db_persisted_source_count": len(det_source_ids) + len(council_source_hashes),
-        "db_persisted_citation_count": len(deterministic_citations)
-        + council_link_count,
+        "db_persisted_citation_count": len(det_rows) + council_link_count,
         "council_claim_citation_count": council_link_count,
     }
 
@@ -3515,6 +3538,18 @@ class FinalReportGeneratorService:
         # than fall back to the globally-newest completed report — the old
         # behaviour returned another company's analysis (e.g. Apple for a
         # Richemont request). The ValueError is mapped to a 404 by the route.
+        #
+        # Phase 32A Slice 3 — source ONLY from the analysis DRAFT, never from a
+        # previously generated final report. Slice 3 stamps ``company_id`` +
+        # ``created_by_agent_run_id`` on the final report (for lineage/ownership),
+        # which would otherwise make a prior final report satisfy this very query
+        # and, being newer than the draft, be picked on the 2nd from-company call.
+        # That is wrong twice over: (a) a final report carries no analysis-state
+        # envelope, so re-parsing its markdown re-introduces the lossy state loss
+        # Slice 1 fixed; (b) its own ``council:%`` citations would pollute the
+        # reconciliation counts. The analysis draft is the Phase-9 writer's output
+        # and is the ONLY report with ``final_report_version IS NULL`` — generated
+        # final reports always carry a version string.
         from app.models.agent_run import AgentRun
 
         report_result = await db.execute(
@@ -3522,6 +3557,7 @@ class FinalReportGeneratorService:
             .join(AgentRun, Report.created_by_agent_run_id == AgentRun.id)
             .where(
                 Report.company_id == company_id,
+                Report.final_report_version.is_(None),
                 AgentRun.status == "completed",
             )
             .order_by(Report.created_at.desc(), Report.id.desc())
