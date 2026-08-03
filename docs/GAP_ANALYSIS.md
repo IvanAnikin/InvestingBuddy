@@ -60,6 +60,7 @@ This document describes the gap between the current implementation and the targe
 - Public report publishing is not yet implemented
 - User accounts, paid plans, and personalized reports are not yet implemented
 - Backtesting uses `MockHistoricalOutcomeProvider` only; live historical outcome data is not yet connected
+- **LLM council reliability (Phase 32A Slice 4) is IMPLEMENTED but NOT yet validated.** The single-company LLM council runs sequentially and inline in the request; under Azure `gpt-4.1-mini` TPM limits a large evidence pack can still leave some agents `failed` (the "Azure-TPM partial councils" environmental note carried through Slices 2–3). Slice 4 adds bounded transient-error retries under a total wall-time budget, a reserved budget for `red_team` + `committee_chair`, and a deterministic committee-chair fallback (`committee_label="insufficient_data"`, no recommendation/valuation/citations), behind the default-OFF `LLM_COUNCIL_RETRY_ENABLED` flag (no DB migration; head stays `012`). Implemented on branch `phase-32a-slice4-council-reliability` (`5bbaaf4`), **PR open — pending staging validation** (not merged / deployed / validated). See `docs/development/PHASE_LEDGER.md` row `32A.4`.
 
 ---
 

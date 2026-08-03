@@ -531,6 +531,48 @@ grep -RiE "Authorization: Bearer|Set-Cookie:|DATABASE_URL=|api_token=[A-Za-z0-9]
 
 ---
 
+## LLM Council Reliability — Bounded Retry + Deterministic Chair Fallback (Phase 32A Slice 4)
+
+> **PR open — pre-staging.** Not yet merged / deployed / staging-validated. Do
+> **not** treat this section as a closed/validated deployment record until the
+> merge SHA + deployed SHA + staging validation result are on file. The master
+> flag ships **default-OFF** and will be **flipped ON on staging for validation**
+> (human-approved `az` change) as a later step. Branch
+> `phase-32a-slice4-council-reliability` (`5bbaaf4`).
+
+- **No DB migration** (DB head stays `012`); **no new host, no new endpoint, no
+  new secret.** No auth / publishing / SSRF change. Reliability affects council
+  EXECUTION only: `publication_ready` stays `false`, `human_review_required`
+  stays `true`, and failed agents still create no citations. With the master flag
+  **off**, the council path is byte-for-byte identical to today (one attempt per
+  agent, no retry, no fallback, null `committee_label` on chair failure).
+- **New app settings (all safe non-secret defaults; master gate OFF):**
+
+  | Setting | Default | Purpose |
+  |---|---|---|
+  | `LLM_COUNCIL_RETRY_ENABLED` | `false` | Master gate for the whole reliability bundle (transient-error retries + reserved critical budget + deterministic chair fallback). `false` → dark / byte-identical. |
+  | `LLM_COUNCIL_MAX_RETRIES` | `2` | Extra attempts (beyond the first) for an OPTIONAL agent that failed transiently. |
+  | `LLM_COUNCIL_CRITICAL_MAX_RETRIES` | `3` | Extra attempts for a CRITICAL agent (`financial_analyst`, `source_quality_critic`, `red_team`, `committee_chair`; + `valuation_guard` when the pack carries financial evidence). |
+  | `LLM_COUNCIL_RETRY_BASE_BACKOFF_SECONDS` | `1.0` | Exponential-backoff base: `base * 2**(attempt-1)`, plus jitter in `[0, base)`. |
+  | `LLM_COUNCIL_RETRY_MAX_BACKOFF_SECONDS` | `20.0` | Hard ceiling on a single computed backoff wait. |
+  | `LLM_COUNCIL_RETRY_MAX_RETRY_AFTER_SECONDS` | `30.0` | Hard ceiling on an honored provider `retry-after`, so a hostile / large header can never blow the wall-time budget. |
+  | `LLM_COUNCIL_TOTAL_BUDGET_SECONDS` | `150.0` | HARD total council wall-time cap — must stay well under the ~230s Azure gateway timeout because the single-company council runs INLINE in the request. |
+  | `LLM_COUNCIL_CRITICAL_RESERVE_SECONDS` | `45.0` | Wall-time reserved out of the total budget for the two RESERVED agents (`red_team` + `committee_chair`) so earlier agents can't starve them. |
+
+  These are **tuning knobs, not secrets** — no real secret value is ever printed.
+  Leave `LLM_COUNCIL_RETRY_ENABLED=false` on staging until Slice 4 is validated.
+  **Rollback:** set `LLM_COUNCIL_RETRY_ENABLED=false` to return to the exact prior
+  behaviour with no code change.
+- **Safe logging.** Retry events (`llm_agent_retry` / `llm_agent_retry_skipped` /
+  `llm_committee_chair_fallback`) carry only ids / agent_name / attempt /
+  error_type / duration_ms / backoff_ms / capped retry_after / counts — never
+  prompts, completions, evidence, or credentials. The Phase 27.1D "Verify NO
+  secrets are logged" grep applies unchanged.
+- **Deliberately deferred (see `docs/DECISIONS.md` ADR-013):** concurrent council
+  execution (would worsen Azure TPM 429s on the inline path) and per-agent
+  evidence projection / prompt trimming (would risk evidence loss / reopen Slice
+  2). Sequential execution + bounded retry + reserved budget is the Slice-4 lever.
+
 ## Internal Research Memo Builder (Phase 31 — FINAL phase)
 
 > **Merged + deployed + staging-validated (`b89d5c5`, PR #69).** Full-stack deploy

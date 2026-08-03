@@ -2603,3 +2603,35 @@ entirely from existing report data, so the happy path is directly demonstrable.
 > `disallowed_outputs` notice; regressions (AAPL / BA / KER / UHR) pass. See
 > PHASE_LEDGER row `31-hotfix` and closure
 > `docs/development/closures/phase-31-hotfix.md`.
+
+## Phase 32A Slice 4 — Council Reliability: Deterministic Chair Fallback Response Fields (internal admin only)
+
+> **PR open on branch `phase-32a-slice4-council-reliability` (`5bbaaf4`) — NOT yet
+> merged / deployed / staging-validated.** Do not treat this as a closed/validated
+> contract until the merge SHA + deployed SHA + staging validation result are on
+> file. Gated by the default-OFF `LLM_COUNCIL_RETRY_ENABLED` flag; with it off
+> (and whenever the LLM committee chair completes) the council metadata + report
+> shapes below are unchanged.
+
+**No new endpoint and no new request field.** Slice 4 changes only LLM council
+execution reliability (bounded transient-error retries + a deterministic chair
+fallback — see `docs/AGENTS.md` → "LLM Council Reliability" and `docs/DECISIONS.md`
+ADR-013). It adds TWO additive, conditional fields to the council metadata
+(`source_summary_json.llm_council`, i.e. `CouncilResult.to_metadata_dict` /
+`to_report_dict`), surfaced **only** when the LLM committee chair failed AND the
+retry flag is on:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `chair_fallback_used` | bool | `true` only when the LLM committee chair did not complete and a deterministic fallback synthesis was attached. Absent otherwise (OFF path + chair-completed path byte-identical). |
+| `deterministic_committee_chair` | object | The deterministic, non-consensus committee summary. `committee_label="insufficient_data"`, empty `key_points` (⇒ **no citations**); states no recommendation / valuation / price objective. Built only from already-validated stored council outputs; safety-scanned. |
+
+When the fallback fires, `committee_label` is `"insufficient_data"` (never null,
+never a recommendation), and the internal research memo's
+`council_disagreement_red_team` block gains `committee_chair_fallback_used=true`
+plus a `committee_chair_synthesis` sub-block (`provenance="deterministic_fallback"`
++ an "LLM chair unavailable; human review required" note). The failed LLM-chair
+entry is retained in the agent list so `agents_completed` / `agents_failed`
+honestly show the council is **visibly partial**. `schema_valid` / `safety_valid`
+stay `true`, `publication_ready` stays `false`, `human_review_required` stays
+`true`; failed agents create no citations.
