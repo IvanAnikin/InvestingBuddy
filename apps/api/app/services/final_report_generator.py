@@ -27,13 +27,14 @@ Every sourced fact is labelled with its provenance type:
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -58,10 +59,18 @@ from app.services.data_provenance import (
     provenance_to_is_mock,
 )
 from app.services.llm.council import maybe_run_council
-from app.services.llm.schemas import AGENT_RED_TEAM, CouncilResult
+from app.services.llm.schemas import (
+    AGENT_RED_TEAM,
+    STATUS_COMPLETED,
+    CouncilResult,
+    PersistableEvidence,
+)
 from app.services.real_asset_report_completer import build_schema_complete_report
 from app.services.report_validation_service import validate_real_asset_report
-from app.services.sources.redaction import strip_url_secrets
+from app.services.sources.redaction import (
+    canonicalize_source_url,
+    strip_url_secrets,
+)
 from app.services.sources.registry import build_registry, registry_gap_messages
 from app.services.sources.translation import MACHINE_TRANSLATION_WARNING
 
@@ -121,6 +130,280 @@ _REQUIRED_SECTIONS = [
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+# ---------------------------------------------------------------------------
+# Phase 32A Slice 3 — source/citation persistence + reconciliation helpers
+# ---------------------------------------------------------------------------
+
+# Structured SEC/XBRL statement-fact + high-confidence issuer-fact source types.
+# Mirrors ``evidence_budget._FINANCIAL_FACT_TYPES`` (kept local to avoid an import
+# cycle). A metadata-only reference is NEVER one of these — that is the CFR
+# invariant (a located issuer page asserts no fact).
+_FINANCIAL_FACT_TYPES = frozenset(
+    {"sec_financial_statement", "company_filing", "company_ir_financial_fact"}
+)
+# The data-quality sentinels the connector layer stamps on a metadata-only
+# reference (a located primary source, not extracted text and not a parsed fact).
+_METADATA_ONLY_QUALITIES = frozenset({"metadata_only", "link_metadata_only"})
+_COUNCIL_FIELD_PATH_PREFIX = "council:"
+_COUNCIL_QUOTE_MAX = 500
+_SOURCE_TITLE_MAX = 500
+
+
+def _coerce_uuid(value: Any) -> uuid.UUID | None:
+    """Best-effort str/UUID → UUID. Unparsable ⇒ None (never fabricate/raise)."""
+    if value is None:
+        return None
+    if isinstance(value, uuid.UUID):
+        return value
+    try:
+        return uuid.UUID(str(value))
+    except (ValueError, TypeError, AttributeError):
+        return None
+
+
+def _evidence_content_hash(item: PersistableEvidence, canonical_url: str | None) -> str:
+    """Deterministic 64-char content_hash for one evidence item's canonical source.
+
+    SEC/XBRL statement facts carry ``url=None``, so the hash keys on the
+    query-stripped canonical URL + source_type + content_tier + a hash of the
+    excerpt + period/date + the supported field set. Two runs of the same company
+    produce the same key ⇒ ``get_or_create_source`` dedups; genuinely different
+    statements (income vs cash-flow) differ by ``fields_supported`` ⇒ distinct
+    sources. Never encodes a secret (the URL was already secret-stripped +
+    canonicalised).
+    """
+    excerpt = (item.excerpt or "").strip().lower()
+    excerpt_hash = (
+        hashlib.sha256(excerpt.encode("utf-8")).hexdigest()[:16] if excerpt else ""
+    )
+    period = ""
+    if isinstance(item.primary_fact, dict):
+        period = str(item.primary_fact.get("period") or "")
+    key = "|".join(
+        [
+            (canonical_url or "").split("?")[0],
+            item.source_type or "",
+            item.content_tier or item.source_tier or "",
+            excerpt_hash,
+            period or (item.date or ""),
+            ",".join(sorted(item.fields_supported or [])),
+        ]
+    )
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()
+
+
+def _is_metadata_only(item: PersistableEvidence) -> bool:
+    return (item.data_quality or "") in _METADATA_ONLY_QUALITIES
+
+
+def _is_financial_fact(item: PersistableEvidence) -> bool:
+    return (item.source_type in _FINANCIAL_FACT_TYPES) or bool(item.primary_fact)
+
+
+def _bounded_council_quote(item: PersistableEvidence) -> str | None:
+    """A bounded source_quote for a council citation.
+
+    Metadata-only references assert NO fact — never invent a fact-like quote for
+    them (they get ``None``). Otherwise return the bounded excerpt (if any).
+    """
+    if _is_metadata_only(item):
+        return None
+    excerpt = item.excerpt
+    if not excerpt:
+        return None
+    return excerpt[:_COUNCIL_QUOTE_MAX]
+
+
+def _council_evidence_links(
+    council_result: Any,
+) -> list[tuple[str, str, PersistableEvidence]]:
+    """Resolve each COMPLETED-agent claim→E# link to its evidence item.
+
+    Returns ``(agent_name, claim_text, evidence_item)`` for every key_point and
+    risk/gap that carries a citation_id resolvable to a retained pack item. Failed
+    / skipped agents (empty key_points) contribute nothing. An ``E#`` that does not
+    resolve is skipped (never fabricated). Deterministic order = agent order then
+    claim order then citation order, so the projected appendix count matches the
+    rows actually persisted.
+    """
+    by_alias: dict[str, PersistableEvidence] = {
+        it.alias: it
+        for it in (getattr(council_result, "persistable_evidence", None) or [])
+    }
+    links: list[tuple[str, str, PersistableEvidence]] = []
+    if not by_alias:
+        return links
+    for agent in getattr(council_result, "agents", None) or []:
+        if getattr(agent, "status", None) != STATUS_COMPLETED:
+            continue
+        for kp in getattr(agent, "key_points", None) or []:
+            for cid in getattr(kp, "citation_ids", None) or []:
+                item = by_alias.get(cid)
+                if item is not None:
+                    links.append((agent.agent_name, kp.claim, item))
+        for rg in getattr(agent, "risks_or_gaps", None) or []:
+            for cid in getattr(rg, "citation_ids", None) or []:
+                item = by_alias.get(cid)
+                if item is not None:
+                    links.append((agent.agent_name, rg.item, item))
+    return links
+
+
+async def _get_or_create_evidence_source_id(
+    db: AsyncSession,
+    item: PersistableEvidence,
+    canonical_url: str | None,
+    seen: dict[str, uuid.UUID],
+) -> uuid.UUID:
+    """Flush-only ``get_or_create`` for one evidence item's canonical Source.
+
+    Deduped by a synthesized ``content_hash`` (so url-less SEC facts dedup and
+    re-runs never accumulate duplicate sources): first the in-run cache, then an
+    existing DB row, else a new ``Source``. ``db.add`` + ``db.flush`` ONLY — no
+    commit — so the whole final-report persistence stays in one transaction (the
+    service ``create_source`` commits internally and must NOT be reused here).
+    """
+    content_hash = _evidence_content_hash(item, canonical_url)
+    cached = seen.get(content_hash)
+    if cached is not None:
+        return cached
+    existing = await db.execute(
+        select(Source).where(Source.content_hash == content_hash).limit(1)
+    )
+    row = existing.scalar_one_or_none()
+    if row is not None:
+        seen[content_hash] = row.id
+        return row.id
+    source = Source(
+        id=uuid.uuid4(),
+        source_type=item.source_type or "source",
+        title=(item.title or "Council evidence source")[:_SOURCE_TITLE_MAX],
+        url=canonical_url,
+        publisher=item.provider_transport,
+        retrieved_at=_utcnow(),
+        content_hash=content_hash,
+    )
+    db.add(source)
+    await db.flush()
+    seen[content_hash] = source.id
+    return source.id
+
+
+async def _persist_council_evidence_citations(
+    db: AsyncSession,
+    report_id: uuid.UUID,
+    agent_run_id: uuid.UUID | None,
+    council_result: Any,
+) -> tuple[int, int]:
+    """Persist COMPLETED-agent claim→evidence links as Source + Citation rows.
+
+    Idempotent within a report: any prior ``council:%`` citations for this report
+    are deleted first (the report is new, so normally none). Sources are deduped
+    by content_hash; a metadata-only reference is persisted as a REFERENCE (no
+    fact-like source_quote, ``data_quality`` keeps the metadata-only sentinel) so
+    it can never be classified/counted as a financial fact. Flush-only — the
+    caller owns the single commit. Returns ``(sources_added_or_reused,
+    citations_added)`` for count logging.
+    """
+    await db.execute(
+        delete(Citation).where(
+            Citation.report_id == report_id,
+            Citation.field_path.like(f"{_COUNCIL_FIELD_PATH_PREFIX}%"),
+        )
+    )
+    links = _council_evidence_links(council_result)
+    if not links:
+        return (0, 0)
+    seen_sources: dict[str, uuid.UUID] = {}
+    citations_added = 0
+    now = _utcnow()
+    for agent_name, claim_text, item in links:
+        canonical_url = canonicalize_source_url(item.url)
+        source_id = await _get_or_create_evidence_source_id(
+            db, item, canonical_url, seen_sources
+        )
+        db.add(
+            Citation(
+                id=uuid.uuid4(),
+                source_id=source_id,
+                report_id=report_id,
+                agent_run_id=agent_run_id,
+                claim_text=claim_text,
+                source_quote=_bounded_council_quote(item),
+                url=canonical_url,
+                retrieved_at=now,
+                field_path=f"{_COUNCIL_FIELD_PATH_PREFIX}{agent_name}",
+                source_tier=item.source_tier,
+                data_quality=item.data_quality,
+            )
+        )
+        citations_added += 1
+    await db.flush()
+    return (len(seen_sources), citations_added)
+
+
+def _evidence_reconciliation_counts(
+    council_result: Any,
+    deterministic_citations: list[Citation],
+    references: list[dict[str, Any]],
+    source_reference_counts: dict[str, int],
+) -> dict[str, int]:
+    """The SIX honest, side-by-side appendix counts (NEVER summed).
+
+    Projects the DB-persisted counts from the same deterministic inputs the
+    persistence layer uses, so the appendix agrees with the rows that will exist:
+    deterministic draft citations (surfaced via the fallback loader) + the council
+    claim→evidence links. Distinct sources are counted by identity (deterministic
+    source_id ∪ synthesized council content_hash) so a source cited by N claims is
+    one source / N citations, and references/facts are never conflated with rows.
+    """
+    persistable = list(getattr(council_result, "persistable_evidence", None) or [])
+    extracted = 0
+    financial = 0
+    for it in persistable:
+        if _is_financial_fact(it):
+            financial += 1
+            continue
+        if _is_metadata_only(it):
+            continue  # a located reference is neither extracted nor a fact
+        if (it.excerpt or "").strip():
+            extracted += 1
+
+    links = _council_evidence_links(council_result)
+    council_link_count = len(links)
+    council_source_hashes = {
+        _evidence_content_hash(it, canonicalize_source_url(it.url))
+        for _, _, it in links
+    }
+    det_source_ids = {c.source_id for c in deterministic_citations}
+    ref_count = (source_reference_counts or {}).get(
+        "primary_source_reference_count", len(references)
+    )
+    return {
+        "primary_source_reference_count": int(ref_count),
+        "extracted_evidence_count": extracted,
+        "structured_financial_fact_count": financial,
+        "db_persisted_source_count": len(det_source_ids) + len(council_source_hashes),
+        "db_persisted_citation_count": len(deterministic_citations)
+        + council_link_count,
+        "council_claim_citation_count": council_link_count,
+    }
+
+
+_APPENDIX_RECONCILE_NOTE = (
+    "Six independent evidence counts are reported side-by-side and are NOT summed. "
+    "Primary-source references LOCATE verified sources (metadata only — never an "
+    "extracted fact); extracted evidence items carry bounded excerpts; structured "
+    "financial facts are tier-split SEC/XBRL statement facts; DB-persisted sources "
+    "and citations are the rows persisted for this report's lineage (one source per "
+    "distinct document, one citation per claim→evidence link); council claim "
+    "citations link a council claim to bounded evidence. Wherever the council cited "
+    "evidence the council-claim-citation count is non-zero — this report is never a "
+    "'no sources' state in that case. A metadata-only reference is never counted or "
+    "labelled as a financial fact. Human review required."
+)
 
 
 def _derive_report_provenance(
@@ -2775,12 +3058,49 @@ async def _load_latest_report_for_run(
 
 
 async def _load_citations_for_report(
-    db: AsyncSession, report_id: uuid.UUID
+    db: AsyncSession,
+    report_id: uuid.UUID,
+    agent_run_id: uuid.UUID | None = None,
 ) -> list[Citation]:
+    """Load a report's citations, keyed on ``report_id``.
+
+    Phase 32A Slice 3 (flag ON + ``agent_run_id`` provided): return the UNION,
+    deduped by ``Citation.id``, of
+
+      1. every citation WHERE ``report_id == report_id`` — this report's OWN
+         ``council:%`` claim citations live here; AND
+      2. the lineage's DETERMINISTIC citations WHERE ``agent_run_id ==
+         agent_run_id`` AND field_path IS NULL OR NOT LIKE ``council:%`` — the
+         draft's backfilled profile/price/SEC citations, shared across every final
+         report of the lineage.
+
+    Council citations (``field_path LIKE 'council:%'``) are NEVER loaded by
+    agent_run — they belong to exactly one report by ``report_id`` — so a SIBLING
+    final report's council rows can never leak in through the lineage arm. This
+    makes the loader agree with the stored ``db_persisted_citation_count``
+    (= deterministic lineage citations + this report's council links) and surfaces
+    the draft's deterministic citations on EVERY final report of the lineage. The
+    lineage/agent_run is company-pinned, so this never crosses a company boundary.
+
+    OFF (or no ``agent_run_id``) ⇒ ``report_id`` filter only ⇒ byte-identical.
+    """
     result = await db.execute(
         select(Citation).where(Citation.report_id == report_id)
     )
-    return list(result.scalars().all())
+    rows = list(result.scalars().all())
+    if not (settings.report_citation_persistence_enabled and agent_run_id is not None):
+        return rows
+    by_id: dict[uuid.UUID, Citation] = {c.id: c for c in rows}
+    lineage = await db.execute(
+        select(Citation).where(
+            Citation.agent_run_id == agent_run_id,
+            (Citation.field_path.is_(None))
+            | (Citation.field_path.not_like(f"{_COUNCIL_FIELD_PATH_PREFIX}%")),
+        )
+    )
+    for c in lineage.scalars().all():
+        by_id.setdefault(c.id, c)
+    return list(by_id.values())
 
 
 async def _load_sources_for_citations(
@@ -2931,6 +3251,9 @@ async def _save_final_report_draft(
     ticker: str | None,
     source_report_id: uuid.UUID | None,
     llm_used: bool = False,
+    company_id: uuid.UUID | None = None,
+    created_by_agent_run_id: uuid.UUID | None = None,
+    council_result: Any = None,
 ) -> Report:
     """
     Save the assembled final report as a new draft report record.
@@ -2999,8 +3322,37 @@ async def _save_final_report_draft(
         scorecard_id=scorecard_id,
     )
 
+    # Phase 32A Slice 3 — carry the resolved lineage onto the final report so it
+    # is a first-class member of the public research entity (not an orphan). The
+    # source_report_id param is no longer discarded: the caller resolved
+    # ``company_id`` + ``created_by_agent_run_id`` off the SOURCE report (from
+    # report / from company) or the workflow state (from workflow state), or left
+    # them None when genuinely unknown (never fabricated). OFF ⇒ both stay NULL, so
+    # a regenerated report is byte-identical to today.
+    if settings.report_citation_persistence_enabled:
+        report.company_id = company_id
+        report.created_by_agent_run_id = created_by_agent_run_id
+
     db.add(report)
     await db.flush()
+
+    # Phase 32A Slice 3 — persist the council's claim→evidence citations for this
+    # NEW report BEFORE the single commit, so a cited E# alias becomes a durable
+    # Source + Citation row. Flush-only (no inner commit) ⇒ the whole final-report
+    # write stays atomic. Never crosses a company (keyed by report_id + the
+    # company-pinned lineage agent_run). OFF / no council ⇒ no-op.
+    if settings.report_citation_persistence_enabled and council_result is not None:
+        sources_touched, citations_added = await _persist_council_evidence_citations(
+            db, report.id, created_by_agent_run_id, council_result
+        )
+        log_event(
+            logger,
+            "council_citations_persisted",
+            report_id=str(report.id),
+            council_sources=sources_touched,
+            council_citations=citations_added,
+        )
+
     # Persist the draft. get_db() does not commit for us (it yields the session
     # and closes it, which rolls back an uncommitted transaction), so every
     # write service commits its own work — this one must too, or the generated
@@ -3061,7 +3413,9 @@ class FinalReportGeneratorService:
         citations: list[Citation] = []
         sources: list[Source] = []
         if source_report:
-            citations = await _load_citations_for_report(db, source_report.id)
+            citations = await _load_citations_for_report(
+                db, source_report.id, source_report.created_by_agent_run_id
+            )
             sources = await _load_sources_for_citations(db, citations)
 
         return await self._generate_and_save(
@@ -3109,7 +3463,9 @@ class FinalReportGeneratorService:
 
         if source_report:
             state = _extract_workflow_state_from_report(source_report)
-            citations = await _load_citations_for_report(db, source_report.id)
+            citations = await _load_citations_for_report(
+                db, source_report.id, source_report.created_by_agent_run_id
+            )
             sources = await _load_sources_for_citations(db, citations)
 
         return await self._generate_and_save(
@@ -3183,7 +3539,9 @@ class FinalReportGeneratorService:
 
         if source_report:
             state = _extract_workflow_state_from_report(source_report)
-            citations = await _load_citations_for_report(db, source_report.id)
+            citations = await _load_citations_for_report(
+                db, source_report.id, source_report.created_by_agent_run_id
+            )
             sources = await _load_sources_for_citations(db, citations)
 
         return await self._generate_and_save(
@@ -3210,7 +3568,9 @@ class FinalReportGeneratorService:
         if not scorecard and source_report.scorecard_id:
             scorecard = await _load_scorecard_by_id(db, source_report.scorecard_id)
 
-        citations = await _load_citations_for_report(db, report_id)
+        citations = await _load_citations_for_report(
+            db, report_id, source_report.created_by_agent_run_id
+        )
         sources = await _load_sources_for_citations(db, citations)
 
         # Phase 32A RC-5 — when the re-parsed markdown carries no company
@@ -3595,6 +3955,27 @@ class FinalReportGeneratorService:
                 "yet a persisted citation and requires human review."
             )
 
+        # Phase 32A Slice 3 — honest source/citation reconciliation. Extend the
+        # appendix with SIX independent, side-by-side counts (NEVER summed into one
+        # total — that would double/triple-count the same underlying source, per the
+        # agent-D warning). The existing ``sources``/``citations`` {value,total}
+        # envelopes are now non-zero via the fallback loader; these counts add the
+        # evidence-pack + persistence view and a reconciling ``note`` that never
+        # implies "no sources" while council claim citations exist. Dark by default:
+        # with the flag off this block does not run and the appendix wording is
+        # byte-for-byte unchanged.
+        if settings.report_citation_persistence_enabled and isinstance(
+            _appendix, dict
+        ):
+            _counts = _evidence_reconciliation_counts(
+                council_result,
+                citations,
+                _refs,
+                getattr(council_result, "source_reference_counts", {}) or {},
+            )
+            _appendix.update(_counts)
+            _appendix["note"] = _APPENDIX_RECONCILE_NOTE
+
         # Phase 29C.1: optional MACRO CONTEXT block. When ``source_macro_enabled``
         # is on and the council surfaced reference-only macro sources for this
         # company's broad theme, render them as an OPTIONAL industry_macro_context
@@ -3743,6 +4124,22 @@ class FinalReportGeneratorService:
             "data_provenance": report_provenance,
         }
 
+        # Phase 32A Slice 3 — resolve the report's lineage from EXPLICIT signals
+        # only (public research entities). from-report / from-company read the
+        # company + agent_run off the SOURCE report; from-workflow-state reads them
+        # off the in-memory state; genuinely-unknown stays None (never fabricated,
+        # never inferred from ticker/name). Used to own the final report + key its
+        # persisted council citations to the company-pinned agent_run. OFF ⇒ None.
+        lineage_company_id: uuid.UUID | None = None
+        lineage_agent_run_id: uuid.UUID | None = None
+        if settings.report_citation_persistence_enabled:
+            if source_report is not None:
+                lineage_company_id = source_report.company_id
+                lineage_agent_run_id = source_report.created_by_agent_run_id
+            else:
+                lineage_company_id = _coerce_uuid(state.get("company_id"))
+                lineage_agent_run_id = _coerce_uuid(state.get("agent_run_id"))
+
         saved_report = await _save_final_report_draft(
             db=db,
             report_content=report_content,
@@ -3754,6 +4151,9 @@ class FinalReportGeneratorService:
             ticker=ticker,
             source_report_id=source_report.id if source_report else None,
             llm_used=council_result.llm_used,
+            company_id=lineage_company_id,
+            created_by_agent_run_id=lineage_agent_run_id,
+            council_result=council_result,
         )
 
         sections_generated = list(report_content.keys())

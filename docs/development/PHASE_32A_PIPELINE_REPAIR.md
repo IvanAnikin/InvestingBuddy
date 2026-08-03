@@ -195,7 +195,7 @@ ranking, dedup, materiality, low-tier caps. Metadata-only refs never become extr
 ### Slice 3 — Source/citation integration + honest display
 Replace the `pass` backfill with a real `report_id` UPDATE + an `agent_run_id` fallback loader; make
 the appendix distinguish DB citations from council E# evidence (invariant 9). Largely independent of
-Slice 1.
+Slice 1. **→ IMPLEMENTED (pre-merge / at PR gate — NOT yet staging-validated); see §9.**
 
 ### Slice 4 — Council retry / fallback / critical-agent reliability
 Bounded retries + exponential backoff; lower concurrency + pacing; retry-only-failed-agents; reserved
@@ -334,3 +334,105 @@ untouched); derived metrics never T1/T2; annual never confused with TTM; Slice-1
 provenance untouched (absence⇒unknown, is_mock never coerced True);
 `publication_ready`=False / `human_review_required`=True unchanged. Tests:
 `apps/api/tests/test_phase32a_slice2_evidence_budgets.py`.
+
+---
+
+## 9. Slice 3 — Source/citation integration + honest display (IMPLEMENTED — pre-merge / at PR gate)
+
+Backend + frontend, dark-safe behind ONE new default-False flag
+(`report_citation_persistence_enabled`, env `REPORT_CITATION_PERSISTENCE_ENABLED`).
+**NO migration** (DB head stays `012`), NO new network, counts-only logging. Flag
+OFF ⇒ the backfill stays the historic no-op, the appendix loader is unchanged
+(`report_id` filter only), no council citations are persisted, and the appendix
+is byte-identical to today. The OFF→ON contrast IS the fix.
+
+**Root cause repaired (two compounding defects + the unresolvable-E# gap, §1.4):**
+1. The company-analysis draft created deterministic profile/price/SEC-XBRL
+   `Source` + `Citation` rows but citations got `report_id=NULL` (the report did
+   not exist yet at Node 8) and the backfill loop in `company_analysis.py` was a
+   literal `pass` → every citation stayed `report_id=NULL` → appendix 0/0.
+2. The current-schema FINAL report (`_save_final_report_draft`) was a brand-new
+   orphaned `Report`: no `company_id`, no `created_by_agent_run_id`, it discarded
+   the `source_report_id` param and created zero citations → `_load_citations_for_report`
+   (report_id-only) returned `[]` → appendix 0/0 on the report users actually view.
+3. The council cited in-memory `E#` evidence (`AgentKeyPoint.citation_ids`) that
+   was never attached to `CouncilResult` → dangling aliases; the frontend printed
+   "No sources cited yet" even though claims cited evidence.
+
+**What Slice 3 does (all gated):**
+- **Layer 1 — draft backfill** (`citation_service.link_citations_to_report`,
+  called from `company_analysis.py`): a scoped idempotent
+  `UPDATE citations SET report_id WHERE agent_run_id=:arid AND report_id IS NULL`
+  (company-safe — the agent_run pins the run; idempotent — the NULL guard makes a
+  re-run a no-op). Replaces the `pass`.
+- **Layer 2 — final-report lineage + fallback loader + council persistence**
+  (`final_report_generator.py`, `council.py`, `evidence_pack.py`, `schemas.py`,
+  `sources/redaction.py`):
+  - `_save_final_report_draft` now carries the report's lineage — `company_id` +
+    `created_by_agent_run_id` resolved from EXPLICIT signals only (the SOURCE
+    report for from-report/from-company; workflow state for from-workflow-state;
+    genuinely-unknown ⇒ NULL, never fabricated, never inferred from ticker/name).
+    It STOPS discarding `source_report_id`.
+  - `_load_citations_for_report` returns the UNION (deduped by id) of this
+    report's own citations (`report_id`) + the lineage's DETERMINISTIC citations
+    (`agent_run_id` AND `field_path NOT LIKE 'council:%'`). Council citations are
+    NEVER loaded by agent_run — they belong to exactly one report by `report_id`
+    — so a SIBLING final report's council rows can never leak.
+  - `run_council` snapshots the post-budget pack onto `CouncilResult.persistable_evidence`
+    (runtime-only, `exclude=True`) so a cited `E#` alias resolves to a canonical
+    source at persist time; `add_framework_item` now preserves the framework
+    item's `source_id`/`primary_fact`/`provenance` (previously dropped). E# stays
+    a run-local presentation alias; stable UUIDs = `Source.id`/`Citation.id`.
+  - Completed-agent claim→evidence is persisted (flush-only helpers, inside the
+    single existing transaction — the committing service `create_source`/`create_citation`
+    are NOT reused) as canonical `Source` + `Citation` rows, deduped by a
+    synthesized `content_hash` (query-stripped canonical URL + source_type +
+    content_tier + excerpt-hash + period/date + sorted fields) so url-less
+    SEC/XBRL facts dedup and re-runs never accumulate duplicates. Idempotent
+    within a report (delete-before-insert of `council:%` citations). Failed/skipped
+    agents (empty key_points) persist nothing. `canonicalize_source_url` strips
+    userinfo + fragment + credential query params before persistence.
+  - **Metadata-only references** (`data_quality` sentinel `metadata_only` /
+    `link_metadata_only`) are persisted as REFERENCES: no fact-like `source_quote`,
+    the sentinel is kept, and they are NEVER counted or labelled as financial facts.
+- **Layer 3 — honest appendix** (`final_report_generator.py` appendix builder +
+  `FinalReportRenderer.tsx`): SIX independent, side-by-side counts (NEVER summed —
+  that would double/triple-count one source) + a reconciling `note`:
+  `primary_source_reference_count`, `extracted_evidence_count`,
+  `structured_financial_fact_count`, `db_persisted_source_count`,
+  `db_persisted_citation_count`, `council_claim_citation_count`. The existing
+  `sources`/`citations` `{value,total}` envelopes are now non-zero via the
+  fallback loader. The frontend renders the six counts and no longer says
+  "No sources cited yet" when council claim citations / DB citations exist.
+
+**Migration decision — NONE (`013` not required).** All needed columns already
+exist (`citations.report_id`/`agent_run_id`/`source_tier`/`data_quality` [002/003],
+`reports.company_id`/`created_by_agent_run_id` [012/earlier], `sources.content_hash`
+[002]). A DB unique constraint was deliberately NOT added (nullable
+`url`/`content_hash`/`field_path` defeat it + it would break on existing staging
+dups). **Deferred future refactor:** a dedicated `evidence`/`claim_evidence_link`
+table + a Source canonical-key unique constraint (bigger blast radius — mirrors
+AD-5's deferral of `analysis_state_json`).
+
+**Compatibility / backfill policy (honest):**
+- Old pre-slice reports keep zero-count appendices — their citations were never
+  linked and final reports were never lineage-connected; NOT force-backfilled
+  (deterministic ownership/provenance not guaranteed). Safely unrecoverable.
+- `reports.company_id = NULL` legacy behavior unchanged/explicit.
+- Known nuance: SEC/XBRL data may exist as two distinct `Source` rows (the
+  deterministic fundamentals source + the council-evidence source) — not
+  cross-deduped across the two layers; honest (both are real rows), a candidate
+  for the deferred unified-evidence table. The from-workflow-state (live) path
+  does not load deterministic citations for the appendix when there is no source
+  report (the primary validated path is admin from-company/from-report) — noted
+  as a follow-up.
+
+**Invariants held:** metadata-only references NEVER become facts (CFR case:
+`structured_financial_fact_count`=0, no fact-like quote); no cross-company /
+cross-report linkage (keyed by `report_id` + the company-pinned lineage
+`agent_run`); no secrets/signed URLs persisted (canonicalised + credential-stripped,
+bounded excerpts, no raw documents); no new network / SSRF; counts/labels-only
+logging; single-transaction persistence (no mixed-report citations); `schema_valid`
+/ `safety_valid` stay true; `publication_ready`=False / `human_review_required`=True
+unchanged; Slice-1/Slice-2 behavior untouched; OFF ⇒ byte-identical. Tests:
+`apps/api/tests/test_phase32a_slice3_source_citation_persistence.py`.

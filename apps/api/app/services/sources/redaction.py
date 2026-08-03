@@ -20,6 +20,7 @@ from app.core.log_redaction import (
 )
 
 __all__ = [
+    "canonicalize_source_url",
     "redact_text",
     "redact_url",
     "strip_url_secrets",
@@ -57,6 +58,44 @@ def strip_url_secrets(url: str | None) -> str | None:
         )
     except (ValueError, TypeError):
         return url
+
+
+def canonicalize_source_url(url: str | None) -> str | None:
+    """Return a canonical, credential-free form of ``url`` for persistence.
+
+    ``strip_url_secrets`` only removes credential-bearing QUERY parameters; it
+    leaves ``user:pass@`` userinfo and the ``#fragment`` intact (Phase 32A Slice
+    3 security review). This canonicaliser goes further so no credential-like
+    residue is ever persisted on a Source/Citation:
+
+      - drops every credential-bearing query parameter (via ``strip_url_secrets``);
+      - strips ``user:pass@`` userinfo from the authority;
+      - lower-cases the scheme + host (path/query case is preserved);
+      - drops the fragment.
+
+    Never raises: an unpar't URL is returned as the secret-stripped best effort.
+    """
+    if not url:
+        return url
+    cleaned = strip_url_secrets(url)
+    if not cleaned:
+        return cleaned
+    try:
+        parts = urlsplit(cleaned)
+        host = (parts.hostname or "").lower()
+        if host:
+            netloc = host
+            if parts.port is not None:
+                netloc = f"{host}:{parts.port}"
+        else:
+            # No parseable host (e.g. a scheme-less path) — drop any userinfo
+            # defensively and keep the rest.
+            netloc = parts.netloc.rsplit("@", 1)[-1]
+        return urlunsplit(
+            (parts.scheme.lower(), netloc, parts.path, parts.query, "")
+        )
+    except (ValueError, TypeError):
+        return cleaned
 
 
 def url_has_secret(url: str | None) -> bool:

@@ -36,6 +36,7 @@ Design rules enforced:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import pathlib
 import re
@@ -89,7 +90,9 @@ from app.agents.research_team.source_quality_agent import (
     run_source_quality_agent,
     source_quality_output_to_dict,
 )
+from app.core.config import settings
 from app.core.log_redaction import REDACTED, is_sensitive_key, redact_mapping
+from app.core.structured_logging import log_event
 from app.integrations.company_profile_enrichment import enrich_company_profile
 from app.integrations.financial_data_provider import (
     DataQuality,
@@ -139,6 +142,8 @@ from app.workflows.snapshot_builder import (
 
 WORKFLOW_NAME = "company_analysis"
 WORKFLOW_VERSION = "5.0.0"
+
+_logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -2506,13 +2511,26 @@ def build_company_analysis_graph(
             ),
         )
 
-        # Link all citations to the report
-        citation_ids = state.get("citation_ids") or []
-        for cit_id in citation_ids:
-            # Citations were created without report_id (no report existed yet).
-            # We update them here. For simplicity we re-use get_or_create pattern
-            # by just accepting existing IDs — a real implementation would UPDATE.
-            pass  # Citations are already created; report linkage via FK is handled separately
+        # Phase 32A Slice 3 — link this run's deterministic citations to the draft
+        # report. They were created earlier (Node 8), before the report row existed,
+        # with ``agent_run_id`` set and ``report_id`` NULL. Now that ``report.id`` is
+        # live, a scoped idempotent UPDATE links them: keyed by this run's
+        # ``agent_run_id`` (which pins the run ⇒ company-safe) and guarded by
+        # ``report_id IS NULL`` (⇒ idempotent, a re-run is a no-op, never a
+        # duplicate). OFF by default: with the flag off the historic no-op stands
+        # and the draft's citations keep ``report_id`` NULL (byte-identical). Logs a
+        # count only — never the citations, URLs, or evidence.
+        if settings.report_citation_persistence_enabled and agent_run_id:
+            _linked = await citation_service.link_citations_to_report(
+                db, uuid.UUID(agent_run_id), report.id
+            )
+            await db.commit()
+            log_event(
+                _logger,
+                "citation_report_backfill",
+                report_id=str(report.id),
+                citations_linked=_linked,
+            )
 
         await agent_run_service.complete_agent_step(
             db,

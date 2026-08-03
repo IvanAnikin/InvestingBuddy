@@ -55,6 +55,29 @@ alembic revision --autogenerate -m "short description"
 | 011 | `011_add_thesis_discovery.py` | adds thesis columns to `discovery_runs` (`mode`, `thesis_text`, `parsed_thesis_json`, `universe_json`) + `discovery_candidates` (`thesis_relevance_score`, `combined_internal_score`, `thesis_match_json`) (Phase 27 Thesis-to-Universe Discovery) |
 | 012 | `012_add_report_company_id.py` | adds `company_id` (UUID FK → companies.id, SET NULL) + index `ix_reports_company_id` to `reports` (Phase 32A hotfix — company-scoped `from-company` final-report selection) |
 
+**DB head = `012`.** **Phase 32A Slice 3 (source/citation persistence + honest
+reconciliation) adds NO migration — head stays `012`.** It persists into the
+EXISTING `sources` / `citations` tables using columns that already exist:
+`citations.report_id` / `agent_run_id` / `source_tier` / `data_quality` (002/003),
+`reports.company_id` / `created_by_agent_run_id` (012 / earlier), and
+`sources.content_hash` (002). Behind the OFF-by-default flag
+`REPORT_CITATION_PERSISTENCE_ENABLED`, the company-analysis draft backfills
+`citations.report_id` for its run (scoped by `agent_run_id`, idempotent via the
+`report_id IS NULL` guard); the final report carries `company_id` +
+`created_by_agent_run_id` as lineage; completed-agent council claim→evidence is
+written as canonical `Source` + `Citation` rows (a synthesized `content_hash` on
+the `Source` dedups url-less SEC/XBRL facts so re-runs never accumulate duplicates;
+`citations.field_path` is prefixed `council:<agent>` so the loader can keep
+council rows report-scoped while surfacing deterministic lineage rows). A DB
+UNIQUE constraint on `sources`/`citations` was deliberately **not** added (the
+nullable `url` / `content_hash` / `field_path` columns defeat a useful uniqueness
+key and would break the ALTER on existing staging duplicates). **Deferred future
+refactor:** a dedicated `evidence` / `claim_evidence_link` table + a Source
+canonical-key unique constraint. **Legacy policy:** reports created before the
+slice keep honest zero-count appendices (their citations were never linked and
+their final reports were never lineage-connected — NOT force-backfilled, safely
+unrecoverable); `reports.company_id = NULL` behavior stays explicit.
+
 ---
 
 ## Implemented Tables
