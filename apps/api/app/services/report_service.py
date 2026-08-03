@@ -50,6 +50,7 @@ async def create_draft_report(db: AsyncSession, data: ReportCreate) -> Report:
         period_start=data.period_start,
         period_end=data.period_end,
         created_by_agent_run_id=data.created_by_agent_run_id,
+        company_id=data.company_id,
         status="draft",
         review_status="draft",
         human_review_required=data.human_review_required,

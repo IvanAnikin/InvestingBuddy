@@ -210,6 +210,7 @@ async def test_report_content_does_not_expose_buy_sell(
     safe_report.schema_validation_json = {"is_valid": True}
     safe_report.source_summary_json = {"source_count": 0, "citation_count": 0}
     safe_report.scorecard_id = None
+    safe_report.company_id = None
 
     with patch(_GET, new_callable=AsyncMock, return_value=safe_report):
         response = await client.get(f"/api/v1/reports/{report_id}")

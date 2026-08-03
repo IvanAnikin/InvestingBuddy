@@ -2476,6 +2476,23 @@ def build_company_analysis_graph(
             "No investment recommendation."
         )
 
+        # Phase 32A hotfix — link the draft to the company it is about so the
+        # ``from-company`` final-report route can select this report by company
+        # (not the globally-newest completed report). Prefer the resolved company
+        # ORM object; fall back to the state's company_id string. Defensive: an
+        # unparsable/absent id yields None (never crash the report save).
+        _company = _run_holder.get("company")
+        _company_id: uuid.UUID | None
+        if _company is not None:
+            _company_id = _company.id
+        elif state.get("company_id"):
+            try:
+                _company_id = uuid.UUID(str(state["company_id"]))
+            except (ValueError, TypeError):
+                _company_id = None
+        else:
+            _company_id = None
+
         report = await report_service.create_draft_report(
             db,
             ReportCreate(
@@ -2485,6 +2502,7 @@ def build_company_analysis_graph(
                 summary=summary,
                 content_markdown=content_md,
                 created_by_agent_run_id=uuid.UUID(agent_run_id) if agent_run_id else None,
+                company_id=_company_id,
             ),
         )
 

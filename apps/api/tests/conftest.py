@@ -162,6 +162,8 @@ def sample_report(report_id: uuid.UUID, agent_run_id: uuid.UUID) -> MagicMock:
     report.schema_validation_json = {"is_valid": True}
     report.source_summary_json = {"source_count": 2, "citation_count": 3}
     report.scorecard_id = None
+    # Phase 32A hotfix: reports now carry a company link (ReportRead reads it).
+    report.company_id = None
     return report
 
 

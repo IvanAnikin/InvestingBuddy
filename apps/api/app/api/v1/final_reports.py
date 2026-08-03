@@ -101,7 +101,11 @@ async def generate_from_candidate(
     description=(
         "ADMIN/DEV ONLY. Generates a structured internal final report draft "
         "for a company in the research universe. "
-        "Pulls the most recent analysis outputs, scorecard, and citations. "
+        "Selects the most recent COMPLETED analysis report FOR THAT COMPANY "
+        "(company-scoped and deterministic — newest by created_at then id), "
+        "along with that company's scorecard and citations. "
+        "Returns 404 when the company is unknown OR when it has no eligible "
+        "completed analysis report — there is NO cross-company fallback. "
         "Report is saved with status=draft, review_status=draft, "
         "human_review_required=True. "
         "NOT investment advice. No BUY/SELL/HOLD/WATCH recommendation is produced. "
