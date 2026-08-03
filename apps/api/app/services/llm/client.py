@@ -51,8 +51,44 @@ class LLMTimeoutError(LLMError):
     """The provider call exceeded the configured timeout."""
 
 
+class LLMRateLimitError(LLMError):
+    """The provider rate-limited the call (HTTP 429).
+
+    Carries an optional ``retry_after`` (seconds) extracted from the provider's
+    response — a bounded numeric hint only, never the raw header text. The
+    council honors it (capped) when scheduling a retry. Transient/recoverable.
+    """
+
+    def __init__(
+        self, message: str = "rate limited", *, retry_after: float | None = None
+    ) -> None:
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
+class LLMServerError(LLMError):
+    """A temporary provider-side server error (HTTP 5xx). Transient/recoverable."""
+
+
 class LLMUnavailableError(LLMError):
     """The provider could not be constructed (missing deps or credentials)."""
+
+
+# Errors the council may retry: a transient rate-limit, provider 5xx, or timeout.
+# Everything else — malformed JSON after the single repair (LLMJsonError), a
+# missing provider/credentials (LLMUnavailableError), a safety quarantine (a
+# ``failed`` status, not an exception), or any other generic LLMError — is
+# PERMANENT and must never be retried.
+_TRANSIENT_LLM_ERRORS: tuple[type[LLMError], ...] = (
+    LLMRateLimitError,
+    LLMServerError,
+    LLMTimeoutError,
+)
+
+
+def is_transient_llm_error(exc: Exception) -> bool:
+    """True when ``exc`` is a transient (retryable) council-client error."""
+    return isinstance(exc, _TRANSIENT_LLM_ERRORS)
 
 
 def _extract_json(raw: str) -> dict[str, Any]:

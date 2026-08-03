@@ -14,6 +14,14 @@ council must handle safely:
   forbidden_agents={...}     inject a forbidden rating token for those agents
   bad_citation_agents={...}  cite an evidence id that is NOT in the pack
   uncited_agents={...}       emit a material claim with no citations
+  agent_failures={...}       Phase 32A Slice 4: a per-agent QUEUE of exceptions,
+                             popped once per call for that agent then falling
+                             through to normal output — scripts 429/5xx/timeout
+                             -then-success, retry-after, and retry exhaustion.
+
+State (for assertions): ``self.calls`` counts raw calls per agent; ``self.
+user_prompts`` records the user message seen per agent (so a test can assert the
+committee chair's rebuilt prompt contains a recovered agent's summary line).
 """
 
 from __future__ import annotations
@@ -40,12 +48,21 @@ class FakeLLMClient(LLMClient):
         forbidden_agents: set[str] | None = None,
         bad_citation_agents: set[str] | None = None,
         uncited_agents: set[str] | None = None,
+        agent_failures: dict[str, list[Exception]] | None = None,
         model: str = "fake-council-model",
     ) -> None:
         self._mode = mode
         self._forbidden_agents = forbidden_agents or set()
         self._bad_citation_agents = bad_citation_agents or set()
         self._uncited_agents = uncited_agents or set()
+        # Copy each queue so popping does not mutate the caller's dict/lists.
+        self._agent_failures: dict[str, list[Exception]] = {
+            agent: list(queue) for agent, queue in (agent_failures or {}).items()
+        }
+        # Assertion state (Phase 32A Slice 4): raw calls per agent + the last
+        # user prompt(s) seen per agent.
+        self.calls: dict[str, int] = {}
+        self.user_prompts: dict[str, list[str]] = {}
         self._model = model
 
     @property
@@ -69,6 +86,16 @@ class FakeLLMClient(LLMClient):
         temperature: float,
         timeout: int,
     ) -> str:
+        agent = self._agent_from_system(system)
+        self.calls[agent] = self.calls.get(agent, 0) + 1
+        self.user_prompts.setdefault(agent, []).append(user)
+
+        # Phase 32A Slice 4: per-agent scripted failure queue, popped once per
+        # call, falling through to normal output when empty.
+        queue = self._agent_failures.get(agent)
+        if queue:
+            raise queue.pop(0)
+
         if self._mode == "timeout":
             raise LLMTimeoutError("fake timeout")
 
@@ -78,7 +105,6 @@ class FakeLLMClient(LLMClient):
         if self._mode == "invalid_json_once" and not is_repair:
             return "```\nthis is not valid json\n```"
 
-        agent = self._agent_from_system(system)
         evidence_ids = _EVIDENCE_ID_RE.findall(user)
         return json.dumps(self._build_output(agent, evidence_ids))
 

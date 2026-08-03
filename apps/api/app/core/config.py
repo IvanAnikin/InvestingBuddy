@@ -304,6 +304,46 @@ class Settings(BaseSettings):
     # human-review-required and never publication-ready.
     source_research_memo_enabled: bool = False
 
+    # ── LLM council reliability / retry (Phase 32A Slice 4) ────────────────
+    # Master gate for the council reliability bundle: transient-error retries,
+    # critical-agent reserved budget, and the deterministic committee-chair
+    # fallback. OFF by default so the council path is byte-for-byte identical to
+    # today — a single attempt per agent, no fallback, chair failure yields a
+    # null committee_label. When ON, ``run_council`` runs an initial pass plus a
+    # bounded, priority-ordered retry pass for TRANSIENTLY-failed agents (429 /
+    # 5xx / timeout only — never a schema/safety failure), honoring a provider
+    # ``retry-after`` (capped) with exponential backoff + jitter, under a strict
+    # TOTAL wall-time budget that reserves capacity for red_team + committee_chair;
+    # and when the LLM chair still does not complete it attaches a deterministic,
+    # non-consensus committee summary (committee_label="insufficient_data", empty
+    # key_points, no citations). This changes ONLY execution reliability: it never
+    # flips publication_ready (stays False) or human_review_required (stays True),
+    # never fabricates evidence, and failed agents still create no citations.
+    llm_council_retry_enabled: bool = False
+    # Extra attempts (beyond the initial pass) for an OPTIONAL agent that failed
+    # transiently. Total attempts for an optional agent = 1 + this.
+    llm_council_max_retries: int = 2
+    # Extra attempts (beyond the initial pass) for a CRITICAL agent (financial_
+    # analyst, source_quality_critic, red_team, committee_chair, and valuation_
+    # guard when the pack carries financial evidence).
+    llm_council_critical_max_retries: int = 3
+    # Exponential-backoff base (seconds) before a retry: base * 2**(attempt-1),
+    # capped by the max below, plus jitter in [0, base).
+    llm_council_retry_base_backoff_seconds: float = 1.0
+    # Hard ceiling (seconds) on a single computed backoff wait.
+    llm_council_retry_max_backoff_seconds: float = 20.0
+    # Hard ceiling (seconds) on an honored provider ``retry-after`` value, so a
+    # hostile / large header can never blow the wall-time budget.
+    llm_council_retry_max_retry_after_seconds: float = 30.0
+    # HARD total council wall-time cap (seconds). All retries live under this
+    # deadline; it must stay comfortably below the ~230s Azure gateway timeout
+    # because the single-company council runs inline in the request handler.
+    llm_council_total_budget_seconds: float = 150.0
+    # Wall-time (seconds) reserved out of the total budget for the two protected
+    # agents (red_team + committee_chair) so earlier agents draining the budget
+    # cannot starve the adversarial check and the synthesis.
+    llm_council_critical_reserve_seconds: float = 45.0
+
     # ── Report source/citation persistence + reconciliation (Phase 32A Slice 3)
     # Gate for PERSISTING the source/citation lineage of a report and RECONCILING
     # the honest source counts on the final-report appendix. OFF by default so the
