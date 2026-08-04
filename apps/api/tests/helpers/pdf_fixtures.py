@@ -121,4 +121,34 @@ def make_pdf_with_table(rows: list[list[str]]) -> bytes:
     return _assemble(objs)
 
 
-__all__ = ["make_pdf", "make_pdf_no_text", "make_pdf_with_table"]
+def make_encrypted_pdf(
+    pages_text: list[str] | None = None, *, password: str = "secret-pw"
+) -> bytes:
+    """Build a valid PDF encrypted with a NON-EMPTY user password.
+
+    The ``%PDF-`` magic byte stays valid (so the fetch magic-sniff passes) but the
+    body is encrypted, so the extractor's single empty-password ``pdfplumber.open``
+    attempt fails — exercising the encrypted/decrypt-fail degradation branch. Uses
+    pypdf lazily so the pure-stdlib fixtures above stay dependency-free.
+    """
+    import io as _io
+
+    from pypdf import PdfReader, PdfWriter
+
+    raw = make_pdf(pages_text or ["Encrypted annual report body; do not fabricate."])
+    reader = PdfReader(_io.BytesIO(raw))
+    writer = PdfWriter()
+    for page in reader.pages:
+        writer.add_page(page)
+    writer.encrypt(password)
+    out = _io.BytesIO()
+    writer.write(out)
+    return out.getvalue()
+
+
+__all__ = [
+    "make_pdf",
+    "make_pdf_no_text",
+    "make_pdf_with_table",
+    "make_encrypted_pdf",
+]
