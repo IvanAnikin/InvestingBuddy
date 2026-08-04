@@ -1098,6 +1098,7 @@ async def run_council(
                 source_id=item.source_id,
                 primary_fact=item.primary_fact,
                 provenance=list(item.provenance),
+                document_content_hash=item.document_content_hash,
             )
             for item in evidence_pack.evidence_items
         ]

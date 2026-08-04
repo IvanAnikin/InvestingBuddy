@@ -798,6 +798,10 @@ class CompanyIrConnector(SourceConnector):
         requires_tr = ext.requires_translation or self._requires_translation()
         doc_title = artifact.title or target.text or "Annual report"
         url = artifact.source_url or target.url
+        # Phase 32A Slice 5 (3c-ii): the RAW-bytes document identity every deep item
+        # from this document carries, so the citation write keys one canonical Source
+        # per distinct document (not per url+tier+excerpt hash). Never a secret.
+        doc_hash = ext.content_hash
         cap = max(1, query.max_items)
         orig_lang = self._original_language()
         tr_warn = (
@@ -843,6 +847,7 @@ class CompanyIrConnector(SourceConnector):
                     confidence=_confidence_bucket(exc.confidence),
                     fields_supported=[exc.evidence_type],
                     provenance=provenance,
+                    document_content_hash=doc_hash,
                     warnings=(
                         ["Bounded excerpt from the issuer's own annual report; "
                          "not the full document. Human review required."]
@@ -899,6 +904,7 @@ class CompanyIrConnector(SourceConnector):
                     confidence=conf_bucket,
                     fields_supported=[fact.label],
                     provenance=provenance,
+                    document_content_hash=doc_hash,
                     warnings=(
                         [note for note in fact.validation_notes if note]
                         + ["Validated primary fact — unverified; human review required."]
@@ -964,6 +970,7 @@ class CompanyIrConnector(SourceConnector):
                     data_quality="C",
                     confidence=_confidence_bucket(fact.confidence),
                     provenance=provenance,
+                    document_content_hash=doc_hash,
                     warnings=(
                         ["Table cell retained as a bounded excerpt (not a validated "
                          "fact); human review required."]
