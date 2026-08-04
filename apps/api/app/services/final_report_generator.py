@@ -58,6 +58,9 @@ from app.services.data_provenance import (
     derive_data_provenance,
     provenance_to_is_mock,
 )
+from app.services.extracted_document_service import (
+    persist_primary_document_artifacts,
+)
 from app.services.llm.council import maybe_run_council
 from app.services.llm.schemas import (
     AGENT_RED_TEAM,
@@ -3399,6 +3402,49 @@ async def _save_final_report_draft(
             council_sources=sources_touched,
             council_citations=citations_added,
         )
+
+    # Phase 32A Slice 5 (3c-i) — persist the council's DEEP primary-document
+    # artifacts (ExtractedDocument / ExtractedFact) for this run's lineage. Gated
+    # behind BOTH the ingestion + citation-persistence flags (either off ⇒ no
+    # query, no row). Lineage is attached via company_id / agent_run_id only — it
+    # never touches the from-company selection (Slice-3 "B1" invariant). Best
+    # effort: wrapped in a SAVEPOINT so a persistence error rolls back ONLY the
+    # ingestion rows (never the report / citations) and never breaks report
+    # generation; the failure is logged by exception TYPE NAME only (no secrets).
+    if (
+        settings.primary_document_ingestion_enabled
+        and settings.report_citation_persistence_enabled
+        and council_result is not None
+    ):
+        try:
+            async with db.begin_nested():
+                persist_result = await persist_primary_document_artifacts(
+                    db,
+                    artifacts=getattr(
+                        council_result, "primary_document_artifacts", None
+                    ),
+                    company_id=company_id,
+                    agent_run_id=created_by_agent_run_id,
+                    cfg=settings,
+                )
+            log_event(
+                logger,
+                "primary_documents_persisted",
+                report_id=str(report.id),
+                documents_created=persist_result.documents_created,
+                documents_reused=persist_result.documents_reused,
+                facts_created=persist_result.facts_created,
+                facts_deduped=persist_result.facts_deduped,
+                skipped=persist_result.skipped,
+            )
+        except Exception as exc:  # noqa: BLE001 - ingestion never breaks a report
+            log_event(
+                logger,
+                "primary_documents_persist_failed",
+                level=logging.WARNING,
+                report_id=str(report.id),
+                exception_type=type(exc).__name__,
+            )
 
     # Persist the draft. get_db() does not commit for us (it yields the session
     # and closes it, which rolls back an uncommitted transaction), so every

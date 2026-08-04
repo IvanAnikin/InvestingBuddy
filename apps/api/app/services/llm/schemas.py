@@ -338,6 +338,15 @@ class CouncilResult(BaseModel):
     persistable_evidence: list[PersistableEvidence] = Field(
         default_factory=list, exclude=True
     )
+    # Phase 32A Slice 5 (3c-i): runtime-ONLY handoff of the deep primary-document
+    # ingestion artifacts (``PrimaryDocumentArtifact``) so the report-write path can
+    # persist ExtractedDocument / ExtractedFact rows next to the citation write —
+    # WITHOUT re-fetching or re-extracting. Typed ``Any`` to avoid a connector→schema
+    # import cycle; EXCLUDED from serialization (``to_report_dict`` /
+    # ``to_metadata_dict`` never reference it) ⇒ the persisted report is byte-identical.
+    # Populated by ``maybe_run_council`` only when BOTH the ingestion + citation
+    # persistence flags are on; empty otherwise (dark path).
+    primary_document_artifacts: list[Any] = Field(default_factory=list, exclude=True)
     # Phase 32A Slice 4: set True only when the LLM committee chair did not
     # complete AND the retry bundle (``llm_council_retry_enabled``) is on, so a
     # DETERMINISTIC, non-consensus committee summary was attached below. Default

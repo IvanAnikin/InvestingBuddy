@@ -1163,6 +1163,11 @@ async def maybe_run_council(
         primary_source_references: list[dict[str, Any]] = []
         source_reference_counts: dict[str, int] = {}
         source_gap_messages_bounded: list[str] = []
+        # Phase 32A Slice 5 (3c-i): deep primary-document artifacts threaded OUT for
+        # the report-write path to persist (ExtractedDocument / ExtractedFact). Only
+        # captured when BOTH the ingestion + citation persistence flags are on so the
+        # dark path (either flag off) stays byte-identical and holds no data.
+        primary_document_artifacts: list[Any] = []
         if cfg.source_connector_enabled:
             try:
                 # Phase 29B.2: when document extraction is also enabled, inject the
@@ -1208,6 +1213,16 @@ async def maybe_run_council(
                 connector_gap_messages = collected.gap_messages()
                 primary_documents = _primary_document_summary(collected.evidence_items)
                 primary_facts = _primary_facts(collected.evidence_items)
+                # Phase 32A Slice 5 (3c-i): capture the deep artifacts for persistence
+                # ONLY when both the ingestion + citation persistence flags are on.
+                # Either flag off ⇒ list stays empty ⇒ nothing to persist downstream.
+                if (
+                    cfg.primary_document_ingestion_enabled
+                    and cfg.report_citation_persistence_enabled
+                ):
+                    primary_document_artifacts = list(
+                        collected.primary_document_artifacts
+                    )
                 # Phase 31 hotfix: classify metadata-only PRIMARY-source references
                 # (issuer IR / annual-report index / regulator venue) so the report
                 # can surface them, distinct from extracted text and parsed facts.
@@ -1406,6 +1421,11 @@ async def maybe_run_council(
         # the original text + source URL and is clearly marked NOT official.
         if translated_excerpts:
             result.translated_excerpts = translated_excerpts
+        # Phase 32A Slice 5 (3c-i): hand the deep primary-document artifacts to the
+        # report-write path (runtime-only, excluded from serialization). Non-empty
+        # ONLY when both gate flags are on ⇒ dark-by-default byte-identical.
+        if primary_document_artifacts:
+            result.primary_document_artifacts = primary_document_artifacts
         return result
     except Exception as exc:  # noqa: BLE001 - never let the council crash a report
         log_event(
