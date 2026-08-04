@@ -366,5 +366,62 @@ class Settings(BaseSettings):
     # stays False and human_review_required stays True.
     report_citation_persistence_enabled: bool = False
 
+    # ── Primary-document ingestion (Phase 32A Slice 5 — foundation only) ────
+    # FOUNDATION ONLY: these knobs (plus the ``extracted_documents`` /
+    # ``extracted_facts`` tables + ORM models added this slice) prepare bounded
+    # ingestion of an issuer's OWN primary documents (annual report / registration
+    # document) into structured, citation-bound rows so LATER slices can feed the
+    # council real T1 primary evidence — not only metadata + price/model data.
+    # NOTHING is wired yet: with every flag off (the default) the existing
+    # extraction / connector / council paths are byte-for-byte unchanged and these
+    # knobs are inert. When a later slice turns ingestion on it stays bounded,
+    # allowlist-only (no arbitrary-URL fetch surface), never fabricates a filing —
+    # a blocked / JS-gated / scanned document degrades to an honest gap — and every
+    # extracted fact is human-review-required and never a recommendation.
+    primary_document_ingestion_enabled: bool = False
+    # Optional OCR pass for scanned (image-only) PDFs. OFF by default AND gated
+    # behind the master flag; kept separate so OCR (which needs a raster path added
+    # in a later slice) can never be enabled implicitly.
+    primary_document_ocr_enabled: bool = False
+    # Hard byte ceiling for a single fetched document — a larger document is
+    # rejected/truncated, never fully buffered (bounds memory).
+    primary_document_max_download_bytes: int = 8_000_000
+    # Maximum number of leading pages read from a PDF (bounds native extraction
+    # cost). Pages beyond this are ignored.
+    primary_document_max_pdf_pages: int = 40
+    # Maximum number of pages rastered + OCR'd when OCR is enabled (kept far
+    # smaller than the native page cap because OCR is much more expensive).
+    primary_document_max_ocr_pages: int = 5
+    # Per-document fetch timeout budget (seconds).
+    primary_document_fetch_timeout_seconds: int = 15
+    # Per-document text-extraction timeout budget (seconds).
+    primary_document_extraction_timeout_seconds: int = 20
+    # HARD per-document total timeout (seconds): fetch + extract + parse for ONE
+    # document must complete inside this.
+    primary_document_total_timeout_seconds: int = 45
+    # AGGREGATE ingestion wall-time budget (seconds) across ALL documents in one
+    # request. MUST stay small: ingestion runs BEFORE the council's ~150s
+    # wall-budget and the whole request must fit the ~230s Azure gateway timeout,
+    # so ingestion + council together must stay comfortably under it.
+    primary_document_ingestion_budget_seconds: int = 60
+    # Hard cap on documents ingested for one issuer in a single request (bounds
+    # cost + keeps one issuer from draining the aggregate budget).
+    primary_document_max_docs_per_issuer: int = 3
+    # Maximum number of bounded excerpts produced from one document.
+    primary_document_max_excerpts_per_document: int = 8
+    # Hard cap on characters per excerpt (a whole filing is never carried around;
+    # aligned with ``llm_council_evidence_max_chars_per_item``).
+    primary_document_max_excerpt_chars: int = 1200
+    # Minimum extraction confidence [0..1] for a parsed primary fact to be kept as
+    # a validated fact; lower-confidence text is retained excerpt-only.
+    primary_document_min_extraction_confidence: float = 0.6
+    # Pillow decompression-bomb guard for the future OCR raster path: refuse to
+    # decode an image larger than this many pixels.
+    primary_document_max_image_pixels: int = 40_000_000
+    # Evidence-pack integration (later slice): guaranteed floor + hard cap on the
+    # number of primary-document facts contributed to the council evidence pack.
+    primary_document_evidence_floor: int = 1
+    primary_document_evidence_cap: int = 6
+
 
 settings = Settings()

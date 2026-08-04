@@ -19,4 +19,9 @@ httpx>=0.27
 # Phase 29B.2: pure-Python PDF text extraction (bounded primary-document
 # excerpting). No system deps, no OCR.
 pypdf>=4.0,<6
+# Phase 32A Slice 5: table-aware PDF text/layout extraction for bounded
+# primary-document ingestion. Pure-Python; transitively brings pdfminer.six +
+# Pillow (Pillow gates the future OCR raster path via a pixel cap). No system
+# deps, no OCR binary (tesseract/pdf2image/pymupdf are intentionally NOT added).
+pdfplumber>=0.11,<0.12
 gunicorn>=23.0

@@ -32,6 +32,7 @@ Safety properties (why this is not an SSRF surface):
 
 from __future__ import annotations
 
+import socket
 from dataclasses import dataclass, field
 from urllib.parse import urljoin
 
@@ -39,7 +40,11 @@ from app.core.config import Settings
 from app.core.config import settings as default_settings
 from app.services.sources.gaps import GapSeverity, GapType, SourceGap
 from app.services.sources.redaction import strip_url_secrets
-from app.services.sources.safe_web_fetcher import _USER_AGENT, check_fetch_url
+from app.services.sources.safe_web_fetcher import (
+    _USER_AGENT,
+    Resolver,
+    check_fetch_url,
+)
 
 # Document type buckets the extractor understands, keyed by content-type prefix.
 _PDF_TYPES = ("application/pdf", "application/x-pdf")
@@ -114,6 +119,8 @@ async def safe_fetch_document(
     *,
     allowed_domains: tuple[str, ...],
     cfg: Settings | None = None,
+    resolve_ip: bool = False,
+    resolver: Resolver = socket.getaddrinfo,
 ) -> DocumentFetchResult:
     """Fetch one allowlisted HTTPS document (bounded, guarded, never raising).
 
@@ -121,11 +128,18 @@ async def safe_fetch_document(
     redirect, disallowed content type, timeout, http error) it degrades to a
     result with ``error``/``blocked`` set and an honest ``SourceGap`` — never a
     fabricated document.
+
+    ``resolve_ip`` is OPT-IN (default OFF): when True the target host's resolved
+    IPs are checked before the initial fetch AND after each redirect hop (closing
+    the DNS-rebinding SSRF vector). Left OFF (the default) every existing caller
+    is byte-for-byte unchanged. ``resolver`` is injectable for tests.
     """
     cfg = cfg or default_settings
     result = DocumentFetchResult(requested_url=strip_url_secrets(url) or url)
 
-    reason = check_fetch_url(url, allowed_domains, cfg=cfg)
+    reason = check_fetch_url(
+        url, allowed_domains, cfg=cfg, resolve_ip=resolve_ip, resolver=resolver
+    )
     if reason:
         result.blocked = True
         result.error = reason
@@ -164,7 +178,13 @@ async def safe_fetch_document(
                     if resp.is_redirect:
                         location = resp.headers.get("location", "")
                         nxt = urljoin(current, location)
-                        block = check_fetch_url(nxt, allowed_domains, cfg=cfg)
+                        block = check_fetch_url(
+                            nxt,
+                            allowed_domains,
+                            cfg=cfg,
+                            resolve_ip=resolve_ip,
+                            resolver=resolver,
+                        )
                         if block:
                             result.blocked = True
                             result.error = f"redirect blocked ({block})"

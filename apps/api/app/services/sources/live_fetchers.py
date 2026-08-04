@@ -18,18 +18,37 @@ Safety properties:
 
 from __future__ import annotations
 
+import socket
+import time
+from datetime import datetime, timezone
 from typing import Any
 
 from app.core.config import Settings
 from app.core.config import settings as default_settings
 from app.services.sources.connector_base import CompanyContext, QueryContext
-from app.services.sources.connectors.company_ir import PrimaryDocumentBundle
+from app.services.sources.connectors.company_ir import (
+    PrimaryDocumentArtifact,
+    PrimaryDocumentBundle,
+)
 from app.services.sources.document_fetcher import safe_fetch_document
 from app.services.sources.document_text_extractor import extract_document_text
+from app.services.sources.extracted_fact_validator import (
+    IssuerContext,
+    validate_extracted_facts,
+)
+from app.services.sources.gaps import GapSeverity, GapType, SourceGap
+from app.services.sources.primary_document_extractor import (
+    STATUS_EXTRACTED,
+    STATUS_EXTRACTION_FAILED,
+    STATUS_METADATA_ONLY,
+    extract_primary_document,
+)
 from app.services.sources.primary_fact_parser import parse_primary_facts
 from app.services.sources.safe_web_fetcher import (
     ANNUAL_REPORT_KEYWORDS,
+    Resolver,
     SafeFetchResult,
+    looks_like_pdf,
     safe_fetch_page,
 )
 
@@ -183,9 +202,107 @@ async def live_document_extractor(
     return bundle
 
 
+def _honest_gap(message: str) -> SourceGap:
+    """A bounded, non-blocking company-IR ``SourceGap`` (never fabricated data)."""
+    return SourceGap(
+        connector_key="company_ir",
+        source_id="company_ir",
+        gap_type=GapType.primary_filing_unavailable,
+        severity=GapSeverity.info,
+        message=message,
+        blocks_research_complete=False,
+    )
+
+
+async def live_primary_document_extractor(
+    url: str,
+    *,
+    allowed_domains: tuple[str, ...],
+    title_hint: str | None = None,
+    original_language: str | None = None,
+    issuer_context: IssuerContext | None = None,
+    cfg: Settings | None = None,
+    resolver: Resolver = socket.getaddrinfo,
+) -> PrimaryDocumentArtifact:
+    """DEEP fetch + structure-aware extraction + stricter validation of ONE doc.
+
+    The structure-aware sibling of :func:`live_document_extractor` (Phase 32A
+    Slice 5, master flag). The URL is never caller-supplied — it is an
+    annual-report link already extracted from an allowlisted issuer page and is
+    re-checked against ``allowed_domains`` inside ``safe_fetch_document``. The
+    fetch additionally DNS-resolves the host (``resolve_ip=True``) and rejects any
+    non-public resolved IP (DNS-rebinding SSRF guard). For a PDF the ``%PDF`` magic
+    is verified before parsing. Runs ``extract_primary_document`` (pdfplumber
+    tables / HTML) then ``validate_extracted_facts`` (stricter grid validation).
+
+    Never raises: an honest failure degrades to a ``metadata_only`` /
+    ``extraction_failed`` artifact with honest gaps. Never logs bytes or text; the
+    stored URL is secret-stripped by the fetch layer.
+    """
+    cfg = cfg or default_settings
+    fetch_started = time.perf_counter()
+    fetched = await safe_fetch_document(
+        url,
+        allowed_domains=allowed_domains,
+        cfg=cfg,
+        resolve_ip=True,
+        resolver=resolver,
+    )
+    fetch_ms = int((time.perf_counter() - fetch_started) * 1000)
+
+    artifact = PrimaryDocumentArtifact(
+        source_url=fetched.final_url or fetched.requested_url,
+        document_type=fetched.document_type,
+        title=title_hint,
+        retrieved_at=datetime.now(timezone.utc),
+        status=STATUS_EXTRACTION_FAILED,
+        warnings=list(fetched.warnings),
+        source_gaps=list(fetched.source_gaps),
+        fetch_ms=fetch_ms,
+    )
+    # Blocked / off-domain / rebinding / http error / disallowed type → honest gap.
+    if not fetched.ok or fetched.content is None or fetched.document_type is None:
+        return artifact
+
+    # Magic-byte guard: never feed a non-PDF blob (an HTML error page served as
+    # octet-stream, say) to the PDF parser — degrade honestly instead.
+    if fetched.document_type == "pdf" and not looks_like_pdf(fetched.content):
+        artifact.status = STATUS_METADATA_ONLY
+        artifact.source_gaps.append(
+            _honest_gap(
+                "Annual-report document is not a valid PDF (missing %PDF- "
+                "signature); document text is not extracted."
+            )
+        )
+        return artifact
+
+    extract_started = time.perf_counter()
+    extraction = extract_primary_document(
+        fetched.content,
+        document_type=fetched.document_type,
+        cfg=cfg,
+        original_language=original_language,
+    )
+    artifact.extraction_ms = int((time.perf_counter() - extract_started) * 1000)
+    artifact.extraction = extraction
+    artifact.status = extraction.status
+    artifact.warnings.extend(extraction.warnings)
+
+    # Only a fully-extracted document is validated into structured facts; a
+    # scanned / empty document stays metadata_only with no fabricated fact.
+    if extraction.status == STATUS_EXTRACTED:
+        artifact.validated_facts = validate_extracted_facts(
+            extraction,
+            issuer_context=issuer_context or IssuerContext(),
+            cfg=cfg,
+        )
+    return artifact
+
+
 __all__ = [
     "live_sec_filings_fetcher",
     "live_ir_press_fetcher",
     "live_ir_page_fetcher",
     "live_document_extractor",
+    "live_primary_document_extractor",
 ]

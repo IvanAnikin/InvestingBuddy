@@ -1169,8 +1169,25 @@ async def maybe_run_council(
                 # bounded live IR-page fetcher + document extractor so the council
                 # reasons from real annual-report excerpts + parsed facts — not only
                 # metadata. Off by default (both flags), preserving 29B.1 behaviour.
+                #
+                # Phase 32A Slice 5: when the MASTER flag
+                # ``primary_document_ingestion_enabled`` is on, inject the DEEP
+                # extractor instead (pdfplumber tables + stricter fact validation +
+                # aggregate ingestion budget). This runs BEFORE the council deadline,
+                # so ingestion + the ~150s council stays under the ~230s gateway. With
+                # the master flag OFF the ``elif`` below is byte-identical to Slice 4.
                 extract_kwargs: dict[str, Any] = {}
-                if cfg.source_document_extraction_enabled:
+                if cfg.primary_document_ingestion_enabled:
+                    from app.services.sources.live_fetchers import (
+                        live_ir_page_fetcher,
+                        live_primary_document_extractor,
+                    )
+
+                    extract_kwargs = {
+                        "ir_page_fetcher": live_ir_page_fetcher,
+                        "primary_document_extractor": live_primary_document_extractor,
+                    }
+                elif cfg.source_document_extraction_enabled:
                     from app.services.sources.live_fetchers import (
                         live_document_extractor,
                         live_ir_page_fetcher,

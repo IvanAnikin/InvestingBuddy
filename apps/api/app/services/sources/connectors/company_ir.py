@@ -39,11 +39,16 @@ Guarantees:
 
 from __future__ import annotations
 
+import logging
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
+from pydantic import BaseModel, Field
+
+from app.core.structured_logging import log_event
 from app.services.sources.connector_base import (
     CompanyContext,
     ConnectorResult,
@@ -60,7 +65,18 @@ from app.services.sources.evidence import (
     PrimaryFactRef,
     build_evidence_item,
 )
+from app.services.sources.extracted_fact_validator import (
+    VALIDATION_EXCERPT_ONLY,
+    VALIDATION_VALIDATED,
+    IssuerContext,
+    ValidatedFact,
+)
 from app.services.sources.gaps import GapSeverity, GapType, SourceGap
+from app.services.sources.primary_document_extractor import (
+    STATUS_EXTRACTED,
+    PrimaryDocumentExtraction,
+    _confidence_bucket,
+)
 from app.services.sources.primary_fact_parser import PrimaryFact
 from app.services.sources.safe_web_fetcher import (
     ANNUAL_REPORT_KEYWORDS,
@@ -74,6 +90,8 @@ from app.services.sources.taxonomy import (
     ConnectorStatus,
 )
 from app.services.sources.verified_issuer_sources import VerifiedIssuerSource
+
+_log = logging.getLogger("app.services.sources.connectors.company_ir")
 
 # A press fetcher returns plain press-release dicts. Expected keys (all
 # optional): headline/title, url, published_at/date, summary, source_name,
@@ -109,6 +127,52 @@ class PrimaryDocumentBundle:
 # document-extraction flags are on). Never raises.
 DocumentExtractor = Callable[..., Awaitable[PrimaryDocumentBundle]]
 
+
+class PrimaryDocumentArtifact(BaseModel):
+    """Deep primary-document ingestion result for ONE document — Phase 32A Slice 5.
+
+    Bundles the bounded ``PrimaryDocumentExtraction`` (pdfplumber/HTML excerpts +
+    tables) with its stricter-validated structured facts and secret-stripped
+    provenance so a LATER persistence task can store ``ExtractedDocument`` /
+    ``ExtractedFact`` rows without re-fetching or re-extracting. It carries ONLY
+    bounded excerpts / tables / facts + a token-stripped URL — never raw bytes or
+    the whole document, and never a fabricated figure.
+    """
+
+    source_url: str
+    document_type: str | None = None
+    content_tier: str = T1_PRIMARY_FILING
+    title: str | None = None
+    retrieved_at: datetime | None = None
+    status: str = "extraction_failed"
+    extraction: PrimaryDocumentExtraction | None = None
+    validated_facts: list[ValidatedFact] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    source_gaps: list[SourceGap] = Field(default_factory=list)
+    # Secret-free per-document timings for telemetry (never bytes/text).
+    fetch_ms: int | None = None
+    extraction_ms: int | None = None
+
+
+# A DEEP document extractor fetches ONE allowlisted annual-report document, runs
+# the structure-aware ``primary_document_extractor`` (pdfplumber tables) + the
+# stricter ``extracted_fact_validator``, and returns a ``PrimaryDocumentArtifact``.
+# Injected only when ``primary_document_ingestion_enabled`` (the master flag) is
+# on. Never raises: an honest failure degrades to a metadata_only/failed artifact.
+PrimaryDocumentDeepExtractor = Callable[..., Awaitable[PrimaryDocumentArtifact]]
+
+# Report-link text markers used to rank the most material documents first (annual
+# report / results / registration document) when the per-issuer cap is > 1.
+_MATERIAL_DOCUMENT_MARKERS = (
+    "annual",
+    "registration document",
+    "results",
+    "integrated report",
+    "financial report",
+    "full-year",
+    "full year",
+)
+
 _IR_TRANSPORT_LABEL = "Company IR / newsroom (issuer-published)"
 
 # Map an extraction excerpt's evidence_type to an EvidenceItem source_type.
@@ -136,11 +200,25 @@ class CompanyIrConnector(SourceConnector):
         verified_source: VerifiedIssuerSource | None = None,
         page_fetcher: PageFetcher | None = None,
         document_extractor: DocumentExtractor | None = None,
+        primary_document_extractor: PrimaryDocumentDeepExtractor | None = None,
+        max_docs_per_issuer: int = 1,
+        ingestion_budget_seconds: float | None = None,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._fetcher = press_fetcher
         self._verified = verified_source
         self._page_fetcher = page_fetcher
         self._document_extractor = document_extractor
+        # Phase 32A Slice 5 (deep ingestion, gated by the master flag): when a deep
+        # extractor is injected the connector fetches up to ``max_docs_per_issuer``
+        # documents under an AGGREGATE wall-budget and collects rich artifacts.
+        self._primary_document_extractor = primary_document_extractor
+        self._max_docs_per_issuer = max(1, max_docs_per_issuer)
+        self._ingestion_budget_seconds = ingestion_budget_seconds
+        self._clock = clock
+        # Deep artifacts (extractions + validated facts) collected this run, threaded
+        # OUT for a later persistence task. Empty on the OFF / shallow path.
+        self.collected_primary_document_artifacts: list[PrimaryDocumentArtifact] = []
 
     # -- Helpers -----------------------------------------------------------
 
@@ -365,12 +443,26 @@ class CompanyIrConnector(SourceConnector):
                 )
             )
 
-        # Phase 29B.2: bounded document extraction. When a document extractor is
-        # injected (both connector + document-extraction flags on), fetch ONE
-        # already-discovered annual-report document, extract bounded excerpts and
-        # parse high-confidence primary facts into tiered T1 evidence. A blocked /
-        # scanned / JS-gated document degrades to an honest gap — never fabricated.
-        if self._document_extractor is not None and fetched.links:
+        # Phase 32A Slice 5: DEEP document ingestion (master flag on). When a deep
+        # extractor is injected, fetch up to ``max_docs_per_issuer`` of the most
+        # material discovered documents under the AGGREGATE ingestion budget, run
+        # pdfplumber/HTML extraction + stricter fact validation, and emit rich T1
+        # excerpt / validated-fact evidence plus honest gaps. Takes precedence over
+        # the Phase 29B.2 shallow path; when it is NOT injected the shallow path
+        # below runs byte-for-byte unchanged.
+        if self._primary_document_extractor is not None and fetched.links:
+            doc_items, doc_gaps, artifacts = await self._extract_primary_documents_deep(
+                fetched.links, query, company
+            )
+            items.extend(doc_items)
+            gaps.extend(doc_gaps)
+            self.collected_primary_document_artifacts.extend(artifacts)
+        # Phase 29B.2: bounded (shallow) document extraction. When a document
+        # extractor is injected (both connector + document-extraction flags on),
+        # fetch ONE already-discovered annual-report document, extract bounded
+        # excerpts and parse high-confidence primary facts into tiered T1 evidence.
+        # A blocked / scanned / JS-gated document degrades to an honest gap.
+        elif self._document_extractor is not None and fetched.links:
             doc_items, doc_gaps = await self._extract_primary_document(
                 fetched.links, query
             )
@@ -535,6 +627,353 @@ class CompanyIrConnector(SourceConnector):
             )
         return items, gaps
 
+    # -- Deep primary-document ingestion (Phase 32A Slice 5, master flag) ---
+
+    def _issuer_context(self, company: CompanyContext) -> IssuerContext:
+        """Known issuer identity a table-derived fact must be tied to validate."""
+        return IssuerContext(
+            company_name=self._issuer_name or company.company_name,
+            legal_name=self._verified.company_name if self._verified else None,
+            ticker=company.ticker,
+        )
+
+    def _rank_deep_targets(self, links: list[SafeLink]) -> list[SafeLink]:
+        """Order report links most-material-first, de-dup by URL, cap per issuer.
+
+        Prefers annual-report / results / registration documents and downloadable
+        (PDF) links; stable within equal rank. Bounded by ``max_docs_per_issuer``.
+        """
+
+        def rank(link: SafeLink) -> tuple[int, int]:
+            text = (link.text or "").lower()
+            material = 0 if any(m in text for m in _MATERIAL_DOCUMENT_MARKERS) else 1
+            doc = 0 if link.is_document else 1
+            return (material, doc)
+
+        seen: set[str] = set()
+        ordered: list[SafeLink] = []
+        for link in sorted(links, key=rank):
+            if link.url in seen:
+                continue
+            seen.add(link.url)
+            ordered.append(link)
+        return ordered[: self._max_docs_per_issuer]
+
+    async def _extract_primary_documents_deep(
+        self, links: list[SafeLink], query: QueryContext, company: CompanyContext
+    ) -> tuple[list[EvidenceItem], list[SourceGap], list[PrimaryDocumentArtifact]]:
+        """Ingest up to N material documents under the AGGREGATE ingestion budget.
+
+        Emits rich T1 excerpt + validated-fact evidence and honest gaps, and returns
+        the collected artifacts (extractions + validated facts) for a later
+        persistence task. The aggregate budget stops STARTING new fetches once
+        exhausted, recording an honest ``ingestion_budget_exhausted`` gap for the
+        remaining documents (never a fabricated excerpt/fact). Runs BEFORE the
+        council deadline so ingestion + council stays under the gateway timeout.
+        """
+        assert self._primary_document_extractor is not None
+        allowed = self._verified.allowed_domains if self._verified else ()
+        issuer_context = self._issuer_context(company)
+        targets = self._rank_deep_targets(links)
+
+        items: list[EvidenceItem] = []
+        gaps: list[SourceGap] = []
+        artifacts: list[PrimaryDocumentArtifact] = []
+        budget = self._ingestion_budget_seconds
+        start = self._clock()
+        total_started = time.perf_counter()
+        ingested = 0
+
+        for doc_idx, target in enumerate(targets, start=1):
+            if budget is not None and (self._clock() - start) >= budget:
+                remaining = len(targets) - (doc_idx - 1)
+                gaps.append(
+                    SourceGap(
+                        connector_key=self.connector_key,
+                        source_id="company_ir",
+                        gap_type=GapType.primary_filing_unavailable,
+                        severity=GapSeverity.info,
+                        message=(
+                            "Primary-document ingestion budget exhausted "
+                            f"(ingestion_budget_exhausted); {remaining} further issuer "
+                            "document(s) were not fetched."
+                        ),
+                        blocks_research_complete=False,
+                    )
+                )
+                log_event(
+                    _log,
+                    "primary_document_ingestion_budget_exhausted",
+                    level=logging.WARNING,
+                    connector_key=self.connector_key,
+                    documents_ingested=ingested,
+                    documents_skipped=remaining,
+                    budget_seconds=budget,
+                )
+                break
+
+            artifact = await self._primary_document_extractor(
+                target.url,
+                allowed_domains=allowed,
+                title_hint=target.text or None,
+                original_language=self._original_language(),
+                issuer_context=issuer_context,
+            )
+            artifacts.append(artifact)
+            ingested += 1
+            doc_items, doc_gaps = self._artifact_to_evidence(
+                artifact, target, doc_idx, query
+            )
+            items.extend(doc_items)
+            gaps.extend(doc_gaps)
+            validated = sum(
+                1
+                for f in artifact.validated_facts
+                if f.validation_status == VALIDATION_VALIDATED
+            )
+            log_event(
+                _log,
+                "primary_document_ingested",
+                connector_key=self.connector_key,
+                document_index=doc_idx,
+                status=artifact.status,
+                document_type=artifact.document_type,
+                fetch_ms=artifact.fetch_ms,
+                extraction_ms=artifact.extraction_ms,
+                excerpt_count=(
+                    len(artifact.extraction.excerpts) if artifact.extraction else 0
+                ),
+                table_count=(
+                    len(artifact.extraction.tables) if artifact.extraction else 0
+                ),
+                validated_fact_count=validated,
+            )
+
+        log_event(
+            _log,
+            "primary_document_ingestion_completed",
+            connector_key=self.connector_key,
+            document_count=len(artifacts),
+            total_ingestion_ms=int((time.perf_counter() - total_started) * 1000),
+        )
+        return items, gaps, artifacts
+
+    def _artifact_to_evidence(
+        self,
+        artifact: PrimaryDocumentArtifact,
+        target: SafeLink,
+        doc_idx: int,
+        query: QueryContext,
+    ) -> tuple[list[EvidenceItem], list[SourceGap]]:
+        """Turn ONE deep artifact into bounded T1 excerpt + validated-fact evidence.
+
+        * prose excerpts → ``company_ir_*_excerpt`` T1 items (page/section/method/
+          confidence in provenance);
+        * ``validated`` facts → ``company_ir_financial_fact`` T1 items carrying the
+          structured ``PrimaryFactRef`` (with table location + page);
+        * ``excerpt_only`` facts → an excerpt EvidenceItem (table-located) — NEVER a
+          fact; a scanned/failed extraction yields honest gaps only.
+        """
+        items: list[EvidenceItem] = []
+        gaps: list[SourceGap] = list(artifact.source_gaps)
+        ext = artifact.extraction
+
+        if ext is None or artifact.status != STATUS_EXTRACTED or not ext.has_content:
+            for msg in (ext.source_gaps if ext else []) or [
+                "Annual-report document text could not be extracted; company IR "
+                "index and link remain as metadata evidence."
+            ]:
+                gaps.append(
+                    SourceGap(
+                        connector_key=self.connector_key,
+                        source_id="company_ir",
+                        gap_type=GapType.primary_filing_unavailable,
+                        severity=GapSeverity.info,
+                        message=msg,
+                        blocks_research_complete=False,
+                    )
+                )
+            return items, gaps
+
+        requires_tr = ext.requires_translation or self._requires_translation()
+        doc_title = artifact.title or target.text or "Annual report"
+        url = artifact.source_url or target.url
+        cap = max(1, query.max_items)
+        orig_lang = self._original_language()
+        tr_warn = (
+            ["Local-language primary disclosure; machine translation pending "
+             "Phase 30 — excerpt is unmodified source text."]
+            if requires_tr
+            else []
+        )
+
+        # 1) prose excerpts (bounded) → T1 primary-document excerpt items.
+        for n, exc in enumerate(ext.excerpts[:cap], start=1):
+            source_type = _EXCERPT_SOURCE_TYPE.get(
+                exc.evidence_type, _DEFAULT_EXCERPT_SOURCE_TYPE
+            )
+            provenance = [
+                p
+                for p in (
+                    "Extracted from issuer annual-report document (deep, bounded text)",
+                    f"page={exc.page_number}" if exc.page_number else "page=unknown",
+                    f"section={exc.section}" if exc.section else None,
+                    f"method={exc.extraction_method}",
+                    f"confidence={exc.confidence:.2f}",
+                )
+                if p
+            ]
+            items.append(
+                build_evidence_item(
+                    id=f"IRDOC{doc_idx}X{n}",
+                    source_id="company_ir",
+                    source_name=self._issuer_name or "Company IR",
+                    provider_transport=_IR_TRANSPORT_LABEL,
+                    provider_transport_tier=T1_PRIMARY_COMPANY_SOURCE,
+                    content_source=doc_title,
+                    content_source_tier=T1_PRIMARY_FILING,
+                    source_type=source_type,
+                    title=f"{doc_title} — excerpt",
+                    url=url,
+                    excerpt=exc.text,
+                    requires_translation=requires_tr,
+                    original_language=orig_lang,
+                    language=ext.language,
+                    data_quality="B" if exc.confidence >= 0.75 else "C",
+                    confidence=_confidence_bucket(exc.confidence),
+                    fields_supported=[exc.evidence_type],
+                    provenance=provenance,
+                    warnings=(
+                        ["Bounded excerpt from the issuer's own annual report; "
+                         "not the full document. Human review required."]
+                        + tr_warn
+                    ),
+                )
+            )
+
+        # 2) validated facts → structured T1 primary-filing datapoints.
+        for j, fact in enumerate(
+            (f for f in artifact.validated_facts if f.validation_status == VALIDATION_VALIDATED),
+            start=1,
+        ):
+            value_str = fact.value_text or (
+                str(fact.value_numeric) if fact.value_numeric is not None else ""
+            )
+            unit_bits = " ".join(b for b in (fact.scale, fact.currency, fact.unit) if b)
+            excerpt = (
+                f"{fact.label} = {value_str}"
+                + (f" ({unit_bits})" if unit_bits else "")
+                + (f" [{fact.period}]" if fact.period else "")
+            )
+            conf_bucket = _confidence_bucket(fact.confidence)
+            provenance = [
+                p
+                for p in (
+                    "Validated from issuer annual-report table "
+                    "(deep, stricter grid validation)",
+                    f"page={fact.page_number}" if fact.page_number else "page=unknown",
+                    f"table={fact.table_location}" if fact.table_location else None,
+                    f"method={fact.extraction_method}",
+                    f"confidence={fact.confidence:.2f}",
+                    f"validation_status={fact.validation_status}",
+                    "needs_human_review=true",
+                )
+                if p
+            ]
+            items.append(
+                build_evidence_item(
+                    id=f"IRFACT{doc_idx}_{j}",
+                    source_id="company_ir",
+                    source_name=self._issuer_name or "Company IR",
+                    provider_transport=_IR_TRANSPORT_LABEL,
+                    provider_transport_tier=T1_PRIMARY_COMPANY_SOURCE,
+                    content_source=doc_title,
+                    content_source_tier=T1_PRIMARY_FILING,
+                    source_type="company_ir_financial_fact",
+                    title=f"{doc_title}: {fact.label}",
+                    url=url,
+                    date=fact.period,
+                    excerpt=excerpt,
+                    requires_translation=requires_tr,
+                    data_quality="B" if conf_bucket == "high" else "C",
+                    confidence=conf_bucket,
+                    fields_supported=[fact.label],
+                    provenance=provenance,
+                    warnings=(
+                        [note for note in fact.validation_notes if note]
+                        + ["Validated primary fact — unverified; human review required."]
+                    ),
+                    primary_fact=PrimaryFactRef(
+                        field=fact.label,
+                        value=value_str or fact.label,
+                        numeric_value=fact.value_numeric,
+                        unit=fact.unit,
+                        currency=fact.currency,
+                        scale=fact.scale,
+                        period=fact.period,
+                        source_url=url,
+                        excerpt_id=fact.table_location,
+                        page_number=fact.page_number,
+                        confidence=conf_bucket,
+                        needs_human_review=fact.needs_human_review,
+                    ),
+                )
+            )
+
+        # 3) excerpt_only facts → a table-located excerpt item — NEVER a fact.
+        for k, fact in enumerate(
+            (f for f in artifact.validated_facts if f.validation_status == VALIDATION_EXCERPT_ONLY),
+            start=1,
+        ):
+            value_str = fact.value_text or (
+                str(fact.value_numeric) if fact.value_numeric is not None else ""
+            )
+            unit_bits = " ".join(b for b in (fact.scale, fact.currency, fact.unit) if b)
+            provenance = [
+                p
+                for p in (
+                    "Extracted from issuer annual-report table "
+                    "(deep, bounded; not promoted to a validated fact)",
+                    f"page={fact.page_number}" if fact.page_number else "page=unknown",
+                    f"table={fact.table_location}" if fact.table_location else None,
+                    f"method={fact.extraction_method}",
+                    "validation_status=excerpt_only",
+                )
+                if p
+            ]
+            items.append(
+                build_evidence_item(
+                    id=f"IRTBL{doc_idx}_{k}",
+                    source_id="company_ir",
+                    source_name=self._issuer_name or "Company IR",
+                    provider_transport=_IR_TRANSPORT_LABEL,
+                    provider_transport_tier=T1_PRIMARY_COMPANY_SOURCE,
+                    content_source=doc_title,
+                    content_source_tier=T1_PRIMARY_FILING,
+                    source_type=_DEFAULT_EXCERPT_SOURCE_TYPE,
+                    title=f"{doc_title} — table excerpt",
+                    url=url,
+                    excerpt=(
+                        f"{fact.label}: {value_str}"
+                        + (f" ({unit_bits})" if unit_bits else "")
+                        + (f" [{fact.period}]" if fact.period else "")
+                    ),
+                    requires_translation=requires_tr,
+                    original_language=orig_lang,
+                    language=artifact.extraction.language if artifact.extraction else "en",
+                    data_quality="C",
+                    confidence=_confidence_bucket(fact.confidence),
+                    provenance=provenance,
+                    warnings=(
+                        ["Table cell retained as a bounded excerpt (not a validated "
+                         "fact); human review required."]
+                        + tr_warn
+                    ),
+                )
+            )
+
+        return items, gaps
+
     # -- fetch_events → press / newsroom -----------------------------------
 
     async def fetch_events(
@@ -638,4 +1077,6 @@ __all__ = [
     "PageFetcher",
     "DocumentExtractor",
     "PrimaryDocumentBundle",
+    "PrimaryDocumentArtifact",
+    "PrimaryDocumentDeepExtractor",
 ]
