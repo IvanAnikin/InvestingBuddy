@@ -147,3 +147,30 @@ Tests must pass on every PR before merge to `main`.
 - Never connect to real Azure services in unit or integration tests.
 - Use an in-memory SQLite database for simple unit tests.
 - Use a dedicated PostgreSQL test database for integration tests (separate from dev DB).
+
+---
+
+## Primary-Document Ingestion Tests (Phase 32A Slice 5)
+
+> Implemented — PR open, pending staging validation.
+
+Slice 5 adds offline, network-free tests covering the deepened ingestion path
+(all under `apps/api/tests/`):
+
+- `test_phase32a_slice5_extraction.py` — pdfplumber/HTML structure-aware extraction
+- `test_phase32a_slice5_validation.py` — stricter table/OCR fact validation (validated / excerpt_only / rejected)
+- `test_phase32a_slice5_ingestion.py` — the hierarchy + wall-budget wiring in `maybe_run_council`
+- `test_phase32a_slice5_citations.py` — page/section/table-located citations, no citation from failed/metadata-only extraction
+- `test_phase32a_slice5_persistence.py` — `ExtractedDocument` / `ExtractedFact` persistence + dedup
+- `test_phase32a_slice5_reuse.py` — TTL-bounded reuse of a persisted extraction
+- `test_phase32a_slice5_edgecases.py` — magic-byte / bomb / SSRF-guard / degradation edge cases
+- Shared fixtures in `tests/helpers/pdf_fixtures.py` (new `tests/helpers/` package)
+
+**Test dependency:** these tests require `pdfplumber>=0.11,<0.12` (and its
+transitive pdfminer.six + Pillow) to be installed in the API venv — the same
+runtime dependency added for the feature. No OCR binary is needed (the OCR path is
+a NoOp seam this slice). On a local Python 3.14 venv, install with
+`--only-binary=:all:` (cryptography has no 3.14 source-build path there); the Azure
+App Service Python 3.12 runtime resolves the pure-Python wheels directly. Fetch /
+parse tests never touch real network or real Azure services (fixtures + injected
+resolvers only).

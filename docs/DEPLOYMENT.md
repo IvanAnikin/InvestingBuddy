@@ -531,6 +531,114 @@ grep -RiE "Authorization: Bearer|Set-Cookie:|DATABASE_URL=|api_token=[A-Za-z0-9]
 
 ---
 
+## Bounded Primary-Document Ingestion (Phase 32A Slice 5)
+
+> **PR open — pre-staging.** Implemented on branch `phase-32a-slice5`; NOT yet
+> merged / deployed / staging-validated. Do **not** treat this section as a
+> closed/validated deployment record until the merge SHA + deployed SHA + staging
+> validation result are on file. All flags ship **default-OFF**; the master flag
+> will be **flipped ON on staging for validation** (human-approved `az` change) as
+> a later step.
+
+- **New migration `013`** (`013_add_extracted_documents.py`) creates
+  `extracted_documents` + `extracted_facts` (reversible, additive, backfill-free).
+  Run it on staging with the standard recipe (`## Running Migrations on Staging`
+  above); confirm `alembic current` shows `013`. The two tables stay **empty**
+  unless `PRIMARY_DOCUMENT_INGESTION_ENABLED` is on, so applying the migration is
+  safe even before the flag is flipped. **Rollback:** `alembic downgrade -1`
+  drops both tables.
+- **New dependency:** `pdfplumber>=0.11,<0.12` (table-aware PDF text/layout
+  extraction) — added to `pyproject.toml` + `requirements.txt` alongside the
+  existing `pypdf`. Pure-Python; transitively brings pdfminer.six + Pillow (Pillow
+  gates the future OCR raster path via a pixel cap). No system binaries; **no OCR
+  binary** (tesseract / pdf2image / pymupdf are intentionally NOT added); resolves
+  on the Azure App Service Python 3.12 runtime. Confirm it is present in the
+  deployed image before enabling ingestion. **Dev caveat:** on a local Python 3.14
+  venv, install with `--only-binary=:all:` (cryptography has no 3.14 source-build
+  path there).
+- **What changed:** with `PRIMARY_DOCUMENT_INGESTION_ENABLED=true` (and
+  `SOURCE_CONNECTOR_ENABLED=true`), the source-connector phase inside
+  `maybe_run_council` deepens Phase 29B.2 extraction (HTML tables/sections →
+  native-PDF text + table extraction → OCR NoOp seam) under an aggregate wall
+  budget, feeds validated primary-document facts into the council evidence pack
+  (a `primary_document` floor + cap that does NOT weaken the Slice-2
+  `financial_floor=3` / news caps), and — when
+  `REPORT_CITATION_PERSISTENCE_ENABLED` is ALSO on — persists + reuses extraction
+  in the new tables. With the master flag **OFF** (default) behaviour is **exactly
+  Phase 29B.2 / Slice 4** — no deep fetch, no persistence, no reuse.
+- **OCR is a NoOp seam this slice.** `PRIMARY_DOCUMENT_OCR_ENABLED` exists and is
+  double-gated behind the master flag, but the only OCR provider shipped returns
+  an empty `ocr_unavailable` result (never fabricated text). A real Azure Document
+  Intelligence adapter is a deferred follow-up (needs resource provisioning +
+  admin sign-off — see `docs/DECISIONS.md` ADR-014). Scanned / JS-gated issuer
+  PDFs still degrade honestly to metadata-only / gaps.
+- **New app settings (all safe non-secret defaults; master gate OFF):**
+
+  | Setting | Default | Purpose |
+  |---|---|---|
+  | `PRIMARY_DOCUMENT_INGESTION_ENABLED` | `false` | Master gate. `false` → deep path never entered, byte-identical. |
+  | `PRIMARY_DOCUMENT_OCR_ENABLED` | `false` | Optional OCR (NoOp seam only this slice); double-gated behind the master flag. |
+  | `PRIMARY_DOCUMENT_MAX_DOWNLOAD_BYTES` | `8000000` | Hard byte ceiling per fetched document. |
+  | `PRIMARY_DOCUMENT_MAX_PDF_PAGES` | `40` | Max leading PDF pages read. |
+  | `PRIMARY_DOCUMENT_MAX_OCR_PAGES` | `5` | Max pages rastered + OCR'd. |
+  | `PRIMARY_DOCUMENT_FETCH_TIMEOUT_SECONDS` | `15` | Per-document fetch timeout. |
+  | `PRIMARY_DOCUMENT_EXTRACTION_TIMEOUT_SECONDS` | `20` | Per-document extraction timeout. |
+  | `PRIMARY_DOCUMENT_TOTAL_TIMEOUT_SECONDS` | `45` | HARD per-document total (fetch + extract + parse). |
+  | `PRIMARY_DOCUMENT_INGESTION_BUDGET_SECONDS` | `60` | AGGREGATE ingestion wall budget (stays under the ~230s gateway alongside the ~150s council). |
+  | `PRIMARY_DOCUMENT_MAX_DOCS_PER_ISSUER` | `3` | Docs ingested per issuer per request. |
+  | `PRIMARY_DOCUMENT_MAX_EXCERPTS_PER_DOCUMENT` | `8` | Excerpts per document. |
+  | `PRIMARY_DOCUMENT_MAX_EXCERPT_CHARS` | `1200` | Chars per excerpt. |
+  | `PRIMARY_DOCUMENT_MIN_EXTRACTION_CONFIDENCE` | `0.6` | Min confidence for a validated fact (else excerpt-only). |
+  | `PRIMARY_DOCUMENT_MAX_IMAGE_PIXELS` | `40000000` | Pillow decompression-bomb guard for the OCR raster path. |
+  | `PRIMARY_DOCUMENT_EVIDENCE_FLOOR` | `1` | Guaranteed primary-document facts in the pack (ON only with the master flag). |
+  | `PRIMARY_DOCUMENT_EVIDENCE_CAP` | `6` | Hard cap on primary-document facts in the pack. |
+  | `PRIMARY_DOCUMENT_REUSE_TTL_HOURS` | `24` | Freshness window for reusing a persisted extraction (both ingestion + citation-persistence flags on). |
+
+  These are **tuning knobs, not secrets** — no real secret value is ever printed;
+  all KEYS are in `.env.example` with default values. Leave
+  `PRIMARY_DOCUMENT_INGESTION_ENABLED=false` until Slice 5 is validated.
+  **Rollback:** set `PRIMARY_DOCUMENT_INGESTION_ENABLED=false` to return to the
+  exact prior behaviour with no code change (the `013` tables can remain — they
+  stay empty).
+- **Security controls (see `docs/SECURITY.md`).** No new public endpoint and no
+  user-supplied-URL surface; every fetch routes through the allowlist-gated
+  hardened layer with an opt-in resolved-IP / DNS-rebinding guard (before & after
+  redirects), a %PDF magic-byte check, a decompression-bomb + page/byte cap, and
+  the Pillow pixel cap. Extracted text is treated as untrusted, inert data. No JS /
+  browser / paywall / auth bypass. Logging is counts / status only — the Phase
+  27.1D "Verify NO secrets are logged" grep applies unchanged.
+
+### Staging validation checklist (run AFTER merge + deploy; migration applied; flag flipped ON under the human gate)
+
+Do not mark Slice 5 ✅ until these pass. `PRIMARY_DOCUMENT_INGESTION_ENABLED` ships
+`false`; apply migration `013`, then flip the master flag `true` on staging only
+after merge/deploy approval, then:
+
+- **A. Deploy identity.** API serves the merged commit SHA (stable polls); DB head
+  advances to `013`; `AUTH_TEST_MODE` absent.
+- **B. Flag state.** Confirm the master flag is the only intended Slice-5 change;
+  the knobs read their safe defaults (or intended staging overrides); OCR flag off.
+- **C. OFF-state regression.** With the master flag off, a fresh report is
+  byte-compatible with Slice 4 (no deep fetch, no new appendix counts, no rows in
+  `extracted_documents` / `extracted_facts`).
+- **D. Digital-text issuer.** For an issuer with a native (non-scanned) primary
+  document, deep extraction yields validated, page/table-located facts + citations
+  with disclosed provenance; the evidence-pack `primary_document` floor/cap holds
+  and the Slice-2 financial floor is not weakened.
+- **E. Scanned / JS-gated issuer (e.g. Richemont).** Degrades honestly to
+  metadata-only / `extraction_failed`; no fabricated facts; no citation from a
+  failed / metadata-only extraction; OCR NoOp yields `ocr_unavailable`.
+- **F. Persistence + reuse.** With citation-persistence ALSO on, rows persist
+  (deduped by `content_hash`); a report regeneration within the TTL reuses the
+  stored extraction (no re-fetch); counts are stable / not inflated.
+- **G. Report integrity.** `schema_valid=true`, `safety_valid=true`,
+  `human_review_required=true`, `publication_ready=false`; extracted facts are
+  `needs_human_review`; no recommendation / valuation.
+- **H. Security.** No user-supplied-URL surface; response + log secret grep clean;
+  logs carry counts / status only (no bytes / extracted text / URLs with secrets).
+
+---
+
 ## LLM Council Reliability — Bounded Retry + Deterministic Chair Fallback (Phase 32A Slice 4)
 
 > **PR open — pre-staging.** Not yet merged / deployed / staging-validated. Do

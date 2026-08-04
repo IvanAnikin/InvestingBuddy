@@ -106,6 +106,48 @@ Required mitigations:
 
 ---
 
+## Outbound Document Fetch / SSRF Hardening (Phase 32A Slice 5)
+
+> **Implemented — PR open, pending staging validation.** Behind the default-OFF
+> `PRIMARY_DOCUMENT_INGESTION_ENABLED` flag; with it off none of this fetch/parse
+> surface is exercised.
+
+Phase 32A Slice 5 adds bounded ingestion of an issuer's OWN primary documents
+(annual report / registration document) — a new outbound-fetch + PDF-parsing
+surface. It is hardened as follows:
+
+- **No arbitrary-URL surface.** No endpoint accepts a user-supplied URL. Every
+  document URL comes from the verified-issuer / company-IR allowlist, and all new
+  fetches route through the allowlist-gated hardened fetch layer
+  (`safe_web_fetcher`). No JS / browser / paywall / auth bypass; no cookies or
+  credentials are sent.
+- **SSRF / DNS-rebinding guard (opt-in on the deep path).** The resolved IPs for a
+  host are checked before AND after redirects; a target that resolves to a
+  loopback / private / link-local / reserved / multicast / unspecified address, or
+  to a cloud instance-metadata IP (`169.254.169.254` / `fd00:ec2::254`), is
+  rejected. Known residual (deferred, non-blocking — ADR-014): the guard resolves
+  and checks but does not yet pin the connected socket to the checked IP
+  (resolve-then-connect IP-pinning would fully close the TOCTOU window), and DNS
+  resolution is synchronous (async resolution is a deferred follow-up).
+- **Content + resource bounds.** A `%PDF-` magic-byte check before parsing; a hard
+  download-byte ceiling; page / OCR-page / excerpt / char / table-size caps; a
+  decompression-bomb guard; a Pillow image-pixel cap for the (future) OCR raster
+  path; and per-document + aggregate wall-time budgets so ingestion cannot hang or
+  exhaust memory.
+- **External text is untrusted, inert data.** Extracted text is never executed or
+  interpreted; prompt-injection markers are preserved verbatim (not stripped) so a
+  downstream prompt-boundary guard sees them — the extractor never treats document
+  content as instructions.
+- **Secret-free logging.** Ingestion logs counts / status only — never document
+  bytes, extracted text, or URLs carrying secrets; canonical URLs are
+  credential-stripped before persistence. On parse error only the exception class
+  name is recorded. The Phase 27.1D log secret-scan applies unchanged.
+- **No fabrication, human review required.** A blocked / JS-gated / scanned
+  document degrades to an honest metadata-only / `extraction_failed` gap; every
+  extracted fact is `needs_human_review`; `publication_ready` stays false.
+
+---
+
 ## Data Isolation
 
 - `portfolio_positions` — never included in public API responses

@@ -940,3 +940,72 @@ create no citations. Retry telemetry (`llm_agent_retry` / `llm_agent_retry_skipp
 / `llm_committee_chair_fallback`) carries SAFE fields only — attempt, agent_name,
 error_type, duration_ms, backoff_ms, capped retry_after, counts — never prompts,
 completions, evidence, or secrets.
+
+## Primary-Document Ingestion (Phase 32A Slice 5)
+
+> **Status: implemented on branch `phase-32a-slice5` — PR open, NOT yet merged /
+> deployed / staging-validated.** Gated by a default-OFF master flag
+> `PRIMARY_DOCUMENT_INGESTION_ENABLED`; with it off the connector / council /
+> evidence-pack / persistence paths are byte-for-byte unchanged (Phase 29B.2
+> behaviour), and migration `013`'s two tables stay empty.
+
+Slice 5 deepens the Phase 29B.2 extractor so the single-company council can
+eventually reason from an issuer's OWN primary documents (annual report /
+registration document) with precise citation provenance — not only metadata-only
+references. The ingestion runs in the **source-connector phase inside
+`maybe_run_council`, BEFORE the council**, under an AGGREGATE wall-budget
+(`PRIMARY_DOCUMENT_INGESTION_BUDGET_SECONDS`) so ingestion + the ~150s council
+budget stay under the ~230s inline gateway.
+
+**Ingestion hierarchy (least-cost first).** `primary_document_extractor` structures
+one already-discovered, allowlisted document: structured (SEC/XBRL, unchanged) →
+deepened HTML (stdlib `HTMLParser`: tables + headings/sections, boilerplate
+removal) → native PDF (**pdfplumber**: per-page text + table extraction, each item
+carrying method / page / table location / confidence + a raw-bytes `content_hash`)
+→ OCR fallback. It is bounded (page / excerpt / char / table-size / wall-clock
+caps), honest (wrong magic byte / malformed / encrypted → `extraction_failed`;
+valid-but-scanned or empty → `metadata_only`; text never fabricated), never raises,
+and treats extracted text as UNTRUSTED, inert data (injection markers preserved
+verbatim for a downstream prompt-boundary guard, never executed).
+
+**OCR is a NoOp seam only this slice.** `ocr_provider` mirrors the Phase 30A
+`TranslationProvider` seam: the only provider shipped returns an empty
+`ocr_unavailable` result (never fabricated text), and `get_ocr_provider` returns
+it regardless of config. A real Azure Document Intelligence adapter is deferred
+(needs resource provisioning + admin sign-off — see `docs/DECISIONS.md` ADR-014),
+so scanned / JS-gated issuer PDFs (e.g. some Richemont reports) still degrade
+honestly to metadata-only / gaps this slice.
+
+**Stricter fact validation.** `extracted_fact_validator` holds table/OCR-derived
+values to a higher bar — label/value/unit/period + table-column alignment +
+cross-field arithmetic (subtotals) + cross-method agreement, with OCR downgraded.
+Only a fact that clears the bar is `validated`; everything short is retained
+`excerpt_only` (`rejected` when it fails a hard check) and is never a structured
+fact. Metadata-only references never become facts or claim-verification. Every
+extracted fact is `needs_human_review=True`.
+
+**Evidence pack + citations.** When the master flag is on, the evidence budgeter
+adds a `primary_document` floor + cap WITHOUT weakening the Slice-2
+`financial_floor=3` / news caps. Citations carry the fact's page / section / table
+location; a failed / metadata-only extraction yields no citation; OCR provenance
+is disclosed. A deep-extracted item carries a runtime-only `document_content_hash`
+(excluded from serialization) so the citation write keys one canonical `Source`
+per distinct document (raw-bytes identity).
+
+**Persistence + reuse (both flags on).** When BOTH
+`PRIMARY_DOCUMENT_INGESTION_ENABLED` and `REPORT_CITATION_PERSISTENCE_ENABLED` are
+on, `run_council` threads the deep artifacts (`primary_document_artifacts`,
+runtime-only) to the report-write path, which persists `ExtractedDocument` /
+`ExtractedFact` rows (migration `013`) next to the citation write, deduped by raw
+`content_hash`. Before ingestion runs, a bounded reuse lookup rebuilds a fresh
+persisted document for the same company within `PRIMARY_DOCUMENT_REUSE_TTL_HOURS`
+(from its stored excerpts + validated facts) so a report regeneration skips the
+re-fetch / re-extract. With either flag off there is no reuse lookup and no
+persistence — the path is byte-identical.
+
+**Security posture.** No new public endpoint and no user-supplied-URL surface;
+every fetch routes through the allowlist-gated hardened layer. Bounded by size /
+page / OCR-page caps, a %PDF magic-byte check, a decompression-bomb guard, a
+Pillow image-pixel cap, and an opt-in resolved-IP / DNS-rebinding guard (before &
+after redirects on the deep path). No JS / browser / paywall / auth bypass.
+Logging is counts / status only — never document bytes or extracted text.

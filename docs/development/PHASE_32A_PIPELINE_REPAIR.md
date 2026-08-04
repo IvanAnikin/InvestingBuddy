@@ -452,3 +452,110 @@ logging; single-transaction persistence (no mixed-report citations); `schema_val
 / `safety_valid` stay true; `publication_ready`=False / `human_review_required`=True
 unchanged; Slice-1/Slice-2 behavior untouched; OFF ⇒ byte-identical. Tests:
 `apps/api/tests/test_phase32a_slice3_source_citation_persistence.py`.
+
+---
+
+## 10. Slice 5 — Deeper primary-document ingestion (IMPLEMENTED — PR open, pending staging validation)
+
+**Status: implemented on branch `phase-32a-slice5` — NOT merged / deployed /
+staging-validated.** The LAST Phase 32A slice (§1.6). Backend-only, dark-safe
+behind a default-OFF master flag (`primary_document_ingestion_enabled`, env
+`PRIMARY_DOCUMENT_INGESTION_ENABLED`) + a default-OFF `PRIMARY_DOCUMENT_OCR_ENABLED`
++ 15 tuning knobs. Adds migration `013` (reversible / additive / backfill-free).
+Flag OFF ⇒ connector / council / evidence-pack / persistence paths behave
+byte-for-byte as Phase 29B.2 / Slice 4 (all prior tests green); the `013` tables
+stay empty. Persistence + reuse are additionally gated on
+`report_citation_persistence_enabled` (Slice 3).
+
+**What it repairs (§1.6 inventory).** Phase 29B.2 shipped bounded native-text
+PDF/HTML extraction (pypdf, no OCR, no tables); on staging every reachable issuer
+report is scanned/JS-gated → metadata-only. Slice 5 deepens ingestion so the
+council can eventually cite real T1 primary evidence with precise provenance.
+
+**Ingestion hierarchy (least-cost first)** — `sources/primary_document_extractor.py`
+(pure, network-free, its own unit tests) structures ONE already-discovered,
+allowlisted document:
+1. structured (SEC/XBRL) — unchanged;
+2. deepened HTML — stdlib `HTMLParser`: tables + headings/sections, boilerplate
+   removal;
+3. native PDF — **pdfplumber**: per-page text + table extraction, each item
+   carrying method / page / table location / confidence + a raw-bytes
+   `content_hash`;
+4. OCR fallback — `sources/ocr_provider.py`, a `TranslationProvider`-style seam
+   whose ONLY shipped provider returns an empty `ocr_unavailable` result (never
+   fabricated text). A real Azure Document Intelligence adapter is DEFERRED
+   (needs resource provisioning + admin sign-off — DECISIONS.md ADR-014).
+
+**Where it runs.** In the source-connector phase inside `maybe_run_council`
+(`llm/council.py`), BEFORE the council, when `primary_document_ingestion_enabled`
+is on — `live_fetchers.live_primary_document_extractor` does the DEEP fetch (via
+the allowlist-gated hardened `safe_web_fetcher`) + extraction + stricter
+validation. It is bounded by an AGGREGATE ingestion wall-budget
+(`primary_document_ingestion_budget_seconds`) plus per-document fetch/extract/total
+budgets, so ingestion + the ~150s council budget stay under the ~230s inline
+gateway.
+
+**Stricter validation** — `sources/extracted_fact_validator.py`: a table/OCR value
+must clear label/value/unit/period + table-column alignment + cross-field
+arithmetic (subtotals) + cross-method agreement (OCR downgraded). Only then is it
+`validated`; everything short is `excerpt_only` (or `rejected` on a hard failure)
+and never a structured fact. Absence ⇒ no fact. Every produced fact is
+`needs_human_review=True`. Metadata-only references never become facts or
+claim-verification.
+
+**Evidence pack + citations** (`llm/evidence_pack.py`, `llm/evidence_budget.py`,
+`llm/schemas.py`): a `primary_document` floor + cap (`primary_document_evidence_floor`
+/ `_cap`) is added ON only with the master flag, WITHOUT weakening the Slice-2
+`financial_floor=3` / news caps. A deep-extracted `EvidenceItem` carries a
+runtime-only `document_content_hash` (`exclude=True` ⇒ the pack JSON the council
+reads is byte-identical) so the citation write keys one canonical `Source` per
+distinct document (raw-bytes identity) and surfaces page/section/table provenance.
+No citation from a failed / metadata-only extraction; OCR provenance disclosed.
+
+**Persistence + reuse** (`services/extracted_document_service.py`,
+`final_report_generator.py`): `run_council` threads the deep artifacts
+(`CouncilResult.primary_document_artifacts`, runtime-only) to the report-write
+path, which — when BOTH the ingestion + citation-persistence flags are on —
+persists `ExtractedDocument` / `ExtractedFact` rows next to the citation write
+(inside a SAVEPOINT so a persistence error rolls back only that), deduped by raw
+`content_hash`. Before ingestion runs, `load_reusable_documents` builds an
+in-memory reuse lookup for the same company within `primary_document_reuse_ttl_hours`
+(rebuilt from stored excerpts + validated facts) so a report regeneration skips the
+re-fetch / re-extract. The appendix gains honest state counts
+(`primary_document_extracted_count` / `_metadata_only_count` /
+`_extraction_failed_count`), `db_persisted_source_count`,
+`primary_document_citations` (page/section/table provenance) and a
+`primary_document_note`.
+
+**Security** (SECURITY.md "Outbound Document Fetch / SSRF Hardening"): no
+user-supplied-URL surface + no new public endpoint; opt-in resolved-IP /
+DNS-rebinding guard (before & after redirects) rejecting private / loopback /
+link-local / reserved / metadata IPs; `%PDF` magic-byte check; decompression-bomb
++ download-byte + page caps; Pillow image-pixel cap for the OCR raster path;
+extracted text treated as UNTRUSTED, inert data (injection markers preserved
+verbatim for a downstream prompt-boundary guard); counts/status-only logging (no
+bytes / text / secret URLs). No JS / browser / paywall / auth bypass.
+
+**Migration decision — `013` REQUIRED** (unlike Slices 2–4): durable
+`extracted_documents` / `extracted_facts` are needed so extraction persists +
+reuses across regeneration and facts carry durable page/table provenance
+(DECISIONS.md ADR-014). Reversible, additive, backfill-free; tables unwritten
+unless ingestion is enabled.
+
+**Deferred follow-ups (ADR-014):** real Azure Document Intelligence OCR adapter +
+its call-site wiring; blob-storage document-body caching (the
+`extracted_documents.blob_path` hook); SEC 10-K / 20-F full-text body fetch;
+resolve-then-connect IP-pinning (to fully close the DNS-rebinding TOCTOU) and async
+DNS resolution (both non-blocking).
+
+**Invariants held:** OFF ⇒ byte-identical; no fabricated facts (scanned / JS-gated
+issuer PDFs — e.g. some Richemont reports — degrade honestly to metadata-only /
+`extraction_failed` gaps); metadata-only refs never facts; stricter validation for
+table/OCR facts; `publication_ready`=False / `human_review_required`=True unchanged;
+Slice 1–4 behaviour untouched; no user-supplied-URL surface. Tests: 7 new
+`apps/api/tests/test_phase32a_slice5_{extraction,validation,ingestion,citations,persistence,reuse,edgecases}.py`
++ `apps/api/tests/helpers/pdf_fixtures.py`.
+
+**Next (before any closure):** apply migration `013` on staging; flip
+`PRIMARY_DOCUMENT_INGESTION_ENABLED` ON (human-approved); run the DEPLOYMENT.md
+Slice-5 A–H staging validation checklist.
