@@ -31,8 +31,11 @@ Safety properties (why this is not an SSRF surface):
 from __future__ import annotations
 
 import ipaddress
+import socket
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
+from typing import Any
 from urllib.parse import urljoin, urlsplit
 
 from app.core.config import Settings
@@ -53,6 +56,16 @@ _INTERNAL_HOST_SUFFIXES = (".local", ".internal", ".localhost", ".lan", ".home.a
 _INTERNAL_HOST_EXACT = frozenset(
     {"localhost", "localhost.localdomain", "metadata", "metadata.google.internal"}
 )
+
+# Cloud instance-metadata endpoints — never a legitimate fetch target. The IPv4
+# address is inside link-local (169.254.0.0/16) so it is already rejected by the
+# is_link_local check below; it is enumerated here for explicitness + the IPv6
+# form, which is what the resolved-IP guard reports on.
+_METADATA_IPS = frozenset({"169.254.169.254", "fd00:ec2::254"})
+
+# A resolver is any callable shaped like ``socket.getaddrinfo`` — injectable so
+# the DNS guard can be unit-tested without touching real DNS.
+Resolver = Callable[..., list[Any]]
 
 # Link text keywords that mark an annual-report / financial-disclosure link.
 ANNUAL_REPORT_KEYWORDS: tuple[str, ...] = (
@@ -142,11 +155,82 @@ def is_safe_public_host(host: str | None) -> bool:
     return True
 
 
+def _ip_is_public(ip_text: str) -> bool:
+    """True when ``ip_text`` is a routable, public unicast address.
+
+    False for loopback / private / link-local / reserved / multicast /
+    unspecified addresses — i.e. every SSRF-relevant internal range.
+    """
+    try:
+        ip = ipaddress.ip_address(ip_text)
+    except ValueError:
+        return False
+    return not (
+        ip.is_loopback
+        or ip.is_private
+        or ip.is_link_local
+        or ip.is_reserved
+        or ip.is_multicast
+        or ip.is_unspecified
+    )
+
+
+def assert_resolved_ip_public(
+    host: str | None,
+    *,
+    resolver: Resolver = socket.getaddrinfo,
+) -> str | None:
+    """Return None if EVERY resolved IP for ``host`` is public, else a reason.
+
+    Closes the DNS-rebinding / name-that-resolves-internal SSRF vector that a
+    hostname allowlist alone cannot: it resolves ``host`` and rejects the target
+    if ANY resolved address is loopback / private / link-local / reserved /
+    multicast, or the cloud instance-metadata endpoint (``169.254.169.254``).
+    ``resolver`` is injectable (shaped like ``socket.getaddrinfo``) so this is
+    unit-testable without real DNS. Never raises — a resolution error is itself a
+    "block" reason.
+    """
+    if not host:
+        return "empty host"
+    try:
+        infos = resolver(host, None)
+    except Exception as exc:  # noqa: BLE001 - a resolution failure is a block
+        return f"dns resolution failed: {type(exc).__name__}"
+    ips: list[str] = []
+    for info in infos or []:
+        try:
+            sockaddr = info[4]
+            if sockaddr:
+                ips.append(str(sockaddr[0]))
+        except (IndexError, TypeError):
+            continue
+    if not ips:
+        return "no resolved ip"
+    for ip_text in ips:
+        clean = ip_text.split("%", 1)[0]  # drop any IPv6 scope id
+        if clean in _METADATA_IPS:
+            return f"resolved to metadata ip: {clean}"
+        if not _ip_is_public(clean):
+            return f"resolved to non-public ip: {clean}"
+    return None
+
+
+def looks_like_pdf(raw: bytes) -> bool:
+    """True when ``raw`` begins with the ``%PDF-`` magic-byte signature.
+
+    A cheap, reusable content-sniff so a caller never feeds a non-PDF blob (an
+    HTML error page served as ``application/octet-stream``, say) to a PDF parser.
+    """
+    return bool(raw) and raw[:5] == b"%PDF-"
+
+
 def check_fetch_url(
     url: str | None,
     allowed_domains: tuple[str, ...],
     *,
     cfg: Settings | None = None,
+    resolve_ip: bool = False,
+    resolver: Resolver = socket.getaddrinfo,
 ) -> str | None:
     """Return None if ``url`` is safe to fetch, else a short reason string.
 
@@ -154,6 +238,11 @@ def check_fetch_url(
     host; and host is inside ``allowed_domains``. When ``allowlist_only`` is off
     (never in production), the allowlist check is skipped but every other guard
     still applies.
+
+    When ``resolve_ip`` is True the host is additionally DNS-resolved and every
+    resolved IP must be public (see :func:`assert_resolved_ip_public`) — this is
+    OPT-IN and defaults OFF so all existing callers are byte-for-byte unchanged.
+    ``resolver`` is injectable for tests.
     """
     cfg = cfg or default_settings
     if not url:
@@ -171,6 +260,10 @@ def check_fetch_url(
         host, allowed_domains
     ):
         return f"host not in allowlist: {host}"
+    if resolve_ip:
+        dns_reason = assert_resolved_ip_public(host, resolver=resolver)
+        if dns_reason:
+            return f"unsafe resolved ip ({dns_reason})"
     return None
 
 
@@ -318,12 +411,21 @@ async def safe_fetch_page(
     keywords: tuple[str, ...] = ANNUAL_REPORT_KEYWORDS,
     fallback_keywords: tuple[str, ...] = (),
     cfg: Settings | None = None,
+    resolve_ip: bool = False,
+    resolver: Resolver = socket.getaddrinfo,
 ) -> SafeFetchResult:
-    """Fetch one allowlisted HTTPS page (bounded, guarded, never raising)."""
+    """Fetch one allowlisted HTTPS page (bounded, guarded, never raising).
+
+    ``resolve_ip`` is OPT-IN (default OFF): when True the target host's resolved
+    IPs are checked before the initial fetch AND after each redirect hop. Left OFF
+    every existing caller is byte-for-byte unchanged.
+    """
     cfg = cfg or default_settings
     result = SafeFetchResult(requested_url=url)
 
-    reason = check_fetch_url(url, allowed_domains, cfg=cfg)
+    reason = check_fetch_url(
+        url, allowed_domains, cfg=cfg, resolve_ip=resolve_ip, resolver=resolver
+    )
     if reason:
         result.blocked = True
         result.error = reason
@@ -351,7 +453,13 @@ async def safe_fetch_page(
                     if resp.is_redirect:
                         location = resp.headers.get("location", "")
                         nxt = urljoin(current, location)
-                        block = check_fetch_url(nxt, allowed_domains, cfg=cfg)
+                        block = check_fetch_url(
+                            nxt,
+                            allowed_domains,
+                            cfg=cfg,
+                            resolve_ip=resolve_ip,
+                            resolver=resolver,
+                        )
                         if block:
                             result.blocked = True
                             result.error = f"redirect blocked ({block})"
@@ -392,7 +500,10 @@ async def safe_fetch_page(
 __all__ = [
     "SafeLink",
     "SafeFetchResult",
+    "Resolver",
     "is_safe_public_host",
+    "assert_resolved_ip_public",
+    "looks_like_pdf",
     "check_fetch_url",
     "parse_title",
     "parse_meta_description",

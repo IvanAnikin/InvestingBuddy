@@ -29,6 +29,7 @@ Design guarantees:
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
@@ -48,6 +49,8 @@ from app.services.sources.connectors.company_ir import (
     DocumentExtractor,
     PageFetcher,
     PressFetcher,
+    PrimaryDocumentArtifact,
+    PrimaryDocumentDeepExtractor,
 )
 from app.services.sources.connectors.local_language_press import (
     SOURCE_ID as LOCAL_LANGUAGE_PRESS_ID,
@@ -61,6 +64,9 @@ from app.services.sources.evidence import EvidenceItem
 from app.services.sources.gaps import GapSeverity, GapType, SourceGap
 from app.services.sources.registry import SourceRegistry, build_registry
 from app.services.sources.verified_issuer_sources import get_verified_issuer_source
+
+if TYPE_CHECKING:  # reuse lookup is a plain in-memory dict — never a DB session.
+    from app.services.extracted_document_service import ReusedDocument
 
 # Source ids whose connectors can produce live company evidence in this phase.
 SEC_ID = "sec_edgar"
@@ -137,6 +143,12 @@ class CompanySourceEvidence(BaseModel):
     evidence_items: list[EvidenceItem] = Field(default_factory=list)
     source_gaps: list[SourceGap] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    # Phase 32A Slice 5: deep primary-document ingestion artifacts (extractions +
+    # validated facts + provenance), threaded OUT for a LATER persistence task.
+    # Empty on the OFF / shallow path — additive, so existing callers are unchanged.
+    primary_document_artifacts: list[PrimaryDocumentArtifact] = Field(
+        default_factory=list
+    )
 
     def gap_messages(self) -> list[str]:
         """Compact, de-duplicated gap strings for an evidence pack's known_gaps."""
@@ -267,6 +279,8 @@ async def collect_company_source_evidence(
     press_fetcher: PressFetcher | None = None,
     ir_page_fetcher: PageFetcher | None = None,
     document_extractor: DocumentExtractor | None = None,
+    primary_document_extractor: PrimaryDocumentDeepExtractor | None = None,
+    primary_document_reuse: dict[str, ReusedDocument] | None = None,
     cfg: Settings | None = None,
     registry: SourceRegistry | None = None,
 ) -> CompanySourceEvidence:
@@ -282,7 +296,10 @@ async def collect_company_source_evidence(
     fetch + text-extraction + fact-parsing of ONE discovered annual-report
     document; when None no document is fetched (Phase 29B.1 behaviour preserved).
     ``source_ids`` restricts which connectors run; when ``None`` a sensible
-    default set runs.
+    default set runs. ``primary_document_reuse`` (Phase 32A Slice 5, 3c-iii) is an
+    OPTIONAL in-memory lookup (NOT a DB session) keyed by canonical URL: a candidate
+    document already present is rebuilt from persisted excerpts + facts and REUSED
+    (no re-fetch/re-extract). None / empty ⇒ every candidate is fetched as before.
     """
     cfg = cfg or default_settings
     registry = registry or build_registry(cfg)
@@ -301,6 +318,7 @@ async def collect_company_source_evidence(
     items: list[EvidenceItem] = []
     gaps: list[SourceGap] = []
     warnings: list[str] = []
+    primary_document_artifacts: list[PrimaryDocumentArtifact] = []
 
     # -- SEC EDGAR (self-gates on eligibility) -----------------------------
     if want(SEC_ID):
@@ -327,6 +345,14 @@ async def collect_company_source_evidence(
             verified_source=verified,
             page_fetcher=ir_page_fetcher,
             document_extractor=document_extractor,
+            primary_document_extractor=primary_document_extractor,
+            primary_document_reuse=primary_document_reuse,
+            max_docs_per_issuer=cfg.primary_document_max_docs_per_issuer,
+            ingestion_budget_seconds=(
+                float(cfg.primary_document_ingestion_budget_seconds)
+                if primary_document_extractor is not None
+                else None
+            ),
         )
         ir_items: list[EvidenceItem] = []
         for method in (ir.search_company, ir.fetch_filings, ir.fetch_events):
@@ -337,6 +363,9 @@ async def collect_company_source_evidence(
         # Prioritise extracted document excerpts/facts so they survive the
         # per-source cap (Phase 29B.2), then de-dup, then bound.
         items.extend(_prioritize_ir_items(_dedup_evidence(ir_items))[:max_items])
+        # Phase 32A Slice 5: thread the deep ingestion artifacts OUT for a later
+        # persistence task (empty unless the deep extractor was injected).
+        primary_document_artifacts.extend(ir.collected_primary_document_artifacts)
 
     # -- Non-US primary-disclosure context (Phase 29B.1) -------------------
     # For a verified non-US issuer, home-regulator connectors are still
@@ -402,7 +431,10 @@ async def collect_company_source_evidence(
         warnings.extend(res.warnings)
 
     return CompanySourceEvidence(
-        evidence_items=items, source_gaps=gaps, warnings=warnings
+        evidence_items=items,
+        source_gaps=gaps,
+        warnings=warnings,
+        primary_document_artifacts=primary_document_artifacts,
     )
 
 

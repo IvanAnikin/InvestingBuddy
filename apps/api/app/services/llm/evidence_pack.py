@@ -203,6 +203,7 @@ class _Builder:
         source_id: str | None = None,
         primary_fact: dict[str, Any] | None = None,
         provenance: list[str] | None = None,
+        document_content_hash: str | None = None,
     ) -> bool:
         if self.full:
             return False
@@ -232,6 +233,10 @@ class _Builder:
                 source_id=source_id,
                 primary_fact=primary_fact,
                 provenance=provenance or [],
+                # Phase 32A Slice 5 (3c-ii): raw-bytes document identity for a deep
+                # primary-document item (excluded from serialization). Present only
+                # for deep-ingested items ⇒ the dark path carries None.
+                document_content_hash=document_content_hash,
             )
         )
         return True
@@ -270,6 +275,7 @@ class _Builder:
             source_id=getattr(item, "source_id", None),
             primary_fact=pf_dump,
             provenance=list(getattr(item, "provenance", None) or []),
+            document_content_hash=getattr(item, "document_content_hash", None),
         )
 
 

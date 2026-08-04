@@ -54,8 +54,17 @@ alembic revision --autogenerate -m "short description"
 | 010 | `010_add_market_discovery.py` | creates `discovery_runs`, `discovery_candidates` (Phase 25 Real Market Candidate Discovery) |
 | 011 | `011_add_thesis_discovery.py` | adds thesis columns to `discovery_runs` (`mode`, `thesis_text`, `parsed_thesis_json`, `universe_json`) + `discovery_candidates` (`thesis_relevance_score`, `combined_internal_score`, `thesis_match_json`) (Phase 27 Thesis-to-Universe Discovery) |
 | 012 | `012_add_report_company_id.py` | adds `company_id` (UUID FK → companies.id, SET NULL) + index `ix_reports_company_id` to `reports` (Phase 32A hotfix — company-scoped `from-company` final-report selection) |
+| 013 | `013_add_extracted_documents.py` | creates `extracted_documents`, `extracted_facts` (Phase 32A Slice 5 primary-document ingestion). Reversible, additive, backfill-free. **Implemented — PR open, pending staging validation.** |
 
-**DB head = `012`.** **Phase 32A Slice 3 (source/citation persistence + honest
+**DB head baseline = `012`; Phase 32A Slice 5 adds migration `013` → head `013`.**
+Slice 5 is **implemented, PR-open, pending staging validation** — this migration
+is not yet applied on staging. It is reversible, additive and backfill-free, and
+the two new tables stay **unwritten** unless `PRIMARY_DOCUMENT_INGESTION_ENABLED`
+is on (with the ingestion flag off the DB is effectively unchanged even after the
+migration is applied). See the `Primary-Document Ingestion (Phase 32A Slice 5)`
+tables section below.
+
+**DB head = `012`** (before Slice 5's `013`). **Phase 32A Slice 3 (source/citation persistence + honest
 reconciliation) adds NO migration — head stays `012`.** It persists into the
 EXISTING `sources` / `citations` tables using columns that already exist:
 `citations.report_id` / `agent_run_id` / `source_tier` / `data_quality` (002/003),
@@ -566,6 +575,72 @@ Existing rows are unaffected: absent keys simply read as `None`.
 The `companies.name` column can now be **upgraded in place** when it holds a
 bare-ticker stub (created by a discovery scan) and a curated name is available.
 A name that is not a bare ticker is never overwritten.
+
+---
+
+### Primary-Document Ingestion (Phase 32A Slice 5)
+
+> **Implemented — PR open, pending staging validation.** Migration `013`
+> (`013_add_extracted_documents.py`, reversible / additive / backfill-free) creates
+> two internal-only tables. Rows are only ever written when
+> `PRIMARY_DOCUMENT_INGESTION_ENABLED` is on; with the flag off (default) the tables
+> stay empty. No BUY/SELL/HOLD/WATCH labels, no valuations, no recommendations —
+> extracted facts are research evidence that **always** requires human review.
+
+`extracted_documents` records the lineage + status of ONE ingested issuer primary
+document (annual report / registration document), deduped by `content_hash` — a
+sha256 of the RAW fetched bytes (UNIQUE index). It carries the BOUNDED excerpts
+(`excerpts_json`) produced for the document so a later report regeneration can
+rebuild + reuse the extraction without re-fetching / re-extracting — never the full
+document text or the raw table grid.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | UUID PK | |
+| `content_hash` | str(64) | sha256 of raw fetched bytes; **UNIQUE** index (`ix_extracted_documents_content_hash`) — the document dedup key |
+| `canonical_url` | str(2000) | credential-stripped canonical URL (never a signed/secret URL) |
+| `provider` | str(100) | which connector/provider fetched it |
+| `source_type` | str(50) | e.g. issuer annual report / registration document |
+| `source_tier` | str(50) | evidence tier (e.g. `T1_primary_filing`) |
+| `mime_type` | str(100) | |
+| `title` | str(500) nullable | |
+| `doc_date` | date nullable | |
+| `period` | str(50) nullable | |
+| `retrieved_at` | timestamptz | drives the reuse TTL (`PRIMARY_DOCUMENT_REUSE_TTL_HOURS`) |
+| `extraction_method` | str(50) | native pdf / html / ocr |
+| `page_count` | int nullable | |
+| `status` | str(50) | `extracted` / `metadata_only` / `extraction_failed` |
+| `company_id` | UUID FK → companies.id | `ON DELETE SET NULL`; index `ix_extracted_documents_company_id` |
+| `agent_run_id` | UUID FK → agent_runs.id | `ON DELETE SET NULL`; index `ix_extracted_documents_agent_run_id` |
+| `blob_path` | str(1000) nullable | **unused hook** — reserved for the deferred blob-storage document-body cache (ADR-014) |
+| `excerpts_json` | JSONB nullable | bounded excerpts only (never full text / raw table grid) |
+| `created_at` / `updated_at` | timestamptz | |
+
+`extracted_facts` stores the bounded primary facts parsed from a document, each
+with provenance (page / table location), an extraction confidence, a validation
+status and a human-review flag. Table/OCR-derived facts must clear stricter
+validation (label/value/unit/period + table-column alignment + cross-field
+arithmetic + cross-method agreement; OCR downgraded); anything short of the bar is
+retained `excerpt_only` and is never a structured fact.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | UUID PK | |
+| `extracted_document_id` | UUID FK → extracted_documents.id | `ON DELETE CASCADE`; index `ix_extracted_facts_extracted_document_id` |
+| `label` | str(200) | |
+| `value_numeric` | numeric nullable | |
+| `value_text` | text nullable | |
+| `unit` / `currency` / `scale` / `period` | str nullable | |
+| `page_number` | int nullable | provenance |
+| `table_location` | str(200) nullable | provenance (table/cell) |
+| `extraction_method` | str(50) | native / table / ocr |
+| `confidence` | float | |
+| `validation_status` | str(50) | `validated` / `excerpt_only` / `rejected` |
+| `needs_human_review` | bool (default true) | always true for extracted facts |
+| `created_at` | timestamptz | |
+
+ORM models: `ExtractedDocument` / `ExtractedFact` in
+`apps/api/app/models/extracted_document.py`.
 
 ---
 

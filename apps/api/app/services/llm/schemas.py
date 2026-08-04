@@ -160,6 +160,11 @@ class EvidenceItem(BaseModel):
     source_id: str | None = Field(default=None, exclude=True)
     primary_fact: dict[str, Any] | None = Field(default=None, exclude=True)
     provenance: list[str] = Field(default_factory=list, exclude=True)
+    # Phase 32A Slice 5 (3c-ii): raw-bytes sha256 of a DEEP-ingested primary
+    # document. Its presence marks the item as deep-extracted so the citation write
+    # can key one canonical Source per distinct document. Runtime-only + EXCLUDED
+    # from serialization ⇒ the evidence-pack JSON the council reads is byte-identical.
+    document_content_hash: str | None = Field(default=None, exclude=True)
 
 
 class EvidencePack(BaseModel):
@@ -258,6 +263,12 @@ class PersistableEvidence(BaseModel):
     source_id: str | None = None
     primary_fact: dict[str, Any] | None = None
     provenance: list[str] = Field(default_factory=list)
+    # Phase 32A Slice 5 (3c-ii): raw-bytes sha256 of a DEEP-ingested primary
+    # document. Present ONLY for deep-extracted excerpt/fact items (set when the
+    # master ingestion flag is on); its presence lets the citation write key one
+    # canonical Source per distinct document (raw-bytes identity) and surface the
+    # document's page/section/table provenance on the citation representation.
+    document_content_hash: str | None = None
 
 
 class CouncilResult(BaseModel):
@@ -338,6 +349,15 @@ class CouncilResult(BaseModel):
     persistable_evidence: list[PersistableEvidence] = Field(
         default_factory=list, exclude=True
     )
+    # Phase 32A Slice 5 (3c-i): runtime-ONLY handoff of the deep primary-document
+    # ingestion artifacts (``PrimaryDocumentArtifact``) so the report-write path can
+    # persist ExtractedDocument / ExtractedFact rows next to the citation write —
+    # WITHOUT re-fetching or re-extracting. Typed ``Any`` to avoid a connector→schema
+    # import cycle; EXCLUDED from serialization (``to_report_dict`` /
+    # ``to_metadata_dict`` never reference it) ⇒ the persisted report is byte-identical.
+    # Populated by ``maybe_run_council`` only when BOTH the ingestion + citation
+    # persistence flags are on; empty otherwise (dark path).
+    primary_document_artifacts: list[Any] = Field(default_factory=list, exclude=True)
     # Phase 32A Slice 4: set True only when the LLM committee chair did not
     # complete AND the retry bundle (``llm_council_retry_enabled``) is on, so a
     # DETERMINISTIC, non-consensus committee summary was attached below. Default

@@ -346,3 +346,75 @@ is bounded only by the ~230s Azure App Service gateway timeout. This is the
   durations / backoff / capped retry-after) — never prompts, evidence, or secrets.
 - Not yet staging-validated — the flag ships OFF and will be flipped ON on staging
   (human-approved) for validation as a later step.
+
+---
+
+## ADR-014: Bounded Primary-Document Ingestion — pdfplumber, Durable Extraction Tables, a Single Flag-OFF-Inert PR, and a NoOp OCR Seam (Phase 32A Slice 5)
+
+**Date:** 2026-08-04
+**Status:** Accepted (implemented on branch `phase-32a-slice5`; **PR open, pending
+staging validation** — not yet merged / deployed / validated)
+
+### Context
+Phase 29B.2 added bounded PDF/HTML text extraction (pypdf, no OCR), but on staging
+every reachable issuer report is scanned or JS-gated, so councils reason from
+metadata-only references. Slice 5 deepens ingestion — HTML tables/sections, native
+PDF text + table extraction with page/table location, and an OCR fallback seam —
+so the council can eventually cite real T1 primary evidence with precise
+provenance. This adds a network-fetch + PDF-parsing surface that is
+security-sensitive, so it must be strictly bounded, allowlist-gated, and OFF by
+default.
+
+### Decision (four approved architecture forks)
+1. **pdfplumber for native-PDF table + layout extraction.** `pdfplumber>=0.11,<0.12`
+   (pure-Python; transitively pdfminer.six + Pillow — Pillow gates the future OCR
+   raster path via a pixel cap) is added alongside the existing pypdf. No OCR
+   binary (tesseract / pdf2image / pymupdf) is added; wheels resolve on the Azure
+   App Service Python 3.12 runtime.
+2. **Migration `013` for durable `extracted_documents` / `extracted_facts` tables.**
+   Extraction is persisted (deduped by raw-bytes `content_hash`) so a later report
+   regeneration reuses it (no re-fetch/re-extract) and facts carry durable
+   page/table provenance. Reversible, additive, backfill-free; the tables stay
+   unwritten unless ingestion is enabled.
+3. **A single flag-OFF-inert PR.** The whole slice ships behind default-OFF flags
+   (master `PRIMARY_DOCUMENT_INGESTION_ENABLED`); with it off the connector /
+   council / evidence-pack / persistence paths are byte-for-byte unchanged. Reuse
+   and persistence are additionally gated on BOTH ingestion +
+   `REPORT_CITATION_PERSISTENCE_ENABLED`.
+4. **A NoOp OCR provider-abstraction now; the real adapter later.** OCR ships as an
+   honest provider seam only (mirrors the Phase 30A translation-provider seam):
+   the sole provider returns an empty `ocr_unavailable` result — never fabricated
+   text — so scanned PDFs still degrade honestly to metadata-only gaps this slice.
+
+### Deferred follow-ups (documented, not built this slice)
+- **Real Azure Document Intelligence OCR adapter** (+ its call-site wiring) —
+  needs resource provisioning + admin sign-off before it can be enabled.
+- **Blob-storage document-body caching** — the `extracted_documents.blob_path`
+  column is a reserved, currently-unused hook.
+- **SEC 10-K / 20-F full-text body fetch** for US issuers (this slice ingests the
+  issuer's OWN primary documents via the verified-issuer/company-IR path).
+- **Two non-blocking security hardenings:** resolve-then-connect IP-pinning to
+  fully close the DNS-rebinding TOCTOU window (the current guard resolves + checks
+  before and after redirects but does not pin the connected socket to the checked
+  IP), and async DNS resolution to avoid a synchronous `getaddrinfo` on the event
+  loop.
+
+### Consequences
+- No new public endpoint and no user-supplied-URL fetch surface; every fetch
+  routes through the allowlist-gated hardened layer. Extracted text is treated as
+  UNTRUSTED, inert data (injection markers preserved verbatim for a downstream
+  prompt-boundary guard, never executed/interpreted). No JS/browser/paywall/auth
+  bypass.
+- Table/OCR-derived values pass stricter validation (label/value/unit/period +
+  column alignment + cross-field arithmetic + cross-method agreement; OCR
+  downgraded); non-validated text is kept `excerpt_only`, never a fact.
+  Metadata-only references never become facts or claim-verification. Every
+  extracted fact is `needs_human_review`; `publication_ready` stays False.
+- The evidence pack gains a primary_document floor + cap (ON only with the master
+  flag) WITHOUT weakening the Slice-2 `financial_floor=3` / news caps.
+- Bounded by size/page/OCR-page/excerpt/char caps, per-document + aggregate
+  wall-time budgets (so ingestion + the ~150s council stay under the ~230s
+  gateway), a %PDF magic-byte check, a decompression-bomb guard and a Pillow
+  pixel cap. Logging is counts/status only — never bytes or extracted text.
+- Not yet staging-validated — the flags ship OFF and will be flipped ON on staging
+  (human-approved) for validation as a later step.

@@ -277,6 +277,19 @@ def _apply_category_budget(
         CATEGORY_LOW_TIER_NEWS: low_tier_news_cap,
     }
 
+    # Phase 32A Slice 5: guarantee a FLOOR of primary-document slots and CAP the
+    # category so one large ingested filing cannot consume the whole budget. This
+    # is applied ONLY when ``primary_document_ingestion_enabled`` is on; with the
+    # flag off (the default) the category stays uncapped/unfloored and this path
+    # is byte-identical to Slice 2.
+    pd_ingestion_enabled = bool(getattr(cfg, "primary_document_ingestion_enabled", False))
+    primary_document_cap = max(0, int(getattr(cfg, "primary_document_evidence_cap", 6)))
+    primary_document_floor = max(0, int(getattr(cfg, "primary_document_evidence_floor", 1)))
+    if pd_ingestion_enabled:
+        caps[CATEGORY_PRIMARY_DOCUMENT] = primary_document_cap
+        # A floor larger than the cap is incoherent — the cap is the hard ceiling.
+        primary_document_floor = min(primary_document_floor, primary_document_cap)
+
     original_count = len(pack.evidence_items)
 
     # 1. Dedup: exact-hash (first wins) + near-duplicate news dedup by title.
@@ -300,13 +313,24 @@ def _apply_category_budget(
     # 2+3. Rank globally by (tier, materiality, factual, order).
     ranked = sorted(deduped, key=lambda t: _category_rank_key(t[1], t[0]))
 
-    # 4. Reserve the financial-fact floor first (by rank, bounded by max_items).
+    # 4. Reserve floors first (by rank, bounded by max_items): the financial-fact
+    #    floor always, and the primary-document floor only when ingestion is on.
     reserved: set[int] = set()
+    financial_reserved = 0
+    pd_reserved = 0
     for order, _item, category in ranked:
         if len(reserved) >= max_items:
             break
-        if category == CATEGORY_FINANCIAL_FACT and len(reserved) < financial_floor:
+        if category == CATEGORY_FINANCIAL_FACT and financial_reserved < financial_floor:
             reserved.add(order)
+            financial_reserved += 1
+        elif (
+            pd_ingestion_enabled
+            and category == CATEGORY_PRIMARY_DOCUMENT
+            and pd_reserved < primary_document_floor
+        ):
+            reserved.add(order)
+            pd_reserved += 1
 
     # 5. Fill: reserved first, then global rank skipping any capped category.
     selected: list[tuple[int, EvidenceItem]] = []
@@ -351,14 +375,26 @@ def _apply_category_budget(
     omitted = original_count - len(survivors)
     omitted_reason = None
     if omitted > 0:
+        # The primary-document clause is appended ONLY when ingestion is on AND the
+        # pack actually carried primary-document items, so the wording stays
+        # byte-identical to Slice 2 for the flag-off (and no-primary-document) path.
+        pd_present = any(
+            cat == CATEGORY_PRIMARY_DOCUMENT for _o, _it, cat in deduped
+        )
+        pd_clause = ""
+        if pd_ingestion_enabled and pd_present:
+            pd_clause = (
+                f" primary-document reserved up to {primary_document_floor} slot(s) "
+                f"and capped at {primary_document_cap};"
+            )
         omitted_reason = (
             f"{omitted} lower-priority / duplicate / capped evidence item(s) were "
             f"compressed out to fit the category-aware council evidence budget "
             f"(kept {len(survivors)} of {original_count}; reserved up to "
             f"{financial_floor} structured financial-fact slot(s); price/trend "
             f"capped at {price_trend_cap}, news at {news_cap} (low-tier news at "
-            f"{low_tier_news_cap}); near-duplicate events removed; higher-tier "
-            f"factual items preserved). Source gaps are retained."
+            f"{low_tier_news_cap});{pd_clause} near-duplicate events removed; "
+            f"higher-tier factual items preserved). Source gaps are retained."
         )
 
     return pack.model_copy(

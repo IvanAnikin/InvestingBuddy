@@ -1,0 +1,763 @@
+"""
+Stricter validation of table/OCR-derived primary facts — Phase 32A Slice 5.
+
+Turns the bounded ``PrimaryDocumentExtraction`` produced by
+``primary_document_extractor`` (Task 2) into candidate structured facts, applying
+a DELIBERATELY STRICTER bar than the prose ``primary_fact_parser``: a
+table/OCR-derived number is only promoted to a validated fact when its row-header
+label is unambiguous, its column maps to a known period, its unit (currency +
+scale for money, ``people`` for a headcount) is known, and its source location is
+preserved. Everything short of that bar is retained as an ``excerpt_only``
+candidate (never a fabricated figure); only a clear contradiction is ``rejected``.
+
+Why stricter than prose? A table cell has no surrounding sentence to anchor its
+meaning, so a mis-aligned row/column mapping can silently invent a value. This
+validator mirrors the prose parser's ambiguity-refusal spirit at the grid level:
+if a labelled row has more than one candidate magnitude and the columns cannot be
+mapped to distinct periods, no fact is emitted. It also adds three checks the
+prose path cannot do:
+
+  * **Column alignment.** A value must sit in a numeric column aligned with a
+    row-header label; an ambiguous mapping downgrades to ``excerpt_only``.
+  * **Cross-field arithmetic (best-effort).** When a labelled subtotal and its
+    components are present for the same period, their sum is checked within a
+    tolerance; a mismatch downgrades the subtotal to ``excerpt_only`` (the
+    excerpt is kept — the components are untouched).
+  * **Cross-method agreement.** When the same ``(label, period)`` is produced by
+    more than one extraction method (e.g. native PDF + OCR), matching values
+    raise confidence; a conflict is a clear contradiction and is ``rejected``.
+
+Hard guarantees (mirroring the extractor + prose parser):
+  * Never fabricates a value. Absence ⇒ no fact (or an ``excerpt_only`` record).
+  * No FX conversion; the reporting currency is recorded as-found.
+  * No valuation metric, price target, fair value, or upside/downside is ever
+    computed — this only reads primary statements of fact.
+  * OCR-derived facts are confidence-downgraded, NEVER auto-``high``, and must
+    still clear ``primary_document_min_extraction_confidence`` to validate; their
+    OCR provenance is disclosed on the fact.
+  * Every produced fact is ``needs_human_review=True`` and carries its method,
+    confidence, unit, currency, scale, period, page number and table location.
+  * Secret-free: nothing here logs document text or values.
+
+This module is a pure, synchronous, network-free function library with its own
+unit tests. It is NOT wired into the connector / council / persistence in this
+task; a later slice performs the wiring (gated by
+``primary_document_ingestion_enabled``) and persists a ``ValidatedFact`` onto the
+``ExtractedFact`` ORM row it maps cleanly onto.
+"""
+
+from __future__ import annotations
+
+import re
+
+from pydantic import BaseModel, Field
+
+from app.core.config import Settings
+from app.core.config import settings as default_settings
+from app.services.sources.primary_document_extractor import (
+    METHOD_HTML,
+    METHOD_NATIVE_PDF,
+    METHOD_OCR,
+    ExtractedTable,
+    PrimaryDocumentExtraction,
+)
+from app.services.sources.primary_fact_parser import (
+    FIELD_CASH,
+    FIELD_EMPLOYEES,
+    FIELD_FREE_CASH_FLOW,
+    FIELD_NET_INCOME,
+    FIELD_OPERATING_PROFIT,
+    FIELD_REVENUE,
+    FIELD_TOTAL_ASSETS,
+    FIELD_TOTAL_DEBT,
+    _find_currency,
+    _norm_number,
+    _scale_word,
+)
+
+# --------------------------------------------------------------------------- #
+# Vocabulary
+# --------------------------------------------------------------------------- #
+
+# Validation outcome (matches ExtractedFact.validation_status).
+VALIDATION_VALIDATED = "validated"
+VALIDATION_EXCERPT_ONLY = "excerpt_only"
+VALIDATION_REJECTED = "rejected"
+
+# Units (neutral, factual — never a rating vocabulary).
+UNIT_CURRENCY_AMOUNT = "currency_amount"
+UNIT_PEOPLE = "people"
+
+# Extra component labels needed for the cross-field arithmetic (subtotal) check.
+FIELD_SHORT_TERM_DEBT = "short_term_debt"
+FIELD_LONG_TERM_DEBT = "long_term_debt"
+FIELD_CURRENT_ASSETS = "total_current_assets"
+FIELD_NON_CURRENT_ASSETS = "total_non_current_assets"
+
+# Money labels require a KNOWN currency AND scale (the stricter bar). Count labels
+# require only a plausible integer count.
+_MONEY_LABELS: frozenset[str] = frozenset(
+    {
+        FIELD_REVENUE,
+        FIELD_OPERATING_PROFIT,
+        FIELD_NET_INCOME,
+        FIELD_FREE_CASH_FLOW,
+        FIELD_TOTAL_ASSETS,
+        FIELD_TOTAL_DEBT,
+        FIELD_CASH,
+        FIELD_SHORT_TERM_DEBT,
+        FIELD_LONG_TERM_DEBT,
+        FIELD_CURRENT_ASSETS,
+        FIELD_NON_CURRENT_ASSETS,
+    }
+)
+_COUNT_LABELS: frozenset[str] = frozenset({FIELD_EMPLOYEES})
+
+# Row-header label patterns → normalized label. Ordered most-specific first so a
+# component ("short-term debt", "total current assets") is never swallowed by a
+# broader subtotal pattern ("total debt", "total assets").
+_LABEL_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"short[- ]term (?:debt|borrowings)", re.I), FIELD_SHORT_TERM_DEBT),
+    (re.compile(r"long[- ]term (?:debt|borrowings)", re.I), FIELD_LONG_TERM_DEBT),
+    (re.compile(r"total current assets|current assets", re.I), FIELD_CURRENT_ASSETS),
+    (
+        re.compile(r"total non[- ]current assets|non[- ]current assets", re.I),
+        FIELD_NON_CURRENT_ASSETS,
+    ),
+    (re.compile(r"total (?:debt|borrowings)|gross debt", re.I), FIELD_TOTAL_DEBT),
+    (re.compile(r"total assets", re.I), FIELD_TOTAL_ASSETS),
+    (re.compile(r"free cash flow", re.I), FIELD_FREE_CASH_FLOW),
+    (re.compile(r"cash and cash equivalents", re.I), FIELD_CASH),
+    (
+        re.compile(
+            r"net income|net profit|profit for the year|profit attributable", re.I
+        ),
+        FIELD_NET_INCOME,
+    ),
+    (re.compile(r"operating profit|operating income|ebit\b", re.I), FIELD_OPERATING_PROFIT),
+    (re.compile(r"revenue|net sales|total sales|turnover", re.I), FIELD_REVENUE),
+    (
+        re.compile(r"employees|headcount|full[- ]time equivalents", re.I),
+        FIELD_EMPLOYEES,
+    ),
+]
+
+# subtotal_label -> component labels that should sum to it (same period, table).
+_SUBTOTAL_RULES: list[tuple[str, tuple[str, ...]]] = [
+    (FIELD_TOTAL_DEBT, (FIELD_SHORT_TERM_DEBT, FIELD_LONG_TERM_DEBT)),
+    (FIELD_TOTAL_ASSETS, (FIELD_CURRENT_ASSETS, FIELD_NON_CURRENT_ASSETS)),
+]
+
+_YEAR_RE = re.compile(r"(?:19|20)\d{2}")
+# Accept singular OR plural scale words ("million"/"millions") + the abbreviations.
+_SCALE_RE = re.compile(
+    r"(?:€|£|\$)?\s*(millions?|billions?|thousands?|bn|mn|m)\b", re.IGNORECASE
+)
+
+# Confidence model. ``high`` is a bucket at >= 0.75 (see extractor
+# ``_confidence_bucket``); OCR facts are held strictly below it.
+_HIGH_CONFIDENCE = 0.75
+_FULLY_QUALIFIED_CONFIDENCE = 0.8
+_CROSS_METHOD_BOOST = 0.1
+_MAX_CONFIDENCE = 0.95
+_OCR_CONFIDENCE_FACTOR = 0.85
+_OCR_CONFIDENCE_CEILING = 0.72  # deliberately below _HIGH_CONFIDENCE
+
+# Method quality order (best first) — the primary method on a merged fact.
+_METHOD_QUALITY = {METHOD_NATIVE_PDF: 0, METHOD_HTML: 1, METHOD_OCR: 2}
+
+
+# --------------------------------------------------------------------------- #
+# Result models
+# --------------------------------------------------------------------------- #
+
+
+class IssuerContext(BaseModel):
+    """Minimal, known issuer/filing identity a structured fact must be tied to.
+
+    A fact can only be *validated* when the issuer is known (at least one of
+    company/legal name or ticker). ``reporting_currency`` / ``default_period`` are
+    optional hints used when a table cell/header does not itself state them.
+    """
+
+    company_name: str | None = None
+    legal_name: str | None = None
+    ticker: str | None = None
+    reporting_currency: str | None = None
+    default_period: str | None = None  # e.g. "2024" fiscal year
+
+    def is_known(self) -> bool:
+        return bool(
+            (self.company_name and self.company_name.strip())
+            or (self.legal_name and self.legal_name.strip())
+            or (self.ticker and self.ticker.strip())
+        )
+
+
+class ValidatedFact(BaseModel):
+    """One candidate structured fact with its validation verdict + provenance.
+
+    The first block of fields maps 1:1 onto the ``ExtractedFact`` ORM columns so a
+    later persistence task can store it directly. The trailing fields
+    (``methods`` / ``ocr_derived`` / ``validation_notes``) are informational and
+    are not ORM columns.
+    """
+
+    # ── ExtractedFact-mapped columns ──────────────────────────────────────
+    label: str
+    value_numeric: float | None = None
+    value_text: str | None = None  # raw as-found value (never normalized away)
+    unit: str | None = None
+    currency: str | None = None
+    scale: str | None = None
+    period: str | None = None
+    page_number: int | None = None
+    table_location: str | None = None
+    extraction_method: str
+    confidence: float
+    validation_status: str
+    needs_human_review: bool = True
+    # ── Informational (not persisted as ORM columns) ──────────────────────
+    methods: list[str] = Field(default_factory=list)
+    ocr_derived: bool = False
+    validation_notes: list[str] = Field(default_factory=list)
+
+    @property
+    def is_validated(self) -> bool:
+        return self.validation_status == VALIDATION_VALIDATED
+
+
+# --------------------------------------------------------------------------- #
+# Internal candidate (mutable working record before cross-method resolution)
+# --------------------------------------------------------------------------- #
+
+
+class _Candidate:
+    """A single table-cell candidate before subtotal / cross-method resolution."""
+
+    __slots__ = (
+        "label",
+        "period",
+        "value_numeric",
+        "value_text",
+        "unit",
+        "currency",
+        "scale",
+        "page_number",
+        "table_location",
+        "method",
+        "base_confidence",
+        "fully_qualified",
+        "status",
+        "notes",
+    )
+
+    def __init__(
+        self,
+        *,
+        label: str,
+        period: str | None,
+        value_numeric: float | None,
+        value_text: str,
+        unit: str | None,
+        currency: str | None,
+        scale: str | None,
+        page_number: int | None,
+        table_location: str | None,
+        method: str,
+        base_confidence: float,
+        fully_qualified: bool,
+        status: str,
+    ) -> None:
+        self.label = label
+        self.period = period
+        self.value_numeric = value_numeric
+        self.value_text = value_text
+        self.unit = unit
+        self.currency = currency
+        self.scale = scale
+        self.page_number = page_number
+        self.table_location = table_location
+        self.method = method
+        self.base_confidence = base_confidence
+        self.fully_qualified = fully_qualified
+        self.status = status
+        self.notes: list[str] = []
+
+
+# --------------------------------------------------------------------------- #
+# Small pure helpers
+# --------------------------------------------------------------------------- #
+
+
+def _match_label(text: str) -> str | None:
+    """Return the single normalized label for a row-header cell, else None.
+
+    None when the cell matches no known label OR matches more than one distinct
+    label (ambiguous → not a structured fact, mirror the prose refusal).
+    """
+    if not text:
+        return None
+    matched = {label for pat, label in _LABEL_PATTERNS if pat.search(text)}
+    if len(matched) == 1:
+        return next(iter(matched))
+    return None
+
+
+def _find_scale(text: str) -> str | None:
+    """Return million/billion/thousand if a scale token is present, else None."""
+    m = _SCALE_RE.search(text or "")
+    # rstrip("s") normalizes a plural ("millions" → "million") for _scale_word.
+    return _scale_word(m.group(1).rstrip("s")) if m else None
+
+
+def _column_periods(table: ExtractedTable) -> dict[int, str]:
+    """Map column index → period (a 4-digit year) from the first row that has
+    year tokens (the header). Later columns without a year are left unmapped."""
+    for row in table.rows:
+        found: dict[int, str] = {}
+        for col, cell in enumerate(row):
+            m = _YEAR_RE.search(cell or "")
+            if m:
+                found[col] = m.group(0)
+        if found:
+            return found
+    return {}
+
+
+def _table_currency_scale(
+    table: ExtractedTable,
+    excerpts_by_page: dict[int | None, list[str]],
+    issuer: IssuerContext,
+) -> tuple[str | None, str | None]:
+    """Best-effort currency + scale for a whole table.
+
+    Scanned from (in priority order) the table's own cells, then any excerpt on
+    the same page, then the issuer's reporting-currency hint. No fabrication: a
+    missing currency/scale simply stays None (and blocks money-fact validation).
+    """
+    flat = " ".join(cell for row in table.rows for cell in row)
+    currency = _find_currency(flat)
+    scale = _find_scale(flat)
+
+    if currency is None or scale is None:
+        for text in excerpts_by_page.get(table.page_number, []):
+            currency = currency or _find_currency(text)
+            scale = scale or _find_scale(text)
+            if currency and scale:
+                break
+
+    if currency is None and issuer.reporting_currency:
+        currency = issuer.reporting_currency.strip().upper() or None
+    return currency, scale
+
+
+def _numeric_cells(row: list[str]) -> list[tuple[int, str, float]]:
+    """Return ``(col, raw_text, numeric)`` for every parseable numeric cell in a
+    row, skipping the leading label column (col 0)."""
+    out: list[tuple[int, str, float]] = []
+    for col, cell in enumerate(row):
+        if col == 0:
+            continue
+        num = _norm_number(cell)
+        if num is not None:
+            out.append((col, cell.strip(), num))
+    return out
+
+
+def _derive_confidence(
+    method: str, base: float, *, fully_qualified: bool
+) -> float:
+    """Confidence for a single-method fact: OCR is downgraded + capped below high;
+    a fully-qualified native/HTML fact is lifted (still earned, never auto-high
+    for OCR)."""
+    if method == METHOD_OCR:
+        return round(min(base * _OCR_CONFIDENCE_FACTOR, _OCR_CONFIDENCE_CEILING), 4)
+    conf = base
+    if fully_qualified:
+        conf = max(conf, _FULLY_QUALIFIED_CONFIDENCE)
+    return round(min(conf, _MAX_CONFIDENCE), 4)
+
+
+def _values_agree(a: float, b: float) -> bool:
+    """True when two magnitudes match within a small relative/absolute tolerance."""
+    tol = max(abs(a), abs(b)) * 0.01
+    return abs(a - b) <= max(tol, 0.5)
+
+
+# --------------------------------------------------------------------------- #
+# Per-table candidate extraction
+# --------------------------------------------------------------------------- #
+
+
+def _candidates_from_table(
+    table: ExtractedTable,
+    excerpts_by_page: dict[int | None, list[str]],
+    issuer: IssuerContext,
+) -> list[_Candidate]:
+    """Turn one bounded table into per-cell candidates + run the subtotal check."""
+    col_period = _column_periods(table)
+    currency, scale = _table_currency_scale(table, excerpts_by_page, issuer)
+    candidates: list[_Candidate] = []
+
+    for row in table.rows:
+        if not row:
+            continue
+        label = _match_label(row[0])
+        if label is None:
+            continue  # unknown/ambiguous label → stays an excerpt, not a fact
+        nums = _numeric_cells(row)
+        if not nums:
+            continue
+        is_money = label in _MONEY_LABELS
+
+        # Resolve (period, value) pairs for this row.
+        pairs: list[tuple[str | None, str, float, int]] = []  # period, text, num, col
+        mapped = [(col, t, n) for (col, t, n) in nums if col in col_period]
+        if mapped:
+            for col, t, n in mapped:
+                pairs.append((col_period[col], t, n, col))
+        else:
+            distinct = {round(n, 6) for _c, _t, n in nums}
+            if len(distinct) > 1:
+                # Multiple different magnitudes and no period mapping → ambiguous.
+                col, t, n = nums[0]
+                candidates.append(
+                    _make_candidate(
+                        label,
+                        issuer.default_period,
+                        t,
+                        n,
+                        table,
+                        currency if is_money else None,
+                        scale if is_money else None,
+                        is_money,
+                        VALIDATION_EXCERPT_ONLY,
+                        note="Ambiguous row/column mapping (multiple unlabelled "
+                        "magnitudes); retained as excerpt.",
+                    )
+                )
+                continue
+            col, t, n = nums[0]
+            pairs.append((issuer.default_period, t, n, col))
+
+        for period, text, num, _col in pairs:
+            status = VALIDATION_VALIDATED
+            note = None
+            if period is None:
+                status = VALIDATION_EXCERPT_ONLY
+                note = "Period could not be resolved; retained as excerpt."
+            elif is_money and not (currency and scale):
+                status = VALIDATION_EXCERPT_ONLY
+                note = (
+                    "Currency and/or scale not stated for the table; retained as "
+                    "excerpt."
+                )
+            candidates.append(
+                _make_candidate(
+                    label,
+                    period,
+                    text,
+                    num,
+                    table,
+                    currency if is_money else None,
+                    scale if is_money else None,
+                    is_money,
+                    status,
+                    note=note,
+                )
+            )
+
+    _apply_subtotal_check(candidates)
+    return candidates
+
+
+def _make_candidate(
+    label: str,
+    period: str | None,
+    value_text: str,
+    value_numeric: float,
+    table: ExtractedTable,
+    currency: str | None,
+    scale: str | None,
+    is_money: bool,
+    status: str,
+    *,
+    note: str | None = None,
+) -> _Candidate:
+    unit = UNIT_CURRENCY_AMOUNT if is_money else UNIT_PEOPLE
+    fully_qualified = (
+        bool(currency and scale and period)
+        if is_money
+        else bool(period and value_numeric >= 1)
+    )
+    cand = _Candidate(
+        label=label,
+        period=period,
+        value_numeric=value_numeric,
+        value_text=value_text,
+        unit=unit,
+        currency=currency,
+        scale=scale,
+        page_number=table.page_number,
+        table_location=table.table_location,
+        method=table.extraction_method,
+        base_confidence=table.confidence,
+        fully_qualified=fully_qualified,
+        status=status,
+    )
+    if note:
+        cand.notes.append(note)
+    return cand
+
+
+def _apply_subtotal_check(candidates: list[_Candidate]) -> None:
+    """Downgrade a labelled subtotal to ``excerpt_only`` when it does not
+    reconcile with its components for the same period (components are untouched)."""
+    by_period: dict[str | None, dict[str, _Candidate]] = {}
+    for c in candidates:
+        by_period.setdefault(c.period, {}).setdefault(c.label, c)
+
+    for period, by_label in by_period.items():
+        if period is None:
+            continue
+        for subtotal_label, components in _SUBTOTAL_RULES:
+            sub = by_label.get(subtotal_label)
+            if sub is None or sub.value_numeric is None:
+                continue
+            comp_facts = [by_label.get(c) for c in components]
+            comp_values = [
+                c.value_numeric
+                for c in comp_facts
+                if c is not None and c.value_numeric is not None
+            ]
+            if len(comp_values) != len(components):
+                continue
+            expected = sum(comp_values)
+            tol = max(abs(expected) * 0.01, 0.5)
+            if abs(sub.value_numeric - expected) > tol:
+                sub.status = VALIDATION_EXCERPT_ONLY
+                sub.notes.append(
+                    "Subtotal did not reconcile with its components; retained as "
+                    "excerpt."
+                )
+
+
+# --------------------------------------------------------------------------- #
+# Cross-method resolution
+# --------------------------------------------------------------------------- #
+
+
+def _resolve_group(
+    key: tuple[str, str | None], group: list[_Candidate], cfg: Settings
+) -> ValidatedFact:
+    """Collapse all candidates for one ``(label, period)`` into a single verdict.
+
+    * Values agree across >1 method → boosted confidence.
+    * Values conflict across >1 method → clear contradiction → rejected.
+    * Values conflict within a single method → ambiguous → excerpt_only.
+    """
+    label, period = key
+    methods = sorted({c.method for c in group}, key=lambda m: _METHOD_QUALITY.get(m, 9))
+    ocr_derived = METHOD_OCR in methods
+    numeric_vals = [c.value_numeric for c in group if c.value_numeric is not None]
+
+    conflict = False
+    for i in range(len(numeric_vals)):
+        for j in range(i + 1, len(numeric_vals)):
+            if not _values_agree(numeric_vals[i], numeric_vals[j]):
+                conflict = True
+                break
+        if conflict:
+            break
+
+    # Representative candidate: prefer the highest-quality method.
+    rep = min(group, key=lambda c: _METHOD_QUALITY.get(c.method, 9))
+    primary_method = methods[0] if methods else rep.method
+
+    if conflict:
+        if len(methods) > 1:
+            return ValidatedFact(
+                label=label,
+                value_numeric=None,
+                value_text=None,
+                unit=rep.unit,
+                currency=rep.currency,
+                scale=rep.scale,
+                period=period,
+                page_number=rep.page_number,
+                table_location=rep.table_location,
+                extraction_method=primary_method,
+                confidence=round(min(c.base_confidence for c in group), 4),
+                validation_status=VALIDATION_REJECTED,
+                methods=methods,
+                ocr_derived=ocr_derived,
+                validation_notes=[
+                    "Cross-method value conflict for the same label/period; "
+                    "rejected as a clear contradiction."
+                ],
+            )
+        # Same-method disagreement → ambiguous, not a contradiction.
+        return _excerpt_only_fact(
+            rep,
+            methods,
+            ocr_derived,
+            note="Conflicting magnitudes from the same method; retained as excerpt.",
+        )
+
+    # Values agree (or a single value): the strongest status wins.
+    best = _best_candidate(group)
+    fully_qualified = any(c.fully_qualified for c in group)
+    conf = _derive_confidence(
+        primary_method, best.base_confidence, fully_qualified=fully_qualified
+    )
+    boosted = len(methods) > 1
+    if boosted:
+        conf = round(min(conf + _CROSS_METHOD_BOOST, _MAX_CONFIDENCE), 4)
+    # OCR-only facts are never auto-high, even after a boost.
+    if methods and all(m == METHOD_OCR for m in methods):
+        conf = round(min(conf, _OCR_CONFIDENCE_CEILING), 4)
+
+    status = best.status
+    notes = list(best.notes)
+    # Confidence floor: a validated fact must clear the minimum.
+    min_conf = float(cfg.primary_document_min_extraction_confidence)
+    if status == VALIDATION_VALIDATED and conf < min_conf:
+        status = VALIDATION_EXCERPT_ONLY
+        notes.append(
+            "Extraction confidence below the minimum; retained as excerpt."
+        )
+    if ocr_derived and status == VALIDATION_VALIDATED:
+        notes.append("OCR-derived value; confidence downgraded, human review required.")
+    if boosted and status == VALIDATION_VALIDATED:
+        notes.append("Corroborated across extraction methods; confidence raised.")
+
+    return ValidatedFact(
+        label=label,
+        value_numeric=best.value_numeric,
+        value_text=best.value_text,
+        unit=best.unit,
+        currency=best.currency,
+        scale=best.scale,
+        period=period,
+        page_number=best.page_number,
+        table_location=best.table_location,
+        extraction_method=primary_method,
+        confidence=conf,
+        validation_status=status,
+        methods=methods,
+        ocr_derived=ocr_derived,
+        validation_notes=notes,
+    )
+
+
+def _best_candidate(group: list[_Candidate]) -> _Candidate:
+    """Pick the representative candidate: validated first, then highest base
+    confidence, then best-quality method."""
+    return min(
+        group,
+        key=lambda c: (
+            0 if c.status == VALIDATION_VALIDATED else 1,
+            -c.base_confidence,
+            _METHOD_QUALITY.get(c.method, 9),
+        ),
+    )
+
+
+def _excerpt_only_fact(
+    rep: _Candidate, methods: list[str], ocr_derived: bool, *, note: str
+) -> ValidatedFact:
+    notes = list(rep.notes)
+    notes.append(note)
+    return ValidatedFact(
+        label=rep.label,
+        value_numeric=rep.value_numeric,
+        value_text=rep.value_text,
+        unit=rep.unit,
+        currency=rep.currency,
+        scale=rep.scale,
+        period=rep.period,
+        page_number=rep.page_number,
+        table_location=rep.table_location,
+        extraction_method=methods[0] if methods else rep.method,
+        confidence=round(rep.base_confidence, 4),
+        validation_status=VALIDATION_EXCERPT_ONLY,
+        methods=methods,
+        ocr_derived=ocr_derived,
+        validation_notes=notes,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Public entry point
+# --------------------------------------------------------------------------- #
+
+
+def validate_extracted_facts(
+    extraction: PrimaryDocumentExtraction,
+    *,
+    issuer_context: IssuerContext,
+    cfg: Settings | None = None,
+) -> list[ValidatedFact]:
+    """Validate an extraction's tables into candidate structured facts.
+
+    Every returned fact is ``needs_human_review=True`` and carries its method,
+    confidence, unit, currency, scale, period, page number and table location.
+    Facts below the stricter bar are returned as ``excerpt_only`` (retained, never
+    a fabricated figure); only a clear cross-method contradiction is ``rejected``.
+    Returns an empty list when there are no tables — the caller keeps the raw
+    excerpts as evidence and produces no structured facts (honest under-reporting).
+    """
+    cfg = cfg or default_settings
+    issuer = issuer_context or IssuerContext()
+    issuer_known = issuer.is_known()
+
+    excerpts_by_page: dict[int | None, list[str]] = {}
+    for ex in extraction.excerpts:
+        excerpts_by_page.setdefault(ex.page_number, []).append(ex.text)
+
+    candidates: list[_Candidate] = []
+    for table in extraction.tables:
+        candidates.extend(_candidates_from_table(table, excerpts_by_page, issuer))
+
+    # Group by (label, period) so the same figure from >1 method is reconciled.
+    groups: dict[tuple[str, str | None], list[_Candidate]] = {}
+    for cand in candidates:
+        groups.setdefault((cand.label, cand.period), []).append(cand)
+
+    facts: list[ValidatedFact] = []
+    for key, group in groups.items():
+        fact = _resolve_group(key, group, cfg)
+        # Without a known issuer/filing context a fact can never be validated.
+        if not issuer_known and fact.validation_status == VALIDATION_VALIDATED:
+            fact.validation_status = VALIDATION_EXCERPT_ONLY
+            fact.validation_notes.append(
+                "Issuer/filing context unknown; retained as excerpt."
+            )
+        facts.append(fact)
+
+    # Deterministic order: validated first, then by label + period.
+    facts.sort(
+        key=lambda f: (
+            0 if f.validation_status == VALIDATION_VALIDATED else 1,
+            f.label,
+            f.period or "",
+        )
+    )
+    return facts
+
+
+__all__ = [
+    "VALIDATION_VALIDATED",
+    "VALIDATION_EXCERPT_ONLY",
+    "VALIDATION_REJECTED",
+    "UNIT_CURRENCY_AMOUNT",
+    "UNIT_PEOPLE",
+    "FIELD_SHORT_TERM_DEBT",
+    "FIELD_LONG_TERM_DEBT",
+    "FIELD_CURRENT_ASSETS",
+    "FIELD_NON_CURRENT_ASSETS",
+    "IssuerContext",
+    "ValidatedFact",
+    "validate_extracted_facts",
+]

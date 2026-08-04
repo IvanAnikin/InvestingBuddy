@@ -58,6 +58,10 @@ from app.services.data_provenance import (
     derive_data_provenance,
     provenance_to_is_mock,
 )
+from app.services.extracted_document_service import (
+    load_reusable_documents,
+    persist_primary_document_artifacts,
+)
 from app.services.llm.council import maybe_run_council
 from app.services.llm.schemas import (
     AGENT_RED_TEAM,
@@ -194,6 +198,104 @@ def _evidence_content_hash(item: PersistableEvidence, canonical_url: str | None)
     return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
 
+def _is_deep_primary_document(item: PersistableEvidence) -> bool:
+    """True when this item was DEEP-ingested from a primary document (Slice 5).
+
+    Signalled by the raw-bytes ``document_content_hash`` the deep extractor stamps
+    on each excerpt / validated-fact item (present ONLY when the master ingestion
+    flag is on). Shallow (29B.2) / metadata-only / non-document items carry None.
+    """
+    return bool(getattr(item, "document_content_hash", None))
+
+
+def _source_content_hash(item: PersistableEvidence, canonical_url: str | None) -> str:
+    """The canonical Source ``content_hash`` for one evidence item.
+
+    Phase 32A Slice 5 (C4): a DEEP-ingested primary-document item is keyed by its
+    RAW-bytes document hash, so every excerpt / fact from the SAME document dedups
+    to ONE canonical Source (one source per distinct document) and a re-run never
+    accumulates duplicate document sources. The existing SHALLOW path keeps the
+    synthesized url+tier+excerpt hash unchanged ⇒ the dark path is byte-identical.
+    """
+    if _is_deep_primary_document(item):
+        return str(item.document_content_hash)
+    return _evidence_content_hash(item, canonical_url)
+
+
+# Provenance markers the deep extractor stamps into ``EvidenceItem.provenance`` as
+# ``key=value`` strings (see ``company_ir._artifact_to_evidence``). Parsed back into
+# a structured citation-provenance dict at persist/report time (never a secret).
+_PROV_PAGE = "page="
+_PROV_SECTION = "section="
+_PROV_TABLE = "table="
+_PROV_METHOD = "method="
+_PROV_CONFIDENCE = "confidence="
+_OCR_METHODS = frozenset({"ocr", "ocr_pdf", "ocr_image"})
+
+
+def _primary_document_provenance(
+    item: PersistableEvidence,
+) -> dict[str, Any] | None:
+    """Structured page/section/table provenance for a DEEP primary-document item.
+
+    Returns ``None`` for any non-deep item (so only genuinely extracted primary
+    documents surface page/section into the citation representation). For a deep
+    item, parses the deterministic ``key=value`` provenance markers into
+    ``{page_number, section, table_location, extraction_method, confidence,
+    document_content_hash}`` and falls back to the structured ``primary_fact``
+    page for validated facts. An OCR extraction_method adds an honest
+    ``ocr_disclosure`` (fields present even though OCR is a NoOp this slice).
+    Carries no raw document text — only bounded provenance metadata.
+    """
+    if not _is_deep_primary_document(item):
+        return None
+    page_number: int | None = None
+    section: str | None = None
+    table_location: str | None = None
+    extraction_method: str | None = None
+    confidence: float | None = None
+    for entry in item.provenance or []:
+        text = str(entry)
+        if text.startswith(_PROV_PAGE):
+            raw = text[len(_PROV_PAGE):].strip()
+            if raw.isdigit():
+                page_number = int(raw)
+        elif text.startswith(_PROV_SECTION):
+            section = text[len(_PROV_SECTION):].strip() or None
+        elif text.startswith(_PROV_TABLE):
+            table_location = text[len(_PROV_TABLE):].strip() or None
+        elif text.startswith(_PROV_METHOD):
+            extraction_method = text[len(_PROV_METHOD):].strip() or None
+        elif text.startswith(_PROV_CONFIDENCE):
+            raw = text[len(_PROV_CONFIDENCE):].strip()
+            try:
+                confidence = float(raw)
+            except ValueError:
+                confidence = None
+    # Structured fact fallback: a validated fact carries its page + table location
+    # on ``primary_fact`` even when the provenance string is absent.
+    pf = item.primary_fact if isinstance(item.primary_fact, dict) else None
+    if pf is not None:
+        if page_number is None and isinstance(pf.get("page_number"), int):
+            page_number = pf["page_number"]
+        if table_location is None and pf.get("excerpt_id"):
+            table_location = str(pf["excerpt_id"])
+    prov: dict[str, Any] = {
+        "page_number": page_number,
+        "section": section,
+        "table_location": table_location,
+        "extraction_method": extraction_method,
+        "confidence": confidence,
+        "document_content_hash": str(item.document_content_hash),
+    }
+    if (extraction_method or "").lower() in _OCR_METHODS:
+        prov["ocr_disclosure"] = (
+            "OCR-derived text (optical character recognition) — accuracy is "
+            "unverified; human review required."
+        )
+    return prov
+
+
 def _is_metadata_only(item: PersistableEvidence) -> bool:
     return (item.data_quality or "") in _METADATA_ONLY_QUALITIES
 
@@ -271,13 +373,15 @@ async def _get_or_create_evidence_source_id(
 ) -> uuid.UUID:
     """Flush-only ``get_or_create`` for one evidence item's canonical Source.
 
-    Deduped by a synthesized ``content_hash`` (so url-less SEC facts dedup and
-    re-runs never accumulate duplicate sources): first the in-run cache, then an
-    existing DB row, else a new ``Source``. ``db.add`` + ``db.flush`` ONLY — no
+    Deduped by ``content_hash`` (so url-less SEC facts dedup and re-runs never
+    accumulate duplicate sources): first the in-run cache, then an existing DB row,
+    else a new ``Source``. A DEEP primary-document item uses its RAW-bytes document
+    hash (one Source per distinct document — Slice 5 C4); every other item keeps
+    the synthesized url+tier+excerpt hash. ``db.add`` + ``db.flush`` ONLY — no
     commit — so the whole final-report persistence stays in one transaction (the
     service ``create_source`` commits internally and must NOT be reused here).
     """
-    content_hash = _evidence_content_hash(item, canonical_url)
+    content_hash = _source_content_hash(item, canonical_url)
     cached = seen.get(content_hash)
     if cached is not None:
         return cached
@@ -385,8 +489,12 @@ def _evidence_reconciliation_counts(
 
     links = _council_evidence_links(council_result)
     council_link_count = len(links)
+    # Use the SAME per-item Source key the persistence layer uses (raw-bytes hash
+    # for deep primary documents, synthesized hash otherwise) so this projected
+    # ``db_persisted_source_count`` equals the rows actually written — deep excerpts
+    # + facts from one document collapse to one Source, never inflated.
     council_source_hashes = {
-        _evidence_content_hash(it, canonicalize_source_url(it.url))
+        _source_content_hash(it, canonicalize_source_url(it.url))
         for _, _, it in links
     }
     # Count ONLY genuinely-deterministic (non-council) lineage citations here.
@@ -413,6 +521,85 @@ def _evidence_reconciliation_counts(
         "db_persisted_citation_count": len(det_rows) + council_link_count,
         "council_claim_citation_count": council_link_count,
     }
+
+
+# Deep primary-document extraction statuses (mirror ``primary_document_extractor``
+# — kept local to avoid importing the connector layer into the report generator).
+_DEEP_STATUS_EXTRACTED = "extracted"
+_DEEP_STATUS_METADATA_ONLY = "metadata_only"
+_DEEP_STATUS_EXTRACTION_FAILED = "extraction_failed"
+
+
+def _primary_document_citation_rows(council_result: Any) -> list[dict[str, Any]]:
+    """Citation representation for DEEP primary-document claim→evidence links.
+
+    Phase 32A Slice 5 (C3): each row surfaces the page / section / table location /
+    extraction method / confidence for a council claim backed by extracted
+    primary-document evidence — the page/section carried through the
+    ``PersistableEvidence`` carrier (there is no citations JSON column, so this
+    lives in the report's citation representation, not a new DB column). Only DEEP
+    items appear (``document_content_hash`` present); a metadata-only reference is
+    NEVER included (it verifies no claim). OCR-derived evidence discloses its OCR
+    provenance. Carries no raw document text — bounded provenance + claim only.
+    """
+    rows: list[dict[str, Any]] = []
+    for agent_name, claim_text, item in _council_evidence_links(council_result):
+        prov = _primary_document_provenance(item)
+        if prov is None:
+            continue
+        row: dict[str, Any] = {
+            "agent": agent_name,
+            "claim_text": claim_text,
+            "source_type": item.source_type,
+            "source_tier": item.source_tier,
+            "page_number": prov["page_number"],
+            "section": prov["section"],
+            "table_location": prov["table_location"],
+            "extraction_method": prov["extraction_method"],
+            "confidence": prov["confidence"],
+            "document_content_hash": prov["document_content_hash"],
+        }
+        if "ocr_disclosure" in prov:
+            row["ocr_disclosure"] = prov["ocr_disclosure"]
+        rows.append(row)
+    return rows
+
+
+def _primary_document_state_counts(council_result: Any) -> dict[str, int]:
+    """Distinct, honest per-document ingestion-state counts (NEVER summed).
+
+    Phase 32A Slice 5 (C4): extracted vs metadata-only vs extraction-failed are
+    three separate states of the deep artifacts handed off for this run. Reported
+    side-by-side so the appendix is honest about which documents yielded text,
+    which located only metadata, and which failed (surfaced as gaps elsewhere).
+    """
+    extracted = 0
+    metadata_only = 0
+    failed = 0
+    for art in getattr(council_result, "primary_document_artifacts", None) or []:
+        status = getattr(art, "status", None)
+        if status == _DEEP_STATUS_EXTRACTED:
+            extracted += 1
+        elif status == _DEEP_STATUS_METADATA_ONLY:
+            metadata_only += 1
+        elif status == _DEEP_STATUS_EXTRACTION_FAILED:
+            failed += 1
+    return {
+        "primary_document_extracted_count": extracted,
+        "primary_document_metadata_only_count": metadata_only,
+        "primary_document_extraction_failed_count": failed,
+    }
+
+
+_APPENDIX_PRIMARY_DOC_NOTE = (
+    "Deep primary-document ingestion states are reported side-by-side and are NOT "
+    "summed: extracted documents yielded bounded excerpts / validated facts; "
+    "metadata-only documents located a verified source but no extractable text "
+    "(reference only — never a fact); extraction-failed documents are surfaced as "
+    "honest gaps. Primary-document citations carry the page / section / table "
+    "location, extraction method and confidence of the evidence they cite; an "
+    "OCR-derived citation discloses its OCR provenance. Human review required."
+)
 
 
 _APPENDIX_RECONCILE_NOTE = (
@@ -3400,6 +3587,49 @@ async def _save_final_report_draft(
             council_citations=citations_added,
         )
 
+    # Phase 32A Slice 5 (3c-i) — persist the council's DEEP primary-document
+    # artifacts (ExtractedDocument / ExtractedFact) for this run's lineage. Gated
+    # behind BOTH the ingestion + citation-persistence flags (either off ⇒ no
+    # query, no row). Lineage is attached via company_id / agent_run_id only — it
+    # never touches the from-company selection (Slice-3 "B1" invariant). Best
+    # effort: wrapped in a SAVEPOINT so a persistence error rolls back ONLY the
+    # ingestion rows (never the report / citations) and never breaks report
+    # generation; the failure is logged by exception TYPE NAME only (no secrets).
+    if (
+        settings.primary_document_ingestion_enabled
+        and settings.report_citation_persistence_enabled
+        and council_result is not None
+    ):
+        try:
+            async with db.begin_nested():
+                persist_result = await persist_primary_document_artifacts(
+                    db,
+                    artifacts=getattr(
+                        council_result, "primary_document_artifacts", None
+                    ),
+                    company_id=company_id,
+                    agent_run_id=created_by_agent_run_id,
+                    cfg=settings,
+                )
+            log_event(
+                logger,
+                "primary_documents_persisted",
+                report_id=str(report.id),
+                documents_created=persist_result.documents_created,
+                documents_reused=persist_result.documents_reused,
+                facts_created=persist_result.facts_created,
+                facts_deduped=persist_result.facts_deduped,
+                skipped=persist_result.skipped,
+            )
+        except Exception as exc:  # noqa: BLE001 - ingestion never breaks a report
+            log_event(
+                logger,
+                "primary_documents_persist_failed",
+                level=logging.WARNING,
+                report_id=str(report.id),
+                exception_type=type(exc).__name__,
+            )
+
     # Persist the draft. get_db() does not commit for us (it yields the session
     # and closes it, which rolls back an uncommitted transaction), so every
     # write service commits its own work — this one must too, or the generated
@@ -3942,6 +4172,30 @@ class FinalReportGeneratorService:
         # safety gate scans it (backstop on top of the council's own quarantine).
         appendix = report_content.get("source_citation_appendix", {}) or {}
         source_rows = (appendix.get("sources") or {}).get("value") or []
+
+        # Phase 32A Slice 5 (3c-iii) — build the in-memory REUSE lookup BEFORE the
+        # council so the deep-ingestion path can skip re-fetching / re-extracting a
+        # document already persisted for THIS company within the freshness TTL. Only
+        # consulted when BOTH the ingestion + citation-persistence flags are on and a
+        # company_id is resolvable (same explicit signals as the lineage below —
+        # never inferred from ticker/name). With either flag off no query is issued
+        # and the council path is byte-identical. Strictly company-scoped: the loader
+        # never returns another company's documents.
+        reuse_lookup = None
+        if (
+            settings.primary_document_ingestion_enabled
+            and settings.report_citation_persistence_enabled
+        ):
+            reuse_company_id = (
+                source_report.company_id
+                if source_report is not None
+                else _coerce_uuid(state.get("company_id"))
+            )
+            if reuse_company_id is not None:
+                reuse_lookup = await load_reusable_documents(
+                    db, company_id=reuse_company_id, cfg=settings
+                )
+
         council_result: CouncilResult = await maybe_run_council(
             report_content=report_content,
             company_snapshot=company_snapshot,
@@ -3950,6 +4204,7 @@ class FinalReportGeneratorService:
             report_id=None,
             ticker=ticker,
             exchange=exchange,
+            reuse_lookup=reuse_lookup,
         )
         if council_result.llm_used:
             report_content["llm_council_analysis"] = council_result.to_report_dict()
@@ -4035,6 +4290,30 @@ class FinalReportGeneratorService:
             )
             _appendix.update(_counts)
             _appendix["note"] = _APPENDIX_RECONCILE_NOTE
+
+        # Phase 32A Slice 5 (C3 + C4) — honest DEEP primary-document surfacing.
+        # When the master ingestion flag is on, extend the appendix with (a) the
+        # per-document ingestion-state counts (extracted / metadata-only / failed —
+        # distinct honest states, never summed) and (b) the primary-document
+        # citation representation carrying page / section / table location +
+        # extraction method + confidence (+ OCR disclosure) for each council claim
+        # backed by extracted primary-document evidence. Both are additive and only
+        # appear when non-empty. Dark by default: with the master flag off (or no
+        # deep documents) nothing is added and the appendix is byte-for-byte
+        # unchanged. A metadata-only reference never appears here as verification.
+        if settings.primary_document_ingestion_enabled and isinstance(
+            _appendix, dict
+        ):
+            _state_counts = _primary_document_state_counts(council_result)
+            _pd_citations = _primary_document_citation_rows(council_result)
+            if any(_state_counts.values()) or _pd_citations:
+                _appendix.update(_state_counts)
+                _appendix["primary_document_citations"] = {
+                    "value": _pd_citations,
+                    "total": len(_pd_citations),
+                    "provenance": "sourced_fact",
+                }
+                _appendix["primary_document_note"] = _APPENDIX_PRIMARY_DOC_NOTE
 
         # Phase 29C.1: optional MACRO CONTEXT block. When ``source_macro_enabled``
         # is on and the council surfaced reference-only macro sources for this

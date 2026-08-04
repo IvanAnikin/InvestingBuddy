@@ -163,6 +163,14 @@ class EvidenceItem(BaseModel):
     # text (see PrimaryFactRef). Absent on every other evidence item.
     primary_fact: PrimaryFactRef | None = None
 
+    # Phase 32A Slice 5 (3c-ii): the sha256 hex of the RAW document bytes for a
+    # DEEP-ingested primary-document evidence item (excerpt / validated fact). Its
+    # PRESENCE marks an item as deep-ingested, so the citation write can key the
+    # canonical Source on the document identity (one Source per distinct document)
+    # instead of the synthesized url+tier+excerpt hash. ``None`` on every shallow
+    # (Phase 29B.2) / metadata-only / non-document item — never a secret (a hash).
+    document_content_hash: str | None = None
+
     @field_validator("content_source_tier")
     @classmethod
     def _content_tier_required(cls, v: str) -> str:

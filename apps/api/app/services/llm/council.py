@@ -26,7 +26,7 @@ import random
 import time
 import uuid
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.core.config import Settings
 from app.core.config import settings as default_settings
@@ -79,6 +79,9 @@ from app.services.sources.macro_evidence import (
 )
 from app.services.sources.registry import build_registry, registry_gap_messages
 from app.services.sources.translation import get_translation_provider
+
+if TYPE_CHECKING:  # reuse lookup is a plain in-memory dict — never a DB session.
+    from app.services.extracted_document_service import ReusedDocument
 
 _logger = logging.getLogger("app.services.llm.council")
 
@@ -1098,6 +1101,7 @@ async def run_council(
                 source_id=item.source_id,
                 primary_fact=item.primary_fact,
                 provenance=list(item.provenance),
+                document_content_hash=item.document_content_hash,
             )
             for item in evidence_pack.evidence_items
         ]
@@ -1130,6 +1134,7 @@ async def maybe_run_council(
     exchange: str | None = None,
     cfg: Settings | None = None,
     client: LLMClient | None = None,
+    reuse_lookup: "dict[str, ReusedDocument] | None" = None,
     logger: logging.Logger | None = None,
 ) -> CouncilResult:
     """Resolve a client, build the evidence pack, and run the council.
@@ -1137,6 +1142,11 @@ async def maybe_run_council(
     Returns ``CouncilResult.disabled()`` (llm_used=False) when the council flag
     is off or no provider resolves — the signal to keep the deterministic path.
     Never raises: an unexpected failure degrades to the disabled result.
+
+    ``reuse_lookup`` (Phase 32A Slice 5, 3c-iii) is an OPTIONAL in-memory lookup
+    (NOT a DB session) built by the caller from persisted extracted documents; when
+    the deep ingestion path runs, a candidate document already present is reused
+    instead of re-fetched. None / empty ⇒ every candidate is fetched (byte-identical).
     """
     cfg = cfg or default_settings
     log = logger or _logger
@@ -1163,14 +1173,40 @@ async def maybe_run_council(
         primary_source_references: list[dict[str, Any]] = []
         source_reference_counts: dict[str, int] = {}
         source_gap_messages_bounded: list[str] = []
+        # Phase 32A Slice 5 (3c-i): deep primary-document artifacts threaded OUT for
+        # the report-write path to persist (ExtractedDocument / ExtractedFact). Only
+        # captured when BOTH the ingestion + citation persistence flags are on so the
+        # dark path (either flag off) stays byte-identical and holds no data.
+        primary_document_artifacts: list[Any] = []
         if cfg.source_connector_enabled:
             try:
                 # Phase 29B.2: when document extraction is also enabled, inject the
                 # bounded live IR-page fetcher + document extractor so the council
                 # reasons from real annual-report excerpts + parsed facts — not only
                 # metadata. Off by default (both flags), preserving 29B.1 behaviour.
+                #
+                # Phase 32A Slice 5: when the MASTER flag
+                # ``primary_document_ingestion_enabled`` is on, inject the DEEP
+                # extractor instead (pdfplumber tables + stricter fact validation +
+                # aggregate ingestion budget). This runs BEFORE the council deadline,
+                # so ingestion + the ~150s council stays under the ~230s gateway. With
+                # the master flag OFF the ``elif`` below is byte-identical to Slice 4.
                 extract_kwargs: dict[str, Any] = {}
-                if cfg.source_document_extraction_enabled:
+                if cfg.primary_document_ingestion_enabled:
+                    from app.services.sources.live_fetchers import (
+                        live_ir_page_fetcher,
+                        live_primary_document_extractor,
+                    )
+
+                    extract_kwargs = {
+                        "ir_page_fetcher": live_ir_page_fetcher,
+                        "primary_document_extractor": live_primary_document_extractor,
+                        # Phase 32A Slice 5 (3c-iii): reuse persisted extractions so a
+                        # report regeneration skips the re-fetch/re-extract. Empty /
+                        # None ⇒ every candidate is fetched (byte-identical).
+                        "primary_document_reuse": reuse_lookup,
+                    }
+                elif cfg.source_document_extraction_enabled:
                     from app.services.sources.live_fetchers import (
                         live_document_extractor,
                         live_ir_page_fetcher,
@@ -1191,6 +1227,16 @@ async def maybe_run_council(
                 connector_gap_messages = collected.gap_messages()
                 primary_documents = _primary_document_summary(collected.evidence_items)
                 primary_facts = _primary_facts(collected.evidence_items)
+                # Phase 32A Slice 5 (3c-i): capture the deep artifacts for persistence
+                # ONLY when both the ingestion + citation persistence flags are on.
+                # Either flag off ⇒ list stays empty ⇒ nothing to persist downstream.
+                if (
+                    cfg.primary_document_ingestion_enabled
+                    and cfg.report_citation_persistence_enabled
+                ):
+                    primary_document_artifacts = list(
+                        collected.primary_document_artifacts
+                    )
                 # Phase 31 hotfix: classify metadata-only PRIMARY-source references
                 # (issuer IR / annual-report index / regulator venue) so the report
                 # can surface them, distinct from extracted text and parsed facts.
@@ -1389,6 +1435,11 @@ async def maybe_run_council(
         # the original text + source URL and is clearly marked NOT official.
         if translated_excerpts:
             result.translated_excerpts = translated_excerpts
+        # Phase 32A Slice 5 (3c-i): hand the deep primary-document artifacts to the
+        # report-write path (runtime-only, excluded from serialization). Non-empty
+        # ONLY when both gate flags are on ⇒ dark-by-default byte-identical.
+        if primary_document_artifacts:
+            result.primary_document_artifacts = primary_document_artifacts
         return result
     except Exception as exc:  # noqa: BLE001 - never let the council crash a report
         log_event(

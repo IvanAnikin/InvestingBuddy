@@ -2635,3 +2635,40 @@ entry is retained in the agent list so `agents_completed` / `agents_failed`
 honestly show the council is **visibly partial**. `schema_valid` / `safety_valid`
 stay `true`, `publication_ready` stays `false`, `human_review_required` stays
 `true`; failed agents create no citations.
+
+## Phase 32A Slice 5 — Primary-Document Ingestion (internal; NO new public endpoint)
+
+> **PR open on branch `phase-32a-slice5` — NOT yet merged / deployed /
+> staging-validated.** Do not treat this as a closed/validated contract until the
+> merge SHA + deployed SHA + staging validation result are on file. Gated by the
+> default-OFF `PRIMARY_DOCUMENT_INGESTION_ENABLED` flag; with it off the report /
+> council response shapes below are unchanged (Phase 29B.2 / Slice 4 behaviour).
+
+**No new endpoint and no user-supplied-URL surface.** Primary-document ingestion
+is entirely INTERNAL to the analysis path — it runs in the source-connector phase
+inside `maybe_run_council` (before the council) and persists to migration `013`'s
+`extracted_documents` / `extracted_facts` tables. It never exposes a public route
+and no endpoint accepts a document URL (every fetch routes through the
+allowlist-gated hardened layer — see `docs/SECURITY.md`).
+
+**Additive report response fields.** When `PRIMARY_DOCUMENT_INGESTION_ENABLED` is
+on AND deep extraction produced results (or primary-document citations exist), the
+final report's **Source Citation Appendix** (`report_content.source_citation_appendix`)
+gains these additive keys; they are absent otherwise (OFF path byte-identical):
+
+| Field | Type | Meaning |
+|---|---|---|
+| `primary_document_extracted_count` | int | Documents deep-extracted this run. |
+| `primary_document_metadata_only_count` | int | Documents that stayed metadata-only (scanned / JS-gated / no usable text). |
+| `primary_document_extraction_failed_count` | int | Documents that failed extraction (wrong magic byte / malformed / encrypted). |
+| `db_persisted_source_count` | int | Canonical `Source` rows actually written (keyed per distinct document by raw-bytes `content_hash`). |
+| `primary_document_citations` | object | Per-citation page / section / table provenance for validated primary-document facts (no citation from a failed / metadata-only extraction; OCR provenance disclosed). |
+| `primary_document_note` | str | Honest reconciling note describing what was extracted vs metadata-only vs failed. |
+
+Extracted facts are `needs_human_review`; metadata-only references never become
+facts or claim-verification; the evidence-pack `primary_document` floor/cap does
+not weaken the Slice-2 financial floor / news caps. `schema_valid` /
+`safety_valid` stay `true`, `publication_ready` stays `false`,
+`human_review_required` stays `true`; no recommendation / valuation. OCR is a NoOp
+seam this slice — a scanned document degrades honestly to metadata-only (a real
+Azure Document Intelligence adapter is deferred; see `docs/DECISIONS.md` ADR-014).
