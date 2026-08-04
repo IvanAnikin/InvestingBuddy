@@ -26,7 +26,7 @@ import random
 import time
 import uuid
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.core.config import Settings
 from app.core.config import settings as default_settings
@@ -79,6 +79,9 @@ from app.services.sources.macro_evidence import (
 )
 from app.services.sources.registry import build_registry, registry_gap_messages
 from app.services.sources.translation import get_translation_provider
+
+if TYPE_CHECKING:  # reuse lookup is a plain in-memory dict — never a DB session.
+    from app.services.extracted_document_service import ReusedDocument
 
 _logger = logging.getLogger("app.services.llm.council")
 
@@ -1131,6 +1134,7 @@ async def maybe_run_council(
     exchange: str | None = None,
     cfg: Settings | None = None,
     client: LLMClient | None = None,
+    reuse_lookup: "dict[str, ReusedDocument] | None" = None,
     logger: logging.Logger | None = None,
 ) -> CouncilResult:
     """Resolve a client, build the evidence pack, and run the council.
@@ -1138,6 +1142,11 @@ async def maybe_run_council(
     Returns ``CouncilResult.disabled()`` (llm_used=False) when the council flag
     is off or no provider resolves — the signal to keep the deterministic path.
     Never raises: an unexpected failure degrades to the disabled result.
+
+    ``reuse_lookup`` (Phase 32A Slice 5, 3c-iii) is an OPTIONAL in-memory lookup
+    (NOT a DB session) built by the caller from persisted extracted documents; when
+    the deep ingestion path runs, a candidate document already present is reused
+    instead of re-fetched. None / empty ⇒ every candidate is fetched (byte-identical).
     """
     cfg = cfg or default_settings
     log = logger or _logger
@@ -1192,6 +1201,10 @@ async def maybe_run_council(
                     extract_kwargs = {
                         "ir_page_fetcher": live_ir_page_fetcher,
                         "primary_document_extractor": live_primary_document_extractor,
+                        # Phase 32A Slice 5 (3c-iii): reuse persisted extractions so a
+                        # report regeneration skips the re-fetch/re-extract. Empty /
+                        # None ⇒ every candidate is fetched (byte-identical).
+                        "primary_document_reuse": reuse_lookup,
                     }
                 elif cfg.source_document_extraction_enabled:
                     from app.services.sources.live_fetchers import (

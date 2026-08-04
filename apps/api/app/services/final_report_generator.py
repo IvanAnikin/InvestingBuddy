@@ -59,6 +59,7 @@ from app.services.data_provenance import (
     provenance_to_is_mock,
 )
 from app.services.extracted_document_service import (
+    load_reusable_documents,
     persist_primary_document_artifacts,
 )
 from app.services.llm.council import maybe_run_council
@@ -4171,6 +4172,30 @@ class FinalReportGeneratorService:
         # safety gate scans it (backstop on top of the council's own quarantine).
         appendix = report_content.get("source_citation_appendix", {}) or {}
         source_rows = (appendix.get("sources") or {}).get("value") or []
+
+        # Phase 32A Slice 5 (3c-iii) — build the in-memory REUSE lookup BEFORE the
+        # council so the deep-ingestion path can skip re-fetching / re-extracting a
+        # document already persisted for THIS company within the freshness TTL. Only
+        # consulted when BOTH the ingestion + citation-persistence flags are on and a
+        # company_id is resolvable (same explicit signals as the lineage below —
+        # never inferred from ticker/name). With either flag off no query is issued
+        # and the council path is byte-identical. Strictly company-scoped: the loader
+        # never returns another company's documents.
+        reuse_lookup = None
+        if (
+            settings.primary_document_ingestion_enabled
+            and settings.report_citation_persistence_enabled
+        ):
+            reuse_company_id = (
+                source_report.company_id
+                if source_report is not None
+                else _coerce_uuid(state.get("company_id"))
+            )
+            if reuse_company_id is not None:
+                reuse_lookup = await load_reusable_documents(
+                    db, company_id=reuse_company_id, cfg=settings
+                )
+
         council_result: CouncilResult = await maybe_run_council(
             report_content=report_content,
             company_snapshot=company_snapshot,
@@ -4179,6 +4204,7 @@ class FinalReportGeneratorService:
             report_id=None,
             ticker=ticker,
             exchange=exchange,
+            reuse_lookup=reuse_lookup,
         )
         if council_result.llm_used:
             report_content["llm_council_analysis"] = council_result.to_report_dict()

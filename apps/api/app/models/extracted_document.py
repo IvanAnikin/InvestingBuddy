@@ -1,8 +1,10 @@
 import uuid
 from datetime import date, datetime, timezone
 from decimal import Decimal
+from typing import Any
 
 import sqlalchemy as sa
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -48,6 +50,18 @@ class ExtractedDocument(Base):
     page_count: Mapped[int | None] = mapped_column(sa.Integer)
     # Ingestion outcome: 'extracted' | 'metadata_only' | 'extraction_failed'.
     status: Mapped[str] = mapped_column(sa.String(50), nullable=False)
+    # Phase 32A Slice 5 (3c-iii) — the BOUNDED excerpts already produced for this
+    # document (each capped by ``primary_document_max_excerpts_per_document`` /
+    # ``primary_document_max_excerpt_chars`` at extraction time), stored so a later
+    # report regeneration can REBUILD the extraction and REUSE it without a
+    # re-fetch / re-extract. A JSON list of
+    # ``{text, page_number, section, heading, table_location, extraction_method,
+    # confidence, evidence_type, excerpt_id, char_count}``. Bounded on purpose —
+    # this is never the full document text and never the raw table grid. NULL for
+    # rows written before this column existed (reuse degrades to a re-fetch).
+    excerpts_json: Mapped[list[dict[str, Any]] | None] = mapped_column(
+        JSONB, nullable=True
+    )
     # Lineage — SET NULL preserves research history on company / run deletion.
     company_id: Mapped[uuid.UUID | None] = mapped_column(
         sa.Uuid(as_uuid=True),

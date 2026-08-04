@@ -10,10 +10,13 @@ Creates: extracted_documents, extracted_facts
 
 ``extracted_documents`` records the lineage + status of one ingested issuer
 primary document (annual report / registration document), deduped by a
-``content_hash`` of the RAW fetched bytes (unique index). ``extracted_facts``
-stores the bounded primary facts / excerpts parsed from a document, each with
-provenance (page / table location), an extraction ``confidence``, a validation
-status, and a human-review flag.
+``content_hash`` of the RAW fetched bytes (unique index). It also carries the
+BOUNDED excerpts (``excerpts_json``) that were produced for the document so a
+LATER report regeneration can rebuild + reuse the extraction without re-fetching
+or re-extracting — never the full document text or raw table grid.
+``extracted_facts`` stores the bounded primary facts / excerpts parsed from a
+document, each with provenance (page / table location), an extraction
+``confidence``, a validation status, and a human-review flag.
 
 Nothing is wired to populate these tables in this slice; ingestion behaviour
 arrives in a later slice. No investment recommendations, price targets, fair
@@ -26,6 +29,7 @@ Reversible. No data backfill.
 from collections.abc import Sequence
 
 import sqlalchemy as sa
+from sqlalchemy.dialects.postgresql import JSONB
 
 from alembic import op
 
@@ -58,6 +62,10 @@ def upgrade() -> None:
         sa.Column("extraction_method", sa.String(50), nullable=False),
         sa.Column("page_count", sa.Integer(), nullable=True),
         sa.Column("status", sa.String(50), nullable=False),
+        # Phase 32A Slice 5 (3c-iii) — bounded excerpts stored so a report
+        # regeneration can rebuild + reuse the extraction without a re-fetch /
+        # re-extract. Never the full document text or the raw table grid.
+        sa.Column("excerpts_json", JSONB(), nullable=True),
         sa.Column("company_id", sa.Uuid(as_uuid=True), nullable=True),
         sa.Column("agent_run_id", sa.Uuid(as_uuid=True), nullable=True),
         sa.Column("blob_path", sa.String(1000), nullable=True),

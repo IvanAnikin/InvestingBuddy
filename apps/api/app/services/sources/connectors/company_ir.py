@@ -44,7 +44,7 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
@@ -78,6 +78,7 @@ from app.services.sources.primary_document_extractor import (
     _confidence_bucket,
 )
 from app.services.sources.primary_fact_parser import PrimaryFact
+from app.services.sources.redaction import canonicalize_source_url
 from app.services.sources.safe_web_fetcher import (
     ANNUAL_REPORT_KEYWORDS,
     FALLBACK_REPORT_KEYWORDS,
@@ -90,6 +91,9 @@ from app.services.sources.taxonomy import (
     ConnectorStatus,
 )
 from app.services.sources.verified_issuer_sources import VerifiedIssuerSource
+
+if TYPE_CHECKING:  # reuse lookup is a plain in-memory dict — never a DB session.
+    from app.services.extracted_document_service import ReusedDocument
 
 _log = logging.getLogger("app.services.sources.connectors.company_ir")
 
@@ -201,6 +205,7 @@ class CompanyIrConnector(SourceConnector):
         page_fetcher: PageFetcher | None = None,
         document_extractor: DocumentExtractor | None = None,
         primary_document_extractor: PrimaryDocumentDeepExtractor | None = None,
+        primary_document_reuse: "dict[str, ReusedDocument] | None" = None,
         max_docs_per_issuer: int = 1,
         ingestion_budget_seconds: float | None = None,
         clock: Callable[[], float] = time.monotonic,
@@ -213,6 +218,13 @@ class CompanyIrConnector(SourceConnector):
         # extractor is injected the connector fetches up to ``max_docs_per_issuer``
         # documents under an AGGREGATE wall-budget and collects rich artifacts.
         self._primary_document_extractor = primary_document_extractor
+        # Phase 32A Slice 5 (3c-iii): an OPTIONAL, in-memory reuse lookup (NOT a DB
+        # session) keyed by canonical URL. When a candidate document is already in
+        # it, the connector rebuilds the persisted artifact and SKIPS the network
+        # fetch/extract. Empty / None ⇒ every candidate is fetched (byte-identical).
+        self._primary_document_reuse: dict[str, ReusedDocument] = (
+            primary_document_reuse or {}
+        )
         self._max_docs_per_issuer = max(1, max_docs_per_issuer)
         self._ingestion_budget_seconds = ingestion_budget_seconds
         self._clock = clock
@@ -712,13 +724,40 @@ class CompanyIrConnector(SourceConnector):
                 )
                 break
 
-            artifact = await self._primary_document_extractor(
-                target.url,
-                allowed_domains=allowed,
-                title_hint=target.text or None,
-                original_language=self._original_language(),
-                issuer_context=issuer_context,
-            )
+            # Phase 32A Slice 5 (3c-iii): reuse a previously extracted document
+            # (rebuilt from persisted excerpts + validated facts) INSTEAD of a fresh
+            # fetch/extract when its canonical URL is in the reuse lookup. The reused
+            # artifact flows into evidence + facts + (idempotent) persistence exactly
+            # as a freshly-fetched one. Empty lookup ⇒ always fetch (byte-identical).
+            reuse_key = canonicalize_source_url(target.url) or target.url
+            reused = self._primary_document_reuse.get(reuse_key)
+            if reused is not None:
+                artifact = reused.artifact
+                log_event(
+                    _log,
+                    "primary_document_reused",
+                    connector_key=self.connector_key,
+                    document_index=doc_idx,
+                    status=artifact.status,
+                    excerpt_count=(
+                        len(artifact.extraction.excerpts)
+                        if artifact.extraction
+                        else 0
+                    ),
+                    validated_fact_count=sum(
+                        1
+                        for f in artifact.validated_facts
+                        if f.validation_status == VALIDATION_VALIDATED
+                    ),
+                )
+            else:
+                artifact = await self._primary_document_extractor(
+                    target.url,
+                    allowed_domains=allowed,
+                    title_hint=target.text or None,
+                    original_language=self._original_language(),
+                    issuer_context=issuer_context,
+                )
             artifacts.append(artifact)
             ingested += 1
             doc_items, doc_gaps = self._artifact_to_evidence(

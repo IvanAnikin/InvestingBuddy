@@ -29,6 +29,7 @@ Design guarantees:
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
@@ -63,6 +64,9 @@ from app.services.sources.evidence import EvidenceItem
 from app.services.sources.gaps import GapSeverity, GapType, SourceGap
 from app.services.sources.registry import SourceRegistry, build_registry
 from app.services.sources.verified_issuer_sources import get_verified_issuer_source
+
+if TYPE_CHECKING:  # reuse lookup is a plain in-memory dict — never a DB session.
+    from app.services.extracted_document_service import ReusedDocument
 
 # Source ids whose connectors can produce live company evidence in this phase.
 SEC_ID = "sec_edgar"
@@ -276,6 +280,7 @@ async def collect_company_source_evidence(
     ir_page_fetcher: PageFetcher | None = None,
     document_extractor: DocumentExtractor | None = None,
     primary_document_extractor: PrimaryDocumentDeepExtractor | None = None,
+    primary_document_reuse: dict[str, ReusedDocument] | None = None,
     cfg: Settings | None = None,
     registry: SourceRegistry | None = None,
 ) -> CompanySourceEvidence:
@@ -291,7 +296,10 @@ async def collect_company_source_evidence(
     fetch + text-extraction + fact-parsing of ONE discovered annual-report
     document; when None no document is fetched (Phase 29B.1 behaviour preserved).
     ``source_ids`` restricts which connectors run; when ``None`` a sensible
-    default set runs.
+    default set runs. ``primary_document_reuse`` (Phase 32A Slice 5, 3c-iii) is an
+    OPTIONAL in-memory lookup (NOT a DB session) keyed by canonical URL: a candidate
+    document already present is rebuilt from persisted excerpts + facts and REUSED
+    (no re-fetch/re-extract). None / empty ⇒ every candidate is fetched as before.
     """
     cfg = cfg or default_settings
     registry = registry or build_registry(cfg)
@@ -338,6 +346,7 @@ async def collect_company_source_evidence(
             page_fetcher=ir_page_fetcher,
             document_extractor=document_extractor,
             primary_document_extractor=primary_document_extractor,
+            primary_document_reuse=primary_document_reuse,
             max_docs_per_issuer=cfg.primary_document_max_docs_per_issuer,
             ingestion_budget_seconds=(
                 float(cfg.primary_document_ingestion_budget_seconds)

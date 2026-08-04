@@ -422,6 +422,15 @@ class Settings(BaseSettings):
     # number of primary-document facts contributed to the council evidence pack.
     primary_document_evidence_floor: int = 1
     primary_document_evidence_cap: int = 6
+    # Phase 32A Slice 5 (3c-iii): freshness window (hours) for REUSING a previously
+    # extracted primary document across a report regeneration. A persisted
+    # ``extracted`` document whose ``retrieved_at`` is within this TTL is rebuilt
+    # from its stored excerpts + validated facts and reused (no re-fetch /
+    # re-extract); older documents are re-fetched. Only ever consulted when BOTH
+    # ``primary_document_ingestion_enabled`` and
+    # ``report_citation_persistence_enabled`` are on — with either off there is no
+    # reuse lookup and the path is byte-identical.
+    primary_document_reuse_ttl_hours: int = 24
 
 
 settings = Settings()
