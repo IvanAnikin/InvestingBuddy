@@ -108,9 +108,12 @@ Required mitigations:
 
 ## Outbound Document Fetch / SSRF Hardening (Phase 32A Slice 5)
 
-> **Implemented — PR open, pending staging validation.** Behind the default-OFF
-> `PRIMARY_DOCUMENT_INGESTION_ENABLED` flag; with it off none of this fetch/parse
-> surface is exercised.
+> **Implemented — Slice 5A and Slice 5B.1 are both CLOSED + STAGING-VALIDATED**
+> (`docs/development/closures/phase-32a-slice5a.md`,
+> `docs/development/closures/phase-32a-slice5b1.md`). Behind the default-OFF
+> `PRIMARY_DOCUMENT_INGESTION_ENABLED` flag (kept ON on staging); with it off
+> none of this fetch/parse surface is exercised. Slice 5B.2 (real OCR) and
+> 5B.3 (admin web visibility) remain open.
 
 Phase 32A Slice 5 adds bounded ingestion of an issuer's OWN primary documents
 (annual report / registration document) — a new outbound-fetch + PDF-parsing

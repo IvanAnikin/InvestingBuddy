@@ -642,10 +642,12 @@ after merge/deploy approval, then:
 
 ## Document Reachability + Secure Fetching (Phase 32A Slice 5B.1)
 
-> **PR open — pre-staging.** Branch `phase-32a-slice-5b1`. Not yet merged /
-> deployed / staging-validated. Do **not** treat this as a closed deployment
-> record until the merge SHA, deployed SHA, applied migration and staging
-> validation result are on file.
+> **✅ CLOSED + STAGING-VALIDATED (2026-08-05).** Merge chain
+> `1e26773` → `30a4737` → `0cffc87` (PR #78 + two corrective hotfixes, #79 and
+> #80 — both triggered by real staging failures this validation caught, both
+> resolved and re-validated). Migration `014` applied and verified. Full
+> results, live SQL evidence and both hotfix root causes:
+> `docs/development/closures/phase-32a-slice5b1.md`.
 
 - **Why this exists.** Slice 5A was staging-validated as a *foundation* with an
   explicit efficacy caveat: **0 successful native extractions across 7 issuers**,
@@ -691,7 +693,8 @@ after merge/deploy approval, then:
 
 ### Staging validation checklist (run AFTER merge + deploy + migration `014`)
 
-Do not mark Slice 5B.1 ✅ until these pass.
+**All items below PASSED on 2026-08-05.** See the closure report for exact
+report IDs, SQL evidence, and the two corrective-hotfix root causes.
 
 - **A. Deploy identity.** API serves the merged commit SHA (3 stable polls); DB
   head advances `013` → `014`; `AUTH_TEST_MODE` absent; unauthenticated → 401.
