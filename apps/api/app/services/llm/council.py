@@ -210,7 +210,18 @@ def _primary_facts(evidence_items: list[Any]) -> list[dict[str, Any]]:
 
 
 # Phase 31 hotfix: extracted document TEXT excerpt types (exclude the parsed
-# financial fact, which is handled by ``_primary_facts``).
+# IR financial fact, which is handled by ``_primary_facts``).
+#
+# NOTE (Slice 5B.1 hotfix 2): unlike ``company_ir_financial_fact``,
+# ``SEC_DOCUMENT_FACT_TYPE`` is deliberately NOT excluded here. ``_primary_facts``
+# only reads the IR fact shape, so a SEC-only filing (structured table data, no
+# prose excerpt — exactly what a real AAPL 10-Q/8-K produced on staging) would
+# otherwise be invisible to every counter if it were excluded here too.
+# Pre-existing, unchanged caveat: ``extracted_documents`` below counts EVIDENCE
+# ITEMS, not distinct documents (an excerpt and a fact from the SAME filing both
+# increment it) — this was already true for company-IR excerpts before this
+# change and is out of scope for this fix; ``_primary_document_summary`` is the
+# function that correctly groups by document identity.
 _EXTRACTED_EXCERPT_TYPES = _DOCUMENT_SOURCE_TYPES - {"company_ir_financial_fact"}
 # The data-quality labels the connector layer stamps on metadata-only items —
 # a located primary-source REFERENCE, not extracted text and not a parsed fact.

@@ -18,7 +18,11 @@ from app.schemas.source_registry import (
     TierInfo,
 )
 from app.services import source_service
-from app.services.sources.company_evidence import collect_company_source_evidence
+from app.services.sources.company_evidence import (
+    SEC_DOCUMENT_EXCERPT_TYPE,
+    SEC_DOCUMENT_FACT_TYPE,
+    collect_company_source_evidence,
+)
 from app.services.sources.connector_base import CompanyContext
 from app.services.sources.live_fetchers import (
     live_document_extractor,
@@ -38,6 +42,11 @@ _DOCUMENT_SOURCE_TYPES = frozenset(
         "company_ir_business_description",
         "company_ir_risk_excerpt",
         "company_ir_financial_fact",
+        # Phase 32A Slice 5B.1 hotfix 2: this preview-cap set drifted from the
+        # equivalent one in llm/council.py when Slice 5B.1 added SEC filing-body
+        # evidence — keep both in sync when either changes.
+        SEC_DOCUMENT_EXCERPT_TYPE,
+        SEC_DOCUMENT_FACT_TYPE,
     }
 )
 
