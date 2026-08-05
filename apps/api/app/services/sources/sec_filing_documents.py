@@ -49,6 +49,7 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlsplit
 
 from app.core.config import Settings
 from app.core.config import settings as default_settings
@@ -683,6 +684,66 @@ def _sorted_filings(filings: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(dated + undated, key=lambda f: _form_rank(f.get("form_type")))
 
 
+_ARCHIVES_CIK_RE = re.compile(r"/edgar/data/(\d{1,10})(?:/|$)", re.IGNORECASE)
+
+
+def cik_from_archives_url(url: str | None) -> str | None:
+    """Extract the filer CIK from an official SEC Archives URL.
+
+    ``https://www.sec.gov/Archives/edgar/data/320193/0000.../aapl-...htm`` carries
+    the filer's CIK in its path. Only ``sec.gov`` URLs are trusted — a CIK is an
+    identity, and taking one from an arbitrary host would let unrelated metadata
+    redirect us at a different filer.
+    """
+    if not url:
+        return None
+    try:
+        parts = urlsplit(url)
+    except (ValueError, TypeError):
+        return None
+    # HTTPS only, matching every other SEC path here — an http:// URL is not a
+    # trustworthy source of an issuer identity.
+    if parts.scheme != "https":
+        return None
+    host = (parts.hostname or "").lower()
+    if not registrable_host_allowed(host, SEC_ALLOWED_DOMAINS):
+        return None
+    match = _ARCHIVES_CIK_RE.search(parts.path or "")
+    return normalize_cik(match.group(1)) if match else None
+
+
+def cik_from_accession(accession: str | None) -> str | None:
+    """Derive the filer CIK from an accession number's 10-digit prefix.
+
+    ``0000320193-26-000020`` is ``<filer CIK><year><sequence>``. This is the
+    fallback when a filing carries no Archives URL.
+    """
+    digits = normalize_accession(accession)
+    return normalize_cik(digits[:10]) if digits else None
+
+
+def _cik_from_filings(filings: list[dict[str, Any]]) -> str | None:
+    """First CIK derivable from the filing list — URL preferred, accession next.
+
+    Returns None rather than guessing when the filings disagree, so a mixed list
+    can never silently attribute one issuer's filing body to another.
+    """
+    found: set[str] = set()
+    for filing in filings:
+        if not isinstance(filing, dict):
+            continue
+        for candidate in (
+            cik_from_archives_url(filing.get("url")),
+            cik_from_accession(filing.get("accession_number")),
+        ):
+            if candidate:
+                found.add(candidate)
+                break
+    if len(found) == 1:
+        return found.pop()
+    return None
+
+
 async def resolve_filing_documents(
     cik: str | int | None,
     filings: list[dict[str, Any]],
@@ -716,9 +777,24 @@ async def resolve_filing_documents(
       * ``max_documents * 3`` index attempts, enforced regardless of the
         deadline, so a filings list full of index misses still terminates.
     """
-    padded = normalize_cik(cik)
     cap = max(0, int(max_documents or 0))
-    if padded is None or cap == 0 or not isinstance(filings, list):
+    if cap == 0 or not isinstance(filings, list):
+        return []
+
+    # The caller's CompanyContext.cik comes from ``company_snapshot`` →
+    # ``company_identity``, which does NOT carry a ``cik`` key today — so it is
+    # None for every issuer, including AAPL. Relying on it alone made this whole
+    # path a SILENT no-op: it returned here with no log and no SourceGap, which
+    # is indistinguishable from "never ran". Derive the filer CIK from the filing
+    # metadata instead (the Archives URL path, else the accession prefix), and
+    # never fail silently again.
+    padded = normalize_cik(cik) or _cik_from_filings(filings)
+    if padded is None:
+        log_event(
+            _logger,
+            "sec_filing_cik_unresolved",
+            candidate_count=len(filings),
+        )
         return []
 
     cfg = cfg or default_settings
