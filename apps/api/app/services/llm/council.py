@@ -63,6 +63,8 @@ from app.services.llm.schemas import (
     has_financial_evidence,
 )
 from app.services.sources.company_evidence import (
+    SEC_DOCUMENT_EXCERPT_TYPE,
+    SEC_DOCUMENT_FACT_TYPE,
     collect_company_source_evidence,
     press_items_from_catalyst,
     sec_filings_from_catalyst,
@@ -112,8 +114,22 @@ _DOCUMENT_SOURCE_TYPES = frozenset(
         "company_ir_business_description",
         "company_ir_risk_excerpt",
         "company_ir_financial_fact",
+        # Phase 32A Slice 5B.1 hotfix: SEC filing-BODY evidence
+        # (`company_evidence.sec_artifacts_to_evidence`) was never added here, so
+        # a successful SEC extraction never appeared in `primary_documents` /
+        # `extracted_primary_document_count` even though its citations resolved
+        # correctly end-to-end — proven live on staging (AAPL 10-Q/8-K, a real
+        # validated `cash_and_equivalents` fact). This was a report-summary gap,
+        # not a fabrication or safety issue: the underlying evidence and
+        # citations were always correct.
+        SEC_DOCUMENT_EXCERPT_TYPE,
+        SEC_DOCUMENT_FACT_TYPE,
     }
 )
+
+# Fact-shaped source_types within _DOCUMENT_SOURCE_TYPES — used to route an item
+# to fact_count vs excerpt_count in _primary_document_summary.
+_DOCUMENT_FACT_TYPES = frozenset({"company_ir_financial_fact", SEC_DOCUMENT_FACT_TYPE})
 
 
 def _primary_document_summary(evidence_items: list[Any]) -> list[dict[str, Any]]:
@@ -149,7 +165,7 @@ def _primary_document_summary(evidence_items: list[Any]) -> list[dict[str, Any]]
                 "warnings": [],
             },
         )
-        if stype == "company_ir_financial_fact":
+        if stype in _DOCUMENT_FACT_TYPES:
             g["fact_count"] += 1
         else:
             g["excerpt_count"] += 1
