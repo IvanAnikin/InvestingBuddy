@@ -63,6 +63,8 @@ from app.services.llm.schemas import (
     has_financial_evidence,
 )
 from app.services.sources.company_evidence import (
+    SEC_DOCUMENT_EXCERPT_TYPE,
+    SEC_DOCUMENT_FACT_TYPE,
     collect_company_source_evidence,
     press_items_from_catalyst,
     sec_filings_from_catalyst,
@@ -112,8 +114,22 @@ _DOCUMENT_SOURCE_TYPES = frozenset(
         "company_ir_business_description",
         "company_ir_risk_excerpt",
         "company_ir_financial_fact",
+        # Phase 32A Slice 5B.1 hotfix: SEC filing-BODY evidence
+        # (`company_evidence.sec_artifacts_to_evidence`) was never added here, so
+        # a successful SEC extraction never appeared in `primary_documents` /
+        # `extracted_primary_document_count` even though its citations resolved
+        # correctly end-to-end — proven live on staging (AAPL 10-Q/8-K, a real
+        # validated `cash_and_equivalents` fact). This was a report-summary gap,
+        # not a fabrication or safety issue: the underlying evidence and
+        # citations were always correct.
+        SEC_DOCUMENT_EXCERPT_TYPE,
+        SEC_DOCUMENT_FACT_TYPE,
     }
 )
+
+# Fact-shaped source_types within _DOCUMENT_SOURCE_TYPES — used to route an item
+# to fact_count vs excerpt_count in _primary_document_summary.
+_DOCUMENT_FACT_TYPES = frozenset({"company_ir_financial_fact", SEC_DOCUMENT_FACT_TYPE})
 
 
 def _primary_document_summary(evidence_items: list[Any]) -> list[dict[str, Any]]:
@@ -149,7 +165,7 @@ def _primary_document_summary(evidence_items: list[Any]) -> list[dict[str, Any]]
                 "warnings": [],
             },
         )
-        if stype == "company_ir_financial_fact":
+        if stype in _DOCUMENT_FACT_TYPES:
             g["fact_count"] += 1
         else:
             g["excerpt_count"] += 1
@@ -194,7 +210,18 @@ def _primary_facts(evidence_items: list[Any]) -> list[dict[str, Any]]:
 
 
 # Phase 31 hotfix: extracted document TEXT excerpt types (exclude the parsed
-# financial fact, which is handled by ``_primary_facts``).
+# IR financial fact, which is handled by ``_primary_facts``).
+#
+# NOTE (Slice 5B.1 hotfix 2): unlike ``company_ir_financial_fact``,
+# ``SEC_DOCUMENT_FACT_TYPE`` is deliberately NOT excluded here. ``_primary_facts``
+# only reads the IR fact shape, so a SEC-only filing (structured table data, no
+# prose excerpt — exactly what a real AAPL 10-Q/8-K produced on staging) would
+# otherwise be invisible to every counter if it were excluded here too.
+# Pre-existing, unchanged caveat: ``extracted_documents`` below counts EVIDENCE
+# ITEMS, not distinct documents (an excerpt and a fact from the SAME filing both
+# increment it) — this was already true for company-IR excerpts before this
+# change and is out of scope for this fix; ``_primary_document_summary`` is the
+# function that correctly groups by document identity.
 _EXTRACTED_EXCERPT_TYPES = _DOCUMENT_SOURCE_TYPES - {"company_ir_financial_fact"}
 # The data-quality labels the connector layer stamps on metadata-only items —
 # a located primary-source REFERENCE, not extracted text and not a parsed fact.
