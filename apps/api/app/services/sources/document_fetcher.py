@@ -34,16 +34,30 @@ from __future__ import annotations
 
 import socket
 from dataclasses import dataclass, field
+from typing import Any
 from urllib.parse import urljoin
 
 from app.core.config import Settings
 from app.core.config import settings as default_settings
 from app.services.sources.gaps import GapSeverity, GapType, SourceGap
+from app.services.sources.ingestion_status import (
+    FAILURE_BLOCKED_REDIRECT,
+    FAILURE_CLIENT_UNAVAILABLE,
+    FAILURE_HTTP_CLIENT_ERROR,
+    FAILURE_HTTP_SERVER_ERROR,
+    FAILURE_REDIRECT_LIMIT,
+    FAILURE_UNSUPPORTED_CONTENT_TYPE,
+    failure_code_for_block,
+    failure_code_for_exception,
+    http_status_class,
+)
 from app.services.sources.redaction import strip_url_secrets
 from app.services.sources.safe_web_fetcher import (
     _USER_AGENT,
     Resolver,
-    check_fetch_url,
+    async_check_fetch_url,
+    host_of,
+    pinned_transport_for,
 )
 
 # Document type buckets the extractor understands, keyed by content-type prefix.
@@ -91,6 +105,18 @@ class DocumentFetchResult:
     blocked: bool = False
     warnings: list[str] = field(default_factory=list)
     source_gaps: list[SourceGap] = field(default_factory=list)
+    # Phase 32A Slice 5B.1 — bounded, sanitized operational telemetry. These feed
+    # the durable ingestion-attempt record; none of them can carry provider text,
+    # a URL secret or an address.
+    failure_code: str | None = None
+    # True only when the connection was pinned to a pre-validated address. False
+    # is an honest "not pinned", never a claim that pinning happened.
+    pinned: bool = False
+
+    @property
+    def status_class(self) -> str | None:
+        """``2xx``/``3xx``/``4xx``/``5xx`` — the exact code is never retained."""
+        return http_status_class(self.status_code)
 
     @property
     def ok(self) -> bool:
@@ -137,12 +163,13 @@ async def safe_fetch_document(
     cfg = cfg or default_settings
     result = DocumentFetchResult(requested_url=strip_url_secrets(url) or url)
 
-    reason = check_fetch_url(
+    reason, pinned_ip = await async_check_fetch_url(
         url, allowed_domains, cfg=cfg, resolve_ip=resolve_ip, resolver=resolver
     )
     if reason:
         result.blocked = True
         result.error = reason
+        result.failure_code = failure_code_for_block(reason)
         result._gap(
             f"Annual-report document could not be safely fetched ({reason}); "
             "document text is not extracted."
@@ -153,6 +180,7 @@ async def safe_fetch_document(
         import httpx
     except Exception as exc:  # noqa: BLE001
         result.error = f"http client unavailable: {type(exc).__name__}"
+        result.failure_code = FAILURE_CLIENT_UNAVAILABLE
         result._gap("Document fetch skipped — HTTP client unavailable.")
         return result
 
@@ -160,17 +188,23 @@ async def safe_fetch_document(
     max_bytes = max(1, cfg.source_document_extraction_max_bytes)
     timeout = max(1, cfg.source_document_extraction_timeout_seconds)
     current = url
+    # When an address was validated, connect ONLY to it (Slice 5B.1 pinning).
+    transport = pinned_transport_for(cfg, host_of(url), pinned_ip)
+    result.pinned = transport is not None
+    client_kwargs: dict[str, Any] = {
+        "follow_redirects": False,
+        "timeout": timeout,
+        "cookies": None,
+        "headers": {
+            "User-Agent": _USER_AGENT,
+            "Accept": "application/pdf,text/html,text/plain,*/*",
+        },
+    }
+    if transport is not None:
+        client_kwargs["transport"] = transport
     try:
         # No cookies, no auth, no Referer — a plain, credential-free document GET.
-        async with httpx.AsyncClient(
-            follow_redirects=False,
-            timeout=timeout,
-            cookies=None,
-            headers={
-                "User-Agent": _USER_AGENT,
-                "Accept": "application/pdf,text/html,text/plain,*/*",
-            },
-        ) as client:
+        async with httpx.AsyncClient(**client_kwargs) as client:
             for _hop in range(4):  # bounded redirect chain
                 async with client.stream("GET", current) as resp:
                     result.status_code = resp.status_code
@@ -178,7 +212,7 @@ async def safe_fetch_document(
                     if resp.is_redirect:
                         location = resp.headers.get("location", "")
                         nxt = urljoin(current, location)
-                        block = check_fetch_url(
+                        block, next_ip = await async_check_fetch_url(
                             nxt,
                             allowed_domains,
                             cfg=cfg,
@@ -188,15 +222,24 @@ async def safe_fetch_document(
                         if block:
                             result.blocked = True
                             result.error = f"redirect blocked ({block})"
+                            result.failure_code = FAILURE_BLOCKED_REDIRECT
                             result._gap(
                                 "Annual-report document redirected off the verified "
                                 f"issuer domain ({block}); not fetched."
                             )
                             return result
+                        # Re-pin the new hop against its own validated address.
+                        if transport is not None and next_ip:
+                            transport.pin(host_of(nxt), next_ip)
                         current = nxt
                         continue
                     if resp.status_code >= 400:
                         result.error = f"http {resp.status_code}"
+                        result.failure_code = (
+                            FAILURE_HTTP_SERVER_ERROR
+                            if resp.status_code >= 500
+                            else FAILURE_HTTP_CLIENT_ERROR
+                        )
                         result._gap(
                             "Annual-report document could not be fetched "
                             f"(http {resp.status_code}); document text is not extracted."
@@ -215,6 +258,7 @@ async def safe_fetch_document(
                     ):
                         result.blocked = True
                         result.error = f"unsupported content-type: {ct_prefix or 'unknown'}"
+                        result.failure_code = FAILURE_UNSUPPORTED_CONTENT_TYPE
                         result._gap(
                             "Annual-report link is not a supported document type "
                             f"({ct_prefix or 'unknown'}); document text is not extracted."
@@ -239,10 +283,12 @@ async def safe_fetch_document(
                     return result
             result.blocked = True
             result.error = "too many redirects"
+            result.failure_code = FAILURE_REDIRECT_LIMIT
             result._gap("Annual-report document exceeded the redirect limit; not fetched.")
             return result
     except Exception as exc:  # noqa: BLE001 - fetch must never crash a run
         result.error = f"fetch failed: {type(exc).__name__}"
+        result.failure_code = failure_code_for_exception(exc)
         result._gap(
             "Annual-report document could not be safely fetched "
             f"({type(exc).__name__}); document text is not extracted."

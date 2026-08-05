@@ -28,7 +28,8 @@ Design guarantees:
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import time
+from collections.abc import Awaitable, Callable, Sequence
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
@@ -60,9 +61,22 @@ from app.services.sources.connectors.local_language_press import (
     local_language_press_source_for,
 )
 from app.services.sources.connectors.sec_edgar import FilingsFetcher, SecEdgarConnector
-from app.services.sources.evidence import EvidenceItem
+from app.services.sources.evidence import (
+    EvidenceItem,
+    PrimaryFactRef,
+    build_evidence_item,
+)
+from app.services.sources.extracted_fact_validator import (
+    VALIDATION_VALIDATED,
+    IssuerContext,
+)
 from app.services.sources.gaps import GapSeverity, GapType, SourceGap
+from app.services.sources.primary_document_extractor import (
+    STATUS_EXTRACTED,
+    _confidence_bucket,
+)
 from app.services.sources.registry import SourceRegistry, build_registry
+from app.services.sources.taxonomy import SEC_TRANSPORT_LABEL, sec_tier_pair
 from app.services.sources.verified_issuer_sources import get_verified_issuer_source
 
 if TYPE_CHECKING:  # reuse lookup is a plain in-memory dict — never a DB session.
@@ -167,6 +181,178 @@ def _static_fetcher(items: list[dict] | None):
     return _fetch
 
 
+# A SEC filing-BODY deep extractor resolves a US issuer's filing accessions into
+# canonical Archives documents, fetches them through the SSRF-safe fetcher and
+# returns bounded ``PrimaryDocumentArtifact``s. Injected only when the master
+# ingestion flag is on (Phase 32A Slice 5B.1); when it is None nothing changes.
+# Never raises.
+SecPrimaryDocumentExtractor = Callable[..., Awaitable[list[PrimaryDocumentArtifact]]]
+
+# Evidence source types for SEC filing-BODY derived items. Deliberately distinct
+# from ``company_filing`` (the metadata item) so a body excerpt is never mistaken
+# for filing metadata, and from the ``company_ir_*`` types so issuer-site and
+# EDGAR provenance stay separable.
+SEC_DOCUMENT_EXCERPT_TYPE = "sec_filing_excerpt"
+SEC_DOCUMENT_FACT_TYPE = "sec_filing_financial_fact"
+
+# Share of the AGGREGATE ingestion budget the SEC filing-body leg may consume for
+# a US issuer that also runs the issuer-IR leg. Without this the SEC path could
+# spend the whole budget and leave the IR path nothing (both draw on one budget).
+_SEC_BUDGET_SHARE = 0.5
+
+
+def sec_artifacts_to_evidence(
+    artifacts: Sequence[PrimaryDocumentArtifact],
+    *,
+    company: CompanyContext,
+    max_items: int,
+) -> tuple[list[EvidenceItem], list[SourceGap]]:
+    """Turn SEC filing-BODY artifacts into tiered T1 evidence + honest gaps.
+
+    SUPPLEMENT ONLY — this never touches, replaces or re-derives the SEC/XBRL
+    structured facts, which remain the authoritative source for every financial
+    number. It adds narrative filing-body excerpts and table-validated datapoints
+    that previously did not exist at all for US issuers.
+
+    Tiering matches the rest of the SEC path (``sec_tier_pair()``): transport
+    ``T2_regulator_or_gov`` (EDGAR served it), content ``T1_primary_filing`` (the
+    issuer wrote it). A non-extracted artifact yields ONLY honest gaps — never a
+    fabricated excerpt, figure or filing.
+    """
+    transport_tier, content_tier = sec_tier_pair()
+    issuer = company.company_name or company.ticker or "Issuer"
+    cap = max(1, max_items)
+    items: list[EvidenceItem] = []
+    gaps: list[SourceGap] = []
+
+    for doc_idx, artifact in enumerate(artifacts, start=1):
+        gaps.extend(artifact.source_gaps)
+        extraction = artifact.extraction
+        if (
+            extraction is None
+            or artifact.status != STATUS_EXTRACTED
+            or not extraction.has_content
+        ):
+            continue
+
+        doc_title = artifact.title or "SEC filing"
+        url = artifact.source_url
+        doc_hash = artifact.content_hash or extraction.content_hash
+
+        for n, exc in enumerate(extraction.excerpts[:cap], start=1):
+            items.append(
+                build_evidence_item(
+                    id=f"SECDOC{doc_idx}X{n}",
+                    source_id=SEC_ID,
+                    source_name="SEC EDGAR",
+                    provider_transport=SEC_TRANSPORT_LABEL,
+                    provider_transport_tier=transport_tier,
+                    content_source=f"{issuer} {doc_title}".strip(),
+                    content_source_tier=content_tier,
+                    source_type=SEC_DOCUMENT_EXCERPT_TYPE,
+                    title=f"{doc_title} — excerpt",
+                    url=url,
+                    excerpt=exc.text,
+                    language=extraction.language,
+                    data_quality="B" if exc.confidence >= 0.75 else "C",
+                    confidence=_confidence_bucket(exc.confidence),
+                    fields_supported=[exc.evidence_type],
+                    provenance=[
+                        p
+                        for p in (
+                            "Extracted from the issuer's own SEC filing body "
+                            "(bounded text)",
+                            f"page={exc.page_number}" if exc.page_number else "page=unknown",
+                            f"section={exc.section}" if exc.section else None,
+                            f"method={exc.extraction_method}",
+                            f"confidence={exc.confidence:.2f}",
+                        )
+                        if p
+                    ],
+                    document_content_hash=doc_hash,
+                    warnings=[
+                        "Bounded excerpt from the issuer's own SEC filing; not the "
+                        "full document. Human review required."
+                    ],
+                )
+            )
+
+        for j, fact in enumerate(
+            (
+                f
+                for f in artifact.validated_facts
+                if f.validation_status == VALIDATION_VALIDATED
+            ),
+            start=1,
+        ):
+            value_str = fact.value_text or (
+                str(fact.value_numeric) if fact.value_numeric is not None else ""
+            )
+            unit_bits = " ".join(b for b in (fact.scale, fact.currency, fact.unit) if b)
+            conf_bucket = _confidence_bucket(fact.confidence)
+            items.append(
+                build_evidence_item(
+                    id=f"SECFACT{doc_idx}_{j}",
+                    source_id=SEC_ID,
+                    source_name="SEC EDGAR",
+                    provider_transport=SEC_TRANSPORT_LABEL,
+                    provider_transport_tier=transport_tier,
+                    content_source=f"{issuer} {doc_title}".strip(),
+                    content_source_tier=content_tier,
+                    source_type=SEC_DOCUMENT_FACT_TYPE,
+                    title=f"{doc_title}: {fact.label}",
+                    url=url,
+                    date=fact.period,
+                    excerpt=(
+                        f"{fact.label} = {value_str}"
+                        + (f" ({unit_bits})" if unit_bits else "")
+                        + (f" [{fact.period}]" if fact.period else "")
+                    ),
+                    data_quality="B" if conf_bucket == "high" else "C",
+                    confidence=conf_bucket,
+                    fields_supported=[fact.label],
+                    provenance=[
+                        p
+                        for p in (
+                            "Validated from an issuer SEC filing table "
+                            "(stricter grid validation)",
+                            f"page={fact.page_number}" if fact.page_number else "page=unknown",
+                            f"table={fact.table_location}" if fact.table_location else None,
+                            f"method={fact.extraction_method}",
+                            f"confidence={fact.confidence:.2f}",
+                            "needs_human_review=true",
+                        )
+                        if p
+                    ],
+                    document_content_hash=doc_hash,
+                    warnings=(
+                        [note for note in fact.validation_notes if note]
+                        + [
+                            "Validated primary fact from a filing body — it "
+                            "SUPPLEMENTS, and never replaces, the SEC/XBRL "
+                            "structured facts. Human review required."
+                        ]
+                    ),
+                    primary_fact=PrimaryFactRef(
+                        field=fact.label,
+                        value=value_str or fact.label,
+                        numeric_value=fact.value_numeric,
+                        unit=fact.unit,
+                        currency=fact.currency,
+                        scale=fact.scale,
+                        period=fact.period,
+                        source_url=url,
+                        excerpt_id=fact.table_location,
+                        page_number=fact.page_number,
+                        confidence=conf_bucket,
+                        needs_human_review=fact.needs_human_review,
+                    ),
+                )
+            )
+
+    return items, gaps
+
+
 # Document-derived company-IR source types (Phase 29B.2). These legitimately
 # share the annual-report URL with the link item, so dedup must key on more than
 # the URL, and they must be prioritised ahead of metadata-only items.
@@ -269,6 +455,37 @@ def _relevant_scaffold_ids(
     return matched or scaffold_ids
 
 
+async def _safe_sec_document_artifacts(
+    extractor: SecPrimaryDocumentExtractor,
+    *,
+    company: CompanyContext,
+    filings: list[dict] | None,
+    cfg: Settings,
+    budget_seconds: float | None = None,
+) -> list[PrimaryDocumentArtifact]:
+    """Run the SEC filing-body extractor without letting it break a report.
+
+    The extractor already degrades every failure to an honest artifact; this is
+    belt-and-braces so an unexpected error yields no evidence rather than a failed
+    run. Only the exception TYPE NAME could ever be surfaced — never its message.
+    """
+    issuer_context = IssuerContext(
+        company_name=company.company_name,
+        ticker=company.ticker,
+    )
+    try:
+        artifacts = await extractor(
+            company.cik,
+            list(filings or []),
+            cfg=cfg,
+            issuer_context=issuer_context,
+            budget_seconds=budget_seconds,
+        )
+    except Exception:  # noqa: BLE001 - SEC body ingestion never breaks a report
+        return []
+    return list(artifacts or [])
+
+
 async def collect_company_source_evidence(
     *,
     company: CompanyContext,
@@ -280,6 +497,7 @@ async def collect_company_source_evidence(
     ir_page_fetcher: PageFetcher | None = None,
     document_extractor: DocumentExtractor | None = None,
     primary_document_extractor: PrimaryDocumentDeepExtractor | None = None,
+    sec_primary_document_extractor: SecPrimaryDocumentExtractor | None = None,
     primary_document_reuse: dict[str, ReusedDocument] | None = None,
     cfg: Settings | None = None,
     registry: SourceRegistry | None = None,
@@ -320,6 +538,34 @@ async def collect_company_source_evidence(
     warnings: list[str] = []
     primary_document_artifacts: list[PrimaryDocumentArtifact] = []
 
+    # Phase 32A Slice 5B.1 — ``primary_document_ingestion_budget_seconds`` is an
+    # AGGREGATE wall budget for the WHOLE request, so the SEC filing-body path and
+    # the issuer-IR path SHARE it rather than each claiming a full one. Without
+    # this, adding SEC bodies would double the worst-case ingestion time and push
+    # ingestion + the ~150s council past the ~230s gateway timeout.
+    ingestion_started = time.monotonic()
+    ingestion_budget = float(
+        max(0, getattr(cfg, "primary_document_ingestion_budget_seconds", 0) or 0)
+    )
+
+    def _remaining_budget() -> float:
+        """Seconds left of the shared aggregate budget. ``0.0`` means EXHAUSTED.
+
+        Callers must pass this through :func:`_budget_or_unbounded` (never
+        ``or None``) so a genuinely spent budget is not mistaken for "no budget
+        configured" and turned into an unbounded run.
+        """
+        return max(0.0, ingestion_budget - (time.monotonic() - ingestion_started))
+
+    def _budget_or_unbounded(seconds: float) -> float | None:
+        """``None`` ONLY when no budget is configured at all.
+
+        With a budget configured, ``0.0`` is passed through as ``0.0`` — an
+        exhausted budget, which stops further fetches — rather than collapsing to
+        the ``None`` sentinel that means "unbounded".
+        """
+        return None if ingestion_budget <= 0 else seconds
+
     # -- SEC EDGAR (self-gates on eligibility) -----------------------------
     if want(SEC_ID):
         fetcher = filings_fetcher or (
@@ -330,6 +576,46 @@ async def collect_company_source_evidence(
         items.extend(res.evidence_items[:max_items])
         gaps.extend(res.source_gaps)
         warnings.extend(res.warnings)
+
+        # Phase 32A Slice 5B.1 — SEC filing-BODY ingestion. Until this slice the
+        # SEC path read only structured JSON, so a US issuer produced ZERO primary
+        # document candidates and every SEC result carried a
+        # ``primary_filing_unavailable`` gap. The injected extractor resolves each
+        # already-known accession to its canonical Archives body document and runs
+        # the SAME bounded extraction + stricter validation as the issuer-IR path.
+        #
+        # SUPPLEMENT ONLY: SEC/XBRL structured facts are untouched here and remain
+        # authoritative for every financial number.
+        #
+        # Runs off the ALREADY-FETCHED deterministic filing list (the report /
+        # council path). A live ``filings_fetcher`` (preview path) is deliberately
+        # not re-invoked — one bounded fetch per request, never two. Extractor not
+        # injected (master flag off) ⇒ this block is inert and nothing changes.
+        if (
+            sec_primary_document_extractor is not None
+            and filings
+            and is_sec_eligible(company.exchange)
+        ):
+            # The SEC leg gets AT MOST half of what is left, so a slow EDGAR path
+            # can never starve the issuer-IR path that runs after it (both draw on
+            # the same aggregate budget).
+            sec_remaining = _remaining_budget()
+            sec_artifacts = await _safe_sec_document_artifacts(
+                sec_primary_document_extractor,
+                company=company,
+                filings=filings,
+                cfg=cfg,
+                budget_seconds=_budget_or_unbounded(
+                    min(sec_remaining, ingestion_budget * _SEC_BUDGET_SHARE)
+                ),
+            )
+            if sec_artifacts:
+                sec_items, sec_gaps = sec_artifacts_to_evidence(
+                    sec_artifacts, company=company, max_items=max_items
+                )
+                items.extend(sec_items[:max_items])
+                gaps.extend(sec_gaps)
+                primary_document_artifacts.extend(sec_artifacts)
 
     # -- Company IR / newsroom ---------------------------------------------
     # Verified-issuer metadata (profile / annual-reports index / press index)
@@ -348,8 +634,12 @@ async def collect_company_source_evidence(
             primary_document_extractor=primary_document_extractor,
             primary_document_reuse=primary_document_reuse,
             max_docs_per_issuer=cfg.primary_document_max_docs_per_issuer,
+            cfg=cfg,
+            # Slice 5B.1: what is LEFT of the shared aggregate budget after the SEC
+            # filing-body path. With no SEC path this is effectively the full
+            # budget, so Slice 5A behaviour is unchanged.
             ingestion_budget_seconds=(
-                float(cfg.primary_document_ingestion_budget_seconds)
+                _budget_or_unbounded(_remaining_budget())
                 if primary_document_extractor is not None
                 else None
             ),
@@ -483,7 +773,11 @@ def press_items_from_catalyst(catalyst_discovery: dict | None) -> list[dict]:
 
 __all__ = [
     "CompanySourceEvidence",
+    "SEC_DOCUMENT_EXCERPT_TYPE",
+    "SEC_DOCUMENT_FACT_TYPE",
+    "SecPrimaryDocumentExtractor",
     "collect_company_source_evidence",
+    "sec_artifacts_to_evidence",
     "sec_filings_from_catalyst",
     "press_items_from_catalyst",
     "regulator_connector_for",

@@ -141,6 +141,23 @@ def test_malformed_pdf_extraction_failed_no_raise():
     assert r.source_gaps
 
 
+def test_unmapped_pdf_failure_code_still_degrades_honestly(monkeypatch):
+    """PR-review nit 10: a failure code with no bespoke gap text must not raise.
+
+    ``extract_pdf`` promises never to raise, but the gap lookup used to be a
+    direct dict index inside the ``except`` handler — so a fifth failure code
+    would have turned the guarantee into a KeyError.
+    """
+    from app.services.sources import primary_document_extractor as mod
+
+    monkeypatch.setattr(mod, "classify_pdf_failure", lambda raw, exc: "unknown")
+    r = extract_pdf(b"%PDF-1.4\nnot a real pdf body \x00\x01\x02")
+    assert r.status == STATUS_EXTRACTION_FAILED
+    assert r.failure_code == "unknown"
+    assert r.source_gaps and "no text is extracted" in r.source_gaps[0].lower()
+    assert not r.excerpts and not r.tables  # nothing fabricated
+
+
 def test_scanned_pdf_is_metadata_only():
     r = extract_pdf(make_pdf_no_text())
     assert r.status == STATUS_METADATA_ONLY

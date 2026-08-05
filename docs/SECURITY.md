@@ -125,10 +125,53 @@ surface. It is hardened as follows:
   host are checked before AND after redirects; a target that resolves to a
   loopback / private / link-local / reserved / multicast / unspecified address, or
   to a cloud instance-metadata IP (`169.254.169.254` / `fd00:ec2::254`), is
-  rejected. Known residual (deferred, non-blocking — ADR-014): the guard resolves
-  and checks but does not yet pin the connected socket to the checked IP
-  (resolve-then-connect IP-pinning would fully close the TOCTOU window), and DNS
-  resolution is synchronous (async resolution is a deferred follow-up).
+  rejected.
+- **Resolve-then-connect IP pinning (ADR-015, Phase 32A Slice 5B.1 — closes the
+  ADR-014 residual).** The address that is validated is now the address that is
+  connected to: `PinnedAsyncHTTPTransport` rewrites the request's URL host to the
+  validated IP literal while restoring the real hostname in the `Host` header and
+  the `sni_hostname` request extension, so the name is never resolved a second
+  time and a hostile DNS answer cannot change between the check and the connect.
+  TLS is not weakened — certificate hostname verification still targets the real
+  hostname; pinning changes *where we connect*, never *what we trust*. The
+  transport **fails closed**: a host with no validated pin raises before any
+  socket opens.
+
+  **Scope of the closure — do not shorten this to a bare "closed".** It holds for
+  the *ingestion path* (issuer IR page fetch, document fetch, SEC filing-index
+  fetch) and only while `PRIMARY_DOCUMENT_PIN_DNS_ENABLED=true`; the kill-switch
+  deliberately reverts to the older check-then-connect behaviour. The pre-existing
+  fixed-host provider clients (EODHD, SEC XBRL, GLEIF, Stooq, news, press) are
+  untouched and unpinned — lower exposure, since they reach code-defined hosts,
+  but not covered by this work.
+
+  **New documented residual (ADR-015):** httpcore keys connection-pool reuse on
+  `Origin(scheme, host, port)`, and the pinned host IS the IP literal. If two
+  different allowlisted hosts in one redirect chain resolve to the same address
+  (common behind a CDN), the second hop can reuse a TLS connection whose
+  certificate was verified for the first hop's hostname. Blast radius is a single
+  `AsyncClient` and both hosts must already be allowlisted. This is a TLS/SNI
+  reuse issue, not a rebinding one — it does not reopen ADR-014. Each redirect hop is re-validated and re-pinned, and a pin is
+  never reused across hosts. DNS resolution is now asynchronous
+  (`loop.getaddrinfo`), so a slow or blackholed resolver can no longer stall the
+  worker. Kill-switch: `PRIMARY_DOCUMENT_PIN_DNS_ENABLED` (default **true**);
+  turning it off reverts to the weaker Slice 5A check-then-connect behaviour and
+  that degradation is recorded honestly rather than reported as pinned.
+- **Sanitized ingestion telemetry (Slice 5B.1).** Every ingestion attempt —
+  including every failure — is persisted to `document_ingestion_attempts`. The
+  `status` and `failure_code` columns are **closed vocabularies** defined once in
+  `app/services/sources/ingestion_status.py`; anything outside them is coerced to
+  `unknown`, so a raw provider exception message, URL fragment or IP address can
+  never reach the database or the admin UI. Only the HTTP status *class*
+  (`4xx`/`5xx`) is kept, never the exact code. URLs are canonicalized and
+  credential-stripped before hashing and storage. Raw document bodies and
+  extracted text are never persisted to this table.
+- **Document protection is never bypassed.** An encrypted, password-protected,
+  scanned and malformed PDF are now classified distinctly. The only password ever
+  supplied is the EMPTY one (the standard "this document has no user password"
+  case, which is what an owner-password-only PDF uses); no password is guessed,
+  derived, brute-forced or stripped, and a document that genuinely requires a
+  user password is recorded as inaccessible and never opened.
 - **Content + resource bounds.** A `%PDF-` magic-byte check before parsing; a hard
   download-byte ceiling; page / OCR-page / excerpt / char / table-size caps; a
   decompression-bomb guard; a Pillow image-pixel cap for the (future) OCR raster

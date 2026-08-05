@@ -393,11 +393,12 @@ default.
   column is a reserved, currently-unused hook.
 - **SEC 10-K / 20-F full-text body fetch** for US issuers (this slice ingests the
   issuer's OWN primary documents via the verified-issuer/company-IR path).
+  → **RESOLVED by ADR-015 (Slice 5B.1).**
 - **Two non-blocking security hardenings:** resolve-then-connect IP-pinning to
   fully close the DNS-rebinding TOCTOU window (the current guard resolves + checks
   before and after redirects but does not pin the connected socket to the checked
   IP), and async DNS resolution to avoid a synchronous `getaddrinfo` on the event
-  loop.
+  loop. → **BOTH RESOLVED by ADR-015 (Slice 5B.1).**
 
 ### Consequences
 - No new public endpoint and no user-supplied-URL fetch surface; every fetch
@@ -418,3 +419,130 @@ default.
   pixel cap. Logging is counts/status only — never bytes or extracted text.
 - Not yet staging-validated — the flags ship OFF and will be flipped ON on staging
   (human-approved) for validation as a later step.
+
+---
+
+## ADR-015: Making Primary-Document Ingestion Actually Reach Documents — SEC Filing Bodies, Non-Browser Discovery, Durable Attempt Records and Resolve-Then-Connect Pinning (Phase 32A Slice 5B.1)
+
+**Date:** 2026-08-05
+**Status:** Accepted — PR open, pending staging validation.
+
+### Context
+
+Slice 5A (ADR-014) shipped the ingestion foundation and was staging-validated as
+a *foundation*, with an explicit efficacy caveat: **0 successful native
+extractions across 7 issuers**, and `extracted_documents` / `extracted_facts`
+both still at 0/0. The success path existed only in unit tests. Four separate
+root causes produced that result, and they need different fixes:
+
+1. **US issuers had no path at all.** The SEC connector only ever called
+   `data.sec.gov` JSON (companyfacts / submissions). It parsed `accessionNumber`
+   and then dropped it, and it attached a `primary_filing_unavailable` gap to
+   every result stating the full text is not retrieved. AAPL is not in the
+   `verified_issuer_sources` registry either, so the company-IR document path
+   could not run for it. AAPL therefore produced zero document candidates.
+2. **Modern IR pages are JS-rendered.** Discovery read only `<a href>` tags. For
+   BA, BRBY, KER, MC and RMS the served HTML contains zero matching anchors even
+   though the document URLs are present in the page's own hydration payload.
+3. **Failures were invisible.** `persist_primary_document_artifacts` writes a row
+   only when `status == "extracted"`, so every failed attempt persisted nothing.
+   Staging could not distinguish "never attempted" from "attempted and blocked".
+4. **CFR's documents were mislabelled.** Encrypted, password-protected, scanned
+   and malformed PDFs all collapsed into one opaque `extraction_failed`, so
+   "needs OCR" was indistinguishable from "is broken".
+
+ADR-014 also left two security items open: the DNS-rebinding TOCTOU window and a
+synchronous `getaddrinfo` on the event loop.
+
+### Decision
+
+**1. Fetch official SEC filing bodies, as a supplement.** Resolve
+`accession → www.sec.gov/Archives/.../index.json → primary document` and fetch
+the body through the existing hardened, allowlisted fetcher against
+`allowed_domains=("sec.gov",)`. Primary-document selection is deterministic
+(submissions `primaryDocument` hint → form-typed `.htm` → largest non-exhibit
+`.htm` → first `.htm`), never the unbounded `.txt` full-submission dump, with
+exhibits only on explicit request. A declaring User-Agent and a real client-side
+throttle are applied. **SEC/XBRL structured facts remain authoritative for
+financial figures**; the document body supplements them and never replaces them.
+
+**2. Bounded, non-browser discovery — no headless browser.** Strategies run in a
+documented order (anchors → JSON-LD → `__NEXT_DATA__`/hydration state → embedded
+script JSON), each bounded, each re-applying the https / safe-host / allowlist /
+secret-strip checks, deduplicated by a canonical identity that collapses signed
+query variants of the same document. Feeds/sitemaps and same-origin JSON
+endpoints are separate, caller-driven entry points because they require another
+guarded fetch. **We deliberately did NOT add Playwright or any headless browser
+in this slice** — where bounded non-browser methods still cannot reach a site's
+documents, that is recorded as an honest limitation rather than escalated to
+uncontrolled automation. Documents are classified (annual / interim / results /
+presentation) so an annual report outranks a marketing PDF.
+
+**3. A durable, sanitized attempt record (migration `014`).** Every attempt that
+reaches the fetch/extract stage persists a bounded row to
+`document_ingestion_attempts`, idempotent per `(company_id, agent_run_id,
+url_hash)`: `extracted`, `metadata_only`, `unsupported`, `encrypted`,
+`password_protected`, `malformed`, `rejected_security`, `timeout`,
+`extraction_failed`. (`discovered` and `fetched` are RESERVED vocabulary members
+that no writer emits in this slice — a candidate ranked out before a fetch
+produces no row. They are listed here as reserved, not as delivered.) Status and
+failure code are **closed vocabularies** defined once in
+`app/services/sources/ingestion_status.py`; anything outside them becomes
+`unknown`. Only the HTTP status *class* is kept. Raw provider text, secrets,
+signed query strings, document bodies and OCR text are never stored. A tri-state
+`pinned` column records honestly whether the connection was pinned — `false` is
+never dressed up as `true`.
+
+**4. Resolve-then-connect IP pinning + async DNS (closes the ADR-014 residual).**
+A custom `httpx` transport connects only to the pre-validated address, restoring
+the hostname in the `Host` header and the `sni_hostname` extension so TLS and
+certificate hostname verification are unchanged. It fails closed on an unpinned
+host, and every redirect hop is re-validated and re-pinned. Resolution moves to
+`loop.getaddrinfo`. **All three outbound paths added or touched by this slice are
+covered** — the issuer IR page fetch, the document fetch, and the SEC filing-index
+fetch — so no unvalidated-address connection remains on the ingestion path.
+
+**Known residual (documented, not fixed here):** httpcore keys connection-pool
+reuse on `Origin(scheme, host, port)`, and the pinned host IS the IP literal. If
+two *different* allowlisted hosts in one redirect chain resolve to the same
+address (common behind a CDN), the second hop can reuse a TLS connection whose
+certificate was verified for the first hop's hostname. Blast radius is a single
+`AsyncClient` and both hosts must already be allowlisted. The fix is a per-hop
+client or folding the hostname into the pool key; deferred as a follow-up.
+
+**5. Distinguish the four inaccessibility modes — without bypassing any of
+them.** The extraction status vocabulary is unchanged (the council summary and
+persistence path depend on it); the distinction is carried by a new sanitized
+`failure_code` and resolved into the attempt vocabulary at the persistence
+boundary. The only password ever supplied is the EMPTY one — the standard "no
+user password" case that an owner-password-only PDF uses. No password is
+guessed, derived, brute-forced or stripped.
+
+### Alternatives rejected
+
+- **A headless browser for JS-gated pages.** Large attack surface, heavy runtime,
+  and it edges toward crawling. Rejected for this slice; the hydration payload
+  turns out to contain the URLs anyway.
+- **Widening `extracted_documents.status` to hold failures.** Its `content_hash`
+  is a UNIQUE NOT NULL identity, and a failed attempt has no bytes and therefore
+  no hash. Attempts need their own table and their own identity key.
+- **Re-vocabularying `PrimaryDocumentExtraction.status`.** Would silently drop
+  encrypted documents out of existing council counters and break passing tests
+  for no gain over a dedicated failure code.
+- **Making pinning mandatory with no kill-switch.** An httpx/httpcore build that
+  cannot support the `sni_hostname` extension would lose outbound fetching
+  entirely. Pinning degrades to the previous check-then-connect behaviour and the
+  degradation is recorded honestly — `pinned` is never claimed when it did not
+  happen.
+
+### Consequences
+
+- No new public endpoint, no user-supplied-URL fetch surface, no new dependency.
+- With `PRIMARY_DOCUMENT_INGESTION_ENABLED` off, every path stays byte-identical.
+- Failed ingestion becomes observable for the first time, which is what makes the
+  Slice 5B.3 admin surfacing and the eventual Phase 32A closure evidence possible.
+- OCR is still NOT implemented — a scanned PDF remains `metadata_only` with a
+  `scanned_no_text` failure code. That is Slice 5B.2's job, and this slice
+  deliberately labels the one failure mode OCR can actually rescue.
+- Not yet staging-validated. Migration `014` must be applied to staging (manual,
+  human-approved) before the behaviour is exercised.

@@ -1196,11 +1196,21 @@ async def maybe_run_council(
                     from app.services.sources.live_fetchers import (
                         live_ir_page_fetcher,
                         live_primary_document_extractor,
+                        live_sec_primary_document_extractor,
                     )
 
                     extract_kwargs = {
                         "ir_page_fetcher": live_ir_page_fetcher,
                         "primary_document_extractor": live_primary_document_extractor,
+                        # Phase 32A Slice 5B.1: official SEC filing-BODY ingestion
+                        # for US issuers. SUPPLEMENTS — never replaces — the
+                        # SEC/XBRL structured facts, which stay authoritative for
+                        # every financial number. Self-gates on its own
+                        # ``primary_document_sec_body_enabled`` flag and returns []
+                        # with no network when either flag is off.
+                        "sec_primary_document_extractor": (
+                            live_sec_primary_document_extractor
+                        ),
                         # Phase 32A Slice 5 (3c-iii): reuse persisted extractions so a
                         # report regeneration skips the re-fetch/re-extract. Empty /
                         # None ⇒ every candidate is fetched (byte-identical).

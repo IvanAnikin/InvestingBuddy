@@ -123,6 +123,12 @@ class SafeFetchResult:
     links: list[SafeLink] = field(default_factory=list)
     error: str | None = None
     blocked: bool = False
+    # Phase 32A Slice 5B.1 — the ALREADY byte-capped page body, kept so a caller
+    # can run the richer, non-browser discovery strategies (JSON-LD, hydration
+    # state, embedded script JSON) over it. An <a href>-only scan finds nothing on
+    # a JS-rendered IR page, which is why Slice 5A discovered 0 documents for five
+    # of seven issuers. Never logged, never persisted, never sent to a model.
+    body_html: str | None = None
 
     @property
     def ok(self) -> bool:
@@ -265,6 +271,61 @@ def check_fetch_url(
         if dns_reason:
             return f"unsafe resolved ip ({dns_reason})"
     return None
+
+
+async def async_check_fetch_url(
+    url: str | None,
+    allowed_domains: tuple[str, ...],
+    *,
+    cfg: Settings | None = None,
+    resolve_ip: bool = False,
+    resolver: Resolver = socket.getaddrinfo,
+) -> tuple[str | None, str | None]:
+    """Async twin of :func:`check_fetch_url` returning ``(reason, pinned_ip)``.
+
+    Applies exactly the same guards, but resolves off the event loop and hands
+    back the validated address so the caller can PIN the connection to it
+    (Phase 32A Slice 5B.1 — closes the ADR-014 rebinding window). ``pinned_ip`` is
+    None whenever ``resolve_ip`` is False, which is the default, so a caller that
+    does not opt in behaves exactly as before.
+
+    An explicitly injected ``resolver`` is honoured (the Slice 5A test seam);
+    left at the default the lookup goes through ``loop.getaddrinfo`` instead of
+    blocking the worker on a synchronous ``socket.getaddrinfo``.
+    """
+    reason = check_fetch_url(url, allowed_domains, cfg=cfg)
+    if reason:
+        return reason, None
+    if not resolve_ip:
+        return None, None
+
+    from app.services.sources.pinned_transport import resolve_and_validate
+
+    host = (urlsplit(url or "").hostname or "").lower()
+    injected = None if resolver is socket.getaddrinfo else resolver
+    ip, dns_reason = await resolve_and_validate(host, resolver=injected)
+    if dns_reason:
+        return f"unsafe resolved ip ({dns_reason})", None
+    return None, ip
+
+
+def pinned_transport_for(
+    cfg: Settings, host: str | None, ip: str | None
+) -> Any | None:
+    """Build a transport pinned to ``ip`` for ``host``, or None.
+
+    None means "connect normally": either pinning is switched off by config, or
+    no address was validated (``resolve_ip`` off), or this httpx build cannot
+    support it. None is never a claim that pinning happened — callers that care
+    record the degradation.
+    """
+    if not ip or not host:
+        return None
+    if not getattr(cfg, "primary_document_pin_dns_enabled", True):
+        return None
+    from app.services.sources.pinned_transport import build_pinned_transport
+
+    return build_pinned_transport({host: ip})
 
 
 # --------------------------------------------------------------------------- #
@@ -423,7 +484,7 @@ async def safe_fetch_page(
     cfg = cfg or default_settings
     result = SafeFetchResult(requested_url=url)
 
-    reason = check_fetch_url(
+    reason, pinned_ip = await async_check_fetch_url(
         url, allowed_domains, cfg=cfg, resolve_ip=resolve_ip, resolver=resolver
     )
     if reason:
@@ -440,12 +501,18 @@ async def safe_fetch_page(
     max_bytes = max(1, cfg.source_connector_max_bytes)
     timeout = max(1, cfg.source_connector_timeout_seconds)
     current = url
+    # When an address was validated, connect ONLY to it: the name is never
+    # resolved a second time, so it cannot rebind between check and connect.
+    transport = pinned_transport_for(cfg, host_of(url), pinned_ip)
+    client_kwargs: dict[str, Any] = {
+        "follow_redirects": False,
+        "timeout": timeout,
+        "headers": {"User-Agent": _USER_AGENT, "Accept": "text/html,*/*"},
+    }
+    if transport is not None:
+        client_kwargs["transport"] = transport
     try:
-        async with httpx.AsyncClient(
-            follow_redirects=False,
-            timeout=timeout,
-            headers={"User-Agent": _USER_AGENT, "Accept": "text/html,*/*"},
-        ) as client:
+        async with httpx.AsyncClient(**client_kwargs) as client:
             for _hop in range(4):  # bounded redirect chain
                 async with client.stream("GET", current) as resp:
                     result.status_code = resp.status_code
@@ -453,7 +520,7 @@ async def safe_fetch_page(
                     if resp.is_redirect:
                         location = resp.headers.get("location", "")
                         nxt = urljoin(current, location)
-                        block = check_fetch_url(
+                        block, next_ip = await async_check_fetch_url(
                             nxt,
                             allowed_domains,
                             cfg=cfg,
@@ -464,6 +531,10 @@ async def safe_fetch_page(
                             result.blocked = True
                             result.error = f"redirect blocked ({block})"
                             return result
+                        # Re-pin: the new hop gets its own validated address; the
+                        # previous hop's pin is never reused for a new host.
+                        if transport is not None and next_ip:
+                            transport.pin(host_of(nxt), next_ip)
                         current = nxt
                         continue
                     if resp.status_code >= 400:
@@ -477,6 +548,7 @@ async def safe_fetch_page(
                         if total >= max_bytes:
                             break
                     body = b"".join(chunks)[:max_bytes].decode("utf-8", "replace")
+                    result.body_html = body
                     parser = _parse_html(body)
                     result.title = parser.title
                     result.meta_description = parser.meta_description
@@ -505,6 +577,8 @@ __all__ = [
     "assert_resolved_ip_public",
     "looks_like_pdf",
     "check_fetch_url",
+    "async_check_fetch_url",
+    "pinned_transport_for",
     "parse_title",
     "parse_meta_description",
     "extract_links",
