@@ -189,6 +189,18 @@ class PinnedAsyncHTTPTransport:
 
     A host with no pin raises :class:`UnpinnedHostError` — the transport fails
     closed rather than resolving on its own.
+
+    **Per-hostname pool isolation.** Because the connected host IS the IP literal,
+    httpcore would key its connection pool on ``Origin(scheme, <ip>, port)`` — so
+    two DIFFERENT allowlisted hostnames that resolve to the SAME address (routine
+    behind a CDN) would collide on one pooled connection, and the second hop could
+    reuse a TLS session whose certificate was verified for the FIRST hop's
+    hostname. That would silently cross a certificate-verification boundary.
+
+    This transport therefore keeps **one inner transport, and so one connection
+    pool, per original hostname**. Connections are never reused across a hostname
+    change, so a pooled session can only ever serve the hostname its certificate
+    was actually validated for.
     """
 
     def __init__(
@@ -196,16 +208,39 @@ class PinnedAsyncHTTPTransport:
         *,
         pins: dict[str, str] | None = None,
         inner: Any = None,
+        transport_factory: Callable[[], Any] | None = None,
         **transport_kwargs: Any,
     ) -> None:
-        import httpx
-
         self._pins: dict[str, str] = {}
         for host, ip in (pins or {}).items():
             self.pin(host, ip)
-        self._inner = inner if inner is not None else httpx.AsyncHTTPTransport(
-            **transport_kwargs
-        )
+
+        # One pool per original hostname (see the class docstring). ``inner`` is a
+        # TEST-ONLY override that shares a single transport across hostnames; it
+        # deliberately does NOT provide pool isolation and is never used in
+        # production, where ``_transport_for`` builds one transport per hostname.
+        self._shared_inner = inner
+        self._transports: dict[str, Any] = {}
+        if transport_factory is not None:
+            self._factory = transport_factory
+        else:
+
+            def _default_factory() -> Any:
+                import httpx
+
+                return httpx.AsyncHTTPTransport(**transport_kwargs)
+
+            self._factory = _default_factory
+
+    def _transport_for(self, host: str) -> Any:
+        """Return the pool dedicated to ``host`` (created on first use)."""
+        if self._shared_inner is not None:
+            return self._shared_inner
+        transport = self._transports.get(host)
+        if transport is None:
+            transport = self._factory()
+            self._transports[host] = transport
+        return transport
 
     # -- pin management ----------------------------------------------------
 
@@ -233,20 +268,33 @@ class PinnedAsyncHTTPTransport:
         # Preserve the hostname for TLS SNI + certificate verification and for the
         # Host header, then point the socket at the validated address only.
         host_header = request.headers.get("host") or original_host
+        # Resolve the per-hostname pool BEFORE rewriting the URL — after the
+        # rewrite the request no longer carries the hostname it belongs to.
+        transport = self._transport_for(original_host.strip().lower().rstrip("."))
         request.url = request.url.copy_with(host=ip)
         request.headers["Host"] = host_header
         request.extensions = {**dict(request.extensions), "sni_hostname": original_host}
-        return await self._inner.handle_async_request(request)
+        return await transport.handle_async_request(request)
 
     async def aclose(self) -> None:
-        await self._inner.aclose()
+        if self._shared_inner is not None:
+            await self._shared_inner.aclose()
+        for transport in list(self._transports.values()):
+            try:
+                await transport.aclose()
+            except Exception:  # noqa: BLE001 - a close failure must not mask the result
+                continue
+        self._transports.clear()
 
     async def __aenter__(self) -> PinnedAsyncHTTPTransport:
-        await self._inner.__aenter__()
+        if self._shared_inner is not None:
+            await self._shared_inner.__aenter__()
         return self
 
     async def __aexit__(self, *exc_info: Any) -> None:
-        await self._inner.__aexit__(*exc_info)
+        if self._shared_inner is not None:
+            await self._shared_inner.__aexit__(*exc_info)
+        await self.aclose()
 
 
 def build_pinned_transport(

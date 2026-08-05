@@ -145,13 +145,16 @@ surface. It is hardened as follows:
   untouched and unpinned — lower exposure, since they reach code-defined hosts,
   but not covered by this work.
 
-  **New documented residual (ADR-015):** httpcore keys connection-pool reuse on
-  `Origin(scheme, host, port)`, and the pinned host IS the IP literal. If two
-  different allowlisted hosts in one redirect chain resolve to the same address
-  (common behind a CDN), the second hop can reuse a TLS connection whose
-  certificate was verified for the first hop's hostname. Blast radius is a single
-  `AsyncClient` and both hosts must already be allowlisted. This is a TLS/SNI
-  reuse issue, not a rebinding one — it does not reopen ADR-014. Each redirect hop is re-validated and re-pinned, and a pin is
+  **Per-hostname pool isolation (ADR-015).** Because the connected host is the
+  pinned IP literal, httpcore would key its connection pool on
+  `Origin(scheme, <ip>, port)` — so two different allowlisted hostnames sharing
+  one address (routine behind a CDN) would collide on a single pooled connection,
+  and a later hop could reuse a TLS session whose certificate was verified for an
+  earlier hop's hostname. The transport therefore keeps one connection pool **per
+  original hostname**; connections are never reused across a hostname change, so a
+  pooled session can only serve the hostname its certificate was validated for.
+  Keep-alive within a single hostname is unaffected. Asserted by test, not by
+  argument. Each redirect hop is re-validated and re-pinned, and a pin is
   never reused across hosts. DNS resolution is now asynchronous
   (`loop.getaddrinfo`), so a slow or blackholed resolver can no longer stall the
   worker. Kill-switch: `PRIMARY_DOCUMENT_PIN_DNS_ENABLED` (default **true**);

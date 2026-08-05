@@ -423,6 +423,116 @@ async def test_aclose_closes_inner_transport() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# D2. Per-hostname connection-pool isolation.
+#
+# Because the connected host IS the pinned IP literal, httpcore would key its
+# pool on Origin(scheme, <ip>, port). Two DIFFERENT allowlisted hostnames sharing
+# one address (routine behind a CDN) would then collide on a single pooled
+# connection, and the second hop could reuse a TLS session whose certificate was
+# verified for the FIRST hop's hostname — silently crossing a certificate
+# verification boundary. These tests prove that cannot happen.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_two_hostnames_on_one_ip_get_isolated_pools() -> None:
+    """The core residual: same IP, different hostnames ⇒ SEPARATE pools."""
+    built: list[_FakeInner] = []
+
+    def _factory() -> _FakeInner:
+        inner = _FakeInner()
+        built.append(inner)
+        return inner
+
+    transport = PinnedAsyncHTTPTransport(transport_factory=_factory)
+    transport.pin("a.example.com", PUBLIC_V4)
+    transport.pin("b.example.com", PUBLIC_V4)  # SAME address
+
+    await transport.handle_async_request(_request("https://a.example.com/x.pdf"))
+    await transport.handle_async_request(_request("https://b.example.com/y.pdf"))
+
+    # Two distinct pools, one request each — no cross-hostname connection reuse.
+    assert len(built) == 2, "hostnames sharing an IP must not share a pool"
+    assert len(built[0].requests) == 1
+    assert len(built[1].requests) == 1
+    # Each carried its OWN hostname for SNI / cert verification.
+    assert built[0].requests[0].extensions["sni_hostname"] == "a.example.com"
+    assert built[1].requests[0].extensions["sni_hostname"] == "b.example.com"
+    # ...while both still connected to the one validated address.
+    assert built[0].requests[0].url.host == PUBLIC_V4
+    assert built[1].requests[0].url.host == PUBLIC_V4
+
+
+@pytest.mark.asyncio
+async def test_same_hostname_reuses_its_own_pool() -> None:
+    """Isolation must not defeat legitimate keep-alive for a single hostname."""
+    built: list[_FakeInner] = []
+
+    def _factory() -> _FakeInner:
+        inner = _FakeInner()
+        built.append(inner)
+        return inner
+
+    transport = PinnedAsyncHTTPTransport(transport_factory=_factory)
+    transport.pin("www.sec.gov", PUBLIC_V4)
+
+    await transport.handle_async_request(_request("https://www.sec.gov/a.htm"))
+    await transport.handle_async_request(_request("https://www.sec.gov/b.htm"))
+
+    assert len(built) == 1  # one pool, reused
+    assert len(built[0].requests) == 2
+
+
+@pytest.mark.asyncio
+async def test_pool_lookup_is_case_and_trailing_dot_insensitive() -> None:
+    built: list[_FakeInner] = []
+    transport = PinnedAsyncHTTPTransport(
+        transport_factory=lambda: built.append(_FakeInner()) or built[-1]
+    )
+    transport.pin("www.sec.gov", PUBLIC_V4)
+
+    await transport.handle_async_request(_request("https://WWW.SEC.GOV/a.htm"))
+    await transport.handle_async_request(_request("https://www.sec.gov/b.htm"))
+
+    assert len(built) == 1  # the same host must not spawn a second pool
+
+
+@pytest.mark.asyncio
+async def test_aclose_closes_every_per_host_pool() -> None:
+    built: list[_FakeInner] = []
+
+    def _factory() -> _FakeInner:
+        inner = _FakeInner()
+        built.append(inner)
+        return inner
+
+    transport = PinnedAsyncHTTPTransport(transport_factory=_factory)
+    transport.pin("a.example.com", PUBLIC_V4)
+    transport.pin("b.example.com", "8.8.8.8")
+    await transport.handle_async_request(_request("https://a.example.com/x"))
+    await transport.handle_async_request(_request("https://b.example.com/y"))
+
+    await transport.aclose()
+    assert built and all(inner.closed for inner in built)
+
+
+def test_production_transport_builds_a_real_pool_per_host() -> None:
+    """Without a test override, each hostname gets its own httpx transport."""
+    import httpx
+
+    transport = PinnedAsyncHTTPTransport()
+    transport.pin("a.example.com", PUBLIC_V4)
+    transport.pin("b.example.com", PUBLIC_V4)
+
+    ta = transport._transport_for("a.example.com")  # noqa: SLF001 - direct seam
+    tb = transport._transport_for("b.example.com")  # noqa: SLF001 - direct seam
+    assert isinstance(ta, httpx.AsyncHTTPTransport)
+    assert isinstance(tb, httpx.AsyncHTTPTransport)
+    assert ta is not tb, "each hostname must own its connection pool"
+    assert transport._transport_for("a.example.com") is ta  # noqa: SLF001
+
+
+# --------------------------------------------------------------------------- #
 # E. Availability helpers
 # --------------------------------------------------------------------------- #
 
@@ -455,7 +565,7 @@ async def test_real_httpx_client_accepts_the_pinned_transport() -> None:
         return httpx.Response(200, text="ok")
 
     # Swap the inner for a real httpx MockTransport so the whole client stack runs.
-    transport._inner = httpx.MockTransport(_handler)  # noqa: SLF001 - direct seam
+    transport._shared_inner = httpx.MockTransport(_handler)  # noqa: SLF001 - direct seam
     async with httpx.AsyncClient(transport=transport) as client:
         resp = await client.get("https://example.com/x")
     assert resp.status_code == 200

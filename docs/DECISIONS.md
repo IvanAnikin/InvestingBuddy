@@ -502,13 +502,22 @@ host, and every redirect hop is re-validated and re-pinned. Resolution moves to
 covered** — the issuer IR page fetch, the document fetch, and the SEC filing-index
 fetch — so no unvalidated-address connection remains on the ingestion path.
 
-**Known residual (documented, not fixed here):** httpcore keys connection-pool
-reuse on `Origin(scheme, host, port)`, and the pinned host IS the IP literal. If
-two *different* allowlisted hosts in one redirect chain resolve to the same
-address (common behind a CDN), the second hop can reuse a TLS connection whose
-certificate was verified for the first hop's hostname. Blast radius is a single
-`AsyncClient` and both hosts must already be allowlisted. The fix is a per-hop
-client or folding the hostname into the pool key; deferred as a follow-up.
+**Per-hostname connection-pool isolation (found and fixed pre-merge).** Because
+the connected host IS the pinned IP literal, httpcore keys its pool on
+`Origin(scheme, <ip>, port)`. An empirical probe confirmed that two *different*
+allowlisted hostnames resolving to the same address — routine behind a CDN —
+produced an identical pool origin served by one shared transport, so a second hop
+could have reused a TLS session whose certificate was verified for the *first*
+hop's hostname, silently crossing a certificate-verification boundary.
+
+The transport therefore keeps **one inner transport, and so one connection pool,
+per original hostname**. Connections are never reused across a hostname change, so
+a pooled session can only ever serve the hostname its certificate was actually
+validated for. Legitimate keep-alive within a single hostname is unaffected. This
+is verified by test, not by argument: `test_two_hostnames_on_one_ip_get_isolated_pools`
+asserts two distinct pools with the correct per-hop `sni_hostname`, and
+`test_same_hostname_reuses_its_own_pool` asserts reuse still happens where it is
+safe.
 
 **5. Distinguish the four inaccessibility modes — without bypassing any of
 them.** The extraction status vocabulary is unchanged (the council summary and
