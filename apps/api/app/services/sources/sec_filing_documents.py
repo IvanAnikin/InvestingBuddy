@@ -66,6 +66,12 @@ from app.services.sources.document_fetcher import (
 )
 from app.services.sources.gaps import GapSeverity, GapType, SourceGap
 from app.services.sources.ingestion_status import (
+    FAILURE_CONFLICTING_CIK,
+    FAILURE_INVALID_SEC_URL,
+    FAILURE_MALFORMED_ACCESSION,
+    FAILURE_MISSING_CIK,
+    FAILURE_NO_PRIMARY_FILING_DOCUMENT,
+    FAILURE_PREFLIGHT_BUDGET_EXHAUSTED,
     failure_code_for_block,
     http_status_class,
 )
@@ -722,26 +728,207 @@ def cik_from_accession(accession: str | None) -> str | None:
     return normalize_cik(digits[:10]) if digits else None
 
 
+def _one_cik_from_filing(filing: dict[str, Any]) -> str | None:
+    """URL-derived CIK preferred; accession-derived CIK as the fallback."""
+    return cik_from_archives_url(filing.get("url")) or cik_from_accession(
+        filing.get("accession_number")
+    )
+
+
+def _ciks_from_filings(filings: list[dict[str, Any]]) -> set[str]:
+    """Every DISTINCT CIK derivable from the filing list — never just the first.
+
+    Returning the full set (not one value) is what lets a caller distinguish
+    "nothing derivable" (empty set) from "the filings disagree about who filed
+    them" (more than one value) — the latter must fail closed, never guess.
+    """
+    found: set[str] = set()
+    for filing in filings:
+        if not isinstance(filing, dict):
+            continue
+        candidate = _one_cik_from_filing(filing)
+        if candidate:
+            found.add(candidate)
+    return found
+
+
 def _cik_from_filings(filings: list[dict[str, Any]]) -> str | None:
     """First CIK derivable from the filing list — URL preferred, accession next.
 
     Returns None rather than guessing when the filings disagree, so a mixed list
     can never silently attribute one issuer's filing body to another.
     """
-    found: set[str] = set()
-    for filing in filings:
-        if not isinstance(filing, dict):
-            continue
-        for candidate in (
-            cik_from_archives_url(filing.get("url")),
-            cik_from_accession(filing.get("accession_number")),
-        ):
-            if candidate:
-                found.add(candidate)
-                break
-    if len(found) == 1:
-        return found.pop()
+    found = _ciks_from_filings(filings)
+    return found.pop() if len(found) == 1 else None
+
+
+def resolve_sec_filer_cik(
+    cik: str | int | None, filings: list[dict[str, Any]]
+) -> tuple[str | None, str | None]:
+    """Return ``(resolved_cik, failure_code)`` via a deterministic fallback chain.
+
+    Phase 32A Slice 5B.1 hotfix. Staging proved the SEC filing-body path was a
+    SILENT no-op for every issuer: ``CompanyContext.cik`` is populated from
+    ``company_snapshot`` → ``company_identity``, which carries no ``cik`` field
+    at all, so trusting the caller's value alone always failed with no log and no
+    SourceGap. This resolves the filer identity from every source available and
+    CROSS-CHECKS them rather than trusting one silently:
+
+      1. the caller-supplied CIK, when present and valid;
+      2. otherwise the CIK derivable from the filing metadata itself — an
+         official SEC Archives URL already attached to the filing event, else
+         the accession number's own 10-digit prefix — but ONLY when every
+         filing that yields one agrees.
+
+    If the caller's value and the filings' own derived value DISAGREE, or the
+    filings disagree among themselves, resolution FAILS CLOSED — returns
+    ``(None, "conflicting_cik")`` — rather than trusting one source over the
+    other; a wrong CIK would silently attribute one issuer's filing to another.
+    Company name and ticker are never consulted: guessing an identity from a
+    display name is exactly the kind of inference this function refuses to make.
+    On success ``failure_code`` is None.
+    """
+    caller_cik = normalize_cik(cik)
+    derived = _ciks_from_filings(filings)
+
+    if len(derived) > 1:
+        return None, FAILURE_CONFLICTING_CIK
+    filings_cik = next(iter(derived), None)
+
+    if caller_cik and filings_cik and caller_cik != filings_cik:
+        return None, FAILURE_CONFLICTING_CIK
+    if caller_cik:
+        return caller_cik, None
+    if filings_cik:
+        return filings_cik, None
+    return None, FAILURE_MISSING_CIK
+
+
+# --------------------------------------------------------------------------- #
+# Preflight attempt visibility — a real candidate that never reached a fetch.
+#
+# ``resolve_filing_documents`` only ever returned successfully-resolved
+# documents; every other outcome (unresolvable identity, a malformed accession,
+# an unsafe filename, no selectable primary document, the preflight budget
+# running out) degraded SILENTLY — no log, no SourceGap, no attempt row. That
+# silence is indistinguishable from "the feature never ran", which is exactly
+# what staging validation could not tell apart. ``SecPreflightFailure`` is the
+# bounded, honest record of one such candidate.
+# --------------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True)
+class SecPreflightFailure:
+    """One known filing candidate that never reached a network fetch, and why.
+
+    ``canonical_url`` is always a safe, non-secret identity string — the real SEC
+    index location when a CIK + accession are both known, else the filing's own
+    validated ``sec.gov`` URL, else a synthetic ``urn:`` identifier keyed on the
+    (possibly malformed) accession text. It is NEVER a fabricated, guessed or
+    fetchable-looking location, and it never carries a query string or fragment.
+    """
+
+    canonical_url: str
+    accession_number: str | None
+    form_type: str | None
+    filing_date: str | None
+    failure_code: str
+
+
+_SAFE_TOKEN_RE = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def _sec_gov_safe_url(url: Any) -> str | None:
+    """A validated ``https://…sec.gov/…`` URL, or None.
+
+    Unlike :func:`cik_from_archives_url` this accepts ANY safe ``sec.gov`` path,
+    not only the ``/edgar/data/<cik>/…`` shape — used only to pick an honest
+    identity for a preflight attempt record, never to derive a filer identity.
+    """
+    if not isinstance(url, str) or not url:
+        return None
+    try:
+        parts = urlsplit(url)
+    except (ValueError, TypeError):
+        return None
+    if parts.scheme != "https":
+        return None
+    host = (parts.hostname or "").lower()
+    if not registrable_host_allowed(host, SEC_ALLOWED_DOMAINS):
+        return None
+    return url
+
+
+def _sanitize_identity_token(raw: Any, *, max_len: int = 64) -> str | None:
+    """Bound + charset-restrict a value for use inside a synthetic identity URN.
+
+    Never a secret: an accession number or form type is a public SEC filing
+    identifier, not a credential, so it is safe to retain in a sanitized form.
+    """
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    cleaned = _SAFE_TOKEN_RE.sub("-", text).strip("-")[:max_len].strip("-")
+    return cleaned or None
+
+
+def _preflight_canonical_url(
+    filing: dict[str, Any] | None,
+    *,
+    cik: str | None,
+    accession: str | None,
+) -> str | None:
+    """The best honest, safe identity for a candidate that was never fetched.
+
+    Prefers the real SEC index location (bounded, deterministic, never actually
+    requested by this preflight path); falls back to the filing's own validated
+    ``sec.gov`` URL; falls back to a synthetic, clearly-internal ``urn:`` keyed on
+    whatever raw accession text is available. Returns None only when nothing
+    stable and safe can be built at all — in which case nothing is persisted,
+    matching the pre-existing behaviour for a filing with no accession at all.
+    """
+    if cik and accession:
+        built = build_filing_index_url(cik, accession)
+        if built:
+            return built
+    if isinstance(filing, dict):
+        safe = _sec_gov_safe_url(filing.get("url"))
+        if safe:
+            return safe
+        token = _sanitize_identity_token(filing.get("accession_number"))
+        if token:
+            return f"urn:investingbuddy:sec-filing:{token}"
     return None
+
+
+def _preflight_failure(
+    filing: dict[str, Any] | None,
+    *,
+    cik: str | None,
+    accession: str | None,
+    failure_code: str,
+) -> SecPreflightFailure | None:
+    """Build one preflight failure record, or None when no safe identity exists."""
+    url = _preflight_canonical_url(filing, cik=cik, accession=accession)
+    if not url:
+        return None
+    form = (
+        base_form(filing.get("form_type"))
+        if isinstance(filing, dict) and filing.get("form_type")
+        else None
+    )
+    filed_date = (
+        str(filing.get("filed_date") or "").strip() or None
+        if isinstance(filing, dict)
+        else None
+    )
+    return SecPreflightFailure(
+        canonical_url=url,
+        accession_number=format_accession(accession) if accession else None,
+        form_type=form or None,
+        filing_date=filed_date,
+        failure_code=failure_code,
+    )
 
 
 async def resolve_filing_documents(
@@ -757,6 +944,7 @@ async def resolve_filing_documents(
     deadline: float | None = None,
     clock: ClockFn = time.monotonic,
     resolver: Resolver | None = None,
+    preflight_sink: list[SecPreflightFailure] | None = None,
 ) -> list[SecFilingDocument]:
     """Resolve filing metadata into canonical filing-body documents.
 
@@ -776,6 +964,14 @@ async def resolve_filing_documents(
         returns whatever resolved so far (never a fabricated document).
       * ``max_documents * 3`` index attempts, enforced regardless of the
         deadline, so a filings list full of index misses still terminates.
+
+    ``preflight_sink``, when given, collects one :class:`SecPreflightFailure` for
+    every KNOWN candidate that never reached a network fetch (unresolvable
+    identity, a malformed accession, an unsafe filename, no selectable primary
+    document, or the preflight budget running out) — the class of failure that
+    previously degraded silently. ``None`` (the default) is a pure no-op: nothing
+    is collected and every return value is unchanged from before this parameter
+    existed.
     """
     cap = max(0, int(max_documents or 0))
     if cap == 0 or not isinstance(filings, list):
@@ -785,16 +981,26 @@ async def resolve_filing_documents(
     # ``company_identity``, which does NOT carry a ``cik`` key today — so it is
     # None for every issuer, including AAPL. Relying on it alone made this whole
     # path a SILENT no-op: it returned here with no log and no SourceGap, which
-    # is indistinguishable from "never ran". Derive the filer CIK from the filing
-    # metadata instead (the Archives URL path, else the accession prefix), and
-    # never fail silently again.
-    padded = normalize_cik(cik) or _cik_from_filings(filings)
+    # is indistinguishable from "never ran". ``resolve_sec_filer_cik`` derives the
+    # filer identity from every available source and cross-checks them instead.
+    padded, cik_failure = resolve_sec_filer_cik(cik, filings)
     if padded is None:
         log_event(
             _logger,
             "sec_filing_cik_unresolved",
             candidate_count=len(filings),
+            reason=cik_failure,
         )
+        if preflight_sink is not None:
+            for filing in _sorted_filings(filings):
+                failure = _preflight_failure(
+                    filing,
+                    cik=None,
+                    accession=normalize_accession(filing.get("accession_number")),
+                    failure_code=cik_failure or FAILURE_MISSING_CIK,
+                )
+                if failure is not None:
+                    preflight_sink.append(failure)
         return []
 
     cfg = cfg or default_settings
@@ -810,20 +1016,50 @@ async def resolve_filing_documents(
     attempts = 0
     stopped_reason: str | None = None
 
-    for filing in _sorted_filings(filings):
+    candidates = _sorted_filings(filings)
+    for position, filing in enumerate(candidates):
         if len(resolved) >= cap:
             break
-        if attempts >= max_attempts:
-            stopped_reason = "attempt_cap"
+        if attempts >= max_attempts or (deadline is not None and clock() >= deadline):
+            stopped_reason = "attempt_cap" if attempts >= max_attempts else "deadline"
+            if preflight_sink is not None:
+                # Every candidate not yet visited was KNOWN but skipped purely
+                # because time/attempts ran out — record each one that carries
+                # enough identity to be worth recording.
+                for remaining in candidates[position:]:
+                    remaining_accession = normalize_accession(
+                        remaining.get("accession_number")
+                    )
+                    if remaining_accession is None:
+                        continue
+                    failure = _preflight_failure(
+                        remaining,
+                        cik=padded,
+                        accession=remaining_accession,
+                        failure_code=FAILURE_PREFLIGHT_BUDGET_EXHAUSTED,
+                    )
+                    if failure is not None:
+                        preflight_sink.append(failure)
             break
-        if deadline is not None and clock() >= deadline:
-            stopped_reason = "deadline"
-            break
-        accession = normalize_accession(
+        raw_accession = (
             filing.get("accession_number") if isinstance(filing, dict) else None
         )
+        accession = normalize_accession(raw_accession)
         if accession is None:
             skipped_no_accession += 1
+            # Only a genuinely malformed (present but unusable) accession is
+            # worth an attempt record — a filing with NO accession field at all
+            # was never a real candidate, matching the pre-existing behaviour of
+            # ``skipped_no_accession`` (a count, not a record).
+            if preflight_sink is not None and raw_accession:
+                failure = _preflight_failure(
+                    filing,
+                    cik=padded,
+                    accession=None,
+                    failure_code=FAILURE_MALFORMED_ACCESSION,
+                )
+                if failure is not None:
+                    preflight_sink.append(failure)
             continue
 
         attempts += 1
@@ -855,11 +1091,31 @@ async def resolve_filing_documents(
             allow_exhibits=allow_exhibits,
         )
         if entry is None:
+            if preflight_sink is not None:
+                failure = _preflight_failure(
+                    filing,
+                    cik=padded,
+                    accession=accession,
+                    failure_code=FAILURE_NO_PRIMARY_FILING_DOCUMENT,
+                )
+                if failure is not None:
+                    preflight_sink.append(failure)
             continue
 
         name = _entry_name(entry)
         url = build_document_url(padded, accession, name)
-        if url is None or url in seen_urls:
+        if url is None:
+            if preflight_sink is not None:
+                failure = _preflight_failure(
+                    filing,
+                    cik=padded,
+                    accession=accession,
+                    failure_code=FAILURE_INVALID_SEC_URL,
+                )
+                if failure is not None:
+                    preflight_sink.append(failure)
+            continue
+        if url in seen_urls:
             continue
         seen_urls.add(url)
 
@@ -975,10 +1231,13 @@ __all__ = [
     "STRATEGY_SEC_ACCESSION",
     "SUPPORTED_FORMS",
     "SecFilingDocument",
+    "SecPreflightFailure",
     "SecRateLimiter",
     "base_form",
     "build_document_url",
     "build_filing_index_url",
+    "cik_from_accession",
+    "cik_from_archives_url",
     "doc_kind_for_form",
     "fetch_filing_body",
     "fetch_filing_index",
@@ -988,5 +1247,6 @@ __all__ = [
     "normalize_cik",
     "parse_filing_index",
     "resolve_filing_documents",
+    "resolve_sec_filer_cik",
     "select_primary_document",
 ]

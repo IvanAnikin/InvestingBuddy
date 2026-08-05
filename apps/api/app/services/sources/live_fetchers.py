@@ -45,7 +45,13 @@ from app.services.sources.extracted_fact_validator import (
 from app.services.sources.gaps import GapSeverity, GapType, SourceGap
 from app.services.sources.ingestion_status import (
     FAILURE_BUDGET_EXHAUSTED,
+    FAILURE_CONFLICTING_CIK,
+    FAILURE_INVALID_SEC_URL,
+    FAILURE_MALFORMED_ACCESSION,
+    FAILURE_MISSING_CIK,
+    FAILURE_NO_PRIMARY_FILING_DOCUMENT,
     FAILURE_NOT_A_PDF,
+    FAILURE_PREFLIGHT_BUDGET_EXHAUSTED,
     FAILURE_UNKNOWN,
 )
 from app.services.sources.primary_document_extractor import (
@@ -65,6 +71,7 @@ from app.services.sources.safe_web_fetcher import (
 from app.services.sources.sec_filing_documents import (
     STRATEGY_SEC_ACCESSION,
     SecFilingDocument,
+    SecPreflightFailure,
     SecRateLimiter,
     doc_kind_for_form,
     fetch_filing_body,
@@ -417,6 +424,73 @@ def _sec_budget_artifact(doc: SecFilingDocument) -> PrimaryDocumentArtifact:
     )
 
 
+# Honest, human-readable gap text per PREFLIGHT failure code — a real candidate
+# that never reached a network fetch. None of these claim a successful fetch, and
+# none suggest a workaround; they simply say plainly what stopped and why.
+_PREFLIGHT_GAP_TEXT: dict[str, str] = {
+    FAILURE_MISSING_CIK: (
+        "SEC filer identity (CIK) could not be determined for this filing "
+        "candidate; the filing body was not fetched."
+    ),
+    FAILURE_CONFLICTING_CIK: (
+        "SEC filer identity (CIK) could not be safely determined — available "
+        "values disagree; the filing body was not fetched."
+    ),
+    FAILURE_MALFORMED_ACCESSION: (
+        "SEC filing accession number is malformed; the filing body was not "
+        "fetched."
+    ),
+    FAILURE_INVALID_SEC_URL: (
+        "SEC filing document location could not be safely constructed; the "
+        "filing body was not fetched."
+    ),
+    FAILURE_NO_PRIMARY_FILING_DOCUMENT: (
+        "SEC filing index carried no selectable primary document; the filing "
+        "body was not fetched."
+    ),
+    FAILURE_PREFLIGHT_BUDGET_EXHAUSTED: (
+        "Primary-document ingestion budget exhausted "
+        "(preflight_budget_exhausted); this SEC filing candidate was known but "
+        "not fetched."
+    ),
+}
+
+
+def _preflight_artifact(failure: SecPreflightFailure) -> PrimaryDocumentArtifact:
+    """An honest 'known candidate, never fetched' record for a preflight failure.
+
+    Phase 32A Slice 5B.1 hotfix. Every outcome here degraded SILENTLY before —
+    no log, no SourceGap, no attempt row — which staging validation could not
+    distinguish from "the feature never ran". This flows through the SAME
+    ``artifact_to_attempt`` → ``record_ingestion_attempts`` pipeline as a real
+    fetch, so the failure becomes a durable, honest row. Carries no content, no
+    excerpt, no fact — ``extraction`` stays unset, so it can never be mistaken
+    for a successful extraction.
+    """
+    title = (
+        f"{failure.form_type} {failure.accession_number}".strip()
+        if failure.form_type or failure.accession_number
+        else "SEC filing"
+    )
+    return PrimaryDocumentArtifact(
+        source_url=failure.canonical_url,
+        title=title,
+        retrieved_at=datetime.now(timezone.utc),
+        status=STATUS_EXTRACTION_FAILED,
+        failure_code=failure.failure_code,
+        doc_kind=doc_kind_for_form(failure.form_type) if failure.form_type else None,
+        discovery_strategy=STRATEGY_SEC_ACCESSION,
+        source_gaps=[
+            _sec_gap(
+                _PREFLIGHT_GAP_TEXT.get(
+                    failure.failure_code,
+                    "SEC filing candidate was known but not fetched.",
+                )
+            )
+        ],
+    )
+
+
 async def live_sec_primary_document_extractor(
     cik: str | int | None,
     filings: list[dict[str, Any]] | None,
@@ -480,6 +554,12 @@ async def live_sec_primary_document_extractor(
     # index round-trips can never escape the aggregate wall-budget.
     deadline = started + budget_seconds if budget_seconds is not None else None
     limiter = SecRateLimiter(cfg=cfg)
+    # Collects every KNOWN candidate that never reached a network fetch (Phase
+    # 32A Slice 5B.1 hotfix) — unresolvable identity, a malformed accession, an
+    # unsafe filename, no selectable primary document, or the preflight budget
+    # running out. Each becomes an honest attempt record via the SAME pipeline a
+    # real fetch uses, instead of degrading silently.
+    preflight: list[SecPreflightFailure] = []
     try:
         documents = await resolve_filing_documents(
             cik,
@@ -490,11 +570,14 @@ async def live_sec_primary_document_extractor(
             deadline=deadline,
             clock=clock,
             resolver=resolver,
+            preflight_sink=preflight,
         )
     except Exception:  # noqa: BLE001 - resolution never breaks a run
         return []
 
-    artifacts: list[PrimaryDocumentArtifact] = []
+    artifacts: list[PrimaryDocumentArtifact] = [
+        _preflight_artifact(failure) for failure in preflight
+    ]
     exhausted = False
     for doc in documents:
         if exhausted or (
@@ -563,6 +646,7 @@ async def live_sec_primary_document_extractor(
         "sec_primary_document_ingestion_completed",
         document_count=len(artifacts),
         extracted_count=sum(1 for a in artifacts if a.status == STATUS_EXTRACTED),
+        preflight_failure_count=len(preflight),
         budget_exhausted=exhausted,
     )
     return artifacts

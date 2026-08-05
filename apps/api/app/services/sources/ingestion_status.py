@@ -76,6 +76,20 @@ FAILURE_BUDGET_EXHAUSTED = "budget_exhausted"
 FAILURE_CLIENT_UNAVAILABLE = "client_unavailable"
 FAILURE_UNKNOWN = "unknown"
 
+# Preflight identity-resolution failures — Phase 32A Slice 5B.1 hotfix. These are
+# NOT fetch/extraction failures: they happen BEFORE any network request is made,
+# when a real candidate (a known SEC filing) cannot be safely turned into a
+# fetchable URL at all. Staging proved this class of failure was previously
+# invisible: ``CompanyContext.cik`` is always None (``company_identity`` carries
+# no ``cik`` field), so filer-identity resolution failed SILENTLY — no log, no
+# gap, no attempt row, indistinguishable from "never ran".
+FAILURE_MISSING_CIK = "missing_cik"
+FAILURE_CONFLICTING_CIK = "conflicting_cik"
+FAILURE_MALFORMED_ACCESSION = "malformed_accession"
+FAILURE_INVALID_SEC_URL = "invalid_sec_url"
+FAILURE_NO_PRIMARY_FILING_DOCUMENT = "no_primary_filing_document"
+FAILURE_PREFLIGHT_BUDGET_EXHAUSTED = "preflight_budget_exhausted"
+
 ALL_FAILURE_CODES: tuple[str, ...] = (
     FAILURE_BLOCKED_HOST,
     FAILURE_BLOCKED_SCHEME,
@@ -95,6 +109,12 @@ ALL_FAILURE_CODES: tuple[str, ...] = (
     FAILURE_EMPTY_EXTRACTION,
     FAILURE_BUDGET_EXHAUSTED,
     FAILURE_CLIENT_UNAVAILABLE,
+    FAILURE_MISSING_CIK,
+    FAILURE_CONFLICTING_CIK,
+    FAILURE_MALFORMED_ACCESSION,
+    FAILURE_INVALID_SEC_URL,
+    FAILURE_NO_PRIMARY_FILING_DOCUMENT,
+    FAILURE_PREFLIGHT_BUDGET_EXHAUSTED,
     FAILURE_UNKNOWN,
 )
 
@@ -190,6 +210,27 @@ _FAILURE_TO_ATTEMPT_STATUS: dict[str, str] = {
     FAILURE_REDIRECT_LIMIT: ATTEMPT_REJECTED_SECURITY,
     FAILURE_FETCH_TIMEOUT: ATTEMPT_TIMEOUT,
     FAILURE_EXTRACTION_TIMEOUT: ATTEMPT_TIMEOUT,
+    # Preflight failures (candidate known, but never reached a network fetch).
+    # Mapped onto EXISTING attempt statuses only — no new status is introduced.
+    #   * missing_cik / no_primary_filing_document: real filing metadata exists
+    #     (form/accession/date) even though the fetchable document does not —
+    #     the same "we know something, but not the content" shape as a scanned
+    #     PDF, so it is honestly ``metadata_only``.
+    #   * conflicting_cik / invalid_sec_url: an identity or URL failed a safety
+    #     check, so this fails CLOSED exactly like a blocked host or private IP —
+    #     ``rejected_security``.
+    #   * malformed_accession: a malformed identifier we cannot act on —
+    #     ``unsupported``, the same bucket a not-a-PDF / unsupported content type
+    #     already uses for "well-formed input, unusable shape".
+    #   * preflight_budget_exhausted: time ran out before this candidate's own
+    #     fetch could even start — ``timeout``, alongside fetch/extraction
+    #     timeouts.
+    FAILURE_MISSING_CIK: ATTEMPT_METADATA_ONLY,
+    FAILURE_NO_PRIMARY_FILING_DOCUMENT: ATTEMPT_METADATA_ONLY,
+    FAILURE_CONFLICTING_CIK: ATTEMPT_REJECTED_SECURITY,
+    FAILURE_INVALID_SEC_URL: ATTEMPT_REJECTED_SECURITY,
+    FAILURE_MALFORMED_ACCESSION: ATTEMPT_UNSUPPORTED,
+    FAILURE_PREFLIGHT_BUDGET_EXHAUSTED: ATTEMPT_TIMEOUT,
 }
 
 
@@ -235,15 +276,21 @@ __all__ = [
     "FAILURE_BLOCKED_SCHEME",
     "FAILURE_BUDGET_EXHAUSTED",
     "FAILURE_CLIENT_UNAVAILABLE",
+    "FAILURE_CONFLICTING_CIK",
     "FAILURE_EMPTY_EXTRACTION",
     "FAILURE_ENCRYPTED_PDF",
     "FAILURE_EXTRACTION_TIMEOUT",
     "FAILURE_FETCH_TIMEOUT",
     "FAILURE_HTTP_CLIENT_ERROR",
     "FAILURE_HTTP_SERVER_ERROR",
+    "FAILURE_INVALID_SEC_URL",
+    "FAILURE_MALFORMED_ACCESSION",
     "FAILURE_MALFORMED_PDF",
+    "FAILURE_MISSING_CIK",
     "FAILURE_NOT_A_PDF",
+    "FAILURE_NO_PRIMARY_FILING_DOCUMENT",
     "FAILURE_PASSWORD_PROTECTED_PDF",
+    "FAILURE_PREFLIGHT_BUDGET_EXHAUSTED",
     "FAILURE_REDIRECT_LIMIT",
     "FAILURE_SCANNED_NO_TEXT",
     "FAILURE_UNKNOWN",
