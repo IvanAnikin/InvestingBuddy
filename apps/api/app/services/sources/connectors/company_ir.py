@@ -55,6 +55,16 @@ from app.services.sources.connector_base import (
     QueryContext,
     SourceConnector,
 )
+from app.services.sources.document_discovery import (
+    DEFAULT_STRATEGIES,
+    DOC_KIND_ANNUAL_REPORT,
+    DOC_KIND_INTERIM_REPORT,
+    DOC_KIND_OTHER,
+    DOC_KIND_PRESENTATION,
+    DOC_KIND_RESULTS_RELEASE,
+    STRATEGY_ANCHORS,
+    discover_documents,
+)
 from app.services.sources.document_text_extractor import (
     EVIDENCE_TYPE_BUSINESS,
     EVIDENCE_TYPE_RISK,
@@ -93,6 +103,7 @@ from app.services.sources.taxonomy import (
 from app.services.sources.verified_issuer_sources import VerifiedIssuerSource
 
 if TYPE_CHECKING:  # reuse lookup is a plain in-memory dict — never a DB session.
+    from app.core.config import Settings
     from app.services.extracted_document_service import ReusedDocument
 
 _log = logging.getLogger("app.services.sources.connectors.company_ir")
@@ -156,6 +167,29 @@ class PrimaryDocumentArtifact(BaseModel):
     # Secret-free per-document timings for telemetry (never bytes/text).
     fetch_ms: int | None = None
     extraction_ms: int | None = None
+    # Phase 32A Slice 5B.1 — bounded, sanitized provenance + failure telemetry.
+    # Every field is optional and defaulted, so no existing construction changes.
+    # None means "not known", never a claim; nothing here can carry provider text,
+    # a URL secret, an address or an exact HTTP status code.
+    #
+    # What kind of document the discovery layer classified this as
+    # (``annual_report`` / ``interim_report`` / …) and HOW its URL was found
+    # (``anchors`` / ``next_data`` / ``sec_accession`` / …).
+    doc_kind: str | None = None
+    discovery_strategy: str | None = None
+    # A member of the CLOSED ``ingestion_status`` vocabulary saying why this
+    # document did not reach ``extracted``. Never raw provider/exception text.
+    failure_code: str | None = None
+    # ``2xx``/``3xx``/``4xx``/``5xx`` only — the exact status code is never kept.
+    http_status_class: str | None = None
+    # Whether the connection was PINNED to a pre-validated address (ADR-014/015).
+    # ``True`` = pinned; ``False`` = an honest "not pinned" (kill-switch off, or
+    # this httpx build cannot support it) — never a claim that pinning happened;
+    # ``None`` = no fetch was attempted at all (budget-exhausted / reused).
+    pinned: bool | None = None
+    # sha256 of the RAW fetched bytes — ties an attempt back to its extracted
+    # document row without duplicating it. Never a secret.
+    content_hash: str | None = None
 
 
 # A DEEP document extractor fetches ONE allowlisted annual-report document, runs
@@ -176,6 +210,18 @@ _MATERIAL_DOCUMENT_MARKERS = (
     "full-year",
     "full year",
 )
+
+# Slice 5B.1 ranking: a document the discovery layer explicitly classified
+# outranks one that merely matched a keyword. Unclassified links sort between
+# results releases and presentations so 5A behaviour is not demoted.
+_DOC_KIND_RANK: dict[str | None, int] = {
+    DOC_KIND_ANNUAL_REPORT: 0,
+    DOC_KIND_RESULTS_RELEASE: 1,
+    DOC_KIND_INTERIM_REPORT: 2,
+    DOC_KIND_PRESENTATION: 4,
+    DOC_KIND_OTHER: 5,
+}
+_DOC_KIND_RANK_DEFAULT = 3
 
 _IR_TRANSPORT_LABEL = "Company IR / newsroom (issuer-published)"
 
@@ -209,6 +255,7 @@ class CompanyIrConnector(SourceConnector):
         max_docs_per_issuer: int = 1,
         ingestion_budget_seconds: float | None = None,
         clock: Callable[[], float] = time.monotonic,
+        cfg: "Settings | None" = None,
     ) -> None:
         self._fetcher = press_fetcher
         self._verified = verified_source
@@ -231,6 +278,11 @@ class CompanyIrConnector(SourceConnector):
         # Deep artifacts (extractions + validated facts) collected this run, threaded
         # OUT for a later persistence task. Empty on the OFF / shallow path.
         self.collected_primary_document_artifacts: list[PrimaryDocumentArtifact] = []
+        self._cfg = cfg
+        # Phase 32A Slice 5B.1: url -> (doc_kind, discovery_strategy) for every
+        # candidate the discovery layer classified. Side map (not on SafeLink) so
+        # the Slice 5A link shape and every existing caller stay unchanged.
+        self._document_kinds: dict[str, tuple[str, str]] = {}
 
     # -- Helpers -----------------------------------------------------------
 
@@ -462,10 +514,17 @@ class CompanyIrConnector(SourceConnector):
         # excerpt / validated-fact evidence plus honest gaps. Takes precedence over
         # the Phase 29B.2 shallow path; when it is NOT injected the shallow path
         # below runs byte-for-byte unchanged.
-        if self._primary_document_extractor is not None and fetched.links:
-            doc_items, doc_gaps, artifacts = await self._extract_primary_documents_deep(
-                fetched.links, query, company
-            )
+        if self._primary_document_extractor is not None:
+            # Slice 5B.1: augment the anchor links with the bounded non-browser
+            # discovery strategies before ranking, so a JS-rendered IR page can
+            # still yield real document candidates.
+            deep_links = self._discover_deep_targets(fetched)
+            if deep_links:
+                doc_items, doc_gaps, artifacts = (
+                    await self._extract_primary_documents_deep(deep_links, query, company)
+                )
+            else:
+                doc_items, doc_gaps, artifacts = [], [], []
             items.extend(doc_items)
             gaps.extend(doc_gaps)
             self.collected_primary_document_artifacts.extend(artifacts)
@@ -649,18 +708,103 @@ class CompanyIrConnector(SourceConnector):
             ticker=company.ticker,
         )
 
+    def _discovery_strategies(self) -> tuple[str, ...]:
+        """Parse ``primary_document_discovery_strategies`` into an ordered tuple.
+
+        Comma-separated, whitespace-trimmed, case-insensitive; an unknown name is
+        ignored rather than failing the run (config is operator-set, not user
+        input). An absent / blank / entirely-unknown setting falls back to the
+        module default, so discovery is never accidentally switched off by a typo.
+        """
+        raw = getattr(self._cfg, "primary_document_discovery_strategies", None)
+        if not isinstance(raw, str):
+            return DEFAULT_STRATEGIES
+        known = set(DEFAULT_STRATEGIES)
+        wanted = tuple(
+            name
+            for name in dict.fromkeys(
+                part.strip().lower() for part in raw.split(",") if part.strip()
+            )
+            if name in known
+        )
+        return wanted or DEFAULT_STRATEGIES
+
+    def _discover_deep_targets(self, fetched: SafeFetchResult) -> list[SafeLink]:
+        """Merge anchor links with the richer, non-browser discovery strategies.
+
+        Phase 32A Slice 5B.1. Slice 5A only read ``<a href>`` tags, so a
+        JS-rendered IR page (Burberry, Kering, LVMH, Hermes, BAE) yielded zero
+        candidates even though the document URLs were sitting in the page's
+        hydration payload. This runs the bounded strategies — JSON-LD, Next.js /
+        Nuxt / ``__INITIAL_STATE__`` hydration state, embedded script JSON — over
+        the already-fetched, already-capped body and merges what they find.
+
+        Anchors keep priority: a document found by both appears once, attributed
+        to the anchor. Everything still passes the same https / safe-host /
+        allowlist / secret-strip checks. No browser, no crawl, no extra fetch.
+        """
+        links = list(fetched.links)
+        body = fetched.body_html
+        if not body or not self._verified:
+            return links
+
+        try:
+            discovered = discover_documents(
+                body,
+                base_url=fetched.final_url or fetched.requested_url,
+                allowed_domains=self._verified.allowed_domains,
+                cfg=self._cfg,
+                strategies=self._discovery_strategies(),
+            )
+        except Exception:  # noqa: BLE001 - discovery must never break a run
+            return links
+
+        known_anchors = {ln.url for ln in links}
+        known = set(known_anchors)
+        added = 0
+        for doc in discovered:
+            if doc.url in known:
+                # Already an anchor hit — keep the anchor, but record the kind so
+                # ranking and the attempt record still see the classification.
+                self._document_kinds.setdefault(doc.url, (doc.doc_kind, STRATEGY_ANCHORS))
+                continue
+            known.add(doc.url)
+            self._document_kinds[doc.url] = (doc.doc_kind, doc.strategy)
+            links.append(
+                SafeLink(url=doc.url, text=doc.title, is_document=doc.is_document)
+            )
+            added += 1
+
+        if added:
+            log_event(
+                _log,
+                "primary_document_discovery_augmented",
+                connector_key=self.connector_key,
+                anchor_links=len(fetched.links),
+                discovered_links=added,
+                strategies=",".join(
+                    sorted({d.strategy for d in discovered if d.url not in known_anchors})
+                ),
+            )
+        return links
+
     def _rank_deep_targets(self, links: list[SafeLink]) -> list[SafeLink]:
         """Order report links most-material-first, de-dup by URL, cap per issuer.
 
         Prefers annual-report / results / registration documents and downloadable
         (PDF) links; stable within equal rank. Bounded by ``max_docs_per_issuer``.
+        Slice 5B.1 adds the discovery layer's explicit document classification as
+        the primary key, so a classified annual report outranks a generic
+        marketing PDF whose link text happens to contain a keyword.
         """
 
-        def rank(link: SafeLink) -> tuple[int, int]:
+        def rank(link: SafeLink) -> tuple[int, int, int]:
+            kind = self._document_kinds.get(link.url, (None, None))[0]
+            kind_rank = _DOC_KIND_RANK.get(kind, _DOC_KIND_RANK_DEFAULT)
             text = (link.text or "").lower()
             material = 0 if any(m in text for m in _MATERIAL_DOCUMENT_MARKERS) else 1
             doc = 0 if link.is_document else 1
-            return (material, doc)
+            return (kind_rank, material, doc)
 
         seen: set[str] = set()
         ordered: list[SafeLink] = []
@@ -670,6 +814,26 @@ class CompanyIrConnector(SourceConnector):
             seen.add(link.url)
             ordered.append(link)
         return ordered[: self._max_docs_per_issuer]
+
+    def _stamp_provenance(
+        self, artifact: PrimaryDocumentArtifact, target: SafeLink
+    ) -> None:
+        """Record HOW this candidate was found + its raw-bytes identity.
+
+        Phase 32A Slice 5B.1. Only fills a field the extractor left unset, so a
+        deep extractor that already knows its own provenance (the SEC filing-body
+        path) is never overwritten. A candidate the discovery layer did not
+        classify keeps ``None`` — an honest "not known", never a guessed kind.
+        """
+        kind = self._document_kinds.get(target.url)
+        if kind is not None:
+            if artifact.doc_kind is None:
+                artifact.doc_kind = kind[0]
+            if artifact.discovery_strategy is None:
+                artifact.discovery_strategy = kind[1]
+        extraction = artifact.extraction
+        if artifact.content_hash is None and extraction is not None:
+            artifact.content_hash = extraction.content_hash or None
 
     async def _extract_primary_documents_deep(
         self, links: list[SafeLink], query: QueryContext, company: CompanyContext
@@ -758,6 +922,11 @@ class CompanyIrConnector(SourceConnector):
                     original_language=self._original_language(),
                     issuer_context=issuer_context,
                 )
+            # Phase 32A Slice 5B.1: carry the discovery provenance + the raw-bytes
+            # identity onto the artifact so the durable ingestion-attempt record can
+            # say WHAT was tried and HOW it was found — for a reused artifact too.
+            # Absent classification stays None (honest "not known"), never a guess.
+            self._stamp_provenance(artifact, target)
             artifacts.append(artifact)
             ingested += 1
             doc_items, doc_gaps = self._artifact_to_evidence(
@@ -777,6 +946,9 @@ class CompanyIrConnector(SourceConnector):
                 document_index=doc_idx,
                 status=artifact.status,
                 document_type=artifact.document_type,
+                # Honest record of whether the connection was pinned to a
+                # pre-validated address (ADR-014/015); None = no fetch happened.
+                pinned=artifact.pinned,
                 fetch_ms=artifact.fetch_ms,
                 extraction_ms=artifact.extraction_ms,
                 excerpt_count=(

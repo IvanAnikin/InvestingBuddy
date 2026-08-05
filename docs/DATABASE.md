@@ -55,11 +55,18 @@ alembic revision --autogenerate -m "short description"
 | 011 | `011_add_thesis_discovery.py` | adds thesis columns to `discovery_runs` (`mode`, `thesis_text`, `parsed_thesis_json`, `universe_json`) + `discovery_candidates` (`thesis_relevance_score`, `combined_internal_score`, `thesis_match_json`) (Phase 27 Thesis-to-Universe Discovery) |
 | 012 | `012_add_report_company_id.py` | adds `company_id` (UUID FK → companies.id, SET NULL) + index `ix_reports_company_id` to `reports` (Phase 32A hotfix — company-scoped `from-company` final-report selection) |
 | 013 | `013_add_extracted_documents.py` | creates `extracted_documents`, `extracted_facts` (Phase 32A Slice 5 primary-document ingestion). Reversible, additive, backfill-free. **Implemented — PR open, pending staging validation.** |
+| 014 | `014_add_document_ingestion_attempts.py` | creates `document_ingestion_attempts` — one honest row per primary-document ingestion attempt, **including the failed ones** (Phase 32A Slice 5B.1). Reversible, additive, backfill-free. **Implemented — PR open, pending staging validation.** |
 
-**DB head baseline = `012`; Phase 32A Slice 5 adds migration `013` → head `013`.**
-Slice 5 is **implemented, PR-open, pending staging validation** — this migration
-is not yet applied on staging. It is reversible, additive and backfill-free, and
-the two new tables stay **unwritten** unless `PRIMARY_DOCUMENT_INGESTION_ENABLED`
+**DB head baseline = `013`; Phase 32A Slice 5B.1 adds migration `014` → head `014`.**
+Slice 5B.1 is **implemented, PR-open, pending staging validation** — `014` is not
+yet applied on staging. It is reversible, additive and backfill-free, and the new
+`document_ingestion_attempts` table stays **unwritten** unless BOTH
+`PRIMARY_DOCUMENT_INGESTION_ENABLED` and `REPORT_CITATION_PERSISTENCE_ENABLED` are
+on. See the `Document Ingestion Attempts (Phase 32A Slice 5B.1)` tables section
+below.
+
+Migration `013` (Phase 32A Slice 5A) is reversible, additive and backfill-free,
+and its two tables stay **unwritten** unless `PRIMARY_DOCUMENT_INGESTION_ENABLED`
 is on (with the ingestion flag off the DB is effectively unchanged even after the
 migration is applied). See the `Primary-Document Ingestion (Phase 32A Slice 5)`
 tables section below.
@@ -641,6 +648,66 @@ retained `excerpt_only` and is never a structured fact.
 
 ORM models: `ExtractedDocument` / `ExtractedFact` in
 `apps/api/app/models/extracted_document.py`.
+
+---
+
+### Document Ingestion Attempts (Phase 32A Slice 5B.1)
+
+> **Implemented — PR open, pending staging validation.** Migration `014`
+> (`014_add_document_ingestion_attempts.py`, reversible / additive / backfill-free)
+> creates one internal-only table. Rows are only ever written when BOTH
+> `PRIMARY_DOCUMENT_INGESTION_ENABLED` and `REPORT_CITATION_PERSISTENCE_ENABLED`
+> are on; with either flag off the writer issues no query and the table stays
+> empty. No financial numbers, no valuations, no recommendations — this is
+> ingestion telemetry, not evidence.
+
+Slice 5A only wrote an `extracted_documents` row when a document reached
+`status = 'extracted'`, so every FAILED attempt persisted nothing: a staging run
+that tried documents across seven issuers left `extracted_documents` /
+`extracted_facts` at 0/0 with no durable record of what was tried or why it
+failed. `document_ingestion_attempts` is that record — one row per
+`(company_id, agent_run_id, url_hash)` attempt, **updated in place** when the same
+URL is re-attempted in the same run.
+
+Bounded and secret-free by construction. **Never stored:** raw provider or
+exception text, secrets / signed query strings (the URL is canonicalized +
+credential-stripped before it is hashed or stored), exact HTTP status codes (only
+the class), document bodies, extracted excerpts or OCR text.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | UUID PK | |
+| `company_id` | UUID FK → companies.id nullable | `ON DELETE SET NULL`; index `ix_document_ingestion_attempts_company_id` |
+| `agent_run_id` | UUID FK → agent_runs.id nullable | `ON DELETE SET NULL`; index `ix_document_ingestion_attempts_agent_run_id` |
+| `canonical_url` | str(2000) | credential-stripped canonical URL (truncated, never rejected) |
+| `url_hash` | str(64) | sha256 of `canonical_url`; index `ix_document_ingestion_attempts_url_hash` — signed-token variants of one document hash identically |
+| `source_type` | str(50) | e.g. `company_ir_primary_document` |
+| `source_tier` | str(50) | evidence tier (e.g. `T1_primary_filing`) |
+| `doc_kind` | str(50) nullable | e.g. annual report / registration document / IR page |
+| `discovery_strategy` | str(50) nullable | how the candidate URL was found |
+| `attempted_at` | timestamptz | server default `now()` |
+| `status` | str(50) | **CLOSED vocabulary**: `extracted`, `metadata_only`, `unsupported`, `encrypted`, `password_protected`, `malformed`, `rejected_security`, `timeout`, `extraction_failed` — an unrecognised status is SKIPPED, never stored. `discovered` and `fetched` are RESERVED members of the vocabulary that no writer currently emits (a candidate ranked out before a fetch produces no row in Slice 5B.1) |
+| `failure_code` | str(50) nullable | **CLOSED, sanitized vocabulary**: `blocked_host`, `blocked_scheme`, `blocked_private_ip`, `blocked_redirect`, `redirect_limit`, `unsupported_content_type`, `http_client_error`, `http_server_error`, `fetch_timeout`, `extraction_timeout`, `not_a_pdf`, `encrypted_pdf`, `password_protected_pdf`, `malformed_pdf`, `scanned_no_text`, `empty_extraction`, `budget_exhausted`, `client_unavailable`, `unknown` — anything else is downgraded to `unknown` so raw provider text can never reach the DB |
+| `pinned` | bool nullable | tri-state: `true` = the connection was pinned to a pre-validated address (ADR-015); `false` = an honest "not pinned" (kill-switch off, or pinning unavailable); NULL = no fetch happened. Never claims pinning that did not occur. |
+| `mime_type` | str(100) nullable | |
+| `http_status_class` | str(10) nullable | `2xx` / `3xx` / `4xx` / `5xx` **only** — never the exact code |
+| `extraction_method` | str(50) nullable | native pdf / html / ocr (NULL when nothing was extracted) |
+| `page_count` | int nullable | |
+| `content_hash` | str(64) nullable | sha256 of the raw bytes when a body was obtained — ties the attempt to its `extracted_documents` row without duplicating it |
+| `fetch_ms` / `extraction_ms` / `total_ms` | int nullable | wall-clock telemetry |
+| `created_at` / `updated_at` | timestamptz | |
+
+Idempotency key: UNIQUE `uq_document_ingestion_attempts_run_url` on
+`(company_id, agent_run_id, url_hash)`. PostgreSQL NULLs never collide inside a
+UNIQUE constraint, so a NULL `company_id` / `agent_run_id` is not protected by the
+constraint alone — the writer service **also** pre-queries for the existing row
+and updates it in place (the constraint is the backstop, the pre-query is the
+guarantee).
+
+ORM model: `DocumentIngestionAttempt` in
+`apps/api/app/models/document_ingestion_attempt.py`. Writer + bounded per-status
+summary reader: `apps/api/app/services/document_ingestion_attempt_service.py`
+(flush-only — the caller owns the commit).
 
 ---
 

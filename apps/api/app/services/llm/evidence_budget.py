@@ -76,13 +76,20 @@ _PRICE_TREND_TYPES = frozenset(
         "financial_snapshot",
     }
 )
-# Connector-extracted primary-document excerpt source types.
+# Connector-extracted primary-document excerpt / validated-fact source types.
+# ``sec_filing_financial_fact`` (Phase 32A Slice 5B.1) is a fact validated from a
+# table inside the issuer's OWN SEC filing body. It is listed here so it is
+# budgeted as primary-document evidence rather than falling through to the
+# lowest-priority ``source_reference`` bucket and being dropped first under
+# pressure. It deliberately does NOT join ``_FINANCIAL_FACT_TYPES``: the
+# structured SEC/XBRL facts stay authoritative and keep their own floor.
 _PRIMARY_DOCUMENT_TYPES = frozenset(
     {
         "company_ir_annual_report_text",
         "company_ir_annual_report_excerpt",
         "company_ir_business_description",
         "company_ir_risk_excerpt",
+        "sec_filing_financial_fact",
     }
 )
 # Price/market/trend field names (so a legacy financial-snapshot item whose

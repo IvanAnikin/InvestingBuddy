@@ -58,6 +58,7 @@ from app.services.data_provenance import (
     derive_data_provenance,
     provenance_to_is_mock,
 )
+from app.services.document_ingestion_attempt_service import record_ingestion_attempts
 from app.services.extracted_document_service import (
     load_reusable_documents,
     persist_primary_document_artifacts,
@@ -71,6 +72,7 @@ from app.services.llm.schemas import (
 )
 from app.services.real_asset_report_completer import build_schema_complete_report
 from app.services.report_validation_service import validate_real_asset_report
+from app.services.sources.ingestion_attempts import attempts_for_primary_documents
 from app.services.sources.redaction import (
     canonicalize_source_url,
     strip_url_secrets,
@@ -3601,14 +3603,27 @@ async def _save_final_report_draft(
         and council_result is not None
     ):
         try:
+            artifacts = getattr(council_result, "primary_document_artifacts", None)
             async with db.begin_nested():
                 persist_result = await persist_primary_document_artifacts(
                     db,
-                    artifacts=getattr(
-                        council_result, "primary_document_artifacts", None
-                    ),
+                    artifacts=artifacts,
                     company_id=company_id,
                     agent_run_id=created_by_agent_run_id,
+                    cfg=settings,
+                )
+                # Phase 32A Slice 5B.1 — record EVERY attempt, not only the ones
+                # that reached ``extracted``. Slice 5A wrote nothing for a failed
+                # attempt, so a run that tried documents across seven issuers left
+                # no durable trace of what was tried or why it failed. Same
+                # SAVEPOINT, same lineage, same double-flag gate (checked inside
+                # the service, so with either flag off this issues no query and
+                # writes no row); flush-only, the caller owns the commit.
+                attempts_recorded = await record_ingestion_attempts(
+                    db,
+                    company_id=company_id,
+                    agent_run_id=created_by_agent_run_id,
+                    attempts=attempts_for_primary_documents(artifacts),
                     cfg=settings,
                 )
             log_event(
@@ -3620,6 +3635,7 @@ async def _save_final_report_draft(
                 facts_created=persist_result.facts_created,
                 facts_deduped=persist_result.facts_deduped,
                 skipped=persist_result.skipped,
+                attempts_recorded=attempts_recorded,
             )
         except Exception as exc:  # noqa: BLE001 - ingestion never breaks a report
             log_event(

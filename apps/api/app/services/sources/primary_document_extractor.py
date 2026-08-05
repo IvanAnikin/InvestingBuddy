@@ -51,6 +51,17 @@ from app.services.sources.document_text_extractor import (
     _detect_language,
     _relevance,
 )
+from app.services.sources.ingestion_status import (
+    FAILURE_CLIENT_UNAVAILABLE,
+    FAILURE_EMPTY_EXTRACTION,
+    FAILURE_ENCRYPTED_PDF,
+    FAILURE_EXTRACTION_TIMEOUT,
+    FAILURE_MALFORMED_PDF,
+    FAILURE_NOT_A_PDF,
+    FAILURE_PASSWORD_PROTECTED_PDF,
+    FAILURE_SCANNED_NO_TEXT,
+    FAILURE_UNSUPPORTED_CONTENT_TYPE,
+)
 from app.services.sources.safe_web_fetcher import looks_like_pdf
 
 # --------------------------------------------------------------------------- #
@@ -66,6 +77,33 @@ METHOD_OCR = "ocr"
 STATUS_EXTRACTED = "extracted"
 STATUS_METADATA_ONLY = "metadata_only"
 STATUS_EXTRACTION_FAILED = "extraction_failed"
+
+# Honest, human-readable gap text per PDF failure code (Phase 32A Slice 5B.1).
+# Each states plainly what happened and what it does NOT mean — none of them
+# claims a successful extraction, and none suggests circumventing protection.
+_PDF_FAILURE_GAP: dict[str, str] = {
+    FAILURE_PASSWORD_PROTECTED_PDF: (
+        "PDF requires a user password and is not accessible; it was not opened "
+        "and no text is extracted."
+    ),
+    FAILURE_ENCRYPTED_PDF: (
+        "PDF is encrypted and could not be read without a password; no text is "
+        "extracted."
+    ),
+    FAILURE_MALFORMED_PDF: (
+        "PDF structure is malformed and could not be parsed; no text is extracted."
+    ),
+    FAILURE_EXTRACTION_TIMEOUT: (
+        "PDF extraction exceeded its time budget; no text is extracted."
+    ),
+}
+
+# Fallback wording for any failure code without bespoke text (e.g. one added to
+# the closed vocabulary later). Honest and generic — it never claims a successful
+# extraction and never guesses a cause.
+_PDF_FAILURE_GAP_DEFAULT = (
+    "PDF could not be read; no text is extracted."
+)
 
 # Decompression-bomb ceiling: stop accumulating once total extracted text passes
 # this, no matter how many pages remain (defensive; the tight bound is the
@@ -155,6 +193,15 @@ class PrimaryDocumentExtraction(BaseModel):
     source_gaps: list[str] = Field(default_factory=list)
     # ONLY ``type(exc).__name__`` ever lands here — never bytes/text.
     error_type: str | None = None
+    # Phase 32A Slice 5B.1 — a member of the closed ``ingestion_status``
+    # vocabulary saying WHY this document did not extract. Unlike ``error_type``
+    # this is safe to persist and to render in the admin UI, and it is what lets
+    # an operator tell "scanned, OCR would help" from "encrypted, it would not".
+    failure_code: str | None = None
+    # True when the PDF carries an encryption dictionary. Note this can be True
+    # on a SUCCESSFUL extraction: an owner-password-only document restricts
+    # printing/copying yet opens with no user password.
+    encrypted: bool = False
 
     @property
     def has_content(self) -> bool:
@@ -332,6 +379,59 @@ def _finalize_language(
 
 
 # --------------------------------------------------------------------------- #
+# PDF accessibility classification (Phase 32A Slice 5B.1)
+#
+# Slice 5A collapsed four genuinely different outcomes into one opaque
+# ``extraction_failed``: Richemont's documents were reported the same way a
+# corrupt byte-stream would be, so staging could not tell "needs OCR" from
+# "needs nothing — it is broken". These helpers separate them.
+#
+# NOTE ON PASSWORDS: ``pdfplumber.open`` supplies the EMPTY password, which is
+# the standard "this document has no user password" case (an owner-password-only
+# PDF restricts printing/copying but is openly readable). That is the only
+# password ever tried. No password is guessed, derived, brute-forced or stripped,
+# and a document that genuinely requires a user password is recorded as
+# inaccessible — never opened.
+# --------------------------------------------------------------------------- #
+
+
+def pdf_has_encryption_marker(raw: bytes) -> bool:
+    """True when the PDF carries an ``/Encrypt`` dictionary.
+
+    A cheap, dependency-free signal used only for CLASSIFICATION — it decides how
+    an outcome is *labelled*, never whether decryption is attempted. Scanning the
+    trailer region rather than the whole file keeps this bounded and avoids
+    matching the literal inside a content stream.
+    """
+    if not raw:
+        return False
+    tail = raw[-4096:] if len(raw) > 4096 else raw
+    if b"/Encrypt" in tail:
+        return True
+    # Linearized PDFs put the trailer dictionary near the front instead.
+    head = raw[:4096]
+    return b"/Encrypt" in head
+
+
+def classify_pdf_failure(raw: bytes, exc: BaseException | None) -> str:
+    """Return the sanitized failure code for a PDF that could not be parsed.
+
+    Distinguishes password-protected (a user password is required — inaccessible,
+    and we do not try to get past it) from encrypted-but-broken, from plain
+    malformed. Uses the exception TYPE and the encryption marker only; the
+    exception message is never inspected or retained.
+    """
+    name = type(exc).__name__.lower() if exc is not None else ""
+    if "password" in name:
+        return FAILURE_PASSWORD_PROTECTED_PDF
+    if "timeout" in name:
+        return FAILURE_EXTRACTION_TIMEOUT
+    if pdf_has_encryption_marker(raw):
+        return FAILURE_ENCRYPTED_PDF
+    return FAILURE_MALFORMED_PDF
+
+
+# --------------------------------------------------------------------------- #
 # PDF extraction (pdfplumber, native text + tables)
 # --------------------------------------------------------------------------- #
 
@@ -358,10 +458,15 @@ def extract_pdf(
 
     # 1) Magic bytes — a non-PDF blob is never fed to the parser.
     if not looks_like_pdf(raw):
+        result.failure_code = FAILURE_NOT_A_PDF
         result.source_gaps.append(
             "Document is not a PDF (missing %PDF- signature); not extracted."
         )
         return result
+
+    # Recorded whether or not parsing succeeds: an owner-password-only PDF is
+    # readable but still encrypted, and an operator needs to see that.
+    result.encrypted = pdf_has_encryption_marker(raw)
 
     # 2) Byte cap — record honest truncation (the hard memory bound lives in the
     #    fetch layer; this is a defensive, honest flag on the pure path).
@@ -378,6 +483,7 @@ def extract_pdf(
         import pdfplumber
     except Exception as exc:  # noqa: BLE001
         result.error_type = type(exc).__name__
+        result.failure_code = FAILURE_CLIENT_UNAVAILABLE
         result.source_gaps.append(
             f"PDF library unavailable ({type(exc).__name__}); not extracted."
         )
@@ -449,8 +555,12 @@ def extract_pdf(
                     )
     except Exception as exc:  # noqa: BLE001 - malformed/encrypted must not raise
         result.error_type = type(exc).__name__
+        result.failure_code = classify_pdf_failure(raw, exc)
+        # ``.get`` (not ``[...]``): a failure code with no bespoke wording must
+        # still degrade honestly. Indexing here would turn a never-raises function
+        # into a raiser the moment a new code is added to the vocabulary.
         result.source_gaps.append(
-            "PDF could not be parsed (encrypted or malformed); not extracted."
+            _PDF_FAILURE_GAP.get(result.failure_code, _PDF_FAILURE_GAP_DEFAULT)
         )
         return result
 
@@ -464,13 +574,21 @@ def extract_pdf(
     _finalize_language(result, page_blocks, original_language)
 
     if not result.has_content:
-        # Valid PDF but no usable text/tables → scanned / image-only.
+        # Valid PDF but no usable text/tables → scanned / image-only. This is the
+        # one failure mode OCR can actually rescue (Slice 5B.2), so it is labelled
+        # distinctly from encrypted / malformed, which OCR cannot help with.
         result.status = STATUS_METADATA_ONLY
+        result.failure_code = FAILURE_SCANNED_NO_TEXT
         result.source_gaps.append(
             "PDF appears scanned or text extraction returned no usable text."
         )
     else:
         result.status = STATUS_EXTRACTED
+        if result.encrypted:
+            result.warnings.append(
+                "PDF carries an encryption dictionary but is readable without a "
+                "user password; extracted normally."
+            )
     return result
 
 
@@ -689,6 +807,7 @@ def extract_html(
 
     if not result.has_content:
         result.status = STATUS_METADATA_ONLY
+        result.failure_code = FAILURE_EMPTY_EXTRACTION
         result.source_gaps.append(
             "HTML document contained no extractable body text."
         )
@@ -724,6 +843,7 @@ def extract_primary_document(
         mime_type="application/octet-stream",
         extraction_method=METHOD_NATIVE_PDF,
         status=STATUS_EXTRACTION_FAILED,
+        failure_code=FAILURE_UNSUPPORTED_CONTENT_TYPE,
         source_gaps=[f"Unsupported document type '{document_type}'; not extracted."],
     )
 

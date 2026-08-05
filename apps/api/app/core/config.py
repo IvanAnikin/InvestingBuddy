@@ -432,5 +432,39 @@ class Settings(BaseSettings):
     # reuse lookup and the path is byte-identical.
     primary_document_reuse_ttl_hours: int = 24
 
+    # ── Primary-document reachability + secure fetch (Phase 32A Slice 5B.1) ──
+    # Slice 5A shipped the ingestion foundation but reached 0 successful live
+    # extractions: US issuers had no SEC filing-BODY path at all, and modern
+    # issuer IR pages are JS-rendered so an <a href>-only scan found nothing.
+    # These knobs bound the fixes. All of them are inert unless
+    # ``primary_document_ingestion_enabled`` (the master flag) is on.
+    #
+    # Resolve-then-connect IP pinning (closes the ADR-014 DNS-rebinding TOCTOU).
+    # ON by default because it is a security fix, but kept as a kill-switch: with
+    # it off the Slice 5A behaviour (resolve + check, unpinned connect) applies
+    # and the degradation is recorded honestly rather than silently.
+    primary_document_pin_dns_enabled: bool = True
+    # Hard cap on document candidates kept from ONE issuer page across ALL
+    # discovery strategies (bounds parsing + ranking cost).
+    primary_document_max_discovery_candidates: int = 12
+    # Ordered, comma-separated discovery strategies. Bounded, non-browser methods
+    # only — there is deliberately no crawler and no headless browser here.
+    primary_document_discovery_strategies: str = (
+        "anchors,json_ld,next_data,embedded_json"
+    )
+    # NOTE: there is deliberately NO "JSON endpoint fetch" knob. The discovery
+    # layer's ``find_json_endpoints`` only REPORTS same-origin endpoints it saw on
+    # a page; nothing fetches them, so a setting bounding such a hop would be
+    # documenting a capability that does not exist.
+    # Official SEC filing-BODY retrieval for US issuers. Supplements — never
+    # replaces — the SEC/XBRL structured facts, which stay authoritative.
+    primary_document_sec_body_enabled: bool = True
+    # Hard cap on SEC filing bodies fetched for one issuer in a single request.
+    primary_document_sec_max_bodies: int = 2
+    # Client-side throttle between SEC requests (milliseconds). SEC asks
+    # automated clients to declare a User-Agent and stay under ~10 requests/sec;
+    # this is deliberately more conservative than the published ceiling.
+    sec_request_min_interval_ms: int = 120
+
 
 settings = Settings()

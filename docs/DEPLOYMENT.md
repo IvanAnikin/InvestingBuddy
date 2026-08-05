@@ -637,6 +637,101 @@ after merge/deploy approval, then:
 - **H. Security.** No user-supplied-URL surface; response + log secret grep clean;
   logs carry counts / status only (no bytes / extracted text / URLs with secrets).
 
+
+---
+
+## Document Reachability + Secure Fetching (Phase 32A Slice 5B.1)
+
+> **PR open — pre-staging.** Branch `phase-32a-slice-5b1`. Not yet merged /
+> deployed / staging-validated. Do **not** treat this as a closed deployment
+> record until the merge SHA, deployed SHA, applied migration and staging
+> validation result are on file.
+
+- **Why this exists.** Slice 5A was staging-validated as a *foundation* with an
+  explicit efficacy caveat: **0 successful native extractions across 7 issuers**,
+  `extracted_documents` / `extracted_facts` both 0/0. Slice 5B.1 fixes the four
+  root causes — no SEC filing-BODY path for US issuers, `<a href>`-only discovery
+  against JS-rendered IR pages, failures persisting nothing at all, and the four
+  PDF-inaccessibility modes collapsing into one opaque status. It also closes the
+  two ADR-014 security residuals (DNS-rebinding TOCTOU, synchronous DNS).
+- **Migration `014`** (`014_add_document_ingestion_attempts.py`, additive,
+  reversible, backfill-free): new `document_ingestion_attempts` table.
+  **Head `013` → `014`.** The table stays empty unless
+  `PRIMARY_DOCUMENT_INGESTION_ENABLED` **and**
+  `REPORT_CITATION_PERSISTENCE_ENABLED` are both on, so applying the migration is
+  safe ahead of any flag change. Apply it with the runbook in *Running Migrations
+  on Staging* (human-approved), and confirm with `alembic current`.
+- **No new master flag.** Everything rides the existing
+  `PRIMARY_DOCUMENT_INGESTION_ENABLED` (already ON in staging). With it **off**,
+  every path is byte-identical to today.
+- **New app settings (all safe non-secret defaults):**
+
+  | Setting | Default | Purpose |
+  |---|---|---|
+  | `PRIMARY_DOCUMENT_PIN_DNS_ENABLED` | `true` | Resolve-then-connect IP pinning (closes the ADR-014 rebinding TOCTOU). Kill-switch only — turning it off reverts to the weaker Slice 5A check-then-connect behaviour. |
+  | `PRIMARY_DOCUMENT_MAX_DISCOVERY_CANDIDATES` | `12` | Cap on document candidates kept from ONE issuer page across all strategies. |
+  | `PRIMARY_DOCUMENT_DISCOVERY_STRATEGIES` | `anchors,json_ld,next_data,embedded_json` | Ordered, bounded, non-browser strategies. No crawler, no headless browser. |
+  | `PRIMARY_DOCUMENT_SEC_BODY_ENABLED` | `true` | Official SEC filing-body retrieval (10-K / 20-F / 10-Q / 6-K / 8-K). Inert unless the master flag is on. |
+  | `PRIMARY_DOCUMENT_SEC_MAX_BODIES` | `2` | Cap on SEC filing bodies fetched per issuer per request. |
+  | `SEC_REQUEST_MIN_INTERVAL_MS` | `120` | Client-side SEC throttle. More conservative than SEC's published ~10 req/s ceiling. |
+
+  **Rollback:** set `PRIMARY_DOCUMENT_INGESTION_ENABLED=false` to return to the
+  exact prior behaviour with no code change (the `014` table can remain — it stays
+  empty). To roll back only the pinning change, set
+  `PRIMARY_DOCUMENT_PIN_DNS_ENABLED=false`.
+- **Security controls (see `docs/SECURITY.md`).** Still no new public endpoint and
+  no user-supplied-URL surface. The connection is now pinned to the validated
+  address with `Host` + `sni_hostname` preserved (TLS and certificate hostname
+  verification unchanged); the transport **fails closed** on an unpinned host and
+  every redirect hop is re-validated and re-pinned. `status` / `failure_code` are
+  closed vocabularies, so raw provider text, secrets, signed query strings,
+  document bodies and OCR text can never reach the DB or the admin UI; only the
+  HTTP status *class* is stored. No password is ever guessed, derived,
+  brute-forced or stripped — the only password supplied is the empty one.
+
+### Staging validation checklist (run AFTER merge + deploy + migration `014`)
+
+Do not mark Slice 5B.1 ✅ until these pass.
+
+- **A. Deploy identity.** API serves the merged commit SHA (3 stable polls); DB
+  head advances `013` → `014`; `AUTH_TEST_MODE` absent; unauthenticated → 401.
+- **B. Flag state.** `PRIMARY_DOCUMENT_INGESTION_ENABLED` unchanged (ON);
+  `PRIMARY_DOCUMENT_OCR_ENABLED` still OFF; the 6 new knobs read their defaults;
+  confirm only the intended keys changed.
+- **C. OFF-state regression.** With `PRIMARY_DOCUMENT_INGESTION_ENABLED=false`, a
+  fresh report is byte-compatible with the Slice 5A OFF baseline: no discovery, no
+  SEC body fetch, and **zero rows** in `document_ingestion_attempts`.
+- **D. AAPL — SEC filing body (the Slice 5A gap).** A fresh AAPL / US /
+  `free_real` / LLM-enabled analysis discovers and fetches an official SEC filing
+  body, extracts it natively, and persists an `extracted_documents` row with
+  page/section provenance. **SEC/XBRL remains authoritative** — the document
+  supplements it; the Slice-2 `financial_floor=3` is not weakened.
+- **E. European issuer — discovery.** For at least one of CFR / BRBY / KER / MC /
+  RMS, the non-browser strategies surface a real document candidate that the
+  `<a href>`-only scan did not. Where a document is genuinely inaccessible
+  (Richemont's encrypted PDFs), it is classified **`encrypted`** — not a generic
+  failure — with no password bypass and no fabricated value.
+- **F. Attempt visibility (the core fix).** `document_ingestion_attempts` contains
+  a row for **every** attempt including failures, with an honest status and a
+  sanitized failure code. Verify no raw exception text, no signed query string, no
+  IP address and no exact HTTP status code appears in any column.
+- **G. Idempotency.** Re-running the same analysis updates attempt rows in place
+  for the same `(company_id, agent_run_id, url_hash)` rather than accumulating; a
+  new run creates new rows; `extracted_documents` dedup by `content_hash` holds.
+- **H. Security proof.** A private/reserved target is rejected; a redirect to a
+  private IP is rejected and its body never fetched; response + log secret grep
+  clean; logs carry counts / status only. **Prove pinning actually engaged:** the
+  `document_ingestion_attempts.pinned` column must be `true` for successful
+  fetches. Then toggle `PRIMARY_DOCUMENT_PIN_DNS_ENABLED` OFF and ON and confirm
+  the fetch success rate is identical — pinning rewrites the socket target, and no
+  test exercises real TLS/SNI against `sec.gov` or an issuer CDN.
+- **H2. SEC access preconditions.** Confirm `company_identity.cik` is populated for
+  AAPL — a NULL CIK makes the whole SEC body path a silent no-op. Confirm SEC
+  returns 200 (not 403) for the declared `SEC_USER_AGENT`, and that its contact
+  mailbox is real per SEC fair-access policy.
+- **I. Timing.** Discovery + fetch + extraction durations recorded; total analysis
+  stays well under the ~230s gateway (no 502/504); SEC throttle observed.
+
 ---
 
 ## LLM Council Reliability — Bounded Retry + Deterministic Chair Fallback (Phase 32A Slice 4)
