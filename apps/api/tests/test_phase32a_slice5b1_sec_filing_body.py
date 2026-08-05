@@ -27,6 +27,7 @@ from app.services.sources import sec_filing_documents as mod
 from app.services.sources.document_fetcher import DocumentFetchResult
 from app.services.sources.sec_filing_documents import (
     SEC_ALLOWED_DOMAINS,
+    SEC_ARCHIVES_BASE,
     SEC_USER_AGENT,
     SecFilingDocument,
     SecRateLimiter,
@@ -680,9 +681,22 @@ def test_resolve_filing_documents_ignores_unsupported_forms_and_bad_cik(monkeypa
             **_index_kwargs(),
         )
     ) == []
-    assert asyncio.run(
+    # A junk caller CIK is no longer a dead end: Slice 5B.1's hotfix derives the
+    # filer CIK from the filing metadata, because company_identity never carries
+    # one and relying on it made the whole path a silent no-op on staging.
+    derived = asyncio.run(
         resolve_filing_documents(
             "not-a-cik", [_filing("10-K", ACC_10K, "2024-11-01")], max_documents=2,
+            **_index_kwargs(),
+        )
+    )
+    assert len(derived) == 1
+    assert derived[0].cik == AAPL_CIK
+
+    # With NOTHING derivable anywhere it still resolves to nothing - but loudly.
+    assert asyncio.run(
+        resolve_filing_documents(
+            "not-a-cik", [_filing("10-K", None, "2024-11-01")], max_documents=2,
             **_index_kwargs(),
         )
     ) == []
@@ -887,3 +901,128 @@ def test_fetch_filing_body_is_throttled_before_the_request(monkeypatch):
 
     asyncio.run(_run())
     assert limiter.sleep_calls == [pytest.approx(0.2)]  # type: ignore[attr-defined]
+
+
+# =========================================================================== #
+# 9. CIK derivation from filing metadata (Slice 5B.1 hotfix).
+#
+# STAGING ROOT CAUSE: CompanyContext.cik comes from company_snapshot ->
+# company_identity, which carries NO `cik` key for any issuer. The SEC body path
+# therefore early-returned at normalize_cik() with no log and no SourceGap - a
+# silent no-op indistinguishable from "never ran". Staging proved it: the AAPL
+# run logged `sec_primary_document_ingestion_completed document_count=0` with no
+# index fetch attempted at all.
+# =========================================================================== #
+
+from app.services.sources.sec_filing_documents import (  # noqa: E402
+    _cik_from_filings,
+    cik_from_accession,
+    cik_from_archives_url,
+)
+
+AAPL_ARCHIVES = (
+    "https://www.sec.gov/Archives/edgar/data/320193/"
+    "000032019326000020/aapl-20260627.htm"
+)
+
+
+def test_cik_from_archives_url_extracts_the_filer_cik():
+    assert cik_from_archives_url(AAPL_ARCHIVES) == AAPL_CIK
+    assert cik_from_archives_url("https://sec.gov/Archives/edgar/data/789019/x/y.htm") == "0000789019"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        None,
+        "",
+        # A CIK is an identity - never take one from a host we do not trust.
+        "https://evil.example.com/Archives/edgar/data/320193/x.htm",
+        "https://sec.gov.evil.example.com/Archives/edgar/data/320193/x.htm",
+        "http://www.sec.gov/Archives/edgar/data/320193/x.htm",
+        "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany",
+    ],
+)
+def test_cik_from_archives_url_rejects_untrusted_or_missing(url):
+    assert cik_from_archives_url(url) is None
+
+
+def test_cik_from_accession_uses_the_ten_digit_prefix():
+    assert cik_from_accession(ACC_10K) == AAPL_CIK
+    assert cik_from_accession("000032019324000123") == AAPL_CIK
+    for bad in (None, "", "123", "abcdefghijklmnopqr"):
+        assert cik_from_accession(bad) is None
+
+
+def test_cik_from_filings_prefers_the_archives_url():
+    assert _cik_from_filings([{"url": AAPL_ARCHIVES, "accession_number": ACC_10K}]) == AAPL_CIK
+
+
+def test_cik_from_filings_falls_back_to_the_accession():
+    assert _cik_from_filings([{"url": None, "accession_number": ACC_10K}]) == AAPL_CIK
+
+
+def test_cik_from_filings_refuses_to_guess_when_filers_disagree():
+    """A mixed list must never attribute one issuer's body to another."""
+    mixed = [
+        {"accession_number": ACC_10K},                 # Apple
+        {"accession_number": "0000789019-26-000001"},  # a different filer
+    ]
+    assert _cik_from_filings(mixed) is None
+
+
+def test_cik_from_filings_handles_junk_entries():
+    assert _cik_from_filings([]) is None
+    assert _cik_from_filings(["nope", None, {}, {"url": "x"}]) is None
+
+
+def test_resolution_derives_the_cik_when_the_caller_supplies_none():
+    """The exact staging failure: caller cik=None must no longer be a no-op."""
+    calls: list[tuple[str, str]] = []
+
+    async def _index(cik, accession, **kw):
+        calls.append((cik, accession))
+        return [_entry("aapl-20260627.htm", type_="10-Q", size="1018210")]
+
+    filings = [
+        {
+            "form_type": "10-Q",
+            "accession_number": ACC_10K,
+            "filed_date": "2026-07-31",
+            "url": AAPL_ARCHIVES,
+        }
+    ]
+    docs = asyncio.run(
+        resolve_filing_documents(
+            None, filings, max_documents=1, cfg=_cfg(), limiter=_quiet_limiter(),
+            index_fetcher=_index,
+        )
+    )
+    assert calls == [(AAPL_CIK, normalize_accession(ACC_10K))]
+    assert len(docs) == 1
+    assert docs[0].cik == AAPL_CIK
+    assert docs[0].accession_number == ACC_10K
+    # URL is rebuilt from the DERIVED cik + this filing's own accession
+    # (the sample url above carries a different accession on purpose).
+    assert docs[0].canonical_url.startswith(
+        f"{SEC_ARCHIVES_BASE}/320193/{normalize_accession(ACC_10K)}/"
+    )
+
+
+def test_unresolvable_cik_is_logged_not_silent(caplog):
+    """No CIK anywhere must leave an operator-visible trace, never silence."""
+
+    async def _index(cik, accession, **kw):  # pragma: no cover - must not run
+        raise AssertionError("index must not be fetched without a CIK")
+
+    with caplog.at_level("INFO", logger="app.services.sources.sec_filing_documents"):
+        docs = asyncio.run(
+            resolve_filing_documents(
+                None,
+                [{"form_type": "10-Q", "accession_number": None, "url": None}],
+                max_documents=1, cfg=_cfg(), limiter=_quiet_limiter(),
+                index_fetcher=_index,
+            )
+        )
+    assert docs == []
+    assert "sec_filing_cik_unresolved" in caplog.text
