@@ -250,7 +250,13 @@ def test_1_extraction_defaults_off():
 
 def test_2_config_knobs_loaded():
     s = Settings()
-    assert s.source_document_extraction_max_bytes == 5_000_000
+    # Phase 32A Slice 5B.2 hotfix: raised from 5_000_000 — the old cap
+    # silently truncated real large annual-report PDFs mid-download,
+    # corrupting their trailer/xref table and misclassifying the result as
+    # "scanned, no text" rather than "download was cut off" (staging
+    # validation finding). 35 MB comfortably covers real annual-report sizes
+    # while staying explicitly bounded.
+    assert s.source_document_extraction_max_bytes == 35_000_000
     assert s.source_document_extraction_timeout_seconds == 15
     assert s.source_document_extraction_max_pages == 20
     assert s.source_document_extraction_max_excerpts == 8
@@ -316,6 +322,30 @@ def test_6_enforces_max_bytes(monkeypatch):
     )
     assert r.truncated is True
     assert r.content is not None and len(r.content) <= 200
+
+
+def test_6b_real_size_large_annual_report_not_truncated_at_default_cap(monkeypatch):
+    # Phase 32A Slice 5B.2 hotfix regression: a genuine large annual-report
+    # PDF (here ~8 MB — bigger than the OLD 5 MB default, comfortably under
+    # the NEW 35 MB default) must download completely, not get silently
+    # truncated mid-stream (which corrupts the trailer/xref table at the end
+    # of the file and misclassifies the document as "scanned, no text layer"
+    # rather than "download was cut off" — the exact staging failure this
+    # fixes).
+    body = b"%PDF-1.4 " + b"x" * 8_000_000
+    _patch_httpx(
+        monkeypatch,
+        [_FakeStream(status_code=200, headers={"content-type": "application/pdf"}, body=body)],
+    )
+    r = asyncio.run(
+        safe_fetch_document(
+            "https://www.richemont.com/reports/ar.pdf",
+            allowed_domains=("richemont.com",),
+            cfg=_cfg(),  # default max_bytes (35_000_000)
+        )
+    )
+    assert r.truncated is False
+    assert r.content is not None and len(r.content) == len(body)
 
 
 def test_7_enforces_timeout_never_raises(monkeypatch):

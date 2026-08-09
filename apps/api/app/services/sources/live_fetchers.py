@@ -60,7 +60,13 @@ from app.services.sources.ingestion_status import (
     FAILURE_SCANNED_NO_TEXT,
     FAILURE_UNKNOWN,
 )
-from app.services.sources.ocr_provider import OcrBudget, OcrProvider, OcrResult, select_ocr_pages
+from app.services.sources.ocr_provider import (
+    OcrBudget,
+    OcrProvider,
+    OcrResult,
+    extract_page_subset,
+    select_ocr_pages,
+)
 from app.services.sources.primary_document_extractor import (
     METHOD_OCR,
     STATUS_EXTRACTED,
@@ -318,6 +324,24 @@ async def _try_ocr(
     if ocr_budget is not None:
         ocr_budget.record_document_started()
 
+    # Send only the selected pages to the provider, not the whole source
+    # document. The provider's own per-request size limit is checked against
+    # the WHOLE uploaded body regardless of the ``pages`` parameter (a
+    # narrower `pages` spec only bounds what the service ANALYZES, not what it
+    # must receive) — a handful of pages is almost always far smaller than a
+    # multi-hundred-page real annual report. Falls back to the full document
+    # if page-subset extraction fails for any reason (e.g. an unusual PDF
+    # structure pypdf can't rewrite); that degrades honestly via the
+    # provider's existing FAILURE_OCR_DOCUMENT_TOO_LARGE path if still
+    # oversized, never a silent/fabricated outcome.
+    subset = extract_page_subset(raw_bytes, pages)
+    if subset is not None:
+        ocr_bytes, ocr_pages = subset
+        body_is_page_subset = True
+    else:
+        ocr_bytes, ocr_pages = raw_bytes, pages
+        body_is_page_subset = False
+
     # Bounded retry: only a TRANSIENT failure (timeout / throttled / a
     # provider-side error) is worth retrying — a malformed result is a parsing
     # problem a retry cannot fix. Each attempt re-clamps its timeout to
@@ -334,10 +358,11 @@ async def _try_ocr(
                         break
                     timeout_seconds = min(cfg.primary_document_ocr_timeout_seconds, remaining)
         result = await ocr_provider.extract(
-            raw_bytes,
+            ocr_bytes,
             cfg=cfg,
-            pages=pages,
+            pages=ocr_pages,
             timeout_seconds=timeout_seconds,
+            body_is_page_subset=body_is_page_subset,
         )
         log_event(
             _logger,
@@ -347,7 +372,7 @@ async def _try_ocr(
             attempt=attempt + 1,
             excerpt_count=len(result.excerpts),
             table_count=len(result.tables),
-            selected_pages=len(pages),
+            selected_pages=len(ocr_pages),
             duration_ms=result.duration_ms,
         )
         if result.has_content or result.failure_code not in _TRANSIENT_OCR_FAILURES:

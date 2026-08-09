@@ -74,7 +74,12 @@ from app.services.sources.primary_document_extractor import (
 )
 from app.services.sources.redaction import canonicalize_source_url
 from app.services.sources.safe_web_fetcher import SafeLink
-from tests.helpers.pdf_fixtures import make_encrypted_pdf, make_pdf, make_pdf_with_image
+from tests.helpers.pdf_fixtures import (
+    make_encrypted_pdf,
+    make_multi_page_scanned_pdf,
+    make_pdf,
+    make_pdf_with_image,
+)
 
 
 def _cfg(**over: Any) -> Settings:
@@ -105,6 +110,7 @@ class _FakeOcrProvider(OcrProvider):
         cfg: Settings | None = None,
         pages: list[int] | None = None,
         timeout_seconds: float | None = None,
+        body_is_page_subset: bool = False,
     ) -> OcrResult:
         self.calls.append(image_or_pdf_bytes)
         return self._result
@@ -128,6 +134,7 @@ class _SequenceOcrProvider(OcrProvider):
         cfg: Settings | None = None,
         pages: list[int] | None = None,
         timeout_seconds: float | None = None,
+        body_is_page_subset: bool = False,
     ) -> OcrResult:
         self.calls.append(image_or_pdf_bytes)
         idx = min(len(self.calls) - 1, len(self._results) - 1)
@@ -223,7 +230,11 @@ def test_scanned_pdf_high_confidence_ocr_promotes_to_extracted():
     fake = _FakeOcrProvider(ocr_result)
     artifact = _run(_fetched(scanned), cfg=_cfg(), ocr_provider=fake)
 
-    assert fake.calls == [scanned]
+    # The provider is called exactly once, with a valid rebuilt single-page
+    # PDF (Slice 5B.2 hotfix: only the selected page(s) are sent, not
+    # necessarily byte-identical to the source — see
+    # test_ocr_sends_page_subset_not_full_document for the dedicated proof).
+    assert len(fake.calls) == 1
     assert artifact.status == STATUS_EXTRACTED
     assert artifact.failure_code is None
     assert artifact.extraction.extraction_method == METHOD_OCR
@@ -259,7 +270,7 @@ def test_scanned_pdf_low_confidence_ocr_stays_metadata_only():
         _fetched(scanned), cfg=_cfg(primary_document_ocr_min_confidence=0.4), ocr_provider=fake
     )
 
-    assert fake.calls == [scanned]
+    assert len(fake.calls) == 1
     assert artifact.status == STATUS_METADATA_ONLY
     assert artifact.failure_code == FAILURE_OCR_LOW_CONFIDENCE
     assert artifact.validated_facts == []  # never promoted to a fact
@@ -270,9 +281,40 @@ def test_scanned_pdf_ocr_finds_nothing_stays_metadata_only():
     fake = _FakeOcrProvider(OcrResult(status=OCR_STATUS_UNAVAILABLE))
     artifact = _run(_fetched(scanned), cfg=_cfg(), ocr_provider=fake)
 
-    assert fake.calls == [scanned]
+    assert len(fake.calls) == 1
     assert artifact.status == STATUS_METADATA_ONLY
     assert artifact.validated_facts == []
+
+
+def test_ocr_sends_page_subset_not_full_document():
+    # Root-cause regression (Phase 32A Slice 5B.2 staging validation): a real
+    # Azure Document Intelligence request is rejected around ~4 MB regardless
+    # of a `pages=` restriction — the WHOLE uploaded body is checked, not just
+    # the analyzed pages. A large real multi-page document must therefore
+    # reach the provider as a SMALL subset containing only the selected
+    # pages, never the full document — and any page number in the result must
+    # be the TRUE original page, not the subset-local position.
+    full = make_multi_page_scanned_pdf([f"scanned page {i}" for i in range(1, 11)])  # 10 pages
+    ocr_result = OcrResult(
+        status=OCR_STATUS_EXTRACTED,
+        excerpts=[
+            PrimaryDocumentExcerpt(
+                excerpt_id="OCR0",
+                text="Consolidated balance sheet content",
+                page_number=1,  # subset-local — page 1 of the ~5-page subset
+                extraction_method=METHOD_OCR,
+                confidence=0.85,
+                char_count=35,
+            )
+        ],
+    )
+    fake = _FakeOcrProvider(ocr_result)
+    artifact = _run(_fetched(full), cfg=_cfg(primary_document_max_ocr_pages=5), ocr_provider=fake)
+
+    assert len(fake.calls) == 1
+    sent_bytes = fake.calls[0]
+    assert len(sent_bytes) < len(full)  # the fake provider received the SUBSET, not the whole doc
+    assert artifact.status == STATUS_EXTRACTED
 
 
 # =========================================================================== #
@@ -317,10 +359,22 @@ def test_ocr_aggregate_deadline_clamps_the_per_call_timeout():
     seen_timeouts: list[float | None] = []
 
     class _RecordingProvider(_FakeOcrProvider):
-        async def extract(self, image_or_pdf_bytes, *, cfg=None, pages=None, timeout_seconds=None):
+        async def extract(
+            self,
+            image_or_pdf_bytes,
+            *,
+            cfg=None,
+            pages=None,
+            timeout_seconds=None,
+            body_is_page_subset=False,
+        ):
             seen_timeouts.append(timeout_seconds)
             return await super().extract(
-                image_or_pdf_bytes, cfg=cfg, pages=pages, timeout_seconds=timeout_seconds
+                image_or_pdf_bytes,
+                cfg=cfg,
+                pages=pages,
+                timeout_seconds=timeout_seconds,
+                body_is_page_subset=body_is_page_subset,
             )
 
     fake = _RecordingProvider(

@@ -210,8 +210,14 @@ class Settings(BaseSettings):
     # no arbitrary-URL fetch surface.
     source_document_extraction_enabled: bool = False
     # Hard byte ceiling for a single fetched document. A larger document is
-    # truncated, never fully buffered. ~5 MB covers a typical results PDF.
-    source_document_extraction_max_bytes: int = 5_000_000
+    # truncated, never fully buffered. Phase 32A Slice 5B.2 staging validation
+    # found the prior 5 MB default silently truncated real large annual-report
+    # PDFs (e.g. a genuine 25 MB IFRS annual report) mid-download — a truncated
+    # PDF's trailer/xref table (at the END of the file) is corrupted, so it
+    # fails to parse and gets misclassified as "scanned, no text layer" rather
+    # than "download was cut off". 35 MB comfortably covers real annual-report
+    # PDF sizes while staying explicitly bounded (not unbounded).
+    source_document_extraction_max_bytes: int = 35_000_000
     # Per-document fetch timeout budget (seconds).
     source_document_extraction_timeout_seconds: int = 15
     # Maximum number of leading pages read from a PDF (bounds extraction cost;

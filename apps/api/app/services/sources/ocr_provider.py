@@ -147,14 +147,31 @@ class OcrProvider(ABC):
         cfg: Settings | None = None,
         pages: list[int] | None = None,
         timeout_seconds: float | None = None,
+        body_is_page_subset: bool = False,
     ) -> OcrResult:
         """OCR ONE scanned document into bounded excerpts + tables.
 
-        ``pages`` (1-based, from :func:`select_ocr_pages`) bounds which pages
-        are rastered/analyzed; ``timeout_seconds`` is a hard cap for the whole
-        call (submit + poll). Must never fabricate text and never raise — a
-        failure degrades to an honest :class:`OcrResult` with ``status``
-        ``ocr_failed``/``ocr_unavailable`` and a sanitized ``failure_code``.
+        ``pages`` (1-based, from :func:`select_ocr_pages`) is always the TRUE
+        original-document page numbers, used both for the ``OcrResult.
+        selected_pages`` metadata and (when ``body_is_page_subset`` is False)
+        as the provider's own page-restriction parameter against the FULL
+        document body.
+
+        ``body_is_page_subset=True`` means ``image_or_pdf_bytes`` is already a
+        small document containing ONLY ``pages`` (see
+        :func:`extract_page_subset`), built so the upload stays within the
+        provider's per-request size limit regardless of the source document's
+        total size. In that case the provider must analyze the WHOLE body (no
+        further page restriction — it's already filtered) and remap each
+        result item's page number from its position WITHIN THE SUBSET back to
+        the corresponding entry in ``pages`` — a raw subset-local page number
+        would otherwise misreport provenance (e.g. claiming "page 2" for what
+        is really original page 45).
+
+        ``timeout_seconds`` is a hard cap for the whole call (submit + poll).
+        Must never fabricate text and never raise — a failure degrades to an
+        honest :class:`OcrResult` with ``status`` ``ocr_failed``/
+        ``ocr_unavailable`` and a sanitized ``failure_code``.
         """
 
 
@@ -182,6 +199,7 @@ class NoOpOcrProvider(OcrProvider):
         cfg: Settings | None = None,
         pages: list[int] | None = None,
         timeout_seconds: float | None = None,
+        body_is_page_subset: bool = False,
     ) -> OcrResult:
         return OcrResult(
             status=OCR_STATUS_UNAVAILABLE,
@@ -286,6 +304,55 @@ def select_ocr_pages(raw: bytes, *, max_pages: int) -> list[int]:
         candidates = list(range(1, min(total_pages, max_pages) + 1))
 
     return candidates[:max_pages]
+
+
+def extract_page_subset(raw: bytes, pages: list[int]) -> tuple[bytes, list[int]] | None:
+    """Build a NEW, small PDF containing ONLY ``pages`` (1-based) from ``raw``.
+
+    Azure Document Intelligence's ``pages`` request parameter only bounds
+    which pages the SERVICE *analyzes* — the FULL request body is still
+    uploaded and checked against the provider's own per-request size limit
+    (empirically confirmed on the F0 tier: a request is rejected around ~4 MB
+    regardless of the ``pages`` parameter, well below real annual-report PDF
+    sizes). Sending only the already-bounded page subset (``primary_document_
+    max_ocr_pages``, default 5) keeps the uploaded bytes small regardless of
+    the SOURCE document's total size — a handful of pages from a real report
+    is almost always a small fraction of the whole document.
+
+    Returns ``(subset_bytes, written_pages)`` where ``written_pages`` is the
+    subsequence of ``pages`` that was ACTUALLY written (in order) — any
+    out-of-range page number is silently skipped, never fabricated as a blank
+    page. Callers MUST use this returned list (never the original ``pages``)
+    as the page-number map for the corresponding ``extract(...,
+    body_is_page_subset=True)`` call: using the original, unfiltered list
+    would misalign every entry after a skipped page. Returns ``None`` (never
+    raises) on any failure or if no requested page was in range — callers
+    must fall back to the raw bytes, which then degrades honestly via the
+    provider's own existing ``FAILURE_OCR_DOCUMENT_TOO_LARGE`` classification
+    if still oversized, never a silent/fabricated outcome.
+    """
+    if not pages:
+        return None
+    try:
+        import io
+
+        from pypdf import PdfReader, PdfWriter
+
+        reader = PdfReader(io.BytesIO(raw))
+        total_pages = len(reader.pages)
+        writer = PdfWriter()
+        written: list[int] = []
+        for page_no in pages:
+            if 1 <= page_no <= total_pages:
+                writer.add_page(reader.pages[page_no - 1])
+                written.append(page_no)
+        if not written:
+            return None
+        buf = io.BytesIO()
+        writer.write(buf)
+        return buf.getvalue(), written
+    except Exception:  # noqa: BLE001 - a malformed source must degrade, never raise
+        return None
 
 
 # --------------------------------------------------------------------------- #
@@ -424,10 +491,19 @@ class AzureDocumentIntelligenceOcrProvider(OcrProvider):
         cfg: Settings | None = None,
         pages: list[int] | None = None,
         timeout_seconds: float | None = None,
+        body_is_page_subset: bool = False,
     ) -> OcrResult:
         cfg = cfg or default_settings
         started = time.perf_counter()
-        page_spec = ",".join(str(p) for p in pages) if pages else None
+        # When the body is already a pre-filtered page subset, it must be
+        # analyzed in full (no further restriction — see extract_page_subset);
+        # only against a FULL document body does `pages` restrict what Azure
+        # analyzes.
+        page_spec = (
+            None
+            if body_is_page_subset
+            else (",".join(str(p) for p in pages) if pages else None)
+        )
         deadline = timeout_seconds or cfg.primary_document_ocr_timeout_seconds
 
         # Client construction (import + instantiation) lives INSIDE the try: a
@@ -496,6 +572,7 @@ class AzureDocumentIntelligenceOcrProvider(OcrProvider):
                 model_id=self._model_id,
                 selected_pages=pages or [],
                 duration_ms=duration_ms,
+                page_number_map=pages if body_is_page_subset else None,
             )
         except Exception as exc:  # noqa: BLE001 - a malformed result must degrade
             log_event(
@@ -575,6 +652,25 @@ def _confidence_for_spans(spans: Any, sorted_words: list[tuple[int, int, float]]
     return sum(matched) / len(matched)
 
 
+def _remap_page_number(
+    page_number: int | None, page_number_map: list[int] | None
+) -> int | None:
+    """Translate a subset-local (1-based) page number back to the original.
+
+    ``page_number_map[i]`` is the TRUE original page number of the subset's
+    ``i+1``-th page (see :func:`extract_page_subset` — pages are written in
+    the same order they were selected). Returns the input unchanged when no
+    map is given (full-document call) or the index is out of bounds
+    (defensive — never raises, never fabricates a page number).
+    """
+    if page_number_map is None or page_number is None:
+        return page_number
+    idx = page_number - 1
+    if 0 <= idx < len(page_number_map):
+        return page_number_map[idx]
+    return page_number
+
+
 def _map_azure_result(
     raw_result: Any,
     *,
@@ -582,6 +678,7 @@ def _map_azure_result(
     model_id: str,
     selected_pages: list[int],
     duration_ms: int,
+    page_number_map: list[int] | None = None,
 ) -> OcrResult:
     """Map an Azure ``AnalyzeResult`` onto the bounded internal shape.
 
@@ -590,6 +687,13 @@ def _map_azure_result(
     the caller rather than raising past this function. Only bounded,
     structured fields are copied — never raw provider text beyond the bounded
     excerpt/cell caps, and never the endpoint/credential.
+
+    ``page_number_map``, when given (the body was a pre-filtered page
+    subset — see :func:`extract_page_subset`), translates every returned
+    item's page number from its position WITHIN THE SUBSET back to the real
+    original-document page number via :func:`_remap_page_number` — otherwise
+    a citation would report a fabricated-looking page (e.g. "page 2" for what
+    is really original page 45).
 
     Every recognized excerpt/table is returned with a REAL, word-confidence-
     derived confidence (see ``_confidence_for_spans``), regardless of
@@ -622,6 +726,7 @@ def _map_azure_result(
                 if regions:
                     page_number = getattr(regions[0], "page_number", None)
             cell_spans.extend(list(getattr(cell, "spans", None) or []))
+        page_number = _remap_page_number(page_number, page_number_map)
         rows = [row for row in grid if any(row)]
         if not rows:
             continue
@@ -653,6 +758,7 @@ def _map_azure_result(
             continue
         regions = list(getattr(para, "bounding_regions", None) or [])
         page_number = getattr(regions[0], "page_number", None) if regions else None
+        page_number = _remap_page_number(page_number, page_number_map)
         confidence = _confidence_for_spans(getattr(para, "spans", None), words)
         if confidence is None:
             confidence = _UNMEASURED_CONFIDENCE
@@ -748,5 +854,6 @@ __all__ = [
     "OcrBudget",
     "guard_image_pixels",
     "select_ocr_pages",
+    "extract_page_subset",
     "get_ocr_provider",
 ]

@@ -192,10 +192,36 @@ def make_pdf_with_image(
     return _assemble(objs)
 
 
+def make_multi_page_scanned_pdf(page_texts: list[str], *, width: int = 600, height: int = 200) -> bytes:
+    """A valid, multi-page, NO-text-layer PDF (each page a rendered image).
+
+    Built by rendering one single-page ``make_pdf_with_image``-style document
+    per entry in ``page_texts`` and merging them with ``pypdf.PdfWriter`` —
+    used to exercise page SELECTION (:func:`select_ocr_pages` choosing a
+    bounded subset from a larger real-shaped document) and page-subset
+    extraction (:func:`app.services.sources.ocr_provider.extract_page_subset`)
+    together, which a single-page fixture cannot cover (a 1-page source's
+    "subset" is trivially the whole document).
+    """
+    import io as _io
+
+    from pypdf import PdfReader, PdfWriter
+
+    writer = PdfWriter()
+    for text in page_texts:
+        page_pdf = make_pdf_with_image(text, width=width, height=height)
+        reader = PdfReader(_io.BytesIO(page_pdf))
+        writer.add_page(reader.pages[0])
+    out = _io.BytesIO()
+    writer.write(out)
+    return out.getvalue()
+
+
 __all__ = [
     "make_pdf",
     "make_pdf_no_text",
     "make_pdf_with_table",
     "make_encrypted_pdf",
     "make_pdf_with_image",
+    "make_multi_page_scanned_pdf",
 ]
