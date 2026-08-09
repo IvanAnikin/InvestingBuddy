@@ -105,6 +105,7 @@ from app.services.sources.verified_issuer_sources import VerifiedIssuerSource
 if TYPE_CHECKING:  # reuse lookup is a plain in-memory dict — never a DB session.
     from app.core.config import Settings
     from app.services.extracted_document_service import ReusedDocument
+    from app.services.sources.ocr_provider import OcrBudget, OcrProvider
 
 _log = logging.getLogger("app.services.sources.connectors.company_ir")
 
@@ -252,6 +253,8 @@ class CompanyIrConnector(SourceConnector):
         document_extractor: DocumentExtractor | None = None,
         primary_document_extractor: PrimaryDocumentDeepExtractor | None = None,
         primary_document_reuse: "dict[str, ReusedDocument] | None" = None,
+        ocr_provider: "OcrProvider | None" = None,
+        ocr_budget: "OcrBudget | None" = None,
         max_docs_per_issuer: int = 1,
         ingestion_budget_seconds: float | None = None,
         clock: Callable[[], float] = time.monotonic,
@@ -265,6 +268,12 @@ class CompanyIrConnector(SourceConnector):
         # extractor is injected the connector fetches up to ``max_docs_per_issuer``
         # documents under an AGGREGATE wall-budget and collects rich artifacts.
         self._primary_document_extractor = primary_document_extractor
+        # Phase 32A Slice 5B.2: optional real-OCR fallback for a scanned document,
+        # threaded straight into the injected ``primary_document_extractor`` call
+        # (e.g. ``live_primary_document_extractor``). None ⇒ never attempted,
+        # byte-identical to Slice 5B.1.
+        self._ocr_provider = ocr_provider
+        self._ocr_budget = ocr_budget
         # Phase 32A Slice 5 (3c-iii): an OPTIONAL, in-memory reuse lookup (NOT a DB
         # session) keyed by canonical URL. When a candidate document is already in
         # it, the connector rebuilds the persisted artifact and SKIPS the network
@@ -915,12 +924,21 @@ class CompanyIrConnector(SourceConnector):
                     ),
                 )
             else:
+                # Phase 32A Slice 5B.2: only ever passed when an OCR provider
+                # was actually injected, so every existing fake/deep extractor
+                # (tests, and any future extractor with the pre-5B.2 signature)
+                # keeps working unchanged — this is additive, never required.
+                ocr_kwargs: dict[str, Any] = {}
+                if self._ocr_provider is not None:
+                    ocr_kwargs["ocr_provider"] = self._ocr_provider
+                    ocr_kwargs["ocr_budget"] = self._ocr_budget
                 artifact = await self._primary_document_extractor(
                     target.url,
                     allowed_domains=allowed,
                     title_hint=target.text or None,
                     original_language=self._original_language(),
                     issuer_context=issuer_context,
+                    **ocr_kwargs,
                 )
             # Phase 32A Slice 5B.1: carry the discovery provenance + the raw-bytes
             # identity onto the artifact so the durable ingestion-attempt record can

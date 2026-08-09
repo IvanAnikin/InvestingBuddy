@@ -90,6 +90,20 @@ FAILURE_INVALID_SEC_URL = "invalid_sec_url"
 FAILURE_NO_PRIMARY_FILING_DOCUMENT = "no_primary_filing_document"
 FAILURE_PREFLIGHT_BUDGET_EXHAUSTED = "preflight_budget_exhausted"
 
+# Real-OCR failures — Phase 32A Slice 5B.2. Only ever produced when OCR was
+# actually attempted (``primary_document_ocr_enabled`` on, endpoint configured,
+# native extraction resolved to ``scanned_no_text``). "OCR disabled" and "OCR
+# skipped, native sufficient" need no code of their own: they leave the
+# existing ``extracted`` / ``scanned_no_text`` outcome exactly as it already is.
+FAILURE_OCR_DOCUMENT_TOO_LARGE = "ocr_document_too_large"
+FAILURE_OCR_PAGE_LIMIT_EXCEEDED = "ocr_page_limit_exceeded"
+FAILURE_OCR_TIMEOUT = "ocr_timeout"
+FAILURE_OCR_PROVIDER_THROTTLED = "ocr_provider_throttled"
+FAILURE_OCR_PROVIDER_ERROR = "ocr_provider_error"
+FAILURE_OCR_MALFORMED_RESULT = "ocr_malformed_result"
+FAILURE_OCR_LOW_CONFIDENCE = "ocr_low_confidence"
+FAILURE_OCR_BUDGET_EXHAUSTED = "ocr_budget_exhausted"
+
 ALL_FAILURE_CODES: tuple[str, ...] = (
     FAILURE_BLOCKED_HOST,
     FAILURE_BLOCKED_SCHEME,
@@ -115,6 +129,14 @@ ALL_FAILURE_CODES: tuple[str, ...] = (
     FAILURE_INVALID_SEC_URL,
     FAILURE_NO_PRIMARY_FILING_DOCUMENT,
     FAILURE_PREFLIGHT_BUDGET_EXHAUSTED,
+    FAILURE_OCR_DOCUMENT_TOO_LARGE,
+    FAILURE_OCR_PAGE_LIMIT_EXCEEDED,
+    FAILURE_OCR_TIMEOUT,
+    FAILURE_OCR_PROVIDER_THROTTLED,
+    FAILURE_OCR_PROVIDER_ERROR,
+    FAILURE_OCR_MALFORMED_RESULT,
+    FAILURE_OCR_LOW_CONFIDENCE,
+    FAILURE_OCR_BUDGET_EXHAUSTED,
     FAILURE_UNKNOWN,
 )
 
@@ -231,6 +253,21 @@ _FAILURE_TO_ATTEMPT_STATUS: dict[str, str] = {
     FAILURE_INVALID_SEC_URL: ATTEMPT_REJECTED_SECURITY,
     FAILURE_MALFORMED_ACCESSION: ATTEMPT_UNSUPPORTED,
     FAILURE_PREFLIGHT_BUDGET_EXHAUSTED: ATTEMPT_TIMEOUT,
+    # Real-OCR failures (Slice 5B.2). OCR only ever runs on a document already
+    # classified ``metadata_only`` (scanned, no text) — an OCR attempt that
+    # itself fails or is skipped for cost/size reasons leaves the document in
+    # that same honest bucket, never a fabricated success. A transient
+    # provider failure (throttled) reuses the ``timeout`` bucket alongside
+    # fetch/extraction timeouts; a hard provider/parse failure is
+    # ``extraction_failed``.
+    FAILURE_OCR_DOCUMENT_TOO_LARGE: ATTEMPT_METADATA_ONLY,
+    FAILURE_OCR_PAGE_LIMIT_EXCEEDED: ATTEMPT_METADATA_ONLY,
+    FAILURE_OCR_TIMEOUT: ATTEMPT_TIMEOUT,
+    FAILURE_OCR_PROVIDER_THROTTLED: ATTEMPT_TIMEOUT,
+    FAILURE_OCR_PROVIDER_ERROR: ATTEMPT_EXTRACTION_FAILED,
+    FAILURE_OCR_MALFORMED_RESULT: ATTEMPT_EXTRACTION_FAILED,
+    FAILURE_OCR_LOW_CONFIDENCE: ATTEMPT_METADATA_ONLY,
+    FAILURE_OCR_BUDGET_EXHAUSTED: ATTEMPT_METADATA_ONLY,
 }
 
 
@@ -289,6 +326,14 @@ __all__ = [
     "FAILURE_MISSING_CIK",
     "FAILURE_NOT_A_PDF",
     "FAILURE_NO_PRIMARY_FILING_DOCUMENT",
+    "FAILURE_OCR_BUDGET_EXHAUSTED",
+    "FAILURE_OCR_DOCUMENT_TOO_LARGE",
+    "FAILURE_OCR_LOW_CONFIDENCE",
+    "FAILURE_OCR_MALFORMED_RESULT",
+    "FAILURE_OCR_PAGE_LIMIT_EXCEEDED",
+    "FAILURE_OCR_PROVIDER_ERROR",
+    "FAILURE_OCR_PROVIDER_THROTTLED",
+    "FAILURE_OCR_TIMEOUT",
     "FAILURE_PASSWORD_PROTECTED_PDF",
     "FAILURE_PREFLIGHT_BUDGET_EXHAUSTED",
     "FAILURE_REDIRECT_LIMIT",

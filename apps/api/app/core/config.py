@@ -466,5 +466,32 @@ class Settings(BaseSettings):
     # this is deliberately more conservative than the published ceiling.
     sec_request_min_interval_ms: int = 120
 
+    # ── Real OCR: Azure Document Intelligence (Phase 32A Slice 5B.2) ─────────
+    # Only ever consulted when ``primary_document_ocr_enabled`` (Slice 5,
+    # default False) is also True. With the endpoint left empty (the default),
+    # ``get_ocr_provider()`` falls back to ``NoOpOcrProvider`` even if the flag
+    # is on — this lets the flag be flipped safely before the Azure resource
+    # is provisioned. Never hardcode. Load from Azure Key Vault in
+    # staging/production; managed identity (``DefaultAzureCredential``) is
+    # preferred over the API key when both are unset/set respectively.
+    azure_document_intelligence_endpoint: str = ""
+    azure_document_intelligence_api_key: str = ""
+    # Hard cap for ONE OCR call (submit + poll), carved OUT OF — never added on
+    # top of — ``primary_document_total_timeout_seconds`` (45s).
+    primary_document_ocr_timeout_seconds: int = 20
+    # Fixed poll interval (seconds) for the Azure long-running-operation status
+    # check. Injectable in tests so nothing really sleeps.
+    primary_document_ocr_poll_interval_seconds: float = 1.0
+    # Cross-document cap on how many documents may go through OCR in a single
+    # report-generation request. Smaller than ``primary_document_max_docs_per_issuer``
+    # (3) because OCR is materially more expensive than native extraction.
+    primary_document_max_ocr_documents_per_run: int = 2
+    # Bounded retry count for a single transient (429 / 5xx) OCR failure.
+    # Never unbounded — mirrors the ``_INDEX_ATTEMPTS_PER_DOCUMENT`` pattern.
+    primary_document_ocr_max_retries: int = 1
+    # Below this confidence [0..1], OCR excerpts are retained as bounded
+    # evidence but never become validated-fact candidates.
+    primary_document_ocr_min_confidence: float = 0.4
+
 
 settings = Settings()

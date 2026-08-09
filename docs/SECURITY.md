@@ -112,8 +112,10 @@ Required mitigations:
 > (`docs/development/closures/phase-32a-slice5a.md`,
 > `docs/development/closures/phase-32a-slice5b1.md`). Behind the default-OFF
 > `PRIMARY_DOCUMENT_INGESTION_ENABLED` flag (kept ON on staging); with it off
-> none of this fetch/parse surface is exercised. Slice 5B.2 (real OCR) and
-> 5B.3 (admin web visibility) remain open.
+> none of this fetch/parse surface is exercised. **Slice 5B.2 (real Azure
+> Document Intelligence OCR) is implemented — PR open, pending staging
+> validation, not yet merged/deployed.** `PRIMARY_DOCUMENT_OCR_ENABLED` stays
+> the code default `false`. 5B.3 (admin web visibility) remains open.
 
 Phase 32A Slice 5 adds bounded ingestion of an issuer's OWN primary documents
 (annual report / registration document) — a new outbound-fetch + PDF-parsing
@@ -180,9 +182,29 @@ surface. It is hardened as follows:
   user password is recorded as inaccessible and never opened.
 - **Content + resource bounds.** A `%PDF-` magic-byte check before parsing; a hard
   download-byte ceiling; page / OCR-page / excerpt / char / table-size caps; a
-  decompression-bomb guard; a Pillow image-pixel cap for the (future) OCR raster
-  path; and per-document + aggregate wall-time budgets so ingestion cannot hang or
-  exhaust memory.
+  decompression-bomb guard; a Pillow image-pixel cap for the OCR raster path; and
+  per-document + aggregate wall-time budgets so ingestion cannot hang or exhaust
+  memory.
+- **Real Azure Document Intelligence OCR — fixed endpoint, no arbitrary URL
+  (Slice 5B.2).** `AzureDocumentIntelligenceOcrProvider` always calls the ONE
+  code-configured `azure_document_intelligence_endpoint` — never a
+  caller-supplied URL, so there is no new SSRF surface here. Auth is
+  managed-identity-first (`DefaultAzureCredential`, matching the App Service
+  system-assigned identity + Key Vault RBAC already wired for other services);
+  an API key is only ever used when explicitly configured (local dev), and
+  `get_ocr_provider()` returns the honest `NoOpOcrProvider` whenever the
+  endpoint is unset — so `PRIMARY_DOCUMENT_OCR_ENABLED` can be flipped on
+  safely before the Azure resource is provisioned. Every SDK exception is
+  classified down to `type(exc).__name__` + HTTP status class only (mirrors
+  `azure_openai_client.py`); the raw exception message — which can embed the
+  endpoint — never reaches a log line or a stored failure code. OCR is metered
+  INSIDE the existing per-document/aggregate ingestion budgets (never a new
+  phase), bounded further by `PRIMARY_DOCUMENT_OCR_TIMEOUT_SECONDS`,
+  `PRIMARY_DOCUMENT_MAX_OCR_DOCUMENTS_PER_RUN` and a bounded retry count; page
+  selection is deterministic and capped by `PRIMARY_DOCUMENT_MAX_OCR_PAGES` —
+  a document is never OCR'd page-by-page without bound. OCR-derived facts
+  remain confidence-capped below "high" and `needs_human_review`, identically
+  to native/HTML facts.
 - **External text is untrusted, inert data.** Extracted text is never executed or
   interpreted; prompt-injection markers are preserved verbatim (not stripped) so a
   downstream prompt-boundary guard sees them — the extractor never treats document

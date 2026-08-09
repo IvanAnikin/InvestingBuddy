@@ -93,6 +93,12 @@ FIELD_SHORT_TERM_DEBT = "short_term_debt"
 FIELD_LONG_TERM_DEBT = "long_term_debt"
 FIELD_CURRENT_ASSETS = "total_current_assets"
 FIELD_NON_CURRENT_ASSETS = "total_non_current_assets"
+# Balance-sheet identity check (Phase 32A Slice 5B.2): assets == liabilities +
+# equity. Local to this file, same pattern as the debt/asset subtotal labels
+# above — these are cross-check-only labels, not surfaced as their own
+# report field elsewhere.
+FIELD_TOTAL_LIABILITIES = "total_liabilities"
+FIELD_TOTAL_EQUITY = "total_equity"
 
 # Money labels require a KNOWN currency AND scale (the stricter bar). Count labels
 # require only a plausible integer count.
@@ -109,6 +115,8 @@ _MONEY_LABELS: frozenset[str] = frozenset(
         FIELD_LONG_TERM_DEBT,
         FIELD_CURRENT_ASSETS,
         FIELD_NON_CURRENT_ASSETS,
+        FIELD_TOTAL_LIABILITIES,
+        FIELD_TOTAL_EQUITY,
     }
 )
 _COUNT_LABELS: frozenset[str] = frozenset({FIELD_EMPLOYEES})
@@ -126,6 +134,14 @@ _LABEL_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     ),
     (re.compile(r"total (?:debt|borrowings)|gross debt", re.I), FIELD_TOTAL_DEBT),
     (re.compile(r"total assets", re.I), FIELD_TOTAL_ASSETS),
+    (re.compile(r"total liabilities", re.I), FIELD_TOTAL_LIABILITIES),
+    (
+        re.compile(
+            r"total (?:shareholders|stockholders)[’']?\s*equity|total equity",
+            re.I,
+        ),
+        FIELD_TOTAL_EQUITY,
+    ),
     (re.compile(r"free cash flow", re.I), FIELD_FREE_CASH_FLOW),
     (re.compile(r"cash and cash equivalents", re.I), FIELD_CASH),
     (
@@ -469,6 +485,7 @@ def _candidates_from_table(
             )
 
     _apply_subtotal_check(candidates)
+    _apply_balance_sheet_check(candidates)
     return candidates
 
 
@@ -540,6 +557,44 @@ def _apply_subtotal_check(candidates: list[_Candidate]) -> None:
                 sub.notes.append(
                     "Subtotal did not reconcile with its components; retained as "
                     "excerpt."
+                )
+
+
+def _apply_balance_sheet_check(candidates: list[_Candidate]) -> None:
+    """Balance-sheet identity: total assets == total liabilities + total equity.
+
+    Phase 32A Slice 5B.2. Runs ONLY when all three labels are present for the
+    SAME period in the same table (the identity is meaningless otherwise). On a
+    mismatch outside tolerance, all three candidates are downgraded to
+    ``excerpt_only`` — unlike a two-component subtotal, a 3-way identity gives
+    no way to single out which figure is wrong, so the honest response is to
+    keep all three as evidence without promoting any of them to a fact.
+    """
+    by_period: dict[str | None, dict[str, _Candidate]] = {}
+    for c in candidates:
+        by_period.setdefault(c.period, {}).setdefault(c.label, c)
+
+    for period, by_label in by_period.items():
+        if period is None:
+            continue
+        assets = by_label.get(FIELD_TOTAL_ASSETS)
+        liabilities = by_label.get(FIELD_TOTAL_LIABILITIES)
+        equity = by_label.get(FIELD_TOTAL_EQUITY)
+        if assets is None or liabilities is None or equity is None:
+            continue
+        assets_value = assets.value_numeric
+        liabilities_value = liabilities.value_numeric
+        equity_value = equity.value_numeric
+        if assets_value is None or liabilities_value is None or equity_value is None:
+            continue
+        expected = liabilities_value + equity_value
+        tol = max(abs(assets_value) * 0.01, 0.5)
+        if abs(assets_value - expected) > tol:
+            for candidate in (assets, liabilities, equity):
+                candidate.status = VALIDATION_EXCERPT_ONLY
+                candidate.notes.append(
+                    "Balance-sheet identity (assets = liabilities + equity) did "
+                    "not reconcile; retained as excerpt."
                 )
 
 

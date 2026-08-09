@@ -184,17 +184,25 @@ def _primary_document_summary(evidence_items: list[Any]) -> list[dict[str, Any]]
 def _primary_facts(evidence_items: list[Any]) -> list[dict[str, Any]]:
     """Structured, bounded HIGH-CONFIDENCE primary facts — Phase 29B.3.
 
-    Reads the STRUCTURED ``primary_fact`` payload each ``company_ir_financial_fact``
-    EvidenceItem carries (field / value / numeric_value / unit / currency / scale /
-    period + short page/excerpt provenance) — never the raw excerpt body or
-    document text. Only ``confidence == "high"`` facts are surfaced: a matching
+    Reads the STRUCTURED ``primary_fact`` payload each fact-shaped EvidenceItem
+    carries (field / value / numeric_value / unit / currency / scale / period +
+    short page/excerpt provenance) — never the raw excerpt body or document
+    text. Only ``confidence == "high"`` facts are surfaced: a matching
     high-confidence fact is precisely what lets the final report present a real
     T1 primary-filing datapoint. The item's own token-stripped URL is preferred
     as the fact's provenance URL.
+
+    Phase 32A Slice 5B.2 fix: this previously matched ONLY
+    ``"company_ir_financial_fact"``, so a SEC/XBRL-sourced fact
+    (``SEC_DOCUMENT_FACT_TYPE`` — e.g. the already-live AAPL
+    ``cash_and_equivalents`` fact) never reached ``primary_facts`` even though
+    its citation resolved correctly end-to-end. ``_DOCUMENT_FACT_TYPES``
+    (already used by ``_primary_document_summary``) is the correct, complete
+    set of fact-shaped source_types — reusing it here is the fix.
     """
     out: list[dict[str, Any]] = []
     for it in evidence_items:
-        if getattr(it, "source_type", None) != "company_ir_financial_fact":
+        if getattr(it, "source_type", None) not in _DOCUMENT_FACT_TYPES:
             continue
         pf = getattr(it, "primary_fact", None)
         if pf is None:
@@ -1243,6 +1251,15 @@ async def maybe_run_council(
                         # None ⇒ every candidate is fetched (byte-identical).
                         "primary_document_reuse": reuse_lookup,
                     }
+                    # Phase 32A Slice 5B.2: real-OCR fallback for a scanned issuer-IR
+                    # document, gated on its OWN sub-flag (never implied by the master
+                    # ingestion flag). ``get_ocr_provider`` returns NoOp unless BOTH
+                    # the flag is on AND an Azure endpoint is configured, so this stays
+                    # inert/byte-identical until a human provisions the resource.
+                    if cfg.primary_document_ocr_enabled:
+                        from app.services.sources.ocr_provider import get_ocr_provider
+
+                        extract_kwargs["ocr_provider"] = get_ocr_provider(cfg)
                 elif cfg.source_document_extraction_enabled:
                     from app.services.sources.live_fetchers import (
                         live_document_extractor,

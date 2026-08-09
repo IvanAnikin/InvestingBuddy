@@ -46,6 +46,15 @@ deploy = [
 llm = [
     "langchain-openai>=0.2",
 ]
+# Phase 32A Slice 5B.2: real Azure Document Intelligence OCR adapter. Install
+# when PRIMARY_DOCUMENT_OCR_ENABLED=true is used locally or in staging.
+# Not required for CI — the flag defaults false and get_ocr_provider() falls
+# back to NoOpOcrProvider when unconfigured, so nothing imports this SDK
+# unless OCR is both enabled AND an endpoint is configured.
+ocr = [
+    "azure-ai-documentintelligence>=1.0",
+    "azure-identity>=1.19",
+]
 
 [build-system]
 requires = ["setuptools>=70"]

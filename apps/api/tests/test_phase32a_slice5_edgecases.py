@@ -10,11 +10,15 @@ code is modified.
 Covers:
   1. Encrypted PDF → honest ``extraction_failed`` (never raises, no fabricated
      fact), pure path AND the deep ``live_primary_document_extractor`` path.
-  2. OCR gating at the SEAM (OCR is a NoOp seam with NO call site this slice, so
-     end-to-end activation gating cannot be tested — see the module note below):
-     the provider stays NoOp even with the flag ON; a fake ``OcrProvider`` double
-     honours the page cap + low confidence; and neither the native nor the deep
-     extraction flow invokes any OCR provider (even on a scanned PDF).
+  2. OCR gating at the SEAM (Phase 32A Slice 5 foundation): ``get_ocr_provider``
+     stays NoOp when the OCR flag is on but no Azure endpoint is configured; a
+     fake ``OcrProvider`` double honours the page cap + low confidence; the
+     PURE ``extract_pdf`` path (no provider ever threaded to it) never invokes
+     OCR; and the deep ``live_primary_document_extractor`` path never invokes
+     OCR when no ``ocr_provider`` is passed (the pre-5B.2 default). Real,
+     wired end-to-end OCR activation (a provider IS passed and IS invoked on a
+     scanned document) is covered in
+     ``tests/test_phase32a_slice5b2_ocr.py`` (Slice 5B.2).
   3. Transport error mid-download on the deep path → honest gap, no raise.
   4. Redirect at the fetch layer on the deep path: followed within the hop cap
      with per-hop host + resolved-IP re-validation; a redirect to a disallowed
@@ -25,12 +29,14 @@ Covers:
   6. PDF resource-abuse (very large declared page count) → bounded by the page
      cap, honest truncation, no hang.
 
-OCR-WIRING NOTE: ``get_ocr_provider`` / ``OcrProvider.extract`` / the NoOp
-provider have NO call site anywhere in the extraction flow this slice — OCR is a
-pure seam. So "native prevents unnecessary OCR" and "disabled ⇒ never call OCR"
-are asserted here as they are OBSERVABLE today (the flow never touches OCR at
-all); genuine end-to-end OCR-activation gating cannot be exercised until a later
-slice wires a call site.
+OCR-WIRING NOTE (updated, Phase 32A Slice 5B.2): a real call site now exists in
+``live_fetchers.py`` (``_artifact_from_fetch`` / ``_try_ocr``), gated on an
+``ocr_provider`` parameter that defaults to ``None``. The tests below still
+pass ``ocr_provider=None`` (the pre-5B.2 default) via ``_run_deep`` /
+``extract_pdf``, so "native prevents unnecessary OCR" and "no provider passed
+⇒ never call OCR" remain correct, unchanged assertions — they are just no
+longer "OCR has no call site at all." See ``tests/test_phase32a_slice5b2_ocr.py``
+for tests that DO pass a provider and assert real activation.
 """
 
 from __future__ import annotations
@@ -238,10 +244,15 @@ def test_encrypted_pdf_deep_path_degrades_honestly(monkeypatch):
 # =========================================================================== #
 
 
-def test_get_ocr_provider_is_noop_even_when_flag_enabled():
-    # Provider selection is inert this slice: enabling the flag does NOT swap in a
-    # real backend — the honest NoOp is returned regardless (gating not wired).
-    prov = get_ocr_provider(_cfg(primary_document_ocr_enabled=True))
+def test_get_ocr_provider_is_noop_when_endpoint_unconfigured():
+    # Phase 32A Slice 5B.2: the flag ALONE is not enough — with no Azure
+    # endpoint configured (the default), get_ocr_provider still returns the
+    # honest NoOp so the flag can be flipped safely before the resource
+    # exists. See test_phase32a_slice5b2_ocr.py for the configured-endpoint
+    # case (returns a real AzureDocumentIntelligenceOcrProvider).
+    prov = get_ocr_provider(
+        _cfg(primary_document_ocr_enabled=True, azure_document_intelligence_endpoint="")
+    )
     assert isinstance(prov, NoOpOcrProvider)
     assert prov.is_noop is True
 
@@ -323,8 +334,9 @@ def test_native_success_never_invokes_ocr(monkeypatch):
 
 
 def test_scanned_pdf_never_invokes_ocr_even_when_enabled(monkeypatch):
-    # OCR is unwired: even an empty (scanned) PDF WITH the flag ON does not invoke
-    # any OCR provider — it degrades to metadata_only. (See module OCR-WIRING NOTE.)
+    # extract_pdf() is the PURE native extractor — no OcrProvider is ever
+    # threaded to it (OCR is invoked one layer up, in live_fetchers.py). An
+    # empty (scanned) PDF WITH the flag ON still degrades to metadata_only.
     calls = _ocr_spy(monkeypatch)
     r = extract_pdf(make_pdf_no_text(), cfg=_cfg(primary_document_ocr_enabled=True))
     assert r.status == STATUS_METADATA_ONLY
@@ -332,7 +344,9 @@ def test_scanned_pdf_never_invokes_ocr_even_when_enabled(monkeypatch):
     assert calls == []
 
 
-def test_deep_path_scanned_pdf_never_invokes_ocr(monkeypatch):
+def test_deep_path_scanned_pdf_never_invokes_ocr_without_a_provider(monkeypatch):
+    # _run_deep calls live_primary_document_extractor with ocr_provider=None
+    # (the default) — OCR must never be attempted without one, flag or no flag.
     calls = _ocr_spy(monkeypatch)
     artifact = _run_deep(
         [_FakeStream(status_code=200, headers={"content-type": "application/pdf"}, body=make_pdf_no_text())],
@@ -342,7 +356,7 @@ def test_deep_path_scanned_pdf_never_invokes_ocr(monkeypatch):
     )
     assert artifact.status == STATUS_METADATA_ONLY
     assert artifact.validated_facts == []
-    assert calls == []  # deep flow never reaches OCR this slice
+    assert calls == []  # no provider was passed → OCR is never attempted
 
 
 # =========================================================================== #

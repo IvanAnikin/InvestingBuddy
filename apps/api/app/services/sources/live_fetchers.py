@@ -51,10 +51,15 @@ from app.services.sources.ingestion_status import (
     FAILURE_MISSING_CIK,
     FAILURE_NO_PRIMARY_FILING_DOCUMENT,
     FAILURE_NOT_A_PDF,
+    FAILURE_OCR_BUDGET_EXHAUSTED,
+    FAILURE_OCR_LOW_CONFIDENCE,
     FAILURE_PREFLIGHT_BUDGET_EXHAUSTED,
+    FAILURE_SCANNED_NO_TEXT,
     FAILURE_UNKNOWN,
 )
+from app.services.sources.ocr_provider import OcrBudget, OcrProvider, select_ocr_pages
 from app.services.sources.primary_document_extractor import (
+    METHOD_OCR,
     STATUS_EXTRACTED,
     STATUS_EXTRACTION_FAILED,
     STATUS_METADATA_ONLY,
@@ -251,7 +256,88 @@ def _honest_gap(message: str) -> SourceGap:
     )
 
 
-def _artifact_from_fetch(
+async def _try_ocr(
+    extraction: Any,
+    *,
+    raw_bytes: bytes,
+    ocr_provider: OcrProvider,
+    ocr_budget: OcrBudget | None,
+    cfg: Settings,
+) -> None:
+    """Attempt real OCR on ONE scanned (metadata-only, no-text) document.
+
+    Mutates ``extraction`` in place: promotes ``status``/clears
+    ``failure_code`` when OCR recovers content with at least one
+    excerpt/table above ``primary_document_ocr_min_confidence``; otherwise
+    leaves ``status`` at ``metadata_only`` with an honest, sanitized
+    ``FAILURE_OCR_*`` code. Never raises, never fabricates text — a provider
+    failure degrades to the same honest ``metadata_only`` outcome the
+    document already had.
+    """
+    if ocr_budget is not None and not ocr_budget.can_start_document():
+        extraction.failure_code = FAILURE_OCR_BUDGET_EXHAUSTED
+        extraction.source_gaps.append(
+            "OCR budget for this report was exhausted; document remains "
+            "scanned/metadata-only."
+        )
+        return
+
+    pages = select_ocr_pages(raw_bytes, max_pages=cfg.primary_document_max_ocr_pages)
+    if not pages:
+        return
+
+    if ocr_budget is not None:
+        ocr_budget.record_document_started()
+
+    result = await ocr_provider.extract(
+        raw_bytes,
+        cfg=cfg,
+        pages=pages,
+        timeout_seconds=cfg.primary_document_ocr_timeout_seconds,
+    )
+    log_event(
+        _logger,
+        "primary_document_ocr_attempted",
+        provider=result.provider_name,
+        status=result.status,
+        excerpt_count=len(result.excerpts),
+        table_count=len(result.tables),
+        selected_pages=len(pages),
+        duration_ms=result.duration_ms,
+    )
+    if not result.has_content:
+        if result.failure_code:
+            extraction.failure_code = result.failure_code
+        extraction.source_gaps.extend(result.source_gaps)
+        return
+
+    best_confidence = max(
+        [e.confidence for e in result.excerpts] + [t.confidence for t in result.tables],
+        default=0.0,
+    )
+    if best_confidence < cfg.primary_document_ocr_min_confidence:
+        extraction.failure_code = FAILURE_OCR_LOW_CONFIDENCE
+        extraction.source_gaps.append(
+            "OCR recognized text below the confidence threshold; retained "
+            "internally but not promoted to extracted evidence."
+        )
+        return
+
+    # Promote: OCR rescued a scanned document. Every recovered item is already
+    # tagged extraction_method=ocr by the provider, so downstream confidence
+    # dampening / human-review flagging applies exactly as it already does
+    # for any other OCR-derived excerpt or table. This branch is only ever
+    # reached when the document had NO native excerpts/tables (that is what
+    # made it ``metadata_only`` in the first place), so the document-level
+    # extraction_method becomes OCR outright — never a native/OCR mix.
+    extraction.excerpts.extend(result.excerpts)
+    extraction.tables.extend(result.tables)
+    extraction.status = STATUS_EXTRACTED
+    extraction.failure_code = None
+    extraction.extraction_method = METHOD_OCR
+
+
+async def _artifact_from_fetch(
     fetched: DocumentFetchResult,
     *,
     title: str | None,
@@ -259,6 +345,8 @@ def _artifact_from_fetch(
     issuer_context: IssuerContext | None,
     cfg: Settings,
     fetch_ms: int,
+    ocr_provider: OcrProvider | None = None,
+    ocr_budget: OcrBudget | None = None,
 ) -> PrimaryDocumentArtifact:
     """Extract + validate ONE already-fetched document into an artifact.
 
@@ -269,6 +357,10 @@ def _artifact_from_fetch(
     Never raises. Every non-``extracted`` outcome carries a sanitized
     ``failure_code`` from the CLOSED ``ingestion_status`` vocabulary — never
     provider text, a URL, an address or an exact HTTP status code.
+
+    ``ocr_provider``/``ocr_budget`` (Phase 32A Slice 5B.2) are the issuer-IR
+    leg's OCR fallback — ``None`` for the SEC filing-body leg, which never
+    triggers OCR (EDGAR filings are native HTML/text, not scanned images).
     """
     artifact = PrimaryDocumentArtifact(
         source_url=fetched.final_url or fetched.requested_url,
@@ -320,6 +412,27 @@ def _artifact_from_fetch(
     artifact.failure_code = extraction.failure_code
     artifact.content_hash = extraction.content_hash or None
 
+    # Phase 32A Slice 5B.2: the ONE failure mode OCR can rescue — a valid,
+    # openly-readable PDF with no extractable text (scanned/image-only).
+    # Encrypted/password-protected/malformed documents never reach here with
+    # this status, so OCR is never attempted on a document it cannot help.
+    if (
+        ocr_provider is not None
+        and cfg.primary_document_ocr_enabled
+        and extraction.status == STATUS_METADATA_ONLY
+        and extraction.failure_code == FAILURE_SCANNED_NO_TEXT
+    ):
+        await _try_ocr(
+            extraction,
+            raw_bytes=fetched.content,
+            ocr_provider=ocr_provider,
+            ocr_budget=ocr_budget,
+            cfg=cfg,
+        )
+        artifact.status = extraction.status
+        artifact.failure_code = extraction.failure_code
+        artifact.warnings.extend(extraction.warnings)
+
     # Only a fully-extracted document is validated into structured facts; a
     # scanned / empty document stays metadata_only with no fabricated fact.
     if extraction.status == STATUS_EXTRACTED:
@@ -340,6 +453,8 @@ async def live_primary_document_extractor(
     issuer_context: IssuerContext | None = None,
     cfg: Settings | None = None,
     resolver: Resolver = socket.getaddrinfo,
+    ocr_provider: OcrProvider | None = None,
+    ocr_budget: OcrBudget | None = None,
 ) -> PrimaryDocumentArtifact:
     """DEEP fetch + structure-aware extraction + stricter validation of ONE doc.
 
@@ -351,6 +466,11 @@ async def live_primary_document_extractor(
     non-public resolved IP (DNS-rebinding SSRF guard). For a PDF the ``%PDF`` magic
     is verified before parsing. Runs ``extract_primary_document`` (pdfplumber
     tables / HTML) then ``validate_extracted_facts`` (stricter grid validation).
+
+    ``ocr_provider``/``ocr_budget`` (Phase 32A Slice 5B.2): when a scanned,
+    no-text PDF is found, real OCR is attempted as a bounded fallback — see
+    ``_try_ocr``. Both default ``None`` (OCR sub-flag off / not threaded),
+    which is byte-identical to the pre-5B.2 behaviour.
 
     Never raises: an honest failure degrades to a ``metadata_only`` /
     ``extraction_failed`` artifact with honest gaps. Never logs bytes or text; the
@@ -366,13 +486,15 @@ async def live_primary_document_extractor(
         resolver=resolver,
     )
     fetch_ms = int((time.perf_counter() - fetch_started) * 1000)
-    return _artifact_from_fetch(
+    return await _artifact_from_fetch(
         fetched,
         title=title_hint,
         original_language=original_language,
         issuer_context=issuer_context,
         cfg=cfg,
         fetch_ms=fetch_ms,
+        ocr_provider=ocr_provider,
+        ocr_budget=ocr_budget,
     )
 
 
@@ -612,7 +734,7 @@ async def live_sec_primary_document_extractor(
             )
         else:
             try:
-                artifact = _artifact_from_fetch(
+                artifact = await _artifact_from_fetch(
                     fetched,
                     title=f"{doc.form_type} {doc.accession_number}",
                     original_language=None,
