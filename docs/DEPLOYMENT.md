@@ -759,6 +759,104 @@ report IDs, SQL evidence, and the two corrective-hotfix root causes.
 
 ---
 
+## Real Azure Document Intelligence OCR (Phase 32A Slice 5B.2)
+
+> **PR open — pre-staging. Not yet merged / deployed / staging-validated.** Do
+> **not** treat this section as a closed/validated deployment record until the
+> merge SHA + deployed SHA + staging validation result are on file. Branch
+> `phase-32a-slice-5b2-ocr`. `PRIMARY_DOCUMENT_OCR_ENABLED` ships `false`; the
+> real adapter additionally requires `AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT` to
+> be set, which **no infra in this repo provisions** — see item F below. No
+> migration (Alembic head stays `014`).
+
+**Scope note — this is NOT a fully-dormant PR.** Unlike a change gated
+entirely behind a still-OFF flag, this PR's `council.py::_primary_facts()`
+fix runs on the ALREADY-ON `PRIMARY_DOCUMENT_INGESTION_ENABLED` path (kept ON
+on staging since Slice 5A). The moment this merges and deploys, a SEC/XBRL
+fact that previously matched only `"company_ir_financial_fact"` will start
+populating `primary_facts` for any US issuer whose SEC-sourced fact is
+`confidence="high"` — concretely, AAPL's already-live `cash_and_equivalents`
+fact. This is a genuine, immediate behavior change on a live path and must be
+explicitly re-proven post-deploy (item C below), not assumed byte-identical.
+
+- **A. Deploy identity.** API serves the merged commit SHA (3 stable polls);
+  DB head stays `014` (no migration in this slice); `AUTH_TEST_MODE` absent;
+  unauthenticated → 401.
+- **B. Flag state.** `PRIMARY_DOCUMENT_INGESTION_ENABLED` unchanged (ON, no
+  new app-setting change needed for this deploy); `PRIMARY_DOCUMENT_OCR_ENABLED`
+  and `AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT` both remain unset (OFF/empty) —
+  confirm ONLY the code changed, no app setting needs to change for this PR
+  to deploy safely.
+- **C. `_primary_facts()` fix — re-proof on the live path (the scope-note
+  item, run even though OCR itself stays off).** Re-run a fresh AAPL
+  analysis. Confirm: (i) the SEC-sourced `cash_and_equivalents` fact (or
+  whichever high-confidence SEC/XBRL fact is currently live) now appears in
+  `source_summary_json.llm_council.primary_facts`, where it was previously
+  absent; (ii) `company_ir_financial_fact`-sourced facts (if any for this
+  issuer) still appear, unchanged; (iii) SEC/XBRL numeric values in the
+  rendered report are UNCHANGED from the pre-deploy baseline (the fix changes
+  what's *visible in the structured list*, never a value); (iv) no new
+  citation, no new Source row, no duplicate evidence appears as a side
+  effect.
+- **D. OCR flag off / unconfigured — byte-identical regression.** With both
+  `PRIMARY_DOCUMENT_OCR_ENABLED=false` (the deployed default) AND, separately,
+  a probe with the flag hypothetically `true`-but-endpoint-still-empty (code
+  read, not a live app-setting change — confirm via `get_ocr_provider()`
+  logic review, since flipping the flag on staging is a separate human-gated
+  step): a scanned document still degrades to `metadata_only` /
+  `scanned_no_text`, IDENTICAL to Slice 5B.1 behavior. Zero calls to any
+  `azure.*` host — confirm via `document_ingestion_attempts` (no new
+  `ocr_*` failure codes appear) and via egress/log inspection.
+- **E. Balance-sheet identity check — live proof (does not require OCR).**
+  For an issuer whose extracted table already carries total assets, total
+  liabilities AND total equity in the same period (native extraction, no OCR
+  needed), confirm the new check runs: either all three reconcile and stay
+  `validated`, or a genuine mismatch downgrades all three to `excerpt_only`
+  with the new validator note. If no live table currently carries all three
+  labels, record that honestly as "not exercised live this round" rather than
+  claiming false coverage — the offline unit tests
+  (`test_phase32a_slice5b2_balance_sheet.py`) remain the primary proof either
+  way.
+- **F. Real OCR proof — BLOCKED, human-gated, explicitly not this round.**
+  No Azure Document Intelligence resource exists in `infra/azure/*.bicep`.
+  Live proof (an actual Azure DI call against a genuinely scanned issuer
+  document, page/table provenance persisting, confidence + validation state
+  visible in report data, a second run reusing without a second Azure call)
+  **cannot be executed until a human**: (1) provisions the Azure Document
+  Intelligence resource + RBAC/managed-identity wiring; (2) sets
+  `AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT` (and optionally `_API_KEY`) as a
+  staging app setting; (3) explicitly approves flipping
+  `PRIMARY_DOCUMENT_OCR_ENABLED=true` on staging. This is a known,
+  intentional limitation (mirrors ADR-014's own deferral for the OCR seam
+  itself) — record it as "not yet executable," not as a passed/failed check.
+  When that human step happens, follow up with: a genuinely scanned document
+  fixture check (bounded live discovery across the other 10 registered
+  issuers per `08_scanned_vs_encrypted_ocr_candidates.md`, since CFR's
+  encrypted PDF is confirmed NOT a valid target — it never opens even with
+  the empty password); confirm `ocr_provider_error`/`ocr_timeout` degrade
+  honestly under real network conditions; confirm the aggregate-budget clamp
+  (§ ADR-016 Decision 4) holds under real Azure latency, not just the fake
+  provider's instant responses.
+- **G. Cross-company isolation.** Run AAPL and one European issuer (e.g. CFR)
+  back-to-back. No OCR-derived (or any) evidence/citation crosses between
+  them; no shared `content_hash`; no Apple data appears in the European
+  report or vice versa (same check pattern as Slice 5B.1's live proof).
+- **H. Security proof.** Response + fresh log grep clean of secrets, the
+  Azure endpoint, and any credential (the `azure` logger is capped at
+  WARNING — confirm no `azure.core.pipeline.policies.http_logging_policy`
+  INFO line reaches stdout even with OCR still off, since the cap applies
+  regardless of flag state). No `AUTH_TEST_MODE`. No new public route.
+- **I. Idempotency (structural — exercised by existing reuse, no OCR
+  needed).** Re-running the same analysis does not create duplicate
+  `extracted_documents` / `extracted_facts` / `document_ingestion_attempts`
+  rows; the reuse lookup still short-circuits re-fetch/re-extract exactly as
+  in Slice 5B.1.
+- **J. Timing.** Total analysis duration unchanged from the Slice 5B.1
+  baseline (OCR never runs with the flag off, so no new time is spent); no
+  502/504.
+
+---
+
 ## LLM Council Reliability — Bounded Retry + Deterministic Chair Fallback (Phase 32A Slice 4)
 
 > **PR open — pre-staging.** Not yet merged / deployed / staging-validated. Do

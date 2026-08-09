@@ -37,6 +37,7 @@ Hard product invariants enforced here:
 from __future__ import annotations
 
 import asyncio
+import bisect
 import logging
 import time
 from abc import ABC, abstractmethod
@@ -339,15 +340,6 @@ class OcrBudget:
 # --------------------------------------------------------------------------- #
 
 
-def _confidence_bucket_local(confidence: float) -> str:
-    """Same thresholds as ``primary_document_extractor._confidence_bucket``."""
-    if confidence >= 0.75:
-        return "high"
-    if confidence >= 0.4:
-        return "medium"
-    return "low"
-
-
 def _bound_cell_local(value: object) -> str:
     s = "" if value is None else str(value)
     s = s.replace("\r", " ").replace("\n", " ").strip()
@@ -532,37 +524,51 @@ class AzureDocumentIntelligenceOcrProvider(OcrProvider):
 _UNMEASURED_CONFIDENCE = 0.3  # below every promotion/validation threshold
 
 
-def _flatten_words(raw_result: Any) -> list[Any]:
-    words: list[Any] = []
+def _flatten_words(raw_result: Any) -> list[tuple[int, int, float]]:
+    """Flatten every page's words into ``(offset, end, confidence)`` tuples,
+    SORTED by offset — the sort is what lets :func:`_confidence_for_spans`
+    binary-search instead of scanning every word for every span (a bounded
+    document still has bounded words/tables, but a full O(n*m) scan per table
+    is needless when a sorted-once list makes each lookup O(log n))."""
+    out: list[tuple[int, int, float]] = []
     for page in list(getattr(raw_result, "pages", None) or []):
-        words.extend(list(getattr(page, "words", None) or []))
-    return words
+        for word in list(getattr(page, "words", None) or []):
+            w_span = getattr(word, "span", None)
+            w_off = getattr(w_span, "offset", None) if w_span else None
+            w_len = getattr(w_span, "length", None) if w_span else None
+            conf = getattr(word, "confidence", None)
+            if w_off is None or w_len is None or conf is None:
+                continue
+            out.append((w_off, w_off + w_len, float(conf)))
+    out.sort(key=lambda t: t[0])
+    return out
 
 
-def _confidence_for_spans(spans: Any, words: list[Any]) -> float | None:
+def _confidence_for_spans(spans: Any, sorted_words: list[tuple[int, int, float]]) -> float | None:
     """Average REAL word-level confidence for the given span(s).
+
+    ``sorted_words`` is ``_flatten_words``'s output — sorted by offset, so
+    each span only scans the words starting from its own offset onward
+    (via bisect) rather than the whole document's words.
 
     Returns ``None`` when no word's span is fully contained in any of
     ``spans`` — callers must treat that as "not measured", never coerce it to
     a plausible-looking number.
     """
     matched: list[float] = []
+    offsets = [w[0] for w in sorted_words]
     for span in list(spans or []):
         s_off = getattr(span, "offset", None)
         s_len = getattr(span, "length", None)
         if s_off is None or s_len is None:
             continue
         s_end = s_off + s_len
-        for word in words:
-            w_span = getattr(word, "span", None)
-            w_off = getattr(w_span, "offset", None) if w_span else None
-            w_len = getattr(w_span, "length", None) if w_span else None
-            if w_off is None or w_len is None:
-                continue
-            if w_off >= s_off and (w_off + w_len) <= s_end:
-                conf = getattr(word, "confidence", None)
-                if conf is not None:
-                    matched.append(float(conf))
+        idx = bisect.bisect_left(offsets, s_off)
+        while idx < len(sorted_words) and sorted_words[idx][0] < s_end:
+            w_off, w_end, conf = sorted_words[idx]
+            if w_off >= s_off and w_end <= s_end:
+                matched.append(conf)
+            idx += 1
     if not matched:
         return None
     return sum(matched) / len(matched)
