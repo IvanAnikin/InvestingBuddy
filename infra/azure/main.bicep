@@ -37,6 +37,16 @@ param dbLocation string = resourceGroup().location
 @description('Override for the PostgreSQL server name. When empty the name is auto-generated.')
 param dbServerNameOverride string = ''
 
+@description('Set to true to include the Document Intelligence (OCR) module. Defaults false — see the WARNING below before enabling.')
+param deployDocumentIntelligence bool = false
+
+@description('Document Intelligence SKU — F0 (Free, one per subscription) or S0 (Standard)')
+@allowed([
+  'F0'
+  'S0'
+])
+param documentIntelligenceSku string = 'F0'
+
 // ── Resource Names ─────────────────────────────────────────────────────────
 
 var apiAppName = '${projectShort}-${env}-api'
@@ -49,6 +59,7 @@ var kvName = '${projectShort}-${env}-kv'
 var storageName = '${projectShort}${env}storage'
 var insightsName = '${projectShort}-${env}-insights'
 var logsName = '${projectShort}-${env}-logs'
+var docIntelName = '${projectShort}-${env}-docintel'
 
 // ── Role Definition IDs (built-in Azure roles) ────────────────────────────
 
@@ -111,6 +122,34 @@ module appServiceModule 'modules/appservice.bicep' = {
     sharedPlanName: sharedPlanName
     kvUri: kvModule.outputs.kvUri
     appInsightsConnectionString: monitoringModule.outputs.insightsConnectionString
+  }
+}
+
+// ── Module: Document Intelligence (OCR, Phase 32A Slice 5B.2) ─────────────
+// OFF by default (deployDocumentIntelligence=false). This module is provided
+// for reproducibility of a from-scratch environment. WARNING: this file's
+// appServiceModule.appSettings array is NOT authoritative for the live app's
+// current settings (many flags, incl. PRIMARY_DOCUMENT_OCR_ENABLED /
+// AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT, were added out-of-band via
+// `az webapp config appsettings set`, which merges). Re-running
+// `az deployment group create` against this WHOLE main.bicep file would
+// replace the API app's appSettings collection with only what's listed in
+// appservice.bicep, dropping every out-of-band flag. The Document
+// Intelligence resource itself was provisioned via a standalone, isolated
+// deployment scoped to ONLY modules/documentintelligence.bicep — never via a
+// full main.bicep apply — specifically to avoid this risk. Do not run a full
+// main.bicep deployment against ib-stg-rg without first reconciling
+// appservice.bicep's appSettings array against the live `az webapp config
+// appsettings list` output.
+
+module docIntelModule 'modules/documentintelligence.bicep' = if (deployDocumentIntelligence) {
+  name: 'documentintelligence'
+  params: {
+    location: location
+    accountName: docIntelName
+    skuName: documentIntelligenceSku
+    apiManagedIdentityPrincipalId: appServiceModule.outputs.apiManagedIdentityPrincipalId
+    skipRbac: skipRbac
   }
 }
 
