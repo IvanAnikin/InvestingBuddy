@@ -1068,6 +1068,7 @@ These endpoints are for **internal admin and development use only**. They expose
 |---|---|---|---|
 | GET | `/api/v1/reports` | ✅ Live | List all draft reports (admin only) |
 | GET | `/api/v1/reports/{report_id}` | ✅ Live | Get a single draft report by ID (admin only) |
+| GET | `/api/v1/reports/{report_id}/primary-documents` | ✅ Live | Primary-document ingestion provenance for a report's generating run (admin/dev only) — Phase 32A Slice 5B.3 |
 | POST | `/api/v1/admin/reports/{report_id}/mark-under-review` | ✅ Live | Move report to under_review (admin only) |
 | POST | `/api/v1/admin/reports/{report_id}/approve` | ✅ Live | Approve report internally (approved_internal; not public) |
 | POST | `/api/v1/admin/reports/{report_id}/reject` | ✅ Live | Reject report (rejected_internal; requires note) |
@@ -1106,6 +1107,84 @@ Response `200 OK`:
 Response `200 OK`: report object (same shape as item above)
 
 Error `404 Not Found`: report does not exist
+
+**GET /api/v1/reports/{report_id}/primary-documents** — Primary-document ingestion provenance (Phase 32A Slice 5B.3)
+
+Admin/dev-only, bounded, read-only view of what the primary-document ingestion
+pipeline (Slice 5 / 5A / 5B.1 / 5B.2) actually discovered, attempted, and
+extracted for this report's generating run. Scoped by the report's own
+`agent_run_id` (falls back to `company_id` for legacy pre-lineage reports;
+never returns unscoped data). Never exposes raw document bodies, raw OCR
+text, raw HTML, provider exceptions, signed URLs, or credentials — every
+field already passed through the existing bounded/sanitized persistence
+layer. A report with no ingestion activity returns an honest all-zero
+summary, not an error.
+
+Response `200 OK`:
+```json
+{
+  "report_id": "uuid",
+  "company_id": "uuid",
+  "agent_run_id": "uuid",
+  "summary": {
+    "discovered_count": 3,
+    "attempted_count": 2,
+    "extracted_count": 2,
+    "metadata_only_count": 0,
+    "failed_count": 0,
+    "native_count": 2,
+    "ocr_count": 0,
+    "validated_fact_count": 3,
+    "reused_count": 0,
+    "evidence_reference_count": 2
+  },
+  "documents": [
+    {
+      "attempt_id": "uuid",
+      "canonical_url": "https://www.sec.gov/Archives/edgar/data/...",
+      "title": "Form 10-Q",
+      "source_type": "sec_filing",
+      "source_tier": "T1_primary_filing",
+      "doc_kind": "filing",
+      "discovery_strategy": "sec_filing_body",
+      "attempted_at": "2026-08-09T10:00:00Z",
+      "status": "extracted",
+      "failure_code": null,
+      "mime_type": "text/html",
+      "extraction_method": "html",
+      "page_count": null,
+      "fetch_ms": 420,
+      "extraction_ms": 180,
+      "total_ms": 600,
+      "pinned": true,
+      "content_hash": "sha256-hex",
+      "reused": false,
+      "excerpts": [],
+      "facts": [
+        {
+          "id": "uuid",
+          "label": "cash_and_equivalents",
+          "value_numeric": 12345.6,
+          "value_text": null,
+          "unit": "USD_millions",
+          "currency": "USD",
+          "period": "2026-Q2",
+          "page_number": 16,
+          "table_location": "t16",
+          "extraction_method": "html",
+          "confidence": 0.9,
+          "validation_status": "validated",
+          "needs_human_review": false
+        }
+      ]
+    }
+  ]
+}
+```
+
+Error `404 Not Found`: report does not exist. Unauthenticated access follows
+the same perimeter-auth convention as every other admin route (`401`,
+identical shape to `GET /api/v1/reports/{report_id}`).
 
 > **Phase 10 note:** Report endpoints are admin/dev only. Content is an AI-generated draft.
 > It is not investment advice. It is not a public recommendation.
