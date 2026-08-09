@@ -941,6 +941,63 @@ create no citations. Retry telemetry (`llm_agent_retry` / `llm_agent_retry_skipp
 error_type, duration_ms, backoff_ms, capped retry_after, counts — never prompts,
 completions, evidence, or secrets.
 
+## Discovery Council Reliability Parity (Phase 32A Slice 6A)
+
+> **Status: implemented on branch `phase-32a-slice6a-discovery-council-reliability`
+> — PR open, NOT yet merged / deployed / staging-validated.** Gated by a new
+> default-OFF flag `LLM_DISCOVERY_COUNCIL_RETRY_ENABLED`; with it off the
+> discovery council is byte-for-byte identical to today (one attempt per agent,
+> no retry, no fallback).
+
+The discovery-run LLM council (`run_discovery_council` — 8 agents:
+`run_coordinator`, `candidate_prioritization`, `novelty_coverage`,
+`diversity_anti_convergence`, `evidence_sufficiency`, `risk_gatekeeper`,
+`run_red_team`, `discovery_chair`) never received the Slice 4 reliability work
+above — it called each agent exactly once with no retry, no backoff, no
+wall-budget, and no deterministic fallback. This was a plain parity gap (Slice 4
+only touched the single-company council), not an intentional design choice: a
+real staging run recently completed only 1/8 discovery-council agents under
+Azure rate-limiting in the same session where the company council, protected by
+Slice 4, completed 8/8.
+
+**Shared engine.** Slice 4's retry/backoff/wall-budget/deterministic-fallback
+machinery was extracted out of `council.py` into a new, agent-shape-agnostic
+module `apps/api/app/services/llm/retry_engine.py` (`retry_agent`,
+`run_with_retries`, `build_budget_exhausted_output`,
+`build_deterministic_synthesis`) with zero imports from either council's
+schema module and no hardcoded agent-name literal. `council.py` was refactored
+to call into it (behavior-preserving — the company council's public API and
+generated text, including the deterministic chair-fallback wording, are
+unchanged); `discovery_council.py` was then wired to the same engine.
+
+**Discovery-specific budget.** Unlike the company council (strictly sequential,
+inline in the HTTP request, bound by the ~230s Azure gateway timeout), the
+discovery council runs as an ASYNC background job
+(`market_discovery_service.py::process_discovery_council_by_id`, invoked via
+`BackgroundTasks`, polled by the admin UI) with no gateway constraint. It gets
+its own, more generous budget: `llm_discovery_council_retry_total_budget_seconds`
+defaults to 300s (vs. the company council's 150s) and
+`llm_discovery_council_retry_critical_reserve_seconds` defaults to 60s (vs.
+45s), reserved for `run_red_team` + `discovery_chair`. `LLMJsonError` (malformed
+JSON after the single repair) remains PERMANENT/never-retried in both councils —
+unchanged, shared classification in `client.py`.
+
+**Deterministic discovery-chair fallback.** If the LLM discovery chair still
+does not complete, a deterministic, non-consensus discovery-run summary is
+attached (`chair_fallback_used=true`, `run_quality="failed"`). Built only from
+already-validated stored agent outputs; states no recommendation, no candidate
+action, no consensus; `candidate_notes`/`run_notes` are empty so it carries no
+citations. The failed LLM-chair entry is kept in `agents` so completion stays
+honestly visible as partial; the fallback runs through the same
+`check_and_sanitize` safety/citation gate as any agent output.
+
+Tests: `apps/api/tests/test_phase32a_slice6a_discovery_council_reliability.py`
+(22 tests) covering transient recovery, permanent-error non-retry, retry
+exhaustion, no-rerun-of-succeeded-agents, critical-reserve protection, fallback
+honesty/safety, 8/8, 5/8, near-total 1/8→7/8 (mirroring the real incident),
+complete provider outage, flag-OFF byte-identical regression guards, and
+byte-for-byte wording preservation for the shared engine's two callers.
+
 ## Primary-Document Ingestion (Phase 32A Slice 5)
 
 > **Status: implemented on branch `phase-32a-slice5` — PR open, NOT yet merged /

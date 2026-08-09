@@ -46,6 +46,8 @@ __all__ = [
     "AGENT_RISK_GATEKEEPER",
     "AGENT_RUN_RED_TEAM",
     "AGENT_DISCOVERY_CHAIR",
+    "CRITICAL_ALWAYS",
+    "RESERVED_AGENTS",
     "ALLOWED_INTERNAL_ACTIONS",
     "DEFAULT_INTERNAL_ACTION",
     "ALLOWED_RUN_QUALITY",
@@ -91,6 +93,26 @@ DISCOVERY_COUNCIL_AGENT_ORDER: tuple[str, ...] = (
     AGENT_RISK_GATEKEEPER,
     AGENT_RUN_RED_TEAM,
     AGENT_DISCOVERY_CHAIR,
+)
+
+# Phase 32A Slice 6A — discovery-council reliability. Agents that are ALWAYS
+# treated as critical for retry prioritization + the reserved-budget guarantee.
+# Mirrors the company council's ``CRITICAL_ALWAYS`` (``schemas.py``); unlike the
+# company council, the discovery-council critical set does not depend on the
+# evidence pack's contents — it is fixed.
+CRITICAL_ALWAYS: frozenset[str] = frozenset(
+    {
+        AGENT_RUN_COORDINATOR,
+        AGENT_RISK_GATEKEEPER,
+        AGENT_RUN_RED_TEAM,
+        AGENT_DISCOVERY_CHAIR,
+    }
+)
+# The two agents the total-budget reserve specifically protects, so they retain
+# retry capacity after earlier (non-reserved) agents drain the shared budget.
+# Mirrors the company council's ``RESERVED_AGENTS``.
+RESERVED_AGENTS: frozenset[str] = frozenset(
+    {AGENT_RUN_RED_TEAM, AGENT_DISCOVERY_CHAIR}
 )
 
 # The ONLY per-candidate action labels any agent may return. These are internal
@@ -284,6 +306,19 @@ class DiscoveryCouncilResult(BaseModel):
     next_source_tasks: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     safety_valid: bool = True
+    # Phase 32A Slice 6A: set True only when the LLM discovery chair did not
+    # complete AND the retry bundle (``llm_discovery_council_retry_enabled``) is
+    # on, so a DETERMINISTIC, non-consensus discovery-chair summary was attached
+    # below. Default False keeps the OFF path identical (mirrors the company
+    # council's ``chair_fallback_used`` — Phase 32A Slice 4).
+    chair_fallback_used: bool = False
+    # Phase 32A Slice 6A: the deterministic discovery-chair synthesis attached
+    # when the LLM chair failed. It is NEVER a recommendation/valuation/price
+    # objective (``run_quality="failed"``, empty candidate_notes/run_notes ⇒ no
+    # citations). Kept SEPARATE from ``agents`` so the failed LLM chair still
+    # shows in the honest completed/failed counts (the council is visibly
+    # partial); default None keeps the OFF path identical.
+    deterministic_chair: DiscoveryCouncilAgentOutput | None = None
 
     def recount(self) -> None:
         """Refresh the completed/failed/skipped tallies from ``agents``."""
@@ -301,7 +336,7 @@ class DiscoveryCouncilResult(BaseModel):
         prompts or full completions are ever stored; every text field here is
         the already-safety-scanned agent output.
         """
-        return {
+        payload: dict[str, Any] = {
             "type": "llm_discovery_council_review",
             "llm_used": self.llm_used,
             "council_version": self.council_version,
@@ -334,6 +369,16 @@ class DiscoveryCouncilResult(BaseModel):
             ),
             "created_at": created_at,
         }
+        # Phase 32A Slice 6A: surface the deterministic discovery-chair fallback
+        # ONLY when it fired (keeps the OFF path + the retried-and-completed path
+        # byte-identical — mirrors the company council's Slice-4 pattern).
+        if self.chair_fallback_used:
+            payload["chair_fallback_used"] = True
+            if self.deterministic_chair is not None:
+                payload["deterministic_discovery_chair"] = (
+                    self.deterministic_chair.to_dict()
+                )
+        return payload
 
     @classmethod
     def disabled(cls) -> "DiscoveryCouncilResult":

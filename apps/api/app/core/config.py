@@ -104,6 +104,52 @@ class Settings(BaseSettings):
     # changes. Independent of the single-company council version.
     llm_discovery_council_version: str = "v1"
 
+    # ── LLM discovery council reliability / retry (Phase 32A Slice 6A) ─────
+    # Master gate for the discovery-council reliability bundle: transient-error
+    # retries, critical-agent reserved budget, and the deterministic
+    # discovery-chair fallback. OFF by default so the discovery-council path is
+    # byte-for-byte identical to today — a single attempt per agent, no
+    # fallback. When ON, ``run_discovery_council`` runs an initial pass plus a
+    # bounded, priority-ordered retry pass for TRANSIENTLY-failed agents (429 /
+    # 5xx / timeout only — never a schema/safety failure, and never
+    # ``LLMJsonError``, which is permanent by design), honoring a provider
+    # ``retry-after`` (capped) with exponential backoff + jitter, under a total
+    # wall-time budget that reserves capacity for run_red_team +
+    # discovery_chair; when the LLM chair still does not complete it attaches a
+    # deterministic, non-consensus discovery-chair summary. Mirrors the company
+    # council's Slice-4 bundle (``llm_council_retry_*`` above) but with its OWN,
+    # more generous budget: unlike the company council (which runs INLINE in
+    # the HTTP request, bound by the ~230s Azure gateway timeout), the discovery
+    # council runs as an ASYNC background job with no request-timeout
+    # constraint, so it can afford a materially larger total budget + critical
+    # reserve. This changes ONLY execution reliability: it never fabricates
+    # evidence, never produces a recommendation/rating/price-target, and
+    # candidates_* / run_quality stay honest.
+    llm_discovery_council_retry_enabled: bool = False
+    # Extra attempts (beyond the initial pass) for an OPTIONAL agent that failed
+    # transiently. Total attempts for an optional agent = 1 + this.
+    llm_discovery_council_retry_max_retries: int = 2
+    # Extra attempts (beyond the initial pass) for a CRITICAL agent
+    # (run_coordinator, risk_gatekeeper, run_red_team, discovery_chair).
+    llm_discovery_council_retry_critical_max_retries: int = 3
+    # Exponential-backoff base (seconds) before a retry: base * 2**(attempt-1),
+    # capped by the max below, plus jitter in [0, base).
+    llm_discovery_council_retry_base_backoff_seconds: float = 1.0
+    # Hard ceiling (seconds) on a single computed backoff wait.
+    llm_discovery_council_retry_max_backoff_seconds: float = 20.0
+    # Hard ceiling (seconds) on an honored provider ``retry-after`` value, so a
+    # hostile / large header can never blow the wall-time budget.
+    llm_discovery_council_retry_max_retry_after_seconds: float = 30.0
+    # HARD total discovery-council wall-time cap (seconds). All retries live
+    # under this deadline. Materially higher than the company council's 150s:
+    # the discovery council is not bound by the inline gateway timeout.
+    llm_discovery_council_retry_total_budget_seconds: float = 300.0
+    # Wall-time (seconds) reserved out of the total budget for the two protected
+    # agents (run_red_team + discovery_chair) so earlier agents draining the
+    # budget cannot starve the adversarial check and the synthesis. Materially
+    # higher than the company council's 45s, matching the larger total budget.
+    llm_discovery_council_retry_critical_reserve_seconds: float = 60.0
+
     # ── Market Candidate Discovery (Phase 25) ──────────────────────────────
     # Internal-only, bounded market scan configuration. Discovery produces
     # internal research candidates ranked by an internal prioritization score.
