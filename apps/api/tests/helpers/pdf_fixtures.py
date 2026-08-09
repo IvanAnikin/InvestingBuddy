@@ -146,9 +146,56 @@ def make_encrypted_pdf(
     return out.getvalue()
 
 
+def make_pdf_with_image(
+    text: str = "Consolidated Balance Sheet",
+    *,
+    width: int = 600,
+    height: int = 200,
+) -> bytes:
+    """A valid PDF whose page is a rendered image with NO text layer.
+
+    Unlike ``make_pdf_no_text`` (a vector-only filled rectangle), this embeds a
+    genuine raster ``/Image`` XObject — no ``Tj``/``TJ`` text-showing operator
+    anywhere in the page — so it exercises BOTH the existing "scanned, no
+    text" classification path (``pdfplumber.extract_text()`` returns ``""``,
+    same as ``make_pdf_no_text``) AND a real OCR-recoverable raster for the
+    Phase 32A Slice 5B.2 OCR-path tests (a fake OCR provider can assert it was
+    handed genuine image bytes, not an empty/degenerate image).
+
+    Renders ``text`` via Pillow (already a transitive dependency through
+    pdfplumber) as an uncompressed 8-bit grayscale raster, imported lazily so
+    the pure-stdlib fixtures above stay dependency-free.
+    """
+    from PIL import Image, ImageDraw
+
+    img = Image.new("L", (width, height), color=255)
+    draw = ImageDraw.Draw(img)
+    draw.text((10, max(0, height // 2 - 10)), text, fill=0)
+    raw_gray = img.tobytes()  # DeviceGray, 8 bits/component, uncompressed
+
+    image_obj = (
+        f"<< /Type /XObject /Subtype /Image /Width {width} /Height {height} "
+        f"/ColorSpace /DeviceGray /BitsPerComponent 8 /Length {len(raw_gray)} >>"
+    ).encode() + b"\nstream\n" + raw_gray + b"\nendstream"
+
+    content = f"q {width} 0 0 {height} 0 0 cm /Im0 Do Q".encode()
+    objs = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        (
+            f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {width} {height}] "
+            f"/Contents 4 0 R /Resources << /XObject << /Im0 5 0 R >> >> >>"
+        ).encode(),
+        b"<< /Length %d >>\nstream\n" % len(content) + content + b"\nendstream",
+        image_obj,
+    ]
+    return _assemble(objs)
+
+
 __all__ = [
     "make_pdf",
     "make_pdf_no_text",
     "make_pdf_with_table",
     "make_encrypted_pdf",
+    "make_pdf_with_image",
 ]

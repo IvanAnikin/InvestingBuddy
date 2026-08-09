@@ -555,3 +555,188 @@ guessed, derived, brute-forced or stripped.
   deliberately labels the one failure mode OCR can actually rescue.
 - Not yet staging-validated. Migration `014` must be applied to staging (manual,
   human-approved) before the behaviour is exercised.
+
+---
+
+## ADR-016: Real Azure Document Intelligence OCR Adapter, a Cross-Document OCR Budget, and Fixing the `primary_facts` Fact-Type Gap (Phase 32A Slice 5B.2)
+
+**Date:** 2026-08-09
+**Status:** Accepted — implemented on branch `phase-32a-slice-5b2-ocr`; **PR open,
+pending staging validation** (not yet merged / deployed / validated). Live
+Azure Document Intelligence proof additionally requires a human-provisioned
+resource — see Consequences.
+
+### Context
+
+ADR-014 shipped the `OcrProvider` interface + an honest `NoOpOcrProvider` and
+deferred the real adapter, explicitly flagging it as needing "resource
+provisioning + admin sign-off." ADR-015 (Slice 5B.1) then proved, live on
+staging, that the ONE failure mode OCR can rescue — `STATUS_METADATA_ONLY` +
+`FAILURE_SCANNED_NO_TEXT`, a valid PDF with no extractable text layer — is
+reachable and correctly distinguished from encrypted/malformed documents. This
+slice builds the real adapter behind that same interface and wires it into the
+one place the ADR-015 classification exists for: the issuer-IR extraction path.
+
+Independently, a Slice 5B.1-era gap was found: `council.py`'s `_primary_facts()`
+matched only the literal `"company_ir_financial_fact"` source_type, so a
+SEC/XBRL-sourced fact (`SEC_DOCUMENT_FACT_TYPE`) — including the already-live
+AAPL `cash_and_equivalents` fact proven on staging — never populated the
+structured `primary_facts` list even though its citation resolved correctly.
+
+### Decision
+
+**1. The real adapter extends the existing seam; it does not replace it.**
+`AzureDocumentIntelligenceOcrProvider` implements the same `OcrProvider` ABC as
+`NoOpOcrProvider`, using the official `azure-ai-documentintelligence` SDK's
+`prebuilt-layout` model (generic layout + table recognition — the input is an
+arbitrary annual report, not a specialized document type). `OcrResult` gains one
+additive field, `tables: list[ExtractedTable]` — without it, OCR output could
+never reach `validate_extracted_facts()`, which only ever reads
+`extraction.tables`, never bare excerpts.
+
+**2. `get_ocr_provider()` resolves the real adapter ONLY when the flag is on AND
+an endpoint is configured.** `primary_document_ocr_enabled` stays the code
+default `false`. Even with it flipped on, an empty
+`azure_document_intelligence_endpoint` (the default) still returns
+`NoOpOcrProvider` — this is what lets the flag be turned on safely before the
+Azure resource exists, mirroring ADR-014's own deferral framing. Auth is
+managed-identity-first (`DefaultAzureCredential`, matching the App Service
+system-assigned identity + Key Vault RBAC already wired in
+`infra/azure/modules/appservice.bicep` / `keyvault.bicep`) with an API-key
+fallback (`AzureKeyCredential`) only when a key is explicitly configured (local
+dev). A credential-resolution failure degrades to `NoOpOcrProvider`, never a
+crash.
+
+**3. OCR is invoked at the LOWEST-blast-radius point: inside
+`live_fetchers.py::_artifact_from_fetch`.** Immediately after native extraction
+resolves to `metadata_only` / `scanned_no_text`, an injected `ocr_provider` is
+tried. This required zero signature changes to
+`collect_company_source_evidence` / `CompanyIrConnector` for the *provider*
+itself; the only new parameter threading is a shared `OcrBudget` (cross-document
+counter), added the same way the existing `primary_document_reuse` lookup
+already threads through that exact call chain. **Scoped to the issuer-IR leg
+only** — SEC filing bodies never trigger OCR (EDGAR filings are native
+HTML/text, not scanned images), so no hook was added there.
+
+**4. OCR is metered INSIDE the existing budgets, never as a new phase.** The
+60s `primary_document_ingestion_budget_seconds` aggregate window and the 45s
+`primary_document_total_timeout_seconds` per-document cap are unchanged; a new
+`primary_document_ocr_timeout_seconds` (20s default) is carved OUT OF the
+per-document cap, not added on top — there is no spare budget between the 60s +
+150s (council) hard caps and the ~230s gateway timeout to add a third phase. A
+new `primary_document_max_ocr_documents_per_run` (2, smaller than
+`primary_document_max_docs_per_issuer`=3) bounds cross-document cost via
+`OcrBudget`. OCR calls stay sequential — no `asyncio.Semaphore`/`gather`
+fan-out is introduced; this codebase has no existing parallel-fan-out
+precedent, and the tight budget does not justify introducing one now.
+
+**5. Deterministic, bounded page selection — never every page.** A PDF's
+outline/bookmarks (metadata, readable even on a fully scanned document) are
+matched against a fixed financial-statement heading keyword list; unmatched or
+outline-less documents fall back to the first `primary_document_max_ocr_pages`
+pages (unchanged default, 5). Both paths are capped and never expand.
+
+**6. Merge semantics promote on ANY usable signal, not average confidence.** OCR
+excerpts/tables are appended with their REAL Azure confidence (never filtered at
+the mapping layer); the document is promoted from `metadata_only` to `extracted`
+only when at least one recovered item clears
+`primary_document_ocr_min_confidence` (0.4). Below that bar, the document stays
+`metadata_only` with the new `ocr_low_confidence` failure code — never promoted
+to evidence or a fact, but not silently discarded either (retained on the
+extraction object). A promoted document's `extraction_method` becomes `ocr`
+outright (this branch is only reached when NO native content existed, by
+construction of the trigger condition), and `validate_extracted_facts()` runs
+completely unchanged — it already had full `METHOD_OCR` confidence-dampening,
+`ocr_derived` flagging and human-review-note support wired from Slice 5.
+
+**7. A new balance-sheet identity check.** `extracted_fact_validator.py` gained
+`assets ≈ liabilities + equity` (new `FIELD_TOTAL_LIABILITIES` /
+`FIELD_TOTAL_EQUITY` labels), mirroring the existing debt/asset subtotal-check
+pattern. Because a 3-way identity gives no way to single out which figure is
+wrong, a mismatch downgrades all three candidates to `excerpt_only` — never a
+partial guess.
+
+**8. 8 new `FAILURE_OCR_*` codes, zero new `ATTEMPT_*` statuses.** Every OCR
+failure mode (too large, page-limit exceeded, timeout, throttled, provider
+error, malformed result, low confidence, OCR budget exhausted) resolves into
+one of the THREE existing durable statuses (`metadata_only` / `timeout` /
+`extraction_failed`) via `ingestion_status.py`'s single mapping dict — the
+established Slice 5B.1 pattern, never a parallel vocabulary.
+
+**9. The `primary_facts` fix reuses an already-defined frozenset.**
+`_primary_facts()` now matches `_DOCUMENT_FACT_TYPES` (already used by
+`_primary_document_summary()`) instead of the single literal
+`"company_ir_financial_fact"` string — a one-line change with a regression test
+pinned to the AAPL `cash_and_equivalents` shape (fails against the pre-fix
+code, passes after).
+
+**10. No migration.** An OCR-recovered excerpt persists through the EXISTING,
+unchanged `excerpts_json` write path the moment OCR promotes a document to
+`extracted` — `excerpts_json` is a bounded JSON array of excerpt dicts, each
+already carrying its own `extraction_method`, so `"ocr"` needs no schema
+change at all. `document_ingestion_attempts` needs no new columns either — the
+8 new failure codes are plain strings fitting the existing `failure_code`
+column, and `extraction_method="ocr"` already fit the existing free-string
+column. **Explicitly NOT done in this slice, and NOT claimed as done:**
+`PrimaryDocumentExtraction.tables` (native OR OCR) is still not persisted
+anywhere — a pre-existing gap from Slice 5 that this slice does not close —
+and OCR provider/model/version metadata is not yet persisted either; both
+remain a follow-up (would fit as new `excerpts_json` keys, still no migration
+expected, but that is a claim for whoever implements it to verify, not one
+made here). Alembic head stays `014`.
+
+### Alternatives rejected
+
+- **Threading `ocr_provider` through every layer's signature (`CompanyIrConnector`
+  → `collect_company_source_evidence` → `council.py`) as a first-class parameter
+  at each hop.** Rejected in favor of resolving/calling it at the single
+  lowest-blast-radius point; only the cross-document `OcrBudget` needed genuine
+  threading, using the pre-existing `primary_document_reuse` pattern rather than
+  inventing a new one.
+  A LOWER-blast-radius alternative (resolving `get_ocr_provider()` directly
+  inside `live_fetchers.py` with no parameter at all) was considered but
+  rejected: it would have made the OCR sub-flag untestable in isolation from
+  global settings and broken the existing dependency-injection test pattern
+  every other extractor callable in this module already follows.
+- **A new `_OCR_BUDGET_SHARE` sibling to `_SEC_BUDGET_SHARE`.** Rejected — OCR is
+  not a third leg drawing on the aggregate ingestion budget; it is a mode inside
+  the per-document extraction call already bounded by whatever budget was
+  threaded to that document.
+- **Filtering low-confidence OCR excerpts out of the mapping layer.** Rejected —
+  it would silently discard bounded evidence the task explicitly requires be
+  retained (labelled, not promoted). Confidence-based promotion is decided once,
+  at the merge point, not duplicated across layers.
+- **A new column for OCR provenance.** Rejected for now: nothing in this slice
+  requires OCR provider/model/version to be independently queryable via SQL.
+  Persisting it at all (as a new `excerpts_json` key, same as table persistence
+  — see Decision 10) is deferred, not built in this slice; a migration is
+  still not expected to be necessary when it is.
+
+### Consequences
+
+- No new public endpoint; no arbitrary-URL fetch surface — the Azure client
+  always talks to the ONE code-configured endpoint, never a caller-supplied URL.
+  No secret (endpoint, key, extracted text) is ever logged; SDK exceptions are
+  classified down to `type(exc).__name__` + HTTP status class only, mirroring
+  `azure_openai_client.py`.
+- `azure-ai-documentintelligence` + `azure-identity` are the FIRST `azure-*`
+  Python packages in this repo. Both are Microsoft-official, narrowly scoped,
+  and lazily imported so a NoOp-only deployment never needs them installed at
+  runtime for correctness (they are still declared in `requirements.txt` since
+  Oryx installs the full deploy manifest regardless of flag state).
+- OCR-derived facts remain confidence-capped below "high" and `needs_human_review`,
+  exactly like every other extracted fact; `publication_ready` stays false.
+- **Azure Document Intelligence resource provisioning does not exist yet** — no
+  Bicep resource, no staging app setting. This is a genuine human-gated
+  infrastructure blocker, consistent with ADR-014's own deferral. All code is
+  implemented and unit-tested against a FAKE Azure SDK client double; the "real
+  OCR proof" staging-validation criterion (an actual Azure DI call against a
+  genuinely scanned issuer document) cannot be executed until a human
+  provisions the resource and supplies the endpoint (+ optionally a key) as a
+  staging app setting under the existing human-approval gate.
+- CFR's live encrypted annual-report PDF is confirmed NOT a valid OCR proof
+  candidate (it never opens even with the empty password, so it cannot be
+  rasterized) — a genuinely scanned document is a separate, still-open target
+  for live proof; the offline `make_pdf_with_image` fixture is the guaranteed,
+  deterministic proof in the interim.
+- Not yet staging-validated. No migration required — Alembic head stays `014`.

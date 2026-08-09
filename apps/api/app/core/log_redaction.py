@@ -62,6 +62,10 @@ SENSITIVE_KEY_SUBSTRINGS: tuple[str, ...] = (
     "private_key",
     "signature",
     "session",
+    # Azure Document Intelligence's API-key header name (Phase 32A Slice
+    # 5B.2) — not caught by "api_key"/"api-key" above since it has no
+    # underscore/hyphen there.
+    "subscription-key",
 )
 
 # Query-parameter names (or substrings) whose VALUE is a secret in a URL.

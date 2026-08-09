@@ -35,6 +35,13 @@ dev = [
     # Offline async SQLite driver for real-DB tests (e.g. company-scoped
     # from-company selection). Test-only — never used at runtime.
     "aiosqlite>=0.20",
+    # Phase 32A Slice 5B.2: the OCR test suite monkeypatches
+    # azure.identity.aio.DefaultAzureCredential / azure.core.credentials.
+    # AzureKeyCredential, which requires the real package to be importable
+    # (a monkeypatch target must exist). CI runs `pip install -e ".[dev]"`, so
+    # these must be here, not only in the runtime-only `ocr` extra below.
+    "azure-ai-documentintelligence>=1.0,<2",
+    "azure-identity>=1.19,<2",
 ]
 # Install in Azure App Service (staging/production).
 # gunicorn serves uvicorn workers for multi-process production serving.
@@ -45,6 +52,14 @@ deploy = [
 # Not required for CI — default LLM_PROVIDER=mock uses no Azure credentials.
 llm = [
     "langchain-openai>=0.2",
+]
+# Phase 32A Slice 5B.2: real Azure Document Intelligence OCR adapter, for a
+# RUNTIME install that skips the rest of `dev` (e.g. a minimal production-like
+# venv). Not needed for CI (see the `dev` extra above, which is what CI
+# installs and already includes these two for the test suite).
+ocr = [
+    "azure-ai-documentintelligence>=1.0,<2",
+    "azure-identity>=1.19,<2",
 ]
 
 [build-system]

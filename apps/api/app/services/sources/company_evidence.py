@@ -71,6 +71,7 @@ from app.services.sources.extracted_fact_validator import (
     IssuerContext,
 )
 from app.services.sources.gaps import GapSeverity, GapType, SourceGap
+from app.services.sources.ocr_provider import OcrBudget, OcrProvider
 from app.services.sources.primary_document_extractor import (
     STATUS_EXTRACTED,
     _confidence_bucket,
@@ -499,6 +500,7 @@ async def collect_company_source_evidence(
     primary_document_extractor: PrimaryDocumentDeepExtractor | None = None,
     sec_primary_document_extractor: SecPrimaryDocumentExtractor | None = None,
     primary_document_reuse: dict[str, ReusedDocument] | None = None,
+    ocr_provider: OcrProvider | None = None,
     cfg: Settings | None = None,
     registry: SourceRegistry | None = None,
 ) -> CompanySourceEvidence:
@@ -518,6 +520,10 @@ async def collect_company_source_evidence(
     OPTIONAL in-memory lookup (NOT a DB session) keyed by canonical URL: a candidate
     document already present is rebuilt from persisted excerpts + facts and REUSED
     (no re-fetch/re-extract). None / empty ⇒ every candidate is fetched as before.
+    ``ocr_provider`` (Phase 32A Slice 5B.2) enables a bounded real-OCR fallback
+    for a scanned (no-text) issuer-IR document; None ⇒ byte-identical to
+    Slice 5B.1 (OCR never attempted). Scoped to the issuer-IR leg only — the
+    SEC filing-body leg never triggers OCR (EDGAR filings are native text).
     """
     cfg = cfg or default_settings
     registry = registry or build_registry(cfg)
@@ -556,6 +562,23 @@ async def collect_company_source_evidence(
         configured" and turned into an unbounded run.
         """
         return max(0.0, ingestion_budget - (time.monotonic() - ingestion_started))
+
+    # Phase 32A Slice 5B.2 — cross-document OCR usage tracker for THIS request,
+    # shared by every document the issuer-IR leg attempts OCR on. Constructed
+    # ONLY when an OCR provider was injected (byte-identical / None when not).
+    # ``deadline`` is the SAME aggregate ingestion-budget expiry as
+    # ``_remaining_budget()`` above, so an OCR call started late in the 60s
+    # window is clamped to what is ACTUALLY left, never given the full
+    # per-call timeout regardless of elapsed time.
+    ocr_budget = (
+        OcrBudget(
+            max_documents_per_run=cfg.primary_document_max_ocr_documents_per_run,
+            deadline=(ingestion_started + ingestion_budget) if ingestion_budget > 0 else None,
+            clock=time.monotonic,
+        )
+        if ocr_provider is not None
+        else None
+    )
 
     def _budget_or_unbounded(seconds: float) -> float | None:
         """``None`` ONLY when no budget is configured at all.
@@ -633,6 +656,8 @@ async def collect_company_source_evidence(
             document_extractor=document_extractor,
             primary_document_extractor=primary_document_extractor,
             primary_document_reuse=primary_document_reuse,
+            ocr_provider=ocr_provider,
+            ocr_budget=ocr_budget,
             max_docs_per_issuer=cfg.primary_document_max_docs_per_issuer,
             cfg=cfg,
             # Slice 5B.1: what is LEFT of the shared aggregate budget after the SEC

@@ -566,12 +566,20 @@ grep -RiE "Authorization: Bearer|Set-Cookie:|DATABASE_URL=|api_token=[A-Za-z0-9]
   `REPORT_CITATION_PERSISTENCE_ENABLED` is ALSO on — persists + reuses extraction
   in the new tables. With the master flag **OFF** (default) behaviour is **exactly
   Phase 29B.2 / Slice 4** — no deep fetch, no persistence, no reuse.
-- **OCR is a NoOp seam this slice.** `PRIMARY_DOCUMENT_OCR_ENABLED` exists and is
-  double-gated behind the master flag, but the only OCR provider shipped returns
-  an empty `ocr_unavailable` result (never fabricated text). A real Azure Document
-  Intelligence adapter is a deferred follow-up (needs resource provisioning +
-  admin sign-off — see `docs/DECISIONS.md` ADR-014). Scanned / JS-gated issuer
-  PDFs still degrade honestly to metadata-only / gaps.
+- **OCR: a real Azure Document Intelligence adapter exists (Phase 32A Slice
+  5B.2), but stays OFF by default and requires TWO things, not one.**
+  `PRIMARY_DOCUMENT_OCR_ENABLED` is double-gated behind the master flag AND
+  `get_ocr_provider()` also requires `AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT` to
+  be set — with either condition unmet, the honest NoOp provider is used
+  (returns an empty `ocr_unavailable` result, never fabricated text). This is
+  what lets the flag be flipped on safely BEFORE the Azure resource is
+  provisioned. See `docs/DECISIONS.md` ADR-016 for the full design. Scanned /
+  JS-gated issuer PDFs still degrade honestly to metadata-only / gaps when
+  OCR is off or unconfigured. **The Azure Document Intelligence resource
+  itself is NOT provisioned anywhere in `infra/azure/*.bicep` yet** — a
+  human-gated infra step (provisioning + Key Vault/managed-identity RBAC +
+  setting the two settings below) must happen before OCR can be enabled on
+  staging/production.
 - **New app settings (all safe non-secret defaults; master gate OFF):**
 
   | Setting | Default | Purpose |
@@ -594,9 +602,23 @@ grep -RiE "Authorization: Bearer|Set-Cookie:|DATABASE_URL=|api_token=[A-Za-z0-9]
   | `PRIMARY_DOCUMENT_EVIDENCE_CAP` | `6` | Hard cap on primary-document facts in the pack. |
   | `PRIMARY_DOCUMENT_REUSE_TTL_HOURS` | `24` | Freshness window for reusing a persisted extraction (both ingestion + citation-persistence flags on). |
 
+  **Phase 32A Slice 5B.2 — real OCR settings (all inert unless BOTH `PRIMARY_DOCUMENT_OCR_ENABLED=true` AND the endpoint below is set):**
+
+  | Setting | Default | Purpose |
+  |---|---|---|
+  | `AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT` | *(empty)* | The ONE fixed Azure DI resource endpoint the client calls — never a caller-supplied URL. Empty ⇒ `get_ocr_provider()` returns NoOp regardless of the flag. **Secret-adjacent — never hardcode; set as an App Service setting.** |
+  | `AZURE_DOCUMENT_INTELLIGENCE_API_KEY` | *(empty)* | Optional fallback credential. Leave empty in any environment with a system-assigned managed identity (preferred: `DefaultAzureCredential`). **Never hardcode — Key Vault reference in staging/production.** |
+  | `PRIMARY_DOCUMENT_OCR_TIMEOUT_SECONDS` | `20` | Hard cap for ONE OCR call (submit + poll); carved out of, never added on top of, the 45s per-document total. |
+  | `PRIMARY_DOCUMENT_OCR_POLL_INTERVAL_SECONDS` | `1.0` | Poll interval for the Azure long-running-operation status check. |
+  | `PRIMARY_DOCUMENT_MAX_OCR_DOCUMENTS_PER_RUN` | `2` | Cross-document OCR cap for one report-generation request. |
+  | `PRIMARY_DOCUMENT_OCR_MAX_RETRIES` | `1` | Bounded retry count for a single transient (timeout/429/5xx) OCR failure. |
+  | `PRIMARY_DOCUMENT_OCR_MIN_CONFIDENCE` | `0.4` | Below this, OCR output stays evidence-only internally — never promoted to extracted/a fact. |
+
   These are **tuning knobs, not secrets** — no real secret value is ever printed;
-  all KEYS are in `.env.example` with default values. Leave
-  `PRIMARY_DOCUMENT_INGESTION_ENABLED=false` until Slice 5 is validated.
+  all KEYS are in `.env.example` with default (empty/off) values. Leave
+  `PRIMARY_DOCUMENT_INGESTION_ENABLED=false` until Slice 5 is validated, and leave
+  `PRIMARY_DOCUMENT_OCR_ENABLED=false` / the Azure DI endpoint unset until a human
+  has provisioned the resource and explicitly approved enabling it.
   **Rollback:** set `PRIMARY_DOCUMENT_INGESTION_ENABLED=false` to return to the
   exact prior behaviour with no code change (the `013` tables can remain — they
   stay empty).
@@ -734,6 +756,111 @@ report IDs, SQL evidence, and the two corrective-hotfix root causes.
   mailbox is real per SEC fair-access policy.
 - **I. Timing.** Discovery + fetch + extraction durations recorded; total analysis
   stays well under the ~230s gateway (no 502/504); SEC throttle observed.
+
+---
+
+## Real Azure Document Intelligence OCR (Phase 32A Slice 5B.2)
+
+> **PR open — pre-staging. Not yet merged / deployed / staging-validated.** Do
+> **not** treat this section as a closed/validated deployment record until the
+> merge SHA + deployed SHA + staging validation result are on file. Branch
+> `phase-32a-slice-5b2-ocr`. `PRIMARY_DOCUMENT_OCR_ENABLED` ships `false`; the
+> real adapter additionally requires `AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT` to
+> be set, which **no infra in this repo provisions** — see item F below. No
+> migration (Alembic head stays `014`).
+
+**Scope note — this is NOT a fully-dormant PR.** Unlike a change gated
+entirely behind a still-OFF flag, this PR's `council.py::_primary_facts()`
+fix runs on the ALREADY-ON `PRIMARY_DOCUMENT_INGESTION_ENABLED` path (kept ON
+on staging since Slice 5A). The moment this merges and deploys, a SEC/XBRL
+fact that previously matched only `"company_ir_financial_fact"` will start
+populating `primary_facts` for any US issuer whose SEC-sourced fact is
+`confidence="high"` — concretely, AAPL's already-live `cash_and_equivalents`
+fact. This is a genuine, immediate behavior change on a live path and must be
+explicitly re-proven post-deploy (item C below), not assumed byte-identical.
+
+- **A. Deploy identity.** API serves the merged commit SHA (3 stable polls);
+  DB head stays `014` (no migration in this slice); `AUTH_TEST_MODE` absent;
+  unauthenticated → 401.
+- **B. Flag state.** `PRIMARY_DOCUMENT_INGESTION_ENABLED` unchanged (ON, no
+  new app-setting change needed for this deploy); `PRIMARY_DOCUMENT_OCR_ENABLED`
+  and `AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT` both remain unset (OFF/empty) —
+  confirm ONLY the code changed, no app setting needs to change for this PR
+  to deploy safely.
+- **C. `_primary_facts()` fix — re-proof on the live path (the scope-note
+  item, run even though OCR itself stays off).** Re-run a fresh AAPL
+  analysis. Confirm: (i) the SEC-sourced `cash_and_equivalents` fact (or
+  whichever high-confidence SEC/XBRL fact is currently live) now appears in
+  `source_summary_json.llm_council.primary_facts`, where it was previously
+  absent; (ii) `company_ir_financial_fact`-sourced facts (if any for this
+  issuer) still appear, unchanged; (iii) SEC/XBRL numeric values in the
+  rendered report are UNCHANGED from the pre-deploy baseline (the fix changes
+  what's *visible in the structured list*, never a value); (iv) no new
+  citation, no new Source row, no duplicate evidence appears as a side
+  effect.
+- **D. OCR flag off / unconfigured — byte-identical regression.** With
+  `PRIMARY_DOCUMENT_OCR_ENABLED=false` (the deployed default): a scanned
+  document still degrades to `metadata_only` / `scanned_no_text`, IDENTICAL
+  to Slice 5B.1 behavior. Zero calls to any `azure.*` host — confirm via
+  `document_ingestion_attempts` (no new `ocr_*` failure codes appear) and
+  via egress/log inspection. **This is also a real, live probe worth
+  running as its OWN human-approved app-setting change** (separate from
+  provisioning the Azure resource — see item F): flip
+  `PRIMARY_DOCUMENT_OCR_ENABLED=true` with the endpoint still unset and
+  confirm the `primary_document_ocr_enabled_but_unconfigured` WARNING log
+  line appears and `get_ocr_provider()` still returns the NoOp path (a
+  scanned document behaves identically to the flag being off) — proving the
+  double-gate live, not just by code reading.
+- **E. Balance-sheet identity check — live proof (does not require OCR).**
+  For an issuer whose extracted table already carries total assets, total
+  liabilities AND total equity in the same period (native extraction, no OCR
+  needed), confirm the new check runs: either all three reconcile and stay
+  `validated`, or a genuine mismatch downgrades all three to `excerpt_only`
+  with the new validator note. If no live table currently carries all three
+  labels, record that honestly as "not exercised live this round" rather than
+  claiming false coverage — the offline unit tests
+  (`test_phase32a_slice5b2_balance_sheet.py`) remain the primary proof either
+  way.
+- **F. Real OCR proof — BLOCKED, human-gated, explicitly not this round.**
+  No Azure Document Intelligence resource exists in `infra/azure/*.bicep`.
+  Live proof (an actual Azure DI call against a genuinely scanned issuer
+  document, page/table provenance persisting, confidence + validation state
+  visible in report data, a second run reusing without a second Azure call)
+  **cannot be executed until a human**: (1) provisions the Azure Document
+  Intelligence resource + RBAC/managed-identity wiring; (2) sets
+  `AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT` (and optionally `_API_KEY`) as a
+  staging app setting; (3) explicitly approves flipping
+  `PRIMARY_DOCUMENT_OCR_ENABLED=true` on staging. This is a known,
+  intentional limitation (mirrors ADR-014's own deferral for the OCR seam
+  itself) — record it as "not yet executable," not as a passed/failed check.
+  When that human step happens, follow up with: a genuinely scanned document
+  fixture check — bounded live discovery across the other 11 registered
+  issuers in `verified_issuer_sources.py` (UHR, MC, RMS, KER, BRBY, PNDORA,
+  MONC, BA, ASML, SAP, NESN), since CFR's encrypted annual-report PDF is
+  confirmed NOT a valid target (it never opens even with the empty password
+  — it cannot be rasterized, so OCR cannot rescue it; a genuinely scanned,
+  no-password document is a structurally different, still-open target);
+  confirm `ocr_provider_error`/`ocr_timeout` degrade honestly under real
+  network conditions; confirm the aggregate-budget clamp (§ ADR-016 Decision
+  4) holds under real Azure latency, not just the fake provider's instant
+  responses.
+- **G. Cross-company isolation.** Run AAPL and one European issuer (e.g. CFR)
+  back-to-back. No OCR-derived (or any) evidence/citation crosses between
+  them; no shared `content_hash`; no Apple data appears in the European
+  report or vice versa (same check pattern as Slice 5B.1's live proof).
+- **H. Security proof.** Response + fresh log grep clean of secrets, the
+  Azure endpoint, and any credential (the `azure` logger is capped at
+  WARNING — confirm no `azure.core.pipeline.policies.http_logging_policy`
+  INFO line reaches stdout even with OCR still off, since the cap applies
+  regardless of flag state). No `AUTH_TEST_MODE`. No new public route.
+- **I. Idempotency (structural — exercised by existing reuse, no OCR
+  needed).** Re-running the same analysis does not create duplicate
+  `extracted_documents` / `extracted_facts` / `document_ingestion_attempts`
+  rows; the reuse lookup still short-circuits re-fetch/re-extract exactly as
+  in Slice 5B.1.
+- **J. Timing.** Total analysis duration unchanged from the Slice 5B.1
+  baseline (OCR never runs with the flag off, so no new time is spent); no
+  502/504.
 
 ---
 

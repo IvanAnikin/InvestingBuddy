@@ -24,4 +24,10 @@ pypdf>=4.0,<6
 # Pillow (Pillow gates the future OCR raster path via a pixel cap). No system
 # deps, no OCR binary (tesseract/pdf2image/pymupdf are intentionally NOT added).
 pdfplumber>=0.11,<0.12
+# Phase 32A Slice 5B.2: real Azure Document Intelligence OCR adapter for
+# scanned/image-only primary documents. Inert unless
+# PRIMARY_DOCUMENT_OCR_ENABLED=true AND an endpoint is configured — see
+# get_ocr_provider() in app/services/sources/ocr_provider.py.
+azure-ai-documentintelligence>=1.0,<2
+azure-identity>=1.19,<2
 gunicorn>=23.0
