@@ -40,7 +40,7 @@ import asyncio
 import logging
 import time
 from abc import ABC, abstractmethod
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from typing import Any
 
@@ -301,16 +301,37 @@ class OcrBudget:
     to each document's extraction call — mirrors the ``primary_document_reuse``
     threading precedent. Purely in-memory counters; never persisted itself
     (the durable record is the ingestion-attempt row each OCR call produces).
+
+    ``deadline`` (an absolute value on ``clock``'s timescale) is the SAME
+    aggregate-ingestion-budget expiry ``company_evidence.py`` already computes
+    (``ingestion_started + ingestion_budget``) — carried here so an OCR call
+    started late in the aggregate window is clamped to whatever time is
+    ACTUALLY left, never blindly given the full
+    ``primary_document_ocr_timeout_seconds`` regardless of how much of the 60s
+    aggregate budget already elapsed. ``None`` means no aggregate budget is
+    configured (unbounded), matching ``_budget_or_unbounded``'s convention.
     """
 
     max_documents_per_run: int
     documents_used: int = 0
+    deadline: float | None = None
+    clock: Callable[[], float] = time.monotonic
 
     def can_start_document(self) -> bool:
         return self.documents_used < max(0, self.max_documents_per_run)
 
     def record_document_started(self) -> None:
         self.documents_used += 1
+
+    def remaining_seconds(self) -> float | None:
+        """Seconds left on the aggregate deadline, or ``None`` if unbounded.
+
+        ``0.0`` (never negative) means the deadline has already passed —
+        callers must treat that as EXHAUSTED, not "unbounded".
+        """
+        if self.deadline is None:
+            return None
+        return max(0.0, self.deadline - self.clock())
 
 
 # --------------------------------------------------------------------------- #
@@ -414,20 +435,28 @@ class AzureDocumentIntelligenceOcrProvider(OcrProvider):
     ) -> OcrResult:
         cfg = cfg or default_settings
         started = time.perf_counter()
-        client = self._client or self._build_client()
         page_spec = ",".join(str(p) for p in pages) if pages else None
         deadline = timeout_seconds or cfg.primary_document_ocr_timeout_seconds
 
+        # Client construction (import + instantiation) lives INSIDE the try: a
+        # missing SDK package or a malformed endpoint must degrade to an
+        # honest OcrResult like any other provider failure, never propagate
+        # past extract() and break the whole source-connector evidence leg.
+        client: Any | None = None
         try:
-            poller = await asyncio.wait_for(
-                client.begin_analyze_document(
+            client = self._client or self._build_client()
+            # ONE shared deadline for the whole call (submit + poll) — two
+            # separate wait_for(..., timeout=deadline) calls would let the
+            # call take up to 2x deadline in the worst case, contradicting
+            # "hard cap for the whole call".
+            async with asyncio.timeout(deadline):
+                poller = await client.begin_analyze_document(
                     self._model_id,
                     body=image_or_pdf_bytes,
                     pages=page_spec,
-                ),
-                timeout=deadline,
-            )
-            raw_result = await asyncio.wait_for(poller.result(), timeout=deadline)
+                    polling_interval=cfg.primary_document_ocr_poll_interval_seconds,
+                )
+                raw_result = await poller.result()
         except TimeoutError:
             log_event(
                 _log,
@@ -461,7 +490,7 @@ class AzureDocumentIntelligenceOcrProvider(OcrProvider):
             )
         finally:
             try:
-                aclose = getattr(client, "close", None)
+                aclose = getattr(client, "close", None) if client is not None else None
                 if aclose is not None and self._client is None:
                     await aclose()
             except Exception:  # noqa: BLE001 - cleanup must never raise
@@ -493,6 +522,52 @@ class AzureDocumentIntelligenceOcrProvider(OcrProvider):
             )
 
 
+# Azure Document Intelligence exposes a real, measured ``confidence`` ONLY on
+# ``DocumentWord`` (via ``pages[].words[]``) — NOT on ``DocumentParagraph`` or
+# ``DocumentTable``/``DocumentTableCell`` (confirmed against the pinned
+# ``azure-ai-documentintelligence`` SDK's model schemas). A paragraph/table
+# confidence is therefore DERIVED by averaging the real confidence of every
+# word whose span falls inside the paragraph's/table's own span(s) — never a
+# fabricated constant standing in for a number Azure never measured.
+_UNMEASURED_CONFIDENCE = 0.3  # below every promotion/validation threshold
+
+
+def _flatten_words(raw_result: Any) -> list[Any]:
+    words: list[Any] = []
+    for page in list(getattr(raw_result, "pages", None) or []):
+        words.extend(list(getattr(page, "words", None) or []))
+    return words
+
+
+def _confidence_for_spans(spans: Any, words: list[Any]) -> float | None:
+    """Average REAL word-level confidence for the given span(s).
+
+    Returns ``None`` when no word's span is fully contained in any of
+    ``spans`` — callers must treat that as "not measured", never coerce it to
+    a plausible-looking number.
+    """
+    matched: list[float] = []
+    for span in list(spans or []):
+        s_off = getattr(span, "offset", None)
+        s_len = getattr(span, "length", None)
+        if s_off is None or s_len is None:
+            continue
+        s_end = s_off + s_len
+        for word in words:
+            w_span = getattr(word, "span", None)
+            w_off = getattr(w_span, "offset", None) if w_span else None
+            w_len = getattr(w_span, "length", None) if w_span else None
+            if w_off is None or w_len is None:
+                continue
+            if w_off >= s_off and (w_off + w_len) <= s_end:
+                conf = getattr(word, "confidence", None)
+                if conf is not None:
+                    matched.append(float(conf))
+    if not matched:
+        return None
+    return sum(matched) / len(matched)
+
+
 def _map_azure_result(
     raw_result: Any,
     *,
@@ -509,13 +584,15 @@ def _map_azure_result(
     structured fields are copied — never raw provider text beyond the bounded
     excerpt/cell caps, and never the endpoint/credential.
 
-    Every recognized excerpt/table is returned with its REAL confidence,
-    regardless of ``primary_document_ocr_min_confidence`` — that threshold is
-    applied by the CALLER (the merge step in ``live_fetchers.py``), which
-    decides whether to promote the document to ``extracted`` or keep it
+    Every recognized excerpt/table is returned with a REAL, word-confidence-
+    derived confidence (see ``_confidence_for_spans``), regardless of
+    ``primary_document_ocr_min_confidence`` — that threshold is applied by the
+    CALLER (the merge step in ``live_fetchers.py``), which decides whether to
+    promote the document to ``extracted`` or keep it
     ``metadata_only``/``ocr_low_confidence``. This function only ever reports
-    what Azure actually recognized.
+    what Azure actually recognized/measured.
     """
+    words = _flatten_words(raw_result)
     tables: list[ExtractedTable] = []
     raw_tables = list(getattr(raw_result, "tables", None) or [])[
         :_MAX_TABLES_PER_DOCUMENT
@@ -527,6 +604,7 @@ def _map_azure_result(
         col_count = min(col_count, _MAX_TABLE_COLS)
         grid: list[list[str]] = [["" for _ in range(col_count)] for _ in range(row_count)]
         page_number: int | None = None
+        cell_spans: list[Any] = []
         for cell in list(getattr(raw_table, "cells", None) or []):
             r = int(getattr(cell, "row_index", -1))
             c = int(getattr(cell, "column_index", -1))
@@ -536,9 +614,13 @@ def _map_azure_result(
                 regions = list(getattr(cell, "bounding_regions", None) or [])
                 if regions:
                     page_number = getattr(regions[0], "page_number", None)
+            cell_spans.extend(list(getattr(cell, "spans", None) or []))
         rows = [row for row in grid if any(row)]
         if not rows:
             continue
+        table_confidence = _confidence_for_spans(cell_spans, words)
+        if table_confidence is None:
+            table_confidence = _UNMEASURED_CONFIDENCE
         # CONFIRMED repo convention (primary_document_extractor.py): "p{page}:t{idx}".
         location = f"p{page_number}:t{t_idx}" if page_number else f"t{t_idx}"
         tables.append(
@@ -550,7 +632,7 @@ def _map_azure_result(
                 row_count=len(rows),
                 col_count=col_count,
                 extraction_method=METHOD_OCR,
-                confidence=0.6,  # layout model exposes no per-table confidence
+                confidence=round(table_confidence, 4),
             )
         )
 
@@ -564,14 +646,16 @@ def _map_azure_result(
             continue
         regions = list(getattr(para, "bounding_regions", None) or [])
         page_number = getattr(regions[0], "page_number", None) if regions else None
-        confidence = float(getattr(para, "confidence", 0.6) or 0.6)
+        confidence = _confidence_for_spans(getattr(para, "spans", None), words)
+        if confidence is None:
+            confidence = _UNMEASURED_CONFIDENCE
         excerpts.append(
             PrimaryDocumentExcerpt(
                 excerpt_id=f"OCR{p_idx}",
                 text=text,
                 page_number=page_number,
                 extraction_method=METHOD_OCR,
-                confidence=confidence,
+                confidence=round(confidence, 4),
                 char_count=len(text),
             )
         )

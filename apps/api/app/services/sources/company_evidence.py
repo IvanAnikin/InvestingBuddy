@@ -566,8 +566,16 @@ async def collect_company_source_evidence(
     # Phase 32A Slice 5B.2 — cross-document OCR usage tracker for THIS request,
     # shared by every document the issuer-IR leg attempts OCR on. Constructed
     # ONLY when an OCR provider was injected (byte-identical / None when not).
+    # ``deadline`` is the SAME aggregate ingestion-budget expiry as
+    # ``_remaining_budget()`` above, so an OCR call started late in the 60s
+    # window is clamped to what is ACTUALLY left, never given the full
+    # per-call timeout regardless of elapsed time.
     ocr_budget = (
-        OcrBudget(max_documents_per_run=cfg.primary_document_max_ocr_documents_per_run)
+        OcrBudget(
+            max_documents_per_run=cfg.primary_document_max_ocr_documents_per_run,
+            deadline=(ingestion_started + ingestion_budget) if ingestion_budget > 0 else None,
+            clock=time.monotonic,
+        )
         if ocr_provider is not None
         else None
     )

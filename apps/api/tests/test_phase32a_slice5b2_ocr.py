@@ -37,8 +37,10 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app.core.config import Settings
+from app.services.extracted_document_service import ReusedDocument
 from app.services.llm.council import _primary_facts
 from app.services.sources.company_evidence import SEC_DOCUMENT_FACT_TYPE
+from app.services.sources.connector_base import CompanyContext, QueryContext
 from app.services.sources.connectors.company_ir import CompanyIrConnector, PrimaryDocumentArtifact
 from app.services.sources.document_fetcher import DocumentFetchResult
 from app.services.sources.evidence import EvidenceItem, PrimaryFactRef
@@ -49,11 +51,14 @@ from app.services.sources.extracted_fact_validator import (
 from app.services.sources.ingestion_status import (
     FAILURE_OCR_BUDGET_EXHAUSTED,
     FAILURE_OCR_LOW_CONFIDENCE,
+    FAILURE_OCR_MALFORMED_RESULT,
+    FAILURE_OCR_TIMEOUT,
     FAILURE_SCANNED_NO_TEXT,
 )
 from app.services.sources.live_fetchers import _artifact_from_fetch
 from app.services.sources.ocr_provider import (
     OCR_STATUS_EXTRACTED,
+    OCR_STATUS_FAILED,
     OCR_STATUS_UNAVAILABLE,
     OcrBudget,
     OcrProvider,
@@ -67,6 +72,8 @@ from app.services.sources.primary_document_extractor import (
     ExtractedTable,
     PrimaryDocumentExcerpt,
 )
+from app.services.sources.redaction import canonicalize_source_url
+from app.services.sources.safe_web_fetcher import SafeLink
 from tests.helpers.pdf_fixtures import make_encrypted_pdf, make_pdf, make_pdf_with_image
 
 
@@ -101,6 +108,30 @@ class _FakeOcrProvider(OcrProvider):
     ) -> OcrResult:
         self.calls.append(image_or_pdf_bytes)
         return self._result
+
+
+class _SequenceOcrProvider(OcrProvider):
+    """Returns a different canned result on each successive call."""
+
+    def __init__(self, results: list[OcrResult]) -> None:
+        self.calls: list[bytes] = []
+        self._results = list(results)
+
+    @property
+    def provider_name(self) -> str:
+        return "fake"
+
+    async def extract(
+        self,
+        image_or_pdf_bytes: bytes,
+        *,
+        cfg: Settings | None = None,
+        pages: list[int] | None = None,
+        timeout_seconds: float | None = None,
+    ) -> OcrResult:
+        self.calls.append(image_or_pdf_bytes)
+        idx = min(len(self.calls) - 1, len(self._results) - 1)
+        return self._results[idx]
 
 
 def _fetched(content: bytes, *, document_type: str = "pdf") -> DocumentFetchResult:
@@ -262,6 +293,119 @@ def test_ocr_budget_exhausted_skips_call_entirely():
     assert artifact.failure_code == FAILURE_OCR_BUDGET_EXHAUSTED
 
 
+def test_ocr_aggregate_deadline_already_passed_skips_call_entirely():
+    # deadline in the past (relative to the injected clock) must skip OCR
+    # entirely, even though the document-count budget still has room — the
+    # aggregate ingestion-budget deadline is a SEPARATE, equally hard limit.
+    scanned = make_pdf_with_image("scanned")
+    fake = _FakeOcrProvider(OcrResult(status=OCR_STATUS_EXTRACTED))
+    budget = OcrBudget(max_documents_per_run=2, deadline=100.0, clock=lambda: 200.0)
+
+    artifact = _run(_fetched(scanned), cfg=_cfg(), ocr_provider=fake, ocr_budget=budget)
+
+    assert fake.calls == []
+    assert artifact.status == STATUS_METADATA_ONLY
+    assert artifact.failure_code == FAILURE_OCR_BUDGET_EXHAUSTED
+    assert budget.documents_used == 0  # never charged; the call never started
+
+
+def test_ocr_aggregate_deadline_clamps_the_per_call_timeout():
+    # Plenty of document-count budget and a still-open deadline, but LESS time
+    # remaining than the configured per-call timeout — the provider must be
+    # called with the clamped (smaller) value, never the full config default.
+    scanned = make_pdf_with_image("scanned")
+    seen_timeouts: list[float | None] = []
+
+    class _RecordingProvider(_FakeOcrProvider):
+        async def extract(self, image_or_pdf_bytes, *, cfg=None, pages=None, timeout_seconds=None):
+            seen_timeouts.append(timeout_seconds)
+            return await super().extract(
+                image_or_pdf_bytes, cfg=cfg, pages=pages, timeout_seconds=timeout_seconds
+            )
+
+    fake = _RecordingProvider(
+        OcrResult(
+            status=OCR_STATUS_EXTRACTED,
+            excerpts=[
+                PrimaryDocumentExcerpt(
+                    excerpt_id="OCR0",
+                    text="Revenue for fiscal year 2024 was EUR 20,616 million.",
+                    page_number=1,
+                    extraction_method=METHOD_OCR,
+                    confidence=0.85,
+                    char_count=52,
+                )
+            ],
+        )
+    )
+    budget = OcrBudget(max_documents_per_run=2, deadline=105.0, clock=lambda: 100.0)  # 5s left
+    artifact = _run(
+        _fetched(scanned),
+        cfg=_cfg(primary_document_ocr_timeout_seconds=20),
+        ocr_provider=fake,
+        ocr_budget=budget,
+    )
+
+    assert seen_timeouts == [5.0]  # clamped to the remaining 5s, not the configured 20s
+    assert artifact.status == STATUS_EXTRACTED
+
+
+def test_ocr_retries_once_after_a_transient_failure_then_succeeds():
+    scanned = make_pdf_with_image("scanned")
+    seq = _SequenceOcrProvider(
+        [
+            OcrResult(status=OCR_STATUS_FAILED, failure_code=FAILURE_OCR_TIMEOUT),
+            OcrResult(
+                status=OCR_STATUS_EXTRACTED,
+                excerpts=[
+                    PrimaryDocumentExcerpt(
+                        excerpt_id="OCR0",
+                        text="Revenue for fiscal year 2024 was EUR 20,616 million.",
+                        page_number=1,
+                        extraction_method=METHOD_OCR,
+                        confidence=0.85,
+                        char_count=52,
+                    )
+                ],
+            ),
+        ]
+    )
+    artifact = _run(
+        _fetched(scanned),
+        cfg=_cfg(primary_document_ocr_max_retries=1),
+        ocr_provider=seq,
+    )
+    assert len(seq.calls) == 2  # one retry after the transient failure
+    assert artifact.status == STATUS_EXTRACTED
+
+
+def test_ocr_never_retries_a_malformed_result():
+    scanned = make_pdf_with_image("scanned")
+    seq = _SequenceOcrProvider(
+        [
+            OcrResult(status=OCR_STATUS_FAILED, failure_code=FAILURE_OCR_MALFORMED_RESULT),
+            OcrResult(status=OCR_STATUS_EXTRACTED),  # would succeed, but must never be tried
+        ]
+    )
+    artifact = _run(
+        _fetched(scanned),
+        cfg=_cfg(primary_document_ocr_max_retries=2),
+        ocr_provider=seq,
+    )
+    assert len(seq.calls) == 1  # malformed_result is not transient — no retry
+    assert artifact.status == STATUS_METADATA_ONLY
+    assert artifact.failure_code == FAILURE_OCR_MALFORMED_RESULT
+
+
+def test_ocr_max_retries_zero_makes_exactly_one_attempt():
+    scanned = make_pdf_with_image("scanned")
+    seq = _SequenceOcrProvider(
+        [OcrResult(status=OCR_STATUS_FAILED, failure_code=FAILURE_OCR_TIMEOUT)]
+    )
+    _run(_fetched(scanned), cfg=_cfg(primary_document_ocr_max_retries=0), ocr_provider=seq)
+    assert len(seq.calls) == 1
+
+
 def test_ocr_disabled_flag_prevents_call_even_with_provider_passed():
     # Defense-in-depth: _artifact_from_fetch re-checks the flag itself, so a
     # caller that (incorrectly) passes a provider with the flag off still
@@ -289,17 +433,18 @@ def test_no_provider_passed_is_byte_identical_to_pre_5b2():
 
 
 def test_reused_artifact_never_calls_ocr_provider():
+    # Genuinely drives CompanyIrConnector._extract_primary_documents_deep — not
+    # just asserting on construction — so this proves the reuse branch itself
+    # (not just "nothing ran yet") skips both the extractor AND OCR.
     fake = _FakeOcrProvider(OcrResult(status=OCR_STATUS_EXTRACTED))
+    url = "https://www.example-issuer.com/reports/ar2024.pdf"
+    canonical = canonicalize_source_url(url) or url
 
-    cached_extraction_artifact = PrimaryDocumentArtifact(
-        source_url="https://www.example-issuer.com/reports/ar2024.pdf",
+    cached_artifact = PrimaryDocumentArtifact(
+        source_url=url,
         status=STATUS_EXTRACTED,
         retrieved_at=datetime.now(timezone.utc),
     )
-
-    class _ReusedDouble:
-        def __init__(self, artifact: PrimaryDocumentArtifact) -> None:
-            self.artifact = artifact
 
     async def _extractor_should_not_be_called(*a: Any, **k: Any) -> Any:
         raise AssertionError("primary_document_extractor must not be called when reused")
@@ -307,16 +452,28 @@ def test_reused_artifact_never_calls_ocr_provider():
     connector = CompanyIrConnector(
         primary_document_extractor=_extractor_should_not_be_called,
         primary_document_reuse={
-            "https://www.example-issuer.com/reports/ar2024.pdf": _ReusedDouble(
-                cached_extraction_artifact
+            canonical: ReusedDocument(
+                canonical_url=canonical,
+                content_hash="0" * 64,
+                retrieved_at=datetime.now(timezone.utc),
+                artifact=cached_artifact,
             )
         },
         ocr_provider=fake,
         ocr_budget=OcrBudget(max_documents_per_run=2),
         max_docs_per_issuer=1,
     )
-    assert connector._ocr_provider is fake
-    assert fake.calls == []  # nothing has run yet; reuse path never touches OCR
+    links = [SafeLink(url=url, text="Annual report 2024", is_document=True)]
+    company = CompanyContext(ticker="EXIS", exchange="XX", company_name="Example Issuer")
+    query = QueryContext(max_items=5)
+
+    items, gaps, artifacts = asyncio.run(
+        connector._extract_primary_documents_deep(links, query, company)
+    )
+
+    assert fake.calls == []  # the extractor was never called, so OCR never ran either
+    assert len(artifacts) == 1
+    assert artifacts[0] is cached_artifact  # the reused artifact, not a fresh one
 
 
 # =========================================================================== #

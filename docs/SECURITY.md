@@ -182,9 +182,12 @@ surface. It is hardened as follows:
   user password is recorded as inaccessible and never opened.
 - **Content + resource bounds.** A `%PDF-` magic-byte check before parsing; a hard
   download-byte ceiling; page / OCR-page / excerpt / char / table-size caps; a
-  decompression-bomb guard; a Pillow image-pixel cap for the OCR raster path; and
-  per-document + aggregate wall-time budgets so ingestion cannot hang or exhaust
-  memory.
+  decompression-bomb guard (`guard_image_pixels`, Pillow-based — pins
+  `PIL.Image.MAX_IMAGE_PIXELS`; not on the real OCR call path itself, since
+  the PDF bytes are shipped to Azure directly and rasterized server-side, but
+  still exercised/available for any future local-image entry point); and
+  per-document + aggregate wall-time budgets so ingestion cannot hang or
+  exhaust memory.
 - **Real Azure Document Intelligence OCR — fixed endpoint, no arbitrary URL
   (Slice 5B.2).** `AzureDocumentIntelligenceOcrProvider` always calls the ONE
   code-configured `azure_document_intelligence_endpoint` — never a

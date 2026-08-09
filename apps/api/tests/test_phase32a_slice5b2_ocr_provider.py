@@ -184,12 +184,38 @@ class _FakeRegion:
         self.page_number = page_number
 
 
+class _FakeSpan:
+    def __init__(self, offset: int, length: int) -> None:
+        self.offset = offset
+        self.length = length
+
+
+class _FakeWord:
+    """Mirrors the REAL SDK: only DocumentWord carries a real ``confidence``."""
+
+    def __init__(self, content: str, *, offset: int, confidence: float) -> None:
+        self.content = content
+        self.span = _FakeSpan(offset, len(content))
+        self.confidence = confidence
+
+
+class _FakePage:
+    def __init__(self, page_number: int, words: list[_FakeWord]) -> None:
+        self.page_number = page_number
+        self.words = words
+
+
 class _FakeCell:
-    def __init__(self, row_index: int, column_index: int, content: str, page: int) -> None:
+    """Mirrors the REAL SDK: DocumentTableCell has ``spans``, never ``confidence``."""
+
+    def __init__(
+        self, row_index: int, column_index: int, content: str, page: int, *, offset: int = 0
+    ) -> None:
         self.row_index = row_index
         self.column_index = column_index
         self.content = content
         self.bounding_regions = [_FakeRegion(page)]
+        self.spans = [_FakeSpan(offset, len(content))]
 
 
 class _FakeTable:
@@ -200,10 +226,12 @@ class _FakeTable:
 
 
 class _FakeParagraph:
-    def __init__(self, content: str, page: int, confidence: float) -> None:
+    """Mirrors the REAL SDK: DocumentParagraph has ``spans``, never ``confidence``."""
+
+    def __init__(self, content: str, page: int, *, offset: int = 0) -> None:
         self.content = content
         self.bounding_regions = [_FakeRegion(page)]
-        self.confidence = confidence
+        self.spans = [_FakeSpan(offset, len(content))]
 
 
 class _FakeAnalyzeResult:
@@ -216,7 +244,7 @@ class _FakeAnalyzeResult:
     ) -> None:
         self.tables = tables or []
         self.paragraphs = paragraphs or []
-        self.pages = pages or [object()]
+        self.pages = pages if pages is not None else [_FakePage(1, [])]
 
 
 class _FakePoller:
@@ -245,7 +273,9 @@ class _FakeClient:
         self.calls: list[dict[str, Any]] = []
         self.closed = False
 
-    async def begin_analyze_document(self, model_id: str, *, body: bytes, pages: str | None) -> Any:
+    async def begin_analyze_document(
+        self, model_id: str, *, body: bytes, pages: str | None, polling_interval: float | None = None
+    ) -> Any:
         self.calls.append({"model_id": model_id, "body_len": len(body), "pages": pages})
         if self._submit_exc is not None:
             raise self._submit_exc
@@ -264,18 +294,33 @@ def _provider(client: _FakeClient) -> AzureDocumentIntelligenceOcrProvider:
 
 
 def test_extract_success_maps_tables_and_paragraphs():
-    table = _FakeTable(
-        row_count=2,
-        column_count=2,
-        cells=[
-            _FakeCell(0, 0, "Total assets", 1),
-            _FakeCell(0, 1, "1,234", 1),
-            _FakeCell(1, 0, "Total liabilities", 1),
-            _FakeCell(1, 1, "800", 1),
-        ],
+    # Offsets are disjoint content-string positions; a matching DocumentWord at
+    # the SAME offset/length is what makes a confidence "real" (see
+    # _confidence_for_spans) — mirrors how DocumentParagraph/DocumentTableCell
+    # actually carry NO confidence field of their own in the real SDK.
+    para_text = "Consolidated Balance Sheet"
+    para = _FakeParagraph(para_text, page=1, offset=0)
+    cells = [
+        _FakeCell(0, 0, "Total assets", 1, offset=100),
+        _FakeCell(0, 1, "1,234", 1, offset=120),
+        _FakeCell(1, 0, "Total liabilities", 1, offset=140),
+        _FakeCell(1, 1, "800", 1, offset=165),
+    ]
+    table = _FakeTable(row_count=2, column_count=2, cells=cells)
+    words = [
+        _FakeWord(para_text, offset=0, confidence=0.9),
+        _FakeWord("Total assets", offset=100, confidence=0.7),
+        _FakeWord("1,234", offset=120, confidence=0.9),
+        _FakeWord("Total liabilities", offset=140, confidence=0.6),
+        _FakeWord("800", offset=165, confidence=0.8),
+    ]
+    client = _FakeClient(
+        poller=_FakePoller(
+            result=_FakeAnalyzeResult(
+                tables=[table], paragraphs=[para], pages=[_FakePage(1, words)]
+            )
+        )
     )
-    para = _FakeParagraph("Consolidated Balance Sheet", page=1, confidence=0.9)
-    client = _FakeClient(poller=_FakePoller(result=_FakeAnalyzeResult(tables=[table], paragraphs=[para])))
     prov = _provider(client)
 
     result = asyncio.run(prov.extract(b"pdf-bytes", cfg=Settings(), pages=[1], timeout_seconds=5))
@@ -285,12 +330,34 @@ def test_extract_success_maps_tables_and_paragraphs():
     assert len(result.tables) == 1
     assert result.tables[0].extraction_method == "ocr"
     assert result.tables[0].row_count == 2
+    # Real, word-confidence-derived average across the 4 cell words: 0.75.
+    assert result.tables[0].confidence == 0.75
     assert len(result.excerpts) == 1
+    # Single matching word → the paragraph's own real confidence, not a
+    # fabricated constant.
     assert result.excerpts[0].confidence == 0.9
     assert result.provider_name == "azure_document_intelligence"
     assert result.duration_ms is not None
     # Submitted with the bounded page spec, not "every page".
     assert client.calls == [{"model_id": "prebuilt-layout", "body_len": len(b"pdf-bytes"), "pages": "1"}]
+
+
+def test_extract_falls_back_to_unmeasured_confidence_when_no_words_match():
+    # A paragraph/table with no corresponding DocumentWord (malformed/partial
+    # response) must never be assigned a fabricated plausible-looking
+    # confidence — it gets the explicit, conservative "unmeasured" floor,
+    # which stays below every promotion/validation threshold.
+    para = _FakeParagraph("Orphan text with no matching word", page=1, offset=500)
+    client = _FakeClient(
+        poller=_FakePoller(
+            result=_FakeAnalyzeResult(paragraphs=[para], pages=[_FakePage(1, [])])
+        )
+    )
+    prov = _provider(client)
+    result = asyncio.run(prov.extract(b"pdf-bytes", cfg=Settings(), pages=[1]))
+    assert len(result.excerpts) == 1
+    assert result.excerpts[0].confidence == 0.3
+    assert result.excerpts[0].confidence < Settings().primary_document_ocr_min_confidence
 
 
 def test_extract_no_content_returns_unavailable_not_malformed():
@@ -349,6 +416,24 @@ def test_extract_malformed_result_never_raises():
     assert result.status == OCR_STATUS_FAILED
     assert result.failure_code == FAILURE_OCR_MALFORMED_RESULT
     assert result.error_type == "RuntimeError"
+
+
+def test_extract_client_construction_failure_degrades_honestly(monkeypatch):
+    # A missing SDK package / malformed endpoint at client-build time must
+    # degrade like any other provider failure, never propagate past extract()
+    # and break the whole source-connector evidence leg (R1 hardening).
+    prov = AzureDocumentIntelligenceOcrProvider(
+        endpoint="https://example.cognitiveservices.azure.com", credential=object()
+    )
+
+    def _boom() -> Any:
+        raise RuntimeError("azure-ai-documentintelligence is not installed")
+
+    monkeypatch.setattr(prov, "_build_client", _boom)
+    result = asyncio.run(prov.extract(b"pdf-bytes", cfg=Settings(), pages=[1]))
+    assert result.status == OCR_STATUS_FAILED
+    assert result.error_type == "RuntimeError"
+    assert result.excerpts == [] and result.tables == []
 
 
 def test_extract_bounds_pages_argument_to_selected_pages():

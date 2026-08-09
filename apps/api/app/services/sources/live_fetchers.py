@@ -53,11 +53,14 @@ from app.services.sources.ingestion_status import (
     FAILURE_NOT_A_PDF,
     FAILURE_OCR_BUDGET_EXHAUSTED,
     FAILURE_OCR_LOW_CONFIDENCE,
+    FAILURE_OCR_PROVIDER_ERROR,
+    FAILURE_OCR_PROVIDER_THROTTLED,
+    FAILURE_OCR_TIMEOUT,
     FAILURE_PREFLIGHT_BUDGET_EXHAUSTED,
     FAILURE_SCANNED_NO_TEXT,
     FAILURE_UNKNOWN,
 )
-from app.services.sources.ocr_provider import OcrBudget, OcrProvider, select_ocr_pages
+from app.services.sources.ocr_provider import OcrBudget, OcrProvider, OcrResult, select_ocr_pages
 from app.services.sources.primary_document_extractor import (
     METHOD_OCR,
     STATUS_EXTRACTED,
@@ -256,6 +259,14 @@ def _honest_gap(message: str) -> SourceGap:
     )
 
 
+# Failure codes worth a bounded retry (transient — the same call might
+# succeed a moment later); a malformed result is a parsing problem a retry
+# cannot fix, so it is deliberately excluded.
+_TRANSIENT_OCR_FAILURES = frozenset(
+    {FAILURE_OCR_TIMEOUT, FAILURE_OCR_PROVIDER_THROTTLED, FAILURE_OCR_PROVIDER_ERROR}
+)
+
+
 async def _try_ocr(
     extraction: Any,
     *,
@@ -282,6 +293,24 @@ async def _try_ocr(
         )
         return
 
+    # Clamp the per-call timeout to whatever is ACTUALLY left of the shared
+    # aggregate ingestion budget — an OCR call started late in the 60s window
+    # must never be given the full primary_document_ocr_timeout_seconds
+    # regardless of elapsed time, or it could push ingestion well past its
+    # share of the ~230s gateway budget.
+    timeout_seconds: float = cfg.primary_document_ocr_timeout_seconds
+    if ocr_budget is not None:
+        remaining = ocr_budget.remaining_seconds()
+        if remaining is not None:
+            if remaining <= 0:
+                extraction.failure_code = FAILURE_OCR_BUDGET_EXHAUSTED
+                extraction.source_gaps.append(
+                    "OCR budget for this report was exhausted; document "
+                    "remains scanned/metadata-only."
+                )
+                return
+            timeout_seconds = min(timeout_seconds, remaining)
+
     pages = select_ocr_pages(raw_bytes, max_pages=cfg.primary_document_max_ocr_pages)
     if not pages:
         return
@@ -289,22 +318,41 @@ async def _try_ocr(
     if ocr_budget is not None:
         ocr_budget.record_document_started()
 
-    result = await ocr_provider.extract(
-        raw_bytes,
-        cfg=cfg,
-        pages=pages,
-        timeout_seconds=cfg.primary_document_ocr_timeout_seconds,
-    )
-    log_event(
-        _logger,
-        "primary_document_ocr_attempted",
-        provider=result.provider_name,
-        status=result.status,
-        excerpt_count=len(result.excerpts),
-        table_count=len(result.tables),
-        selected_pages=len(pages),
-        duration_ms=result.duration_ms,
-    )
+    # Bounded retry: only a TRANSIENT failure (timeout / throttled / a
+    # provider-side error) is worth retrying — a malformed result is a parsing
+    # problem a retry cannot fix. Each attempt re-clamps its timeout to
+    # whatever remains of the aggregate budget; running out mid-retry stops
+    # the loop honestly rather than trying again with no time left.
+    max_attempts = 1 + max(0, cfg.primary_document_ocr_max_retries)
+    result: OcrResult | None = None
+    for attempt in range(max_attempts):
+        if attempt > 0:
+            if ocr_budget is not None:
+                remaining = ocr_budget.remaining_seconds()
+                if remaining is not None:
+                    if remaining <= 0:
+                        break
+                    timeout_seconds = min(cfg.primary_document_ocr_timeout_seconds, remaining)
+        result = await ocr_provider.extract(
+            raw_bytes,
+            cfg=cfg,
+            pages=pages,
+            timeout_seconds=timeout_seconds,
+        )
+        log_event(
+            _logger,
+            "primary_document_ocr_attempted",
+            provider=result.provider_name,
+            status=result.status,
+            attempt=attempt + 1,
+            excerpt_count=len(result.excerpts),
+            table_count=len(result.tables),
+            selected_pages=len(pages),
+            duration_ms=result.duration_ms,
+        )
+        if result.has_content or result.failure_code not in _TRANSIENT_OCR_FAILURES:
+            break
+    assert result is not None  # the loop always runs at least once (attempt 0)
     if not result.has_content:
         if result.failure_code:
             extraction.failure_code = result.failure_code
@@ -429,9 +477,12 @@ async def _artifact_from_fetch(
             ocr_budget=ocr_budget,
             cfg=cfg,
         )
+        # _try_ocr mutates extraction.status/failure_code in place; re-read
+        # them onto the artifact. It never appends to extraction.warnings
+        # (only extraction.source_gaps), so re-extending warnings here would
+        # duplicate the exact list already copied above.
         artifact.status = extraction.status
         artifact.failure_code = extraction.failure_code
-        artifact.warnings.extend(extraction.warnings)
 
     # Only a fully-extracted document is validated into structured facts; a
     # scanned / empty document stays metadata_only with no fabricated fact.

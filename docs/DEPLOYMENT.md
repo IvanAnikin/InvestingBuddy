@@ -566,12 +566,20 @@ grep -RiE "Authorization: Bearer|Set-Cookie:|DATABASE_URL=|api_token=[A-Za-z0-9]
   `REPORT_CITATION_PERSISTENCE_ENABLED` is ALSO on — persists + reuses extraction
   in the new tables. With the master flag **OFF** (default) behaviour is **exactly
   Phase 29B.2 / Slice 4** — no deep fetch, no persistence, no reuse.
-- **OCR is a NoOp seam this slice.** `PRIMARY_DOCUMENT_OCR_ENABLED` exists and is
-  double-gated behind the master flag, but the only OCR provider shipped returns
-  an empty `ocr_unavailable` result (never fabricated text). A real Azure Document
-  Intelligence adapter is a deferred follow-up (needs resource provisioning +
-  admin sign-off — see `docs/DECISIONS.md` ADR-014). Scanned / JS-gated issuer
-  PDFs still degrade honestly to metadata-only / gaps.
+- **OCR: a real Azure Document Intelligence adapter exists (Phase 32A Slice
+  5B.2), but stays OFF by default and requires TWO things, not one.**
+  `PRIMARY_DOCUMENT_OCR_ENABLED` is double-gated behind the master flag AND
+  `get_ocr_provider()` also requires `AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT` to
+  be set — with either condition unmet, the honest NoOp provider is used
+  (returns an empty `ocr_unavailable` result, never fabricated text). This is
+  what lets the flag be flipped on safely BEFORE the Azure resource is
+  provisioned. See `docs/DECISIONS.md` ADR-016 for the full design. Scanned /
+  JS-gated issuer PDFs still degrade honestly to metadata-only / gaps when
+  OCR is off or unconfigured. **The Azure Document Intelligence resource
+  itself is NOT provisioned anywhere in `infra/azure/*.bicep` yet** — a
+  human-gated infra step (provisioning + Key Vault/managed-identity RBAC +
+  setting the two settings below) must happen before OCR can be enabled on
+  staging/production.
 - **New app settings (all safe non-secret defaults; master gate OFF):**
 
   | Setting | Default | Purpose |
@@ -594,9 +602,23 @@ grep -RiE "Authorization: Bearer|Set-Cookie:|DATABASE_URL=|api_token=[A-Za-z0-9]
   | `PRIMARY_DOCUMENT_EVIDENCE_CAP` | `6` | Hard cap on primary-document facts in the pack. |
   | `PRIMARY_DOCUMENT_REUSE_TTL_HOURS` | `24` | Freshness window for reusing a persisted extraction (both ingestion + citation-persistence flags on). |
 
+  **Phase 32A Slice 5B.2 — real OCR settings (all inert unless BOTH `PRIMARY_DOCUMENT_OCR_ENABLED=true` AND the endpoint below is set):**
+
+  | Setting | Default | Purpose |
+  |---|---|---|
+  | `AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT` | *(empty)* | The ONE fixed Azure DI resource endpoint the client calls — never a caller-supplied URL. Empty ⇒ `get_ocr_provider()` returns NoOp regardless of the flag. **Secret-adjacent — never hardcode; set as an App Service setting.** |
+  | `AZURE_DOCUMENT_INTELLIGENCE_API_KEY` | *(empty)* | Optional fallback credential. Leave empty in any environment with a system-assigned managed identity (preferred: `DefaultAzureCredential`). **Never hardcode — Key Vault reference in staging/production.** |
+  | `PRIMARY_DOCUMENT_OCR_TIMEOUT_SECONDS` | `20` | Hard cap for ONE OCR call (submit + poll); carved out of, never added on top of, the 45s per-document total. |
+  | `PRIMARY_DOCUMENT_OCR_POLL_INTERVAL_SECONDS` | `1.0` | Poll interval for the Azure long-running-operation status check. |
+  | `PRIMARY_DOCUMENT_MAX_OCR_DOCUMENTS_PER_RUN` | `2` | Cross-document OCR cap for one report-generation request. |
+  | `PRIMARY_DOCUMENT_OCR_MAX_RETRIES` | `1` | Bounded retry count for a single transient (timeout/429/5xx) OCR failure. |
+  | `PRIMARY_DOCUMENT_OCR_MIN_CONFIDENCE` | `0.4` | Below this, OCR output stays evidence-only internally — never promoted to extracted/a fact. |
+
   These are **tuning knobs, not secrets** — no real secret value is ever printed;
-  all KEYS are in `.env.example` with default values. Leave
-  `PRIMARY_DOCUMENT_INGESTION_ENABLED=false` until Slice 5 is validated.
+  all KEYS are in `.env.example` with default (empty/off) values. Leave
+  `PRIMARY_DOCUMENT_INGESTION_ENABLED=false` until Slice 5 is validated, and leave
+  `PRIMARY_DOCUMENT_OCR_ENABLED=false` / the Azure DI endpoint unset until a human
+  has provisioned the resource and explicitly approved enabling it.
   **Rollback:** set `PRIMARY_DOCUMENT_INGESTION_ENABLED=false` to return to the
   exact prior behaviour with no code change (the `013` tables can remain — they
   stay empty).

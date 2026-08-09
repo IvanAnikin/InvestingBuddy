@@ -34,7 +34,14 @@ _DATE_FORMAT = "%Y-%m-%dT%H:%M:%S%z"
 # EODHD key. Cap them at WARNING so those request lines never emit. The
 # RedactingFilter below is the defense-in-depth net for anything that slips
 # through at WARNING/ERROR.
-_NOISY_URL_LOGGERS = ("httpx", "httpcore", "urllib3")
+#
+# ``azure`` (Phase 32A Slice 5B.2): azure-core's HttpLoggingPolicy defaults to
+# INFO and would otherwise emit "Request URL: https://<resource>.cognitive
+# services.azure.com/..." for every Document Intelligence call once OCR is
+# enabled — the same regression class as the EODHD leak above, just for the
+# first azure-* SDK in this repo. Capped here before OCR ever makes a real
+# call, not after.
+_NOISY_URL_LOGGERS = ("httpx", "httpcore", "urllib3", "azure")
 
 
 class RedactingFilter(logging.Filter):

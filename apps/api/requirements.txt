@@ -28,6 +28,6 @@ pdfplumber>=0.11,<0.12
 # scanned/image-only primary documents. Inert unless
 # PRIMARY_DOCUMENT_OCR_ENABLED=true AND an endpoint is configured — see
 # get_ocr_provider() in app/services/sources/ocr_provider.py.
-azure-ai-documentintelligence>=1.0
-azure-identity>=1.19
+azure-ai-documentintelligence>=1.0,<2
+azure-identity>=1.19,<2
 gunicorn>=23.0
