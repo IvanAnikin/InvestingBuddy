@@ -444,6 +444,155 @@ def test_extract_bounds_pages_argument_to_selected_pages():
 
 
 # =========================================================================== #
+# 4b. Page-subset upload (Slice 5B.2 hotfix — large real annual-report PDFs)
+#
+# Root cause fixed here: a real Azure Document Intelligence request is
+# rejected around ~4 MB regardless of the `pages` restriction parameter (the
+# WHOLE body is checked, not just the analyzed subset) — empirically confirmed
+# against a real F0 resource during Phase 32A Slice 5B.2 staging validation.
+# `extract_page_subset` pre-filters the upload to only the selected pages so
+# the request stays small regardless of the source document's total size;
+# `body_is_page_subset=True` tells the provider the body is ALREADY filtered
+# (skip the `pages=` restriction — it would refer to page numbers that don't
+# exist in the small subset) and to remap returned page numbers (relative to
+# the subset) back to the true original page numbers via `pages`.
+# =========================================================================== #
+
+
+def test_extract_page_subset_true_sends_no_pages_restriction():
+    # A `pages=` restriction against an already-filtered subset body would
+    # reference page numbers that may not exist in the (small) uploaded
+    # document — the provider must omit it entirely when the body is a subset.
+    client = _FakeClient(poller=_FakePoller(result=_FakeAnalyzeResult()))
+    prov = _provider(client)
+    asyncio.run(
+        prov.extract(
+            b"small-subset-pdf-bytes",
+            cfg=Settings(),
+            pages=[12, 45, 87],
+            body_is_page_subset=True,
+        )
+    )
+    assert client.calls[0]["pages"] is None
+
+
+def test_extract_page_subset_false_still_sends_pages_restriction():
+    # Unchanged legacy behavior when the body is the FULL document.
+    client = _FakeClient(poller=_FakePoller(result=_FakeAnalyzeResult()))
+    prov = _provider(client)
+    asyncio.run(
+        prov.extract(
+            b"full-document-bytes",
+            cfg=Settings(),
+            pages=[12, 45, 87],
+            body_is_page_subset=False,
+        )
+    )
+    assert client.calls[0]["pages"] == "12,45,87"
+
+
+def test_extract_page_subset_remaps_table_and_paragraph_page_numbers():
+    # The fake result reports "page 2" — the SECOND page of the small uploaded
+    # subset, which is really original page 45 (the subset was built from
+    # original pages [12, 45, 87], in that order). Without remapping, a
+    # citation would falsely claim "page 2" of the real 100+ page source.
+    para = _FakeParagraph("Total equity 1,234", page=2, offset=0)
+    cells = [
+        _FakeCell(0, 0, "Total equity", 2, offset=50),
+        _FakeCell(0, 1, "1,234", 2, offset=70),
+    ]
+    table = _FakeTable(row_count=1, column_count=2, cells=cells)
+    words = [
+        _FakeWord("Total equity 1,234", offset=0, confidence=0.9),
+        _FakeWord("Total equity", offset=50, confidence=0.8),
+        _FakeWord("1,234", offset=70, confidence=0.85),
+    ]
+    client = _FakeClient(
+        poller=_FakePoller(
+            result=_FakeAnalyzeResult(
+                tables=[table], paragraphs=[para], pages=[_FakePage(1, []), _FakePage(2, words)]
+            )
+        )
+    )
+    prov = _provider(client)
+
+    result = asyncio.run(
+        prov.extract(
+            b"small-subset-pdf-bytes",
+            cfg=Settings(),
+            pages=[12, 45, 87],
+            body_is_page_subset=True,
+        )
+    )
+
+    assert result.status == OCR_STATUS_EXTRACTED
+    assert result.tables[0].page_number == 45  # remapped from subset-local 2
+    assert result.excerpts[0].page_number == 45
+
+
+def test_extract_page_subset_out_of_bounds_page_number_left_unchanged():
+    # Defensive: an unexpected page number outside the map's range must never
+    # raise or fabricate a plausible-looking original page — it degrades to
+    # the raw (subset-local) value rather than crashing the whole result.
+    para = _FakeParagraph("stray text", page=9, offset=0)
+    client = _FakeClient(
+        poller=_FakePoller(result=_FakeAnalyzeResult(paragraphs=[para], pages=[_FakePage(9, [])]))
+    )
+    prov = _provider(client)
+    result = asyncio.run(
+        prov.extract(b"x", cfg=Settings(), pages=[12, 45], body_is_page_subset=True)
+    )
+    assert result.excerpts[0].page_number == 9  # out of range for a 2-entry map — unchanged
+
+
+def test_extract_page_subset_body_size_is_smaller_than_full_document():
+    # End-to-end proof that the byte-cap/upload-size fix actually reduces what
+    # reaches the provider: a real multi-hundred-page document's selected
+    # 3-page subset must be far smaller than the whole document.
+    from tests.helpers.pdf_fixtures import make_multi_page_scanned_pdf
+
+    full = make_multi_page_scanned_pdf([f"page {i}" for i in range(1, 21)])  # 20 pages
+    from app.services.sources.ocr_provider import extract_page_subset
+
+    subset = extract_page_subset(full, [1, 10, 20])
+    assert subset is not None
+    assert len(subset) < len(full)
+
+    import io as _io
+
+    from pypdf import PdfReader
+
+    assert len(PdfReader(_io.BytesIO(subset)).pages) == 3
+
+
+def test_extract_page_subset_malformed_source_returns_none():
+    from app.services.sources.ocr_provider import extract_page_subset
+
+    assert extract_page_subset(b"not a pdf at all", [1, 2]) is None
+
+
+def test_extract_page_subset_empty_pages_returns_none():
+    from app.services.sources.ocr_provider import extract_page_subset
+
+    assert extract_page_subset(make_pdf(["p1", "p2"]), []) is None
+
+
+def test_extract_page_subset_out_of_range_pages_skipped_not_fabricated():
+    import io as _io
+
+    from pypdf import PdfReader
+
+    from app.services.sources.ocr_provider import extract_page_subset
+
+    raw = make_pdf(["p1", "p2"])
+    # Page 99 doesn't exist in a 2-page document — must be silently skipped,
+    # never raise, never invent a page.
+    subset = extract_page_subset(raw, [1, 99])
+    assert subset is not None
+    assert len(PdfReader(_io.BytesIO(subset)).pages) == 1
+
+
+# =========================================================================== #
 # 5. Secret-free by construction
 # =========================================================================== #
 
