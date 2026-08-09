@@ -556,14 +556,15 @@ def _confidence_for_spans(spans: Any, sorted_words: list[tuple[int, int, float]]
     a plausible-looking number.
     """
     matched: list[float] = []
-    offsets = [w[0] for w in sorted_words]
     for span in list(spans or []):
         s_off = getattr(span, "offset", None)
         s_len = getattr(span, "length", None)
         if s_off is None or s_len is None:
             continue
         s_end = s_off + s_len
-        idx = bisect.bisect_left(offsets, s_off)
+        # bisect's key= (3.10+) searches the tuple list directly by its first
+        # element — no need to materialize a parallel offsets list per call.
+        idx = bisect.bisect_left(sorted_words, s_off, key=lambda t: t[0])
         while idx < len(sorted_words) and sorted_words[idx][0] < s_end:
             w_off, w_end, conf = sorted_words[idx]
             if w_off >= s_off and w_end <= s_end:

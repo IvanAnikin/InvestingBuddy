@@ -798,15 +798,19 @@ explicitly re-proven post-deploy (item C below), not assumed byte-identical.
   what's *visible in the structured list*, never a value); (iv) no new
   citation, no new Source row, no duplicate evidence appears as a side
   effect.
-- **D. OCR flag off / unconfigured — byte-identical regression.** With both
-  `PRIMARY_DOCUMENT_OCR_ENABLED=false` (the deployed default) AND, separately,
-  a probe with the flag hypothetically `true`-but-endpoint-still-empty (code
-  read, not a live app-setting change — confirm via `get_ocr_provider()`
-  logic review, since flipping the flag on staging is a separate human-gated
-  step): a scanned document still degrades to `metadata_only` /
-  `scanned_no_text`, IDENTICAL to Slice 5B.1 behavior. Zero calls to any
-  `azure.*` host — confirm via `document_ingestion_attempts` (no new
-  `ocr_*` failure codes appear) and via egress/log inspection.
+- **D. OCR flag off / unconfigured — byte-identical regression.** With
+  `PRIMARY_DOCUMENT_OCR_ENABLED=false` (the deployed default): a scanned
+  document still degrades to `metadata_only` / `scanned_no_text`, IDENTICAL
+  to Slice 5B.1 behavior. Zero calls to any `azure.*` host — confirm via
+  `document_ingestion_attempts` (no new `ocr_*` failure codes appear) and
+  via egress/log inspection. **This is also a real, live probe worth
+  running as its OWN human-approved app-setting change** (separate from
+  provisioning the Azure resource — see item F): flip
+  `PRIMARY_DOCUMENT_OCR_ENABLED=true` with the endpoint still unset and
+  confirm the `primary_document_ocr_enabled_but_unconfigured` WARNING log
+  line appears and `get_ocr_provider()` still returns the NoOp path (a
+  scanned document behaves identically to the flag being off) — proving the
+  double-gate live, not just by code reading.
 - **E. Balance-sheet identity check — live proof (does not require OCR).**
   For an issuer whose extracted table already carries total assets, total
   liabilities AND total equity in the same period (native extraction, no OCR
@@ -830,13 +834,16 @@ explicitly re-proven post-deploy (item C below), not assumed byte-identical.
   intentional limitation (mirrors ADR-014's own deferral for the OCR seam
   itself) — record it as "not yet executable," not as a passed/failed check.
   When that human step happens, follow up with: a genuinely scanned document
-  fixture check (bounded live discovery across the other 10 registered
-  issuers per `08_scanned_vs_encrypted_ocr_candidates.md`, since CFR's
-  encrypted PDF is confirmed NOT a valid target — it never opens even with
-  the empty password); confirm `ocr_provider_error`/`ocr_timeout` degrade
-  honestly under real network conditions; confirm the aggregate-budget clamp
-  (§ ADR-016 Decision 4) holds under real Azure latency, not just the fake
-  provider's instant responses.
+  fixture check — bounded live discovery across the other 11 registered
+  issuers in `verified_issuer_sources.py` (UHR, MC, RMS, KER, BRBY, PNDORA,
+  MONC, BA, ASML, SAP, NESN), since CFR's encrypted annual-report PDF is
+  confirmed NOT a valid target (it never opens even with the empty password
+  — it cannot be rasterized, so OCR cannot rescue it; a genuinely scanned,
+  no-password document is a structurally different, still-open target);
+  confirm `ocr_provider_error`/`ocr_timeout` degrade honestly under real
+  network conditions; confirm the aggregate-budget clamp (§ ADR-016 Decision
+  4) holds under real Azure latency, not just the fake provider's instant
+  responses.
 - **G. Cross-company isolation.** Run AAPL and one European issuer (e.g. CFR)
   back-to-back. No OCR-derived (or any) evidence/citation crosses between
   them; no shared `content_hash`; no Apple data appears in the European
