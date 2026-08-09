@@ -561,10 +561,12 @@ guessed, derived, brute-forced or stripped.
 ## ADR-016: Real Azure Document Intelligence OCR Adapter, a Cross-Document OCR Budget, and Fixing the `primary_facts` Fact-Type Gap (Phase 32A Slice 5B.2)
 
 **Date:** 2026-08-09
-**Status:** Accepted — implemented on branch `phase-32a-slice-5b2-ocr`; **PR open,
-pending staging validation** (not yet merged / deployed / validated). Live
-Azure Document Intelligence proof additionally requires a human-provisioned
-resource — see Consequences.
+**Status:** Accepted — merged (`768da0c` PR #81, `3187298` PR #82 hotfix,
+`6947bcf` PR #83, `007d398` PR #84), deployed, and **CLOSED + STAGING-VALIDATED
+as a FOUNDATION**, with an explicit efficacy caveat on live OCR invocation. See
+the **Addendum (2026-08-09 closure)** at the end of this entry for the
+post-implementation record; the Context/Decision/Alternatives/Consequences
+below are the original pre-implementation design and are left unchanged.
 
 ### Context
 
@@ -733,10 +735,76 @@ made here). Alembic head stays `014`.
   OCR proof" staging-validation criterion (an actual Azure DI call against a
   genuinely scanned issuer document) cannot be executed until a human
   provisions the resource and supplies the endpoint (+ optionally a key) as a
-  staging app setting under the existing human-approval gate.
+  staging app setting under the existing human-approval gate. **(This was true
+  when this ADR was written; see the Addendum below — the resource is now
+  provisioned, but the "real OCR proof" criterion specifically still was not
+  met.)**
 - CFR's live encrypted annual-report PDF is confirmed NOT a valid OCR proof
   candidate (it never opens even with the empty password, so it cannot be
   rasterized) — a genuinely scanned document is a separate, still-open target
   for live proof; the offline `make_pdf_with_image` fixture is the guaranteed,
   deterministic proof in the interim.
 - Not yet staging-validated. No migration required — Alembic head stays `014`.
+
+### Addendum (2026-08-09 closure) — post-implementation record, appended not rewritten
+
+Merge chain: PR #81 `768da0c` (original slice) → PR #82 `3187298` (hotfix) →
+PR #83 `6947bcf` (docs-only Bicep module) → PR #84 `007d398` (Goodwin PLC
+registry entry), all squash-merged to `main`, all auto-deployed. No migration
+— head stayed `014` throughout. Full evidence:
+`docs/development/closures/phase-32a-slice5b2.md`.
+
+- **The Azure Document Intelligence resource is now provisioned on staging**
+  — `ib-stg-docintel` (`Microsoft.CognitiveServices/accounts`, kind
+  `FormRecognizer`, SKU **F0/free**, region **westeurope**, `ib-stg-rg`),
+  deployed via a standalone scoped `az deployment group create` against
+  `infra/azure/modules/documentintelligence.bicep` alone (deliberately not a
+  full `main.bicep` apply — see the closure report for why). Authentication
+  runs on the **API-key fallback, not managed identity**: the deploying
+  identity holds only subscription-level Contributor, which excludes
+  `Microsoft.Authorization/roleAssignments/write`, so the managed-identity
+  RBAC grant this ADR's Decision 2 designed for could not be applied this
+  round. `PRIMARY_DOCUMENT_OCR_ENABLED` flipped absent→`true` and is **KEPT
+  ON**.
+- **An empirically-discovered F0-tier constraint not anticipated in the
+  original design.** Direct HTTP probes against the real provisioned
+  resource (before any code change) confirmed the free tier rejects any
+  request over **~3.5 MB regardless of the `pages=` restriction parameter**
+  — the whole uploaded body is size-checked, not just the analyzed subset.
+  This required adding `extract_page_subset()` (pypdf) to pre-filter the OCR
+  upload to only the selected pages before sending to Azure, plus
+  `page_number_map`/`_remap_page_number` so a citation's page number always
+  reflects the true original page, never a subset-local position.
+- **Two genuine corruption/misclassification bugs were found and fixed live
+  during staging validation (PR #82), not anticipated by this ADR:** (1)
+  `source_document_extraction_max_bytes` (5 MB default) silently truncated
+  real large annual-report PDF downloads, corrupting the trailer/xref table
+  and causing `select_ocr_pages()`/`_try_ocr()` to bail before ever calling
+  Azure — misclassifying ASML's two real 23.9 MB/25.3 MB annual reports as
+  `scanned_no_text`. Fixed by raising the byte cap to 35 MB. (2) The same
+  truncation produced a false `/Encrypt` match in the tail-4096-byte
+  encryption check, so CFR's annual-report PDF — documented in this
+  project's own Slice 5B.1 closure as genuinely password-protected — is now
+  confirmed to extract natively and was **never actually encrypted**; that
+  prior claim is retracted (see the closure report's "Known-issue update").
+- **Efficacy caveat — a real, live Azure Document Intelligence OCR call was
+  not observed on staging**, despite three full validation rounds across 13
+  real registered issuers (12 plus Goodwin PLC/GDWN.LSE, added specifically
+  for this purpose) and the two bug fixes above. Not a code defect — every
+  *other* live invariant this ADR designed (gating, connectivity, budget,
+  retry, security, reuse) is staging-proven; the reason is structural (8 of
+  13 issuers have zero discoverable documents; ASML/CFR turned out to be
+  genuinely native-extractable once the two bugs were fixed; Goodwin PLC's
+  genuinely-scanned document ranks too low among candidates to reach without
+  risking the shared ~230s Azure gateway ceiling). Full detail in the closure
+  report.
+- **A validation subagent's own diagnostic tool output briefly exposed the
+  real `AZURE_DOCUMENT_INTELLIGENCE_API_KEY` value once** (never in
+  application logs, never in a persisted staging artifact). Disclosed
+  immediately, contained the same session via key rotation. See
+  `docs/SECURITY.md` and the closure report.
+- Balance-sheet identity check (Decision 7) remains unit-test-only — no live
+  table currently carries `total_assets`/`total_liabilities`/`total_equity`
+  together.
+- **Slice 5B.3 (admin API + web visibility) is next. The complete Slice 5 and
+  Phase 32A are NOT closed.**
