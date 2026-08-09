@@ -19,14 +19,18 @@ excerpts, or credentials.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import random
 import time
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from app.core.config import Settings
 from app.core.config import settings as default_settings
 from app.core.structured_logging import log_event
 from app.services.llm import discovery_prompts as prompts
+from app.services.llm import retry_engine
 from app.services.llm.client import (
     LLMClient,
     LLMError,
@@ -37,8 +41,11 @@ from app.services.llm.discovery_evidence_pack import build_discovery_evidence_pa
 from app.services.llm.discovery_schemas import (
     AGENT_DISCOVERY_CHAIR,
     ALLOWED_RUN_QUALITY,
+    CRITICAL_ALWAYS,
     DEFAULT_RUN_QUALITY,
     DISCOVERY_COUNCIL_AGENT_ORDER,
+    RESERVED_AGENTS,
+    STATUS_COMPLETED,
     STATUS_FAILED,
     DiscoveryCouncilAgentOutput,
     DiscoveryCouncilResult,
@@ -164,6 +171,404 @@ def _aggregate_chair(
     return buckets
 
 
+# ---------------------------------------------------------------------------
+# Phase 32A Slice 6A — single-agent attempt + retry orchestration
+#
+# Mirrors ``council.py``'s Slice-4 adapter section exactly (same helper names,
+# same shapes) so the two councils' reliability code stays easy to compare.
+# ---------------------------------------------------------------------------
+
+
+def _messages_for(
+    agent_name: str, evidence_json: str, result: DiscoveryCouncilResult
+) -> tuple[str, str]:
+    """Build (system, user) for one agent from the CURRENT council state.
+
+    The discovery chair's user message is rebuilt from the current (possibly
+    recovered) prior summaries every time it is called, so a chair retry
+    synthesizes over agents that recovered in the retry pass.
+    """
+    if agent_name == AGENT_DISCOVERY_CHAIR:
+        system = prompts.discovery_chair_system_prompt()
+        user = prompts.build_user_message(
+            evidence_json, _prior_summaries(result.agents)
+        )
+    else:
+        system = prompts.system_prompt_for(agent_name)
+        user = prompts.build_user_message(evidence_json)
+    return system, user
+
+
+async def _run_agent_attempt(
+    agent_name: str,
+    evidence_json: str,
+    evidence_ids: set[str],
+    candidate_ids: set[str],
+    result: DiscoveryCouncilResult,
+    client: LLMClient,
+    cfg: Settings,
+) -> tuple[DiscoveryCouncilAgentOutput, list[str], Exception | None]:
+    """Run ONE attempt for an agent. Never raises.
+
+    Returns ``(output, issues, exc)``. On success ``output`` is the sanitized
+    agent output and ``exc`` is None (``output.status`` may still be ``failed``
+    if the safety gate quarantined it — a PERMANENT outcome). On an ``LLMError``
+    ``output`` is the failed placeholder and ``exc`` is the (possibly transient)
+    exception. This is the single-agent primitive BOTH the OFF path and the ON
+    (retry) path call.
+    """
+    is_chair = agent_name == AGENT_DISCOVERY_CHAIR
+    system, user = _messages_for(agent_name, evidence_json, result)
+    try:
+        raw = await client.complete_json(
+            system,
+            user,
+            max_tokens=cfg.llm_max_output_tokens,
+            temperature=cfg.llm_temperature,
+            timeout=cfg.llm_request_timeout_seconds,
+            repair_instruction=prompts.REPAIR_INSTRUCTION,
+        )
+    except LLMError as exc:
+        placeholder = DiscoveryCouncilAgentOutput(
+            agent_name=agent_name,
+            status=STATUS_FAILED,
+            summary="[Agent did not complete: provider error or timeout.]",
+            safety_notes=[f"Agent failed ({type(exc).__name__})."],
+        )
+        return placeholder, [f"{agent_name}: {type(exc).__name__}"], exc
+    output = _coerce_output(agent_name, raw)
+    sanitized, issues = check_and_sanitize(
+        output, evidence_ids, candidate_ids, is_chair=is_chair
+    )
+    return sanitized, issues, None
+
+
+async def _timed_attempt(
+    agent_name: str,
+    evidence_json: str,
+    evidence_ids: set[str],
+    candidate_ids: set[str],
+    result: DiscoveryCouncilResult,
+    client: LLMClient,
+    cfg: Settings,
+) -> tuple[DiscoveryCouncilAgentOutput, list[str], Exception | None, int]:
+    """``_run_agent_attempt`` plus a wall-clock duration_ms for logging."""
+    started = time.perf_counter()
+    output, issues, exc = await _run_agent_attempt(
+        agent_name, evidence_json, evidence_ids, candidate_ids, result, client, cfg
+    )
+    duration_ms = int((time.perf_counter() - started) * 1000)
+    return output, issues, exc, duration_ms
+
+
+def _log_agent_outcome(
+    log: logging.Logger,
+    agent_name: str,
+    output: DiscoveryCouncilAgentOutput,
+    exc: Exception | None,
+    duration_ms: int,
+    *,
+    cfg: Settings,
+    client: LLMClient,
+    run_id: str | None,
+    attempt: int | None = None,
+) -> None:
+    """Emit the safe completed/failed telemetry for one attempt (no prompts)."""
+    if exc is not None:
+        log_event(
+            log,
+            "discovery_council_agent_failed",
+            level=logging.WARNING,
+            run_id=run_id,
+            agent_name=agent_name,
+            provider=client.provider_name,
+            council_version=cfg.llm_discovery_council_version,
+            duration_ms=duration_ms,
+            status=STATUS_FAILED,
+            reason=type(exc).__name__,
+            attempt=attempt,
+        )
+    elif output.status == STATUS_FAILED:
+        log_event(
+            log,
+            "discovery_council_agent_failed",
+            level=logging.WARNING,
+            run_id=run_id,
+            agent_name=agent_name,
+            provider=client.provider_name,
+            council_version=cfg.llm_discovery_council_version,
+            duration_ms=duration_ms,
+            status=STATUS_FAILED,
+            reason="quarantined_or_unparsed",
+            attempt=attempt,
+        )
+    else:
+        log_event(
+            log,
+            "discovery_council_agent_completed",
+            run_id=run_id,
+            agent_name=agent_name,
+            provider=client.provider_name,
+            council_version=cfg.llm_discovery_council_version,
+            duration_ms=duration_ms,
+            status=output.status,
+            candidate_note_count=len(output.candidate_notes),
+            attempt=attempt,
+        )
+
+
+def _budget_exhausted_output(agent_name: str) -> DiscoveryCouncilAgentOutput:
+    """A failed placeholder for an agent that could not START before the deadline.
+
+    Thin discovery-specific adapter (Phase 32A Slice 6A) over
+    ``retry_engine.build_budget_exhausted_output``.
+    """
+    return retry_engine.build_budget_exhausted_output(
+        agent_name, DiscoveryCouncilAgentOutput, failed_status=STATUS_FAILED
+    )
+
+
+def _retry_priority_order() -> list[str]:
+    """Order transiently-failed agents are retried in (chair last).
+
+    Unlike the company council, the discovery-council critical set is fixed
+    (not evidence-dependent — see ``discovery_schemas.CRITICAL_ALWAYS``), so the
+    natural run order already places the two RESERVED agents (run_red_team,
+    discovery_chair) last.
+    """
+    return list(DISCOVERY_COUNCIL_AGENT_ORDER)
+
+
+def _replace_agent(
+    result: DiscoveryCouncilResult,
+    agent_name: str,
+    output: DiscoveryCouncilAgentOutput,
+    issues: list[str],
+) -> None:
+    """Replace a failed placeholder IN PLACE (never append) and refresh warnings.
+
+    Mirrors ``council._replace_agent``: exactly one entry per agent name is
+    preserved and the recovered agent leaves no stale failure warning.
+    """
+    for i, existing in enumerate(result.agents):
+        if existing.agent_name == agent_name:
+            result.agents[i] = output
+            break
+    prefix = f"{agent_name}: "
+    result.warnings = [w for w in result.warnings if not w.startswith(prefix)]
+    result.warnings.extend(issues)
+
+
+def _deterministic_chair_fallback(
+    agents: list[DiscoveryCouncilAgentOutput], order: tuple[str, ...]
+) -> DiscoveryCouncilAgentOutput:
+    """A deterministic, non-consensus discovery-chair summary.
+
+    Built only from ALREADY-VALIDATED stored council outputs. It NEVER
+    fabricates a consensus, a recommendation, or a candidate action: the label
+    is the honest ``run_quality="failed"`` (already in ``ALLOWED_RUN_QUALITY``)
+    and ``candidate_notes``/``run_notes`` are empty (so it carries no
+    citations and buckets no candidate into research_next / monitor / reject /
+    insufficient_data on the fallback's behalf). The wording deliberately
+    avoids the forbidden safety substrings (e.g. "price target", "fair value")
+    so it survives ``check_and_sanitize``.
+
+    Thin discovery-specific adapter (Phase 32A Slice 6A) over
+    ``retry_engine.build_deterministic_synthesis``.
+    """
+    synthesis = retry_engine.build_deterministic_synthesis(
+        agents,
+        order,
+        AGENT_DISCOVERY_CHAIR,
+        completed_status=STATUS_COMPLETED,
+        failed_status=STATUS_FAILED,
+        chair_role_label="discovery chair",
+    )
+    return DiscoveryCouncilAgentOutput(
+        agent_name=AGENT_DISCOVERY_CHAIR,
+        status=STATUS_COMPLETED,
+        summary=synthesis.summary,
+        candidate_notes=[],
+        run_notes=[],
+        evidence_gaps=[],
+        unsupported_claims=[],
+        safety_notes=[synthesis.safety_note],
+        next_source_tasks=[],
+        run_quality="failed",
+    )
+
+
+def _finalize_aggregates(
+    result: DiscoveryCouncilResult,
+) -> tuple[bool, list[str], list[str]]:
+    """Derive (safety_valid, evidence_gaps, next_source_tasks) from the FINAL
+    ``result.agents`` state — after any retries have replaced a recovered
+    placeholder in place. Equivalent to (and replaces) the pre-Slice-6A inline
+    per-attempt accumulation: a quarantine warning is permanent (a quarantined
+    agent's ``exc`` is always ``None``, so it is never entered into the
+    transient-failure retry pass — see ``retry_engine.run_with_retries``), and
+    every stored agent's own ``evidence_gaps``/``next_source_tasks`` already
+    reflect its FINAL (possibly recovered) output.
+    """
+    safety_valid = not _is_safety_quarantine(result.warnings)
+    all_gaps = [g for a in result.agents for g in a.evidence_gaps]
+    all_tasks = [t for a in result.agents for t in a.next_source_tasks]
+    return safety_valid, _dedupe(all_gaps), _dedupe(all_tasks)
+
+
+async def _run_offline_pass(
+    *,
+    evidence_json: str,
+    evidence_ids: set[str],
+    candidate_ids: set[str],
+    result: DiscoveryCouncilResult,
+    client: LLMClient,
+    cfg: Settings,
+    log: logging.Logger,
+    run_id: str | None,
+) -> None:
+    """The OFF path: one attempt per agent, no retries — byte-identical to
+    pre-Slice-6A."""
+    for agent_name in DISCOVERY_COUNCIL_AGENT_ORDER:
+        output, issues, exc, duration_ms = await _timed_attempt(
+            agent_name, evidence_json, evidence_ids, candidate_ids, result, client, cfg
+        )
+        result.agents.append(output)
+        result.warnings.extend(issues)
+        _log_agent_outcome(
+            log,
+            agent_name,
+            output,
+            exc,
+            duration_ms,
+            cfg=cfg,
+            client=client,
+            run_id=run_id,
+        )
+
+
+def _make_attempt(
+    evidence_json: str,
+    evidence_ids: set[str],
+    candidate_ids: set[str],
+    result: DiscoveryCouncilResult,
+    client: LLMClient,
+    cfg: Settings,
+) -> retry_engine.AttemptFn:
+    """Bind the discovery-specific single-attempt primitive for the retry engine."""
+
+    async def _attempt(agent_name: str) -> retry_engine.AttemptResult:
+        return await _timed_attempt(
+            agent_name, evidence_json, evidence_ids, candidate_ids, result, client, cfg
+        )
+
+    return _attempt
+
+
+def _make_replace_agent(
+    result: DiscoveryCouncilResult,
+) -> retry_engine.ReplaceAgentFn:
+    """Bind ``_replace_agent`` to a specific ``result`` for the retry engine."""
+
+    def _replace(agent_name: str, output: Any, issues: list[str]) -> None:
+        _replace_agent(result, agent_name, output, issues)
+
+    return _replace
+
+
+def _make_status_of(result: DiscoveryCouncilResult) -> retry_engine.StatusOfFn:
+    """The current status of an already-attempted agent, or ``None``."""
+
+    def _status_of(agent_name: str) -> str | None:
+        entry = next((a for a in result.agents if a.agent_name == agent_name), None)
+        return entry.status if entry is not None else None
+
+    return _status_of
+
+
+def _make_log_outcome(
+    log: logging.Logger,
+    cfg: Settings,
+    client: LLMClient,
+    run_id: str | None,
+) -> retry_engine.LogOutcomeFn:
+    """Bind ``_log_agent_outcome`` to the run's fixed logging context."""
+
+    def _log_outcome(
+        agent_name: str,
+        output: Any,
+        exc: Exception | None,
+        duration_ms: int,
+        attempt_number: int | None,
+    ) -> None:
+        _log_agent_outcome(
+            log,
+            agent_name,
+            output,
+            exc,
+            duration_ms,
+            cfg=cfg,
+            client=client,
+            run_id=run_id,
+            attempt=attempt_number,
+        )
+
+    return _log_outcome
+
+
+async def _run_council_with_retries(
+    *,
+    evidence_json: str,
+    evidence_ids: set[str],
+    candidate_ids: set[str],
+    result: DiscoveryCouncilResult,
+    client: LLMClient,
+    cfg: Settings,
+    log: logging.Logger,
+    run_id: str | None,
+    clock: Callable[[], float],
+    sleeper: Callable[[float], Awaitable[Any]],
+    rng: random.Random,
+) -> None:
+    """The ON path: initial pass under a deadline + a priority retry pass.
+
+    Thin discovery-specific adapter (Phase 32A Slice 6A) over
+    ``retry_engine.run_with_retries``: supplies the discovery council's FIXED
+    agent order / critical-agent set / retry-priority order, and the
+    ``result`` mutation/lookup callbacks the generic engine needs.
+    """
+    await retry_engine.run_with_retries(
+        agent_order=DISCOVERY_COUNCIL_AGENT_ORDER,
+        critical=CRITICAL_ALWAYS,
+        priority_order=_retry_priority_order(),
+        reserved=RESERVED_AGENTS,
+        attempt=_make_attempt(evidence_json, evidence_ids, candidate_ids, result, client, cfg),
+        append_output=result.agents.append,
+        extend_warnings=result.warnings.extend,
+        replace_agent=_make_replace_agent(result),
+        status_of=_make_status_of(result),
+        log_outcome=_make_log_outcome(log, cfg, client, run_id),
+        budget_exhausted_output=_budget_exhausted_output,
+        log=log,
+        report_id=None,
+        ticker=run_id,
+        provider=client.provider_name,
+        council_version=cfg.llm_discovery_council_version,
+        clock=clock,
+        sleeper=sleeper,
+        rng=rng,
+        total_budget_seconds=cfg.llm_discovery_council_retry_total_budget_seconds,
+        critical_reserve_seconds=cfg.llm_discovery_council_retry_critical_reserve_seconds,
+        max_retries=cfg.llm_discovery_council_retry_max_retries,
+        critical_max_retries=cfg.llm_discovery_council_retry_critical_max_retries,
+        base_backoff_seconds=cfg.llm_discovery_council_retry_base_backoff_seconds,
+        max_backoff_seconds=cfg.llm_discovery_council_retry_max_backoff_seconds,
+        max_retry_after_seconds=cfg.llm_discovery_council_retry_max_retry_after_seconds,
+        completed_status=STATUS_COMPLETED,
+        failed_status=STATUS_FAILED,
+    )
+
+
 async def run_discovery_council(
     evidence_pack: DiscoveryEvidencePack,
     client: LLMClient,
@@ -171,10 +576,28 @@ async def run_discovery_council(
     cfg: Settings | None = None,
     run_id: str | None = None,
     logger: logging.Logger | None = None,
+    clock: Callable[[], float] = time.monotonic,
+    sleeper: Callable[[float], Awaitable[Any]] = asyncio.sleep,
+    rng: random.Random | None = None,
 ) -> DiscoveryCouncilResult:
-    """Run every discovery-council agent over the pack and return the result."""
+    """Run every discovery-council agent over the pack and return the result.
+
+    When ``cfg.llm_discovery_council_retry_enabled`` is False (default) the OFF
+    path runs: one attempt per agent, no retries, no chair fallback —
+    behaviorally identical to pre-Slice-6A. When True, an initial pass plus a
+    bounded, priority-ordered retry pass runs under a total wall-time budget
+    (materially more generous than the company council's, since the discovery
+    council is an async background job — see ``llm_discovery_council_retry_*``
+    in ``config.py``), and a deterministic discovery-chair fallback is attached
+    if the LLM chair still fails.
+
+    ``clock`` / ``sleeper`` / ``rng`` are injectable so tests can drive the
+    budget and backoff deterministically (a fake clock advanced by a fake
+    sleeper) — mirrors ``council.run_council``.
+    """
     cfg = cfg or default_settings
     log = logger or _logger
+    rng = rng if rng is not None else random.Random()
     evidence_ids = evidence_pack.evidence_ids()
     candidate_ids = evidence_pack.candidate_ids()
     evidence_json = evidence_pack.model_dump_json()
@@ -201,88 +624,31 @@ async def run_discovery_council(
         candidate_count=evidence_pack.candidate_count,
     )
 
-    safety_valid = True
-    all_gaps: list[str] = []
-    all_tasks: list[str] = []
-
-    for agent_name in DISCOVERY_COUNCIL_AGENT_ORDER:
-        started = time.perf_counter()
-        is_chair = agent_name == AGENT_DISCOVERY_CHAIR
-        if is_chair:
-            system = prompts.discovery_chair_system_prompt()
-            user = prompts.build_user_message(evidence_json, _prior_summaries(result.agents))
-        else:
-            system = prompts.system_prompt_for(agent_name)
-            user = prompts.build_user_message(evidence_json)
-
-        try:
-            raw = await client.complete_json(
-                system,
-                user,
-                max_tokens=cfg.llm_max_output_tokens,
-                temperature=cfg.llm_temperature,
-                timeout=cfg.llm_request_timeout_seconds,
-                repair_instruction=prompts.REPAIR_INSTRUCTION,
-            )
-            output = _coerce_output(agent_name, raw)
-            sanitized, issues = check_and_sanitize(
-                output, evidence_ids, candidate_ids, is_chair=is_chair
-            )
-            result.agents.append(sanitized)
-            result.warnings.extend(issues)
-            if _is_safety_quarantine(issues):
-                safety_valid = False
-            all_gaps.extend(sanitized.evidence_gaps)
-            all_tasks.extend(sanitized.next_source_tasks)
-            duration_ms = int((time.perf_counter() - started) * 1000)
-            if sanitized.status == STATUS_FAILED:
-                log_event(
-                    log,
-                    "discovery_council_agent_failed",
-                    level=logging.WARNING,
-                    run_id=run_id,
-                    agent_name=agent_name,
-                    provider=client.provider_name,
-                    council_version=cfg.llm_discovery_council_version,
-                    duration_ms=duration_ms,
-                    status=STATUS_FAILED,
-                    reason="quarantined_or_unparsed",
-                )
-            else:
-                log_event(
-                    log,
-                    "discovery_council_agent_completed",
-                    run_id=run_id,
-                    agent_name=agent_name,
-                    provider=client.provider_name,
-                    council_version=cfg.llm_discovery_council_version,
-                    duration_ms=duration_ms,
-                    status=sanitized.status,
-                    candidate_note_count=len(sanitized.candidate_notes),
-                )
-        except LLMError as exc:
-            duration_ms = int((time.perf_counter() - started) * 1000)
-            result.agents.append(
-                DiscoveryCouncilAgentOutput(
-                    agent_name=agent_name,
-                    status=STATUS_FAILED,
-                    summary="[Agent did not complete: provider error or timeout.]",
-                    safety_notes=[f"Agent failed ({type(exc).__name__})."],
-                )
-            )
-            result.warnings.append(f"{agent_name}: {type(exc).__name__}")
-            log_event(
-                log,
-                "discovery_council_agent_failed",
-                level=logging.WARNING,
-                run_id=run_id,
-                agent_name=agent_name,
-                provider=client.provider_name,
-                council_version=cfg.llm_discovery_council_version,
-                duration_ms=duration_ms,
-                status=STATUS_FAILED,
-                reason=type(exc).__name__,
-            )
+    if cfg.llm_discovery_council_retry_enabled:
+        await _run_council_with_retries(
+            evidence_json=evidence_json,
+            evidence_ids=evidence_ids,
+            candidate_ids=candidate_ids,
+            result=result,
+            client=client,
+            cfg=cfg,
+            log=log,
+            run_id=run_id,
+            clock=clock,
+            sleeper=sleeper,
+            rng=rng,
+        )
+    else:
+        await _run_offline_pass(
+            evidence_json=evidence_json,
+            evidence_ids=evidence_ids,
+            candidate_ids=candidate_ids,
+            result=result,
+            client=client,
+            cfg=cfg,
+            log=log,
+            run_id=run_id,
+        )
 
     result.recount()
 
@@ -301,9 +667,43 @@ async def run_discovery_council(
     buckets = _aggregate_chair(evidence_pack, chair)
     for field, entries in buckets.items():
         setattr(result, field, entries[:_MAX_AGG_LIST])
-    result.evidence_gaps = _dedupe(all_gaps)
-    result.next_source_tasks = _dedupe(all_tasks)
+    safety_valid, evidence_gaps, next_source_tasks = _finalize_aggregates(result)
+    result.evidence_gaps = evidence_gaps
+    result.next_source_tasks = next_source_tasks
     result.safety_valid = safety_valid
+
+    # Phase 32A Slice 6A: when the retry bundle is on and the LLM discovery
+    # chair still did not complete, attach a DETERMINISTIC, non-consensus
+    # discovery-chair summary so the run has an honest synthesis to render —
+    # without inventing a consensus, a candidate action, or a recommendation.
+    # The failed LLM chair entry is KEPT in ``agents`` (so the counts +
+    # warnings show the council is visibly partial); the fallback is attached
+    # separately and is excluded from the completed/failed recount tallies. It
+    # never flips ``human_review_required`` / ``publication_ready``.
+    if cfg.llm_discovery_council_retry_enabled and (
+        chair is None or chair.status != STATUS_COMPLETED
+    ):
+        fallback = _deterministic_chair_fallback(
+            result.agents, DISCOVERY_COUNCIL_AGENT_ORDER
+        )
+        # Defense-in-depth: run the fallback through the same safety/citation gate.
+        sanitized_fallback, _fb_issues = check_and_sanitize(
+            fallback, evidence_ids, candidate_ids, is_chair=True
+        )
+        result.deterministic_chair = sanitized_fallback
+        result.chair_fallback_used = True
+        result.run_quality = sanitized_fallback.run_quality
+        log_event(
+            log,
+            "discovery_council_chair_fallback",
+            level=logging.WARNING,
+            run_id=run_id,
+            provider=client.provider_name,
+            council_version=cfg.llm_discovery_council_version,
+            run_quality=sanitized_fallback.run_quality,
+            agents_completed=result.agents_completed,
+            agents_failed=result.agents_failed,
+        )
 
     log_event(
         log,

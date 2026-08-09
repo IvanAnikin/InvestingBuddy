@@ -15,6 +15,15 @@ must handle safely:
   forbidden_agents={...}     inject a forbidden rating token for those agents
   bad_citation_agents={...}  cite an evidence id that is NOT in the pack
   uncited_agents={...}       emit a material run claim with no citations
+  agent_failures={...}       Phase 32A Slice 6A: a per-agent QUEUE of exceptions,
+                             popped once per call for that agent then falling
+                             through to normal output — scripts 429/5xx/timeout
+                             -then-success, retry-after, and retry exhaustion
+                             (mirrors ``fake_client.FakeLLMClient``).
+
+State (for assertions): ``self.calls`` counts raw calls per agent; ``self.
+user_prompts`` records the user message seen per agent (so a test can assert the
+discovery chair's rebuilt prompt contains a recovered agent's summary line).
 """
 
 from __future__ import annotations
@@ -57,12 +66,21 @@ class FakeDiscoveryLLMClient(LLMClient):
         forbidden_agents: set[str] | None = None,
         bad_citation_agents: set[str] | None = None,
         uncited_agents: set[str] | None = None,
+        agent_failures: dict[str, list[Exception]] | None = None,
         model: str = "fake-discovery-council-model",
     ) -> None:
         self._mode = mode
         self._forbidden_agents = forbidden_agents or set()
         self._bad_citation_agents = bad_citation_agents or set()
         self._uncited_agents = uncited_agents or set()
+        # Copy each queue so popping does not mutate the caller's dict/lists.
+        self._agent_failures: dict[str, list[Exception]] = {
+            agent: list(queue) for agent, queue in (agent_failures or {}).items()
+        }
+        # Assertion state (Phase 32A Slice 6A): raw calls per agent + the user
+        # prompt(s) seen per agent.
+        self.calls: dict[str, int] = {}
+        self.user_prompts: dict[str, list[str]] = {}
         self._model = model
         # Guard against a rotation that would emit a disallowed action.
         assert all(a in ALLOWED_INTERNAL_ACTIONS for a in _ACTION_CYCLE)
@@ -88,6 +106,17 @@ class FakeDiscoveryLLMClient(LLMClient):
         temperature: float,
         timeout: int,
     ) -> str:
+        agent = self._agent_from_system(system)
+        self.calls[agent] = self.calls.get(agent, 0) + 1
+        self.user_prompts.setdefault(agent, []).append(user)
+
+        # Phase 32A Slice 6A: per-agent scripted failure queue, popped once per
+        # call, falling through to normal output when empty (mirrors
+        # ``fake_client.FakeLLMClient``).
+        queue = self._agent_failures.get(agent)
+        if queue:
+            raise queue.pop(0)
+
         if self._mode == "timeout":
             raise LLMTimeoutError("fake timeout")
 
@@ -97,7 +126,6 @@ class FakeDiscoveryLLMClient(LLMClient):
         if self._mode == "invalid_json_once" and not is_repair:
             return "```\nthis is not valid json\n```"
 
-        agent = self._agent_from_system(system)
         candidate_ids = _CANDIDATE_ID_RE.findall(user)
         run_fact_ids = _RUN_FACT_ID_RE.findall(user)
         return json.dumps(self._build_output(agent, candidate_ids, run_fact_ids))
