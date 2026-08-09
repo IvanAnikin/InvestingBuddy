@@ -243,6 +243,57 @@ async def test_extracted_document_and_facts_joined_by_content_hash(db):
     assert doc_read.reused is False
 
 
+async def test_shared_content_hash_across_two_attempts_does_not_double_count(db):
+    # A regression for a real reviewer-caught bug: the SAME document (one
+    # content_hash) discovered via TWO distinct candidate URLs/discovery
+    # strategies in the same run must count its validated facts and its
+    # reused status ONCE, not once per attempt row that references it.
+    run_id = uuid.uuid4()
+    company_id = uuid.uuid4()
+    content_hash = "c" * 64
+    old = _utcnow() - timedelta(days=1)
+
+    doc = _document(content_hash=content_hash, company_id=company_id, agent_run_id=uuid.uuid4(), created_at=old)
+    db.add(doc)
+    await db.flush()
+    db.add(
+        ExtractedFact(
+            id=uuid.uuid4(),
+            extracted_document_id=doc.id,
+            label="revenue",
+            value_numeric=1000,
+            value_text="$1,000",
+            unit="currency_amount",
+            currency="USD",
+            period="2024",
+            page_number=3,
+            table_location="p3:t0",
+            extraction_method="native_pdf",
+            confidence=0.9,
+            validation_status="validated",
+            needs_human_review=True,
+        )
+    )
+    # Two attempts, same content_hash, same run — e.g. found via both a
+    # direct anchor link and a sitemap-derived URL that canonicalize to the
+    # same underlying document.
+    db.add(_attempt(company_id=company_id, agent_run_id=run_id, url="https://x.com/a.pdf", status="extracted", extraction_method="native_pdf", content_hash=content_hash))
+    db.add(_attempt(company_id=company_id, agent_run_id=run_id, url="https://x.com/a-mirror.pdf", status="extracted", extraction_method="native_pdf", content_hash=content_hash))
+    await db.commit()
+
+    result = await get_report_primary_documents(
+        db, report_company_id=company_id, report_agent_run_id=run_id, report_id=uuid.uuid4()
+    )
+    # Two attempt rows are still shown (real, distinct discovery events)...
+    assert len(result.documents) == 2
+    # ...but the document-level counts are deduped, not doubled.
+    assert result.summary.validated_fact_count == 1
+    assert result.summary.reused_count == 1
+    # Both attempt cards still show the same document's facts (display is
+    # intentionally per-attempt, only the summary aggregate is deduped).
+    assert all(len(d.facts) == 1 for d in result.documents)
+
+
 async def test_reuse_detected_when_document_predates_attempt(db):
     run_id = uuid.uuid4()
     company_id = uuid.uuid4()

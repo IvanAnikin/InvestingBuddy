@@ -130,6 +130,15 @@ async def get_report_primary_documents(
     ocr_count = 0
     validated_fact_count = 0
     reused_count = 0
+    # A document can be pointed to by more than one attempt in the same run
+    # (e.g. discovered via two different candidate URLs/discovery strategies
+    # that canonicalize to the same content_hash). Per-attempt DISPLAY
+    # (facts/excerpts on each document card) intentionally repeats the same
+    # document's data for every attempt that references it, but SUMMARY
+    # counts are a property of the document, not the attempt, and must only
+    # ever be counted once per unique document — never fabricate a higher
+    # count than the number of real persisted rows.
+    counted_document_ids: set[uuid.UUID] = set()
 
     for attempt in attempts:
         doc = documents_by_hash.get(attempt.content_hash) if attempt.content_hash else None
@@ -149,16 +158,18 @@ async def get_report_primary_documents(
                         confidence=raw.get("confidence"),
                     )
                 )
+            first_time_seeing_doc = doc.id not in counted_document_ids
             for fact in facts_by_document_id.get(doc.id, []):
                 facts.append(PrimaryDocumentFactRead.model_validate(fact))
-                if fact.validation_status == "validated":
+                if first_time_seeing_doc and fact.validation_status == "validated":
                     validated_fact_count += 1
             if doc.created_at is not None and attempt.attempted_at is not None:
                 reused = (
                     _as_aware(attempt.attempted_at) - _as_aware(doc.created_at)
                 ) > _REUSE_TOLERANCE
-            if reused:
+            if reused and first_time_seeing_doc:
                 reused_count += 1
+            counted_document_ids.add(doc.id)
 
         if attempt.status == STATUS_EXTRACTED:
             extracted_count += 1
