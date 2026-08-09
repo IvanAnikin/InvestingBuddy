@@ -334,9 +334,13 @@ async def _try_ocr(
     # structure pypdf can't rewrite); that degrades honestly via the
     # provider's existing FAILURE_OCR_DOCUMENT_TOO_LARGE path if still
     # oversized, never a silent/fabricated outcome.
-    subset_bytes = extract_page_subset(raw_bytes, pages)
-    ocr_bytes = subset_bytes if subset_bytes is not None else raw_bytes
-    body_is_page_subset = subset_bytes is not None
+    subset = extract_page_subset(raw_bytes, pages)
+    if subset is not None:
+        ocr_bytes, ocr_pages = subset
+        body_is_page_subset = True
+    else:
+        ocr_bytes, ocr_pages = raw_bytes, pages
+        body_is_page_subset = False
 
     # Bounded retry: only a TRANSIENT failure (timeout / throttled / a
     # provider-side error) is worth retrying — a malformed result is a parsing
@@ -356,7 +360,7 @@ async def _try_ocr(
         result = await ocr_provider.extract(
             ocr_bytes,
             cfg=cfg,
-            pages=pages,
+            pages=ocr_pages,
             timeout_seconds=timeout_seconds,
             body_is_page_subset=body_is_page_subset,
         )
@@ -368,7 +372,7 @@ async def _try_ocr(
             attempt=attempt + 1,
             excerpt_count=len(result.excerpts),
             table_count=len(result.tables),
-            selected_pages=len(pages),
+            selected_pages=len(ocr_pages),
             duration_ms=result.duration_ms,
         )
         if result.has_content or result.failure_code not in _TRANSIENT_OCR_FAILURES:

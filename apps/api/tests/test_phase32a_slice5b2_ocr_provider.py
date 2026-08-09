@@ -554,15 +554,17 @@ def test_extract_page_subset_body_size_is_smaller_than_full_document():
     full = make_multi_page_scanned_pdf([f"page {i}" for i in range(1, 21)])  # 20 pages
     from app.services.sources.ocr_provider import extract_page_subset
 
-    subset = extract_page_subset(full, [1, 10, 20])
-    assert subset is not None
-    assert len(subset) < len(full)
+    result = extract_page_subset(full, [1, 10, 20])
+    assert result is not None
+    subset_bytes, written_pages = result
+    assert len(subset_bytes) < len(full)
+    assert written_pages == [1, 10, 20]
 
     import io as _io
 
     from pypdf import PdfReader
 
-    assert len(PdfReader(_io.BytesIO(subset)).pages) == 3
+    assert len(PdfReader(_io.BytesIO(subset_bytes)).pages) == 3
 
 
 def test_extract_page_subset_malformed_source_returns_none():
@@ -577,7 +579,7 @@ def test_extract_page_subset_empty_pages_returns_none():
     assert extract_page_subset(make_pdf(["p1", "p2"]), []) is None
 
 
-def test_extract_page_subset_out_of_range_pages_skipped_not_fabricated():
+def test_extract_page_subset_out_of_range_pages_skipped_and_map_stays_aligned():
     import io as _io
 
     from pypdf import PdfReader
@@ -586,10 +588,16 @@ def test_extract_page_subset_out_of_range_pages_skipped_not_fabricated():
 
     raw = make_pdf(["p1", "p2"])
     # Page 99 doesn't exist in a 2-page document — must be silently skipped,
-    # never raise, never invent a page.
-    subset = extract_page_subset(raw, [1, 99])
-    assert subset is not None
-    assert len(PdfReader(_io.BytesIO(subset)).pages) == 1
+    # never raise, never invent a page. Critically, the returned
+    # `written_pages` list must reflect ONLY what was actually written ([1],
+    # not [1, 99]) — a caller using the ORIGINAL [1, 99] as a page_number_map
+    # against a 1-page subset would misattribute any recognized content to
+    # the wrong original page number.
+    result = extract_page_subset(raw, [1, 99])
+    assert result is not None
+    subset_bytes, written_pages = result
+    assert written_pages == [1]
+    assert len(PdfReader(_io.BytesIO(subset_bytes)).pages) == 1
 
 
 # =========================================================================== #

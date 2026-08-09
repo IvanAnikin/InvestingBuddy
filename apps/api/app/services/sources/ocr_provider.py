@@ -306,7 +306,7 @@ def select_ocr_pages(raw: bytes, *, max_pages: int) -> list[int]:
     return candidates[:max_pages]
 
 
-def extract_page_subset(raw: bytes, pages: list[int]) -> bytes | None:
+def extract_page_subset(raw: bytes, pages: list[int]) -> tuple[bytes, list[int]] | None:
     """Build a NEW, small PDF containing ONLY ``pages`` (1-based) from ``raw``.
 
     Azure Document Intelligence's ``pages`` request parameter only bounds
@@ -319,10 +319,17 @@ def extract_page_subset(raw: bytes, pages: list[int]) -> bytes | None:
     the SOURCE document's total size — a handful of pages from a real report
     is almost always a small fraction of the whole document.
 
-    Returns ``None`` (never raises) on any failure — callers must fall back to
-    the raw bytes, which then degrades honestly via the provider's own
-    existing ``FAILURE_OCR_DOCUMENT_TOO_LARGE`` classification if still
-    oversized, never a silent/fabricated outcome.
+    Returns ``(subset_bytes, written_pages)`` where ``written_pages`` is the
+    subsequence of ``pages`` that was ACTUALLY written (in order) — any
+    out-of-range page number is silently skipped, never fabricated as a blank
+    page. Callers MUST use this returned list (never the original ``pages``)
+    as the page-number map for the corresponding ``extract(...,
+    body_is_page_subset=True)`` call: using the original, unfiltered list
+    would misalign every entry after a skipped page. Returns ``None`` (never
+    raises) on any failure or if no requested page was in range — callers
+    must fall back to the raw bytes, which then degrades honestly via the
+    provider's own existing ``FAILURE_OCR_DOCUMENT_TOO_LARGE`` classification
+    if still oversized, never a silent/fabricated outcome.
     """
     if not pages:
         return None
@@ -334,16 +341,16 @@ def extract_page_subset(raw: bytes, pages: list[int]) -> bytes | None:
         reader = PdfReader(io.BytesIO(raw))
         total_pages = len(reader.pages)
         writer = PdfWriter()
-        added = 0
+        written: list[int] = []
         for page_no in pages:
             if 1 <= page_no <= total_pages:
                 writer.add_page(reader.pages[page_no - 1])
-                added += 1
-        if added == 0:
+                written.append(page_no)
+        if not written:
             return None
         buf = io.BytesIO()
         writer.write(buf)
-        return buf.getvalue()
+        return buf.getvalue(), written
     except Exception:  # noqa: BLE001 - a malformed source must degrade, never raise
         return None
 
