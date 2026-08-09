@@ -284,7 +284,14 @@ class EodhdProvider(FinancialDataProvider):
         return PriceHistoryData(
             ticker=ticker.upper(),
             exchange=exchange,
-            currency="USD",  # overridden when profile currency is known
+            # Phase 32A Slice 6B (C3) — this endpoint (EODHD /eod) never returns
+            # a currency field, and this function has no cheap access to the
+            # profile's CurrencyCode (that requires a separate /fundamentals
+            # call — see get_company_profile()). Honestly None here; callers
+            # resolve a real, non-guessed quote currency via
+            # ``exchange_registry.price_quote_currency_for_exchange`` when the
+            # exchange is known (e.g. build_company_snapshot).
+            currency=None,
             price_points=price_points,
             source_url=f"{self._base_url}/eod/{symbol}",
             data_quality=DataQuality.B_single_credible if price_points else DataQuality.D_weak_or_stale, # noqa: E501

@@ -348,6 +348,40 @@ async def test_no_stale_schema_invalid_note_in_persisted_content(mock_db) -> Non
     assert "Schema invalid" not in (saved.content_markdown or "")
 
 
+async def test_committee_quality_gate_schema_valid_never_stale(mock_db) -> None:
+    """
+    Phase 32A Slice 6B (C4) — ``committee_chair_summary.quality_gate_status``
+    is set ONCE, early, from the Phase-9 minimal-draft validation (often False
+    at that stage). It must be refreshed from the SAME authoritative
+    post-final-assembly ``validation.schema_valid`` as the RC-6
+    ``workflow_status`` patch, so the two never contradict each other.
+    """
+    state = _real_state()
+    # Simulate the early Phase-9 value being False while the eventual final
+    # assembly / schema completion succeeds (schema_valid True).
+    state["committee_chair_summary"]["quality_gate_status"] = {
+        "schema_valid": False,
+        "safety_valid": True,
+    }
+    state["schema_validation_result"] = {"is_valid": True, "errors": [], "warnings": []}
+
+    source_report = _report_with_markdown(_envelope_markdown(state))
+    resp = await _run_from_report(mock_db, source_report)
+    content = _saved_report_content(_saved_report(mock_db))
+
+    assert resp.schema_valid is True
+    committee = content["committee_chair_summary"]
+    assert committee["quality_gate_status"]["value"]["schema_valid"] is True
+    # No stale contradiction survives against the top-level authoritative flag.
+    assert content["workflow_status"]["schema_valid"] == resp.schema_valid
+    assert (
+        committee["quality_gate_status"]["value"]["schema_valid"]
+        == content["workflow_status"]["schema_valid"]
+    )
+    # Untouched sibling field is preserved (only schema_valid is patched).
+    assert committee["quality_gate_status"]["value"]["safety_valid"] is True
+
+
 # ---------------------------------------------------------------------------
 # 4. Identity fallback (RC-5): DB lineage → identity resolved, provenance unknown
 # ---------------------------------------------------------------------------

@@ -123,7 +123,11 @@ class PricePoint(BaseModel):
 class PriceHistoryData(BaseModel):
     ticker: str
     exchange: str | None = None
-    currency: str
+    # Phase 32A Slice 6B (C3) — the raw provider price-quote currency is
+    # honestly None when genuinely unknown (never fabricated as USD/GBP).
+    # Downstream code resolves a real, non-guessed value via
+    # ``exchange_registry.price_quote_currency_for_exchange`` where possible.
+    currency: str | None = None
     price_points: list[PricePoint]
     source_url: str | None = None
     data_quality: DataQuality = DataQuality.B_single_credible

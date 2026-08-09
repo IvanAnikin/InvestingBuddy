@@ -159,7 +159,7 @@ function sampleReportContent({ withCouncil }) {
       source_tier: "T2_regulator_or_gov",
       is_mock: false,
       available_count: 6,
-      missing_count: 3,
+      missing_financial_fields_count: 3,
       warnings_count: 1,
     },
     financial_snapshot: {

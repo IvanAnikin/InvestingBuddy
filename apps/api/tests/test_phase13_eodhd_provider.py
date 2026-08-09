@@ -260,6 +260,26 @@ class TestEodhdPriceHistoryParsing:
         assert dq == "D_weak_or_stale"
 
     @pytest.mark.asyncio
+    async def test_price_history_currency_honestly_none_not_hardcoded_usd(
+        self, aapl_eod_payload
+    ):
+        """
+        Phase 32A Slice 6B (C3) — get_price_history() has no cheap access to the
+        real CurrencyCode (that's a separate /fundamentals call). It must never
+        fabricate "USD" — currency is honestly None here; callers resolve a real
+        value via exchange_registry when the exchange is known.
+        """
+        with patch.dict(os.environ, {"EODHD_API_KEY": "test-key"}):
+            from app.integrations.providers.eodhd_provider import EodhdProvider
+
+            provider = EodhdProvider()
+            with patch.object(provider, "_get_json", new_callable=AsyncMock) as mock_get:
+                mock_get.return_value = aapl_eod_payload
+                prices = await provider.get_price_history("BRBY", "LSE")
+
+        assert prices.currency is None
+
+    @pytest.mark.asyncio
     async def test_price_history_invalid_format_raises(self):
         from app.integrations.providers.eodhd_provider import EodhdProvider, EodhdProviderError
         with patch.dict(os.environ, {"EODHD_API_KEY": "test-key"}):

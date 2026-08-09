@@ -109,6 +109,46 @@ if TYPE_CHECKING:  # reuse lookup is a plain in-memory dict — never a DB sessi
 
 _log = logging.getLogger("app.services.sources.connectors.company_ir")
 
+# Phase 32A Slice 6B (C7) — content-based markers of a bot-protection /
+# challenge page (e.g. Burberry's "Challenge Validation" wall). These pages
+# often return a normal 2xx status (so ``SafeFetchResult.blocked``/``error``
+# is never set — the fetch technically "succeeded") but their body is NOT the
+# real IR page, so zero real annual-report links are ever found. Checked only
+# to DISTINGUISH the gap message from a genuine "fetched fine, no links"
+# state — never used to fabricate a success, never to retry/bypass anything.
+_BOT_PROTECTION_MARKERS: tuple[str, ...] = (
+    "just a moment",
+    "attention required",
+    "checking your browser",
+    "verify you are human",
+    "please verify you are a human",
+    "access denied",
+    "challenge validation",
+    "cf-challenge",
+    "captcha",
+    "unusual traffic",
+    "enable javascript and cookies",
+    "are you a robot",
+)
+
+
+def _looks_like_bot_protection_page(fetched: SafeFetchResult) -> bool:
+    """
+    Heuristic detection of a bot-protection / challenge page in an otherwise
+    "successful" fetch (no ``fetched.blocked``, no ``fetched.error``). Bounded
+    to the page title + first 2KB of body — never logs or persists the body
+    itself, only the True/False verdict feeding the gap message.
+    """
+    haystack = " ".join(
+        filter(
+            None,
+            [(fetched.title or "").lower(), (fetched.body_html or "")[:2000].lower()],
+        )
+    )
+    if not haystack:
+        return False
+    return any(marker in haystack for marker in _BOT_PROTECTION_MARKERS)
+
 # A press fetcher returns plain press-release dicts. Expected keys (all
 # optional): headline/title, url, published_at/date, summary, source_name,
 # source_url_quality, media_url.
@@ -502,16 +542,32 @@ class CompanyIrConnector(SourceConnector):
                 )
             )
         if not fetched.links:
+            # Phase 32A Slice 6B (C7) — distinguish an ACTIVELY BLOCKED fetch
+            # (bot protection / challenge page returned instead of the real
+            # IR page) from a fetch that genuinely succeeded and found zero
+            # candidate links. Both are honest, non-fabricating gap states —
+            # neither ever claims success — but conflating them into one
+            # message hid the real reason no links were found (the confirmed
+            # Burberry case: an active "Challenge Validation" wall, not a
+            # missing/absent link).
+            if _looks_like_bot_protection_page(fetched):
+                gap_message = (
+                    "Company IR source fetch was blocked (bot protection / "
+                    "access denied) — annual report links could not be "
+                    "evaluated."
+                )
+            else:
+                gap_message = (
+                    "Company IR source found but annual report link not "
+                    "identified by bounded extractor."
+                )
             gaps.append(
                 SourceGap(
                     connector_key=self.connector_key,
                     source_id="company_ir",
                     gap_type=GapType.primary_filing_unavailable,
                     severity=GapSeverity.info,
-                    message=(
-                        "Company IR source found but annual report link not "
-                        "identified by bounded extractor."
-                    ),
+                    message=gap_message,
                     blocks_research_complete=False,
                 )
             )
