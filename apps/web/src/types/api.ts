@@ -115,6 +115,89 @@ export interface PrimaryDocumentSummary {
   warnings?: string[];
 }
 
+// Phase 32A Slice 5B.3 — admin-only, bounded provenance view of what the
+// primary-document/OCR ingestion pipeline (Slice 5/5A/5B.1/5B.2) actually
+// did for one report's generating run. Mirrors
+// apps/api/app/schemas/primary_document.py. Never a raw document body, raw
+// OCR output, or provider exception — every field already went through the
+// existing bounded/sanitized persistence layer. Diagnostic/provenance only —
+// never a recommendation.
+export interface PrimaryDocumentFact {
+  id: string;
+  label: string;
+  value_numeric: number | null;
+  value_text: string | null;
+  unit: string | null;
+  currency: string | null;
+  period: string | null;
+  page_number: number | null;
+  table_location: string | null;
+  extraction_method: string;
+  confidence: number;
+  validation_status: string;
+  needs_human_review: boolean;
+}
+
+export interface PrimaryDocumentExcerpt {
+  text: string;
+  page_number?: number | null;
+  section?: string | null;
+  heading?: string | null;
+  table_location?: string | null;
+  extraction_method?: string | null;
+  confidence?: number | null;
+}
+
+export interface PrimaryDocument {
+  attempt_id: string;
+  canonical_url: string;
+  title: string | null;
+  source_type: string;
+  source_tier: string;
+  doc_kind: string | null;
+  discovery_strategy: string | null;
+  attempted_at: string;
+  // Closed ingestion_status vocabulary (see
+  // apps/api/app/services/sources/ingestion_status.py ALL_ATTEMPT_STATUSES).
+  status: string;
+  failure_code: string | null;
+  mime_type: string | null;
+  extraction_method: string | null;
+  page_count: number | null;
+  fetch_ms: number | null;
+  extraction_ms: number | null;
+  total_ms: number | null;
+  pinned: boolean | null;
+  content_hash: string | null;
+  reused: boolean;
+  excerpts: PrimaryDocumentExcerpt[];
+  facts: PrimaryDocumentFact[];
+}
+
+// Named distinctly from `PrimaryDocumentSummary` above (Phase 29B.2's
+// per-document council-metadata summary) to avoid a symbol collision — this
+// is the run-level ingestion COUNTS summary from the new provenance endpoint.
+export interface PrimaryDocumentIngestionSummary {
+  discovered_count: number;
+  attempted_count: number;
+  extracted_count: number;
+  metadata_only_count: number;
+  failed_count: number;
+  native_count: number;
+  ocr_count: number;
+  validated_fact_count: number;
+  reused_count: number;
+  evidence_reference_count: number;
+}
+
+export interface ReportPrimaryDocumentsResponse {
+  report_id: string;
+  company_id: string | null;
+  agent_run_id: string | null;
+  summary: PrimaryDocumentIngestionSummary;
+  documents: PrimaryDocument[];
+}
+
 export interface LlmCouncilMetadata {
   llm_used: boolean;
   council_version?: string | null;

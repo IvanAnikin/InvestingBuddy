@@ -1,7 +1,16 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { fetchReport, fetchReviewEvents } from "@/lib/api";
-import type { Report, ReviewEvent, LlmCouncilMetadata } from "@/types/api";
+import {
+  fetchReport,
+  fetchReportPrimaryDocuments,
+  fetchReviewEvents,
+} from "@/lib/api";
+import type {
+  LlmCouncilMetadata,
+  Report,
+  ReportPrimaryDocumentsResponse,
+  ReviewEvent,
+} from "@/types/api";
 import FinalReportActions from "./FinalReportActions";
 import ReviewPanel from "./ReviewPanel";
 import GlassCard from "@/components/ui/GlassCard";
@@ -145,6 +154,20 @@ async function getReviewEvents(id: string): Promise<ReviewEvent[]> {
   }
 }
 
+// Phase 32A Slice 5B.3 — primary-document/OCR ingestion provenance. A report
+// with no ingestion activity returns an honest all-zero response from the
+// backend (not an error), so a caught exception here means the fetch itself
+// failed (e.g. network) — degrade to null rather than breaking the page.
+async function getPrimaryDocuments(
+  id: string,
+): Promise<ReportPrimaryDocumentsResponse | null> {
+  try {
+    return await fetchReportPrimaryDocuments(id);
+  } catch {
+    return null;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Page
 // ---------------------------------------------------------------------------
@@ -155,9 +178,10 @@ export default async function ReportDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const [report, reviewEvents] = await Promise.all([
+  const [report, reviewEvents, primaryDocuments] = await Promise.all([
     getReport(id),
     getReviewEvents(id),
+    getPrimaryDocuments(id),
   ]);
 
   if (!report) {
@@ -460,6 +484,7 @@ export default async function ReportDetailPage({
           report={report}
           content={structuredContent}
           council={council && llmUsed ? council : null}
+          primaryDocuments={primaryDocuments}
           schemaValid={schemaValid}
           safetyValid={safetyValid}
         />

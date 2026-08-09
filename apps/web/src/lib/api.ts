@@ -22,6 +22,7 @@ import type {
   HealthResponse,
   Report,
   ReportList,
+  ReportPrimaryDocumentsResponse,
   ReviewActionRequest,
   ReviewActionResponse,
   ReviewEventList,
@@ -134,6 +135,17 @@ export async function fetchReports(
 
 export async function fetchReport(id: string): Promise<Report> {
   return apiFetch<Report>(`/api/v1/reports/${id}`);
+}
+
+// Phase 32A Slice 5B.3 — primary-document/OCR ingestion provenance for one
+// report (admin-only diagnostic view; a report with no ingestion activity
+// returns an honest all-zero summary, not an error).
+export async function fetchReportPrimaryDocuments(
+  id: string,
+): Promise<ReportPrimaryDocumentsResponse> {
+  return apiFetch<ReportPrimaryDocumentsResponse>(
+    `/api/v1/reports/${id}/primary-documents`,
+  );
 }
 
 // ---------------------------------------------------------------------------

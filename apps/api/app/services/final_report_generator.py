@@ -2360,6 +2360,63 @@ def _memo_safe_list(items: Any) -> list[Any]:
     return [_memo_safe_text(x) for x in (items or [])]
 
 
+# Phase 32A Slice 5B.3: the SEC EDGAR connector (``sec_edgar.py``) always
+# attaches this gap whenever it returns filing METADATA, because the
+# connector itself has no visibility into the SEPARATE, later deep body-fetch
+# (Slice 5B.1's ``sec_filing_documents.py``, wired into ``council.py``'s
+# primary-document ingestion) that may have already extracted that exact
+# filing's full text for this same run. That makes the gap stale-but-not-wrong
+# whenever a SEC-sourced primary document WAS extracted — this filters it out
+# at the one place both facts (the gap message + the extraction outcome) are
+# already available, without threading new state through the connector.
+_STALE_SEC_FULL_TEXT_GAP_SUBSTRING = "full filing text is not retrieved"
+
+
+def _sec_primary_document_extracted(primary_documents: list[Any]) -> bool:
+    """True when a SEC-sourced primary document has excerpt/fact text this run.
+
+    Reads the same ``primary_documents`` summary already used to populate
+    ``primary_document_extracted_count`` in ``source_summary_json.llm_council``
+    (grouped by document in ``council.py``'s ``_primary_document_summary``,
+    which groups both ``company_ir_*`` AND SEC (``sec_filing_excerpt`` /
+    ``sec_filing_financial_fact``) source types). SEC filing-body documents are
+    only ever fetched from the ``sec.gov`` allowlisted domain
+    (``SEC_ALLOWED_DOMAINS`` in ``sec_filing_documents.py``), so a grouped
+    document on that domain with at least one excerpt or fact is a real,
+    successful SEC extraction for this run.
+    """
+    for doc in primary_documents:
+        if not isinstance(doc, dict):
+            continue
+        domain = str(doc.get("domain") or "")
+        if domain != "sec.gov" and not domain.endswith(".sec.gov"):
+            continue
+        if (int(doc.get("excerpt_count") or 0) + int(doc.get("fact_count") or 0)) > 0:
+            return True
+    return False
+
+
+def _reconcile_stale_sec_gaps(
+    source_gaps: list[Any], primary_documents: list[Any]
+) -> list[Any]:
+    """Drop the stale "SEC full filing text not retrieved" gap when it is wrong.
+
+    Matches ONLY the specific, connector-authored stale message — every other
+    gap (including SEC's own still-honest "filing body was not fetched"
+    blocked-fetch gap from ``sec_filing_documents.py``, and gaps from other
+    connectors) is left untouched.
+    """
+    if not _sec_primary_document_extracted(primary_documents):
+        return source_gaps
+    return [
+        g
+        for g in source_gaps
+        if not (
+            isinstance(g, str) and _STALE_SEC_FULL_TEXT_GAP_SUBSTRING in g
+        )
+    ]
+
+
 def _memo_carry_identity(
     company_identity: dict[str, Any], key: str
 ) -> dict[str, Any]:
@@ -2465,6 +2522,10 @@ def _build_research_memo(
         _memo_get(council_result, "source_reference_counts", {}) or {}
     )
     source_gaps = list(_memo_get(council_result, "source_gaps", []) or [])
+    # Phase 32A Slice 5B.3: reconcile the SEC connector's stale "full filing
+    # text is not retrieved" gap with what deep primary-document ingestion
+    # actually did this run (see ``_reconcile_stale_sec_gaps``).
+    source_gaps = _reconcile_stale_sec_gaps(source_gaps, primary_documents)
     committee_label = _memo_get(council_result, "committee_label", None)
     llm_used = bool(_memo_get(council_result, "llm_used", False))
     # Phase 32A Slice 4: deterministic committee-chair fallback (only set when the
