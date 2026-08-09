@@ -93,6 +93,7 @@ TARGET_ISSUERS = [
     ("BRBY", "LSE"),
     ("PNDORA", "CO"),
     ("MONC", "MI"),
+    ("GDWN", "LSE"),
 ]
 
 

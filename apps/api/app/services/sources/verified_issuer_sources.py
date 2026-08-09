@@ -298,6 +298,27 @@ _ISSUERS: tuple[VerifiedIssuerSource, ...] = (
         source_confidence=CONFIDENCE_VERIFIED_REFERENCE,
         last_verified_note="Known-stable IR URLs.",
     ),
+    VerifiedIssuerSource(
+        ticker="GDWN",
+        exchange="LSE",
+        company_name="Goodwin PLC",
+        country="United Kingdom",
+        official_website_domain="goodwin.co.uk",
+        allowed_domains=("goodwin.co.uk",),
+        annual_reports_url="https://www.goodwin.co.uk/company-reports/",
+        source_confidence=CONFIDENCE_VERIFIED_LIVE,
+        last_verified_note=(
+            "Static HTML reports archive confirmed 2026-08-09 (direct <a href> PDF "
+            "links, no JS rendering needed, back to 2002)."
+        ),
+        warnings=(
+            "The reports archive spans decades; older entries (e.g. the 2002 "
+            "report) are genuinely scanned/image-only PDFs with no text layer — "
+            "used as a real-world Phase 32A Slice 5B.2 OCR validation target. "
+            "Some archive entries (e.g. the 2003 report) are password-encrypted "
+            "and are honestly classified as such, never bypassed.",
+        ),
+    ),
 )
 
 
