@@ -110,6 +110,37 @@ ALLOWED_INTERNAL_STATUSES = {
     "reject_due_to_data_quality",
 }
 
+
+def _coerce_status_value(value: Any) -> str | None:
+    """Unwrap a possibly-datapoint-shaped internal-status value to a plain str.
+
+    Bug fix (Phase 32A Slice 6C): ``committee_chair_summary`` has TWO different
+    on-the-wire shapes that share the same top-level key name:
+
+      * the RAW workflow-state shape (``company_analysis`` envelope /
+        in-memory state), where ``provisional_internal_status`` is a plain
+        ``str``; and
+      * the ALREADY-RENDERED final-report SECTION shape produced by
+        ``_build_committee_chair_summary`` (embedded in a saved final report's
+        ``content_markdown`` JSON block), where ``provisional_internal_status``
+        is a datapoint dict: ``{"value": <str>, "provenance": ..., "note": ...}``.
+
+    ``generate_from_report`` / ``regenerate_report_section`` re-parse whichever
+    report is passed as the source — including an ALREADY-FINAL report (e.g. a
+    prior final-report-generator output regenerated again) — via
+    ``_extract_workflow_state_from_report``, which does not distinguish the two
+    shapes. Reading ``provisional_internal_status`` off a rendered section then
+    yields a ``dict``, which previously reached ``status not in
+    ALLOWED_INTERNAL_STATUSES`` (a set-membership check) unguarded and crashed
+    with ``TypeError: unhashable type: 'dict'``. This coerces either shape to a
+    plain string (or ``None`` when genuinely absent/malformed) — never fabricates
+    a status — so every ``... not in ALLOWED_INTERNAL_STATUSES`` check downstream
+    always tests a hashable value.
+    """
+    if isinstance(value, dict):
+        value = value.get("value")
+    return value if isinstance(value, str) else None
+
 # Sections that are always required in a final report
 _REQUIRED_SECTIONS = [
     "admin_disclaimer",
@@ -823,7 +854,11 @@ def _build_executive_summary(
     committee_chair_summary: dict[str, Any] | None,
     provisional_internal_status: str | None,
 ) -> dict[str, Any]:
-    status = provisional_internal_status or "not_enough_data"
+    # Bug fix (Phase 32A Slice 6C): a caller regenerating from an
+    # ALREADY-FINAL report may pass the rendered datapoint-shaped
+    # ``provisional_internal_status`` (see ``_coerce_status_value``) rather
+    # than a plain string — coerce defensively before the set-membership check.
+    status = _coerce_status_value(provisional_internal_status) or "not_enough_data"
     if status not in ALLOWED_INTERNAL_STATUSES:
         status = "not_enough_data"
 
@@ -1706,7 +1741,13 @@ def _build_committee_chair_summary(
             "human_review_required": True,
         }
 
-    status = committee_chair_summary.get("provisional_internal_status", "not_enough_data")
+    # Bug fix (Phase 32A Slice 6C): see ``_coerce_status_value`` — a caller
+    # regenerating from an ALREADY-FINAL report re-parses the rendered,
+    # datapoint-shaped ``provisional_internal_status`` here, not a plain string.
+    status = (
+        _coerce_status_value(committee_chair_summary.get("provisional_internal_status"))
+        or "not_enough_data"
+    )
     if status not in ALLOWED_INTERNAL_STATUSES:
         status = "not_enough_data"
 
@@ -3174,9 +3215,14 @@ def _assemble_final_report_content(
         company_name = candidate.name
         ticker = candidate.ticker
 
+    # Bug fix (Phase 32A Slice 6C): see ``_coerce_status_value`` — regenerating
+    # from an ALREADY-FINAL report re-parses the rendered, datapoint-shaped
+    # ``provisional_internal_status`` here, not a plain string.
     provisional_status = None
     if committee_chair_summary:
-        provisional_status = committee_chair_summary.get("provisional_internal_status")
+        provisional_status = _coerce_status_value(
+            committee_chair_summary.get("provisional_internal_status")
+        )
     if scorecard and not provisional_status:
         provisional_status = scorecard.internal_status
 
@@ -4579,10 +4625,16 @@ class FinalReportGeneratorService:
         # (Phase 32A RC-6) and already persisted into ``report_content``; the same
         # objects are returned on the response so body and response agree.
 
+        # Bug fix (Phase 32A Slice 6C): see ``_coerce_status_value`` —
+        # regenerating from an ALREADY-FINAL report re-parses the rendered,
+        # datapoint-shaped ``provisional_internal_status`` here, not a plain
+        # string; unguarded, this reached ``not in ALLOWED_INTERNAL_STATUSES``
+        # (a set-membership check) as a dict and raised
+        # ``TypeError: unhashable type: 'dict'``.
         provisional_status = None
         if committee_chair_summary:
-            provisional_status = committee_chair_summary.get(
-                "provisional_internal_status"
+            provisional_status = _coerce_status_value(
+                committee_chair_summary.get("provisional_internal_status")
             )
         if not provisional_status and scorecard:
             provisional_status = scorecard.internal_status
