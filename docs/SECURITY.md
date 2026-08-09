@@ -91,6 +91,20 @@ Rules:
 
 Prefer managed identity over connection-string credentials where Azure services support it.
 
+**Incident record — 2026-08-09 (Phase 32A Slice 5B.2 staging validation).**
+During real Azure Document Intelligence OCR staging validation, a validation
+subagent's own diagnostic tool output briefly contained the real
+`AZURE_DOCUMENT_INTELLIGENCE_API_KEY` value once — never in an application
+log, never in any persisted staging artifact, never printed a second time.
+Disclosed immediately by the agent. Contained the same session: a fresh
+`key2` was generated (never itself exposed), the app was switched to it,
+then the exposed `key1` was regenerated/invalidated; the API was restarted
+and connectivity re-verified post-rotation. The remaining two validation
+rounds used a stricter "capture inline, never print" credential discipline
+and were confirmed clean by fresh log/transcript greps for
+key/secret/password/bearer/`Ocp-Apim`/connection-string patterns. Full
+record: `docs/development/closures/phase-32a-slice5b2.md`.
+
 ---
 
 ## Prompt Injection Risks
@@ -108,14 +122,21 @@ Required mitigations:
 
 ## Outbound Document Fetch / SSRF Hardening (Phase 32A Slice 5)
 
-> **Implemented — Slice 5A and Slice 5B.1 are both CLOSED + STAGING-VALIDATED**
-> (`docs/development/closures/phase-32a-slice5a.md`,
-> `docs/development/closures/phase-32a-slice5b1.md`). Behind the default-OFF
+> **Implemented — Slice 5A, Slice 5B.1 and Slice 5B.2 are all CLOSED +
+> STAGING-VALIDATED** (`docs/development/closures/phase-32a-slice5a.md`,
+> `docs/development/closures/phase-32a-slice5b1.md`,
+> `docs/development/closures/phase-32a-slice5b2.md`). Behind the default-OFF
 > `PRIMARY_DOCUMENT_INGESTION_ENABLED` flag (kept ON on staging); with it off
 > none of this fetch/parse surface is exercised. **Slice 5B.2 (real Azure
-> Document Intelligence OCR) is implemented — PR open, pending staging
-> validation, not yet merged/deployed.** `PRIMARY_DOCUMENT_OCR_ENABLED` stays
-> the code default `false`. 5B.3 (admin web visibility) remains open.
+> Document Intelligence OCR) closed 2026-08-09 — WITH AN EXPLICIT EFFICACY
+> CAVEAT**: the real Azure resource is now provisioned on staging and
+> `PRIMARY_DOCUMENT_OCR_ENABLED` is flipped `true` (kept ON); gating,
+> connectivity, budget, retry, reuse and cross-company isolation are all
+> staging-proven live, but a real Azure OCR call itself has not yet been
+> observed on staging, for a documented structural (non-code) reason — see
+> the closure report. A validation-time key-exposure incident was disclosed,
+> contained and resolved same-session — see *Secrets Management* below. 5B.3
+> (admin web visibility) remains open.
 
 Phase 32A Slice 5 adds bounded ingestion of an issuer's OWN primary documents
 (annual report / registration document) — a new outbound-fetch + PDF-parsing

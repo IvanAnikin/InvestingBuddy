@@ -566,20 +566,22 @@ grep -RiE "Authorization: Bearer|Set-Cookie:|DATABASE_URL=|api_token=[A-Za-z0-9]
   `REPORT_CITATION_PERSISTENCE_ENABLED` is ALSO on — persists + reuses extraction
   in the new tables. With the master flag **OFF** (default) behaviour is **exactly
   Phase 29B.2 / Slice 4** — no deep fetch, no persistence, no reuse.
-- **OCR: a real Azure Document Intelligence adapter exists (Phase 32A Slice
-  5B.2), but stays OFF by default and requires TWO things, not one.**
-  `PRIMARY_DOCUMENT_OCR_ENABLED` is double-gated behind the master flag AND
-  `get_ocr_provider()` also requires `AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT` to
-  be set — with either condition unmet, the honest NoOp provider is used
-  (returns an empty `ocr_unavailable` result, never fabricated text). This is
-  what lets the flag be flipped on safely BEFORE the Azure resource is
-  provisioned. See `docs/DECISIONS.md` ADR-016 for the full design. Scanned /
-  JS-gated issuer PDFs still degrade honestly to metadata-only / gaps when
-  OCR is off or unconfigured. **The Azure Document Intelligence resource
-  itself is NOT provisioned anywhere in `infra/azure/*.bicep` yet** — a
-  human-gated infra step (provisioning + Key Vault/managed-identity RBAC +
-  setting the two settings below) must happen before OCR can be enabled on
-  staging/production.
+- **OCR: a real Azure Document Intelligence adapter is CLOSED + STAGING-VALIDATED
+  (Phase 32A Slice 5B.2, 2026-08-09) — see the dedicated section below for the
+  full record.** `PRIMARY_DOCUMENT_OCR_ENABLED` is double-gated behind the
+  master flag AND `get_ocr_provider()` also requires
+  `AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT` to be set — with either condition
+  unmet, the honest NoOp provider is used (returns an empty `ocr_unavailable`
+  result, never fabricated text). See `docs/DECISIONS.md` ADR-016 for the full
+  design. Scanned / JS-gated issuer PDFs still degrade honestly to
+  metadata-only / gaps when OCR is off or unconfigured. **The Azure Document
+  Intelligence resource is now provisioned on staging** — `ib-stg-docintel`
+  (F0/free tier, `westeurope`, `ib-stg-rg`), via a standalone scoped Bicep
+  deploy (not a full `main.bicep` apply, to avoid clobbering out-of-band app
+  settings) — and `PRIMARY_DOCUMENT_OCR_ENABLED` is flipped **`true`** and
+  kept on. **A real live OCR call itself has not yet been observed on
+  staging**, for a documented structural reason (see the dedicated section
+  below), not a defect.
 - **New app settings (all safe non-secret defaults; master gate OFF):**
 
   | Setting | Default | Purpose |
@@ -615,13 +617,18 @@ grep -RiE "Authorization: Bearer|Set-Cookie:|DATABASE_URL=|api_token=[A-Za-z0-9]
   | `PRIMARY_DOCUMENT_OCR_MIN_CONFIDENCE` | `0.4` | Below this, OCR output stays evidence-only internally — never promoted to extracted/a fact. |
 
   These are **tuning knobs, not secrets** — no real secret value is ever printed;
-  all KEYS are in `.env.example` with default (empty/off) values. Leave
-  `PRIMARY_DOCUMENT_INGESTION_ENABLED=false` until Slice 5 is validated, and leave
-  `PRIMARY_DOCUMENT_OCR_ENABLED=false` / the Azure DI endpoint unset until a human
-  has provisioned the resource and explicitly approved enabling it.
+  all KEYS are in `.env.example` with default (empty/off) values, which is
+  still the correct posture for any environment other than staging. **On
+  staging (2026-08-09), a human has provisioned the resource
+  (`ib-stg-docintel`) and explicitly approved enabling it**:
+  `PRIMARY_DOCUMENT_OCR_ENABLED=true` and `AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT`
+  are both set; `AZURE_DOCUMENT_INTELLIGENCE_API_KEY` carries the current
+  key (API-key fallback — see the dedicated Slice 5B.2 section below for why
+  managed identity could not be used this round).
   **Rollback:** set `PRIMARY_DOCUMENT_INGESTION_ENABLED=false` to return to the
   exact prior behaviour with no code change (the `013` tables can remain — they
-  stay empty).
+  stay empty); set `PRIMARY_DOCUMENT_OCR_ENABLED=false` to return to the NoOp
+  OCR seam independently, without touching ingestion.
 - **Security controls (see `docs/SECURITY.md`).** No new public endpoint and no
   user-supplied-URL surface; every fetch routes through the allowlist-gated
   hardened layer with an opt-in resolved-IP / DNS-rebinding guard (before & after
@@ -761,15 +768,21 @@ report IDs, SQL evidence, and the two corrective-hotfix root causes.
 
 ## Real Azure Document Intelligence OCR (Phase 32A Slice 5B.2)
 
-> **PR open — pre-staging. Not yet merged / deployed / staging-validated.** Do
-> **not** treat this section as a closed/validated deployment record until the
-> merge SHA + deployed SHA + staging validation result are on file. Branch
-> `phase-32a-slice-5b2-ocr`. `PRIMARY_DOCUMENT_OCR_ENABLED` ships `false`; the
-> real adapter additionally requires `AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT` to
-> be set, which **no infra in this repo provisions** — see item F below. No
-> migration (Alembic head stays `014`).
+> **✅ CLOSED + STAGING-VALIDATED as a FOUNDATION (2026-08-09) — WITH AN
+> EXPLICIT EFFICACY CAVEAT on live OCR invocation.** Merge chain `768da0c`
+> (PR #81) → `3187298` (PR #82, hotfix) → `6947bcf` (PR #83, docs-only Bicep
+> module) → `007d398` (PR #84, GDWN.LSE registry entry), all squash-merged to
+> `main`, all auto-deployed (`31316185172`/`31322831431`/`31323164278`/
+> `31325314368`, all success). `PRIMARY_DOCUMENT_OCR_ENABLED` flipped
+> absent→`true` on staging and **KEPT ON**; `AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT`
+> / `_API_KEY` are set — the Azure Document Intelligence resource
+> (`ib-stg-docintel`, F0/free, `westeurope`) is now provisioned. **A real,
+> live Azure OCR call itself has not yet been observed on staging** — see item
+> F below for the honest, structural reason. No migration (Alembic head stays
+> `014`). Full results, live evidence, both bug root causes, and the
+> security-incident record: `docs/development/closures/phase-32a-slice5b2.md`.
 
-**Scope note — this is NOT a fully-dormant PR.** Unlike a change gated
+**Scope note — this was NOT a fully-dormant PR.** Unlike a change gated
 entirely behind a still-OFF flag, this PR's `council.py::_primary_facts()`
 fix runs on the ALREADY-ON `PRIMARY_DOCUMENT_INGESTION_ENABLED` path (kept ON
 on staging since Slice 5A). The moment this merges and deploys, a SEC/XBRL
@@ -779,88 +792,117 @@ populating `primary_facts` for any US issuer whose SEC-sourced fact is
 fact. This is a genuine, immediate behavior change on a live path and must be
 explicitly re-proven post-deploy (item C below), not assumed byte-identical.
 
+### Staging validation checklist results (2026-08-09)
+
+**Items A, B, C, G, H, I PASSED.** Item D was superseded by the actual
+human-approved decision to flip the flag on (rather than probe it staying
+off) and its own live proof folded into the resource-provisioning step below.
+**Item E was NOT exercised live** — recorded honestly, per its own
+instructions, as unit-test-only coverage. **Item F did NOT reach a real OCR
+call** — the honest efficacy caveat this closure carries; everything AROUND
+the OCR call (gating, connectivity, budget, retry) is proven live instead. See
+the closure report for exact evidence.
+
 - **A. Deploy identity.** API serves the merged commit SHA (3 stable polls);
   DB head stays `014` (no migration in this slice); `AUTH_TEST_MODE` absent;
   unauthenticated → 401.
-- **B. Flag state.** `PRIMARY_DOCUMENT_INGESTION_ENABLED` unchanged (ON, no
-  new app-setting change needed for this deploy); `PRIMARY_DOCUMENT_OCR_ENABLED`
-  and `AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT` both remain unset (OFF/empty) —
-  confirm ONLY the code changed, no app setting needs to change for this PR
-  to deploy safely.
+- **B. Flag state.** `PRIMARY_DOCUMENT_INGESTION_ENABLED` unchanged (ON).
+  `PRIMARY_DOCUMENT_OCR_ENABLED` and `AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT`
+  were confirmed unset/OFF at PR #81's own deploy (item C re-proof ran with
+  OCR still off, as designed); both were flipped ON as a SEPARATE,
+  later, explicitly human-approved app-setting change once the resource
+  (below) existed — never bundled into a code deploy.
 - **C. `_primary_facts()` fix — re-proof on the live path (the scope-note
-  item, run even though OCR itself stays off).** Re-run a fresh AAPL
-  analysis. Confirm: (i) the SEC-sourced `cash_and_equivalents` fact (or
-  whichever high-confidence SEC/XBRL fact is currently live) now appears in
-  `source_summary_json.llm_council.primary_facts`, where it was previously
-  absent; (ii) `company_ir_financial_fact`-sourced facts (if any for this
-  issuer) still appear, unchanged; (iii) SEC/XBRL numeric values in the
-  rendered report are UNCHANGED from the pre-deploy baseline (the fix changes
-  what's *visible in the structured list*, never a value); (iv) no new
-  citation, no new Source row, no duplicate evidence appears as a side
-  effect.
-- **D. OCR flag off / unconfigured — byte-identical regression.** With
-  `PRIMARY_DOCUMENT_OCR_ENABLED=false` (the deployed default): a scanned
-  document still degrades to `metadata_only` / `scanned_no_text`, IDENTICAL
-  to Slice 5B.1 behavior. Zero calls to any `azure.*` host — confirm via
-  `document_ingestion_attempts` (no new `ocr_*` failure codes appear) and
-  via egress/log inspection. **This is also a real, live probe worth
-  running as its OWN human-approved app-setting change** (separate from
-  provisioning the Azure resource — see item F): flip
-  `PRIMARY_DOCUMENT_OCR_ENABLED=true` with the endpoint still unset and
-  confirm the `primary_document_ocr_enabled_but_unconfigured` WARNING log
-  line appears and `get_ocr_provider()` still returns the NoOp path (a
-  scanned document behaves identically to the flag being off) — proving the
-  double-gate live, not just by code reading.
-- **E. Balance-sheet identity check — live proof (does not require OCR).**
-  For an issuer whose extracted table already carries total assets, total
-  liabilities AND total equity in the same period (native extraction, no OCR
-  needed), confirm the new check runs: either all three reconcile and stay
-  `validated`, or a genuine mismatch downgrades all three to `excerpt_only`
-  with the new validator note. If no live table currently carries all three
-  labels, record that honestly as "not exercised live this round" rather than
-  claiming false coverage — the offline unit tests
-  (`test_phase32a_slice5b2_balance_sheet.py`) remain the primary proof either
-  way.
-- **F. Real OCR proof — BLOCKED, human-gated, explicitly not this round.**
-  No Azure Document Intelligence resource exists in `infra/azure/*.bicep`.
-  Live proof (an actual Azure DI call against a genuinely scanned issuer
-  document, page/table provenance persisting, confidence + validation state
-  visible in report data, a second run reusing without a second Azure call)
-  **cannot be executed until a human**: (1) provisions the Azure Document
-  Intelligence resource + RBAC/managed-identity wiring; (2) sets
-  `AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT` (and optionally `_API_KEY`) as a
-  staging app setting; (3) explicitly approves flipping
-  `PRIMARY_DOCUMENT_OCR_ENABLED=true` on staging. This is a known,
+  item, run even though OCR itself stays off). PASSED (round 1, AAPL).**
+  Fresh AAPL analysis confirmed: (i) 3 SEC/XBRL facts
+  (`cash_and_equivalents`, `total_equity`, `total_liabilities`) now appear in
+  `source_summary_json.llm_council.primary_facts`, previously invisible to
+  that list, with values matching byte-for-byte elsewhere in the same
+  report; (ii) idempotent — a second run showed 0 new
+  `extracted_documents`/`extracted_facts` (DB-verified
+  `documents_reused=2 facts_deduped=3`); (iii) `schema_valid`/`safety_valid`/
+  `human_review_required`/`publication_ready`/`data_provenance`/`is_mock` all
+  correct both runs; (iv) no duplicate evidence appeared as a side effect.
+- **D. OCR flag off / unconfigured — byte-identical regression. SUPERSEDED
+  by the actual human decision to provision + enable, not re-run as a
+  standalone probe this round.** Before the resource existed, the deployed
+  default (`PRIMARY_DOCUMENT_OCR_ENABLED=false`, endpoint unset) behaved
+  identically to Slice 5B.1 — no code change in PR #81 touches this path
+  when unconfigured. Once the resource was provisioned and the flag flipped
+  ON (see item F), the double-gate itself (flag AND endpoint) was exercised
+  live as part of rounds 2–3 below, rather than as a separate OFF-state
+  probe.
+- **E. Balance-sheet identity check — live proof (does not require OCR).
+  NOT EXERCISED LIVE this round**, recorded honestly per its own
+  instructions: no currently-extracted document carries `total_assets` /
+  `total_liabilities` / `total_equity` together in one table. Remains
+  unit-test-only coverage (`test_phase32a_slice5b2_balance_sheet.py`), the
+  same honest status as the original pre-merge record. Opportunistic
+  follow-up, not blocking.
+- **F. Real OCR proof — resource NOW provisioned; gating/connectivity/budget
+  mechanics proven live; a real OCR call itself STILL NOT OBSERVED, for a
+  documented structural reason — do NOT mark this PASSED.** A human (1)
+  provisioned `ib-stg-docintel` (F0/free, `westeurope`) via a standalone
+  scoped Bicep deploy; (2) set `AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT` +
+  `AZURE_DOCUMENT_INTELLIGENCE_API_KEY` (API-key fallback, not managed
+  identity — the deploying identity lacks `roleAssignments/write`) as
+  staging app settings, connectivity-verified blind before flipping
+  anything; (3) explicitly approved flipping
+  `PRIMARY_DOCUMENT_OCR_ENABLED=true`, which was then KEPT ON. Three full
+  validation rounds across 13 real registered issuers (12 plus Goodwin
+  PLC/GDWN.LSE, added specifically for this proof) exercised the flag/
+  endpoint gate, the cross-document `OcrBudget` cap, the aggregate-deadline
+  clamp, and the bounded-retry loop against the real resource's real
+  connectivity check — all live-proven. Two genuine corruption bugs were
+  found and fixed live along the way (large-PDF truncation misclassifying
+  ASML as scanned; the same truncation producing a false CFR "encrypted"
+  classification — see the closure report for full before/after evidence).
+  **What did NOT happen: a real Azure Document Intelligence API call being
+  actually invoked and returning OCR output was not observed.** This is
+  structural, not a defect — 8 of the 13 issuers have zero discoverable
+  documents (pre-existing JS-gated IR pages); ASML and CFR turned out to be
+  genuinely native-extractable once the two bugs were fixed (an honest
+  negative result); Goodwin PLC's genuinely-scanned document is correctly
+  discovered but ranks too low among candidates to reach without widening
+  `primary_document_max_docs_per_issuer` / the ingestion budget far enough
+  to risk the shared ~230s Azure gateway ceiling — deliberately not
+  attempted. Follow-up (non-blocking, Slice-5B.3-or-later): a more targeted
+  registry URL/date-aware document selection, or an async ingestion path
+  decoupled from the synchronous report-generation request. This is a known,
   intentional limitation (mirrors ADR-014's own deferral for the OCR seam
-  itself) — record it as "not yet executable," not as a passed/failed check.
-  When that human step happens, follow up with: a genuinely scanned document
-  fixture check — bounded live discovery across the other 11 registered
-  issuers in `verified_issuer_sources.py` (UHR, MC, RMS, KER, BRBY, PNDORA,
-  MONC, BA, ASML, SAP, NESN), since CFR's encrypted annual-report PDF is
-  confirmed NOT a valid target (it never opens even with the empty password
-  — it cannot be rasterized, so OCR cannot rescue it; a genuinely scanned,
-  no-password document is a structurally different, still-open target);
-  confirm `ocr_provider_error`/`ocr_timeout` degrade honestly under real
-  network conditions; confirm the aggregate-budget clamp (§ ADR-016 Decision
-  4) holds under real Azure latency, not just the fake provider's instant
-  responses.
-- **G. Cross-company isolation.** Run AAPL and one European issuer (e.g. CFR)
-  back-to-back. No OCR-derived (or any) evidence/citation crosses between
-  them; no shared `content_hash`; no Apple data appears in the European
-  report or vice versa (same check pattern as Slice 5B.1's live proof).
-- **H. Security proof.** Response + fresh log grep clean of secrets, the
-  Azure endpoint, and any credential (the `azure` logger is capped at
-  WARNING — confirm no `azure.core.pipeline.policies.http_logging_policy`
-  INFO line reaches stdout even with OCR still off, since the cap applies
-  regardless of flag state). No `AUTH_TEST_MODE`. No new public route.
-- **I. Idempotency (structural — exercised by existing reuse, no OCR
-  needed).** Re-running the same analysis does not create duplicate
-  `extracted_documents` / `extracted_facts` / `document_ingestion_attempts`
-  rows; the reuse lookup still short-circuits re-fetch/re-extract exactly as
-  in Slice 5B.1.
-- **J. Timing.** Total analysis duration unchanged from the Slice 5B.1
-  baseline (OCR never runs with the flag off, so no new time is spent); no
-  502/504.
+  itself) — record it as "not yet executable this round," not as a
+  passed/failed check. The human provisioning step described above DID
+  happen this round, and the bounded live discovery it enabled ran across
+  all 13 registered issuers (not just the original 11) — the remaining gap
+  is the structural per-request budget/ranking constraint on reaching
+  Goodwin PLC's genuinely-scanned document, not an infra or credential
+  blocker. See the closure report's "Exact remaining scope" for the two
+  concrete non-blocking follow-ups that could reach a real OCR call
+  (targeted registry URL/date-aware selection, or an async ingestion path
+  decoupled from the synchronous report-generation request).
+- **G. Cross-company isolation. PASSED.** AAPL / ASML / CFR / GDWN run across
+  the three validation rounds; zero shared `content_hash` / citations
+  crossed between any pair — confirmed live, same check pattern as Slice
+  5B.1's proof.
+- **H. Security proof. PASSED, WITH ONE DISCLOSED-AND-CONTAINED INCIDENT.**
+  Fresh log/response secret grep clean of secrets, the Azure endpoint, and
+  any credential across all three rounds; `azure` logger correctly capped at
+  WARNING; unauthenticated → 401 held throughout; no `AUTH_TEST_MODE`; no new
+  public route. **Incident:** a validation subagent's own diagnostic tool
+  output briefly contained the real `AZURE_DOCUMENT_INTELLIGENCE_API_KEY`
+  value once (never in application logs, never in a persisted staging
+  artifact); disclosed immediately, contained same session (`key2`
+  regenerated → app switched → `key1` invalidated, API restarted,
+  connectivity reverified), zero further occurrence across the remaining two
+  rounds. See `docs/SECURITY.md` and the closure report for the full record.
+- **I. Idempotency. PASSED (native path).** Re-running the same AAPL analysis
+  created 0 new `extracted_documents`/`extracted_facts` rows
+  (`documents_reused=2 facts_deduped=3`, stable `content_hash`); the reuse
+  lookup short-circuited re-fetch/re-extract exactly as in Slice 5B.1. OCR
+  path idempotency was not separately exercised since no OCR call occurred
+  live (see item F).
+- **J. Timing.** No 502/504 across any of the three validation rounds; the
+  budget/deadline-clamp mechanics (item F) were exercised live and held.
 
 ---
 
