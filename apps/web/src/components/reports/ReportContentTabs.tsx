@@ -8,33 +8,49 @@
 // (the page renders the markdown preview directly).
 
 import { useState } from "react";
-import type { LlmCouncilMetadata, Report } from "@/types/api";
+import type {
+  LlmCouncilMetadata,
+  Report,
+  ReportPrimaryDocumentsResponse,
+} from "@/types/api";
 import type { ReportContent } from "./finalReportContent";
 import FinalReportRenderer from "./FinalReportRenderer";
 import LlmCouncilAnalysis, { LlmCouncilSummaryCard } from "./LlmCouncilAnalysis";
 import MarkdownReportPreview from "./MarkdownReportPreview";
+import PrimaryDocumentsPanel from "./PrimaryDocumentsPanel";
 
-type TabId = "readable" | "council" | "json" | "markdown";
+type TabId = "readable" | "council" | "documents" | "json" | "markdown";
 
 export default function ReportContentTabs({
   report,
   content,
   council,
+  primaryDocuments,
   schemaValid,
   safetyValid,
 }: {
   report: Report;
   content: ReportContent | null;
   council: LlmCouncilMetadata | null;
+  primaryDocuments: ReportPrimaryDocumentsResponse | null;
   schemaValid: boolean;
   safetyValid: boolean;
 }) {
   const [tab, setTab] = useState<TabId>("readable");
   const llmUsed = Boolean(council?.llm_used);
+  // Phase 32A Slice 5B.3 — only show the tab when there was actual ingestion
+  // activity this run (mirrors how the "LLM Council" tab only shows when
+  // `llmUsed`); a report with zero ingestion attempts has nothing to show.
+  const hasPrimaryDocuments = Boolean(
+    primaryDocuments && primaryDocuments.summary.attempted_count > 0,
+  );
 
   const tabs: { id: TabId; label: string }[] = [
     { id: "readable", label: "Readable Report" },
     ...(llmUsed ? [{ id: "council" as TabId, label: "LLM Council" }] : []),
+    ...(hasPrimaryDocuments
+      ? [{ id: "documents" as TabId, label: "Primary Documents" }]
+      : []),
     { id: "json", label: "Raw JSON" },
     { id: "markdown", label: "Raw Markdown" },
   ];
@@ -85,6 +101,10 @@ export default function ReportContentTabs({
         ))}
 
       {tab === "council" && council && <LlmCouncilAnalysis council={council} />}
+
+      {tab === "documents" && primaryDocuments && (
+        <PrimaryDocumentsPanel data={primaryDocuments} />
+      )}
 
       {tab === "json" && (
         <div data-testid="report-raw-json">
