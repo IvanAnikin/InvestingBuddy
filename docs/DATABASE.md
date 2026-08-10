@@ -56,6 +56,17 @@ alembic revision --autogenerate -m "short description"
 | 012 | `012_add_report_company_id.py` | adds `company_id` (UUID FK → companies.id, SET NULL) + index `ix_reports_company_id` to `reports` (Phase 32A hotfix — company-scoped `from-company` final-report selection) |
 | 013 | `013_add_extracted_documents.py` | creates `extracted_documents`, `extracted_facts` (Phase 32A Slice 5 primary-document ingestion). Reversible, additive, backfill-free. **Implemented — PR open, pending staging validation.** |
 | 014 | `014_add_document_ingestion_attempts.py` | creates `document_ingestion_attempts` — one honest row per primary-document ingestion attempt, **including the failed ones** (Phase 32A Slice 5B.1). Reversible, additive, backfill-free. **Implemented — PR open, pending staging validation.** |
+| 015 | `015_add_field_review.py` | creates `field_review_runs`, `field_review_candidate_summaries` — the Deep Field Review, a COMPARATIVE council over the already-completed analyses of 2+ candidates from one discovery run (Phase 32A Slice 6D). Reversible, additive, backfill-free. **Implemented — PR open, pending staging validation.** |
+
+**Phase 32A Slice 6D adds migration `015` → head `015`.** It is reversible,
+additive and backfill-free, and both new tables stay **unwritten** unless BOTH
+`LLM_COUNCIL_ENABLED` and `LLM_FIELD_REVIEW_COUNCIL_ENABLED` are on (the feature
+ships **default-OFF**), so with the flags off the DB is effectively unchanged even
+after the migration is applied. Verified locally against PostgreSQL 16:
+`alembic upgrade head` (014 → 015) → `alembic downgrade -1` (015 → 014) →
+`upgrade head` again, all clean, with the downgrade dropping **only** the two new
+tables and their six indexes. See the
+`Deep Field Review (Phase 32A Slice 6D)` tables section below.
 
 **DB head baseline = `013`; Phase 32A Slice 5B.1 adds migration `014` → head `014`.**
 Slice 5B.1 is **implemented, PR-open, pending staging validation** — `014` is not
@@ -708,6 +719,69 @@ ORM model: `DocumentIngestionAttempt` in
 `apps/api/app/models/document_ingestion_attempt.py`. Writer + bounded per-status
 summary reader: `apps/api/app/services/document_ingestion_attempt_service.py`
 (flush-only — the caller owns the commit).
+
+---
+
+### Deep Field Review (Phase 32A Slice 6D)
+
+Migration `015`. Two tables recording a **comparative** review of the
+already-completed analyses of 2+ candidates from ONE discovery run. This is a
+THIRD council, distinct from the discovery council (candidate-list triage) and
+the single-company council. **Nothing here is recomputed**: every stored summary
+re-presents data already persisted on the candidate's report.
+
+**`field_review_runs`** — one Deep Field Review job.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | UUID PK | |
+| `discovery_run_id` | UUID FK → discovery_runs.id | `ON DELETE CASCADE`; index `ix_field_review_runs_discovery_run_id` |
+| `status` | str(50) | **CLOSED vocabulary**: `pending`, `running`, `completed`, `completed_with_warnings`, `failed`, `insufficient_candidates`. Index `ix_field_review_runs_status` |
+| `included_candidate_count` | int | how many candidates were actually compared |
+| `missing_candidate_count` | int | how many could NOT be compared (all of them are recorded — see below) |
+| `llm_used` | bool | honest: `true` only when a client really ran the council |
+| `council_version` / `provider` / `model` | str nullable | never the Azure *deployment* name |
+| `agents_completed` / `agents_failed` | int | honest per-run tallies |
+| `field_quality` | str(20) nullable | `strong` \| `adequate` \| `thin` \| `failed` — an internal field-quality label, **never a rating** |
+| `safety_valid` | bool nullable | `false` when the defensive re-scan flagged the payload (flagged, never silently stripped) |
+| `review_json` | JSONB nullable | the full safety-scanned result (all eight agents' outputs, the three priority buckets, the disclaimer). **Never raw prompts or completions** |
+| `warnings_json` | JSONB nullable | citation/safety issue notes |
+| `error` | str(200) nullable | short, safe reason code only — never a raw exception string |
+| `human_review_required` | bool | server default `true`; nothing here is publishable |
+| `started_at` / `completed_at` / `created_at` / `updated_at` | timestamptz | index `ix_field_review_runs_created_at` |
+
+**`field_review_candidate_summaries`** — one row per candidate **considered**,
+included **or** excluded. An excluded candidate is never silently dropped
+(CLAUDE.md rule 8: rejected cases are learning data).
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | UUID PK | |
+| `field_review_run_id` | UUID FK → field_review_runs.id | `ON DELETE CASCADE`; index `ix_field_review_candidate_summaries_run_id` |
+| `discovery_candidate_id` | UUID FK → discovery_candidates.id nullable | `ON DELETE SET NULL` — research history survives a candidate deletion. Constraint name shortened to `fk_field_review_summaries_candidate_id_discovery_candidates` (the fully symmetrical name is 69 chars; PostgreSQL rejects identifiers over 63). Index `ix_field_review_candidate_summaries_candidate_id` |
+| `report_id` | UUID FK → reports.id nullable | `ON DELETE SET NULL`; index `ix_field_review_candidate_summaries_report_id` |
+| `citation_ref` | str(20) | the id the council cited this company by (`F1`, `F2`, …); excluded candidates get an `X`-prefixed ref so they can never collide with a cited company id |
+| `ticker` / `exchange` | str nullable | |
+| `included` | bool | server default `false` |
+| `exclusion_reason` | str(50) nullable | **CLOSED vocabulary**: `no_analysis_run`, `report_deleted`, `draft_only`, `not_schema_valid`, `over_company_cap`. NULL when `included` |
+| `data_provenance` | str(20) nullable | `real` \| `mock` \| `mixed` \| `unknown`, carried from the report — never guessed. A non-`real` company is **included with a caveat**, never dropped |
+| `priority_tier` | str(50) nullable | **CLOSED vocabulary**: `strongest_candidates`, `second_tier`, `blocked_insufficient_evidence` — internal research buckets, **never** BUY/SELL/HOLD/WATCH |
+| `summary_json` | JSONB nullable | the bounded `FieldReviewCompanySummary` actually sent to the council (NULL for an excluded candidate) |
+| `created_at` | timestamptz | |
+
+Uniqueness: UNIQUE `uq_field_review_candidate_summary_run_ref` on
+`(field_review_run_id, citation_ref)` — one company can occupy a given citation
+id at most once per review.
+
+**Input linkage rule (load-bearing):** a candidate's report is resolved through
+`discovery_candidates.analysis_report_id` **only**. There is deliberately **no**
+"latest report for this company_id" fallback — that would resurrect the
+from-company scoping bug fixed earlier in Phase 32A and could silently substitute
+a report generated for a *different* run of the same company.
+
+ORM models: `FieldReviewRun`, `FieldReviewCandidateSummary` in
+`apps/api/app/models/field_review.py`. Resolution + async job orchestration:
+`apps/api/app/services/field_review_service.py`.
 
 ---
 

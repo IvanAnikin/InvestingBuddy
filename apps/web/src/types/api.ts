@@ -848,6 +848,95 @@ export interface DiscoveryCouncilReview {
   disclaimer: string;
 }
 
+// ── Deep Field Review (Phase 32A Slice 6D) ─────────────────────────────────
+// A THIRD, SEPARATE council. NOT the Discovery Council above (which triages a
+// candidate LIST before any analysis exists) and NOT the single-company council.
+// A Deep Field Review compares the ALREADY-COMPLETED, already-persisted deep
+// analyses of 2+ candidates from ONE discovery run and produces an internal
+// RESEARCH-PRIORITY shortlist. Nothing is re-analysed or re-fetched.
+//
+// The only per-company placements are the three internal research buckets. Never
+// a recommendation, rating, price target, fair value, or return projection. Raw
+// prompts / completions are never sent to the client. Mirrors
+// apps/api/app/schemas/field_review.py.
+export type FieldReviewStatus =
+  | "pending"
+  | "running"
+  | "completed"
+  | "completed_with_warnings"
+  | "failed"
+  | "insufficient_candidates"
+  | "disabled";
+
+export type FieldReviewPriorityTier =
+  | "strongest_candidates"
+  | "second_tier"
+  | "blocked_insufficient_evidence";
+
+export interface FieldPriorityEntry {
+  company_ref?: string | null;
+  discovery_candidate_id?: string | null;
+  report_id?: string | null;
+  ticker?: string | null;
+  exchange?: string | null;
+  rationale?: string | null;
+  citation_ids?: string[];
+  confidence?: string | null;
+  caveats?: string[];
+}
+
+// One candidate CONSIDERED by the review — included or excluded. An excluded
+// candidate is never silently dropped: it carries an honest exclusion_reason.
+export interface FieldReviewCandidateRow {
+  citation_ref: string;
+  discovery_candidate_id?: string | null;
+  report_id?: string | null;
+  ticker?: string | null;
+  exchange?: string | null;
+  included: boolean;
+  exclusion_reason?: string | null;
+  data_provenance?: string | null;
+  priority_tier?: FieldReviewPriorityTier | null;
+}
+
+export interface FieldReview {
+  discovery_run_id: string;
+  field_review_run_id?: string | null;
+  status?: FieldReviewStatus | null;
+  review_available?: boolean;
+  message?: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+  error?: string | null;
+  llm_used: boolean;
+  council_version?: string | null;
+  provider?: string | null;
+  model?: string | null;
+  pack_version?: string | null;
+  item_count?: number;
+  company_count?: number;
+  included_candidate_count?: number;
+  missing_candidate_count?: number;
+  agents_completed?: number;
+  agents_failed?: number;
+  agents_skipped?: number;
+  field_quality?: string | null;
+  strongest_candidates?: FieldPriorityEntry[];
+  second_tier?: FieldPriorityEntry[];
+  blocked_insufficient_evidence?: FieldPriorityEntry[];
+  field_uncertainties?: string[];
+  evidence_gaps?: string[];
+  next_research_tasks?: string[];
+  agent_outputs?: Record<string, unknown>;
+  warnings?: string[];
+  candidates?: FieldReviewCandidateRow[];
+  safety_valid?: boolean;
+  human_review_required?: boolean;
+  publication_ready?: boolean;
+  created_at?: string | null;
+  disclaimer: string;
+}
+
 // ── Source Registry + Connector Framework (Phase 29A) ──────────────────────
 // Read-only, secret-free views of the unified source registry. Mirrors
 // apps/api/app/schemas/source_registry.py.
