@@ -223,6 +223,7 @@ async def run_with_retries(
     max_retry_after_seconds: float,
     completed_status: str,
     failed_status: str,
+    initial_pass_delay_seconds: float = 0.0,
 ) -> None:
     """The ON path: initial pass under a deadline + a priority retry pass.
 
@@ -234,6 +235,15 @@ async def run_with_retries(
     for agents in ``critical``, ``max_retries`` otherwise, with the
     ``critical_reserve_seconds`` reserve protecting agents in ``reserved``.
 
+    ``initial_pass_delay_seconds`` (default ``0.0`` — OFF, so every existing
+    caller is byte-identical) paces the INITIAL pass: a fixed wait between two
+    consecutive agent attempts. The initial pass is already strictly sequential
+    (no ``asyncio.gather``), but with no pacing every request fires the instant
+    the previous one returns, which is what pushes a large council over a
+    provider's short-window token/request-rate limits. The delay is never
+    applied after the LAST agent, never when it would cross the ``deadline``,
+    and never in the retry pass (which has its own jittered backoff).
+
     Extracted verbatim (modulo parameterization) from
     ``council._run_council_with_retries`` — Phase 32A Slice 4.
     """
@@ -243,7 +253,8 @@ async def run_with_retries(
     transient_failures: dict[str, Exception] = {}
 
     # --- Initial pass: attempt every agent once, in order, honoring the deadline.
-    for agent_name in agent_order:
+    last_index = len(agent_order) - 1
+    for index, agent_name in enumerate(agent_order):
         if clock() >= deadline:
             placeholder = budget_exhausted_output(agent_name)
             append_output(placeholder)
@@ -268,6 +279,15 @@ async def run_with_retries(
         log_outcome(agent_name, output, exc, duration_ms, None)
         if exc is not None and is_transient_llm_error(exc):
             transient_failures[agent_name] = exc
+        # Optional inter-agent pacing (see the docstring). Never after the last
+        # agent, and never when the wait would eat into the deadline — the
+        # budget belongs to real attempts, not to pacing.
+        if (
+            initial_pass_delay_seconds > 0
+            and index < last_index
+            and clock() + initial_pass_delay_seconds < deadline
+        ):
+            await sleeper(initial_pass_delay_seconds)
 
     # --- Retry pass: only transiently-failed agents, in priority order.
     for agent_name in priority_order:
