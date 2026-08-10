@@ -1318,12 +1318,32 @@ worker).
 | `LLM_DISCOVERY_COUNCIL_ENABLED` | `false` | Discovery-council switch. Requires `LLM_COUNCIL_ENABLED=true` as well |
 | `LLM_DISCOVERY_COUNCIL_MAX_CANDIDATES` | `25` | Bounds candidates in the evidence pack (cost) |
 | `LLM_DISCOVERY_COUNCIL_VERSION` | `v1` | Discovery-council contract version |
+| `LLM_DISCOVERY_MAX_OUTPUT_TOKENS_BASE` | `1200` | Fixed part of the per-agent output budget |
+| `LLM_DISCOVERY_MAX_OUTPUT_TOKENS_PER_CANDIDATE` | `200` | Extra output tokens per candidate in the pack |
+| `LLM_DISCOVERY_MAX_OUTPUT_TOKENS_CAP` | `5000` | Hard ceiling on one agent's output budget |
+| `LLM_DISCOVERY_COUNCIL_INITIAL_PASS_DELAY_SECONDS` | `1.5` | Pacing between initial-pass agents (rate-limit mitigation; `0.0` = off) |
 
 Gated by **both** `LLM_COUNCIL_ENABLED` (the shared 28A client gate) **and**
 `LLM_DISCOVERY_COUNCIL_ENABLED`. It **reuses** the Phase 28A provider settings
 (`LLM_PROVIDER_COUNCIL` / `LLM_MODEL` / `LLM_TEMPERATURE` /
-`LLM_MAX_OUTPUT_TOKENS` / `LLM_REQUEST_TIMEOUT_SECONDS`) and the same provider
-credentials (Azure OpenAI settings / `OPENAI_API_KEY`). No separate credentials.
+`LLM_REQUEST_TIMEOUT_SECONDS`) and the same provider credentials (Azure OpenAI
+settings / `OPENAI_API_KEY`). No separate credentials.
+
+It does **not** use `LLM_MAX_OUTPUT_TOKENS` (that flat value stays the single-
+company council's). The discovery council's JSON contract carries one
+`candidate_notes` entry **per candidate**, so its reply grows with the candidate
+count; the per-agent output budget is therefore SCALED and computed once per run:
+
+```
+min(CAP, BASE + PER_CANDIDATE * candidate_count)
+```
+
+Sharing the flat 1200-token value truncated the reply mid-object on realistic
+multi-candidate runs, which surfaced as a **permanent** `LLMJsonError` (malformed
+JSON is never retried, and the one-shot repair reuses the same budget). The
+prompt contract additionally caps each `rationale` at `<=150` chars, which lowers
+the worst-case per-candidate cost. Both are cost/reliability controls only: they
+never change what the council may output.
 
 ### Enabling on staging (only with a securely-provided provider)
 

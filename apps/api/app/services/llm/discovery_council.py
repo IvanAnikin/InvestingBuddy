@@ -65,6 +65,7 @@ from app.services.sources.taxonomy import ProviderType
 
 __all__ = [
     "get_discovery_llm_client",
+    "discovery_max_output_tokens",
     "run_discovery_council",
     "maybe_run_discovery_council",
 ]
@@ -101,6 +102,28 @@ def get_discovery_llm_client(settings: Settings | None = None) -> LLMClient | No
 
         return FakeDiscoveryLLMClient()
     return base
+
+
+def discovery_max_output_tokens(candidate_count: int, cfg: Settings | None = None) -> int:
+    """The output-token budget for ONE discovery-council agent call.
+
+    ``min(cap, base + per_candidate * candidate_count)``. The discovery council's
+    JSON contract carries one ``candidate_notes`` entry per candidate, so its
+    output grows with the candidate count — a flat budget truncates the reply
+    mid-object on multi-candidate runs, which surfaces as a PERMANENT
+    ``LLMJsonError`` (never retried, and the one-shot repair reuses the same
+    budget). Computed ONCE per council run from the evidence pack and threaded
+    down, so every agent (and every retry) in a run uses the same budget.
+
+    Negative/garbage counts are floored at 0, so a zero-candidate pack gets
+    exactly ``base``. The cap is a HARD ceiling and always wins.
+    """
+    cfg = cfg or default_settings
+    count = max(0, int(candidate_count))
+    scaled = cfg.llm_discovery_max_output_tokens_base + (
+        cfg.llm_discovery_max_output_tokens_per_candidate * count
+    )
+    return min(cfg.llm_discovery_max_output_tokens_cap, scaled)
 
 
 def _coerce_output(agent_name: str, raw: dict[str, Any]) -> DiscoveryCouncilAgentOutput:
@@ -207,6 +230,7 @@ async def _run_agent_attempt(
     result: DiscoveryCouncilResult,
     client: LLMClient,
     cfg: Settings,
+    max_tokens: int,
 ) -> tuple[DiscoveryCouncilAgentOutput, list[str], Exception | None]:
     """Run ONE attempt for an agent. Never raises.
 
@@ -216,6 +240,10 @@ async def _run_agent_attempt(
     ``output`` is the failed placeholder and ``exc`` is the (possibly transient)
     exception. This is the single-agent primitive BOTH the OFF path and the ON
     (retry) path call.
+
+    ``max_tokens`` is the run's candidate-count-scaled output budget (see
+    ``discovery_max_output_tokens``), computed once per run and passed in — it is
+    NOT ``cfg.llm_max_output_tokens`` (that flat value is the COMPANY council's).
     """
     is_chair = agent_name == AGENT_DISCOVERY_CHAIR
     system, user = _messages_for(agent_name, evidence_json, result)
@@ -223,7 +251,7 @@ async def _run_agent_attempt(
         raw = await client.complete_json(
             system,
             user,
-            max_tokens=cfg.llm_max_output_tokens,
+            max_tokens=max_tokens,
             temperature=cfg.llm_temperature,
             timeout=cfg.llm_request_timeout_seconds,
             repair_instruction=prompts.REPAIR_INSTRUCTION,
@@ -251,11 +279,19 @@ async def _timed_attempt(
     result: DiscoveryCouncilResult,
     client: LLMClient,
     cfg: Settings,
+    max_tokens: int,
 ) -> tuple[DiscoveryCouncilAgentOutput, list[str], Exception | None, int]:
     """``_run_agent_attempt`` plus a wall-clock duration_ms for logging."""
     started = time.perf_counter()
     output, issues, exc = await _run_agent_attempt(
-        agent_name, evidence_json, evidence_ids, candidate_ids, result, client, cfg
+        agent_name,
+        evidence_json,
+        evidence_ids,
+        candidate_ids,
+        result,
+        client,
+        cfg,
+        max_tokens,
     )
     duration_ms = int((time.perf_counter() - started) * 1000)
     return output, issues, exc, duration_ms
@@ -424,6 +460,7 @@ async def _run_offline_pass(
     result: DiscoveryCouncilResult,
     client: LLMClient,
     cfg: Settings,
+    max_tokens: int,
     log: logging.Logger,
     run_id: str | None,
 ) -> None:
@@ -431,7 +468,14 @@ async def _run_offline_pass(
     pre-Slice-6A."""
     for agent_name in DISCOVERY_COUNCIL_AGENT_ORDER:
         output, issues, exc, duration_ms = await _timed_attempt(
-            agent_name, evidence_json, evidence_ids, candidate_ids, result, client, cfg
+            agent_name,
+            evidence_json,
+            evidence_ids,
+            candidate_ids,
+            result,
+            client,
+            cfg,
+            max_tokens,
         )
         result.agents.append(output)
         result.warnings.extend(issues)
@@ -454,12 +498,20 @@ def _make_attempt(
     result: DiscoveryCouncilResult,
     client: LLMClient,
     cfg: Settings,
+    max_tokens: int,
 ) -> retry_engine.AttemptFn:
     """Bind the discovery-specific single-attempt primitive for the retry engine."""
 
     async def _attempt(agent_name: str) -> retry_engine.AttemptResult:
         return await _timed_attempt(
-            agent_name, evidence_json, evidence_ids, candidate_ids, result, client, cfg
+            agent_name,
+            evidence_json,
+            evidence_ids,
+            candidate_ids,
+            result,
+            client,
+            cfg,
+            max_tokens,
         )
 
     return _attempt
@@ -524,6 +576,7 @@ async def _run_council_with_retries(
     result: DiscoveryCouncilResult,
     client: LLMClient,
     cfg: Settings,
+    max_tokens: int,
     log: logging.Logger,
     run_id: str | None,
     clock: Callable[[], float],
@@ -536,13 +589,21 @@ async def _run_council_with_retries(
     ``retry_engine.run_with_retries``: supplies the discovery council's FIXED
     agent order / critical-agent set / retry-priority order, and the
     ``result`` mutation/lookup callbacks the generic engine needs.
+
+    It also opts INTO the engine's optional initial-pass pacing
+    (``llm_discovery_council_initial_pass_delay_seconds``): eight back-to-back
+    large requests to one Azure deployment are what trip the provider's
+    short-window rate limits. The other two councils leave the engine's default
+    (``0.0`` — no pacing) untouched.
     """
     await retry_engine.run_with_retries(
         agent_order=DISCOVERY_COUNCIL_AGENT_ORDER,
         critical=CRITICAL_ALWAYS,
         priority_order=_retry_priority_order(),
         reserved=RESERVED_AGENTS,
-        attempt=_make_attempt(evidence_json, evidence_ids, candidate_ids, result, client, cfg),
+        attempt=_make_attempt(
+            evidence_json, evidence_ids, candidate_ids, result, client, cfg, max_tokens
+        ),
         append_output=result.agents.append,
         extend_warnings=result.warnings.extend,
         replace_agent=_make_replace_agent(result),
@@ -566,6 +627,9 @@ async def _run_council_with_retries(
         max_retry_after_seconds=cfg.llm_discovery_council_retry_max_retry_after_seconds,
         completed_status=STATUS_COMPLETED,
         failed_status=STATUS_FAILED,
+        initial_pass_delay_seconds=(
+            cfg.llm_discovery_council_initial_pass_delay_seconds
+        ),
     )
 
 
@@ -591,6 +655,11 @@ async def run_discovery_council(
     in ``config.py``), and a deterministic discovery-chair fallback is attached
     if the LLM chair still fails.
 
+    The per-agent OUTPUT-token budget is computed once from the pack's candidate
+    count (``discovery_max_output_tokens``) and used for every agent attempt in
+    the run, because this council's JSON contract grows with the candidate count.
+    It is independent of the company council's flat ``llm_max_output_tokens``.
+
     ``clock`` / ``sleeper`` / ``rng`` are injectable so tests can drive the
     budget and backoff deterministically (a fake clock advanced by a fake
     sleeper) — mirrors ``council.run_council``.
@@ -601,6 +670,9 @@ async def run_discovery_council(
     evidence_ids = evidence_pack.evidence_ids()
     candidate_ids = evidence_pack.candidate_ids()
     evidence_json = evidence_pack.model_dump_json()
+    # Computed ONCE per run from the pack, then threaded down to every agent
+    # attempt (initial pass AND retries) exactly like evidence_json/evidence_ids.
+    max_tokens = discovery_max_output_tokens(evidence_pack.candidate_count, cfg)
 
     result = DiscoveryCouncilResult(
         council_version=cfg.llm_discovery_council_version,
@@ -622,6 +694,7 @@ async def run_discovery_council(
         council_version=cfg.llm_discovery_council_version,
         evidence_item_count=evidence_pack.item_count,
         candidate_count=evidence_pack.candidate_count,
+        max_output_tokens=max_tokens,
     )
 
     if cfg.llm_discovery_council_retry_enabled:
@@ -632,6 +705,7 @@ async def run_discovery_council(
             result=result,
             client=client,
             cfg=cfg,
+            max_tokens=max_tokens,
             log=log,
             run_id=run_id,
             clock=clock,
@@ -646,6 +720,7 @@ async def run_discovery_council(
             result=result,
             client=client,
             cfg=cfg,
+            max_tokens=max_tokens,
             log=log,
             run_id=run_id,
         )

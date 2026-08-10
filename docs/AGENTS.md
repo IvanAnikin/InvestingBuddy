@@ -1014,6 +1014,83 @@ honesty/safety, 8/8, 5/8, near-total 1/8→7/8 (mirroring the real incident),
 complete provider outage, flag-OFF byte-identical regression guards, and
 byte-for-byte wording preservation for the shared engine's two callers.
 
+### Hotfix — discovery-council output-token budget (`LLMJsonError` collapse)
+
+> **Status: 🟡 implemented, NOT yet staging-validated.** Backend-only, no
+> migration, no flag (the scaled budget is always on for the discovery council).
+
+A fresh manual staging discovery-council run collapsed to **1/8** agents
+completed. Unlike the incident that motivated Slice 6A, this was **not** rate
+limiting: `run_coordinator`, `candidate_prioritization` and `novelty_coverage`
+failed with `LLMJsonError`, which is permanent by design and correctly never
+retried.
+
+**Root cause.** Both councils shared the SAME flat `llm_max_output_tokens`
+(1200). The single-company council's per-agent JSON is a fixed-size qualitative
+shape that does not grow with its input. The discovery council's JSON contract
+(`discovery_prompts.JSON_CONTRACT`) requires a `candidate_notes` array with one
+entry **per candidate** — and the pack carries up to
+`llm_discovery_council_max_candidates` (25) of them. On a realistic run the
+reply exceeded 1200 output tokens and was cut off mid-object; `_extract_json`
+can recover fence-wrapped or prose-surrounded *complete* JSON but never JSON
+with no closing brace, and the one-shot repair reuses the SAME budget, so it
+failed identically. The three failing agents were exactly the ones whose role
+instructions demand per-candidate enumeration; the aggregate-judgment agents
+(`diversity_anti_convergence`, `run_red_team`) were unaffected.
+
+**Fix (discovery council only).** The per-agent output budget is now computed
+ONCE per run from the pack's candidate count in
+`discovery_council.discovery_max_output_tokens()` and threaded down to every
+attempt (initial pass and retries) exactly like `evidence_json` / `evidence_ids`:
+
+```
+max_tokens = min(CAP, BASE + PER_CANDIDATE * candidate_count)
+```
+
+with `llm_discovery_max_output_tokens_base=1200`,
+`..._per_candidate=200`, `..._cap=5000`. The cap comfortably covers the default
+25-candidate pack and exists so a raised candidate cap can never make one call
+unbounded. `council.py` and `llm_max_output_tokens` are **unchanged** — the
+company council keeps the flat value. The computed budget is logged (a number)
+on `discovery_council_started`; prompts and completions are still never logged.
+
+**Complementary prompt tightening.** `JSON_CONTRACT` now caps each
+`candidate_notes[].rationale` at `<=150 chars` (matching how `summary` was
+already capped at `<=600 chars`), and a shared `OUTPUT_DISCIPLINE` block tells
+every agent to stay terse, emit at most one note per candidate, and keep
+`next_source_tasks` to venues that fit **this run's own jurisdiction** as stated
+in the pack's `run_context` (region / country) — which also addresses generic
+`SEDAR+` / `ASX` suggestions appearing on clearly European runs. This lowers the
+worst-case per-candidate cost; it complements the higher ceiling rather than
+replacing it. Nothing about what the council may *output* changed: no
+recommendation, rating, price-target or valuation language is added or allowed.
+
+**Not done (deliberately):** `LLMJsonError` stays permanent/never-retried, and
+no bracket-balancing "repair truncated JSON" logic was added — reconstructing a
+cut-off object is unreliable compared with sizing the budget correctly.
+
+**Bundled with it — initial-pass pacing.** The same failing staging run also
+burned the full 300s budget with four agents still failing `LLMRateLimitError`
+after retries. Excessive parallelism was ruled out (the initial pass is already
+strictly sequential — no `asyncio.gather`), but there was zero pacing between
+those sequential calls: eight large requests hit one Azure deployment within
+seconds. `retry_engine.run_with_retries` gained an OPTIONAL keyword-only
+`initial_pass_delay_seconds` (default `0.0` = OFF, so the company and
+field-review councils that share the engine are byte-identical). The discovery
+council opts in with `llm_discovery_council_initial_pass_delay_seconds=1.5`,
+costing at most `7 × 1.5 = 10.5s` against a 300s budget. The delay is never
+taken after the last agent, never when it would cross the deadline, never in the
+retry pass (which has its own jittered backoff), and never on the flag-OFF path
+(`_run_offline_pass` is untouched and stays byte-identical to pre-Slice-6A).
+
+Tests: `apps/api/tests/test_hotfix_discovery_council_token_budget.py` (17 tests)
+and `apps/api/tests/test_hotfix_discovery_council_initial_pass_pacing.py` (8).
+A new deterministic `budget_truncated` mode in `fake_discovery_client.py` cuts
+its canned reply off whenever the payload does not fit the `max_tokens` it was
+actually called with, so the regression is arithmetic, not a mock assertion:
+the same 8-candidate run fails with `LLMJsonError` on exactly 3 of 8 agents
+under the old flat 1200 budget and reaches 8/8 under the scaled budget.
+
 ## Full-Analysis Report Integrity Reconciliation (Phase 32A Slice 6B)
 
 > **Status: ✅ CLOSED + STAGING-VALIDATED (2026-08-10).** PR **#90** (squash) →

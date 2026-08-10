@@ -68,7 +68,8 @@ JSON_CONTRACT = (
     '  "candidate_notes": [\n'
     '    {"candidate_ref": "C1", "ticker": "...", "exchange": "...", '
     '"internal_action": "research_next|monitor_for_evidence|insufficient_data|reject_for_now", '
-    '"rationale": "...", "citation_ids": ["C1","R2"], "confidence": "low|medium|high"}\n'
+    '"rationale": "<=150 chars, factual, no recommendation", '
+    '"citation_ids": ["C1","R2"], "confidence": "low|medium|high"}\n'
     "  ],\n"
     '  "run_notes": [\n'
     '    {"claim": "...", "citation_ids": ["R1"], "confidence": "low|medium|high"}\n'
@@ -81,6 +82,18 @@ JSON_CONTRACT = (
 )
 
 
+OUTPUT_DISCIPLINE = (
+    "OUTPUT DISCIPLINE:\n"
+    "- Be terse and respect every per-field length cap above. A reply that runs "
+    "past the output budget is cut off mid-object and is then unusable.\n"
+    "- Emit at most ONE candidate_notes entry per candidate.\n"
+    "- next_source_tasks must name sourcing venues that actually apply to THIS "
+    "run's jurisdiction, as stated in the evidence pack's run_context "
+    "(region / country) and the candidates' own exchange / country fields. Do "
+    "not suggest venues from unrelated jurisdictions."
+)
+
+
 def _base_header(agent_name: str, role: str) -> str:
     return (
         f"You are the {role} on an internal, run-level equity-research DISCOVERY "
@@ -88,7 +101,8 @@ def _base_header(agent_name: str, role: str) -> str:
         f"run's whole candidate set and decides internal research priority.\n\n"
         f"{INJECTION_GUARD}\n\n"
         f"{SAFETY_RULES}\n\n"
-        f"{JSON_CONTRACT}"
+        f"{JSON_CONTRACT}\n\n"
+        f"{OUTPUT_DISCIPLINE}"
     )
 
 

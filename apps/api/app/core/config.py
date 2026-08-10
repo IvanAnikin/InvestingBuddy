@@ -103,6 +103,27 @@ class Settings(BaseSettings):
     # Discovery-council contract version. Bump when the agent set or output schema
     # changes. Independent of the single-company council version.
     llm_discovery_council_version: str = "v1"
+    # Output-token budget for ONE discovery-council agent call. Unlike the single
+    # company council — whose per-agent JSON is a fixed-size qualitative shape —
+    # the discovery council's JSON contract carries a ``candidate_notes`` array
+    # with ONE entry per candidate, so its output size grows with the candidate
+    # count. Sharing the company council's flat ``llm_max_output_tokens`` (1200)
+    # truncated the reply mid-object on realistic multi-candidate runs, which
+    # surfaced as a PERMANENT ``LLMJsonError`` (unparseable JSON is never
+    # retried, and the one-shot repair reuses the same budget, so it failed
+    # identically). The effective budget is therefore SCALED:
+    #     min(cap, base + per_candidate * candidate_count)
+    # ``base`` covers the fixed shell (summary <=600 chars, run_notes, gaps,
+    # safety notes); ``per_candidate`` covers one candidate_note (whose
+    # ``rationale`` is capped at <=150 chars in the prompt contract, i.e. roughly
+    # 75 output tokens) with ~2x headroom; ``cap`` bounds worst-case cost and
+    # latency. The default cap comfortably covers the default
+    # ``llm_discovery_council_max_candidates`` (25) and exists to stop a raised
+    # candidate cap from making a single call unbounded. Does NOT affect the
+    # company council (``llm_max_output_tokens`` is unchanged).
+    llm_discovery_max_output_tokens_base: int = 1200
+    llm_discovery_max_output_tokens_per_candidate: int = 200
+    llm_discovery_max_output_tokens_cap: int = 5000
 
     # ── LLM discovery council reliability / retry (Phase 32A Slice 6A) ─────
     # Master gate for the discovery-council reliability bundle: transient-error
@@ -149,6 +170,20 @@ class Settings(BaseSettings):
     # budget cannot starve the adversarial check and the synthesis. Materially
     # higher than the company council's 45s, matching the larger total budget.
     llm_discovery_council_retry_critical_reserve_seconds: float = 60.0
+    # Inter-agent pacing (seconds) inside the discovery council's INITIAL pass
+    # when the retry bundle is ON. The initial pass is already strictly
+    # sequential (no asyncio.gather), but with no pacing all eight agents fire
+    # back-to-back at the same Azure deployment within a few seconds, which — on
+    # a large evidence pack, alongside real concurrent staging traffic — trips
+    # the provider's short-window token/request-rate limits. A small fixed wait
+    # between consecutive agents spreads the load; it costs at most
+    # (agents - 1) * delay seconds, negligible against the 300s total budget.
+    # Applies to the discovery council ONLY (the shared
+    # ``retry_engine.run_with_retries`` defaults to 0.0 = no pacing, so the
+    # company and field-review councils are unchanged), never after the last
+    # agent, never when the wait would cross the deadline, and never in the
+    # retry pass (which has its own jittered backoff). 0.0 disables pacing.
+    llm_discovery_council_initial_pass_delay_seconds: float = 1.5
 
     # ── Deep Field Review (Phase 32A Slice 6D) ─────────────────────────────
     # A THIRD, separate council. It is NOT the discovery council (which triages a
