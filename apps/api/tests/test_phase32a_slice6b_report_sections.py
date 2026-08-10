@@ -24,12 +24,93 @@ from typing import Any
 
 from app.services.final_report_generator import (
     _APPENDIX_RECONCILE_NOTE,
+    _build_company_identity,
     _build_data_availability_summary,
     _build_missing_information,
     _build_research_completeness_review,
     _build_source_citation_appendix,
     _evidence_reconciliation_counts,
 )
+
+# ---------------------------------------------------------------------------
+# C1 hotfix — identity resolution must not re-surface the ticker-as-legal-name
+# safety stub when a real, verified name already exists in the company DB
+# record. Found live on staging: BRBY's company_snapshot legitimately resolves
+# legal_name="BRBY" (free_real_provider._not_sourced_profile()'s deliberate
+# "never guess a wrong company from an unrelated SEC index entry" stub for
+# exchanges SEC EDGAR doesn't cover), which _build_company_identity's
+# snapshot-always-wins precedence blindly trusted -- even though
+# companies.name already correctly held "Burberry Group plc" (seeded by the
+# already-closed C1 fix in market_discovery_service.py/ensure_company). The
+# original C1 fix addressed WHERE the DB row gets seeded; this addresses
+# WHETHER the seeded value is actually consulted when a snapshot exists.
+# ---------------------------------------------------------------------------
+
+
+def test_identity_prefers_db_record_name_over_snapshot_ticker_stub():
+    snapshot = {
+        "company_identity": {"legal_name": "BRBY", "ticker": "BRBY", "exchange": "LSE"},
+        "profile": {},
+        "is_mock": False,
+    }
+    record = {"name": "Burberry Group plc", "ticker": "BRBY", "exchange": "LSE"}
+    identity = _build_company_identity(snapshot, record)
+    assert identity["legal_name"]["value"] == "Burberry Group plc"
+    assert identity["legal_name"]["source"] == "company_db_record"
+
+
+def test_identity_keeps_real_snapshot_legal_name_when_genuinely_resolved():
+    # A snapshot that DID resolve a real, distinct legal name (SEC/GLEIF/
+    # company_ir) must still win over the DB record -- this is the "fresher,
+    # this-run identity resolution" precedence the original design intended;
+    # the hotfix only applies when the snapshot's own value is the bare-ticker
+    # stub, never otherwise.
+    snapshot = {
+        "company_identity": {
+            "legal_name": "Apple Inc.",
+            "ticker": "AAPL",
+            "exchange": "NASDAQ",
+        },
+        "profile": {},
+        "is_mock": False,
+    }
+    record = {"name": "Apple Inc. (stale registry copy)", "ticker": "AAPL"}
+    identity = _build_company_identity(snapshot, record)
+    assert identity["legal_name"]["value"] == "Apple Inc."
+    assert identity["legal_name"]["source"] == "company_snapshot"
+
+
+def test_identity_falls_back_to_ticker_when_db_record_is_also_a_placeholder():
+    # No real name anywhere -- must NOT fabricate one. Ticker-as-stub survives
+    # honestly rather than being swapped for an equally-uninformative DB value.
+    snapshot = {
+        "company_identity": {"legal_name": "XYZ", "ticker": "XYZ", "exchange": "LSE"},
+        "profile": {},
+        "is_mock": False,
+    }
+    record = {"name": "XYZ", "ticker": "XYZ"}
+    identity = _build_company_identity(snapshot, record)
+    assert identity["legal_name"]["value"] == "XYZ"
+    assert identity["legal_name"]["source"] == "company_snapshot"
+
+
+def test_identity_handles_venue_suffixed_ticker_stub():
+    # free_real_provider / discovery scans sometimes carry a venue-suffixed
+    # ticker (e.g. "BRBY.LSE") as the stub legal_name -- is_placeholder_company_name
+    # already recognizes this form; confirm the hotfix does too.
+    snapshot = {
+        "company_identity": {
+            "legal_name": "BRBY.LSE",
+            "ticker": "BRBY",
+            "exchange": "LSE",
+        },
+        "profile": {},
+        "is_mock": False,
+    }
+    record = {"name": "Burberry Group plc", "ticker": "BRBY"}
+    identity = _build_company_identity(snapshot, record)
+    assert identity["legal_name"]["value"] == "Burberry Group plc"
+
 
 # ---------------------------------------------------------------------------
 # C5 — blocking_gaps_count / non_blocking_gaps_count
