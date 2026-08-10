@@ -58,6 +58,7 @@ from app.services.data_provenance import (
     derive_data_provenance,
     provenance_to_is_mock,
 )
+from app.services.discovery_signal_extractor import is_placeholder_company_name
 from app.services.document_ingestion_attempt_service import record_ingestion_attempts
 from app.services.extracted_document_service import (
     load_reusable_documents,
@@ -1004,7 +1005,32 @@ def _build_company_identity(
     if company_snapshot:
         ci = company_snapshot.get("company_identity", {})
         profile = company_snapshot.get("profile", {})
-        identity["legal_name"] = _dp(ci.get("legal_name"), "company_snapshot")
+        snapshot_ticker = ci.get("ticker")
+        snapshot_legal_name = ci.get("legal_name")
+        # Phase 32A Slice 6B hotfix — the snapshot's own legal_name can
+        # legitimately BE the ticker: free_real_provider._not_sourced_profile()
+        # deliberately sets legal_name=ticker as a safety stub for exchanges SEC
+        # EDGAR doesn't cover (never guess a wrong company from an unrelated SEC
+        # index entry — that provider's own docstring cites BA.LSE vs "THE
+        # BOEING COMPANY" as the incident this guards against). Blindly trusting
+        # that stub here re-surfaces the ticker as if it were a legal name, even
+        # when the company DB record already carries a real, verified one
+        # (seeded via discovery_signal_extractor.ensure_company). Prefer the DB
+        # record's name in that one narrow case — never otherwise, so a genuine
+        # snapshot-resolved name (SEC/GLEIF/company_ir) still wins as before.
+        resolved_legal_name = snapshot_legal_name
+        legal_name_source = "company_snapshot"
+        if (
+            snapshot_ticker
+            and is_placeholder_company_name(snapshot_legal_name, snapshot_ticker)
+            and company_record
+            and not is_placeholder_company_name(
+                company_record.get("name"), snapshot_ticker
+            )
+        ):
+            resolved_legal_name = company_record.get("name")
+            legal_name_source = "company_db_record"
+        identity["legal_name"] = _dp(resolved_legal_name, legal_name_source)
         identity["ticker"] = _dp(ci.get("ticker"), "company_snapshot")
         identity["exchange"] = _dp(ci.get("exchange"), "company_snapshot")
         identity["country_domicile"] = _dp(
