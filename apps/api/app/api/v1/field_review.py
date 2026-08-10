@@ -22,6 +22,7 @@ Hard guarantees:
 Endpoints:
   POST /api/v1/discovery-runs/{run_id}/field-review
   GET  /api/v1/discovery-runs/{run_id}/field-review
+  GET  /api/v1/discovery-runs/{run_id}/field-review-eligibility
 """
 
 from __future__ import annotations
@@ -33,6 +34,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
 from app.schemas.field_review import (
+    FieldReviewEligibilityCandidate,
+    FieldReviewEligibilityResponse,
     FieldReviewMissingCandidate,
     FieldReviewResponse,
     InsufficientCandidatesDetail,
@@ -169,3 +172,51 @@ async def get_field_review(
         )
     candidates = await svc.get_candidate_summaries(db, row.id)
     return FieldReviewResponse.from_row(run_id, row, candidates)
+
+
+@router.get(
+    "/{run_id}/field-review-eligibility",
+    response_model=FieldReviewEligibilityResponse,
+    summary="Which candidates a Deep Field Review could compare now (admin only)",
+    description=(
+        "ADMIN/INTERNAL ONLY. Returns the SAME eligibility verdict the Deep "
+        "Field Review itself applies — it calls the review's own candidate "
+        "resolver, so the admin UI can never advertise an eligibility the "
+        "backend would reject with a 422.\n\n"
+        "``with_full_analysis_count`` counts candidates whose linked analysis "
+        "report exists, is a FINAL report, and is schema-valid (regardless of "
+        "the per-review company cap). ``included_count`` is the subset also "
+        "within the cap — what a review started right now would compare. "
+        "``not_comparable_count`` counts candidates that WERE analysed but "
+        "cannot be compared (report deleted / draft only / schema-invalid / "
+        "over the cap); candidates never analysed are reported separately as "
+        "``not_yet_analyzed_count``.\n\n"
+        "Counts and identifiers only — no report content, no rating, no "
+        "valuation. Does not start anything and never runs an LLM. " + _INTERNAL
+    ),
+)
+async def get_field_review_eligibility(
+    run_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+) -> FieldReviewEligibilityResponse:
+    run = await discovery_svc.get_run(db, run_id)
+    if run is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Discovery run {run_id} not found",
+        )
+    summary = await svc.summarize_field_eligibility(db, run)
+    return FieldReviewEligibilityResponse(
+        discovery_run_id=run_id,
+        candidate_count=summary.candidate_count,
+        with_full_analysis_count=summary.with_full_analysis_count,
+        included_count=summary.included_count,
+        not_comparable_count=summary.not_comparable_count,
+        not_yet_analyzed_count=summary.not_yet_analyzed_count,
+        required_candidate_count=summary.required_candidate_count,
+        max_companies=summary.max_companies,
+        candidates=[
+            FieldReviewEligibilityCandidate.model_validate(row)
+            for row in summary.candidates
+        ],
+    )

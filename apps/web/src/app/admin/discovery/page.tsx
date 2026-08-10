@@ -9,6 +9,7 @@ import {
   getDiscoveryCouncilReview,
   getDiscoveryRun,
   getFieldReview,
+  getFieldReviewEligibility,
   listDiscoveryCandidates,
   listDiscoveryRuns,
   listSupportedFilters,
@@ -27,6 +28,8 @@ import type {
   DiscoveryRunCreate,
   FieldPriorityEntry,
   FieldReview,
+  FieldReviewEligibility,
+  FieldReviewEligibilityCandidate,
   FilterOption,
   ParseThesisResponse,
   ReportLinkSummary,
@@ -1179,9 +1182,20 @@ function DiscoveryCouncilPanel({
 // price target, fair value, or return projection.
 // ---------------------------------------------------------------------------
 
-// The minimum comparable companies the backend requires (FIELD_REVIEW_MIN_
-// CANDIDATES). Client-side preview only — the server always enforces the limit.
+// Fallback threshold used ONLY before the backend's eligibility summary has
+// loaded. The authoritative number is `required_candidate_count` on that
+// summary (FIELD_REVIEW_MIN_CANDIDATES); the server always enforces it.
 const FIELD_REVIEW_MIN_COMPANIES = 2;
+
+// Why a candidate cannot be compared, in admin-readable words. Mirrors the
+// closed vocabulary emitted by the backend's candidate resolver.
+const FIELD_REVIEW_EXCLUSION_LABELS: Record<string, string> = {
+  no_analysis_run: "no full analysis yet",
+  report_deleted: "linked analysis report no longer exists",
+  draft_only: "analysis never produced a final report",
+  not_schema_valid: "final report failed schema validation",
+  over_company_cap: "beyond this review's company cap",
+};
 
 const FIELD_TIER_LABELS: Record<string, string> = {
   strongest_candidates: "research first",
@@ -1446,19 +1460,19 @@ function FieldReviewBody({ review }: { review: FieldReview }) {
 
 function FieldReviewPanel({
   review,
+  eligibility,
   loading,
   error,
   disabled,
   candidateCount,
-  analyzedCandidateCount,
   onRun,
 }: {
   review: FieldReview | null;
+  eligibility: FieldReviewEligibility | null;
   loading: boolean;
   error: string | null;
   disabled: boolean;
   candidateCount: number;
-  analyzedCandidateCount: number;
   onRun: () => void;
 }) {
   const status = review?.status ?? null;
@@ -1468,12 +1482,30 @@ function FieldReviewPanel({
   const hasReview = review?.review_available ?? false;
   const busy = loading || inFlight;
 
-  // How many companies would actually be compared. Prefer the server's own
-  // count once a review exists; before that, fall back to how many candidates
-  // have a linked analysis report.
-  const includedCandidateCount =
-    review?.included_candidate_count ?? analyzedCandidateCount;
-  const tooFewCompanies = includedCandidateCount < FIELD_REVIEW_MIN_COMPANIES;
+  // Every eligibility number below comes from the backend's own candidate
+  // resolver (GET .../field-review-eligibility) — the SAME code the review runs.
+  // The client deliberately does not re-derive it: "has an analysis_report_id"
+  // is looser than what the review enforces (the linked report must also exist,
+  // be FINAL and be schema-valid), so a client-side guess would advertise
+  // companies the backend then refuses to compare.
+  const requiredCompanies =
+    eligibility?.required_candidate_count ?? FIELD_REVIEW_MIN_COMPANIES;
+  const withFullAnalysisCount = eligibility?.with_full_analysis_count ?? 0;
+  const comparableNowCount = eligibility?.included_count ?? 0;
+  const notComparableCount = eligibility?.not_comparable_count ?? 0;
+
+  // Gate ONLY on an answer we actually received. If the summary could not be
+  // loaded the button stays live: the backend answers a premature run with a
+  // structured 422 carrying this same message, which is far better than a
+  // silently dead button.
+  const tooFewCompanies =
+    eligibility !== null && withFullAnalysisCount < requiredCompanies;
+
+  // Candidates that still need a completed full analysis before they can be
+  // compared — named, so the admin knows what to run next.
+  const awaitingAnalysis: FieldReviewEligibilityCandidate[] = (
+    eligibility?.candidates ?? []
+  ).filter((c) => !c.has_full_analysis);
 
   const statusLabel = disabled
     ? "Disabled"
@@ -1498,10 +1530,11 @@ function FieldReviewPanel({
             ? "green"
             : "gray";
 
+  const insufficientMessage = `Needs at least ${requiredCompanies} candidates with completed full analyses from this discovery run.`;
   const runDisabledReason = disabled
     ? "Deep Field Review is disabled on this environment."
     : tooFewCompanies
-      ? `Needs at least ${FIELD_REVIEW_MIN_COMPANIES} candidates with a COMPLETED full analysis to compare (currently ${includedCandidateCount} of ${candidateCount}). Run "Full Analysis" on more candidates first.`
+      ? `${insufficientMessage} Currently ${withFullAnalysisCount} of ${candidateCount}.`
       : undefined;
 
   return (
@@ -1553,20 +1586,35 @@ function FieldReviewPanel({
             value={String(candidateCount)}
             testid="field-review-run-candidates"
           />
+          {/* "—" (not "0") while the backend's answer is unavailable: a failed
+              fetch must never be displayed as a real count of zero. */}
           <CouncilStat
             label="With full analysis"
-            value={String(analyzedCandidateCount)}
+            value={eligibility ? String(withFullAnalysisCount) : "—"}
             testid="field-review-analyzed-candidates"
           />
           <CouncilStat
-            label="Included in review"
-            value={String(review?.included_candidate_count ?? 0)}
+            label="Comparable now"
+            value={eligibility ? String(comparableNowCount) : "—"}
+            testid="field-review-included-candidates"
           />
           <CouncilStat
-            label="Not comparable"
-            value={String(review?.missing_candidate_count ?? 0)}
+            label="Not comparable (now)"
+            value={eligibility ? String(notComparableCount) : "—"}
+            testid="field-review-missing-candidates"
           />
         </div>
+
+        {!disabled && !eligibility && (
+          <p
+            data-testid="field-review-eligibility-unavailable"
+            className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs text-slate-400"
+          >
+            Could not load which candidates are comparable. The counts above are
+            unknown, not zero — running the review will still report the exact
+            reason.
+          </p>
+        )}
 
         {disabled && (
           <p
@@ -1577,12 +1625,37 @@ function FieldReviewPanel({
           </p>
         )}
         {!disabled && tooFewCompanies && !hasReview && (
-          <p
+          <div
             data-testid="field-review-too-few"
-            className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs text-slate-400"
+            className="space-y-1 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs text-slate-400"
           >
-            {runDisabledReason}
-          </p>
+            <p>{runDisabledReason}</p>
+            {awaitingAnalysis.length > 0 && (
+              <>
+                <p className="text-slate-500">
+                  Still needs a completed full analysis:
+                </p>
+                <ul
+                  data-testid="field-review-awaiting-analysis"
+                  className="list-disc space-y-0.5 pl-4"
+                >
+                  {awaitingAnalysis.map((c) => (
+                    <li key={c.candidate_id}>
+                      <span className="font-semibold text-slate-300">
+                        {c.ticker ?? "—"}
+                      </span>
+                      {c.exclusion_reason
+                        ? ` — ${
+                            FIELD_REVIEW_EXCLUSION_LABELS[c.exclusion_reason] ??
+                            c.exclusion_reason
+                          }`
+                        : ""}
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+          </div>
         )}
         {!disabled && error && (
           <p
@@ -1608,9 +1681,8 @@ function FieldReviewPanel({
             data-testid="field-review-insufficient"
             className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200"
           >
-            Not enough candidates with a completed full analysis to compare. Run
-            &quot;Full Analysis&quot; on more candidates, then re-run this
-            review.
+            {insufficientMessage} Run &quot;Full Analysis&quot; on more
+            candidates, then re-run this review.
           </p>
         )}
         {!disabled && failed && !hasReview && (
@@ -1717,6 +1789,10 @@ export default function DiscoveryPage() {
   const [fieldReviewLoading, setFieldReviewLoading] = useState(false);
   const [fieldReviewError, setFieldReviewError] = useState<string | null>(null);
   const [fieldReviewDisabled, setFieldReviewDisabled] = useState(false);
+  // The backend's own eligibility verdict for this run. Null until it loads (or
+  // if it fails) — the panel never substitutes a client-side guess for it.
+  const [fieldEligibility, setFieldEligibility] =
+    useState<FieldReviewEligibility | null>(null);
 
   const parsedTickers = manualTickers
     .split(",")
@@ -1930,6 +2006,28 @@ export default function DiscoveryPage() {
     };
   }, [selectedRunId]);
 
+  // The authoritative "what could a field review compare right now?" answer.
+  // Refetched whenever the candidate list changes, so finishing a full analysis
+  // updates the stats and un-gates the button without a page reload. A failure
+  // leaves it null: the panel then keeps the button live and lets the backend's
+  // structured 422 explain the situation, rather than guessing client-side.
+  useEffect(() => {
+    if (!selectedRunId) return;
+    let cancelled = false;
+    async function fetchEligibility(runId: string) {
+      try {
+        const summary = await getFieldReviewEligibility(runId);
+        if (!cancelled) setFieldEligibility(summary);
+      } catch {
+        if (!cancelled) setFieldEligibility(null);
+      }
+    }
+    void fetchEligibility(selectedRunId);
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedRunId, candidates]);
+
   // Poll the async Deep Field Review job while it is in flight. Polling stops
   // once the status is terminal. Mirrors the discovery-council poll above.
   useEffect(() => {
@@ -2139,18 +2237,18 @@ export default function DiscoveryPage() {
         err instanceof Error ? err.message : "Deep Field Review failed.";
       setFieldReviewError(msg);
       if (/disabled|not available/i.test(msg)) setFieldReviewDisabled(true);
+      // A rejected start (e.g. the 422 for too few completed analyses) means our
+      // eligibility snapshot is stale — refresh it so the panel and the button
+      // immediately agree with the backend.
+      try {
+        setFieldEligibility(await getFieldReviewEligibility(selectedRunId));
+      } catch {
+        // Non-fatal: the error message above already explains the refusal.
+      }
     } finally {
       setFieldReviewLoading(false);
     }
   }
-
-  // How many of this run's candidates already have a completed full analysis —
-  // the population the Deep Field Review can compare. Derived from the linked
-  // analysis report id, which is exactly what the backend keys on.
-  const analyzedCandidateCount = useMemo(
-    () => candidates.filter((c) => c.analysis_report_id != null).length,
-    [candidates],
-  );
 
   // Map a candidate (ticker+exchange) to the council's internal action, so the
   // candidate table can show it inline. Keyed precisely, with a ticker-only
@@ -2777,11 +2875,11 @@ export default function DiscoveryPage() {
       {selectedRun && (
         <FieldReviewPanel
           review={fieldReview}
+          eligibility={fieldEligibility}
           loading={fieldReviewLoading}
           error={fieldReviewError}
           disabled={fieldReviewDisabled}
           candidateCount={candidates.length}
-          analyzedCandidateCount={analyzedCandidateCount}
           onRun={handleRunFieldReview}
         />
       )}

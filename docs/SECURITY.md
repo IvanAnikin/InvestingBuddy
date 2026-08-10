@@ -41,6 +41,13 @@ Clerk for the MVP admin surface.
   - The admin **API proxy route** independently re-checks auth + allowlist
     before attaching any backend credential (401 unauthenticated, 403 not
     allowed, 404 for a disallowed backend path).
+    Its `ALLOWED_PREFIXES` match on a full path **segment**, so a prefix never
+    covers a sibling that merely shares a string prefix (`/api/v1/discovery`
+    does **not** allow `/api/v1/discovery-runs`). Every router mounted in
+    `apps/api/app/main.py` therefore needs its own entry — otherwise the proxy
+    answers 404 and the backend is never reached, which reads exactly like a
+    missing endpoint. `apps/api/tests/test_admin_proxy_route_allowlist.py`
+    enforces that invariant against the live OpenAPI path list.
 - **Backend Basic Auth remains** as a server-to-server defense: the proxy adds
   it only after the human admin is authenticated and authorized. The browser
   never calls the backend directly and never sees the credential.

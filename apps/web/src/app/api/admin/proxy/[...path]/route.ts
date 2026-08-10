@@ -28,6 +28,13 @@ const BACKEND_BASIC_AUTH = process.env.BACKEND_BASIC_AUTH ?? "";
 // Allowlist: only forward to known backend path prefixes.
 // A request whose resolved backend path does not start with one of these
 // receives a 404 from the proxy — the backend is never contacted.
+//
+// IMPORTANT: matching is on a full path SEGMENT (see isAllowed below), so a
+// prefix never covers a sibling that merely shares a string prefix:
+// "/api/v1/discovery" does NOT allow "/api/v1/discovery-runs". Every backend
+// router mounted in apps/api/app/main.py needs its OWN entry here, otherwise
+// the proxy answers 404 and the backend is never reached. The backend test
+// tests/test_admin_proxy_route_allowlist.py enforces exactly that.
 const ALLOWED_PREFIXES = [
   "/health",
   "/api/v1/companies",
@@ -35,6 +42,9 @@ const ALLOWED_PREFIXES = [
   "/api/v1/workflows",
   "/api/v1/admin/reports",
   "/api/v1/discovery",
+  // Deep Field Review (Phase 32A Slice 6D) — a SEPARATE router from
+  // /api/v1/discovery above, and not covered by it.
+  "/api/v1/discovery-runs",
   "/api/v1/scoring",
   "/api/v1/final-reports",
   "/api/v1/financial-data",

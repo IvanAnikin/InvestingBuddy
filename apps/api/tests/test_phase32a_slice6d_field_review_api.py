@@ -51,6 +51,7 @@ from app.services.field_review_service import (
 from app.services.llm.fake_field_review_client import FakeFieldReviewLLMClient
 
 FIELD_REVIEW_PATH = "/api/v1/discovery-runs/{run_id}/field-review"
+ELIGIBILITY_PATH = "/api/v1/discovery-runs/{run_id}/field-review-eligibility"
 
 FORBIDDEN_SUBSTRINGS = (
     "BUY",
@@ -482,6 +483,19 @@ def _final_report() -> Report:
     )
 
 
+def _draft_report() -> Report:
+    """An analysis that never reached a FINAL report — not comparable."""
+    report = _final_report()
+    report.final_report_version = None
+    return report
+
+
+def _schema_invalid_report() -> Report:
+    report = _final_report()
+    report.schema_validation_json = {"schema_valid": False}
+    return report
+
+
 @pytest.mark.asyncio
 async def test_end_to_end_field_review_never_leaks_another_runs_data() -> None:
     """Runs A and B each contain the SAME ticker with DIFFERENT reports. The API
@@ -596,3 +610,195 @@ async def test_end_to_end_field_review_never_leaks_another_runs_data() -> None:
     blob = json.dumps(body)
     for term in FORBIDDEN_SUBSTRINGS:
         assert term not in blob, term
+
+
+# ===========================================================================
+# GET /field-review-eligibility — ONE authoritative eligibility answer
+#
+# The admin UI used to compute "with full analysis" itself, from nothing but a
+# non-NULL analysis_report_id. That is looser than what the review enforces (the
+# linked report must also EXIST, be FINAL, and be schema-valid), so the button
+# could look runnable while the backend would reject the run. These tests pin
+# the endpoint to the review's OWN resolver.
+# ===========================================================================
+
+
+class _EligibilityFixture:
+    """A run with one candidate per eligibility outcome, seeded in SQLite."""
+
+    def __init__(self) -> None:
+        self.run = DiscoveryRun(
+            id=uuid.uuid4(), status="completed", mode="ticker", candidate_count=5
+        )
+        self.good_a = _final_report()
+        self.good_b = _final_report()
+        self.draft = _draft_report()
+        self.invalid = _schema_invalid_report()
+        self.ids: dict[str, uuid.UUID] = {}
+
+    def candidates(self) -> list[DiscoveryCandidate]:
+        spec: list[tuple[str, int, uuid.UUID | None]] = [
+            ("GOODA", 1, self.good_a.id),
+            ("GOODB", 2, self.good_b.id),
+            ("DRAFT", 3, self.draft.id),
+            ("INVALID", 4, self.invalid.id),
+            ("NOANALYSIS", 5, None),
+        ]
+        rows = []
+        for ticker, rank, report_id in spec:
+            candidate = DiscoveryCandidate(
+                id=uuid.uuid4(),
+                discovery_run_id=self.run.id,
+                ticker=ticker,
+                exchange="US",
+                rank=rank,
+                candidate_score_grade="medium_internal_interest",
+                analysis_report_id=report_id,
+            )
+            self.ids[ticker] = candidate.id
+            rows.append(candidate)
+        return rows
+
+
+async def _get_eligibility(
+    cfg: Settings,
+) -> tuple[dict[str, Any], _EligibilityFixture]:
+    engine = create_async_engine(
+        "sqlite+aiosqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    fixture = _EligibilityFixture()
+    async with factory() as seed:
+        seed.add_all(
+            [
+                fixture.run,
+                fixture.good_a,
+                fixture.good_b,
+                fixture.draft,
+                fixture.invalid,
+            ]
+        )
+        seed.add_all(fixture.candidates())
+        await seed.commit()
+
+    async def _override_db():
+        async with factory() as session:
+            yield session
+
+    app.dependency_overrides[get_db] = _override_db
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as http:
+            with patch("app.services.field_review_service.settings", cfg):
+                resp = await http.get(ELIGIBILITY_PATH.format(run_id=fixture.run.id))
+    finally:
+        app.dependency_overrides.clear()
+        await engine.dispose()
+
+    assert resp.status_code == 200
+    return resp.json(), fixture
+
+
+def _row(body: dict[str, Any], ticker: str) -> dict[str, Any]:
+    matches = [c for c in body["candidates"] if c["ticker"] == ticker]
+    assert len(matches) == 1, f"{ticker} not found exactly once"
+    return matches[0]
+
+
+@pytest.mark.asyncio
+async def test_eligibility_counts_only_completed_schema_valid_final_reports() -> None:
+    body, fixture = await _get_eligibility(_cfg())
+
+    assert body["discovery_run_id"] == str(fixture.run.id)
+    assert body["candidate_count"] == 5
+    # GOODA + GOODB only — the draft and the schema-invalid report do NOT count,
+    # even though both have a non-NULL analysis_report_id.
+    assert body["with_full_analysis_count"] == 2
+    assert body["included_count"] == 2
+    assert body["required_candidate_count"] == 2
+
+    good = _row(body, "GOODA")
+    assert good["has_analysis"] is True
+    assert good["has_full_analysis"] is True
+    assert good["included"] is True
+    assert good["exclusion_reason"] is None
+    assert good["candidate_id"] == str(fixture.ids["GOODA"])
+
+
+@pytest.mark.asyncio
+async def test_eligibility_reports_a_draft_only_analysis_as_not_comparable() -> None:
+    body, _ = await _get_eligibility(_cfg())
+
+    draft = _row(body, "DRAFT")
+    assert draft["has_analysis"] is True
+    assert draft["has_full_analysis"] is False
+    assert draft["included"] is False
+    assert draft["exclusion_reason"] == "draft_only"
+
+    invalid = _row(body, "INVALID")
+    assert invalid["has_full_analysis"] is False
+    assert invalid["exclusion_reason"] == "not_schema_valid"
+
+    # Analysed-but-not-comparable: the draft and the schema-invalid one.
+    assert body["not_comparable_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_eligibility_keeps_never_analyzed_candidates_out_of_both_buckets() -> (
+    None
+):
+    body, _ = await _get_eligibility(_cfg())
+
+    never = _row(body, "NOANALYSIS")
+    assert never["has_analysis"] is False
+    assert never["has_full_analysis"] is False
+    assert never["included"] is False
+    assert never["exclusion_reason"] == "no_analysis_run"
+
+    # It is its own bucket — never counted as "with full analysis" (it has none)
+    # and never as "not comparable" (it was simply never analysed).
+    assert body["not_yet_analyzed_count"] == 1
+    assert body["with_full_analysis_count"] + body["not_comparable_count"] == 4
+
+
+@pytest.mark.asyncio
+async def test_eligibility_capped_candidate_still_has_a_full_analysis() -> None:
+    """The company cap bounds THIS review; it does not un-analyse a company."""
+    body, _ = await _get_eligibility(_cfg(llm_field_review_council_max_companies=1))
+
+    assert body["max_companies"] == 1
+    assert body["with_full_analysis_count"] == 2
+    assert body["included_count"] == 1
+
+    capped = _row(body, "GOODB")
+    assert capped["has_full_analysis"] is True
+    assert capped["included"] is False
+    assert capped["exclusion_reason"] == "over_company_cap"
+
+    # Capped, draft and schema-invalid are all "analysed but not compared here".
+    assert body["not_comparable_count"] == 3
+
+
+@pytest.mark.asyncio
+async def test_eligibility_response_carries_no_rating_or_valuation_vocabulary() -> None:
+    body, _ = await _get_eligibility(_cfg())
+    blob = json.dumps(body)
+    for term in FORBIDDEN_SUBSTRINGS:
+        assert term not in blob, term
+
+
+@pytest.mark.asyncio
+async def test_eligibility_for_an_unknown_run_returns_404(client, mock_db) -> None:
+    run_id = uuid.uuid4()
+    with patch(
+        "app.api.v1.field_review.discovery_svc.get_run", AsyncMock(return_value=None)
+    ), patch.object(svc, "summarize_field_eligibility", AsyncMock()) as summarize:
+        resp = await client.get(ELIGIBILITY_PATH.format(run_id=run_id))
+    assert resp.status_code == 404
+    summarize.assert_not_called()

@@ -26,6 +26,8 @@ from app.services.llm.field_review_schemas import FIELD_REVIEW_DISCLAIMER
 __all__ = [
     "FieldPriorityEntryRead",
     "FieldReviewCandidateRow",
+    "FieldReviewEligibilityCandidate",
+    "FieldReviewEligibilityResponse",
     "FieldReviewMissingCandidate",
     "FieldReviewResponse",
     "InsufficientCandidatesDetail",
@@ -70,6 +72,52 @@ class FieldReviewMissingCandidate(BaseModel):
     ticker: str | None = None
     exchange: str | None = None
     exclusion_reason: str | None = None
+
+
+class FieldReviewEligibilityCandidate(BaseModel):
+    """One candidate's field-review eligibility, exactly as the backend sees it."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    candidate_id: uuid.UUID
+    ticker: str | None = None
+    exchange: str | None = None
+    company_name: str | None = None
+    # Internal candidate-score grade — a prioritization signal only, never a
+    # rating and never a recommendation.
+    tier: str | None = None
+    has_analysis: bool = False
+    has_full_analysis: bool = False
+    included: bool = False
+    exclusion_reason: str | None = None
+
+
+class FieldReviewEligibilityResponse(BaseModel):
+    """Which of a discovery run's candidates a field review could compare NOW.
+
+    Derived from the SAME resolver the review itself uses, so the admin UI can
+    never advertise an eligibility the backend would reject. Counts only — no
+    report content, no rating, no valuation.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    discovery_run_id: uuid.UUID
+    # Every candidate in the run.
+    candidate_count: int = 0
+    # Analysed AND the linked report exists, is FINAL, and is schema-valid —
+    # regardless of the per-review company cap.
+    with_full_analysis_count: int = 0
+    # The subset that is also within the cap: what a review started now compares.
+    included_count: int = 0
+    # Analysed, but not comparable (report deleted / draft only / schema-invalid
+    # / over the company cap). Candidates never analysed are NOT counted here.
+    not_comparable_count: int = 0
+    # Candidates that were never analysed at all.
+    not_yet_analyzed_count: int = 0
+    required_candidate_count: int = 2
+    max_companies: int = 0
+    candidates: list[FieldReviewEligibilityCandidate] = Field(default_factory=list)
 
 
 class InsufficientCandidatesDetail(BaseModel):
