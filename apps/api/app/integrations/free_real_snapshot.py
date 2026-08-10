@@ -124,6 +124,12 @@ class FreeRealSnapshot:
                 "source_tier": self.price_source_tier,
                 "provider": self.price_provider,
                 "is_mock": self.price_history.meta.is_mock,
+                # Phase 32A Slice 6B hotfix (C3) — the raw provider currency
+                # (now honestly None when genuinely unknown, per the Slice 6B
+                # fix to eodhd_provider/eodhd_price_only_provider/stooq_provider)
+                # must be threaded through here so enrich_snapshot_with_free_real
+                # can resolve a real value instead of a hardcoded default.
+                "currency": self.price_history.currency,
             }
 
         fund_summary: dict | None = None

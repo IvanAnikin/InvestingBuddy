@@ -42,12 +42,13 @@ from app.integrations.financial_data_provider import (
     ProviderStatus,
     SourceTier,
 )
+from app.integrations.free_real_snapshot import FreeRealSnapshot
 from app.integrations.llm_provider import AzureOpenAIResearchLLMClient, ResearchSectionsOutput
 from app.services.exchange_registry import (
     currency_for_exchange,
     price_quote_currency_for_exchange,
 )
-from app.workflows.snapshot_builder import build_company_snapshot
+from app.workflows.snapshot_builder import build_company_snapshot, enrich_snapshot_with_free_real
 
 _RETRIEVED_AT = datetime(2026, 8, 1, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -270,3 +271,101 @@ async def test_llm_prompt_states_currency_not_confirmed_when_unsourced(monkeypat
     # Never silently let the model infer USD or GBP from the unrelated line.
     assert "Latest close: 1164.5 USD" not in captured["prompt"]
     assert "Latest close: 1164.5 GBP" not in captured["prompt"]
+
+
+# ---------------------------------------------------------------------------
+# 5. Composite-provider path (free_real / eodhd_free_real) — hotfix
+#
+# The Slice 6B fix above touched the raw provider classes and
+# build_company_snapshot(), but missed the SEPARATE composite-provider
+# enrichment path actually used in production discovery/analysis runs
+# (provider_name="free_real"/"eodhd_free_real"): FreeRealSnapshot.to_dict()
+# never threaded the real provider currency through at all, and
+# enrich_snapshot_with_free_real() independently hardcoded "currency": "USD"
+# regardless of exchange. Found live on staging: a fresh BRBY report (via
+# provider_name=free_real) still showed latest_close currency="USD" after
+# the Slice 6B PR merged.
+# ---------------------------------------------------------------------------
+
+
+def test_free_real_snapshot_to_dict_threads_through_real_currency():
+    prices = PriceHistoryData(
+        ticker="BRBY",
+        exchange="LSE",
+        currency=None,
+        price_points=[
+            PricePoint(date="2026-08-07", close=1164.5, open=1160.0, high=1170.0, low=1155.0, volume=100)
+        ],
+        meta=ProviderResponseMetadata(
+            provider_name="stooq",
+            source_tier=SourceTier.T5_api_aggregator,
+            retrieved_at=datetime.now(timezone.utc),
+            is_mock=False,
+            status=ProviderStatus.ok,
+        ),
+        data_quality=DataQuality.B_single_credible,
+    )
+    snap = FreeRealSnapshot(
+        ticker="BRBY",
+        legal_name="Burberry Group plc",
+        exchange="LSE",
+        price_history=prices,
+        price_provider="stooq",
+        price_source_tier="T5_api_aggregator",
+        is_mock=False,
+        provider_stack="free_real",
+    )
+    d = snap.to_dict()
+    assert d["price_history"]["currency"] is None
+
+
+def test_enrich_snapshot_with_free_real_resolves_lse_currency_to_gbx():
+    snapshot = {"company_identity": {"ticker": "BRBY", "exchange": "LSE"}, "missing_fields": []}
+    free_real_dict = {
+        "price_history": {
+            "num_points": 5,
+            "latest_close": 1164.5,
+            "earliest_date": "2026-08-01",
+            "latest_date": "2026-08-07",
+            "source_tier": "T5_api_aggregator",
+            "provider": "stooq",
+            "currency": None,
+        }
+    }
+    result = enrich_snapshot_with_free_real(snapshot, free_real_dict)
+    assert result["price_history_summary"]["currency"] == "GBX"
+    assert result["price_history_summary"]["currency"] != "USD"
+
+
+def test_enrich_snapshot_with_free_real_never_fabricates_usd_for_unknown_exchange():
+    snapshot = {"company_identity": {"ticker": "XYZ", "exchange": "UNKNOWN_VENUE"}, "missing_fields": []}
+    free_real_dict = {
+        "price_history": {
+            "num_points": 5,
+            "latest_close": 50.0,
+            "earliest_date": "2026-08-01",
+            "latest_date": "2026-08-07",
+            "source_tier": "T5_api_aggregator",
+            "provider": "stooq",
+            "currency": None,
+        }
+    }
+    result = enrich_snapshot_with_free_real(snapshot, free_real_dict)
+    assert result["price_history_summary"]["currency"] == "not_sourced"
+
+
+def test_enrich_snapshot_with_free_real_keeps_real_provider_currency():
+    snapshot = {"company_identity": {"ticker": "AAPL", "exchange": "NASDAQ"}, "missing_fields": []}
+    free_real_dict = {
+        "price_history": {
+            "num_points": 5,
+            "latest_close": 200.0,
+            "earliest_date": "2026-08-01",
+            "latest_date": "2026-08-07",
+            "source_tier": "T5_api_aggregator",
+            "provider": "stooq",
+            "currency": "USD",
+        }
+    }
+    result = enrich_snapshot_with_free_real(snapshot, free_real_dict)
+    assert result["price_history_summary"]["currency"] == "USD"
