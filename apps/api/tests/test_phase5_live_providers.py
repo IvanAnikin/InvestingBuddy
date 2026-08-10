@@ -157,6 +157,18 @@ def test_stooq_parse_csv_correct_row_count() -> None:
     assert len(result.price_points) == 5
 
 
+def test_stooq_parse_csv_currency_is_honestly_none_never_fabricated() -> None:
+    # Phase 32A Slice 6B (C3) — Stooq's CSV carries no currency field; the
+    # provider must never fabricate one (previously hardcoded "USD"
+    # unconditionally, silently defeating downstream exchange-aware
+    # currency resolution, e.g. LSE GBX). The caller resolves a real value
+    # via exchange_registry.price_quote_currency_for_exchange() or renders
+    # not_sourced.
+    csv_text = _read_fixture("stooq_aapl_us.csv")
+    result = _parse_stooq_csv(csv_text, "AAPL", "NASDAQ", "https://stooq.com/q/d/l/?s=aapl.us&i=d")
+    assert result.currency is None
+
+
 def test_stooq_parse_csv_first_date() -> None:
     csv_text = _read_fixture("stooq_aapl_us.csv")
     result = _parse_stooq_csv(csv_text, "AAPL", "NASDAQ", "https://stooq.com/q/d/l/?s=aapl.us&i=d")

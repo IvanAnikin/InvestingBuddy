@@ -998,6 +998,66 @@ honesty/safety, 8/8, 5/8, near-total 1/8→7/8 (mirroring the real incident),
 complete provider outage, flag-OFF byte-identical regression guards, and
 byte-for-byte wording preservation for the shared engine's two callers.
 
+## Full-Analysis Report Integrity Reconciliation (Phase 32A Slice 6B)
+
+> **Status: implemented on branch `phase-32a-slice6b-report-integrity` — PR open,
+> NOT yet merged / deployed / staging-validated.**
+
+Nine independently-root-caused report-integration fixes found during an E2E QA
+pass on a real staging report (Burberry Group plc, LSE):
+
+- **Company identity.** `run_candidate_analysis` now seeds/upgrades the
+  `Company` DB row with `DiscoveryCandidate.legal_name` (a real, sourced
+  identity value) in preference to the ticker-like `company_name`, so a
+  report's title/legal_name no longer collapses to the bare ticker. The
+  existing `is_placeholder_company_name` upgrade guard is unchanged — a
+  genuine existing name is never overwritten.
+- **Discovery lineage.** A `discovery_lineage` block (discovery_run_id,
+  candidate rank/score, thesis relevance/match, sourced from the run's own
+  `DiscoveryCandidate`/`DiscoveryRun` rows — never inferred from ticker/name
+  matching) is threaded into `Report.source_summary_json` and rendered as an
+  additive `discovery_lineage` report section, alongside (not replacing) the
+  legacy `discovery_rationale` section that stays honestly "not available"
+  for reports launched from a `DiscoveryCandidate` (a different model from
+  the legacy `ScreeningCandidate` that section was built for).
+- **Price-quote currency honesty.** `eodhd_provider`, `eodhd_price_only_provider`,
+  and `stooq_provider` no longer hardcode `currency="USD"` on every price
+  history — a genuinely unknown quote currency is `None`, rendered as
+  `not_sourced` rather than fabricated (CLAUDE.md rule 6). A new
+  `exchange_registry.price_quote_currency_for_exchange()` distinguishes the
+  price-quote currency (e.g. LSE trades in **GBX**/pence) from the issuer's
+  reporting currency (e.g. GBP) — the two are never conflated. The LLM
+  narrative prompt now states `"(currency not confirmed)"` instead of
+  silently omitting the field and letting the model infer/guess one.
+- **Schema-valid staleness.** `committee_chair_summary.quality_gate_status.schema_valid`
+  is now refreshed from the same authoritative post-final-assembly validation
+  result the existing RC-6 hotfix already uses for `workflow_status` and the
+  human-review checklist — closing a gap RC-6 didn't cover.
+- **Blocking/missing-count reconciliation.** `blocking_gaps_count`/
+  `non_blocking_gaps_count` now read the real `blocking_gaps`/`non_blocking_gaps`
+  lists (were reading a key the producer never wrote, silently defaulting to
+  0). The financial-agent-scoped `missing_count` is renamed
+  `missing_financial_fields_count` (distinct from the whole-report
+  `missing_information` union) and no longer falls back to a misleading `0`
+  when financial data is genuinely absent.
+- **Document-gap message clarity.** A bot-protection/challenge-page fetch
+  (e.g. an IR site with active bot protection) now produces a distinct,
+  honest gap message from a genuinely successful fetch that found zero
+  candidate links — both remain honest, non-fabricating gap states.
+- **OCR status text.** The two unconditional "no OCR in this phase" literals
+  (stale since Slice 5B.2 shipped real OCR) are replaced with text
+  conditioned on the real `primary_document_ocr_enabled` flag and each
+  artifact's actual `failure_code` from the existing closed
+  `ingestion_status` vocabulary.
+- **Source/citation scope labeling.** The pre-council deterministic-draft
+  `sources`/`citations` envelope now carries an explicit
+  `"scope": "deterministic_pre_council_draft"` marker next to the six
+  broader post-council reconciliation counts, removing an apparent (not
+  actual) contradiction.
+
+None of these fixes require an Alembic migration — all use existing JSONB
+columns or pure Python/display logic.
+
 ## Primary-Document Ingestion (Phase 32A Slice 5)
 
 > **Status: implemented on branch `phase-32a-slice5` — PR open, NOT yet merged /
