@@ -433,6 +433,20 @@ def enrich_snapshot_with_free_real(snapshot: dict, free_real_dict: dict) -> dict
     # ── Price history from free_real (T5) ────────────────────────────────
     fr_price = free_real_dict.get("price_history")
     if fr_price and fr_price.get("num_points", 0) > 0:
+        # Phase 32A Slice 6B hotfix (C3) — this composite-provider path
+        # (free_real / eodhd_free_real) is the one actually used in
+        # production discovery/analysis runs, and it built its OWN separate
+        # price_history_summary here, independently hardcoding "USD" even
+        # after the Slice 6B fix removed that literal from the raw provider
+        # classes (eodhd_provider / eodhd_price_only_provider /
+        # stooq_provider). Resolve honestly: the real provider currency
+        # (now threaded through FreeRealSnapshot.to_dict()), else the
+        # exchange registry's known quote currency (e.g. LSE -> GBX pence),
+        # else the explicit not_sourced marker — never a guessed code.
+        exchange = (result.get("company_identity") or {}).get("exchange")
+        resolved_currency = fr_price.get("currency") or price_quote_currency_for_exchange(
+            exchange
+        )
         result["price_history_summary"] = {
             "available": True,
             "data_points_count": fr_price["num_points"],
@@ -443,7 +457,7 @@ def enrich_snapshot_with_free_real(snapshot: dict, free_real_dict: dict) -> dict
             },
             "source_tier": fr_price.get("source_tier") or "T5_api_aggregator",
             "provider_name": fr_price.get("provider"),
-            "currency": "USD",
+            "currency": resolved_currency or "not_sourced",
             "price_data_quality": "B_single_credible",
         }
         # Remove price_history from missing_fields if it was marked missing
@@ -619,6 +633,18 @@ def enrich_snapshot_with_market_metrics(snapshot: dict, mm_dict: dict) -> dict:
     Derived market cap / EV / P/E are DERIVED ESTIMATES (T6_model_estimate) —
     they are never presented as official figures or a valuation conclusion.
     EBITDA, EV/EBITDA and beta are left missing (never fabricated).
+
+    KNOWN FOLLOW-UP (not yet fixed, found alongside the Phase 32A Slice 6B
+    currency hotfixes): ``mm_dict["currency"]`` (see
+    ``market_metrics_enrichment.py``'s ``MarketMetrics.currency``/
+    ``derive_market_metrics(reporting_currency=...)``) still defaults to
+    "USD" when the real reporting currency is unknown, and the field names
+    below (``market_cap_usd_m``/``enterprise_value_usd_m``) bake in a USD
+    assumption at the schema level. Fixing this properly needs real
+    currency labeling threaded through the derived-metrics pipeline (a
+    schema/contract change touching every downstream consumer), not a
+    one-line default swap — deliberately out of scope for the narrow C3
+    currency hotfix (see commit 85838e4).
     """
     result = dict(snapshot)
     fs = dict(result.get("fundamentals_summary") or {})
