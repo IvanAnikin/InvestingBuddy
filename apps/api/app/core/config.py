@@ -150,6 +150,56 @@ class Settings(BaseSettings):
     # higher than the company council's 45s, matching the larger total budget.
     llm_discovery_council_retry_critical_reserve_seconds: float = 60.0
 
+    # ── Deep Field Review (Phase 32A Slice 6D) ─────────────────────────────
+    # A THIRD, separate council. It is NOT the discovery council (which triages a
+    # candidate LIST before any analysis exists) and NOT the single-company
+    # council (which analyses ONE company). The Deep Field Review runs AFTER two
+    # or more candidates from the SAME discovery run already have a completed
+    # full analysis, and compares those ALREADY-PERSISTED reports to produce an
+    # internal RESEARCH-PRIORITY shortlist. It reads persisted data only — it
+    # never re-runs an analysis, never fetches new data, and never produces a
+    # rating, price target, fair value, or return projection.
+    #
+    # Gated by BOTH ``llm_council_enabled`` (the shared client gate) AND
+    # ``llm_field_review_council_enabled``. OFF by default: with either flag off
+    # no LLM call is made and no fake output is ever produced in production.
+    llm_field_review_council_enabled: bool = False
+    # Hard cap on companies included in ONE field-review pack (bounds prompt size
+    # + cost). Companies beyond the cap are excluded with an honest reason.
+    llm_field_review_council_max_companies: int = 12
+    # Field-review contract version. Bump when the agent set or output schema
+    # changes. Independent of the other two councils' versions.
+    llm_field_review_council_version: str = "v1"
+    # Minimum number of candidates with a usable completed full analysis before a
+    # COMPARATIVE review is meaningful. Below this the service returns an explicit
+    # ``insufficient_analyzed_candidates`` state — it never silently proceeds.
+    field_review_min_candidates: int = 2
+
+    # Bounded retry policy for the field-review council. Mirrors the Slice 4
+    # single-company knobs but with a larger wall-budget: the field review runs as
+    # an ASYNC background job (not inline in a request), so it is not bound by the
+    # ~230s Azure gateway timeout. It is still STRICTLY bounded — attempt caps, a
+    # total deadline, and capped jittered backoff. Never an unbounded loop.
+    llm_field_review_council_retry_enabled: bool = True
+    # Extra attempts (beyond the initial pass) for a transiently-failed agent.
+    llm_field_review_council_max_retries: int = 2
+    # Extra attempts for a CRITICAL agent (field_red_team + field_chair).
+    llm_field_review_council_critical_max_retries: int = 3
+    # Exponential-backoff base (seconds): base * 2**(attempt-1), capped below,
+    # plus jitter in [0, base).
+    llm_field_review_council_retry_base_backoff_seconds: float = 1.0
+    # Hard ceiling (seconds) on a single computed backoff wait.
+    llm_field_review_council_retry_max_backoff_seconds: float = 20.0
+    # Hard ceiling (seconds) on an honored provider ``retry-after`` value, so a
+    # hostile / large header can never blow the wall-time budget.
+    llm_field_review_council_retry_max_retry_after_seconds: float = 30.0
+    # HARD total wall-time cap (seconds) for the whole field-review council.
+    llm_field_review_council_total_budget_seconds: float = 600.0
+    # Wall-time (seconds) reserved out of the total budget for the two protected
+    # agents (field_red_team + field_chair) so earlier agents draining the budget
+    # cannot starve the adversarial check and the synthesis.
+    llm_field_review_council_critical_reserve_seconds: float = 120.0
+
     # ── Market Candidate Discovery (Phase 25) ──────────────────────────────
     # Internal-only, bounded market scan configuration. Discovery produces
     # internal research candidates ranked by an internal prioritization score.

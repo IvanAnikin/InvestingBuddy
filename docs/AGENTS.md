@@ -1126,3 +1126,142 @@ page / OCR-page caps, a %PDF magic-byte check, a decompression-bomb guard, a
 Pillow image-pixel cap, and an opt-in resolved-IP / DNS-rebinding guard (before &
 after redirects on the deep path). No JS / browser / paywall / auth bypass.
 Logging is counts / status only — never document bytes or extracted text.
+
+## Deep Field Review (Phase 32A Slice 6D)
+
+> **Status: implemented on branch `feature/phase-32a-slice6d-deep-field-review` —
+> PR open, NOT yet merged / deployed / staging-validated.** Ships **default-OFF**
+> behind `LLM_FIELD_REVIEW_COUNCIL_ENABLED` (and, like every council, the shared
+> `LLM_COUNCIL_ENABLED` gate). With either flag off no LLM call is made, no fake
+> output is produced in production, and migration `015`'s two tables stay empty.
+
+### Why a third council
+
+The codebase now has **three** distinct councils. They answer different questions
+and must never be conflated in code, API, UI, or docs:
+
+| Council | Scope | Runs | Input |
+|---|---|---|---|
+| **Discovery Council** (28B) | one discovery run's **candidate list** | **before** any full analysis exists | shallow candidate signals |
+| **Company Council** (28A) | **one** company | during that company's analysis | that company's evidence pack |
+| **Deep Field Review** (32A/6D) | **several** companies from ONE run | **after** 2+ of them already have a **completed** full analysis | those companies' **already-persisted reports** |
+
+The Deep Field Review fills the gap between them: a **comparative** review that
+reads completed deep analyses and produces an internal **research-priority
+shortlist** — which company deserves the next unit of research effort, given the
+evidence already gathered. It **never re-analyses, re-fetches, or recomputes**
+anything.
+
+### Input resolution (`field_review_service.resolve_field_candidates`)
+
+Candidates are read for **one** `discovery_run_id`, ordered by `rank` ascending
+with NULLs last, and each is classified:
+
+| Condition | Outcome |
+|---|---|
+| `analysis_report_id IS NULL` | excluded, `no_analysis_run` |
+| report row missing | excluded, `report_deleted` |
+| `final_report_version IS NULL` | excluded, `draft_only` |
+| schema validation not passed | excluded, `not_schema_valid` |
+| beyond `LLM_FIELD_REVIEW_COUNCIL_MAX_COMPANIES` | excluded, `over_company_cap` |
+| otherwise | **included**, assigned a stable citation id `F1`, `F2`, … |
+
+Three rules make this safe:
+
+1. **`analysis_report_id` is the ONLY linkage.** There is deliberately no
+   "latest report for this company_id" fallback — that would resurrect the
+   from-company scoping bug already fixed in Phase 32A and could silently
+   substitute a report generated for a *different* run of the same company.
+2. **Nothing is silently dropped.** Every excluded candidate is persisted with
+   its closed-vocabulary reason and surfaced as a citeable run fact.
+3. **Mock / unknown provenance is included WITH a caveat**, never excluded and
+   never presented as real.
+
+Below `FIELD_REVIEW_MIN_CANDIDATES` (default `2`) comparable candidates the
+service raises `InsufficientAnalyzedCandidatesError` (→ **422**, listing what
+exists and why each candidate is not comparable) and the council never runs.
+
+### The bounded comparative pack
+
+`field_review_evidence_pack.build_company_summary` builds one
+`FieldReviewCompanySummary` per included report from persisted data ONLY,
+reusing the existing `_extract_from_report_content` parser (no second,
+drifting markdown/JSON parser) plus `PrimaryDocumentSummary` from
+`primary_document_view_service`. It carries identity, discovery relevance (read
+verbatim off the candidate row), financial facts **with their own provenance**,
+primary-document coverage, evidence/source quality + tiers, business/moat,
+catalyst, and risk notes, the **qualitative** `valuation_readiness` label only
+(never a number), the company council's stored chair verdict and the stored
+`financial_analyst` / `source_quality_critic` / `red_team` summaries (read-only —
+no company-council agent is re-run), unresolved gaps, research completeness,
+council completion (`agents_completed` / `agents_failed` / `chair_fallback_used`),
+`data_provenance`, and honest machine-generated `caveats`. **Every list-valued
+sub-field is capped**; a field with no persisted source stays absent rather than
+being guessed.
+
+### The eight comparative agents
+
+`comparative_financial_quality` → `thematic_relevance_materiality` →
+`comparative_business_quality_moat` → `comparative_catalysts` →
+`comparative_risk` → `comparative_evidence_source_quality` → `field_red_team` →
+`field_chair` (last).
+
+Non-chair agents receive the full set of company summaries and return per-company
+notes (`company_ref` = `F#`, cited rationale, confidence). `field_red_team`
+additionally receives the prior agents' already-safety-scanned summaries and
+challenges overconfident or unsupported convergence. `field_chair` receives
+everything and returns the verdict.
+
+Every agent's output passes through `field_review_citation_checker`: a safety
+hit or a citation id outside the pack **quarantines** the agent
+(`status=failed`) — it is never sanitized-and-passed. The chair's verdict is
+additionally checked for ungrounded and duplicate placements (a company can
+appear in at most one bucket).
+
+### Field chair verdict — prioritization, not advice
+
+Three buckets **only**: `strongest_candidates`, `second_tier`,
+`blocked_insufficient_evidence`. They mean "research this next", "research this
+after the first group", and "cannot be compared yet — evidence too thin". Every
+entry cites `citation_ids`, and a company's own caveats are always merged into
+its entry so a mock-provenance company can never be presented as clean. Plus
+`field_uncertainties` and `field_quality`
+(`strong` | `adequate` | `thin` | `failed`).
+
+No rating or action vocabulary exists anywhere in the schema. The stored payload
+is re-scanned by the shared `safety_terms` scanner before persistence as a
+backstop; a hit forces `safety_valid=false` rather than silently stripping.
+
+### Bounded execution
+
+The review runs as an **async background job** (`start_field_review` →
+`process_field_review_task` → `process_field_review_by_id`), mirroring the
+discovery council's fresh-session worker pattern: idempotent start (no duplicate
+in-flight jobs; a completed review is returned unless `force=true`), a primitive
+id handed to `BackgroundTasks`, and a terminal DB row written on **every** path
+including an unhandled exception — a job can never stick in `running`.
+
+Retries are strictly bounded and reuse `client.py`'s transient-error
+classification (429 / 5xx / timeout only; a quarantine is permanent): an initial
+pass under a total wall-time deadline
+(`LLM_FIELD_REVIEW_COUNCIL_TOTAL_BUDGET_SECONDS`, default `600` — larger than the
+inline single-company council because this is a background job), then a
+priority-ordered retry pass with per-agent attempt caps, a capped honored
+provider `retry-after`, capped jittered exponential backoff, and a reserve
+(`..._CRITICAL_RESERVE_SECONDS`) protecting `field_red_team` + `field_chair`.
+`clock` / `sleeper` / `rng` are injectable so tests drive the budget
+deterministically. There is no unbounded loop anywhere.
+
+### Persistence + surface
+
+Results persist to `field_review_runs` + `field_review_candidate_summaries`
+(migration `015`). Admin API: `POST` / `GET
+/api/v1/discovery-runs/{run_id}/field-review`. Admin UI: a **"Deep Field
+Review"** panel directly below the Discovery Council panel on
+`/admin/discovery`, deliberately labelled and styled distinctly, with the run
+button disabled (with an explanatory tooltip) until at least two candidates have
+a completed full analysis.
+
+Logging is structured and safe (Phase 27.1D): ids, statuses, counts, durations,
+capped backoff — never prompts, completions, report bodies, pack text, or
+credentials.

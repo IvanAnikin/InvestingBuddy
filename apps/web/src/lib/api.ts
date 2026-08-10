@@ -29,6 +29,7 @@ import type {
   RunCandidateAnalysisResponse,
   EvidencePreviewRequest,
   EvidencePreviewResponse,
+  FieldReview,
   SourceHealthResponse,
   SourceRegistryResponse,
   SupportedThemesResponse,
@@ -382,6 +383,21 @@ export async function getDiscoveryCouncilReview(
   return apiFetch<DiscoveryCouncilReview>(
     `/api/v1/market-discovery/runs/${runId}/council-review`,
   );
+}
+
+// Phase 32A Slice 6D — Deep Field Review (manual admin-triggered, async).
+// A SEPARATE council from the discovery council above: it compares the
+// ALREADY-COMPLETED analyses of this run's candidates and produces an internal
+// research-priority shortlist. Never a recommendation.
+export async function runFieldReview(runId: string): Promise<FieldReview> {
+  return apiFetch<FieldReview>(
+    `/api/v1/discovery-runs/${runId}/field-review`,
+    { method: "POST" },
+  );
+}
+
+export async function getFieldReview(runId: string): Promise<FieldReview> {
+  return apiFetch<FieldReview>(`/api/v1/discovery-runs/${runId}/field-review`);
 }
 
 // ── Source Registry + Connector Framework (Phase 29A) ──────────────────────

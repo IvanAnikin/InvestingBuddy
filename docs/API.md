@@ -1695,6 +1695,153 @@ Response (200 for **GET .../council-review**):
 > - `BackgroundTasks` are process-local, not a durable queue (future work: Azure
 >   Queue / Celery / a durable worker). Safety guarantees unchanged.
 
+### Deep Field Review (Phase 32A Slice 6D)
+
+> **A THIRD, SEPARATE council.** It is neither the **Discovery Council** above
+> (which triages a run's *candidate list* **before** any full analysis exists) nor
+> the **single-company council** below (which analyses **one** company). The Deep
+> Field Review runs **after** two or more candidates from the **same discovery
+> run** already have a **completed full analysis**, and compares those
+> **already-persisted reports** against each other to produce an internal
+> **research-priority shortlist**. It never re-analyses, re-fetches, or recomputes
+> anything: every value it reads is already persisted on the candidate's report.
+>
+> Admin/internal only. The only per-company placements are the three internal
+> research buckets `strongest_candidates` / `second_tier` /
+> `blocked_insufficient_evidence` — never a recommendation, rating, price
+> objective, valuation conclusion, or return projection. `human_review_required`
+> is always `true` and `publication_ready` always `false`. Raw prompts,
+> completions, report bodies, and credentials are never returned or logged.
+
+| Method | Path | Status | Description |
+|---|---|---|---|
+| POST | `/api/v1/discovery-runs/{run_id}/field-review` | ✅ Live | **Async:** start a background Deep Field Review job; returns the current job status immediately (admin/internal only). Query: `force=true` to re-run a completed review |
+| GET | `/api/v1/discovery-runs/{run_id}/field-review` | ✅ Live | Poll the job status / return the completed comparative result (admin/internal only) |
+
+**POST /api/v1/discovery-runs/{run_id}/field-review** — Start the async job
+
+- **200** — the current job status (`FieldReviewResponse`, schema below):
+  `status=pending` with `message="Deep Field Review started."` when a job was
+  started; `status=running` (`"…already in progress."`) when one is already in
+  flight (no second job is started); the existing completed review when one
+  exists and `force` is not set. `force=true` re-runs even if a completed review
+  exists (ignored while a job is already running).
+- **409** — the review is disabled (`LLM_COUNCIL_ENABLED` or
+  `LLM_FIELD_REVIEW_COUNCIL_ENABLED` off, or no provider available) **and** no
+  completed review exists; no LLM call is made.
+- **422** — fewer than `FIELD_REVIEW_MIN_CANDIDATES` (default `2`) of the run's
+  candidates have a usable completed analysis. The body is an
+  `InsufficientCandidatesDetail`: `{message, included_candidate_count,
+  required_candidate_count, missing_candidates[]}` — it still lists **every**
+  candidate that could not be compared and **why**.
+- **404** — the discovery run is not found.
+
+**GET /api/v1/discovery-runs/{run_id}/field-review** — Poll / fetch the result
+
+- **200** — the current `FieldReviewResponse`: `status` is `pending`/`running`
+  while the job runs, `completed`/`completed_with_warnings` with
+  `review_available=true` when done, `insufficient_candidates` when the field was
+  too small to compare, `failed` with a safe `error` reason code, or `disabled`
+  when no job has ever run and the feature is off. A completed review stays
+  readable after the flags are turned off.
+- **404** — no job has ever run and the review is enabled, or the run is unknown.
+
+**`FieldReviewResponse`** (`apps/api/app/schemas/field_review.py`): lifecycle
+fields `discovery_run_id`, `field_review_run_id`, `status`, `review_available`,
+`message`, `started_at`, `completed_at`, `error`; council metadata `llm_used`,
+`council_version`, `provider`, `model`, `pack_version`, `item_count`,
+`company_count`, `included_candidate_count`, `missing_candidate_count`,
+`agents_completed` / `agents_failed` / `agents_skipped`; the result
+`field_quality` (`strong` | `adequate` | `thin` | `failed`), the three priority
+buckets `strongest_candidates` / `second_tier` / `blocked_insufficient_evidence`
+(each a list of `{company_ref, discovery_candidate_id, report_id, ticker,
+exchange, rationale, citation_ids, confidence, caveats}`), `field_uncertainties`,
+`evidence_gaps`, `next_research_tasks`, `agent_outputs`, `warnings`; the honest
+per-candidate roster `candidates[]` (`{citation_ref, discovery_candidate_id,
+report_id, ticker, exchange, included, exclusion_reason, data_provenance,
+priority_tier}`) covering **included and excluded** candidates alike; plus
+`safety_valid`, `human_review_required` (always `true`), `publication_ready`
+(always `false`), `created_at`, `disclaimer`.
+
+Response (200 for **GET .../field-review**):
+```json
+{
+  "discovery_run_id": "uuid",
+  "field_review_run_id": "uuid",
+  "status": "completed",
+  "review_available": true,
+  "llm_used": true,
+  "council_version": "v1",
+  "provider": "azure_openai",
+  "model": "gpt-4.1-mini",
+  "pack_version": "v1",
+  "item_count": 6,
+  "company_count": 3,
+  "included_candidate_count": 3,
+  "missing_candidate_count": 2,
+  "agents_completed": 8,
+  "agents_failed": 0,
+  "field_quality": "adequate",
+  "strongest_candidates": [
+    { "company_ref": "F1", "report_id": "uuid", "ticker": "AMAT", "exchange": "US", "rationale": "Cited F1, R1: deepest primary-document coverage of the compared analyses.", "citation_ids": ["F1", "R1"], "confidence": "medium", "caveats": [] }
+  ],
+  "second_tier": [
+    { "company_ref": "F2", "report_id": "uuid", "ticker": "UHR", "exchange": "SW", "rationale": "Cited F2: complete analysis but thinner sourced financials.", "citation_ids": ["F2"], "confidence": "low", "caveats": [] }
+  ],
+  "blocked_insufficient_evidence": [
+    { "company_ref": "F3", "report_id": "uuid", "ticker": "BRBY", "exchange": "LSE", "rationale": "Cited F3: no extracted primary document; company council partial.", "citation_ids": ["F3"], "confidence": "low", "caveats": ["data_provenance=unknown"] }
+  ],
+  "field_uncertainties": ["Evidence depth differs materially across the field."],
+  "candidates": [
+    { "citation_ref": "F1", "ticker": "AMAT", "exchange": "US", "included": true, "exclusion_reason": null, "data_provenance": "real", "priority_tier": "strongest_candidates" },
+    { "citation_ref": "X1", "ticker": "KER", "exchange": "PA", "included": false, "exclusion_reason": "no_analysis_run", "data_provenance": null, "priority_tier": null }
+  ],
+  "warnings": [],
+  "safety_valid": true,
+  "human_review_required": true,
+  "publication_ready": false,
+  "created_at": "2026-08-10T00:00:00Z",
+  "disclaimer": "Internal, citation-bound COMPARATIVE research-priority aid ..."
+}
+```
+
+> **Phase 32A Slice 6D constraints:**
+> - **Input linkage is `discovery_candidates.analysis_report_id` ONLY.** There is
+>   deliberately **no** "latest report for this company_id" fallback: substituting
+>   a report generated for a *different* run of the same company is the exact bug
+>   the Phase 32A from-company hotfix fixed, and it would silently corrupt a
+>   comparison. A field review for run A therefore can never see run B's data.
+> - **Nothing is ever silently dropped.** Every candidate considered gets a
+>   persisted row — included **or** excluded with a closed-vocabulary
+>   `exclusion_reason` (`no_analysis_run` | `report_deleted` | `draft_only` |
+>   `not_schema_valid` | `over_company_cap`). Excluded candidates also become
+>   citeable run facts in the pack.
+> - **Mock / unknown provenance is included WITH a caveat, never excluded** — and
+>   the company's own caveats are always merged into its chair entry, so a
+>   non-real company can never be presented as clean.
+> - Only the qualitative `valuation_readiness` **label** crosses over from a
+>   source report; no valuation number, price objective, or return figure ever
+>   does.
+> - Bounded by `LLM_FIELD_REVIEW_COUNCIL_MAX_COMPANIES` (default `12`); every
+>   list-valued sub-field of a company summary is capped.
+> - Eight comparative agents: `comparative_financial_quality`,
+>   `thematic_relevance_materiality`, `comparative_business_quality_moat`,
+>   `comparative_catalysts`, `comparative_risk`,
+>   `comparative_evidence_source_quality`, `field_red_team`, `field_chair` (last).
+>   An agent that trips the safety scanner or cites an id outside the pack is
+>   **quarantined** (`status=failed`), never sanitized-and-passed.
+> - Retries are **bounded**: attempt caps, a total wall-time deadline
+>   (`LLM_FIELD_REVIEW_COUNCIL_TOTAL_BUDGET_SECONDS`, default `600`, larger than
+>   the inline single-company council because this runs as a background job), a
+>   reserve protecting `field_red_team` + `field_chair`, capped honored
+>   `retry-after`, and capped jittered backoff. Only transient errors (429 / 5xx /
+>   timeout) are retried; a quarantine is permanent.
+> - Persisted in **`field_review_runs`** + **`field_review_candidate_summaries`**
+>   (migration `015`). Manual admin-triggered only; ships **default-OFF**.
+> - No BUY/SELL/HOLD/WATCH, no price objective / fair value / intrinsic value /
+>   upside-downside / recommendation; `human_review_required=true`,
+>   `publication_ready=false`, no publish route, no auth change.
+
 > **Phase 28A — Single-Company LLM Analysis Council.** When
 > `LLM_COUNCIL_ENABLED=true` **and** a usable provider resolves
 > (`LLM_PROVIDER_COUNCIL` = `fake` | `azure_openai` | `openai`), every

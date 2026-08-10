@@ -8,6 +8,7 @@ import {
   getDiscoveryCandidate,
   getDiscoveryCouncilReview,
   getDiscoveryRun,
+  getFieldReview,
   listDiscoveryCandidates,
   listDiscoveryRuns,
   listSupportedFilters,
@@ -15,6 +16,7 @@ import {
   parseThesis,
   runCandidateAnalysis,
   runDiscoveryCouncilReview,
+  runFieldReview,
 } from "@/lib/api";
 import type {
   CountryFilterOption,
@@ -23,6 +25,8 @@ import type {
   DiscoveryCouncilReview,
   DiscoveryRun,
   DiscoveryRunCreate,
+  FieldPriorityEntry,
+  FieldReview,
   FilterOption,
   ParseThesisResponse,
   ReportLinkSummary,
@@ -1140,6 +1144,460 @@ function DiscoveryCouncilPanel({
 }
 
 // ---------------------------------------------------------------------------
+// Deep Field Review (Phase 32A Slice 6D)
+//
+// A SEPARATE council from the Discovery Council above. The Discovery Council
+// triages this run's CANDIDATE LIST *before* any full analysis exists. The Deep
+// Field Review runs *after* 2+ of those candidates already HAVE a completed full
+// analysis, and compares those completed analyses against each other. The two
+// panels are labelled and styled distinctly on purpose.
+//
+// Internal research-PRIORITY buckets only — never a recommendation, rating,
+// price target, fair value, or return projection.
+// ---------------------------------------------------------------------------
+
+// The minimum comparable companies the backend requires (FIELD_REVIEW_MIN_
+// CANDIDATES). Client-side preview only — the server always enforces the limit.
+const FIELD_REVIEW_MIN_COMPANIES = 2;
+
+const FIELD_TIER_LABELS: Record<string, string> = {
+  strongest_candidates: "research first",
+  second_tier: "research after",
+  blocked_insufficient_evidence: "evidence too thin",
+};
+
+function fieldTierBadgeCls(tier: string): string {
+  switch (tier) {
+    case "strongest_candidates":
+      return "border border-emerald-400/30 bg-emerald-500/10 text-emerald-300";
+    case "second_tier":
+      return "border border-sky-400/30 bg-sky-500/10 text-sky-300";
+    case "blocked_insufficient_evidence":
+      return "border border-amber-400/30 bg-amber-500/10 text-amber-200";
+    default:
+      return "border border-white/15 bg-white/5 text-slate-300";
+  }
+}
+
+// Why a candidate could not be compared. Kept verbose on purpose: an excluded
+// candidate is never silently dropped from the admin's view.
+const FIELD_EXCLUSION_LABELS: Record<string, string> = {
+  no_analysis_run: "no full analysis has been run for it yet",
+  report_deleted: "its analysis report no longer exists",
+  draft_only: "its analysis is still a draft (no final report)",
+  not_schema_valid: "its final report did not pass schema validation",
+  over_company_cap: "beyond this review's company cap",
+};
+
+function FieldTierBucket({
+  title,
+  tier,
+  entries,
+  testid,
+}: {
+  title: string;
+  tier: string;
+  entries: FieldPriorityEntry[] | undefined;
+  testid: string;
+}) {
+  if (!entries || entries.length === 0) return null;
+  return (
+    <div data-testid={testid}>
+      <p className="text-xs font-semibold text-slate-200">
+        {title} ({entries.length})
+      </p>
+      <ul className="mt-1 space-y-1">
+        {entries.map((e, i) => (
+          <li
+            key={`${e.company_ref ?? e.ticker ?? "?"}-${i}`}
+            className="text-xs text-slate-400"
+          >
+            <span
+              className={`mr-2 rounded px-1.5 py-0.5 text-[10px] font-medium ${fieldTierBadgeCls(
+                tier,
+              )}`}
+            >
+              {FIELD_TIER_LABELS[tier] ?? tier}
+            </span>
+            <span className="font-semibold text-slate-200">
+              {e.ticker ?? e.company_ref ?? "—"}
+            </span>
+            {e.exchange ? (
+              <span className="text-slate-500">.{e.exchange}</span>
+            ) : null}
+            {e.rationale ? ` — ${e.rationale}` : ""}
+            {e.caveats && e.caveats.length > 0 ? (
+              <span className="ml-1 text-amber-300/80">
+                [{e.caveats.join("; ")}]
+              </span>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function FieldReviewBody({ review }: { review: FieldReview }) {
+  const candidates = review.candidates ?? [];
+  const missing = candidates.filter((c) => !c.included);
+  const included = candidates.filter((c) => c.included);
+  const caveated = included.filter(
+    (c) => c.data_provenance && c.data_provenance !== "real",
+  );
+  const agentSummaries = Object.entries(review.agent_outputs ?? {})
+    .map(([name, out]) => {
+      const summary = (out as { summary?: string } | null)?.summary;
+      return summary ? { name, summary } : null;
+    })
+    .filter((x): x is { name: string; summary: string } => x !== null);
+
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
+        <CouncilStat label="LLM used" value={review.llm_used ? "yes" : "no"} />
+        <CouncilStat label="Provider" value={review.provider ?? "—"} />
+        <CouncilStat label="Model" value={review.model ?? "—"} />
+        <CouncilStat label="Council" value={review.council_version ?? "—"} />
+        <CouncilStat
+          label="Field quality"
+          value={review.field_quality ?? "—"}
+          testid="field-review-quality"
+        />
+        <CouncilStat
+          label="Compared"
+          value={String(review.included_candidate_count ?? 0)}
+          testid="field-review-included-count"
+        />
+        <CouncilStat
+          label="Not comparable"
+          value={String(review.missing_candidate_count ?? 0)}
+          testid="field-review-missing-count"
+        />
+        <CouncilStat
+          label="Agents ok/fail"
+          value={`${review.agents_completed ?? 0}/${review.agents_failed ?? 0}`}
+          testid="field-review-agents"
+        />
+        <CouncilStat
+          label="Safety"
+          value={review.safety_valid === false ? "flagged" : "valid"}
+        />
+        <CouncilStat
+          label="Human review"
+          value={review.human_review_required === false ? "—" : "required"}
+        />
+        <CouncilStat
+          label="Publishable"
+          value={review.publication_ready ? "yes" : "no"}
+        />
+      </div>
+
+      {caveated.length > 0 && (
+        <p
+          data-testid="field-review-evidence-limits"
+          className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200"
+        >
+          Evidence limitations:{" "}
+          {caveated
+            .map(
+              (c) =>
+                `${c.ticker ?? c.citation_ref} data_provenance=${c.data_provenance}`,
+            )
+            .join(", ")}
+          . These companies are still compared, but their figures are not
+          authoritative.
+        </p>
+      )}
+
+      <FieldTierBucket
+        title="Strongest candidates (research first)"
+        tier="strongest_candidates"
+        entries={review.strongest_candidates}
+        testid="field-review-strongest"
+      />
+      <FieldTierBucket
+        title="Second tier"
+        tier="second_tier"
+        entries={review.second_tier}
+        testid="field-review-second-tier"
+      />
+      <FieldTierBucket
+        title="Blocked — insufficient evidence"
+        tier="blocked_insufficient_evidence"
+        entries={review.blocked_insufficient_evidence}
+        testid="field-review-blocked"
+      />
+
+      {missing.length > 0 && (
+        <div data-testid="field-review-missing">
+          <p className="text-xs font-semibold text-slate-200">
+            Not comparable ({missing.length})
+          </p>
+          <ul className="mt-1 list-disc space-y-0.5 pl-5">
+            {missing.map((c) => (
+              <li key={c.citation_ref} className="text-xs text-slate-400">
+                <span className="font-semibold text-slate-200">
+                  {c.ticker ?? "—"}
+                </span>
+                {c.exchange ? (
+                  <span className="text-slate-500">.{c.exchange}</span>
+                ) : null}{" "}
+                —{" "}
+                {c.exclusion_reason
+                  ? (FIELD_EXCLUSION_LABELS[c.exclusion_reason] ??
+                    c.exclusion_reason)
+                  : "reason not recorded"}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      <CouncilStringList
+        title="Field uncertainties"
+        items={review.field_uncertainties}
+        testid="field-review-uncertainties"
+      />
+      <CouncilStringList
+        title="Evidence gaps"
+        items={review.evidence_gaps}
+        testid="field-review-evidence-gaps"
+      />
+      <CouncilStringList
+        title="Next research tasks"
+        items={review.next_research_tasks}
+        testid="field-review-next-tasks"
+      />
+      <CouncilStringList
+        title="Review notes"
+        items={review.warnings}
+        testid="field-review-warnings"
+      />
+
+      {agentSummaries.length > 0 && (
+        <details data-testid="field-review-agent-summaries">
+          <summary className="cursor-pointer text-xs font-semibold text-slate-200">
+            Agent summaries ({agentSummaries.length})
+          </summary>
+          <ul className="mt-1 space-y-1">
+            {agentSummaries.map(({ name, summary }) => (
+              <li key={name} className="text-xs text-slate-400">
+                <span className="font-semibold text-slate-300">{name}:</span>{" "}
+                {summary}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+
+      <p className="text-[11px] text-slate-500">{review.disclaimer}</p>
+    </div>
+  );
+}
+
+function FieldReviewPanel({
+  review,
+  loading,
+  error,
+  disabled,
+  candidateCount,
+  analyzedCandidateCount,
+  onRun,
+}: {
+  review: FieldReview | null;
+  loading: boolean;
+  error: string | null;
+  disabled: boolean;
+  candidateCount: number;
+  analyzedCandidateCount: number;
+  onRun: () => void;
+}) {
+  const status = review?.status ?? null;
+  const inFlight = status === "pending" || status === "running";
+  const failed = status === "failed";
+  const insufficient = status === "insufficient_candidates";
+  const hasReview = review?.review_available ?? false;
+  const busy = loading || inFlight;
+
+  // How many companies would actually be compared. Prefer the server's own
+  // count once a review exists; before that, fall back to how many candidates
+  // have a linked analysis report.
+  const includedCandidateCount =
+    review?.included_candidate_count ?? analyzedCandidateCount;
+  const tooFewCompanies = includedCandidateCount < FIELD_REVIEW_MIN_COMPANIES;
+
+  const statusLabel = disabled
+    ? "Disabled"
+    : inFlight
+      ? "Running"
+      : insufficient
+        ? "Not enough analyses"
+        : failed && !hasReview
+          ? "Failed"
+          : hasReview
+            ? "Completed"
+            : "Not run";
+  const statusColor: PillColor = disabled
+    ? "gray"
+    : inFlight
+      ? "blue"
+      : insufficient
+        ? "amber"
+        : failed && !hasReview
+          ? "red"
+          : hasReview
+            ? "green"
+            : "gray";
+
+  const runDisabledReason = disabled
+    ? "Deep Field Review is disabled on this environment."
+    : tooFewCompanies
+      ? `Needs at least ${FIELD_REVIEW_MIN_COMPANIES} candidates with a COMPLETED full analysis to compare (currently ${includedCandidateCount} of ${candidateCount}). Run "Full Analysis" on more candidates first.`
+      : undefined;
+
+  return (
+    <GlassCard className="overflow-hidden" testId="field-review-panel">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/10 px-5 py-3">
+        <div>
+          <p className="text-sm font-semibold text-slate-200">
+            Deep Field Review
+          </p>
+          <p className="text-xs text-slate-500">
+            A <span className="font-semibold text-slate-400">separate</span>{" "}
+            council from the Discovery Council Review above. It compares the
+            companies in this run that{" "}
+            <span className="font-semibold text-slate-400">
+              already have a completed full analysis
+            </span>{" "}
+            — it does not re-analyse or re-fetch anything — and produces an
+            internal research-priority shortlist. Not investment advice, no
+            rating, no valuation. Human review required.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <StatusPill
+            label={`Deep Field Review: ${statusLabel}`}
+            color={statusColor}
+            testId="field-review-status-pill"
+          />
+          <StatusPill label="Internal only" color="red" />
+          <button
+            type="button"
+            onClick={onRun}
+            disabled={busy || disabled || tooFewCompanies}
+            title={runDisabledReason}
+            data-testid="field-review-run-button"
+            className="rounded-lg bg-gradient-to-r from-teal-500 to-cyan-600 px-4 py-2 text-sm font-semibold text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {busy
+              ? "Running field review…"
+              : hasReview
+                ? "Re-run Deep Field Review"
+                : "Run Deep Field Review"}
+          </button>
+        </div>
+      </div>
+      <div className="space-y-3 px-5 py-4">
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+          <CouncilStat
+            label="Candidates in run"
+            value={String(candidateCount)}
+            testid="field-review-run-candidates"
+          />
+          <CouncilStat
+            label="With full analysis"
+            value={String(analyzedCandidateCount)}
+            testid="field-review-analyzed-candidates"
+          />
+          <CouncilStat
+            label="Included in review"
+            value={String(review?.included_candidate_count ?? 0)}
+          />
+          <CouncilStat
+            label="Not comparable"
+            value={String(review?.missing_candidate_count ?? 0)}
+          />
+        </div>
+
+        {disabled && (
+          <p
+            data-testid="field-review-disabled"
+            className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200"
+          >
+            {error || "Deep Field Review is disabled."}
+          </p>
+        )}
+        {!disabled && tooFewCompanies && !hasReview && (
+          <p
+            data-testid="field-review-too-few"
+            className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs text-slate-400"
+          >
+            {runDisabledReason}
+          </p>
+        )}
+        {!disabled && error && (
+          <p
+            data-testid="field-review-error"
+            className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-200"
+          >
+            {error}
+          </p>
+        )}
+        {!disabled && inFlight && (
+          <p
+            data-testid="field-review-progress"
+            className="rounded-lg border border-teal-500/30 bg-teal-500/10 px-3 py-2 text-xs text-teal-200"
+          >
+            Deep Field Review in progress ({status})
+            {(review?.agents_completed ?? 0) + (review?.agents_failed ?? 0) > 0
+              ? ` — agents ${review?.agents_completed ?? 0} ok / ${review?.agents_failed ?? 0} failed`
+              : "…"}
+          </p>
+        )}
+        {!disabled && insufficient && (
+          <p
+            data-testid="field-review-insufficient"
+            className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200"
+          >
+            Not enough candidates with a completed full analysis to compare. Run
+            &quot;Full Analysis&quot; on more candidates, then re-run this
+            review.
+          </p>
+        )}
+        {!disabled && failed && !hasReview && (
+          <p
+            data-testid="field-review-failed"
+            className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-200"
+          >
+            Deep Field Review failed
+            {review?.error ? ` (${review.error})` : ""}. You can re-run it.
+          </p>
+        )}
+        {!disabled && status === "completed_with_warnings" && (
+          <p
+            data-testid="field-review-completed-warnings"
+            className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200"
+          >
+            Completed with warnings — some agents failed or output was flagged.
+            Review the notes below.
+          </p>
+        )}
+        {!review && !disabled && !error && !inFlight && !tooFewCompanies && (
+          <p data-testid="field-review-empty" className="text-xs text-slate-500">
+            No Deep Field Review yet. Run it to compare the completed analyses in
+            this run and produce an internal research-priority shortlist.
+          </p>
+        )}
+        {(hasReview || insufficient) && review && (
+          <FieldReviewBody review={review} />
+        )}
+      </div>
+    </GlassCard>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main page
 // ---------------------------------------------------------------------------
 
@@ -1204,6 +1662,13 @@ export default function DiscoveryPage() {
   const [councilLoading, setCouncilLoading] = useState(false);
   const [councilError, setCouncilError] = useState<string | null>(null);
   const [councilDisabled, setCouncilDisabled] = useState(false);
+
+  // Phase 32A Slice 6D — Deep Field Review. A SEPARATE, later-stage council
+  // over the candidates that already have a completed full analysis.
+  const [fieldReview, setFieldReview] = useState<FieldReview | null>(null);
+  const [fieldReviewLoading, setFieldReviewLoading] = useState(false);
+  const [fieldReviewError, setFieldReviewError] = useState<string | null>(null);
+  const [fieldReviewDisabled, setFieldReviewDisabled] = useState(false);
 
   const parsedTickers = manualTickers
     .split(",")
@@ -1386,6 +1851,69 @@ export default function DiscoveryPage() {
     };
   }, [selectedRunId, councilReview?.status]);
 
+  // Phase 32A Slice 6D — load the current Deep Field Review job state for the
+  // selected run. A 404 (no review has run and the feature is enabled) is not an
+  // error; a `disabled` status flips the panel into its disabled state; a
+  // pending/running status hands off to the poll effect below.
+  useEffect(() => {
+    if (!selectedRunId) return;
+    let cancelled = false;
+    async function fetchFieldReview(runId: string) {
+      if (!cancelled) {
+        setFieldReview(null);
+        setFieldReviewError(null);
+        setFieldReviewDisabled(false);
+      }
+      try {
+        const review = await getFieldReview(runId);
+        if (cancelled) return;
+        if (review.status === "disabled") {
+          setFieldReviewDisabled(true);
+        } else {
+          setFieldReview(review);
+        }
+      } catch {
+        // No review yet (404) or transient error — leave the panel empty.
+      }
+    }
+    void fetchFieldReview(selectedRunId);
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedRunId]);
+
+  // Poll the async Deep Field Review job while it is in flight. Polling stops
+  // once the status is terminal. Mirrors the discovery-council poll above.
+  useEffect(() => {
+    if (!selectedRunId) return;
+    const status = fieldReview?.status;
+    if (status !== "pending" && status !== "running") return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    function schedule(runId: string) {
+      timer = setTimeout(async () => {
+        try {
+          const next = await getFieldReview(runId);
+          if (cancelled) return;
+          setFieldReview(next);
+          if (next.status === "pending" || next.status === "running") {
+            schedule(runId);
+          }
+        } catch {
+          // Transient error — keep polling; the job is still running server-side.
+          if (!cancelled) schedule(runId);
+        }
+      }, POLL_INTERVAL_MS);
+    }
+
+    schedule(selectedRunId);
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [selectedRunId, fieldReview?.status]);
+
   // Poll the selected run's status while it is processing in the background.
   // Each poll refreshes the live run detail and triggers a candidate refetch so
   // the queue fills as tickers finish. Polling stops on a terminal status.
@@ -1539,6 +2067,42 @@ export default function DiscoveryPage() {
       setCouncilLoading(false);
     }
   }
+
+  // Phase 32A Slice 6D — trigger the async Deep Field Review. Returns
+  // immediately with a pending/running status (or an existing completed review);
+  // the poll effect drives it to a terminal state. A 409 (disabled) flips the
+  // panel into its disabled state; a 422 (too few completed analyses) is
+  // surfaced verbatim. No result is ever fabricated on the client.
+  async function handleRunFieldReview() {
+    if (!selectedRunId) return;
+    setFieldReviewLoading(true);
+    setFieldReviewError(null);
+    setFieldReviewDisabled(false);
+    try {
+      const resp = await runFieldReview(selectedRunId);
+      if (resp.status === "disabled") {
+        setFieldReviewDisabled(true);
+        setFieldReview(null);
+      } else {
+        setFieldReview(resp);
+      }
+    } catch (err) {
+      const msg =
+        err instanceof Error ? err.message : "Deep Field Review failed.";
+      setFieldReviewError(msg);
+      if (/disabled|not available/i.test(msg)) setFieldReviewDisabled(true);
+    } finally {
+      setFieldReviewLoading(false);
+    }
+  }
+
+  // How many of this run's candidates already have a completed full analysis —
+  // the population the Deep Field Review can compare. Derived from the linked
+  // analysis report id, which is exactly what the backend keys on.
+  const analyzedCandidateCount = useMemo(
+    () => candidates.filter((c) => c.analysis_report_id != null).length,
+    [candidates],
+  );
 
   // Map a candidate (ticker+exchange) to the council's internal action, so the
   // candidate table can show it inline. Keyed precisely, with a ticker-only
@@ -2155,6 +2719,22 @@ export default function DiscoveryPage() {
           error={councilError}
           disabled={councilDisabled}
           onRun={handleRunCouncilReview}
+        />
+      )}
+
+      {/* Deep Field Review (Phase 32A Slice 6D — comparative review of the
+          candidates that ALREADY have a completed full analysis). Deliberately
+          rendered directly below, and clearly distinguished from, the Discovery
+          Council Review above: the two councils answer different questions. */}
+      {selectedRun && (
+        <FieldReviewPanel
+          review={fieldReview}
+          loading={fieldReviewLoading}
+          error={fieldReviewError}
+          disabled={fieldReviewDisabled}
+          candidateCount={candidates.length}
+          analyzedCandidateCount={analyzedCandidateCount}
+          onRun={handleRunFieldReview}
         />
       )}
 
