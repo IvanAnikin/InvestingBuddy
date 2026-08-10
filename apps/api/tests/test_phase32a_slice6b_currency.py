@@ -25,9 +25,11 @@ All tests run OFFLINE — no network, no real Azure credentials.
 
 from __future__ import annotations
 
+import sys
+import types
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -216,6 +218,15 @@ def _azure_client(monkeypatch) -> AzureOpenAIResearchLLMClient:
     monkeypatch.setattr(settings, "azure_openai_api_key", "fake-key")
     monkeypatch.setattr(settings, "azure_openai_deployment_name", "fake-deployment")
     monkeypatch.setattr(settings, "azure_openai_api_version", "2025-01-01-preview")
+    # ``langchain-openai`` is deliberately NOT a CI dependency (pyproject.toml's
+    # ``llm`` extra — "Not required for CI, default LLM_PROVIDER=mock uses no
+    # Azure credentials"). AzureOpenAIResearchLLMClient.__init__ imports it
+    # unconditionally, so stub the module rather than requiring the real
+    # package: this test only exercises prompt-string assembly, never a real
+    # LLM call (``_structured_llm`` is replaced by the caller right after).
+    fake_module = types.ModuleType("langchain_openai")
+    fake_module.AzureChatOpenAI = MagicMock()  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "langchain_openai", fake_module)
     return AzureOpenAIResearchLLMClient()
 
 
