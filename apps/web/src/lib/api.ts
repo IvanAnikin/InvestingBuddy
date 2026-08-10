@@ -30,6 +30,7 @@ import type {
   EvidencePreviewRequest,
   EvidencePreviewResponse,
   FieldReview,
+  FieldReviewEligibility,
   SourceHealthResponse,
   SourceRegistryResponse,
   SupportedThemesResponse,
@@ -65,6 +66,35 @@ function serverAuthHeaders(): Record<string, string> {
   return {};
 }
 
+// Turn an error body into a message a human can act on.
+//
+// FastAPI's `detail` is not always a string: a structured 422 (e.g. the Deep
+// Field Review's "not enough completed analyses" body) sends an OBJECT, and a
+// request-validation error sends an ARRAY. `String(detail)` on those yields
+// "[object Object]", so the admin used to see that — or a bare "HTTP 422" —
+// instead of the reason the backend actually gave. Falls back to the status
+// code only when there is genuinely nothing better.
+function errorMessage(status: number, body: unknown): string {
+  const detail = (body as { detail?: unknown } | null)?.detail;
+
+  if (typeof detail === "string" && detail.trim()) return detail.trim();
+
+  if (Array.isArray(detail)) {
+    const parts = detail
+      .map((entry) => (entry as { msg?: unknown })?.msg)
+      .filter((msg): msg is string => typeof msg === "string" && !!msg.trim());
+    if (parts.length) return parts.join("; ");
+  } else if (detail && typeof detail === "object") {
+    const message = (detail as { message?: unknown }).message;
+    if (typeof message === "string" && message.trim()) return message.trim();
+  }
+
+  const topLevel = (body as { message?: unknown } | null)?.message;
+  if (typeof topLevel === "string" && topLevel.trim()) return topLevel.trim();
+
+  return `HTTP ${status}`;
+}
+
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(buildUrl(path), {
     ...init,
@@ -78,10 +108,9 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   if (!res.ok) {
     let detail = `HTTP ${res.status}`;
     try {
-      const body = await res.json();
-      if (body?.detail) detail = String(body.detail);
+      detail = errorMessage(res.status, await res.json());
     } catch {
-      // ignore parse error
+      // Non-JSON error body — keep the status-code fallback.
     }
     throw new Error(detail);
   }
@@ -398,6 +427,19 @@ export async function runFieldReview(runId: string): Promise<FieldReview> {
 
 export async function getFieldReview(runId: string): Promise<FieldReview> {
   return apiFetch<FieldReview>(`/api/v1/discovery-runs/${runId}/field-review`);
+}
+
+// The SINGLE authoritative answer to "which candidates could be compared now?".
+// The client must never re-derive this from the candidate list: a non-NULL
+// analysis_report_id is not enough (the linked report must also exist, be FINAL
+// and be schema-valid), and guessing is what made the admin stats disagree with
+// the backend.
+export async function getFieldReviewEligibility(
+  runId: string,
+): Promise<FieldReviewEligibility> {
+  return apiFetch<FieldReviewEligibility>(
+    `/api/v1/discovery-runs/${runId}/field-review-eligibility`,
+  );
 }
 
 // ── Source Registry + Connector Framework (Phase 29A) ──────────────────────

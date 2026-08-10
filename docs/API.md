@@ -1717,6 +1717,7 @@ Response (200 for **GET .../council-review**):
 |---|---|---|---|
 | POST | `/api/v1/discovery-runs/{run_id}/field-review` | ✅ Live | **Async:** start a background Deep Field Review job; returns the current job status immediately (admin/internal only). Query: `force=true` to re-run a completed review |
 | GET | `/api/v1/discovery-runs/{run_id}/field-review` | ✅ Live | Poll the job status / return the completed comparative result (admin/internal only) |
+| GET | `/api/v1/discovery-runs/{run_id}/field-review-eligibility` | ✅ Live | Which of the run's candidates a review could compare **now**, from the review's own resolver (admin/internal only) |
 
 **POST /api/v1/discovery-runs/{run_id}/field-review** — Start the async job
 
@@ -1745,6 +1746,35 @@ Response (200 for **GET .../council-review**):
   when no job has ever run and the feature is off. A completed review stays
   readable after the flags are turned off.
 - **404** — no job has ever run and the review is enabled, or the run is unknown.
+
+**GET /api/v1/discovery-runs/{run_id}/field-review-eligibility** — Can a review run?
+
+Answers "which candidates would a Deep Field Review compare **right now**?" by
+calling the review's **own** candidate resolver (`resolve_field_candidates`) —
+the eligibility rules exist in exactly one place, so the admin UI can never
+advertise a company the backend would then refuse with a 422. Read-only: it
+starts nothing and never calls an LLM.
+
+- **200** — a `FieldReviewEligibilityResponse`:
+  - `candidate_count` — every candidate in the run.
+  - `with_full_analysis_count` — candidates whose linked analysis report
+    **exists**, is a **FINAL** report, and is **schema-valid**. A non-`NULL`
+    `analysis_report_id` alone is *not* enough. Counted regardless of the
+    per-review company cap.
+  - `included_count` — the subset also within `LLM_FIELD_REVIEW_COUNCIL_MAX_COMPANIES`;
+    what a review started now would actually compare.
+  - `not_comparable_count` — candidates that **were** analysed but cannot be
+    compared (`report_deleted` / `draft_only` / `not_schema_valid` /
+    `over_company_cap`). Never-analysed candidates are **not** counted here.
+  - `not_yet_analyzed_count` — candidates with no analysis at all.
+  - `required_candidate_count` (`FIELD_REVIEW_MIN_CANDIDATES`, floor `2`) and
+    `max_companies`.
+  - `candidates[]` — `{candidate_id, ticker, exchange, company_name, tier,
+    has_analysis, has_full_analysis, included, exclusion_reason}`. `tier` is the
+    internal candidate-score grade (a prioritization signal only).
+- **404** — the discovery run is not found.
+
+Counts and identifiers only: no report content, no rating, no valuation.
 
 **`FieldReviewResponse`** (`apps/api/app/schemas/field_review.py`): lifecycle
 fields `discovery_run_id`, `field_review_run_id`, `status`, `review_available`,

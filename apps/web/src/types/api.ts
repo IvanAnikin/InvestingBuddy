@@ -948,6 +948,44 @@ export interface FieldReview {
   disclaimer: string;
 }
 
+// Why a candidate cannot be compared by a Deep Field Review. Closed vocabulary,
+// mirrors the resolver in apps/api/app/services/field_review_service.py.
+export type FieldReviewExclusionReason =
+  | "no_analysis_run"
+  | "report_deleted"
+  | "draft_only"
+  | "not_schema_valid"
+  | "over_company_cap";
+
+export interface FieldReviewEligibilityCandidate {
+  candidate_id: string;
+  ticker?: string | null;
+  exchange?: string | null;
+  company_name?: string | null;
+  // Internal candidate-score grade — a prioritization signal only.
+  tier?: string | null;
+  has_analysis: boolean;
+  has_full_analysis: boolean;
+  included: boolean;
+  exclusion_reason?: FieldReviewExclusionReason | null;
+}
+
+// Which of a run's candidates a Deep Field Review could compare RIGHT NOW.
+// Computed by the backend from the review's own candidate resolver — the client
+// must never re-derive this, or the button will advertise an eligibility the
+// backend rejects with a 422.
+export interface FieldReviewEligibility {
+  discovery_run_id: string;
+  candidate_count: number;
+  with_full_analysis_count: number;
+  included_count: number;
+  not_comparable_count: number;
+  not_yet_analyzed_count: number;
+  required_candidate_count: number;
+  max_companies: number;
+  candidates: FieldReviewEligibilityCandidate[];
+}
+
 // ── Source Registry + Connector Framework (Phase 29A) ──────────────────────
 // Read-only, secret-free views of the unified source registry. Mirrors
 // apps/api/app/schemas/source_registry.py.

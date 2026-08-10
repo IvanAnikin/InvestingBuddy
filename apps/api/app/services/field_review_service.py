@@ -36,6 +36,7 @@ from __future__ import annotations
 import logging
 import time
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
@@ -70,7 +71,11 @@ __all__ = [
     "FieldReviewDisabledError",
     "InsufficientAnalyzedCandidatesError",
     "CandidateResolution",
+    "FieldEligibilityRow",
+    "FieldEligibilitySummary",
     "resolve_field_candidates",
+    "summarize_field_eligibility",
+    "required_candidate_count",
     "get_latest_field_review",
     "start_field_review",
     "process_field_review_by_id",
@@ -128,6 +133,33 @@ def field_review_enabled(cfg: Any | None = None) -> bool:
 # ---------------------------------------------------------------------------
 # Input resolution
 # ---------------------------------------------------------------------------
+
+
+# Closed vocabulary of exclusion reasons emitted by ``resolve_field_candidates``.
+# Kept immediately next to the resolver so the two can never drift apart.
+#
+#   no_analysis_run  — step 1 failed: the candidate was never analysed at all.
+#   report_deleted   — step 2 failed: the linked report row no longer exists.
+#   draft_only       — step 3 failed: the report is a draft, not a FINAL report.
+#   not_schema_valid — step 4 failed: the report did not pass schema validation.
+#   over_company_cap — steps 1–4 PASSED; only the max_companies cap kept the
+#                      candidate out of THIS review. It still legitimately "has a
+#                      completed full analysis".
+EXCLUSION_REASON_NO_ANALYSIS = "no_analysis_run"
+EXCLUSION_REASON_REPORT_DELETED = "report_deleted"
+EXCLUSION_REASON_DRAFT_ONLY = "draft_only"
+EXCLUSION_REASON_NOT_SCHEMA_VALID = "not_schema_valid"
+EXCLUSION_REASON_CAPPED = "over_company_cap"
+# Every reason that implies the candidate DID have an ``analysis_report_id``
+# (i.e. it was actually analysed) but could not be compared in this review.
+EXCLUSION_REASONS_WITH_ANALYSIS = frozenset(
+    {
+        EXCLUSION_REASON_REPORT_DELETED,
+        EXCLUSION_REASON_DRAFT_ONLY,
+        EXCLUSION_REASON_NOT_SCHEMA_VALID,
+        EXCLUSION_REASON_CAPPED,
+    }
+)
 
 
 class CandidateResolution:
@@ -190,7 +222,9 @@ async def resolve_field_candidates(
         # 1. Never analysed. The candidate exists but "Run Full Analysis" was
         #    never completed for it.
         if candidate.analysis_report_id is None:
-            resolution.missing.append({**base, "exclusion_reason": "no_analysis_run"})
+            resolution.missing.append(
+                {**base, "exclusion_reason": EXCLUSION_REASON_NO_ANALYSIS}
+            )
             continue
 
         resolution.analyzed_candidate_count += 1
@@ -203,18 +237,22 @@ async def resolve_field_candidates(
         report = report_result.scalar_one_or_none()
         base["report_id"] = str(candidate.analysis_report_id)
         if report is None:
-            resolution.missing.append({**base, "exclusion_reason": "report_deleted"})
+            resolution.missing.append(
+                {**base, "exclusion_reason": EXCLUSION_REASON_REPORT_DELETED}
+            )
             continue
 
         # 3. Only a FINAL report is comparable; a draft has no assembled sections.
         if report.final_report_version is None:
-            resolution.missing.append({**base, "exclusion_reason": "draft_only"})
+            resolution.missing.append(
+                {**base, "exclusion_reason": EXCLUSION_REASON_DRAFT_ONLY}
+            )
             continue
 
         # 4. A schema-invalid report cannot be compared field-for-field.
         if not _schema_valid(report):
             resolution.missing.append(
-                {**base, "exclusion_reason": "not_schema_valid"}
+                {**base, "exclusion_reason": EXCLUSION_REASON_NOT_SCHEMA_VALID}
             )
             continue
 
@@ -222,7 +260,7 @@ async def resolve_field_candidates(
         #    (recorded with a reason), never quietly truncated away.
         if len(resolution.included) >= max_companies:
             resolution.missing.append(
-                {**base, "exclusion_reason": "over_company_cap"}
+                {**base, "exclusion_reason": EXCLUSION_REASON_CAPPED}
             )
             continue
 
@@ -230,6 +268,113 @@ async def resolve_field_candidates(
         resolution.included.append((candidate, report, citation_ref))
 
     return resolution
+
+
+def required_candidate_count(cfg: Any | None = None) -> int:
+    """How many comparable candidates a Deep Field Review needs (never below 2).
+
+    Single source of truth: both ``start_field_review`` (which raises the 422)
+    and the eligibility summary (which gates the admin button) read it, so the
+    UI can never advertise a threshold the backend does not enforce.
+    """
+    cfg = cfg or settings
+    return max(2, int(cfg.field_review_min_candidates))
+
+
+@dataclass(frozen=True)
+class FieldEligibilityRow:
+    """One candidate's eligibility state, as the field review itself sees it."""
+
+    candidate_id: uuid.UUID
+    ticker: str | None
+    exchange: str | None
+    company_name: str | None
+    # Internal candidate-score grade (prioritization signal only, never a rating).
+    tier: str | None
+    # The candidate has an ``analysis_report_id`` — a full analysis was run.
+    has_analysis: bool
+    # Steps 1–4 passed: linked report exists, is FINAL, and is schema-valid.
+    has_full_analysis: bool
+    # Also within ``max_companies`` — would actually be compared right now.
+    included: bool
+    exclusion_reason: str | None
+
+
+@dataclass(frozen=True)
+class FieldEligibilitySummary:
+    """A bounded, honest answer to "what would a field review compare now?"."""
+
+    candidate_count: int
+    with_full_analysis_count: int
+    included_count: int
+    not_comparable_count: int
+    not_yet_analyzed_count: int
+    required_candidate_count: int
+    max_companies: int
+    candidates: list[FieldEligibilityRow]
+
+
+async def summarize_field_eligibility(
+    db: AsyncSession, run: DiscoveryRun, *, cfg: Any | None = None
+) -> FieldEligibilitySummary:
+    """Summarize which of a run's candidates a field review could compare NOW.
+
+    This is a pure DERIVATION of ``resolve_field_candidates`` — the eligibility
+    rules live in exactly one place. Nothing here re-decides whether a candidate
+    is comparable; it only re-groups the resolver's own verdicts and attaches
+    display fields (name/tier) so the admin UI never has to guess.
+    """
+    cfg = cfg or settings
+    resolution = await resolve_field_candidates(db, run, cfg=cfg)
+
+    included_ids = {candidate.id for candidate, _report, _ref in resolution.included}
+    reason_by_id: dict[str, str | None] = {
+        str(entry.get("discovery_candidate_id")): entry.get("exclusion_reason")
+        for entry in resolution.missing
+    }
+
+    # Display fields only — the eligibility verdict above is never recomputed here.
+    result = await db.execute(
+        select(DiscoveryCandidate).where(
+            DiscoveryCandidate.discovery_run_id == run.id
+        )
+    )
+    candidates = sorted(result.scalars().all(), key=_candidate_sort_key)
+
+    rows: list[FieldEligibilityRow] = []
+    for candidate in candidates:
+        included = candidate.id in included_ids
+        reason = None if included else reason_by_id.get(str(candidate.id))
+        rows.append(
+            FieldEligibilityRow(
+                candidate_id=candidate.id,
+                ticker=candidate.ticker,
+                exchange=candidate.exchange,
+                company_name=candidate.company_name,
+                tier=candidate.candidate_score_grade,
+                has_analysis=included or reason in EXCLUSION_REASONS_WITH_ANALYSIS,
+                # A capped-out candidate still HAS a completed full analysis; it
+                # is simply not part of this particular comparison.
+                has_full_analysis=included or reason == EXCLUSION_REASON_CAPPED,
+                included=included,
+                exclusion_reason=reason,
+            )
+        )
+
+    included_count = len(resolution.included)
+    return FieldEligibilitySummary(
+        candidate_count=resolution.candidate_count,
+        with_full_analysis_count=sum(1 for row in rows if row.has_full_analysis),
+        included_count=included_count,
+        # Analysed, but not comparable in this review (deleted/draft/invalid/capped).
+        not_comparable_count=resolution.analyzed_candidate_count - included_count,
+        not_yet_analyzed_count=(
+            resolution.candidate_count - resolution.analyzed_candidate_count
+        ),
+        required_candidate_count=required_candidate_count(cfg),
+        max_companies=max(1, int(cfg.llm_field_review_council_max_companies)),
+        candidates=rows,
+    )
 
 
 async def _build_pack(
@@ -422,7 +567,7 @@ async def start_field_review(
     # Resolve the field BEFORE queuing, so an impossible comparison is a clean
     # 422 rather than a background job that fails a minute later.
     resolution = await resolve_field_candidates(db, run, cfg=cfg)
-    required = max(2, int(cfg.field_review_min_candidates))
+    required = required_candidate_count(cfg)
     if len(resolution.included) < required:
         log_event(
             logger,
