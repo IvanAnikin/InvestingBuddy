@@ -16,6 +16,7 @@ Endpoints:
 
 from __future__ import annotations
 
+import logging
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -31,6 +32,7 @@ from app.schemas.final_report import (
 from app.services.final_report_generator import FinalReportGeneratorService
 
 router = APIRouter(prefix="/final-reports", tags=["final-reports"])
+logger = logging.getLogger(__name__)
 
 _svc = FinalReportGeneratorService()
 
@@ -58,6 +60,11 @@ async def generate_from_scorecard(
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
+        logger.exception(
+            "Final report generation from scorecard %s failed: %s",
+            scorecard_id,
+            exc,
+        )
         raise HTTPException(
             status_code=422,
             detail=f"Final report generation failed: {exc}",
@@ -87,6 +94,11 @@ async def generate_from_candidate(
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
+        logger.exception(
+            "Final report generation from candidate %s failed: %s",
+            candidate_id,
+            exc,
+        )
         raise HTTPException(
             status_code=422,
             detail=f"Final report generation failed: {exc}",
@@ -121,6 +133,11 @@ async def generate_from_company(
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
+        logger.exception(
+            "Final report generation from company %s failed: %s",
+            company_id,
+            exc,
+        )
         raise HTTPException(
             status_code=422,
             detail=f"Final report generation failed: {exc}",
@@ -150,6 +167,11 @@ async def generate_from_report(
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
+        logger.exception(
+            "Final report generation from report %s failed: %s",
+            report_id,
+            exc,
+        )
         raise HTTPException(
             status_code=422,
             detail=f"Final report generation failed: {exc}",
@@ -178,6 +200,11 @@ async def validate_final_report(
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
+        logger.exception(
+            "Final report validation for report %s failed: %s",
+            report_id,
+            exc,
+        )
         raise HTTPException(
             status_code=422,
             detail=f"Report validation failed: {exc}",
@@ -209,6 +236,12 @@ async def regenerate_section(
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
+        logger.exception(
+            "Section %s regeneration for report %s failed: %s",
+            request.section_name,
+            report_id,
+            exc,
+        )
         raise HTTPException(
             status_code=422,
             detail=f"Section regeneration failed: {exc}",
