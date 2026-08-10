@@ -904,6 +904,13 @@ function DiscoveryCouncilBody({ review }: { review: DiscoveryCouncilReview }) {
     })
     .filter((x): x is { name: string; summary: string } => x !== null);
 
+  // Phase 32A Slice 6A: the deterministic discovery-chair fallback fires when
+  // the LLM discovery chair could not complete. Its `summary` is a bounded,
+  // non-consensus synthesis — never a recommendation or valuation conclusion.
+  const chairFallbackSummary =
+    (review.deterministic_discovery_chair as { summary?: string } | null)
+      ?.summary ?? null;
+
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
@@ -937,6 +944,22 @@ function DiscoveryCouncilBody({ review }: { review: DiscoveryCouncilReview }) {
           value={review.publication_ready ? "yes" : "no"}
         />
       </div>
+
+      {review.chair_fallback_used && (
+        <div
+          data-testid="council-chair-fallback"
+          className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200"
+        >
+          <StatusPill label="Deterministic fallback used" color="amber" />
+          <p className="mt-1">
+            The LLM discovery chair did not complete, so a deterministic,
+            non-consensus summary was attached instead.
+          </p>
+          {chairFallbackSummary && (
+            <p className="mt-1 text-slate-300">{chairFallbackSummary}</p>
+          )}
+        </div>
+      )}
 
       <CouncilBucket
         title="Research next"

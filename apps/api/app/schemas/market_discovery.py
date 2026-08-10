@@ -546,6 +546,15 @@ class DiscoveryCouncilReviewResponse(BaseModel):
     agent_outputs: dict[str, Any] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
     safety_valid: bool = True
+    # Phase 32A Slice 6A: surfaces whether the deterministic discovery-chair
+    # fallback fired (LLM discovery chair unavailable) and, if so, its honest
+    # non-consensus summary — so admins can see a partial/failed council
+    # degraded gracefully rather than silently. ``deterministic_discovery_chair``
+    # mirrors the internal ``DiscoveryCouncilAgentOutput.to_dict()`` shape and is
+    # kept as a loose dict here (like ``agent_outputs`` above) since it is not
+    # itself part of the public API contract.
+    chair_fallback_used: bool = False
+    deterministic_discovery_chair: dict[str, Any] | None = None
     human_review_required: bool = True
     publication_ready: bool = False
     created_at: str | None = None
