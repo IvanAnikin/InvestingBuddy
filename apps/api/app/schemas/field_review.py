@@ -123,6 +123,17 @@ class FieldReviewResponse(BaseModel):
     next_research_tasks: list[str] = Field(default_factory=list)
     agent_outputs: dict[str, Any] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
+    # Surfaces whether the deterministic field-chair fallback fired (the LLM
+    # field chair did not complete) and, if so, its honest non-consensus
+    # summary — so an admin sees WHY the three priority buckets are empty
+    # instead of an unexplained blank shortlist. ``deterministic_field_chair``
+    # mirrors the internal ``FieldReviewAgentOutput.to_dict()`` shape and is
+    # kept as a loose dict here (like ``agent_outputs`` above) since it is not
+    # itself part of the public API contract. NOTE: ``from_row`` below lists
+    # every field EXPLICITLY, so both keys must also be read there — declaring
+    # them here alone would silently drop them.
+    chair_fallback_used: bool = False
+    deterministic_field_chair: dict[str, Any] | None = None
 
     candidates: list[FieldReviewCandidateRow] = Field(default_factory=list)
 
@@ -149,6 +160,10 @@ class FieldReviewResponse(BaseModel):
         never weaken it.
         """
         review = row.review_json if isinstance(row.review_json, dict) else {}
+        stored_fallback = review.get("deterministic_field_chair")
+        fallback_chair = (
+            dict(stored_fallback) if isinstance(stored_fallback, dict) else None
+        )
         resp = cls(
             discovery_run_id=discovery_run_id,
             field_review_run_id=row.id,
@@ -189,6 +204,8 @@ class FieldReviewResponse(BaseModel):
             evidence_gaps=list(review.get("evidence_gaps") or []),
             next_research_tasks=list(review.get("next_research_tasks") or []),
             agent_outputs=dict(review.get("agent_outputs") or {}),
+            chair_fallback_used=bool(review.get("chair_fallback_used")),
+            deterministic_field_chair=fallback_chair,
             warnings=list(row.warnings_json or review.get("warnings") or []),
             candidates=[
                 FieldReviewCandidateRow.model_validate(c) for c in candidates or []

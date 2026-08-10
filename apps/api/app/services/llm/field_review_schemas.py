@@ -488,6 +488,17 @@ class FieldReviewResult(BaseModel):
     next_research_tasks: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     safety_valid: bool = True
+    # Set when the LLM field chair did not complete and a DETERMINISTIC,
+    # non-consensus field-chair synthesis was attached instead (mirrors the
+    # company council's ``chair_fallback_used``/``deterministic_chair`` and the
+    # discovery council's ``chair_fallback_used``/``deterministic_discovery_chair``
+    # — Phase 32A Slice 4 / 6A). The FAILED LLM ``field_chair`` entry stays in
+    # ``agents`` untouched, so the review is visibly partial; the fallback is an
+    # ADDITIONAL field, never a replacement. Held as a plain dict (the
+    # ``FieldReviewAgentOutput.to_dict()`` shape) so it round-trips through
+    # ``review_json`` unchanged.
+    chair_fallback_used: bool = False
+    deterministic_field_chair: dict[str, Any] | None = None
 
     def recount(self) -> None:
         """Refresh the completed/failed/skipped tallies from ``agents``."""
@@ -539,6 +550,15 @@ class FieldReviewResult(BaseModel):
             "evidence_gaps": list(self.evidence_gaps),
             "next_research_tasks": list(self.next_research_tasks),
             "agent_outputs": {a.agent_name: a.to_dict() for a in self.agents},
+            # The failed LLM field_chair stays inside ``agent_outputs`` above;
+            # these two keys record, separately and honestly, that a
+            # deterministic non-consensus synthesis stood in for it.
+            "chair_fallback_used": self.chair_fallback_used,
+            "deterministic_field_chair": (
+                dict(self.deterministic_field_chair)
+                if self.deterministic_field_chair is not None
+                else None
+            ),
             "warnings": list(self.warnings),
             "safety_valid": self.safety_valid,
             "human_review_required": True,

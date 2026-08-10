@@ -17,6 +17,8 @@ from typing import Any
 import pytest
 
 from app.core.config import Settings
+from app.models.field_review import FieldReviewRun
+from app.schemas.field_review import FieldReviewResponse
 from app.services import safety_terms
 from app.services.llm.fake_field_review_client import FakeFieldReviewLLMClient
 from app.services.llm.field_review_citation_checker import check_and_sanitize
@@ -603,6 +605,214 @@ def test_a_missing_chair_verdict_becomes_an_honest_empty_verdict() -> None:
     assert cleaned.chair_verdict.strongest_candidates == []
     assert cleaned.chair_verdict.field_quality == "thin"
     assert any("no chair_verdict was returned" in i for i in issues)
+
+
+# ---------------------------------------------------------------------------
+# Deterministic field-chair fallback
+# ---------------------------------------------------------------------------
+
+
+async def _run_with_failing_chair(
+    *, also_failing: set[str] | None = None, companies: int = 3
+):
+    """Run the council with the field chair failing through retry exhaustion."""
+    clock = _FakeClock()
+    client = FakeFieldReviewLLMClient(
+        transient_agents={AGENT_FIELD_CHAIR, *(also_failing or set())},
+        transient_failures=99,
+        transient_error="rate_limit",
+    )
+    result = await run_field_review_council(
+        _pack(companies),
+        client,
+        cfg=_cfg(
+            llm_field_review_council_retry_enabled=True,
+            llm_field_review_council_critical_max_retries=1,
+            llm_field_review_council_max_retries=1,
+        ),
+        clock=clock,
+        sleeper=_sleeper_for(clock),
+        rng=random.Random(1234),
+    )
+    return result, client
+
+
+@pytest.mark.anyio
+async def test_a_failed_field_chair_gets_a_deterministic_fallback() -> None:
+    """The Slice 6D defect: a failed chair used to leave ALL THREE buckets
+    silently empty with no explanation anywhere in the payload."""
+    result, client = await _run_with_failing_chair()
+
+    # The chair really did exhaust its retries (1 initial + 1 retry).
+    assert client.attempts[AGENT_FIELD_CHAIR] == 2
+
+    # The ORIGINAL failed LLM chair entry is still honestly visible.
+    llm_chair = next(a for a in result.agents if a.agent_name == AGENT_FIELD_CHAIR)
+    assert llm_chair.status == STATUS_FAILED
+    assert llm_chair.chair_verdict is None
+    assert len(result.agents) == len(FIELD_REVIEW_AGENT_ORDER)
+    assert result.agents_completed == 7
+    assert result.agents_failed == 1
+
+    # The fallback is an ADDITIONAL field, not a replacement.
+    assert result.chair_fallback_used is True
+    fallback = result.deterministic_field_chair
+    assert isinstance(fallback, dict)
+    assert fallback["agent_name"] == AGENT_FIELD_CHAIR
+    assert fallback["status"] == STATUS_COMPLETED
+    assert "Deterministic field chair summary" in fallback["summary"]
+    assert "7 of 7 comparative agents completed" in fallback["summary"]
+    assert fallback["safety_notes"]
+
+    # No fabricated ranking: every bucket stays empty and the label is honest.
+    assert result.strongest_candidates == []
+    assert result.second_tier == []
+    assert result.blocked_insufficient_evidence == []
+    assert result.field_quality == "failed"
+    assert result.field_uncertainties
+    joined = " ".join(result.field_uncertainties)
+    assert "field chair did not complete" in joined
+    assert "NO comparative ranking" in joined
+    assert "Human review" in joined
+
+
+@pytest.mark.anyio
+async def test_the_fallback_names_the_agents_that_did_and_did_not_complete() -> None:
+    result, _ = await _run_with_failing_chair(
+        also_failing={AGENT_COMPARATIVE_FINANCIAL_QUALITY}
+    )
+    fallback = result.deterministic_field_chair
+    assert isinstance(fallback, dict)
+    summary = fallback["summary"]
+    assert "6 of 7 comparative agents completed" in summary
+    # The still-usable agents are named ...
+    assert AGENT_FIELD_RED_TEAM in summary
+    # ... and so is the one that did not complete, honestly.
+    assert f"Did not complete: {AGENT_COMPARATIVE_FINANCIAL_QUALITY}" in summary
+    # The chair itself is never counted among the agents it is summarizing.
+    assert "Completed: " in summary
+    completed_part = summary.split("Completed: ")[1].split(". Did not complete")[0]
+    assert AGENT_FIELD_CHAIR not in completed_part
+
+    joined = " ".join(result.field_uncertainties)
+    assert AGENT_COMPARATIVE_FINANCIAL_QUALITY in joined
+    assert AGENT_FIELD_RED_TEAM in joined
+
+
+@pytest.mark.anyio
+async def test_the_fallback_places_no_company_in_any_bucket() -> None:
+    """An empty ``blocked_insufficient_evidence`` is deliberate: the CHAIR
+    failing says nothing about any company's own evidence."""
+    result, _ = await _run_with_failing_chair(companies=3)
+    fallback = result.deterministic_field_chair
+    assert isinstance(fallback, dict)
+    verdict = fallback["chair_verdict"]
+    assert verdict["strongest_candidates"] == []
+    assert verdict["second_tier"] == []
+    assert verdict["blocked_insufficient_evidence"] == []
+    assert verdict["field_quality"] == "failed"
+    assert result.tier_by_company_ref() == {}
+
+
+@pytest.mark.anyio
+async def test_the_fallback_text_passes_the_safety_scanner() -> None:
+    result, _ = await _run_with_failing_chair()
+    stored = result.to_storage_dict()
+    assert stored["chair_fallback_used"] is True
+    assert stored["deterministic_field_chair"] is not None
+    hits = safety_terms.scan_value(stored["deterministic_field_chair"])
+    assert hits == [], [h.term for h in hits]
+    blob = json.dumps(stored["deterministic_field_chair"])
+    for term in FORBIDDEN_SUBSTRINGS:
+        assert term not in blob, term
+    # And the whole stored payload stays clean too.
+    assert safety_terms.scan_value(stored) == []
+
+
+@pytest.mark.anyio
+async def test_a_completed_chair_never_triggers_the_fallback() -> None:
+    """Regression guard: the healthy path is unchanged."""
+    clock = _FakeClock()
+    result = await run_field_review_council(
+        _pack(3),
+        FakeFieldReviewLLMClient(),
+        cfg=_cfg(llm_field_review_council_retry_enabled=True),
+        clock=clock,
+        sleeper=_sleeper_for(clock),
+        rng=random.Random(1234),
+    )
+    assert result.chair_fallback_used is False
+    assert result.deterministic_field_chair is None
+    assert result.agents_completed == 8
+    placed = (
+        len(result.strongest_candidates)
+        + len(result.second_tier)
+        + len(result.blocked_insufficient_evidence)
+    )
+    assert placed == 3
+    assert result.field_quality in ALLOWED_FIELD_QUALITY
+    assert result.field_quality != "failed"
+
+    stored = result.to_storage_dict()
+    assert stored["chair_fallback_used"] is False
+    assert stored["deterministic_field_chair"] is None
+
+
+@pytest.mark.anyio
+async def test_the_fallback_survives_the_stored_payload_to_api_response() -> None:
+    """Guards the field-preservation class of bug: ``from_row`` lists every
+    field EXPLICITLY, so a new key must be read there or it is silently lost."""
+    result, _ = await _run_with_failing_chair()
+    stored = result.to_storage_dict(created_at="2026-08-10T00:00:00+00:00")
+
+    discovery_run_id = uuid.uuid4()
+    row = FieldReviewRun(
+        id=uuid.uuid4(),
+        discovery_run_id=discovery_run_id,
+        status="completed_with_warnings",
+        included_candidate_count=3,
+        missing_candidate_count=0,
+        llm_used=True,
+        council_version="v1",
+        provider="fake",
+        model="fake-field-review-model",
+        agents_completed=result.agents_completed,
+        agents_failed=result.agents_failed,
+        field_quality=result.field_quality,
+        safety_valid=result.safety_valid,
+        review_json=stored,
+        warnings_json=list(result.warnings),
+        human_review_required=True,
+    )
+    resp = FieldReviewResponse.from_row(discovery_run_id, row)
+
+    assert resp.chair_fallback_used is True
+    assert resp.deterministic_field_chair is not None
+    assert "Deterministic field chair summary" in str(
+        resp.deterministic_field_chair.get("summary")
+    )
+    # The failed LLM chair is still visible to the admin UI alongside it.
+    assert resp.agent_outputs[AGENT_FIELD_CHAIR]["status"] == STATUS_FAILED
+    # And the buckets are honestly empty, with the reason now explained.
+    assert resp.strongest_candidates == []
+    assert resp.second_tier == []
+    assert resp.blocked_insufficient_evidence == []
+    assert resp.field_quality == "failed"
+    assert resp.field_uncertainties
+
+
+def test_a_review_without_a_fallback_round_trips_as_not_used() -> None:
+    discovery_run_id = uuid.uuid4()
+    row = FieldReviewRun(
+        id=uuid.uuid4(),
+        discovery_run_id=discovery_run_id,
+        status="completed",
+        llm_used=True,
+        review_json={"field_quality": "adequate"},
+    )
+    resp = FieldReviewResponse.from_row(discovery_run_id, row)
+    assert resp.chair_fallback_used is False
+    assert resp.deterministic_field_chair is None
 
 
 # ---------------------------------------------------------------------------

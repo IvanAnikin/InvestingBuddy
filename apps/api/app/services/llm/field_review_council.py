@@ -21,6 +21,12 @@ a capped provider ``retry-after`` with capped jittered exponential backoff, with
 a reserve protecting ``field_red_team`` + ``field_chair``. There is no unbounded
 loop anywhere.
 
+If the field chair itself still does not complete after its retries, a
+DETERMINISTIC field-chair synthesis is attached (``chair_fallback_used`` +
+``deterministic_field_chair``) so a partial council degrades to an honest,
+non-fabricating explanation instead of three silently-empty priority buckets.
+The failed LLM chair entry stays visible in ``agents``.
+
 Logging is structured and safe (Phase 27.1D): it records ids, provider/model
 names, statuses, counts and durations — never prompts, completions, pack
 excerpts, or credentials.
@@ -39,6 +45,7 @@ from app.core.config import Settings
 from app.core.config import settings as default_settings
 from app.core.structured_logging import log_event
 from app.services.llm import field_review_prompts as prompts
+from app.services.llm import retry_engine
 from app.services.llm.client import (
     LLMClient,
     LLMError,
@@ -55,7 +62,9 @@ from app.services.llm.field_review_schemas import (
     FIELD_CRITICAL_AGENTS,
     FIELD_RESERVED_AGENTS,
     FIELD_REVIEW_AGENT_ORDER,
+    STATUS_COMPLETED,
     STATUS_FAILED,
+    FieldChairVerdict,
     FieldReviewAgentOutput,
     FieldReviewPack,
     FieldReviewResult,
@@ -321,6 +330,86 @@ def _replace_agent(
             result.agents[index] = output
             break
     result.warnings.extend(issues)
+
+
+def _deterministic_field_chair_fallback(
+    agents: list[FieldReviewAgentOutput], order: tuple[str, ...]
+) -> FieldReviewAgentOutput:
+    """A deterministic, non-consensus FIELD-chair synthesis.
+
+    Built only from ALREADY-VALIDATED stored agent outputs. It NEVER fabricates
+    a ranking, a consensus, or a recommendation: all THREE priority buckets stay
+    EMPTY (so the fallback carries no citations and places no company anywhere),
+    the label is the honest ``field_quality="failed"``, and
+    ``field_uncertainties`` states plainly that the chair could not complete,
+    that no ranking exists, and that human review is required.
+
+    Empty ``blocked_insufficient_evidence`` is deliberate: that bucket means
+    "THIS company's own evidence was insufficient", which is a different — and
+    here untrue — claim. The chair failing says nothing about any company's
+    evidence, so no company is placed there.
+
+    Thin field-review-specific adapter (mirroring
+    ``council._deterministic_chair_fallback`` and
+    ``discovery_council._deterministic_chair_fallback``) over
+    ``retry_engine.build_deterministic_synthesis``: the shared engine returns
+    the generic completed/failed prose, and THIS function builds the
+    field-review-shaped output, because the three-bucket ``FieldChairVerdict``
+    is specific to this council.
+
+    The summary keeps the siblings' sentence skeleton but is composed here so it
+    can name what this council's agents actually are ("comparative agents") and
+    what is actually missing ("no ranking") instead of the company council's
+    "no numeric price objective" — this council never emits a number at all. The
+    safety note is the shared engine's, unchanged.
+    """
+    synthesis = retry_engine.build_deterministic_synthesis(
+        agents,
+        order,
+        AGENT_FIELD_CHAIR,
+        completed_status=STATUS_COMPLETED,
+        failed_status=STATUS_FAILED,
+        chair_role_label="field chair",
+    )
+    completed = ", ".join(synthesis.completed) or "none"
+    failed = ", ".join(synthesis.failed) or "none"
+    summary = (
+        "Deterministic field chair summary (LLM field chair unavailable). "
+        f"{len(synthesis.completed)} of {len(order) - 1} comparative agents "
+        f"completed. Completed: {completed}. Did not complete: {failed}. "
+        "This is a partial, non-consensus internal summary. It states no "
+        "recommendation, no valuation conclusion, and no ranking. Further "
+        "evidence and human review are required."
+    )
+    verdict = FieldChairVerdict(
+        strongest_candidates=[],
+        second_tier=[],
+        blocked_insufficient_evidence=[],
+        field_uncertainties=[
+            "The LLM field chair did not complete, so NO comparative ranking "
+            "or research-priority ordering was produced. All three priority "
+            "buckets are empty because none could be produced honestly — not "
+            "because any company was assessed and set aside.",
+            "Comparative agents that completed (their summaries remain "
+            f"available and usable): {completed}.",
+            f"Comparative agents that did not complete: {failed}.",
+            "Human review of the completed comparative agent summaries is "
+            "required before any prioritization is drawn from this run.",
+        ],
+        field_quality="failed",
+    )
+    return FieldReviewAgentOutput(
+        agent_name=AGENT_FIELD_CHAIR,
+        status=STATUS_COMPLETED,
+        summary=summary,
+        company_notes=[],
+        field_notes=[],
+        evidence_gaps=[],
+        unsupported_claims=[],
+        safety_notes=[synthesis.safety_note],
+        next_research_tasks=[],
+        chair_verdict=verdict,
+    )
 
 
 def _retry_priority_order() -> list[str]:
@@ -713,7 +802,46 @@ async def run_field_review_council(
     chair = next(
         (a for a in result.agents if a.agent_name == AGENT_FIELD_CHAIR), None
     )
-    verdict = chair.chair_verdict if chair is not None else None
+
+    # When the retry bundle is on and the LLM field chair STILL did not complete,
+    # attach a DETERMINISTIC, non-consensus field-chair synthesis so the review
+    # has an honest explanation to render instead of three silently-empty
+    # priority buckets (the Slice 6D defect this fixes) — without inventing a
+    # ranking, a placement, or a recommendation. The FAILED LLM chair entry is
+    # KEPT in ``agents`` untouched (so the counts + warnings still show the
+    # council is visibly partial) and is excluded from the fallback's own
+    # completed/failed tallies; the fallback is attached separately and never
+    # flips ``human_review_required`` / ``publication_ready``. Mirrors
+    # ``discovery_council`` (Slice 6A) and ``council`` (Slice 4).
+    chair_for_verdict = chair
+    if cfg.llm_field_review_council_retry_enabled and (
+        chair is None or chair.status != STATUS_COMPLETED
+    ):
+        fallback = _deterministic_field_chair_fallback(
+            result.agents, FIELD_REVIEW_AGENT_ORDER
+        )
+        # Defense-in-depth: the fallback goes through the SAME safety/citation
+        # gate every real agent output does, even though it is machine-built.
+        sanitized_fallback, _fb_issues = check_and_sanitize(
+            fallback, evidence_ids, company_ids, is_chair=True
+        )
+        result.deterministic_field_chair = sanitized_fallback.to_dict()
+        result.chair_fallback_used = True
+        chair_for_verdict = sanitized_fallback
+        log_event(
+            log,
+            "field_review_chair_fallback",
+            level=logging.WARNING,
+            field_review_run_id=field_review_run_id,
+            provider=client.provider_name,
+            council_version=cfg.llm_field_review_council_version,
+            agents_completed=result.agents_completed,
+            agents_failed=result.agents_failed,
+        )
+
+    verdict = (
+        chair_for_verdict.chair_verdict if chair_for_verdict is not None else None
+    )
     quality = verdict.field_quality if verdict is not None else None
     if quality not in ALLOWED_FIELD_QUALITY:
         # The chair did not (or could not — e.g. it failed) set a valid label.
@@ -721,7 +849,7 @@ async def run_field_review_council(
         quality = DEFAULT_FIELD_QUALITY if result.agents_completed else "failed"
     result.field_quality = quality
 
-    buckets = _aggregate_chair(pack, chair)
+    buckets = _aggregate_chair(pack, chair_for_verdict)
     result.strongest_candidates = buckets["strongest_candidates"][:_MAX_AGG_LIST]
     result.second_tier = buckets["second_tier"][:_MAX_AGG_LIST]
     result.blocked_insufficient_evidence = buckets["blocked_insufficient_evidence"][
@@ -750,6 +878,7 @@ async def run_field_review_council(
         agents_failed=result.agents_failed,
         field_quality=result.field_quality,
         safety_valid=result.safety_valid,
+        chair_fallback_used=result.chair_fallback_used,
         strongest_count=len(result.strongest_candidates),
         second_tier_count=len(result.second_tier),
         blocked_count=len(result.blocked_insufficient_evidence),
