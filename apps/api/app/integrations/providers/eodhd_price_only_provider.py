@@ -208,7 +208,14 @@ class EodhdPriceOnlyProvider(FinancialDataProvider):
         return PriceHistoryData(
             ticker=ticker.upper(),
             exchange=exchange,
-            currency="USD",
+            # Phase 32A Slice 6B (C3) — this provider has no fundamentals call
+            # (returns reporting_currency=None from get_company_profile), so it
+            # has no real currency to thread here either. Honestly None rather
+            # than the previous unconditional, unsourced "USD". Callers resolve
+            # a real, non-guessed quote currency via
+            # ``exchange_registry.price_quote_currency_for_exchange`` when the
+            # exchange is known.
+            currency=None,
             price_points=price_points,
             source_url=f"{self._base_url}/eod/{symbol}",
             data_quality=(

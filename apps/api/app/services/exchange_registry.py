@@ -249,6 +249,37 @@ def currency_for_exchange(code: str | None) -> str | None:
     return info.currency if info else None
 
 
+# Phase 32A Slice 6B (C3) — exchanges whose live PRICE-QUOTE unit differs from
+# ``ExchangeInfo.currency`` (the venue's general/reporting fiat currency).
+# London Stock Exchange main-market equities are quoted in pence (GBX), not
+# pounds (GBP) — a well-documented, real market convention (not a guess), and a
+# DIFFERENT concept from an issuer's GBP *reporting* currency (fundamentals
+# ``CurrencyCode``). Conflating the two silently mislabels a price as 100x its
+# real pound value. Only add an entry here when the quote-unit distinction is
+# actually confirmed — an exchange absent from this table falls back to
+# ``currency_for_exchange`` (i.e. quote currency == reporting currency, true
+# for most venues).
+_PRICE_QUOTE_CURRENCY_OVERRIDES: dict[str, str] = {
+    "LSE": "GBX",
+}
+
+
+def price_quote_currency_for_exchange(code: str | None) -> str | None:
+    """
+    Return the REAL price-QUOTE currency/unit for an exchange, when known.
+
+    Distinct from ``currency_for_exchange`` (the venue's general/reporting
+    currency): most venues quote prices in that same currency, but LSE quotes
+    in pence (GBX). Never guesses — returns None when the exchange is unknown.
+    """
+    if not code:
+        return None
+    override = _PRICE_QUOTE_CURRENCY_OVERRIDES.get(code.strip().upper())
+    if override:
+        return override
+    return currency_for_exchange(code)
+
+
 def _build_country_to_region() -> dict[str, str]:
     """Derive country -> region from the registry (absorbs the old table)."""
     mapping: dict[str, str] = {}

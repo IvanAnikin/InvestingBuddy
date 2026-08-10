@@ -515,6 +515,60 @@ def test_no_document_links_yields_honest_gap_no_artifacts():
     )
 
 
+def _bot_protection_page_fetcher():
+    """
+    Phase 32A Slice 6B (C7) — simulates the confirmed Burberry case: the fetch
+    itself "succeeds" (2xx, not ``blocked``, no ``error``) but the returned
+    body is an active bot-protection / challenge page, not the real IR page.
+    """
+
+    async def _fetch(url, *, allowed_domains, keywords, fallback_keywords=()):
+        return SafeFetchResult(
+            requested_url=url,
+            status_code=200,
+            title="Just a moment...",
+            body_html="<html><body>Checking your browser before accessing "
+            "the site. Please verify you are a human.</body></html>",
+            links=[],
+        )
+
+    return _fetch
+
+
+def test_bot_protection_page_yields_distinct_blocked_gap_message():
+    """A fetch that 'succeeds' but returns a challenge page must be labeled as
+    blocked — never the generic 'link not identified' message, and never a
+    claim of success."""
+    collected = asyncio.run(
+        collect_company_source_evidence(
+            company=CompanyContext(ticker="BRBY", exchange="LSE", country="United Kingdom"),
+            source_ids=["company_ir"],
+            ir_page_fetcher=_bot_protection_page_fetcher(),
+            cfg=_cfg(),
+        )
+    )
+    messages = [g.message for g in collected.source_gaps]
+    assert any("blocked (bot protection / access denied)" in m for m in messages)
+    assert not any("annual report link not identified" in m for m in messages)
+
+
+def test_successful_linkless_fetch_keeps_the_original_gap_message():
+    """Regression guard: a genuinely successful fetch with zero links (no bot-
+    protection markers present) keeps the ORIGINAL, distinct message — the two
+    scenarios must never be conflated."""
+    collected = asyncio.run(
+        collect_company_source_evidence(
+            company=CompanyContext(ticker="CFR", exchange="SW", country="Switzerland"),
+            source_ids=["company_ir"],
+            ir_page_fetcher=_page_fetcher([]),
+            cfg=_cfg(),
+        )
+    )
+    messages = [g.message for g in collected.source_gaps]
+    assert any("annual report link not identified" in m for m in messages)
+    assert not any("blocked (bot protection / access denied)" in m for m in messages)
+
+
 # =========================================================================== #
 # 6. PDF resource-abuse: a very large page count is bounded by the page cap.
 # =========================================================================== #

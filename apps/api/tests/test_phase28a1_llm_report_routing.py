@@ -15,6 +15,7 @@ credentials.
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -158,6 +159,56 @@ def _real_discovery_candidate(**over: Any):
     )
 
 
+async def test_run_candidate_analysis_prefers_legal_name(mock_db, enable_council) -> None:
+    """
+    Phase 32A Slice 6B (C1) — a candidate's real, sourced ``legal_name`` (e.g.
+    "Burberry Group plc") must take precedence over ``company_name`` (which is
+    sometimes just the ticker, e.g. "BRBY") when seeding/upgrading the Company.
+    """
+    candidate = _real_discovery_candidate()
+    candidate.company_name = "BRBY"
+    candidate.legal_name = "Burberry Group plc"
+
+    async def fake_runner(db_, **kwargs):
+        return _final_state()
+
+    ensure_company_mock = AsyncMock(return_value=_company())
+    with patch.object(
+        mds, "_load_final_report_inputs", AsyncMock(return_value=(None, [], []))
+    ), patch.object(
+        mds, "get_candidate", AsyncMock(return_value=candidate)
+    ), patch.object(
+        mds, "ensure_company", ensure_company_mock
+    ):
+        await mds.run_candidate_analysis(mock_db, candidate.id, run_analysis=fake_runner)
+
+    assert ensure_company_mock.await_args.kwargs["company_name"] == "Burberry Group plc"
+
+
+async def test_run_candidate_analysis_falls_back_to_company_name(
+    mock_db, enable_council
+) -> None:
+    """No ``legal_name`` set — the existing ``company_name`` fallback still works."""
+    candidate = _real_discovery_candidate()
+    candidate.company_name = "Apple Inc."
+    candidate.legal_name = None
+
+    async def fake_runner(db_, **kwargs):
+        return _final_state()
+
+    ensure_company_mock = AsyncMock(return_value=_company())
+    with patch.object(
+        mds, "_load_final_report_inputs", AsyncMock(return_value=(None, [], []))
+    ), patch.object(
+        mds, "get_candidate", AsyncMock(return_value=candidate)
+    ), patch.object(
+        mds, "ensure_company", ensure_company_mock
+    ):
+        await mds.run_candidate_analysis(mock_db, candidate.id, run_analysis=fake_runner)
+
+    assert ensure_company_mock.await_args.kwargs["company_name"] == "Apple Inc."
+
+
 async def test_real_discovery_candidate_routes_to_final_not_legacy(
     mock_db, enable_council
 ) -> None:
@@ -176,6 +227,68 @@ async def test_real_discovery_candidate_routes_to_final_not_legacy(
     assert result["report"].report_kind == "final"
     assert result["report"].llm_used is True
     assert candidate.analysis_report_id == result["analysis_report_id"]
+
+
+async def test_discovery_lineage_threaded_from_real_candidate(
+    mock_db, enable_council
+) -> None:
+    """
+    Phase 32A Slice 6B (C2) — a real DiscoveryCandidate's lineage (never a
+    ScreeningCandidate, never inferred from ticker/name) must survive into the
+    final report's ``source_summary_json["discovery_lineage"]`` and the
+    rendered ``discovery_lineage`` report section, while the UNRELATED
+    ``discovery_rationale`` section (which reads a ScreeningCandidate) stays
+    honestly "not available" for this flow.
+    """
+    from app.models.discovery import DiscoveryRun
+
+    run_id = uuid.uuid4()
+    candidate = _real_discovery_candidate()
+    candidate.discovery_run_id = run_id
+    candidate.rank = 2
+    candidate.candidate_score = 87.5
+    candidate.candidate_score_grade = "high_internal_interest"
+    candidate.score_explanation = "Strong momentum + thesis match"
+    candidate.thesis_relevance_score = 0.91
+    candidate.thesis_match_json = {"matched_keywords": ["luxury", "watches"]}
+
+    fake_run = DiscoveryRun(id=run_id, thesis_text="Luxury goods thesis")
+
+    with patch.object(mds, "get_run", AsyncMock(return_value=fake_run)):
+        result = await _run(
+            mock_db, candidate=candidate, company=_company(), state=_final_state()
+        )
+
+    assert result["warnings"] == []
+    report = _captured_report(mock_db)
+
+    lineage = report.source_summary_json["discovery_lineage"]
+    assert lineage["discovery_run_id"] == str(run_id)
+    assert lineage["discovery_candidate_id"] == str(candidate.id)
+    assert lineage["rank"] == 2
+    assert lineage["candidate_score"] == 87.5
+    assert lineage["candidate_score_grade"] == "high_internal_interest"
+    assert lineage["score_explanation"] == "Strong momentum + thesis match"
+    assert lineage["thesis_relevance_score"] == 0.91
+    assert lineage["thesis_match_json"] == {"matched_keywords": ["luxury", "watches"]}
+    assert lineage["thesis_text"] == "Luxury goods thesis"
+
+    body = report.content_markdown.split("```json\n", 1)[1].rsplit("\n```", 1)[0]
+    content = json.loads(body)
+
+    section = content["discovery_lineage"]
+    assert section["available"] is True
+    assert section["discovery_run_id"] == str(run_id)
+    assert section["rank"]["value"] == 2
+    assert section["thesis_relevance_score"]["value"] == 0.91
+    assert section["thesis_match"]["value"] == {"matched_keywords": ["luxury", "watches"]}
+    assert section["thesis_text"]["value"] == "Luxury goods thesis"
+
+    # The existing (unrelated, ScreeningCandidate-sourced) rationale section is
+    # honestly "not available" here — never conflated with the new lineage.
+    rationale = content["discovery_rationale"]
+    assert rationale["available"] is False
+    assert rationale["note"]["value"] == "No screening candidate linked to this report."
 
 
 async def test_run_analysis_routes_to_llm_council(mock_db, enable_council) -> None:

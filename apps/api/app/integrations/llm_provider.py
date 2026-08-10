@@ -302,6 +302,21 @@ class AzureOpenAIResearchLLMClient(ResearchLLMClient):
         price_summary = company_snapshot.get("price_history_summary", {})
         provider_meta = company_snapshot.get("provider_metadata", {})
 
+        # Phase 32A Slice 6B (C3) — the price-quote currency is a DIFFERENT
+        # concept from the issuer's reporting currency above (e.g. LSE prices
+        # quote in pence/GBX while the issuer reports in GBP) and must never be
+        # silently omitted — that is exactly what let the model infer/conflate
+        # a currency for the price figure that was never actually validated
+        # for it. State explicitly when it is not confirmed.
+        _latest_close = price_summary.get("latest_close")
+        _price_currency = price_summary.get("currency")
+        if _latest_close is None:
+            latest_close_display = "N/A"
+        elif _price_currency and _price_currency != "not_sourced":
+            latest_close_display = f"{_latest_close} {_price_currency}"
+        else:
+            latest_close_display = f"{_latest_close} (currency not confirmed)"
+
         context = (
             f"Company: {identity.get('legal_name', 'N/A')} ({identity.get('ticker', 'N/A')})\n"
             f"Exchange: {identity.get('exchange', 'N/A')}\n"
@@ -315,7 +330,7 @@ class AzureOpenAIResearchLLMClient(ResearchLLMClient):
             f"Website: {profile.get('website', 'N/A')}\n"
             f"Description: {profile.get('description', 'N/A')}\n"
             f"Price data available: {price_summary.get('available', False)}\n"
-            f"Latest close: {price_summary.get('latest_close', 'N/A')}\n"
+            f"Latest close: {latest_close_display}\n"
             f"Data provider: {provider_meta.get('provider_name', 'N/A')} "
             f"(tier {provider_meta.get('source_tier', 'N/A')})\n"
             f"Is mock data: {provider_meta.get('is_mock', True)}\n"

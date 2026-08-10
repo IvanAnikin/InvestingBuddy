@@ -161,8 +161,11 @@ def _parse_stooq_csv(
     return PriceHistoryData(
         ticker=ticker.upper(),
         exchange=exchange,
-        # Stooq CSV does not include currency; caller overrides when exchange is known
-        currency="USD",
+        # Phase 32A Slice 6B (C3) — Stooq's CSV carries no currency field.
+        # Honestly None here; snapshot_builder resolves a real value via
+        # exchange_registry.price_quote_currency_for_exchange() or renders
+        # not_sourced — never a guessed/fabricated code.
+        currency=None,
         price_points=price_points,
         source_url=source_url,
         data_quality=DataQuality.B_single_credible,

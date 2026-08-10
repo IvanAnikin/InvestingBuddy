@@ -645,7 +645,11 @@ _APPENDIX_RECONCILE_NOTE = (
     "citations link a council claim to bounded evidence. Wherever the council cited "
     "evidence the council-claim-citation count is non-zero — this report is never a "
     "'no sources' state in that case. A metadata-only reference is never counted or "
-    "labelled as a financial fact. Human review required."
+    "labelled as a financial fact. Human review required. "
+    "The sources/citations counts above reflect only the deterministic "
+    "pre-council draft report's own citations; db_persisted_source_count / "
+    "db_persisted_citation_count below are the full persisted set for this "
+    "report including council-added evidence."
 )
 
 
@@ -1111,6 +1115,70 @@ def _build_discovery_rationale(candidate: ScreeningCandidate | None) -> dict[str
     }
 
 
+def _build_discovery_lineage_from_dict(discovery_lineage: dict[str, Any] | None) -> dict[str, Any]:
+    """
+    Phase 32A Slice 6B (C2) — render lineage from a REAL ``DiscoveryCandidate``
+    (+ parent ``DiscoveryRun``), threaded in as a plain dict by
+    ``market_discovery_service.run_candidate_analysis``.
+
+    This is intentionally separate from ``_build_discovery_rationale`` (which
+    reads a legacy ``ScreeningCandidate``): the two candidate models are
+    incompatible (``ScreeningCandidate.name``/``.candidate_status``/
+    ``.source_tier``/``.discovery_reasons_json`` vs
+    ``DiscoveryCandidate.company_name``/``.legal_name``/``.thesis_match_json``/
+    ``.rank``) and must not be conflated. Reads ONLY from the supplied dict —
+    never inferred from ticker/name matching, never fabricated.
+    """
+    if not discovery_lineage:
+        return {
+            "type": "discovery_lineage",
+            "available": False,
+            "note": {
+                "value": "No discovery-run candidate lineage linked to this report.",
+                "provenance": "missing_data",
+            },
+            "human_review_required": True,
+        }
+
+    return {
+        "type": "discovery_lineage",
+        "available": True,
+        "discovery_run_id": discovery_lineage.get("discovery_run_id"),
+        "discovery_candidate_id": discovery_lineage.get("discovery_candidate_id"),
+        "ticker": discovery_lineage.get("ticker"),
+        "exchange": discovery_lineage.get("exchange"),
+        "rank": {
+            "value": discovery_lineage.get("rank"),
+            "provenance": "sourced_fact",
+        },
+        "candidate_score": {
+            "value": discovery_lineage.get("candidate_score"),
+            "provenance": "sourced_fact",
+        },
+        "candidate_score_grade": {
+            "value": discovery_lineage.get("candidate_score_grade"),
+            "provenance": "sourced_fact",
+        },
+        "score_explanation": {
+            "value": discovery_lineage.get("score_explanation"),
+            "provenance": "sourced_fact",
+        },
+        "thesis_relevance_score": {
+            "value": discovery_lineage.get("thesis_relevance_score"),
+            "provenance": "sourced_fact",
+        },
+        "thesis_match": {
+            "value": discovery_lineage.get("thesis_match_json"),
+            "provenance": "sourced_fact",
+        },
+        "thesis_text": {
+            "value": discovery_lineage.get("thesis_text"),
+            "provenance": "sourced_fact",
+        },
+        "human_review_required": True,
+    }
+
+
 def _build_data_availability_summary(
     financial_data_summary: dict[str, Any] | None,
     fundamentals_available: bool | None,
@@ -1125,6 +1193,18 @@ def _build_data_availability_summary(
     is_mock = provenance_to_is_mock(data_provenance)
     review_for_mock = data_provenance == "mock"
 
+    # Phase 32A Slice 6B (C6) — this is a NARROWER, financial-agent-only metric
+    # ("missing_financial_fields_count"), genuinely different in scope from the
+    # whole-report cross-source union in _build_missing_information(). The
+    # field is named to make that scope explicit rather than read as if it
+    # were the report-wide count (which invited the observed "17 vs 0"
+    # confusion). See "missing_information" for the full cross-source gap list.
+    cross_ref_note = (
+        "See the 'missing_information' section for the full, whole-report "
+        "cross-source gap list — this count is scoped to financial-agent "
+        "fields only."
+    )
+
     if financial_data_summary:
         return {
             "type": "data_availability_summary",
@@ -1133,7 +1213,9 @@ def _build_data_availability_summary(
             "data_provenance": data_provenance,
             "fundamentals_available": fundamentals_available or False,
             "available_count": financial_data_summary.get("available_count", 0),
-            "missing_count": financial_data_summary.get("missing_count", 0),
+            "missing_financial_fields_count": financial_data_summary.get(
+                "missing_count", 0
+            ),
             "warnings_count": financial_data_summary.get("warnings_count", 0),
             "available_fields": {
                 "value": financial_data_summary.get("available_fields", []),
@@ -1144,6 +1226,7 @@ def _build_data_availability_summary(
                 "provenance": "sourced_fact",
             },
             "warnings": financial_data_summary.get("warnings", []),
+            "scope_note": cross_ref_note,
             "human_review_required": review_for_mock or not fundamentals_available,
         }
 
@@ -1154,11 +1237,15 @@ def _build_data_availability_summary(
         "data_provenance": data_provenance,
         "fundamentals_available": fundamentals_available or False,
         "available_count": 0,
-        "missing_count": 0,
+        # Phase 32A Slice 6B (C6) — no financial_data_summary means this metric
+        # was genuinely never computed. A bare 0 read as "verified complete",
+        # which is false — None (not-available) is the honest tri-state value.
+        "missing_financial_fields_count": None,
         "note": {
             "value": "Financial data summary not available from analysis workflow.",
             "provenance": "missing_data",
         },
+        "scope_note": cross_ref_note,
         "human_review_required": True,
     }
 
@@ -1667,11 +1754,15 @@ def _build_research_completeness_review(
             "value": research_completeness_summary.get("incomplete_sections", []),
             "provenance": "sourced_fact",
         },
-        "blocking_gaps_count": research_completeness_summary.get(
-            "blocking_gaps_count", 0
+        # Phase 32A Slice 6B (C5) — the producer (research_completeness_agent)
+        # only ever writes "blocking_gaps"/"non_blocking_gaps" LISTS, never a
+        # "_count"-suffixed key, so ``.get(..., 0)`` used to silently default
+        # to 0 every time (the observed "32 vs 0" contradiction).
+        "blocking_gaps_count": len(
+            research_completeness_summary.get("blocking_gaps", []) or []
         ),
-        "non_blocking_gaps_count": research_completeness_summary.get(
-            "non_blocking_gaps_count", 0
+        "non_blocking_gaps_count": len(
+            research_completeness_summary.get("non_blocking_gaps", []) or []
         ),
         "next_research_tasks": {
             "value": research_completeness_summary.get("next_research_tasks", []),
@@ -1723,6 +1814,14 @@ def _build_missing_information(
         "note": (
             "All missing items must be resolved or explicitly acknowledged "
             "before a report can be approved internally."
+        ),
+        # Phase 32A Slice 6B (C6) — this is the full, whole-report cross-source
+        # union (snapshot + financial agent + research completeness +
+        # screening candidate). See 'data_availability_summary' for the
+        # narrower financial-agent-only missing-field count.
+        "scope_note": (
+            "See the 'data_availability_summary' section for the narrower "
+            "financial-agent-only missing-field count."
         ),
     }
 
@@ -2030,11 +2129,19 @@ def _build_source_citation_appendix(
             "value": source_rows,
             "total": len(source_rows),
             "provenance": "sourced_fact",
+            # Phase 32A Slice 6B (C9) — labeling only, no logic change. This
+            # envelope is scoped to the deterministic pre-council Phase-9
+            # draft's OWN citations, NOT the full persisted set (which
+            # includes council-added evidence) — see the six-count
+            # reconciliation block (``db_persisted_source_count`` /
+            # ``db_persisted_citation_count`` etc.) merged in alongside this.
+            "scope": "deterministic_pre_council_draft",
         },
         "citations": {
             "value": citation_rows,
             "total": len(citation_rows),
             "provenance": "sourced_fact",
+            "scope": "deterministic_pre_council_draft",
         },
         "human_review_required": False,
     }
@@ -2508,6 +2615,63 @@ def _memo_human_review_checklist_snapshot(checklist: list[Any]) -> dict[str, Any
     }
 
 
+# Phase 32A Slice 6B (C8) — human-readable labels for the real Slice-5B.2
+# OCR-specific failure codes (``ingestion_status.FAILURE_OCR_*``). Only ever
+# produced when OCR actually ran (see ingestion_status.py's own note).
+_OCR_FAILURE_CODE_LABELS: dict[str, str] = {
+    "ocr_document_too_large": "the document exceeded the OCR size limit",
+    "ocr_page_limit_exceeded": "the document exceeded the OCR page limit",
+    "ocr_timeout": "OCR timed out",
+    "ocr_provider_throttled": "the OCR provider throttled the request",
+    "ocr_provider_error": "the OCR provider returned an error",
+    "ocr_malformed_result": "the OCR result was malformed",
+    "ocr_low_confidence": "OCR confidence was too low to accept",
+    "ocr_budget_exhausted": "the OCR budget for this run was exhausted",
+}
+
+
+def _ocr_status_note(council_result: Any, doc_rows: list[dict[str, Any]]) -> str:
+    """
+    Real-state OCR status text for the primary-evidence gap summary.
+
+    Replaces the stale, unconditional "no OCR in this phase" wording that
+    predated Slice 5B.2's real Azure Document Intelligence OCR adapter (now
+    deployed and enabled). Reads ``settings.primary_document_ocr_enabled`` and
+    each discovered document's real ``failure_code`` (the closed
+    ``ingestion_status`` vocabulary) — never a hardcoded literal.
+    """
+    if not settings.primary_document_ocr_enabled:
+        return "(OCR disabled)"
+
+    artifacts = list(getattr(council_result, "primary_document_artifacts", None) or [])
+
+    if not artifacts and not doc_rows:
+        return "(no document candidate discovered — OCR was not reached)"
+
+    if doc_rows:
+        # This gap-summary branch is reached only when doc_rows is empty, but
+        # this stays correct if this helper is ever called with a non-empty
+        # doc_rows from elsewhere: native extraction already produced
+        # excerpts/facts, so OCR was never eligible to run.
+        return "(OCR not eligible — native extraction succeeded)"
+
+    ocr_codes: list[str] = sorted(
+        {
+            str(getattr(a, "failure_code", None))
+            for a in artifacts
+            if getattr(a, "failure_code", None) in _OCR_FAILURE_CODE_LABELS
+        }
+    )
+    if ocr_codes:
+        return f"(OCR attempted and failed — {_OCR_FAILURE_CODE_LABELS[ocr_codes[0]]})"
+
+    # A document candidate WAS discovered (artifacts non-empty) but none
+    # reached "extracted" and none carries an OCR-specific failure code — OCR
+    # was reachable but never actually attempted for this document set (e.g.
+    # a pre-OCR failure such as a blocked host or unsupported content type).
+    return "(document candidate discovered but OCR was not attempted for it)"
+
+
 def _build_research_memo(
     report_content: dict[str, Any],
     council_result: Any,
@@ -2792,11 +2956,11 @@ def _build_research_memo(
             "note": (
                 f"{primary_source_reference_count} primary-source reference(s) are "
                 "available and are listed above. However, issuer document TEXT was "
-                "NOT extracted (the reports are scanned or JS-gated; no OCR in this "
-                "phase) and NO primary financial facts were parsed. References locate "
-                "verified primary sources for human review; they are not yet extracted "
-                "evidence or confirmed facts, so primary-source validation remains "
-                "outstanding."
+                "NOT extracted (the reports are scanned or JS-gated "
+                f"{_ocr_status_note(council_result, doc_rows)}) and NO primary "
+                "financial facts were parsed. References locate verified primary "
+                "sources for human review; they are not yet extracted evidence or "
+                "confirmed facts, so primary-source validation remains outstanding."
             ),
             "human_review_required": True,
         }
@@ -2819,7 +2983,8 @@ def _build_research_memo(
             "note": {
                 "value": (
                     "0 primary facts — no issuer primary document was extracted, or "
-                    "the reports were scanned / JS-gated (no OCR in this phase). "
+                    "the reports were scanned / JS-gated "
+                    f"{_ocr_status_note(council_result, doc_rows)}. "
                     "Primary-source validation is still outstanding."
                 ),
                 "provenance": "missing_data",
@@ -3194,6 +3359,7 @@ def _assemble_final_report_content(
     schema_valid: bool | None,
     human_review_required: bool | None,
     catalyst_discovery: dict[str, Any] | None = None,
+    discovery_lineage: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Assemble all required sections into a structured report dict.
@@ -3253,6 +3419,7 @@ def _assemble_final_report_content(
             company_snapshot, company_record
         ),
         "discovery_rationale": _build_discovery_rationale(candidate),
+        "discovery_lineage": _build_discovery_lineage_from_dict(discovery_lineage),
         "data_availability_summary": _build_data_availability_summary(
             financial_data_summary,
             fundamentals_available,
@@ -4019,6 +4186,7 @@ class FinalReportGeneratorService:
         scorecard: Scorecard | None = None,
         citations: list[Citation] | None = None,
         sources: list[Source] | None = None,
+        discovery_lineage: dict[str, Any] | None = None,
     ) -> FinalReportResponse:
         """
         Generate a final report draft directly from an in-memory workflow state.
@@ -4043,6 +4211,7 @@ class FinalReportGeneratorService:
             citations=citations or [],
             sources=sources or [],
             state=state,
+            discovery_lineage=discovery_lineage,
         )
 
     async def validate_final_report(
@@ -4211,6 +4380,7 @@ class FinalReportGeneratorService:
         citations: list[Citation],
         sources: list[Source],
         state: dict[str, Any],
+        discovery_lineage: dict[str, Any] | None = None,
     ) -> FinalReportResponse:
         company_snapshot = state.get("company_snapshot")
         financial_data_summary = state.get("financial_data_summary")
@@ -4268,6 +4438,7 @@ class FinalReportGeneratorService:
             schema_valid=schema_valid,
             human_review_required=human_review_required,
             catalyst_discovery=catalyst_discovery,
+            discovery_lineage=discovery_lineage,
         )
 
         # Derive identity early — needed for both the council and the title.
@@ -4540,6 +4711,19 @@ class FinalReportGeneratorService:
         if isinstance(_workflow_status, dict):
             _workflow_status["schema_valid"] = validation.schema_valid
 
+        # Phase 32A Slice 6B (C4) — the Committee's own quality-gate snapshot is
+        # set ONCE, early, from the Phase-9 minimal-draft validation (often
+        # false at that stage) and is never otherwise refreshed. Patch it here,
+        # alongside the RC-6 workflow_status refresh above, from the SAME
+        # authoritative post-final-assembly ``validation.schema_valid`` so the
+        # stored report can never contradict itself (top-level true, Committee
+        # section stale-false, or vice versa).
+        _committee = report_content.get("committee_chair_summary")
+        if isinstance(_committee, dict):
+            _qgs = _committee.get("quality_gate_status")
+            if isinstance(_qgs, dict) and isinstance(_qgs.get("value"), dict):
+                _qgs["value"]["schema_valid"] = validation.schema_valid
+
         # Phase 32A Slice-1 hotfix — refresh the Phase-31 memo's EMBEDDED checklist
         # snapshot from the FINAL authoritative checklist above. The memo is built
         # (and safety-scanned) BEFORE validation, so its embedded snapshot would
@@ -4584,6 +4768,10 @@ class FinalReportGeneratorService:
             # mixed / unknown). Stored in this flexible metadata dict, so no
             # schema/migration change is needed.
             "data_provenance": report_provenance,
+            # Phase 32A Slice 6B (C2) — real DiscoveryCandidate/DiscoveryRun
+            # lineage (never a ScreeningCandidate). None when not available
+            # (e.g. no discovery-run candidate is genuinely in play).
+            "discovery_lineage": discovery_lineage,
         }
 
         # Phase 32A Slice 3 — resolve the report's lineage from EXPLICIT signals

@@ -1295,12 +1295,15 @@ async def run_candidate_analysis(
     # Ensure the company exists so the workflow can resolve it. Routed through
     # the shared helper so a company row still stuck on its bare-ticker stub
     # name is upgraded to the candidate's resolved name before the full
-    # analysis (and its report title) is generated.
+    # analysis (and its report title) is generated. ``legal_name`` is a real,
+    # sourced identity value populated earlier in the discovery pipeline and
+    # takes precedence over ``company_name`` (which is sometimes just the
+    # ticker) when present.
     company = await ensure_company(
         db,
         candidate.ticker,
         candidate.exchange,
-        company_name=candidate.company_name,
+        company_name=candidate.legal_name or candidate.company_name,
     )
 
     final_state = await runner(
@@ -1338,6 +1341,37 @@ async def run_candidate_analysis(
         # legacy draft. Identity + research data already come from
         # ``company_record`` (built from the Company) and the workflow state's
         # ``company_snapshot``, so we pass ``candidate=None``.
+        #
+        # Phase 32A Slice 6B (C2) — the real discovery-run lineage is NOT lost
+        # though: build an additive, plain-dict lineage block straight off this
+        # (real, ORM) DiscoveryCandidate + its parent DiscoveryRun, threaded
+        # through separately so "No screening candidate is linked" no longer
+        # hides a real discovery-run origin. Never inferred/fabricated — only
+        # fields that already exist on the candidate/run.
+        discovery_lineage: dict[str, Any] | None = None
+        try:
+            discovery_run = await get_run(db, candidate.discovery_run_id)
+            discovery_lineage = {
+                "discovery_run_id": str(candidate.discovery_run_id),
+                "discovery_candidate_id": str(candidate.id),
+                "ticker": candidate.ticker,
+                "exchange": candidate.exchange,
+                "rank": candidate.rank,
+                "candidate_score": candidate.candidate_score,
+                "candidate_score_grade": candidate.candidate_score_grade,
+                "score_explanation": candidate.score_explanation,
+                "thesis_relevance_score": candidate.thesis_relevance_score,
+                "thesis_match_json": candidate.thesis_match_json,
+                "thesis_text": discovery_run.thesis_text if discovery_run else None,
+            }
+        except Exception as exc:  # noqa: BLE001 - lineage is best-effort, never fatal
+            logger.warning(
+                "discovery_lineage_build_failed candidate=%s error=%s",
+                str(candidate_id),
+                type(exc).__name__,
+            )
+            discovery_lineage = None
+
         final_resp = await gen(
             db,
             state=final_state,
@@ -1346,6 +1380,7 @@ async def run_candidate_analysis(
             source_report=source_report,
             citations=citations,
             sources=sources,
+            discovery_lineage=discovery_lineage,
         )
         linked_report_id = final_resp.report_id
         report_summary = _summary_from_final_response(final_resp)

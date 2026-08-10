@@ -28,6 +28,7 @@ from app.integrations.financial_data_provider import (
     PriceHistoryData,
     ProviderResponseMetadata,
 )
+from app.services.exchange_registry import price_quote_currency_for_exchange
 
 # ---------------------------------------------------------------------------
 # Datapoint builder
@@ -117,9 +118,19 @@ def build_company_snapshot(
         pts = prices.price_points
         dates = [p.date for p in pts]
         closes = [p.close for p in pts]
+        # Phase 32A Slice 6B (C3) — the raw provider currency is honestly None
+        # when the provider genuinely doesn't know it (see eodhd_provider /
+        # eodhd_price_only_provider). Resolve a REAL, non-guessed quote
+        # currency from the exchange registry when the exchange is known
+        # (e.g. LSE -> GBX pence, distinct from the GBP reporting currency);
+        # never fabricate a specific currency code when neither is available —
+        # fall back to the honest "not_sourced" marker instead.
+        resolved_currency = prices.currency or price_quote_currency_for_exchange(
+            prices.exchange or profile.exchange
+        )
         price_summary = {
             "available": True,
-            "currency": prices.currency,
+            "currency": resolved_currency or "not_sourced",
             "data_points_count": len(pts),
             "date_range": {"start": min(dates), "end": max(dates)},
             "latest_close": closes[-1] if closes else None,
@@ -316,10 +327,17 @@ def build_schema_draft(
         )
         latest = prices.price_points[-1]
         price_note = _provider_note(price_meta)
+        # Phase 32A Slice 6B (C3) — same honest resolution as price_summary
+        # above: a real, non-guessed currency from the exchange registry when
+        # available, "not_sourced" (never a fabricated code) otherwise — so
+        # this legacy draft section never contradicts the readable snapshot.
+        resolved_price_currency = prices.currency or price_quote_currency_for_exchange(
+            prices.exchange or profile.exchange
+        )
         draft["_phase6_price_snapshot"] = {
             "latest_close": _make_datapoint(
                 value=latest.close,
-                unit=prices.currency,
+                unit=resolved_price_currency or "not_sourced",
                 as_of=latest.date,
                 source_tier=price_tier,
                 source_name=f"{price_meta.provider_name} OHLCV",
@@ -328,7 +346,7 @@ def build_schema_draft(
                 note=price_note if price_meta.is_mock else None,
             ),
             "data_points_count": len(prices.price_points),
-            "currency": prices.currency,
+            "currency": resolved_price_currency or "not_sourced",
         }
 
     # Phase 13: populate snapshot_financials from EODHD fundamentals
