@@ -935,6 +935,11 @@ export interface FieldReview {
   next_research_tasks?: string[];
   agent_outputs?: Record<string, unknown>;
   warnings?: string[];
+  // Set when the LLM field chair did not complete and a deterministic,
+  // non-consensus synthesis was attached instead. The failed field_chair entry
+  // is still present in `agent_outputs`.
+  chair_fallback_used?: boolean;
+  deterministic_field_chair?: Record<string, unknown> | null;
   candidates?: FieldReviewCandidateRow[];
   safety_valid?: boolean;
   human_review_required?: boolean;

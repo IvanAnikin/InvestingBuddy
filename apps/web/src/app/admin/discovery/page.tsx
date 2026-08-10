@@ -1275,6 +1275,13 @@ function FieldReviewBody({ review }: { review: FieldReview }) {
     })
     .filter((x): x is { name: string; summary: string } => x !== null);
 
+  // The deterministic field-chair fallback fires when the LLM field chair could
+  // not complete. Its `summary` is a bounded, non-consensus synthesis — never a
+  // ranking, a recommendation, or a valuation conclusion.
+  const chairFallbackSummary =
+    (review.deterministic_field_chair as { summary?: string } | null)?.summary ??
+    null;
+
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
@@ -1315,6 +1322,24 @@ function FieldReviewBody({ review }: { review: FieldReview }) {
           value={review.publication_ready ? "yes" : "no"}
         />
       </div>
+
+      {review.chair_fallback_used && (
+        <div
+          data-testid="field-review-chair-fallback"
+          className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200"
+        >
+          <StatusPill label="Deterministic fallback used" color="amber" />
+          <p className="mt-1">
+            The LLM field chair did not complete, so a deterministic,
+            non-consensus summary was attached instead. No comparative ranking
+            was produced — the priority buckets below are empty for that reason,
+            not because any company was assessed and set aside.
+          </p>
+          {chairFallbackSummary && (
+            <p className="mt-1 text-slate-300">{chairFallbackSummary}</p>
+          )}
+        </div>
+      )}
 
       {caveated.length > 0 && (
         <p

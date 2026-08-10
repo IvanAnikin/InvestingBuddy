@@ -1252,6 +1252,20 @@ provider `retry-after`, capped jittered exponential backoff, and a reserve
 `clock` / `sleeper` / `rng` are injectable so tests drive the budget
 deterministically. There is no unbounded loop anywhere.
 
+**Deterministic field-chair fallback.** If the LLM `field_chair` still does not
+complete, a deterministic, non-consensus field summary is attached
+(`chair_fallback_used=true`, `deterministic_field_chair`,
+`field_quality="failed"`). All **three** priority buckets stay **empty** — the
+fallback never fabricates a ranking, and it deliberately does not push companies
+into `blocked_insufficient_evidence`, which asserts something about *that
+company's own* evidence rather than about the chair. `field_uncertainties`
+states plainly that no ranking was produced, names which comparative agents did
+and did not complete (the completed ones' summaries remain usable), and requires
+human review. The failed LLM-chair entry is kept in `agents` / `agent_outputs`
+so completion stays honestly visible as partial; the fallback runs through the
+same `check_and_sanitize` safety/citation gate as any agent output. Mirrors the
+company council (Slice 4) and the discovery council (Slice 6A).
+
 ### Persistence + surface
 
 Results persist to `field_review_runs` + `field_review_candidate_summaries`

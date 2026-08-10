@@ -1756,7 +1756,12 @@ fields `discovery_run_id`, `field_review_run_id`, `status`, `review_available`,
 buckets `strongest_candidates` / `second_tier` / `blocked_insufficient_evidence`
 (each a list of `{company_ref, discovery_candidate_id, report_id, ticker,
 exchange, rationale, citation_ids, confidence, caveats}`), `field_uncertainties`,
-`evidence_gaps`, `next_research_tasks`, `agent_outputs`, `warnings`; the honest
+`evidence_gaps`, `next_research_tasks`, `agent_outputs`, `warnings`;
+`chair_fallback_used` (`true` only when the LLM `field_chair` did not complete
+and a deterministic non-consensus synthesis was attached — the failed
+`field_chair` entry stays visible in `agent_outputs`) and
+`deterministic_field_chair` (that synthesis, same shape as an `agent_outputs`
+entry, `null` otherwise); the honest
 per-candidate roster `candidates[]` (`{citation_ref, discovery_candidate_id,
 report_id, ticker, exchange, included, exclusion_reason, data_provenance,
 priority_tier}`) covering **included and excluded** candidates alike; plus
