@@ -878,9 +878,10 @@ See `.claude/skills/langgraph-agents/SKILL.md` for agent output schema requireme
 
 ## LLM Council Reliability (Phase 32A Slice 4)
 
-> **Status: implemented on branch `phase-32a-slice4-council-reliability` (`5bbaaf4`)
-> — PR open, NOT yet merged / deployed / staging-validated.** Gated by a new
-> default-OFF master flag `LLM_COUNCIL_RETRY_ENABLED`; with it off the council is
+> **Status: ✅ CLOSED + STAGING-VALIDATED (PR #76 → `main` `11ab66b`, 2026-08-04).**
+> Closure: `docs/development/closures/phase-32a-slice4.md`. Gated by the
+> default-OFF master flag `LLM_COUNCIL_RETRY_ENABLED` (flipped ON on staging and
+> **KEPT ON**); with it off the council is
 > byte-for-byte identical to today (one attempt per agent, no retry, no fallback,
 > null `committee_label` on chair failure).
 
@@ -943,11 +944,26 @@ completions, evidence, or secrets.
 
 ## Discovery Council Reliability Parity (Phase 32A Slice 6A)
 
-> **Status: implemented on branch `phase-32a-slice6a-discovery-council-reliability`
-> — PR open, NOT yet merged / deployed / staging-validated.** Gated by a new
-> default-OFF flag `LLM_DISCOVERY_COUNCIL_RETRY_ENABLED`; with it off the
-> discovery council is byte-for-byte identical to today (one attempt per agent,
-> no retry, no fallback).
+> **Status: ✅ CLOSED + STAGING-VALIDATED (2026-08-10).** PR **#88** (squash) →
+> `main` **`25abc7b`**; hotfix PR **#94** (squash) → `main` **`a1e52a6`**; deployed
+> to staging at **`b2aa1be`**. Ships behind the default-OFF flag
+> `LLM_DISCOVERY_COUNCIL_RETRY_ENABLED` (flipped ON on staging for validation and
+> **KEPT ON**); with it off the discovery council is byte-for-byte identical to its
+> prior behaviour (one attempt per agent, no retry, no fallback). Closure:
+> `docs/development/closures/phase-32a-slice6a.md`.
+>
+> **Hotfix #94 (visibility-only, found live on staging):** the deterministic
+> fallback fired correctly internally, but `DiscoveryCouncilReviewResponse` never
+> declared `chair_fallback_used` / `deterministic_discovery_chair` as fields, so
+> Pydantic v2 **silently dropped both** before they reached any API consumer,
+> including the admin UI. Fields are now declared.
+>
+> **Live proof:** on discovery run `6b0700a9-...` under real Azure contention the
+> council completed 3/8 agents, reported `run_quality="failed"`, and the
+> deterministic fallback fired with an honest synthesis naming exactly which agents
+> did and did not complete — no fabricated consensus. **Honest limitation:** the
+> *recovery* path (transient failure → retry → success → 8/8) was **not** observed
+> live; it is covered by offline tests only.
 
 The discovery-run LLM council (`run_discovery_council` — 8 agents:
 `run_coordinator`, `candidate_prioritization`, `novelty_coverage`,
@@ -1000,8 +1016,11 @@ byte-for-byte wording preservation for the shared engine's two callers.
 
 ## Full-Analysis Report Integrity Reconciliation (Phase 32A Slice 6B)
 
-> **Status: implemented on branch `phase-32a-slice6b-report-integrity` — PR open,
-> NOT yet merged / deployed / staging-validated.**
+> **Status: ✅ CLOSED + STAGING-VALIDATED (2026-08-10).** PR **#90** (squash) →
+> `main` **`d7c8774`**, plus two corrective hotfixes each triggered by a real
+> staging failure — **#95** → **`977cb22`** (identity) and **#93** → **`734fac6`**
+> (currency) — and a CI-only fix **#92** → **`7f4c985`**. Deployed to staging at
+> **`b2aa1be`**. Closure: `docs/development/closures/phase-32a-slice6b.md`.
 
 Nine independently-root-caused report-integration fixes found during an E2E QA
 pass on a real staging report (Burberry Group plc, LSE):
@@ -1012,6 +1031,15 @@ pass on a real staging report (Burberry Group plc, LSE):
   report's title/legal_name no longer collapses to the bare ticker. The
   existing `is_placeholder_company_name` upgrade guard is unchanged — a
   genuine existing name is never overwritten.
+  **Completed by hotfix #95 (`977cb22`), found live:** seeding the DB row was
+  not enough, because `_build_company_identity()` in `final_report_generator.py`
+  **always** preferred `company_snapshot` over the DB-seeded `company_record` —
+  and a snapshot's own `legal_name` can legitimately BE the ticker (a deliberate
+  anti-fabrication stub in `free_real_provider.py` for exchanges SEC EDGAR does
+  not cover, which exists because "BA.LSE became THE BOEING COMPANY" once really
+  happened). The generator now prefers the DB record **only** when the snapshot's
+  own name is a provable placeholder (`is_placeholder_company_name()`), never
+  otherwise — the anti-fabrication stub keeps winning against guesswork.
 - **Discovery lineage.** A `discovery_lineage` block (discovery_run_id,
   candidate rank/score, thesis relevance/match, sourced from the run's own
   `DiscoveryCandidate`/`DiscoveryRun` rows — never inferred from ticker/name
@@ -1029,6 +1057,14 @@ pass on a real staging report (Burberry Group plc, LSE):
   reporting currency (e.g. GBP) — the two are never conflated. The LLM
   narrative prompt now states `"(currency not confirmed)"` instead of
   silently omitting the field and letting the model infer/guess one.
+  **Completed by hotfix #93 (`734fac6`), found live:** the mainline fix missed a
+  fourth, separate path used by the actual production flow
+  (`provider_name="free_real"`) — `FreeRealSnapshot.to_dict()` never threaded
+  currency through and `enrich_snapshot_with_free_real()` independently hardcoded
+  `"currency": "USD"`; both now follow the same real-value → registry →
+  `not_sourced` pattern. **Known, deliberately unfixed (tracked follow-up):** a
+  related USD default remains in `market_metrics_enrichment.py`'s derived
+  market-cap fields — genuinely separate scope, recorded rather than hidden.
 - **Schema-valid staleness.** `committee_chair_summary.quality_gate_status.schema_valid`
   is now refreshed from the same authoritative post-final-assembly validation
   result the existing RC-6 hotfix already uses for `workflow_status` and the
@@ -1058,13 +1094,51 @@ pass on a real staging report (Burberry Group plc, LSE):
 None of these fixes require an Alembic migration — all use existing JSONB
 columns or pure Python/display logic.
 
+## Final-Report Regeneration Crash Fix (Phase 32A Slice 6C)
+
+> **Status: ✅ CLOSED + STAGING-VALIDATED (2026-08-10).** PR **#89** (squash) →
+> `main` **`89b7f41`** — no hotfix required. Deployed to staging at **`b2aa1be`**.
+> No migration, no new flag, no schema/contract change. Closure:
+> `docs/development/closures/phase-32a-slice6c.md`.
+
+Regenerating a final report from an **already-completed** report ("Generate
+Internal Final Report Draft") failed with `unhashable type: 'dict'`.
+
+**Root cause, reproduced locally rather than guessed:** `generate_from_report`
+re-parses an already-final report's
+`committee_chair_summary.provisional_internal_status`. On a rendered report that
+value is no longer a bare string but a **datapoint dict**
+(`{"value": ..., "provenance": ...}`), and that dict hit an unguarded
+`status not in ALLOWED_INTERNAL_STATUSES` set-membership check.
+
+**Fix:** a targeted `_coerce_status_value()` helper applied at all **4**
+vulnerable sites, normalizing a status to its scalar form before any
+set-membership check. A related diagnosability gap was closed at the same time:
+all **6** final-report endpoints previously discarded tracebacks (`str(exc)`
+only), which is why the crash surfaced as an opaque message with no server-side
+stack; they now call `logger.exception()` (structured and secret-free per Phase
+27.1D — ids, statuses and exception context only).
+
+**Live proof** on fresh BRBY report `7d8be857-...`: generate → HTTP 201
+(`17f150ee-...`; `schema_valid=true`, `safety_valid=true`,
+`human_review_required=true`, `publication_ready=false`, 8 council agents
+completed / 0 failed), validate → HTTP 200, and a **second regeneration from the
+regenerated report itself** → HTTP 201 (`ecf79192-...`) — the exact
+double-regeneration shape that previously crashed. No `TypeError` anywhere.
+Regeneration never changes the safety posture: `publication_ready` stays `false`
+and `human_review_required` stays `true`.
+
 ## Primary-Document Ingestion (Phase 32A Slice 5)
 
-> **Status: implemented on branch `phase-32a-slice5` — PR open, NOT yet merged /
-> deployed / staging-validated.** Gated by a default-OFF master flag
-> `PRIMARY_DOCUMENT_INGESTION_ENABLED`; with it off the connector / council /
-> evidence-pack / persistence paths are byte-for-byte unchanged (Phase 29B.2
-> behaviour), and migration `013`'s two tables stay empty.
+> **Status: ✅ CLOSED + STAGING-VALIDATED as a FOUNDATION, with an explicit
+> efficacy caveat (Slice 5A: PR #77 → `main` `354a5ba`, 2026-08-04; migration
+> `013` applied on staging).** Gated by the default-OFF master flag
+> `PRIMARY_DOCUMENT_INGESTION_ENABLED` (flipped ON on staging and **KEPT ON**);
+> with it off the connector / council / evidence-pack / persistence paths are
+> byte-for-byte unchanged (Phase 29B.2 behaviour). The later Slices 5B.1, 5B.2 and
+> 5B.3 build on this. **Phase 32A as a whole is NOT fully closed** — see
+> `docs/development/closures/phase-32a-final-status.md`; closure for this slice:
+> `docs/development/closures/phase-32a-slice5a.md`.
 
 Slice 5 deepens the Phase 29B.2 extractor so the single-company council can
 eventually reason from an issuer's OWN primary documents (annual report /
@@ -1129,28 +1203,60 @@ Logging is counts / status only — never document bytes or extracted text.
 
 ## Deep Field Review (Phase 32A Slice 6D)
 
-> **Status: implemented on branch `feature/phase-32a-slice6d-deep-field-review` —
-> PR open, NOT yet merged / deployed / staging-validated.** Ships **default-OFF**
-> behind `LLM_FIELD_REVIEW_COUNCIL_ENABLED` (and, like every council, the shared
-> `LLM_COUNCIL_ENABLED` gate). With either flag off no LLM call is made, no fake
-> output is produced in production, and migration `015`'s two tables stay empty.
+> **Status: ✅ CLOSED + STAGING-VALIDATED (2026-08-10).** PR **#91** (squash) →
+> `main` **`dee5998`**; hotfix PR **#96** (squash) → `main` **`b2aa1be`**;
+> migration **`015` applied + schema-verified on staging** (`alembic current` =
+> `015`, head); deployed to staging at **`b2aa1be`**. Ships **default-OFF** behind
+> `LLM_FIELD_REVIEW_COUNCIL_ENABLED` (flipped ON on staging for validation and
+> **KEPT ON**) and, like every council, the shared `LLM_COUNCIL_ENABLED` gate. With
+> either flag off no LLM call is made, no fake output is produced in production,
+> and migration `015`'s two tables stay empty. Closure:
+> `docs/development/closures/phase-32a-slice6d.md`.
+>
+> **Hotfix #96, found on the first-ever live run:** `field_chair` had **no
+> deterministic fallback at all** (unlike the company council/Slice 4 and the
+> discovery council/Slice 6A), so when it failed all three priority buckets
+> silently stayed empty with no explanation. The fallback described below was
+> added, and `chair_fallback_used` / `deterministic_field_chair` were threaded
+> storage → API → UI (`FieldReviewResponse.from_row()` uses explicit field reads,
+> not a spread, so the explicit read lines were added and **proven necessary** via
+> a remove-and-watch-the-test-fail check).
 
-### Why a third council
+### Why a third council — Discovery Council vs. Deep Field Review
 
-The codebase now has **three** distinct councils. They answer different questions
-and must never be conflated in code, API, UI, or docs:
+The codebase has **three** distinct councils. They answer different questions and
+must never be conflated in code, API, UI, or docs:
 
-| Council | Scope | Runs | Input |
-|---|---|---|---|
-| **Discovery Council** (28B) | one discovery run's **candidate list** | **before** any full analysis exists | shallow candidate signals |
-| **Company Council** (28A) | **one** company | during that company's analysis | that company's evidence pack |
-| **Deep Field Review** (32A/6D) | **several** companies from ONE run | **after** 2+ of them already have a **completed** full analysis | those companies' **already-persisted reports** |
+| Council | Scope | Runs | Input | Output |
+|---|---|---|---|---|
+| **Discovery Council** (28B) | one discovery run's **candidate list** | **before** any full analysis exists | shallow candidate signals | run-level review of the candidate list |
+| **Company Council** (28A) | **one** company | during that company's analysis | that company's evidence pack | that company's committee-chair verdict |
+| **Deep Field Review** (32A/6D) | **several** companies from ONE run | **after** 2+ of them already have a **completed** full analysis | those companies' **already-persisted reports** | internal research-priority shortlist across those companies |
 
-The Deep Field Review fills the gap between them: a **comparative** review that
-reads completed deep analyses and produces an internal **research-priority
-shortlist** — which company deserves the next unit of research effort, given the
-evidence already gathered. It **never re-analyses, re-fetches, or recomputes**
-anything.
+The distinction that matters most in practice is **Discovery Council vs. Deep
+Field Review**, because both operate at the level of a discovery run:
+
+- The **Discovery Council** is **shallow and upstream**. It triages a candidate
+  list *before* any deep evidence exists, using only the discovery signals
+  gathered during the run. It cannot compare companies on financials, primary
+  documents or council verdicts, because none of those exist yet.
+- The **Deep Field Review** is **deep and downstream**. It runs only once at least
+  `FIELD_REVIEW_MIN_CANDIDATES` (default `2`) candidates from that same run have a
+  **completed, schema-valid full analysis**, and it reads exclusively from those
+  already-persisted reports. It **never re-analyses, re-fetches, or recomputes**
+  anything, and it never re-runs a company-council agent.
+
+It fills the gap between the other two: a **comparative** review that reads
+completed deep analyses and answers "which company deserves the next unit of
+research effort, given the evidence already gathered". It is a **prioritization**
+of internal research effort — not a rating, not advice, and never published.
+
+The two are kept visibly separate on every surface: distinct DB tables
+(`field_review_runs` / `field_review_candidate_summaries` vs. the discovery-council
+payload), distinct endpoints, distinct flags
+(`LLM_FIELD_REVIEW_COUNCIL_ENABLED` vs. `LLM_DISCOVERY_COUNCIL_ENABLED`), and a
+distinctly labelled and styled admin panel sitting
+below — never merged into — the Discovery Council panel.
 
 ### Input resolution (`field_review_service.resolve_field_candidates`)
 

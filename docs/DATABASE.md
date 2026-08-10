@@ -54,11 +54,12 @@ alembic revision --autogenerate -m "short description"
 | 010 | `010_add_market_discovery.py` | creates `discovery_runs`, `discovery_candidates` (Phase 25 Real Market Candidate Discovery) |
 | 011 | `011_add_thesis_discovery.py` | adds thesis columns to `discovery_runs` (`mode`, `thesis_text`, `parsed_thesis_json`, `universe_json`) + `discovery_candidates` (`thesis_relevance_score`, `combined_internal_score`, `thesis_match_json`) (Phase 27 Thesis-to-Universe Discovery) |
 | 012 | `012_add_report_company_id.py` | adds `company_id` (UUID FK → companies.id, SET NULL) + index `ix_reports_company_id` to `reports` (Phase 32A hotfix — company-scoped `from-company` final-report selection) |
-| 013 | `013_add_extracted_documents.py` | creates `extracted_documents`, `extracted_facts` (Phase 32A Slice 5 primary-document ingestion). Reversible, additive, backfill-free. **Implemented — PR open, pending staging validation.** |
-| 014 | `014_add_document_ingestion_attempts.py` | creates `document_ingestion_attempts` — one honest row per primary-document ingestion attempt, **including the failed ones** (Phase 32A Slice 5B.1). Reversible, additive, backfill-free. **Implemented — PR open, pending staging validation.** |
-| 015 | `015_add_field_review.py` | creates `field_review_runs`, `field_review_candidate_summaries` — the Deep Field Review, a COMPARATIVE council over the already-completed analyses of 2+ candidates from one discovery run (Phase 32A Slice 6D). Reversible, additive, backfill-free. **Implemented — PR open, pending staging validation.** |
+| 013 | `013_add_extracted_documents.py` | creates `extracted_documents`, `extracted_facts` (Phase 32A Slice 5A primary-document ingestion). Reversible, additive, backfill-free. **APPLIED on staging 2026-08-04** — Slice 5A CLOSED + STAGING-VALIDATED (`354a5ba`). |
+| 014 | `014_add_document_ingestion_attempts.py` | creates `document_ingestion_attempts` — one honest row per primary-document ingestion attempt, **including the failed ones** (Phase 32A Slice 5B.1). Reversible, additive, backfill-free. **APPLIED + verified on staging 2026-08-05** — Slice 5B.1 CLOSED + STAGING-VALIDATED. |
+| 015 | `015_add_field_review.py` | creates `field_review_runs`, `field_review_candidate_summaries` — the Deep Field Review, a COMPARATIVE council over the already-completed analyses of 2+ candidates from one discovery run (Phase 32A Slice 6D). Reversible, additive, backfill-free. **APPLIED + schema-verified on staging 2026-08-10** (`alembic current` = `015`, head) — Slice 6D CLOSED + STAGING-VALIDATED (PR #91 `dee5998` + hotfix PR #96 `b2aa1be`). |
 
-**Phase 32A Slice 6D adds migration `015` → head `015`.** It is reversible,
+**Phase 32A Slice 6D adds migration `015` → head `015` — applied and
+schema-verified on staging 2026-08-10 (`alembic current` = `015`).** It is reversible,
 additive and backfill-free, and both new tables stay **unwritten** unless BOTH
 `LLM_COUNCIL_ENABLED` and `LLM_FIELD_REVIEW_COUNCIL_ENABLED` are on (the feature
 ships **default-OFF**), so with the flags off the DB is effectively unchanged even
@@ -68,9 +69,9 @@ after the migration is applied. Verified locally against PostgreSQL 16:
 tables and their six indexes. See the
 `Deep Field Review (Phase 32A Slice 6D)` tables section below.
 
-**DB head baseline = `013`; Phase 32A Slice 5B.1 adds migration `014` → head `014`.**
-Slice 5B.1 is **implemented, PR-open, pending staging validation** — `014` is not
-yet applied on staging. It is reversible, additive and backfill-free, and the new
+**Phase 32A Slice 5B.1 added migration `014` (on top of Slice 5A's `013`).**
+Slice 5B.1 is **CLOSED + STAGING-VALIDATED** — `014` was applied and verified on
+staging 2026-08-05. It is reversible, additive and backfill-free, and the new
 `document_ingestion_attempts` table stays **unwritten** unless BOTH
 `PRIMARY_DOCUMENT_INGESTION_ENABLED` and `REPORT_CITATION_PERSISTENCE_ENABLED` are
 on. See the `Document Ingestion Attempts (Phase 32A Slice 5B.1)` tables section
