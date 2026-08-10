@@ -396,6 +396,70 @@ def test_completed_review_readable_when_flags_off() -> None:
     assert resp.publication_ready is False
 
 
+def test_chair_fallback_fields_survive_from_storage() -> None:
+    """Phase 32A Slice 6A: chair_fallback_used/deterministic_discovery_chair
+    must reach the API response, not be silently dropped as unknown kwargs.
+    """
+    stored = {
+        "llm_used": True,
+        "run_quality": "failed",
+        "safety_valid": True,
+        "chair_fallback_used": True,
+        "deterministic_discovery_chair": {
+            "agent_name": "discovery_chair",
+            "status": "completed",
+            "summary": (
+                "Deterministic discovery chair summary (LLM discovery chair "
+                "unavailable). 3 of 7 non-chair council agents completed."
+            ),
+            "safety_notes": ["no recommendation, no valuation conclusion"],
+        },
+    }
+    run_id = uuid.uuid4()
+    resp = DiscoveryCouncilReviewResponse.from_storage(run_id, stored)
+    assert resp.chair_fallback_used is True
+    assert resp.deterministic_discovery_chair is not None
+    assert resp.deterministic_discovery_chair["agent_name"] == "discovery_chair"
+    assert "unavailable" in resp.deterministic_discovery_chair["summary"]
+
+
+def test_chair_fallback_fields_survive_from_envelope() -> None:
+    """Same guarantee via the async job-envelope path used by GET."""
+    review = {
+        "llm_used": True,
+        "run_quality": "failed",
+        "safety_valid": True,
+        "chair_fallback_used": True,
+        "deterministic_discovery_chair": {
+            "agent_name": "discovery_chair",
+            "status": "completed",
+            "summary": "Deterministic discovery chair summary.",
+        },
+    }
+    completed = _envelope(
+        "completed",
+        llm_used=True,
+        agents_completed=3,
+        agents_failed=4,
+        safety_valid=True,
+        review=review,
+    )
+    run = _orm_run(config_json={"region": "Europe", COUNCIL: completed})
+    env = mds.get_council_envelope(run)
+    resp = DiscoveryCouncilReviewResponse.from_envelope(run.id, env)
+    assert resp.chair_fallback_used is True
+    assert resp.deterministic_discovery_chair == review["deterministic_discovery_chair"]
+
+
+def test_chair_fallback_fields_default_false_when_absent() -> None:
+    """The OFF/no-fallback path stays default (byte-identical for consumers)."""
+    resp = DiscoveryCouncilReviewResponse.from_storage(
+        uuid.uuid4(), {"llm_used": True, "run_quality": "adequate"}
+    )
+    assert resp.chair_fallback_used is False
+    assert resp.deterministic_discovery_chair is None
+
+
 # ===========================================================================
 # Response envelope shaping
 # ===========================================================================

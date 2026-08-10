@@ -846,6 +846,12 @@ export interface DiscoveryCouncilReview {
   publication_ready?: boolean;
   created_at?: string | null;
   disclaimer: string;
+  // Phase 32A Slice 6A: true only when the LLM discovery chair did not
+  // complete and a deterministic, non-consensus discovery-chair summary was
+  // attached instead — lets the admin UI show a partial/failed council
+  // degraded gracefully rather than silently.
+  chair_fallback_used?: boolean;
+  deterministic_discovery_chair?: Record<string, unknown> | null;
 }
 
 // ── Deep Field Review (Phase 32A Slice 6D) ─────────────────────────────────
