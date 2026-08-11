@@ -566,6 +566,36 @@ def test_21_cfr_returns_annual_report_text_evidence():
     assert "company_ir_financial_fact" in types
 
 
+def test_21b_cfr_english_document_gets_no_domicile_based_translation_gap():
+    """Problem F follow-up (found during live staging acceptance of the fresh
+    CFR report): ``collect_company_source_evidence`` used to append a
+    "Local-language filing extraction pending Phase 30 translation." gap for
+    ANY Swiss/French/etc.-domiciled issuer, independent of whether the actual
+    extracted document content was really non-English. Switzerland is in the
+    domicile-based ``_LOCAL_LANGUAGE_COUNTRIES`` set, but ``ANNUAL_TEXT`` here
+    is genuinely English — so the gap must NOT fire once it is gated on the
+    real, content-detected ``requires_translation`` flag."""
+    from app.services.sources.gaps import GapType
+
+    collected = asyncio.run(
+        collect_company_source_evidence(
+            company=CompanyContext(ticker="CFR", exchange="SW", country="Switzerland"),
+            source_ids=["company_ir"],
+            ir_page_fetcher=_fake_page,
+            document_extractor=_real_bundle_extractor(),
+            cfg=_cfg(),
+        )
+    )
+    assert not any(
+        g.gap_type == GapType.translation_required
+        and "Local-language filing extraction pending Phase 30" in g.message
+        for g in collected.source_gaps
+    )
+    ir_items = [i for i in collected.evidence_items if i.source_id == "company_ir"]
+    assert ir_items
+    assert not any(i.requires_translation for i in ir_items)
+
+
 def test_22_extraction_disabled_keeps_metadata_only():
     # No document_extractor injected → Phase 29B.1 behaviour (metadata + gaps).
     collected = asyncio.run(

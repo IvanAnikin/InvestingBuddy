@@ -543,6 +543,10 @@ async def collect_company_source_evidence(
     gaps: list[SourceGap] = []
     warnings: list[str] = []
     primary_document_artifacts: list[PrimaryDocumentArtifact] = []
+    # Populated only inside the company-IR block below; declared here so the
+    # later "Non-US primary-disclosure context" gap check (which reads it even
+    # when company-IR wasn't requested at all) never hits an UnboundLocalError.
+    ir_items: list[EvidenceItem] = []
 
     # Phase 32A Slice 5B.1 — ``primary_document_ingestion_budget_seconds`` is an
     # AGGREGATE wall budget for the WHOLE request, so the SEC filing-body path and
@@ -669,7 +673,6 @@ async def collect_company_source_evidence(
                 else None
             ),
         )
-        ir_items: list[EvidenceItem] = []
         for method in (ir.search_company, ir.fetch_filings, ir.fetch_events):
             res = await ir.call_safe(method, company, query)
             ir_items.extend(res.evidence_items)
@@ -701,7 +704,18 @@ async def collect_company_source_evidence(
                 blocks_research_complete=False,
             )
         )
-        if verified.country in _LOCAL_LANGUAGE_COUNTRIES:
+        # Problem F follow-up (found during live staging acceptance): this gap
+        # used to fire from the issuer's country alone (``verified.country in
+        # _LOCAL_LANGUAGE_COUNTRIES``), independent of what language the
+        # actually-collected IR evidence was really detected as — so an
+        # English document from a French/Swiss-domiciled issuer still got an
+        # honest-sounding "translation pending" gap attached. Now gated on the
+        # SAME content-based ``requires_translation`` flag already carried on
+        # the real collected ``ir_items`` (fixed to be content-first, domicile
+        # only as a weak fallback) — never on domicile alone.
+        if verified.country in _LOCAL_LANGUAGE_COUNTRIES and any(
+            getattr(it, "requires_translation", False) for it in ir_items
+        ):
             gaps.append(
                 SourceGap(
                     connector_key="company_ir",

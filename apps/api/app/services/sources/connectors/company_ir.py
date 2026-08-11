@@ -450,9 +450,6 @@ class CompanyIrConnector(SourceConnector):
     def _issuer_name(self) -> str | None:
         return self._verified.company_name if self._verified else None
 
-    def _requires_translation(self) -> bool:
-        return bool(self._verified and self._verified.country in _LOCAL_LANGUAGE_COUNTRIES)
-
     def _original_language(self) -> str | None:
         """Best-guess primary-disclosure language from the issuer's country."""
         if not self._verified:
@@ -747,21 +744,20 @@ class CompanyIrConnector(SourceConnector):
                     source_type="company_ir_annual_report",
                     title=link.text or "Annual report",
                     url=link.url,
-                    requires_translation=self._requires_translation(),
+                    # Problem F follow-up: no document content has been fetched
+                    # for this link yet — its language is genuinely UNDETERMINED,
+                    # not known-non-English. A domicile guess here would force a
+                    # potentially-English document into "translation pending"
+                    # before any content is even examined; the honest state is
+                    # unknown until the deep-extraction path (which IS
+                    # content-first) actually reads it.
+                    requires_translation=False,
                     data_quality="link_metadata_only",
                     confidence=v.source_confidence,
                     provenance=[
                         "Extracted from issuer annual-reports index (link metadata)"
                     ],
-                    warnings=(
-                        ["Document text not extracted; link title/URL only."]
-                        + (
-                            ["Local-language primary disclosure; translation pending "
-                             "Phase 30."]
-                            if self._requires_translation()
-                            else []
-                        )
-                    ),
+                    warnings=["Document text not extracted; link title/URL only."],
                 )
             )
         # Phase 32A Problem B — a distinct, always-reachable status for "the

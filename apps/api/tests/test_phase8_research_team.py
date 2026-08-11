@@ -609,6 +609,46 @@ def test_research_completeness_missing_identity_does_not_crash():
 
 
 # ---------------------------------------------------------------------------
+# 22b: SourceQualityAgent's "missing primary source" line has the SAME
+# jurisdiction bug as ResearchCompletenessAgent's next-task wording (found
+# during live staging acceptance of the MC/LVMH fresh report: the fix above
+# only covered research_completeness_agent.py, but source_quality_agent.py
+# has its own separate hardcoded "SEC EDGAR / SEDAR+" list feeding
+# bear_case_agent/risk_agent's "Missing primary source: ..." claims).
+# ---------------------------------------------------------------------------
+
+
+def test_source_quality_swiss_issuer_gets_six_swiss_missing_source_line():
+    snapshot = _make_snapshot_for(exchange="SW", country_domicile="Switzerland")
+    output = run_source_quality_agent(company_snapshot=snapshot)
+    text = " ".join(output.missing_primary_sources)
+    assert "SIX Swiss Exchange" in text
+    assert "SEC EDGAR / SEDAR+" not in text
+
+
+def test_source_quality_french_issuer_gets_euronext_missing_source_line():
+    snapshot = _make_snapshot_for(exchange="PA", country_domicile="France")
+    output = run_source_quality_agent(company_snapshot=snapshot)
+    text = " ".join(output.missing_primary_sources)
+    assert "Euronext" in text or "AMF" in text
+    assert "SEC EDGAR / SEDAR+" not in text
+
+
+def test_source_quality_us_issuer_keeps_sec_edgar_missing_source_line():
+    snapshot = _make_snapshot_for(exchange="NASDAQ", country_domicile="US")
+    output = run_source_quality_agent(company_snapshot=snapshot)
+    text = " ".join(output.missing_primary_sources)
+    assert "SEC EDGAR / SEDAR+ filings" in text
+
+
+def test_source_quality_unknown_jurisdiction_keeps_generic_missing_source_line():
+    snapshot = _make_snapshot()
+    output = run_source_quality_agent(company_snapshot=snapshot)
+    text = " ".join(output.missing_primary_sources)
+    assert "SEC EDGAR / SEDAR+ filings" in text
+
+
+# ---------------------------------------------------------------------------
 # 23–30: CitationValidatorV2
 # ---------------------------------------------------------------------------
 

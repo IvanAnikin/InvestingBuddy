@@ -20,6 +20,43 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from app.services.sources.company_evidence import regulator_connector_for
+
+# Phase-32A(fix) — human-readable display names for the regulator connector ids
+# ``regulator_connector_for`` (company_evidence.py) can resolve. Deliberately a
+# local copy (not an import from the connector modules) to avoid coupling this
+# deterministic, no-LLM agent to the connector layer's own display strings —
+# mirrors the identical map in ``research_completeness_agent.py``. No
+# individual company name is ever hardcoded — only venue/regulator names.
+_REGULATOR_DISPLAY_NAMES: dict[str, str] = {
+    "uk_fca_nsm": "the UK FCA National Storage Mechanism (NSM)",
+    "euronext_regulated_info": "Euronext Regulated Information / AMF filings",
+    "deutsche_boerse": "the German regulated-information venue (Deutsche Börse / Bundesanzeiger)",
+    "nordic_disclosures": "Nasdaq Nordic company disclosures",
+    "six_swiss": "SIX Swiss Exchange regulatory disclosures",
+}
+
+
+def _jurisdiction_appropriate_regulator_line(company_snapshot: dict) -> str:
+    """The "missing regulatory filings" line, swapped to the issuer's actual
+    home regulator when resolvable — never guessed when unresolved (a US
+    issuer, or any issuer whose exchange/country does not resolve to a known
+    regulator, keeps the generic "SEC EDGAR / SEDAR+" wording unchanged)."""
+    generic = "SEC EDGAR / SEDAR+ filings — T2_regulator_or_gov needed for regulatory data"
+    identity: dict = (company_snapshot or {}).get("company_identity") or {}
+    exchange = identity.get("exchange")
+    country = identity.get("country_domicile")
+    if not exchange and not country:
+        return generic
+    try:
+        connector_id = regulator_connector_for(exchange, country)
+    except Exception:
+        connector_id = None
+    display_name = _REGULATOR_DISPLAY_NAMES.get(connector_id) if connector_id else None
+    if not display_name:
+        return generic
+    return f"{display_name} — T2_regulator_or_gov needed for regulatory data"
+
 # Tier strength ordering (lower index = stronger)
 _TIER_RANK = {
     "T1_primary_filing": 1,
@@ -180,7 +217,7 @@ def run_source_quality_agent(
         )
     missing_primary.extend([
         "Annual report / 10-K / 40-F — T1_primary_filing required for financials",
-        "SEC EDGAR / SEDAR+ filings — T2_regulator_or_gov needed for regulatory data",
+        _jurisdiction_appropriate_regulator_line(company_snapshot),
         "Earnings call transcript — T1 source for management commentary",
     ])
 

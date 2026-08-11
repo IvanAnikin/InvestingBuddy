@@ -275,7 +275,14 @@ def test_11_annual_reports_offline_metadata_and_live_links():
     )
     ar = [i for i in live.evidence_items if i.source_type == "company_ir_annual_report"]
     assert ar and ar[0].content_source_tier == T1_PRIMARY_FILING
-    assert ar[0].requires_translation is True  # France → local-language
+    # Problem F fix: this is a link-metadata-only echo — no document content has
+    # been fetched/examined yet, so its language is genuinely undetermined. A
+    # domicile guess (France -> "local-language") must NOT force it to True
+    # before any content is actually read; that was the bug (a real, live
+    # French-domiciled issuer whose actual document IS English got mislabeled
+    # translation-pending from this same code path). Content-based detection
+    # only happens once the document is actually deep-extracted.
+    assert ar[0].requires_translation is False
 
 
 def test_12_press_index_and_replayed_releases():
