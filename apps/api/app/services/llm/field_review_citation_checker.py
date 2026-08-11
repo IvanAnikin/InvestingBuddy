@@ -26,6 +26,13 @@ Runs BEFORE any agent output is stored or displayed. Five jobs (mirroring the
   5. Field-quality integrity — coerce the chair's ``field_quality`` to a safe
      default when it is not one of the allowed labels.
 
+  6. Gap-attribution grounding (corrective, post-#99/#100) — an ``evidence_gaps``
+     item that blames a specific cause (translation, bot protection, document
+     not found, traversal exhausted, OCR required, extraction failed) is only
+     kept when the run's own structured ``known_gaps`` state recorded a
+     compatible cause; an ungrounded causal claim is replaced with generic
+     insufficient-evidence wording. See ``app.services.llm.gap_attribution``.
+
 Returned issue strings are guaranteed forbidden-term-free.
 """
 
@@ -42,6 +49,7 @@ from app.services.llm.field_review_schemas import (
     FieldPriorityEntry,
     FieldReviewAgentOutput,
 )
+from app.services.llm.gap_attribution import ground_gap_text
 
 # Claims/rationales shorter than this are treated as non-material (labels,
 # headers) and are not escalated to unsupported_claims when un-cited.
@@ -157,8 +165,14 @@ def check_and_sanitize(
     company_ids: set[str],
     *,
     is_chair: bool = False,
+    known_gaps: list[str] | None = None,
 ) -> tuple[FieldReviewAgentOutput, list[str]]:
-    """Return a safe, citation-checked copy of ``output`` plus issue notes."""
+    """Return a safe, citation-checked copy of ``output`` plus issue notes.
+
+    ``known_gaps`` (the run's ``FieldReviewPack.known_gaps``) enables the
+    gap-attribution grounding check (job 6). Omitted ⇒ any recognised causal
+    claim in ``evidence_gaps`` is treated as ungrounded (conservative default).
+    """
     issues: list[str] = []
 
     # 1. Safety first. Scan the raw model output; quarantine on any hit.
@@ -251,5 +265,21 @@ def check_and_sanitize(
     elif output.chair_verdict is not None:
         # Only the chair may set a verdict.
         output.chair_verdict = None
+
+    # 6. Gap-attribution grounding — an ``evidence_gaps`` item blaming a
+    # specific cause is only kept when ``known_gaps`` recorded a compatible
+    # cause; an ungrounded claim is replaced with generic insufficient-
+    # evidence wording. An item asserting no specific cause is never touched.
+    grounded_gaps = []
+    for gap in output.evidence_gaps:
+        grounded_text = ground_gap_text(gap, known_gaps)
+        if grounded_text != gap:
+            issues.append(
+                f"{output.agent_name}: an ungrounded causal gap-attribution was "
+                "replaced with generic insufficient-evidence wording (no "
+                "matching structured cause recorded for this run)."
+            )
+        grounded_gaps.append(grounded_text)
+    output.evidence_gaps = grounded_gaps
 
     return output, issues

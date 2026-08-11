@@ -96,6 +96,7 @@ from app.services.sources.redaction import canonicalize_source_url
 from app.services.sources.safe_web_fetcher import (
     ANNUAL_REPORT_KEYWORDS,
     FALLBACK_REPORT_KEYWORDS,
+    PRESS_KEYWORDS,
     SafeFetchResult,
     SafeLink,
 )
@@ -304,6 +305,54 @@ _STATEMENT_EXCERPT_SOURCE_TYPE = "company_ir_statement_excerpt"
 # deeper to look for the actual current-results document/page.
 _MAX_CHILD_LANDING_PAGES = 3
 
+# Corrective (post-#99/#100 live-acceptance gap): a results LANDING page's
+# actual rich content is typically ONE more anchor away — a same-domain press
+# release, presentation, or results document — never itself matched by
+# ``ANNUAL_REPORT_KEYWORDS`` alone (e.g. a link simply labelled "Press
+# release"). The bounded second hop widens its own keyword vocabulary with
+# ``PRESS_KEYWORDS`` so that link is discoverable; still a single bounded hop,
+# never a general crawler.
+_HOP_KEYWORDS: tuple[str, ...] = tuple(
+    dict.fromkeys((*ANNUAL_REPORT_KEYWORDS, *PRESS_KEYWORDS))
+)
+
+# Corrective (post-#99/#100): when every document ingested within the normal
+# per-issuer cap is THIN (no generic financial-content signal at all), spend
+# leftover bounded ingestion budget on a FEW further already-discovered,
+# already-ranked candidates instead of stopping on an all-thin result. Bounded
+# and explicit — never unbounded, never a second fetch surface.
+_MAX_THIN_FALLBACK_DOCS = 2
+
+# Generic (never company-specific) vocabulary used ONLY to detect whether an
+# already-extracted document actually contains current financial-result
+# content, so a genuinely rich candidate can be preferred over a thin
+# "report published" announcement when the per-issuer cap would otherwise
+# stop after only thin results.
+_FINANCIAL_CONTENT_MARKERS: tuple[str, ...] = (
+    "revenue",
+    "sales",
+    "turnover",
+    "operating profit",
+    "operating result",
+    "operating margin",
+    "recurring operating profit",
+    "net profit",
+    "net income",
+    "profit for the period",
+    "cash flow",
+    "free cash flow",
+    "operating cash flow",
+    "net debt",
+    "net financial debt",
+    "net cash",
+    "equity",
+    "total assets",
+    "segment",
+    "business group",
+    "business area",
+    "gross margin",
+)
+
 # Generic (never issuer-specific) ranking vocabulary for candidate report
 # links — annual > half-year/interim > generic financial publication.
 _CANDIDATE_ANNUAL_MARKERS: tuple[str, ...] = (
@@ -382,6 +431,28 @@ def _merge_links(*link_lists: list[SafeLink]) -> list[SafeLink]:
             seen.add(link.url)
             merged.append(link)
     return merged
+
+
+def _has_financial_signal(artifact: "PrimaryDocumentArtifact") -> bool:
+    """Generic, keyword-based signal that ``artifact`` actually carries CURRENT
+    financial-result content (never company-specific, never a guess at a
+    figure — purely a retrieval-usefulness signal).
+
+    True when at least one validated fact exists, OR the extraction recovered
+    a structured table, OR its excerpt text contains a generic financial-
+    result marker (revenue, operating profit, margin, cash flow, debt, equity,
+    segment, …). False (never fabricated) when the extraction is missing or
+    genuinely carries none of these.
+    """
+    if any(f.validation_status == VALIDATION_VALIDATED for f in artifact.validated_facts):
+        return True
+    extraction = artifact.extraction
+    if extraction is None:
+        return False
+    if extraction.tables:
+        return True
+    text = " ".join(e.text or "" for e in extraction.excerpts).lower()
+    return any(marker in text for marker in _FINANCIAL_CONTENT_MARKERS)
 
 
 # Countries whose primary regulatory disclosures are typically local-language.
@@ -550,6 +621,15 @@ class CompanyIrConnector(SourceConnector):
         Returns ``(discovered_links, pages_examined, pages_with_candidates)``
         so the caller can distinguish "hop attempted, nothing found" from
         "hop never attempted" in its gap message.
+
+        Corrective (post-#99/#100): the child page's candidates are found with
+        the SAME richer hydration/JSON-LD discovery already used at depth 0
+        (``_discover_deep_targets``), widened with press-release vocabulary
+        (``_HOP_KEYWORDS``) — a plain anchor scan for report-only keywords
+        misses a landing page's real content links (a "Press release" anchor,
+        or a JS-rendered results page whose links live in hydration state),
+        which is exactly why a thin landing page previously became "the
+        document" itself instead of one more hop reaching the real content.
         """
         assert self._page_fetcher is not None
         landing_candidates = [ln for ln in candidates if not ln.is_document][
@@ -569,9 +649,10 @@ class CompanyIrConnector(SourceConnector):
                 continue
             if child.blocked or (child.error and not child.ok):
                 continue
-            if child.links:
+            child_links = self._discover_deep_targets(child, keywords=_HOP_KEYWORDS)
+            if child_links:
                 pages_with_candidates += 1
-                discovered.extend(child.links)
+                discovered.extend(child_links)
         return discovered, len(landing_candidates), pages_with_candidates
 
     # -- fetch_filings → annual-report discovery ---------------------------
@@ -1057,7 +1138,12 @@ class CompanyIrConnector(SourceConnector):
         )
         return wanted or DEFAULT_STRATEGIES
 
-    def _discover_deep_targets(self, fetched: SafeFetchResult) -> list[SafeLink]:
+    def _discover_deep_targets(
+        self,
+        fetched: SafeFetchResult,
+        *,
+        keywords: tuple[str, ...] = ANNUAL_REPORT_KEYWORDS,
+    ) -> list[SafeLink]:
         """Merge anchor links with the richer, non-browser discovery strategies.
 
         Phase 32A Slice 5B.1. Slice 5A only read ``<a href>`` tags, so a
@@ -1070,6 +1156,11 @@ class CompanyIrConnector(SourceConnector):
         Anchors keep priority: a document found by both appears once, attributed
         to the anchor. Everything still passes the same https / safe-host /
         allowlist / secret-strip checks. No browser, no crawl, no extra fetch.
+
+        ``keywords`` (corrective, post-#99/#100) defaults to the depth-0
+        report-only vocabulary, unchanged for the index-page call sites; the
+        bounded second hop passes the wider ``_HOP_KEYWORDS`` so a landing
+        page's press-release / results-release anchors are recognised too.
         """
         links = list(fetched.links)
         body = fetched.body_html
@@ -1083,6 +1174,7 @@ class CompanyIrConnector(SourceConnector):
                 allowed_domains=self._verified.allowed_domains,
                 cfg=self._cfg,
                 strategies=self._discovery_strategies(),
+                keywords=keywords,
             )
         except Exception:  # noqa: BLE001 - discovery must never break a run
             return links
@@ -1116,11 +1208,16 @@ class CompanyIrConnector(SourceConnector):
             )
         return links
 
-    def _rank_deep_targets(self, links: list[SafeLink]) -> list[SafeLink]:
+    def _rank_deep_targets(
+        self, links: list[SafeLink], *, limit: int | None = None
+    ) -> list[SafeLink]:
         """Order report links most-material-first, de-dup by URL, cap per issuer.
 
         Prefers annual-report / results / registration documents and downloadable
-        (PDF) links; stable within equal rank. Bounded by ``max_docs_per_issuer``.
+        (PDF) links; stable within equal rank. Bounded by ``max_docs_per_issuer``
+        unless ``limit`` overrides it (corrective, post-#99/#100 — lets the
+        caller consider a few further ranked candidates when every document
+        within the normal cap turned out thin; still an explicit, bounded cap).
         Slice 5B.1 adds the discovery layer's explicit document classification as
         the primary key, so a classified annual report outranks a generic
         marketing PDF whose link text happens to contain a keyword.
@@ -1141,7 +1238,8 @@ class CompanyIrConnector(SourceConnector):
                 continue
             seen.add(link.url)
             ordered.append(link)
-        return ordered[: self._max_docs_per_issuer]
+        cap = self._max_docs_per_issuer if limit is None else limit
+        return ordered[:cap]
 
     def _stamp_provenance(
         self, artifact: PrimaryDocumentArtifact, target: SafeLink
@@ -1178,7 +1276,12 @@ class CompanyIrConnector(SourceConnector):
         assert self._primary_document_extractor is not None
         allowed = self._verified.allowed_domains if self._verified else ()
         issuer_context = self._issuer_context(company)
-        targets = self._rank_deep_targets(links)
+        # Corrective (post-#99/#100): rank a FEW further candidates beyond the
+        # normal per-issuer cap so the loop below can keep going, still
+        # bounded, when every document within the normal cap turns out thin.
+        targets = self._rank_deep_targets(
+            links, limit=self._max_docs_per_issuer + _MAX_THIN_FALLBACK_DOCS
+        )
 
         items: list[EvidenceItem] = []
         gaps: list[SourceGap] = []
@@ -1189,6 +1292,16 @@ class CompanyIrConnector(SourceConnector):
         ingested = 0
 
         for doc_idx, target in enumerate(targets, start=1):
+            if ingested >= self._max_docs_per_issuer:
+                # Corrective (post-#99/#100): the normal per-issuer cap is
+                # reached. Stop here UNLESS every document ingested so far is
+                # thin (no generic financial-content signal at all) — then
+                # spend remaining bounded budget on the extra ranked
+                # candidates instead of returning an all-thin result. A rich
+                # result already found means there is nothing more to gain
+                # from the fallback.
+                if any(_has_financial_signal(a) for a in artifacts):
+                    break
             if budget is not None and (self._clock() - start) >= budget:
                 remaining = len(targets) - (doc_idx - 1)
                 gaps.append(

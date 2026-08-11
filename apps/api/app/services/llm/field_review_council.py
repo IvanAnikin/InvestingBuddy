@@ -194,6 +194,7 @@ async def _run_agent_attempt(
     result: FieldReviewResult,
     client: LLMClient,
     cfg: Settings,
+    known_gaps: list[str] | None = None,
 ) -> tuple[FieldReviewAgentOutput, list[str], Exception | None]:
     """Run ONE attempt for an agent. Never raises.
 
@@ -201,7 +202,8 @@ async def _run_agent_attempt(
     agent output and ``exc`` is None (``output.status`` may still be ``failed``
     if the safety gate quarantined it — a PERMANENT outcome). On an ``LLMError``
     ``output`` is the failed placeholder and ``exc`` is the (possibly transient)
-    exception.
+    exception. ``known_gaps`` (the run's ``FieldReviewPack.known_gaps``) enables
+    the gap-attribution grounding check (corrective, post-#99/#100).
     """
     system, user = _messages_for(agent_name, pack_json, result)
     try:
@@ -227,6 +229,7 @@ async def _run_agent_attempt(
         evidence_ids,
         company_ids,
         is_chair=agent_name == AGENT_FIELD_CHAIR,
+        known_gaps=known_gaps,
     )
     return sanitized, issues, None
 
@@ -239,11 +242,19 @@ async def _timed_attempt(
     result: FieldReviewResult,
     client: LLMClient,
     cfg: Settings,
+    known_gaps: list[str] | None = None,
 ) -> tuple[FieldReviewAgentOutput, list[str], Exception | None, int]:
     """``_run_agent_attempt`` plus a wall-clock duration_ms for logging."""
     started = time.perf_counter()
     output, issues, exc = await _run_agent_attempt(
-        agent_name, pack_json, evidence_ids, company_ids, result, client, cfg
+        agent_name,
+        pack_json,
+        evidence_ids,
+        company_ids,
+        result,
+        client,
+        cfg,
+        known_gaps,
     )
     duration_ms = int((time.perf_counter() - started) * 1000)
     return output, issues, exc, duration_ms
@@ -453,6 +464,7 @@ async def _retry_agent(
     sleeper: Callable[[float], Awaitable[Any]],
     rng: random.Random,
     transient_failures: dict[str, Exception],
+    known_gaps: list[str] | None = None,
 ) -> None:
     """Bounded retry loop for ONE transiently-failed agent.
 
@@ -517,7 +529,14 @@ async def _retry_agent(
         await sleeper(wait)
 
         output, issues, exc, duration_ms = await _timed_attempt(
-            agent_name, pack_json, evidence_ids, company_ids, result, client, cfg
+            agent_name,
+            pack_json,
+            evidence_ids,
+            company_ids,
+            result,
+            client,
+            cfg,
+            known_gaps,
         )
         if exc is None:
             # Completed OR quarantined/unparsable — both are PERMANENT outcomes.
@@ -569,11 +588,19 @@ async def _run_single_pass(
     cfg: Settings,
     log: logging.Logger,
     field_review_run_id: str | None,
+    known_gaps: list[str] | None = None,
 ) -> None:
     """The retry-OFF path: one attempt per agent, no retries."""
     for agent_name in FIELD_REVIEW_AGENT_ORDER:
         output, issues, exc, duration_ms = await _timed_attempt(
-            agent_name, pack_json, evidence_ids, company_ids, result, client, cfg
+            agent_name,
+            pack_json,
+            evidence_ids,
+            company_ids,
+            result,
+            client,
+            cfg,
+            known_gaps,
         )
         result.agents.append(output)
         result.warnings.extend(issues)
@@ -602,6 +629,7 @@ async def _run_with_retries(
     clock: Callable[[], float],
     sleeper: Callable[[float], Awaitable[Any]],
     rng: random.Random,
+    known_gaps: list[str] | None = None,
 ) -> None:
     """The retry-ON path: initial pass under a deadline + a priority retry pass."""
     deadline = clock() + cfg.llm_field_review_council_total_budget_seconds
@@ -626,7 +654,14 @@ async def _run_with_retries(
             )
             continue
         output, issues, exc, duration_ms = await _timed_attempt(
-            agent_name, pack_json, evidence_ids, company_ids, result, client, cfg
+            agent_name,
+            pack_json,
+            evidence_ids,
+            company_ids,
+            result,
+            client,
+            cfg,
+            known_gaps,
         )
         result.agents.append(output)
         result.warnings.extend(issues)
@@ -667,6 +702,7 @@ async def _run_with_retries(
             sleeper=sleeper,
             rng=rng,
             transient_failures=transient_failures,
+            known_gaps=known_gaps,
         )
 
 
@@ -747,6 +783,10 @@ async def run_field_review_council(
     evidence_ids = pack.evidence_ids()
     company_ids = pack.company_ids()
     pack_json = pack.model_dump_json()
+    # Corrective (post-#99/#100): the run's own structured gap state, so the
+    # citation checker's gap-attribution grounding check can tell a genuine
+    # cause from an invented one.
+    known_gaps = pack.known_gaps
 
     result = FieldReviewResult(
         council_version=cfg.llm_field_review_council_version,
@@ -783,6 +823,7 @@ async def run_field_review_council(
             clock=clock,
             sleeper=sleeper,
             rng=rng,
+            known_gaps=known_gaps,
         )
     else:
         await _run_single_pass(
@@ -794,6 +835,7 @@ async def run_field_review_council(
             cfg=cfg,
             log=log,
             field_review_run_id=field_review_run_id,
+            known_gaps=known_gaps,
         )
 
     result.recount()
@@ -823,7 +865,7 @@ async def run_field_review_council(
         # Defense-in-depth: the fallback goes through the SAME safety/citation
         # gate every real agent output does, even though it is machine-built.
         sanitized_fallback, _fb_issues = check_and_sanitize(
-            fallback, evidence_ids, company_ids, is_chair=True
+            fallback, evidence_ids, company_ids, is_chair=True, known_gaps=known_gaps
         )
         result.deterministic_field_chair = sanitized_fallback.to_dict()
         result.chair_fallback_used = True
