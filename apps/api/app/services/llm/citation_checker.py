@@ -25,6 +25,13 @@ Runs BEFORE any agent output is merged into a report or displayed. Four jobs:
   4. Committee-label integrity — coerce the chair's label to a safe default if
      it is not one of the allowed internal labels.
 
+  5. Gap-attribution grounding (corrective, post-#99/#100) — a risk/gap item
+     that blames a specific cause (translation, bot protection, document not
+     found, traversal exhausted, OCR required, extraction failed) is only kept
+     when the run's own structured ``known_gaps`` state recorded a compatible
+     cause; an ungrounded causal claim is replaced with generic
+     insufficient-evidence wording. See ``app.services.llm.gap_attribution``.
+
 Returned issue strings are guaranteed forbidden-term-free.
 """
 
@@ -34,6 +41,7 @@ import re
 from typing import Any
 
 from app.services import safety_terms
+from app.services.llm.gap_attribution import ground_gap_text
 from app.services.llm.schemas import (
     AGENT_COMMITTEE_CHAIR,
     ALLOWED_COMMITTEE_LABELS,
@@ -171,6 +179,7 @@ def check_and_sanitize(
     output: CouncilAgentOutput,
     evidence_ids: set[str],
     evidence_by_id: dict[str, Any] | None = None,
+    known_gaps: list[str] | None = None,
 ) -> tuple[CouncilAgentOutput, list[str]]:
     """Return a safe, citation-checked copy of ``output`` plus issue notes.
 
@@ -179,6 +188,11 @@ def check_and_sanitize(
     call shape), citation-id membership + safety + committee-label checks still
     run exactly as before; the semantic check simply never fires, so it never
     changes existing behaviour for a caller that has not been updated.
+
+    ``known_gaps`` (optional, the run's ``EvidencePack.known_gaps``) enables
+    the gap-attribution grounding check (job 5). Omitted ⇒ any recognised
+    causal claim is treated as ungrounded (never assumed true), which is the
+    conservative/safe default for a caller that has not been updated.
     """
     issues: list[str] = []
     evidence_by_id = evidence_by_id or {}
@@ -237,6 +251,10 @@ def check_and_sanitize(
         )
 
     # 2b. Citation integrity for risks/gaps (un-cited is allowed; bad ids dropped).
+    # 5. Gap-attribution grounding — a causal claim (e.g. "untranslated French
+    # filings") is only kept when ``known_gaps`` recorded a compatible cause;
+    # an ungrounded claim is replaced with generic insufficient-evidence
+    # wording. A gap item asserting no specific cause is never touched.
     clean_risks = []
     for rg in output.risks_or_gaps:
         valid, invalid = _split_citations(rg.citation_ids, evidence_ids)
@@ -245,7 +263,16 @@ def check_and_sanitize(
                 f"{output.agent_name}: dropped {len(invalid)} risk citation id(s) "
                 "not present in the evidence pack."
             )
-        clean_risks.append(rg.model_copy(update={"citation_ids": valid}))
+        grounded_item = ground_gap_text(rg.item, known_gaps)
+        if grounded_item != rg.item:
+            issues.append(
+                f"{output.agent_name}: an ungrounded causal gap-attribution was "
+                "replaced with generic insufficient-evidence wording (no "
+                "matching structured cause recorded for this run)."
+            )
+        clean_risks.append(
+            rg.model_copy(update={"citation_ids": valid, "item": grounded_item})
+        )
     output.risks_or_gaps = clean_risks
 
     # 4. Committee-label integrity.

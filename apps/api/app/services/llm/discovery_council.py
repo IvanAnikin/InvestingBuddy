@@ -231,6 +231,7 @@ async def _run_agent_attempt(
     client: LLMClient,
     cfg: Settings,
     max_tokens: int,
+    known_gaps: list[str] | None = None,
 ) -> tuple[DiscoveryCouncilAgentOutput, list[str], Exception | None]:
     """Run ONE attempt for an agent. Never raises.
 
@@ -244,6 +245,8 @@ async def _run_agent_attempt(
     ``max_tokens`` is the run's candidate-count-scaled output budget (see
     ``discovery_max_output_tokens``), computed once per run and passed in — it is
     NOT ``cfg.llm_max_output_tokens`` (that flat value is the COMPANY council's).
+    ``known_gaps`` (the run's ``DiscoveryEvidencePack.known_gaps``) enables the
+    gap-attribution grounding check (corrective, post-#99/#100).
     """
     is_chair = agent_name == AGENT_DISCOVERY_CHAIR
     system, user = _messages_for(agent_name, evidence_json, result)
@@ -266,7 +269,7 @@ async def _run_agent_attempt(
         return placeholder, [f"{agent_name}: {type(exc).__name__}"], exc
     output = _coerce_output(agent_name, raw)
     sanitized, issues = check_and_sanitize(
-        output, evidence_ids, candidate_ids, is_chair=is_chair
+        output, evidence_ids, candidate_ids, is_chair=is_chair, known_gaps=known_gaps
     )
     return sanitized, issues, None
 
@@ -280,6 +283,7 @@ async def _timed_attempt(
     client: LLMClient,
     cfg: Settings,
     max_tokens: int,
+    known_gaps: list[str] | None = None,
 ) -> tuple[DiscoveryCouncilAgentOutput, list[str], Exception | None, int]:
     """``_run_agent_attempt`` plus a wall-clock duration_ms for logging."""
     started = time.perf_counter()
@@ -292,6 +296,7 @@ async def _timed_attempt(
         client,
         cfg,
         max_tokens,
+        known_gaps,
     )
     duration_ms = int((time.perf_counter() - started) * 1000)
     return output, issues, exc, duration_ms
@@ -463,6 +468,7 @@ async def _run_offline_pass(
     max_tokens: int,
     log: logging.Logger,
     run_id: str | None,
+    known_gaps: list[str] | None = None,
 ) -> None:
     """The OFF path: one attempt per agent, no retries — byte-identical to
     pre-Slice-6A."""
@@ -476,6 +482,7 @@ async def _run_offline_pass(
             client,
             cfg,
             max_tokens,
+            known_gaps,
         )
         result.agents.append(output)
         result.warnings.extend(issues)
@@ -499,6 +506,7 @@ def _make_attempt(
     client: LLMClient,
     cfg: Settings,
     max_tokens: int,
+    known_gaps: list[str] | None = None,
 ) -> retry_engine.AttemptFn:
     """Bind the discovery-specific single-attempt primitive for the retry engine."""
 
@@ -512,6 +520,7 @@ def _make_attempt(
             client,
             cfg,
             max_tokens,
+            known_gaps,
         )
 
     return _attempt
@@ -582,6 +591,7 @@ async def _run_council_with_retries(
     clock: Callable[[], float],
     sleeper: Callable[[float], Awaitable[Any]],
     rng: random.Random,
+    known_gaps: list[str] | None = None,
 ) -> None:
     """The ON path: initial pass under a deadline + a priority retry pass.
 
@@ -602,7 +612,14 @@ async def _run_council_with_retries(
         priority_order=_retry_priority_order(),
         reserved=RESERVED_AGENTS,
         attempt=_make_attempt(
-            evidence_json, evidence_ids, candidate_ids, result, client, cfg, max_tokens
+            evidence_json,
+            evidence_ids,
+            candidate_ids,
+            result,
+            client,
+            cfg,
+            max_tokens,
+            known_gaps,
         ),
         append_output=result.agents.append,
         extend_warnings=result.warnings.extend,
@@ -670,6 +687,10 @@ async def run_discovery_council(
     evidence_ids = evidence_pack.evidence_ids()
     candidate_ids = evidence_pack.candidate_ids()
     evidence_json = evidence_pack.model_dump_json()
+    # Corrective (post-#99/#100): the run's own structured gap state, so the
+    # citation checker's gap-attribution grounding check can tell a genuine
+    # cause from an invented one.
+    known_gaps = evidence_pack.known_gaps
     # Computed ONCE per run from the pack, then threaded down to every agent
     # attempt (initial pass AND retries) exactly like evidence_json/evidence_ids.
     max_tokens = discovery_max_output_tokens(evidence_pack.candidate_count, cfg)
@@ -711,6 +732,7 @@ async def run_discovery_council(
             clock=clock,
             sleeper=sleeper,
             rng=rng,
+            known_gaps=known_gaps,
         )
     else:
         await _run_offline_pass(
@@ -723,6 +745,7 @@ async def run_discovery_council(
             max_tokens=max_tokens,
             log=log,
             run_id=run_id,
+            known_gaps=known_gaps,
         )
 
     result.recount()
@@ -763,7 +786,7 @@ async def run_discovery_council(
         )
         # Defense-in-depth: run the fallback through the same safety/citation gate.
         sanitized_fallback, _fb_issues = check_and_sanitize(
-            fallback, evidence_ids, candidate_ids, is_chair=True
+            fallback, evidence_ids, candidate_ids, is_chair=True, known_gaps=known_gaps
         )
         result.deterministic_chair = sanitized_fallback
         result.chair_fallback_used = True

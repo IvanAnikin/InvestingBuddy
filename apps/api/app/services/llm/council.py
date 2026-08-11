@@ -520,6 +520,7 @@ async def _run_agent_attempt(
     client: LLMClient,
     cfg: Settings,
     evidence_by_id: dict[str, Any] | None = None,
+    known_gaps: list[str] | None = None,
 ) -> tuple[CouncilAgentOutput, list[str], Exception | None]:
     """Run ONE attempt for an agent. Never raises.
 
@@ -532,6 +533,8 @@ async def _run_agent_attempt(
 
     ``evidence_by_id`` (id -> evidence-pack ``EvidenceItem``) enables the
     citation checker's semantic-grounding check (Phase 32A hotfix).
+    ``known_gaps`` (the run's ``EvidencePack.known_gaps``) enables the
+    gap-attribution grounding check (corrective, post-#99/#100).
     """
     system, user = _messages_for(agent_name, evidence_json, result)
     try:
@@ -552,7 +555,9 @@ async def _run_agent_attempt(
         )
         return placeholder, [f"{agent_name}: {type(exc).__name__}"], exc
     output = _coerce_output(agent_name, raw)
-    sanitized, issues = check_and_sanitize(output, evidence_ids, evidence_by_id)
+    sanitized, issues = check_and_sanitize(
+        output, evidence_ids, evidence_by_id, known_gaps
+    )
     return sanitized, issues, None
 
 
@@ -564,11 +569,19 @@ async def _timed_attempt(
     client: LLMClient,
     cfg: Settings,
     evidence_by_id: dict[str, Any] | None = None,
+    known_gaps: list[str] | None = None,
 ) -> tuple[CouncilAgentOutput, list[str], Exception | None, int]:
     """``_run_agent_attempt`` plus a wall-clock duration_ms for logging."""
     started = time.perf_counter()
     output, issues, exc = await _run_agent_attempt(
-        agent_name, evidence_json, evidence_ids, result, client, cfg, evidence_by_id
+        agent_name,
+        evidence_json,
+        evidence_ids,
+        result,
+        client,
+        cfg,
+        evidence_by_id,
+        known_gaps,
     )
     duration_ms = int((time.perf_counter() - started) * 1000)
     return output, issues, exc, duration_ms
@@ -741,11 +754,19 @@ async def _run_offline_pass(
     report_id: str | None,
     ticker: str | None,
     evidence_by_id: dict[str, Any] | None = None,
+    known_gaps: list[str] | None = None,
 ) -> None:
     """The OFF path: one attempt per agent, no retries — byte-identical to pre-Slice-4."""
     for agent_name in COUNCIL_AGENT_ORDER:
         output, issues, exc, duration_ms = await _timed_attempt(
-            agent_name, evidence_json, evidence_ids, result, client, cfg, evidence_by_id
+            agent_name,
+            evidence_json,
+            evidence_ids,
+            result,
+            client,
+            cfg,
+            evidence_by_id,
+            known_gaps,
         )
         result.agents.append(output)
         result.warnings.extend(issues)
@@ -769,6 +790,7 @@ def _make_attempt(
     client: LLMClient,
     cfg: Settings,
     evidence_by_id: dict[str, Any] | None = None,
+    known_gaps: list[str] | None = None,
 ) -> retry_engine.AttemptFn:
     """Bind the company-specific single-attempt primitive for the retry engine.
 
@@ -779,7 +801,14 @@ def _make_attempt(
 
     async def _attempt(agent_name: str) -> retry_engine.AttemptResult:
         return await _timed_attempt(
-            agent_name, evidence_json, evidence_ids, result, client, cfg, evidence_by_id
+            agent_name,
+            evidence_json,
+            evidence_ids,
+            result,
+            client,
+            cfg,
+            evidence_by_id,
+            known_gaps,
         )
 
     return _attempt
@@ -851,6 +880,7 @@ async def _run_council_with_retries(
     sleeper: Callable[[float], Awaitable[Any]],
     rng: random.Random,
     evidence_by_id: dict[str, Any] | None = None,
+    known_gaps: list[str] | None = None,
 ) -> None:
     """The ON path: initial pass under a deadline + a priority retry pass.
 
@@ -865,7 +895,9 @@ async def _run_council_with_retries(
         critical=critical,
         priority_order=_retry_priority_order(critical),
         reserved=RESERVED_AGENTS,
-        attempt=_make_attempt(evidence_json, evidence_ids, result, client, cfg, evidence_by_id),
+        attempt=_make_attempt(
+            evidence_json, evidence_ids, result, client, cfg, evidence_by_id, known_gaps
+        ),
         append_output=result.agents.append,
         extend_warnings=result.warnings.extend,
         replace_agent=_make_replace_agent(result),
@@ -924,6 +956,10 @@ async def run_council(
     # Phase 32A hotfix: id -> EvidenceItem, so the citation checker's semantic-
     # grounding check can look up each cited item's scope/period/excerpt.
     evidence_by_id = {item.id: item for item in evidence_pack.evidence_items}
+    # Corrective (post-#99/#100): the run's own structured gap state, so the
+    # citation checker's gap-attribution grounding check can tell a genuine
+    # cause from an invented one.
+    known_gaps = evidence_pack.known_gaps
 
     result = CouncilResult(
         council_version=cfg.llm_council_version,
@@ -962,6 +998,7 @@ async def run_council(
             sleeper=sleeper,
             rng=rng,
             evidence_by_id=evidence_by_id,
+            known_gaps=known_gaps,
         )
     else:
         await _run_offline_pass(
@@ -974,6 +1011,7 @@ async def run_council(
             report_id=report_id,
             ticker=ticker,
             evidence_by_id=evidence_by_id,
+            known_gaps=known_gaps,
         )
 
     result.recount()
@@ -996,7 +1034,7 @@ async def run_council(
         fallback = _deterministic_chair_fallback(result.agents, COUNCIL_AGENT_ORDER)
         # Defense-in-depth: run the fallback through the same safety/citation gate.
         sanitized_fallback, _fb_issues = check_and_sanitize(
-            fallback, evidence_ids, evidence_by_id
+            fallback, evidence_ids, evidence_by_id, known_gaps
         )
         result.deterministic_chair = sanitized_fallback
         result.chair_fallback_used = True
