@@ -392,6 +392,10 @@ class Settings(BaseSettings):
     # Guaranteed number of SEC/XBRL financial-fact slots reserved before the
     # global fill, so higher-tier catalysts cannot evict every financial datapoint.
     llm_council_evidence_financial_floor: int = 3
+    # Guaranteed number of statement/table-derived (balance sheet, cash flow,
+    # segment reporting) evidence slots reserved so this content cannot lose an
+    # append-order tie-break against generic narrative prose (Problem C).
+    llm_council_evidence_statement_floor: int = 3
     # Ceiling on price / market / trend (T5/T6) metric items.
     llm_council_evidence_price_trend_cap: int = 3
     # Combined ceiling across all news-ish categories (quality media + aggregator).

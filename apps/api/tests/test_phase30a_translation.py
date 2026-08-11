@@ -101,15 +101,26 @@ def test_detect_language_defaults_to_en_on_empty_or_weak():
     assert detect_language("Q3 numbers were strong.") == "en"
 
 
-def test_detect_language_honours_explicit_hint_first():
-    # A hint naming a supported non-English language wins over English content.
-    assert detect_language(_EN, hint="fr") == "fr"
-    assert detect_language(_EN, hint="de-DE") == "de"
-    assert detect_language(_EN, hint="DA") == "da"
-    # An "en" or unknown hint falls through to content detection (so French
-    # content is still detected even if the registry mislabels it English).
+def test_detect_language_prefers_confident_content_over_hint():
+    # Phase 32A Problem F: a domicile-derived hint must NEVER pre-empt a
+    # confident content-based result (the LVMH bug — English content on a
+    # French-domicile issuer was wrongly stamped "fr" by the hint alone).
+    # Confident English content wins over a non-English hint.
+    assert detect_language(_EN, hint="fr") == "en"
+    assert detect_language(_EN, hint="de-DE") == "en"
+    assert detect_language(_EN, hint="DA") == "en"
+    # Confident foreign-language content also wins regardless of the hint.
     assert detect_language(_FR, hint="en") == "fr"
     assert detect_language(_FR, hint="xx") == "fr"
+    assert detect_language(_FR, hint="de") == "fr"
+
+
+def test_detect_language_falls_back_to_hint_only_when_content_inconclusive():
+    # No content at all / too short to score -> the hint is a WEAK fallback.
+    assert detect_language("", hint="fr") == "fr"
+    assert detect_language("Q3 numbers.", hint="de") == "de"
+    # No hint either -> the honest, conservative default (English).
+    assert detect_language("", hint=None) == "en"
 
 
 def test_language_name_is_honest_and_falls_back():
@@ -135,8 +146,8 @@ def test_extractor_detect_language_regression():
     assert _detect_language(_DE, None) == ("de", True)
     assert _detect_language(_IT, None) == ("it", True)
     assert _detect_language(_EN, None) == ("en", False)
-    # A registry hint is honoured (French issuer with English-looking text).
-    assert _detect_language(_EN, "fr") == ("fr", True)
+    # A registry hint no longer overrides confident English content (Problem F).
+    assert _detect_language(_EN, "fr") == ("en", False)
     # English default is never flagged as needing translation.
     assert _detect_language("Just some plain english prose here.", None) == (
         "en",

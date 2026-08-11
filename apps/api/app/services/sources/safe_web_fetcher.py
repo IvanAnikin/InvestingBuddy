@@ -68,6 +68,13 @@ _METADATA_IPS = frozenset({"169.254.169.254", "fd00:ec2::254"})
 Resolver = Callable[..., list[Any]]
 
 # Link text keywords that mark an annual-report / financial-disclosure link.
+# Phase 32A Problem B: widened with generic (never issuer-specific) current-
+# results vocabulary — the original set covered annual/full-year and
+# "half-year report"/"interim report" *document* phrasing, but missed the
+# common "half-year RESULTS" / "H1 results" / "financial results" / "results
+# release" phrasing many issuers use for their current-period results pages
+# (the proven LVMH gap: the index page was fetched but its current-results
+# link never matched any keyword).
 ANNUAL_REPORT_KEYWORDS: tuple[str, ...] = (
     "annual report",
     "universal registration document",
@@ -82,6 +89,15 @@ ANNUAL_REPORT_KEYWORDS: tuple[str, ...] = (
     "half-year report",
     "half year report",
     "interim report",
+    "half-year results",
+    "half year results",
+    "first-half results",
+    "first half results",
+    "h1 results",
+    "interim results",
+    "financial results",
+    "results release",
+    "quarterly results",
 )
 # Only used when no annual/financial report link is found on the page.
 FALLBACK_REPORT_KEYWORDS: tuple[str, ...] = ("sustainability report", "esg report")

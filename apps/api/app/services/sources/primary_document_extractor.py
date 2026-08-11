@@ -48,7 +48,6 @@ from app.services.sources.document_text_extractor import (
     DocumentTextExtraction,
     _blocks,
     _classify,
-    _detect_language,
     _relevance,
 )
 from app.services.sources.ingestion_status import (
@@ -62,6 +61,7 @@ from app.services.sources.ingestion_status import (
     FAILURE_SCANNED_NO_TEXT,
     FAILURE_UNSUPPORTED_CONTENT_TYPE,
 )
+from app.services.sources.language import detect_language
 from app.services.sources.safe_web_fetcher import looks_like_pdf
 
 # --------------------------------------------------------------------------- #
@@ -276,6 +276,124 @@ def content_hash_of(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
+# Heading substrings (case-insensitive) that mark a SEGMENT/business-unit-level
+# breakdown — generic financial-reporting vocabulary, never a company's actual
+# segment/brand names. Ordered as a tuple for deterministic matching.
+_SEGMENT_HEADING_MARKERS = (
+    "segment",
+    "by business",
+    "by division",
+    "by region",
+    "reportable segment",
+    "operating segment",
+    "business area",
+)
+# Heading substrings that mark an entity-level (whole-company) figure.
+_GROUP_HEADING_MARKERS = ("consolidated", "group")
+_SCOPE_LABEL_MAX = 80
+
+
+def _infer_scope(heading: str | None) -> str | None:
+    """Best-effort entity/segment scope label inferred from a document heading.
+
+    Generic, structure-only heuristic — it never references a specific company's
+    segment/brand names. Returns:
+      * ``None`` when ``heading`` is falsy or gives no scope signal (unknown —
+        never guessed).
+      * the (trimmed, bounded) heading text itself when it looks like a
+        segment/business-unit breakdown (e.g. "Segment information",
+        "Revenue by region") — this IS the segment-scope label.
+      * the literal ``"group"`` when the heading looks like a consolidated /
+        whole-company figure.
+    """
+    if not heading:
+        return None
+    low = heading.lower()
+    if any(marker in low for marker in _SEGMENT_HEADING_MARKERS):
+        label = heading.strip()
+        if len(label) > _SCOPE_LABEL_MAX:
+            label = label[: _SCOPE_LABEL_MAX - 1].rstrip() + "…"
+        return label
+    if any(marker in low for marker in _GROUP_HEADING_MARKERS):
+        return "group"
+    return None
+
+
+# --------------------------------------------------------------------------- #
+# Statement-type classification (Phase 32A Problem C)
+#
+# A generic, structure-only heading classifier — mirrors (but does not import,
+# to avoid a circular import: ``ocr_provider`` already imports FROM this module)
+# the financial-statement heading keywords ``ocr_provider._HEADING_KEYWORDS``
+# uses to pick OCR page targets. This is a SECOND, independent consumer of the
+# same vocabulary: it lets evidence-selection recognise that a prose excerpt or
+# a demoted table row came from a balance sheet / cash-flow statement / segment
+# note, so genuine statement content is not crowded out by generic narrative
+# within the same evidence-budget category (see ``evidence_budget.py``'s
+# ``CATEGORY_STATEMENT_TABLE``). Never a company-specific vocabulary; never used
+# to fabricate a fact — purely a ranking/priority signal.
+# --------------------------------------------------------------------------- #
+
+STATEMENT_TYPE_INCOME = "income_statement"
+STATEMENT_TYPE_BALANCE_SHEET = "balance_sheet"
+STATEMENT_TYPE_CASH_FLOW = "cash_flow_statement"
+STATEMENT_TYPE_SEGMENT = "segment_reporting"
+
+# Checked in this order so a heading matching more than one table is classified
+# by its most specific/likely signal first (segment before the generic group
+# balance-sheet/cash-flow/income vocabulary below).
+_STATEMENT_HEADING_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        STATEMENT_TYPE_SEGMENT,
+        (
+            "segment information",
+            "segment reporting",
+            "operating segments",
+            "reportable segments",
+            "segment note",
+        ),
+    ),
+    (
+        STATEMENT_TYPE_BALANCE_SHEET,
+        ("balance sheet", "statement of financial position"),
+    ),
+    (
+        STATEMENT_TYPE_CASH_FLOW,
+        ("cash flow statement", "statement of cash flows", "cash flow"),
+    ),
+    (
+        STATEMENT_TYPE_INCOME,
+        (
+            "income statement",
+            "statement of income",
+            "profit and loss",
+            "statement of comprehensive income",
+            "statement of profit or loss",
+        ),
+    ),
+)
+
+
+def classify_statement_type(heading: str | None) -> str | None:
+    """Classify a document heading/section as a known financial-statement type.
+
+    Returns one of ``income_statement`` / ``balance_sheet`` /
+    ``cash_flow_statement`` / ``segment_reporting``, or ``None`` when the
+    heading gives no such signal — never guessed. Pure, deterministic, never
+    raises; generic vocabulary only (no company-specific terms).
+    """
+    if not heading:
+        return None
+    try:
+        low = heading.lower()
+    except AttributeError:
+        return None
+    for statement_type, keywords in _STATEMENT_HEADING_KEYWORDS:
+        if any(kw in low for kw in keywords):
+            return statement_type
+    return None
+
+
 def _confidence_from_relevance(relevance: int) -> float:
     """Map the keyword relevance score to a bounded [0..1] confidence."""
     if relevance >= 4:
@@ -371,11 +489,19 @@ def _finalize_language(
     blocks: list[tuple[int | None, str | None, str]],
     original_language: str | None,
 ) -> None:
-    """Detect language + inferred year over the leading content (labels only)."""
+    """Detect language + inferred year over the leading content (labels only).
+
+    Phase 32A Problem F: delegates to ``detect_language_with_confidence``, whose
+    CONTENT-based detection runs first — ``original_language`` (typically a
+    domicile guess passed in by the caller) is only a WEAK fallback used when
+    content detection is genuinely inconclusive. A confidently-English document
+    is never re-labelled by a non-English domicile guess, so
+    ``requires_translation`` never invents a translation requirement.
+    """
     joined_head = " ".join(b[2] for b in blocks[:12])
-    lang, needs_tr = _detect_language(joined_head, original_language)
+    lang = detect_language(joined_head, hint=original_language)
     result.language = lang
-    result.requires_translation = needs_tr
+    result.requires_translation = lang != "en"
 
 
 # --------------------------------------------------------------------------- #
@@ -855,9 +981,14 @@ __all__ = [
     "STATUS_EXTRACTED",
     "STATUS_METADATA_ONLY",
     "STATUS_EXTRACTION_FAILED",
+    "STATEMENT_TYPE_INCOME",
+    "STATEMENT_TYPE_BALANCE_SHEET",
+    "STATEMENT_TYPE_CASH_FLOW",
+    "STATEMENT_TYPE_SEGMENT",
     "ExtractedTable",
     "PrimaryDocumentExcerpt",
     "PrimaryDocumentExtraction",
+    "classify_statement_type",
     "content_hash_of",
     "extract_pdf",
     "extract_html",

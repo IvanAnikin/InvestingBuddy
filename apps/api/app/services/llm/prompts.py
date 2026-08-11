@@ -53,7 +53,15 @@ SAFETY_RULES = (
     "presented as fact.\n"
     "- Every factual claim MUST cite one or more evidence ids (e.g. [\"E1\", "
     "\"E3\"]) that exist in the pack. If you cannot cite it, mark it as a "
-    "limitation or a clearly-labelled model inference instead of a fact."
+    "limitation or a clearly-labelled model inference instead of a fact.\n"
+    "- Some evidence items carry a \"scope\" (e.g. \"group\" for a consolidated, "
+    "whole-company figure, or a segment/business-unit heading such as "
+    "\"Segment A\") and/or a \"period\". NEVER combine a number from one "
+    "scope or period with a number, unit, or topic from a DIFFERENT scope or "
+    "period as if they described the same thing (e.g. do not attach a segment's "
+    "margin to the Group's profit figure, and do not relabel a segment figure "
+    "under a topic — such as macroeconomic conditions — that its own source text "
+    "never discusses)."
 )
 
 # The strict JSON contract every agent must satisfy. The real clients ask the

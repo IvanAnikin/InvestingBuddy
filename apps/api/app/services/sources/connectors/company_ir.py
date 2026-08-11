@@ -40,6 +40,7 @@ Guarantees:
 from __future__ import annotations
 
 import logging
+import re
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -82,10 +83,13 @@ from app.services.sources.extracted_fact_validator import (
     ValidatedFact,
 )
 from app.services.sources.gaps import GapSeverity, GapType, SourceGap
+from app.services.sources.language import detect_language
 from app.services.sources.primary_document_extractor import (
     STATUS_EXTRACTED,
     PrimaryDocumentExtraction,
     _confidence_bucket,
+    _infer_scope,
+    classify_statement_type,
 )
 from app.services.sources.primary_fact_parser import PrimaryFact
 from app.services.sources.redaction import canonicalize_source_url
@@ -272,6 +276,113 @@ _EXCERPT_SOURCE_TYPE = {
     EVIDENCE_TYPE_RISK: "company_ir_risk_excerpt",
 }
 _DEFAULT_EXCERPT_SOURCE_TYPE = "company_ir_annual_report_excerpt"
+# Phase 32A Problem C: statement/table-derived financial content (a prose
+# excerpt whose heading/section classifies as a balance sheet / cash-flow
+# statement / income statement / segment note, or ANY demoted table row that
+# matched a known financial-statement label but fell short of the stricter
+# validated-fact bar) gets its OWN source_type so ``evidence_budget.py`` can
+# recognise it as ``CATEGORY_STATEMENT_TABLE`` and give it a floor — it must
+# not lose a same-category ordering race against generic narrative prose.
+_STATEMENT_EXCERPT_SOURCE_TYPE = "company_ir_statement_excerpt"
+
+# --------------------------------------------------------------------------- #
+# Bounded issuer-publication traversal (Phase 32A Problem B)
+#
+# ``fetch_filings`` historically fetched ONLY ``annual_reports_url`` — the
+# issuer's separately-registered ``investor_relations_url`` stayed inert
+# metadata, and nothing ever followed a link one page deeper. This left a
+# proven gap: an issuer's official, English, CURRENT financial results were
+# publicly reachable on its own site but never traversed (the confirmed LVMH
+# case). The fix below is deliberately narrow: ONE extra candidate index page
+# (``investor_relations_url``) + AT MOST ``_MAX_CHILD_LANDING_PAGES`` bounded,
+# single-hop child fetches — never a general crawler, never unbounded, and
+# every fetch reuses the SAME safe/allowlisted/SSRF-guarded ``page_fetcher``.
+# --------------------------------------------------------------------------- #
+
+# Named, conservative bound: at most this many non-document candidate links
+# (already keyword-matched on a verified index page) are followed ONE hop
+# deeper to look for the actual current-results document/page.
+_MAX_CHILD_LANDING_PAGES = 3
+
+# Generic (never issuer-specific) ranking vocabulary for candidate report
+# links — annual > half-year/interim > generic financial publication.
+_CANDIDATE_ANNUAL_MARKERS: tuple[str, ...] = (
+    "annual report",
+    "annual results",
+    "universal registration document",
+    "registration document",
+    "integrated report",
+    "annual financial report",
+    "full-year results",
+    "full year results",
+)
+_CANDIDATE_INTERIM_MARKERS: tuple[str, ...] = (
+    "half-year",
+    "half year",
+    "interim",
+    "first-half",
+    "first half",
+    "h1 results",
+    "quarterly results",
+)
+_CANDIDATE_GENERIC_MARKERS: tuple[str, ...] = (
+    "financial report",
+    "results presentation",
+    "financial results",
+    "results release",
+    "regulated financial publication",
+)
+_CANDIDATE_YEAR_RE = re.compile(r"(?:19|20)\d{2}")
+
+
+def _candidate_rank_tier(text: str, url: str) -> int:
+    """Generic candidate-report ranking tier (0 is best). Never issuer-specific."""
+    hay = f"{text} {url}".lower()
+    if any(m in hay for m in _CANDIDATE_ANNUAL_MARKERS):
+        return 0
+    if any(m in hay for m in _CANDIDATE_INTERIM_MARKERS):
+        return 1
+    if any(m in hay for m in _CANDIDATE_GENERIC_MARKERS):
+        return 2
+    return 3
+
+
+def _candidate_recency(text: str, url: str) -> int:
+    """Most recent plausible 4-digit year mentioned, else 0 (never guessed)."""
+    years = [int(m.group(0)) for m in _CANDIDATE_YEAR_RE.finditer(f"{text} {url}")]
+    return max(years) if years else 0
+
+
+def _rank_candidate_links(links: list[SafeLink]) -> list[SafeLink]:
+    """Rank candidate report links generically: annual/full-year results beat
+    half-year/interim/H1 results beat a generic financial-report/regulated
+    publication link; ties broken by more-recent year-in-text/url, then an
+    English-language link (best-effort, from link text only), then original
+    discovery order. Never hardcodes which document an issuer should have.
+    """
+
+    def key(link: SafeLink) -> tuple[int, int, int]:
+        text = link.text or ""
+        tier = _candidate_rank_tier(text, link.url)
+        recency = -_candidate_recency(text, link.url)
+        english = 0 if detect_language(text) == "en" else 1
+        return (tier, recency, english)
+
+    return sorted(links, key=key)
+
+
+def _merge_links(*link_lists: list[SafeLink]) -> list[SafeLink]:
+    """Dedup-merge ``SafeLink`` lists by URL, preserving first-seen order."""
+    seen: set[str] = set()
+    merged: list[SafeLink] = []
+    for links in link_lists:
+        for link in links:
+            if link.url in seen:
+                continue
+            seen.add(link.url)
+            merged.append(link)
+    return merged
+
 
 # Countries whose primary regulatory disclosures are typically local-language.
 _LOCAL_LANGUAGE_COUNTRIES = frozenset(
@@ -423,6 +534,49 @@ class CompanyIrConnector(SourceConnector):
         )
         return ConnectorResult(connector_key=self.connector_key, evidence_items=[item])
 
+    # -- bounded second-hop child-page discovery (Phase 32A Problem B) -----
+
+    async def _hop_into_landing_pages(
+        self, candidates: list[SafeLink], v: VerifiedIssuerSource
+    ) -> tuple[list[SafeLink], int, int]:
+        """Follow AT MOST ``_MAX_CHILD_LANDING_PAGES`` candidate links ONE hop
+        deeper when they look like a results/reports LANDING page rather than a
+        direct document.
+
+        ``candidates`` are already keyword-matched (they came out of an
+        allowlisted index-page fetch), so a non-document candidate here is
+        exactly the "half-year results" / "financial results" style link that
+        itself lists the actual current-results document rather than being one.
+        Every fetch reuses the SAME safe, allowlisted, SSRF-guarded
+        ``self._page_fetcher`` — no new fetch machinery, and this method never
+        recurses into what IT discovers (a single, capped extra hop only).
+        Returns ``(discovered_links, pages_examined, pages_with_candidates)``
+        so the caller can distinguish "hop attempted, nothing found" from
+        "hop never attempted" in its gap message.
+        """
+        assert self._page_fetcher is not None
+        landing_candidates = [ln for ln in candidates if not ln.is_document][
+            :_MAX_CHILD_LANDING_PAGES
+        ]
+        discovered: list[SafeLink] = []
+        pages_with_candidates = 0
+        for candidate in landing_candidates:
+            try:
+                child = await self._page_fetcher(
+                    candidate.url,
+                    allowed_domains=v.allowed_domains,
+                    keywords=ANNUAL_REPORT_KEYWORDS,
+                    fallback_keywords=FALLBACK_REPORT_KEYWORDS,
+                )
+            except Exception:  # noqa: BLE001 - a bounded hop must never break the run
+                continue
+            if child.blocked or (child.error and not child.ok):
+                continue
+            if child.links:
+                pages_with_candidates += 1
+                discovered.extend(child.links)
+        return discovered, len(landing_candidates), pages_with_candidates
+
     # -- fetch_filings → annual-report discovery ---------------------------
 
     async def fetch_filings(
@@ -510,8 +664,77 @@ class CompanyIrConnector(SourceConnector):
                 latency_ms=latency_ms,
             )
 
+        # Phase 32A Problem B — a second, independent candidate index page. The
+        # investor-relations landing page is registered separately from the
+        # annual-reports/results index and was historically only ever used as
+        # INERT metadata (never fetched) — this is the proven LVMH gap: current
+        # results existed on the issuer's own site but were never traversed
+        # because only ONE page was ever fetched. Reuses the SAME safe fetcher /
+        # allowlist / SSRF guards; a failure here is non-fatal — the primary
+        # index result still stands.
+        fetched_ir: SafeFetchResult | None = None
+        if v.investor_relations_url and v.investor_relations_url != v.annual_reports_url:
+            try:
+                fetched_ir = await self._page_fetcher(
+                    v.investor_relations_url,
+                    allowed_domains=v.allowed_domains,
+                    keywords=ANNUAL_REPORT_KEYWORDS,
+                    fallback_keywords=FALLBACK_REPORT_KEYWORDS,
+                )
+            except Exception:  # noqa: BLE001 - a second index fetch must never break the run
+                fetched_ir = None
+            if fetched_ir is not None and (
+                fetched_ir.blocked or (fetched_ir.error and not fetched_ir.ok)
+            ):
+                gaps.append(
+                    SourceGap(
+                        connector_key=self.connector_key,
+                        source_id="company_ir",
+                        gap_type=GapType.primary_filing_unavailable,
+                        severity=GapSeverity.info,
+                        message=(
+                            "Company IR investor-relations page could not be "
+                            f"safely fetched ({fetched_ir.error or 'blocked'}); "
+                            "only the primary annual-reports index was used."
+                        ),
+                        blocks_research_complete=False,
+                    )
+                )
+                fetched_ir = None
+
+        combined_links = _merge_links(
+            fetched.links, fetched_ir.links if fetched_ir is not None else []
+        )
+
+        # Phase 32A Problem B — ONE bounded extra hop: a same-domain candidate
+        # discovered on an already-verified index page that itself looks like a
+        # results/reports LANDING page (already keyword-matched, not itself a
+        # direct document) is followed exactly once, to recover the actual
+        # current-results document one level deeper. Never a general crawler —
+        # capped at ``_MAX_CHILD_LANDING_PAGES`` pages, no recursion into what
+        # this hop itself discovers.
+        child_links, child_pages_examined, child_pages_with_candidates = (
+            await self._hop_into_landing_pages(combined_links, v)
+        )
+        all_candidate_links = _rank_candidate_links(
+            _merge_links(combined_links, child_links)
+        )
+
+        log_event(
+            _log,
+            "company_ir_index_discovery",
+            connector_key=self.connector_key,
+            primary_index_links=len(fetched.links),
+            secondary_index_fetched=fetched_ir is not None,
+            secondary_index_links=len(fetched_ir.links) if fetched_ir is not None else 0,
+            child_pages_examined=child_pages_examined,
+            child_pages_with_candidates=child_pages_with_candidates,
+            child_discovered_links=len(child_links),
+            total_candidate_links=len(all_candidate_links),
+        )
+
         cap = max(1, query.max_items)
-        for i, link in enumerate(fetched.links[:cap], start=1):
+        for i, link in enumerate(all_candidate_links[:cap], start=1):
             items.append(
                 build_evidence_item(
                     id=f"IRAR{i}",
@@ -541,7 +764,34 @@ class CompanyIrConnector(SourceConnector):
                     ),
                 )
             )
-        if not fetched.links:
+        # Phase 32A Problem B — a distinct, always-reachable status for "the
+        # bounded extra hop WAS attempted (at least one landing-page candidate
+        # existed and was followed) but it discovered no further document/page".
+        # This is deliberately a SEPARATE check from the "no candidate at all"
+        # block below: a landing-page candidate that led nowhere still counts as
+        # itself being "a candidate" for that block (it is still a same-domain,
+        # keyword-matched link and may still be surfaced as weak evidence), so
+        # the two states are not mutually exclusive with "no candidate at all"
+        # and must not be collapsed into one message.
+        if child_pages_examined > 0 and not child_links:
+            gaps.append(
+                SourceGap(
+                    connector_key=self.connector_key,
+                    source_id="company_ir",
+                    gap_type=GapType.primary_filing_unavailable,
+                    severity=GapSeverity.info,
+                    message=(
+                        "Company IR index page(s) were fetched and "
+                        f"{child_pages_examined} child result-page candidate(s) "
+                        "were followed one hop deeper, but no further document "
+                        "or page was discovered there (child result-page hop "
+                        "attempted, no candidate)."
+                    ),
+                    blocks_research_complete=False,
+                )
+            )
+
+        if not all_candidate_links:
             # Phase 32A Slice 6B (C7) — distinguish an ACTIVELY BLOCKED fetch
             # (bot protection / challenge page returned instead of the real
             # IR page) from a fetch that genuinely succeeded and found zero
@@ -559,7 +809,8 @@ class CompanyIrConnector(SourceConnector):
             else:
                 gap_message = (
                     "Company IR source found but annual report link not "
-                    "identified by bounded extractor."
+                    "identified by bounded extractor (no candidate on primary "
+                    "index)."
                 )
             gaps.append(
                 SourceGap(
@@ -582,8 +833,15 @@ class CompanyIrConnector(SourceConnector):
         if self._primary_document_extractor is not None:
             # Slice 5B.1: augment the anchor links with the bounded non-browser
             # discovery strategies before ranking, so a JS-rendered IR page can
-            # still yield real document candidates.
+            # still yield real document candidates. Phase 32A Problem B: also
+            # runs discovery over the secondary (investor-relations) index page
+            # and merges in whatever the bounded child-landing-page hop found.
             deep_links = self._discover_deep_targets(fetched)
+            if fetched_ir is not None:
+                deep_links = _merge_links(
+                    deep_links, self._discover_deep_targets(fetched_ir)
+                )
+            deep_links = _rank_candidate_links(_merge_links(deep_links, child_links))
             if deep_links:
                 doc_items, doc_gaps, artifacts = (
                     await self._extract_primary_documents_deep(deep_links, query, company)
@@ -598,9 +856,9 @@ class CompanyIrConnector(SourceConnector):
         # fetch ONE already-discovered annual-report document, extract bounded
         # excerpts and parse high-confidence primary facts into tiered T1 evidence.
         # A blocked / scanned / JS-gated document degrades to an honest gap.
-        elif self._document_extractor is not None and fetched.links:
+        elif self._document_extractor is not None and all_candidate_links:
             doc_items, doc_gaps = await self._extract_primary_document(
-                fetched.links, query
+                all_candidate_links, query
             )
             items.extend(doc_items)
             gaps.extend(doc_gaps)
@@ -649,7 +907,13 @@ class CompanyIrConnector(SourceConnector):
                 )
             return items, gaps
 
-        requires_tr = ext.requires_translation or self._requires_translation()
+        # Phase 32A Problem F: trust the CONTENT-based determination on ``ext`` —
+        # it already threads the issuer's domicile guess through as a WEAK
+        # fallback (via ``original_language=`` on the extractor call below), so
+        # ORing in a second, cruder domicile-only guess here could only ever
+        # wrongly force a confident "this is English" result to True (the
+        # LVMH/CFR bug). Never silently override an honest ``False``.
+        requires_tr = ext.requires_translation
         year = str(ext.inferred_year) if ext.inferred_year else None
         doc_title = ext.title or target.text or "Annual report"
         cap = max(1, query.max_items)
@@ -680,6 +944,7 @@ class CompanyIrConnector(SourceConnector):
                     url=ext.source_url or target.url,
                     date=year,
                     excerpt=exc.text,
+                    scope=_infer_scope(exc.heading),
                     requires_translation=requires_tr,
                     original_language=ext.original_language,
                     language=ext.language,
@@ -732,6 +997,7 @@ class CompanyIrConnector(SourceConnector):
                     url=fact_url,
                     date=fact.period or year,
                     excerpt=excerpt,
+                    scope=fact.scope,
                     requires_translation=requires_tr,
                     data_quality="B" if fact.confidence == "high" else "C",
                     confidence=fact.confidence,
@@ -753,6 +1019,7 @@ class CompanyIrConnector(SourceConnector):
                         currency=fact.currency,
                         scale=fact.scale,
                         period=fact.period,
+                        scope=fact.scope,
                         source_url=fact_url,
                         excerpt_id=fact.excerpt_id,
                         page_number=fact.page_number,
@@ -1080,7 +1347,10 @@ class CompanyIrConnector(SourceConnector):
                 )
             return items, gaps
 
-        requires_tr = ext.requires_translation or self._requires_translation()
+        # Phase 32A Problem F: trust ``ext`` (content-first, domicile-hint-as-
+        # weak-fallback already applied inside the extractor) — never re-OR a
+        # second, cruder domicile-only guess over an honest content result.
+        requires_tr = ext.requires_translation
         doc_title = artifact.title or target.text or "Annual report"
         url = artifact.source_url or target.url
         # Phase 32A Slice 5 (3c-ii): the RAW-bytes document identity every deep item
@@ -1088,7 +1358,10 @@ class CompanyIrConnector(SourceConnector):
         # per distinct document (not per url+tier+excerpt hash). Never a secret.
         doc_hash = ext.content_hash
         cap = max(1, query.max_items)
-        orig_lang = self._original_language()
+        # The language ``ext`` actually determined (content-first) — never a bare
+        # domicile guess, so a confidently-English document is never labelled
+        # with the issuer's registered country language (the LVMH/CFR bug).
+        orig_lang = ext.language if ext.language != "en" else None
         tr_warn = (
             ["Local-language primary disclosure; machine translation pending "
              "Phase 30 — excerpt is unmodified source text."]
@@ -1098,9 +1371,18 @@ class CompanyIrConnector(SourceConnector):
 
         # 1) prose excerpts (bounded) → T1 primary-document excerpt items.
         for n, exc in enumerate(ext.excerpts[:cap], start=1):
-            source_type = _EXCERPT_SOURCE_TYPE.get(
-                exc.evidence_type, _DEFAULT_EXCERPT_SOURCE_TYPE
-            )
+            # Phase 32A Problem C: a heading that classifies as a known
+            # financial-statement section (balance sheet / cash-flow statement
+            # / income statement / segment note) outranks the generic
+            # business/risk/narrative mapping below, so it lands in its own
+            # evidence-budget category instead of competing with narrative prose.
+            statement_type = classify_statement_type(exc.section or exc.heading)
+            if statement_type is not None:
+                source_type = _STATEMENT_EXCERPT_SOURCE_TYPE
+            else:
+                source_type = _EXCERPT_SOURCE_TYPE.get(
+                    exc.evidence_type, _DEFAULT_EXCERPT_SOURCE_TYPE
+                )
             provenance = [
                 p
                 for p in (
@@ -1125,6 +1407,7 @@ class CompanyIrConnector(SourceConnector):
                     title=f"{doc_title} — excerpt",
                     url=url,
                     excerpt=exc.text,
+                    scope=_infer_scope(exc.section or exc.heading),
                     requires_translation=requires_tr,
                     original_language=orig_lang,
                     language=ext.language,
@@ -1241,7 +1524,12 @@ class CompanyIrConnector(SourceConnector):
                     provider_transport_tier=T1_PRIMARY_COMPANY_SOURCE,
                     content_source=doc_title,
                     content_source_tier=T1_PRIMARY_FILING,
-                    source_type=_DEFAULT_EXCERPT_SOURCE_TYPE,
+                    # Every excerpt_only fact matched a known financial-statement
+                    # row-header label (``_LABEL_PATTERNS``) — it is inherently
+                    # statement/table-derived (Phase 32A Problem C), regardless
+                    # of whether the surrounding table had a classifiable
+                    # heading, so it always gets the priority category.
+                    source_type=_STATEMENT_EXCERPT_SOURCE_TYPE,
                     title=f"{doc_title} — table excerpt",
                     url=url,
                     excerpt=(

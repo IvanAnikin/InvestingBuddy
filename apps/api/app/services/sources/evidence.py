@@ -96,6 +96,12 @@ class PrimaryFactRef(BaseModel):
     currency: str | None = None
     scale: str | None = None
     period: str | None = None
+    # Best-effort entity/segment scope this fact was reported under (e.g.
+    # "group" for a consolidated figure, or the heading text for a segment
+    # breakdown, e.g. "Segment A" — a generic placeholder, never a real
+    # company's segment name). ``None`` when it could not be determined from
+    # the document structure — never guessed.
+    scope: str | None = None
     source_url: str | None = None
     excerpt_id: str | None = None
     page_number: int | None = None
@@ -151,6 +157,14 @@ class EvidenceItem(BaseModel):
     fields_supported: list[str] = Field(default_factory=list)
     data_quality: str | None = None
     confidence: str | None = None
+
+    # Best-effort entity/segment scope inferred from the document structure this
+    # item came from (e.g. "group" for a consolidated figure, or a heading like
+    # "Segment A" — a generic placeholder — for a segment breakdown). ``None``
+    # when unknown — the inference is deliberately conservative and never
+    # guesses a company-specific segment name; see
+    # ``primary_document_extractor._infer_scope``.
+    scope: str | None = None
 
     retrieved_at: datetime | None = None
     stale_after_days: int | None = None
@@ -244,6 +258,8 @@ class EvidenceItem(BaseModel):
             # non-English without re-detecting. Additive + safe.
             "original_language": self.original_language,
             "requires_translation": self.requires_translation,
+            # Semantic-grounding signal (best-effort, may be None).
+            "scope": self.scope,
         }
 
 

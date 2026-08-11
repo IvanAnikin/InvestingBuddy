@@ -550,6 +550,65 @@ def test_research_completeness_output_to_dict_serializable():
 
 
 # ---------------------------------------------------------------------------
+# ResearchCompletenessAgent — jurisdiction-aware "next research task" wording
+# (fix/research-quality-semantic-grounding). A Swiss or French issuer must not
+# be told to cross-check against SEC EDGAR / SEDAR+; it should be pointed at
+# its own home regulator. US issuers, and issuers whose exchange/country do
+# not resolve to a known regulator, keep the generic SEC EDGAR/SEDAR+ wording.
+# ---------------------------------------------------------------------------
+
+def _make_snapshot_for(exchange: str, country_domicile: str) -> dict:
+    profile = _mock_profile()
+    profile = profile.model_copy(
+        update={"exchange": exchange, "country_domicile": country_domicile}
+    )
+    prices = _mock_prices()
+    return build_company_snapshot(profile=profile, prices=prices)
+
+
+def test_research_completeness_swiss_issuer_gets_six_swiss_task():
+    snapshot = _make_snapshot_for(exchange="SW", country_domicile="Switzerland")
+    output = run_research_completeness_agent(company_snapshot=snapshot, schema_draft=None)
+    tasks_text = " ".join(output.next_research_tasks)
+    assert "SIX Swiss Exchange" in tasks_text
+    assert "SEC EDGAR" not in tasks_text
+    assert "SEDAR+" not in tasks_text
+
+
+def test_research_completeness_french_issuer_gets_euronext_task():
+    snapshot = _make_snapshot_for(exchange="PA", country_domicile="France")
+    output = run_research_completeness_agent(company_snapshot=snapshot, schema_draft=None)
+    tasks_text = " ".join(output.next_research_tasks)
+    assert "Euronext" in tasks_text or "AMF" in tasks_text
+    assert "SEC EDGAR" not in tasks_text
+    assert "SEDAR+" not in tasks_text
+
+
+def test_research_completeness_us_issuer_keeps_sec_edgar_task():
+    snapshot = _make_snapshot_for(exchange="NASDAQ", country_domicile="US")
+    output = run_research_completeness_agent(company_snapshot=snapshot, schema_draft=None)
+    tasks_text = " ".join(output.next_research_tasks)
+    assert "Cross-check company name and domicile against SEC EDGAR or SEDAR+" in tasks_text
+
+
+def test_research_completeness_unknown_jurisdiction_keeps_generic_task():
+    # Default fixture uses exchange="OSE" / country_domicile="Norway", which
+    # has no dedicated regulator connector mapping — must fall back to the
+    # generic wording, never guess at a regulator, and never crash.
+    snapshot = _make_snapshot()
+    output = run_research_completeness_agent(company_snapshot=snapshot, schema_draft=None)
+    tasks_text = " ".join(output.next_research_tasks)
+    assert "Cross-check company name and domicile against SEC EDGAR or SEDAR+" in tasks_text
+
+
+def test_research_completeness_missing_identity_does_not_crash():
+    output = run_research_completeness_agent(company_snapshot={}, schema_draft=None)
+    assert isinstance(output, ResearchCompletenessAgentOutput)
+    tasks_text = " ".join(output.next_research_tasks)
+    assert "Cross-check company name and domicile against SEC EDGAR or SEDAR+" in tasks_text
+
+
+# ---------------------------------------------------------------------------
 # 23–30: CitationValidatorV2
 # ---------------------------------------------------------------------------
 

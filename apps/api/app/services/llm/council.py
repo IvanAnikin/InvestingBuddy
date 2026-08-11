@@ -519,6 +519,7 @@ async def _run_agent_attempt(
     result: CouncilResult,
     client: LLMClient,
     cfg: Settings,
+    evidence_by_id: dict[str, Any] | None = None,
 ) -> tuple[CouncilAgentOutput, list[str], Exception | None]:
     """Run ONE attempt for an agent. Never raises.
 
@@ -528,6 +529,9 @@ async def _run_agent_attempt(
     ``output`` is the failed placeholder and ``exc`` is the (possibly transient)
     exception. This is the single-agent primitive BOTH the OFF path and the
     ON (retry) path call.
+
+    ``evidence_by_id`` (id -> evidence-pack ``EvidenceItem``) enables the
+    citation checker's semantic-grounding check (Phase 32A hotfix).
     """
     system, user = _messages_for(agent_name, evidence_json, result)
     try:
@@ -548,7 +552,7 @@ async def _run_agent_attempt(
         )
         return placeholder, [f"{agent_name}: {type(exc).__name__}"], exc
     output = _coerce_output(agent_name, raw)
-    sanitized, issues = check_and_sanitize(output, evidence_ids)
+    sanitized, issues = check_and_sanitize(output, evidence_ids, evidence_by_id)
     return sanitized, issues, None
 
 
@@ -559,11 +563,12 @@ async def _timed_attempt(
     result: CouncilResult,
     client: LLMClient,
     cfg: Settings,
+    evidence_by_id: dict[str, Any] | None = None,
 ) -> tuple[CouncilAgentOutput, list[str], Exception | None, int]:
     """``_run_agent_attempt`` plus a wall-clock duration_ms for logging."""
     started = time.perf_counter()
     output, issues, exc = await _run_agent_attempt(
-        agent_name, evidence_json, evidence_ids, result, client, cfg
+        agent_name, evidence_json, evidence_ids, result, client, cfg, evidence_by_id
     )
     duration_ms = int((time.perf_counter() - started) * 1000)
     return output, issues, exc, duration_ms
@@ -735,11 +740,12 @@ async def _run_offline_pass(
     log: logging.Logger,
     report_id: str | None,
     ticker: str | None,
+    evidence_by_id: dict[str, Any] | None = None,
 ) -> None:
     """The OFF path: one attempt per agent, no retries — byte-identical to pre-Slice-4."""
     for agent_name in COUNCIL_AGENT_ORDER:
         output, issues, exc, duration_ms = await _timed_attempt(
-            agent_name, evidence_json, evidence_ids, result, client, cfg
+            agent_name, evidence_json, evidence_ids, result, client, cfg, evidence_by_id
         )
         result.agents.append(output)
         result.warnings.extend(issues)
@@ -762,6 +768,7 @@ def _make_attempt(
     result: CouncilResult,
     client: LLMClient,
     cfg: Settings,
+    evidence_by_id: dict[str, Any] | None = None,
 ) -> retry_engine.AttemptFn:
     """Bind the company-specific single-attempt primitive for the retry engine.
 
@@ -772,7 +779,7 @@ def _make_attempt(
 
     async def _attempt(agent_name: str) -> retry_engine.AttemptResult:
         return await _timed_attempt(
-            agent_name, evidence_json, evidence_ids, result, client, cfg
+            agent_name, evidence_json, evidence_ids, result, client, cfg, evidence_by_id
         )
 
     return _attempt
@@ -843,6 +850,7 @@ async def _run_council_with_retries(
     clock: Callable[[], float],
     sleeper: Callable[[float], Awaitable[Any]],
     rng: random.Random,
+    evidence_by_id: dict[str, Any] | None = None,
 ) -> None:
     """The ON path: initial pass under a deadline + a priority retry pass.
 
@@ -857,7 +865,7 @@ async def _run_council_with_retries(
         critical=critical,
         priority_order=_retry_priority_order(critical),
         reserved=RESERVED_AGENTS,
-        attempt=_make_attempt(evidence_json, evidence_ids, result, client, cfg),
+        attempt=_make_attempt(evidence_json, evidence_ids, result, client, cfg, evidence_by_id),
         append_output=result.agents.append,
         extend_warnings=result.warnings.extend,
         replace_agent=_make_replace_agent(result),
@@ -913,6 +921,9 @@ async def run_council(
     rng = rng if rng is not None else random.Random()
     evidence_ids = evidence_pack.evidence_ids()
     evidence_json = evidence_pack.model_dump_json()
+    # Phase 32A hotfix: id -> EvidenceItem, so the citation checker's semantic-
+    # grounding check can look up each cited item's scope/period/excerpt.
+    evidence_by_id = {item.id: item for item in evidence_pack.evidence_items}
 
     result = CouncilResult(
         council_version=cfg.llm_council_version,
@@ -950,6 +961,7 @@ async def run_council(
             clock=clock,
             sleeper=sleeper,
             rng=rng,
+            evidence_by_id=evidence_by_id,
         )
     else:
         await _run_offline_pass(
@@ -961,6 +973,7 @@ async def run_council(
             log=log,
             report_id=report_id,
             ticker=ticker,
+            evidence_by_id=evidence_by_id,
         )
 
     result.recount()
@@ -982,7 +995,9 @@ async def run_council(
     ):
         fallback = _deterministic_chair_fallback(result.agents, COUNCIL_AGENT_ORDER)
         # Defense-in-depth: run the fallback through the same safety/citation gate.
-        sanitized_fallback, _fb_issues = check_and_sanitize(fallback, evidence_ids)
+        sanitized_fallback, _fb_issues = check_and_sanitize(
+            fallback, evidence_ids, evidence_by_id
+        )
         result.deterministic_chair = sanitized_fallback
         result.chair_fallback_used = True
         result.committee_label = sanitized_fallback.committee_label

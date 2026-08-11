@@ -32,6 +32,7 @@ from app.services.sources.document_text_extractor import (
     DocumentExcerpt,
     DocumentTextExtraction,
 )
+from app.services.sources.primary_document_extractor import _infer_scope
 
 # Canonical fact field names (neutral, factual — never a rating vocabulary).
 FIELD_LEGAL_NAME = "company_legal_name"
@@ -57,6 +58,12 @@ class PrimaryFact(BaseModel):
     currency: str | None = None
     scale: str | None = None  # million | billion | thousand | None
     period: str | None = None
+    # Best-effort entity/segment scope this fact was reported under (e.g.
+    # "group" for a consolidated figure, or a heading like "Segment A" — a
+    # generic placeholder — for a segment breakdown). ``None`` when the
+    # excerpt's heading gives no scope signal — never guessed. See
+    # ``primary_document_extractor._infer_scope``.
+    scope: str | None = None
     source_url: str | None = None
     excerpt_id: str | None = None
     page_number: int | None = None
@@ -211,11 +218,17 @@ def _parse_excerpt(excerpt: DocumentExcerpt, source_url: str | None) -> list[Pri
     text = excerpt.text
     facts: list[PrimaryFact] = []
     seen_fields: set[str] = set()
+    # Best-effort scope inferred from the excerpt's own heading (already carried
+    # by ``DocumentExcerpt`` regardless of which extractor produced it). ``None``
+    # when the heading gives no scope signal — every fact below stays honest.
+    scope = _infer_scope(excerpt.heading)
 
     def add(fact: PrimaryFact) -> None:
         if fact.field in seen_fields:
             return
         seen_fields.add(fact.field)
+        if fact.scope is None and scope is not None:
+            fact = fact.model_copy(update={"scope": scope})
         facts.append(fact)
 
     # -- reporting currency (only if a currency is explicitly present) --------

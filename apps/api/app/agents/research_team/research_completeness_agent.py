@@ -28,6 +28,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from app.services.sources.company_evidence import regulator_connector_for
+
 # Top-level sections defined in report_schema.json
 # Grouped by whether they are available from the Phase 8 snapshot or require
 # deeper research (filings, LLM analysis, peer data, etc.)
@@ -108,12 +110,21 @@ _SCHEMA_SECTIONS = {
     },
 }
 
+# Phase-32A(fix) — the generic, jurisdiction-agnostic wording for the
+# domicile-verification task. For issuers whose exchange/country resolves to a
+# known home regulator (see ``_jurisdiction_aware_snapshot_tasks`` below) this
+# is swapped for a jurisdiction-appropriate equivalent. US issuers, and any
+# issuer whose jurisdiction cannot be resolved, keep this wording unchanged —
+# SEC EDGAR is genuinely the right venue for US issuers, and an unresolved
+# jurisdiction must never guess at a regulator.
+_GENERIC_DOMICILE_TASK = "Cross-check company name and domicile against SEC EDGAR or SEDAR+"
+
 # Research tasks that unlock each incomplete phase
 _PHASE_TASKS = {
     "snapshot": [
         "Verify legal entity via GLEIF (obtain LEI)",
         "Confirm ISIN from exchange listing or regulatory data",
-        "Cross-check company name and domicile against SEC EDGAR or SEDAR+",
+        _GENERIC_DOMICILE_TASK,
     ],
     "research": [
         "Source discovery profile: document how this candidate was identified",
@@ -259,6 +270,59 @@ def _enriched_present_fields(
     return present
 
 
+# Phase-32A(fix) — human-readable display names for the regulator connector ids
+# ``regulator_connector_for`` (company_evidence.py) can resolve. Kept minimal
+# and scoped to exactly those ids; deliberately a local copy (not an import
+# from the connector modules) to avoid coupling this deterministic, no-LLM
+# agent to the connector layer's own display strings. No individual company
+# name is ever hardcoded — only venue/regulator names.
+_REGULATOR_DISPLAY_NAMES: dict[str, str] = {
+    "uk_fca_nsm": "the UK FCA National Storage Mechanism (NSM)",
+    "euronext_regulated_info": "Euronext Regulated Information / AMF filings",
+    "deutsche_boerse": "the German regulated-information venue (Deutsche Börse / Bundesanzeiger)",
+    "nordic_disclosures": "Nasdaq Nordic company disclosures",
+    "six_swiss": "SIX Swiss Exchange regulatory disclosures",
+}
+
+
+def _jurisdiction_aware_snapshot_tasks(company_snapshot: dict) -> list[str]:
+    """Return the ``snapshot`` phase task list with the generic domicile
+    cross-check line swapped for a jurisdiction-appropriate one when the
+    company's exchange/country resolves to a known home regulator.
+
+    Uses the same ``regulator_connector_for`` resolver the connector layer
+    already relies on (company_evidence.py) so the wording never drifts from
+    the exchanges/countries the platform actually has a dedicated regulator
+    connector for. A US issuer, or any issuer whose exchange/country does not
+    resolve to a known regulator, keeps the generic "SEC EDGAR or SEDAR+"
+    wording unchanged — an unresolved jurisdiction must never be guessed at.
+    """
+    tasks = list(_PHASE_TASKS["snapshot"])
+    identity: dict[str, Any] = (company_snapshot or {}).get("company_identity") or {}
+    exchange = identity.get("exchange")
+    country = identity.get("country_domicile")
+    if not exchange and not country:
+        return tasks
+
+    try:
+        connector_id = regulator_connector_for(exchange, country)
+    except Exception:
+        # Never let a resolution failure block completeness reporting — fall
+        # back to the safe, generic wording.
+        connector_id = None
+
+    display_name = _REGULATOR_DISPLAY_NAMES.get(connector_id) if connector_id else None
+    if not display_name:
+        return tasks
+
+    return [
+        f"Cross-check company name and domicile against {display_name}"
+        if task == _GENERIC_DOMICILE_TASK
+        else task
+        for task in tasks
+    ]
+
+
 def run_research_completeness_agent(
     company_snapshot: dict,
     schema_draft: dict | None = None,
@@ -342,7 +406,11 @@ def run_research_completeness_agent(
 
     # Collect next tasks from phases needed
     for phase in ("snapshot", "research", "financials", "analysis"):
-        if phase in phases_needed:
+        if phase not in phases_needed:
+            continue
+        if phase == "snapshot":
+            next_tasks.extend(_jurisdiction_aware_snapshot_tasks(company_snapshot))
+        else:
             next_tasks.extend(_PHASE_TASKS[phase])
 
     # Phase 19.4.1: drop identity-verification tasks the enriched snapshot has

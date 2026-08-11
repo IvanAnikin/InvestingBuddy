@@ -28,7 +28,7 @@ from pydantic import BaseModel, Field
 
 from app.core.config import Settings
 from app.core.config import settings as default_settings
-from app.services.sources.language import detect_language
+from app.services.sources.language import detect_language_with_confidence
 
 # Evidence-type tags for an excerpt (mapped to EvidenceItem source_types by the
 # connector). Deliberately factual/neutral — never a rating vocabulary.
@@ -190,12 +190,14 @@ def _relevance(text: str) -> int:
 def _detect_language(text: str, original_language: str | None) -> tuple[str, bool]:
     """Return (language_code, requires_translation).
 
-    Delegates to the shared, dependency-free ``detect_language`` heuristic
-    (Phase 30A) — honouring an ``original_language`` hint (from the issuer's
-    country) and defaulting to English. ``requires_translation`` is simply
-    "detected language is not English". Never blocks extraction — only labels it.
+    Delegates to the shared, dependency-free ``detect_language_with_confidence``
+    heuristic (Phase 30A; priority fixed in Phase 32A Problem F) — CONTENT-based
+    detection runs first and wins whenever confident; an ``original_language``
+    hint (from the issuer's country) is only a weak fallback used when content
+    detection genuinely cannot tell. ``requires_translation`` is simply "detected
+    language is not English". Never blocks extraction — only labels it.
     """
-    code = detect_language(text, hint=original_language)
+    code, _confident = detect_language_with_confidence(text, hint=original_language)
     return code, code != "en"
 
 
