@@ -37,6 +37,7 @@ from typing import Any
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agents.research_team.source_quality_agent import run_source_quality_agent
 from app.core.config import settings
 from app.core.structured_logging import log_event
 from app.models.report import Report
@@ -397,6 +398,89 @@ def _council_evidence_links(
             for cid in getattr(rg, "citation_ids", None) or []:
                 _emit(agent.agent_name, rg.item, cid)
     return links
+
+
+def _council_evidence_source_tiers(council_result: Any) -> list[str]:
+    """Real (non metadata-only) source tiers from this run's council evidence.
+
+    Problem D (stale source-quality reconciliation) fix. These are the SAME
+    claim->evidence links ``_persist_council_evidence_citations`` is about to
+    write as ``council:%`` Citation rows, once the new final report is saved
+    (the report — and therefore its own citations — does not exist in the DB
+    yet at final-assembly time; the report row and its council citations are
+    both created together by ``_save_final_report_draft``, further down). Using
+    the in-memory links here is the equivalent of "reload citations from the
+    DB after the council ran": same source_tier values, just read before the
+    flush instead of after it. A metadata-only reference (index/IR URL with no
+    extracted content) is excluded — it is never counted as a strong source,
+    only a genuine content-bearing citation is (only a CITED link is even
+    considered here — evidence that was extracted but never cited by a claim
+    does not back a final claim and is intentionally left out).
+    """
+    return [
+        item.source_tier
+        for _, _, item in _council_evidence_links(council_result)
+        if item.source_tier and not _is_metadata_only(item)
+    ]
+
+
+def _fresh_citation_source_tiers(
+    citations: list[Citation], council_result: Any
+) -> list[str]:
+    """Real (non metadata-only) source tiers backing this report right now.
+
+    Combines the report's already-loaded DB citations (this report's real
+    lineage, e.g. Node 8 deterministic + Slice 5B.1 extracted-document
+    citations) with this run's council claim-cited evidence. A metadata-only
+    ``Citation`` row (``data_quality`` in the metadata-only sentinel set — a
+    persisted reference with no extracted content) is excluded from the
+    "strong" side on both inputs.
+    """
+    tiers = [
+        c.source_tier
+        for c in citations
+        if c.source_tier
+        and (getattr(c, "data_quality", None) or "") not in _METADATA_ONLY_QUALITIES
+    ]
+    tiers.extend(_council_evidence_source_tiers(council_result))
+    return tiers
+
+
+def _recompute_fresh_source_quality_summary(
+    company_snapshot: dict[str, Any] | None,
+    citations: list[Citation],
+    council_result: Any,
+    base_summary: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Problem D fix — recompute source-quality from FRESH evidence.
+
+    ``base_summary`` (``source_quality_summary`` from workflow node 6) is a
+    best-effort estimate computed BEFORE citations exist, BEFORE document
+    ingestion, and BEFORE the council ran (see
+    ``workflows/company_analysis.py`` node 6 docstring) — it is never wrong to
+    compute early, but it goes stale the moment real evidence is gathered.
+    This re-invokes ``run_source_quality_agent`` (Phase 8) with the FRESH
+    ``citation_source_tiers`` derived from real, content-bearing evidence only,
+    at final-report-assembly time, after the council has run. The returned
+    dict overwrites ``overall_source_quality`` / ``strong_sources_count`` /
+    ``weak_sources_count`` (plus the underlying lists + warnings) so a stale
+    "strong_sources_count = 0" / "T6 only" never survives into the saved
+    report when real T1/T2 evidence is actually present.
+    """
+    fresh_tiers = _fresh_citation_source_tiers(citations, council_result)
+    fresh = run_source_quality_agent(
+        company_snapshot=company_snapshot or {},
+        citation_source_tiers=fresh_tiers,
+    )
+    return {
+        **(base_summary or {}),
+        "overall_source_quality": fresh.overall_source_quality,
+        "strong_sources_count": len(fresh.strong_sources),
+        "weak_sources_count": len(fresh.weak_sources),
+        "strong_sources": fresh.strong_sources,
+        "weak_sources": fresh.weak_sources,
+        "warnings": fresh.warnings,
+    }
 
 
 async def _get_or_create_evidence_source_id(
@@ -1953,6 +2037,7 @@ def _has_t1_t2_evidence(
     source_tier: str | None,
     citations: list[Citation],
     primary_facts: list[dict[str, Any]] | None = None,
+    extra_source_tiers: list[str] | None = None,
 ) -> bool:
     """True only when a genuine T1/T2 (primary filing / regulator) source backs a
     claim.
@@ -1968,12 +2053,34 @@ def _has_t1_t2_evidence(
     (revenue / reporting currency / … with its own source_url) is genuine T1
     evidence and also counts. With zero facts this argument is ``None`` and the
     result is byte-for-byte identical to the pre-29B.3 behaviour.
+
+    Problem D fix — ``extra_source_tiers`` carries this run's council
+    claim-cited evidence tiers (see ``_council_evidence_source_tiers``) that are
+    not yet reflected in ``citations`` because the new final report (and its own
+    ``council:%`` Citation rows) is only persisted after this check runs. Every
+    entry is already restricted to real, content-bearing (non metadata-only)
+    evidence by the caller. With no council evidence this stays ``None`` and the
+    result is unchanged.
+
+    Problem D fix — a persisted ``Citation`` row CAN carry a T1/T2
+    ``source_tier`` while still being a metadata-only reference (e.g. a council
+    claim citing a verified issuer IR *index* URL with no extracted content —
+    see ``_persist_council_evidence_citations``): ``data_quality`` is the
+    field that distinguishes them, so those rows are excluded here too. A
+    citation with no ``data_quality`` set (the common case for deterministic
+    Node 8 citations) is unaffected — only the explicit metadata-only sentinel
+    values are excluded.
     """
 
     def _is_t1_t2(tier: str | None) -> bool:
         return bool(tier) and (str(tier).startswith("T1") or str(tier).startswith("T2"))
 
-    if any(_is_t1_t2(c.source_tier) for c in citations):
+    def _is_real_citation(c: Citation) -> bool:
+        return (getattr(c, "data_quality", None) or "") not in _METADATA_ONLY_QUALITIES
+
+    if any(_is_t1_t2(c.source_tier) for c in citations if _is_real_citation(c)):
+        return True
+    if any(_is_t1_t2(t) for t in (extra_source_tiers or [])):
         return True
     if _has_high_confidence_primary_facts(primary_facts):
         return True
@@ -2698,6 +2805,115 @@ def _ocr_status_note(council_result: Any, doc_rows: list[dict[str, Any]]) -> str
     return "(document candidate discovered but OCR was not attempted for it)"
 
 
+# Phase 32A Problem B follow-up: bounded issuer-index traversal (company_ir.py)
+# can now legitimately fail with NO scanning/JS-rendering involved at all — the
+# issuer's own IR/publication index page(s), plus one bounded extra hop, were
+# fetched successfully but no matching document candidate was ever found, or
+# the fetch was actively blocked (bot protection). The legacy wording below
+# ("the reports are scanned or JS-gated") assumes a document was located but
+# couldn't be read — that is false in these two states (no document was ever
+# located to begin with), so they must be reported with their own honest cause
+# rather than folded into the OCR/scan framing.
+_TRAVERSAL_NO_CANDIDATE_GAP_MARKERS: tuple[str, ...] = (
+    "no candidate on primary index",
+    "child result-page hop attempted, no candidate",
+)
+_TRAVERSAL_BLOCKED_GAP_MARKERS: tuple[str, ...] = ("blocked (bot protection",)
+
+
+def _document_gap_cause_note(gap_rows: list[Any]) -> str | None:
+    """An honest cause phrase for a traversal/blocking gap, or ``None`` to keep
+    the legacy scan/JS-gated framing (used when the real cause is unknown or is
+    genuinely an unreadable-document case)."""
+    texts = [str(g) for g in gap_rows]
+    if any(
+        any(marker in t for marker in _TRAVERSAL_NO_CANDIDATE_GAP_MARKERS)
+        for t in texts
+    ):
+        return (
+            "no current-results document candidate could be located via bounded "
+            "issuer-index traversal — the issuer's own index page(s) were "
+            "fetched successfully, but no matching document or page was found"
+        )
+    if any(
+        any(marker in t for marker in _TRAVERSAL_BLOCKED_GAP_MARKERS)
+        for t in texts
+    ):
+        return "the issuer source fetch was blocked (bot protection / access denied)"
+    return None
+
+
+def _legacy_scan_gap_note(
+    council_result: Any, doc_rows: list[dict[str, Any]], *, prefix: str = "are"
+) -> str:
+    return f"the reports {prefix} scanned or JS-gated {_ocr_status_note(council_result, doc_rows)}"
+
+
+def _memo_why_surfaced_from_lineage(discovery_lineage: dict[str, Any]) -> dict[str, Any]:
+    """``why_surfaced`` built from a real ``DiscoveryCandidate``/``DiscoveryRun``
+    lineage (Problem E fix — discovery rationale not surfaced despite exact
+    linkage).
+
+    A candidate-launched analysis (``market_discovery_service.
+    run_candidate_analysis``) is linked to a real ``DiscoveryCandidate`` — the
+    SAME FK (``DiscoveryCandidate.analysis_report_id``) the field-review
+    eligibility endpoint uses to count it as eligible — but ``discovery_rationale``
+    is built from the unrelated, legacy ``ScreeningCandidate`` model and is
+    deliberately ``None`` on this path (passing a ``DiscoveryCandidate`` into the
+    ``ScreeningCandidate``-typed parameter would ``AttributeError``). Reads ONLY
+    the fields ``_build_discovery_lineage_from_dict`` already carries — this
+    report's OWN candidate/run, threaded through by ``run_candidate_analysis`` off
+    the real ORM ``DiscoveryCandidate`` + parent ``DiscoveryRun`` — never inferred
+    from ticker/name, never another run's candidate for the same company.
+    """
+    reasons: list[str] = []
+    thesis_text = _memo_datapoint_value(discovery_lineage, "thesis_text")
+    if thesis_text:
+        reasons.append(f"Matched discovery-run thesis: {_memo_safe_text(thesis_text)}")
+    score_explanation = _memo_datapoint_value(discovery_lineage, "score_explanation")
+    if score_explanation:
+        reasons.append(_memo_safe_text(score_explanation))
+    thesis_match = _memo_datapoint_value(discovery_lineage, "thesis_match")
+    if isinstance(thesis_match, dict):
+        match_reason = thesis_match.get("relevance_reason") or thesis_match.get("reason")
+        if match_reason:
+            reasons.append(_memo_safe_text(str(match_reason)))
+    return {
+        "available": True,
+        "source": "discovery_run_candidate",
+        "discovery_run_id": discovery_lineage.get("discovery_run_id"),
+        "discovery_candidate_id": discovery_lineage.get("discovery_candidate_id"),
+        "rank": {
+            "value": _memo_datapoint_value(discovery_lineage, "rank"),
+            "provenance": "sourced_fact",
+        },
+        "candidate_score": {
+            "value": _memo_datapoint_value(discovery_lineage, "candidate_score"),
+            "provenance": "sourced_fact",
+        },
+        "candidate_score_grade": {
+            "value": _memo_datapoint_value(discovery_lineage, "candidate_score_grade"),
+            "provenance": "sourced_fact",
+        },
+        "thesis_relevance_score": {
+            "value": _memo_datapoint_value(discovery_lineage, "thesis_relevance_score"),
+            "provenance": "sourced_fact",
+        },
+        "discovery_reasons": {
+            "value": reasons,
+            "provenance": "sourced_fact",
+        },
+        "note": {
+            "value": (
+                "Discovery rationale derived from this report's linked "
+                "DiscoveryCandidate/DiscoveryRun lineage (a legacy screening "
+                "candidate is not linked to this candidate-launched analysis)."
+            ),
+            "provenance": "sourced_fact",
+        },
+    }
+
+
 def _build_research_memo(
     report_content: dict[str, Any],
     council_result: Any,
@@ -2728,6 +2944,7 @@ def _build_research_memo(
     """
     company_identity = report_content.get("company_identity", {}) or {}
     discovery_rationale = report_content.get("discovery_rationale", {}) or {}
+    discovery_lineage = report_content.get("discovery_lineage", {}) or {}
     data_availability = report_content.get("data_availability_summary", {}) or {}
     source_quality = report_content.get("source_quality_review", {}) or {}
     missing_information = report_content.get("missing_information", {}) or {}
@@ -2806,6 +3023,11 @@ def _build_research_memo(
                 "provenance": "missing_data",
             },
         }
+    elif discovery_lineage.get("available"):
+        # Problem E fix — authoritative when the legacy ``discovery_rationale``
+        # (ScreeningCandidate) is unavailable but this report carries a real
+        # DiscoveryCandidate/DiscoveryRun lineage (candidate-launched analyses).
+        why_surfaced = _memo_why_surfaced_from_lineage(discovery_lineage)
     else:
         why_surfaced = {
             "available": False,
@@ -2959,6 +3181,9 @@ def _build_research_memo(
                 "provenance": "missing_data",
             }
     elif ref_rows:
+        doc_gap_cause = _document_gap_cause_note(gap_rows) or _legacy_scan_gap_note(
+            council_result, doc_rows
+        )
         primary_evidence_summary = {
             "primary_source_reference_count": primary_source_reference_count,
             "primary_document_reference_count": primary_document_reference_count,
@@ -2982,8 +3207,7 @@ def _build_research_memo(
             "note": (
                 f"{primary_source_reference_count} primary-source reference(s) are "
                 "available and are listed above. However, issuer document TEXT was "
-                "NOT extracted (the reports are scanned or JS-gated "
-                f"{_ocr_status_note(council_result, doc_rows)}) and NO primary "
+                f"NOT extracted ({doc_gap_cause}) and NO primary "
                 "financial facts were parsed. References locate verified primary "
                 "sources for human review; they are not yet extracted evidence or "
                 "confirmed facts, so primary-source validation remains outstanding."
@@ -2996,6 +3220,9 @@ def _build_research_memo(
                 "provenance": "missing_data",
             }
     else:
+        doc_gap_cause = _document_gap_cause_note(gap_rows) or _legacy_scan_gap_note(
+            council_result, doc_rows, prefix="were"
+        )
         primary_evidence_summary = {
             "primary_document_count": 0,
             "primary_fact_count": 0,
@@ -3008,9 +3235,8 @@ def _build_research_memo(
             "primary_facts_available": False,
             "note": {
                 "value": (
-                    "0 primary facts — no issuer primary document was extracted, or "
-                    "the reports were scanned / JS-gated "
-                    f"{_ocr_status_note(council_result, doc_rows)}. "
+                    "0 primary facts — no issuer primary document was extracted "
+                    f"({doc_gap_cause}). "
                     "Primary-source validation is still outstanding."
                 ),
                 "provenance": "missing_data",
@@ -3563,6 +3789,13 @@ async def _load_candidate_by_id(
 async def _load_candidate_for_company(
     db: AsyncSession, company_id: uuid.UUID
 ) -> ScreeningCandidate | None:
+    # PRE-EXISTING ISSUE (flagged during Problem E tracing, out of scope to fix
+    # here): "latest ScreeningCandidate by company_id" is a globally-newest-by-
+    # company fallback, which CLAUDE.md forbids in general (no globally/latest-
+    # by-company lookup). It is only reachable from generate_from_company /
+    # generate_from_scorecard (never the candidate-launched path this task
+    # fixed), so it is NOT the cause of the MC discovery-rationale defect — left
+    # unchanged to keep this change minimal and scoped.
     result = await db.execute(
         select(ScreeningCandidate)
         .where(ScreeningCandidate.company_id == company_id)
@@ -4529,6 +4762,39 @@ class FinalReportGeneratorService:
         if council_result.llm_used:
             report_content["llm_council_analysis"] = council_result.to_report_dict()
 
+        primary_facts = council_result.primary_facts
+
+        # Problem D — stale source-quality reconciliation. ``source_quality_summary``
+        # was computed at workflow node 6, BEFORE citations existed, BEFORE document
+        # ingestion, and BEFORE the council ran (see that node's docstring). Now that
+        # the council has run, recompute the source-quality summary from FRESH
+        # evidence (this report's real DB citations + the council's claim-cited
+        # evidence — ``_council_evidence_source_tiers`` — excluding any
+        # metadata-only reference on either side) and overwrite the source-quality
+        # review with it BEFORE it is embedded in the report. This runs
+        # unconditionally (not gated on ``primary_facts``) — a report can have real
+        # T1/T2 excerpt evidence + council claims citing it without producing a
+        # structured Phase 29B.3 "primary fact".
+        council_fresh_tiers = _council_evidence_source_tiers(council_result)
+        source_quality_summary = _recompute_fresh_source_quality_summary(
+            company_snapshot, citations, council_result, source_quality_summary
+        )
+        report_content["source_quality_review"] = _build_source_quality_review(
+            source_quality_summary, sources, primary_facts=primary_facts
+        )
+        # Phase 32A RC-2 — mock ONLY on explicit provenance; unknown ≠ mock. Also
+        # unconditional (Problem D) — see above.
+        _patch_t1_t2_checklist_item(
+            report_content.get("human_review_checklist", []),
+            is_mock=(report_provenance == "mock"),
+            has_t1_t2=_has_t1_t2_evidence(
+                source_tier,
+                citations,
+                primary_facts,
+                extra_source_tiers=council_fresh_tiers,
+            ),
+        )
+
         # Phase 29B.3: when the council surfaced real high-confidence primary facts
         # (annual-report revenue / reporting currency / fiscal year / …), re-render
         # the financial-snapshot + company-identity sections so each fact appears
@@ -4536,28 +4802,12 @@ class FinalReportGeneratorService:
         # needs_human_review. The existing T5 eodhd datapoints are preserved. With
         # zero facts (the scanned-PDF reality) both sections stay byte-for-byte
         # identical. This runs BEFORE validation so the safety gate scans it.
-        primary_facts = council_result.primary_facts
         if primary_facts:
             report_content["financial_snapshot"] = _build_financial_snapshot(
                 company_snapshot, fundamentals_data, primary_facts=primary_facts
             )
             report_content["company_identity"] = _build_company_identity(
                 company_snapshot, company_record, primary_facts=primary_facts
-            )
-            # Phase 29B.3: the quality gates were assembled before the council ran,
-            # so re-derive the ones that recognise real T1 primary facts. The
-            # source-quality review now flags EXTRACTED primary facts (distinct
-            # from metadata-only IR links), and the T1/T2 data-quality checklist
-            # item is recomputed (still gated on not-mock). With zero facts none
-            # of this runs and the report is byte-for-byte unchanged.
-            report_content["source_quality_review"] = _build_source_quality_review(
-                source_quality_summary, sources, primary_facts=primary_facts
-            )
-            # Phase 32A RC-2 — mock ONLY on explicit provenance; unknown ≠ mock.
-            _patch_t1_t2_checklist_item(
-                report_content.get("human_review_checklist", []),
-                is_mock=(report_provenance == "mock"),
-                has_t1_t2=_has_t1_t2_evidence(source_tier, citations, primary_facts),
             )
 
         # Phase 31 hotfix: when the connector layer located verified PRIMARY-SOURCE
@@ -4715,6 +4965,16 @@ class FinalReportGeneratorService:
         # reflects the post-completion schema_valid, eliminating the stale
         # "Schema invalid" note. publication_ready (stays False) and
         # human_review_required (stays True) are NOT touched.
+        #
+        # Problem D fix: ``has_t1_t2`` also passes ``council_fresh_tiers`` (this
+        # run's council claim-cited evidence, computed right after the council
+        # ran, above) so the T1/T2 checklist item reflects the evidence the
+        # council actually produced this run — not only the pre-council
+        # ``citations`` snapshot. Without this, a report with real T1 excerpts and
+        # council claims citing them could still show "no T1/T2 source backs a
+        # claim" here, because this report's own council citations are not
+        # persisted (and therefore not reloadable from the DB) until
+        # ``_save_final_report_draft`` creates the report row, below.
         missing_count_val = report_content.get("missing_information", {}).get(
             "total_missing_items", 0
         )
@@ -4728,7 +4988,12 @@ class FinalReportGeneratorService:
             has_citations=len(citations) > 0,
             missing_count=missing_count_val,
             is_mock=(report_provenance == "mock"),
-            has_t1_t2=_has_t1_t2_evidence(source_tier, citations, primary_facts),
+            has_t1_t2=_has_t1_t2_evidence(
+                source_tier,
+                citations,
+                primary_facts,
+                extra_source_tiers=council_fresh_tiers,
+            ),
         )
         report_content["human_review_checklist"] = [
             item.model_dump() for item in checklist_items

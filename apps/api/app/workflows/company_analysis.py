@@ -1067,6 +1067,17 @@ def build_company_analysis_graph(
 
     # ------------------------------------------------------------------ #
     # Node 6: source_quality_agent  (Phase 8 Research Team)              #
+    #                                                                    #
+    # NOTE (Problem D): this node runs before Node 8's citations exist,  #
+    # before document ingestion, and before any LLM council runs, so    #
+    # ``source_quality_summary`` here is only an early best-effort       #
+    # estimate from the company snapshot alone (no ``citation_source_    #
+    # tiers`` to pass yet). It is intentionally superseded at final-     #
+    # report-assembly time (``final_report_generator._generate_and_     #
+    # save``, after the council runs) by a fresh recomputation from real #
+    # citation/evidence state — see                                     #
+    # ``_recompute_fresh_source_quality_summary``. Do not treat this     #
+    # node's output as the report's authoritative source-quality state. #
     # ------------------------------------------------------------------ #
     async def node_source_quality_agent(state: CompanyAnalysisState) -> dict:
         run = _run_holder.get("run")

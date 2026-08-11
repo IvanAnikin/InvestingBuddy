@@ -123,3 +123,93 @@ def test_ocr_status_note_native_extraction_succeeded(monkeypatch):
     monkeypatch.setattr(settings, "primary_document_ocr_enabled", True)
     note = _ocr_status_note(CouncilResult.disabled(), doc_rows=[{"title": "AR 2025"}])
     assert note == "(OCR not eligible — native extraction succeeded)"
+
+
+# ---------------------------------------------------------------------------
+# 6. Problem B follow-up — a bounded-traversal "no candidate found" gap (or an
+#    actively blocked fetch) must NOT be reported as "scanned or JS-gated":
+#    no document was ever located, so there is nothing that "is scanned".
+# ---------------------------------------------------------------------------
+
+
+def test_traversal_no_candidate_gap_is_not_reported_as_scanned_or_js_gated(monkeypatch):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "primary_document_ocr_enabled", True)
+
+    council = CouncilResult(
+        llm_used=False,
+        source_gaps=[
+            "Company IR source found but annual report link not identified by "
+            "bounded extractor (no candidate on primary index)."
+        ],
+    )
+    memo = _build_research_memo(
+        _thin_report_content(), council, source_tier="T5_api_aggregator"
+    )
+    note = memo["primary_evidence_summary"]["note"]["value"]
+    assert "scanned or JS-gated" not in note
+    assert "scanned / JS-gated" not in note
+    assert "bounded issuer-index traversal" in note
+
+
+def test_traversal_child_hop_no_candidate_gap_is_not_reported_as_scanned_or_js_gated(
+    monkeypatch,
+):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "primary_document_ocr_enabled", True)
+
+    council = CouncilResult(
+        llm_used=False,
+        source_gaps=[
+            "Company IR index page(s) were fetched and 2 child result-page "
+            "candidate(s) were followed one hop deeper, but no further "
+            "document or page was discovered there (child result-page hop "
+            "attempted, no candidate)."
+        ],
+    )
+    memo = _build_research_memo(
+        _thin_report_content(), council, source_tier="T5_api_aggregator"
+    )
+    note = memo["primary_evidence_summary"]["note"]["value"]
+    assert "scanned or JS-gated" not in note
+    assert "scanned / JS-gated" not in note
+    assert "bounded issuer-index traversal" in note
+
+
+def test_bot_blocked_gap_is_not_reported_as_scanned_or_js_gated(monkeypatch):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "primary_document_ocr_enabled", True)
+
+    council = CouncilResult(
+        llm_used=False,
+        source_gaps=[
+            "Company IR source fetch was blocked (bot protection / access "
+            "denied) — annual report links could not be evaluated."
+        ],
+    )
+    memo = _build_research_memo(
+        _thin_report_content(), council, source_tier="T5_api_aggregator"
+    )
+    note = memo["primary_evidence_summary"]["note"]["value"]
+    assert "scanned or JS-gated" not in note
+    assert "scanned / JS-gated" not in note
+    assert "blocked (bot protection" in note
+
+
+def test_genuine_scan_gap_keeps_legacy_ocr_framing_when_no_traversal_marker(monkeypatch):
+    """No traversal/blocking marker present -> legacy OCR-framed wording is
+    preserved unchanged (this is not a regression for genuinely-unreadable
+    documents, only for the two new honest "never located" gap states)."""
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "primary_document_ocr_enabled", True)
+
+    council = CouncilResult(llm_used=False, source_gaps=[])
+    memo = _build_research_memo(
+        _thin_report_content(), council, source_tier="T5_api_aggregator"
+    )
+    note = memo["primary_evidence_summary"]["note"]["value"]
+    assert "no document candidate discovered — OCR was not reached" in note

@@ -144,6 +144,14 @@ class EvidenceItem(BaseModel):
     excerpt: str | None = None
     data_quality: str | None = None
     fields_supported: list[str] = Field(default_factory=list)
+    # Semantic-grounding fields (Phase 32A hotfix): best-effort entity/segment
+    # scope (e.g. "group" vs a segment heading like "Segment A" — a generic
+    # placeholder) and reporting period this item's excerpt/figure was reported
+    # under. Plain (non-excluded) fields so the LLM prompt renderer — and the
+    # citation checker's post-hoc compatibility check — can both see them.
+    # ``None`` when unknown; never guessed.
+    scope: str | None = None
+    period: str | None = None
     # Phase 32A Slice 2: news materiality carried from the upstream deterministic
     # relevance scorer (high | medium | low | irrelevant). Only populated for
     # news/catalyst items when the category-budget flag is on; ``None`` otherwise

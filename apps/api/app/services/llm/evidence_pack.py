@@ -204,6 +204,8 @@ class _Builder:
         primary_fact: dict[str, Any] | None = None,
         provenance: list[str] | None = None,
         document_content_hash: str | None = None,
+        scope: str | None = None,
+        period: str | None = None,
     ) -> bool:
         if self.full:
             return False
@@ -228,6 +230,8 @@ class _Builder:
                 data_quality=data_quality,
                 fields_supported=fields_supported or [],
                 relevance_level=relevance_level,
+                scope=scope,
+                period=period,
                 # Phase 32A Slice 3: runtime-only persistence carriers (excluded
                 # from serialization) — preserve upstream provenance for persist time.
                 source_id=source_id,
@@ -260,6 +264,13 @@ class _Builder:
             if pf is not None and hasattr(pf, "model_dump")
             else None
         )
+        # Semantic-grounding fields: the item's own ``scope`` (set generically
+        # from document structure, see ``primary_document_extractor._infer_scope``)
+        # and ``period``, taken from the structured fact when present (a fact's
+        # own period is the more precise signal; the item itself carries no
+        # separate period field).
+        scope = getattr(item, "scope", None)
+        period = getattr(pf, "period", None) if pf is not None else None
         return self.add(
             source_tier=item.content_source_tier,
             source_type=item.source_type or "source",
@@ -276,6 +287,8 @@ class _Builder:
             primary_fact=pf_dump,
             provenance=list(getattr(item, "provenance", None) or []),
             document_content_hash=getattr(item, "document_content_hash", None),
+            scope=scope,
+            period=period,
         )
 
 

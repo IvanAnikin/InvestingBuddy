@@ -372,6 +372,10 @@ def test_6_primary_facts_never_carry_excerpt_body_or_document_text():
         "currency",
         "scale",
         "period",
+        # Phase 32A hotfix: best-effort, bounded (<=80 char) entity/segment scope
+        # label — never the raw excerpt body/document text (see
+        # ``primary_document_extractor._infer_scope``).
+        "scope",
         "source_url",
         "excerpt_id",
         "page_number",

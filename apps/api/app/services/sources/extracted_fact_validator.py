@@ -99,6 +99,12 @@ FIELD_NON_CURRENT_ASSETS = "total_non_current_assets"
 # report field elsewhere.
 FIELD_TOTAL_LIABILITIES = "total_liabilities"
 FIELD_TOTAL_EQUITY = "total_equity"
+# Operating cash flow (Phase 32A Problem C): a cash-flow-statement line item that
+# had NO row-header pattern before this fix, so a table row labelled "operating
+# cash flow" / "net cash from operating activities" matched no known label and
+# was silently dropped before validation — never surfaced as evidence at all,
+# even as an excerpt. Local to this file, same pattern as the labels above.
+FIELD_OPERATING_CASH_FLOW = "operating_cash_flow"
 
 # Money labels require a KNOWN currency AND scale (the stricter bar). Count labels
 # require only a plausible integer count.
@@ -117,6 +123,7 @@ _MONEY_LABELS: frozenset[str] = frozenset(
         FIELD_NON_CURRENT_ASSETS,
         FIELD_TOTAL_LIABILITIES,
         FIELD_TOTAL_EQUITY,
+        FIELD_OPERATING_CASH_FLOW,
     }
 )
 _COUNT_LABELS: frozenset[str] = frozenset({FIELD_EMPLOYEES})
@@ -143,6 +150,15 @@ _LABEL_PATTERNS: list[tuple[re.Pattern[str], str]] = [
         FIELD_TOTAL_EQUITY,
     ),
     (re.compile(r"free cash flow", re.I), FIELD_FREE_CASH_FLOW),
+    (
+        re.compile(
+            r"net cash (?:generated |provided )?from operating activities"
+            r"|cash flow from operations|operating cash flow"
+            r"|net cash flows? from operating activities",
+            re.I,
+        ),
+        FIELD_OPERATING_CASH_FLOW,
+    ),
     (re.compile(r"cash and cash equivalents", re.I), FIELD_CASH),
     (
         re.compile(
@@ -812,6 +828,7 @@ __all__ = [
     "FIELD_LONG_TERM_DEBT",
     "FIELD_CURRENT_ASSETS",
     "FIELD_NON_CURRENT_ASSETS",
+    "FIELD_OPERATING_CASH_FLOW",
     "IssuerContext",
     "ValidatedFact",
     "validate_extracted_facts",

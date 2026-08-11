@@ -49,6 +49,7 @@ _METADATA_QUALITIES = {"metadata_only", "link_metadata_only"}
 # ── Evidence categories (Phase 32A Slice 2) ────────────────────────────────
 CATEGORY_COMPANY_IDENTITY = "company_identity"
 CATEGORY_FINANCIAL_FACT = "financial_fact"
+CATEGORY_STATEMENT_TABLE = "statement_table_content"
 CATEGORY_PRIMARY_DOCUMENT = "primary_document"
 CATEGORY_FINANCIAL_SUMMARY = "financial_summary"
 CATEGORY_PRICE_TREND_METRIC = "price_trend_metric"
@@ -92,6 +93,16 @@ _PRIMARY_DOCUMENT_TYPES = frozenset(
         "sec_filing_financial_fact",
     }
 )
+# Statement/table-derived financial content (Phase 32A Problem C):
+# ``company_ir_statement_excerpt`` is either a prose excerpt whose heading
+# classified as a balance sheet / cash-flow statement / income statement /
+# segment note, or a table row that matched a known financial-statement label
+# but was demoted short of the stricter validated-fact bar
+# (``extracted_fact_validator``). Classified BEFORE ``_PRIMARY_DOCUMENT_TYPES``
+# (whose broad ``"excerpt" in st`` check would otherwise swallow it) so it gets
+# its own budget category instead of losing an order tie-break against generic
+# narrative excerpts within ``CATEGORY_PRIMARY_DOCUMENT``.
+_STATEMENT_TABLE_TYPES = frozenset({"company_ir_statement_excerpt"})
 # Price/market/trend field names (so a legacy financial-snapshot item whose
 # ``source_type`` is a provider name still classifies as a price/trend metric).
 _PRICE_TREND_FIELDS = frozenset(
@@ -191,6 +202,12 @@ def evidence_category(item: EvidenceItem) -> str:
     if st == "financial_data_summary":
         return CATEGORY_FINANCIAL_SUMMARY
 
+    # 4b. Statement/table-derived financial content (Problem C) — checked BEFORE
+    # the broad "excerpt" substring match below so it does not fall into the
+    # generic primary-document bucket and lose its priority.
+    if st in _STATEMENT_TABLE_TYPES:
+        return CATEGORY_STATEMENT_TABLE
+
     # 5. Connector-extracted primary-document excerpts.
     if st in _PRIMARY_DOCUMENT_TYPES or "excerpt" in st or "annual_report" in st:
         return CATEGORY_PRIMARY_DOCUMENT
@@ -276,6 +293,10 @@ def _apply_category_budget(
     """Category-aware selection: reserve a financial-fact floor, cap price/trend
     and news categories, near-dup-dedup news, then fill by global rank."""
     financial_floor = max(0, int(getattr(cfg, "llm_council_evidence_financial_floor", 3)))
+    # Phase 32A Problem C: a floor of statement/table-derived financial content
+    # (balance sheet / cash-flow / segment excerpts, demoted table facts) so
+    # narrative prose can never crowd out every slot within the same category.
+    statement_floor = max(0, int(getattr(cfg, "llm_council_evidence_statement_floor", 3)))
     price_trend_cap = max(0, int(getattr(cfg, "llm_council_evidence_price_trend_cap", 3)))
     news_cap = max(0, int(getattr(cfg, "llm_council_evidence_news_cap", 8)))
     low_tier_news_cap = max(0, int(getattr(cfg, "llm_council_evidence_low_tier_news_cap", 4)))
@@ -324,6 +345,7 @@ def _apply_category_budget(
     #    floor always, and the primary-document floor only when ingestion is on.
     reserved: set[int] = set()
     financial_reserved = 0
+    statement_reserved = 0
     pd_reserved = 0
     for order, _item, category in ranked:
         if len(reserved) >= max_items:
@@ -331,6 +353,12 @@ def _apply_category_budget(
         if category == CATEGORY_FINANCIAL_FACT and financial_reserved < financial_floor:
             reserved.add(order)
             financial_reserved += 1
+        elif (
+            category == CATEGORY_STATEMENT_TABLE
+            and statement_reserved < statement_floor
+        ):
+            reserved.add(order)
+            statement_reserved += 1
         elif (
             pd_ingestion_enabled
             and category == CATEGORY_PRIMARY_DOCUMENT
@@ -394,14 +422,23 @@ def _apply_category_budget(
                 f" primary-document reserved up to {primary_document_floor} slot(s) "
                 f"and capped at {primary_document_cap};"
             )
+        # The statement-table clause is appended ONLY when the pack actually
+        # carried statement/table-derived items, so the wording stays
+        # byte-identical for packs with none (Phase 32A Problem C).
+        statement_clause = ""
+        if any(cat == CATEGORY_STATEMENT_TABLE for _o, _it, cat in deduped):
+            statement_clause = (
+                f" statement/table content reserved up to {statement_floor} slot(s);"
+            )
         omitted_reason = (
             f"{omitted} lower-priority / duplicate / capped evidence item(s) were "
             f"compressed out to fit the category-aware council evidence budget "
             f"(kept {len(survivors)} of {original_count}; reserved up to "
             f"{financial_floor} structured financial-fact slot(s); price/trend "
             f"capped at {price_trend_cap}, news at {news_cap} (low-tier news at "
-            f"{low_tier_news_cap});{pd_clause} near-duplicate events removed; "
-            f"higher-tier factual items preserved). Source gaps are retained."
+            f"{low_tier_news_cap});{statement_clause}{pd_clause} near-duplicate "
+            f"events removed; higher-tier factual items preserved). Source gaps "
+            f"are retained."
         )
 
     return pack.model_copy(
@@ -525,4 +562,18 @@ def apply_evidence_budget(
     )
 
 
-__all__ = ["apply_evidence_budget", "evidence_category"]
+__all__ = [
+    "apply_evidence_budget",
+    "evidence_category",
+    "CATEGORY_COMPANY_IDENTITY",
+    "CATEGORY_FINANCIAL_FACT",
+    "CATEGORY_STATEMENT_TABLE",
+    "CATEGORY_PRIMARY_DOCUMENT",
+    "CATEGORY_FINANCIAL_SUMMARY",
+    "CATEGORY_PRICE_TREND_METRIC",
+    "CATEGORY_COMPANY_PRESS",
+    "CATEGORY_REGULATOR_EVENT",
+    "CATEGORY_MATERIAL_NEWS",
+    "CATEGORY_LOW_TIER_NEWS",
+    "CATEGORY_SOURCE_REFERENCE",
+]
