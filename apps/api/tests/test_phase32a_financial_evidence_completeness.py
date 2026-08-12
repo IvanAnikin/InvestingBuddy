@@ -57,7 +57,9 @@ from app.services.llm.citation_checker import check_and_sanitize
 from app.services.llm.evidence_budget import _semantic_fact_key
 from app.services.llm.schemas import AgentKeyPoint, CouncilAgentOutput, PersistableEvidence
 from app.services.llm.schemas import EvidenceItem as CouncilEvidenceItem
+from app.services.sources.company_evidence import _prioritize_ir_items
 from app.services.sources.connectors.company_ir import _select_diverse_excerpts
+from app.services.sources.document_text_extractor import DocumentExcerpt
 from app.services.sources.evidence import PrimaryFactRef, build_evidence_item
 from app.services.sources.extracted_fact_validator import (
     VALIDATION_VALIDATED,
@@ -86,7 +88,9 @@ from app.services.sources.primary_fact_parser import (
     FIELD_RECURRING_OPERATING_MARGIN,
     FIELD_RECURRING_OPERATING_PROFIT,
     FIELD_REVENUE,
+    FIELD_TOTAL_DEBT,
     FIELD_TOTAL_EQUITY,
+    _parse_excerpt,
 )
 from tests.helpers.pdf_fixtures import make_pdf, make_pdf_with_outline
 
@@ -268,6 +272,61 @@ def test_lvmh_shaped_fixture_business_group_facts_scoped_and_distinct():
     flg = _by(facts, FIELD_REVENUE, "Fashion and Leather Goods business group")
     assert flg is not None and flg.value_numeric == 19900.0
     assert ws.value_numeric != flg.value_numeric
+
+
+# --------------------------------------------------------------------------- #
+# A2. Real-world prose robustness — pinned from a live staging PDF extraction #
+# --------------------------------------------------------------------------- #
+# pdfplumber's naive ``page.extract_text()`` on a genuine multi-column annual-
+# report page interleaves unrelated column fragments mid-sentence. These
+# fixtures are the ACTUAL (public) excerpt text a live corrective-slice
+# acceptance run surfaced from a real issuer's FY26 annual report PDF, kept
+# verbatim as regression pins for the resulting parser fixes — a "<label>
+# <trend verb> by X% to <value>" clause, additional connector words, and a
+# label-collision guard — NOT company-name conditional logic in production
+# code (these are literal test strings, not a branch keyed on a ticker/name).
+
+
+def test_prose_trend_clause_does_not_swallow_percent_change_before_value():
+    text = (
+        "The Group's net cash position rose by 3% to € 8 496 million at "
+        "31 March 2026, an increase of € 239 million."
+    )
+    exc = DocumentExcerpt(excerpt_id="X1", heading=None, text=text, char_count=len(text))
+    facts = {f.field: f for f in _parse_excerpt(exc, None)}
+    assert facts["net_cash"].numeric_value == 8496.0
+    assert facts["net_cash"].scale == "million"
+    assert facts["net_cash"].currency == "EUR"
+
+
+def test_prose_bare_borrowings_no_longer_matches_unrelated_nearby_number():
+    # Real column-interleaving artifact: "external borrowings," sits directly
+    # before an unrelated operating-cash-flow figure from a different column.
+    text = (
+        "Cash flow generated from operating activities amounted to bond and "
+        "money market funds as well as external borrowings, € 4 880 "
+        "million, up from € 4 443 million in the prior year."
+    )
+    exc = DocumentExcerpt(excerpt_id="X2", heading=None, text=text, char_count=len(text))
+    facts = {f.field: f for f in _parse_excerpt(exc, None)}
+    assert FIELD_TOTAL_DEBT not in facts
+
+
+def test_prose_operating_cash_flow_matches_generated_from_phrasing():
+    text = (
+        "Cash flow generated from operating activities amounted to "
+        "€ 4 880 million, up from € 4 443 million in the prior year."
+    )
+    exc = DocumentExcerpt(excerpt_id="X3", heading=None, text=text, char_count=len(text))
+    facts = {f.field: f for f in _parse_excerpt(exc, None)}
+    assert facts[FIELD_OPERATING_CASH_FLOW].numeric_value == 4880.0
+
+
+def test_prose_profit_for_the_year_never_mislabels_operating_profit():
+    text = "Operating profit for the year grew by 1% to € 4 492 million."
+    exc = DocumentExcerpt(excerpt_id="X4", heading=None, text=text, char_count=len(text))
+    facts = {f.field: f for f in _parse_excerpt(exc, None)}
+    assert FIELD_NET_INCOME not in facts
 
 
 def test_html_prose_reaches_council_evidence_item_with_primary_fact_ref():
@@ -454,6 +513,49 @@ def test_classify_statement_type_recognizes_required_statement_headings():
     assert classify_statement_type("Cash Flow Statement") is not None
     assert classify_statement_type("Segment Information") is not None
     assert classify_statement_type("Chairman's Letter to Shareholders") is None
+
+
+def _ir_item(eid: str, *, source_type: str, fact: bool) -> CouncilEvidenceItem:
+    # Mirrors ``company_ir.py``'s own item shape closely enough to exercise
+    # ``_prioritize_ir_items``'s bucketing (source_type + primary_fact
+    # presence) without depending on the connector's full construction path.
+    return CouncilEvidenceItem(
+        id=eid,
+        source_tier="T1_primary_filing",
+        source_type=source_type,
+        excerpt=f"excerpt for {eid}",
+        primary_fact={"field": "revenue", "numeric_value": 1.0} if fact else None,
+    )
+
+
+def test_prioritize_ir_items_floors_structured_facts_ahead_of_excerpt_flood():
+    """The live MC bug, pinned: 5 prose excerpts appended before 8 structured
+    facts (matching ``company_ir._artifact_to_evidence``'s loop order) must
+    not let a downstream per-source cap evict every single fact — a stable
+    sort on the old single "document" bucket did exactly that."""
+    excerpts = [
+        _ir_item(f"X{i}", source_type="company_ir_annual_report_excerpt", fact=False)
+        for i in range(5)
+    ]
+    facts = [
+        _ir_item(f"F{i}", source_type="company_ir_financial_fact", fact=True)
+        for i in range(8)
+    ]
+    items = excerpts + facts  # excerpts-before-facts, the real append order
+    prioritized = _prioritize_ir_items(items)
+    top_5 = prioritized[:5]
+    fact_count_in_top_5 = sum(1 for it in top_5 if it.primary_fact is not None)
+    assert fact_count_in_top_5 >= 3
+    # The floor does not consume every slot — excerpt evidence still survives.
+    assert any(it.primary_fact is None for it in top_5)
+
+
+def test_prioritize_ir_items_stable_when_no_facts_present():
+    excerpts = [
+        _ir_item(f"X{i}", source_type="company_ir_annual_report_excerpt", fact=False)
+        for i in range(5)
+    ]
+    assert [it.id for it in _prioritize_ir_items(excerpts)] == [it.id for it in excerpts]
 
 
 # =========================================================================== #

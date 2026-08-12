@@ -181,6 +181,19 @@ _PERIOD_QUALIFIER = (
     r"(?:ended\s+)?(?:19|20)\d{2})?"
 )
 
+# An optional "<trend verb> by X%" clause that can sit BETWEEN a label and its
+# connector (e.g. "net cash rose by 3% to €8,496 million"). Real financial
+# narrative very commonly states a percentage CHANGE before the absolute
+# value — without consuming it here, the loose label→value gap below could
+# grab the percentage figure instead of the real value (a real, live-observed
+# failure on an actual issuer report — Phase 32A corrective).
+_TREND_CLAUSE = (
+    r"(?:\s+(?:rose|grew|grow|increased|increase|fell|fall|declined|decline"
+    r"|decreased|decrease|dropped|drop|climbed|slipped|improved|improve"
+    r"|was up|were up|was down|were down)"
+    r"\s+(?:by\s+)?\d+(?:[.,]\d+)?\s*%)?"
+)
+
 
 # label -> compiled regex capturing (number, optional scale). ``exclude_prefix``
 # is a FIXED-WIDTH literal negative-lookbehind guard so a more specific label
@@ -194,7 +207,8 @@ def _money_pattern(label_alts: str, *, exclude_prefix: str | None = None) -> re.
     return re.compile(
         rf"{guard}(?:{label_alts})"
         rf"{_PERIOD_QUALIFIER}"
-        rf"(?:\s+(?:of|was|were|amounted to|reached|totalled|totaled|:))?"
+        rf"{_TREND_CLAUSE}"
+        rf"(?:\s+(?:of|was|were|to|at|amounted to|reached|totalled|totaled|:))?"
         rf"[^\d\n]{{0,25}}?"
         rf"[€£$]?\s*{_NUM}\s*(?:{_SCALE})?",
         re.IGNORECASE,
@@ -233,7 +247,15 @@ _MONEY_FIELDS: list[tuple[str, re.Pattern[str]]] = [
     ),
     (
         FIELD_NET_INCOME,
-        _money_pattern(r"net income|net profit|profit attributable|net result|profit for the year"),
+        _money_pattern(
+            r"net income|net profit|profit attributable|net result"
+            # "profit for the year" alone means the bottom-line/net figure in
+            # standard IFRS wording, but is ALSO a literal substring of
+            # "operating profit for the year" / "recurring operating profit
+            # for the year" — guarded so it never mislabels those as net
+            # income (a real, live-observed collision — Phase 32A corrective).
+            r"|(?<!operating )(?<!recurring operating )profit for the year"
+        ),
     ),
     (FIELD_OPERATING_FREE_CASH_FLOW, _money_pattern(r"operating free cash flow")),
     (
@@ -243,13 +265,19 @@ _MONEY_FIELDS: list[tuple[str, re.Pattern[str]]] = [
     (
         FIELD_OPERATING_CASH_FLOW,
         _money_pattern(
-            r"net cash (?:generated |provided )?from operating activities"
+            r"(?:net )?cash (?:flow )?(?:generated |provided )?from operating activities"
             r"|cash flow from operations|operating cash flow"
-            r"|net cash flows? from operating activities"
+            r"|(?:net )?cash flows? from operating activities"
         ),
     ),
     (FIELD_TOTAL_ASSETS, _money_pattern(r"total assets")),
-    (FIELD_TOTAL_DEBT, _money_pattern(r"total debt|gross debt|total borrowings|borrowings")),
+    # Bare "borrowings" (no total/gross qualifier) is deliberately EXCLUDED: a
+    # real-report finding (Phase 32A corrective live CFR run) showed a bare
+    # "borrowings" mention describing what a net-cash figure is COMPRISED OF
+    # — not itself stating a debt figure — matching a nearby unrelated number.
+    # "total"/"gross" qualified mentions are a genuine, low-ambiguity signal;
+    # the bare word alone is not.
+    (FIELD_TOTAL_DEBT, _money_pattern(r"total debt|gross debt|total borrowings|gross borrowings")),
     (FIELD_NET_DEBT, _money_pattern(r"net (?:financial )?debt")),
     (FIELD_CASH, _money_pattern(r"cash and cash equivalents")),
     (

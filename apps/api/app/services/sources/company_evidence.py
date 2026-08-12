@@ -391,15 +391,38 @@ def _dedup_evidence(items: list[EvidenceItem]) -> list[EvidenceItem]:
     return out
 
 
+# Phase 32A corrective (Problem A/B): a document's structured facts (loop 2 of
+# ``company_ir._artifact_to_evidence``) are always appended AFTER that same
+# document's prose excerpts (loop 1) — so within the single "document excerpts
+# + facts" bucket below, a stable sort preserved that append order and this
+# per-SOURCE cap could evict every fact in favour of excerpts that happened to
+# be listed first, even though a validated structured fact is strictly the
+# more valuable evidence (it is what makes ``structured_financial_fact_count``
+# truthful). Reserving a small floor of facts — ahead of the bucket order,
+# not replacing it — guarantees at least a few survive regardless of list
+# order, while leaving the remaining slots to the existing excerpt-first
+# priority so prose evidence is not itself starved out.
+_IR_FACT_FLOOR = 3
+
+
 def _prioritize_ir_items(items: list[EvidenceItem]) -> list[EvidenceItem]:
     """Stable sort so extracted document excerpts/facts survive the per-source cap.
 
-    Bucket order: document excerpts + parsed facts (highest value) → annual-report
-    link → everything else (profile / index metadata). Order within a bucket is
-    preserved, so this never reorders same-value items.
+    Bucket order: a bounded floor of structured facts (highest value; see
+    ``_IR_FACT_FLOOR``) → document excerpts + any remaining parsed facts →
+    annual-report link → everything else (profile / index metadata). Order
+    within a bucket is preserved, so this never reorders same-value items.
     """
+    ordered_facts = [
+        it
+        for it in items
+        if it.source_type in _DOCUMENT_SOURCE_TYPES and it.primary_fact is not None
+    ]
+    floored_fact_ids = {id(it) for it in ordered_facts[:_IR_FACT_FLOOR]}
 
     def bucket(it: EvidenceItem) -> int:
+        if id(it) in floored_fact_ids:
+            return -1
         if it.source_type in _DOCUMENT_SOURCE_TYPES:
             return 0
         if it.source_type == "company_ir_annual_report":
