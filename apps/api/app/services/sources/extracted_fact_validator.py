@@ -54,24 +54,35 @@ from pydantic import BaseModel, Field
 
 from app.core.config import Settings
 from app.core.config import settings as default_settings
+from app.services.sources.document_text_extractor import DocumentExcerpt
 from app.services.sources.primary_document_extractor import (
     METHOD_HTML,
     METHOD_NATIVE_PDF,
     METHOD_OCR,
     ExtractedTable,
     PrimaryDocumentExtraction,
+    _confidence_bucket,
 )
 from app.services.sources.primary_fact_parser import (
     FIELD_CASH,
     FIELD_EMPLOYEES,
     FIELD_FREE_CASH_FLOW,
+    FIELD_NET_CASH,
+    FIELD_NET_DEBT,
     FIELD_NET_INCOME,
+    FIELD_OPERATING_CASH_FLOW,
+    FIELD_OPERATING_FREE_CASH_FLOW,
+    FIELD_OPERATING_MARGIN,
     FIELD_OPERATING_PROFIT,
+    FIELD_RECURRING_OPERATING_MARGIN,
+    FIELD_RECURRING_OPERATING_PROFIT,
     FIELD_REVENUE,
     FIELD_TOTAL_ASSETS,
     FIELD_TOTAL_DEBT,
+    FIELD_TOTAL_EQUITY,
     _find_currency,
     _norm_number,
+    _parse_excerpt,
     _scale_word,
 )
 
@@ -87,6 +98,7 @@ VALIDATION_REJECTED = "rejected"
 # Units (neutral, factual — never a rating vocabulary).
 UNIT_CURRENCY_AMOUNT = "currency_amount"
 UNIT_PEOPLE = "people"
+UNIT_PERCENT = "percent"
 
 # Extra component labels needed for the cross-field arithmetic (subtotal) check.
 FIELD_SHORT_TERM_DEBT = "short_term_debt"
@@ -95,27 +107,24 @@ FIELD_CURRENT_ASSETS = "total_current_assets"
 FIELD_NON_CURRENT_ASSETS = "total_non_current_assets"
 # Balance-sheet identity check (Phase 32A Slice 5B.2): assets == liabilities +
 # equity. Local to this file, same pattern as the debt/asset subtotal labels
-# above — these are cross-check-only labels, not surfaced as their own
-# report field elsewhere.
+# above — a cross-check-only label, not surfaced as its own report field.
 FIELD_TOTAL_LIABILITIES = "total_liabilities"
-FIELD_TOTAL_EQUITY = "total_equity"
-# Operating cash flow (Phase 32A Problem C): a cash-flow-statement line item that
-# had NO row-header pattern before this fix, so a table row labelled "operating
-# cash flow" / "net cash from operating activities" matched no known label and
-# was silently dropped before validation — never surfaced as evidence at all,
-# even as an excerpt. Local to this file, same pattern as the labels above.
-FIELD_OPERATING_CASH_FLOW = "operating_cash_flow"
 
-# Money labels require a KNOWN currency AND scale (the stricter bar). Count labels
-# require only a plausible integer count.
+# Money labels require a KNOWN currency AND scale (the stricter bar). Percent
+# labels (margins) require only an explicit period. Count labels require only
+# a plausible integer count.
 _MONEY_LABELS: frozenset[str] = frozenset(
     {
         FIELD_REVENUE,
         FIELD_OPERATING_PROFIT,
+        FIELD_RECURRING_OPERATING_PROFIT,
         FIELD_NET_INCOME,
         FIELD_FREE_CASH_FLOW,
+        FIELD_OPERATING_FREE_CASH_FLOW,
         FIELD_TOTAL_ASSETS,
         FIELD_TOTAL_DEBT,
+        FIELD_NET_DEBT,
+        FIELD_NET_CASH,
         FIELD_CASH,
         FIELD_SHORT_TERM_DEBT,
         FIELD_LONG_TERM_DEBT,
@@ -126,11 +135,18 @@ _MONEY_LABELS: frozenset[str] = frozenset(
         FIELD_OPERATING_CASH_FLOW,
     }
 )
+# Phase 32A corrective (Problem A/B): a table row like "Operating margin | 20.0%"
+# carries no currency/scale — it needs its own bar (an explicit period is
+# enough), never the money bar. See ``_numeric_cells``/``_make_candidate``.
+_PERCENT_LABELS: frozenset[str] = frozenset(
+    {FIELD_OPERATING_MARGIN, FIELD_RECURRING_OPERATING_MARGIN}
+)
 _COUNT_LABELS: frozenset[str] = frozenset({FIELD_EMPLOYEES})
 
 # Row-header label patterns → normalized label. Ordered most-specific first so a
 # component ("short-term debt", "total current assets") is never swallowed by a
-# broader subtotal pattern ("total debt", "total assets").
+# broader subtotal pattern ("total debt", "total assets"), and a "recurring"
+# variant is never swallowed by its plain counterpart.
 _LABEL_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"short[- ]term (?:debt|borrowings)", re.I), FIELD_SHORT_TERM_DEBT),
     (re.compile(r"long[- ]term (?:debt|borrowings)", re.I), FIELD_LONG_TERM_DEBT),
@@ -139,17 +155,20 @@ _LABEL_PATTERNS: list[tuple[re.Pattern[str], str]] = [
         re.compile(r"total non[- ]current assets|non[- ]current assets", re.I),
         FIELD_NON_CURRENT_ASSETS,
     ),
+    (re.compile(r"net (?:financial )?debt", re.I), FIELD_NET_DEBT),
     (re.compile(r"total (?:debt|borrowings)|gross debt", re.I), FIELD_TOTAL_DEBT),
     (re.compile(r"total assets", re.I), FIELD_TOTAL_ASSETS),
     (re.compile(r"total liabilities", re.I), FIELD_TOTAL_LIABILITIES),
     (
         re.compile(
-            r"total (?:shareholders|stockholders)[’']?\s*equity|total equity",
+            r"total (?:shareholders|stockholders)[’']?\s*equity"
+            r"|shareholders[’']?\s*equity|total equity",
             re.I,
         ),
         FIELD_TOTAL_EQUITY,
     ),
-    (re.compile(r"free cash flow", re.I), FIELD_FREE_CASH_FLOW),
+    (re.compile(r"operating free cash flow", re.I), FIELD_OPERATING_FREE_CASH_FLOW),
+    (re.compile(r"(?<!operating )free cash flow", re.I), FIELD_FREE_CASH_FLOW),
     (
         re.compile(
             r"net cash (?:generated |provided )?from operating activities"
@@ -161,12 +180,34 @@ _LABEL_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     ),
     (re.compile(r"cash and cash equivalents", re.I), FIELD_CASH),
     (
+        re.compile(r"net cash position|net cash(?!\s*(?:flow|generated|provided|from|and))", re.I),
+        FIELD_NET_CASH,
+    ),
+    (
         re.compile(
             r"net income|net profit|profit for the year|profit attributable", re.I
         ),
         FIELD_NET_INCOME,
     ),
-    (re.compile(r"operating profit|operating income|ebit\b", re.I), FIELD_OPERATING_PROFIT),
+    (
+        re.compile(r"recurring operating margin", re.I),
+        FIELD_RECURRING_OPERATING_MARGIN,
+    ),
+    (
+        re.compile(r"(?<!recurring )operating margin", re.I),
+        FIELD_OPERATING_MARGIN,
+    ),
+    (
+        re.compile(r"recurring operating (?:profit|income|result)", re.I),
+        FIELD_RECURRING_OPERATING_PROFIT,
+    ),
+    (
+        re.compile(
+            r"(?<!recurring )(?:operating profit|operating income|operating result|ebit\b)",
+            re.I,
+        ),
+        FIELD_OPERATING_PROFIT,
+    ),
     (re.compile(r"revenue|net sales|total sales|turnover", re.I), FIELD_REVENUE),
     (
         re.compile(r"employees|headcount|full[- ]time equivalents", re.I),
@@ -249,6 +290,11 @@ class ValidatedFact(BaseModel):
     confidence: float
     validation_status: str
     needs_human_review: bool = True
+    # Best-effort entity/segment scope (``"group"``, a segment/business-unit
+    # label, or ``None`` when unknown — never guessed). Phase 32A corrective
+    # (Problem A/B): without this a Group-scoped and a segment-scoped fact for
+    # the same (label, period) collided as one "conflicting" group.
+    scope: str | None = None
     # ── Informational (not persisted as ORM columns) ──────────────────────
     methods: list[str] = Field(default_factory=list)
     ocr_derived: bool = False
@@ -282,6 +328,7 @@ class _Candidate:
         "fully_qualified",
         "status",
         "notes",
+        "scope",
     )
 
     def __init__(
@@ -300,6 +347,7 @@ class _Candidate:
         base_confidence: float,
         fully_qualified: bool,
         status: str,
+        scope: str | None = None,
     ) -> None:
         self.label = label
         self.period = period
@@ -315,6 +363,7 @@ class _Candidate:
         self.fully_qualified = fully_qualified
         self.status = status
         self.notes: list[str] = []
+        self.scope = scope
 
 
 # --------------------------------------------------------------------------- #
@@ -397,6 +446,24 @@ def _numeric_cells(row: list[str]) -> list[tuple[int, str, float]]:
     return out
 
 
+def _numeric_cells_percent(row: list[str]) -> list[tuple[int, str, float]]:
+    """Same as :func:`_numeric_cells` but for a row whose value cells carry an
+    explicit ``%`` sign (a margin row) — only a cell that itself states ``%``
+    is accepted, so a plain currency amount in the same table is never
+    mistaken for a percentage."""
+    out: list[tuple[int, str, float]] = []
+    for col, cell in enumerate(row):
+        if col == 0:
+            continue
+        stripped = cell.strip()
+        if not stripped.endswith("%"):
+            continue
+        num = _norm_number(stripped[:-1])
+        if num is not None:
+            out.append((col, stripped, num))
+    return out
+
+
 def _derive_confidence(
     method: str, base: float, *, fully_qualified: bool
 ) -> float:
@@ -438,10 +505,11 @@ def _candidates_from_table(
         label = _match_label(row[0])
         if label is None:
             continue  # unknown/ambiguous label → stays an excerpt, not a fact
-        nums = _numeric_cells(row)
+        is_money = label in _MONEY_LABELS
+        is_percent = label in _PERCENT_LABELS
+        nums = _numeric_cells_percent(row) if is_percent else _numeric_cells(row)
         if not nums:
             continue
-        is_money = label in _MONEY_LABELS
 
         # Resolve (period, value) pairs for this row.
         pairs: list[tuple[str | None, str, float, int]] = []  # period, text, num, col
@@ -465,6 +533,7 @@ def _candidates_from_table(
                         scale if is_money else None,
                         is_money,
                         VALIDATION_EXCERPT_ONLY,
+                        is_percent=is_percent,
                         note="Ambiguous row/column mapping (multiple unlabelled "
                         "magnitudes); retained as excerpt.",
                     )
@@ -496,6 +565,7 @@ def _candidates_from_table(
                     scale if is_money else None,
                     is_money,
                     status,
+                    is_percent=is_percent,
                     note=note,
                 )
             )
@@ -516,14 +586,18 @@ def _make_candidate(
     is_money: bool,
     status: str,
     *,
+    is_percent: bool = False,
     note: str | None = None,
 ) -> _Candidate:
-    unit = UNIT_CURRENCY_AMOUNT if is_money else UNIT_PEOPLE
-    fully_qualified = (
-        bool(currency and scale and period)
-        if is_money
-        else bool(period and value_numeric >= 1)
-    )
+    if is_percent:
+        unit = UNIT_PERCENT
+        fully_qualified = bool(period)
+    elif is_money:
+        unit = UNIT_CURRENCY_AMOUNT
+        fully_qualified = bool(currency and scale and period)
+    else:
+        unit = UNIT_PEOPLE
+        fully_qualified = bool(period and value_numeric >= 1)
     cand = _Candidate(
         label=label,
         period=period,
@@ -538,10 +612,85 @@ def _make_candidate(
         base_confidence=table.confidence,
         fully_qualified=fully_qualified,
         status=status,
+        scope=table.scope,
     )
     if note:
         cand.notes.append(note)
     return cand
+
+
+# --------------------------------------------------------------------------- #
+# Per-excerpt (prose) candidate extraction — Phase 32A corrective, Problem A
+# --------------------------------------------------------------------------- #
+
+
+def _candidates_from_excerpts(extraction: PrimaryDocumentExtraction) -> list[_Candidate]:
+    """Turn each bounded PROSE excerpt into fact candidates.
+
+    Before this fix, ``validate_extracted_facts`` looked ONLY at
+    ``extraction.tables`` — a figure explicitly stated in ordinary prose (e.g.
+    an HTML press release with no ``<table>`` at all, or a lead paragraph
+    summarizing the headline numbers) never became a structured fact even
+    when clearly stated, because the deep pipeline never ran the conservative
+    prose parser at all (that parser was wired only into the superseded
+    shallow/legacy path). Reuses ``primary_fact_parser._parse_excerpt`` — the
+    SAME conservative, fail-closed matcher — so prose and table facts share
+    one vocabulary and one ambiguity-refusal policy. Each candidate then goes
+    through the SAME cross-method reconciliation as table candidates: a figure
+    corroborated by both a table and a press-release paragraph is boosted, a
+    genuine conflict is a rejection, never a silent pick.
+    """
+    candidates: list[_Candidate] = []
+    for exc in extraction.excerpts:
+        wrapper = DocumentExcerpt(
+            excerpt_id=exc.excerpt_id,
+            heading=exc.heading,
+            text=exc.text,
+            page_number=exc.page_number,
+            char_count=exc.char_count,
+            confidence=_confidence_bucket(exc.confidence),
+            evidence_type=exc.evidence_type,
+        )
+        for fact in _parse_excerpt(wrapper, None):
+            is_money = fact.unit == UNIT_CURRENCY_AMOUNT
+            period_known = bool(fact.period)
+            if is_money:
+                status = (
+                    VALIDATION_VALIDATED
+                    if period_known and fact.currency and fact.scale
+                    else VALIDATION_EXCERPT_ONLY
+                )
+            else:
+                status = VALIDATION_VALIDATED if period_known else VALIDATION_EXCERPT_ONLY
+            fully_qualified = (
+                bool(fact.currency and fact.scale and fact.period)
+                if is_money
+                else bool(fact.period)
+            )
+            cand = _Candidate(
+                label=fact.field,
+                period=fact.period,
+                value_numeric=fact.numeric_value,
+                value_text=fact.value,
+                unit=fact.unit,
+                currency=fact.currency,
+                scale=fact.scale,
+                page_number=fact.page_number,
+                # Reuses the ``table_location`` slot for the excerpt id — the
+                # same field ``ValidatedFact.table_location`` already maps
+                # onto and that ``company_ir.py`` already renders as
+                # provenance for BOTH tables and (now) prose.
+                table_location=fact.excerpt_id,
+                method=exc.extraction_method,
+                base_confidence=exc.confidence,
+                fully_qualified=fully_qualified,
+                status=status,
+                scope=fact.scope,
+            )
+            if fact.parser_warning:
+                cand.notes.append(fact.parser_warning)
+            candidates.append(cand)
+    return candidates
 
 
 def _apply_subtotal_check(candidates: list[_Candidate]) -> None:
@@ -620,15 +769,20 @@ def _apply_balance_sheet_check(candidates: list[_Candidate]) -> None:
 
 
 def _resolve_group(
-    key: tuple[str, str | None], group: list[_Candidate], cfg: Settings
+    key: tuple[str, str | None, str | None], group: list[_Candidate], cfg: Settings
 ) -> ValidatedFact:
-    """Collapse all candidates for one ``(label, period)`` into a single verdict.
+    """Collapse all candidates for one ``(label, period, scope)`` into a single
+    verdict.
 
     * Values agree across >1 method → boosted confidence.
     * Values conflict across >1 method → clear contradiction → rejected.
     * Values conflict within a single method → ambiguous → excerpt_only.
+
+    ``scope`` is part of the group key (Phase 32A corrective, Problem A/B): a
+    Group-scoped and a segment-scoped candidate for the same label/period are
+    two genuinely different figures, never conflicting values of one fact.
     """
-    label, period = key
+    label, period, scope = key
     methods = sorted({c.method for c in group}, key=lambda m: _METHOD_QUALITY.get(m, 9))
     ocr_derived = METHOD_OCR in methods
     numeric_vals = [c.value_numeric for c in group if c.value_numeric is not None]
@@ -667,6 +821,7 @@ def _resolve_group(
                     "Cross-method value conflict for the same label/period; "
                     "rejected as a clear contradiction."
                 ],
+                scope=scope,
             )
         # Same-method disagreement → ambiguous, not a contradiction.
         return _excerpt_only_fact(
@@ -719,6 +874,7 @@ def _resolve_group(
         methods=methods,
         ocr_derived=ocr_derived,
         validation_notes=notes,
+        scope=scope,
     )
 
 
@@ -756,6 +912,7 @@ def _excerpt_only_fact(
         methods=methods,
         ocr_derived=ocr_derived,
         validation_notes=notes,
+        scope=rep.scope,
     )
 
 
@@ -790,11 +947,17 @@ def validate_extracted_facts(
     candidates: list[_Candidate] = []
     for table in extraction.tables:
         candidates.extend(_candidates_from_table(table, excerpts_by_page, issuer))
+    # Phase 32A corrective (Problem A): prose excerpts are now ALSO a candidate
+    # source, not just tables — see ``_candidates_from_excerpts``.
+    candidates.extend(_candidates_from_excerpts(extraction))
 
-    # Group by (label, period) so the same figure from >1 method is reconciled.
-    groups: dict[tuple[str, str | None], list[_Candidate]] = {}
+    # Group by (label, period, scope) so the same figure from >1 method/source
+    # is reconciled, while a Group-scoped and a segment-scoped candidate for
+    # the same label/period are kept as two distinct facts, never merged or
+    # cross-checked against each other as "conflicting".
+    groups: dict[tuple[str, str | None, str | None], list[_Candidate]] = {}
     for cand in candidates:
-        groups.setdefault((cand.label, cand.period), []).append(cand)
+        groups.setdefault((cand.label, cand.period, cand.scope), []).append(cand)
 
     facts: list[ValidatedFact] = []
     for key, group in groups.items():

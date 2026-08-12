@@ -40,11 +40,19 @@ FIELD_REPORTING_CURRENCY = "reporting_currency"
 FIELD_FISCAL_YEAR = "fiscal_year"
 FIELD_REVENUE = "revenue"
 FIELD_OPERATING_PROFIT = "operating_profit"
+FIELD_RECURRING_OPERATING_PROFIT = "recurring_operating_profit"
+FIELD_OPERATING_MARGIN = "operating_margin"
+FIELD_RECURRING_OPERATING_MARGIN = "recurring_operating_margin"
 FIELD_NET_INCOME = "net_income"
 FIELD_FREE_CASH_FLOW = "free_cash_flow"
+FIELD_OPERATING_FREE_CASH_FLOW = "operating_free_cash_flow"
+FIELD_OPERATING_CASH_FLOW = "operating_cash_flow"
 FIELD_TOTAL_ASSETS = "total_assets"
 FIELD_TOTAL_DEBT = "total_debt"
+FIELD_NET_DEBT = "net_debt"
+FIELD_NET_CASH = "net_cash"
 FIELD_CASH = "cash_and_equivalents"
+FIELD_TOTAL_EQUITY = "total_equity"
 FIELD_EMPLOYEES = "employees"
 
 
@@ -159,10 +167,33 @@ def _find_currency(text: str) -> str | None:
 # Field patterns — each requires an explicit label near a single number.
 # --------------------------------------------------------------------------- #
 
-# label -> compiled regex capturing (number, optional scale)
-def _money_pattern(label_alts: str) -> re.Pattern[str]:
+# An optional "for/in/during <period>" qualifier that can sit BETWEEN a label
+# and its connector word (e.g. "Revenue for fiscal year 2024 was ..."). Without
+# consuming this first, the year inside it is close enough to the label that
+# the loose label→value gap below could grab IT instead of the real value —
+# a real, pre-existing regex weakness this fix surfaces once prose parsing
+# feeds the stricter validated-fact pipeline (a wrongly-parsed prose duplicate
+# of a correct table value reads as a same-method "conflict" and silently
+# downgrades the correct table fact to excerpt_only).
+_PERIOD_QUALIFIER = (
+    r"(?:\s+(?:for|in|during)\s+(?:the\s+)?"
+    r"(?:fiscal\s+year|financial\s+year|year|period|half[- ]year|h[12])?\s*"
+    r"(?:ended\s+)?(?:19|20)\d{2})?"
+)
+
+
+# label -> compiled regex capturing (number, optional scale). ``exclude_prefix``
+# is a FIXED-WIDTH literal negative-lookbehind guard so a more specific label
+# immediately preceding this one (e.g. "recurring " before "operating profit",
+# or "operating " before "free cash flow") is never ALSO counted under the
+# broader/plain field — each span of text promotes to exactly one field,
+# preserving metric identity instead of conflating two distinct disclosed
+# figures that happen to share a common suffix word.
+def _money_pattern(label_alts: str, *, exclude_prefix: str | None = None) -> re.Pattern[str]:
+    guard = rf"(?<!{re.escape(exclude_prefix)})" if exclude_prefix else ""
     return re.compile(
-        rf"(?:{label_alts})"
+        rf"{guard}(?:{label_alts})"
+        rf"{_PERIOD_QUALIFIER}"
         rf"(?:\s+(?:of|was|were|amounted to|reached|totalled|totaled|:))?"
         rf"[^\d\n]{{0,25}}?"
         rf"[€£$]?\s*{_NUM}\s*(?:{_SCALE})?",
@@ -170,22 +201,81 @@ def _money_pattern(label_alts: str) -> re.Pattern[str]:
     )
 
 
+# label -> compiled regex capturing an EXPLICIT percentage near its label
+# (e.g. "operating margin of 20.0%"). A margin/percentage field is ONLY ever
+# taken from a percent sign explicitly present in the source text — this
+# parser never computes a margin from a profit/revenue pair (see module
+# docstring: "No inference of a missing financial").
+def _percent_pattern(label_alts: str, *, exclude_prefix: str | None = None) -> re.Pattern[str]:
+    guard = rf"(?<!{re.escape(exclude_prefix)})" if exclude_prefix else ""
+    return re.compile(
+        rf"{guard}(?:{label_alts})"
+        rf"{_PERIOD_QUALIFIER}"
+        rf"(?:\s+(?:of|was|were|stood at|reached|at|:))?"
+        rf"[^\d\n%]{{0,25}}?"
+        rf"(\d[\d.,]*)\s*%",
+        re.IGNORECASE,
+    )
+
+
 _MONEY_FIELDS: list[tuple[str, re.Pattern[str]]] = [
-    (FIELD_REVENUE, _money_pattern(r"revenue|net sales|total sales|sales")),
+    (FIELD_REVENUE, _money_pattern(r"revenue|net sales|total sales|sales|turnover")),
+    (
+        FIELD_RECURRING_OPERATING_PROFIT,
+        _money_pattern(r"recurring operating (?:profit|income|result)"),
+    ),
     (
         FIELD_OPERATING_PROFIT,
         _money_pattern(
-            r"operating profit|operating income|ebit\b|recurring operating (?:profit|income)"
+            r"operating profit|operating income|operating result|ebit\b",
+            exclude_prefix="recurring ",
         ),
     ),
     (
         FIELD_NET_INCOME,
         _money_pattern(r"net income|net profit|profit attributable|net result|profit for the year"),
     ),
-    (FIELD_FREE_CASH_FLOW, _money_pattern(r"free cash flow")),
+    (FIELD_OPERATING_FREE_CASH_FLOW, _money_pattern(r"operating free cash flow")),
+    (
+        FIELD_FREE_CASH_FLOW,
+        _money_pattern(r"free cash flow", exclude_prefix="operating "),
+    ),
+    (
+        FIELD_OPERATING_CASH_FLOW,
+        _money_pattern(
+            r"net cash (?:generated |provided )?from operating activities"
+            r"|cash flow from operations|operating cash flow"
+            r"|net cash flows? from operating activities"
+        ),
+    ),
     (FIELD_TOTAL_ASSETS, _money_pattern(r"total assets")),
     (FIELD_TOTAL_DEBT, _money_pattern(r"total debt|gross debt|total borrowings|borrowings")),
+    (FIELD_NET_DEBT, _money_pattern(r"net (?:financial )?debt")),
     (FIELD_CASH, _money_pattern(r"cash and cash equivalents")),
+    (
+        FIELD_NET_CASH,
+        _money_pattern(
+            r"net cash position|net cash(?!\s*(?:flow|generated|provided|from|and))"
+        ),
+    ),
+    (
+        FIELD_TOTAL_EQUITY,
+        _money_pattern(
+            r"total (?:shareholders|stockholders)[’']?\s*equity"
+            r"|shareholders[’']?\s*equity|total equity"
+        ),
+    ),
+]
+
+_PERCENT_FIELDS: list[tuple[str, re.Pattern[str]]] = [
+    (
+        FIELD_RECURRING_OPERATING_MARGIN,
+        _percent_pattern(r"recurring operating margin"),
+    ),
+    (
+        FIELD_OPERATING_MARGIN,
+        _percent_pattern(r"operating margin", exclude_prefix="recurring "),
+    ),
 ]
 
 _FISCAL_YEAR_RE = re.compile(
@@ -295,12 +385,38 @@ def _parse_excerpt(excerpt: DocumentExcerpt, source_url: str | None) -> list[Pri
                 unit="currency_amount",
                 currency=currency,
                 scale=scale,
-                period=str(_year_hint(excerpt)),
+                period=_year_hint_str(excerpt),
                 source_url=source_url,
                 excerpt_id=excerpt.excerpt_id,
                 page_number=excerpt.page_number,
                 confidence=conf,
                 parser_warning=warning,
+            )
+        )
+
+    # -- percent fields (margins) ----------------------------------------------
+    # Only ever an EXPLICIT percentage found in the text next to its label —
+    # never computed from a profit/revenue pair (module-level guarantee).
+    for field, pattern in _PERCENT_FIELDS:
+        m = pattern.search(text)
+        if not m:
+            continue
+        num = _norm_number(m.group(1))
+        if num is None:
+            continue
+        if _ambiguous_multiple(pattern, text):
+            continue
+        add(
+            PrimaryFact(
+                field=field,
+                value=m.group(0).strip(),
+                numeric_value=num,
+                unit="percent",
+                period=_year_hint_str(excerpt),
+                source_url=source_url,
+                excerpt_id=excerpt.excerpt_id,
+                page_number=excerpt.page_number,
+                confidence="high",
             )
         )
 
@@ -330,6 +446,14 @@ def _parse_excerpt(excerpt: DocumentExcerpt, source_url: str | None) -> list[Pri
 def _year_hint(excerpt: DocumentExcerpt) -> int | None:
     m = re.search(r"\b(19|20)\d{2}\b", excerpt.text)
     return int(m.group(0)) if m else None
+
+
+def _year_hint_str(excerpt: DocumentExcerpt) -> str | None:
+    """String form of :func:`_year_hint` — ``None`` stays ``None`` (not the
+    string ``"None"``); a caller checking ``if fact.period:`` must see an
+    honestly-absent period as falsy, not a truthy placeholder string."""
+    year = _year_hint(excerpt)
+    return str(year) if year is not None else None
 
 
 def parse_primary_facts(
@@ -362,10 +486,18 @@ __all__ = [
     "FIELD_FISCAL_YEAR",
     "FIELD_REVENUE",
     "FIELD_OPERATING_PROFIT",
+    "FIELD_RECURRING_OPERATING_PROFIT",
+    "FIELD_OPERATING_MARGIN",
+    "FIELD_RECURRING_OPERATING_MARGIN",
     "FIELD_NET_INCOME",
     "FIELD_FREE_CASH_FLOW",
+    "FIELD_OPERATING_FREE_CASH_FLOW",
+    "FIELD_OPERATING_CASH_FLOW",
     "FIELD_TOTAL_ASSETS",
     "FIELD_TOTAL_DEBT",
+    "FIELD_NET_DEBT",
+    "FIELD_NET_CASH",
     "FIELD_CASH",
+    "FIELD_TOTAL_EQUITY",
     "FIELD_EMPLOYEES",
 ]

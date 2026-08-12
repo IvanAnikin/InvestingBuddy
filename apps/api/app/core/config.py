@@ -528,8 +528,19 @@ class Settings(BaseSettings):
     # rejected/truncated, never fully buffered (bounds memory).
     primary_document_max_download_bytes: int = 8_000_000
     # Maximum number of leading pages read from a PDF (bounds native extraction
-    # cost). Pages beyond this are ignored.
+    # cost). Pages beyond this are ignored by the initial pass — see
+    # ``primary_document_max_supplemental_pdf_pages`` for the bounded, targeted
+    # look-beyond pass.
     primary_document_max_pdf_pages: int = 40
+    # Phase 32A corrective (Problem C): a SMALL, bounded number of ADDITIONAL
+    # pages the native-PDF extractor may read beyond the leading-page window,
+    # targeted ONLY at pages whose bookmark/outline title matches a known
+    # financial-statement heading (income statement / balance sheet / cash flow
+    # / segment information — see ``ocr_provider._HEADING_KEYWORDS``). This is
+    # NOT a larger prefix window: it never reads pages sequentially past the
+    # cap, only the specific pages a real PDF outline points to. 0 disables the
+    # look-beyond pass entirely (byte-identical to the pre-corrective behaviour).
+    primary_document_max_supplemental_pdf_pages: int = 12
     # Maximum number of pages rastered + OCR'd when OCR is enabled (kept far
     # smaller than the native page cap because OCR is much more expensive).
     primary_document_max_ocr_pages: int = 5

@@ -141,6 +141,35 @@ def _dedup_key(item: EvidenceItem) -> tuple[str, str, str]:
     return (url, title, _excerpt_hash(item.excerpt))
 
 
+def _semantic_fact_key(item: EvidenceItem) -> tuple[str, str, str, str, str, str] | None:
+    """Cross-document dedup key for a STRUCTURED financial fact (Phase 32A
+    corrective, Problem 8): ``None`` for anything without a ``primary_fact``
+    (the exact-hash ``_dedup_key`` already handles those).
+
+    The same figure can arrive via more than one document for one issuer (an
+    HTML press release AND the PDF annual report both stating Group revenue,
+    say). Two items collapse to one ONLY when metric + scope + period +
+    currency + scale + the numeric value itself all agree — a genuine
+    disagreement (same metric/scope/period, different value) is a real
+    conflict and must stay explicit as two distinct items, never silently
+    merged or overwritten.
+    """
+    fact = item.primary_fact
+    if not fact:
+        return None
+    numeric_value = fact.get("numeric_value")
+    if numeric_value is None:
+        return None
+    return (
+        str(fact.get("field") or ""),
+        str(fact.get("scope") or ""),
+        str(fact.get("period") or ""),
+        str(fact.get("currency") or "").upper(),
+        str(fact.get("scale") or "").lower(),
+        f"{float(numeric_value):.4f}",
+    )
+
+
 def _is_factual_excerpt(item: EvidenceItem) -> bool:
     """True when the item carries real excerpt text (not metadata-only)."""
     if (item.data_quality or "") in _METADATA_QUALITIES:
@@ -320,14 +349,23 @@ def _apply_category_budget(
 
     original_count = len(pack.evidence_items)
 
-    # 1. Dedup: exact-hash (first wins) + near-duplicate news dedup by title.
+    # 1. Dedup: exact-hash (first wins) + cross-document semantic fact dedup
+    # (same metric+scope+period+currency+scale+value from >1 document, e.g. an
+    # HTML press release AND the PDF annual report both stating Group revenue
+    # — see ``_semantic_fact_key``) + near-duplicate news dedup by title.
     seen: set[tuple[str, str, str]] = set()
+    seen_facts: set[tuple[str, str, str, str, str, str]] = set()
     seen_news_titles: set[str] = set()
     deduped: list[tuple[int, EvidenceItem, str]] = []
     for order, item in enumerate(pack.evidence_items):
         key = _dedup_key(item)
         if key != ("", "", "") and key in seen:
             continue
+        fact_key = _semantic_fact_key(item)
+        if fact_key is not None:
+            if fact_key in seen_facts:
+                continue
+            seen_facts.add(fact_key)
         seen.add(key)
         category = evidence_category(item)
         if category in _NEWS_CATEGORIES:

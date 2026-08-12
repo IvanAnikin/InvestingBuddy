@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import hashlib
 import time
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from html.parser import HTMLParser
 
 from pydantic import BaseModel, Field
@@ -158,6 +158,11 @@ class ExtractedTable(BaseModel):
     col_count: int = 0
     extraction_method: str = METHOD_NATIVE_PDF
     confidence: float = 0.7
+    # Best-effort entity/segment scope this table was found under (same
+    # vocabulary as ``PrimaryFact.scope`` / ``_infer_scope``): ``"group"``,
+    # a segment/business-unit heading label, or ``None`` when no scope signal
+    # was found. Never guessed — see ``_infer_scope`` for how it is derived.
+    scope: str | None = None
 
 
 class PrimaryDocumentExcerpt(BaseModel):
@@ -287,13 +292,15 @@ _SEGMENT_HEADING_MARKERS = (
     "reportable segment",
     "operating segment",
     "business area",
+    "business group",
+    "business unit",
 )
 # Heading substrings that mark an entity-level (whole-company) figure.
 _GROUP_HEADING_MARKERS = ("consolidated", "group")
 _SCOPE_LABEL_MAX = 80
 
 
-def _infer_scope(heading: str | None) -> str | None:
+def _infer_scope(heading: str | None, ancestor: str | None = None) -> str | None:
     """Best-effort entity/segment scope label inferred from a document heading.
 
     Generic, structure-only heuristic — it never references a specific company's
@@ -305,6 +312,16 @@ def _infer_scope(heading: str | None) -> str | None:
         "Revenue by region") — this IS the segment-scope label.
       * the literal ``"group"`` when the heading looks like a consolidated /
         whole-company figure.
+      * the (trimmed, bounded) heading text when ``heading`` itself gives no
+        signal but ``ancestor`` (the immediately-preceding, higher-level
+        heading) does look like a segment/business-unit breakdown — this is
+        the common real-report shape of a named subsection (e.g. a specific
+        business-unit heading) nested under a generic "Segment information" /
+        "operating segments" section title. The specific (leaf) heading text
+        is still the more useful label than the generic ancestor text, so it
+        is what gets returned — only the SIGNAL (that this is segment-scoped
+        at all) is inherited from the ancestor. Never inherits company-name
+        vocabulary — purely structural nesting.
     """
     if not heading:
         return None
@@ -316,6 +333,11 @@ def _infer_scope(heading: str | None) -> str | None:
         return label
     if any(marker in low for marker in _GROUP_HEADING_MARKERS):
         return "group"
+    if ancestor and any(marker in ancestor.lower() for marker in _SEGMENT_HEADING_MARKERS):
+        label = heading.strip()
+        if len(label) > _SCOPE_LABEL_MAX:
+            label = label[: _SCOPE_LABEL_MAX - 1].rstrip() + "…"
+        return label
     return None
 
 
@@ -392,6 +414,79 @@ def classify_statement_type(heading: str | None) -> str | None:
         if any(kw in low for kw in keywords):
             return statement_type
     return None
+
+
+# --------------------------------------------------------------------------- #
+# Bounded, targeted long-PDF page selection (Phase 32A corrective, Problem C)
+# --------------------------------------------------------------------------- #
+
+
+def _select_statement_pages(
+    raw: bytes,
+    *,
+    total_pages: int,
+    exclude: set[int],
+    max_pages: int,
+) -> list[int]:
+    """Bounded, deterministic supplemental-page targeting beyond the leading
+    -page extraction window.
+
+    Reads ONLY the PDF's outline/bookmark metadata (never a second full-text
+    pass) to find pages whose bookmark title matches a known financial-
+    statement heading — the SAME generic vocabulary ``classify_statement_type``
+    uses, never a company-specific term and never a hardcoded page number. This
+    is deliberately a SECOND, independent implementation of the outline-walk
+    ``ocr_provider.select_ocr_pages`` already uses (duplicated, not imported,
+    to avoid a circular import: ``ocr_provider`` already imports FROM this
+    module — the same reasoning already documented on
+    ``_STATEMENT_HEADING_KEYWORDS`` above).
+
+    Never raises and never reads sequentially past the leading window: any
+    failure (no pypdf, no outline, a malformed outline) simply yields no
+    candidates, which the caller treats as honest "nothing found beyond the
+    window" — never a fabricated or guessed page number.
+    """
+    if max_pages <= 0 or total_pages <= 0:
+        return []
+    try:
+        import io
+
+        from pypdf import PdfReader
+
+        reader = PdfReader(io.BytesIO(raw))
+        outline = reader.outline
+    except Exception:  # noqa: BLE001
+        return []
+
+    keywords = tuple(kw for _stype, kws in _STATEMENT_HEADING_KEYWORDS for kw in kws)
+
+    def _walk(items: object) -> Iterator[tuple[int, str | None]]:
+        for item in items or []:  # type: ignore[attr-defined]
+            if isinstance(item, list):
+                yield from _walk(item)
+                continue
+            try:
+                page_index = reader.get_destination_page_number(item)
+            except Exception:  # noqa: BLE001
+                continue
+            if page_index is None:
+                continue
+            yield page_index + 1, getattr(item, "title", None)
+
+    candidates: list[int] = []
+    try:
+        for page_no, title in _walk(outline):
+            if page_no < 1 or page_no > total_pages or page_no in exclude:
+                continue
+            if page_no in candidates:
+                continue
+            if any(kw in (title or "").lower() for kw in keywords):
+                candidates.append(page_no)
+            if len(candidates) >= max_pages:
+                break
+    except Exception:  # noqa: BLE001 - outline access can raise on odd PDFs
+        return []
+    return candidates[:max_pages]
 
 
 def _confidence_from_relevance(relevance: int) -> float:
@@ -616,12 +711,61 @@ def extract_pdf(
         return result
 
     max_pages = max(1, cfg.primary_document_max_pdf_pages)
+    max_supplemental_pages = max(0, cfg.primary_document_max_supplemental_pdf_pages)
     max_excerpts = max(1, cfg.primary_document_max_excerpts_per_document)
     per_excerpt = max(120, cfg.primary_document_max_excerpt_chars)
     deadline = time.monotonic() + max(1, cfg.primary_document_extraction_timeout_seconds)
 
     page_blocks: list[tuple[int | None, str | None, str]] = []
     total_chars = 0
+
+    def _extract_one_page(page: object, page_no: int) -> None:
+        """Extract text blocks + tables from ONE page; mutates the closures."""
+        nonlocal total_chars
+        # -- text --
+        try:
+            text = page.extract_text() or ""  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001
+            text = ""
+            result.warnings.append(f"Page {page_no} text extraction failed; skipped.")
+        page_start = len(page_blocks)
+        for blk in _blocks(text):
+            if total_chars >= _MAX_TOTAL_EXTRACTED_CHARS:
+                result.truncated = True
+                break
+            page_blocks.append((page_no, None, blk))
+            total_chars += len(blk)
+        # Best-effort per-page scope signal for this page's tables: raw PDF
+        # text carries no heading/paragraph distinction, so this scans the
+        # page's own extracted blocks for a segment/group marker (same
+        # vocabulary as ``_infer_scope``); stays None — never guessed — when
+        # no signal is found (Phase 32A corrective, Problem B).
+        page_scope: str | None = None
+        for _pg, _sec, blk_text in page_blocks[page_start:]:
+            page_scope = _infer_scope(blk_text[:120])
+            if page_scope is not None:
+                break
+        # -- tables --
+        try:
+            raw_tables = page.extract_tables() or []  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001
+            raw_tables = []
+        for t_idx, raw_rows in enumerate(raw_tables[:_MAX_TABLES_PER_PAGE]):
+            rows = _bound_table(raw_rows)
+            if not rows:
+                continue
+            result.tables.append(
+                ExtractedTable(
+                    table_location=f"p{page_no}:t{t_idx}",
+                    table_index=t_idx,
+                    page_number=page_no,
+                    rows=rows,
+                    row_count=len(rows),
+                    col_count=max(len(r) for r in rows),
+                    extraction_method=METHOD_NATIVE_PDF,
+                    scope=page_scope,
+                )
+            )
 
     try:
         # pdfplumber.open defaults to an empty password → this is the single
@@ -643,42 +787,42 @@ def extract_pdf(
                         "Extraction time budget exceeded; partial extraction only."
                     )
                     break
-                page = pdf.pages[i]
-                page_no = i + 1
-                # -- text --
-                try:
-                    text = page.extract_text() or ""
-                except Exception:  # noqa: BLE001
-                    text = ""
+                _extract_one_page(pdf.pages[i], i + 1)
+
+            # Phase 32A corrective (Problem C): a SMALL, bounded, TARGETED
+            # look-beyond pass — never a larger sequential prefix. Only pages
+            # whose PDF bookmark/outline title matches a known financial-
+            # statement heading are read, and only when pages remain beyond
+            # the leading window and extraction budget remains.
+            if (
+                page_count > n
+                and max_supplemental_pages > 0
+                and time.monotonic() <= deadline
+                and total_chars < _MAX_TOTAL_EXTRACTED_CHARS
+            ):
+                supplemental = _select_statement_pages(
+                    raw,
+                    total_pages=page_count,
+                    exclude=set(range(1, n + 1)),
+                    max_pages=max_supplemental_pages,
+                )
+                if supplemental:
                     result.warnings.append(
-                        f"Page {page_no} text extraction failed; skipped."
+                        f"Targeted {len(supplemental)} additional page(s) beyond "
+                        f"the first {n} whose bookmark/outline title matched a "
+                        "financial-statement heading."
                     )
-                for blk in _blocks(text):
-                    if total_chars >= _MAX_TOTAL_EXTRACTED_CHARS:
+                for page_no in supplemental:
+                    if time.monotonic() > deadline:
                         result.truncated = True
-                        break
-                    page_blocks.append((page_no, None, blk))
-                    total_chars += len(blk)
-                # -- tables --
-                try:
-                    raw_tables = page.extract_tables() or []
-                except Exception:  # noqa: BLE001
-                    raw_tables = []
-                for t_idx, raw_rows in enumerate(raw_tables[:_MAX_TABLES_PER_PAGE]):
-                    rows = _bound_table(raw_rows)
-                    if not rows:
-                        continue
-                    result.tables.append(
-                        ExtractedTable(
-                            table_location=f"p{page_no}:t{t_idx}",
-                            table_index=t_idx,
-                            page_number=page_no,
-                            rows=rows,
-                            row_count=len(rows),
-                            col_count=max(len(r) for r in rows),
-                            extraction_method=METHOD_NATIVE_PDF,
+                        result.warnings.append(
+                            "Extraction time budget exceeded during the "
+                            "supplemental page pass; partial extraction only."
                         )
-                    )
+                        break
+                    if total_chars >= _MAX_TOTAL_EXTRACTED_CHARS:
+                        break
+                    _extract_one_page(pdf.pages[page_no - 1], page_no)
     except Exception as exc:  # noqa: BLE001 - malformed/encrypted must not raise
         result.error_type = type(exc).__name__
         result.failure_code = classify_pdf_failure(raw, exc)
@@ -737,9 +881,20 @@ class _DocumentHtmlParser(HTMLParser):
         # (page=None, section, text)
         self.blocks: list[tuple[int | None, str | None, str]] = []
         self.tables: list[list[list[str]]] = []
+        # Parallel to ``self.tables`` (same index) — the inferred scope for
+        # each table, derived from the heading in effect when the table opened
+        # (Phase 32A corrective, Problem B/C: tables previously carried no
+        # section/scope context at all).
+        self.table_scopes: list[str | None] = []
         # element stack of (tag, is_skip_region)
         self._stack: list[tuple[str, bool]] = []
         self._current_section: str | None = None
+        # The heading immediately preceding ``_current_section`` — lets a
+        # table nested under a specific subsection (e.g. a named business
+        # unit) inherit a segment signal from a higher-level ancestor heading
+        # (e.g. "Segment information") that the leaf heading text alone would
+        # not carry. See ``_infer_scope``.
+        self._prev_section: str | None = None
         self._in_title = False
         self._title_parts: list[str] = []
         self._cur_block_tag: str | None = None
@@ -747,8 +902,10 @@ class _DocumentHtmlParser(HTMLParser):
         self._cur_text: list[str] = []
         # table capture stacks
         self._table_stack: list[list[list[str]]] = []
+        self._table_scope_stack: list[str | None] = []
         self._row_stack: list[list[str]] = []
         self._cur_cell: list[str] | None = None
+        self._cur_cell_colspan = 1
 
     # -- skip-region bookkeeping ------------------------------------------- #
     @staticmethod
@@ -778,10 +935,18 @@ class _DocumentHtmlParser(HTMLParser):
             self._cur_text = []
         elif tag == "table":
             self._table_stack.append([])
+            self._table_scope_stack.append(
+                _infer_scope(self._current_section, self._prev_section)
+            )
         elif tag == "tr" and self._table_stack:
             self._row_stack.append([])
         elif tag in ("td", "th") and self._row_stack:
             self._cur_cell = []
+            colspan_raw = a.get("colspan", "1") or "1"
+            try:
+                self._cur_cell_colspan = max(1, min(int(colspan_raw), _MAX_TABLE_COLS))
+            except ValueError:
+                self._cur_cell_colspan = 1
 
     def handle_startendtag(
         self, tag: str, attrs: list[tuple[str, str | None]]
@@ -801,16 +966,34 @@ class _DocumentHtmlParser(HTMLParser):
                     self.title = " ".join(self._title_parts).strip() or None
             elif tag in ("td", "th") and self._cur_cell is not None:
                 if self._row_stack:
-                    self._row_stack[-1].append(" ".join(self._cur_cell).strip())
+                    # Collapse ALL internal whitespace (including a literal
+                    # source-formatting newline inside one data() chunk, not
+                    # just between chunks) — real issuer HTML routinely wraps
+                    # cell text across source lines, and HTML itself treats
+                    # any whitespace run as a single space when rendered.
+                    text = " ".join(" ".join(self._cur_cell).split())
+                    # A merged header/value cell (colspan > 1) is repeated
+                    # across the columns it visually spans — without this a
+                    # multi-period header row (e.g. one cell spanning two
+                    # value columns) undercounts columns relative to the data
+                    # rows below it, misaligning row-header -> value/period
+                    # mapping downstream (Phase 32A corrective, Problem B).
+                    for _ in range(self._cur_cell_colspan):
+                        self._row_stack[-1].append(text)
                 self._cur_cell = None
+                self._cur_cell_colspan = 1
             elif tag == "tr" and self._row_stack:
                 row = self._row_stack.pop()
                 if self._table_stack:
                     self._table_stack[-1].append(row)
             elif tag == "table" and self._table_stack:
                 rows = self._table_stack.pop()
+                scope = (
+                    self._table_scope_stack.pop() if self._table_scope_stack else None
+                )
                 if rows:
                     self.tables.append(rows)
+                    self.table_scopes.append(scope)
             elif tag == self._cur_block_tag:
                 self._flush_block()
         self._pop_tag(tag)
@@ -825,9 +1008,17 @@ class _DocumentHtmlParser(HTMLParser):
     def _flush_block(self) -> None:
         if self._cur_block_tag is None:
             return
-        text = " ".join(self._cur_text).strip()
+        # Collapse ALL internal whitespace, not just between data() chunks —
+        # real issuer HTML routinely source-wraps a paragraph's text across
+        # multiple lines, and a literal newline inside the resulting excerpt
+        # text breaks the ``[^\d\n]``-bounded label→value gap every money/
+        # percent regex in ``primary_fact_parser`` relies on (Phase 32A
+        # corrective, Problem A) — HTML itself treats any whitespace run,
+        # including a newline, as a single space when rendered.
+        text = " ".join(" ".join(self._cur_text).split())
         if self._cur_block_is_heading:
             if text:
+                self._prev_section = self._current_section
                 self._current_section = text[:120]
                 self.blocks.append((None, text[:120], text))
         elif len(text) >= 40:
@@ -900,6 +1091,9 @@ def extract_html(
         bounded = _bound_table([list(r) for r in rows])
         if not bounded:
             continue
+        scope = (
+            parser.table_scopes[t_idx] if t_idx < len(parser.table_scopes) else None
+        )
         result.tables.append(
             ExtractedTable(
                 table_location=f"t{t_idx}",
@@ -909,6 +1103,7 @@ def extract_html(
                 row_count=len(bounded),
                 col_count=max(len(r) for r in bounded),
                 extraction_method=METHOD_HTML,
+                scope=scope,
             )
         )
 
