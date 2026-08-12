@@ -86,6 +86,7 @@ from app.services.sources.gaps import GapSeverity, GapType, SourceGap
 from app.services.sources.language import detect_language
 from app.services.sources.primary_document_extractor import (
     STATUS_EXTRACTED,
+    PrimaryDocumentExcerpt,
     PrimaryDocumentExtraction,
     _confidence_bucket,
     _infer_scope,
@@ -418,6 +419,52 @@ def _rank_candidate_links(links: list[SafeLink]) -> list[SafeLink]:
         return (tier, recency, english)
 
     return sorted(links, key=key)
+
+
+def _select_diverse_excerpts(
+    excerpts: list[PrimaryDocumentExcerpt], cap: int
+) -> list[PrimaryDocumentExcerpt]:
+    """Select up to ``cap`` excerpts, preferring coverage across distinct
+    financial-statement categories over several near-adjacent narrative ones.
+
+    Phase 32A corrective (Problem B): ``extract_pdf``/``extract_html`` already
+    relevance-rank the full excerpt list (lead paragraph first, then by keyword
+    relevance) and cap it at ``primary_document_max_excerpts_per_document``.
+    This is a SECOND, smaller cut down to ``cap`` (typically well below that) —
+    previously a blind prefix truncation, which could exhaust the whole cap on
+    several near-adjacent lead-ish narrative excerpts before a cash-flow or
+    balance-sheet excerpt further down the ranked list ever got a chance, even
+    though the extractor had already found and ranked it. Reserves the
+    extractor's own top-ranked excerpt (the "headline" pick) plus at most ONE
+    further slot per distinct financial-statement category
+    (``classify_statement_type``: income / balance sheet / cash flow /
+    segment) found among the rest, in rank order; remaining slots are filled
+    by the extractor's own rank order. Never enlarges the cap and never
+    invents content — a category simply absent from the ranked list stays
+    absent.
+    """
+    if len(excerpts) <= cap or cap <= 0:
+        return list(excerpts)
+
+    index_by_id = {exc.excerpt_id: i for i, exc in enumerate(excerpts)}
+    selected_ids: set[str] = {excerpts[0].excerpt_id}
+    seen_categories: set[str] = set()
+    for exc in excerpts[1:]:
+        if len(selected_ids) >= cap:
+            break
+        category = classify_statement_type(exc.section or exc.heading)
+        if category and category not in seen_categories:
+            selected_ids.add(exc.excerpt_id)
+            seen_categories.add(category)
+    if len(selected_ids) < cap:
+        for exc in excerpts[1:]:
+            if len(selected_ids) >= cap:
+                break
+            selected_ids.add(exc.excerpt_id)
+
+    by_id = {exc.excerpt_id: exc for exc in excerpts}
+    ordered_ids = sorted(selected_ids, key=lambda eid: index_by_id[eid])
+    return [by_id[eid] for eid in ordered_ids]
 
 
 def _merge_links(*link_lists: list[SafeLink]) -> list[SafeLink]:
@@ -1479,7 +1526,12 @@ class CompanyIrConnector(SourceConnector):
         )
 
         # 1) prose excerpts (bounded) → T1 primary-document excerpt items.
-        for n, exc in enumerate(ext.excerpts[:cap], start=1):
+        # Phase 32A corrective (Problem B): ``_select_diverse_excerpts`` replaces
+        # a blind ``ext.excerpts[:cap]`` prefix cut — several near-adjacent
+        # narrative excerpts could previously consume the whole per-document cap
+        # before a cash-flow/balance-sheet excerpt further down the extractor's
+        # own ranked list ever got a chance.
+        for n, exc in enumerate(_select_diverse_excerpts(ext.excerpts, cap), start=1):
             # Phase 32A Problem C: a heading that classifies as a known
             # financial-statement section (balance sheet / cash-flow statement
             # / income statement / segment note) outranks the generic
@@ -1576,6 +1628,7 @@ class CompanyIrConnector(SourceConnector):
                     url=url,
                     date=fact.period,
                     excerpt=excerpt,
+                    scope=fact.scope,
                     requires_translation=requires_tr,
                     data_quality="B" if conf_bucket == "high" else "C",
                     confidence=conf_bucket,
@@ -1594,6 +1647,7 @@ class CompanyIrConnector(SourceConnector):
                         currency=fact.currency,
                         scale=fact.scale,
                         period=fact.period,
+                        scope=fact.scope,
                         source_url=url,
                         excerpt_id=fact.table_location,
                         page_number=fact.page_number,
@@ -1646,6 +1700,7 @@ class CompanyIrConnector(SourceConnector):
                         + (f" ({unit_bits})" if unit_bits else "")
                         + (f" [{fact.period}]" if fact.period else "")
                     ),
+                    scope=fact.scope,
                     requires_translation=requires_tr,
                     original_language=orig_lang,
                     language=artifact.extraction.language if artifact.extraction else "en",

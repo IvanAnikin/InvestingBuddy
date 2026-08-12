@@ -217,6 +217,29 @@ def make_multi_page_scanned_pdf(page_texts: list[str], *, width: int = 600, heig
     return out.getvalue()
 
 
+def make_pdf_with_outline(pages_text: list[str], bookmarks: dict[int, str]) -> bytes:
+    """A multi-page, text-extractable PDF (via :func:`make_pdf`) with a real
+    pypdf outline/bookmark tree added on top — ``bookmarks`` maps a 1-based
+    page number to its bookmark title. Used to exercise the Phase 32A
+    corrective (Problem C) targeted supplemental-page selection, which reads
+    ONLY the outline metadata, never a second full-text pass.
+    """
+    import io as _io
+
+    from pypdf import PdfReader, PdfWriter
+
+    raw = make_pdf(pages_text)
+    reader = PdfReader(_io.BytesIO(raw))
+    writer = PdfWriter()
+    for page in reader.pages:
+        writer.add_page(page)
+    for page_no, title in bookmarks.items():
+        writer.add_outline_item(title, page_no - 1)
+    out = _io.BytesIO()
+    writer.write(out)
+    return out.getvalue()
+
+
 __all__ = [
     "make_pdf",
     "make_pdf_no_text",
@@ -224,4 +247,5 @@ __all__ = [
     "make_encrypted_pdf",
     "make_pdf_with_image",
     "make_multi_page_scanned_pdf",
+    "make_pdf_with_outline",
 ]
