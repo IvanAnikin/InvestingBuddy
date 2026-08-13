@@ -101,8 +101,12 @@ def test_015_chains_onto_014(migration) -> None:
     assert migration.depends_on is None
 
 
-def test_015_is_the_single_head() -> None:
-    """No other migration may claim 015 as its parent (one linear head)."""
+def test_015_has_at_most_one_child() -> None:
+    """015 stays a single, non-branching link in the chain (one linear head).
+
+    Superseded by migration 016 (Phase 32A corrective, Problem B) — 015 is no
+    longer the overall head, but it must still have EXACTLY one child (016),
+    never two (which would mean a branch)."""
     down_revisions: list[str] = []
     revisions: list[str] = []
     for path in VERSIONS_DIR.glob("*.py"):
@@ -114,8 +118,8 @@ def test_015_is_the_single_head() -> None:
                 down_revisions.append(line.split("=", 1)[1].strip().strip('"'))
     assert "015" in revisions
     assert revisions.count("015") == 1
-    # Nothing points AT 015 yet, so 015 is the head.
-    assert "015" not in down_revisions
+    # Exactly one migration chains onto 015 — never a branch.
+    assert down_revisions.count("015") == 1
 
 
 # ---------------------------------------------------------------------------

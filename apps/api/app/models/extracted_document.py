@@ -62,6 +62,17 @@ class ExtractedDocument(Base):
     excerpts_json: Mapped[list[dict[str, Any]] | None] = mapped_column(
         JSONB, nullable=True
     )
+    # Phase 32A corrective (Problem B) — the extraction/parsing/validation
+    # pipeline version active when this row's ``excerpts_json`` +
+    # ``ExtractedFact`` children were produced (see
+    # ``app.services.sources.extraction_pipeline_version``). NULL for rows
+    # written before this column existed — treated as stale/legacy, never
+    # assumed compatible with the current parser/validator. A future report
+    # regeneration reuses ``excerpts_json`` (the content layer) even when this
+    # differs from the currently-deployed version, but re-derives facts under
+    # current-code semantics rather than trusting the persisted
+    # ``ExtractedFact`` rows unchanged.
+    pipeline_version: Mapped[int | None] = mapped_column(sa.Integer, nullable=True)
     # Lineage — SET NULL preserves research history on company / run deletion.
     company_id: Mapped[uuid.UUID | None] = mapped_column(
         sa.Uuid(as_uuid=True),

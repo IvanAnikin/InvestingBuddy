@@ -645,6 +645,7 @@ def _candidates_from_excerpts(extraction: PrimaryDocumentExtraction) -> list[_Ca
         wrapper = DocumentExcerpt(
             excerpt_id=exc.excerpt_id,
             heading=exc.heading,
+            ancestor_heading=exc.ancestor_heading,
             text=exc.text,
             page_number=exc.page_number,
             char_count=exc.char_count,

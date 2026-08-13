@@ -70,6 +70,11 @@ from app.services.sources.extracted_fact_validator import (
     VALIDATION_VALIDATED,
     IssuerContext,
 )
+from app.services.sources.financial_fact_categories import (
+    financial_fact_diversity_key,
+    primary_fact_field,
+    select_category_diverse,
+)
 from app.services.sources.gaps import GapSeverity, GapType, SourceGap
 from app.services.sources.ocr_provider import OcrBudget, OcrProvider
 from app.services.sources.primary_document_extractor import (
@@ -391,45 +396,64 @@ def _dedup_evidence(items: list[EvidenceItem]) -> list[EvidenceItem]:
     return out
 
 
-# Phase 32A corrective (Problem A/B): a document's structured facts (loop 2 of
-# ``company_ir._artifact_to_evidence``) are always appended AFTER that same
-# document's prose excerpts (loop 1) — so within the single "document excerpts
-# + facts" bucket below, a stable sort preserved that append order and this
-# per-SOURCE cap could evict every fact in favour of excerpts that happened to
-# be listed first, even though a validated structured fact is strictly the
-# more valuable evidence (it is what makes ``structured_financial_fact_count``
-# truthful). Reserving a small floor of facts — ahead of the bucket order,
-# not replacing it — guarantees at least a few survive regardless of list
-# order, while leaving the remaining slots to the existing excerpt-first
-# priority so prose evidence is not itself starved out.
-_IR_FACT_FLOOR = 3
+# Phase 32A corrective (Problem A/B, superseded again by the follow-up
+# corrective in section 4/5 of the mission that introduced this comment): a
+# document's structured facts (loop 2 of ``company_ir._artifact_to_evidence``)
+# are always appended AFTER that same document's prose excerpts (loop 1) — so
+# within a single "document excerpts + facts" bucket, a stable sort preserved
+# that append order and the per-SOURCE generic item cap
+# (``source_connector_max_items_per_source``) could evict every fact in favour
+# of excerpts that happened to be listed first, even though a validated
+# structured fact is strictly the more valuable evidence (it is what makes
+# ``structured_financial_fact_count`` truthful). A flat raw-count floor (the
+# previous fix) guaranteed a FEW facts survive but not USEFUL CATEGORY
+# COVERAGE — 8 valid facts spanning 5 financial categories could still lose 5
+# of them to a floor sized for "some facts survive" rather than "diverse
+# categories survive". ``_prioritize_ir_items`` now RESERVES a bounded,
+# CATEGORY-DIVERSE set of facts (``company_ir_financial_fact_cap``) that is
+# fully INDEPENDENT of — and applied BEFORE — the generic per-source item cap,
+# so typed financial facts never compete with generic prose for the same
+# slots (mission section 5).
+def _prioritize_ir_items(
+    items: list[EvidenceItem], *, financial_fact_cap: int
+) -> tuple[list[EvidenceItem], list[EvidenceItem]]:
+    """Split ``items`` into ``(reserved_facts, rest)``.
 
+    ``reserved_facts`` — up to ``financial_fact_cap`` structured facts,
+    selected to maximise DISTINCT financial-category coverage (see
+    ``financial_fact_categories.select_category_diverse``) rather than a
+    blind raw-count floor or raw list-order priority; the caller must add
+    these WITHOUT subjecting them to the generic per-source item cap.
 
-def _prioritize_ir_items(items: list[EvidenceItem]) -> list[EvidenceItem]:
-    """Stable sort so extracted document excerpts/facts survive the per-source cap.
-
-    Bucket order: a bounded floor of structured facts (highest value; see
-    ``_IR_FACT_FLOOR``) → document excerpts + any remaining parsed facts →
-    annual-report link → everything else (profile / index metadata). Order
-    within a bucket is preserved, so this never reorders same-value items.
+    ``rest`` — every other item (excerpts / annual-report link / profile
+    metadata), in the SAME bucket order used before this corrective
+    (document excerpts + any non-reserved facts first, then the
+    annual-report link, then everything else) — the caller still applies the
+    generic per-source cap to THIS list only.
     """
     ordered_facts = [
         it
         for it in items
         if it.source_type in _DOCUMENT_SOURCE_TYPES and it.primary_fact is not None
     ]
-    floored_fact_ids = {id(it) for it in ordered_facts[:_IR_FACT_FLOOR]}
+    reserved_facts = select_category_diverse(
+        ordered_facts,
+        cap=financial_fact_cap,
+        diversity_key_of=lambda it: financial_fact_diversity_key(
+            primary_fact_field(it.primary_fact), it.scope
+        ),
+    )
+    reserved_ids = {id(it) for it in reserved_facts}
 
     def bucket(it: EvidenceItem) -> int:
-        if id(it) in floored_fact_ids:
-            return -1
         if it.source_type in _DOCUMENT_SOURCE_TYPES:
             return 0
         if it.source_type == "company_ir_annual_report":
             return 1
         return 2
 
-    return sorted(items, key=bucket)
+    rest = sorted((it for it in items if id(it) not in reserved_ids), key=bucket)
+    return reserved_facts, rest
 
 
 def _relevant_scaffold_ids(
@@ -702,8 +726,16 @@ async def collect_company_source_evidence(
             gaps.extend(res.source_gaps)
             warnings.extend(res.warnings)
         # Prioritise extracted document excerpts/facts so they survive the
-        # per-source cap (Phase 29B.2), then de-dup, then bound.
-        items.extend(_prioritize_ir_items(_dedup_evidence(ir_items))[:max_items])
+        # per-source cap (Phase 29B.2). Phase 32A corrective: structured
+        # financial facts get a CATEGORY-DIVERSE reserved budget
+        # (``company_ir_financial_fact_cap``) that bypasses the generic cap
+        # entirely — only the remaining excerpt/link/metadata items are
+        # bounded by ``max_items`` (mission section 5).
+        reserved_ir_facts, rest_ir_items = _prioritize_ir_items(
+            _dedup_evidence(ir_items),
+            financial_fact_cap=cfg.company_ir_financial_fact_cap,
+        )
+        items.extend(reserved_ir_facts + rest_ir_items[:max_items])
         # Phase 32A Slice 5: thread the deep ingestion artifacts OUT for a later
         # persistence task (empty unless the deep extractor was injected).
         primary_document_artifacts.extend(ir.collected_primary_document_artifacts)

@@ -74,6 +74,7 @@ from app.services.llm.schemas import (
 )
 from app.services.real_asset_report_completer import build_schema_complete_report
 from app.services.report_validation_service import validate_real_asset_report
+from app.services.sources.extracted_fact_validator import IssuerContext
 from app.services.sources.ingestion_attempts import attempts_for_primary_documents
 from app.services.sources.redaction import (
     canonicalize_source_url,
@@ -4745,8 +4746,18 @@ class FinalReportGeneratorService:
                 else _coerce_uuid(state.get("company_id"))
             )
             if reuse_company_id is not None:
+                # Phase 32A corrective (Problem B): pass the already-derived
+                # identity so a stale-pipeline-version reuse can revalidate
+                # facts under current-code semantics with a KNOWN issuer
+                # (never required for reuse itself — see
+                # ``extracted_document_service.load_reusable_documents``).
                 reuse_lookup = await load_reusable_documents(
-                    db, company_id=reuse_company_id, cfg=settings
+                    db,
+                    company_id=reuse_company_id,
+                    cfg=settings,
+                    issuer_context=IssuerContext(
+                        company_name=company_name, ticker=ticker
+                    ),
                 )
 
         council_result: CouncilResult = await maybe_run_council(

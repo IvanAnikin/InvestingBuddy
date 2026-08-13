@@ -337,9 +337,14 @@ def _parse_excerpt(excerpt: DocumentExcerpt, source_url: str | None) -> list[Pri
     facts: list[PrimaryFact] = []
     seen_fields: set[str] = set()
     # Best-effort scope inferred from the excerpt's own heading (already carried
-    # by ``DocumentExcerpt`` regardless of which extractor produced it). ``None``
-    # when the heading gives no scope signal — every fact below stays honest.
-    scope = _infer_scope(excerpt.heading)
+    # by ``DocumentExcerpt`` regardless of which extractor produced it), with
+    # the immediately-enclosing ancestor heading (Phase 32A corrective,
+    # Problem C) as a second signal — a named leaf heading with no generic
+    # scope vocabulary of its own (e.g. a specific segment/business-unit
+    # name) still resolves when its ancestor heading IS generic
+    # segment/business-area vocabulary. ``None`` when neither gives a scope
+    # signal — every fact below stays honest.
+    scope = _infer_scope(excerpt.heading, excerpt.ancestor_heading)
 
     def add(fact: PrimaryFact) -> None:
         if fact.field in seen_fields:

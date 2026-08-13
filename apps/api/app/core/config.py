@@ -270,8 +270,21 @@ class Settings(BaseSettings):
     # fetches only when this flag is on.
     source_connector_enabled: bool = False
     # Hard cap on evidence items taken from ANY single connector (bounds prompt
-    # size + cost, and keeps one source from dominating the pack).
+    # size + cost, and keeps one source from dominating the pack). Applies to
+    # EXCERPT / link / metadata items; structured financial facts from the
+    # company-IR connector are budgeted separately — see
+    # ``company_ir_financial_fact_cap`` — so a small excerpt cap can never make
+    # the fact floor mathematically impossible to reach (Phase 32A corrective,
+    # Problem A / section 5).
     source_connector_max_items_per_source: int = 5
+    # Bounded, SEPARATE cap on the number of structured (validated)
+    # financial facts the company-IR connector may contribute, reserved AHEAD
+    # of — and independent of — ``source_connector_max_items_per_source``
+    # (Phase 32A corrective, Problem A). Sized to comfortably fit one
+    # category-diverse pass across the five financial categories (topline has
+    # up to 3 distinct metrics, cash 2, position up to 3, earnings 1) PLUS a
+    # few segment/business-group representatives, without being unbounded.
+    company_ir_financial_fact_cap: int = 12
     # Per-connector live-fetch timeout budget (seconds). Only relevant to the
     # evidence-preview live path; deterministic report-time use makes no calls.
     source_connector_timeout_seconds: int = 10
@@ -390,8 +403,16 @@ class Settings(BaseSettings):
     # no fabrication, no schema/migration change.
     llm_council_evidence_budgets_enabled: bool = False
     # Guaranteed number of SEC/XBRL financial-fact slots reserved before the
-    # global fill, so higher-tier catalysts cannot evict every financial datapoint.
-    llm_council_evidence_financial_floor: int = 3
+    # global fill, so higher-tier catalysts cannot evict every financial
+    # datapoint. Phase 32A corrective (Problem A): the reservation itself is
+    # now CATEGORY-DIVERSE (see ``financial_fact_categories``), not a raw
+    # rank-order-first cut — this floor is the CEILING on how many of those
+    # diverse facts survive, so it is sized (matching
+    # ``company_ir_financial_fact_cap``) to comfortably hold a company's
+    # Group-level topline/earnings/cash/position facts PLUS a few
+    # segment/business-group facts, without enlarging the overall
+    # ``llm_council_evidence_max_items`` pack size.
+    llm_council_evidence_financial_floor: int = 12
     # Guaranteed number of statement/table-derived (balance sheet, cash flow,
     # segment reporting) evidence slots reserved so this content cannot lose an
     # append-order tie-break against generic narrative prose (Problem C).
