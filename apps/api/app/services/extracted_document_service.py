@@ -195,7 +195,7 @@ async def persist_primary_document_artifacts(
             result.skipped += 1
             continue
 
-        document, reused = await _get_or_create_document(
+        document, reused, restamped = await _get_or_create_document(
             session,
             artifact=artifact,
             extraction=extraction,
@@ -208,6 +208,10 @@ async def persist_primary_document_artifacts(
         else:
             result.documents_created += 1
             wrote_row = True
+        # A pipeline_version re-stamp (Problem B follow-up) is a real pending
+        # change that must be flushed even when nothing else about this
+        # artifact changed (e.g. every fact already matched and deduped).
+        wrote_row = wrote_row or restamped
 
         wrote_fact = await _persist_validated_facts(
             session, artifact=artifact, document=document, reused=reused, result=result
@@ -227,8 +231,15 @@ async def _get_or_create_document(
     content_hash: str,
     company_id: uuid.UUID | None,
     agent_run_id: uuid.UUID | None,
-) -> tuple[ExtractedDocument, bool]:
-    """Return ``(document, reused)`` — reuse the content_hash row if it exists."""
+) -> tuple[ExtractedDocument, bool, bool]:
+    """Return ``(document, reused, restamped)``.
+
+    ``reused`` — an existing ``content_hash`` row was found (no new document
+    row created). ``restamped`` — that existing row's ``pipeline_version``
+    was just updated to the current version (see below); ``False`` when a
+    new row was created (it is already stamped current) or when the existing
+    row already matched.
+    """
     existing = (
         await session.execute(
             select(ExtractedDocument)
@@ -237,7 +248,23 @@ async def _get_or_create_document(
         )
     ).scalar_one_or_none()
     if existing is not None:
-        return existing, True
+        # Pre-merge review finding (Problem B follow-up) — this write path is
+        # ONLY ever reached with an artifact whose ``status == 'extracted'``
+        # (the caller already skips anything else), meaning it was JUST
+        # produced by the CURRENTLY-RUNNING code this request: either a fresh
+        # fetch/extract/validate, or a reused document REVALIDATED under
+        # current semantics (``_rebuild_artifact_revalidated`` in
+        # ``load_reusable_documents``). Without re-stamping here, a legacy/
+        # stale row's ``pipeline_version`` would never advance even after
+        # this run has already reconfirmed it under current code — forcing
+        # every SUBSEQUENT reuse to keep re-deriving facts unnecessarily.
+        # Re-stamping is safe precisely BECAUSE this call only ever runs on
+        # artifacts this request itself just (re)processed; it never touches
+        # ``content_hash`` (document identity) or any provenance field.
+        restamped = existing.pipeline_version != CURRENT_EXTRACTION_PIPELINE_VERSION
+        if restamped:
+            existing.pipeline_version = CURRENT_EXTRACTION_PIPELINE_VERSION
+        return existing, True, restamped
 
     source_url = getattr(artifact, "source_url", "") or ""
     canonical = canonicalize_source_url(source_url) or source_url
@@ -283,7 +310,7 @@ async def _get_or_create_document(
         blob_path=None,
     )
     session.add(document)
-    return document, False
+    return document, False, False
 
 
 async def _persist_validated_facts(

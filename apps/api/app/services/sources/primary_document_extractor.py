@@ -33,6 +33,7 @@ Design guarantees (mirroring the Phase 29B.2 extractor + the safe fetcher):
 from __future__ import annotations
 
 import hashlib
+import re
 import time
 from collections.abc import Iterator, Sequence
 from html.parser import HTMLParser
@@ -308,6 +309,14 @@ _SEGMENT_HEADING_MARKERS = (
 _GROUP_HEADING_MARKERS = ("consolidated", "group")
 _SCOPE_LABEL_MAX = 80
 
+# Pre-merge review finding #4 — a "peer group" / "peer-group" comparison is a
+# common, legitimate competitive-benchmarking phrase; it must NEVER be
+# mistaken for an explicit issuer Group-scope claim merely because it
+# contains the substring "group". Scoped to ``scope_claim_signal`` (claim
+# TEXT) only — headings realistically never phrase a section title as "peer
+# group", so ``_infer_scope`` (used for headings) is intentionally untouched.
+_PEER_GROUP_RE = re.compile(r"\bpeer[\s-]group\b", re.IGNORECASE)
+
 
 def _infer_scope(heading: str | None, ancestor: str | None = None) -> str | None:
     """Best-effort entity/segment scope label inferred from a document heading.
@@ -418,13 +427,18 @@ def scope_claim_signal(text: str | None) -> str | None:
     Returns ``None`` when the text uses no such vocabulary at all — a claim
     that never differentiates scope is unaffected by the scope-fail-closed
     guard (see ``citation_checker``).
+
+    A "peer group" / "peer-group" comparison (competitive benchmarking, never
+    an issuer Group-scope claim) is stripped BEFORE the Group-vocabulary
+    check so it is never mistaken for one (pre-merge review finding).
     """
     if not text:
         return None
     low = text.lower()
     if any(marker in low for marker in _SEGMENT_HEADING_MARKERS):
         return "segment"
-    if any(marker in low for marker in _GROUP_HEADING_MARKERS):
+    group_check_text = _PEER_GROUP_RE.sub(" ", low)
+    if any(marker in group_check_text for marker in _GROUP_HEADING_MARKERS):
         return "group"
     return None
 
@@ -759,18 +773,44 @@ def extract_pdf(
     page_blocks: list[tuple[int | None, str | None, str | None, str]] = []
     total_chars = 0
     # Phase 32A corrective (Problem C): the most recent heading-derived scope
-    # signal found on ANY page processed so far (leading window OR a targeted
-    # supplemental page), persisted ACROSS pages — a segment/Group table that
-    # spans a page break, or whose own page repeats no heading-like text,
-    # otherwise fell back to unknown even though the governing section is
-    # still the same one found a page or two earlier. Best-effort only: a
-    # later page with its OWN heading-like signal still overrides this: never
-    # guessed when nothing has been found at all yet.
+    # signal found on the IMMEDIATELY PRECEDING processed page, persisted only
+    # across a genuinely CONTIGUOUS page transition — a segment/Group table
+    # that spans an adjacent page break, or whose own page repeats no
+    # heading-like text, otherwise fell back to unknown even though the
+    # governing section is still the same one found on the page right before
+    # it. Best-effort only: a later page with its OWN heading-like signal
+    # still overrides this; never guessed when nothing has been found yet.
+    #
+    # Corrective follow-up (pre-merge review finding): this must NEVER
+    # propagate across a NON-CONTIGUOUS jump — the leading sequential window
+    # (pages 1..n) and the bounded, TARGETED bookmark-matched supplemental
+    # pass (``_select_statement_pages``, which can land far beyond n) both
+    # call ``_extract_one_page`` through this SAME closure. Without a
+    # continuity check, a distant supplemental page could silently inherit a
+    # stale scope left over from an unrelated earlier section — an
+    # INCORRECT NON-NULL scope, which is worse than "unknown" because it can
+    # bypass the fail-closed semantic-scope citation guard (that guard's
+    # unscoped-evidence branch only fires when ``scope is None``).
+    # ``last_processed_page_no`` tracks the page ACTUALLY processed most
+    # recently (in call order, not document order) so the check works
+    # regardless of whether the supplemental pass revisits pages in
+    # ascending order.
     running_scope: str | None = None
+    last_processed_page_no: int | None = None
 
     def _extract_one_page(page: object, page_no: int) -> None:
         """Extract text blocks + tables from ONE page; mutates the closures."""
-        nonlocal total_chars, running_scope
+        nonlocal total_chars, running_scope, last_processed_page_no
+        # Reset any inherited scope BEFORE processing this page's own content
+        # when this page is not the immediate successor of the last page
+        # actually processed — a non-contiguous jump (e.g. the leading
+        # window ending at page 40 followed by a targeted supplemental page
+        # 87) must never let page 87 silently inherit whatever scope was in
+        # effect on page 40. This page's OWN local heading signal (computed
+        # below) is unaffected — a genuinely local match still wins.
+        if last_processed_page_no is not None and page_no != last_processed_page_no + 1:
+            running_scope = None
+        last_processed_page_no = page_no
         # -- text --
         try:
             text = page.extract_text() or ""  # type: ignore[attr-defined]

@@ -37,6 +37,7 @@ from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.pool import StaticPool
 
 from app.core.config import Settings
+from app.core.config import settings as default_settings
 from app.db.base import Base
 from app.models import agent_run as _agent_run  # noqa: F401
 from app.models import company as _company  # noqa: F401
@@ -52,7 +53,15 @@ from app.services.extracted_document_service import (
     persist_primary_document_artifacts,
 )
 from app.services.llm.citation_checker import check_and_sanitize
-from app.services.llm.evidence_budget import apply_evidence_budget
+from app.services.llm.evidence_budget import (
+    CATEGORY_COMPANY_PRESS,
+    CATEGORY_FINANCIAL_FACT,
+    CATEGORY_PRIMARY_DOCUMENT,
+    CATEGORY_REGULATOR_EVENT,
+    CATEGORY_SOURCE_REFERENCE,
+    apply_evidence_budget,
+    evidence_category,
+)
 from app.services.llm.schemas import AgentKeyPoint, CouncilAgentOutput, EvidencePack
 from app.services.llm.schemas import EvidenceItem as CouncilEvidenceItem
 from app.services.sources.company_evidence import _prioritize_ir_items
@@ -84,6 +93,7 @@ from app.services.sources.primary_document_extractor import (
     PrimaryDocumentExcerpt,
     PrimaryDocumentExtraction,
     extract_html,
+    extract_pdf,
     scope_claim_signal,
 )
 from app.services.sources.redaction import canonicalize_source_url
@@ -325,6 +335,124 @@ def test_evidence_budget_financial_floor_still_bounded_by_max_items():
     assert len(out.evidence_items) == 10
 
 
+# --------------------------------------------------------------------------- #
+# Pre-merge review finding #2 — realistic headroom under 12/20 financial      #
+# floor: a rich pack must retain BOTH financial category diversity AND       #
+# representative material non-financial evidence (catalyst/event, primary-   #
+# document/source-quality, macro/risk reference) — not just financial facts. #
+# --------------------------------------------------------------------------- #
+
+
+def _non_financial_item(
+    eid: str, *, category_hint: str, tier: str, title: str
+) -> CouncilEvidenceItem:
+    """Build a realistic non-financial evidence item for one of the
+    categories the mission explicitly asks to be represented: catalyst/
+    company-event, primary-document/source-quality, macro/risk reference."""
+    if category_hint == "catalyst":
+        return CouncilEvidenceItem(
+            id=eid,
+            source_tier=tier,
+            content_tier=tier,
+            source_type="catalyst_event",
+            title=title,
+            excerpt=f"{title} excerpt",
+            fields_supported=["catalyst"],
+            relevance_level="high",
+        )
+    if category_hint == "primary_document":
+        return CouncilEvidenceItem(
+            id=eid,
+            source_tier=tier,
+            content_tier=tier,
+            source_type="company_ir_annual_report_excerpt",
+            title=title,
+            excerpt=f"{title} excerpt",
+        )
+    # macro/risk reference — reference-only, metadata_only (mirrors the real
+    # macro/event connector shape: a bounded source REFERENCE, never a figure).
+    return CouncilEvidenceItem(
+        id=eid,
+        source_tier=tier,
+        content_tier=tier,
+        source_type="macro_report",
+        title=title,
+        excerpt=None,
+        data_quality="metadata_only",
+    )
+
+
+def test_evidence_budget_headroom_retains_material_non_financial_categories():
+    """Realistic rich-report regression (pre-merge review finding #2):
+    >=12 valid diverse financial facts (fully occupying the raised floor)
+    PLUS catalyst/company-event evidence, primary-document/source-quality
+    evidence, and macro/risk reference evidence — all in ONE pack under the
+    ACTUAL configured 12/20 defaults. Proves semantic CATEGORY survival
+    (at least one item of each material non-financial category), not exact
+    incidental list ordering."""
+    financial = [
+        _budget_item("F1", field="revenue", scope="group"),
+        _budget_item("F2", field="operating_profit", scope="group"),
+        _budget_item("F3", field="operating_margin", scope="group"),
+        _budget_item("F4", field="net_income", scope="group"),
+        _budget_item("F5", field="operating_cash_flow", scope="group"),
+        _budget_item("F6", field="free_cash_flow", scope="group"),
+        _budget_item("F7", field="net_cash", scope="group"),
+        _budget_item("F8", field="net_debt", scope="group"),
+        _budget_item("F9", field="total_equity", scope="group"),
+        _budget_item("F10", field="operating_margin", scope="Segment A"),
+        _budget_item("F11", field="operating_profit", scope="Segment B"),
+        _budget_item("F12", field="revenue", scope="Segment C"),
+    ]
+    assert len(financial) == 12
+    catalyst = [
+        _non_financial_item(
+            "C1", category_hint="catalyst", tier="T1_primary_company_source", title="Product launch announcement"
+        ),
+        _non_financial_item(
+            "C2", category_hint="catalyst", tier="T2_regulator_or_gov", title="Regulatory filing event"
+        ),
+    ]
+    primary_doc = [
+        _non_financial_item(
+            "P1", category_hint="primary_document", tier="T1_primary_filing", title="Annual report business overview"
+        ),
+        _non_financial_item(
+            "P2", category_hint="primary_document", tier="T1_primary_filing", title="Annual report risk factors"
+        ),
+    ]
+    macro = [
+        _non_financial_item("M1", category_hint="macro", tier="T2_regulator_or_gov", title="Macro dataset reference"),
+        _non_financial_item("M2", category_hint="macro", tier="T3_industry_specialist", title="Industry risk reference"),
+    ]
+    pack = EvidencePack(evidence_items=financial + catalyst + primary_doc + macro)
+    cfg = Settings(
+        llm_council_evidence_budgets_enabled=True,
+        # ACTUAL configured defaults (not overridden) — the exact 12/20 shape
+        # the reviewers flagged.
+        llm_council_evidence_max_items=default_settings.llm_council_evidence_max_items,
+        llm_council_evidence_financial_floor=default_settings.llm_council_evidence_financial_floor,
+    )
+    out = apply_evidence_budget(pack, cfg=cfg)
+    assert len(out.evidence_items) <= 20
+
+    kept_categories = {evidence_category(it) for it in out.evidence_items}
+    # Financial category diversity survives (the floor's whole purpose).
+    assert CATEGORY_FINANCIAL_FACT in kept_categories
+    kept_financial_titles = {
+        it.title for it in out.evidence_items if evidence_category(it) == CATEGORY_FINANCIAL_FACT
+    }
+    for f in financial:
+        assert f.title in kept_financial_titles
+
+    # Representative material non-financial evidence ALSO survives — at
+    # least one item from each category, proving the 12/20 design does not
+    # starve non-financial evidence for this realistic, modest mix.
+    assert CATEGORY_COMPANY_PRESS in kept_categories or CATEGORY_REGULATOR_EVENT in kept_categories
+    assert CATEGORY_PRIMARY_DOCUMENT in kept_categories
+    assert CATEGORY_SOURCE_REFERENCE in kept_categories
+
+
 # =========================================================================== #
 # D. citation_checker — scope fail-closed guard (Problem C, mission sect. 9)  #
 # =========================================================================== #
@@ -415,6 +543,37 @@ def test_scope_claim_signal_generic_vocabulary():
     assert scope_claim_signal("Jewellery Maisons revenue grew.") is None
     assert scope_claim_signal("") is None
     assert scope_claim_signal(None) is None
+
+
+def test_scope_claim_signal_peer_group_is_not_a_group_scope_claim():
+    """Pre-merge review finding #4 — "peer group" / "peer-group" is a common,
+    legitimate competitive-benchmarking phrase, never an explicit issuer
+    Group-scope financial claim, merely because it contains the substring
+    "group"."""
+    assert scope_claim_signal(
+        "Compared to its peer group, the company outperformed on margin."
+    ) is None
+    assert scope_claim_signal(
+        "This is a peer-group comparison of operating margins."
+    ) is None
+    # A genuine Group-scope claim elsewhere in the SAME sentence still fires
+    # — the fail-closed intent is never weakened, only the "peer group"
+    # false positive is removed.
+    assert scope_claim_signal("Versus its peer group, Group operating profit rose.") == "group"
+
+
+def test_unscoped_evidence_over_a_peer_group_claim_is_not_dropped():
+    """End-to-end: a claim mentioning "peer group" over unscoped evidence is
+    NOT treated as an ungrounded explicit Group-scope claim — the fail-closed
+    guard must not fire on this common phrase."""
+    evidence = {
+        "E1": _evidence(
+            "E1", scope=None, excerpt="The company's margin exceeded its peer group average."
+        )
+    }
+    kp = _kp("Its margin exceeded the peer group average by 3 points.", ["E1"])
+    sanitized, _issues = check_and_sanitize(_output([kp]), set(evidence), evidence)
+    assert len(sanitized.key_points) == 1
 
 
 # =========================================================================== #
@@ -719,18 +878,56 @@ async def test_cache_legacy_null_version_forces_revalidation(session):
     assert reused.revalidated is True
 
 
+# Pre-merge review finding #3 — hash-matched reuse path in
+# ``_get_or_create_document`` (``if existing is not None: return existing,
+# True`` before this fix) never re-stamped ``pipeline_version``, so a
+# legacy/mismatched row would repeat revalidation FOREVER even after this
+# run had already reconfirmed it under current code.
+async def test_cache_restamp_on_hash_matched_reuse_stops_repeated_revalidation(session):
+    cfg = _cfg()
+    company = await _add_company(session)
+    run = await _add_run(session)
+    art = _artifact(content_hash="i" * 64, excerpts=[_excerpt("X1", "Revenue was EUR1,250 million in 2026.")])
+    await persist_primary_document_artifacts(
+        session, artifacts=[art], company_id=company.id, agent_run_id=run.id, cfg=cfg
+    )
+    row = (await session.execute(select(ExtractedDocument))).scalars().one()
+    row.pipeline_version = LEGACY_EXTRACTION_PIPELINE_VERSION
+    await session.flush()
+
+    # A SECOND persist call for the SAME content_hash — mirrors a report
+    # regeneration that (re-)fetched/re-extracted/re-validated the SAME
+    # document under the currently-running code this request (or reused +
+    # revalidated it via ``load_reusable_documents``) and now writes it back
+    # through the SAME persist path. The document row is REUSED
+    # (content-hash match — never duplicated), but must now be re-stamped.
+    result2 = await persist_primary_document_artifacts(
+        session, artifacts=[art], company_id=company.id, agent_run_id=run.id, cfg=cfg
+    )
+    assert result2.documents_reused == 1
+    assert result2.documents_created == 0
+
+    row_after = (await session.execute(select(ExtractedDocument))).scalars().one()
+    assert row_after.pipeline_version == CURRENT_EXTRACTION_PIPELINE_VERSION
+    # Still exactly ONE document row — content-hash identity/dedup untouched.
+    all_rows = (await session.execute(select(ExtractedDocument))).scalars().all()
+    assert len(all_rows) == 1
+
+    # A THIRD, subsequent reuse lookup now recognises the CURRENT version and
+    # takes the normal same-version fast path — no longer repeating
+    # revalidation on every future regeneration.
+    lookup = await load_reusable_documents(session, company_id=company.id, cfg=cfg)
+    reused = lookup[canonicalize_source_url(_URL)]
+    assert reused.pipeline_version_matched is True
+    assert reused.revalidated is False
+
+
 # =========================================================================== #
 # F. PDF cross-page scope persistence (Problem C, generic + bounded)          #
 # =========================================================================== #
 
 
-def _two_page_pdf_text_then_table(page1_text: str, table_rows: list[list[str]]) -> bytes:
-    """Page 1: plain ``Tj`` text (heading-like signal). Page 2: a ruled-line
-    table pdfplumber's default line-based detector recovers, with NO heading
-    text of its own — reused/composed from ``pdf_fixtures``'s own building
-    blocks so this stays a real, offline-extractable PDF."""
-    from tests.helpers.pdf_fixtures import _assemble
-
+def _table_ops(table_rows: list[list[str]]) -> str:
     n_rows, n_cols = len(table_rows), len(table_rows[0])
     col_x = [100 + c * 130 for c in range(n_cols + 1)]
     row_y = [700 - r * 30 for r in range(n_rows + 1)]
@@ -746,42 +943,189 @@ def _two_page_pdf_text_then_table(page1_text: str, table_rows: list[list[str]]) 
             val = str(table_rows[r][c]).replace("(", "\\(").replace(")", "\\)")
             ops.append(f"1 0 0 1 {x} {y} Tm ({val}) Tj")
     ops.append("ET")
-    table_content = "\n".join(ops).encode()
+    return "\n".join(ops)
 
-    text_content = f"BT /F1 12 Tf 72 720 Td ({page1_text}) Tj ET".encode()
 
+def _multi_page_pdf_with_table(
+    pages_text: list[str],
+    *,
+    table_page: int,
+    table_rows: list[list[str]],
+    bookmarks: dict[int, str] | None = None,
+) -> bytes:
+    """A real, offline, multi-page PDF: plain ``Tj`` text on every page.
+    ``table_page`` (1-based) ADDITIONALLY gets a ruled-line table pdfplumber's
+    default line-based detector recovers, drawn BELOW that page's own text
+    (so ``pages_text[table_page - 1]`` — empty string for "no heading text of
+    its own" — still governs that page's local scope signal). Optional pypdf
+    outline bookmarks (same technique as ``pdf_fixtures.make_pdf_with_outline``)
+    so ``_select_statement_pages`` can target ``table_page`` as a
+    non-contiguous supplemental jump. Composed from ``pdf_fixtures``'s own
+    building blocks."""
+    import io as _io
+
+    from pypdf import PdfReader, PdfWriter
+
+    from tests.helpers.pdf_fixtures import _assemble
+
+    n = len(pages_text)
     objs: list[bytes] = [
         b"<< /Type /Catalog /Pages 2 0 R >>",
-        b"<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >>",
-        (
-            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
-            b"/Contents 4 0 R /Resources << /Font << /F1 7 0 R >> >> >>"
-        ),
-        b"<< /Length %d >>\nstream\n" % len(text_content) + text_content + b"\nendstream",
-        (
-            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
-            b"/Contents 6 0 R /Resources << /Font << /F1 7 0 R >> >> >>"
-        ),
-        b"<< /Length %d >>\nstream\n" % len(table_content) + table_content + b"\nendstream",
-        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        f"<< /Type /Pages /Kids [{' '.join(f'{3 + i * 2} 0 R' for i in range(n))}] /Count {n} >>".encode(),
     ]
-    return _assemble(objs)
+    font_obj_num = 3 + n * 2
+    for i in range(n):
+        content_num = 4 + i * 2
+        objs.append(
+            (
+                f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+                f"/Contents {content_num} 0 R /Resources << /Font "
+                f"<< /F1 {font_obj_num} 0 R >> >> >>"
+            ).encode()
+        )
+        esc = pages_text[i].replace("(", "\\(").replace(")", "\\)")
+        text_ops = f"BT /F1 12 Tf 72 720 Td ({esc}) Tj ET" if esc else ""
+        if (i + 1) == table_page:
+            content = (text_ops + "\n" + _table_ops(table_rows)).encode()
+        else:
+            content = text_ops.encode()
+        objs.append(b"<< /Length %d >>\nstream\n" % len(content) + content + b"\nendstream")
+    objs.append(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+    raw = _assemble(objs)
+
+    if not bookmarks:
+        return raw
+    reader = PdfReader(_io.BytesIO(raw))
+    writer = PdfWriter()
+    for page in reader.pages:
+        writer.add_page(page)
+    for page_no, title in bookmarks.items():
+        writer.add_outline_item(title, page_no - 1)
+    out = _io.BytesIO()
+    writer.write(out)
+    return out.getvalue()
 
 
 def test_pdf_table_without_its_own_heading_inherits_prior_page_scope():
-    from app.services.sources.primary_document_extractor import extract_pdf
+    """Case A — adjacent pages: page 1 establishes a section scope; page 2's
+    table has no heading of its own; scope validly persists (contiguous)."""
 
-    raw = _two_page_pdf_text_then_table(
-        "Segment information for the full financial year under review.",
-        [["Revenue", "1000"]],
+    raw = _multi_page_pdf_with_table(
+        [
+            "Segment information for the full financial year under review.",
+            "",
+        ],
+        table_page=2,
+        table_rows=[["Revenue", "1000"]],
     )
     extraction = extract_pdf(raw, cfg=Settings())
     assert extraction.status == STATUS_EXTRACTED
     assert extraction.tables
-    # The page-2 table has NO heading text of its own, yet inherits the
-    # "segment"-vocabulary scope signal found on page 1 — never falls back to
-    # unknown purely because of a page break.
     assert extraction.tables[-1].scope is not None
+
+
+def test_pdf_non_contiguous_jump_does_not_leak_stale_scope():
+    """Case B/D — a bounded, TARGETED supplemental jump (mirroring
+    ``_select_statement_pages``) must NOT inherit a distant Segment A scope
+    left over from the leading window: the target page's local content has
+    no compatible heading signal of its own, so its table scope stays
+    unknown (``None``), never the stale ``Segment A``."""
+
+    pages = [
+        "Segment information for the full financial year under review.",
+    ] + ["Filler page content with no scope-establishing vocabulary at all." for _ in range(19)]
+    raw = _multi_page_pdf_with_table(
+        pages,
+        table_page=20,
+        table_rows=[["Total assets", "5000"]],
+        bookmarks={20: "Balance Sheet"},
+    )
+    cfg = Settings(primary_document_max_pdf_pages=3, primary_document_max_supplemental_pdf_pages=5)
+    extraction = extract_pdf(raw, cfg=cfg)
+    assert extraction.status == STATUS_EXTRACTED
+    # The supplemental pass actually reached page 20 (non-contiguous jump
+    # from the page-3 leading-window boundary).
+    page20_tables = [t for t in extraction.tables if t.page_number == 20]
+    assert page20_tables, "expected the targeted supplemental page 20 to be reached"
+    assert page20_tables[-1].scope is None
+
+
+def test_pdf_non_contiguous_jump_with_its_own_heading_wins():
+    """Case C — a non-contiguous jump target that DOES carry its own local
+    heading signal resolves to ITS OWN scope, never the distant one."""
+
+    pages = [
+        "Segment information for the full financial year under review.",
+    ] + [
+        # i == 18 -> pages[19] -> physical page 20 (the table page).
+        "Group consolidated results are presented in the table below for the period."
+        if i == 18
+        else "Filler page content with no scope-establishing vocabulary at all."
+        for i in range(19)
+    ]
+    raw = _multi_page_pdf_with_table(
+        pages,
+        table_page=20,
+        table_rows=[["Total assets", "5000"]],
+        bookmarks={20: "Balance Sheet"},
+    )
+    cfg = Settings(primary_document_max_pdf_pages=3, primary_document_max_supplemental_pdf_pages=5)
+    extraction = extract_pdf(raw, cfg=cfg)
+    page20_tables = [t for t in extraction.tables if t.page_number == 20]
+    assert page20_tables
+    assert page20_tables[-1].scope == "group"
+
+
+def test_pdf_leaked_scope_cannot_bypass_semantic_citation_guard():
+    """Case E — end-to-end: extract (real fixed pipeline) -> validate ->
+    citation-check. Proves the guard-bypass class of bug is closed FOR TWO
+    REASONS together: (1) the extractor no longer produces an INCORRECT
+    non-null scope for the non-contiguous page-20 fact (case B) — so the
+    citation checker's unscoped-evidence branch is the one that actually
+    fires, not silently skipped because ``any(scope)`` was (wrongly) True;
+    (2) even a claim that echoes the SAME "Segment A" label established
+    elsewhere in this exact evidence pack is still dropped, because the
+    page-20 fact's OWN scope is honestly ``None`` — not a leaked
+    "Segment A" that would have made the citation LOOK legitimately scoped
+    to the guard (which cannot detect a wrongly-but-non-null-labelled scope,
+    only a genuinely unscoped or genuinely mismatched one — this is exactly
+    why the extractor-level fix in case B is the PRIMARY control, and this
+    guard is the secondary one)."""
+    pages = [
+        "Segment information for the full financial year under review.",
+    ] + ["Filler page content with no scope-establishing vocabulary at all." for _ in range(19)]
+    raw = _multi_page_pdf_with_table(
+        pages,
+        table_page=20,
+        table_rows=[["Total assets", "5000"]],
+        bookmarks={20: "Balance Sheet"},
+    )
+    cfg = Settings(primary_document_max_pdf_pages=3, primary_document_max_supplemental_pdf_pages=5)
+    extraction = extract_pdf(raw, cfg=cfg)
+    facts = validate_extracted_facts(
+        extraction,
+        issuer_context=IssuerContext(company_name="Example Group SA", ticker="EXG"),
+        cfg=cfg,
+    )
+    page20_fact = next(f for f in facts if f.page_number == 20)
+    # The root-cause fix: this fact's scope is honestly unknown, never a
+    # leaked "Segment A" from the unrelated leading-window page.
+    assert page20_fact.scope is None
+
+    evidence = {
+        # The (correctly unscoped) page-20 fact, cited by the claim below.
+        "E1": _evidence(
+            "E1", scope=page20_fact.scope, excerpt=f"Total assets = {page20_fact.value_numeric}"
+        ),
+        # A DIFFERENT evidence item genuinely establishes "Segment A" as a
+        # known scope label elsewhere in this SAME run's pack (mirrors the
+        # real pipeline: page 1's own excerpt legitimately carries it).
+        "E2": _evidence("E2", scope="Segment A", excerpt="Segment A overview."),
+    }
+    kp = _kp("Segment A total assets were $5,000.", ["E1"])
+    sanitized, issues = check_and_sanitize(_output([kp]), set(evidence), evidence)
+    assert sanitized.key_points == []
+    assert any("incompatible scope" in i for i in issues)
 
 
 # =========================================================================== #
