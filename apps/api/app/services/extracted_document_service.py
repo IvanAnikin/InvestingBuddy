@@ -258,7 +258,7 @@ async def _get_or_create_document(
         # (the caller already skips anything else), meaning it was JUST
         # produced by the CURRENTLY-RUNNING code this request: either a fresh
         # fetch/extract/validate, or a reused document REVALIDATED under
-        # current semantics (``_rebuild_artifact_revalidated`` in
+        # current semantics (``_revalidate_document`` in
         # ``load_reusable_documents``). Without re-stamping here, a legacy/
         # stale row's ``pipeline_version`` would never advance even after
         # this run has already reconfirmed it under current code — forcing
