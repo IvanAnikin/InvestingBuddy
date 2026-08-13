@@ -560,6 +560,17 @@ def test_scope_claim_signal_peer_group_is_not_a_group_scope_claim():
     # — the fail-closed intent is never weakened, only the "peer group"
     # false positive is removed.
     assert scope_claim_signal("Versus its peer group, Group operating profit rose.") == "group"
+    # Plural + possessive forms (found in a second, independent adversarial
+    # review pass of this exact fix) must also be excluded.
+    assert scope_claim_signal(
+        "Compared to its peer groups across the industry, margins were higher."
+    ) is None
+    assert scope_claim_signal(
+        "The company benchmarked against several peer-groups this year."
+    ) is None
+    assert scope_claim_signal(
+        "Compared to its peer group's average margin, results were strong."
+    ) is None
 
 
 def test_unscoped_evidence_over_a_peer_group_claim_is_not_dropped():

@@ -315,7 +315,7 @@ _SCOPE_LABEL_MAX = 80
 # contains the substring "group". Scoped to ``scope_claim_signal`` (claim
 # TEXT) only — headings realistically never phrase a section title as "peer
 # group", so ``_infer_scope`` (used for headings) is intentionally untouched.
-_PEER_GROUP_RE = re.compile(r"\bpeer[\s-]group\b", re.IGNORECASE)
+_PEER_GROUP_RE = re.compile(r"\bpeer[\s-]groups?\b", re.IGNORECASE)
 
 
 def _infer_scope(heading: str | None, ancestor: str | None = None) -> str | None:
