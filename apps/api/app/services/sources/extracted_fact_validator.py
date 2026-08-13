@@ -198,7 +198,11 @@ _LABEL_PATTERNS: list[tuple[re.Pattern[str], str]] = [
         FIELD_OPERATING_MARGIN,
     ),
     (
-        re.compile(r"recurring operating (?:profit|income|result)", re.I),
+        re.compile(
+            r"recurring operating (?:profit|income|result)"
+            r"|profit from recurring operations",
+            re.I,
+        ),
         FIELD_RECURRING_OPERATING_PROFIT,
     ),
     (

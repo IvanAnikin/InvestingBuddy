@@ -237,6 +237,19 @@ class PrimaryDocumentArtifact(BaseModel):
     # sha256 of the RAW fetched bytes — ties an attempt back to its extracted
     # document row without duplicating it. Never a secret.
     content_hash: str | None = None
+    # Phase 32A corrective (cache/derivation correctness) — set ONLY by
+    # ``extracted_document_service.load_reusable_documents`` when this
+    # artifact is the result of a pipeline-version-mismatch revalidation;
+    # ``None`` for every fresh fetch (always complete by construction) and
+    # for a same-version fast-path reuse (nothing to redo). ``"incomplete"``
+    # means the revalidation could NOT safely reproduce this document's
+    # prior active fact set (a full re-extraction was needed and failed, or
+    # its refetched content no longer matches the persisted hash) — the
+    # writer must never restamp ``pipeline_version`` current for this
+    # artifact and must never let its (here, empty) facts supersede the
+    # existing active set. Any other value means the revalidation was
+    # COMPLETE and safe to persist as the new active set.
+    revalidation_state: str | None = None
 
 
 # A DEEP document extractor fetches ONE allowlisted annual-report document, runs
