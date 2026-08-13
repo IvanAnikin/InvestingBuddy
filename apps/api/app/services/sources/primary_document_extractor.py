@@ -33,6 +33,7 @@ Design guarantees (mirroring the Phase 29B.2 extractor + the safe fetcher):
 from __future__ import annotations
 
 import hashlib
+import re
 import time
 from collections.abc import Iterator, Sequence
 from html.parser import HTMLParser
@@ -173,6 +174,15 @@ class PrimaryDocumentExcerpt(BaseModel):
     page_number: int | None = None
     section: str | None = None  # nearest heading / section context
     heading: str | None = None
+    # Phase 32A corrective (Problem C) — the heading IMMEDIATELY ABOVE
+    # ``section``/``heading`` in document structure (e.g. a leaf "Jewellery
+    # Maisons" heading nested under a "Business area review" section
+    # heading). Populated for HTML (``extract_html``); ``None`` for PDF in
+    # this phase (ancestor nesting is not tracked there — see the module's
+    # bounded, targeted PDF fixes instead). Lets ``_infer_scope`` recognise a
+    # named segment/business-unit heading with no generic scope vocabulary of
+    # its own — never a company-specific literal, purely structural.
+    ancestor_heading: str | None = None
     table_location: str | None = None
     extraction_method: str = METHOD_NATIVE_PDF
     confidence: float = 0.5  # 0..1 (aligns with primary_document_min_extraction_confidence)
@@ -299,6 +309,14 @@ _SEGMENT_HEADING_MARKERS = (
 _GROUP_HEADING_MARKERS = ("consolidated", "group")
 _SCOPE_LABEL_MAX = 80
 
+# Pre-merge review finding #4 — a "peer group" / "peer-group" comparison is a
+# common, legitimate competitive-benchmarking phrase; it must NEVER be
+# mistaken for an explicit issuer Group-scope claim merely because it
+# contains the substring "group". Scoped to ``scope_claim_signal`` (claim
+# TEXT) only — headings realistically never phrase a section title as "peer
+# group", so ``_infer_scope`` (used for headings) is intentionally untouched.
+_PEER_GROUP_RE = re.compile(r"\bpeer[\s-]groups?\b", re.IGNORECASE)
+
 
 def _infer_scope(heading: str | None, ancestor: str | None = None) -> str | None:
     """Best-effort entity/segment scope label inferred from a document heading.
@@ -394,6 +412,35 @@ _STATEMENT_HEADING_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
         ),
     ),
 )
+
+
+def scope_claim_signal(text: str | None) -> str | None:
+    """Generic ``"group" | "segment" | None`` scope-vocabulary signal in TEXT.
+
+    Phase 32A corrective (Problem C / fail-closed guard, mission section 9).
+    Reuses the SAME structural, never-company-specific vocabulary
+    ``_infer_scope`` uses for HEADINGS, but applied to arbitrary text (e.g. a
+    council agent's claim, or an evidence item's own excerpt) so a
+    downstream safety check can tell whether a piece of text is EXPLICITLY
+    asserting a Group-level figure, or a named-segment/business-unit-level
+    figure, without ever hardcoding an issuer's actual segment/brand names.
+    Returns ``None`` when the text uses no such vocabulary at all — a claim
+    that never differentiates scope is unaffected by the scope-fail-closed
+    guard (see ``citation_checker``).
+
+    A "peer group" / "peer-group" comparison (competitive benchmarking, never
+    an issuer Group-scope claim) is stripped BEFORE the Group-vocabulary
+    check so it is never mistaken for one (pre-merge review finding).
+    """
+    if not text:
+        return None
+    low = text.lower()
+    if any(marker in low for marker in _SEGMENT_HEADING_MARKERS):
+        return "segment"
+    group_check_text = _PEER_GROUP_RE.sub(" ", low)
+    if any(marker in group_check_text for marker in _GROUP_HEADING_MARKERS):
+        return "group"
+    return None
 
 
 def classify_statement_type(heading: str | None) -> str | None:
@@ -527,26 +574,32 @@ def _bound_table(raw_rows: Sequence[Sequence[object]]) -> list[list[str]]:
 
 
 def _rank_and_build_excerpts(
-    blocks: list[tuple[int | None, str | None, str]],
+    blocks: list[tuple[int | None, str | None, str | None, str]],
     *,
     method: str,
     max_excerpts: int,
     per_excerpt: int,
 ) -> list[PrimaryDocumentExcerpt]:
-    """Relevance-rank ``(page, section, text)`` blocks into bounded excerpts.
+    """Relevance-rank ``(page, section, ancestor, text)`` blocks into bounded
+    excerpts.
 
     Mirrors ``document_text_extractor.extract_document_text``: always keep the
     leading (overview) block, then the most financially-relevant blocks; stable
-    within equal scores; de-dup on a text-prefix key.
+    within equal scores; de-dup on a text-prefix key. ``ancestor`` (Phase 32A
+    corrective, Problem C) is the heading immediately enclosing ``section``
+    when known (HTML only; always ``None`` for PDF in this phase) — carried
+    onto ``PrimaryDocumentExcerpt.ancestor_heading`` so scope inference can
+    recognise a named leaf heading nested under generic segment/business-area
+    vocabulary it does not itself contain.
     """
     indexed = list(enumerate(blocks))
     lead = indexed[:1]
-    rest = sorted(indexed[1:], key=lambda t: (-_relevance(t[1][2]), t[0]))
+    rest = sorted(indexed[1:], key=lambda t: (-_relevance(t[1][3]), t[0]))
     chosen = lead + rest
 
     excerpts: list[PrimaryDocumentExcerpt] = []
     seen: set[str] = set()
-    for orig_idx, (page, section, blk) in chosen:
+    for orig_idx, (page, section, ancestor, blk) in chosen:
         if len(excerpts) >= max_excerpts:
             break
         text = blk.strip()
@@ -570,6 +623,7 @@ def _rank_and_build_excerpts(
                 page_number=page,
                 section=section,
                 heading=heading,
+                ancestor_heading=ancestor,
                 extraction_method=method,
                 confidence=_confidence_from_relevance(rel),
                 char_count=len(text),
@@ -581,7 +635,7 @@ def _rank_and_build_excerpts(
 
 def _finalize_language(
     result: PrimaryDocumentExtraction,
-    blocks: list[tuple[int | None, str | None, str]],
+    blocks: list[tuple[int | None, str | None, str | None, str]],
     original_language: str | None,
 ) -> None:
     """Detect language + inferred year over the leading content (labels only).
@@ -593,7 +647,7 @@ def _finalize_language(
     is never re-labelled by a non-English domicile guess, so
     ``requires_translation`` never invents a translation requirement.
     """
-    joined_head = " ".join(b[2] for b in blocks[:12])
+    joined_head = " ".join(b[3] for b in blocks[:12])
     lang = detect_language(joined_head, hint=original_language)
     result.language = lang
     result.requires_translation = lang != "en"
@@ -716,12 +770,47 @@ def extract_pdf(
     per_excerpt = max(120, cfg.primary_document_max_excerpt_chars)
     deadline = time.monotonic() + max(1, cfg.primary_document_extraction_timeout_seconds)
 
-    page_blocks: list[tuple[int | None, str | None, str]] = []
+    page_blocks: list[tuple[int | None, str | None, str | None, str]] = []
     total_chars = 0
+    # Phase 32A corrective (Problem C): the most recent heading-derived scope
+    # signal found on the IMMEDIATELY PRECEDING processed page, persisted only
+    # across a genuinely CONTIGUOUS page transition — a segment/Group table
+    # that spans an adjacent page break, or whose own page repeats no
+    # heading-like text, otherwise fell back to unknown even though the
+    # governing section is still the same one found on the page right before
+    # it. Best-effort only: a later page with its OWN heading-like signal
+    # still overrides this; never guessed when nothing has been found yet.
+    #
+    # Corrective follow-up (pre-merge review finding): this must NEVER
+    # propagate across a NON-CONTIGUOUS jump — the leading sequential window
+    # (pages 1..n) and the bounded, TARGETED bookmark-matched supplemental
+    # pass (``_select_statement_pages``, which can land far beyond n) both
+    # call ``_extract_one_page`` through this SAME closure. Without a
+    # continuity check, a distant supplemental page could silently inherit a
+    # stale scope left over from an unrelated earlier section — an
+    # INCORRECT NON-NULL scope, which is worse than "unknown" because it can
+    # bypass the fail-closed semantic-scope citation guard (that guard's
+    # unscoped-evidence branch only fires when ``scope is None``).
+    # ``last_processed_page_no`` tracks the page ACTUALLY processed most
+    # recently (in call order, not document order) so the check works
+    # regardless of whether the supplemental pass revisits pages in
+    # ascending order.
+    running_scope: str | None = None
+    last_processed_page_no: int | None = None
 
     def _extract_one_page(page: object, page_no: int) -> None:
         """Extract text blocks + tables from ONE page; mutates the closures."""
-        nonlocal total_chars
+        nonlocal total_chars, running_scope, last_processed_page_no
+        # Reset any inherited scope BEFORE processing this page's own content
+        # when this page is not the immediate successor of the last page
+        # actually processed — a non-contiguous jump (e.g. the leading
+        # window ending at page 40 followed by a targeted supplemental page
+        # 87) must never let page 87 silently inherit whatever scope was in
+        # effect on page 40. This page's OWN local heading signal (computed
+        # below) is unaffected — a genuinely local match still wins.
+        if last_processed_page_no is not None and page_no != last_processed_page_no + 1:
+            running_scope = None
+        last_processed_page_no = page_no
         # -- text --
         try:
             text = page.extract_text() or ""  # type: ignore[attr-defined]
@@ -733,7 +822,10 @@ def extract_pdf(
             if total_chars >= _MAX_TOTAL_EXTRACTED_CHARS:
                 result.truncated = True
                 break
-            page_blocks.append((page_no, None, blk))
+            # Ancestor (4th slot) is always None for PDF in this phase — PDF
+            # heading nesting is not tracked; see the module's separate,
+            # bounded cross-page ``running_scope`` fallback below instead.
+            page_blocks.append((page_no, None, None, blk))
             total_chars += len(blk)
         # Best-effort per-page scope signal for this page's tables: raw PDF
         # text carries no heading/paragraph distinction, so this scans the
@@ -741,10 +833,16 @@ def extract_pdf(
         # vocabulary as ``_infer_scope``); stays None — never guessed — when
         # no signal is found (Phase 32A corrective, Problem B).
         page_scope: str | None = None
-        for _pg, _sec, blk_text in page_blocks[page_start:]:
+        for _pg, _sec, _anc, blk_text in page_blocks[page_start:]:
             page_scope = _infer_scope(blk_text[:120])
             if page_scope is not None:
                 break
+        if page_scope is not None:
+            running_scope = page_scope
+        else:
+            # No heading-like signal on THIS page — fall back to the most
+            # recent cross-page signal (Phase 32A corrective, Problem C).
+            page_scope = running_scope
         # -- tables --
         try:
             raw_tables = page.extract_tables() or []  # type: ignore[attr-defined]
@@ -878,8 +976,10 @@ class _DocumentHtmlParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.title: str | None = None
-        # (page=None, section, text)
-        self.blocks: list[tuple[int | None, str | None, str]] = []
+        # (page=None, section, ancestor, text) — ``ancestor`` (Phase 32A
+        # corrective, Problem C) is the heading immediately enclosing
+        # ``section`` when known.
+        self.blocks: list[tuple[int | None, str | None, str | None, str]] = []
         self.tables: list[list[list[str]]] = []
         # Parallel to ``self.tables`` (same index) — the inferred scope for
         # each table, derived from the heading in effect when the table opened
@@ -889,16 +989,24 @@ class _DocumentHtmlParser(HTMLParser):
         # element stack of (tag, is_skip_region)
         self._stack: list[tuple[str, bool]] = []
         self._current_section: str | None = None
-        # The heading immediately preceding ``_current_section`` — lets a
-        # table nested under a specific subsection (e.g. a named business
-        # unit) inherit a segment signal from a higher-level ancestor heading
-        # (e.g. "Segment information") that the leaf heading text alone would
-        # not carry. See ``_infer_scope``.
-        self._prev_section: str | None = None
+        # Phase 32A corrective (Problem C): a proper DOM heading-LEVEL stack
+        # (``[(level, text), ...]``, innermost last) — h1/h2/.../h6 nesting,
+        # not just "whatever heading text came immediately before". A flat
+        # "previous heading" approximation breaks for SIBLING headings (e.g.
+        # two h3 subsections under the same h2: the second h3's TRUE ancestor
+        # is the shared h2, not the first h3). ``_current_ancestor`` is the
+        # heading immediately ENCLOSING the heading currently in effect — lets
+        # a table/paragraph nested under a specific named subsection (e.g. a
+        # business unit) inherit a segment signal from a higher-level
+        # ancestor heading (e.g. "Business area review") that the leaf
+        # heading text alone would not carry. See ``_infer_scope``.
+        self._heading_stack: list[tuple[int, str]] = []
+        self._current_ancestor: str | None = None
         self._in_title = False
         self._title_parts: list[str] = []
         self._cur_block_tag: str | None = None
         self._cur_block_is_heading = False
+        self._cur_block_heading_level: int | None = None
         self._cur_text: list[str] = []
         # table capture stacks
         self._table_stack: list[list[list[str]]] = []
@@ -932,11 +1040,14 @@ class _DocumentHtmlParser(HTMLParser):
             self._flush_block()
             self._cur_block_tag = tag
             self._cur_block_is_heading = tag in _HTML_HEADING_TAGS
+            self._cur_block_heading_level = (
+                int(tag[1]) if self._cur_block_is_heading else None
+            )
             self._cur_text = []
         elif tag == "table":
             self._table_stack.append([])
             self._table_scope_stack.append(
-                _infer_scope(self._current_section, self._prev_section)
+                _infer_scope(self._current_section, self._current_ancestor)
             )
         elif tag == "tr" and self._table_stack:
             self._row_stack.append([])
@@ -1018,13 +1129,31 @@ class _DocumentHtmlParser(HTMLParser):
         text = " ".join(" ".join(self._cur_text).split())
         if self._cur_block_is_heading:
             if text:
-                self._prev_section = self._current_section
+                level = self._cur_block_heading_level or 1
+                # Pop back to the nearest ENCLOSING (strictly lower-level)
+                # heading — two sibling h3s under the same h2 both resolve
+                # the h2 as their ancestor, never each other.
+                while self._heading_stack and self._heading_stack[-1][0] >= level:
+                    self._heading_stack.pop()
+                ancestor = self._heading_stack[-1][1] if self._heading_stack else None
+                self._current_ancestor = ancestor
                 self._current_section = text[:120]
-                self.blocks.append((None, text[:120], text))
+                self._heading_stack.append((level, text[:120]))
+                self.blocks.append((None, text[:120], ancestor, text))
         elif len(text) >= 40:
-            self.blocks.append((None, self._current_section, text))
+            # Phase 32A corrective (Problem C): thread the TRUE enclosing
+            # ancestor heading (``self._current_ancestor`` — a proper DOM
+            # heading-level stack, not just "whatever heading came before")
+            # alongside the leaf ``self._current_section`` — lets a named
+            # leaf heading with no generic scope vocabulary of its own (e.g.
+            # a specific segment/business-unit name) still resolve when its
+            # ancestor heading IS generic segment/business-area vocabulary.
+            self.blocks.append(
+                (None, self._current_section, self._current_ancestor, text)
+            )
         self._cur_block_tag = None
         self._cur_block_is_heading = False
+        self._cur_block_heading_level = None
         self._cur_text = []
 
     def handle_data(self, data: str) -> None:
@@ -1108,13 +1237,13 @@ def extract_html(
         )
 
     # Bound total characters (decompression-bomb guard).
-    page_blocks: list[tuple[int | None, str | None, str]] = []
+    page_blocks: list[tuple[int | None, str | None, str | None, str]] = []
     total_chars = 0
-    for page, section, blk in parser.blocks:
+    for page, section, ancestor, blk in parser.blocks:
         if total_chars >= _MAX_TOTAL_EXTRACTED_CHARS:
             result.truncated = True
             break
-        page_blocks.append((page, section, blk))
+        page_blocks.append((page, section, ancestor, blk))
         total_chars += len(blk)
 
     result.excerpts = _rank_and_build_excerpts(
@@ -1184,6 +1313,7 @@ __all__ = [
     "PrimaryDocumentExcerpt",
     "PrimaryDocumentExtraction",
     "classify_statement_type",
+    "scope_claim_signal",
     "content_hash_of",
     "extract_pdf",
     "extract_html",

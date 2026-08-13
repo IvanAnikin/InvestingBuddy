@@ -50,6 +50,7 @@ from app.services.llm.schemas import (
     AgentKeyPoint,
     CouncilAgentOutput,
 )
+from app.services.sources.primary_document_extractor import scope_claim_signal
 
 # Claims shorter than this are treated as non-material (labels, headers) and are
 # not escalated to unsupported_claims when un-cited.
@@ -126,6 +127,55 @@ def _violates_scope_or_period_compatibility(
     return False
 
 
+def _violates_unscoped_scope_claim(
+    key_point: AgentKeyPoint,
+    evidence_by_id: dict[str, Any],
+    known_scope_labels: frozenset[str],
+) -> bool:
+    """True when UNSCOPED evidence is used to support an explicit scope claim.
+
+    Phase 32A corrective (Problem C fail-closed guard, mission section 9): a
+    fact whose OWN evidence carries an unknown (``None``) ``scope`` must not
+    be sufficient support for a claim that explicitly asserts an
+    EXPLICIT-scope figure — a Group-level statement, or a named
+    segment/business-unit result — UNLESS the cited evidence independently
+    establishes compatible scope. Only fires when EVERY evidence item cited
+    by this claim has an unknown scope (any known, compatible or
+    incompatible, scope is left to ``_violates_scope_or_period_compatibility``
+    above, which already handles genuinely mixed KNOWN scopes). A claim that
+    never differentiates scope at all is unaffected — "existing safe
+    behaviour" for a simple, non-scope-sensitive claim is preserved.
+
+    Two GENERIC (never company-specific) triggers:
+      1. The claim text itself uses Group-level vocabulary (``"group"`` /
+         ``"consolidated"`` — the SAME structural vocabulary
+         ``_infer_scope`` uses for headings) while every cited item is
+         unscoped.
+      2. The claim text mentions a scope LABEL that is ACTUALLY KNOWN
+         somewhere else in THIS run's own evidence pack (``known_scope_
+         labels`` — real segment/business-unit names this run's own
+         evidence already discovered, never a hardcoded issuer vocabulary),
+         while the evidence actually cited for this number carries no such
+         scope. This catches a claim echoing a specific named segment/
+         business-unit whose cited evidence does not actually establish
+         that scope.
+    """
+    cited = _cited_evidence(key_point, evidence_by_id)
+    if not cited:
+        return False
+    if any(getattr(e, "scope", None) for e in cited):
+        return False  # at least one cited item independently establishes scope
+
+    claim_low = key_point.claim.lower()
+    if scope_claim_signal(key_point.claim) == "group":
+        return True
+    for label in known_scope_labels:
+        norm = (label or "").strip().lower()
+        if norm and norm != "group" and norm in claim_low:
+            return True
+    return False
+
+
 def _violates_macro_category_match(
     key_point: AgentKeyPoint, evidence_by_id: dict[str, Any]
 ) -> bool:
@@ -196,6 +246,15 @@ def check_and_sanitize(
     """
     issues: list[str] = []
     evidence_by_id = evidence_by_id or {}
+    # Real, non-Group scope labels this run's OWN evidence pack already
+    # discovered (never a hardcoded issuer vocabulary) — used only by
+    # ``_violates_unscoped_scope_claim`` to catch a claim echoing a named
+    # segment/business-unit its own cited evidence does not establish.
+    known_scope_labels = frozenset(
+        s
+        for s in (getattr(e, "scope", None) for e in evidence_by_id.values())
+        if s and s.strip().lower() != "group"
+    )
 
     # 1. Safety first. Scan the raw model output; quarantine on any hit.
     hits = safety_terms.scan_value(output.model_dump())
@@ -233,6 +292,9 @@ def check_and_sanitize(
         if evidence_by_id and (
             _violates_scope_or_period_compatibility(candidate, evidence_by_id)
             or _violates_macro_category_match(candidate, evidence_by_id)
+            or _violates_unscoped_scope_claim(
+                candidate, evidence_by_id, known_scope_labels
+            )
         ):
             dropped_for_semantic_mismatch += 1
             issues.append(

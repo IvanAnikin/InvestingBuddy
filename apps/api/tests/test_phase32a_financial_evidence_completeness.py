@@ -532,7 +532,12 @@ def test_prioritize_ir_items_floors_structured_facts_ahead_of_excerpt_flood():
     """The live MC bug, pinned: 5 prose excerpts appended before 8 structured
     facts (matching ``company_ir._artifact_to_evidence``'s loop order) must
     not let a downstream per-source cap evict every single fact — a stable
-    sort on the old single "document" bucket did exactly that."""
+    sort on the old single "document" bucket did exactly that.
+
+    Phase 32A corrective (Problem A/section 5): the reserved facts are now
+    RETURNED SEPARATELY from ``rest`` and are never subject to the generic
+    per-source cap at all — see ``test_phase32a_evidence_quality_corrective.py``
+    for the full category-diverse coverage regression."""
     excerpts = [
         _ir_item(f"X{i}", source_type="company_ir_annual_report_excerpt", fact=False)
         for i in range(5)
@@ -542,12 +547,14 @@ def test_prioritize_ir_items_floors_structured_facts_ahead_of_excerpt_flood():
         for i in range(8)
     ]
     items = excerpts + facts  # excerpts-before-facts, the real append order
-    prioritized = _prioritize_ir_items(items)
-    top_5 = prioritized[:5]
-    fact_count_in_top_5 = sum(1 for it in top_5 if it.primary_fact is not None)
-    assert fact_count_in_top_5 >= 3
-    # The floor does not consume every slot — excerpt evidence still survives.
-    assert any(it.primary_fact is None for it in top_5)
+    reserved, rest = _prioritize_ir_items(items, financial_fact_cap=12)
+    # ALL 8 facts survive — they are no longer capped by a raw floor of 3, nor
+    # by the generic per-source item cap (which is applied to ``rest`` only,
+    # by the caller in ``collect_company_source_evidence``).
+    assert len(reserved) == 8
+    assert all(it.primary_fact is not None for it in reserved)
+    # Excerpt evidence is untouched and still present in ``rest``.
+    assert {it.id for it in rest} == {f"X{i}" for i in range(5)}
 
 
 def test_prioritize_ir_items_stable_when_no_facts_present():
@@ -555,7 +562,9 @@ def test_prioritize_ir_items_stable_when_no_facts_present():
         _ir_item(f"X{i}", source_type="company_ir_annual_report_excerpt", fact=False)
         for i in range(5)
     ]
-    assert [it.id for it in _prioritize_ir_items(excerpts)] == [it.id for it in excerpts]
+    reserved, rest = _prioritize_ir_items(excerpts, financial_fact_cap=12)
+    assert reserved == []
+    assert [it.id for it in rest] == [it.id for it in excerpts]
 
 
 # =========================================================================== #

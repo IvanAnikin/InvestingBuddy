@@ -40,6 +40,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.extracted_document import ExtractedDocument, ExtractedFact
+from app.services.sources.extraction_pipeline_version import (
+    CURRENT_EXTRACTION_PIPELINE_VERSION,
+)
 from app.services.sources.redaction import canonicalize_source_url
 
 if TYPE_CHECKING:  # avoid a runtime import cycle — attributes are read by name
@@ -47,6 +50,7 @@ if TYPE_CHECKING:  # avoid a runtime import cycle — attributes are read by nam
 
     from app.core.config import Settings
     from app.services.sources.connectors.company_ir import PrimaryDocumentArtifact
+    from app.services.sources.extracted_fact_validator import IssuerContext
 
 # Ingestion outcome that means "the document was actually read".
 _STATUS_EXTRACTED = "extracted"
@@ -191,7 +195,7 @@ async def persist_primary_document_artifacts(
             result.skipped += 1
             continue
 
-        document, reused = await _get_or_create_document(
+        document, reused, restamped = await _get_or_create_document(
             session,
             artifact=artifact,
             extraction=extraction,
@@ -204,6 +208,10 @@ async def persist_primary_document_artifacts(
         else:
             result.documents_created += 1
             wrote_row = True
+        # A pipeline_version re-stamp (Problem B follow-up) is a real pending
+        # change that must be flushed even when nothing else about this
+        # artifact changed (e.g. every fact already matched and deduped).
+        wrote_row = wrote_row or restamped
 
         wrote_fact = await _persist_validated_facts(
             session, artifact=artifact, document=document, reused=reused, result=result
@@ -223,8 +231,15 @@ async def _get_or_create_document(
     content_hash: str,
     company_id: uuid.UUID | None,
     agent_run_id: uuid.UUID | None,
-) -> tuple[ExtractedDocument, bool]:
-    """Return ``(document, reused)`` — reuse the content_hash row if it exists."""
+) -> tuple[ExtractedDocument, bool, bool]:
+    """Return ``(document, reused, restamped)``.
+
+    ``reused`` — an existing ``content_hash`` row was found (no new document
+    row created). ``restamped`` — that existing row's ``pipeline_version``
+    was just updated to the current version (see below); ``False`` when a
+    new row was created (it is already stamped current) or when the existing
+    row already matched.
+    """
     existing = (
         await session.execute(
             select(ExtractedDocument)
@@ -233,7 +248,23 @@ async def _get_or_create_document(
         )
     ).scalar_one_or_none()
     if existing is not None:
-        return existing, True
+        # Pre-merge review finding (Problem B follow-up) — this write path is
+        # ONLY ever reached with an artifact whose ``status == 'extracted'``
+        # (the caller already skips anything else), meaning it was JUST
+        # produced by the CURRENTLY-RUNNING code this request: either a fresh
+        # fetch/extract/validate, or a reused document REVALIDATED under
+        # current semantics (``_rebuild_artifact_revalidated`` in
+        # ``load_reusable_documents``). Without re-stamping here, a legacy/
+        # stale row's ``pipeline_version`` would never advance even after
+        # this run has already reconfirmed it under current code — forcing
+        # every SUBSEQUENT reuse to keep re-deriving facts unnecessarily.
+        # Re-stamping is safe precisely BECAUSE this call only ever runs on
+        # artifacts this request itself just (re)processed; it never touches
+        # ``content_hash`` (document identity) or any provenance field.
+        restamped = existing.pipeline_version != CURRENT_EXTRACTION_PIPELINE_VERSION
+        if restamped:
+            existing.pipeline_version = CURRENT_EXTRACTION_PIPELINE_VERSION
+        return existing, True, restamped
 
     source_url = getattr(artifact, "source_url", "") or ""
     canonical = canonicalize_source_url(source_url) or source_url
@@ -268,12 +299,18 @@ async def _get_or_create_document(
         # ``load_reusable_documents``) without a re-fetch / re-extract. Already
         # capped at extraction time; never the full document text.
         excerpts_json=_excerpts_to_json(extraction) or None,
+        # Phase 32A corrective (Problem B) — stamp the pipeline version active
+        # right now, so a LATER report regeneration under a changed
+        # parser/validator can tell this row's ``ExtractedFact`` children were
+        # produced under OLDER semantics and re-derive them instead of
+        # trusting them unchanged. See ``extraction_pipeline_version``.
+        pipeline_version=CURRENT_EXTRACTION_PIPELINE_VERSION,
         company_id=company_id,
         agent_run_id=agent_run_id,
         blob_path=None,
     )
     session.add(document)
-    return document, False
+    return document, False, False
 
 
 async def _persist_validated_facts(
@@ -369,6 +406,16 @@ class ReusedDocument:
     content_hash: str
     retrieved_at: datetime
     artifact: "PrimaryDocumentArtifact"
+    # Phase 32A corrective (Problem B) — safe (secret-free), audit-only
+    # metadata about HOW this reuse was produced: ``pipeline_version_matched``
+    # is True when the persisted row's ``pipeline_version`` equals the
+    # currently-deployed version (facts trusted as-is); ``revalidated`` is
+    # True when it did NOT match and the facts were RE-DERIVED from the
+    # reused excerpts under current-code semantics rather than trusted
+    # unchanged (never both meaningfully False/True at once — see
+    # ``load_reusable_documents``).
+    pipeline_version_matched: bool = True
+    revalidated: bool = False
 
 
 async def load_reusable_documents(
@@ -377,6 +424,7 @@ async def load_reusable_documents(
     company_id: uuid.UUID | None,
     cfg: "Settings",
     now: datetime | None = None,
+    issuer_context: "IssuerContext | None" = None,
 ) -> dict[str, "ReusedDocument"]:
     """Load THIS company's fresh, reusable extracted documents, keyed by URL.
 
@@ -388,6 +436,18 @@ async def load_reusable_documents(
     flags: with either off, or with no ``company_id``, returns an EMPTY dict
     WITHOUT issuing any query (byte-identical dark path). The freshest document
     wins when two share a canonical URL.
+
+    Phase 32A corrective (Problem B): a row whose persisted
+    ``pipeline_version`` matches ``CURRENT_EXTRACTION_PIPELINE_VERSION`` is
+    fully reused (its ``ExtractedFact`` rows are trusted as-is — nothing
+    changed). A row persisted under an OLDER (or unstamped/legacy ``None``)
+    version still reuses its ``excerpts_json`` (no re-fetch) but its facts are
+    RE-DERIVED by re-running the CURRENT ``extracted_fact_validator`` over
+    those excerpts (``issuer_context`` — optional, improves validation
+    accuracy but is never required for the reuse itself) — so a fact the old
+    validator accepted but the current one would reject cannot survive
+    unchanged, and a fact only the current parser recognises can appear
+    without any network fetch.
     """
     # Gate: BOTH flags must be on. Either OFF ⇒ no query, no reuse (dark path).
     if not (
@@ -442,38 +502,41 @@ async def load_reusable_documents(
         if not key or key in out:
             # A fresher document for this URL already won (rows ordered desc).
             continue
+        # Phase 32A corrective (Problem B): a version match trusts the
+        # persisted facts as-is (cheap, correct — nothing changed); a
+        # mismatch (including legacy NULL) re-derives facts from the still-
+        # reusable excerpts under CURRENT code semantics instead.
+        version_matched = doc.pipeline_version == CURRENT_EXTRACTION_PIPELINE_VERSION
+        if version_matched:
+            artifact = _rebuild_artifact(doc, facts_by_doc.get(doc.id, []))
+        else:
+            artifact = _rebuild_artifact_revalidated(
+                doc, cfg=cfg, issuer_context=issuer_context
+            )
         out[key] = ReusedDocument(
             canonical_url=doc.canonical_url,
             content_hash=doc.content_hash,
             retrieved_at=_as_aware(doc.retrieved_at),
-            artifact=_rebuild_artifact(doc, facts_by_doc.get(doc.id, [])),
+            artifact=artifact,
+            pipeline_version_matched=version_matched,
+            revalidated=not version_matched,
         )
     return out
 
 
-def _rebuild_artifact(
-    doc: ExtractedDocument, facts: "Sequence[ExtractedFact]"
-) -> "PrimaryDocumentArtifact":
-    """Rebuild a fully-usable ``PrimaryDocumentArtifact`` from persisted rows.
-
-    Local imports keep this WRITER module free of a runtime import cycle and off
-    the (default) dark path's import cost. Only validated facts are persisted, so
-    every rebuilt fact is ``validated`` + ``needs_human_review`` — never fabricated.
+def _rebuild_excerpts(
+    doc: ExtractedDocument,
+) -> "list[Any]":
+    """Rebuild the persisted, already-bounded excerpts — the reusable
+    content/raw layer (never the full document, never a raw table grid).
+    Local import keeps this WRITER module free of a runtime import cycle.
     """
-    from app.services.sources.connectors.company_ir import PrimaryDocumentArtifact
     from app.services.sources.document_text_extractor import EVIDENCE_TYPE_GENERAL
-    from app.services.sources.extracted_fact_validator import (
-        VALIDATION_VALIDATED,
-        ValidatedFact,
-    )
     from app.services.sources.primary_document_extractor import (
-        STATUS_EXTRACTED,
         PrimaryDocumentExcerpt,
-        PrimaryDocumentExtraction,
     )
-    from app.services.sources.taxonomy import T1_PRIMARY_FILING
 
-    excerpts: list[PrimaryDocumentExcerpt] = []
+    excerpts: list[Any] = []
     for i, raw in enumerate(doc.excerpts_json or [], start=1):
         if not isinstance(raw, dict):
             continue
@@ -493,7 +556,33 @@ def _rebuild_artifact(
                 evidence_type=raw.get("evidence_type") or EVIDENCE_TYPE_GENERAL,
             )
         )
+    return excerpts
 
+
+def _rebuild_artifact(
+    doc: ExtractedDocument, facts: "Sequence[ExtractedFact]"
+) -> "PrimaryDocumentArtifact":
+    """Rebuild a fully-usable ``PrimaryDocumentArtifact`` from persisted rows.
+
+    FAST PATH — only used when ``doc.pipeline_version`` matches the currently
+    -deployed pipeline version (see ``load_reusable_documents``). Local imports
+    keep this WRITER module free of a runtime import cycle and off the
+    (default) dark path's import cost. Only validated facts are persisted, so
+    every rebuilt fact is ``validated`` + ``needs_human_review`` — never
+    fabricated.
+    """
+    from app.services.sources.connectors.company_ir import PrimaryDocumentArtifact
+    from app.services.sources.extracted_fact_validator import (
+        VALIDATION_VALIDATED,
+        ValidatedFact,
+    )
+    from app.services.sources.primary_document_extractor import (
+        STATUS_EXTRACTED,
+        PrimaryDocumentExtraction,
+    )
+    from app.services.sources.taxonomy import T1_PRIMARY_FILING
+
+    excerpts = _rebuild_excerpts(doc)
     extraction = PrimaryDocumentExtraction(
         content_hash=doc.content_hash,
         mime_type=doc.mime_type or "",
@@ -523,6 +612,71 @@ def _rebuild_artifact(
         )
         for fact in facts
     ]
+
+    return PrimaryDocumentArtifact(
+        source_url=doc.canonical_url,
+        document_type=doc.source_type,
+        content_tier=doc.source_tier or T1_PRIMARY_FILING,
+        title=doc.title,
+        retrieved_at=_as_aware(doc.retrieved_at),
+        status=STATUS_EXTRACTED,
+        extraction=extraction,
+        validated_facts=validated_facts,
+    )
+
+
+def _rebuild_artifact_revalidated(
+    doc: ExtractedDocument,
+    *,
+    cfg: "Settings",
+    issuer_context: "IssuerContext | None",
+) -> "PrimaryDocumentArtifact":
+    """Rebuild an artifact from a STALE-pipeline-version row.
+
+    REVALIDATION PATH (Phase 32A corrective, Problem B) — used when
+    ``doc.pipeline_version`` does NOT match the currently-deployed pipeline
+    version (including legacy rows with no stamped version at all). The
+    persisted ``excerpts_json`` (content/raw layer) is still reused — no
+    re-fetch — but ``validated_facts`` are NOT taken from the (potentially
+    stale) persisted ``ExtractedFact`` rows. Instead they are RE-DERIVED by
+    running the CURRENT ``extracted_fact_validator.validate_extracted_facts``
+    over the rebuilt excerpts (no persisted table grid, so this uses the
+    prose-excerpt candidate path only — a bounded, honest degradation, never a
+    fabrication). A fact the old validator accepted but the current one would
+    reject is simply never re-produced; a fact only the current parser
+    recognises can appear here without any network fetch.
+    """
+    from app.services.sources.connectors.company_ir import PrimaryDocumentArtifact
+    from app.services.sources.extracted_fact_validator import (
+        IssuerContext,
+        validate_extracted_facts,
+    )
+    from app.services.sources.primary_document_extractor import (
+        STATUS_EXTRACTED,
+        PrimaryDocumentExtraction,
+    )
+    from app.services.sources.taxonomy import T1_PRIMARY_FILING
+
+    excerpts = _rebuild_excerpts(doc)
+    extraction = PrimaryDocumentExtraction(
+        content_hash=doc.content_hash,
+        mime_type=doc.mime_type or "",
+        extraction_method=doc.extraction_method or "",
+        status=STATUS_EXTRACTED,
+        page_count=doc.page_count,
+        excerpts=excerpts,
+        # No persisted table grid (never stored, by design — see
+        # ``ExtractedDocument.excerpts_json``): revalidation can only recover
+        # prose-excerpt-derived facts, never table-derived ones. Honest
+        # degradation, not a fabrication.
+        tables=[],
+    )
+
+    validated_facts = validate_extracted_facts(
+        extraction,
+        issuer_context=issuer_context or IssuerContext(),
+        cfg=cfg,
+    )
 
     return PrimaryDocumentArtifact(
         source_url=doc.canonical_url,

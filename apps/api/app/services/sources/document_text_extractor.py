@@ -88,6 +88,15 @@ class DocumentExcerpt(BaseModel):
 
     excerpt_id: str
     heading: str | None = None
+    # Phase 32A corrective (Problem C) — the heading IMMEDIATELY ABOVE
+    # ``heading`` in document structure (e.g. a leaf "Jewellery Maisons"
+    # heading nested under a "Business area review" section heading). Lets
+    # scope inference recognise a NAMED segment/business-unit heading that
+    # carries no generic "segment"/"business area" vocabulary ITSELF but IS
+    # nested under a heading that does — never a company-specific literal,
+    # purely structural. ``None`` when unknown/not applicable (e.g. a PDF
+    # excerpt, where ancestor nesting is not tracked in this phase).
+    ancestor_heading: str | None = None
     text: str
     page_number: int | None = None
     char_count: int = 0

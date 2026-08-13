@@ -41,6 +41,11 @@ from app.services.llm.schemas import (
     EvidenceItem,
     EvidencePack,
 )
+from app.services.sources.financial_fact_categories import (
+    financial_fact_diversity_key,
+    primary_fact_field,
+    select_category_diverse,
+)
 from app.services.sources.taxonomy import tier_rank
 
 # Content types that carry a real factual excerpt (worth more than metadata).
@@ -168,6 +173,22 @@ def _semantic_fact_key(item: EvidenceItem) -> tuple[str, str, str, str, str, str
         str(fact.get("scale") or "").lower(),
         f"{float(numeric_value):.4f}",
     )
+
+
+def _financial_fact_field(item: EvidenceItem) -> str | None:
+    """Best-effort metric-field name for category-diversity classification.
+
+    Prefers the structured ``primary_fact.field`` (company-IR / SEC filing-body
+    facts); a plain SEC/XBRL ``sec_financial_statement``/``company_filing`` item
+    carries no ``primary_fact`` but names its metric in ``fields_supported`` —
+    used as a fallback so those items still classify (an unrecognized name
+    degrades to ``CATEGORY_OTHER``, never an error).
+    """
+    field = primary_fact_field(item.primary_fact)
+    if field:
+        return field
+    fields = item.fields_supported or []
+    return fields[0] if fields else None
 
 
 def _is_factual_excerpt(item: EvidenceItem) -> bool:
@@ -379,6 +400,27 @@ def _apply_category_budget(
     # 2+3. Rank globally by (tier, materiality, factual, order).
     ranked = sorted(deduped, key=lambda t: _category_rank_key(t[1], t[0]))
 
+    # Phase 32A corrective (Problem A): the financial-fact floor is now a
+    # CATEGORY-DIVERSE selection (topline / earnings / cash / position /
+    # segment — see ``financial_fact_categories``) over the rank-ordered
+    # candidates, not a blind "first N in rank order" cut — so e.g. a Group
+    # operating margin AND a segment operating margin AND a net-cash figure
+    # can all survive together instead of the floor being exhausted by
+    # several redundant same-category facts that merely ranked first.
+    financial_candidates = [
+        (order, item) for order, item, category in ranked if category == CATEGORY_FINANCIAL_FACT
+    ]
+    diverse_financial_orders = {
+        order
+        for order, _item in select_category_diverse(
+            financial_candidates,
+            cap=financial_floor,
+            diversity_key_of=lambda pair: financial_fact_diversity_key(
+                _financial_fact_field(pair[1]), getattr(pair[1], "scope", None)
+            ),
+        )
+    }
+
     # 4. Reserve floors first (by rank, bounded by max_items): the financial-fact
     #    floor always, and the primary-document floor only when ingestion is on.
     reserved: set[int] = set()
@@ -388,7 +430,11 @@ def _apply_category_budget(
     for order, _item, category in ranked:
         if len(reserved) >= max_items:
             break
-        if category == CATEGORY_FINANCIAL_FACT and financial_reserved < financial_floor:
+        if (
+            category == CATEGORY_FINANCIAL_FACT
+            and order in diverse_financial_orders
+            and financial_reserved < financial_floor
+        ):
             reserved.add(order)
             financial_reserved += 1
         elif (
