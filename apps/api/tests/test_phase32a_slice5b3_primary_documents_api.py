@@ -243,6 +243,81 @@ async def test_extracted_document_and_facts_joined_by_content_hash(db):
     assert doc_read.reused is False
 
 
+async def test_superseded_inactive_fact_excluded_from_admin_view(db):
+    """Phase 32A corrective (cache/derivation correctness) — a fact a later
+    revalidation superseded (``is_active=False``) must never appear in this
+    admin view alongside its own current replacement, and must never be
+    double-counted in ``validated_fact_count`` (a real gap the security
+    review caught: this endpoint predates ``is_active`` and had no filter
+    for it)."""
+    run_id = uuid.uuid4()
+    company_id = uuid.uuid4()
+    content_hash = "b" * 64
+    now = _utcnow()
+
+    doc = _document(content_hash=content_hash, company_id=company_id, agent_run_id=run_id, created_at=now)
+    db.add(doc)
+    await db.flush()
+    db.add(
+        ExtractedFact(
+            id=uuid.uuid4(),
+            extracted_document_id=doc.id,
+            label="net_debt",
+            value_numeric=999,
+            value_text="999",
+            unit="currency_amount",
+            currency="USD",
+            period="2024",
+            page_number=12,
+            table_location="p12:t2",
+            extraction_method="native_pdf",
+            confidence=0.85,
+            validation_status="validated",
+            needs_human_review=True,
+            is_active=False,  # superseded by a later revalidation
+        )
+    )
+    db.add(
+        ExtractedFact(
+            id=uuid.uuid4(),
+            extracted_document_id=doc.id,
+            label="net_debt",
+            value_numeric=1234,
+            value_text="1,234",
+            unit="currency_amount",
+            currency="USD",
+            period="2024",
+            page_number=12,
+            table_location="p12:t2",
+            extraction_method="native_pdf",
+            confidence=0.9,
+            validation_status="validated",
+            needs_human_review=True,
+            is_active=True,
+        )
+    )
+    db.add(
+        _attempt(
+            company_id=company_id,
+            agent_run_id=run_id,
+            url="https://x.com/a.pdf",
+            status="extracted",
+            extraction_method="native_pdf",
+            content_hash=content_hash,
+            attempted_at=now + timedelta(seconds=1),
+        )
+    )
+    await db.commit()
+
+    result = await get_report_primary_documents(
+        db, report_company_id=company_id, report_agent_run_id=run_id, report_id=uuid.uuid4()
+    )
+    assert result.summary.validated_fact_count == 1
+    doc_read = result.documents[0]
+    assert len(doc_read.facts) == 1
+    assert doc_read.facts[0].value_text == "1,234"
+
+
 async def test_shared_content_hash_across_two_attempts_does_not_double_count(db):
     # A regression for a real reviewer-caught bug: the SAME document (one
     # content_hash) discovered via TWO distinct candidate URLs/discovery
