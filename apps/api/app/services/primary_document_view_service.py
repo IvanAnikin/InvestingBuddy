@@ -114,7 +114,15 @@ async def get_report_primary_documents(
         if doc_ids:
             fact_result = await db.execute(
                 select(ExtractedFact).where(
-                    ExtractedFact.extracted_document_id.in_(doc_ids)
+                    ExtractedFact.extracted_document_id.in_(doc_ids),
+                    # Phase 32A corrective (cache/derivation correctness) — a
+                    # revalidation can supersede a document's fact set
+                    # (``is_active=False`` on the superseded rows, kept for
+                    # audit only). This admin view must show the CURRENT
+                    # set, never a stale row mixed in alongside its own
+                    # replacement or double-counted in
+                    # ``validated_fact_count`` below.
+                    ExtractedFact.is_active.is_(True),
                 )
             )
             for fact in fact_result.scalars().all():

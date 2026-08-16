@@ -175,10 +175,25 @@ def _find_currency(text: str) -> str | None:
 # feeds the stricter validated-fact pipeline (a wrongly-parsed prose duplicate
 # of a correct table value reads as a same-method "conflict" and silently
 # downgrades the correct table fact to excerpt_only).
+#
+# Phase 32A corrective — a YEAR-LESS qualifier ("for the year", "for the
+# period", "during the year") must ALSO be fully consumed, not just a
+# dated one ("for fiscal year 2024"). Before this fix the trailing 4-digit
+# year was mandatory, so "for the year" (no digits) matched nothing here —
+# leaving it, and the trend verb immediately following it (see
+# ``_TREND_CLAUSE`` below), unconsumed and within reach of the final loose
+# ``[^\d\n]{0,25}?`` catch-all, which then grabbed the FIRST digit it found
+# — a percentage CHANGE, not the absolute value (a real, live-observed
+# failure on an actual issuer report: "Operating profit for the year grew
+# by 1% to €4,492 million" parsed as ``1``, not ``4,492``).
 _PERIOD_QUALIFIER = (
     r"(?:\s+(?:for|in|during)\s+(?:the\s+)?"
-    r"(?:fiscal\s+year|financial\s+year|year|period|half[- ]year|h[12])?\s*"
-    r"(?:ended\s+)?(?:19|20)\d{2})?"
+    r"(?:"
+    r"(?:fiscal\s+year|financial\s+year|fiscal|year|period|half[- ]year|h[12])"
+    r"(?:\s+ended)?(?:\s+(?:19|20)\d{2})?"
+    r"|(?:19|20)\d{2}"
+    r")"
+    r")?"
 )
 
 # An optional "<trend verb> by X%" clause that can sit BETWEEN a label and its
@@ -236,7 +251,15 @@ _MONEY_FIELDS: list[tuple[str, re.Pattern[str]]] = [
     (FIELD_REVENUE, _money_pattern(r"revenue|net sales|total sales|sales|turnover")),
     (
         FIELD_RECURRING_OPERATING_PROFIT,
-        _money_pattern(r"recurring operating (?:profit|income|result)"),
+        # "profit from recurring operations" (Phase 32A corrective — LVMH
+        # vocabulary gap) is the SAME canonical concept as "recurring
+        # operating profit/income/result", just phrased the other way
+        # around — generic financial-reporting vocabulary, not an
+        # issuer-specific term.
+        _money_pattern(
+            r"recurring operating (?:profit|income|result)"
+            r"|profit from recurring operations"
+        ),
     ),
     (
         FIELD_OPERATING_PROFIT,
@@ -332,6 +355,119 @@ def _ambiguous_multiple(pattern: re.Pattern[str], text: str) -> bool:
     return len(vals) > 1
 
 
+# --------------------------------------------------------------------------- #
+# Prose scope inference — Phase 32A corrective (live CFR gap)
+#
+# ``_infer_scope`` (``primary_document_extractor``) is HEADING-based only.
+# Real issuer prose can carry an explicit scope in the SENTENCE itself even
+# when the excerpt's own heading gives no (or a misleadingly generic)
+# signal — e.g. "The Group's Specialist Watchmakers reported sales of
+# €3.1 billion" sitting in a general-narrative excerpt with no
+# segment-specific heading of its own. Generic and structural — never a
+# hardcoded issuer vocabulary; derived purely from sentence shape.
+# --------------------------------------------------------------------------- #
+
+_SCOPE_REPORT_VERBS = (
+    r"reported|generated|posted|recorded|delivered|achieved|announced"
+)
+
+# "Group's <Named Segment> reported/generated/posted ..." — the segment
+# (never "Group") is the scope, even though "Group" appears in the sentence.
+# The presence of "Group's" before a segment name must never turn a segment
+# figure into a Group figure (mission requirement).
+_GROUP_OWNED_SEGMENT_RE = re.compile(
+    rf"\bGroup['’]s\s+([A-Z][A-Za-z0-9&,.\-\s]{{1,60}}?)\s+"
+    rf"(?:{_SCOPE_REPORT_VERBS})\b"
+)
+
+# A bare named subject (no "Group's" prefix), sentence-initial only,
+# immediately followed by a reporting verb — the subject IS the scope.
+_NAMED_SUBJECT_RE = re.compile(
+    rf"(?:^|[.!?]\s+)(?:The\s+)?([A-Z][A-Za-z0-9&,.\-\s]{{1,60}}?)\s+"
+    rf"(?:{_SCOPE_REPORT_VERBS})\b"
+)
+
+_GROUP_SUBJECT_WORDS = frozenset({"group", "the group"})
+# Generic financial-statement vocabulary that is never itself a business/
+# segment NAME — excluded so a plain metric noun accidentally captured as a
+# "subject" is never mistaken for a named scope.
+_GENERIC_SCOPE_BLOCKLIST = frozenset(
+    {
+        "revenue", "sales", "net sales", "total sales", "turnover",
+        "operating profit", "operating income", "operating result",
+        "recurring operating profit", "net income", "net profit", "profit",
+        "margin", "operating margin", "cash flow", "free cash flow",
+        "operating free cash flow", "operating cash flow", "total assets",
+        "total debt", "net debt", "net cash", "cash and cash equivalents",
+        "total equity", "management", "the board", "results", "performance",
+        "the company", "company",
+    }
+)
+
+
+def _clean_scope_label(raw: str) -> str | None:
+    label = " ".join((raw or "").split()).strip(" .,")
+    if not label:
+        return None
+    if len(label) > 80:
+        label = label[:79].rstrip() + "…"
+    return label
+
+
+def _infer_prose_scope(sentence: str) -> str | None:
+    """Best-effort scope from a SENTENCE's own grammatical subject.
+
+    Independent of the excerpt's heading (see ``_infer_scope``) and of how
+    many other candidates matched elsewhere in the excerpt: every material
+    fact gets its OWN scope decision from its own local sentence, so a
+    segment figure sitting in an excerpt that also discusses Group
+    performance is never defaulted to "group" merely because it was the
+    only regex match in the excerpt (mission requirement — the semantic
+    model must not depend on two matches existing). Returns ``None``
+    (unknown — never guessed) when the sentence gives no clear structural
+    signal; the caller falls back to the excerpt-heading scope, if any.
+    """
+    if not sentence:
+        return None
+    m = _GROUP_OWNED_SEGMENT_RE.search(sentence)
+    if m:
+        label = _clean_scope_label(m.group(1))
+        if label and label.lower() not in _GENERIC_SCOPE_BLOCKLIST:
+            return label
+    m = _NAMED_SUBJECT_RE.search(sentence)
+    if m:
+        raw_subject = m.group(1)
+        lowered = " ".join(raw_subject.split()).strip(" .,").lower()
+        if lowered in _GROUP_SUBJECT_WORDS or "consolidated" in lowered:
+            return "group"
+        if lowered and lowered not in _GENERIC_SCOPE_BLOCKLIST:
+            return _clean_scope_label(raw_subject)
+    return None
+
+
+def _sentence_around(text: str, pos: int) -> str:
+    """The sentence (bounded by ``. ! ? \\n``) containing position ``pos``."""
+    start = max((text.rfind(ch, 0, pos) for ch in ".!?\n"), default=-1)
+    start = start + 1 if start >= 0 else 0
+    ends = [i for i in (text.find(ch, pos) for ch in ".!?\n") if i != -1]
+    end = min(ends) + 1 if ends else len(text)
+    return text[start:end]
+
+
+def _period_near(text: str, pos: int, *, window: int = 120) -> str | None:
+    """Best-effort period from the year NEAREST ``pos`` (a matched value's own
+    position) rather than the first year mentioned anywhere in the excerpt —
+    a comparative aside elsewhere in the excerpt ("...up from EUR8.1bn in
+    2025...") must never steal an unrelated fact's period (a real,
+    live-observed failure — Phase 32A corrective)."""
+    lo, hi = max(0, pos - window), min(len(text), pos + window)
+    m = re.search(r"\b(19|20)\d{2}\b", text[lo:hi])
+    if m:
+        return m.group(0)
+    m = re.search(r"\b(19|20)\d{2}\b", text)
+    return m.group(0) if m else None
+
+
 def _parse_excerpt(excerpt: DocumentExcerpt, source_url: str | None) -> list[PrimaryFact]:
     text = excerpt.text
     facts: list[PrimaryFact] = []
@@ -410,6 +546,12 @@ def _parse_excerpt(excerpt: DocumentExcerpt, source_url: str | None) -> list[Pri
             if (scale and currency)
             else "Scale or currency inferred from surrounding text; verify."
         )
+        # Phase 32A corrective — scope + period are derived from THIS fact's
+        # own local sentence (never the whole excerpt), so a segment-scoped
+        # figure or a comparative aside elsewhere in the excerpt can never be
+        # misattributed to this fact. ``scope=None`` here still lets ``add()``
+        # fall back to the excerpt-heading scope, if any.
+        sentence = _sentence_around(text, m.start())
         add(
             PrimaryFact(
                 field=field,
@@ -418,7 +560,8 @@ def _parse_excerpt(excerpt: DocumentExcerpt, source_url: str | None) -> list[Pri
                 unit="currency_amount",
                 currency=currency,
                 scale=scale,
-                period=_year_hint_str(excerpt),
+                scope=_infer_prose_scope(sentence),
+                period=_period_near(text, m.start()),
                 source_url=source_url,
                 excerpt_id=excerpt.excerpt_id,
                 page_number=excerpt.page_number,
@@ -439,13 +582,15 @@ def _parse_excerpt(excerpt: DocumentExcerpt, source_url: str | None) -> list[Pri
             continue
         if _ambiguous_multiple(pattern, text):
             continue
+        sentence = _sentence_around(text, m.start())
         add(
             PrimaryFact(
                 field=field,
                 value=m.group(0).strip(),
                 numeric_value=num,
                 unit="percent",
-                period=_year_hint_str(excerpt),
+                scope=_infer_prose_scope(sentence),
+                period=_period_near(text, m.start()),
                 source_url=source_url,
                 excerpt_id=excerpt.excerpt_id,
                 page_number=excerpt.page_number,

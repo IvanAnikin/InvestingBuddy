@@ -1182,8 +1182,69 @@ def _build_company_identity(
     return identity
 
 
-def _build_discovery_rationale(candidate: ScreeningCandidate | None) -> dict[str, Any]:
+def _build_discovery_rationale(
+    candidate: ScreeningCandidate | None,
+    discovery_lineage: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build the report's discovery-rationale section.
+
+    Phase 32A corrective — a report launched via
+    ``POST /market-discovery/candidates/{id}/run-analysis`` never has a
+    legacy ``ScreeningCandidate`` (the two candidate models are
+    incompatible; ``candidate`` is deliberately ``None`` for that path — see
+    ``market_discovery_service.run_candidate_analysis``), so this section
+    was UNCONDITIONALLY "unavailable" for every candidate-launched report
+    even though the exact FK linkage to the real ``DiscoveryCandidate`` +
+    ``DiscoveryRun`` was known and already computed as ``discovery_lineage``
+    (``_build_discovery_lineage_from_dict``) — a proven acceptance
+    regression. When ``candidate`` is ``None`` but an ``available``
+    ``discovery_lineage`` was supplied, this now reports ``available: True``
+    from that SAME exact-FK data (never ticker/name matching, never
+    "latest for this company" — see ``market_discovery_service.
+    run_candidate_analysis`` lines building ``discovery_lineage`` straight
+    from ``candidate.id`` / ``candidate.discovery_run_id``).
+    """
     if candidate is None:
+        # ``discovery_lineage`` here is the RAW dict threaded straight from
+        # ``market_discovery_service.run_candidate_analysis`` (exact FK
+        # fields only — see that function) — it has no "available" key of
+        # its own; that key is only added by the RENDERED
+        # ``_build_discovery_lineage_from_dict`` output. A non-empty dict
+        # IS the "available" signal here.
+        if discovery_lineage:
+            return {
+                "type": "discovery_rationale",
+                "available": True,
+                "source": "discovery_run",
+                "discovery_run_id": discovery_lineage.get("discovery_run_id"),
+                "candidate_id": discovery_lineage.get("discovery_candidate_id"),
+                "ticker": discovery_lineage.get("ticker"),
+                "exchange": discovery_lineage.get("exchange"),
+                # ``DiscoveryCandidate`` has no direct equivalent of the
+                # legacy ``ScreeningCandidate.discovery_reasons_json`` text
+                # list; ``score_explanation`` below is its honest,
+                # sourced-fact analogue — this stays an empty list rather
+                # than repurposing ``thesis_match_json`` (a different shape)
+                # into something it is not.
+                "discovery_reasons": {
+                    "value": [],
+                    "provenance": "sourced_fact",
+                    "human_review_required": False,
+                },
+                "rank": {
+                    "value": discovery_lineage.get("rank"),
+                    "provenance": "sourced_fact",
+                },
+                "candidate_score": {
+                    "value": discovery_lineage.get("candidate_score"),
+                    "provenance": "sourced_fact",
+                },
+                "score_explanation": {
+                    "value": discovery_lineage.get("score_explanation"),
+                    "provenance": "sourced_fact",
+                },
+                "human_review_required": True,
+            }
         return {
             "type": "discovery_rationale",
             "available": False,
@@ -3671,7 +3732,7 @@ def _assemble_final_report_content(
         "company_identity": _build_company_identity(
             company_snapshot, company_record
         ),
-        "discovery_rationale": _build_discovery_rationale(candidate),
+        "discovery_rationale": _build_discovery_rationale(candidate, discovery_lineage),
         "discovery_lineage": _build_discovery_lineage_from_dict(discovery_lineage),
         "data_availability_summary": _build_data_availability_summary(
             financial_data_summary,

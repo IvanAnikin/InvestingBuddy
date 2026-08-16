@@ -236,9 +236,16 @@ async def test_discovery_lineage_threaded_from_real_candidate(
     Phase 32A Slice 6B (C2) — a real DiscoveryCandidate's lineage (never a
     ScreeningCandidate, never inferred from ticker/name) must survive into the
     final report's ``source_summary_json["discovery_lineage"]`` and the
-    rendered ``discovery_lineage`` report section, while the UNRELATED
-    ``discovery_rationale`` section (which reads a ScreeningCandidate) stays
-    honestly "not available" for this flow.
+    rendered ``discovery_lineage`` report section.
+
+    Phase 32A corrective — ``discovery_rationale`` (which has no legacy
+    ScreeningCandidate on this flow, by design — see
+    ``market_discovery_service.run_candidate_analysis``) now ALSO reports
+    ``available: True`` from this SAME exact-FK ``discovery_lineage`` data
+    (never ticker/name matching, never "latest for this company"): a
+    candidate-launched report previously showed "No screening candidate
+    linked" even though the exact linkage was known and already computed —
+    a proven acceptance regression this closes.
     """
     from app.models.discovery import DiscoveryRun
 
@@ -284,11 +291,18 @@ async def test_discovery_lineage_threaded_from_real_candidate(
     assert section["thesis_match"]["value"] == {"matched_keywords": ["luxury", "watches"]}
     assert section["thesis_text"]["value"] == "Luxury goods thesis"
 
-    # The existing (unrelated, ScreeningCandidate-sourced) rationale section is
-    # honestly "not available" here — never conflated with the new lineage.
+    # Phase 32A corrective — with no ScreeningCandidate but an AVAILABLE,
+    # exact-FK discovery_lineage, the rationale section is now populated
+    # FROM that lineage (never fabricated, never ticker/name-matched) rather
+    # than unconditionally "unavailable".
     rationale = content["discovery_rationale"]
-    assert rationale["available"] is False
-    assert rationale["note"]["value"] == "No screening candidate linked to this report."
+    assert rationale["available"] is True
+    assert rationale["source"] == "discovery_run"
+    assert rationale["discovery_run_id"] == str(run_id)
+    assert rationale["candidate_id"] == str(candidate.id)
+    assert rationale["rank"]["value"] == 2
+    assert rationale["candidate_score"]["value"] == 87.5
+    assert rationale["score_explanation"]["value"] == "Strong momentum + thesis match"
 
 
 async def test_run_analysis_routes_to_llm_council(mock_db, enable_council) -> None:

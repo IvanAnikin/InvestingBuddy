@@ -156,6 +156,18 @@ class ExtractedFact(Base):
     needs_human_review: Mapped[bool] = mapped_column(
         sa.Boolean, nullable=False, default=True
     )
+    # Phase 32A corrective (cache/derivation correctness) — True for the
+    # CURRENT active representation of this (document, label, period, scope);
+    # False for a row a later COMPLETE revalidation/re-extraction superseded.
+    # Never deleted (audit/history preserved) — but any query feeding a
+    # current report must filter ``is_active == True`` so an old and a new
+    # derivation of the same document are never mixed together as evidence.
+    # See ``app.services.extracted_document_service`` for the supersession
+    # logic and ``app.services.sources.extraction_pipeline_version`` for why
+    # a stale ``pipeline_version`` alone is not enough to decide reuse.
+    is_active: Mapped[bool] = mapped_column(
+        sa.Boolean, nullable=False, default=True, server_default=sa.true()
+    )
     created_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True), default=_utcnow, server_default=sa.func.now()
     )
@@ -163,5 +175,8 @@ class ExtractedFact(Base):
     __table_args__ = (
         sa.Index(
             "ix_extracted_facts_extracted_document_id", "extracted_document_id"
+        ),
+        sa.Index(
+            "ix_extracted_facts_document_active", "extracted_document_id", "is_active"
         ),
     )

@@ -771,7 +771,11 @@ async def test_cache_4_current_validator_rejection_is_not_overridden_by_stale_ro
     row = (await session.execute(select(ExtractedDocument))).scalars().one()
     # Simulate a stale row that (under some OLDER, looser validator) had
     # accepted a fact that the CURRENT validator would never produce from
-    # this excerpt text.
+    # this excerpt text. ``table_location="X1"`` (matching the persisted
+    # excerpt's own id, not a table grid locator) marks this as
+    # PROSE-derived — the persisted excerpts alone are a complete source
+    # for it, so this stays a Case A (excerpts-only) revalidation and never
+    # triggers the Case B full-re-extraction network path.
     session.add(
         ExtractedFact(
             id=uuid.uuid4(),
@@ -784,7 +788,7 @@ async def test_cache_4_current_validator_rejection_is_not_overridden_by_stale_ro
             scale="million",
             period="2026",
             page_number=3,
-            table_location="p3:t0",
+            table_location="X1",
             extraction_method="html",
             confidence=0.9,
             validation_status=VALIDATION_VALIDATED,
