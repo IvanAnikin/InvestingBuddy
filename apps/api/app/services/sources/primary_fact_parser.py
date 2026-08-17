@@ -345,13 +345,33 @@ _EMPLOYEES_RE2 = re.compile(
 )
 
 
-def _ambiguous_multiple(pattern: re.Pattern[str], text: str) -> bool:
-    """True when a labelled metric matches with two *different* magnitudes."""
-    vals = {
-        _norm_number(m.group(1))
-        for m in pattern.finditer(text)
-        if _norm_number(m.group(1)) is not None
-    }
+def _ambiguous_multiple(
+    pattern: re.Pattern[str], text: str, *, require_scale_or_currency: bool = False
+) -> bool:
+    """True when a labelled metric matches with two *different* magnitudes.
+
+    ``require_scale_or_currency`` mirrors the exact validity gate the money-field
+    caller applies before it will ever emit a fact from a match (``if scale is
+    None and currency is None: continue`` in the ``_MONEY_FIELDS`` loop). Without
+    this, a second, unrelated same-label mention later in the excerpt that states
+    only a bare percentage CHANGE with no absolute value nearby (e.g. "operating
+    profit was up by 23%" following a fully-qualified "...grew by 1% to
+    \u20ac4,492 million" earlier in the SAME excerpt) injects a false second
+    "magnitude" purely from its trend-clause digits \u2014 silently discarding an
+    otherwise complete, correctly-parsed fact that would itself pass every other
+    check (a real, live-observed failure \u2014 Phase 32A corrective).
+    """
+    vals: set[float] = set()
+    for m in pattern.finditer(text):
+        num = _norm_number(m.group(1))
+        if num is None:
+            continue
+        if require_scale_or_currency and m.re.groups >= 2:
+            scale = _scale_word(m.group(2))
+            currency = _find_currency(m.group(0))
+            if scale is None and currency is None:
+                continue
+        vals.add(num)
     return len(vals) > 1
 
 
@@ -536,7 +556,7 @@ def _parse_excerpt(excerpt: DocumentExcerpt, source_url: str | None) -> list[Pri
         currency = _find_currency(m.group(0)) or _find_currency(text)
         # Refuse ambiguity: the same label with two different magnitudes, or a
         # bare number with neither a scale nor a currency (too weak to trust).
-        if _ambiguous_multiple(pattern, text):
+        if _ambiguous_multiple(pattern, text, require_scale_or_currency=True):
             continue
         if scale is None and currency is None:
             continue

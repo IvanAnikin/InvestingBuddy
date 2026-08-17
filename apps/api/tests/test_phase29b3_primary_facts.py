@@ -437,6 +437,49 @@ def test_9_financial_snapshot_ignores_non_financial_and_medium_facts():
 
 
 # =========================================================================== #
+# Phase 32A corrective — segment-scoped facts never impersonate the Group     #
+# figure in a canonical <field>_primary_filing slot                          #
+# =========================================================================== #
+
+
+def test_9b_financial_snapshot_never_presents_segment_scoped_revenue_as_group():
+    """A live, real-issuer regression (2026-08-17 CFR staging acceptance):
+    "The Group's Specialist Watchmakers reported sales of EUR3.1 billion" was
+    correctly parsed with ``scope="Specialist Watchmakers"``, but the
+    financial-snapshot builder ignored ``scope`` entirely and presented it
+    under ``revenue_primary_filing`` — the slot readers reasonably expect to
+    be Richemont's actual EUR22.4bn Group sales figure. A segment-scoped fact
+    must never fill that slot, even with no Group figure available at all
+    (an honest gap beats a wrong number)."""
+    section = _build_financial_snapshot(
+        _snapshot(),
+        _fundamentals(),
+        primary_facts=[_revenue_fact(scope="Specialist Watchmakers")],
+    )
+    assert "revenue_primary_filing" not in section
+    # Identical to the no-facts section — the segment fact contributes nothing
+    # to this canonical slot rather than silently mislabeling it.
+    assert section == _build_financial_snapshot(_snapshot(), _fundamentals())
+
+
+def test_9c_financial_snapshot_accepts_explicit_group_scope_label():
+    section = _build_financial_snapshot(
+        _snapshot(), _fundamentals(), primary_facts=[_revenue_fact(scope="Group")]
+    )
+    assert section["revenue_primary_filing"]["numeric_value"] == 20616.0
+
+
+def test_9d_financial_snapshot_accepts_unscoped_fact_as_before():
+    """Unscoped (``scope=None``) keeps the pre-existing implicit-Group
+    convention used everywhere else in this section — no regression for the
+    common case where scope could not be inferred at all."""
+    section = _build_financial_snapshot(
+        _snapshot(), _fundamentals(), primary_facts=[_revenue_fact(scope=None)]
+    )
+    assert section["revenue_primary_filing"]["numeric_value"] == 20616.0
+
+
+# =========================================================================== #
 # 10–11  Company Identity — override/add T1 identity facts
 # =========================================================================== #
 
