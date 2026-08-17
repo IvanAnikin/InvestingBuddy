@@ -62,7 +62,12 @@ from app.services.sources.primary_fact_parser import (
     FIELD_TOTAL_DEBT,
     parse_primary_facts,
 )
-from tests.helpers.pdf_fixtures import make_pdf, make_pdf_two_column, make_pdf_with_table
+from tests.helpers.pdf_fixtures import (
+    make_pdf,
+    make_pdf_bands,
+    make_pdf_two_column,
+    make_pdf_with_table,
+)
 
 ISSUER = IssuerContext(
     company_name="Compagnie Financiere Richemont SA",
@@ -176,6 +181,38 @@ def test_header_plus_two_columns_orders_header_first():
     assert text.index("Left column text") < text.index("Right column text")
 
 
+def test_mid_page_separator_stays_between_the_two_column_bands_it_separates():
+    """A full-width heading HALFWAY down the page must remain BETWEEN the
+    column content above it and the column content below it — never moved to
+    the start of the page (Phase 32A corrective, pre-merge correction)."""
+    words: list[dict] = []
+    for i in range(3):
+        top = 80.0 + i * 16.0
+        words.append(_word("LeftA", 60.0, 100.0, top))
+        words.append(_word("RightA", 340.0, 380.0, top))
+    sep_top = 80.0 + 3 * 16.0
+    words.append(_word("SECTION", 40.0, 300.0, sep_top))
+    words.append(_word("TWO", 305.0, 560.0, sep_top))
+    for i in range(3):
+        top = sep_top + 16.0 + i * 16.0
+        words.append(_word("LeftB", 60.0, 100.0, top))
+        words.append(_word("RightB", 340.0, 380.0, top))
+
+    text = _reconstruct_two_column_text(words, 612.0)
+    assert text is not None
+    sep_pos = text.index("SECTION TWO")
+    # Everything from band 1 (both columns) precedes the separator...
+    assert text.rindex("LeftA") < sep_pos
+    assert text.rindex("RightA") < sep_pos
+    # ...and everything from band 2 (both columns) follows it — the
+    # separator is NOT hoisted to the very start of the page.
+    assert text.index("LeftB") > sep_pos
+    assert text.index("RightB") > sep_pos
+    # Band 1 itself keeps its own left-then-right order (unaffected by the
+    # separator immediately following it).
+    assert text.index("LeftA") < text.index("RightA") < sep_pos
+
+
 # --------------------------------------------------------------------------- #
 # B. Real-PDF integration via extract_pdf                                    #
 # --------------------------------------------------------------------------- #
@@ -240,6 +277,85 @@ def test_full_width_heading_then_two_columns_real_pdf():
     assert text.index("Left column line three follows") < text.index("Right column line one")
 
 
+def test_mid_page_separator_real_pdf_keeps_heading_between_bands():
+    band1 = (
+        "columns",
+        ["Left A line one is here today.", "Left A line two continues below.", "Left A line three ends this band."],
+        ["Right A line one is here today.", "Right A line two continues below.", "Right A line three ends this band."],
+    )
+    band2 = (
+        "columns",
+        ["Left B line one is here today.", "Left B line two continues below.", "Left B line three ends this band."],
+        ["Right B line one is here today.", "Right B line two continues below.", "Right B line three ends this band."],
+    )
+    raw = make_pdf_bands(
+        [
+            band1,
+            ("full", "Section Two Overview Of Additional Financial Disclosures Below"),
+            band2,
+        ]
+    )
+    result = extract_pdf(raw)
+    text = result.excerpts[0].text
+    sep_pos = text.index("Section Two Overview")
+    assert text.index("Left A line one is here today.") < sep_pos
+    assert text.index("Right A line three ends this band.") < sep_pos
+    assert text.index("Left B line one is here today.") > sep_pos
+    assert text.index("Right B line three ends this band.") > sep_pos
+    # Band A keeps its own left-then-right order, entirely before the separator.
+    assert text.index("Left A line three ends this band.") < text.index("Right A line one is here today.")
+    # Band B keeps its own left-then-right order, entirely after the separator.
+    assert text.index("Left B line three ends this band.") < text.index("Right B line one is here today.")
+
+
+def test_full_width_footer_below_two_columns_real_pdf():
+    band = (
+        "columns",
+        ["Left line one is here today.", "Left line two continues below.", "Left line three ends this band."],
+        ["Right line one is here today.", "Right line two continues below.", "Right line three ends this band."],
+    )
+    raw = make_pdf_bands(
+        [band, ("full", "This document is confidential and published for shareholders only")]
+    )
+    result = extract_pdf(raw)
+    text = result.excerpts[0].text
+    footer_pos = text.index("This document is confidential")
+    assert text.index("Left line one is here today.") < footer_pos
+    assert text.index("Right line three ends this band.") < footer_pos
+
+
+def test_multiple_full_width_separators_real_pdf():
+    raw = make_pdf_bands(
+        [
+            ("full", "Consolidated Group Results Overview For The Full Reporting Year"),
+            (
+                "columns",
+                ["Left A one is here today.", "Left A two continues below.", "Left A three ends band now."],
+                ["Right A one is here today.", "Right A two continues below.", "Right A three ends band now."],
+            ),
+            ("full", "Section Two Segment Breakdown Additional Disclosures Below"),
+            (
+                "columns",
+                ["Left B one is here today.", "Left B two continues below.", "Left B three ends band now."],
+                ["Right B one is here today.", "Right B two continues below.", "Right B three ends band now."],
+            ),
+            ("full", "This document is confidential footer note published for shareholders"),
+        ]
+    )
+    result = extract_pdf(raw)
+    text = result.excerpts[0].text
+    title_pos = text.index("Consolidated Group Results Overview")
+    sep_pos = text.index("Section Two Segment Breakdown")
+    footer_pos = text.index("This document is confidential footer")
+    left_a_pos = text.index("Left A one is here today.")
+    right_a_pos = text.index("Right A three ends band now.")
+    left_b_pos = text.index("Left B one is here today.")
+    right_b_pos = text.index("Right B three ends band now.")
+    # Strict document order: title, band A (left then right), separator,
+    # band B (left then right), footer.
+    assert title_pos < left_a_pos < right_a_pos < sep_pos < left_b_pos < right_b_pos < footer_pos
+
+
 def test_table_plus_two_column_prose_table_unaffected():
     # A table on the same document must be extracted exactly as before —
     # this fix only ever changes ``page.extract_text()`` prose ordering.
@@ -282,6 +398,61 @@ def test_ocf_and_debt_resolve_independently_from_two_column_page():
     assert FIELD_TOTAL_DEBT in by_field
     assert by_field[FIELD_TOTAL_DEBT].numeric_value == 1250.0
     # Never the OCF value under the debt field — the exact live-observed bug.
+    assert by_field[FIELD_TOTAL_DEBT].numeric_value != 4880.0
+
+
+def test_ocf_and_debt_across_a_mid_page_section_separator_stay_isolated():
+    """Same regression as above, but the OCF sentence sits in band 1 and the
+    debt sentence sits in band 2, split by a full-width section heading.
+
+    Proves requirement #9 (pre-merge correction): content association is not
+    corrupted by the vertical-band fix — band 1's own left/right content
+    cannot bleed into band 2's, and the section heading does not get spliced
+    into either sentence.
+    """
+    band1 = (
+        "columns",
+        [
+            "Cash flow generated from operating activities",
+            "amounted to EUR 4,880 million for the group",
+            "as a whole during the full financial year now.",
+        ],
+        [
+            "Group trading remained resilient across all of",
+            "our reporting segments during the year under",
+            "review, reflecting broad-based demand growth.",
+        ],
+    )
+    band2 = (
+        "columns",
+        [
+            "Total borrowings stood at EUR 1,250 million at",
+            "the end of the period under review for the",
+            "group as reported in the notes to the accounts.",
+        ],
+        [
+            "This reflects a decrease of three percent when",
+            "compared with the prior year figure previously",
+            "reported for shareholders and other investors.",
+        ],
+    )
+    raw = make_pdf_bands(
+        [
+            band1,
+            ("full", "Section Two Financing And Liquidity Overview Below"),
+            band2,
+        ]
+    )
+    extraction = extract_pdf(raw)
+    text = extraction.excerpts[0].text
+    sep_pos = text.index("Section Two Financing")
+    assert text.index("Cash flow generated from operating activities") < sep_pos
+    assert text.index("Total borrowings stood at EUR 1,250 million") > sep_pos
+
+    facts = parse_primary_facts(extraction.to_text_extraction())
+    by_field = {f.field: f for f in facts}
+    assert by_field[FIELD_OPERATING_CASH_FLOW].numeric_value == 4880.0
+    assert by_field[FIELD_TOTAL_DEBT].numeric_value == 1250.0
     assert by_field[FIELD_TOTAL_DEBT].numeric_value != 4880.0
 
 

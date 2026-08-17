@@ -856,11 +856,29 @@ def _detect_two_column_gutter(
     return (gutter_start, gutter_end)
 
 
+def _line_text(ln: dict) -> str:
+    return " ".join(
+        _layout_text(w) for w in sorted(ln["words"], key=lambda w: _layout_f(w, "x0"))
+    )
+
+
 def _reconstruct_two_column_text(
     words: Sequence[Mapping[str, object]], page_width: float
 ) -> str | None:
-    """Reconstruct left-column-then-right-column, top-to-bottom reading order
-    for a confidently two-column page.
+    """Reconstruct correct reading order for a confidently two-column page.
+
+    A full-width/midline-straddling segment (a heading, section separator, or
+    footer/note) is NEVER just hoisted to the top of the page — it is treated
+    as a VERTICAL BAND SEPARATOR that stays exactly where it sits relative to
+    the column content above and below it. The page is read top-to-bottom as
+    an alternating sequence of "bands": each band is either a single
+    full-width segment (emitted alone, in its own vertical position) or a run
+    of column segments between two full-width segments (emitted left-column
+    top-to-bottom, then right-column top-to-bottom, for that run only — never
+    across a separator). This is what keeps a mid-page section heading
+    between the content above and below it, rather than moving it to the
+    start of the page, which would corrupt scope/section association for
+    whatever comes after it.
 
     Returns ``None`` (never invents an order) whenever the page does not show
     a confident, generic two-column signal — the caller then keeps
@@ -875,20 +893,39 @@ def _reconstruct_two_column_text(
         return None
     mid = page_width / 2.0
 
-    def _line_text(ln: dict) -> str:
-        return " ".join(
-            _layout_text(w) for w in sorted(ln["words"], key=lambda w: _layout_f(w, "x0"))
-        )
+    parts: list[str] = []
+    band_left: list[dict] = []
+    band_right: list[dict] = []
 
-    header = [ln for ln in lines if _segment_side(ln, mid) == "header"]
-    left = [ln for ln in lines if _segment_side(ln, mid) == "left"]
-    right = [ln for ln in lines if _segment_side(ln, mid) == "right"]
-    ordered = (
-        sorted(header, key=lambda ln: ln["top"])
-        + sorted(left, key=lambda ln: ln["top"])
-        + sorted(right, key=lambda ln: ln["top"])
-    )
-    parts = [t for t in (_line_text(ln) for ln in ordered) if t]
+    def _flush_band() -> None:
+        for ln in sorted(band_left, key=lambda ln: ln["top"]):
+            text = _line_text(ln)
+            if text:
+                parts.append(text)
+        for ln in sorted(band_right, key=lambda ln: ln["top"]):
+            text = _line_text(ln)
+            if text:
+                parts.append(text)
+        band_left.clear()
+        band_right.clear()
+
+    for ln in sorted(lines, key=lambda ln: ln["top"]):
+        side = _segment_side(ln, mid)
+        if side == "header":
+            # A full-width segment closes whatever column band came before
+            # it (preserving that band's own top-to-bottom, left-then-right
+            # order) THEN is emitted itself, at its own vertical position —
+            # never moved to the top of the page.
+            _flush_band()
+            text = _line_text(ln)
+            if text:
+                parts.append(text)
+        elif side == "left":
+            band_left.append(ln)
+        else:
+            band_right.append(ln)
+    _flush_band()
+
     return "\n".join(parts) if parts else None
 
 

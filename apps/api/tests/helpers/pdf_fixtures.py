@@ -293,6 +293,66 @@ def make_pdf_two_column(
     return _assemble(objs)
 
 
+def make_pdf_bands(
+    bands: list[tuple],
+    *,
+    left_x: int = 60,
+    right_x: int = 320,
+    top_y: int = 700,
+    line_height: int = 16,
+    band_gap: int = 24,
+    width: int = 612,
+    height: int = 792,
+) -> bytes:
+    """Build a single-page PDF from an ordered sequence of vertical BANDS.
+
+    Each entry in ``bands`` is either ``("full", text)`` — one full-page-width
+    line (a heading, section separator, or footer/note) — or
+    ``("columns", left_lines, right_lines)`` — a run of two-column body text.
+    Bands are laid out top-to-bottom in the given order, each using its own
+    ABSOLUTE ``Tm`` placement, so a ``"full"`` band sits at its own true
+    vertical position BETWEEN the column content immediately above and below
+    it — exactly the shape needed to prove a mid-page section heading is not
+    hoisted out of its original position by column reconstruction. Used by
+    the Phase 32A corrective vertical-band-ordering regression tests.
+    """
+
+    def _esc(s: str) -> str:
+        return s.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+
+    ops: list[str] = ["BT /F1 11 Tf"]
+    y = float(top_y)
+    for band in bands:
+        if band[0] == "full":
+            text = band[1]
+            ops.append(f"1 0 0 1 40 {y} Tm ({_esc(text)}) Tj")
+            y -= band_gap
+        else:
+            _, left_lines, right_lines = band
+            n = max(len(left_lines), len(right_lines))
+            for i in range(n):
+                row_y = y - i * line_height
+                if i < len(left_lines):
+                    ops.append(f"1 0 0 1 {left_x} {row_y} Tm ({_esc(left_lines[i])}) Tj")
+                if i < len(right_lines):
+                    ops.append(f"1 0 0 1 {right_x} {row_y} Tm ({_esc(right_lines[i])}) Tj")
+            y -= n * line_height + band_gap
+    ops.append("ET")
+    cb = "\n".join(ops).encode()
+
+    objs = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        (
+            f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {width} {height}] "
+            f"/Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>"
+        ).encode(),
+        b"<< /Length %d >>\nstream\n" % len(cb) + cb + b"\nendstream",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    ]
+    return _assemble(objs)
+
+
 __all__ = [
     "make_pdf",
     "make_pdf_no_text",
@@ -302,4 +362,5 @@ __all__ = [
     "make_multi_page_scanned_pdf",
     "make_pdf_with_outline",
     "make_pdf_two_column",
+    "make_pdf_bands",
 ]
