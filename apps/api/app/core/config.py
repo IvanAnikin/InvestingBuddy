@@ -580,8 +580,15 @@ class Settings(BaseSettings):
     # Hard cap on documents ingested for one issuer in a single request (bounds
     # cost + keeps one issuer from draining the aggregate budget).
     primary_document_max_docs_per_issuer: int = 3
-    # Maximum number of bounded excerpts produced from one document.
-    primary_document_max_excerpts_per_document: int = 8
+    # Maximum number of bounded excerpts produced from one document. Phase 32A
+    # corrective (raised 8→14): a real, live-observed CFR annual report run
+    # (85 pages) never surfaced its own Group headline sales/margin figures at
+    # 8 excerpts — the relevance-ranked top-8 blocks did not include the page
+    # carrying them, even though several distinct segment/detail pages did.
+    # Ranking already scores the WHOLE document's blocks before truncating, so
+    # this only keeps more of an already-computed ranking — no extra parsing
+    # cost — and stays well inside ``primary_document_total_timeout_seconds``.
+    primary_document_max_excerpts_per_document: int = 14
     # Hard cap on characters per excerpt (a whole filing is never carried around;
     # aligned with ``llm_council_evidence_max_chars_per_item``).
     primary_document_max_excerpt_chars: int = 1200
@@ -593,8 +600,14 @@ class Settings(BaseSettings):
     primary_document_max_image_pixels: int = 40_000_000
     # Evidence-pack integration (later slice): guaranteed floor + hard cap on the
     # number of primary-document facts contributed to the council evidence pack.
+    # Phase 32A corrective (cap raised 6→10, alongside the excerpt-count raise
+    # above): a real annual report legitimately carries more than 6 distinct
+    # high-confidence facts worth the council's attention (Group AND
+    # per-segment figures are each their own distinct fact — see
+    # ``primary_fact_parser`` scope inference), and 6 was silently evicting
+    # some of them even when they had already been correctly extracted.
     primary_document_evidence_floor: int = 1
-    primary_document_evidence_cap: int = 6
+    primary_document_evidence_cap: int = 10
     # Phase 32A Slice 5 (3c-iii): freshness window (hours) for REUSING a previously
     # extracted primary document across a report regeneration. A persisted
     # ``extracted`` document whose ``retrieved_at`` is within this TTL is rebuilt

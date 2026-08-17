@@ -1013,6 +1013,18 @@ _PRIMARY_IDENTITY_FACT_FIELDS: frozenset[str] = frozenset(
     }
 )
 
+# Phase 32A corrective — scope labels that mean "this fact IS the
+# Group/consolidated figure" (the existing implicit convention for every OTHER
+# datapoint in this section, where an absent scope has always meant Group).
+# Any other non-empty scope (a segment/business-unit name, e.g. "Specialist
+# Watchmakers") must never be promoted into a canonical ``<field>_primary_filing``
+# slot — a real, live-observed regression (Phase 32A corrective): a
+# Specialist Watchmakers segment revenue of €3.1bn was silently presented as
+# if it were the Group's €22.4bn consolidated sales figure.
+_GROUP_SCOPE_LABELS: frozenset[str] = frozenset(
+    {"group", "the group", "consolidated", "consolidated group"}
+)
+
 
 def _primary_fact_dp(fact: dict[str, Any]) -> dict[str, Any]:
     """Datapoint for a parsed T1 primary-filing fact — Phase 29B.3.
@@ -1066,6 +1078,12 @@ def _high_confidence_facts_for(
         if field not in fields or field in seen:
             continue
         if fact.get("confidence") != "high":
+            continue
+        # Phase 32A corrective — only a Group-scoped (or unscoped, the
+        # existing implicit Group convention) fact may fill a canonical
+        # ``<field>_primary_filing`` slot; see ``_GROUP_SCOPE_LABELS``.
+        scope = fact.get("scope")
+        if scope and scope.strip().lower() not in _GROUP_SCOPE_LABELS:
             continue
         seen.add(field)  # type: ignore[arg-type]
         out.append((field, fact))  # type: ignore[arg-type]

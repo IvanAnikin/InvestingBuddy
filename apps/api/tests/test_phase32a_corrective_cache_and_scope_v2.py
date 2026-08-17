@@ -172,6 +172,39 @@ def test_wrong_percentage_delta_never_becomes_the_absolute_value():
     assert fact.numeric_value != 3.0
 
 
+def test_trailing_bare_percentage_mention_does_not_falsely_flag_ambiguity():
+    """A live, real-issuer regression (2026-08-17 CFR staging acceptance): a
+    second, later mention of the SAME label in one excerpt that states only a
+    bare percentage CHANGE with no absolute value nearby (e.g. "operating
+    profit was up by 23%", with no scale/currency of its own) was previously
+    counted as a second competing "magnitude" for the ambiguity check,
+    silently discarding the correctly-parsed FIRST value entirely — even
+    though that second match could never itself have produced a valid fact
+    (it has neither a scale word nor a currency)."""
+    text = (
+        "Operating profit for the year grew by 1% to EUR4,492 million, "
+        "corresponding to 20.0% of sales. Excluding the unfavourable impact "
+        "of foreign exchange rates, operating profit was up by 23%."
+    )
+    fact = _facts(text)[FIELD_OPERATING_PROFIT]
+    assert fact.numeric_value == 4492.0
+    assert fact.scale == "million"
+    assert fact.currency == "EUR"
+
+
+def test_two_genuinely_qualified_magnitudes_are_still_ambiguous():
+    """The false-positive fix must never weaken GENUINE ambiguity refusal: two
+    fully-qualified (scale + currency) mentions of the same label with
+    different magnitudes in one excerpt are still refused, not silently
+    picked."""
+    text = (
+        "Operating profit was EUR4,492 million in the period. "
+        "Operating profit was EUR9,000 million in the period."
+    )
+    facts = _facts(text)
+    assert FIELD_OPERATING_PROFIT not in facts
+
+
 def test_ocf_not_parsed_as_debt_from_nearby_borrowings():
     text = (
         "Net cash flow from operating activities was EUR4,880 million, "
