@@ -29,6 +29,20 @@ Covers:
      boundary (full stop) must not be associated (defense-in-depth,
      independent of the layout fix).
   E. HTML-over-PDF method preference in cross-method resolution.
+  F. Merge-blocker regression (independent-reviewer corrective, pre-merge):
+     ``_reconstruct_two_column_text`` now separates semantic regions with a
+     blank line (``\n\n``) rather than a single ``\n``, so that
+     ``document_text_extractor._blocks()`` — which only re-buffers (collapsing
+     single ``\n`` into a space) a >2000-char part that has NO blank line
+     inside it — can never glue a label from one region directly next to a
+     value from an unrelated region. Proven end-to-end (real layout-detection
+     primitives -> ``_reconstruct_two_column_text`` -> ``_blocks`` ->
+     ``parse_primary_facts``) against BOTH a debt-shaped and a non-debt
+     (operating profit) shaped >2000-character two-column page, and shown to
+     reproduce the fabrication under the PRE-PATCH single-``\n`` join and to
+     be absent under the actual patched function. Also proves same-column
+     (same-region) legitimate facts, including a multi-line block, are
+     unaffected.
 """
 
 from __future__ import annotations
@@ -36,6 +50,7 @@ from __future__ import annotations
 from app.services.sources.document_text_extractor import (
     DocumentExcerpt,
     DocumentTextExtraction,
+    _blocks,
 )
 from app.services.sources.extracted_fact_validator import (
     VALIDATION_REJECTED,
@@ -52,12 +67,15 @@ from app.services.sources.primary_document_extractor import (
     PrimaryDocumentExtraction,
     _detect_two_column_gutter,
     _group_words_into_lines,
+    _line_text,
     _reconstruct_two_column_text,
+    _segment_side,
     extract_pdf,
 )
 from app.services.sources.primary_fact_parser import (
     FIELD_NET_DEBT,
     FIELD_OPERATING_CASH_FLOW,
+    FIELD_OPERATING_PROFIT,
     FIELD_REVENUE,
     FIELD_TOTAL_DEBT,
     parse_primary_facts,
@@ -79,6 +97,23 @@ ISSUER = IssuerContext(
 
 def _word(text: str, x0: float, x1: float, top: float) -> dict:
     return {"text": text, "x0": x0, "x1": x1, "top": top, "bottom": top + 10}
+
+
+def _joined_excerpt_text(result) -> str:
+    """Concatenate every excerpt's text, in ``result.excerpts`` order.
+
+    Independent-reviewer corrective: ``_reconstruct_two_column_text`` now
+    separates semantic regions with a blank line (``\\n\\n``) so that
+    ``document_text_extractor._blocks()`` treats each region as its own
+    block/excerpt instead of one oversized, boundary-free block — this is
+    exactly the fix for the fabricated cross-region fact bug. A confidently
+    two-column page's content can therefore land in MULTIPLE excerpts rather
+    than a single ``excerpts[0]``; joining them (in the order
+    ``_rank_and_build_excerpts`` returns, which preserves original document
+    order whenever relevance ties, true for all these plain fixtures) is the
+    correct way to assert relative reading order end-to-end.
+    """
+    return "\n\n".join(e.text for e in result.excerpts)
 
 
 # --------------------------------------------------------------------------- #
@@ -254,7 +289,7 @@ def test_two_column_real_pdf_recovers_column_reading_order():
     result = extract_pdf(raw)
     assert result.status == STATUS_EXTRACTED
     assert any("two-column" in w for w in result.warnings)
-    text = result.excerpts[0].text
+    text = _joined_excerpt_text(result)
     # The full left-column sentence must appear intact (not interleaved with
     # right-column fragments), and must precede the right column entirely.
     assert "Cash flow generated from operating activities" in text
@@ -272,7 +307,7 @@ def test_full_width_heading_then_two_columns_real_pdf():
         heading="Consolidated Group Results Overview For The Full Reporting Year",
     )
     result = extract_pdf(raw)
-    text = result.excerpts[0].text
+    text = _joined_excerpt_text(result)
     assert text.index("Consolidated Group Results Overview") < text.index("Left column line one")
     assert text.index("Left column line three follows") < text.index("Right column line one")
 
@@ -296,7 +331,7 @@ def test_mid_page_separator_real_pdf_keeps_heading_between_bands():
         ]
     )
     result = extract_pdf(raw)
-    text = result.excerpts[0].text
+    text = _joined_excerpt_text(result)
     sep_pos = text.index("Section Two Overview")
     assert text.index("Left A line one is here today.") < sep_pos
     assert text.index("Right A line three ends this band.") < sep_pos
@@ -318,7 +353,7 @@ def test_full_width_footer_below_two_columns_real_pdf():
         [band, ("full", "This document is confidential and published for shareholders only")]
     )
     result = extract_pdf(raw)
-    text = result.excerpts[0].text
+    text = _joined_excerpt_text(result)
     footer_pos = text.index("This document is confidential")
     assert text.index("Left line one is here today.") < footer_pos
     assert text.index("Right line three ends this band.") < footer_pos
@@ -333,7 +368,7 @@ def test_multiple_full_width_separators_real_pdf():
                 ["Left A one is here today.", "Left A two continues below.", "Left A three ends band now."],
                 ["Right A one is here today.", "Right A two continues below.", "Right A three ends band now."],
             ),
-            ("full", "Section Two Segment Breakdown Additional Disclosures Below"),
+            ("full", "Section Two Additional Financial Disclosures Overview Below"),
             (
                 "columns",
                 ["Left B one is here today.", "Left B two continues below.", "Left B three ends band now."],
@@ -343,9 +378,9 @@ def test_multiple_full_width_separators_real_pdf():
         ]
     )
     result = extract_pdf(raw)
-    text = result.excerpts[0].text
+    text = _joined_excerpt_text(result)
     title_pos = text.index("Consolidated Group Results Overview")
-    sep_pos = text.index("Section Two Segment Breakdown")
+    sep_pos = text.index("Section Two Additional Financial Disclosures")
     footer_pos = text.index("This document is confidential footer")
     left_a_pos = text.index("Left A one is here today.")
     right_a_pos = text.index("Right A three ends band now.")
@@ -565,3 +600,264 @@ def test_html_pdf_conflict_is_an_explicit_rejection_not_a_silent_choice():
     rev = next(f for f in facts if f.label == FIELD_REVENUE and f.period == "2024")
     assert rev.validation_status == VALIDATION_REJECTED
     assert rev.value_numeric is None
+
+
+# --------------------------------------------------------------------------- #
+# F. Merge-blocker regression (independent-reviewer corrective, pre-merge)   #
+# --------------------------------------------------------------------------- #
+#
+# The reviewer traced a REAL production-path defect: ``_reconstruct_two_column
+# _text`` safely separates semantic regions, but that safety relied entirely
+# on fact regexes never crossing a ``\n``. Downstream, ``document_text_extra
+# ctor._blocks()`` first splits on BLANK-LINE boundaries; only a part that
+# has NO blank line inside it AND exceeds ~2000 characters gets re-buffered,
+# collapsing every single ``\n`` inside it into a space. Before this fix,
+# ``_reconstruct_two_column_text`` joined every line — regardless of which
+# region it came from — with a single ``\n``, so a long, confidently
+# two-column page had no blank line anywhere; ``_blocks()`` would then
+# rebuild it as ~900-character space-joined chunks, and a chunk boundary
+# landing between a label at the end of one region and a value at the start
+# of another spliced them together as if they were one clause. This was
+# independently reproduced as a fabricated ``total_debt = EUR 4,880m``.
+#
+# The fix (see ``_reconstruct_two_column_text``) inserts a blank line
+# (``\n\n``) at every region boundary — between the left-column run and the
+# right-column run, between one vertical band and the next, and around every
+# full-width heading/separator/footer — so ``_blocks()`` always splits at a
+# region boundary FIRST; its space-collapsing re-buffer step, when it fires
+# at all, can then only ever operate WITHIN one already-isolated region.
+#
+# These tests exercise the REAL production chain end-to-end: real
+# layout-detection primitives (``_group_words_into_lines``,
+# ``_detect_two_column_gutter``, ``_segment_side``, ``_line_text``) feed a
+# reconstruction, whose output is fed through the real
+# ``document_text_extractor._blocks()`` and the real ``parse_primary_facts``
+# — exactly the traced chain (PDF page -> reconstruction -> ``_blocks()`` ->
+# ``parse_primary_facts``).
+
+
+def _old_single_newline_reconstruct(words, page_width):
+    """Re-creates the PRE-PATCH #107 algorithm for comparison ONLY.
+
+    Uses the SAME real production primitives as the patched
+    ``_reconstruct_two_column_text`` (column detection, band grouping, side
+    classification, per-line text) — the only difference from the current,
+    patched function is the final join character: a single ``\n`` between
+    EVERY line, regardless of which semantic region it came from, exactly as
+    ``_reconstruct_two_column_text`` did before this corrective fix. This
+    lets the regression PROVE the fabrication was real under the old
+    behaviour and is gone under the actual patched function, without
+    depending on git history.
+    """
+    lines = _group_words_into_lines(words)
+    gutter = _detect_two_column_gutter(lines, page_width)
+    if gutter is None:
+        return None
+    mid = page_width / 2.0
+    parts: list[str] = []
+    band_left: list[dict] = []
+    band_right: list[dict] = []
+
+    def _flush_band() -> None:
+        for ln in sorted(band_left, key=lambda ln: ln["top"]):
+            text = _line_text(ln)
+            if text:
+                parts.append(text)
+        for ln in sorted(band_right, key=lambda ln: ln["top"]):
+            text = _line_text(ln)
+            if text:
+                parts.append(text)
+        band_left.clear()
+        band_right.clear()
+
+    for ln in sorted(lines, key=lambda ln: ln["top"]):
+        side = _segment_side(ln, mid)
+        if side == "header":
+            _flush_band()
+            text = _line_text(ln)
+            if text:
+                parts.append(text)
+        elif side == "left":
+            band_left.append(ln)
+        else:
+            band_right.append(ln)
+    _flush_band()
+    return "\n".join(parts) if parts else None
+
+
+def _facts_via_blocks(text: str):
+    """Real production chain: ``_blocks`` -> excerpts -> ``parse_primary_facts``."""
+    blocks = _blocks(text)
+    excerpts = [
+        DocumentExcerpt(excerpt_id=f"X{i}", text=b, char_count=len(b))
+        for i, b in enumerate(blocks)
+    ]
+    return parse_primary_facts(DocumentTextExtraction(excerpts=excerpts))
+
+
+def _cross_region_words(
+    *, left_final_label: str, right_first_value: str, n_filler_lines: int = 15
+) -> list[dict]:
+    """A confidently two-column page, >2000 chars once reconstructed.
+
+    The LEFT column ends with ``left_final_label`` — a bare metric label with
+    NO value anywhere in the same column. The RIGHT column immediately
+    STARTS with ``right_first_value`` — an unrelated value with no label of
+    its own attached. Neither, alone, should ever resolve to a fact; a
+    fabricated fact only appears if the two get spliced together across the
+    region boundary.
+    """
+    words: list[dict] = []
+    top = 80.0
+    for i in range(1, n_filler_lines + 1):
+        words.append(
+            _word(
+                f"Left narrative filler line number {i:02d} continues with "
+                "routine commentary text describing unrelated matters here.",
+                60.0,
+                260.0,
+                top,
+            )
+        )
+        top += 14.0
+    words.append(_word(left_final_label, 60.0, 260.0, top))
+    top = 80.0
+    words.append(_word(right_first_value, 340.0, 560.0, top))
+    top += 14.0
+    for i in range(1, n_filler_lines + 1):
+        words.append(
+            _word(
+                f"Right narrative filler line number {i:02d} continues with "
+                "routine commentary text describing unrelated matters here.",
+                340.0,
+                560.0,
+                top,
+            )
+        )
+        top += 14.0
+    return words
+
+
+def test_cross_region_debt_fabrication_reproduced_under_pre_patch_join():
+    """Proves the reviewer's finding is real: the PRE-PATCH single-``\n``
+    join fabricates ``total_debt`` from a label in one region spliced to an
+    unrelated value in another, via the real ``_blocks`` + ``parse_primary_
+    facts`` chain."""
+    words = _cross_region_words(
+        left_final_label="This section closes with references to Total debt",
+        right_first_value=(
+            "EUR 4,880 million was reported as the total for an unrelated "
+            "operating metric this year."
+        ),
+    )
+    old_text = _old_single_newline_reconstruct(words, 612.0)
+    assert old_text is not None
+    assert len(old_text) > 2000
+    assert "\n\n" not in old_text  # the pre-patch shape: no blank-line boundaries
+    facts = _facts_via_blocks(old_text)
+    by_field = {f.field: f.numeric_value for f in facts}
+    assert by_field.get(FIELD_TOTAL_DEBT) == 4880.0
+
+
+def test_cross_region_debt_fabrication_is_fixed_by_the_patch():
+    """Same >2000-char, blank-line-free-if-unpatched shape, through the REAL
+    (patched) ``_reconstruct_two_column_text`` production function — the
+    fabricated ``total_debt`` must be gone."""
+    words = _cross_region_words(
+        left_final_label="This section closes with references to Total debt",
+        right_first_value=(
+            "EUR 4,880 million was reported as the total for an unrelated "
+            "operating metric this year."
+        ),
+    )
+    new_text = _reconstruct_two_column_text(words, 612.0)
+    assert new_text is not None
+    assert len(new_text) > 2000
+    assert "\n\n" in new_text  # region boundary now present
+    facts = _facts_via_blocks(new_text)
+    by_field = {f.field: f.numeric_value for f in facts}
+    assert by_field.get(FIELD_TOTAL_DEBT) != 4880.0
+    assert FIELD_TOTAL_DEBT not in by_field
+
+
+def test_cross_region_operating_profit_fabrication_reproduced_under_pre_patch_join():
+    """Non-debt equivalent (requirement: do not special-case debt only) —
+    the same splice shape fabricates ``operating_profit`` under the
+    pre-patch join."""
+    words = _cross_region_words(
+        left_final_label="This paragraph closes with a reference to Operating profit",
+        right_first_value=(
+            "EUR 2,340 million was recorded for an unrelated separate "
+            "metric this year."
+        ),
+    )
+    old_text = _old_single_newline_reconstruct(words, 612.0)
+    assert old_text is not None
+    assert len(old_text) > 2000
+    facts = _facts_via_blocks(old_text)
+    by_field = {f.field: f.numeric_value for f in facts}
+    assert by_field.get(FIELD_OPERATING_PROFIT) == 2340.0
+
+
+def test_cross_region_operating_profit_fabrication_is_fixed_by_the_patch():
+    words = _cross_region_words(
+        left_final_label="This paragraph closes with a reference to Operating profit",
+        right_first_value=(
+            "EUR 2,340 million was recorded for an unrelated separate "
+            "metric this year."
+        ),
+    )
+    new_text = _reconstruct_two_column_text(words, 612.0)
+    assert new_text is not None
+    assert len(new_text) > 2000
+    facts = _facts_via_blocks(new_text)
+    by_field = {f.field: f.numeric_value for f in facts}
+    assert by_field.get(FIELD_OPERATING_PROFIT) != 2340.0
+    assert FIELD_OPERATING_PROFIT not in by_field
+
+
+def test_same_column_operating_profit_still_parses_after_the_patch():
+    """Preserve legitimate parsing: a label and its OWN value that sit
+    together in the SAME column (same region) must still parse correctly —
+    the patch only isolates DIFFERENT regions from each other."""
+    words = [
+        _word("Left narrative filler line continues here today.", 60.0, 260.0, 80.0),
+        _word(
+            "Operating profit amounted to EUR 3,120 million for the year.",
+            60.0,
+            260.0,
+            94.0,
+        ),
+        _word("Left narrative filler line continues here again.", 60.0, 260.0, 108.0),
+        _word("Right narrative filler line continues here today.", 340.0, 560.0, 80.0),
+        _word("Right narrative filler line continues again below.", 340.0, 560.0, 94.0),
+        _word("Right narrative filler line ends this band now.", 340.0, 560.0, 108.0),
+    ]
+    text = _reconstruct_two_column_text(words, 612.0)
+    assert text is not None
+    facts = _facts_via_blocks(text)
+    by_field = {f.field: f.numeric_value for f in facts}
+    assert by_field.get(FIELD_OPERATING_PROFIT) == 3120.0
+
+
+def test_same_block_multi_line_region_still_parses_the_correct_fact():
+    """A single (multi-line) region — many filler lines PLUS one line that
+    itself carries a complete label+value — must still resolve correctly
+    even though the region as a whole spans many ``\n``-joined lines."""
+    left_lines = [f"Filler commentary line number {i:02d} about unrelated topics." for i in range(1, 6)]
+    left_lines.insert(3, "Total debt of EUR 1,250 million was reported at year end.")
+    right_lines = [f"Other column filler line number {i:02d} about unrelated topics." for i in range(1, 6)]
+    words: list[dict] = []
+    top = 80.0
+    for ln in left_lines:
+        words.append(_word(ln, 60.0, 260.0, top))
+        top += 14.0
+    top = 80.0
+    for ln in right_lines:
+        words.append(_word(ln, 340.0, 560.0, top))
+        top += 14.0
+    text = _reconstruct_two_column_text(words, 612.0)
+    assert text is not None
+    facts = _facts_via_blocks(text)
+    by_field = {f.field: f.numeric_value for f in facts}
+    assert by_field.get(FIELD_TOTAL_DEBT) == 1250.0

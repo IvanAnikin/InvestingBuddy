@@ -884,6 +884,22 @@ def _reconstruct_two_column_text(
     a confident, generic two-column signal — the caller then keeps
     pdfplumber's untouched default single-stream ``extract_text()`` order,
     exactly as before this fix.
+
+    Independent-reviewer corrective: adjacent SEMANTIC REGIONS (a column run,
+    the other column's run, a full-width heading/separator/footer) are joined
+    with a blank line (``\n\n``), not a single ``\n``. A single ``\n`` is only
+    ever used BETWEEN two lines that belong to the SAME region (e.g.
+    consecutive lines within one column run). This matters downstream:
+    ``document_text_extractor._blocks()`` first splits on blank-line
+    boundaries, and only re-buffers (collapsing single ``\n`` into a space) a
+    part that is itself over ~2000 characters with no blank line inside it.
+    Without a blank line at every region boundary, a whole two-column page
+    could previously become ONE such oversized, boundary-free part, and that
+    re-buffering step could then glue a label from one region directly next
+    to a value from an unrelated region (reproduced live as a fabricated
+    ``total_debt``). Blank lines at every region boundary make each region
+    its own ``_blocks()`` part, so that collapsing step — when it fires at
+    all — only ever operates WITHIN one already-isolated region.
     """
     if not words or len(words) > _MAX_WORDS_PER_PAGE_FOR_LAYOUT:
         return None
@@ -893,19 +909,28 @@ def _reconstruct_two_column_text(
         return None
     mid = page_width / 2.0
 
+    # Each entry is one SEMANTIC REGION's text (a full column run, or a
+    # single full-width segment) with its own internal lines already joined
+    # by a single ``\n``. Regions are joined together with ``\n\n`` below.
     parts: list[str] = []
     band_left: list[dict] = []
     band_right: list[dict] = []
 
+    def _column_text(band: list[dict]) -> str:
+        column_lines = [
+            text
+            for ln in sorted(band, key=lambda ln: ln["top"])
+            if (text := _line_text(ln))
+        ]
+        return "\n".join(column_lines)
+
     def _flush_band() -> None:
-        for ln in sorted(band_left, key=lambda ln: ln["top"]):
-            text = _line_text(ln)
-            if text:
-                parts.append(text)
-        for ln in sorted(band_right, key=lambda ln: ln["top"]):
-            text = _line_text(ln)
-            if text:
-                parts.append(text)
+        left_text = _column_text(band_left)
+        right_text = _column_text(band_right)
+        if left_text:
+            parts.append(left_text)
+        if right_text:
+            parts.append(right_text)
         band_left.clear()
         band_right.clear()
 
@@ -926,7 +951,7 @@ def _reconstruct_two_column_text(
             band_right.append(ln)
     _flush_band()
 
-    return "\n".join(parts) if parts else None
+    return "\n\n".join(parts) if parts else None
 
 
 # --------------------------------------------------------------------------- #
