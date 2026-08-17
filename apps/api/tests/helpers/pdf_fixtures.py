@@ -240,6 +240,59 @@ def make_pdf_with_outline(pages_text: list[str], bookmarks: dict[int, str]) -> b
     return out.getvalue()
 
 
+def make_pdf_two_column(
+    left_lines: list[str],
+    right_lines: list[str],
+    *,
+    heading: str | None = None,
+    left_x: int = 60,
+    right_x: int = 320,
+    top_y: int = 700,
+    line_height: int = 16,
+    width: int = 612,
+    height: int = 792,
+) -> bytes:
+    """Build a single-page PDF with two independently-positioned text columns.
+
+    Each column line is placed with an ABSOLUTE ``Tm`` matrix (not relative
+    ``Td``/``T*``), so a left/right line pair at the SAME row index shares the
+    SAME vertical position on the page — exactly the shape that defeats
+    pdfplumber's default top-to-bottom ``extract_text()`` reading order (it
+    interleaves the two columns line-by-line instead of reading one column
+    fully, then the other). An optional ``heading`` is drawn as one wide,
+    full-page-width line above both columns. Used to prove the Phase 32A
+    corrective generic column-reconstruction fix without any hardcoded
+    company/document content.
+    """
+
+    def _esc(s: str) -> str:
+        return s.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+
+    ops: list[str] = ["BT /F1 11 Tf"]
+    if heading:
+        ops.append(f"1 0 0 1 40 {top_y + 2 * line_height} Tm ({_esc(heading)}) Tj")
+    for i, ln in enumerate(left_lines):
+        y = top_y - i * line_height
+        ops.append(f"1 0 0 1 {left_x} {y} Tm ({_esc(ln)}) Tj")
+    for i, ln in enumerate(right_lines):
+        y = top_y - i * line_height
+        ops.append(f"1 0 0 1 {right_x} {y} Tm ({_esc(ln)}) Tj")
+    ops.append("ET")
+    cb = "\n".join(ops).encode()
+
+    objs = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        (
+            f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {width} {height}] "
+            f"/Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>"
+        ).encode(),
+        b"<< /Length %d >>\nstream\n" % len(cb) + cb + b"\nendstream",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    ]
+    return _assemble(objs)
+
+
 __all__ = [
     "make_pdf",
     "make_pdf_no_text",
@@ -248,4 +301,5 @@ __all__ = [
     "make_pdf_with_image",
     "make_multi_page_scanned_pdf",
     "make_pdf_with_outline",
+    "make_pdf_two_column",
 ]

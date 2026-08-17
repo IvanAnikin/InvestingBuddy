@@ -217,14 +217,33 @@ _TREND_CLAUSE = (
 # broader/plain field — each span of text promotes to exactly one field,
 # preserving metric identity instead of conflating two distinct disclosed
 # figures that happen to share a common suffix word.
-def _money_pattern(label_alts: str, *, exclude_prefix: str | None = None) -> re.Pattern[str]:
+def _money_pattern(
+    label_alts: str,
+    *,
+    exclude_prefix: str | None = None,
+    strict_clause: bool = False,
+) -> re.Pattern[str]:
+    """Build a label -> (number, scale) pattern.
+
+    ``strict_clause`` (Phase 32A corrective — safe debt parsing) additionally
+    forbids the label-to-value gap from crossing a sentence-ending period.
+    Debt/borrowings fields use this: a label and value separated by a full
+    stop are two different clauses/sentences, and a real, live-observed
+    failure showed a debt-vocabulary label ending up unrelated-sentence-close
+    to a DIFFERENT metric's value (Phase 32A corrective — see
+    ``extracted_fact_validator``/layout-reconstruction fix, which addresses
+    the same failure at its root: column-interleaved PDF text). This is a
+    narrow, generic defensive tightening — it never inspects a specific
+    label/value combination, only whether they share one clause.
+    """
     guard = rf"(?<!{re.escape(exclude_prefix)})" if exclude_prefix else ""
+    gap = r"[^\d\n.]{0,25}?" if strict_clause else r"[^\d\n]{0,25}?"
     return re.compile(
         rf"{guard}(?:{label_alts})"
         rf"{_PERIOD_QUALIFIER}"
         rf"{_TREND_CLAUSE}"
         rf"(?:\s+(?:of|was|were|to|at|amounted to|reached|totalled|totaled|:))?"
-        rf"[^\d\n]{{0,25}}?"
+        rf"{gap}"
         rf"[€£$]?\s*{_NUM}\s*(?:{_SCALE})?",
         re.IGNORECASE,
     )
@@ -300,8 +319,14 @@ _MONEY_FIELDS: list[tuple[str, re.Pattern[str]]] = [
     # — not itself stating a debt figure — matching a nearby unrelated number.
     # "total"/"gross" qualified mentions are a genuine, low-ambiguity signal;
     # the bare word alone is not.
-    (FIELD_TOTAL_DEBT, _money_pattern(r"total debt|gross debt|total borrowings|gross borrowings")),
-    (FIELD_NET_DEBT, _money_pattern(r"net (?:financial )?debt")),
+    (
+        FIELD_TOTAL_DEBT,
+        _money_pattern(
+            r"total debt|gross debt|total borrowings|gross borrowings",
+            strict_clause=True,
+        ),
+    ),
+    (FIELD_NET_DEBT, _money_pattern(r"net (?:financial )?debt", strict_clause=True)),
     (FIELD_CASH, _money_pattern(r"cash and cash equivalents")),
     (
         FIELD_NET_CASH,
