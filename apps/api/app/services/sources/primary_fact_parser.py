@@ -154,12 +154,18 @@ def _scale_word(w: str | None) -> str | None:
 def _find_currency(text: str) -> str | None:
     low = text.lower()
     # Prefer explicit "in millions of euros" / "reporting currency" phrasing.
+    # A currency WORD (as opposed to a symbol like "€") must be matched at
+    # letter-boundaries, not as a raw substring — "eur" is also a substring
+    # of "Europe"/"European", "usd" can sit inside issuer-specific tickers,
+    # etc. Symbols (€, £, $) never collide with ordinary words, so they are
+    # still matched as plain substrings.
     for word, code in _CURRENCY_WORDS.items():
-        if word in low:
+        if word in _CURRENCY_SYMBOLS:
+            if word in text:
+                return code
+            continue
+        if re.search(rf"(?<![a-z]){re.escape(word)}(?![a-z])", low):
             return code
-    for sym in _CURRENCY_SYMBOLS:
-        if sym in text:
-            return _CURRENCY_WORDS[sym]
     return None
 
 
@@ -202,11 +208,35 @@ _PERIOD_QUALIFIER = (
 # value — without consuming it here, the loose label→value gap below could
 # grab the percentage figure instead of the real value (a real, live-observed
 # failure on an actual issuer report — Phase 32A corrective).
+#
+# The trailing ``?+`` is a POSSESSIVE optional quantifier (not a plain ``?``):
+# once this clause matches a trend phrase here, that consumption is locked in
+# and can never be given up by backtracking. Without this, a sentence with a
+# trend percentage but NO absolute value at all (e.g. "operating profit was
+# up by 23% in Europe.") would have the engine retry the whole match with the
+# trend clause "un-consumed", letting the plain connector+gap fallback below
+# grab the trend percentage itself as if it were the metric's value — an
+# independently reproduced fabrication bug (Phase 32A corrective, PR #107
+# merge-blocker fix). A plain ``?`` cannot prevent this: it only controls
+# whether the clause is *tried*, not whether a successful match may later be
+# undone to let a different branch succeed.
 _TREND_CLAUSE = (
     r"(?:\s+(?:rose|grew|grow|increased|increase|fell|fall|declined|decline"
     r"|decreased|decrease|dropped|drop|climbed|slipped|improved|improve"
     r"|was up|were up|was down|were down)"
-    r"\s+(?:by\s+)?\d+(?:[.,]\d+)?\s*%)?"
+    r"\s+(?:by\s+)?\d+(?:[.,]\d+)?\s*%)?+"
+)
+
+# Same idea as ``_TREND_CLAUSE`` but for percent-level fields (e.g. operating
+# margin), where the trend unit can also be "percentage points" or "basis
+# points" — never a bare "%" change mistaken for the metric's own level. Also
+# possessive-optional for the same non-backtracking reason.
+_PERCENT_TREND_CLAUSE = (
+    r"(?:\s+(?:rose|grew|grow|increased|increase|fell|fall|declined|decline"
+    r"|decreased|decrease|dropped|drop|climbed|slipped|improved|improve"
+    r"|was up|were up|was down|were down)"
+    r"\s+(?:by\s+)?\d+(?:[.,]\d+)?\s*"
+    r"(?:percentage\s+points?|basis\s+points?|%))?+"
 )
 
 
@@ -253,7 +283,13 @@ def _money_pattern(
         rf"{_TREND_CLAUSE}"
         rf"(?:\s+(?:of|was|were|to|at|amounted to|reached|totalled|totaled|:))?"
         rf"(?P<gap>[^\d\n]{{0,25}}?)"
-        rf"[€£$]?\s*{_NUM}\s*(?:{_SCALE})?",
+        # A money value is never itself expressed with a trailing "%" — this
+        # negative lookahead is the second, defence-in-depth guard (beyond
+        # the possessive ``_TREND_CLAUSE`` above) against a percentage
+        # CHANGE figure being captured as though it were an absolute money
+        # amount, e.g. "operating profit was up by 23% in Europe." (Phase
+        # 32A corrective, PR #107 merge-blocker fix).
+        rf"[€£$]?\s*{_NUM}\s*(?:{_SCALE})?(?!\s*%)",
         re.IGNORECASE,
     )
 
@@ -263,12 +299,20 @@ def _money_pattern(
 # taken from a percent sign explicitly present in the source text — this
 # parser never computes a margin from a profit/revenue pair (see module
 # docstring: "No inference of a missing financial").
+#
+# ``_PERCENT_TREND_CLAUSE`` (possessive-optional, see its definition) absorbs
+# a leading trend phrase — "was up by 23%", "rose 120 basis points" — before
+# the connector/gap/number below ever runs, so a bare percentage CHANGE with
+# no absolute level stated afterward yields NO match at all (Phase 32A
+# corrective, PR #107 merge-blocker fix), while "...rose 120 basis points to
+# 20.0%" still correctly parses the trailing 20.0 as the level.
 def _percent_pattern(label_alts: str, *, exclude_prefix: str | None = None) -> re.Pattern[str]:
     guard = rf"(?<!{re.escape(exclude_prefix)})" if exclude_prefix else ""
     _ALL_LABEL_ALTS.append(label_alts)
     return re.compile(
         rf"{guard}(?:{label_alts})"
         rf"{_PERIOD_QUALIFIER}"
+        rf"{_PERCENT_TREND_CLAUSE}"
         rf"(?:\s+(?:of|was|were|stood at|reached|at|:))?"
         rf"(?P<gap>[^\d\n%]{{0,25}}?)"
         rf"(?P<num>\d[\d.,]*)\s*%",
