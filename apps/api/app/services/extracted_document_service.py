@@ -44,6 +44,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.extracted_document import ExtractedDocument, ExtractedFact
 from app.services.sources.extraction_pipeline_version import (
     CURRENT_EXTRACTION_PIPELINE_VERSION,
+    EXTRACTION_TEXT_LAYER_MIN_VERSION,
 )
 from app.services.sources.redaction import canonicalize_source_url
 
@@ -716,6 +717,31 @@ def _has_unreconstructable_table_facts(
     return any(_is_table_derived_fact(f, excerpt_ids) for f in facts)
 
 
+def _requires_full_reextraction(
+    doc: ExtractedDocument,
+    facts: "Sequence[ExtractedFact]",
+) -> bool:
+    """True when ``doc`` cannot be safely brought current from its own
+    persisted ``excerpts_json`` alone and must instead undergo Case B (one
+    bounded re-fetch + re-extraction of its own ``canonical_url``).
+
+    Two independent triggers, either sufficient on its own:
+      * at least one active fact is TABLE-derived (see
+        ``_has_unreconstructable_table_facts`` — the raw table grid is
+        never persisted, so prose-only replay can't reproduce it); or
+      * ``doc.pipeline_version`` predates
+        ``EXTRACTION_TEXT_LAYER_MIN_VERSION`` — the persisted excerpt TEXT
+        itself was produced by an OLDER raw-text extractor (e.g. before
+        two-column reading-order reconstruction) and may be genuinely
+        garbled, not just under-interpreted; re-deriving facts from that
+        same stale text under current-code semantics would silently keep
+        serving the old, potentially-mislabeled values.
+    """
+    if _has_unreconstructable_table_facts(facts, doc.excerpts_json):
+        return True
+    return (doc.pipeline_version or 0) < EXTRACTION_TEXT_LAYER_MIN_VERSION
+
+
 async def _deactivate_active_facts(session: AsyncSession, document_id: uuid.UUID) -> None:
     """Flip every currently-active fact of ``document_id`` to historical.
 
@@ -893,12 +919,16 @@ async def _revalidate_document(
 ) -> "PrimaryDocumentArtifact":
     """Bring a stale/legacy ``doc`` up to the current pipeline version.
 
-    Case A — no active fact is table-derived (including none at all): the
-    persisted ``excerpts_json`` is a COMPLETE source for everything
-    derivable, so facts are re-derived from it under current-code semantics
-    — no network fetch. Case B — at least one active fact is table-derived:
-    excerpts alone are insufficient, so ONE full, bounded re-extraction of
-    the document's own ``canonical_url`` is attempted. Case C — that
+    Case A — no active fact is table-derived AND ``doc.pipeline_version``
+    already reflects the current raw-text extraction layer (see
+    ``EXTRACTION_TEXT_LAYER_MIN_VERSION``): the persisted ``excerpts_json``
+    is a COMPLETE, TRUSTWORTHY source for everything derivable, so facts
+    are re-derived from it under current-code semantics — no network
+    fetch. Case B — either at least one active fact is table-derived, OR
+    the persisted excerpt text itself predates the current extraction
+    layer (see ``_requires_full_reextraction``): excerpts alone are
+    insufficient/untrustworthy, so ONE full, bounded re-extraction of the
+    document's own ``canonical_url`` is attempted. Case C — that
     re-extraction fails: fail closed (see
     ``_degraded_artifact_after_failed_reextraction``).
 
@@ -908,7 +938,7 @@ async def _revalidate_document(
     facts never mix" and "a partial rebuild never gets restamped current"
     both hold by construction.
     """
-    if _has_unreconstructable_table_facts(existing_active_facts, doc.excerpts_json):
+    if _requires_full_reextraction(doc, existing_active_facts):
         artifact = await _attempt_full_reextraction(
             doc,
             cfg=cfg,

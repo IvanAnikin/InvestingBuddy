@@ -52,23 +52,45 @@ from __future__ import annotations
 # Baseline: every ``ExtractedDocument`` row persisted before Phase 32A
 # Problems A-C (2026-08) predates explicit versioning and is treated as
 # version 1 when NULL. Version 2 was that slice's parser/validator/scope
-# bump. Version 3 (this corrective slice) fixes: the year-less "for the
-# year" trend-clause regression that let a percentage change be promoted as
-# the absolute value; per-fact (not per-excerpt) prose scope inference from
-# an explicit "Group's <Segment>" / named-subject sentence construction;
-# nearest-year (not first-anywhere) period derivation for a money/percent
-# fact; the LVMH "profit from recurring operations" vocabulary gap; and —
-# most importantly — the derivation-completeness invariant itself: a
-# document whose active facts include a TABLE-derived figure can no longer
-# be silently declared current from an excerpts-only (prose-only)
-# revalidation, because the raw table grid is never persisted and such a
-# revalidation can only ever recover the prose subset. See
+# bump. Version 3 fixed: the year-less "for the year" trend-clause
+# regression that let a percentage change be promoted as the absolute
+# value; per-fact (not per-excerpt) prose scope inference from an explicit
+# "Group's <Segment>" / named-subject sentence construction; nearest-year
+# (not first-anywhere) period derivation for a money/percent fact; the
+# LVMH "profit from recurring operations" vocabulary gap; and the
+# derivation-completeness invariant itself: a document whose active facts
+# include a TABLE-derived figure can no longer be silently declared
+# current from an excerpts-only (prose-only) revalidation, because the raw
+# table grid is never persisted and such a revalidation can only ever
+# recover the prose subset. See
 # ``app.services.extracted_document_service.load_reusable_documents`` for the
 # full-reconstruction-or-fail-closed policy this version bump now triggers.
+#
+# Version 4 (this corrective slice, PR #107 follow-up) changed the RAW TEXT
+# EXTRACTION layer itself, not just the code that interprets already
+# -extracted text: ``primary_document_extractor._extract_one_page`` gained
+# column-aware reading-order reconstruction for two-column PDF pages, so a
+# document's persisted ``excerpts_json`` written under version <4 can be
+# genuinely GARBLED (column-interleaved) rather than merely
+# under-interpreted. Case A revalidation ("no table-derived active fact ⇒
+# safely re-derive from persisted excerpts alone, no re-fetch") assumes the
+# persisted excerpt TEXT itself is trustworthy and only the INTERPRETATION
+# of it changed — that assumption is false for any row written under
+# version <4. See ``EXTRACTION_TEXT_LAYER_MIN_VERSION`` below and
+# ``extracted_document_service._requires_full_reextraction``, which forces
+# Case B (full re-fetch + re-extraction) for any such row regardless of
+# whether its active facts are table-derived.
 LEGACY_EXTRACTION_PIPELINE_VERSION = 1
-CURRENT_EXTRACTION_PIPELINE_VERSION = 3
+CURRENT_EXTRACTION_PIPELINE_VERSION = 4
+
+# The pipeline version at/after which persisted ``excerpts_json`` text is
+# guaranteed to have been produced by column-aware page extraction. A
+# document stamped below this version must undergo a full re-extraction
+# (never an excerpts-only replay) to pick up the corrected raw text.
+EXTRACTION_TEXT_LAYER_MIN_VERSION = 4
 
 __all__ = [
     "LEGACY_EXTRACTION_PIPELINE_VERSION",
     "CURRENT_EXTRACTION_PIPELINE_VERSION",
+    "EXTRACTION_TEXT_LAYER_MIN_VERSION",
 ]
