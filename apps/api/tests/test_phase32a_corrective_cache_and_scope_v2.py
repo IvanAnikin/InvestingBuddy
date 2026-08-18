@@ -59,6 +59,7 @@ from app.services.sources.extracted_fact_validator import (
 )
 from app.services.sources.extraction_pipeline_version import (
     CURRENT_EXTRACTION_PIPELINE_VERSION,
+    EXTRACTION_TEXT_LAYER_MIN_VERSION,
     LEGACY_EXTRACTION_PIPELINE_VERSION,
 )
 from app.services.sources.primary_document_extractor import (
@@ -740,6 +741,59 @@ async def test_cache_case_b_content_hash_mismatch_handled_safely(session):
     await session.refresh(doc)
     assert doc.pipeline_version == LEGACY_EXTRACTION_PIPELINE_VERSION
     assert doc.content_hash == "p" * 64  # identity of the original row is untouched
+
+
+async def test_cache_stale_extraction_text_layer_forces_full_reextraction_even_without_table_facts(session):
+    """A document with ONLY prose-derived active facts (no table-derived
+    fact at all — the exact shape that used to qualify for the excerpts
+    -only Case A fast path) but stamped BELOW
+    ``EXTRACTION_TEXT_LAYER_MIN_VERSION`` must still go through Case B (one
+    bounded re-fetch + re-extraction), never a same-stale-text replay.
+
+    Regression for a live CFR staging finding (PR #107 follow-up,
+    2026-08-18): the two-column PDF reading-order fix changed what RAW TEXT
+    ``primary_document_extractor`` produces, not just how that text is
+    interpreted. A version bump alone (3→4) is not sufficient if Case A's
+    "no table-derived fact ⇒ safe to replay the persisted excerpts" branch
+    is left untouched — a prose-only document written under the OLD,
+    column-interleaved extractor would still be silently re-derived from
+    its own stale, garbled excerpt text and keep serving the same wrong
+    values (e.g. an operating-cash-flow figure mislabeled as debt).
+    """
+    company = await _add_company(session)
+    run = await _add_run(session)
+    content_hash = "n" * 64
+    art = _prose_artifact(content_hash=content_hash)
+    await persist_primary_document_artifacts(
+        session, artifacts=[art], company_id=company.id, agent_run_id=run.id, cfg=_cfg()
+    )
+    doc = (
+        await session.execute(
+            select(ExtractedDocument).where(ExtractedDocument.content_hash == content_hash)
+        )
+    ).scalar_one()
+    # Stamped at 3: predates the extraction-text-layer bump to 4, but is
+    # NOT the legacy/unstamped baseline either — this is exactly the shape
+    # a document persisted by the PREVIOUS (pre-PR-107) deploy would have.
+    doc.pipeline_version = EXTRACTION_TEXT_LAYER_MIN_VERSION - 1
+    await session.flush()
+
+    calls: list[str] = []
+
+    async def fake_extractor(url, *, allowed_domains, title_hint=None, issuer_context=None, cfg=None):
+        calls.append(url)
+        return _full_reextraction_artifact(content_hash=content_hash)
+
+    lookup = await load_reusable_documents(
+        session, company_id=company.id, cfg=_cfg(), primary_document_extractor=fake_extractor
+    )
+    reused = lookup[canonicalize_source_url(_URL)]
+
+    assert calls == [_URL]  # Case B triggered — a real re-fetch happened, not a replay
+    assert reused.revalidated is True
+
+    await session.refresh(doc)
+    assert doc.pipeline_version == CURRENT_EXTRACTION_PIPELINE_VERSION
 
 
 async def test_cache_current_version_document_with_table_facts_retains_fast_path(session):

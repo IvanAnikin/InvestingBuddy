@@ -71,6 +71,7 @@ from app.services.sources.evidence import PrimaryFactRef, build_evidence_item
 from app.services.sources.extracted_fact_validator import (
     VALIDATION_VALIDATED,
     IssuerContext,
+    ValidatedFact,
     validate_extracted_facts,
 )
 from app.services.sources.extraction_pipeline_version import (
@@ -718,14 +719,22 @@ async def test_cache_1_same_pipeline_version_reuses_facts_as_is(session):
 # 2 + 3 + 5. changed parser/validator version: old facts NOT trusted; raw
 # excerpts reused (no fetch) but facts RE-DERIVED under current semantics; a
 # fact only the CURRENT parser recognises appears without a network fetch.
-async def test_cache_2_3_5_stale_version_revalidates_from_reused_excerpts(session):
+async def test_cache_2_3_5_stale_version_triggers_full_reextraction_not_stale_replay(session):
+    """Superseded assumption (PR #107 follow-up, 2026-08-18): a
+    LEGACY-pipeline-version row used to be safely re-derivable from its own
+    persisted excerpts alone whenever none of its active facts were
+    table-derived (Case A, no network fetch). That is no longer safe once
+    the pipeline version also gates the RAW TEXT EXTRACTION layer itself
+    (see ``EXTRACTION_TEXT_LAYER_MIN_VERSION``) — a legacy row's persisted
+    excerpt text may itself be stale/garbled (e.g. pre-column-aware-PDF
+    -reconstruction), not just under-interpreted. Any row below that
+    threshold must now go through Case B (one bounded re-fetch +
+    re-extraction of its own ``canonical_url``), proven here by injecting a
+    fake extractor and asserting it is actually called.
+    """
     cfg = _cfg()
     company = await _add_company(session)
     run = await _add_run(session)
-    # Persist a document via the real writer, then downgrade its stamped
-    # version to simulate a row written under OLDER parser/validator code —
-    # and delete the (would-be-stale) persisted ExtractedFact row, proving
-    # the rebuilt fact is NEWLY DERIVED from the excerpt text, not reused.
     art = _artifact(
         content_hash="b" * 64,
         excerpts=[_excerpt("X1", "Revenue was EUR1,250 million in 2026.")],
@@ -737,18 +746,58 @@ async def test_cache_2_3_5_stale_version_revalidates_from_reused_excerpts(sessio
     row.pipeline_version = LEGACY_EXTRACTION_PIPELINE_VERSION
     await session.flush()
 
+    calls: list[str] = []
+
+    async def fake_extractor(url, *, allowed_domains, title_hint=None, issuer_context=None, cfg=None):
+        calls.append(url)
+        extraction = PrimaryDocumentExtraction(
+            content_hash="b" * 64,
+            mime_type="text/html",
+            extraction_method="html",
+            status=STATUS_EXTRACTED,
+            page_count=1,
+            excerpts=[_excerpt("X1", "Revenue was EUR1,250 million in 2026.")],
+        )
+        return PrimaryDocumentArtifact(
+            source_url=_URL,
+            document_type="press_release",
+            title="FY26 Results",
+            retrieved_at=_utcnow(),
+            status=STATUS_EXTRACTED,
+            extraction=extraction,
+            validated_facts=[
+                ValidatedFact(
+                    label="revenue",
+                    value_numeric=1250.0,
+                    value_text="EUR1,250 million",
+                    unit="currency_amount",
+                    currency="EUR",
+                    scale="million",
+                    period="2026",
+                    page_number=3,
+                    table_location="X1",
+                    extraction_method="html",
+                    confidence=0.9,
+                    validation_status=VALIDATION_VALIDATED,
+                    needs_human_review=True,
+                )
+            ],
+        )
+
     lookup = await load_reusable_documents(
         session,
         company_id=company.id,
         cfg=cfg,
         issuer_context=IssuerContext(company_name="Example Issuer", ticker="CFR"),
+        primary_document_extractor=fake_extractor,
     )
     reused = lookup[canonicalize_source_url(_URL)]
     assert reused.pipeline_version_matched is False
     assert reused.revalidated is True
-    # No network fetch happened (this is purely a DB read + re-derivation);
-    # the revenue fact is NEWLY promoted from the reused excerpt text by the
-    # CURRENT ``extracted_fact_validator`` — not from a persisted row.
+    # A real re-fetch of this document's own canonical_url happened — the
+    # persisted excerpt text is never trusted unconditionally for a legacy
+    # -pipeline-version row, even a prose-only one.
+    assert calls == [_URL]
     labels = {f.label for f in reused.artifact.validated_facts if f.validation_status == VALIDATION_VALIDATED}
     assert "revenue" in labels
 
