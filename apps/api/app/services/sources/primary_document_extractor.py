@@ -35,7 +35,7 @@ from __future__ import annotations
 import hashlib
 import re
 import time
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from html.parser import HTMLParser
 
 from pydantic import BaseModel, Field
@@ -707,6 +707,254 @@ def classify_pdf_failure(raw: bytes, exc: BaseException | None) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# Layout-aware column reconstruction (Phase 32A corrective)
+#
+# ``page.extract_text()`` reads pdfplumber's default reading order, which
+# sorts words primarily by vertical position — on a genuine two-column page
+# this INTERLEAVES the two columns line-by-line instead of reading the left
+# column fully, then the right. A live CFR staging run proved this splices an
+# unrelated fragment from the OTHER column into the middle of a sentence
+# (e.g. a label ends up sitting next to a value that actually belongs to a
+# different metric), which is the direct root cause of both missing Group
+# headline figures and a real observed OCF value being mislabelled as
+# ``total_debt``. This section reconstructs correct column-then-column
+# reading order for a CONFIDENTLY two-column page and changes NOTHING for
+# every other page shape (single-column, ambiguous, etc.) — those keep the
+# exact pre-existing ``extract_text()`` behaviour untouched.
+#
+# Generic + bounded by design:
+#   * No company, page number, exact coordinate, or segment name is ever
+#     hardcoded — detection is purely a function of word bounding boxes.
+#   * A page is only ever reconstructed when the signal is confident (see
+#     ``_detect_two_column_gutter``); otherwise this returns ``None`` and the
+#     caller falls back to the untouched default path — never invents an
+#     order.
+#   * Word count per page is capped (``_MAX_WORDS_PER_PAGE_FOR_LAYOUT``) so a
+#     pathological word count cannot turn this into a CPU-DoS vector; a page
+#     over the cap simply skips reconstruction (fail closed, not slow).
+# --------------------------------------------------------------------------- #
+
+# Object-abuse guard: a page with a pathological word count skips layout
+# reconstruction entirely (falls back to the untouched default path) rather
+# than doing unbounded clustering work.
+_MAX_WORDS_PER_PAGE_FOR_LAYOUT = 6000
+# Words within this many points of vertical position are treated as the same
+# visual line (typical single-spaced body text row height tolerance).
+_LAYOUT_LINE_Y_TOLERANCE = 3.0
+# A candidate gutter must be at least this wide (points AND fraction of page
+# width, whichever is larger) to be treated as a real column gap rather than
+# ordinary word/kerning spacing.
+_LAYOUT_MIN_GUTTER_PT = 14.0
+_LAYOUT_MIN_GUTTER_FRACTION = 0.03
+# Each side of the page must contribute at least this many segments that sit
+# ENTIRELY on one side of the page's own vertical midline before a gutter is
+# trusted — avoids misreading a single stray indented line/footnote as a
+# whole second column.
+_LAYOUT_MIN_COLUMN_LINES = 3
+
+
+def _layout_f(w: Mapping[str, object], key: str) -> float:
+    value = w.get(key, 0.0)
+    return float(value) if isinstance(value, (int, float)) else 0.0
+
+
+def _layout_text(w: Mapping[str, object]) -> str:
+    value = w.get("text", "")
+    return value if isinstance(value, str) else ""
+
+
+def _segment_from_words(words: list[Mapping[str, object]]) -> dict:
+    return {
+        "top": _layout_f(words[0], "top"),
+        "x0": min(_layout_f(w, "x0") for w in words),
+        "x1": max(_layout_f(w, "x1") for w in words),
+        "words": words,
+    }
+
+
+def _group_words_into_lines(words: Sequence[Mapping[str, object]]) -> list[dict]:
+    """Cluster words into visual line SEGMENTS: same visual row (``top``
+    within tolerance) AND horizontally contiguous — a gap between two
+    consecutive words at least as wide as a candidate column gutter ends the
+    current segment and starts a new one.
+
+    This split-on-big-gap step (rather than merging an entire row into one
+    bounding box regardless of internal gaps) is what lets a genuine
+    two-column ROW naturally become two narrow segments — one per column —
+    while a genuine full-width heading (no internal gap that size) stays one
+    segment spanning its own true text extent. Pure and generic: only reads
+    the ``text``/``x0``/``x1``/``top`` keys pdfplumber's
+    ``page.extract_words()`` always returns.
+    """
+    ordered = sorted(words, key=lambda w: (round(_layout_f(w, "top"), 1), _layout_f(w, "x0")))
+    rows: list[list[Mapping[str, object]]] = []
+    for w in ordered:
+        top = _layout_f(w, "top")
+        if rows and abs(top - _layout_f(rows[-1][0], "top")) <= _LAYOUT_LINE_Y_TOLERANCE:
+            rows[-1].append(w)
+        else:
+            rows.append([w])
+
+    segments: list[dict] = []
+    for row in rows:
+        row_sorted = sorted(row, key=lambda w: _layout_f(w, "x0"))
+        seg_words: list[Mapping[str, object]] = [row_sorted[0]]
+        for prev, cur in zip(row_sorted, row_sorted[1:]):
+            gap = _layout_f(cur, "x0") - _layout_f(prev, "x1")
+            if gap >= _LAYOUT_MIN_GUTTER_PT:
+                segments.append(_segment_from_words(seg_words))
+                seg_words = []
+            seg_words.append(cur)
+        if seg_words:
+            segments.append(_segment_from_words(seg_words))
+    return segments
+
+
+def _segment_side(ln: dict, mid: float) -> str:
+    """Classify a segment against the page's own vertical midline.
+
+    A segment that STRADDLES the midline (starts left of it, ends right of
+    it) is never a column-body segment — it is a full-width element (a
+    heading/title spanning both columns, a page-wide rule, etc.). Only a
+    segment sitting ENTIRELY on one side is ever a candidate column line.
+    This is the same principle the module already uses for scope/heading
+    detection elsewhere: never guess from a fixed fraction of the page, only
+    from a segment's own true extent relative to the page it came from.
+    """
+    if ln["x0"] < mid < ln["x1"]:
+        return "header"
+    return "left" if ln["x1"] <= mid else "right"
+
+
+def _detect_two_column_gutter(
+    lines: list[dict], page_width: float
+) -> tuple[float, float] | None:
+    """Best-effort, generic two-column gutter detection.
+
+    Fires only when enough segments sit ENTIRELY on each side of the page's
+    own vertical midline (never a heading/full-width segment, which by
+    construction cannot land on either side — see ``_segment_side``) AND the
+    empty span between the rightmost left-side segment and the leftmost
+    right-side segment is wide enough to be a real column gutter, not
+    ordinary word spacing. Any failing condition means "not confidently
+    two-column" — the caller then leaves the page's reading order completely
+    unchanged rather than guessing.
+    """
+    if page_width <= 0:
+        return None
+    mid = page_width / 2.0
+    left = [ln for ln in lines if _segment_side(ln, mid) == "left"]
+    right = [ln for ln in lines if _segment_side(ln, mid) == "right"]
+    if len(left) < _LAYOUT_MIN_COLUMN_LINES or len(right) < _LAYOUT_MIN_COLUMN_LINES:
+        return None
+    gutter_start = max(ln["x1"] for ln in left)
+    gutter_end = min(ln["x0"] for ln in right)
+    gutter_width = gutter_end - gutter_start
+    min_gutter = max(_LAYOUT_MIN_GUTTER_PT, page_width * _LAYOUT_MIN_GUTTER_FRACTION)
+    if gutter_width < min_gutter:
+        return None
+    return (gutter_start, gutter_end)
+
+
+def _line_text(ln: dict) -> str:
+    return " ".join(
+        _layout_text(w) for w in sorted(ln["words"], key=lambda w: _layout_f(w, "x0"))
+    )
+
+
+def _reconstruct_two_column_text(
+    words: Sequence[Mapping[str, object]], page_width: float
+) -> str | None:
+    """Reconstruct correct reading order for a confidently two-column page.
+
+    A full-width/midline-straddling segment (a heading, section separator, or
+    footer/note) is NEVER just hoisted to the top of the page — it is treated
+    as a VERTICAL BAND SEPARATOR that stays exactly where it sits relative to
+    the column content above and below it. The page is read top-to-bottom as
+    an alternating sequence of "bands": each band is either a single
+    full-width segment (emitted alone, in its own vertical position) or a run
+    of column segments between two full-width segments (emitted left-column
+    top-to-bottom, then right-column top-to-bottom, for that run only — never
+    across a separator). This is what keeps a mid-page section heading
+    between the content above and below it, rather than moving it to the
+    start of the page, which would corrupt scope/section association for
+    whatever comes after it.
+
+    Returns ``None`` (never invents an order) whenever the page does not show
+    a confident, generic two-column signal — the caller then keeps
+    pdfplumber's untouched default single-stream ``extract_text()`` order,
+    exactly as before this fix.
+
+    Independent-reviewer corrective: adjacent SEMANTIC REGIONS (a column run,
+    the other column's run, a full-width heading/separator/footer) are joined
+    with a blank line (``\n\n``), not a single ``\n``. A single ``\n`` is only
+    ever used BETWEEN two lines that belong to the SAME region (e.g.
+    consecutive lines within one column run). This matters downstream:
+    ``document_text_extractor._blocks()`` first splits on blank-line
+    boundaries, and only re-buffers (collapsing single ``\n`` into a space) a
+    part that is itself over ~2000 characters with no blank line inside it.
+    Without a blank line at every region boundary, a whole two-column page
+    could previously become ONE such oversized, boundary-free part, and that
+    re-buffering step could then glue a label from one region directly next
+    to a value from an unrelated region (reproduced live as a fabricated
+    ``total_debt``). Blank lines at every region boundary make each region
+    its own ``_blocks()`` part, so that collapsing step — when it fires at
+    all — only ever operates WITHIN one already-isolated region.
+    """
+    if not words or len(words) > _MAX_WORDS_PER_PAGE_FOR_LAYOUT:
+        return None
+    lines = _group_words_into_lines(words)
+    gutter = _detect_two_column_gutter(lines, page_width)
+    if gutter is None:
+        return None
+    mid = page_width / 2.0
+
+    # Each entry is one SEMANTIC REGION's text (a full column run, or a
+    # single full-width segment) with its own internal lines already joined
+    # by a single ``\n``. Regions are joined together with ``\n\n`` below.
+    parts: list[str] = []
+    band_left: list[dict] = []
+    band_right: list[dict] = []
+
+    def _column_text(band: list[dict]) -> str:
+        column_lines = [
+            text
+            for ln in sorted(band, key=lambda ln: ln["top"])
+            if (text := _line_text(ln))
+        ]
+        return "\n".join(column_lines)
+
+    def _flush_band() -> None:
+        left_text = _column_text(band_left)
+        right_text = _column_text(band_right)
+        if left_text:
+            parts.append(left_text)
+        if right_text:
+            parts.append(right_text)
+        band_left.clear()
+        band_right.clear()
+
+    for ln in sorted(lines, key=lambda ln: ln["top"]):
+        side = _segment_side(ln, mid)
+        if side == "header":
+            # A full-width segment closes whatever column band came before
+            # it (preserving that band's own top-to-bottom, left-then-right
+            # order) THEN is emitted itself, at its own vertical position —
+            # never moved to the top of the page.
+            _flush_band()
+            text = _line_text(ln)
+            if text:
+                parts.append(text)
+        elif side == "left":
+            band_left.append(ln)
+        else:
+            band_right.append(ln)
+    _flush_band()
+
+    return "\n\n".join(parts) if parts else None
+
+
+# --------------------------------------------------------------------------- #
 # PDF extraction (pdfplumber, native text + tables)
 # --------------------------------------------------------------------------- #
 
@@ -812,11 +1060,39 @@ def extract_pdf(
             running_scope = None
         last_processed_page_no = page_no
         # -- text --
+        # Phase 32A corrective: try a confident, generic two-column
+        # reconstruction FIRST; only ever falls back to the untouched
+        # default ``extract_text()`` order below when reconstruction
+        # returns ``None`` (not confidently two-column, no/too-many words,
+        # or the word-extraction call itself failed) — single-column and
+        # ambiguous pages are byte-for-byte unaffected by this change.
+        text = ""
         try:
-            text = page.extract_text() or ""  # type: ignore[attr-defined]
+            words = page.extract_words() or []  # type: ignore[attr-defined]
         except Exception:  # noqa: BLE001
-            text = ""
-            result.warnings.append(f"Page {page_no} text extraction failed; skipped.")
+            words = []
+        if words:
+            try:
+                page_width = float(getattr(page, "width", 0) or 0)
+            except Exception:  # noqa: BLE001
+                page_width = 0.0
+            if page_width > 0:
+                try:
+                    reconstructed = _reconstruct_two_column_text(words, page_width)
+                except Exception:  # noqa: BLE001
+                    reconstructed = None
+                if reconstructed:
+                    text = reconstructed
+                    result.warnings.append(
+                        f"Page {page_no}: two-column layout detected; text "
+                        "reconstructed in column reading order."
+                    )
+        if not text:
+            try:
+                text = page.extract_text() or ""  # type: ignore[attr-defined]
+            except Exception:  # noqa: BLE001
+                text = ""
+                result.warnings.append(f"Page {page_no} text extraction failed; skipped.")
         page_start = len(page_blocks)
         for blk in _blocks(text):
             if total_chars >= _MAX_TOTAL_EXTRACTED_CHARS:

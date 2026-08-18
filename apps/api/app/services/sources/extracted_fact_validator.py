@@ -241,7 +241,20 @@ _OCR_CONFIDENCE_FACTOR = 0.85
 _OCR_CONFIDENCE_CEILING = 0.72  # deliberately below _HIGH_CONFIDENCE
 
 # Method quality order (best first) — the primary method on a merged fact.
-_METHOD_QUALITY = {METHOD_NATIVE_PDF: 0, METHOD_HTML: 1, METHOD_OCR: 2}
+#
+# Phase 32A corrective: HTML now ranks ABOVE native PDF (was the reverse).
+# A live CFR staging failure traced HTML losing this tie-break even when a
+# clean issuer results HTML page and a multi-column annual-report PDF both
+# carried the same headline figure: pdfplumber's ``extract_text()`` has no
+# general column-aware reading order, so a native-PDF candidate for a
+# multi-column page can be corrupted (mislabelled value / spliced sentence)
+# in ways a DOM-structured HTML table/paragraph is not. This does not
+# override genuine cross-method conflict handling below (a real value
+# disagreement between HTML and PDF is still surfaced as an explicit
+# rejection, never silently resolved by rank alone) — it only decides which
+# candidate is the REPRESENTATIVE one when values agree, and which method a
+# lone candidate is reported under.
+_METHOD_QUALITY = {METHOD_HTML: 0, METHOD_NATIVE_PDF: 1, METHOD_OCR: 2}
 
 
 # --------------------------------------------------------------------------- #

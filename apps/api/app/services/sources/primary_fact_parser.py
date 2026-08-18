@@ -109,8 +109,8 @@ _CURRENCY_WORDS: dict[str, str] = {
 _CURRENCY_SYMBOLS = "€£$"
 
 # A number like 20,616 or 20.6 or 1 234 (thin-space grouping), optionally scaled.
-_NUM = r"(\d[\d.,  ]*\d|\d)"
-_SCALE = r"(million|billion|thousand|bn|mn|m)\b"
+_NUM = r"(?P<num>\d[\d.,  ]*\d|\d)"
+_SCALE = r"(?P<scale>million|billion|thousand|bn|mn|m)\b"
 
 
 def _norm_number(raw: str) -> float | None:
@@ -154,12 +154,18 @@ def _scale_word(w: str | None) -> str | None:
 def _find_currency(text: str) -> str | None:
     low = text.lower()
     # Prefer explicit "in millions of euros" / "reporting currency" phrasing.
+    # A currency WORD (as opposed to a symbol like "€") must be matched at
+    # letter-boundaries, not as a raw substring — "eur" is also a substring
+    # of "Europe"/"European", "usd" can sit inside issuer-specific tickers,
+    # etc. Symbols (€, £, $) never collide with ordinary words, so they are
+    # still matched as plain substrings.
     for word, code in _CURRENCY_WORDS.items():
-        if word in low:
+        if word in _CURRENCY_SYMBOLS:
+            if word in text:
+                return code
+            continue
+        if re.search(rf"(?<![a-z]){re.escape(word)}(?![a-z])", low):
             return code
-    for sym in _CURRENCY_SYMBOLS:
-        if sym in text:
-            return _CURRENCY_WORDS[sym]
     return None
 
 
@@ -202,11 +208,35 @@ _PERIOD_QUALIFIER = (
 # value — without consuming it here, the loose label→value gap below could
 # grab the percentage figure instead of the real value (a real, live-observed
 # failure on an actual issuer report — Phase 32A corrective).
+#
+# The trailing ``?+`` is a POSSESSIVE optional quantifier (not a plain ``?``):
+# once this clause matches a trend phrase here, that consumption is locked in
+# and can never be given up by backtracking. Without this, a sentence with a
+# trend percentage but NO absolute value at all (e.g. "operating profit was
+# up by 23% in Europe.") would have the engine retry the whole match with the
+# trend clause "un-consumed", letting the plain connector+gap fallback below
+# grab the trend percentage itself as if it were the metric's value — an
+# independently reproduced fabrication bug (Phase 32A corrective, PR #107
+# merge-blocker fix). A plain ``?`` cannot prevent this: it only controls
+# whether the clause is *tried*, not whether a successful match may later be
+# undone to let a different branch succeed.
 _TREND_CLAUSE = (
     r"(?:\s+(?:rose|grew|grow|increased|increase|fell|fall|declined|decline"
     r"|decreased|decrease|dropped|drop|climbed|slipped|improved|improve"
     r"|was up|were up|was down|were down)"
-    r"\s+(?:by\s+)?\d+(?:[.,]\d+)?\s*%)?"
+    r"\s+(?:by\s+)?\d+(?:[.,]\d+)?\s*%)?+"
+)
+
+# Same idea as ``_TREND_CLAUSE`` but for percent-level fields (e.g. operating
+# margin), where the trend unit can also be "percentage points" or "basis
+# points" — never a bare "%" change mistaken for the metric's own level. Also
+# possessive-optional for the same non-backtracking reason.
+_PERCENT_TREND_CLAUSE = (
+    r"(?:\s+(?:rose|grew|grow|increased|increase|fell|fall|declined|decline"
+    r"|decreased|decrease|dropped|drop|climbed|slipped|improved|improve"
+    r"|was up|were up|was down|were down)"
+    r"\s+(?:by\s+)?\d+(?:[.,]\d+)?\s*"
+    r"(?:percentage\s+points?|basis\s+points?|%))?+"
 )
 
 
@@ -217,15 +247,49 @@ _TREND_CLAUSE = (
 # broader/plain field — each span of text promotes to exactly one field,
 # preserving metric identity instead of conflating two distinct disclosed
 # figures that happen to share a common suffix word.
-def _money_pattern(label_alts: str, *, exclude_prefix: str | None = None) -> re.Pattern[str]:
+# Raw label alternations for every money/percent field, collected as each
+# pattern is built (side effect of ``_money_pattern``/``_percent_pattern``
+# below) so a single combined "is this text some OTHER recognized metric
+# label" regex (``_ANY_LABEL_RE``) can be assembled once every field is
+# defined — see ``_iter_clause_safe``.
+_ALL_LABEL_ALTS: list[str] = []
+
+
+def _money_pattern(
+    label_alts: str,
+    *,
+    exclude_prefix: str | None = None,
+) -> re.Pattern[str]:
+    """Build a label -> (number, scale) pattern.
+
+    The free-form span between the label (plus its fixed, controlled-
+    vocabulary period-qualifier/trend-clause/connector) and the number is
+    captured as a NAMED group (``gap``) so ``_iter_clause_safe`` can reject
+    a match whose gap crosses into a different clause — a sentence/
+    paragraph boundary, a semicolon, an adversative conjunction ("but",
+    "while", ...), or another recognized metric label — before it is ever
+    used to build a fact. This is the sole, generic invariant this parser
+    relies on: a label may claim a value only when the value is in the
+    SAME clause as the label (Phase 32A corrective — same-region
+    fabrication fix). It replaces the earlier field-specific
+    ``strict_clause`` period guard, which only blocked a full stop and left
+    same-sentence adversative-clause and semicolon-separated captures open.
+    """
     guard = rf"(?<!{re.escape(exclude_prefix)})" if exclude_prefix else ""
+    _ALL_LABEL_ALTS.append(label_alts)
     return re.compile(
         rf"{guard}(?:{label_alts})"
         rf"{_PERIOD_QUALIFIER}"
         rf"{_TREND_CLAUSE}"
         rf"(?:\s+(?:of|was|were|to|at|amounted to|reached|totalled|totaled|:))?"
-        rf"[^\d\n]{{0,25}}?"
-        rf"[€£$]?\s*{_NUM}\s*(?:{_SCALE})?",
+        rf"(?P<gap>[^\d\n]{{0,25}}?)"
+        # A money value is never itself expressed with a trailing "%" — this
+        # negative lookahead is the second, defence-in-depth guard (beyond
+        # the possessive ``_TREND_CLAUSE`` above) against a percentage
+        # CHANGE figure being captured as though it were an absolute money
+        # amount, e.g. "operating profit was up by 23% in Europe." (Phase
+        # 32A corrective, PR #107 merge-blocker fix).
+        rf"[€£$]?\s*{_NUM}\s*(?:{_SCALE})?(?!\s*%)",
         re.IGNORECASE,
     )
 
@@ -235,14 +299,23 @@ def _money_pattern(label_alts: str, *, exclude_prefix: str | None = None) -> re.
 # taken from a percent sign explicitly present in the source text — this
 # parser never computes a margin from a profit/revenue pair (see module
 # docstring: "No inference of a missing financial").
+#
+# ``_PERCENT_TREND_CLAUSE`` (possessive-optional, see its definition) absorbs
+# a leading trend phrase — "was up by 23%", "rose 120 basis points" — before
+# the connector/gap/number below ever runs, so a bare percentage CHANGE with
+# no absolute level stated afterward yields NO match at all (Phase 32A
+# corrective, PR #107 merge-blocker fix), while "...rose 120 basis points to
+# 20.0%" still correctly parses the trailing 20.0 as the level.
 def _percent_pattern(label_alts: str, *, exclude_prefix: str | None = None) -> re.Pattern[str]:
     guard = rf"(?<!{re.escape(exclude_prefix)})" if exclude_prefix else ""
+    _ALL_LABEL_ALTS.append(label_alts)
     return re.compile(
         rf"{guard}(?:{label_alts})"
         rf"{_PERIOD_QUALIFIER}"
+        rf"{_PERCENT_TREND_CLAUSE}"
         rf"(?:\s+(?:of|was|were|stood at|reached|at|:))?"
-        rf"[^\d\n%]{{0,25}}?"
-        rf"(\d[\d.,]*)\s*%",
+        rf"(?P<gap>[^\d\n%]{{0,25}}?)"
+        rf"(?P<num>\d[\d.,]*)\s*%",
         re.IGNORECASE,
     )
 
@@ -300,7 +373,10 @@ _MONEY_FIELDS: list[tuple[str, re.Pattern[str]]] = [
     # — not itself stating a debt figure — matching a nearby unrelated number.
     # "total"/"gross" qualified mentions are a genuine, low-ambiguity signal;
     # the bare word alone is not.
-    (FIELD_TOTAL_DEBT, _money_pattern(r"total debt|gross debt|total borrowings|gross borrowings")),
+    (
+        FIELD_TOTAL_DEBT,
+        _money_pattern(r"total debt|gross debt|total borrowings|gross borrowings"),
+    ),
     (FIELD_NET_DEBT, _money_pattern(r"net (?:financial )?debt")),
     (FIELD_CASH, _money_pattern(r"cash and cash equivalents")),
     (
@@ -328,6 +404,51 @@ _PERCENT_FIELDS: list[tuple[str, re.Pattern[str]]] = [
         _percent_pattern(r"operating margin", exclude_prefix="recurring "),
     ),
 ]
+
+# --------------------------------------------------------------------------- #
+# Clause-safety guard — Phase 32A corrective (same-region fabrication fix).
+#
+# A label may claim a monetary/percentage value only when that value sits in
+# the SAME semantic clause as the label. ``_money_pattern``/``_percent_pattern``
+# already capture the loosely-bounded span between the label (plus its fixed,
+# controlled-vocabulary period-qualifier/trend-clause/connector) and the value
+# as a named ``gap`` group — this is the only free-form part of the match, and
+# therefore the only part that needs checking. A gap is UNSAFE (and the match
+# discarded, never falling back to a weaker guess) when it crosses a sentence/
+# paragraph boundary, a semicolon-style clause boundary, an adversative
+# conjunction that changes subject ("but", "while", "whereas", ...), or
+# another recognized financial-metric label — any of these mean the value no
+# longer belongs to the first label. This is deliberately generic: it never
+# inspects a specific label/value combination or issuer wording, only whether
+# the label and its candidate value share one clause.
+# --------------------------------------------------------------------------- #
+
+_CLAUSE_BOUNDARY_RE = re.compile(
+    r"[.!?;\n]|\b(?:but|while|whereas|however|although|yet|whilst)\b",
+    re.IGNORECASE,
+)
+
+# Built once every money/percent field pattern has registered its label
+# alternation (see ``_ALL_LABEL_ALTS`` in ``_money_pattern``/``_percent_pattern``
+# above). Matches any OTHER recognized metric label — used to reject a gap
+# that has silently drifted onto a different metric's clause.
+_ANY_LABEL_RE = re.compile(
+    "|".join(f"(?:{alt})" for alt in _ALL_LABEL_ALTS), re.IGNORECASE
+)
+
+
+def _iter_clause_safe(pattern: re.Pattern[str], text: str):
+    """Yield only ``pattern`` matches whose ``gap`` group stays within one
+    clause. Fails closed: a match whose gap is unsafe is skipped entirely,
+    never used as a weaker/fallback candidate — an honest "no fact" is
+    always preferable to a fabricated one attached to the wrong label.
+    """
+    for m in pattern.finditer(text):
+        gap = m.group("gap")
+        if _CLAUSE_BOUNDARY_RE.search(gap) or _ANY_LABEL_RE.search(gap):
+            continue
+        yield m
+
 
 _FISCAL_YEAR_RE = re.compile(
     r"(?:fiscal year|financial year|year ended|for the year|as at 31|as of 31|"
@@ -362,12 +483,12 @@ def _ambiguous_multiple(
     check (a real, live-observed failure \u2014 Phase 32A corrective).
     """
     vals: set[float] = set()
-    for m in pattern.finditer(text):
-        num = _norm_number(m.group(1))
+    for m in _iter_clause_safe(pattern, text):
+        num = _norm_number(m.group("num"))
         if num is None:
             continue
-        if require_scale_or_currency and m.re.groups >= 2:
-            scale = _scale_word(m.group(2))
+        if require_scale_or_currency and "scale" in m.re.groupindex:
+            scale = _scale_word(m.group("scale"))
             currency = _find_currency(m.group(0))
             if scale is None and currency is None:
                 continue
@@ -546,13 +667,17 @@ def _parse_excerpt(excerpt: DocumentExcerpt, source_url: str | None) -> list[Pri
 
     # -- money fields ---------------------------------------------------------
     for field, pattern in _MONEY_FIELDS:
-        m = pattern.search(text)
+        # Phase 32A corrective — only ever the first CLAUSE-SAFE candidate; a
+        # nearer but clause-unsafe match (crosses a sentence, semicolon,
+        # adversative conjunction, or another metric's label) is skipped
+        # entirely rather than used as a fallback.
+        m = next(_iter_clause_safe(pattern, text), None)
         if not m:
             continue
-        num = _norm_number(m.group(1))
+        num = _norm_number(m.group("num"))
         if num is None:
             continue
-        scale = _scale_word(m.group(2))
+        scale = _scale_word(m.group("scale"))
         currency = _find_currency(m.group(0)) or _find_currency(text)
         # Refuse ambiguity: the same label with two different magnitudes, or a
         # bare number with neither a scale nor a currency (too weak to trust).
@@ -594,10 +719,10 @@ def _parse_excerpt(excerpt: DocumentExcerpt, source_url: str | None) -> list[Pri
     # Only ever an EXPLICIT percentage found in the text next to its label —
     # never computed from a profit/revenue pair (module-level guarantee).
     for field, pattern in _PERCENT_FIELDS:
-        m = pattern.search(text)
+        m = next(_iter_clause_safe(pattern, text), None)
         if not m:
             continue
-        num = _norm_number(m.group(1))
+        num = _norm_number(m.group("num"))
         if num is None:
             continue
         if _ambiguous_multiple(pattern, text):
