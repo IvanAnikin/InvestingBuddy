@@ -80,14 +80,35 @@ from __future__ import annotations
 # ``extracted_document_service._requires_full_reextraction``, which forces
 # Case B (full re-fetch + re-extraction) for any such row regardless of
 # whether its active facts are table-derived.
+# Version 5 (this corrective slice, live CFR staging follow-up,
+# 2026-08-19) recalibrated ``_LAYOUT_MIN_GUTTER_PT``/``_LAYOUT_MIN_GUTTER_
+# FRACTION`` — the two-column gutter-detection thresholds themselves — from
+# values validated only against wide-gutter synthetic fixtures to values
+# proven against a real narrow-gutter (~14pt) issuer PDF. This is THE SAME
+# CLASS of change as the version-3→4 bump above: it changes what the raw
+# -text extraction layer decides is "confidently two-column" and therefore
+# what excerpt TEXT gets produced, not just how already-extracted text is
+# interpreted. A document whose ``excerpts_json`` was written under
+# version 4 may have been extracted with the OLD, too-strict thresholds and
+# therefore still be genuinely garbled on exactly the pages this fix
+# targets — proven live: a version-4-stamped document's Case-A ("no
+# table-derived fact ⇒ trust persisted excerpts, no re-fetch") reuse
+# STILL served the pre-gutter-fix interleaved text and the resulting
+# ``total_debt`` mislabel, because version 4 == version 4 took the
+# unconditional same-version fast path in ``load_reusable_documents``
+# (``_rebuild_artifact`` — not even routed through
+# ``_requires_full_reextraction`` at all, since that only runs for a
+# VERSION MISMATCH). Bumping CURRENT again is the ONLY mechanism that
+# invalidates that fast path for pre-existing rows.
 LEGACY_EXTRACTION_PIPELINE_VERSION = 1
-CURRENT_EXTRACTION_PIPELINE_VERSION = 4
+CURRENT_EXTRACTION_PIPELINE_VERSION = 5
 
 # The pipeline version at/after which persisted ``excerpts_json`` text is
-# guaranteed to have been produced by column-aware page extraction. A
-# document stamped below this version must undergo a full re-extraction
-# (never an excerpts-only replay) to pick up the corrected raw text.
-EXTRACTION_TEXT_LAYER_MIN_VERSION = 4
+# guaranteed to have been produced by column-aware page extraction UNDER
+# THE CURRENT gutter-detection thresholds. A document stamped below this
+# version must undergo a full re-extraction (never an excerpts-only
+# replay) to pick up the corrected raw text.
+EXTRACTION_TEXT_LAYER_MIN_VERSION = 5
 
 __all__ = [
     "LEGACY_EXTRACTION_PIPELINE_VERSION",
