@@ -59,6 +59,7 @@ from app.services.sources.extracted_fact_validator import (
     validate_extracted_facts,
 )
 from app.services.sources.primary_document_extractor import (
+    _LAYOUT_MIN_GUTTER_PT,
     METHOD_HTML,
     METHOD_NATIVE_PDF,
     STATUS_EXTRACTED,
@@ -161,6 +162,45 @@ def test_clean_two_column_words_detect_a_gutter():
     gutter_start, gutter_end = gutter
     assert gutter_start < gutter_end
     assert gutter_end - gutter_start >= 14.0
+
+
+def _two_column_words_narrow_real_world_gutter(n_lines: int = 6, *, page_width: float = 595.32) -> list[dict]:
+    """A synthetic fixture reproducing the ~14pt real-world column gutter
+    measured live on a real 85-page two-column issuer annual report
+    (page_width ~595pt) — narrower than the ORIGINAL 14.0pt/3% thresholds
+    tolerated, which caused gutter detection (and therefore the whole
+    reading-order fix) to silently never fire on the exact pages carrying
+    the Group headline financial figures. No real company text is used —
+    only the same numeric gutter-width shape."""
+    words: list[dict] = []
+    for i in range(n_lines):
+        top = 80.0 + i * 16.0
+        words.append(_word("Left", 56.6, 100.0, top))
+        words.append(_word("column", 105.0, 180.0, top))
+        words.append(_word("text", 185.0, 283.6, top))  # x1 = 283.6
+        words.append(_word("Right", 297.7, 340.0, top))  # x0 = 297.7 -> gutter 14.1pt
+        words.append(_word("column", 345.0, 460.0, top))
+        words.append(_word("text", 465.0, 500.0, top))
+    return words
+
+
+def test_narrow_real_world_gutter_below_old_threshold_is_now_detected():
+    """Regression for the live CFR staging finding (PR #107 follow-up,
+    2026-08-19): the ORIGINAL 14.0pt floor rejected this exact ~14.1pt real
+    -world gutter (14.1 < the old 3%-of-page-width floor of ~17.9pt for a
+    595pt-wide page), so genuine two-column pages fell back to
+    ``extract_text()``'s column-unaware order. The current, recalibrated
+    threshold must accept it.
+    """
+    words = _two_column_words_narrow_real_world_gutter()
+    lines = _group_words_into_lines(words)
+    gutter = _detect_two_column_gutter(lines, 595.32)
+    assert gutter is not None
+    gutter_start, gutter_end = gutter
+    assert 13.0 <= gutter_end - gutter_start <= 15.0
+    # The current absolute floor itself must be low enough to admit this —
+    # pins the calibration, not just this one fixture's exact numbers.
+    assert _LAYOUT_MIN_GUTTER_PT <= 13.0
 
 
 def test_reconstruction_reads_left_column_fully_before_right_column():
