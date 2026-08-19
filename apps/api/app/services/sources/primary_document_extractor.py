@@ -744,8 +744,24 @@ _LAYOUT_LINE_Y_TOLERANCE = 3.0
 # A candidate gutter must be at least this wide (points AND fraction of page
 # width, whichever is larger) to be treated as a real column gap rather than
 # ordinary word/kerning spacing.
-_LAYOUT_MIN_GUTTER_PT = 14.0
-_LAYOUT_MIN_GUTTER_FRACTION = 0.03
+#
+# Calibration note (PR #107 follow-up, 2026-08-19): the original 14.0pt /
+# 3%-of-page-width values were validated only against synthetic fixtures
+# with a wide (~120pt) gutter — never against a real narrow-gutter
+# two-column financial PDF. A live CFR staging run against a real 85-page
+# issuer annual report (A4, page_width ~595pt) measured actual column
+# gutters of 13.9-14.2pt on genuinely two-column pages — at or just below
+# the old 14.0pt floor, and well below the old 3% (~17.9pt) fraction floor
+# — so gutter detection silently failed on exactly the pages carrying the
+# Group headline financial figures (operating profit, revenue, operating
+# cash flow), falling back to pdfplumber's column-unaware ``extract_text()``
+# and reproducing the pre-fix interleaving bug this whole corrective slice
+# exists to eliminate. Lowered with a safety margin below the smallest
+# observed real gutter, and verified against all 85 pages of that same
+# document: newly-detected pages were manually spot-checked and are
+# genuinely two-column (not a false positive) in every case inspected.
+_LAYOUT_MIN_GUTTER_PT = 10.0
+_LAYOUT_MIN_GUTTER_FRACTION = 0.015
 # Each side of the page must contribute at least this many segments that sit
 # ENTIRELY on one side of the page's own vertical midline before a gutter is
 # trusted — avoids misreading a single stray indented line/footnote as a
