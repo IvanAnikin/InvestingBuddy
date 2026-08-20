@@ -353,6 +353,58 @@ def make_pdf_bands(
     return _assemble(objs)
 
 
+def make_pdf_with_sized_lines(
+    pages: list[list[tuple[str, float, bool]]],
+    *,
+    x: int = 72,
+    top_y: int = 740,
+    line_height: int = 14,
+    width: int = 612,
+    height: int = 792,
+) -> bytes:
+    """Multi-page PDF where each physical line carries its OWN font size and
+    bold flag — ``pages`` is a list of pages, each a list of ``(text, size,
+    bold)`` triples placed top-to-bottom at absolute Y positions (``Tm``).
+
+    Two font resources are registered — ``/F1`` (Helvetica) and ``/F2``
+    (Helvetica-Bold) — switched per line via the ``bold`` flag. Used to prove
+    the generic, page-relative PDF heading-detection heuristic (a line's own
+    font size strictly larger than the page's dominant body-text size,
+    optionally bold) without any hardcoded company/document vocabulary.
+    """
+
+    def _esc(s: str) -> str:
+        return s.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+
+    objs: list[bytes] = [b"<< /Type /Catalog /Pages 2 0 R >>"]
+    kids = " ".join(f"{3 + i * 2} 0 R" for i in range(len(pages)))
+    objs.append(f"<< /Type /Pages /Kids [{kids}] /Count {len(pages)} >>".encode())
+    font_reg_num = 3 + len(pages) * 2
+    font_bold_num = font_reg_num + 1
+    for i, lines in enumerate(pages):
+        content_num = 4 + i * 2
+        ops: list[str] = ["BT"]
+        y = float(top_y)
+        for text, size, bold in lines:
+            font = "/F2" if bold else "/F1"
+            ops.append(f"{font} {size} Tf")
+            ops.append(f"1 0 0 1 {x} {y} Tm ({_esc(text)}) Tj")
+            y -= line_height
+        ops.append("ET")
+        cb = "\n".join(ops).encode()
+        objs.append(
+            (
+                f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {width} {height}] "
+                f"/Contents {content_num} 0 R /Resources << /Font "
+                f"<< /F1 {font_reg_num} 0 R /F2 {font_bold_num} 0 R >> >> >>"
+            ).encode()
+        )
+        objs.append(b"<< /Length %d >>\nstream\n" % len(cb) + cb + b"\nendstream")
+    objs.append(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+    objs.append(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>")
+    return _assemble(objs)
+
+
 __all__ = [
     "make_pdf",
     "make_pdf_no_text",
@@ -363,4 +415,5 @@ __all__ = [
     "make_pdf_with_outline",
     "make_pdf_two_column",
     "make_pdf_bands",
+    "make_pdf_with_sized_lines",
 ]

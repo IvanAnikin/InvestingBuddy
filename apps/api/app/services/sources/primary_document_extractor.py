@@ -35,6 +35,7 @@ from __future__ import annotations
 import hashlib
 import re
 import time
+from collections import Counter
 from collections.abc import Iterator, Mapping, Sequence
 from html.parser import HTMLParser
 
@@ -43,12 +44,13 @@ from pydantic import BaseModel, Field
 from app.core.config import Settings
 from app.core.config import settings as default_settings
 from app.services.sources.document_text_extractor import (
+    _MULTI_NL_RE,
     EVIDENCE_TYPE_BUSINESS,
     EVIDENCE_TYPE_GENERAL,
     DocumentExcerpt,
     DocumentTextExtraction,
-    _blocks,
     _classify,
+    _normalize,
     _relevance,
 )
 from app.services.sources.financial_fact_categories import select_category_diverse
@@ -588,9 +590,11 @@ def _rank_and_build_excerpts(
     Mirrors ``document_text_extractor.extract_document_text``: always keep the
     leading (overview) block, then the most financially-relevant blocks; stable
     within equal scores; de-dup on a text-prefix key. ``ancestor`` (Phase 32A
-    corrective, Problem C) is the heading immediately enclosing ``section``
-    when known (HTML only; always ``None`` for PDF in this phase) — carried
-    onto ``PrimaryDocumentExcerpt.ancestor_heading`` so scope inference can
+    corrective, Problem C; PDF support added in the structural-PDF-scope-context
+    corrective) is the heading immediately enclosing ``section`` when known —
+    for HTML, a true DOM heading-level ancestor; for PDF, the font-size-derived
+    heading-stack ancestor from ``_tag_blocks_with_headings`` — carried onto
+    ``PrimaryDocumentExcerpt.ancestor_heading`` so scope inference can
     recognise a named leaf heading nested under generic segment/business-area
     vocabulary it does not itself contain.
     """
@@ -817,12 +821,32 @@ def _layout_text(w: Mapping[str, object]) -> str:
     return value if isinstance(value, str) else ""
 
 
+def _segment_font_size(words: Sequence[Mapping[str, object]]) -> float | None:
+    """Representative font size of a line segment — the LARGEST word size
+    present (a bare superscript/footnote marker sharing a line with normal
+    -size text must never shrink the line's own apparent size)."""
+    sizes = [_layout_f(w, "size") for w in words if w.get("size") is not None]
+    return max(sizes) if sizes else None
+
+
+def _segment_is_bold(words: Sequence[Mapping[str, object]]) -> bool:
+    return any("bold" in str(w.get("fontname", "")).lower() for w in words)
+
+
 def _segment_from_words(words: list[Mapping[str, object]]) -> dict:
     return {
         "top": _layout_f(words[0], "top"),
         "x0": min(_layout_f(w, "x0") for w in words),
         "x1": max(_layout_f(w, "x1") for w in words),
         "words": words,
+        # Font geometry (Phase 32A corrective — PDF section-heading
+        # detection): ``None``/``False`` when ``extract_words()`` was called
+        # without the ``size``/``fontname`` extra attrs (every EXISTING
+        # consumer of this dict — ``_segment_side``, ``_detect_two_column_
+        # gutter``, ``_line_text`` — only ever reads ``top``/``x0``/``x1``/
+        # ``words`` and is unaffected by these additional keys).
+        "size": _segment_font_size(words),
+        "bold": _segment_is_bold(words),
     }
 
 
@@ -1031,6 +1055,207 @@ def _reconstruct_two_column_text(
 
 
 # --------------------------------------------------------------------------- #
+# PDF section-heading tracking (Phase 32A corrective — structural PDF scope
+# context)
+#
+# HTML already carries a real DOM heading-LEVEL stack (h1..h6 — see
+# ``_DocumentHtmlParser``'s ``_heading_stack``/``_current_ancestor``), so a
+# named leaf heading with no generic scope vocabulary of its own (e.g. a
+# specific segment/business-unit name) can still resolve when its ANCESTOR
+# heading IS generic segment/business-area vocabulary (``_infer_scope``). PDF
+# has no such semantic markup, but pdfplumber's ``extract_words(extra_attrs=
+# ["size", "fontname"])`` exposes each word's own font size + font name — a
+# real report's heading typography is reliably LARGER than its own body text
+# (and often bold), which is exactly the same "more senior than what's
+# currently on the stack" signal HTML's heading LEVEL provides. This section
+# builds the PDF equivalent of that stack, using font size as the structural
+# proxy for heading level (larger size == more senior == pops more of the
+# stack), so a PDF excerpt can inherit a bounded, cross-page, provenance
+# -preserving structural section context exactly the way an HTML excerpt
+# already does.
+#
+# Deliberately generic: no company name, segment name, page number, or exact
+# font size is ever hardcoded — every threshold below is computed RELATIVE TO
+# the page's own dominant ("body") font size. A page with no extractable font
+# geometry (e.g. ``extract_words()`` failed, or was never called with the
+# size/fontname extra attrs) yields no headings at all — fail-closed, exactly
+# like every other best-effort signal in this module.
+# --------------------------------------------------------------------------- #
+
+# A heading candidate line must be no longer than this (a real section/
+# subsection title; a wrapped body sentence that happens to be bold/oversized
+# — e.g. a pull-quote — is bounded out here rather than by punctuation alone).
+_PDF_HEADING_MAX_CHARS = 70
+# A line ending in ordinary sentence punctuation is prose, never a heading.
+_PDF_HEADING_TERMINAL_PUNCTUATION = (".", ",", ";", ":", "!", "?")
+# Primary signal: bold AND at least this many points larger than the page's
+# own dominant body font size (a small epsilon guards against float jitter
+# between two words nominally "the same" size).
+_PDF_HEADING_BOLD_SIZE_EPSILON = 0.2
+# Fallback signal (no reliable bold flag, e.g. a black/semibold weight PDF
+# viewers render visually bold without "Bold" in the font's own PostScript
+# name): a MUCH larger size alone is still a confident heading signal.
+_PDF_HEADING_LARGE_SIZE_RATIO = 1.5
+
+
+def _body_font_size(words: Sequence[Mapping[str, object]]) -> float | None:
+    """The page's dominant (most common) word font size — the "body text"
+    baseline every heading candidate is compared against. ``None`` when no
+    word on the page carries font-size information at all."""
+    sizes = [round(_layout_f(w, "size"), 1) for w in words if w.get("size") is not None]
+    if not sizes:
+        return None
+    return Counter(sizes).most_common(1)[0][0]
+
+
+def _is_pdf_heading_candidate(
+    text: str, size: float | None, bold: bool, body_size: float | None
+) -> bool:
+    """Generic, page-relative PDF heading heuristic — never a hardcoded
+    absolute font size or company/section vocabulary.
+
+    A line qualifies when it is short, does not end in sentence punctuation,
+    contains a real amount of alphabetic content (excludes a bold pull-quote
+    number/percentage), AND its own font size is either (a) bold and
+    genuinely larger than the page's dominant body size, or (b) large enough
+    on its own (``_PDF_HEADING_LARGE_SIZE_RATIO``) regardless of a reliable
+    bold flag. Returns ``False`` (never a heading) whenever font-size
+    information is unavailable for this line or the page — fail-closed.
+    """
+    stripped = text.strip()
+    if not stripped or len(stripped) > _PDF_HEADING_MAX_CHARS:
+        return False
+    if stripped[-1] in _PDF_HEADING_TERMINAL_PUNCTUATION:
+        return False
+    alpha_count = sum(1 for ch in stripped if ch.isalpha())
+    if alpha_count < max(3, len(stripped) // 3):
+        return False
+    if size is None or body_size is None or body_size <= 0:
+        return False
+    if bold and size > body_size + _PDF_HEADING_BOLD_SIZE_EPSILON:
+        return True
+    return size >= body_size * _PDF_HEADING_LARGE_SIZE_RATIO
+
+
+def _page_heading_sizes(
+    words: Sequence[Mapping[str, object]],
+) -> dict[str, tuple[float, str]]:
+    """Map each heading-QUALIFYING line's exact (stripped) text on ONE page to
+    its ``(font_size, bounded_label)``.
+
+    Deliberately NOT restricted to full-width/"header"-side segments: a real
+    report heading is routinely left-aligned within its own margin or column
+    (not spanning the whole page), so requiring full width would silently
+    miss the overwhelming common case — including on a page that a SEPARATE,
+    independent heuristic (``_detect_two_column_gutter``) mis-detects as
+    two-column because of an unruled financial summary table's own wide
+    inter-cell spacing (a real, live-observed shape: a single-column
+    narrative page whose only "columns" are a plain-text label/value table).
+    Order-independent by design — the CALLER (``_tag_blocks_with_headings``)
+    walks the page's OWN final ``text`` (whichever path produced it: plain
+    ``extract_text()`` order, or column-reconstructed band order) and looks
+    each line up by its EXACT text, so a heading's tag position always
+    matches its true position in that specific page's own text however it
+    was produced, without this function needing to know or replicate which
+    path was taken.
+    """
+    if not words:
+        return {}
+    lines = _group_words_into_lines(words)
+    if not lines:
+        return {}
+    body_size = _body_font_size(words)
+    out: dict[str, tuple[float, str]] = {}
+    for ln in lines:
+        text = _line_text(ln)
+        stripped = text.strip()
+        if not stripped:
+            continue
+        size = ln.get("size")
+        bold = bool(ln.get("bold"))
+        if _is_pdf_heading_candidate(text, size, bold, body_size):
+            label = stripped
+            if len(label) > _SCOPE_LABEL_MAX:
+                label = label[: _SCOPE_LABEL_MAX - 1].rstrip() + "…"
+            out[stripped] = (float(size), label)  # type: ignore[arg-type]
+    return out
+
+
+def _tag_blocks_with_headings(
+    text: str,
+    heading_sizes: dict[str, tuple[float, str]],
+    heading_stack: list[tuple[float, str]],
+) -> list[tuple[str, str | None, str | None]]:
+    """Split ``text`` into the SAME blocks ``document_text_extractor._blocks``
+    would produce — identical content and boundaries — additionally paired
+    with ``(section, ancestor)``: the structural heading state in effect when
+    each block's own content began.
+
+    ``heading_stack`` is a font-size-keyed heading-LEVEL stack (mirrors
+    ``_DocumentHtmlParser``'s DOM ``_heading_stack`` — see the module
+    docstring above this function) that the CALLER owns and mutates across a
+    whole document's page-processing loop: passing the SAME list across
+    contiguous pages lets a section established on one page persist onto the
+    next (e.g. a segment note continuing across a page break with no
+    repeated heading); the caller is responsible for calling
+    ``heading_stack.clear()`` on a non-contiguous page jump (mirrors the
+    existing ``running_scope`` reset for the identical reason — an
+    unrelated, non-adjacent page must never silently inherit a stale
+    section).
+
+    A line is matched against ``heading_sizes`` by EXACT (stripped) text —
+    a bounded, page-scoped lookup, never a fuzzy/global one: a false miss
+    only ever costs "no section signal" (identical to today's behaviour),
+    never a wrong one. The heading line's own text still remains part of
+    the surrounding block's content (unchanged from ``_blocks``) — this
+    only ADDS a tag, it never removes or rewrites anything a fact parser
+    already sees.
+    """
+
+    def _advance(line: str) -> None:
+        info = heading_sizes.get(line.strip())
+        if info is None:
+            return
+        head_size, head_label = info
+        while heading_stack and heading_stack[-1][0] <= head_size:
+            heading_stack.pop()
+        heading_stack.append((head_size, head_label))
+
+    def _current() -> tuple[str | None, str | None]:
+        section = heading_stack[-1][1] if heading_stack else None
+        ancestor = heading_stack[-2][1] if len(heading_stack) >= 2 else None
+        return section, ancestor
+
+    normalized = _normalize(text)
+    parts = _MULTI_NL_RE.split(normalized)
+    out: list[tuple[str, str | None, str | None]] = []
+    for p in parts:
+        p = p.strip()
+        if not p:
+            continue
+        if len(p) <= 2000:
+            section, ancestor = _current()
+            out.append((p, section, ancestor))
+            for ln in p.splitlines():
+                _advance(ln)
+            continue
+        buf: list[str] = []
+        size = 0
+        section, ancestor = _current()
+        for ln in p.splitlines():
+            buf.append(ln)
+            size += len(ln)
+            _advance(ln)
+            if size >= 900:
+                out.append((" ".join(buf).strip(), section, ancestor))
+                buf, size = [], 0
+                section, ancestor = _current()
+        if buf:
+            out.append((" ".join(buf).strip(), section, ancestor))
+    return [(b, s, a) for b, s, a in out if len(b) >= 40]
+
+
+# --------------------------------------------------------------------------- #
 # PDF extraction (pdfplumber, native text + tables)
 # --------------------------------------------------------------------------- #
 
@@ -1121,6 +1346,14 @@ def extract_pdf(
     # ascending order.
     running_scope: str | None = None
     last_processed_page_no: int | None = None
+    # Font-size-keyed PDF heading-LEVEL stack (Phase 32A corrective —
+    # structural PDF scope context; see ``_tag_blocks_with_headings``'s
+    # docstring). Persists across a CONTIGUOUS page run the exact same way
+    # ``running_scope`` does, and is reset on the exact same non-contiguous
+    # -jump condition below — a distant supplemental page must never
+    # silently inherit a section heading left over from an unrelated
+    # earlier page any more than it may inherit a stale ``running_scope``.
+    heading_stack: list[tuple[float, str]] = []
 
     def _extract_one_page(page: object, page_no: int) -> None:
         """Extract text blocks + tables from ONE page; mutates the closures."""
@@ -1134,6 +1367,7 @@ def extract_pdf(
         # below) is unaffected — a genuinely local match still wins.
         if last_processed_page_no is not None and page_no != last_processed_page_no + 1:
             running_scope = None
+            heading_stack.clear()
         last_processed_page_no = page_no
         # -- text --
         # Phase 32A corrective: try a confident, generic two-column
@@ -1144,9 +1378,15 @@ def extract_pdf(
         # ambiguous pages are byte-for-byte unaffected by this change.
         text = ""
         try:
-            words = page.extract_words() or []  # type: ignore[attr-defined]
+            # ``size``/``fontname`` (Phase 32A corrective — PDF section
+            # -heading detection) are additive extra attrs: every existing
+            # consumer of ``words`` here (``_reconstruct_two_column_text``,
+            # ``_detect_two_column_gutter``) only ever reads x0/x1/top/text
+            # and is byte-for-byte unaffected by their presence.
+            words = page.extract_words(extra_attrs=["size", "fontname"]) or []  # type: ignore[attr-defined]
         except Exception:  # noqa: BLE001
             words = []
+        page_width = 0.0
         if words:
             try:
                 page_width = float(getattr(page, "width", 0) or 0)
@@ -1169,15 +1409,23 @@ def extract_pdf(
             except Exception:  # noqa: BLE001
                 text = ""
                 result.warnings.append(f"Page {page_no} text extraction failed; skipped.")
+        # Section/ancestor heading (Phase 32A corrective — structural PDF
+        # scope context): a font-size/boldness-derived heading signal, best
+        # -effort and fail-closed (``{}`` whenever font geometry is
+        # unavailable — every page falls back to the exact pre-existing
+        # heading-less behaviour in that case).
+        try:
+            page_heading_sizes = _page_heading_sizes(words)
+        except Exception:  # noqa: BLE001
+            page_heading_sizes = {}
         page_start = len(page_blocks)
-        for blk in _blocks(text):
+        for blk, section, ancestor in _tag_blocks_with_headings(
+            text, page_heading_sizes, heading_stack
+        ):
             if total_chars >= _MAX_TOTAL_EXTRACTED_CHARS:
                 result.truncated = True
                 break
-            # Ancestor (4th slot) is always None for PDF in this phase — PDF
-            # heading nesting is not tracked; see the module's separate,
-            # bounded cross-page ``running_scope`` fallback below instead.
-            page_blocks.append((page_no, None, None, blk))
+            page_blocks.append((page_no, section, ancestor, blk))
             total_chars += len(blk)
         # Best-effort per-page scope signal for this page's tables: raw PDF
         # text carries no heading/paragraph distinction, so this scans the

@@ -103,8 +103,11 @@ class DocumentExcerpt(BaseModel):
     # scope inference recognise a NAMED segment/business-unit heading that
     # carries no generic "segment"/"business area" vocabulary ITSELF but IS
     # nested under a heading that does — never a company-specific literal,
-    # purely structural. ``None`` when unknown/not applicable (e.g. a PDF
-    # excerpt, where ancestor nesting is not tracked in this phase).
+    # purely structural. For PDF (structural-PDF-scope-context corrective),
+    # populated from a font-size-derived heading-level stack (see
+    # ``primary_document_extractor._tag_blocks_with_headings``) rather than
+    # DOM nesting. ``None`` when unknown/not applicable — no heading-like
+    # signal was found for either extractor.
     ancestor_heading: str | None = None
     text: str
     page_number: int | None = None

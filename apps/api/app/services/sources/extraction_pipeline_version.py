@@ -172,16 +172,31 @@ from __future__ import annotations
 # Case A's "no table-derived fact ⇒ safely re-derive facts from the
 # persisted excerpts alone, no re-fetch" path remains correct and sufficient
 # here too; only CURRENT_EXTRACTION_PIPELINE_VERSION advances.
+# Version 9 (PDF structural section-scope-context corrective) changed the RAW
+# TEXT EXTRACTION layer itself, not just fact interpretation:
+# ``primary_document_extractor._extract_one_page`` now calls
+# ``page.extract_words()`` WITH the ``size``/``fontname`` extra attrs and
+# populates the PREVIOUSLY-ALWAYS-``None`` ``section``/``ancestor`` PDF block
+# slots via a new font-size-derived heading-LEVEL stack (``_page_heading_
+# sizes`` / ``_tag_blocks_with_headings``) — the PDF analogue of
+# ``_DocumentHtmlParser``'s DOM h1-h6 stack. A document's persisted
+# ``excerpts_json`` written under version <9 has every PDF excerpt's
+# ``ancestor_heading`` hardcoded ``None`` (the field existed, but PDF never
+# populated it), so — per the version-4/5/6 precedent above — an excerpts
+# -only Case-A revalidation of such a row can never recover this NEW
+# structural signal; it needs the ORIGINAL words/geometry, which excerpts_json
+# never persists. See ``EXTRACTION_TEXT_LAYER_MIN_VERSION`` below.
 LEGACY_EXTRACTION_PIPELINE_VERSION = 1
-CURRENT_EXTRACTION_PIPELINE_VERSION = 8
+CURRENT_EXTRACTION_PIPELINE_VERSION = 9
 
 # The pipeline version at/after which persisted ``excerpts_json`` text is
 # guaranteed to have been produced by column-aware page extraction UNDER
-# THE CURRENT gutter-detection thresholds AND THE CURRENT excerpt-ranking/
-# selection logic. A document stamped below this version must undergo a
-# full re-extraction (never an excerpts-only replay) to pick up the
-# corrected raw text and/or selection.
-EXTRACTION_TEXT_LAYER_MIN_VERSION = 6
+# THE CURRENT gutter-detection thresholds, THE CURRENT excerpt-ranking/
+# selection logic, AND (version 9+) THE CURRENT PDF section/ancestor-heading
+# detection. A document stamped below this version must undergo a full
+# re-extraction (never an excerpts-only replay) to pick up the corrected raw
+# text, selection, and/or structural heading context.
+EXTRACTION_TEXT_LAYER_MIN_VERSION = 9
 
 __all__ = [
     "LEGACY_EXTRACTION_PIPELINE_VERSION",
