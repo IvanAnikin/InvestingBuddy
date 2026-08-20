@@ -126,8 +126,28 @@ from __future__ import annotations
 # MUST invalidate Case A's "no table-derived fact ⇒ trust persisted
 # excerpts" fast path for any pre-existing row, or the exact same masking
 # failure repeats a third time.
+# Version 7 (same dedicated slice, same-session live CFR follow-up) fixed
+# TWO real bugs in ``primary_fact_parser``'s money-field INTERPRETATION of
+# already-extracted excerpt text — it does not change what the raw excerpt
+# TEXT looks like, only how it is parsed into facts:
+#   * ``_TREND_CLAUSE``/``_PERCENT_TREND_CLAUSE`` did not absorb the
+#     extremely common "at constant/actual exchange rates" qualifier
+#     between a trend percentage and its absolute value, so the label
+#     -to-value gap silently overflowed its bound for exactly this
+#     sentence shape and failed to reach the real value.
+#   * the money-field loop took the FIRST clause-safe candidate purely by
+#     text position, letting a bare, locally-unqualified number (e.g. a
+#     date fragment) win over a genuinely scale/currency-qualified value
+#     stated moments later in the SAME excerpt.
+# Because this is purely an INTERPRETATION-layer change — the persisted
+# excerpt TEXT itself needs no re-extraction — Case A's "no table-derived
+# fact ⇒ safely re-derive facts from the persisted excerpts alone, no
+# re-fetch" path remains correct and sufficient here; only
+# CURRENT_EXTRACTION_PIPELINE_VERSION advances,
+# EXTRACTION_TEXT_LAYER_MIN_VERSION does NOT (unlike the version-4/5/6
+# text-extraction-layer bumps above).
 LEGACY_EXTRACTION_PIPELINE_VERSION = 1
-CURRENT_EXTRACTION_PIPELINE_VERSION = 6
+CURRENT_EXTRACTION_PIPELINE_VERSION = 7
 
 # The pipeline version at/after which persisted ``excerpts_json`` text is
 # guaranteed to have been produced by column-aware page extraction UNDER
