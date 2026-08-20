@@ -28,6 +28,15 @@ from pydantic import BaseModel, Field
 
 from app.core.config import Settings
 from app.core.config import settings as default_settings
+from app.services.sources.financial_fact_categories import select_category_diverse
+from app.services.sources.financial_metric_signal import (
+    excerpt_diversity_key,
+    has_headline_section_context,
+    has_period_context,
+    has_segment_context,
+    looks_like_boilerplate,
+    metric_value_matches,
+)
 from app.services.sources.language import detect_language_with_confidence
 
 # Evidence-type tags for an excerpt (mapped to EvidenceItem source_types by the
@@ -182,17 +191,39 @@ def _classify(text: str) -> str:
 
 
 def _relevance(text: str) -> int:
+    """Rank a candidate excerpt block for bounded selection.
+
+    Phase 32A dedicated slice (financial excerpt relevance ranking):
+    keyword density alone systematically OUTRANKS a short, precise
+    "headline metric label + its value" sentence with a long, generic
+    multi-topic paragraph that merely mentions many DIFFERENT financial
+    -sounding words (live-observed: a 955-char accounting-note paragraph
+    scored higher than the 62-77-char sentence stating the Group's actual
+    operating profit/revenue). A genuine metric+value pairing
+    (``financial_metric_signal.metric_value_matches``) is therefore the
+    DOMINANT signal; keyword density remains a weak base/tie-breaker layer.
+    """
     low = f" {text.lower()} "
     score = 0
     for k in _FINANCIAL_KEYWORDS:
         if k in low:
-            score += 2
+            score += 1
     for k in _RISK_KEYWORDS:
         if k in low:
             score += 1
     for k in _BUSINESS_KEYWORDS:
         if k in low:
             score += 1
+    matches = metric_value_matches(text)
+    score += len(matches) * 6
+    if matches and has_segment_context(text):
+        score += 3
+    if has_headline_section_context(text):
+        score += 2
+    if has_period_context(text):
+        score += 1
+    if looks_like_boilerplate(text):
+        score = max(score - 8, 0)
     return score
 
 
@@ -401,7 +432,19 @@ def extract_document_text(
     lead = indexed[:1]
     rest = indexed[1:]
     rest_sorted = sorted(rest, key=lambda t: (-_relevance(t[1][1]), t[0]))
-    chosen = lead + rest_sorted
+    # Category-diverse reordering (Phase 32A dedicated slice): a document
+    # with many near-duplicate revenue mentions and only one cash-flow
+    # passage must not let revenue consume every slot before cash flow gets
+    # even one — round-robin by (category, field, value) BEFORE the
+    # existing dedup/cap walk below, which is otherwise unchanged. ``cap``
+    # is the full list length here (a REORDERING, not a truncation yet) —
+    # the walk below still applies the real ``max_excerpts``/dedup bound.
+    rest_diverse = select_category_diverse(
+        rest_sorted,
+        cap=len(rest_sorted),
+        diversity_key_of=lambda t: excerpt_diversity_key(t[1][1]),
+    )
+    chosen = lead + rest_diverse
     seen_text: set[str] = set()
     n = 0
     for _orig_idx, (block_page, blk) in chosen:

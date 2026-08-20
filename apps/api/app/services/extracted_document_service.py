@@ -285,6 +285,34 @@ async def _get_or_create_document(
         )
         if restamped:
             existing.pipeline_version = CURRENT_EXTRACTION_PIPELINE_VERSION
+            # Phase 32A dedicated slice (financial excerpt relevance
+            # ranking) — a live, real bug: restamping ``pipeline_version``
+            # ALONE while leaving the row's persisted ``excerpts_json``
+            # untouched made the version gate purely COSMETIC for this,
+            # the PRIMARY discovery/candidate-analysis ingestion path (as
+            # opposed to ``load_reusable_documents``/``_revalidate_document``,
+            # the REPORT-REGENERATION reuse path the version gate was
+            # originally built for). ``extraction`` here was JUST produced
+            # by the CURRENTLY-RUNNING code this same request (see the
+            # docstring above) — trustworthy fresh data, safe to supersede
+            # the OLD row's excerpts with. Without this, every subsequent
+            # analysis run kept re-fetching + re-extracting the SAME
+            # document (real network/CPU cost paid every time) only to
+            # silently DISCARD the fresh, correctly-reconstructed result in
+            # favour of the stale excerpts already on the row — verified
+            # live: this masked the effect of the PDF layout fix, the
+            # gutter-threshold recalibration, AND this slice's own
+            # fragmentation fix across four consecutive "fresh" CFR runs.
+            existing.excerpts_json = _excerpts_to_json(extraction) or None
+            fresh_method = _clip(
+                getattr(extraction, "extraction_method", "") or "",
+                _EXTRACTION_METHOD_MAX,
+            )
+            if fresh_method:
+                existing.extraction_method = fresh_method
+            fresh_page_count = getattr(extraction, "page_count", None)
+            if fresh_page_count is not None:
+                existing.page_count = fresh_page_count
         return existing, True, restamped
 
     source_url = getattr(artifact, "source_url", "") or ""

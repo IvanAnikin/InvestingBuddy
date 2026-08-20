@@ -100,15 +100,42 @@ from __future__ import annotations
 # ``_requires_full_reextraction`` at all, since that only runs for a
 # VERSION MISMATCH). Bumping CURRENT again is the ONLY mechanism that
 # invalidates that fast path for pre-existing rows.
+# Version 6 (financial excerpt relevance-ranking dedicated slice,
+# 2026-08-20) changed BOTH the raw-text extraction layer AND the
+# excerpt-ranking/selection layer:
+#   * ``primary_document_extractor._reconstruct_two_column_text`` fixed a
+#     real fragmentation bug — it classified each line's column side
+#     against the PAGE's raw geometric midpoint instead of the ACTUALLY
+#     -DETECTED gutter's own midpoint, so ordinary per-line right-edge
+#     jitter on a real document repeatedly misclassified a genuinely-left
+#     line as a midline-straddling "header", fragmenting whole paragraphs
+#     (including a metric's label and its OWN value, on the same source
+#     line) into dozens of isolated one-line regions.
+#   * ``document_text_extractor._relevance`` now uses a deterministic,
+#     pattern-aware "canonical metric label + plausible value" signal
+#     (``financial_metric_signal.metric_value_matches``) as its DOMINANT
+#     term, plus a bounded table-of-contents/boilerplate penalty and a
+#     category-diverse selection pass
+#     (``financial_fact_categories.select_category_diverse``) — a document
+#     whose ``excerpts_json`` was produced under the OLD flat keyword
+#     -density ranking can therefore be carrying a systematically worse
+#     excerpt SELECTION even where the underlying raw text itself was
+#     already fine.
+# Both are extraction/selection-layer changes (not merely fact
+# -interpretation changes), so — per the version-5 lesson above — this
+# MUST invalidate Case A's "no table-derived fact ⇒ trust persisted
+# excerpts" fast path for any pre-existing row, or the exact same masking
+# failure repeats a third time.
 LEGACY_EXTRACTION_PIPELINE_VERSION = 1
-CURRENT_EXTRACTION_PIPELINE_VERSION = 5
+CURRENT_EXTRACTION_PIPELINE_VERSION = 6
 
 # The pipeline version at/after which persisted ``excerpts_json`` text is
 # guaranteed to have been produced by column-aware page extraction UNDER
-# THE CURRENT gutter-detection thresholds. A document stamped below this
-# version must undergo a full re-extraction (never an excerpts-only
-# replay) to pick up the corrected raw text.
-EXTRACTION_TEXT_LAYER_MIN_VERSION = 5
+# THE CURRENT gutter-detection thresholds AND THE CURRENT excerpt-ranking/
+# selection logic. A document stamped below this version must undergo a
+# full re-extraction (never an excerpts-only replay) to pick up the
+# corrected raw text and/or selection.
+EXTRACTION_TEXT_LAYER_MIN_VERSION = 6
 
 __all__ = [
     "LEGACY_EXTRACTION_PIPELINE_VERSION",

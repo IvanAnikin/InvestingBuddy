@@ -203,6 +203,57 @@ def test_narrow_real_world_gutter_below_old_threshold_is_now_detected():
     assert _LAYOUT_MIN_GUTTER_PT <= 13.0
 
 
+def _two_column_words_with_midpoint_jitter(
+    n_lines: int = 8, *, page_width: float = 595.32
+) -> list[dict]:
+    """A synthetic fixture reproducing a real, live-observed fragmentation
+    bug (financial excerpt relevance-ranking dedicated slice, 2026-08-20):
+    the LEFT column's own justified-text right edge lands a fraction of a
+    point on EITHER side of the page's raw geometric midpoint from one line
+    to the next (ordinary per-line rendering jitter — real column layouts
+    are frequently asymmetric, so the true column boundary need not sit at
+    exactly ``page_width / 2``). Classifying against the RAW midpoint
+    misclassifies roughly every other left-column line as a midline
+    -straddling "header", severing consecutive lines of the SAME paragraph
+    (including, live-observed, a metric's own label from its own value on
+    the very next line) into isolated one-line fragments. Classifying
+    against the midpoint of the ACTUALLY-DETECTED gutter fixes this. No
+    real company text is used."""
+    mid = page_width / 2.0
+    words: list[dict] = []
+    for i in range(n_lines):
+        top = 80.0 + i * 16.0
+        # Alternate the left column's own right edge a hair below/above the
+        # raw page midpoint — both are well within the TRUE gutter once the
+        # gutter's own midpoint (not the page's) is used to classify.
+        left_x1 = mid - 0.1 if i % 2 == 0 else mid + 0.15
+        words.append(_word(f"leftline{i}", 56.6, left_x1, top))
+        words.append(_word(f"rightline{i}", mid + 14.2, mid + 14.2 + 120.0, top))
+    return words
+
+
+def test_reconstruction_uses_detected_gutter_midpoint_not_raw_page_midpoint():
+    """The fix itself: reclassifying against the DETECTED gutter's own
+    midpoint (not the page's raw geometric midpoint) must keep every
+    consecutive left-column line in ONE contiguous region — never split by
+    a spurious "header" flush purely from sub-point rendering jitter.
+    """
+    words = _two_column_words_with_midpoint_jitter(n_lines=8)
+    text = _reconstruct_two_column_text(words, 595.32)
+    assert text is not None
+    # All 8 left-column lines are present...
+    for i in range(8):
+        assert f"leftline{i}" in text
+    # ...and none of them are separated from their immediate neighbour by a
+    # region break (``\n\n``) — the whole left column is ONE contiguous
+    # semantic region, exactly as a genuine single paragraph should be.
+    left_region = text.split("\n\n")[0]
+    for i in range(8):
+        assert f"leftline{i}" in left_region, (
+            f"leftline{i} was fragmented into its own region: {text!r}"
+        )
+
+
 def test_reconstruction_reads_left_column_fully_before_right_column():
     words = _two_column_words(n_lines=4)
     text = _reconstruct_two_column_text(words, 612.0)

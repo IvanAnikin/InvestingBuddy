@@ -581,14 +581,23 @@ class Settings(BaseSettings):
     # cost + keeps one issuer from draining the aggregate budget).
     primary_document_max_docs_per_issuer: int = 3
     # Maximum number of bounded excerpts produced from one document. Phase 32A
-    # corrective (raised 8→14): a real, live-observed CFR annual report run
-    # (85 pages) never surfaced its own Group headline sales/margin figures at
-    # 8 excerpts — the relevance-ranked top-8 blocks did not include the page
-    # carrying them, even though several distinct segment/detail pages did.
-    # Ranking already scores the WHOLE document's blocks before truncating, so
-    # this only keeps more of an already-computed ranking — no extra parsing
-    # cost — and stays well inside ``primary_document_total_timeout_seconds``.
-    primary_document_max_excerpts_per_document: int = 14
+    # corrective (raised 8→14, then 14→20): a real, live-observed CFR annual
+    # report run (85 pages) never surfaced its own Group headline sales/margin
+    # figures at 8 excerpts — the relevance-ranked top-8 blocks did not include
+    # the page carrying them, even though several distinct segment/detail
+    # pages did. The 14→20 follow-up bump (financial excerpt relevance
+    # -ranking dedicated slice) is paired with a genuine ranking-quality fix
+    # (a real column-reconstruction fragmentation bug plus a pattern-aware,
+    # category-diverse selector — see ``financial_metric_signal`` /
+    # ``financial_fact_categories.select_category_diverse``) rather than a
+    # cap-only workaround: a much larger cap alone (tested up to 500) did NOT
+    # reliably surface the Group headline sentence before that ranking fix
+    # landed, but a modest 20 now reliably covers it plus every segment
+    # -level headline figure on the same real document. Ranking already
+    # scores the WHOLE document's blocks before truncating, so this only
+    # keeps more of an already-computed ranking — no extra parsing cost —
+    # and stays well inside ``primary_document_total_timeout_seconds``.
+    primary_document_max_excerpts_per_document: int = 20
     # Hard cap on characters per excerpt (a whole filing is never carried around;
     # aligned with ``llm_council_evidence_max_chars_per_item``).
     primary_document_max_excerpt_chars: int = 1200
