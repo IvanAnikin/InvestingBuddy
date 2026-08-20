@@ -146,8 +146,34 @@ from __future__ import annotations
 # CURRENT_EXTRACTION_PIPELINE_VERSION advances,
 # EXTRACTION_TEXT_LAYER_MIN_VERSION does NOT (unlike the version-4/5/6
 # text-extraction-layer bumps above).
+# Version 8 (cross-excerpt financial-fact reconciliation, dedicated slice)
+# changed THREE things in how already-extracted excerpt text is interpreted
+# into candidate facts — again no change to the raw excerpt TEXT itself:
+#   * ``extracted_fact_validator._resolve_group`` now compares two money
+#     candidates on a common base unit (see ``_normalized_magnitude``)
+#     before deciding they conflict — a rounded "EUR22.4 billion" mention and
+#     a precise "EUR22,420 million" mention of the SAME Group figure used to
+#     compare raw digits (22.4 vs 22420) and were treated as a hard
+#     same-method conflict, silently dropping BOTH to ``excerpt_only``.
+#   * ``primary_fact_parser._infer_prose_scope`` gained a possessive-subject
+#     sentence pattern ("the X were/was/... their <metric> ...") and a
+#     generic ``scope_claim_signal`` fallback (an explicit "Group"/
+#     "consolidated" mention anywhere in the fact's own sentence, e.g. "At
+#     Group level, ..."), so more real-report sentence shapes now resolve a
+#     positive Group/segment scope instead of silently falling back to
+#     ``None``.
+#   * ``extracted_fact_validator._candidates_from_excerpts`` now fills a
+#     missing period on a prose money/percent candidate from the document's
+#     own dominant reporting period — the most common explicit year found
+#     elsewhere in the SAME document — but ONLY when that candidate already
+#     carries positive scope evidence from the point above (an unscoped
+#     candidate is left exactly as before; see that function's docstring for
+#     why this ordering is required for safety).
+# Case A's "no table-derived fact ⇒ safely re-derive facts from the
+# persisted excerpts alone, no re-fetch" path remains correct and sufficient
+# here too; only CURRENT_EXTRACTION_PIPELINE_VERSION advances.
 LEGACY_EXTRACTION_PIPELINE_VERSION = 1
-CURRENT_EXTRACTION_PIPELINE_VERSION = 7
+CURRENT_EXTRACTION_PIPELINE_VERSION = 8
 
 # The pipeline version at/after which persisted ``excerpts_json`` text is
 # guaranteed to have been produced by column-aware page extraction UNDER

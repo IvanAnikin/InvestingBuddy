@@ -370,16 +370,45 @@ async def _persist_validated_facts(
     reused: bool,
     result: PersistResult,
 ) -> bool:
-    """Persist this artifact's ``validated`` facts, deduped. Returns wrote-any."""
+    """Persist this artifact's ``validated`` facts as the document's current
+    active fact set (Phase 32A corrective — active fact lifecycle).
+
+    This is a COMPLETE replacement of a reused document's active facts when
+    the newly-computed set genuinely DIFFERS from what is currently active,
+    not an additive merge: ``artifact.validated_facts`` is the full
+    current-generation validated fact set for the whole document (this
+    function's only caller only ever runs on a ``status == 'extracted'``
+    artifact JUST produced by the currently-running code — see
+    ``_get_or_create_document``'s own reasoning for the identical
+    guarantee). Before this fix a document reused across many runs only
+    ever ADDED facts (deduped by exact ``(label, period, value)``), so a
+    since-corrected parser/validator bug's stale output — e.g. a legacy
+    ``total_debt`` row that later turned out to be a different sentence
+    entirely from the correct ``operating_cash_flow`` figure it happened to
+    share a value with — stayed ``is_active=True`` forever alongside its own
+    replacement. When the new set is IDENTICAL to the current active set
+    (the common case — nothing about this document changed), nothing is
+    deactivated or re-inserted (idempotent re-run, no audit-log churn).
+    Mirrors ``_revalidate_document``'s ``_deactivate_active_facts`` /
+    ``_insert_active_facts`` atomic-supersession pattern used by the OTHER
+    (report-regeneration reuse) persistence path.
+    """
     validated = [
         f
         for f in getattr(artifact, "validated_facts", []) or []
         if getattr(f, "validation_status", None) == _VALIDATION_VALIDATED
     ]
-    if not validated:
-        return False
 
-    existing_keys: set[tuple[str, str | None, float | None]] = set()
+    new_keys: set[tuple[str, str | None, float | None]] = {
+        (
+            _norm_label(getattr(fact, "label", None)),
+            getattr(fact, "period", None),
+            _numeric_key(getattr(fact, "value_numeric", None)),
+        )
+        for fact in validated
+    }
+
+    old_keys: set[tuple[str, str | None, float | None]] = set()
     if reused:
         rows = (
             await session.execute(
@@ -389,17 +418,31 @@ async def _persist_validated_facts(
                     ExtractedFact.value_numeric,
                 ).where(
                     ExtractedFact.extracted_document_id == document.id,
-                    # Phase 32A corrective — dedup only against the CURRENT
-                    # active set; a superseded historical row must never
-                    # suppress the (re-)insertion of its still-correct
-                    # replacement.
                     ExtractedFact.is_active.is_(True),
                 )
             )
         ).all()
-        for label, period, value_numeric in rows:
-            existing_keys.add((_norm_label(label), period, _numeric_key(value_numeric)))
+        old_keys = {
+            (_norm_label(label), period, _numeric_key(value_numeric))
+            for label, period, value_numeric in rows
+        }
+        if old_keys == new_keys:
+            # Unchanged generation — nothing to supersede, no new rows.
+            result.facts_deduped += len(validated)
+            return False
+        if old_keys:
+            await _deactivate_active_facts(session, document.id)
 
+    if not validated:
+        # A complete, successful current generation legitimately produced no
+        # structured facts (e.g. this run's excerpts carried none this
+        # time) — the active set correctly shrinks to match (mission
+        # requirement: "the active fact set MUST equal the facts produced by
+        # that successful current generation"). The deactivation above (if
+        # any) already reflects that; nothing left to insert.
+        return reused and bool(old_keys)
+
+    existing_keys: set[tuple[str, str | None, float | None]] = set()
     wrote = False
     for fact in validated:
         key = (

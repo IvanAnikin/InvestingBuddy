@@ -49,6 +49,8 @@ task; a later slice performs the wiring (gated by
 from __future__ import annotations
 
 import re
+from collections import Counter
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -80,6 +82,7 @@ from app.services.sources.primary_fact_parser import (
     FIELD_TOTAL_ASSETS,
     FIELD_TOTAL_DEBT,
     FIELD_TOTAL_EQUITY,
+    PrimaryFact,
     _find_currency,
     _norm_number,
     _parse_excerpt,
@@ -180,7 +183,11 @@ _LABEL_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     ),
     (re.compile(r"cash and cash equivalents", re.I), FIELD_CASH),
     (
-        re.compile(r"net cash position|net cash(?!\s*(?:flow|generated|provided|from|and))", re.I),
+        re.compile(
+            r"net cash position|net cash(?!\s*(?:flow|inflow|outflow|generated|"
+            r"provided|from|and))",
+            re.I,
+        ),
         FIELD_NET_CASH,
     ),
     (
@@ -501,6 +508,61 @@ def _values_agree(a: float, b: float) -> bool:
     return abs(a - b) <= max(tol, 0.5)
 
 
+# Multiplier to a common base unit, used ONLY to compare two money candidates
+# for agreement/conflict — never to rewrite a candidate's own stored value
+# (``ValidatedFact.value_numeric``/``scale`` are always kept exactly as
+# reported). Phase 32A corrective (cross-excerpt reconciliation): before this,
+# a rounded "EUR22.4 billion" mention and a precise "EUR22,420 million"
+# mention of the SAME Group figure compared their raw digits directly
+# (22.4 vs 22420) and were treated as a hard conflict.
+_SCALE_MULTIPLIER: dict[str, float] = {"thousand": 1e3, "million": 1e6, "billion": 1e9}
+# Coarser-to-finer precision rank, used only as a low-priority representative
+# tie-break (prefer the more precise scale when two candidates already agree
+# and are otherwise equally good).
+_SCALE_PRECISION_RANK: dict[str | None, int] = {
+    "thousand": 0,
+    "million": 1,
+    "billion": 2,
+    None: 3,
+}
+
+
+def _scaled_magnitude(candidate: "_Candidate") -> tuple[float | None, bool]:
+    """``(magnitude, was_scaled)`` — ``magnitude`` converted to a common base
+    unit ONLY when ``candidate`` itself carries a known scale; otherwise the
+    raw ``value_numeric`` digits are returned unchanged (``was_scaled=False``)."""
+    if candidate.value_numeric is None:
+        return None, False
+    if candidate.unit == UNIT_CURRENCY_AMOUNT and candidate.scale:
+        return candidate.value_numeric * _SCALE_MULTIPLIER.get(candidate.scale, 1.0), True
+    return candidate.value_numeric, False
+
+
+def _candidates_agree(a: "_Candidate", b: "_Candidate") -> bool:
+    """True when two candidates' values agree.
+
+    Phase 32A corrective (cross-excerpt reconciliation) — two money
+    candidates that BOTH carry a known scale are compared on a common base
+    unit (a rounded "EUR22.4 billion" mention must agree with a precise
+    "EUR22,420 million" mention of the SAME figure, not be treated as a hard
+    conflict merely because their raw digits differ). When EITHER candidate
+    lacks a scale (or for a non-money unit, which never has one), the RAW
+    digits are compared exactly as before this fix — e.g. a table cell
+    "20,616" (scale known from the table header) and an unscaled prose
+    mention of the SAME literal digits "20,616" (no local scale marker) must
+    still agree; multiplying only the scaled side would compare 20,616 to
+    20,616,000,000 and manufacture a false conflict between two mentions of
+    the exact same written number.
+    """
+    va, a_scaled = _scaled_magnitude(a)
+    vb, b_scaled = _scaled_magnitude(b)
+    if va is None or vb is None:
+        return True  # nothing to compare; never the source of a conflict
+    if a_scaled and b_scaled:
+        return _values_agree(va, vb)
+    return _values_agree(a.value_numeric, b.value_numeric)  # type: ignore[arg-type]
+
+
 # --------------------------------------------------------------------------- #
 # Per-table candidate extraction
 # --------------------------------------------------------------------------- #
@@ -656,8 +718,42 @@ def _candidates_from_excerpts(extraction: PrimaryDocumentExtraction) -> list[_Ca
     through the SAME cross-method reconciliation as table candidates: a figure
     corroborated by both a table and a press-release paragraph is boosted, a
     genuine conflict is a rejection, never a silent pick.
+
+    Phase 32A corrective (cross-excerpt reconciliation) — a real report
+    commonly restates the fiscal year ONCE (e.g. in a "Sales" lead sentence)
+    and then omits it from later sentences ("Operating profit for the year
+    grew to ...") that a per-excerpt-only period search cannot see. A prose
+    fact whose OWN local sentence states no year is given the DOCUMENT's own
+    dominant reporting period — the most common explicit year found
+    elsewhere among this SAME document's own parsed facts, never an
+    external/company hint — but ONLY when the fact already carries POSITIVE
+    scope evidence (an explicit Group or named-segment signal; see
+    ``primary_fact_parser._infer_prose_scope``). An unscoped fact is left
+    exactly as before, still requiring its own local period: filling in a
+    period for an unscoped candidate would let it silently collide with a
+    DIFFERENT, also-unscoped fact under the same (label, period, scope=None)
+    key, and the existing fail-closed conflict handling would then mark BOTH
+    ambiguous — quietly breaking an already-working unscoped fact. Requiring
+    scope FIRST means this can only ever add a cleanly-separated fact or
+    surface a genuine same-scope conflict, never manufacture a new collision
+    between two previously-safe unscoped facts.
+
+    A second, independent safety gate: the fallback is also SKIPPED for a
+    given ``(label, scope)`` when this SAME document already has an
+    EXPLICIT-period (never inferred) candidate for that exact ``(label,
+    scope, dominant_period)`` whose value does not agree with this one — a
+    real live example: an unrelated "€134 million" figure sitting near an
+    incidental "... of Group sales" phrase (a ratio-base mention, not a
+    sales figure of its own) must never be allowed to newly collide with
+    the genuine, explicitly-dated "Group sales reached €22.4 billion"
+    figure just because both happen to lack their own stated year — without
+    this gate the inferred candidate would drag the ALREADY-correct
+    explicit one down to ``excerpt_only`` too. Two candidates that BOTH lack
+    an explicit period may still end up conflicting with each other after
+    inference — that is a genuine same-scope ambiguity, correctly surfaced,
+    not suppressed.
     """
-    candidates: list[_Candidate] = []
+    parsed: list[tuple[PrimaryFact, Any]] = []
     for exc in extraction.excerpts:
         wrapper = DocumentExcerpt(
             excerpt_id=exc.excerpt_id,
@@ -670,44 +766,100 @@ def _candidates_from_excerpts(extraction: PrimaryDocumentExtraction) -> list[_Ca
             evidence_type=exc.evidence_type,
         )
         for fact in _parse_excerpt(wrapper, None):
-            is_money = fact.unit == UNIT_CURRENCY_AMOUNT
-            period_known = bool(fact.period)
-            if is_money:
-                status = (
-                    VALIDATION_VALIDATED
-                    if period_known and fact.currency and fact.scale
-                    else VALIDATION_EXCERPT_ONLY
+            parsed.append((fact, exc))
+
+    dominant_period: str | None = None
+    periods_seen = [fact.period for fact, _exc in parsed if fact.period]
+    if periods_seen:
+        dominant_period = Counter(periods_seen).most_common(1)[0][0]
+
+    # Explicit-period (never inferred) anchor magnitudes per (label, scope,
+    # period) — consulted below so the period-inference fallback never drags
+    # an already-correct, explicitly-dated fact into a new conflict. Each
+    # anchor keeps its raw ``(value, scale)`` — NOT pre-multiplied — so the
+    # comparison below can apply the same "only compare on a common base
+    # unit when BOTH sides carry a known scale" rule as ``_candidates_agree``
+    # (an unscaled anchor and a scaled candidate must fall back to a raw
+    # -digit comparison, never a false conflict from one-sided scaling).
+    anchors: dict[tuple[str, str | None, str | None], list[tuple[float, str | None]]] = {}
+    if dominant_period is not None:
+        for fact, _exc in parsed:
+            if fact.period != dominant_period or fact.numeric_value is None:
+                continue
+            scale = fact.scale if fact.unit == UNIT_CURRENCY_AMOUNT else None
+            anchors.setdefault((fact.field, fact.scope, dominant_period), []).append(
+                (fact.numeric_value, scale)
+            )
+
+    def _magnitudes_agree(
+        value_a: float, scale_a: str | None, value_b: float, scale_b: str | None
+    ) -> bool:
+        if scale_a and scale_b:
+            return _values_agree(
+                value_a * _SCALE_MULTIPLIER.get(scale_a, 1.0),
+                value_b * _SCALE_MULTIPLIER.get(scale_b, 1.0),
+            )
+        return _values_agree(value_a, value_b)
+
+    candidates: list[_Candidate] = []
+    for fact, exc in parsed:
+        period = fact.period
+        inferred_period = False
+        if period is None and fact.scope is not None and dominant_period is not None:
+            candidate_scale = fact.scale if fact.unit == UNIT_CURRENCY_AMOUNT else None
+            anchor_values = anchors.get((fact.field, fact.scope, dominant_period), [])
+            conflicts_with_anchor = fact.numeric_value is not None and any(
+                not _magnitudes_agree(
+                    fact.numeric_value, candidate_scale, anchor_value, anchor_scale
                 )
-            else:
-                status = VALIDATION_VALIDATED if period_known else VALIDATION_EXCERPT_ONLY
-            fully_qualified = (
-                bool(fact.currency and fact.scale and fact.period)
-                if is_money
-                else bool(fact.period)
+                for anchor_value, anchor_scale in anchor_values
             )
-            cand = _Candidate(
-                label=fact.field,
-                period=fact.period,
-                value_numeric=fact.numeric_value,
-                value_text=fact.value,
-                unit=fact.unit,
-                currency=fact.currency,
-                scale=fact.scale,
-                page_number=fact.page_number,
-                # Reuses the ``table_location`` slot for the excerpt id — the
-                # same field ``ValidatedFact.table_location`` already maps
-                # onto and that ``company_ir.py`` already renders as
-                # provenance for BOTH tables and (now) prose.
-                table_location=fact.excerpt_id,
-                method=exc.extraction_method,
-                base_confidence=exc.confidence,
-                fully_qualified=fully_qualified,
-                status=status,
-                scope=fact.scope,
+            if not conflicts_with_anchor:
+                period = dominant_period
+                inferred_period = True
+        is_money = fact.unit == UNIT_CURRENCY_AMOUNT
+        period_known = bool(period)
+        if is_money:
+            status = (
+                VALIDATION_VALIDATED
+                if period_known and fact.currency and fact.scale
+                else VALIDATION_EXCERPT_ONLY
             )
-            if fact.parser_warning:
-                cand.notes.append(fact.parser_warning)
-            candidates.append(cand)
+        else:
+            status = VALIDATION_VALIDATED if period_known else VALIDATION_EXCERPT_ONLY
+        fully_qualified = (
+            bool(fact.currency and fact.scale and period)
+            if is_money
+            else bool(period)
+        )
+        cand = _Candidate(
+            label=fact.field,
+            period=period,
+            value_numeric=fact.numeric_value,
+            value_text=fact.value,
+            unit=fact.unit,
+            currency=fact.currency,
+            scale=fact.scale,
+            page_number=fact.page_number,
+            # Reuses the ``table_location`` slot for the excerpt id — the
+            # same field ``ValidatedFact.table_location`` already maps
+            # onto and that ``company_ir.py`` already renders as
+            # provenance for BOTH tables and (now) prose.
+            table_location=fact.excerpt_id,
+            method=exc.extraction_method,
+            base_confidence=exc.confidence,
+            fully_qualified=fully_qualified,
+            status=status,
+            scope=fact.scope,
+        )
+        if fact.parser_warning:
+            cand.notes.append(fact.parser_warning)
+        if inferred_period:
+            cand.notes.append(
+                "Period inferred from the document's own dominant reporting "
+                "period; this candidate's own local text stated no year."
+            )
+        candidates.append(cand)
     return candidates
 
 
@@ -803,12 +955,17 @@ def _resolve_group(
     label, period, scope = key
     methods = sorted({c.method for c in group}, key=lambda m: _METHOD_QUALITY.get(m, 9))
     ocr_derived = METHOD_OCR in methods
-    numeric_vals = [c.value_numeric for c in group if c.value_numeric is not None]
+    # Phase 32A corrective (cross-excerpt reconciliation) — compare candidates
+    # pairwise on a common base unit ONLY when BOTH sides carry a known scale
+    # (see ``_candidates_agree``), not raw digits: a rounded "EUR22.4bn" and a
+    # precise "EUR22,420m" mention of the SAME Group figure must agree, not
+    # be treated as a hard conflict.
+    valued = [c for c in group if c.value_numeric is not None]
 
     conflict = False
-    for i in range(len(numeric_vals)):
-        for j in range(i + 1, len(numeric_vals)):
-            if not _values_agree(numeric_vals[i], numeric_vals[j]):
+    for i in range(len(valued)):
+        for j in range(i + 1, len(valued)):
+            if not _candidates_agree(valued[i], valued[j]):
                 conflict = True
                 break
         if conflict:
@@ -898,13 +1055,16 @@ def _resolve_group(
 
 def _best_candidate(group: list[_Candidate]) -> _Candidate:
     """Pick the representative candidate: validated first, then highest base
-    confidence, then best-quality method."""
+    confidence, then best-quality method, then (lowest priority — only
+    breaks an otherwise-exact tie) the more precise scale, e.g. a "22,420
+    million" candidate over an agreeing but coarser "22.4 billion" one."""
     return min(
         group,
         key=lambda c: (
             0 if c.status == VALIDATION_VALIDATED else 1,
             -c.base_confidence,
             _METHOD_QUALITY.get(c.method, 9),
+            _SCALE_PRECISION_RANK.get(c.scale, 3),
         ),
     )
 

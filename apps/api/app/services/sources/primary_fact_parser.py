@@ -32,7 +32,10 @@ from app.services.sources.document_text_extractor import (
     DocumentExcerpt,
     DocumentTextExtraction,
 )
-from app.services.sources.primary_document_extractor import _infer_scope
+from app.services.sources.primary_document_extractor import (
+    _infer_scope,
+    scope_claim_signal,
+)
 
 # Canonical fact field names (neutral, factual — never a rating vocabulary).
 FIELD_LEGAL_NAME = "company_legal_name"
@@ -334,7 +337,19 @@ def _percent_pattern(label_alts: str, *, exclude_prefix: str | None = None) -> r
 
 
 _MONEY_FIELDS: list[tuple[str, re.Pattern[str]]] = [
-    (FIELD_REVENUE, _money_pattern(r"revenue|net sales|total sales|sales|turnover")),
+    (
+        FIELD_REVENUE,
+        # Phase 32A corrective (cross-excerpt reconciliation) — the bare
+        # "sales" alternative is genuinely ambiguous immediately after "of "
+        # ("cost of sales", "as a percentage of sales", "64.4% of sales, down
+        # from 66.9%"): these are RATIO/COST-BASE qualifiers, never a
+        # headline sales figure of their own, and matching them let an
+        # unrelated nearby number (a margin percentage, a duration in
+        # months) be mistaken for a revenue value.
+        _money_pattern(
+            r"revenue|net sales|total sales|sales|turnover", exclude_prefix="of "
+        ),
+    ),
     (
         FIELD_RECURRING_OPERATING_PROFIT,
         # "profit from recurring operations" (Phase 32A corrective — LVMH
@@ -395,7 +410,8 @@ _MONEY_FIELDS: list[tuple[str, re.Pattern[str]]] = [
     (
         FIELD_NET_CASH,
         _money_pattern(
-            r"net cash position|net cash(?!\s*(?:flow|generated|provided|from|and))"
+            r"net cash position|net cash(?!\s*(?:flow|inflow|outflow|generated|"
+            r"provided|from|and))"
         ),
     ),
     (
@@ -541,6 +557,19 @@ _NAMED_SUBJECT_RE = re.compile(
     rf"(?:{_SCOPE_REPORT_VERBS})\b"
 )
 
+# A named subject followed by a linking verb ("were"/"was"/...) and, later in
+# the SAME clause, a possessive "their <metric>" reference — a second common
+# real-report sentence shape ("the Jewellery Maisons were ... able to grow
+# their operating profit to ...") that the reporting-verb list above does not
+# cover. Not anchored to sentence-start (the subject commonly follows an
+# introductory clause, e.g. "Led by strong momentum, the X were..."), but
+# still requires the "the " article immediately before a capitalized phrase
+# so a random mid-sentence capitalized word is never mistaken for a subject.
+_POSSESSIVE_SUBJECT_RE = re.compile(
+    r"\b[Tt]he\s+([A-Z][A-Za-z0-9&,.\-\s]{1,60}?)\s+"
+    r"(?:were|was|have|has|remained|continued)\b(?:(?![.!?]).){0,60}?\btheir\b"
+)
+
 _GROUP_SUBJECT_WORDS = frozenset({"group", "the group"})
 # Generic financial-statement vocabulary that is never itself a business/
 # segment NAME — excluded so a plain metric noun accidentally captured as a
@@ -596,6 +625,25 @@ def _infer_prose_scope(sentence: str) -> str | None:
             return "group"
         if lowered and lowered not in _GENERIC_SCOPE_BLOCKLIST:
             return _clean_scope_label(raw_subject)
+    m = _POSSESSIVE_SUBJECT_RE.search(sentence)
+    if m:
+        raw_subject = m.group(1)
+        lowered = " ".join(raw_subject.split()).strip(" .,").lower()
+        if lowered in _GROUP_SUBJECT_WORDS or "consolidated" in lowered:
+            return "group"
+        if lowered and lowered not in _GENERIC_SCOPE_BLOCKLIST:
+            return _clean_scope_label(raw_subject)
+    # No named-subject construction matched. Fall back to the SAME generic,
+    # never-company-specific "group"/"consolidated" vocabulary signal used
+    # for headings (``_infer_scope``) and council claims (``citation_checker``
+    # via ``scope_claim_signal``) — catches a prepositional Group-scope claim
+    # with no named grammatical subject at all (e.g. "At Group level,
+    # operating profit came in at ..."). A generic "segment" signal (no named
+    # label available) is deliberately NOT treated as a positive scope here —
+    # an unnamed segment claim stays unscoped (fail-closed) rather than
+    # risking two DIFFERENT unnamed segments colliding under one label.
+    if scope_claim_signal(sentence) == "group":
+        return "group"
     return None
 
 
