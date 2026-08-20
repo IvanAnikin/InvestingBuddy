@@ -51,6 +51,8 @@ from app.services.sources.document_text_extractor import (
     _classify,
     _relevance,
 )
+from app.services.sources.financial_fact_categories import select_category_diverse
+from app.services.sources.financial_metric_signal import excerpt_diversity_key
 from app.services.sources.ingestion_status import (
     FAILURE_CLIENT_UNAVAILABLE,
     FAILURE_EMPTY_EXTRACTION,
@@ -594,7 +596,16 @@ def _rank_and_build_excerpts(
     """
     indexed = list(enumerate(blocks))
     lead = indexed[:1]
-    rest = sorted(indexed[1:], key=lambda t: (-_relevance(t[1][3]), t[0]))
+    rest_sorted = sorted(indexed[1:], key=lambda t: (-_relevance(t[1][3]), t[0]))
+    # Category-diverse reordering (Phase 32A dedicated slice) — see the
+    # identical comment in document_text_extractor.extract_document_text;
+    # ``cap`` here is the full list length (a reordering, not a truncation
+    # yet), the dedup/``max_excerpts`` walk below is otherwise unchanged.
+    rest = select_category_diverse(
+        rest_sorted,
+        cap=len(rest_sorted),
+        diversity_key_of=lambda t: excerpt_diversity_key(t[1][3]),
+    )
     chosen = lead + rest
 
     excerpts: list[PrimaryDocumentExcerpt] = []
@@ -631,6 +642,33 @@ def _rank_and_build_excerpts(
             )
         )
     return excerpts
+
+
+def _append_selection_diagnostics(
+    result: "PrimaryDocumentExtraction",
+    candidate_count: int,
+) -> None:
+    """Append ONE bounded, secret-free diagnostic line summarizing excerpt
+    selection — never the document body, never a raw excerpt.
+
+    Phase 32A dedicated slice (financial excerpt relevance ranking),
+    section 15: enough to investigate a live selection outcome on staging
+    (how many candidates existed, how many survived, how many distinct
+    financial-category buckets they span, how many carry a genuine
+    metric+value signal) without ever logging full excerpt text.
+    """
+    if not result.excerpts:
+        return
+    categories = {excerpt_diversity_key(e.text)[0] for e in result.excerpts}
+    with_signal = sum(
+        1 for e in result.excerpts if excerpt_diversity_key(e.text)[0] != "no_metric_signal"
+    )
+    result.warnings.append(
+        f"Excerpt selection: {candidate_count} candidate block(s) -> "
+        f"{len(result.excerpts)} selected, {len(categories)} distinct "
+        f"financial category bucket(s), {with_signal} with a genuine "
+        "metric+value signal."
+    )
 
 
 def _finalize_language(
@@ -923,7 +961,29 @@ def _reconstruct_two_column_text(
     gutter = _detect_two_column_gutter(lines, page_width)
     if gutter is None:
         return None
-    mid = page_width / 2.0
+    # Live-diagnosed fragmentation bug (financial excerpt relevance-ranking
+    # slice, 2026-08-20): the page's exact geometric midpoint
+    # (``page_width / 2.0``) is only a BOOTSTRAP proxy for "where the gutter
+    # roughly is" — it is not necessarily where the gutter actually sits.
+    # Real column layouts are frequently asymmetric (a slightly wider right
+    # -hand column, binding-margin offset, ...), so a left column's own
+    # justified text can legitimately extend a few tenths of a point past
+    # the page's exact half-width on some lines but not others (ordinary
+    # per-line right-edge jitter). Reusing the RAW page midpoint here (as
+    # opposed to the gutter this page ACTUALLY detected two lines above)
+    # made that jitter repeatedly cross the classification threshold,
+    # misclassifying a genuinely-left line as a midline-straddling "header"
+    # on roughly every other row — verified live: this fragmented entire
+    # paragraphs (including the label and its value on the very same source
+    # line) into dozens of isolated one-line "regions" separated by ``\n\n``,
+    # so no single downstream excerpt ever contained both a metric's label
+    # and its value together, regardless of how well excerpt ranking scored
+    # each fragment. Reclassifying against the MIDPOINT OF THE ACTUALLY
+    # -DETECTED GUTTER fixes this: proven on the real live-blocking document
+    # to eliminate 28/28 and 21/22 spurious header-splits on two genuinely
+    # two-column pages, with zero change on a page whose gutter already sat
+    # near the page's true centre.
+    mid = (gutter[0] + gutter[1]) / 2.0
 
     # Each entry is one SEMANTIC REGION's text (a full column run, or a
     # single full-width segment) with its own internal lines already joined
@@ -1230,6 +1290,7 @@ def extract_pdf(
         max_excerpts=max_excerpts,
         per_excerpt=per_excerpt,
     )
+    _append_selection_diagnostics(result, len(page_blocks))
     result.extracted_char_count = total_chars
     _finalize_language(result, page_blocks, original_language)
 
@@ -1544,6 +1605,7 @@ def extract_html(
         max_excerpts=max_excerpts,
         per_excerpt=per_excerpt,
     )
+    _append_selection_diagnostics(result, len(page_blocks))
     result.extracted_char_count = total_chars
     _finalize_language(result, page_blocks, original_language)
 

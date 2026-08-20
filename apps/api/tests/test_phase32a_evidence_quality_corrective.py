@@ -986,6 +986,46 @@ async def test_cache_restamp_on_hash_matched_reuse_stops_repeated_revalidation(s
     assert reused.revalidated is False
 
 
+async def test_cache_restamp_on_hash_matched_reuse_refreshes_stale_excerpts(session):
+    """Regression (financial excerpt relevance-ranking dedicated slice,
+    2026-08-20): restamping ``pipeline_version`` on a hash-matched reuse
+    used to leave the row's persisted ``excerpts_json`` untouched — a real,
+    live-observed bug where a genuinely fresh, correctly re-extracted
+    document kept serving its OLD, pre-fix excerpt text forever, silently
+    masking every extraction-layer corrective fix on this ingestion path.
+    """
+    cfg = _cfg()
+    company = await _add_company(session)
+    run = await _add_run(session)
+    stale_excerpt = _excerpt("X1", "Old pre-fix garbled excerpt text.")
+    art_stale = _artifact(content_hash="j" * 64, excerpts=[stale_excerpt])
+    await persist_primary_document_artifacts(
+        session, artifacts=[art_stale], company_id=company.id, agent_run_id=run.id, cfg=cfg
+    )
+    row = (await session.execute(select(ExtractedDocument))).scalars().one()
+    row.pipeline_version = LEGACY_EXTRACTION_PIPELINE_VERSION
+    await session.flush()
+
+    # A SECOND persist for the SAME content_hash (same underlying document —
+    # a real re-fetch of the identical bytes) but with GENUINELY DIFFERENT,
+    # freshly-reconstructed excerpt text — mirrors a corrective extraction
+    # -layer fix landing between the two runs.
+    fresh_excerpt = _excerpt("X1", "Fresh correctly-reconstructed excerpt text.")
+    art_fresh = _artifact(content_hash="j" * 64, excerpts=[fresh_excerpt])
+    result2 = await persist_primary_document_artifacts(
+        session, artifacts=[art_fresh], company_id=company.id, agent_run_id=run.id, cfg=cfg
+    )
+    assert result2.documents_reused == 1
+    assert result2.documents_created == 0
+
+    row_after = (await session.execute(select(ExtractedDocument))).scalars().one()
+    assert row_after.pipeline_version == CURRENT_EXTRACTION_PIPELINE_VERSION
+    excerpts_json = row_after.excerpts_json or []
+    texts = [e.get("text") for e in excerpts_json]
+    assert "Fresh correctly-reconstructed excerpt text." in texts
+    assert "Old pre-fix garbled excerpt text." not in texts
+
+
 # =========================================================================== #
 # F. PDF cross-page scope persistence (Problem C, generic + bounded)          #
 # =========================================================================== #
