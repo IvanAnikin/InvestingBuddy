@@ -173,6 +173,72 @@ def test_wrong_percentage_delta_never_becomes_the_absolute_value():
     assert fact.numeric_value != 3.0
 
 
+def test_fx_rate_qualifier_between_trend_percentage_and_value_still_resolves():
+    """Regression for a live CFR staging finding (financial excerpt
+    relevance-ranking dedicated slice, 2026-08-20): real financial
+    narrative extremely commonly qualifies an FX-driven trend percentage
+    with "at constant/actual exchange rates" BEFORE stating the absolute
+    value. Without absorbing this generic (never issuer-specific) phrase in
+    the trend clause, it fell into the connector+gap budget and overflowed
+    it, silently failing to reach the real value for exactly this common
+    sentence shape.
+    """
+    fact = _facts(
+        "For the year ended 31 March 2026, sales increased by 5% at actual "
+        "exchange rates to EUR22,420 million."
+    )[FIELD_REVENUE]
+    assert fact.numeric_value == 22420.0
+    assert fact.numeric_value != 31.0
+    assert fact.scale == "million"
+    assert fact.currency == "EUR"
+
+
+@pytest.mark.parametrize("rate_kind", ["constant", "actual"])
+def test_fx_rate_qualifier_both_constant_and_actual_variants(rate_kind):
+    fact = _facts(
+        f"Operating profit grew by 1% at {rate_kind} exchange rates to "
+        "EUR4,492 million."
+    )[FIELD_OPERATING_PROFIT]
+    assert fact.numeric_value == 4492.0
+
+
+def test_qualified_later_candidate_preferred_over_earlier_unqualified_one():
+    """Regression for a live CFR staging finding: a bare, weak number with
+    NEITHER its own scale nor its own currency (e.g. "31" from a "...ended
+    31 March 2026" date fragment, following a bare "Sales" heading) must
+    never win over a genuinely-qualified value stated later in the SAME
+    excerpt, merely because the weak match happens to sit earlier in the
+    text. The whole-excerpt currency-inference fallback previously made
+    this weak match look superficially acceptable by borrowing a currency
+    symbol from elsewhere in the excerpt, silently reporting a wrong
+    headline figure.
+    """
+    text = (
+        "Taiwan, China, respectively. Sales For the year ended 31 March "
+        "2026, sales increased by 5% at actual exchange rates to "
+        "EUR22,420 million. Excluding the unfavourable effects of foreign "
+        "exchange rates, sales for the year were up by 11% with continued "
+        "momentum in the fourth quarter at +13%."
+    )
+    fact = _facts(text)[FIELD_REVENUE]
+    assert fact.numeric_value == 22420.0
+    assert fact.numeric_value != 31.0
+    assert fact.confidence == "high"
+    assert fact.parser_warning is None
+
+
+def test_unqualified_candidate_still_used_when_no_qualified_candidate_exists():
+    """The preference for a locally-qualified candidate must not regress
+    the existing whole-excerpt currency-inference fallback when NO
+    candidate in the excerpt has its own local scale/currency at all.
+    """
+    text = "In millions of EUR. Revenue for the year was 1,204, up 3% from the prior year."
+    fact = _facts(text).get(FIELD_REVENUE)
+    assert fact is not None
+    assert fact.numeric_value == 1204.0
+    assert fact.parser_warning is not None
+
+
 def test_trailing_bare_percentage_mention_does_not_falsely_flag_ambiguity():
     """A live, real-issuer regression (2026-08-17 CFR staging acceptance): a
     second, later mention of the SAME label in one excerpt that states only a

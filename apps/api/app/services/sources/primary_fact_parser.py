@@ -220,11 +220,24 @@ _PERIOD_QUALIFIER = (
 # merge-blocker fix). A plain ``?`` cannot prevent this: it only controls
 # whether the clause is *tried*, not whether a successful match may later be
 # undone to let a different branch succeed.
+# Live CFR staging finding (financial excerpt relevance-ranking dedicated
+# slice, 2026-08-20): real financial narrative extremely commonly qualifies
+# an FX-driven trend percentage with "at constant/actual exchange rates"
+# BEFORE stating the absolute value — e.g. "sales increased by 5% at actual
+# exchange rates to EUR22,420 million". Without consuming this generic
+# (never issuer-specific), standard financial-reporting phrase here, it fell
+# into the connector+gap budget below, whose 25-char cap was too tight to
+# also reach past it to the real value — the label→value gap silently
+# failed for exactly the sentence shape carrying a document's own headline
+# Group revenue figure. Possessive-optional for the same non-backtracking
+# reason as the trend clause itself.
+_FX_RATE_QUALIFIER = r"(?:\s+at\s+(?:constant|actual)\s+exchange\s+rates)?+"
+
 _TREND_CLAUSE = (
     r"(?:\s+(?:rose|grew|grow|increased|increase|fell|fall|declined|decline"
     r"|decreased|decrease|dropped|drop|climbed|slipped|improved|improve"
     r"|was up|were up|was down|were down)"
-    r"\s+(?:by\s+)?\d+(?:[.,]\d+)?\s*%)?+"
+    rf"\s+(?:by\s+)?\d+(?:[.,]\d+)?\s*%{_FX_RATE_QUALIFIER})?+"
 )
 
 # Same idea as ``_TREND_CLAUSE`` but for percent-level fields (e.g. operating
@@ -236,7 +249,7 @@ _PERCENT_TREND_CLAUSE = (
     r"|decreased|decrease|dropped|drop|climbed|slipped|improved|improve"
     r"|was up|were up|was down|were down)"
     r"\s+(?:by\s+)?\d+(?:[.,]\d+)?\s*"
-    r"(?:percentage\s+points?|basis\s+points?|%))?+"
+    rf"(?:percentage\s+points?|basis\s+points?|%){_FX_RATE_QUALIFIER})?+"
 )
 
 
@@ -667,13 +680,38 @@ def _parse_excerpt(excerpt: DocumentExcerpt, source_url: str | None) -> list[Pri
 
     # -- money fields ---------------------------------------------------------
     for field, pattern in _MONEY_FIELDS:
-        # Phase 32A corrective — only ever the first CLAUSE-SAFE candidate; a
-        # nearer but clause-unsafe match (crosses a sentence, semicolon,
-        # adversative conjunction, or another metric's label) is skipped
-        # entirely rather than used as a fallback.
-        m = next(_iter_clause_safe(pattern, text), None)
-        if not m:
+        # Phase 32A corrective — only ever a CLAUSE-SAFE candidate; a nearer
+        # but clause-unsafe match (crosses a sentence, semicolon, adversative
+        # conjunction, or another metric's label) is skipped entirely rather
+        # than used as a fallback.
+        #
+        # Live CFR staging finding (financial excerpt relevance-ranking
+        # dedicated slice, 2026-08-20): taking unconditionally the FIRST
+        # clause-safe candidate (purely by text position) let a bare, weak
+        # number with NEITHER its own scale nor its own currency — e.g. "31"
+        # from "...ended 31 March 2026" following a bare "Sales" heading —
+        # win over a genuinely-qualified value stated moments later in the
+        # SAME excerpt ("...to EUR22,420 million"), because the weak match
+        # merely happened to sit earlier in the text. The whole-excerpt
+        # currency-inference fallback below then made this weak match look
+        # superficially acceptable (borrowing a currency symbol from
+        # elsewhere in the excerpt), silently reporting a wrong headline
+        # figure with only a "verify" warning. A candidate that carries its
+        # OWN local scale-or-currency is now preferred over one that has
+        # neither; the original first-candidate behaviour (and the
+        # whole-excerpt inference fallback) is unchanged when NO candidate
+        # in this excerpt has its own local signal.
+        candidates = list(_iter_clause_safe(pattern, text))
+        if not candidates:
             continue
+        m = next(
+            (
+                c
+                for c in candidates
+                if _scale_word(c.group("scale")) or _find_currency(c.group(0))
+            ),
+            candidates[0],
+        )
         num = _norm_number(m.group("num"))
         if num is None:
             continue
