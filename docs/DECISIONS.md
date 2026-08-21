@@ -808,3 +808,107 @@ registry entry), all squash-merged to `main`, all auto-deployed. No migration
   together.
 - **Slice 5B.3 (admin API + web visibility) is next. The complete Slice 5 and
   Phase 32A are NOT closed.**
+
+---
+
+## ADR-017: LVMH Evidence-Chain Corrective Trilogy + the Real Cause of the Missing Live Azure OCR Call (Phase 32A completion campaign)
+
+**Date:** 2026-08-21
+**Status:** Accepted — merged (`2dfdc6a` PR #115, `9e1865b` PR #116, `3ef4453`
+PR #117, `9ce6bdf` PR #118), deployed, staging-validated live.
+
+### Context
+
+A live end-to-end trace of the MC/LVMH DiscoveryCandidate evidence path
+(official H1 2026 results HTML) against the Group-headline target facts found
+three real, generic (non-issuer-specific) defects spanning three different
+layers of the pipeline, plus — independently — the true root cause of a
+long-standing gap: no real Azure Document Intelligence OCR call had ever been
+observed on staging across multiple prior validation rounds (ADR-016).
+
+### Decision
+
+**1. Parser layer (PR #115).** `_PERIOD_QUALIFIER` (`primary_fact_parser.py`)
+did not recognize "(the) first/second half of `<year>`" phrasing — standard
+financial-reporting English, not LVMH-specific. The unconsumed phrase fell
+into the generic label→value gap, which grabbed the trailing YEAR as though it
+were the metric's own money value (e.g. "...for the first half of 2026 came
+to €8.7 billion" parsed as `2026`). That bogus prose candidate then conflicted
+with (and fail-closed-rejected) the correct table candidate for the same
+field/period — the true cause of a `recurring_operating_profit` gap. Also
+fixed: the table row-label matcher for equity required "total equity" /
+"shareholders' equity" and never matched a standalone "Equity" row label
+(anchored to the WHOLE cell only, so it can never collide with unrelated
+prose); and `_best_candidate` ranked raw excerpt relevance-confidence ahead of
+scale precision, letting a rounded prose mention outrank an agreeing, more
+precise table figure.
+
+**2. Evidence-selection layer, TWO independent call sites (PR #116 + #117).**
+The financial-fact diversity key (`financial_fact_diversity_key`) is
+intentionally `(field, scope)` with no period component, so a
+comparison-period and a current-period fact for the same field compete for one
+bounded round-robin slot. `llm.evidence_budget._apply_category_budget` and
+`company_evidence._prioritize_ir_items` BOTH run this round-robin
+independently — PR #116 fixed period-recency ordering in the first only; a
+fresh live MC run then proved `total_equity` STILL showed the stale 2025
+figure, because `_prioritize_ir_items` is the site that actually determines
+which facts survive the raw evidence-pack entry cap and had never been fixed.
+PR #117 extracted the period-recency rank into one shared function
+(`financial_fact_categories.primary_fact_period_rank`) and applied it at BOTH
+sites, plus reordered `company_ir._artifact_to_evidence` to add a document's
+validated facts before its prose excerpts (defense-in-depth, matching that
+method's own already-documented intent).
+
+**3. The real reason live OCR was never observed (PR #118).** Tracing a
+genuinely scanned document (Goodwin PLC's 2002 annual report — flagged in
+`verified_issuer_sources.py` specifically for this purpose) through the real
+pipeline surfaced a `ModuleNotFoundError`: `azure-core`'s ASYNC transport
+(every `.aio` client the OCR provider calls) requires `aiohttp` installed to
+make a network call at all. It was never a `requirements.txt`/`pyproject.toml`
+dependency. Every real OCR attempt failed closed with a generic
+`ocr_provider_error` — indistinguishable from a genuine provider outage
+without direct diagnosis, which is why every prior validation round's
+"efficacy caveat" concluded "not a code defect... reason is structural"
+without finding this.
+
+### Live proof (2026-08-21, staging)
+
+- **MC/LVMH** — fresh company-analysis run: all 7 required Group H1 2026
+  facts (revenue €38,644m, profit from recurring operations €8,691m,
+  operating margin 22.5%, net profit €5,697m, OFCF €4,100m, net financial
+  debt €8,245m, equity €69,694m) reach the Council narrative with exact
+  precision, current period, Group scope. `schema_valid=true`,
+  `safety_passed=true`, `publication_ready=false`, `human_review_required=true`.
+- **CFR regression** — fresh run: 6/7 target facts still exact
+  (sales €22,420m, OCF €4,880m, net cash €8,496m, Jewellery margin 30.5%,
+  Watchmakers €107m, margin 20.0%); Group operating profit reaches Council
+  evidence only as rounded prose (€4.5bn / €5bn), not the precise €4,492m
+  table value — traced to an UNRELATED, PRE-EXISTING gap (the specific PDF
+  excerpt carrying the precise table figure states no local year and lacks
+  the positive scope signal PR #113's period-inference fallback requires;
+  the underlying `extracted_documents` row is dated 2026-08-11, untouched by
+  any change in this campaign — confirmed NOT a regression from this work).
+- **BRBY regression** — fresh run: Burberry Group plc, LSE, GBX for price
+  data, GBP only in an honest FX-risk narrative context (never as a price
+  unit), `schema_valid=true`, `safety_passed=true`.
+- **OCR** — real live Azure Document Intelligence invocation against
+  `ib-stg-docintel` (model `prebuilt-layout`) recovered real text from
+  Goodwin PLC's genuinely scanned 2002 annual report (20 pages, zero native
+  text layer); persisted to the staging DB (`extracted_documents.
+  extraction_method='ocr'`); a second `load_reusable_documents` lookup
+  correctly found the persisted document by canonical URL, confirming the
+  real pipeline's reuse branch would fire with zero additional Azure calls.
+
+### Consequences
+
+- CFR's Group operating-profit precision gap remains open — a genuinely
+  different, deeper root cause (local period-inference on a specific PDF
+  excerpt) than anything this campaign's shared-evidence-path changes
+  touched. Per this project's own standing rule, the now-working CFR PDF
+  path was NOT redesigned to chase it.
+- `aiohttp` is now a hard runtime dependency wherever
+  `PRIMARY_DOCUMENT_OCR_ENABLED=true` — any future dependency-pruning pass
+  must not drop it silently.
+- Deep Field Review and a full manual-QA pass were not re-run in this
+  session; see the session handoff for the current closure verdict and
+  remaining limitations.
