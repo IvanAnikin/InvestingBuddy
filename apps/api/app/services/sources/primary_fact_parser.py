@@ -198,7 +198,18 @@ def _find_currency(text: str) -> str | None:
 _PERIOD_QUALIFIER = (
     r"(?:\s+(?:for|in|during)\s+(?:the\s+)?"
     r"(?:"
-    r"(?:fiscal\s+year|financial\s+year|fiscal|year|period|half[- ]year|h[12])"
+    # "the first half of 2026" / "the second half of 2026" / "the fourth
+    # quarter of 2025" — standard financial-reporting phrasing (generic,
+    # not issuer-specific) naming BOTH an ordinal sub-period AND its year.
+    # Before this alternative, this whole ordinal+year phrase went
+    # unconsumed here and fell into the generic ``gap`` catch-all below,
+    # which then grabbed the trailing YEAR as though it were the metric's
+    # own value (a real, live-observed failure — Phase 32A corrective, LVMH
+    # H1 2026 results: "Profit from recurring operations for the first
+    # half of 2026 came to €8.7 billion" parsed as ``2026``, not the money
+    # figure that actually followed).
+    r"(?:first|second|third|fourth)\s+(?:half|quarter)\s+of\s+(?:19|20)\d{2}"
+    r"|(?:fiscal\s+year|financial\s+year|fiscal|year|period|half[- ]year|h[12])"
     r"(?:\s+ended)?(?:\s+(?:19|20)\d{2})?"
     r"|(?:19|20)\d{2}"
     r")"

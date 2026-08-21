@@ -165,7 +165,17 @@ _LABEL_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (
         re.compile(
             r"total (?:shareholders|stockholders)[’']?\s*equity"
-            r"|shareholders[’']?\s*equity|total equity",
+            r"|shareholders[’']?\s*equity|total equity"
+            # A table ROW-HEADER cell whose ENTIRE content is just "Equity"
+            # (e.g. LVMH's "Financial highlights" table: a bare "Equity" row
+            # alongside "Revenue", "Net financial debt", ...) is a safe,
+            # generic match here — this pattern is only ever run against one
+            # isolated row-label cell (``_match_label``), never free-flowing
+            # prose, so it can never collide with an unrelated phrase like
+            # "private equity" or "brand equity". A bare "equity" WITHIN a
+            # longer label (e.g. a "Return on equity" ratio row) is
+            # intentionally still excluded by the exact whole-cell anchors.
+            r"|^\s*equity\s*$",
             re.I,
         ),
         FIELD_TOTAL_EQUITY,
@@ -1054,17 +1064,35 @@ def _resolve_group(
 
 
 def _best_candidate(group: list[_Candidate]) -> _Candidate:
-    """Pick the representative candidate: validated first, then highest base
-    confidence, then best-quality method, then (lowest priority — only
-    breaks an otherwise-exact tie) the more precise scale, e.g. a "22,420
-    million" candidate over an agreeing but coarser "22.4 billion" one."""
+    """Pick the representative candidate: validated first, then the more
+    precise scale, then highest base confidence, then best-quality method.
+
+    Only ever called on a GROUP ``_resolve_group`` has already confirmed does
+    NOT conflict (see the ``if conflict:`` branch above, which returns
+    early) — every candidate here is already an agreeing restatement of the
+    same figure, so preferring precision can never silently pick a
+    contradicting value, only the more exact of two that already agree, e.g.
+    a "22,420 million" candidate over an agreeing but coarser "22.4 billion"
+    one.
+
+    Phase 32A corrective (LVMH H1 2026) — precision used to be the LOWEST
+    priority, ranked after ``base_confidence``. A table cell carries no
+    excerpt-relevance score of its own (a flat ``0.7`` default), while a
+    lead-paragraph prose restatement is typically ranked far higher purely
+    for citation-display relevance (e.g. ``0.9``) — a signal about how
+    worth-reading the prose is, not about which figure is more exact. That
+    let a rounded prose mention ("€8.7 billion") silently outrank an
+    agreeing, more precise table figure ("8,691" million) as the fact's
+    representative value merely because of its unrelated excerpt-ranking
+    score — exactly the "never prefer a candidate merely due to a higher
+    excerpt score" failure mode this parser is designed to avoid."""
     return min(
         group,
         key=lambda c: (
             0 if c.status == VALIDATION_VALIDATED else 1,
+            _SCALE_PRECISION_RANK.get(c.scale, 3),
             -c.base_confidence,
             _METHOD_QUALITY.get(c.method, 9),
-            _SCALE_PRECISION_RANK.get(c.scale, 3),
         ),
     )
 
