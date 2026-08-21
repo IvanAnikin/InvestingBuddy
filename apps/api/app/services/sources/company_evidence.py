@@ -73,6 +73,7 @@ from app.services.sources.extracted_fact_validator import (
 from app.services.sources.financial_fact_categories import (
     financial_fact_diversity_key,
     primary_fact_field,
+    primary_fact_period_rank,
     select_category_diverse,
 )
 from app.services.sources.gaps import GapSeverity, GapType, SourceGap
@@ -436,6 +437,19 @@ def _prioritize_ir_items(
         for it in items
         if it.source_type in _DOCUMENT_SOURCE_TYPES and it.primary_fact is not None
     ]
+    # Phase 32A corrective (LVMH H1 2026) — within each diversity key (same
+    # field/scope), the MORE RECENT period must win the round-robin's first
+    # slot; without this, a comparison-period fact that merely happened to
+    # be appended earlier (e.g. an earlier fiscal year sorts first in the
+    # upstream validator's own deterministic ordering) could permanently
+    # displace the CURRENT period from this cap-bounded reservation — see
+    # ``primary_fact_period_rank`` for the full incident. Both callers of
+    # ``select_category_diverse`` over financial facts (this one and
+    # ``llm.evidence_budget._apply_category_budget``) must apply the same
+    # pre-sort so neither reintroduces the bug the other already fixed.
+    ordered_facts = sorted(
+        ordered_facts, key=lambda it: primary_fact_period_rank(it.primary_fact)
+    )
     reserved_facts = select_category_diverse(
         ordered_facts,
         cap=financial_fact_cap,

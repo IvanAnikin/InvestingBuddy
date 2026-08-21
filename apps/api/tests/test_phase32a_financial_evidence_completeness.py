@@ -557,6 +557,35 @@ def test_prioritize_ir_items_floors_structured_facts_ahead_of_excerpt_flood():
     assert {it.id for it in rest} == {f"X{i}" for i in range(5)}
 
 
+def _ir_fact_item(eid: str, *, field: str, period: str) -> CouncilEvidenceItem:
+    return CouncilEvidenceItem(
+        id=eid,
+        source_tier="T1_primary_filing",
+        source_type="company_ir_financial_fact",
+        excerpt=f"{field} [{period}]",
+        period=period,
+        primary_fact={"field": field, "numeric_value": 1.0, "period": period},
+    )
+
+
+def test_prioritize_ir_items_prefers_current_period_over_stale_comparison_period():
+    """Phase 32A corrective (LVMH H1 2026) — a comparison-period and a
+    current-period fact for the SAME field share one diversity-key
+    round-robin slot. A live MC/LVMH run showed the stale 2025
+    ``total_equity`` figure reserved while the current 2026 figure was
+    dropped, because the upstream validator's own deterministic (label,
+    period-as-STRING) sort happens to place 2025 before 2026 in append
+    order. With a cap tight enough that only ONE period per field can be
+    reserved, the more recent period must always win."""
+    items = [
+        _ir_fact_item("F1", field="total_equity", period="2025"),
+        _ir_fact_item("F2", field="total_equity", period="2026"),
+    ]
+    reserved, _rest = _prioritize_ir_items(items, financial_fact_cap=1)
+    assert len(reserved) == 1
+    assert reserved[0].primary_fact["period"] == "2026"
+
+
 def test_prioritize_ir_items_stable_when_no_facts_present():
     excerpts = [
         _ir_item(f"X{i}", source_type="company_ir_annual_report_excerpt", fact=False)
