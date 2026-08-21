@@ -30,4 +30,13 @@ pdfplumber>=0.11,<0.12
 # get_ocr_provider() in app/services/sources/ocr_provider.py.
 azure-ai-documentintelligence>=1.0,<2
 azure-identity>=1.19,<2
+# Phase 32A corrective (real OCR proof) — azure-core's ASYNC transport
+# (used by every ``.aio`` client this module calls) needs aiohttp installed
+# to actually make a network call; without it every real OCR attempt fails
+# closed with ocr_provider_error/ModuleNotFoundError, degrading silently to
+# the SAME honest "OCR call failed" gap a genuine provider outage would
+# produce — indistinguishable from a real failure without this fix. This
+# was the true reason a live Azure Document Intelligence invocation was
+# never observed on staging across every prior validation round.
+aiohttp>=3.9,<4
 gunicorn>=23.0
