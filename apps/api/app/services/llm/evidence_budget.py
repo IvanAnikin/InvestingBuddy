@@ -44,6 +44,7 @@ from app.services.llm.schemas import (
 from app.services.sources.financial_fact_categories import (
     financial_fact_diversity_key,
     primary_fact_field,
+    primary_fact_period_rank,
     select_category_diverse,
 )
 from app.services.sources.taxonomy import tier_rank
@@ -198,44 +199,19 @@ def _is_factual_excerpt(item: EvidenceItem) -> bool:
     return bool(item.excerpt and item.excerpt.strip())
 
 
-_UNKNOWN_PERIOD_RANK = 10_000
-
-
 def _financial_fact_period_rank(item: EvidenceItem) -> int:
     """More-recent-first rank for a structured financial fact's own period.
 
-    Lower is better (sorts earlier), matching every other rank key in this
-    module. A 4-digit year in ``primary_fact.period`` yields ``-year`` (a
-    later year is a smaller/more-negative key, so it sorts first); a missing
-    or unparseable period sorts LAST among same-priority candidates — never
-    preferred over one with a known, dated figure.
-
-    Phase 32A corrective (LVMH H1 2026) — the financial-fact diversity key
-    (``financial_fact_diversity_key``) intentionally does NOT include period,
-    so a comparison-period and a current-period fact for the SAME field/scope
-    (e.g. total equity 2025 vs 2026) compete for the same round-robin slot.
-    Without this, ties within that slot fell back to each item's incidental
-    position in ``validate_extracted_facts``'s own (label, period-as-STRING)
-    sort — which happens to put an EARLIER year first — so a real, live MC/
-    LVMH run showed only the STALE 2025 equity figure ever reaching Council
-    evidence while the current 2026 figure was silently dropped by the floor.
+    Thin wrapper over the shared ``primary_fact_period_rank`` (see its
+    docstring for the full rationale) — falls back to the top-level
+    ``item.period`` field when the item carries no ``primary_fact`` payload
+    at all, a shape only this ``EvidenceItem`` type has.
     """
-    # ``item.primary_fact`` is EITHER a live ``PrimaryFactRef`` OR a plain
-    # dict after a JSON/``model_dump`` round-trip (see ``primary_fact_field``'s
-    # docstring) — handled the same way here. ``item.period`` (the top-level
-    # EvidenceItem field) is a fallback for an item with no ``primary_fact``
-    # payload at all.
-    fact = item.primary_fact
-    raw = None
-    if fact is not None:
-        raw = fact.get("period") if isinstance(fact, dict) else getattr(fact, "period", None)
-    if not raw:
-        raw = item.period
-    if raw:
-        m = re.search(r"(19|20)\d{2}", str(raw))
-        if m:
-            return -int(m.group(0))
-    return _UNKNOWN_PERIOD_RANK
+    if item.primary_fact is not None:
+        return primary_fact_period_rank(item.primary_fact)
+    if item.period:
+        return primary_fact_period_rank({"period": item.period})
+    return primary_fact_period_rank(None)
 
 
 def _rank_key(item: EvidenceItem, order: int) -> tuple[int, int, int]:

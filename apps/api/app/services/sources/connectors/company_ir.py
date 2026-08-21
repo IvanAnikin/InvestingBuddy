@@ -1538,67 +1538,16 @@ class CompanyIrConnector(SourceConnector):
             else []
         )
 
-        # 1) prose excerpts (bounded) → T1 primary-document excerpt items.
-        # Phase 32A corrective (Problem B): ``_select_diverse_excerpts`` replaces
-        # a blind ``ext.excerpts[:cap]`` prefix cut — several near-adjacent
-        # narrative excerpts could previously consume the whole per-document cap
-        # before a cash-flow/balance-sheet excerpt further down the extractor's
-        # own ranked list ever got a chance.
-        for n, exc in enumerate(_select_diverse_excerpts(ext.excerpts, cap), start=1):
-            # Phase 32A Problem C: a heading that classifies as a known
-            # financial-statement section (balance sheet / cash-flow statement
-            # / income statement / segment note) outranks the generic
-            # business/risk/narrative mapping below, so it lands in its own
-            # evidence-budget category instead of competing with narrative prose.
-            statement_type = classify_statement_type(exc.section or exc.heading)
-            if statement_type is not None:
-                source_type = _STATEMENT_EXCERPT_SOURCE_TYPE
-            else:
-                source_type = _EXCERPT_SOURCE_TYPE.get(
-                    exc.evidence_type, _DEFAULT_EXCERPT_SOURCE_TYPE
-                )
-            provenance = [
-                p
-                for p in (
-                    "Extracted from issuer annual-report document (deep, bounded text)",
-                    f"page={exc.page_number}" if exc.page_number else "page=unknown",
-                    f"section={exc.section}" if exc.section else None,
-                    f"method={exc.extraction_method}",
-                    f"confidence={exc.confidence:.2f}",
-                )
-                if p
-            ]
-            items.append(
-                build_evidence_item(
-                    id=f"IRDOC{doc_idx}X{n}",
-                    source_id="company_ir",
-                    source_name=self._issuer_name or "Company IR",
-                    provider_transport=_IR_TRANSPORT_LABEL,
-                    provider_transport_tier=T1_PRIMARY_COMPANY_SOURCE,
-                    content_source=doc_title,
-                    content_source_tier=T1_PRIMARY_FILING,
-                    source_type=source_type,
-                    title=f"{doc_title} — excerpt",
-                    url=url,
-                    excerpt=exc.text,
-                    scope=_infer_scope(exc.section or exc.heading, exc.ancestor_heading),
-                    requires_translation=requires_tr,
-                    original_language=orig_lang,
-                    language=ext.language,
-                    data_quality="B" if exc.confidence >= 0.75 else "C",
-                    confidence=_confidence_bucket(exc.confidence),
-                    fields_supported=[exc.evidence_type],
-                    provenance=provenance,
-                    document_content_hash=doc_hash,
-                    warnings=(
-                        ["Bounded excerpt from the issuer's own annual report; "
-                         "not the full document. Human review required."]
-                        + tr_warn
-                    ),
-                )
-            )
-
-        # 2) validated facts → structured T1 primary-filing datapoints.
+        # 1) validated facts → structured T1 primary-filing datapoints.
+        # Phase 32A corrective (LVMH H1 2026, evidence-budget priority) —
+        # structured facts are added BEFORE prose excerpts (was the other
+        # way around) so a document with many excerpts can never let the
+        # per-document/overall evidence-pack entry cap silently drop a
+        # validated fact before it is ever added — a real, live-observed
+        # failure (the alphabetically-last 'total_equity' fact never
+        # reached the pack at all). Matches this method's own documented
+        # intent: "so that if the cap truncates, the highest-value
+        # evidence stays" — a structured fact is higher-value than prose.
         for j, fact in enumerate(
             (f for f in artifact.validated_facts if f.validation_status == VALIDATION_VALIDATED),
             start=1,
@@ -1666,6 +1615,66 @@ class CompanyIrConnector(SourceConnector):
                         page_number=fact.page_number,
                         confidence=conf_bucket,
                         needs_human_review=fact.needs_human_review,
+                    ),
+                )
+            )
+
+        # 2) prose excerpts (bounded) → T1 primary-document excerpt items.
+        # Phase 32A corrective (Problem B): ``_select_diverse_excerpts`` replaces
+        # a blind ``ext.excerpts[:cap]`` prefix cut — several near-adjacent
+        # narrative excerpts could previously consume the whole per-document cap
+        # before a cash-flow/balance-sheet excerpt further down the extractor's
+        # own ranked list ever got a chance.
+        for n, exc in enumerate(_select_diverse_excerpts(ext.excerpts, cap), start=1):
+            # Phase 32A Problem C: a heading that classifies as a known
+            # financial-statement section (balance sheet / cash-flow statement
+            # / income statement / segment note) outranks the generic
+            # business/risk/narrative mapping below, so it lands in its own
+            # evidence-budget category instead of competing with narrative prose.
+            statement_type = classify_statement_type(exc.section or exc.heading)
+            if statement_type is not None:
+                source_type = _STATEMENT_EXCERPT_SOURCE_TYPE
+            else:
+                source_type = _EXCERPT_SOURCE_TYPE.get(
+                    exc.evidence_type, _DEFAULT_EXCERPT_SOURCE_TYPE
+                )
+            provenance = [
+                p
+                for p in (
+                    "Extracted from issuer annual-report document (deep, bounded text)",
+                    f"page={exc.page_number}" if exc.page_number else "page=unknown",
+                    f"section={exc.section}" if exc.section else None,
+                    f"method={exc.extraction_method}",
+                    f"confidence={exc.confidence:.2f}",
+                )
+                if p
+            ]
+            items.append(
+                build_evidence_item(
+                    id=f"IRDOC{doc_idx}X{n}",
+                    source_id="company_ir",
+                    source_name=self._issuer_name or "Company IR",
+                    provider_transport=_IR_TRANSPORT_LABEL,
+                    provider_transport_tier=T1_PRIMARY_COMPANY_SOURCE,
+                    content_source=doc_title,
+                    content_source_tier=T1_PRIMARY_FILING,
+                    source_type=source_type,
+                    title=f"{doc_title} — excerpt",
+                    url=url,
+                    excerpt=exc.text,
+                    scope=_infer_scope(exc.section or exc.heading, exc.ancestor_heading),
+                    requires_translation=requires_tr,
+                    original_language=orig_lang,
+                    language=ext.language,
+                    data_quality="B" if exc.confidence >= 0.75 else "C",
+                    confidence=_confidence_bucket(exc.confidence),
+                    fields_supported=[exc.evidence_type],
+                    provenance=provenance,
+                    document_content_hash=doc_hash,
+                    warnings=(
+                        ["Bounded excerpt from the issuer's own annual report; "
+                         "not the full document. Human review required."]
+                        + tr_warn
                     ),
                 )
             )

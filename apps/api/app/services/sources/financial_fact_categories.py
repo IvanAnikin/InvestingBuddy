@@ -31,6 +31,7 @@ Categories (mission-specified):
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Iterable, Sequence
 from typing import TypeVar
 
@@ -104,6 +105,46 @@ def primary_fact_field(primary_fact: object) -> str | None:
     else:
         value = getattr(primary_fact, "field", None)
     return str(value) if value else None
+
+
+_UNKNOWN_PERIOD_RANK = 10_000
+
+
+def primary_fact_period_rank(primary_fact: object) -> int:
+    """More-recent-first rank for a structured fact's own reporting period.
+
+    Lower is better (sorts earlier). A 4-digit year in ``primary_fact.period``
+    yields ``-year`` (a later year is a smaller/more-negative key, so it
+    sorts first); a missing/unparseable period sorts LAST — never preferred
+    over one with a known, dated figure. Handles both a live ``PrimaryFactRef``
+    and its plain-dict round-tripped form, same as ``primary_fact_field``.
+
+    Phase 32A corrective (LVMH H1 2026) — ``financial_fact_diversity_key``
+    intentionally has NO period component, so a comparison-period and a
+    current-period fact for the SAME field/scope compete for one round-robin
+    slot in EVERY caller of ``select_category_diverse`` over financial facts
+    (``company_evidence._prioritize_ir_items`` AND
+    ``llm.evidence_budget._apply_category_budget``). Without sorting
+    candidates by period-recency FIRST, ties fell back to each item's
+    incidental position in the upstream validator's own (label,
+    period-as-STRING) sort, which happens to place an earlier year first —
+    so a real, live MC/LVMH run showed the STALE 2025 ``total_equity``
+    figure reach Council evidence while the CURRENT 2026 figure was
+    silently dropped. Both call sites must use this so neither one
+    reintroduces the bug the other already fixed.
+    """
+    if primary_fact is None:
+        return _UNKNOWN_PERIOD_RANK
+    raw = (
+        primary_fact.get("period")
+        if isinstance(primary_fact, dict)
+        else getattr(primary_fact, "period", None)
+    )
+    if raw:
+        m = re.search(r"(19|20)\d{2}", str(raw))
+        if m:
+            return -int(m.group(0))
+    return _UNKNOWN_PERIOD_RANK
 
 
 def financial_fact_category(field: str | None, scope: str | None) -> str:
