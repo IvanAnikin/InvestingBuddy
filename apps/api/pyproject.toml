@@ -42,6 +42,11 @@ dev = [
     # these must be here, not only in the runtime-only `ocr` extra below.
     "azure-ai-documentintelligence>=1.0,<2",
     "azure-identity>=1.19,<2",
+    # Phase 32A corrective (real OCR proof) — required for azure-core's ASYNC
+    # transport to actually make a network call; see requirements.txt for the
+    # full incident note (this was the true reason a live OCR call was never
+    # observed on staging).
+    "aiohttp>=3.9,<4",
 ]
 # Install in Azure App Service (staging/production).
 # gunicorn serves uvicorn workers for multi-process production serving.
