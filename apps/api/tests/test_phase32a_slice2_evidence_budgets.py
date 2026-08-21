@@ -352,6 +352,56 @@ def test_financial_floor_reserved_over_higher_tier_news():
     assert len(out.evidence_items) == 6
 
 
+def _fact_item(id, field, period, *, scope=None, value=1.0, tier=TIER_T1_PRIMARY_FILING):
+    """A structured company-IR financial-fact item carrying a real
+    ``primary_fact`` payload (dict form — the shape it has after
+    ``add_framework_item``'s ``model_dump``) so the diversity/period-recency
+    key can actually read ``field``/``period`` off it."""
+    return EvidenceItem(
+        id=id,
+        source_tier=tier,
+        source_type="company_ir_financial_fact",
+        content_tier=tier,
+        transport_tier=tier,
+        title=f"{field} {period}",
+        excerpt=f"{field} = {value} [{period}]",
+        data_quality="B",
+        fields_supported=[field],
+        scope=scope,
+        period=period,
+        primary_fact={
+            "field": field,
+            "value": str(value),
+            "numeric_value": value,
+            "unit": "currency_amount",
+            "currency": "EUR",
+            "scale": "million",
+            "period": period,
+        },
+    )
+
+
+def test_current_period_financial_fact_survives_over_stale_comparison_period():
+    """Phase 32A corrective (LVMH H1 2026) — the diversity key for a
+    structured financial fact is (field, scope), NOT (field, scope, period),
+    so a comparison-period and a current-period fact for the SAME field
+    compete for one round-robin slot. A live MC/LVMH run showed the stale
+    2025 ``total_equity`` figure reach Council evidence while the CURRENT
+    2026 figure was silently dropped by a tight floor. With only one slot
+    available for this field, the more recent period must win."""
+    cfg = _cfg_on(llm_council_evidence_financial_floor=1)
+    facts = [
+        _fact_item("F1", "total_equity", "2025", value=66875.0),
+        _fact_item("F2", "total_equity", "2026", value=69694.0),
+    ]
+    pack = EvidencePack(evidence_items=facts)
+    out = apply_evidence_budget(pack, cfg=cfg, max_items=1)
+    kept = _items_of(out, CATEGORY_FINANCIAL_FACT)
+    assert len(kept) == 1
+    assert kept[0].primary_fact["period"] == "2026"
+    assert kept[0].primary_fact["numeric_value"] == 69694.0
+
+
 def test_price_trend_cap_enforced():
     cfg = _cfg_on(llm_council_evidence_max_items=20, llm_council_evidence_price_trend_cap=2)
     metrics = [
