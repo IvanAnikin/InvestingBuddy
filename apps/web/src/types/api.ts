@@ -770,10 +770,27 @@ export interface DiscoveryCandidateListResponse {
   disclaimer: string;
 }
 
+// Product readiness — the "Run Full Analysis" POST is an ASYNC job start
+// (HTTP 202 + status "pending"). It used to run the whole pipeline inline and
+// blew the ~230s Azure gateway ceiling, so the browser saw HTTP 504 while the
+// backend quietly finished. The UI polls GET
+// /market-discovery/candidates/{id}/analysis-job until a terminal state.
+// `status` is the JOB lifecycle state — never an investment action.
+export type AnalysisJobStatus =
+  | "pending"
+  | "running"
+  | "completed"
+  | "completed_with_warnings"
+  | "failed";
+
 export interface RunCandidateAnalysisResponse {
   candidate_id: string;
   ticker: string;
-  status: string;
+  status: AnalysisJobStatus | string;
+  started_at?: string | null;
+  completed_at?: string | null;
+  workflow_status?: string | null;
+  error?: string | null;
   analysis_report_id: string | null;
   agent_run_id: string | null;
   provider_name: string;

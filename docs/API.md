@@ -2074,7 +2074,8 @@ admin/internal only with no public-facing routes.
 | GET | `/api/v1/market-discovery/runs/{run_id}/summary` | Aggregate summary (top score, grade breakdown) |
 | GET | `/api/v1/market-discovery/runs/{run_id}/candidates` | List ranked internal candidates (filter/sort) |
 | GET | `/api/v1/market-discovery/candidates/{candidate_id}` | Candidate detail (score breakdown + signals) |
-| POST | `/api/v1/market-discovery/candidates/{candidate_id}/run-analysis` | Promote a candidate to the full company-analysis workflow |
+| POST | `/api/v1/market-discovery/candidates/{candidate_id}/run-analysis` | **Start** an async full-analysis job for a candidate — returns HTTP **202** + `status="pending"` immediately (see *Async Full Analysis* below) |
+| GET | `/api/v1/market-discovery/candidates/{candidate_id}/analysis-job` | Poll the async full-analysis job state for **that** candidate |
 
 **Async execution (Phase 25.1):** `POST /runs` now **creates the run row and
 returns immediately** (HTTP 201, `status="pending"`) instead of processing the
@@ -2178,6 +2179,56 @@ The existing `GET /runs/{run_id}`, `GET /runs/{run_id}/candidates`,
 `GET /candidates/{candidate_id}`, and
 `POST /candidates/{candidate_id}/run-analysis` endpoints serve thesis runs too (a
 thesis run **is** a discovery run with `mode="thesis"`).
+
+### Async Full Analysis (product readiness)
+
+**Defect this fixes.** `POST /candidates/{id}/run-analysis` used to run the whole
+pipeline **inline** — company-analysis workflow → primary-document ingestion →
+8-agent LLM council → final-report assembly. On staging that regularly exceeded
+the shared **~230s Azure App Service gateway ceiling**, so the admin's browser
+showed **HTTP 504** while the backend kept working and persisted a perfectly good
+final report. A retry then started a *second* expensive council run for the same
+candidate. Raising the gateway timeout is explicitly **not** the fix.
+
+**New contract** (mirrors the Phase 28B.2 async discovery-council pattern):
+
+| Method | Path | Behaviour |
+|---|---|---|
+| POST | `/candidates/{id}/run-analysis?force=false` | Writes a `pending` job envelope, commits, returns **202** immediately. Schedules a `BackgroundTasks` worker that runs the analysis in its **own** DB session. |
+| GET | `/candidates/{id}/analysis-job` | Current job state for **that** candidate. `404` when no job has ever run. |
+
+`RunCandidateAnalysisResponse` is the envelope for both and gains `started_at`,
+`completed_at`, `workflow_status` and `error`. Job `status` is a **job lifecycle
+state**, never an investment action:
+
+```
+pending → running → completed | completed_with_warnings | failed
+```
+
+**Idempotency / duplicate protection.**
+
+* A `pending`/`running` job → the current state is returned, `202`, **no second
+  council run is started** (a `candidate_analysis_job_duplicate` event is logged).
+* A `completed` job → returned as-is unless `force=true`.
+* A `running` job older than 30 minutes is treated as abandoned (FastAPI
+  `BackgroundTasks` are process-local and not durable) and is restartable.
+* Every worker failure path persists a **terminal** envelope, so a job can never
+  stick in `running`.
+
+**Storage.** The envelope lives under the candidate's existing
+`raw_signal_json["analysis_job"]` blob — additive key, **no DB migration**, the
+same technique the discovery council uses on `DiscoveryRun.config_json`. A
+candidate analysed *before* this change has no envelope but may carry
+`analysis_report_id`; that legacy state is normalised into a synthetic
+`completed` envelope so the UI never offers to re-run an analysis that already
+happened.
+
+**Lineage.** The job envelope resolves the report generated for **that
+candidate** — `analysis_report_id` (the final report), `legacy_draft_report_id`
+(the deterministic workflow draft, retained for audit) and `agent_run_id`. It is
+never a global-latest or cross-candidate lookup. The admin UI labels the links
+*"View Latest Final Report (this candidate)"* / *"View Legacy Draft (this
+candidate)"*.
 
 ### Phase 28A.1 / 28B.3 — LLM Report Routing + Legacy Phase 9 Cleanup
 

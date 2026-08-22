@@ -912,3 +912,94 @@ without finding this.
 - Deep Field Review and a full manual-QA pass were not re-run in this
   session; see the session handoff for the current closure verdict and
   remaining limitations.
+
+---
+
+## ADR-018: Async Full-Analysis Job — Decoupling "Run Full Analysis" From the Request/Response Cycle
+
+**Status:** Accepted
+**Date:** 2026-08-22
+**Context:** Product-readiness corrective slice (manual QA on discovery run
+`eee7b0c7`, NVDA candidate `f1e74d3e`)
+
+### Context
+
+`POST /api/v1/market-discovery/candidates/{id}/run-analysis` ran the entire
+pipeline **inline inside the HTTP request**:
+
+```
+company-analysis workflow → primary-document ingestion → 8-agent LLM council
+→ final-report assembly → persistence
+```
+
+On staging this regularly exceeded the shared **~230s Azure App Service gateway
+ceiling**. Real manual QA: the admin clicked *Run Full Analysis*, the browser
+returned **HTTP 504**, and the backend nevertheless completed successfully and
+persisted a valid final report. The user could not tell the difference between
+"failed" and "succeeded but the gateway gave up", and a retry launched a
+*second* expensive council run for the same candidate.
+
+Two facts made this unambiguous:
+
+- The candidate's own final report `a42c9295` was persisted at 12:57:27 with
+  complete discovery lineage — the analysis had succeeded.
+- A separate, later report `a1781d03` (13:04:25) carried
+  `"No screening candidate linked to this report."` — it came from a different
+  generation path entirely, not from the candidate's run-analysis.
+
+This is also the exact structural blocker recorded in the Phase 32A final-status
+note ("decouple primary-document ingestion from the synchronous
+report-generation HTTP request") — closing it here removes the 230s ceiling as a
+design constraint for that work too.
+
+### Decision
+
+Make the endpoint an **async job**, mirroring the already-proven Phase 28B.2
+async discovery-council pattern rather than inventing a second mechanism:
+
+1. `POST` writes a `pending` job envelope, commits, returns **HTTP 202**
+   immediately, and schedules a FastAPI `BackgroundTasks` worker that runs the
+   analysis in its **own** DB session (never the request-scoped one).
+2. A new `GET /candidates/{id}/analysis-job` returns the current job state; the
+   admin UI polls it (3s) and stops on any terminal status.
+3. The envelope is stored under the candidate's existing
+   `raw_signal_json["analysis_job"]` blob — **no DB migration**, the same
+   technique the council uses on `DiscoveryRun.config_json`.
+4. **Idempotency is part of the contract, not an afterthought**: a
+   `pending`/`running` job short-circuits with `scheduled=False` and no second
+   council run; a `completed` job needs explicit `force=true` to re-run; a
+   `running` job older than 30 minutes is treated as abandoned (BackgroundTasks
+   are process-local and not durable) and becomes restartable.
+5. Every worker failure path persists a **terminal** envelope, so a job can
+   never stick in `running`.
+6. A candidate analysed before this change has no envelope but may carry
+   `analysis_report_id`; that legacy state is normalised into a synthetic
+   `completed` envelope so the UI never offers to re-run finished work.
+
+### Alternatives rejected
+
+- **Raise the gateway timeout.** Explicitly rejected: it does not bound the
+  runtime, it just moves the cliff, and it would make every future
+  evidence-gathering improvement (deeper ingestion, OCR) a latency liability.
+- **Azure Service Bus / Functions worker.** Correct long-term, disproportionate
+  now. `BackgroundTasks` is what the discovery run and discovery council already
+  use; adding a second, heavier mechanism for one endpoint would fragment the
+  operational model. The stale-job rule is the explicit, documented mitigation
+  for BackgroundTasks' lack of durability.
+- **A new `analysis_jobs` table.** A migration for state that is 1:1 with a
+  candidate row, already has a JSONB blob, and is read only through the
+  candidate. The council precedent (`config_json`) applies directly.
+
+### Consequences
+
+- The browser request that starts an analysis now returns in milliseconds. The
+  admin sees an honest *Analysis queued → running → complete* progression and
+  the report link appears via polling, not via a blocked request.
+- A failed job now surfaces the **real backend failure**, not a gateway 504.
+- `RunCandidateAnalysisResponse` gains `started_at`, `completed_at`,
+  `workflow_status` and `error`. `status` is a **job lifecycle** state and is
+  deliberately drawn from a vocabulary with no investment-action words in it.
+- Because the work no longer runs inside the request, per-request wall-clock
+  budgets (council retry budget, primary-document ingestion budget) are no
+  longer bounded by the gateway. This ADR does **not** change any of those
+  budgets — that is separate, deliberate work.

@@ -238,11 +238,23 @@ async function mockDiscoveryRoutes(page: import("@playwright/test").Page) {
       }),
   );
 
+  // Product readiness — the full-analysis JOB poll. Default: no job has ever run
+  // for this candidate (404), which the panel treats as "never analysed".
   await page.route(
-    `**/api/admin/proxy/api/v1/market-discovery/candidates/${CAND_ID}/run-analysis`,
+    `**/api/admin/proxy/api/v1/market-discovery/candidates/${CAND_ID}/analysis-job`,
     (route) =>
       route.fulfill({
-        status: 200,
+        status: 404,
+        contentType: "application/json",
+        body: JSON.stringify({ detail: "No full-analysis job has been run." }),
+      }),
+  );
+
+  await page.route(
+    `**/api/admin/proxy/api/v1/market-discovery/candidates/${CAND_ID}/run-analysis*`,
+    (route) =>
+      route.fulfill({
+        status: 202,
         contentType: "application/json",
         body: JSON.stringify({
           candidate_id: CAND_ID,
@@ -424,11 +436,11 @@ test.describe("Admin Discovery — page + safety", () => {
     let analysisCalled = false;
     await mockDiscoveryRoutes(page);
     await page.route(
-      `**/api/admin/proxy/api/v1/market-discovery/candidates/${CAND_ID}/run-analysis`,
+      `**/api/admin/proxy/api/v1/market-discovery/candidates/${CAND_ID}/run-analysis*`,
       (route) => {
         analysisCalled = true;
         return route.fulfill({
-          status: 200,
+          status: 202,
           contentType: "application/json",
           body: JSON.stringify({
             candidate_id: CAND_ID,
@@ -463,6 +475,127 @@ test.describe("Admin Discovery — page + safety", () => {
     );
     await expect(page.getByTestId("candidate-report-summary")).toContainText(
       "LLM Council: Used",
+    );
+  });
+
+  test("11c. Run Full Analysis returns immediately, shows Running, then the report link appears via polling", async ({
+    page,
+  }) => {
+    // Product readiness — the browser request that STARTS the analysis must not
+    // stay open for the whole council runtime (that produced HTTP 504 on
+    // staging). It returns 202 + "pending"; the UI polls a normal GET.
+    let pollCount = 0;
+    await mockDiscoveryRoutes(page);
+    await page.route(
+      `**/api/admin/proxy/api/v1/market-discovery/candidates/${CAND_ID}/run-analysis*`,
+      (route) =>
+        route.fulfill({
+          status: 202,
+          contentType: "application/json",
+          body: JSON.stringify({
+            candidate_id: CAND_ID,
+            ticker: "AAPL",
+            status: "pending",
+            started_at: "2026-08-22T12:00:00+00:00",
+            analysis_report_id: null,
+            agent_run_id: null,
+            provider_name: "free_real",
+            message:
+              "Full analysis started. Processing in the background — poll for progress.",
+            human_review_required: true,
+            warnings: [],
+            disclaimer: DISC,
+          }),
+        }),
+    );
+    await page.route(
+      `**/api/admin/proxy/api/v1/market-discovery/candidates/${CAND_ID}/analysis-job`,
+      (route) => {
+        pollCount += 1;
+        const done = pollCount > 1;
+        return route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            candidate_id: CAND_ID,
+            ticker: "AAPL",
+            status: done ? "completed" : "running",
+            started_at: "2026-08-22T12:00:00+00:00",
+            completed_at: done ? "2026-08-22T12:05:00+00:00" : null,
+            analysis_report_id: done ? REPORT_ID : null,
+            agent_run_id: done ? "44444444-0000-0000-0000-000000000025" : null,
+            provider_name: "free_real",
+            message: done
+              ? "Full analysis completed for AAPL. LLM council analysis draft."
+              : "Full analysis is running. Poll for progress.",
+            human_review_required: true,
+            report: done
+              ? {
+                  report_id: REPORT_ID,
+                  report_kind: "final",
+                  llm_used: true,
+                  schema_valid: true,
+                  safety_valid: true,
+                  final_report_version: "16.0.0",
+                }
+              : null,
+            warnings: [],
+            disclaimer: DISC,
+          }),
+        });
+      },
+    );
+
+    await page.goto("/admin/discovery");
+    await page.getByTestId("candidate-toggle").first().click();
+    await page.getByRole("button", { name: "Run Full Analysis" }).click();
+
+    // Running state is visible immediately — no blocked request, no 504.
+    await expect(page.getByTestId("analysis-job-status")).toContainText(
+      /Analysis (queued|running)/,
+    );
+    // The report link appears WITHOUT another click, via polling.
+    await expect(page.getByTestId("candidate-report-link")).toContainText(
+      "View Latest Final Report (this candidate)",
+      { timeout: 20_000 },
+    );
+    await expect(page.getByTestId("analysis-job-status")).toContainText(
+      "Analysis complete",
+    );
+  });
+
+  test("11d. A failed analysis job surfaces the real backend failure", async ({
+    page,
+  }) => {
+    await mockDiscoveryRoutes(page);
+    await page.route(
+      `**/api/admin/proxy/api/v1/market-discovery/candidates/${CAND_ID}/analysis-job`,
+      (route) =>
+        route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            candidate_id: CAND_ID,
+            ticker: "AAPL",
+            status: "failed",
+            error: "internal_error",
+            analysis_report_id: null,
+            agent_run_id: null,
+            provider_name: "free_real",
+            message: "Full analysis failed (internal_error).",
+            human_review_required: true,
+            warnings: [],
+            disclaimer: DISC,
+          }),
+        }),
+    );
+    await page.goto("/admin/discovery");
+    await page.getByTestId("candidate-toggle").first().click();
+    await expect(page.getByTestId("analysis-job-status")).toContainText(
+      "Analysis failed",
+    );
+    await expect(page.getByTestId("candidate-detail")).toContainText(
+      "internal_error",
     );
   });
 
@@ -988,10 +1121,20 @@ async function mockThesisRoutes(page: import("@playwright/test").Page) {
   );
 
   await page.route(
-    `**/api/admin/proxy/api/v1/market-discovery/candidates/${THESIS_CAND_ID}/run-analysis`,
+    `**/api/admin/proxy/api/v1/market-discovery/candidates/${THESIS_CAND_ID}/analysis-job`,
     (route) =>
       route.fulfill({
-        status: 200,
+        status: 404,
+        contentType: "application/json",
+        body: JSON.stringify({ detail: "No full-analysis job has been run." }),
+      }),
+  );
+
+  await page.route(
+    `**/api/admin/proxy/api/v1/market-discovery/candidates/${THESIS_CAND_ID}/run-analysis*`,
+    (route) =>
+      route.fulfill({
+        status: 202,
         contentType: "application/json",
         body: JSON.stringify({
           candidate_id: THESIS_CAND_ID,
@@ -1845,11 +1988,11 @@ test.describe("Admin Discovery — thesis mode (Phase 27)", () => {
     let analysisCalled = false;
     await mockThesisRoutes(page);
     await page.route(
-      `**/api/admin/proxy/api/v1/market-discovery/candidates/${THESIS_CAND_ID}/run-analysis`,
+      `**/api/admin/proxy/api/v1/market-discovery/candidates/${THESIS_CAND_ID}/run-analysis*`,
       (route) => {
         analysisCalled = true;
         return route.fulfill({
-          status: 200,
+          status: 202,
           contentType: "application/json",
           body: JSON.stringify({
             candidate_id: THESIS_CAND_ID,

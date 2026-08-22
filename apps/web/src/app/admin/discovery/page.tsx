@@ -5,6 +5,7 @@ import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import {
   createDiscoveryRun,
   createThesisDiscoveryRun,
+  getCandidateAnalysisJob,
   getDiscoveryCandidate,
   getDiscoveryCouncilReview,
   getDiscoveryRun,
@@ -33,6 +34,7 @@ import type {
   FilterOption,
   ParseThesisResponse,
   ReportLinkSummary,
+  RunCandidateAnalysisResponse,
   SupportedFiltersResponse,
   SupportedThemesResponse,
   ThesisDiscoveryRunCreate,
@@ -48,6 +50,27 @@ const CLIENT_MAX_UNIVERSE = 15;
 // Phase 25.1 — runs are processed in the background; the UI polls run status
 // until it reaches a terminal state.
 const POLL_INTERVAL_MS = 3000;
+
+// Full-analysis JOB lifecycle labels. These describe the background job only —
+// never an investment action and never a rating.
+const ANALYSIS_JOB_LABELS: Record<string, string> = {
+  pending: "Analysis queued",
+  running: "Analysis running",
+  completed: "Analysis complete",
+  completed_with_warnings: "Analysis complete (warnings)",
+  failed: "Analysis failed",
+};
+
+const ANALYSIS_JOB_COLORS: Record<
+  string,
+  "gray" | "blue" | "green" | "amber" | "red" | "purple"
+> = {
+  pending: "gray",
+  running: "blue",
+  completed: "green",
+  completed_with_warnings: "amber",
+  failed: "red",
+};
 const TERMINAL_STATUSES = new Set([
   "completed",
   "completed_with_warnings",
@@ -262,12 +285,19 @@ function CandidateDetailPanel({ candidateId }: { candidateId: string }) {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [showRaw, setShowRaw] = useState(false);
-  const [analysing, setAnalysing] = useState(false);
   const [analysisMsg, setAnalysisMsg] = useState<string | null>(null);
   const [reportId, setReportId] = useState<string | null>(null);
   const [reportSummary, setReportSummary] = useState<ReportLinkSummary | null>(
     null,
   );
+  // Product readiness — the full-analysis JOB envelope. `null` means no job has
+  // ever run for this candidate. `starting` covers the brief window between the
+  // click and the 202 coming back.
+  const [job, setJob] = useState<RunCandidateAnalysisResponse | null>(null);
+  const [starting, setStarting] = useState(false);
+  const jobStatus = job?.status;
+  const jobInFlight =
+    starting || jobStatus === "pending" || jobStatus === "running";
 
   useEffect(() => {
     let cancelled = false;
@@ -291,18 +321,76 @@ function CandidateDetailPanel({ candidateId }: { candidateId: string }) {
     };
   }, [candidateId]);
 
+  // Load any existing full-analysis job for THIS candidate on mount. A 404 just
+  // means no analysis has ever been run — not an error.
+  useEffect(() => {
+    let cancelled = false;
+    getCandidateAnalysisJob(candidateId)
+      .then((j) => {
+        if (cancelled) return;
+        setJob(j);
+        if (j.analysis_report_id) setReportId(j.analysis_report_id);
+        if (j.report) setReportSummary(j.report);
+      })
+      .catch(() => {
+        // No job yet (404) or transient error — leave the panel in its
+        // "never analysed" state.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [candidateId]);
+
+  // Poll the async job while it is in flight. The browser request that STARTS
+  // the analysis returns in milliseconds (HTTP 202); the expensive council work
+  // happens server-side. Polling stops on any terminal status.
+  useEffect(() => {
+    if (jobStatus !== "pending" && jobStatus !== "running") return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    function schedule() {
+      timer = setTimeout(async () => {
+        try {
+          const next = await getCandidateAnalysisJob(candidateId);
+          if (cancelled) return;
+          setJob(next);
+          setAnalysisMsg(next.message);
+          if (next.analysis_report_id) setReportId(next.analysis_report_id);
+          if (next.report) setReportSummary(next.report);
+          if (next.status === "pending" || next.status === "running") schedule();
+        } catch {
+          // Transient error — keep polling; the job is still running server-side.
+          if (!cancelled) schedule();
+        }
+      }, POLL_INTERVAL_MS);
+    }
+
+    schedule();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [candidateId, jobStatus]);
+
   async function handleRunAnalysis() {
-    setAnalysing(true);
+    setStarting(true);
     setAnalysisMsg(null);
     try {
-      const res = await runCandidateAnalysis(candidateId);
-      setReportId(res.analysis_report_id);
-      setReportSummary(res.report ?? null);
+      // Returns immediately (202) with a pending job — never blocks on the
+      // council. `force` is required to pay for a second run once one completed.
+      const res = await runCandidateAnalysis(candidateId, {
+        force:
+          job?.status === "completed" || job?.status === "completed_with_warnings",
+      });
+      setJob(res);
       setAnalysisMsg(res.message);
+      if (res.analysis_report_id) setReportId(res.analysis_report_id);
+      if (res.report) setReportSummary(res.report);
     } catch (e) {
-      setAnalysisMsg(e instanceof Error ? e.message : "Analysis failed.");
+      setAnalysisMsg(e instanceof Error ? e.message : "Analysis failed to start.");
     } finally {
-      setAnalysing(false);
+      setStarting(false);
     }
   }
 
@@ -512,15 +600,29 @@ function CandidateDetailPanel({ candidateId }: { candidateId: string }) {
         )}
       </div>
 
-      {/* Run Full Analysis */}
+      {/* Run Full Analysis — async job (202 + poll), never a blocking request */}
       <div className="flex flex-wrap items-center gap-3 border-t border-white/10 pt-3">
         <button
           onClick={handleRunAnalysis}
-          disabled={analysing}
+          disabled={jobInFlight}
+          data-testid="run-full-analysis"
           className="rounded-lg bg-gradient-to-r from-sky-500 to-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-sky-500/20 transition-all hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-50"
         >
-          {analysing ? "Running full analysis…" : "Run Full Analysis"}
+          {jobInFlight
+            ? "Running full analysis…"
+            : job?.status === "completed" ||
+                job?.status === "completed_with_warnings"
+              ? "Re-run Full Analysis"
+              : "Run Full Analysis"}
         </button>
+        {job && (
+          <span data-testid="analysis-job-status">
+            <StatusPill
+              label={ANALYSIS_JOB_LABELS[job.status] ?? job.status}
+              color={ANALYSIS_JOB_COLORS[job.status] ?? "gray"}
+            />
+          </span>
+        )}
         {reportId && (
           <Link
             href={`/admin/reports/${reportId}`}
@@ -528,12 +630,26 @@ function CandidateDetailPanel({ candidateId }: { candidateId: string }) {
             className="text-sm text-sky-400 hover:text-sky-300 hover:underline"
           >
             {reportSummary?.report_kind === "legacy"
-              ? "View Legacy Draft →"
-              : "View Latest Final Report →"}
+              ? "View Legacy Draft (this candidate) →"
+              : "View Latest Final Report (this candidate) →"}
           </Link>
         )}
         {analysisMsg && <p className="text-xs text-slate-400">{analysisMsg}</p>}
       </div>
+      {jobInFlight && (
+        <p className="text-xs text-slate-500">
+          The analysis runs in the background — you can leave this page open. The
+          report link appears automatically when it finishes.
+        </p>
+      )}
+      {job?.status === "failed" && (
+        <SafetyBanner variant="warning">
+          <p>
+            The full-analysis job failed{job.error ? ` (${job.error})` : ""}. No
+            report was linked. Re-run to try again.
+          </p>
+        </SafetyBanner>
+      )}
 
       {/* Phase 28A.1 — honest label for the linked report so the reviewer knows
           whether they're opening a modern final report or an old draft. */}

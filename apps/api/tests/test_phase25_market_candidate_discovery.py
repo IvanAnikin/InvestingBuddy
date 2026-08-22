@@ -811,24 +811,24 @@ async def test_34_get_candidate_detail_breakdown(client) -> None:
 
 @pytest.mark.asyncio
 async def test_35_run_analysis_from_candidate(client) -> None:
-    cand = _candidate_obj()
-    report_id = uuid.uuid4()
-    run_id = uuid.uuid4()
-    result = {
-        "candidate_id": cand.id,
-        "ticker": "AAPL",
-        "status": "completed",
-        "analysis_report_id": report_id,
-        "agent_run_id": run_id,
-        "provider_name": "free_real",
-    }
-    with patch.object(mds, "run_candidate_analysis", AsyncMock(return_value=result)):
+    """Product readiness — the POST is now an ASYNC job start (202 + pending),
+    never a synchronous full-pipeline run (that produced browser HTTP 504)."""
+    cand = _candidate_obj(raw_signal_json={"provider_name": "free_real"})
+    envelope = {"status": "pending", "started_at": "2026-08-22T12:00:00+00:00"}
+    with patch.object(
+        mds, "get_candidate", AsyncMock(return_value=cand)
+    ), patch.object(
+        mds, "start_candidate_analysis", AsyncMock(return_value=(envelope, True))
+    ), patch.object(
+        mds, "process_candidate_analysis_task", AsyncMock()
+    ):
         res = await client.post(
             f"/api/v1/market-discovery/candidates/{cand.id}/run-analysis"
         )
-    assert res.status_code == 200
+    assert res.status_code == 202
     body = res.json()
-    assert body["analysis_report_id"] == str(report_id)
+    assert body["status"] == "pending"
+    assert body["analysis_report_id"] is None
     assert body["human_review_required"] is True
 
 
