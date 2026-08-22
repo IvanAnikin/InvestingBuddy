@@ -143,6 +143,152 @@ _MATERIAL_CATEGORIES = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Materiality (bounded, deterministic — never an unbounded LLM score)
+# ---------------------------------------------------------------------------
+#
+# REAL DEFECT THIS FIXES. An issuer newsroom feed mixes decision-relevant
+# strategic/financial events with lifestyle, marketing and product-noise posts,
+# and the strength rules above treat every T1 issuer post as equally credible —
+# which it is. Credibility is not materiality. In the NVDA report the two
+# HIGHEST-ranked catalysts were "NVIDIA CEO Tops Glassdoor's 2026 List of Best
+# CEOs" and an earnings-call scheduling notice, while an exclusive AI-compute
+# hosting agreement and a multi-party AI-infrastructure financing partnership
+# ranked below them.
+#
+# Materiality is therefore classified SEPARATELY from evidence strength, from a
+# small closed keyword vocabulary. Nothing is discarded — a low-signal issuer
+# post keeps its full record, its source, and its tier. It simply stops
+# outranking a strategic event.
+
+MATERIALITY_DECISION_RELEVANT = "decision_relevant"
+MATERIALITY_CONTEXTUAL = "contextual"
+MATERIALITY_LOW_SIGNAL = "low_signal"
+
+MATERIALITY_RANK = {
+    MATERIALITY_DECISION_RELEVANT: 0,
+    MATERIALITY_CONTEXTUAL: 1,
+    MATERIALITY_LOW_SIGNAL: 2,
+}
+
+# Recognition / award / employer-branding posts. Real signal about sentiment,
+# but they establish nothing about the business's economics.
+_RECOGNITION_MARKERS: tuple[str, ...] = (
+    "glassdoor",
+    "best ceos",
+    "best places to work",
+    "top workplaces",
+    "great place to work",
+    "most admired",
+    "named to",
+    "tops the list",
+    "tops glassdoor",
+    "list of best",
+    "wins award",
+    "award winner",
+    "honored",
+    "recognized as",
+    "recognised as",
+)
+
+# Consumer/marketing/lifestyle content from an issuer newsroom.
+_MARKETING_NOISE_MARKERS: tuple[str, ...] = (
+    "geforce now",
+    "new games",
+    "game pass",
+    "stream pc games",
+    "gfn thursday",
+    "blog post",
+    "tips and tricks",
+    "how to get started",
+    "sweepstakes",
+    "giveaway",
+    "holiday gift",
+    "developer blog",
+)
+
+# Scheduling/administrative notices — real, dated, and useful for a calendar,
+# but not themselves an event with economic content.
+_SCHEDULING_MARKERS: tuple[str, ...] = (
+    "sets conference call",
+    "to report ",
+    "conference call for",
+    "webcast",
+    "to present at",
+    "will participate in",
+    "schedules ",
+    "announces date",
+    "invitation to",
+)
+
+# Categories whose events carry direct economic/strategic consequence.
+_DECISION_RELEVANT_CATEGORIES = {
+    CatalystCategory.mna.value,
+    CatalystCategory.litigation.value,
+    CatalystCategory.regulatory.value,
+    CatalystCategory.capital_return.value,
+    CatalystCategory.financing.value,
+    CatalystCategory.guidance.value,
+    CatalystCategory.earnings.value,
+    CatalystCategory.contract.value,
+    CatalystCategory.customer.value,
+    CatalystCategory.risk_event.value,
+}
+
+
+def classify_materiality(
+    *,
+    headline: str,
+    summary: str | None,
+    category: str,
+    normalized_event_type: str = "news",
+) -> tuple[str, str]:
+    """Return ``(materiality, reason)`` for one catalyst event.
+
+    Deterministic and bounded: a closed keyword vocabulary plus the event
+    category. Never an LLM score, never a numeric ranking the reader cannot
+    audit. Ordering only — no item is dropped.
+    """
+    text = f"{headline} {summary or ''}".lower()
+
+    if _contains_any(text, _RECOGNITION_MARKERS):
+        return (
+            MATERIALITY_LOW_SIGNAL,
+            "recognition / employer-branding post — a sentiment signal only; "
+            "establishes nothing about business economics or governance",
+        )
+    if _contains_any(text, _MARKETING_NOISE_MARKERS):
+        return (
+            MATERIALITY_LOW_SIGNAL,
+            "consumer marketing / product-noise post from the issuer newsroom",
+        )
+    if _contains_any(text, _SCHEDULING_MARKERS):
+        return (
+            MATERIALITY_CONTEXTUAL,
+            "scheduling / administrative notice — calendar-relevant, no "
+            "economic content of its own",
+        )
+
+    # A regulator filing is decision-relevant by construction: it is a
+    # mandatory disclosure, not issuer-chosen communication.
+    if normalized_event_type == "sec_filing":
+        return (
+            MATERIALITY_DECISION_RELEVANT,
+            "mandatory regulator filing",
+        )
+    if category in _DECISION_RELEVANT_CATEGORIES:
+        return (
+            MATERIALITY_DECISION_RELEVANT,
+            f"category '{category}' carries direct economic or strategic "
+            "consequence",
+        )
+    return (
+        MATERIALITY_CONTEXTUAL,
+        f"category '{category}' is contextual — relevant background, not a "
+        "standalone decision input",
+    )
+
+
 class CatalystClassification(BaseModel):
     catalyst_category: str
     catalyst_direction: str
@@ -151,6 +297,10 @@ class CatalystClassification(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
     explanation: str
     warnings: list[str] = Field(default_factory=list)
+    # Bounded, deterministic materiality — separate from evidence strength.
+    # decision_relevant | contextual | low_signal. See ``classify_materiality``.
+    materiality: str = MATERIALITY_CONTEXTUAL
+    materiality_reason: str | None = None
 
 
 def _contains_any(text: str, keywords: tuple[str, ...]) -> bool:
@@ -320,6 +470,23 @@ def classify_catalyst(
 
     evidence_strength = _evidence_from_tier(source_tier, multi_source)
     strength = _strength(evidence_strength, category, direction, has_detail)
+
+    # Materiality is judged independently of credibility. A T1 issuer post is
+    # fully credible AND can be low-signal; a low-signal item must never
+    # outrank a strategic event just because the issuer published it itself.
+    materiality, materiality_reason = classify_materiality(
+        headline=headline,
+        summary=summary,
+        category=category,
+        normalized_event_type=normalized_event_type,
+    )
+    if materiality == MATERIALITY_LOW_SIGNAL and strength == CatalystStrength.high.value:
+        strength = CatalystStrength.low.value
+        warnings.append(
+            "Strength demoted to 'low': the source is credible but the item is "
+            f"low-signal ({materiality_reason})."
+        )
+
     confidence = _confidence(evidence_strength, strength, direction)
 
     if evidence_strength == EvidenceStrength.aggregator_only.value:
@@ -347,6 +514,8 @@ def classify_catalyst(
         confidence=confidence,
         explanation=explanation,
         warnings=warnings,
+        materiality=materiality,
+        materiality_reason=materiality_reason,
     )
 
 
@@ -375,6 +544,8 @@ def apply_classification(
             "evidence_strength": result.evidence_strength,
             "confidence": result.confidence,
             "classification_explanation": result.explanation,
+            "materiality": result.materiality,
+            "materiality_reason": result.materiality_reason,
             "warnings": list(event.warnings) + result.warnings,
             "requires_human_review": True,
         }

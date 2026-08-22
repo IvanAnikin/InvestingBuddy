@@ -57,8 +57,16 @@ RATING_TOKENS: tuple[str, ...] = (
 # Tier 2 — rating word appearing in an explicit rating/recommendation context
 # ---------------------------------------------------------------------------
 
+# ``short`` is a rating word ONLY in a rating context, and only when it is not
+# the ordinary finance adjective. Without the guard, "credit rating agencies
+# reviewed the issuer's short-term debt" would be flagged — a real, ordinary
+# sentence. With it, "we recommend SHORT" is still caught by Tier 2 while
+# "short-term debt", "short interest", "short seller" and "product cycles may
+# shorten" (no ``\bshort\b`` at all) all pass.
+_SHORT_GUARD = r"short(?![\s-]?(?:term|dated|lived|form|seller|sellers|selling|interest|list))"
 _RATING_WORDS = (
-    r"(?:buy|sell|hold|watch|outperform|underperform|overweight|underweight)"
+    r"(?:buy|sell|hold|watch|outperform|underperform|overweight|underweight"
+    rf"|shorting|{_SHORT_GUARD})"
 )
 _RATING_INTENT = (
     r"(?:rating|ratings|rated|recommendation|recommend|recommends"
@@ -251,3 +259,119 @@ def hit_terms(hits: list[SafetyHit]) -> list[str]:
 def is_safe(text: str) -> bool:
     """True when ``text`` contains no forbidden investment-action language."""
     return not scan_text(text)
+
+
+# ---------------------------------------------------------------------------
+# Neutralisation (externally-sourced free text)
+# ---------------------------------------------------------------------------
+
+# Third-party headlines/snippets can carry recommendation language ("analyst
+# says buy", "sell rating"). Such text must never reach a report artifact the
+# safety gate scans, so it is neutralised at the point it is serialised.
+#
+# The neutraliser must remove EXACTLY what ``scan_text`` would flag — no more.
+# The previous implementation (in ``schemas/catalyst.py``) used blanket
+# word-boundary regexes and corrupted ordinary finance English:
+#
+#   "sell-side analyst estimates" -> "[rating redacted]-side analyst estimates"
+#   "Specialist Watchmakers"      -> unaffected, but "watch segment" was not
+#   "XYZ Holding AG"              -> "XYZ [rating redacted] AG"
+#
+# Sharing the gate's own definition is what makes over- and under-redaction
+# impossible by construction: ``scan_text(neutralize_text(x))`` is always empty,
+# and any string the gate already accepts is returned unchanged.
+
+RATING_REDACTION = "[rating redacted]"
+
+# Phrase -> a safe, readable stand-in that preserves the sentence's meaning.
+_PHRASE_REPLACEMENTS: tuple[tuple[str, str], ...] = (
+    ("price target", "analyst estimate [redacted]"),
+    ("target price", "analyst estimate [redacted]"),
+    ("fair value", "valuation figure [redacted]"),
+    ("intrinsic value", "valuation figure [redacted]"),
+    ("strong buy", RATING_REDACTION),
+    ("buy signal", RATING_REDACTION),
+    ("sell signal", RATING_REDACTION),
+    ("undervalued", "[redacted]"),
+    ("overvalued", "[redacted]"),
+    ("personalized advice", "[redacted]"),
+    ("tailored recommendation", "[redacted]"),
+)
+
+# ``buyback`` contains a Tier-1 token only when upper-cased ("BUYBACK"), but the
+# ordinary word is worth normalising for readability and is never a rating.
+_BUYBACK_RE = re.compile(r"buy[\s-]?back", re.IGNORECASE)
+
+_PHRASE_REPLACEMENT_RES: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(re.escape(term), re.IGNORECASE), repl)
+    for term, repl in _PHRASE_REPLACEMENTS
+]
+# Remaining Tier-3 phrases with no bespoke stand-in above.
+_GENERIC_PHRASE_RES: list[re.Pattern[str]] = [
+    re.compile(re.escape(p), re.IGNORECASE)
+    for p in FORBIDDEN_PHRASES
+    if p not in {t for t, _ in _PHRASE_REPLACEMENTS}
+]
+_RATING_WORD_RE = re.compile(rf"\b{_RATING_WORDS}\b", re.IGNORECASE)
+
+# STRICTER-THAN-THE-GATE terms, applied to EXTERNAL text only.
+#
+# The gate deliberately does not ban bare "upside"/"downside" (they appear in
+# ordinary internal prose such as "downside risks", and only the projection
+# phrasings — "upside of", "upside potential" — are Tier 3). But an external
+# headline's bare "sees upside" IS a return claim, and no report artifact may
+# carry one even second-hand. This asymmetry is intentional and is a safety
+# control on third-party text, not a change to the gate.
+_EXTERNAL_EXTRA_RES: list[re.Pattern[str]] = [
+    re.compile(r"\bupside\b", re.IGNORECASE),
+    re.compile(r"\bdownside\b", re.IGNORECASE),
+    re.compile(r"\bunder\s?valued\b", re.IGNORECASE),
+    re.compile(r"\bover\s?valued\b", re.IGNORECASE),
+]
+
+
+def _needs_neutralisation(text: str) -> bool:
+    return bool(scan_text(text)) or any(
+        p.search(text) for p in _EXTERNAL_EXTRA_RES
+    ) or bool(_BUYBACK_RE.search(text))
+
+
+def neutralize_text(text: str | None) -> str | None:
+    """Neutralise recommendation/valuation language in EXTERNAL free text.
+
+    Removes everything ``scan_text`` would flag (so
+    ``not scan_text(neutralize_text(t))`` always holds) plus the stricter
+    external-text terms above, while leaving legitimate finance terminology
+    ("sell-side analyst estimates", "short-term debt", "watch industry",
+    "Specialist Watchmakers", "XYZ Holding AG") byte-for-byte untouched.
+    Returns the input unchanged when it is None or already clean.
+    """
+    if not text:
+        return text
+    if not _needs_neutralisation(text):
+        return text
+
+    out = _BUYBACK_RE.sub("share repurchase", text)
+    for pattern, replacement in _PHRASE_REPLACEMENT_RES:
+        out = pattern.sub(replacement, out)
+    for pattern in _GENERIC_PHRASE_RES:
+        out = pattern.sub("[redacted]", out)
+    for pattern in _EXTERNAL_EXTRA_RES:
+        out = pattern.sub("[redacted]", out)
+
+    # Tier 1 — ALL-CAPS rating labels (case-SENSITIVE, exactly as the gate).
+    for _term, pattern in _TIER1_RE:
+        out = pattern.sub(RATING_REDACTION, out)
+
+    # Tier 2 — a rating word in an explicit rating context. Replace the rating
+    # WORD inside the offending span only, so the surrounding sentence survives.
+    for _ in range(4):  # bounded: each pass removes at least one context hit
+        match = _TIER2_RE.search(out)
+        if not match:
+            break
+        span = match.group(0)
+        out = out.replace(
+            span, _RATING_WORD_RE.sub(RATING_REDACTION, span), 1
+        )
+
+    return out

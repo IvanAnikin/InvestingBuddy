@@ -419,6 +419,11 @@ class Settings(BaseSettings):
     llm_council_evidence_statement_floor: int = 3
     # Ceiling on price / market / trend (T5/T6) metric items.
     llm_council_evidence_price_trend_cap: int = 3
+    # Floor of price/market-metric slots RESERVED in the council pack. The
+    # Valuation Guard must never tell a human reader "no current market price is
+    # provided" while the report itself renders a latest close — see
+    # ``_apply_category_budget``. Bounded by the cap above.
+    llm_council_evidence_price_trend_floor: int = 2
     # Combined ceiling across all news-ish categories (quality media + aggregator).
     llm_council_evidence_news_cap: int = 8
     # Stricter ceiling on low-tier (T5/T6) aggregator news specifically.

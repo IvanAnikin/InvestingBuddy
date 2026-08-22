@@ -308,6 +308,53 @@ All errors are caught, logged to `agent_runs.error_message`, and returned as HTT
 
 ---
 
+## Canonical Evidence Inventory (product readiness, 2026-08-22)
+
+`app/services/canonical_evidence.py` is the SINGLE definition of "what evidence
+does this report actually have". Every final-report quality surface derives from
+it. Adding a new surface means reading this inventory — never writing another
+truth calculation.
+
+```
+company_snapshot + financial_data_summary + council primary_facts + catalyst summary
+    ↓
+normalize_financial_data_summary()   both key spellings, once (available_count /
+                                     available_fields / missing_count / warnings_count)
+resolve_fundamentals()               issuer document (T1) ▸ SEC XBRL (T2) ▸ EODHD (T5)
+                                     strongest channel wins; every channel retained
+resolve_price_provenance()           the PRICE FEED's own provider + tier
+build_evidence_channels()            5 distinct channels reported separately
+    ↓
+executive_summary · data_availability_summary · evidence_channels ·
+financial_snapshot · bull_case · bear_case · risk_analysis ·
+valuation_readiness · source_quality_review · research_completeness ·
+missing_information · research_memo · llm_council_analysis
+```
+
+**Source-priority rule.** For a decision-critical field a validated
+regulator/issuer structured fact (T1/T2) supersedes a lower-tier estimate
+(T5/T6). A weaker source never overwrites a stronger current fact; when both
+exist BOTH are retained with their own provenance so a conflict is exposed
+rather than silently resolved.
+
+**Five distinct evidence channels.** These are different things and are never
+conflated: (a) issuer primary document extracted, (b) regulator filing
+metadata/events, (c) regulator XBRL structured financial facts, (d) issuer
+press/newsroom, (e) persisted DB citations / council evidence. A company can
+have complete regulator-backed statements with zero separately-extracted issuer
+documents — the report says exactly that.
+
+**Post-reconciliation rebuild.** The deterministic Bull / Bear / Risk /
+Valuation-Readiness sections are recomputed by the final-report generator AFTER
+ingestion + council + fresh source-quality reconciliation, so the human-facing
+report carries one current narrative instead of a pre-ingestion snapshot beside
+a post-council one. Only sections the workflow produced are refreshed; a summary
+already carrying forbidden language is never rebuilt (that would launder
+poisoned upstream state past the safety gate). The original workflow draft is
+retained in full for audit. See ADR-019.
+
+---
+
 ## Phase History
 
 | Phase | Status | What Changed |

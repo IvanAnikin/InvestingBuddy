@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from app.services.canonical_evidence import resolve_fundamentals
 from app.services.sources.company_evidence import regulator_connector_for
 
 # Phase-32A(fix) — human-readable display names for the regulator connector ids
@@ -215,11 +216,44 @@ def run_source_quality_agent(
             "LEI — required for legal entity identification; "
             "obtain from GLEIF (T2_regulator_or_gov)"
         )
-    missing_primary.extend([
-        "Annual report / 10-K / 40-F — T1_primary_filing required for financials",
-        _jurisdiction_appropriate_regulator_line(company_snapshot),
-        "Earnings call transcript — T1 source for management commentary",
-    ])
+    # Product-readiness fix — these three lines used to be appended
+    # UNCONDITIONALLY. For NVDA that produced "Annual report / 10-K / 40-F —
+    # T1_primary_filing required for financials" and "SEC EDGAR / SEDAR+
+    # filings — T2_regulator_or_gov needed for regulatory data" in a report
+    # that had already sourced the full FY2026 10-K statement set from SEC
+    # EDGAR XBRL. Those false gaps propagate into the bear case, the risk
+    # agent's source-quality risks AND the LLM council's ``known_gaps`` — which
+    # is a direct input to the committee chair's label. Claiming a gap that has
+    # in fact been closed is what pushed an 8/8 council with real
+    # regulator-backed financials to ``insufficient_data``.
+    #
+    # A gap is now asserted only when the canonical evidence inventory says it
+    # is genuinely open. What remains open is stated precisely instead.
+    fundamentals = resolve_fundamentals(company_snapshot)
+    if not fundamentals.available:
+        missing_primary.append(
+            "Annual report / 10-K / 40-F — T1_primary_filing required for financials"
+        )
+        missing_primary.append(_jurisdiction_appropriate_regulator_line(company_snapshot))
+    elif fundamentals.is_regulator_structured:
+        # Regulator-backed structured statements ARE present. The remaining,
+        # real gap is the filing NARRATIVE (MD&A, segment discussion, notes),
+        # which structured XBRL statement data does not carry.
+        missing_primary.append(
+            "Annual report / 10-K / 40-F NARRATIVE (MD&A, segment discussion, "
+            "accounting notes) — structured "
+            f"{fundamentals.source} statement facts are already sourced "
+            f"({fundamentals.source_tier}); the filing's narrative text is not"
+        )
+    else:
+        missing_primary.append(
+            "Annual report / 10-K / 40-F — T1/T2 filing needed to validate the "
+            f"aggregator fundamentals currently sourced from {fundamentals.source}"
+        )
+        missing_primary.append(_jurisdiction_appropriate_regulator_line(company_snapshot))
+    missing_primary.append(
+        "Earnings call transcript — T1 source for management commentary"
+    )
 
     # ── Aggregator-only claims ────────────────────────────────────────────
     aggregator_only_claims: list[str] = []

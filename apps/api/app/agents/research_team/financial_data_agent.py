@@ -20,6 +20,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from app.services.canonical_evidence import resolve_price_provenance
+
 # Source tiers considered "primary" for financial data purposes
 _PRIMARY_TIERS = {"T1_primary_filing", "T2_regulator_or_gov"}
 _AGGREGATOR_TIERS = {"T5_api_aggregator", "T6_model_estimate"}
@@ -337,11 +339,11 @@ def run_financial_data_agent(
         )
 
     if price_summary.get("available"):
+        # Name the PRICE FEED's own provider/tier — never the company-level one.
+        price = resolve_price_provenance(company_snapshot)
         data_quality_notes.append(
-            f"Price history available: {price_summary.get('data_points_count', 0)} data points. "
-            f"Latest close: {price_summary.get('latest_close', 'N/A')} "
-            f"{price_summary.get('currency', '')}. "
-            f"Quality: {price_summary.get('price_data_quality', 'unknown')}."
+            f"{price.evidence_sentence()} "
+            f"Quality: {price.price_data_quality or 'unknown'}."
         )
     else:
         warnings.append("No price history available from provider.")
@@ -393,8 +395,21 @@ def run_financial_data_agent(
 
 
 def financial_data_agent_output_to_dict(output: FinancialDataAgentOutput) -> dict:
-    """Serialize output to a plain dict suitable for JSON storage."""
-    return {
+    """Serialize output to a plain dict suitable for JSON storage.
+
+    Emits BOTH key spellings via ``normalize_financial_data_summary``. The agent
+    historically emitted only ``available_financial_data`` /
+    ``missing_financial_data`` while every downstream reader (final-report data
+    availability summary, internal research memo, scoring engine) asked for
+    ``available_count`` / ``available_fields`` / ``missing_count`` /
+    ``missing_fields`` / ``warnings_count`` and silently got the ``0`` / ``[]``
+    defaults. That is what rendered "Fundamentals Available = Yes" beside
+    "Available Count = 0" and "Available Fields = Not sourced" in a report whose
+    council was quoting real FY2026 SEC statement facts.
+    """
+    from app.services.canonical_evidence import normalize_financial_data_summary
+
+    raw = {
         "available_financial_data": output.available_financial_data,
         "missing_financial_data": output.missing_financial_data,
         "data_quality_notes": output.data_quality_notes,
@@ -402,3 +417,4 @@ def financial_data_agent_output_to_dict(output: FinancialDataAgentOutput) -> dic
         "financial_context_summary": output.financial_context_summary,
         "warnings": output.warnings,
     }
+    return normalize_financial_data_summary(raw) or raw
