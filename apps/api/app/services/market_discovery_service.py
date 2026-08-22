@@ -1423,6 +1423,380 @@ async def run_candidate_analysis(
 
 
 # ---------------------------------------------------------------------------
+# Product readiness — ASYNC single-candidate "Run Full Analysis" job
+# ---------------------------------------------------------------------------
+#
+# WHY THIS EXISTS. ``run_candidate_analysis`` above runs the whole pipeline
+# (workflow → primary-document ingestion → 8-agent LLM council → final-report
+# assembly) inline. On staging that regularly exceeds the Azure App Service
+# gateway ceiling (~230s), so the ADMIN SAW HTTP 504 while the backend kept
+# working and persisted a perfectly good final report. Worse, a retry/second
+# click launched a SECOND expensive council run for the same candidate.
+#
+# The fix mirrors the Phase 28B.2 async discovery-council pattern exactly: the
+# POST writes a ``pending`` job envelope, commits, returns 202 immediately, and
+# a background task drives the real work in its OWN session. The UI polls a
+# normal GET. Raising the gateway timeout is deliberately NOT the fix.
+#
+# The envelope lives under the candidate's existing ``raw_signal_json`` blob —
+# additive key, no migration, same trick the council uses on
+# ``DiscoveryRun.config_json``.
+
+ANALYSIS_JOB_STORAGE_KEY = "analysis_job"
+
+# A job in one of these states is in flight — a second click must NEVER start a
+# duplicate council run.
+_ANALYSIS_IN_FLIGHT = {"pending", "running"}
+
+# A job in one of these states produced a linked report.
+_ANALYSIS_HAS_RESULT = {"completed", "completed_with_warnings"}
+
+# A job stuck in "running" longer than this is treated as abandoned (FastAPI
+# BackgroundTasks are process-local and not durable — an app restart mid-run
+# leaves the envelope in ``running`` forever otherwise).
+_ANALYSIS_STALE_RUNNING_MINUTES = 30
+
+
+def _new_analysis_job_envelope(
+    *,
+    status: str,
+    started_at: str | None = None,
+    completed_at: str | None = None,
+    analysis_report_id: str | None = None,
+    agent_run_id: str | None = None,
+    legacy_draft_report_id: str | None = None,
+    report: dict[str, Any] | None = None,
+    provider_name: str | None = None,
+    workflow_status: str | None = None,
+    warnings: list[str] | None = None,
+    error: str | None = None,
+) -> dict[str, Any]:
+    """Build one analysis-job envelope. Plain JSON-safe values only."""
+    return {
+        "status": status,
+        "started_at": started_at,
+        "completed_at": completed_at,
+        "analysis_report_id": analysis_report_id,
+        "agent_run_id": agent_run_id,
+        "legacy_draft_report_id": legacy_draft_report_id,
+        "report": report,
+        "provider_name": provider_name,
+        "workflow_status": workflow_status,
+        "warnings": list(warnings or []),
+        "error": error,
+    }
+
+
+def _store_analysis_job_envelope(
+    candidate: DiscoveryCandidate, envelope: dict[str, Any]
+) -> None:
+    """Persist ``envelope`` under the candidate's ``raw_signal_json`` (no migration).
+
+    Reassigns the whole dict so SQLAlchemy detects the JSONB change — an in-place
+    mutation of a JSONB column is not tracked by default.
+    """
+    new_raw = dict(candidate.raw_signal_json or {})
+    new_raw[ANALYSIS_JOB_STORAGE_KEY] = envelope
+    candidate.raw_signal_json = new_raw
+
+
+def get_analysis_job_envelope(
+    candidate: DiscoveryCandidate,
+) -> dict[str, Any] | None:
+    """Return the candidate's analysis-job envelope, or None if none has run.
+
+    A candidate analysed BEFORE this async migration has no envelope but may
+    already carry ``analysis_report_id``. That legacy state is normalised into a
+    synthetic ``completed`` envelope so the polling UI renders it instead of
+    offering to re-run an analysis that already happened.
+    """
+    raw = candidate.raw_signal_json or {}
+    stored = raw.get(ANALYSIS_JOB_STORAGE_KEY)
+    if isinstance(stored, dict) and "status" in stored:
+        return stored
+    if candidate.analysis_report_id is not None:
+        return _new_analysis_job_envelope(
+            status="completed",
+            completed_at=(
+                candidate.updated_at.isoformat() if candidate.updated_at else None
+            ),
+            analysis_report_id=str(candidate.analysis_report_id),
+            agent_run_id=(
+                str(candidate.agent_run_id) if candidate.agent_run_id else None
+            ),
+        )
+    return None
+
+
+def _analysis_job_is_stale(envelope: dict[str, Any]) -> bool:
+    """True when a ``running`` job has clearly been abandoned by a dead worker."""
+    if envelope.get("status") != "running":
+        return False
+    started = envelope.get("started_at")
+    if not isinstance(started, str) or not started:
+        # No timestamp to reason about — treat as in flight, never as stale.
+        return False
+    try:
+        started_dt = _aware(datetime.fromisoformat(started))
+    except ValueError:
+        return False
+    if started_dt is None:
+        return False
+    age = datetime.now(timezone.utc) - started_dt
+    return age > timedelta(minutes=_ANALYSIS_STALE_RUNNING_MINUTES)
+
+
+async def start_candidate_analysis(
+    db: AsyncSession,
+    candidate: DiscoveryCandidate,
+    *,
+    force: bool = False,
+) -> tuple[dict[str, Any], bool]:
+    """Start (or return the current state of) an async full-analysis job.
+
+    Returns ``(envelope, scheduled)`` — ``scheduled`` tells the API whether to
+    launch the background task. Never runs the analysis itself.
+
+    Job-lifecycle rules (NO duplicate expensive council runs):
+      * A pending/running job that is not stale → return it, ``scheduled=False``.
+      * A stale ``running`` job (dead worker) → restartable.
+      * A completed job and not ``force`` → return it, ``scheduled=False``.
+      * Otherwise write a fresh ``pending`` envelope and return ``scheduled=True``.
+    """
+    envelope = get_analysis_job_envelope(candidate)
+    status = (envelope or {}).get("status")
+
+    if status in _ANALYSIS_IN_FLIGHT and not _analysis_job_is_stale(envelope or {}):
+        log_event(
+            logger,
+            "candidate_analysis_job_duplicate",
+            candidate_id=candidate.id,
+            status=status,
+        )
+        return envelope or {}, False
+
+    if status in _ANALYSIS_HAS_RESULT and not force:
+        return envelope or {}, False
+
+    provider = (
+        (candidate.raw_signal_json or {}).get("provider_name")
+        or settings.discovery_default_provider
+    )
+    started_at = datetime.now(timezone.utc).isoformat()
+    pending = _new_analysis_job_envelope(
+        status="pending", started_at=started_at, provider_name=provider
+    )
+    _store_analysis_job_envelope(candidate, pending)
+    candidate.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(candidate)
+    log_event(
+        logger,
+        "candidate_analysis_job_queued",
+        candidate_id=candidate.id,
+        status="pending",
+    )
+    return pending, True
+
+
+def _analysis_job_envelope_from_result(
+    result: dict[str, Any], *, started_at: str | None
+) -> dict[str, Any]:
+    """Build the terminal envelope for a completed ``run_candidate_analysis``."""
+    warnings = list(result.get("warnings") or [])
+    report_summary = result.get("report")
+    report_dict: dict[str, Any] | None = None
+    if report_summary is not None:
+        report_dict = report_summary.model_dump(mode="json")
+    status = "completed_with_warnings" if warnings else "completed"
+    if result.get("analysis_report_id") is None:
+        status = "failed"
+    return _new_analysis_job_envelope(
+        status=status,
+        started_at=started_at,
+        completed_at=datetime.now(timezone.utc).isoformat(),
+        analysis_report_id=(
+            str(result["analysis_report_id"])
+            if result.get("analysis_report_id")
+            else None
+        ),
+        agent_run_id=(
+            str(result["agent_run_id"]) if result.get("agent_run_id") else None
+        ),
+        legacy_draft_report_id=(
+            str(result["legacy_draft_report_id"])
+            if result.get("legacy_draft_report_id")
+            else None
+        ),
+        report=report_dict,
+        provider_name=result.get("provider_name"),
+        workflow_status=result.get("status"),
+        warnings=warnings,
+        error=None if result.get("analysis_report_id") else "no_report_produced",
+    )
+
+
+async def _mark_analysis_job_failed(
+    session: AsyncSession,
+    candidate: DiscoveryCandidate,
+    *,
+    reason: str,
+) -> None:
+    """Persist a ``failed`` envelope, never clobbering a completed result."""
+    existing = get_analysis_job_envelope(candidate) or {}
+    if existing.get("status") in _ANALYSIS_HAS_RESULT:
+        return
+    failed = _new_analysis_job_envelope(
+        status="failed",
+        started_at=existing.get("started_at"),
+        completed_at=datetime.now(timezone.utc).isoformat(),
+        provider_name=existing.get("provider_name"),
+        error=reason,
+    )
+    _store_analysis_job_envelope(candidate, failed)
+    candidate.updated_at = datetime.now(timezone.utc)
+    await session.commit()
+
+
+async def _mark_analysis_job_failed_fresh(
+    factory: async_sessionmaker[AsyncSession],
+    candidate_id: uuid.UUID,
+    *,
+    reason: str,
+) -> None:
+    """Best-effort: mark a candidate's analysis job ``failed`` in a fresh session."""
+    try:
+        async with factory() as session:
+            candidate = await get_candidate(session, candidate_id)
+            if candidate is not None:
+                await _mark_analysis_job_failed(session, candidate, reason=reason)
+    except Exception:  # noqa: BLE001 — must not crash the worker
+        logger.exception(
+            "Failed to mark candidate analysis job %s as failed.", candidate_id
+        )
+
+
+async def process_candidate_analysis_by_id(
+    candidate_id: uuid.UUID,
+    *,
+    session_factory: async_sessionmaker[AsyncSession] | None = None,
+    run_analysis: AnalysisRunner | None = None,
+    generate_final_report: FinalReportRunner | None = None,
+) -> None:
+    """Background worker: run one candidate's full analysis in a FRESH session.
+
+    Must NOT reuse the request-scoped session (the 202 has already been sent).
+    Every failure path persists a terminal envelope so a job can never stick in
+    ``running``. Only ids/statuses/durations are logged — never prompts,
+    completions, evidence excerpts, or credentials.
+    """
+    factory = session_factory or async_session_factory
+    start = time.perf_counter()
+    try:
+        async with factory() as session:
+            candidate = await get_candidate(session, candidate_id)
+            if candidate is None:
+                logger.warning(
+                    "Candidate analysis: candidate %s not found for background job.",
+                    candidate_id,
+                )
+                return
+
+            existing = get_analysis_job_envelope(candidate) or {}
+            started_at = existing.get("started_at") or datetime.now(
+                timezone.utc
+            ).isoformat()
+            _store_analysis_job_envelope(
+                candidate,
+                _new_analysis_job_envelope(
+                    status="running",
+                    started_at=started_at,
+                    provider_name=existing.get("provider_name"),
+                ),
+            )
+            candidate.updated_at = datetime.now(timezone.utc)
+            await session.commit()
+            log_event(
+                logger,
+                "candidate_analysis_job_started",
+                candidate_id=candidate_id,
+                status="running",
+            )
+
+            try:
+                result = await run_candidate_analysis(
+                    session,
+                    candidate_id,
+                    run_analysis=run_analysis,
+                    generate_final_report=generate_final_report,
+                )
+            except ValueError:
+                await _mark_analysis_job_failed(
+                    session, candidate, reason="candidate_not_found"
+                )
+                log_event(
+                    logger,
+                    "candidate_analysis_job_failed",
+                    level=logging.WARNING,
+                    candidate_id=candidate_id,
+                    status="failed",
+                    reason="candidate_not_found",
+                    duration_ms=int((time.perf_counter() - start) * 1000),
+                )
+                return
+
+            # ``run_candidate_analysis`` refreshed the candidate and committed;
+            # re-read the envelope target from the same live ORM object.
+            envelope = _analysis_job_envelope_from_result(
+                result, started_at=started_at
+            )
+            _store_analysis_job_envelope(candidate, envelope)
+            candidate.updated_at = datetime.now(timezone.utc)
+            await session.commit()
+            log_event(
+                logger,
+                "candidate_analysis_job_completed",
+                candidate_id=candidate_id,
+                status=envelope["status"],
+                warning_count=len(envelope["warnings"]),
+                duration_ms=int((time.perf_counter() - start) * 1000),
+            )
+    except Exception as exc:  # noqa: BLE001 — must not crash the worker
+        log_event(
+            logger,
+            "candidate_analysis_job_failed",
+            level=logging.ERROR,
+            candidate_id=candidate_id,
+            status="failed",
+            reason="internal_error",
+            exception_type=type(exc).__name__,
+            duration_ms=int((time.perf_counter() - start) * 1000),
+        )
+        logger.exception(
+            "Candidate analysis job crashed for candidate %s: %s", candidate_id, exc
+        )
+        await _mark_analysis_job_failed_fresh(
+            factory, candidate_id, reason="internal_error"
+        )
+
+
+async def process_candidate_analysis_task(candidate_id: str) -> None:
+    """FastAPI ``BackgroundTasks`` entry point for an async full-analysis job.
+
+    Takes only a primitive ``candidate_id`` (never an ORM object or the request
+    session). Swallows exceptions so a background failure can never surface to
+    (or crash) the request handler.
+    """
+    try:
+        await process_candidate_analysis_by_id(uuid.UUID(candidate_id))
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "Background candidate analysis task crashed for candidate %s",
+            candidate_id,
+        )
+
+
+# ---------------------------------------------------------------------------
 # Phase 28B — run-level LLM discovery council review
 # ---------------------------------------------------------------------------
 

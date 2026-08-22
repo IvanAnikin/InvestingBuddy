@@ -387,12 +387,27 @@ export async function getDiscoveryCandidate(
   );
 }
 
+// Starts the ASYNC full-analysis job. Returns immediately (HTTP 202) with a
+// job envelope in "pending" — it does NOT wait for the LLM council. Poll
+// getCandidateAnalysisJob() for progress and the final report link.
 export async function runCandidateAnalysis(
+  candidateId: string,
+  options?: { force?: boolean },
+): Promise<RunCandidateAnalysisResponse> {
+  const query = options?.force ? "?force=true" : "";
+  return apiFetch<RunCandidateAnalysisResponse>(
+    `/api/v1/market-discovery/candidates/${candidateId}/run-analysis${query}`,
+    { method: "POST" },
+  );
+}
+
+// Current full-analysis job state for ONE candidate. Strictly candidate-scoped
+// — never a global-latest or cross-candidate report lookup.
+export async function getCandidateAnalysisJob(
   candidateId: string,
 ): Promise<RunCandidateAnalysisResponse> {
   return apiFetch<RunCandidateAnalysisResponse>(
-    `/api/v1/market-discovery/candidates/${candidateId}/run-analysis`,
-    { method: "POST" },
+    `/api/v1/market-discovery/candidates/${candidateId}/analysis-job`,
   );
 }
 

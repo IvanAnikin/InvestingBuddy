@@ -527,23 +527,27 @@ async def test_15_get_candidates_while_running(client) -> None:
 
 @pytest.mark.asyncio
 async def test_22_run_analysis_from_candidate_still_works(client) -> None:
+    """An ALREADY-completed analysis job is returned as-is (no second council
+    run) and still carries the candidate's own final-report id."""
     from tests.test_phase25_market_candidate_discovery import _candidate_obj
 
     cand = _candidate_obj()
     report_id = uuid.uuid4()
-    result = {
-        "candidate_id": cand.id,
-        "ticker": "AAPL",
+    envelope = {
         "status": "completed",
-        "analysis_report_id": report_id,
-        "agent_run_id": uuid.uuid4(),
+        "analysis_report_id": str(report_id),
+        "agent_run_id": str(uuid.uuid4()),
         "provider_name": "free_real",
     }
-    with patch.object(mds, "run_candidate_analysis", AsyncMock(return_value=result)):
+    with patch.object(
+        mds, "get_candidate", AsyncMock(return_value=cand)
+    ), patch.object(
+        mds, "start_candidate_analysis", AsyncMock(return_value=(envelope, False))
+    ):
         res = await client.post(
             f"/api/v1/market-discovery/candidates/{cand.id}/run-analysis"
         )
-    assert res.status_code == 200
+    assert res.status_code == 202
     body = res.json()
     assert body["analysis_report_id"] == str(report_id)
     assert body["human_review_required"] is True

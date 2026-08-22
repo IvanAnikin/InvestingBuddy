@@ -22,6 +22,7 @@ Endpoints:
   GET    /api/v1/market-discovery/runs/{run_id}/candidates
   GET    /api/v1/market-discovery/candidates/{candidate_id}
   POST   /api/v1/market-discovery/candidates/{candidate_id}/run-analysis
+  GET    /api/v1/market-discovery/candidates/{candidate_id}/analysis-job
 """
 
 from __future__ import annotations
@@ -366,61 +367,145 @@ async def get_discovery_candidate(
     return detail
 
 
-@router.post(
-    "/candidates/{candidate_id}/run-analysis",
-    response_model=RunCandidateAnalysisResponse,
-    summary="Run the full analysis workflow for a candidate (admin/internal only)",
-    description=(
-        "ADMIN/INTERNAL ONLY. Promotes an internal research candidate to the "
-        "existing company-analysis workflow and links the produced draft report "
-        "to the candidate. Produces an internal admin draft only — never "
-        "investment advice, never a recommendation. " + _INTERNAL
+_JOB_MESSAGES = {
+    "pending": (
+        "Full analysis queued. Processing in the background — poll "
+        "GET /candidates/{candidate_id}/analysis-job for progress."
     ),
-)
-async def run_candidate_analysis(
-    candidate_id: uuid.UUID,
-    db: AsyncSession = Depends(get_db),
-) -> RunCandidateAnalysisResponse:
-    try:
-        result = await svc.run_candidate_analysis(db, candidate_id)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
-        ) from exc
-    except Exception as exc:  # workflow execution failure
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Candidate analysis failed: {exc}",
-        ) from exc
+    "running": "Full analysis is running. Poll for progress.",
+    "failed": "Full analysis failed. See 'error'.",
+}
 
-    report_summary = result.get("report")
-    warnings = result.get("warnings") or []
-    if report_summary is not None and report_summary.report_kind == "final":
+
+def _analysis_job_message(envelope: dict, ticker: str) -> str:
+    """Human-facing message for one analysis-job state (never a recommendation)."""
+    status = str(envelope.get("status") or "pending")
+    if status in _JOB_MESSAGES:
+        base = _JOB_MESSAGES[status]
+        if status == "failed" and envelope.get("error"):
+            base = f"Full analysis failed ({envelope['error']})."
+        return f"{base} Internal admin draft only — human review required."
+
+    report = envelope.get("report") or {}
+    if report.get("report_kind") == "final":
         llm_note = (
             "LLM council analysis draft."
-            if report_summary.llm_used
+            if report.get("llm_used")
             else "Internal analysis draft (LLM council not used)."
         )
     else:
         llm_note = "Legacy deterministic draft (predates LLM council generation)."
     message = (
-        f"Full analysis completed for {result['ticker']}. {llm_note} "
+        f"Full analysis completed for {ticker}. {llm_note} "
         "Internal admin draft only — human review required."
     )
-    if warnings:
+    if envelope.get("warnings"):
         message += " Note: final-report generation degraded to the deterministic draft."
+    return message
 
-    return RunCandidateAnalysisResponse(
-        candidate_id=result["candidate_id"],
-        ticker=result["ticker"],
-        status=result["status"],
-        analysis_report_id=result["analysis_report_id"],
-        agent_run_id=result["agent_run_id"],
-        provider_name=result["provider_name"],
+
+@router.post(
+    "/candidates/{candidate_id}/run-analysis",
+    response_model=RunCandidateAnalysisResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Start an async full-analysis job for a candidate (admin/internal only)",
+    description=(
+        "ADMIN/INTERNAL ONLY. Starts the full company-analysis pipeline "
+        "(workflow → primary-document ingestion → LLM council → final report) "
+        "ASYNCHRONOUSLY and returns IMMEDIATELY with a job envelope "
+        "(status='pending'). It does NOT block until the council finishes — "
+        "that repeatedly exceeded the ~230s gateway ceiling and surfaced as a "
+        "browser HTTP 504 even though the backend completed successfully. Poll "
+        "GET /candidates/{candidate_id}/analysis-job for progress and the "
+        "linked final report. IDEMPOTENT: while a job for this candidate is "
+        "pending/running the current state is returned and NO second (expensive) "
+        "council run is started; a completed job is returned as-is unless "
+        "force=true. Produces an internal admin draft only — never investment "
+        "advice, never a recommendation. " + _INTERNAL
+    ),
+)
+async def run_candidate_analysis(
+    candidate_id: uuid.UUID,
+    background_tasks: BackgroundTasks,
+    force: bool = Query(
+        default=False,
+        description="Re-run even if a completed analysis already exists.",
+    ),
+    db: AsyncSession = Depends(get_db),
+) -> RunCandidateAnalysisResponse:
+    candidate = await svc.get_candidate(db, candidate_id)
+    if candidate is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Discovery candidate {candidate_id} not found",
+        )
+
+    envelope, scheduled = await svc.start_candidate_analysis(
+        db, candidate, force=force
+    )
+    if scheduled:
+        # Run the (already-committed pending) job in the background using its own
+        # DB session — never the request-scoped one. Only the primitive id is
+        # handed to the task.
+        background_tasks.add_task(
+            svc.process_candidate_analysis_task, str(candidate_id)
+        )
+        message = (
+            "Full analysis started. Processing in the background — poll "
+            "GET /candidates/{id}/analysis-job for progress. Internal admin "
+            "draft only — human review required."
+        )
+    elif envelope.get("status") in {"pending", "running"}:
+        message = (
+            "Full analysis already in progress for this candidate — no second "
+            "job was started. Poll GET /candidates/{id}/analysis-job."
+        )
+    else:
+        message = _analysis_job_message(envelope, candidate.ticker)
+
+    return RunCandidateAnalysisResponse.from_job_envelope(
+        candidate_id=candidate_id,
+        ticker=candidate.ticker,
+        envelope=envelope,
         message=message,
-        report=report_summary,
-        legacy_draft_report_id=result.get("legacy_draft_report_id"),
-        warnings=warnings,
+    )
+
+
+@router.get(
+    "/candidates/{candidate_id}/analysis-job",
+    response_model=RunCandidateAnalysisResponse,
+    summary="Get the async full-analysis job status for a candidate (admin only)",
+    description=(
+        "ADMIN/INTERNAL ONLY. Returns the current full-analysis job state for "
+        "ONE candidate: pending/running while a background job is in flight, "
+        "the completed job (with the FINAL report id produced for THIS "
+        "candidate) when done, or a failed status with a safe reason. Scoped "
+        "strictly to the given candidate — never a global-latest or "
+        "cross-candidate lookup. 404 when no job has ever run for it. "
+        + _INTERNAL
+    ),
+)
+async def get_candidate_analysis_job(
+    candidate_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+) -> RunCandidateAnalysisResponse:
+    candidate = await svc.get_candidate(db, candidate_id)
+    if candidate is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Discovery candidate {candidate_id} not found",
+        )
+    envelope = svc.get_analysis_job_envelope(candidate)
+    if envelope is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No full-analysis job has been run for this candidate.",
+        )
+    return RunCandidateAnalysisResponse.from_job_envelope(
+        candidate_id=candidate_id,
+        ticker=candidate.ticker,
+        envelope=envelope,
+        message=_analysis_job_message(envelope, candidate.ticker),
     )
 
 
