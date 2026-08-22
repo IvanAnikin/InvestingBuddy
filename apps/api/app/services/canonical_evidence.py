@@ -234,6 +234,28 @@ SEC_STATEMENT_FIELDS: tuple[str, ...] = (
 )
 
 
+# Issuer-primary-document fact fields that count as FINANCIAL fundamentals.
+# Kept here (not in the report generator) so the source-quality agent and the
+# report builders admit exactly the same facts — a gap the report says is closed
+# must be the same gap the agent stops asserting.
+PRIMARY_FACT_FIELDS: frozenset[str] = frozenset(
+    {
+        "revenue",
+        "operating_profit",
+        "net_income",
+        "ebitda",
+        "operating_cash_flow",
+        "free_cash_flow",
+        "total_assets",
+        "total_debt",
+        "net_debt",
+        "cash_and_equivalents",
+        "shareholders_equity",
+        "earnings_per_share",
+    }
+)
+
+
 @dataclass(frozen=True)
 class FundamentalsEvidence:
     """What financial-statement fundamentals this report actually holds.

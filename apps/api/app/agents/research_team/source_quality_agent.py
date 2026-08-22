@@ -20,7 +20,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from app.services.canonical_evidence import resolve_fundamentals
+from app.services.canonical_evidence import (
+    PRIMARY_FACT_FIELDS,
+    resolve_fundamentals,
+)
 from app.services.sources.company_evidence import regulator_connector_for
 
 # Phase-32A(fix) — human-readable display names for the regulator connector ids
@@ -144,6 +147,7 @@ def _classify_provider(provider_name: str, declared_tier: str | None) -> str:
 def run_source_quality_agent(
     company_snapshot: dict,
     citation_source_tiers: list[str] | None = None,
+    primary_facts: list[dict] | None = None,
 ) -> SourceQualityAgentOutput:
     """
     Evaluate source quality from the company snapshot and citation metadata.
@@ -152,6 +156,15 @@ def run_source_quality_agent(
         company_snapshot: dict produced by build_company_snapshot().
         citation_source_tiers: list of source_tier strings from Citation records
                                linked to this report (optional).
+        primary_facts: high-confidence issuer-document facts surfaced by the
+                       council (optional). Only available AFTER document
+                       ingestion, so this agent's workflow-time invocation
+                       passes None and the final-report generator re-invokes it
+                       with the real facts. Without it, a non-US issuer whose
+                       financials come from its own annual report (no SEC XBRL)
+                       keeps the "annual report required for financials" gap
+                       even after that report has been read — observed on CFR
+                       and MC.
 
     Returns:
         SourceQualityAgentOutput — always returns, never raises.
@@ -229,7 +242,9 @@ def run_source_quality_agent(
     #
     # A gap is now asserted only when the canonical evidence inventory says it
     # is genuinely open. What remains open is stated precisely instead.
-    fundamentals = resolve_fundamentals(company_snapshot)
+    fundamentals = resolve_fundamentals(
+        company_snapshot, None, primary_facts, financial_fields=PRIMARY_FACT_FIELDS
+    )
     if not fundamentals.available:
         missing_primary.append(
             "Annual report / 10-K / 40-F — T1_primary_filing required for financials"

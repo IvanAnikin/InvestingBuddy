@@ -459,6 +459,7 @@ def _recompute_fresh_source_quality_summary(
     citations: list[Citation],
     council_result: Any,
     base_summary: dict[str, Any] | None,
+    primary_facts: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Problem D fix — recompute source-quality from FRESH evidence.
 
@@ -479,6 +480,7 @@ def _recompute_fresh_source_quality_summary(
     fresh = run_source_quality_agent(
         company_snapshot=company_snapshot or {},
         citation_source_tiers=fresh_tiers,
+        primary_facts=primary_facts,
     )
     return {
         **(base_summary or {}),
@@ -488,6 +490,13 @@ def _recompute_fresh_source_quality_summary(
         "strong_sources": fresh.strong_sources,
         "weak_sources": fresh.weak_sources,
         "warnings": fresh.warnings,
+        # STAGING REGRESSION (CFR/MC, 2026-08-22): these two lists were NOT
+        # propagated, so the stale pre-ingestion "Annual report / 10-K / 40-F —
+        # T1_primary_filing required for financials" survived into a report that
+        # went on to render three T1 issuer-document facts from that very
+        # report. They are recomputed here from the same fresh, fact-aware run.
+        "missing_primary_sources": fresh.missing_primary_sources,
+        "recommended_source_upgrades": fresh.recommended_source_upgrades,
     }
 
 
@@ -5185,7 +5194,11 @@ class FinalReportGeneratorService:
         # structured Phase 29B.3 "primary fact".
         council_fresh_tiers = _council_evidence_source_tiers(council_result)
         source_quality_summary = _recompute_fresh_source_quality_summary(
-            company_snapshot, citations, council_result, source_quality_summary
+            company_snapshot,
+            citations,
+            council_result,
+            source_quality_summary,
+            primary_facts=primary_facts,
         )
         report_content["source_quality_review"] = _build_source_quality_review(
             source_quality_summary, sources, primary_facts=primary_facts
@@ -5216,6 +5229,28 @@ class FinalReportGeneratorService:
             )
             report_content["company_identity"] = _build_company_identity(
                 company_snapshot, company_record, primary_facts=primary_facts
+            )
+            # STAGING REGRESSION (CFR/MC, 2026-08-22). The availability summary
+            # is assembled BEFORE the council, so its canonical inventory has no
+            # issuer-document facts yet. For a non-US issuer with no SEC XBRL
+            # that produced a NEW self-contradiction — "fundamentals_available:
+            # false" beside a financial snapshot whose own note said
+            # "Fundamentals sourced from issuer_primary_document
+            # (T1_primary_filing)". Recompute it from the SAME post-council
+            # inventory the snapshot used.
+            report_content["data_availability_summary"] = (
+                _build_data_availability_summary(
+                    financial_data_summary,
+                    fundamentals_available,
+                    source_tier,
+                    data_provenance=report_provenance,
+                    fundamentals=resolve_fundamentals(
+                        company_snapshot,
+                        fundamentals_data,
+                        primary_facts,
+                        financial_fields=_PRIMARY_FINANCIAL_FACT_FIELDS,
+                    ),
+                )
             )
 
         # ------------------------------------------------------------------

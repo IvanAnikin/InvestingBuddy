@@ -344,6 +344,15 @@ press/newsroom, (e) persisted DB citations / council evidence. A company can
 have complete regulator-backed statements with zero separately-extracted issuer
 documents — the report says exactly that.
 
+**Post-council refresh (issuer-document issuers).** For a non-US issuer there is
+no SEC XBRL — its financials arrive only as issuer-document facts, which exist
+ONLY after the council has run. The `data_availability_summary` and the
+source-quality `missing_primary_sources` are therefore recomputed from the
+post-council inventory, so a report cannot say "fundamentals_available: false"
+beside a snapshot note reading "sourced from issuer_primary_document", nor keep
+asserting "annual report required for financials" after that annual report has
+been read. Caught on CFR/MC during the 2026-08-22 staging regression.
+
 **Post-reconciliation rebuild.** The deterministic Bull / Bear / Risk /
 Valuation-Readiness sections are recomputed by the final-report generator AFTER
 ingestion + council + fresh source-quality reconciliation, so the human-facing
