@@ -36,6 +36,7 @@ from app.services.llm.citation_checker import check_and_sanitize
 from app.services.llm.client import (
     LLMClient,
     LLMError,
+    LLMRateLimitError,
     get_llm_client,
 )
 from app.services.llm.evidence_pack import build_evidence_pack
@@ -59,6 +60,12 @@ from app.services.llm.schemas import (
     EvidencePack,
     PersistableEvidence,
     has_financial_evidence,
+)
+from app.services.llm.token_pacer import (
+    CouncilUsageTracker,
+    TokenBudgetPacer,
+    estimate_request_tokens,
+    get_shared_pacer,
 )
 from app.services.sources.company_evidence import (
     SEC_DOCUMENT_EXCERPT_TYPE,
@@ -476,14 +483,74 @@ def _coerce_output(agent_name: str, raw: dict[str, Any]) -> CouncilAgentOutput:
         )
 
 
-def _prior_summaries(outputs: list[CouncilAgentOutput]) -> str:
+def _truncate_at_word(text: str, max_chars: int) -> str:
+    """Deterministic word-boundary truncation with an explicit ellipsis."""
+    if max_chars <= 0 or len(text) <= max_chars:
+        return text
+    cut = text[:max_chars].rsplit(" ", 1)[0].rstrip()
+    return (cut or text[:max_chars].rstrip()) + " …"
+
+
+def _compact_agent_line(o: CouncilAgentOutput, max_chars: int) -> str:
+    """One bounded chair-input line for a completed agent (Phase 32A TPM slice).
+
+    Deterministic EXTRACTION of the agent's own structured fields — never a
+    re-summarization, never a new claim. Retains: the (truncated) conclusion,
+    the cited evidence ids, the top risk/gap items, and the unsupported-claim
+    count, so compaction can never hide a dissent or a citation from the chair.
+    """
+    parts = [_truncate_at_word((o.summary or "").strip(), max_chars)]
+    cited: list[str] = []
+    for kp in o.key_points:
+        for cid in kp.citation_ids:
+            if cid not in cited:
+                cited.append(cid)
+    if cited:
+        parts.append("cites: " + ",".join(cited[:8]))
+    risks = [
+        _truncate_at_word((r.item or "").strip(), 90)
+        for r in o.risks_or_gaps[:2]
+        if (r.item or "").strip()
+    ]
+    if risks:
+        parts.append("risks: " + "; ".join(risks))
+    if o.unsupported_claims:
+        parts.append(f"unsupported_claims: {len(o.unsupported_claims)}")
+    return f"- {o.agent_name}: " + " | ".join(part for part in parts if part)
+
+
+def _prior_summaries(
+    outputs: list[CouncilAgentOutput], max_chars: int = 0
+) -> str:
+    """The chair's prior-agent digest.
+
+    ``max_chars <= 0`` (default) reproduces the historic behaviour byte-for-byte
+    (full summaries, failed agents silently omitted). When > 0 each completed
+    agent gets one bounded ``_compact_agent_line`` and the failed agents are
+    named explicitly — the chair keeps the failure metadata without the cost of
+    full prose. This is what keeps the LAST and LARGEST council request inside
+    a constrained deployment's TPM window.
+    """
+    if max_chars <= 0:
+        lines = []
+        for o in outputs:
+            if o.status == STATUS_FAILED:
+                continue
+            summary = (o.summary or "").strip()
+            if summary:
+                lines.append(f"- {o.agent_name}: {summary}")
+        return "\n".join(lines)
+
     lines = []
+    failed: list[str] = []
     for o in outputs:
         if o.status == STATUS_FAILED:
+            failed.append(o.agent_name)
             continue
-        summary = (o.summary or "").strip()
-        if summary:
-            lines.append(f"- {o.agent_name}: {summary}")
+        if (o.summary or "").strip():
+            lines.append(_compact_agent_line(o, max_chars))
+    if failed:
+        lines.append("- did_not_complete: " + ", ".join(failed))
     return "\n".join(lines)
 
 
@@ -493,18 +560,25 @@ def _prior_summaries(outputs: list[CouncilAgentOutput]) -> str:
 
 
 def _messages_for(
-    agent_name: str, evidence_json: str, result: CouncilResult
+    agent_name: str,
+    evidence_json: str,
+    result: CouncilResult,
+    *,
+    chair_summary_max_chars: int = 0,
 ) -> tuple[str, str]:
     """Build (system, user) for one agent from the CURRENT council state.
 
     The committee chair's user message is rebuilt from the current (possibly
     recovered) prior summaries every time it is called, so a chair retry
     synthesizes over agents that recovered in the retry pass (req #10).
+    ``chair_summary_max_chars`` > 0 compacts each prior summary deterministically
+    (Phase 32A TPM slice) — 0 keeps the historic chair prompt byte-identical.
     """
     if agent_name == AGENT_COMMITTEE_CHAIR:
         system = prompts.committee_chair_system_prompt()
         user = prompts.build_user_message(
-            evidence_json, _prior_summaries(result.agents)
+            evidence_json,
+            _prior_summaries(result.agents, chair_summary_max_chars),
         )
     else:
         system = prompts.system_prompt_for(agent_name)
@@ -521,6 +595,8 @@ async def _run_agent_attempt(
     cfg: Settings,
     evidence_by_id: dict[str, Any] | None = None,
     known_gaps: list[str] | None = None,
+    pacer: TokenBudgetPacer | None = None,
+    tracker: CouncilUsageTracker | None = None,
 ) -> tuple[CouncilAgentOutput, list[str], Exception | None]:
     """Run ONE attempt for an agent. Never raises.
 
@@ -536,7 +612,24 @@ async def _run_agent_attempt(
     ``known_gaps`` (the run's ``EvidencePack.known_gaps``) enables the
     gap-attribution grounding check (corrective, post-#99/#100).
     """
-    system, user = _messages_for(agent_name, evidence_json, result)
+    system, user = _messages_for(
+        agent_name,
+        evidence_json,
+        result,
+        chair_summary_max_chars=cfg.llm_council_chair_prior_summary_max_chars,
+    )
+    # Phase 32A TPM slice: advisory provider-aware pacing. Wait (bounded) for
+    # window headroom before firing; the chair draws on its reserved slice.
+    lease = None
+    paced_wait = 0.0
+    if pacer is not None:
+        lease = await pacer.acquire(
+            estimate_request_tokens(system, user, cfg.llm_max_output_tokens),
+            reserve_tokens=cfg.llm_council_chair_token_reserve,
+            use_reserve=(agent_name == AGENT_COMMITTEE_CHAIR),
+            max_wait_seconds=cfg.llm_council_pacing_max_wait_seconds,
+        )
+        paced_wait = lease.waited_seconds
     try:
         raw = await client.complete_json(
             system,
@@ -547,6 +640,24 @@ async def _run_agent_attempt(
             repair_instruction=prompts.REPAIR_INSTRUCTION,
         )
     except LLMError as exc:
+        usage = client.consume_usage()
+        if pacer is not None and lease is not None:
+            # A rate-limited request spent no quota; other failures keep the
+            # estimate unless the provider reported real (partial) usage.
+            if isinstance(exc, LLMRateLimitError):
+                pacer.settle(lease, usage.total_tokens if usage else 0)
+            else:
+                pacer.settle(lease, usage.total_tokens if usage else None)
+        if tracker is not None:
+            tracker.record_attempt(
+                agent_name,
+                prompt_tokens=usage.prompt_tokens if usage else 0,
+                completion_tokens=usage.completion_tokens if usage else 0,
+                total_tokens=usage.total_tokens if usage else 0,
+                estimated=bool(usage.estimated) if usage else False,
+                error_type=type(exc).__name__,
+                paced_wait_seconds=paced_wait,
+            )
         placeholder = CouncilAgentOutput(
             agent_name=agent_name,
             status=STATUS_FAILED,
@@ -554,6 +665,19 @@ async def _run_agent_attempt(
             safety_notes=[f"Agent failed ({type(exc).__name__})."],
         )
         return placeholder, [f"{agent_name}: {type(exc).__name__}"], exc
+    usage = client.consume_usage()
+    if pacer is not None and lease is not None:
+        pacer.settle(lease, usage.total_tokens if usage else None)
+    if tracker is not None:
+        tracker.record_attempt(
+            agent_name,
+            prompt_tokens=usage.prompt_tokens if usage else 0,
+            completion_tokens=usage.completion_tokens if usage else 0,
+            total_tokens=usage.total_tokens if usage else 0,
+            estimated=bool(usage.estimated) if usage else False,
+            error_type=None,
+            paced_wait_seconds=paced_wait,
+        )
     output = _coerce_output(agent_name, raw)
     sanitized, issues = check_and_sanitize(
         output, evidence_ids, evidence_by_id, known_gaps
@@ -570,6 +694,8 @@ async def _timed_attempt(
     cfg: Settings,
     evidence_by_id: dict[str, Any] | None = None,
     known_gaps: list[str] | None = None,
+    pacer: TokenBudgetPacer | None = None,
+    tracker: CouncilUsageTracker | None = None,
 ) -> tuple[CouncilAgentOutput, list[str], Exception | None, int]:
     """``_run_agent_attempt`` plus a wall-clock duration_ms for logging."""
     started = time.perf_counter()
@@ -582,6 +708,8 @@ async def _timed_attempt(
         cfg,
         evidence_by_id,
         known_gaps,
+        pacer,
+        tracker,
     )
     duration_ms = int((time.perf_counter() - started) * 1000)
     return output, issues, exc, duration_ms
@@ -599,9 +727,23 @@ def _log_agent_outcome(
     report_id: str | None,
     ticker: str | None,
     attempt: int | None = None,
+    tracker: CouncilUsageTracker | None = None,
 ) -> None:
     """Emit the safe completed/failed telemetry for one attempt (no prompts)."""
+    # Phase 32A TPM slice: per-attempt token accounting (counts only). The
+    # tracker's last record for this agent IS this attempt (attempts run
+    # strictly sequentially per agent).
+    last = tracker.last_by_agent.get(agent_name) if tracker is not None else None
+    usage_fields: dict[str, Any] = {}
+    if last is not None:
+        usage_fields = {
+            "prompt_tokens": last.prompt_tokens,
+            "completion_tokens": last.completion_tokens,
+            "total_tokens": last.total_tokens,
+            "tokens_estimated": last.estimated or None,
+        }
     if exc is not None:
+        retry_after = getattr(exc, "retry_after", None)
         log_event(
             log,
             "llm_agent_failed",
@@ -615,6 +757,8 @@ def _log_agent_outcome(
             status=STATUS_FAILED,
             reason=type(exc).__name__,
             attempt=attempt,
+            retry_after_seconds=retry_after,
+            **usage_fields,
         )
     elif output.status == STATUS_FAILED:
         log_event(
@@ -630,6 +774,7 @@ def _log_agent_outcome(
             status=STATUS_FAILED,
             reason="quarantined_or_unparsed",
             attempt=attempt,
+            **usage_fields,
         )
     else:
         log_event(
@@ -644,6 +789,7 @@ def _log_agent_outcome(
             status=output.status,
             key_point_count=len(output.key_points),
             attempt=attempt,
+            **usage_fields,
         )
 
 
@@ -755,6 +901,8 @@ async def _run_offline_pass(
     ticker: str | None,
     evidence_by_id: dict[str, Any] | None = None,
     known_gaps: list[str] | None = None,
+    pacer: TokenBudgetPacer | None = None,
+    tracker: CouncilUsageTracker | None = None,
 ) -> None:
     """The OFF path: one attempt per agent, no retries — byte-identical to pre-Slice-4."""
     for agent_name in COUNCIL_AGENT_ORDER:
@@ -767,6 +915,8 @@ async def _run_offline_pass(
             cfg,
             evidence_by_id,
             known_gaps,
+            pacer,
+            tracker,
         )
         result.agents.append(output)
         result.warnings.extend(issues)
@@ -780,6 +930,7 @@ async def _run_offline_pass(
             client=client,
             report_id=report_id,
             ticker=ticker,
+            tracker=tracker,
         )
 
 
@@ -791,6 +942,8 @@ def _make_attempt(
     cfg: Settings,
     evidence_by_id: dict[str, Any] | None = None,
     known_gaps: list[str] | None = None,
+    pacer: TokenBudgetPacer | None = None,
+    tracker: CouncilUsageTracker | None = None,
 ) -> retry_engine.AttemptFn:
     """Bind the company-specific single-attempt primitive for the retry engine.
 
@@ -809,6 +962,8 @@ def _make_attempt(
             cfg,
             evidence_by_id,
             known_gaps,
+            pacer,
+            tracker,
         )
 
     return _attempt
@@ -839,6 +994,7 @@ def _make_log_outcome(
     client: LLMClient,
     report_id: str | None,
     ticker: str | None,
+    tracker: CouncilUsageTracker | None = None,
 ) -> retry_engine.LogOutcomeFn:
     """Bind ``_log_agent_outcome`` to the run's fixed logging context."""
 
@@ -860,6 +1016,7 @@ def _make_log_outcome(
             report_id=report_id,
             ticker=ticker,
             attempt=attempt_number,
+            tracker=tracker,
         )
 
     return _log_outcome
@@ -881,6 +1038,8 @@ async def _run_council_with_retries(
     rng: random.Random,
     evidence_by_id: dict[str, Any] | None = None,
     known_gaps: list[str] | None = None,
+    pacer: TokenBudgetPacer | None = None,
+    tracker: CouncilUsageTracker | None = None,
 ) -> None:
     """The ON path: initial pass under a deadline + a priority retry pass.
 
@@ -896,13 +1055,21 @@ async def _run_council_with_retries(
         priority_order=_retry_priority_order(critical),
         reserved=RESERVED_AGENTS,
         attempt=_make_attempt(
-            evidence_json, evidence_ids, result, client, cfg, evidence_by_id, known_gaps
+            evidence_json,
+            evidence_ids,
+            result,
+            client,
+            cfg,
+            evidence_by_id,
+            known_gaps,
+            pacer,
+            tracker,
         ),
         append_output=result.agents.append,
         extend_warnings=result.warnings.extend,
         replace_agent=_make_replace_agent(result),
         status_of=_make_status_of(result),
-        log_outcome=_make_log_outcome(log, cfg, client, report_id, ticker),
+        log_outcome=_make_log_outcome(log, cfg, client, report_id, ticker, tracker),
         budget_exhausted_output=_budget_exhausted_output,
         log=log,
         report_id=report_id,
@@ -921,6 +1088,7 @@ async def _run_council_with_retries(
         max_retry_after_seconds=cfg.llm_council_retry_max_retry_after_seconds,
         completed_status=STATUS_COMPLETED,
         failed_status=STATUS_FAILED,
+        initial_pass_delay_seconds=cfg.llm_council_initial_pass_delay_seconds,
     )
 
 
@@ -936,6 +1104,7 @@ async def run_council(
     clock: Callable[[], float] = time.monotonic,
     sleeper: Callable[[float], Awaitable[Any]] = asyncio.sleep,
     rng: random.Random | None = None,
+    pacer: TokenBudgetPacer | None = None,
 ) -> CouncilResult:
     """Run every council agent over the evidence pack and return the result.
 
@@ -951,6 +1120,18 @@ async def run_council(
     cfg = cfg or default_settings
     log = logger or _logger
     rng = rng if rng is not None else random.Random()
+    run_started = clock()
+    # Phase 32A TPM slice: per-run usage accounting + the process-shared
+    # provider pacer (None when ``llm_council_tpm_capacity`` is 0 — the
+    # default — so a plain deploy is byte-identical). Tests inject their own
+    # pacer built on the fake clock/sleeper.
+    tracker = CouncilUsageTracker()
+    if pacer is None:
+        pacer = get_shared_pacer(
+            client.provider_name,
+            client.deployment_name,
+            cfg.llm_council_tpm_capacity,
+        )
     evidence_ids = evidence_pack.evidence_ids()
     evidence_json = evidence_pack.model_dump_json()
     # Phase 32A hotfix: id -> EvidenceItem, so the citation checker's semantic-
@@ -999,6 +1180,8 @@ async def run_council(
             rng=rng,
             evidence_by_id=evidence_by_id,
             known_gaps=known_gaps,
+            pacer=pacer,
+            tracker=tracker,
         )
     else:
         await _run_offline_pass(
@@ -1012,6 +1195,8 @@ async def run_council(
             ticker=ticker,
             evidence_by_id=evidence_by_id,
             known_gaps=known_gaps,
+            pacer=pacer,
+            tracker=tracker,
         )
 
     result.recount()
@@ -1051,6 +1236,37 @@ async def run_council(
             agents_completed=result.agents_completed,
             agents_failed=result.agents_failed,
         )
+
+    # Phase 32A TPM slice — failure-vs-judgement semantics + run accounting.
+    # ``committee_label`` alone can no longer masquerade: every result records
+    # WHO produced the synthesis, how many attempts the chair made, and (on
+    # failure) WHICH provider error class ended it.
+    if chair is not None and chair.status == STATUS_COMPLETED:
+        result.chair_synthesis_basis = "llm_chair"
+    elif result.chair_fallback_used:
+        result.chair_synthesis_basis = "deterministic_fallback"
+    result.chair_attempts = tracker.attempts_for(AGENT_COMMITTEE_CHAIR)
+    if chair is None or chair.status != STATUS_COMPLETED:
+        result.chair_error_type = tracker.last_error_for(AGENT_COMMITTEE_CHAIR)
+    result.token_usage = tracker.usage_metadata()
+
+    log_event(
+        log,
+        "llm_council_run_summary",
+        report_id=report_id,
+        ticker=ticker,
+        provider=client.provider_name,
+        council_version=cfg.llm_council_version,
+        elapsed_ms=int((clock() - run_started) * 1000),
+        agents_completed=result.agents_completed,
+        agents_failed=result.agents_failed,
+        chair_attempts=result.chair_attempts,
+        chair_fallback_used=result.chair_fallback_used or None,
+        committee_label=result.committee_label,
+        committee_label_basis=result.chair_synthesis_basis,
+        chair_error_type=result.chair_error_type,
+        **tracker.summary_fields(),
+    )
 
     # Phase 32A Slice 3: retain a runtime-only snapshot of the (post-budget)
     # evidence pack so a cited ``E#`` alias can be resolved to a canonical

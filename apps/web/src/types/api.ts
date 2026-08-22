@@ -209,6 +209,16 @@ export interface LlmCouncilMetadata {
   agents_failed?: number;
   agents_skipped?: number;
   committee_label?: string | null;
+  // Phase 32A TPM slice (ADR-020) — WHO produced the committee synthesis:
+  // "llm_chair" = evidence-based judgement (possibly after bounded retries);
+  // "deterministic_fallback" = the chair never completed and the label is a
+  // failure default, NOT a judgement. chair_error_type carries the provider
+  // error class name (e.g. "LLMRateLimitError") on failure.
+  committee_label_basis?: string | null;
+  chair_attempts?: number;
+  chair_error_type?: string | null;
+  chair_fallback_used?: boolean;
+  token_usage?: Record<string, unknown> | null;
   agents?: LlmCouncilAgent[];
   primary_documents?: PrimaryDocumentSummary[];
 }
@@ -869,6 +879,12 @@ export interface DiscoveryCouncilReview {
   // degraded gracefully rather than silently.
   chair_fallback_used?: boolean;
   deterministic_discovery_chair?: Record<string, unknown> | null;
+  // Phase 32A TPM slice (ADR-020): failure-vs-judgement semantics + bounded
+  // token accounting (counts only).
+  chair_synthesis_basis?: string | null;
+  chair_attempts?: number;
+  chair_error_type?: string | null;
+  token_usage?: Record<string, unknown> | null;
 }
 
 // ── Deep Field Review (Phase 32A Slice 6D) ─────────────────────────────────
@@ -957,6 +973,12 @@ export interface FieldReview {
   // is still present in `agent_outputs`.
   chair_fallback_used?: boolean;
   deterministic_field_chair?: Record<string, unknown> | null;
+  // Phase 32A TPM slice (ADR-020): failure-vs-judgement semantics + bounded
+  // token accounting (counts only).
+  chair_synthesis_basis?: string | null;
+  chair_attempts?: number;
+  chair_error_type?: string | null;
+  token_usage?: Record<string, unknown> | null;
   candidates?: FieldReviewCandidateRow[];
   safety_valid?: boolean;
   human_review_required?: boolean;

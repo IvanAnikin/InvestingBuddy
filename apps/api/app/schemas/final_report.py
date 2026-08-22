@@ -153,6 +153,14 @@ class FinalReportResponse(BaseModel):
     evidence_pack_version: str | None = None
     evidence_item_count: int = 0
     committee_label: str | None = None
+    # Phase 32A TPM slice — WHO produced the committee synthesis:
+    # "llm_chair" (evidence-based judgement, possibly after bounded retries) or
+    # "deterministic_fallback" (the chair never completed; the label is a
+    # failure default and must not be read as a judgement). None = no council.
+    committee_label_basis: str | None = None
+    # Provider error CLASS NAME that ended the chair (e.g. "LLMRateLimitError")
+    # — infrastructure failure exposed separately from the semantic label.
+    chair_error_type: str | None = None
 
     # human review checklist
     human_review_checklist: list[HumanReviewChecklistItem] = Field(

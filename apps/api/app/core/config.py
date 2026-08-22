@@ -156,11 +156,14 @@ class Settings(BaseSettings):
     # Exponential-backoff base (seconds) before a retry: base * 2**(attempt-1),
     # capped by the max below, plus jitter in [0, base).
     llm_discovery_council_retry_base_backoff_seconds: float = 1.0
-    # Hard ceiling (seconds) on a single computed backoff wait.
-    llm_discovery_council_retry_max_backoff_seconds: float = 20.0
+    # Hard ceiling (seconds) on a single computed backoff wait. Raised 20->60
+    # with the company council (Phase 32A TPM slice).
+    llm_discovery_council_retry_max_backoff_seconds: float = 60.0
     # Hard ceiling (seconds) on an honored provider ``retry-after`` value, so a
-    # hostile / large header can never blow the wall-time budget.
-    llm_discovery_council_retry_max_retry_after_seconds: float = 30.0
+    # hostile / large header can never blow the wall-time budget. Raised 30->90
+    # (Phase 32A TPM slice) so an honored Azure retry-after can span a real TPM
+    # refill window instead of firing back into the exhausted one.
+    llm_discovery_council_retry_max_retry_after_seconds: float = 90.0
     # HARD total discovery-council wall-time cap (seconds). All retries live
     # under this deadline. Materially higher than the company council's 150s:
     # the discovery council is not bound by the inline gateway timeout.
@@ -223,17 +226,29 @@ class Settings(BaseSettings):
     # Exponential-backoff base (seconds): base * 2**(attempt-1), capped below,
     # plus jitter in [0, base).
     llm_field_review_council_retry_base_backoff_seconds: float = 1.0
-    # Hard ceiling (seconds) on a single computed backoff wait.
-    llm_field_review_council_retry_max_backoff_seconds: float = 20.0
+    # Hard ceiling (seconds) on a single computed backoff wait. Raised 20->60
+    # with the company council (Phase 32A TPM slice).
+    llm_field_review_council_retry_max_backoff_seconds: float = 60.0
     # Hard ceiling (seconds) on an honored provider ``retry-after`` value, so a
-    # hostile / large header can never blow the wall-time budget.
-    llm_field_review_council_retry_max_retry_after_seconds: float = 30.0
+    # hostile / large header can never blow the wall-time budget. Raised 30->90
+    # (Phase 32A TPM slice), matching the other two councils.
+    llm_field_review_council_retry_max_retry_after_seconds: float = 90.0
     # HARD total wall-time cap (seconds) for the whole field-review council.
     llm_field_review_council_total_budget_seconds: float = 600.0
     # Wall-time (seconds) reserved out of the total budget for the two protected
     # agents (field_red_team + field_chair) so earlier agents draining the budget
     # cannot starve the adversarial check and the synthesis.
     llm_field_review_council_critical_reserve_seconds: float = 120.0
+
+    # ── Async full-analysis job (Phase 32A TPM slice) ──────────────────────
+    # Base minutes after which a ``running`` analysis-job envelope written by a
+    # dead worker (FastAPI BackgroundTasks are process-local, not durable) is
+    # treated as abandoned and becomes restartable. The EFFECTIVE threshold is
+    # ``max(this, derived job ceiling + margin)`` — see
+    # ``market_discovery_service.analysis_job_stale_after_minutes()`` — so
+    # raising the council wall budget can never silently make a legitimately
+    # long-running job look stale. Never a magic literal in code.
+    analysis_job_stale_after_minutes: int = 45
 
     # ── Market Candidate Discovery (Phase 25) ──────────────────────────────
     # Internal-only, bounded market scan configuration. Discovery produces
@@ -497,19 +512,64 @@ class Settings(BaseSettings):
     # Exponential-backoff base (seconds) before a retry: base * 2**(attempt-1),
     # capped by the max below, plus jitter in [0, base).
     llm_council_retry_base_backoff_seconds: float = 1.0
-    # Hard ceiling (seconds) on a single computed backoff wait.
-    llm_council_retry_max_backoff_seconds: float = 20.0
+    # Hard ceiling (seconds) on a single computed backoff wait. Raised 20->60
+    # for the async era (Phase 32A TPM slice): a backoff may now usefully span
+    # a meaningful part of a provider TPM refill window.
+    llm_council_retry_max_backoff_seconds: float = 60.0
     # Hard ceiling (seconds) on an honored provider ``retry-after`` value, so a
-    # hostile / large header can never blow the wall-time budget.
-    llm_council_retry_max_retry_after_seconds: float = 30.0
+    # hostile / large header can never blow the wall-time budget. Raised 30->90
+    # (Phase 32A TPM slice): Azure's suggested retry-after under TPM exhaustion
+    # is routinely ~60s, and the old 30s cap guaranteed the retry fired INTO
+    # the same exhausted window.
+    llm_council_retry_max_retry_after_seconds: float = 90.0
     # HARD total council wall-time cap (seconds). All retries live under this
-    # deadline; it must stay comfortably below the ~230s Azure gateway timeout
-    # because the single-company council runs inline in the request handler.
-    llm_council_total_budget_seconds: float = 150.0
+    # deadline. Phase 32A TPM slice: raised 150->600. The old 150s value was
+    # sized for the now-REMOVED constraint that the single-company council ran
+    # inline in an HTTP request under the ~230s Azure gateway timeout; since
+    # PR #119 the full analysis is an async background job, so the budget can
+    # span multiple provider TPM refill windows (a ~48k-token council against a
+    # 10k-TPM deployment needs >=5 minutes of window). Still strictly bounded —
+    # jobs always terminate. The analysis-job stale threshold is derived from
+    # this value (see ``analysis_job_stale_after_minutes``), keeping the two
+    # coherent by construction.
+    llm_council_total_budget_seconds: float = 600.0
     # Wall-time (seconds) reserved out of the total budget for the two protected
     # agents (red_team + committee_chair) so earlier agents draining the budget
-    # cannot starve the adversarial check and the synthesis.
-    llm_council_critical_reserve_seconds: float = 45.0
+    # cannot starve the adversarial check and the synthesis. Raised 45->180 with
+    # the total budget (Phase 32A TPM slice): the chair retry now has room to
+    # wait out a full TPM refill window inside its reserve.
+    llm_council_critical_reserve_seconds: float = 180.0
+    # Inter-agent pacing (seconds) inside the company council's INITIAL pass
+    # when the retry bundle is ON (same mechanism the discovery council already
+    # uses). 0.0 disables pacing (default — byte-identical initial pass).
+    llm_council_initial_pass_delay_seconds: float = 0.0
+
+    # ── Provider-aware token pacing (Phase 32A TPM slice) ──────────────────
+    # Shared by ALL THREE councils (company / discovery / field review): they
+    # call the same Azure OpenAI deployment, so they share ONE process-local
+    # sliding-window token budget (``token_pacer.get_shared_pacer``).
+    #
+    # The deployment's tokens-per-minute capacity. 0 (default) disables pacing
+    # entirely — a plain deploy is byte-identical to the pre-slice behaviour.
+    # Staging: set to the real deployment quota (e.g. 10000 for the current
+    # GlobalStandard capacity-10 gpt-4.1-mini deployment).
+    llm_council_tpm_capacity: int = 0
+    # Tokens withheld from NON-chair agents inside each TPM window so the chair
+    # (last and largest request) always finds headroom. Clamped to at most half
+    # the capacity by the pacer. Only meaningful when pacing is enabled.
+    llm_council_chair_token_reserve: int = 4000
+    # Hard ceiling (seconds) a single paced request may WAIT for window
+    # headroom before proceeding anyway (the provider 429 + bounded retries are
+    # the correctness backstop — pacing is advisory and can never wedge a
+    # council or skip an agent).
+    llm_council_pacing_max_wait_seconds: float = 240.0
+    # Per-agent cap (characters) applied to each PRIOR agent summary inside the
+    # committee chair's user message. 0 (default) = no compaction, byte-identical
+    # chair prompt. When > 0 each completed agent's line keeps its truncated
+    # summary PLUS deterministic extracts of its structured fields (top risk
+    # items, cited evidence ids, unsupported-claim count) — the chair's input
+    # shrinks without losing any agent's conclusion, dissent, or citations.
+    llm_council_chair_prior_summary_max_chars: int = 0
 
     # ── Report source/citation persistence + reconciliation (Phase 32A Slice 3)
     # Gate for PERSISTING the source/citation lineage of a report and RECONCILING

@@ -426,6 +426,25 @@ export default async function ReportDetailPage({
                 value={council.committee_label}
               />
             )}
+            {/* Phase 32A TPM slice (ADR-020): make an infrastructure failure
+                impossible to read as an evidence judgement. */}
+            {council.committee_label_basis === "deterministic_fallback" && (
+              <MetaRow
+                label="Label Basis"
+                value={`Deterministic fallback — LLM chair did not complete${
+                  council.chair_error_type
+                    ? ` (${council.chair_error_type})`
+                    : ""
+                }. Not an evidence-based judgement.`}
+              />
+            )}
+            {council.committee_label_basis === "llm_chair" &&
+              (council.chair_attempts ?? 0) > 1 && (
+                <MetaRow
+                  label="Label Basis"
+                  value={`LLM chair (completed after ${council.chair_attempts} attempts)`}
+                />
+              )}
           </>
         )}
       </GlassCard>

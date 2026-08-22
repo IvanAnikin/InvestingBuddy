@@ -499,6 +499,15 @@ class FieldReviewResult(BaseModel):
     # ``review_json`` unchanged.
     chair_fallback_used: bool = False
     deterministic_field_chair: dict[str, Any] | None = None
+    # Phase 32A TPM slice — failure-vs-judgement semantics (mirrors the company
+    # + discovery councils): WHO produced the chair synthesis ("llm_chair" |
+    # "deterministic_fallback" | None), attempts made, and (on failure) the
+    # provider error CLASS NAME, exposed separately from ``field_quality``.
+    chair_synthesis_basis: str | None = None
+    chair_attempts: int = 0
+    chair_error_type: str | None = None
+    # Bounded token-usage/throttling accounting for the whole run (counts only).
+    token_usage: dict[str, Any] | None = None
 
     def recount(self) -> None:
         """Refresh the completed/failed/skipped tallies from ``agents``."""
@@ -558,6 +567,14 @@ class FieldReviewResult(BaseModel):
                 dict(self.deterministic_field_chair)
                 if self.deterministic_field_chair is not None
                 else None
+            ),
+            # Phase 32A TPM slice: failure-vs-judgement semantics + bounded
+            # usage accounting (counts only — never prompts/completions).
+            "chair_synthesis_basis": self.chair_synthesis_basis,
+            "chair_attempts": self.chair_attempts,
+            "chair_error_type": self.chair_error_type,
+            "token_usage": (
+                dict(self.token_usage) if self.token_usage is not None else None
             ),
             "warnings": list(self.warnings),
             "safety_valid": self.safety_valid,

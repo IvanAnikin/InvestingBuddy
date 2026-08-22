@@ -195,13 +195,23 @@ def test_shared_engine_default_is_no_pacing() -> None:
     assert param.kind is inspect.Parameter.KEYWORD_ONLY
 
 
-def test_only_the_discovery_council_opts_into_pacing() -> None:
-    """The other two councils must not pass the parameter at all."""
-    for module in ("council.py", "field_review_council.py"):
-        source = (_LLM_DIR / module).read_text(encoding="utf-8")
-        assert "initial_pass_delay_seconds" not in source, module
+def test_pacing_opt_in_policy_per_council() -> None:
+    """Which councils opt into the engine's initial-pass pacing.
+
+    Phase 32A TPM slice: the COMPANY council now opts in too (config-driven,
+    default 0.0 = off — the async job removed the reason it was excluded).
+    The field-review council still does not use the engine's initial-pass
+    parameter (its pacing comes from the shared token pacer instead).
+    """
+    company = (_LLM_DIR / "council.py").read_text(encoding="utf-8")
+    assert (
+        "initial_pass_delay_seconds=cfg.llm_council_initial_pass_delay_seconds"
+        in company
+    )
     discovery = (_LLM_DIR / "discovery_council.py").read_text(encoding="utf-8")
     assert "initial_pass_delay_seconds=" in discovery
+    field_review = (_LLM_DIR / "field_review_council.py").read_text(encoding="utf-8")
+    assert "initial_pass_delay_seconds" not in field_review
 
 
 async def test_engine_without_the_parameter_never_sleeps_in_the_initial_pass() -> None:
