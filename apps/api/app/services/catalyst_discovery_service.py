@@ -51,6 +51,7 @@ from app.schemas.catalyst import (
     NewsItem,
     NewsProviderStatus,
     PressReleaseStatus,
+    event_sort_key,
     make_catalyst_event_id,
     summarize_events,
 )
@@ -61,6 +62,63 @@ from app.services.news_query_planner import NewsSearchPlan, build_news_search_pl
 from app.services.news_relevance_scorer import apply_relevance
 
 logger = logging.getLogger(__name__)
+
+
+# Per-source-class floor: how many of a class's most recent events are reserved
+# before the remaining budget is filled by global recency. Bounded and small so
+# a rich press feed still dominates a genuinely press-heavy period, while a
+# regulator filing class can never be truncated to zero.
+_EVENT_CLASS_FLOOR = 4
+
+
+def _select_bounded_events(
+    events_by_class: dict[str, list[CatalystEvent]],
+    *,
+    max_events: int,
+) -> list[CatalystEvent]:
+    """Bound the merged event list without silently zeroing a source class.
+
+    Each class is ranked by NORMALISED date (see ``event_sort_key`` — raw
+    strings from different connectors are not comparable). Up to
+    ``_EVENT_CLASS_FLOOR`` of each non-empty class's most recent events are
+    reserved first; the rest of the budget is filled by global recency. The
+    result is sorted by real recency. Never duplicates an event.
+    """
+    ranked: dict[str, list[CatalystEvent]] = {
+        name: sorted(items, key=event_sort_key, reverse=True)
+        for name, items in events_by_class.items()
+        if items
+    }
+    if not ranked:
+        return []
+
+    selected: list[CatalystEvent] = []
+    selected_ids: set[int] = set()
+
+    def _take(event: CatalystEvent) -> bool:
+        if len(selected) >= max_events or id(event) in selected_ids:
+            return False
+        selected.append(event)
+        selected_ids.add(id(event))
+        return True
+
+    for items in ranked.values():
+        for event in items[:_EVENT_CLASS_FLOOR]:
+            if not _take(event):
+                break
+
+    remaining = [
+        event
+        for items in ranked.values()
+        for event in items
+        if id(event) not in selected_ids
+    ]
+    for event in sorted(remaining, key=event_sort_key, reverse=True):
+        if not _take(event):
+            break
+
+    selected.sort(key=event_sort_key, reverse=True)
+    return selected
 
 
 def _news_item_to_event(
@@ -517,12 +575,30 @@ async def discover_catalysts(
         )
 
     # ── Aggregate + summarise ────────────────────────────────────────────
-    all_events = filing_events + press_release_events + news_events
-    all_events.sort(key=lambda e: (e.event_date or e.filing_date or ""), reverse=True)
-    all_events = all_events[:max_events]
-    industry_events.sort(
-        key=lambda e: (e.event_date or ""), reverse=True
+    # Class-aware, date-normalised selection. Two real defects are fixed here:
+    #
+    #  1. The merged list was sorted by RAW event-date STRING. SEC filings carry
+    #     ISO dates and issuer press releases carry RFC-822 timestamps
+    #     ("Wed, 29 Jul 2026 …"), so "W" > "2" put every press release above
+    #     every filing regardless of actual recency.
+    #  2. The list was then truncated to ``max_events`` with no per-class floor.
+    #     With 20 press releases and max_events=20 that dropped ALL SEC filing
+    #     events — producing a report that claimed ``sec_filings`` succeeded
+    #     while reporting ``filing_event_count: 0``.
+    #
+    # Now: every class is sorted on a NORMALISED ISO key, each non-empty class
+    # keeps a bounded floor of its most recent events, and the remaining budget
+    # is filled globally by real recency. No class can be silently zeroed, and
+    # nothing is double-counted — the floors are taken from the same pool.
+    all_events = _select_bounded_events(
+        {
+            "sec_filing": filing_events,
+            "press_release": press_release_events,
+            "news_article": news_events,
+        },
+        max_events=max_events,
     )
+    industry_events.sort(key=event_sort_key, reverse=True)
 
     summary = summarize_events(
         all_events, lookback_days, industry_events=industry_events

@@ -17,6 +17,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from app.services import safety_terms
+from app.services.canonical_evidence import (
+    resolve_fundamentals,
+    resolve_price_provenance,
+)
+
 # Forbidden words in any output string
 _FORBIDDEN_RECOMMENDATION_WORDS = {
     "BUY",
@@ -51,16 +57,31 @@ class BullCaseOutput:
 
 
 def _check_forbidden_content(text: str) -> list[str]:
-    """Return list of forbidden words/phrases found in text."""
+    """Return the forbidden recommendation/valuation language found in ``text``.
+
+    Routed through the SHARED ``safety_terms`` scanner. The previous
+    implementation upper-cased the text and did a bare ``in`` substring test
+    against a word set, which flagged ordinary finance English:
+
+      * "product cycles may shorten"  -> "SHORT"      (real NVDA false positive)
+      * "sell-side analyst estimates" -> "SELL"
+      * "short-term debt"             -> "SHORT"
+      * "Specialist Watchmakers"      -> "WATCH"
+
+    ``safety_terms`` is word-bounded and tier-aware: ALL-CAPS rating labels are
+    case-sensitive (so "BUY NVDA" is blocked while "buyback" passes), a rating
+    word near explicit rating-intent language is blocked in any case ("rating:
+    Hold"), and only multi-word terms of art are substring-matched. The true
+    recommendation gate is NOT weakened — only the false positives are removed.
+    """
     found: list[str] = []
-    upper = text.upper()
-    for word in _FORBIDDEN_RECOMMENDATION_WORDS:
-        if word in upper:
-            found.append(f"Forbidden recommendation word detected: {word}")
-    lower = text.lower()
-    for phrase in _FORBIDDEN_VALUATION_PHRASES:
-        if phrase in lower:
-            found.append(f"Forbidden valuation phrase detected: '{phrase}'")
+    for hit in safety_terms.scan_text(text):
+        kind = (
+            "valuation phrase"
+            if hit.tier == safety_terms.TIER_PHRASE
+            else "recommendation language"
+        )
+        found.append(f"Forbidden {kind} detected: {hit.term}")
     return found
 
 
@@ -89,9 +110,9 @@ def run_bull_case_agent(
 
     identity = company_snapshot.get("company_identity", {})
     profile = company_snapshot.get("profile", {})
-    price_summary = company_snapshot.get("price_history_summary", {})
     provider_meta = company_snapshot.get("provider_metadata", {})
     is_mock = company_snapshot.get("is_mock", True)
+    fundamentals = resolve_fundamentals(company_snapshot)
 
     ticker = identity.get("ticker", "N/A")
     legal_name = identity.get("legal_name", "Unknown")
@@ -99,7 +120,6 @@ def run_bull_case_agent(
     country = profile.get("country_domicile") or identity.get("country_domicile", "unknown")
     currency = profile.get("reporting_currency", "unknown")
     source_tier = provider_meta.get("source_tier", "T6_model_estimate")
-    provider_name = provider_meta.get("provider_name", "unknown")
 
     # ── Evidence from identity / profile ─────────────────────────────────
     if legal_name and legal_name != "Unknown":
@@ -122,18 +142,23 @@ def run_bull_case_agent(
         )
 
     # ── Price history as positive evidence ────────────────────────────────
-    if price_summary.get("available"):
-        data_points = price_summary.get("data_points_count", 0)
-        latest_close = price_summary.get("latest_close")
-        evidence_used.append(
-            f"Price history available from {provider_name}: "
-            f"{data_points} data points. "
-            f"Latest close: {latest_close} {price_summary.get('currency', '')} "
-            f"(source tier: {source_tier})."
+    # Provenance comes from the PRICE FEED's own attribution, never from the
+    # company-level provider — that is what rendered "Price history available
+    # from sec_edgar" for a price series actually supplied by eodhd_price_only.
+    price = resolve_price_provenance(company_snapshot)
+    if price.available:
+        evidence_used.append(price.evidence_sentence())
+        fundamentals_clause = (
+            "Price trend analysis can be cross-referenced with the sourced "
+            f"{fundamentals.source} financial statements "
+            f"({fundamentals.source_tier})."
+            if fundamentals.available
+            else "Price trend analysis requires cross-referencing with "
+            "fundamentals (not yet sourced)."
         )
         positive_thesis_points.append(
             "Price data available — enables tracking of recent price movement. "
-            "Price trend analysis requires cross-referencing with fundamentals (not yet sourced)."
+            + fundamentals_clause
         )
         assumptions.append(
             "Price trend direction (if positive) is treated as a potential signal only. "

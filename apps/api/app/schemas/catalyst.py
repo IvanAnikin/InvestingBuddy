@@ -27,13 +27,14 @@ Source tier nuance (Phase 24):
 from __future__ import annotations
 
 import hashlib
-import re
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from enum import Enum
 
 from pydantic import BaseModel, Field
 
 from app.integrations.financial_data_provider import SourceTier
+from app.services import safety_terms
 
 # ---------------------------------------------------------------------------
 # Model-derived catalyst label tier (always T6)
@@ -132,51 +133,29 @@ class NewsProviderStatus(str, Enum):
 # Forbidden-term neutralisation for external free text
 # ---------------------------------------------------------------------------
 
-# External headlines/snippets (from news aggregators) can contain recommendation
-# language ("analyst says buy", "sell rating", "buyback"). Such text must never
-# reach a report artifact that the safety gate scans. We neutralise it here at
-# the point it is serialised into any report content. This is a safety control,
-# not detection evasion — the goal is that InvestingBuddy never surfaces
-# recommendation language, even second-hand from a third party.
-_COMPOUND_REPLACEMENTS: list[tuple[re.Pattern[str], str]] = [
-    (re.compile(r"buy[\s-]?back", re.IGNORECASE), "share repurchase"),
-    (re.compile(r"price target", re.IGNORECASE), "analyst estimate [redacted]"),
-    (re.compile(r"target price", re.IGNORECASE), "analyst estimate [redacted]"),
-    (re.compile(r"fair value", re.IGNORECASE), "valuation figure [redacted]"),
-    (re.compile(r"intrinsic value", re.IGNORECASE), "valuation figure [redacted]"),
-    (re.compile(r"upside", re.IGNORECASE), "[redacted]"),
-    (re.compile(r"downside", re.IGNORECASE), "[redacted]"),
-    (re.compile(r"under\s?valued", re.IGNORECASE), "[redacted]"),
-    (re.compile(r"over\s?valued", re.IGNORECASE), "[redacted]"),
-]
-
-# Standalone recommendation tokens neutralised on word boundaries so we do not
-# corrupt legitimate words (e.g. "shareholder" contains HOLD, "counsel" is safe).
-_TOKEN_REPLACEMENTS: list[tuple[re.Pattern[str], str]] = [
-    (re.compile(r"\bbuy(s|ing)?\b", re.IGNORECASE), "[rating redacted]"),
-    (re.compile(r"\bsell(s|ing)?\b", re.IGNORECASE), "[rating redacted]"),
-    (re.compile(r"\bhold(s|ing)?\b", re.IGNORECASE), "[rating redacted]"),
-    (re.compile(r"\bwatch(list)?\b", re.IGNORECASE), "[rating redacted]"),
-]
-
 
 def neutralize_forbidden_terms(text: str | None) -> str | None:
     """
     Neutralise recommendation/valuation language in externally-sourced text.
 
-    Guarantees the returned string contains none of the safety-gate forbidden
-    terms while preserving readability of the surrounding headline. Returns the
-    input unchanged when it is None or already clean (SEC titles, our own
-    controlled vocabulary).
+    External headlines/snippets (from news aggregators and issuer newsrooms) can
+    contain recommendation language ("analyst says buy", "sell rating"). Such
+    text must never reach a report artifact the safety gate scans. This is a
+    safety control, not detection evasion — the goal is that InvestingBuddy never
+    surfaces recommendation language, even second-hand from a third party.
+
+    Delegates to ``safety_terms.neutralize_text``, which removes EXACTLY what the
+    safety gate itself would flag. The previous local implementation used blanket
+    word-boundary regexes (``\bsell(s|ing)?\b`` etc.) and corrupted ordinary
+    finance English — a real, observed defect:
+
+        "sell-side analyst estimates" -> "[rating redacted]-side analyst estimates"
+        "XYZ Holding AG"              -> "XYZ [rating redacted] AG"
+
+    Sharing the gate's definition makes over-redaction impossible by
+    construction: a string the gate already accepts is returned unchanged.
     """
-    if not text:
-        return text
-    out = text
-    for pattern, replacement in _COMPOUND_REPLACEMENTS:
-        out = pattern.sub(replacement, out)
-    for pattern, replacement in _TOKEN_REPLACEMENTS:
-        out = pattern.sub(replacement, out)
-    return out
+    return safety_terms.neutralize_text(text)
 
 
 # ---------------------------------------------------------------------------
@@ -289,6 +268,12 @@ class CatalystEvent(BaseModel):
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     classification_explanation: str | None = None
     model_label_tier: str = MODEL_LABEL_TIER
+    # Bounded, deterministic MATERIALITY, judged separately from evidence
+    # strength: an issuer post can be fully credible (T1) and still be
+    # low-signal. decision_relevant | contextual | low_signal.
+    # See ``catalyst_classifier.classify_materiality``.
+    materiality: str = "contextual"
+    materiality_reason: str | None = None
 
     # Links
     related_filing_url: str | None = None
@@ -356,6 +341,8 @@ class CatalystEvent(BaseModel):
             "classification_explanation": neutralize_forbidden_terms(
                 self.classification_explanation
             ),
+            "materiality": self.materiality,
+            "materiality_reason": self.materiality_reason,
             "is_industry_context": self.is_industry_context,
             "is_company_specific": self.is_company_specific,
             "relevance_score": self.relevance_score,
@@ -389,6 +376,11 @@ class CatalystSummary(BaseModel):
     news_event_count: int = 0
     press_release_event_count: int = 0
     filing_event_count: int = 0
+    # Bounded materiality counts — reported ALONGSIDE the source-class counts,
+    # never summed with them (they classify the same events on a different
+    # axis, so adding them would double-count).
+    decision_relevant_count: int = 0
+    low_signal_count: int = 0
 
 
 class CatalystDiscoveryResult(BaseModel):
@@ -480,6 +472,65 @@ _REPUTABLE_NON_FILING_TIERS = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Event date normalisation (cross-source-class comparability)
+# ---------------------------------------------------------------------------
+#
+# REAL DEFECT THIS FIXES. SEC filing events carry ISO dates ("2026-08-17") while
+# issuer press-release events carry the feed's raw RFC-822 timestamp
+# ("Wed, 29 Jul 2026 21:00:00 GMT"). The aggregation step sorted the merged list
+# with a plain STRING comparison and then truncated to ``max_events``:
+#
+#     all_events.sort(key=lambda e: e.event_date or e.filing_date or "")
+#     all_events = all_events[:max_events]
+#
+# "W" > "2" for every RFC-822 string, so every press release sorted above every
+# filing. With 20 press releases and max_events=20, ALL SEC filing events were
+# silently dropped — which is why the NVDA report showed
+# ``source_classes_successful: [... sec_filings]`` (computed before truncation)
+# next to ``filing_event_count: 0`` and separately listed SEC filing events.
+# The same string was also fed to ``datetime.fromisoformat`` for the staleness
+# check, which always raised and was swallowed — so press-only coverage could
+# never be detected as stale.
+
+
+def normalize_event_date(raw: str | None) -> str | None:
+    """Return an ISO-8601 date string for any supported event-date format.
+
+    Accepts ISO ("2026-08-17", "2026-08-17T12:00:00+00:00") and RFC-822/2822
+    ("Wed, 29 Jul 2026 21:00:00 GMT") — the two formats real connectors emit.
+    Returns None when the value is absent or unparseable; the caller decides
+    what an unknown date means. Never guesses a date.
+    """
+    if not raw or not isinstance(raw, str):
+        return None
+    text = raw.strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).date().isoformat()
+    except ValueError:
+        pass
+    try:
+        parsed = parsedate_to_datetime(text)
+    except (TypeError, ValueError):
+        return None
+    return parsed.date().isoformat() if parsed else None
+
+
+def event_sort_key(event: "CatalystEvent") -> str:
+    """Comparable recency key for ONE event, across source classes.
+
+    Undated events sort last (empty string) rather than being interleaved
+    arbitrarily by raw-string comparison.
+    """
+    return (
+        normalize_event_date(event.event_date)
+        or normalize_event_date(event.filing_date)
+        or ""
+    )
+
+
 def summarize_events(
     events: list[CatalystEvent],
     lookback_days: int,
@@ -510,6 +561,10 @@ def summarize_events(
             summary.aggregator_only_count += 1
         if ev.catalyst_strength == CatalystStrength.high.value:
             summary.high_strength_count += 1
+        if ev.materiality == "decision_relevant":
+            summary.decision_relevant_count += 1
+        elif ev.materiality == "low_signal":
+            summary.low_signal_count += 1
 
         # Source-class breakdown (company-specific events only).
         net = ev.normalized_event_type
@@ -521,7 +576,9 @@ def summarize_events(
             summary.news_event_count += 1
         summary.company_specific_count += 1
 
-        ev_date = ev.event_date or ev.filing_date
+        # Normalised so an RFC-822 press date and an ISO filing date are
+        # actually comparable (raw-string comparison put every press item first).
+        ev_date = event_sort_key(ev)
         if ev_date and (latest is None or ev_date > latest):
             latest = ev_date
 

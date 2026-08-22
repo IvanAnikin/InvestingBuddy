@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from app.services import safety_terms
+
 _FORBIDDEN_RECOMMENDATION_WORDS = {
     "BUY",
     "SELL",
@@ -50,16 +52,31 @@ class BearCaseOutput:
 
 
 def _check_forbidden_content(text: str) -> list[str]:
-    """Return list of forbidden words/phrases found in text."""
+    """Return the forbidden recommendation/valuation language found in ``text``.
+
+    Routed through the SHARED ``safety_terms`` scanner. The previous
+    implementation upper-cased the text and did a bare ``in`` substring test
+    against a word set, which flagged ordinary finance English:
+
+      * "product cycles may shorten"  -> "SHORT"      (real NVDA false positive)
+      * "sell-side analyst estimates" -> "SELL"
+      * "short-term debt"             -> "SHORT"
+      * "Specialist Watchmakers"      -> "WATCH"
+
+    ``safety_terms`` is word-bounded and tier-aware: ALL-CAPS rating labels are
+    case-sensitive (so "BUY NVDA" is blocked while "buyback" passes), a rating
+    word near explicit rating-intent language is blocked in any case ("rating:
+    Hold"), and only multi-word terms of art are substring-matched. The true
+    recommendation gate is NOT weakened — only the false positives are removed.
+    """
     found: list[str] = []
-    upper = text.upper()
-    for word in _FORBIDDEN_RECOMMENDATION_WORDS:
-        if word in upper:
-            found.append(f"Forbidden recommendation word detected: {word}")
-    lower = text.lower()
-    for phrase in _FORBIDDEN_VALUATION_PHRASES:
-        if phrase in lower:
-            found.append(f"Forbidden valuation phrase detected: '{phrase}'")
+    for hit in safety_terms.scan_text(text):
+        kind = (
+            "valuation phrase"
+            if hit.tier == safety_terms.TIER_PHRASE
+            else "recommendation language"
+        )
+        found.append(f"Forbidden {kind} detected: {hit.term}")
     return found
 
 

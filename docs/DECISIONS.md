@@ -1003,3 +1003,151 @@ async discovery-council pattern rather than inventing a second mechanism:
   budgets (council retry budget, primary-document ingestion budget) are no
   longer bounded by the gateway. This ADR does **not** change any of those
   budgets — that is separate, deliberate work.
+
+---
+
+## ADR-019: ONE Canonical Post-Ingestion Evidence Inventory for the Final Report
+
+**Status:** Accepted
+**Date:** 2026-08-22
+**Context:** Product-readiness corrective slice (manual QA of NVDA final report
+`a42c9295`, discovery run `eee7b0c7`)
+
+### Context
+
+A single generated final report contained mutually contradictory statements
+about the same company at the same moment. The LLM council correctly reported
+NVDA's FY2026 SEC/XBRL statements — revenue $215,938m, net income $120,067m,
+OCF $102,718m, assets $206,800m, liabilities $49,500m, equity $157,300m — while
+other sections of that same report said:
+
+| Surface | What it said | Reality |
+|---|---|---|
+| Data Availability Summary | `fundamentals_available=true`, `available_count=0`, `available_fields=[]` | 15 available fields |
+| Financial Snapshot | "Fundamentals not available. Run with EODHD provider or add T1 filings." | Full SEC XBRL statement set |
+| Bull case | "cross-referencing with fundamentals (not yet sourced)" | Sourced |
+| Bull case evidence | "Price history available from **sec_edgar**: 251 data points" | Source list said `eodhd_price_only` |
+| Source quality | "Annual report / 10-K / 40-F — T1_primary_filing required for financials" | 10-K XBRL statements already sourced |
+| Valuation Guard | "No current market price or share price data is provided" | Report showed latest close 214.72 USD |
+| News & Catalyst | `source_classes_successful: [… sec_filings]` + `filing_event_count: 0`, while listing 4 SEC filing events | Both true statements about the same data |
+| Internal memo | "the reports were scanned or JS-gated" | Two SEC 8-K HTML docs were natively extracted |
+
+These were **not one bug**. Six independent causes were traced:
+
+1. **Key-name mismatch.** `financial_data_agent_output_to_dict` emitted
+   `available_financial_data` / `missing_financial_data`; every reader
+   (`_build_data_availability_summary`, the research memo, `scoring_engine`)
+   asked for `available_count` / `available_fields` / `missing_count` /
+   `warnings_count` and silently got the `0` / `[]` defaults. Every test
+   covering those readers passed a hand-built dict using the READER's key
+   names, so the mismatch was invisible to the suite.
+2. **EODHD-only fundamentals.** `_build_financial_snapshot` recognised only
+   `state["fundamentals_data"]` (the T5 EODHD shape). SEC XBRL statements live
+   in `company_snapshot["fundamentals_summary"]` (T2) and were ignored.
+3. **Price provenance inferred from the company provider.**
+   `price_history_summary` already carries its OWN `provider_name` /
+   `source_tier`, but the bull, risk and financial-data agents read the
+   *snapshot-level* `provider_metadata.provider_name` instead.
+4. **Unconditional gap assertions.** `source_quality_agent` always appended
+   "Annual report / 10-K / 40-F required for financials". Those false gaps flow
+   into the bear case, the risk agent, and the council's `known_gaps` — a
+   direct input to the committee chair's label. Asserting a gap that is closed
+   is what pushed an 8/8 council with regulator-backed financials to
+   `insufficient_data`.
+5. **Stale deterministic sections.** Bull/Bear/Risk/Valuation-Readiness are
+   computed at workflow time — before citations, before ingestion, before the
+   council — then rendered verbatim beside the council's better-informed
+   narrative.
+6. **Naive lexical safety scans.** `bull_case_agent` / `bear_case_agent` used
+   `text.upper()` + `in` against a word set ("product cycles may shorten" →
+   "SHORT"), and `neutralize_forbidden_terms` used blanket `\b` regexes
+   ("sell-side" → "[rating redacted]-side").
+
+### Decision
+
+Introduce **one** canonical post-ingestion evidence inventory,
+`app/services/canonical_evidence.py`, and derive every quality surface from it:
+
+- `normalize_financial_data_summary` — emits BOTH key spellings, once, at the
+  serialisation boundary and again at report-assembly entry. Fixes cause 1 for
+  all consumers simultaneously, including the scoring engine.
+- `resolve_fundamentals` — recognises all three channels (issuer primary
+  document T1 → SEC XBRL T2 → EODHD T5) at their TRUE tiers, applies the
+  project's source-priority rule (a weaker source never overwrites a stronger
+  current fact), and retains every channel in `channels` so a conflict is
+  exposed rather than silently resolved.
+- `resolve_price_provenance` — reads the price feed's own attribution first.
+- `build_evidence_channels` — reports issuer-primary-document /
+  regulator-structured-facts / regulator-filing-events / issuer-newsroom /
+  persisted-citations **separately**, because they are five different things
+  and the absence of one never implies the absence of another.
+
+Alongside it:
+
+- **Deterministic sections are REBUILT after reconciliation** (Option A of the
+  three offered). Only sections the workflow actually produced are refreshed —
+  rebuilding a section the workflow never ran would invent content and turn an
+  honest `available: false` into fabricated analysis. The original workflow
+  draft is retained in full as the legacy report for audit.
+- **A poisoned summary is never rebuilt.** If an upstream summary already
+  carries forbidden language, the original is kept so the final safety gate
+  flags it. Overwriting it with clean deterministic output would launder
+  compromised state past the gate and hide the compromise from the admin.
+- **Catalyst counts.** Event dates are normalised (SEC ISO vs press RFC-822 —
+  `"W" > "2"` for every raw string, so press releases sorted above every filing
+  and a 20-item cap dropped all four SEC filings), and truncation now reserves a
+  bounded floor per source class. The two count axes (source class, materiality)
+  are reported side by side with an explicit "do not sum these" note.
+- **Materiality is classified separately from evidence strength** from a closed
+  keyword vocabulary. A T1 issuer post is fully credible AND can be low-signal;
+  a Glassdoor CEO ranking no longer outranks an exclusive infrastructure
+  agreement. Nothing is discarded — only the ordering changes. No LLM scoring.
+- **Safety detection is unified on `safety_terms`**, which is word-bounded and
+  tier-aware, plus a shared `neutralize_text` that removes exactly what the gate
+  would flag (so `scan_text(neutralize_text(x))` is always empty and any string
+  the gate accepts is returned byte-identical). `SHORT` is added as a Tier-2
+  rating word behind a guard that excludes "short-term / short-dated /
+  short-lived / short seller / short interest". The recommendation gate is not
+  weakened: BUY NVDA / SELL the stock / rating: HOLD / we recommend SHORT /
+  price target / fair value all still block.
+- **Council calibration, not restriction.** A new `INFERENCE_STRENGTH_RULES`
+  block in every agent's system prompt requires the conclusion to match the
+  weight of the evidence (one contract ≠ durable moat; filing cadence ≠ good
+  governance; employee-approval ranking ≠ management quality). The chair's
+  sufficiency instruction is made source-type aware: regulator-backed
+  structured statements ARE primary financial evidence, and a missing issuer
+  PDF is a *narrative* gap (`requires_more_evidence`), not `insufficient_data`.
+- **A price/market-metric FLOOR in the evidence budgeter**, so the Valuation
+  Guard reasons about the real current price instead of asserting to a human
+  reader that the platform has none.
+
+### Alternatives rejected
+
+- **Patch each contradicting section individually.** That is how the report got
+  six independent truth calculations in the first place. The observable symptom
+  would go away and the next section added would reintroduce it.
+- **Delete the legacy deterministic sections (Option B/C).** They carry real
+  analysis and real audit value. Rebuilding them from reconciled inputs keeps
+  one coherent narrative without discarding capability.
+- **Change the committee label directly.** Explicitly rejected in the brief and
+  correct: the label was a *symptom* of false gap assertions. Fixing the gap
+  inputs is the real correction; `insufficient_data` remains reachable when
+  material evidence really is absent.
+- **Loosen the safety gate to stop the false positives.** The gate was already
+  correct; the offenders were two older local scanners that predated it. They
+  now delegate to it.
+
+### Consequences
+
+- Every final-report quality surface now derives from one inventory. Adding a
+  new surface means reading that inventory, not writing a seventh truth
+  calculation.
+- Reports gain an `evidence_channels` section (rendered in the admin UI) and
+  `financial_snapshot` gains per-field SEC statement datapoints carrying their
+  own `source` / `source_tier` / `period` / `form_type`.
+- `CatalystEvent` gains `materiality` / `materiality_reason`; `CatalystSummary`
+  gains `decision_relevant_count` / `low_signal_count`. Additive, no migration.
+- One new setting, `LLM_COUNCIL_EVIDENCE_PRICE_TREND_FLOOR` (default 2, bounded
+  by the existing cap).
+- No database migration. No public endpoint. No change to publication gating:
+  `publication_ready=false` and `human_review_required=true` throughout.

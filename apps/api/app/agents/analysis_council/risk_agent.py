@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from app.services.canonical_evidence import resolve_price_provenance
+
 
 @dataclass
 class RiskAgentOutput:
@@ -57,7 +59,6 @@ def run_risk_agent(
 
     identity = company_snapshot.get("company_identity", {})
     profile = company_snapshot.get("profile", {})
-    price_summary = company_snapshot.get("price_history_summary", {})
     provider_meta = company_snapshot.get("provider_metadata", {})
     is_mock = company_snapshot.get("is_mock", True)
 
@@ -66,7 +67,6 @@ def run_risk_agent(
     sector = profile.get("sector", "unknown sector")
     country = profile.get("country_domicile") or identity.get("country_domicile", "unknown")
     source_tier = provider_meta.get("source_tier", "T6_model_estimate")
-    provider_name = provider_meta.get("provider_name", "unknown")
 
     # ── Business risks ────────────────────────────────────────────────────
     # From research completeness gaps
@@ -163,12 +163,13 @@ def run_risk_agent(
     )
 
     # ── Market risks ──────────────────────────────────────────────────────
-    if price_summary.get("available"):
-        pts = price_summary.get("data_points_count", 0)
+    price = resolve_price_provenance(company_snapshot)
+    if price.available:
         market_risks.append(
-            f"Price volatility risk: price data available ({pts} data points "
-            f"from {provider_name}). Volatility, beta, and correlation to "
-            "broader market indices not yet computed."
+            f"Price volatility risk: price data available "
+            f"({price.data_points_count} data points from "
+            f"{price.provider_label}, {price.source_tier}). Volatility, beta, "
+            "and correlation to broader market indices not yet computed."
         )
     else:
         market_risks.append(

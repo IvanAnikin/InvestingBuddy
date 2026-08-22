@@ -64,6 +64,37 @@ SAFETY_RULES = (
     "never discusses)."
 )
 
+# Inference-strength calibration. Real council output over-claimed from thin
+# evidence: ONE exclusive infrastructure agreement was called evidence of a
+# "strategic moat"; a normal cadence of SEC filings was called evidence of
+# "good governance"; a Glassdoor CEO approval ranking was treated as strong
+# leadership/governance evidence. Each of those is a real, cited datapoint —
+# the defect is the STRENGTH of the conclusion drawn from it, so the fix is a
+# calibration rule, not a restriction on what may be discussed.
+INFERENCE_STRENGTH_RULES = (
+    "INFERENCE STRENGTH (match your conclusion to the weight of the evidence):\n"
+    "- State what the evidence supports, not what it is consistent with. One "
+    "contract, partnership or exclusivity arrangement supports 'current "
+    "commercial position' or 'a strategic partnership exists'. It does NOT by "
+    "itself establish a durable moat, a structural advantage, or pricing "
+    "power — those require evidence of persistence over time, switching costs, "
+    "or replicated advantage.\n"
+    "- Disclosure ACTIVITY is not governance QUALITY. A normal cadence of "
+    "regulatory filings shows the issuer meets its disclosure obligations. It "
+    "does NOT establish good corporate governance, board independence, "
+    "effective internal controls, or management quality.\n"
+    "- Sentiment/reputation data (employee-approval rankings, awards, "
+    "'best places to work' lists, media recognition) is at most a weak "
+    "sentiment SIGNAL. It does NOT establish management quality, leadership "
+    "effectiveness, governance, or execution capability.\n"
+    "- Issuer-published marketing and product-announcement posts are the "
+    "issuer's own framing. Report them as company communications, not as "
+    "independently established outcomes.\n"
+    "- When you can only support the weaker claim, make the weaker claim and "
+    "say what additional evidence would be needed for the stronger one. "
+    "Prefer 'the evidence shows X; it does not establish Y' over asserting Y."
+)
+
 # The strict JSON contract every agent must satisfy. The real clients ask the
 # model for exactly this shape; the base client repairs a single malformed
 # response before giving up.
@@ -92,6 +123,7 @@ def _base_header(agent_name: str, role: str) -> str:
         f"council (agent id: {agent_name}).\n\n"
         f"{INJECTION_GUARD}\n\n"
         f"{SAFETY_RULES}\n\n"
+        f"{INFERENCE_STRENGTH_RULES}\n\n"
         f"{JSON_CONTRACT}"
     )
 
@@ -170,8 +202,25 @@ def committee_chair_system_prompt() -> str:
         "EXACTLY ONE of these internal labels (NOT a recommendation):\n"
         "  internal_research_candidate | requires_more_evidence | "
         "insufficient_data | monitor_for_new_evidence | reject_for_now\n"
-        "Never use BUY, SELL, HOLD or WATCH. Choose insufficient_data when the "
-        "evidence is too thin to support any conclusion."
+        "Never use BUY, SELL, HOLD or WATCH.\n\n"
+        "LABEL SUFFICIENCY IS SOURCE-TYPE AWARE. Judge the evidence you were "
+        "actually given, by TYPE, not by whether one particular channel is "
+        "present:\n"
+        "- 'insufficient_data' means there is not enough MATERIAL evidence to "
+        "research the company at all — e.g. no financial statements from any "
+        "source, no identity confirmation, or only model estimates.\n"
+        "- Regulator-backed STRUCTURED financial facts (SEC/XBRL statement "
+        "data: revenue, profit, cash flow, balance sheet) ARE primary financial "
+        "evidence and are sufficient to support research. Do NOT choose "
+        "'insufficient_data' merely because no separately-extracted issuer PDF "
+        "or annual-report narrative is in the pack — that is a NARRATIVE gap, "
+        "not an absence of financial evidence. Use "
+        "'requires_more_evidence' for that.\n"
+        "- Likewise, a missing valuation multiple, a missing transcript or a "
+        "missing segment breakdown is a specific gap to name, not grounds for "
+        "'insufficient_data'.\n"
+        "Whichever label you choose, name in risks_or_gaps the specific "
+        "evidence that is genuinely absent."
     )
 
 

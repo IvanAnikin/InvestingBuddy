@@ -55,6 +55,13 @@ from app.schemas.final_report import (
     SafetyValidationResult,
 )
 from app.services import safety_terms
+from app.services.canonical_evidence import (
+    FundamentalsEvidence,
+    build_evidence_channels,
+    normalize_financial_data_summary,
+    resolve_fundamentals,
+    resolve_price_provenance,
+)
 from app.services.data_provenance import (
     derive_data_provenance,
     provenance_to_is_mock,
@@ -1375,7 +1382,32 @@ def _build_data_availability_summary(
     source_tier: str | None,
     *,
     data_provenance: str = "unknown",
+    fundamentals: FundamentalsEvidence | None = None,
 ) -> dict[str, Any]:
+    """Data-availability surface, derived from the CANONICAL evidence inventory.
+
+    Product-readiness fix. This section used to render three mutually
+    contradictory statements at once for NVDA:
+
+        fundamentals_available = true
+        available_count        = 0
+        available_fields       = []
+
+    Two causes, both closed here:
+
+    1. ``financial_data_summary`` is serialised by ``FinancialDataAgent`` with
+       the keys ``available_financial_data`` / ``missing_financial_data``, but
+       this function asked for ``available_count`` / ``available_fields`` /
+       ``missing_count`` / ``warnings_count`` and silently took the ``0`` / ``[]``
+       defaults. ``normalize_financial_data_summary`` now guarantees both
+       spellings, so the counts are the real ones.
+    2. ``fundamentals_available`` came from a workflow flag that did not know
+       about SEC/XBRL regulator-structured facts. It is now reconciled against
+       the canonical ``FundamentalsEvidence`` — a company with real regulator
+       statement facts is never reported as having none, and a bare flag can no
+       longer claim availability the inventory cannot corroborate.
+    """
+    financial_data_summary = normalize_financial_data_summary(financial_data_summary)
     tier = source_tier or "T6_model_estimate"
     # Phase 32A RC-2 — stop conflating tier==T6 with mock. A real T6-derived
     # metric is NOT mock; is_mock comes from the report-level provenance
@@ -1395,13 +1427,32 @@ def _build_data_availability_summary(
         "fields only."
     )
 
+    # Canonical reconciliation: the inventory wins over a bare workflow flag.
+    # Absent an inventory (legacy callers) the flag is used as-is.
+    resolved_fundamentals_available = (
+        fundamentals.available
+        if fundamentals is not None
+        else bool(fundamentals_available)
+    )
+    fundamentals_block: dict[str, Any] = {}
+    if fundamentals is not None:
+        fundamentals_block = {
+            "fundamentals_source": fundamentals.source,
+            "fundamentals_source_tier": fundamentals.source_tier,
+            "fundamentals_period": fundamentals.period_label,
+            "fundamentals_field_count": len(fundamentals.values),
+            "fundamentals_channels": list(fundamentals.channels),
+            "fundamentals_note": fundamentals.note(),
+        }
+
     if financial_data_summary:
         return {
             "type": "data_availability_summary",
             "source_tier": tier,
             "is_mock": is_mock,
             "data_provenance": data_provenance,
-            "fundamentals_available": fundamentals_available or False,
+            "fundamentals_available": resolved_fundamentals_available,
+            **fundamentals_block,
             "available_count": financial_data_summary.get("available_count", 0),
             "missing_financial_fields_count": financial_data_summary.get(
                 "missing_count", 0
@@ -1417,7 +1468,9 @@ def _build_data_availability_summary(
             },
             "warnings": financial_data_summary.get("warnings", []),
             "scope_note": cross_ref_note,
-            "human_review_required": review_for_mock or not fundamentals_available,
+            "human_review_required": (
+                review_for_mock or not resolved_fundamentals_available
+            ),
         }
 
     return {
@@ -1425,7 +1478,8 @@ def _build_data_availability_summary(
         "source_tier": tier,
         "is_mock": is_mock,
         "data_provenance": data_provenance,
-        "fundamentals_available": fundamentals_available or False,
+        "fundamentals_available": resolved_fundamentals_available,
+        **fundamentals_block,
         "available_count": 0,
         # Phase 32A Slice 6B (C6) — no financial_data_summary means this metric
         # was genuinely never computed. A bare 0 read as "verified complete",
@@ -1458,20 +1512,72 @@ def _build_financial_snapshot(
         section["is_mock"] = provenance_to_is_mock(_prov)
         section["retrieved_at"] = company_snapshot.get("retrieved_at")
 
-        price_history = company_snapshot.get("price_history_summary", {})
-        if price_history.get("available"):
+        # Price carries its OWN provider + tier. Reading the company-level
+        # provider here is what produced "Price history available from
+        # sec_edgar" for a series actually supplied by eodhd_price_only.
+        price = resolve_price_provenance(company_snapshot)
+        if price.available:
             section["latest_close"] = {
-                "value": price_history.get("latest_close"),
-                "currency": price_history.get("currency"),
-                "as_of": price_history.get("date_range", {}).get("end"),
+                "value": price.latest_close,
+                "currency": price.currency,
+                "as_of": price.as_of,
                 "provenance": "sourced_fact",
-                "source": "provider_price_history",
+                "source": price.provider_name or "provider_price_history",
+                "source_tier": price.source_tier,
+                "data_points_count": price.data_points_count,
             }
         else:
             section["latest_close"] = {
                 "value": None,
                 "provenance": "missing_data",
             }
+
+        # Canonical fundamentals across ALL channels. SEC/XBRL regulator-backed
+        # statement facts (T2) are REAL fundamentals and must never be reported
+        # as "not available" merely because no EODHD payload exists — that is
+        # exactly what rendered "Fundamentals not available. Run with EODHD
+        # provider or add T1 filings." beside a full FY2026 SEC statement set.
+        canonical = resolve_fundamentals(
+            company_snapshot,
+            fundamentals_data,
+            primary_facts,
+            financial_fields=_PRIMARY_FINANCIAL_FACT_FIELDS,
+        )
+
+        if canonical.source == "sec_edgar_xbrl":
+            fs = company_snapshot.get("fundamentals_summary") or {}
+
+            def _sec_dp(key: str, unit: str | None = None) -> dict:
+                val = fs.get(key)
+                return {
+                    "value": val,
+                    "unit": unit,
+                    "provenance": "sourced_fact" if val is not None else "missing_data",
+                    "source_tier": canonical.source_tier,
+                    "source": "sec_edgar_xbrl",
+                    "period": canonical.period_label,
+                    "form_type": canonical.form_type,
+                    "human_review_required": val is None,
+                }
+
+            for _key, _unit in (
+                ("revenue_usd_m", "USD_m"),
+                ("gross_profit_usd_m", "USD_m"),
+                ("operating_income_usd_m", "USD_m"),
+                ("net_income_usd_m", "USD_m"),
+                ("operating_cash_flow_usd_m", "USD_m"),
+                ("capital_expenditures_usd_m", "USD_m"),
+                ("free_cash_flow_usd_m", "USD_m"),
+                ("total_assets_usd_m", "USD_m"),
+                ("total_liabilities_usd_m", "USD_m"),
+                ("shareholders_equity_usd_m", "USD_m"),
+                ("cash_and_equivalents_usd_m", "USD_m"),
+                ("total_debt_usd_m", "USD_m"),
+                ("eps_diluted", None),
+                ("shares_outstanding_mln", "millions"),
+            ):
+                if fs.get(_key) is not None:
+                    section[_key] = _sec_dp(_key, _unit)
 
         if fundamentals_data:
             highlights = fundamentals_data.get("highlights", {})
@@ -1491,18 +1597,20 @@ def _build_financial_snapshot(
             section["ebitda_ttm_usd_m"] = _fund_dp("ebitda", "USD_m")
             section["revenue_ttm_usd_m"] = _fund_dp("revenue_ttm", "USD_m")
             section["pe_ratio"] = _fund_dp("pe_ratio")
-            section["fundamentals_note"] = {
-                "value": (
-                    "Fundamentals from EODHD (T5 aggregator). "
-                    "Must be validated against T1 filings before use."
-                ),
-                "provenance": "assumption",
-            }
-        else:
-            section["fundamentals_note"] = {
-                "value": "Fundamentals not available. Run with EODHD provider or add T1 filings.",
-                "provenance": "missing_data",
-            }
+        # ONE honest note derived from the canonical inventory — never a
+        # channel-specific "not available" that contradicts another channel.
+        # NOTE: the keys are deliberately ``fundamentals_source*`` rather than
+        # ``source``/``source_tier`` — this is a provenance NOTE about where the
+        # statements came from, not a sourced datapoint, and must not be picked
+        # up by readers that treat ``source_tier == "T1_primary_filing"`` as
+        # "this is a primary-filing datapoint".
+        section["fundamentals_note"] = {
+            "value": canonical.note(),
+            "provenance": "sourced_fact" if canonical.available else "missing_data",
+            "fundamentals_source": canonical.source,
+            "fundamentals_source_tier": canonical.source_tier,
+            "fundamentals_channels": list(canonical.channels),
+        }
     else:
         section["note"] = {
             "value": "Company snapshot not available. Run company analysis workflow first.",
@@ -2301,6 +2409,99 @@ def _patch_t1_t2_checklist_item(
         return
 
 
+def _rebuild_deterministic_sections(
+    *,
+    company_snapshot: dict[str, Any],
+    financial_data_summary: dict[str, Any],
+    source_quality_summary: dict[str, Any],
+    research_completeness_summary: dict[str, Any],
+    scorecard: Scorecard | None,
+    rebuild: frozenset[str],
+) -> dict[str, Any]:
+    """Re-run the deterministic council agents against the RECONCILED state.
+
+    The Phase-9 Bull / Bear / Risk / Valuation-Guard agents run at workflow
+    time, long before citations, primary-document ingestion or the LLM council.
+    Rendering their pre-ingestion output verbatim in the final report is what
+    produced the observed contradictions ("fundamentals not yet sourced" beside
+    real SEC statement facts; "Price history available from sec_edgar" for an
+    EODHD price series).
+
+    Re-running them here — same agents, same deterministic logic, now with the
+    canonical (key-normalised, post-reconciliation) inputs — gives the reader
+    ONE coherent current narrative. Returns only the section keys it rebuilt so
+    the caller can ``update()`` the report content.
+    """
+    from app.agents.analysis_council.bear_case_agent import (
+        bear_case_output_to_dict,
+        run_bear_case_agent,
+    )
+    from app.agents.analysis_council.bull_case_agent import (
+        bull_case_output_to_dict,
+        run_bull_case_agent,
+    )
+    from app.agents.analysis_council.risk_agent import (
+        risk_agent_output_to_dict,
+        run_risk_agent,
+    )
+    from app.agents.analysis_council.valuation_guard_agent import (
+        run_valuation_guard_agent,
+        valuation_guard_output_to_dict,
+    )
+
+    if not rebuild:
+        return {}
+
+    # The bear case consumes the bull case, so both are computed whenever
+    # either is being refreshed — only the requested keys are returned.
+    bull_dict = bull_case_output_to_dict(
+        run_bull_case_agent(
+            company_snapshot,
+            financial_data_summary,
+            source_quality_summary,
+            research_completeness_summary,
+        )
+    )
+    bear_dict = bear_case_output_to_dict(
+        run_bear_case_agent(
+            company_snapshot,
+            financial_data_summary,
+            source_quality_summary,
+            research_completeness_summary,
+            bull_case_summary=bull_dict,
+        )
+    )
+
+    out: dict[str, Any] = {}
+    if "bull_case" in rebuild:
+        out["bull_case"] = _build_bull_case(bull_dict)
+    if "bear_case" in rebuild:
+        out["bear_case"] = _build_bear_case(bear_dict)
+    if "risk_analysis" in rebuild:
+        out["risk_analysis"] = _build_risk_analysis(
+            risk_agent_output_to_dict(
+                run_risk_agent(
+                    company_snapshot,
+                    financial_data_summary,
+                    source_quality_summary,
+                    research_completeness_summary,
+                )
+            )
+        )
+    if "valuation_readiness" in rebuild:
+        out["valuation_readiness"] = _build_valuation_readiness(
+            valuation_guard_output_to_dict(
+                run_valuation_guard_agent(
+                    company_snapshot,
+                    financial_data_summary,
+                    source_quality_summary,
+                )
+            ),
+            scorecard,
+        )
+    return out
+
+
 def _build_source_citation_appendix(
     sources: list[Source],
     citations: list[Citation],
@@ -2415,10 +2616,36 @@ def _build_news_catalyst_discovery(
             "source_url": e.get("source_url"),
             "source_url_quality": e.get("source_url_quality"),
             "media_url": e.get("media_url"),
+            # Bounded materiality, judged separately from evidence strength.
+            "materiality": e.get("materiality", "contextual"),
+            "materiality_reason": e.get("materiality_reason"),
         }
 
     events = catalyst_discovery.get("events", []) or []
     filing_events = catalyst_discovery.get("filing_events", []) or []
+
+    # Order by MATERIALITY first, then real recency. An issuer newsroom mixes
+    # strategic events with recognition/marketing posts; without this the
+    # reviewer's first five rows were a Glassdoor CEO ranking and four GeForce
+    # NOW posts. Nothing is dropped — only the order changes.
+    from app.schemas.catalyst import normalize_event_date
+    from app.services.catalyst_classifier import MATERIALITY_RANK
+
+    def _materiality_order(e: dict[str, Any]) -> tuple[int, str]:
+        rank = MATERIALITY_RANK.get(str(e.get("materiality") or "contextual"), 1)
+        date_key = (
+            normalize_event_date(e.get("event_date"))
+            or normalize_event_date(e.get("filing_date"))
+            or ""
+        )
+        # Negated recency is not expressible on a str, so sort descending by
+        # date within each materiality band using a two-pass sort.
+        return (rank, date_key)
+
+    events = sorted(
+        sorted(events, key=lambda e: _materiality_order(e)[1], reverse=True),
+        key=lambda e: _materiality_order(e)[0],
+    )
     industry_events = catalyst_discovery.get("industry_events", []) or []
     company_sources = catalyst_discovery.get("company_sources") or {}
 
@@ -2480,9 +2707,24 @@ def _build_news_catalyst_discovery(
                 ),
                 "aggregator_only_count": summary.get("aggregator_only_count", 0),
                 "high_strength_count": summary.get("high_strength_count", 0),
+                # Materiality counts classify the SAME events on a different
+                # axis from the source-class counts above. They are reported
+                # side by side and must NEVER be summed with them.
+                "decision_relevant_count": summary.get("decision_relevant_count", 0),
+                "low_signal_count": summary.get("low_signal_count", 0),
                 "latest_event_date": summary.get("latest_event_date"),
             },
             "provenance": "model_interpretation",
+            "counts_note": (
+                "Two independent axes are reported. SOURCE CLASS "
+                "(filing_event_count / press_release_event_count / "
+                "news_event_count) partitions the same events exactly once and "
+                "sums to total_events. MATERIALITY (decision_relevant_count / "
+                "low_signal_count) re-classifies those same events by decision "
+                "relevance. Do not add the two axes together — that would "
+                "double-count. ``sec_filing_events`` below lists the filing "
+                "events in full and is consistent with filing_event_count."
+            ),
         },
         "company_sources": {
             "value": {
@@ -2923,10 +3165,75 @@ def _document_gap_cause_note(gap_rows: list[Any]) -> str | None:
     return None
 
 
-def _legacy_scan_gap_note(
+# A failure code that genuinely means "a document was located but its text could
+# not be read". ONLY these justify the scanned/JS-gated framing.
+_UNREADABLE_DOCUMENT_FAILURE_CODES: frozenset[str] = frozenset(
+    {
+        "scanned_no_text",
+        "encrypted_pdf",
+        "password_protected_pdf",
+        "malformed_pdf",
+        "empty_extraction",
+        "not_a_pdf",
+    }
+)
+
+
+def _document_gap_state_note(
     council_result: Any, doc_rows: list[dict[str, Any]], *, prefix: str = "are"
 ) -> str:
-    return f"the reports {prefix} scanned or JS-gated {_ocr_status_note(council_result, doc_rows)}"
+    """The REAL reason no issuer document text backs this report.
+
+    Product-readiness fix. This used to return the single hard-coded sentence
+    "the reports {are|were} scanned or JS-gated (…)" for EVERY zero-fact case,
+    regardless of what actually happened. For NVDA that was provably false: the
+    ingestion pipeline discovered and NATIVELY EXTRACTED two SEC 8-K HTML
+    documents (``status="extracted"``, ``extraction_method="html"``) — they
+    simply carried no parsable financial facts, because an 8-K exhibit is not a
+    financial-statement document. Telling a human reviewer the issuer's reports
+    were "scanned or JS-gated" in that situation is a fabricated diagnosis.
+
+    The cause is now read from the real per-document ingestion states. The
+    scanned/JS-gated wording is used ONLY when a document actually failed with a
+    code that means its text could not be read.
+    """
+    artifacts = list(getattr(council_result, "primary_document_artifacts", None) or [])
+
+    ocr_note = _ocr_status_note(council_result, doc_rows)
+
+    if not artifacts:
+        return f"no issuer document candidate was discovered {ocr_note}"
+
+    statuses = {str(getattr(a, "status", "") or "") for a in artifacts}
+    failure_codes = {
+        str(getattr(a, "failure_code", "") or "")
+        for a in artifacts
+        if getattr(a, "failure_code", None)
+    }
+
+    if "extracted" in statuses:
+        return (
+            f"{sum(1 for a in artifacts if getattr(a, 'status', None) == 'extracted')} "
+            "issuer/filing document(s) WERE fetched and extracted successfully, "
+            "but no financial fact could be parsed from them — the extracted "
+            "documents do not contain the financial-statement content this "
+            f"report needs (they are not scanned and not JS-gated) {ocr_note}"
+        )
+
+    unreadable = failure_codes & _UNREADABLE_DOCUMENT_FAILURE_CODES
+    if unreadable:
+        return (
+            "a document was located but its text could not be read "
+            f"({', '.join(sorted(unreadable))}) {ocr_note}"
+        )
+
+    if failure_codes:
+        return (
+            "the issuer document(s) could not be ingested "
+            f"({', '.join(sorted(failure_codes))}) {ocr_note}"
+        )
+
+    return f"a document candidate was discovered but no text was extracted {ocr_note}"
 
 
 def _memo_why_surfaced_from_lineage(discovery_lineage: dict[str, Any]) -> dict[str, Any]:
@@ -3261,7 +3568,7 @@ def _build_research_memo(
                 "provenance": "missing_data",
             }
     elif ref_rows:
-        doc_gap_cause = _document_gap_cause_note(gap_rows) or _legacy_scan_gap_note(
+        doc_gap_cause = _document_gap_cause_note(gap_rows) or _document_gap_state_note(
             council_result, doc_rows
         )
         primary_evidence_summary = {
@@ -3300,7 +3607,7 @@ def _build_research_memo(
                 "provenance": "missing_data",
             }
     else:
-        doc_gap_cause = _document_gap_cause_note(gap_rows) or _legacy_scan_gap_note(
+        doc_gap_cause = _document_gap_cause_note(gap_rows) or _document_gap_state_note(
             council_result, doc_rows, prefix="were"
         )
         primary_evidence_summary = {
@@ -3699,6 +4006,11 @@ def _assemble_final_report_content(
     Phase 24 adds a ``news_catalyst_discovery`` section. It is additive and does
     not affect the original required-section set.
     """
+    # Canonical key normalisation ONCE, at the entry point, so every section
+    # below (missing information, valuation readiness, bull/bear, research memo)
+    # reads the same real counts instead of a silent 0/[] default.
+    financial_data_summary = normalize_financial_data_summary(financial_data_summary)
+
     company_name = None
     ticker = None
 
@@ -3738,6 +4050,11 @@ def _assemble_final_report_content(
     report_provenance = _derive_report_provenance(company_snapshot, scorecard)
     is_mock = report_provenance == "mock"
 
+    # ONE canonical fundamentals inventory for EVERY quality surface below, so
+    # the data-availability summary and the financial snapshot can no longer
+    # disagree about whether this company has financial statements.
+    canonical_fundamentals = resolve_fundamentals(company_snapshot, fundamentals_data)
+
     return {
         "admin_disclaimer": _build_admin_disclaimer(),
         "executive_summary": _build_executive_summary(
@@ -3757,6 +4074,7 @@ def _assemble_final_report_content(
             fundamentals_available,
             source_tier,
             data_provenance=report_provenance,
+            fundamentals=canonical_fundamentals,
         ),
         "financial_snapshot": _build_financial_snapshot(
             company_snapshot, fundamentals_data
@@ -4899,6 +5217,85 @@ class FinalReportGeneratorService:
             report_content["company_identity"] = _build_company_identity(
                 company_snapshot, company_record, primary_facts=primary_facts
             )
+
+        # ------------------------------------------------------------------
+        # Canonical evidence-state reconciliation (product readiness)
+        # ------------------------------------------------------------------
+        # The deterministic Bull / Bear / Risk / Valuation-Readiness sections are
+        # computed at WORKFLOW time — before citations exist, before document
+        # ingestion, and before the council runs. They were then rendered
+        # verbatim beside the council's own, much better-informed narrative, so
+        # one report simultaneously said "fundamentals not yet sourced" (stale
+        # deterministic state) and quoted FY2026 SEC revenue/net income (current
+        # council state). ``source_quality_review`` was already reconciled this
+        # way above (Problem D); the same treatment is now applied to the rest,
+        # so the human-facing report carries ONE current research narrative.
+        #
+        # This is a REBUILD from the same deterministic agents, not new
+        # analysis: identical inputs except that they are now the reconciled,
+        # post-ingestion ones. Nothing is deleted — the original workflow draft
+        # is retained in full as the legacy report (``legacy_draft_report_id``)
+        # for audit.
+        canonical_fds = normalize_financial_data_summary(financial_data_summary) or {}
+        if company_snapshot:
+            try:
+                report_content.update(
+                    _rebuild_deterministic_sections(
+                        company_snapshot=company_snapshot,
+                        financial_data_summary=canonical_fds,
+                        source_quality_summary=source_quality_summary or {},
+                        research_completeness_summary=(
+                            research_completeness_summary or {}
+                        ),
+                        scorecard=scorecard,
+                        # Only REFRESH sections the workflow actually produced.
+                        # Rebuilding a section the workflow never ran would
+                        # invent content and turn an honest "available: false"
+                        # into a fabricated analysis.
+                        #
+                        # SAFETY: a summary that already carries forbidden
+                        # language is NEVER rebuilt. Overwriting it with clean
+                        # deterministic output would launder poisoned upstream
+                        # state past the final safety gate and hide from the
+                        # admin that the state was compromised. The original is
+                        # kept so the gate flags it.
+                        rebuild=frozenset(
+                            name
+                            for name, summary in (
+                                ("bull_case", bull_case_summary),
+                                ("bear_case", bear_case_summary),
+                                ("risk_analysis", risk_summary),
+                                ("valuation_readiness", valuation_guard_summary),
+                            )
+                            if summary and not safety_terms.scan_value(summary)
+                        ),
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001 — never fail the report on this
+                logger.warning(
+                    "deterministic_section_rebuild_failed error=%s",
+                    type(exc).__name__,
+                )
+
+        # Explicit evidence-CHANNEL inventory. "Issuer primary document",
+        # "regulator structured facts", "regulator filing events", "issuer
+        # newsroom" and "persisted citations" are five DIFFERENT things; the
+        # report used to conflate them and claim "primary filings required" for
+        # a company whose SEC XBRL statements were fully sourced.
+        report_content["evidence_channels"] = build_evidence_channels(
+            fundamentals=resolve_fundamentals(
+                company_snapshot,
+                fundamentals_data,
+                primary_facts,
+                financial_fields=_PRIMARY_FINANCIAL_FACT_FIELDS,
+            ),
+            primary_document_counts=_primary_document_state_counts(council_result),
+            catalyst_summary=(catalyst_discovery or {}).get("summary"),
+            citation_count=len(citations),
+            council_evidence_count=int(
+                getattr(council_result, "evidence_item_count", 0) or 0
+            ),
+        )
 
         # Phase 31 hotfix: when the connector layer located verified PRIMARY-SOURCE
         # REFERENCES (metadata-only issuer IR / filing-index / regulator venues) but
