@@ -617,3 +617,109 @@ def test_evidence_channels_carry_no_forbidden_language() -> None:
         catalyst_summary={"filing_event_count": 4},
     )
     assert not safety_terms.scan_value(channels)
+
+
+# =========================================================================== #
+# I. Post-council reconciliation for ISSUER-DOCUMENT issuers (CFR / MC)       #
+# =========================================================================== #
+#
+# STAGING REGRESSION, 2026-08-22. The fresh CFR (13e4ee85) and MC (9e5c7078)
+# final reports exposed two defects that the NVDA (SEC/XBRL) path does not hit,
+# because a non-US issuer has NO SEC XBRL — its financials arrive only as
+# issuer-document facts, which exist ONLY AFTER the council has run:
+#
+#   1. `data_availability_summary` is assembled BEFORE the council, so its
+#      canonical inventory had no issuer facts and reported
+#      `fundamentals_available: false` — beside a financial snapshot whose own
+#      note said "Fundamentals sourced from issuer_primary_document
+#      (T1_primary_filing)". A NEW self-contradiction, introduced by the
+#      canonical-evidence slice itself.
+#   2. `_recompute_fresh_source_quality_summary` did not propagate
+#      `missing_primary_sources`, so the stale pre-ingestion "Annual report /
+#      10-K / 40-F — T1_primary_filing required for financials" survived into a
+#      report that then rendered three T1 facts read from that very report.
+
+
+def _cfr_snapshot() -> dict[str, Any]:
+    """A non-US issuer: real price + identity, but NO SEC XBRL fundamentals."""
+    return {
+        "is_mock": False,
+        "source_tier": "T5_api_aggregator",
+        "company_identity": {
+            "ticker": "CFR",
+            "legal_name": "Compagnie Financiere Richemont SA",
+            "exchange": "SW",
+            "country_domicile": "CH",
+        },
+        "profile": {"sector": "Consumer Cyclical", "reporting_currency": "EUR"},
+        "provider_metadata": {
+            "provider_name": "free_real",
+            "source_tier": "T5_api_aggregator",
+        },
+        "price_history_summary": {
+            "available": True,
+            "data_points_count": 250,
+            "latest_close": 145.2,
+            "currency": "CHF",
+            "provider_name": "stooq",
+            "source_tier": "T5_api_aggregator",
+            "date_range": {"end": "2026-08-21"},
+        },
+        "missing_fields": [],
+    }
+
+
+def _issuer_facts() -> list[dict[str, Any]]:
+    return [
+        {"field": "revenue", "value": "sales reached EUR 22.4 billion",
+         "confidence": "high"},
+        {"field": "net_income", "value": "profit for the year amounted to EUR 3 484 million",
+         "confidence": "high"},
+    ]
+
+
+def test_issuer_document_facts_make_fundamentals_available() -> None:
+    ev = resolve_fundamentals(
+        _cfr_snapshot(), None, _issuer_facts(),
+        financial_fields=frozenset({"revenue", "net_income"}),
+    )
+    assert ev.available is True
+    assert ev.source == "issuer_primary_document"
+    assert ev.source_tier == "T1_primary_filing"
+
+
+def test_availability_summary_agrees_with_the_snapshot_note() -> None:
+    """The exact CFR/MC contradiction: available=False beside a note saying the
+    fundamentals came from the issuer's own primary document."""
+    facts = _issuer_facts()
+    fundamentals = resolve_fundamentals(
+        _cfr_snapshot(), None, facts,
+        financial_fields=frozenset({"revenue", "net_income"}),
+    )
+    das = _build_data_availability_summary(
+        {"available_financial_data": ["a"], "missing_financial_data": [], "warnings": []},
+        False,  # the workflow flag, computed before ingestion
+        "T5_api_aggregator",
+        fundamentals=fundamentals,
+    )
+    snapshot_note = _build_financial_snapshot(
+        _cfr_snapshot(), None, primary_facts=facts
+    )["fundamentals_note"]
+
+    assert das["fundamentals_available"] is True
+    assert das["fundamentals_source"] == snapshot_note["fundamentals_source"]
+    assert das["fundamentals_source_tier"] == snapshot_note["fundamentals_source_tier"]
+
+
+def test_source_quality_gap_narrows_once_the_issuer_report_has_been_read() -> None:
+    snap = _cfr_snapshot()
+    before = " ".join(run_source_quality_agent(snap).missing_primary_sources)
+    after = " ".join(
+        run_source_quality_agent(snap, None, _issuer_facts()).missing_primary_sources
+    )
+    # Genuinely open before the document is read...
+    assert "T1_primary_filing required for financials" in before
+    # ...and precisely narrowed to the NARRATIVE gap once it has been.
+    assert "T1_primary_filing required for financials" not in after
+    assert "NARRATIVE" in after
+    assert "issuer_primary_document" in after
