@@ -1505,26 +1505,26 @@ def get_analysis_job_envelope(
 ) -> dict[str, Any] | None:
     """Return the candidate's analysis-job envelope, or None if none has run.
 
-    A candidate analysed BEFORE this async migration has no envelope but may
-    already carry ``analysis_report_id``. That legacy state is normalised into a
-    synthetic ``completed`` envelope so the polling UI renders it instead of
-    offering to re-run an analysis that already happened.
+    ONLY an explicitly-stored envelope counts as a job.
+
+    A pre-existing ``analysis_report_id`` must NEVER be read as "a full-analysis
+    job already completed". The DISCOVERY pipeline itself sets that column: the
+    signal extractor runs the deterministic company-analysis workflow for every
+    candidate and links the Phase-9 draft it produces. Treating that as a
+    finished job made "Run Full Analysis" short-circuit on every freshly
+    discovered candidate — HTTP 202 in 0.3s with ``status=completed`` and no LLM
+    council run at all (caught on staging, 2026-08-22, candidate
+    ``3c4c9bc8`` linked to discovery-time draft ``b64d800b``).
+
+    Returning None here is also the honest answer for a candidate analysed
+    before this async migration: no JOB has run. The UI still renders the
+    existing report link — ``GET /candidates/{id}`` already exposes
+    ``analysis_report_id`` and ``latest_report`` independently of the job.
     """
     raw = candidate.raw_signal_json or {}
     stored = raw.get(ANALYSIS_JOB_STORAGE_KEY)
     if isinstance(stored, dict) and "status" in stored:
         return stored
-    if candidate.analysis_report_id is not None:
-        return _new_analysis_job_envelope(
-            status="completed",
-            completed_at=(
-                candidate.updated_at.isoformat() if candidate.updated_at else None
-            ),
-            analysis_report_id=str(candidate.analysis_report_id),
-            agent_run_id=(
-                str(candidate.agent_run_id) if candidate.agent_run_id else None
-            ),
-        )
     return None
 
 

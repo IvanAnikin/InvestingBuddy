@@ -2217,11 +2217,19 @@ pending → running → completed | completed_with_warnings | failed
 
 **Storage.** The envelope lives under the candidate's existing
 `raw_signal_json["analysis_job"]` blob — additive key, **no DB migration**, the
-same technique the discovery council uses on `DiscoveryRun.config_json`. A
-candidate analysed *before* this change has no envelope but may carry
-`analysis_report_id`; that legacy state is normalised into a synthetic
-`completed` envelope so the UI never offers to re-run an analysis that already
-happened.
+same technique the discovery council uses on `DiscoveryRun.config_json`.
+
+**ONLY an explicitly-stored envelope counts as a job.** A pre-existing
+`analysis_report_id` is *not* evidence that a full-analysis job ran: the
+**discovery pipeline itself** sets that column — its signal extractor runs the
+deterministic company-analysis workflow for every candidate and links the
+Phase-9 draft it produces. Reading it as a finished job made "Run Full Analysis"
+short-circuit on every freshly discovered candidate (HTTP 202 in 0.3s,
+`status=completed`, no LLM council run — caught on staging 2026-08-22). A
+candidate with no stored envelope therefore returns `404` from
+`GET /analysis-job`; the UI still renders its existing report link because
+`GET /candidates/{id}` exposes `analysis_report_id` and `latest_report`
+independently of the job.
 
 **Lineage.** The job envelope resolves the report generated for **that
 candidate** — `analysis_report_id` (the final report), `legacy_draft_report_id`
