@@ -278,10 +278,13 @@ def test_config_defaults_present_and_off() -> None:
     assert app_settings.llm_council_max_retries == 2
     assert app_settings.llm_council_critical_max_retries == 3
     assert app_settings.llm_council_retry_base_backoff_seconds == 1.0
-    assert app_settings.llm_council_retry_max_backoff_seconds == 20.0
-    assert app_settings.llm_council_retry_max_retry_after_seconds == 30.0
-    assert app_settings.llm_council_total_budget_seconds == 150.0
-    assert app_settings.llm_council_critical_reserve_seconds == 45.0
+    # Phase 32A TPM slice: async-era budgets. The old 20/30/150/45 values were
+    # sized for the removed synchronous ~230s-gateway constraint; the council
+    # now runs in an async job and must span provider TPM refill windows.
+    assert app_settings.llm_council_retry_max_backoff_seconds == 60.0
+    assert app_settings.llm_council_retry_max_retry_after_seconds == 90.0
+    assert app_settings.llm_council_total_budget_seconds == 600.0
+    assert app_settings.llm_council_critical_reserve_seconds == 180.0
 
 
 # ===========================================================================

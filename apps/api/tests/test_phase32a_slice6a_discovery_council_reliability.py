@@ -227,18 +227,18 @@ def test_config_defaults_present_and_off() -> None:
     assert app_settings.llm_discovery_council_retry_max_retries == 2
     assert app_settings.llm_discovery_council_retry_critical_max_retries == 3
     assert app_settings.llm_discovery_council_retry_base_backoff_seconds == 1.0
-    assert app_settings.llm_discovery_council_retry_max_backoff_seconds == 20.0
-    assert app_settings.llm_discovery_council_retry_max_retry_after_seconds == 30.0
-    # Materially higher than the company council's 150s/45s: the discovery
-    # council is an async background job, not bound by the inline gateway.
+    # Phase 32A TPM slice: backoff/retry-after caps raised in lockstep with the
+    # company council so an honored Azure retry-after can span a TPM window.
+    assert app_settings.llm_discovery_council_retry_max_backoff_seconds == 60.0
+    assert app_settings.llm_discovery_council_retry_max_retry_after_seconds == 90.0
     assert app_settings.llm_discovery_council_retry_total_budget_seconds == 300.0
     assert app_settings.llm_discovery_council_retry_critical_reserve_seconds == 60.0
-    assert app_settings.llm_discovery_council_retry_total_budget_seconds > (
-        app_settings.llm_council_total_budget_seconds
-    )
-    assert app_settings.llm_discovery_council_retry_critical_reserve_seconds > (
-        app_settings.llm_council_critical_reserve_seconds
-    )
+    # Since the TPM slice BOTH councils are async jobs; the company council's
+    # budget is now the larger one (it must span multiple TPM refill windows),
+    # so the old "discovery > company" inversion no longer holds. Assert only
+    # that both are strictly bounded and async-era sized.
+    assert app_settings.llm_discovery_council_retry_total_budget_seconds >= 300.0
+    assert app_settings.llm_council_total_budget_seconds >= 600.0
 
 
 def test_critical_and_reserved_sets() -> None:

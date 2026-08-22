@@ -1151,3 +1151,98 @@ Alongside it:
   by the existing cap).
 - No database migration. No public endpoint. No change to publication gating:
   `publication_ready=false` and `human_review_required=true` throughout.
+
+---
+
+## ADR-020: TPM-Aware, Async-Era LLM Councils — Provider Token Pacing, Chair Reserve, Deterministic Chair-Input Compaction, and Failure-vs-Judgement Semantics (Phase 32A TPM slice)
+
+**Date:** 2026-08-22
+**Status:** Accepted
+
+### Context
+
+The staging Azure OpenAI deployment (`gpt-4.1-mini`, GlobalStandard capacity 10
+≈ 10k tokens/minute) cannot absorb a full 8-agent council (~48k tokens) fired
+back-to-back. The committee chair runs last and is the largest request
+(evidence pack + all prior agent summaries), so it repeatedly failed with
+`LLMRateLimitError` — reproduced 3x live. Its deterministic fallback then wrote
+`committee_label="insufficient_data"`, which downstream surfaces could not
+distinguish from an evidence-based chair judgement.
+
+Separately, the company council's retry budgets (150s total / 45s reserve /
+30s retry-after cap / 20s backoff cap — ADR-013) were sized for the removed
+constraint that the council ran inline in an HTTP request under the ~230s Azure
+gateway timeout. Since ADR-018 the full analysis is an async job, so those
+budgets encoded a dead constraint: a ~48k-token council against a 10k-TPM
+deployment needs ≥5 minutes of refill windows, and the 30s retry-after cap
+guaranteed a clamped retry fired back into the same exhausted window.
+
+### Decision
+
+1. **Async-era budgets (company council):** total 150→600s, critical reserve
+   45→180s, retry-after cap 30→90s, backoff cap 20→60s. Discovery/field-review
+   retry-after + backoff caps raised in lockstep (their totals were already
+   async-sized). All still strictly bounded; jobs always terminate.
+2. **One shared token-pacing primitive** (`app/services/llm/token_pacer.py`),
+   used by ALL THREE councils (mirroring how `retry_engine` is the one retry
+   primitive): a process-local sliding-window tokens-per-minute pacer keyed by
+   (provider, deployment) — so concurrent councils share one window — with an
+   explicit chair token reserve non-chair agents cannot consume. Pacing is
+   ADVISORY: after a bounded wait the attempt always proceeds (the provider
+   429 + bounded retries are the correctness backstop), so imperfect token
+   estimates can never wedge a council or skip an agent. Disabled at the
+   default `LLM_COUNCIL_TPM_CAPACITY=0`.
+3. **Deterministic chair-input compaction** (`LLM_COUNCIL_CHAIR_PRIOR_SUMMARY_
+   MAX_CHARS`, default 0 = off): each completed agent's line in the chair
+   prompt keeps a word-boundary-truncated summary PLUS deterministic extracts
+   of its structured fields (cited evidence ids, top risks, unsupported-claim
+   count), and failed agents are named. Extraction only — never an LLM
+   re-summarization, never a new claim, dissent never dropped.
+4. **Failure-vs-judgement semantics:** every council result now records
+   `chair_synthesis_basis` (`"llm_chair"` = evidence-based, possibly after
+   retries; `"deterministic_fallback"` = the label is a failure default),
+   `chair_attempts`, and `chair_error_type` (provider error class name only).
+   Persisted into the council report payload (`committee_label_basis`),
+   metadata, the final-report summary schema, and the research memo's
+   council-disagreement section. `insufficient_data` can no longer masquerade
+   as a judgement.
+5. **Token observability:** clients capture real provider usage
+   (`usage_metadata`, falling back to a ~4-chars/token estimate marked
+   `estimated`); every `*_agent_completed/failed` event carries
+   prompt/completion/total tokens + retry-after; every council emits a
+   `*_run_summary` / completed event with totals, 429 count, retries, paced
+   wait, chair attempts and basis. Counts only — never prompts, completions,
+   or credentials.
+6. **Coherent stale threshold:** the analysis-job abandoned threshold is now
+   `max(ANALYSIS_JOB_STALE_AFTER_MINUTES, derived council+pacing+ingestion
+   worst case + margin)` (`market_discovery_service.analysis_job_stale_after_
+   minutes()`), so raising a council budget can never mark a legitimately
+   long-running job stale mid-council.
+
+### Alternatives considered
+
+- **Only raise Azure capacity.** Near-free (GlobalStandard quota is billed per
+  token) and recommended IN ADDITION, but insufficient alone: budgets encoded
+  a dead constraint, concurrency recreates starvation at any fixed capacity,
+  and the fallback-labeling gap is a correctness bug regardless of quota.
+- **A durable queue / distributed scheduler.** Rejected for this slice —
+  process-local pacing matches the current single-instance BackgroundTasks
+  architecture; Service Bus belongs to the scale roadmap.
+- **Porting the field-review council onto `retry_engine.run_with_retries`.**
+  Deferred: it shares the new pacing/usage primitives and the budget/semantics
+  changes, but its (pre-existing, engine-mirroring) retry loop was left
+  untouched to avoid destabilizing a validated council in the same PR.
+
+### Consequences
+
+- New settings: `LLM_COUNCIL_TPM_CAPACITY`, `LLM_COUNCIL_CHAIR_TOKEN_RESERVE`,
+  `LLM_COUNCIL_PACING_MAX_WAIT_SECONDS`, `LLM_COUNCIL_INITIAL_PASS_DELAY_
+  SECONDS`, `LLM_COUNCIL_CHAIR_PRIOR_SUMMARY_MAX_CHARS`,
+  `ANALYSIS_JOB_STALE_AFTER_MINUTES`; changed defaults for the four company-
+  council budget knobs + the two other councils' backoff/retry-after caps.
+  Pacing + compaction are OFF by default — a plain deploy changes only budget
+  ceilings and additive payload keys.
+- Additive payload keys (`committee_label_basis`, `chair_attempts`,
+  `chair_error_type`, `token_usage`) on all three councils' persisted outputs.
+- No database migration (head stays 017). No publication-gating change:
+  `publication_ready=false`, `human_review_required=true` throughout.

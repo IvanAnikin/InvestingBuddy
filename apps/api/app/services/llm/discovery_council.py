@@ -34,6 +34,7 @@ from app.services.llm import retry_engine
 from app.services.llm.client import (
     LLMClient,
     LLMError,
+    LLMRateLimitError,
     get_llm_client,
 )
 from app.services.llm.discovery_citation_checker import check_and_sanitize
@@ -50,6 +51,12 @@ from app.services.llm.discovery_schemas import (
     DiscoveryCouncilAgentOutput,
     DiscoveryCouncilResult,
     DiscoveryEvidencePack,
+)
+from app.services.llm.token_pacer import (
+    CouncilUsageTracker,
+    TokenBudgetPacer,
+    estimate_request_tokens,
+    get_shared_pacer,
 )
 from app.services.sources.connectors.event_reference import event_spec_for
 from app.services.sources.event_evidence import (
@@ -232,6 +239,8 @@ async def _run_agent_attempt(
     cfg: Settings,
     max_tokens: int,
     known_gaps: list[str] | None = None,
+    pacer: TokenBudgetPacer | None = None,
+    tracker: CouncilUsageTracker | None = None,
 ) -> tuple[DiscoveryCouncilAgentOutput, list[str], Exception | None]:
     """Run ONE attempt for an agent. Never raises.
 
@@ -250,6 +259,19 @@ async def _run_agent_attempt(
     """
     is_chair = agent_name == AGENT_DISCOVERY_CHAIR
     system, user = _messages_for(agent_name, evidence_json, result)
+    # Phase 32A TPM slice: advisory provider-aware pacing shared with the other
+    # two councils (same deployment, same window); the chair draws on its
+    # reserved slice.
+    lease = None
+    paced_wait = 0.0
+    if pacer is not None:
+        lease = await pacer.acquire(
+            estimate_request_tokens(system, user, max_tokens),
+            reserve_tokens=cfg.llm_council_chair_token_reserve,
+            use_reserve=is_chair,
+            max_wait_seconds=cfg.llm_council_pacing_max_wait_seconds,
+        )
+        paced_wait = lease.waited_seconds
     try:
         raw = await client.complete_json(
             system,
@@ -260,6 +282,22 @@ async def _run_agent_attempt(
             repair_instruction=prompts.REPAIR_INSTRUCTION,
         )
     except LLMError as exc:
+        usage = client.consume_usage()
+        if pacer is not None and lease is not None:
+            if isinstance(exc, LLMRateLimitError):
+                pacer.settle(lease, usage.total_tokens if usage else 0)
+            else:
+                pacer.settle(lease, usage.total_tokens if usage else None)
+        if tracker is not None:
+            tracker.record_attempt(
+                agent_name,
+                prompt_tokens=usage.prompt_tokens if usage else 0,
+                completion_tokens=usage.completion_tokens if usage else 0,
+                total_tokens=usage.total_tokens if usage else 0,
+                estimated=bool(usage.estimated) if usage else False,
+                error_type=type(exc).__name__,
+                paced_wait_seconds=paced_wait,
+            )
         placeholder = DiscoveryCouncilAgentOutput(
             agent_name=agent_name,
             status=STATUS_FAILED,
@@ -267,6 +305,19 @@ async def _run_agent_attempt(
             safety_notes=[f"Agent failed ({type(exc).__name__})."],
         )
         return placeholder, [f"{agent_name}: {type(exc).__name__}"], exc
+    usage = client.consume_usage()
+    if pacer is not None and lease is not None:
+        pacer.settle(lease, usage.total_tokens if usage else None)
+    if tracker is not None:
+        tracker.record_attempt(
+            agent_name,
+            prompt_tokens=usage.prompt_tokens if usage else 0,
+            completion_tokens=usage.completion_tokens if usage else 0,
+            total_tokens=usage.total_tokens if usage else 0,
+            estimated=bool(usage.estimated) if usage else False,
+            error_type=None,
+            paced_wait_seconds=paced_wait,
+        )
     output = _coerce_output(agent_name, raw)
     sanitized, issues = check_and_sanitize(
         output, evidence_ids, candidate_ids, is_chair=is_chair, known_gaps=known_gaps
@@ -284,6 +335,8 @@ async def _timed_attempt(
     cfg: Settings,
     max_tokens: int,
     known_gaps: list[str] | None = None,
+    pacer: TokenBudgetPacer | None = None,
+    tracker: CouncilUsageTracker | None = None,
 ) -> tuple[DiscoveryCouncilAgentOutput, list[str], Exception | None, int]:
     """``_run_agent_attempt`` plus a wall-clock duration_ms for logging."""
     started = time.perf_counter()
@@ -297,6 +350,8 @@ async def _timed_attempt(
         cfg,
         max_tokens,
         known_gaps,
+        pacer,
+        tracker,
     )
     duration_ms = int((time.perf_counter() - started) * 1000)
     return output, issues, exc, duration_ms
@@ -313,8 +368,19 @@ def _log_agent_outcome(
     client: LLMClient,
     run_id: str | None,
     attempt: int | None = None,
+    tracker: CouncilUsageTracker | None = None,
 ) -> None:
     """Emit the safe completed/failed telemetry for one attempt (no prompts)."""
+    # Phase 32A TPM slice: per-attempt token accounting (counts only).
+    last = tracker.last_by_agent.get(agent_name) if tracker is not None else None
+    usage_fields: dict[str, Any] = {}
+    if last is not None:
+        usage_fields = {
+            "prompt_tokens": last.prompt_tokens,
+            "completion_tokens": last.completion_tokens,
+            "total_tokens": last.total_tokens,
+            "tokens_estimated": last.estimated or None,
+        }
     if exc is not None:
         log_event(
             log,
@@ -328,6 +394,8 @@ def _log_agent_outcome(
             status=STATUS_FAILED,
             reason=type(exc).__name__,
             attempt=attempt,
+            retry_after_seconds=getattr(exc, "retry_after", None),
+            **usage_fields,
         )
     elif output.status == STATUS_FAILED:
         log_event(
@@ -342,6 +410,7 @@ def _log_agent_outcome(
             status=STATUS_FAILED,
             reason="quarantined_or_unparsed",
             attempt=attempt,
+            **usage_fields,
         )
     else:
         log_event(
@@ -355,6 +424,7 @@ def _log_agent_outcome(
             status=output.status,
             candidate_note_count=len(output.candidate_notes),
             attempt=attempt,
+            **usage_fields,
         )
 
 
@@ -469,6 +539,8 @@ async def _run_offline_pass(
     log: logging.Logger,
     run_id: str | None,
     known_gaps: list[str] | None = None,
+    pacer: TokenBudgetPacer | None = None,
+    tracker: CouncilUsageTracker | None = None,
 ) -> None:
     """The OFF path: one attempt per agent, no retries — byte-identical to
     pre-Slice-6A."""
@@ -483,6 +555,8 @@ async def _run_offline_pass(
             cfg,
             max_tokens,
             known_gaps,
+            pacer,
+            tracker,
         )
         result.agents.append(output)
         result.warnings.extend(issues)
@@ -495,6 +569,7 @@ async def _run_offline_pass(
             cfg=cfg,
             client=client,
             run_id=run_id,
+            tracker=tracker,
         )
 
 
@@ -507,6 +582,8 @@ def _make_attempt(
     cfg: Settings,
     max_tokens: int,
     known_gaps: list[str] | None = None,
+    pacer: TokenBudgetPacer | None = None,
+    tracker: CouncilUsageTracker | None = None,
 ) -> retry_engine.AttemptFn:
     """Bind the discovery-specific single-attempt primitive for the retry engine."""
 
@@ -521,6 +598,8 @@ def _make_attempt(
             cfg,
             max_tokens,
             known_gaps,
+            pacer,
+            tracker,
         )
 
     return _attempt
@@ -552,6 +631,7 @@ def _make_log_outcome(
     cfg: Settings,
     client: LLMClient,
     run_id: str | None,
+    tracker: CouncilUsageTracker | None = None,
 ) -> retry_engine.LogOutcomeFn:
     """Bind ``_log_agent_outcome`` to the run's fixed logging context."""
 
@@ -572,6 +652,7 @@ def _make_log_outcome(
             client=client,
             run_id=run_id,
             attempt=attempt_number,
+            tracker=tracker,
         )
 
     return _log_outcome
@@ -592,6 +673,8 @@ async def _run_council_with_retries(
     sleeper: Callable[[float], Awaitable[Any]],
     rng: random.Random,
     known_gaps: list[str] | None = None,
+    pacer: TokenBudgetPacer | None = None,
+    tracker: CouncilUsageTracker | None = None,
 ) -> None:
     """The ON path: initial pass under a deadline + a priority retry pass.
 
@@ -620,12 +703,14 @@ async def _run_council_with_retries(
             cfg,
             max_tokens,
             known_gaps,
+            pacer,
+            tracker,
         ),
         append_output=result.agents.append,
         extend_warnings=result.warnings.extend,
         replace_agent=_make_replace_agent(result),
         status_of=_make_status_of(result),
-        log_outcome=_make_log_outcome(log, cfg, client, run_id),
+        log_outcome=_make_log_outcome(log, cfg, client, run_id, tracker),
         budget_exhausted_output=_budget_exhausted_output,
         log=log,
         report_id=None,
@@ -660,6 +745,7 @@ async def run_discovery_council(
     clock: Callable[[], float] = time.monotonic,
     sleeper: Callable[[float], Awaitable[Any]] = asyncio.sleep,
     rng: random.Random | None = None,
+    pacer: TokenBudgetPacer | None = None,
 ) -> DiscoveryCouncilResult:
     """Run every discovery-council agent over the pack and return the result.
 
@@ -684,6 +770,16 @@ async def run_discovery_council(
     cfg = cfg or default_settings
     log = logger or _logger
     rng = rng if rng is not None else random.Random()
+    run_started = clock()
+    # Phase 32A TPM slice: per-run usage accounting + the process-shared
+    # provider pacer (None when ``llm_council_tpm_capacity`` is 0 — default).
+    tracker = CouncilUsageTracker()
+    if pacer is None:
+        pacer = get_shared_pacer(
+            client.provider_name,
+            client.deployment_name,
+            cfg.llm_council_tpm_capacity,
+        )
     evidence_ids = evidence_pack.evidence_ids()
     candidate_ids = evidence_pack.candidate_ids()
     evidence_json = evidence_pack.model_dump_json()
@@ -733,6 +829,8 @@ async def run_discovery_council(
             sleeper=sleeper,
             rng=rng,
             known_gaps=known_gaps,
+            pacer=pacer,
+            tracker=tracker,
         )
     else:
         await _run_offline_pass(
@@ -746,6 +844,8 @@ async def run_discovery_council(
             log=log,
             run_id=run_id,
             known_gaps=known_gaps,
+            pacer=pacer,
+            tracker=tracker,
         )
 
     result.recount()
@@ -803,6 +903,17 @@ async def run_discovery_council(
             agents_failed=result.agents_failed,
         )
 
+    # Phase 32A TPM slice — failure-vs-judgement semantics + run accounting
+    # (mirrors ``council.run_council``).
+    if chair is not None and chair.status == STATUS_COMPLETED:
+        result.chair_synthesis_basis = "llm_chair"
+    elif result.chair_fallback_used:
+        result.chair_synthesis_basis = "deterministic_fallback"
+    result.chair_attempts = tracker.attempts_for(AGENT_DISCOVERY_CHAIR)
+    if chair is None or chair.status != STATUS_COMPLETED:
+        result.chair_error_type = tracker.last_error_for(AGENT_DISCOVERY_CHAIR)
+    result.token_usage = tracker.usage_metadata()
+
     log_event(
         log,
         "discovery_council_completed",
@@ -816,6 +927,12 @@ async def run_discovery_council(
         agents_failed=result.agents_failed,
         run_quality=result.run_quality,
         safety_valid=result.safety_valid,
+        chair_attempts=result.chair_attempts,
+        chair_fallback_used=result.chair_fallback_used or None,
+        chair_synthesis_basis=result.chair_synthesis_basis,
+        chair_error_type=result.chair_error_type,
+        elapsed_ms=int((clock() - run_started) * 1000),
+        **tracker.summary_fields(),
     )
     return result
 

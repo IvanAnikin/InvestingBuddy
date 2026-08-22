@@ -27,16 +27,34 @@ from __future__ import annotations
 import json
 import re
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import Any
 
 from app.core.config import Settings
 from app.core.config import settings as default_settings
+from app.services.llm.token_pacer import estimate_tokens
 
 # Providers that are wired up. Anything else resolves to None (disabled).
 _KNOWN_PROVIDERS = frozenset({"fake", "azure_openai", "openai"})
 
 _JSON_BLOCK_RE = re.compile(r"\{.*\}", re.DOTALL)
 _CODE_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
+
+
+@dataclass
+class LLMUsage:
+    """Token usage accumulated across the raw calls of ONE ``complete_json``.
+
+    ``estimated`` is True when any contributing call lacked provider usage
+    metadata and fell back to the ~4-chars/token heuristic. Carries counts
+    only — never text.
+    """
+
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    calls: int = 0
+    estimated: bool = False
 
 
 class LLMError(Exception):
@@ -121,6 +139,76 @@ def _extract_json(raw: str) -> dict[str, Any]:
 class LLMClient(ABC):
     """Abstract council LLM client. Subclasses implement ``_complete_raw``."""
 
+    # Usage accumulated since the last ``consume_usage`` (Phase 32A TPM slice).
+    # Class-level default so subclasses need no __init__ change; instances
+    # assign their own value on first record. One client instance is created
+    # per council run and its agents run sequentially, so this is safe.
+    _usage: LLMUsage | None = None
+
+    def _record_usage(
+        self,
+        *,
+        prompt_tokens: int,
+        completion_tokens: int,
+        total_tokens: int | None = None,
+        estimated: bool = False,
+    ) -> None:
+        """Accumulate one raw call's token usage (counts only, never text)."""
+        usage = self._usage if self._usage is not None else LLMUsage()
+        usage.prompt_tokens += max(0, int(prompt_tokens))
+        usage.completion_tokens += max(0, int(completion_tokens))
+        usage.total_tokens += max(
+            0,
+            int(
+                total_tokens
+                if total_tokens is not None
+                else prompt_tokens + completion_tokens
+            ),
+        )
+        usage.calls += 1
+        usage.estimated = usage.estimated or estimated
+        self._usage = usage
+
+    def consume_usage(self) -> LLMUsage | None:
+        """Pop the usage accumulated since the last consume (or None)."""
+        usage = self._usage
+        self._usage = None
+        return usage
+
+    async def _traced_complete_raw(
+        self,
+        system: str,
+        user: str,
+        *,
+        max_tokens: int,
+        temperature: float,
+        timeout: int,
+    ) -> str:
+        """``_complete_raw`` + a guaranteed usage record for the call.
+
+        A provider client that extracts real usage records it itself inside
+        ``_complete_raw``; when it does not (fake client, providers without
+        usage metadata), an ESTIMATED record is added here so the pacing and
+        observability layers always have a number to work with. A raised
+        provider error records nothing (a rate-limited call spends no quota).
+        """
+        calls_before = self._usage.calls if self._usage is not None else 0
+        raw = await self._complete_raw(
+            system,
+            user,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            timeout=timeout,
+        )
+        calls_after = self._usage.calls if self._usage is not None else 0
+        if calls_after == calls_before:
+            self._record_usage(
+                prompt_tokens=estimate_tokens(system) + estimate_tokens(user),
+                completion_tokens=estimate_tokens(raw),
+                estimated=True,
+            )
+        return raw
+
     @property
     @abstractmethod
     def provider_name(self) -> str:
@@ -165,7 +253,7 @@ class LLMClient(ABC):
         Raises LLMJsonError / LLMTimeoutError / LLMUnavailableError — never a raw
         provider exception — so the council can isolate a single failed agent.
         """
-        raw = await self._complete_raw(
+        raw = await self._traced_complete_raw(
             system,
             user,
             max_tokens=max_tokens,
@@ -182,7 +270,7 @@ class LLMClient(ABC):
             "Your previous reply was not a single valid JSON object. Reply again "
             "with ONLY the JSON object, no prose, no code fences."
         )
-        raw2 = await self._complete_raw(
+        raw2 = await self._traced_complete_raw(
             f"{system}\n\n{repair}",
             user,
             max_tokens=max_tokens,

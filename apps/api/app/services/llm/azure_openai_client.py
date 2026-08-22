@@ -88,7 +88,9 @@ class AzureOpenAILLMClient(LLMClient):
         temperature: float,
         timeout: int,
     ) -> str:
-        return await _ainvoke_chat(self._llm, system, user, timeout)
+        return await _ainvoke_chat(
+            self._llm, system, user, timeout, record_usage=self._record_usage
+        )
 
 
 class OpenAILLMClient(LLMClient):
@@ -134,7 +136,37 @@ class OpenAILLMClient(LLMClient):
         temperature: float,
         timeout: int,
     ) -> str:
-        return await _ainvoke_chat(self._llm, system, user, timeout)
+        return await _ainvoke_chat(
+            self._llm, system, user, timeout, record_usage=self._record_usage
+        )
+
+
+def _extract_usage(result: object) -> tuple[int, int, int] | None:
+    """Best-effort (prompt, completion, total) token counts from a response.
+
+    Reads langchain's ``usage_metadata`` (input/output/total_tokens) first,
+    then the raw provider ``response_metadata['token_usage']``. Returns None
+    when neither carries integer counts — the caller then falls back to the
+    estimated record. Never raises, never reads or returns text.
+    """
+    try:
+        um = getattr(result, "usage_metadata", None)
+        if isinstance(um, dict):
+            pt, ct = um.get("input_tokens"), um.get("output_tokens")
+            if isinstance(pt, int) and isinstance(ct, int):
+                tt = um.get("total_tokens")
+                return pt, ct, tt if isinstance(tt, int) else pt + ct
+        rm = getattr(result, "response_metadata", None)
+        if isinstance(rm, dict):
+            tu = rm.get("token_usage") or rm.get("usage")
+            if isinstance(tu, dict):
+                pt, ct = tu.get("prompt_tokens"), tu.get("completion_tokens")
+                if isinstance(pt, int) and isinstance(ct, int):
+                    tt = tu.get("total_tokens")
+                    return pt, ct, tt if isinstance(tt, int) else pt + ct
+    except (AttributeError, TypeError, ValueError):
+        return None
+    return None
 
 
 def _coerce_retry_after(exc: Exception) -> float | None:
@@ -196,7 +228,13 @@ def _classify_provider_error(exc: Exception) -> LLMError:
     return LLMError(f"provider call failed ({name})")
 
 
-async def _ainvoke_chat(llm, system: str, user: str, timeout: int) -> str:
+async def _ainvoke_chat(
+    llm,
+    system: str,
+    user: str,
+    timeout: int,
+    record_usage=None,
+) -> str:
     """Invoke a langchain chat model with a hard timeout; return text content.
 
     Any provider error (rate limit, API error, connection failure) is wrapped as
@@ -217,6 +255,19 @@ async def _ainvoke_chat(llm, system: str, user: str, timeout: int) -> str:
         raise
     except Exception as exc:  # noqa: BLE001 - any provider error -> recoverable
         raise _classify_provider_error(exc) from exc
+    # Phase 32A TPM slice: record REAL provider token usage when present (counts
+    # only). A missing/None extraction leaves the base class estimated record to
+    # fill the gap; a failed call records nothing (no quota was spent).
+    if record_usage is not None:
+        usage = _extract_usage(result)
+        if usage is not None:
+            prompt_tokens, completion_tokens, total_tokens = usage
+            record_usage(
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens,
+                estimated=False,
+            )
     content = getattr(result, "content", result)
     if isinstance(content, list):
         # Some providers return a list of content blocks.

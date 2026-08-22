@@ -3371,6 +3371,15 @@ def _build_research_memo(
     # actually did this run (see ``_reconcile_stale_sec_gaps``).
     source_gaps = _reconcile_stale_sec_gaps(source_gaps, primary_documents)
     committee_label = _memo_get(council_result, "committee_label", None)
+    # Phase 32A TPM slice — failure-vs-judgement semantics: WHO produced the
+    # committee synthesis ("llm_chair" = evidence-based judgement;
+    # "deterministic_fallback" = the chair never completed and the label is a
+    # failure default) plus the provider error class on failure. Read under both
+    # spellings (model attribute vs serialized payload key).
+    committee_label_basis = _memo_get(
+        council_result, "chair_synthesis_basis", None
+    ) or _memo_get(council_result, "committee_label_basis", None)
+    chair_error_type = _memo_get(council_result, "chair_error_type", None)
     llm_used = bool(_memo_get(council_result, "llm_used", False))
     # Phase 32A Slice 4: deterministic committee-chair fallback (only set when the
     # LLM chair failed and the retry bundle is on). Surfaced below so the memo
@@ -3783,6 +3792,9 @@ def _build_research_memo(
         council_disagreement_red_team = {
             "council_ran": llm_used,
             "committee_label": committee_label,
+            # None omitted downstream; "deterministic_fallback" means the label
+            # is a failure default, NOT an evidence-based chair judgement.
+            "committee_label_basis": committee_label_basis,
             "red_team_present": red_team is not None,
             "red_team_summary": {
                 "value": _memo_safe_text(_memo_get(red_team, "summary", ""))
@@ -3828,6 +3840,13 @@ def _build_research_memo(
     # safety-scanned and makes no recommendation/valuation conclusion.
     if chair_fallback_used:
         council_disagreement_red_team["committee_chair_fallback_used"] = True
+        # Phase 32A TPM slice: the provider/infrastructure failure that ended
+        # the chair, exposed SEPARATELY from the semantic label (class name
+        # only — e.g. "LLMRateLimitError" — never a message or header).
+        if chair_error_type is not None:
+            council_disagreement_red_team["committee_chair_error_type"] = (
+                chair_error_type
+            )
         council_disagreement_red_team["committee_chair_synthesis"] = {
             "value": _memo_safe_text(_memo_get(deterministic_chair, "summary", ""))
             if deterministic_chair is not None
@@ -5675,5 +5694,7 @@ class FinalReportGeneratorService:
             ),
             evidence_item_count=council_result.evidence_item_count,
             committee_label=council_result.committee_label,
+            committee_label_basis=council_result.chair_synthesis_basis,
+            chair_error_type=council_result.chair_error_type,
             human_review_checklist=checklist_items,
         )

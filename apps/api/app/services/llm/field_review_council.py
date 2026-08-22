@@ -69,6 +69,12 @@ from app.services.llm.field_review_schemas import (
     FieldReviewPack,
     FieldReviewResult,
 )
+from app.services.llm.token_pacer import (
+    CouncilUsageTracker,
+    TokenBudgetPacer,
+    estimate_request_tokens,
+    get_shared_pacer,
+)
 
 __all__ = [
     "get_field_review_llm_client",
@@ -195,6 +201,8 @@ async def _run_agent_attempt(
     client: LLMClient,
     cfg: Settings,
     known_gaps: list[str] | None = None,
+    pacer: TokenBudgetPacer | None = None,
+    tracker: CouncilUsageTracker | None = None,
 ) -> tuple[FieldReviewAgentOutput, list[str], Exception | None]:
     """Run ONE attempt for an agent. Never raises.
 
@@ -206,6 +214,19 @@ async def _run_agent_attempt(
     the gap-attribution grounding check (corrective, post-#99/#100).
     """
     system, user = _messages_for(agent_name, pack_json, result)
+    # Phase 32A TPM slice: advisory provider-aware pacing shared with the other
+    # two councils (same deployment, same window); the chair draws on its
+    # reserved slice.
+    lease = None
+    paced_wait = 0.0
+    if pacer is not None:
+        lease = await pacer.acquire(
+            estimate_request_tokens(system, user, cfg.llm_max_output_tokens),
+            reserve_tokens=cfg.llm_council_chair_token_reserve,
+            use_reserve=(agent_name == AGENT_FIELD_CHAIR),
+            max_wait_seconds=cfg.llm_council_pacing_max_wait_seconds,
+        )
+        paced_wait = lease.waited_seconds
     try:
         raw = await client.complete_json(
             system,
@@ -216,6 +237,22 @@ async def _run_agent_attempt(
             repair_instruction=prompts.REPAIR_INSTRUCTION,
         )
     except LLMError as exc:
+        usage = client.consume_usage()
+        if pacer is not None and lease is not None:
+            if isinstance(exc, LLMRateLimitError):
+                pacer.settle(lease, usage.total_tokens if usage else 0)
+            else:
+                pacer.settle(lease, usage.total_tokens if usage else None)
+        if tracker is not None:
+            tracker.record_attempt(
+                agent_name,
+                prompt_tokens=usage.prompt_tokens if usage else 0,
+                completion_tokens=usage.completion_tokens if usage else 0,
+                total_tokens=usage.total_tokens if usage else 0,
+                estimated=bool(usage.estimated) if usage else False,
+                error_type=type(exc).__name__,
+                paced_wait_seconds=paced_wait,
+            )
         placeholder = FieldReviewAgentOutput(
             agent_name=agent_name,
             status=STATUS_FAILED,
@@ -223,6 +260,19 @@ async def _run_agent_attempt(
             safety_notes=[f"Agent failed ({type(exc).__name__})."],
         )
         return placeholder, [f"{agent_name}: {type(exc).__name__}"], exc
+    usage = client.consume_usage()
+    if pacer is not None and lease is not None:
+        pacer.settle(lease, usage.total_tokens if usage else None)
+    if tracker is not None:
+        tracker.record_attempt(
+            agent_name,
+            prompt_tokens=usage.prompt_tokens if usage else 0,
+            completion_tokens=usage.completion_tokens if usage else 0,
+            total_tokens=usage.total_tokens if usage else 0,
+            estimated=bool(usage.estimated) if usage else False,
+            error_type=None,
+            paced_wait_seconds=paced_wait,
+        )
     output = _coerce_output(agent_name, raw)
     sanitized, issues = check_and_sanitize(
         output,
@@ -243,6 +293,8 @@ async def _timed_attempt(
     client: LLMClient,
     cfg: Settings,
     known_gaps: list[str] | None = None,
+    pacer: TokenBudgetPacer | None = None,
+    tracker: CouncilUsageTracker | None = None,
 ) -> tuple[FieldReviewAgentOutput, list[str], Exception | None, int]:
     """``_run_agent_attempt`` plus a wall-clock duration_ms for logging."""
     started = time.perf_counter()
@@ -255,6 +307,8 @@ async def _timed_attempt(
         client,
         cfg,
         known_gaps,
+        pacer,
+        tracker,
     )
     duration_ms = int((time.perf_counter() - started) * 1000)
     return output, issues, exc, duration_ms
@@ -271,8 +325,19 @@ def _log_agent_outcome(
     client: LLMClient,
     field_review_run_id: str | None,
     attempt: int | None = None,
+    tracker: CouncilUsageTracker | None = None,
 ) -> None:
     """Emit the safe completed/failed telemetry for one attempt (no prompts)."""
+    # Phase 32A TPM slice: per-attempt token accounting (counts only).
+    last = tracker.last_by_agent.get(agent_name) if tracker is not None else None
+    usage_fields: dict[str, Any] = {}
+    if last is not None:
+        usage_fields = {
+            "prompt_tokens": last.prompt_tokens,
+            "completion_tokens": last.completion_tokens,
+            "total_tokens": last.total_tokens,
+            "tokens_estimated": last.estimated or None,
+        }
     if exc is not None:
         log_event(
             log,
@@ -286,6 +351,8 @@ def _log_agent_outcome(
             status=STATUS_FAILED,
             reason=type(exc).__name__,
             attempt=attempt,
+            retry_after_seconds=getattr(exc, "retry_after", None),
+            **usage_fields,
         )
     elif output.status == STATUS_FAILED:
         log_event(
@@ -300,6 +367,7 @@ def _log_agent_outcome(
             status=STATUS_FAILED,
             reason="quarantined_or_unparsed",
             attempt=attempt,
+            **usage_fields,
         )
     else:
         log_event(
@@ -313,6 +381,7 @@ def _log_agent_outcome(
             status=output.status,
             company_note_count=len(output.company_notes),
             attempt=attempt,
+            **usage_fields,
         )
 
 
@@ -465,6 +534,8 @@ async def _retry_agent(
     rng: random.Random,
     transient_failures: dict[str, Exception],
     known_gaps: list[str] | None = None,
+    pacer: TokenBudgetPacer | None = None,
+    tracker: CouncilUsageTracker | None = None,
 ) -> None:
     """Bounded retry loop for ONE transiently-failed agent.
 
@@ -537,6 +608,8 @@ async def _retry_agent(
             client,
             cfg,
             known_gaps,
+            pacer,
+            tracker,
         )
         if exc is None:
             # Completed OR quarantined/unparsable — both are PERMANENT outcomes.
@@ -553,6 +626,7 @@ async def _retry_agent(
                 client=client,
                 field_review_run_id=field_review_run_id,
                 attempt=attempt,
+                tracker=tracker,
             )
             return
         _log_agent_outcome(
@@ -565,6 +639,7 @@ async def _retry_agent(
             client=client,
             field_review_run_id=field_review_run_id,
             attempt=attempt,
+            tracker=tracker,
         )
         if not is_transient_llm_error(exc):
             # Permanent provider error — stop; leave the failed placeholder.
@@ -589,6 +664,8 @@ async def _run_single_pass(
     log: logging.Logger,
     field_review_run_id: str | None,
     known_gaps: list[str] | None = None,
+    pacer: TokenBudgetPacer | None = None,
+    tracker: CouncilUsageTracker | None = None,
 ) -> None:
     """The retry-OFF path: one attempt per agent, no retries."""
     for agent_name in FIELD_REVIEW_AGENT_ORDER:
@@ -601,6 +678,8 @@ async def _run_single_pass(
             client,
             cfg,
             known_gaps,
+            pacer,
+            tracker,
         )
         result.agents.append(output)
         result.warnings.extend(issues)
@@ -613,6 +692,7 @@ async def _run_single_pass(
             cfg=cfg,
             client=client,
             field_review_run_id=field_review_run_id,
+            tracker=tracker,
         )
 
 
@@ -630,6 +710,8 @@ async def _run_with_retries(
     sleeper: Callable[[float], Awaitable[Any]],
     rng: random.Random,
     known_gaps: list[str] | None = None,
+    pacer: TokenBudgetPacer | None = None,
+    tracker: CouncilUsageTracker | None = None,
 ) -> None:
     """The retry-ON path: initial pass under a deadline + a priority retry pass."""
     deadline = clock() + cfg.llm_field_review_council_total_budget_seconds
@@ -662,6 +744,8 @@ async def _run_with_retries(
             client,
             cfg,
             known_gaps,
+            pacer,
+            tracker,
         )
         result.agents.append(output)
         result.warnings.extend(issues)
@@ -674,6 +758,7 @@ async def _run_with_retries(
             cfg=cfg,
             client=client,
             field_review_run_id=field_review_run_id,
+            tracker=tracker,
         )
         if exc is not None and is_transient_llm_error(exc):
             transient_failures[agent_name] = exc
@@ -703,6 +788,8 @@ async def _run_with_retries(
             rng=rng,
             transient_failures=transient_failures,
             known_gaps=known_gaps,
+            pacer=pacer,
+            tracker=tracker,
         )
 
 
@@ -767,6 +854,7 @@ async def run_field_review_council(
     clock: Callable[[], float] | None = None,
     sleeper: Callable[[float], Awaitable[Any]] | None = None,
     rng: random.Random | None = None,
+    pacer: TokenBudgetPacer | None = None,
 ) -> FieldReviewResult:
     """Run every field-review agent over the pack and return the result.
 
@@ -779,6 +867,16 @@ async def run_field_review_council(
     clock = clock or time.monotonic
     sleeper = sleeper or asyncio.sleep
     rng = rng or random.Random()
+    run_started = clock()
+    # Phase 32A TPM slice: per-run usage accounting + the process-shared
+    # provider pacer (None when ``llm_council_tpm_capacity`` is 0 — default).
+    tracker = CouncilUsageTracker()
+    if pacer is None:
+        pacer = get_shared_pacer(
+            client.provider_name,
+            client.deployment_name,
+            cfg.llm_council_tpm_capacity,
+        )
 
     evidence_ids = pack.evidence_ids()
     company_ids = pack.company_ids()
@@ -824,6 +922,8 @@ async def run_field_review_council(
             sleeper=sleeper,
             rng=rng,
             known_gaps=known_gaps,
+            pacer=pacer,
+            tracker=tracker,
         )
     else:
         await _run_single_pass(
@@ -836,6 +936,8 @@ async def run_field_review_council(
             log=log,
             field_review_run_id=field_review_run_id,
             known_gaps=known_gaps,
+            pacer=pacer,
+            tracker=tracker,
         )
 
     result.recount()
@@ -907,6 +1009,17 @@ async def run_field_review_council(
         [t for a in result.agents for t in a.next_research_tasks]
     )
 
+    # Phase 32A TPM slice — failure-vs-judgement semantics + run accounting
+    # (mirrors ``council.run_council`` / ``discovery_council``).
+    if chair is not None and chair.status == STATUS_COMPLETED:
+        result.chair_synthesis_basis = "llm_chair"
+    elif result.chair_fallback_used:
+        result.chair_synthesis_basis = "deterministic_fallback"
+    result.chair_attempts = tracker.attempts_for(AGENT_FIELD_CHAIR)
+    if chair is None or chair.status != STATUS_COMPLETED:
+        result.chair_error_type = tracker.last_error_for(AGENT_FIELD_CHAIR)
+    result.token_usage = tracker.usage_metadata()
+
     log_event(
         log,
         "field_review_council_completed",
@@ -921,9 +1034,14 @@ async def run_field_review_council(
         field_quality=result.field_quality,
         safety_valid=result.safety_valid,
         chair_fallback_used=result.chair_fallback_used,
+        chair_attempts=result.chair_attempts,
+        chair_synthesis_basis=result.chair_synthesis_basis,
+        chair_error_type=result.chair_error_type,
         strongest_count=len(result.strongest_candidates),
         second_tier_count=len(result.second_tier),
         blocked_count=len(result.blocked_insufficient_evidence),
+        elapsed_ms=int((clock() - run_started) * 1000),
+        **tracker.summary_fields(),
     )
     return result
 

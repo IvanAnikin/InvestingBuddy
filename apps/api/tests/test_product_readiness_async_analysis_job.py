@@ -112,7 +112,7 @@ async def test_stale_running_job_is_restartable() -> None:
     """A worker that died mid-run must not block the candidate forever."""
     stale = (
         datetime.now(timezone.utc)
-        - timedelta(minutes=mds._ANALYSIS_STALE_RUNNING_MINUTES + 5)
+        - timedelta(minutes=mds.analysis_job_stale_after_minutes() + 5)
     ).isoformat()
     cand = _candidate_obj(
         raw_signal_json={

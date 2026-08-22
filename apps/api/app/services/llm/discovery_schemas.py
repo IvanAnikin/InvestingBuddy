@@ -319,6 +319,16 @@ class DiscoveryCouncilResult(BaseModel):
     # shows in the honest completed/failed counts (the council is visibly
     # partial); default None keeps the OFF path identical.
     deterministic_chair: DiscoveryCouncilAgentOutput | None = None
+    # Phase 32A TPM slice — failure-vs-judgement semantics (mirrors the company
+    # council's fields): WHO produced the chair synthesis ("llm_chair" |
+    # "deterministic_fallback" | None), how many attempts the chair made, and
+    # (on failure) the provider error CLASS NAME, exposed separately from the
+    # semantic ``run_quality`` label.
+    chair_synthesis_basis: str | None = None
+    chair_attempts: int = 0
+    chair_error_type: str | None = None
+    # Bounded token-usage/throttling accounting for the whole run (counts only).
+    token_usage: dict[str, Any] | None = None
 
     def recount(self) -> None:
         """Refresh the completed/failed/skipped tallies from ``agents``."""
@@ -369,6 +379,16 @@ class DiscoveryCouncilResult(BaseModel):
             ),
             "created_at": created_at,
         }
+        # Phase 32A TPM slice: failure-vs-judgement semantics + bounded usage
+        # accounting (counts only — never prompts/completions).
+        if self.chair_synthesis_basis is not None:
+            payload["chair_synthesis_basis"] = self.chair_synthesis_basis
+        if self.chair_attempts:
+            payload["chair_attempts"] = self.chair_attempts
+        if self.chair_error_type is not None:
+            payload["chair_error_type"] = self.chair_error_type
+        if self.token_usage is not None:
+            payload["token_usage"] = dict(self.token_usage)
         # Phase 32A Slice 6A: surface the deterministic discovery-chair fallback
         # ONLY when it fired (keeps the OFF path + the retried-and-completed path
         # byte-identical — mirrors the company council's Slice-4 pattern).

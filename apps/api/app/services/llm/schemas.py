@@ -371,6 +371,28 @@ class CouncilResult(BaseModel):
     # DETERMINISTIC, non-consensus committee summary was attached below. Default
     # False keeps the OFF path identical.
     chair_fallback_used: bool = False
+    # Phase 32A TPM slice — failure-vs-judgement semantics. WHO produced the
+    # committee synthesis this result carries:
+    #   "llm_chair"               — the real LLM chair completed (possibly after
+    #                               bounded retries); ``committee_label`` is an
+    #                               EVIDENCE-BASED judgement.
+    #   "deterministic_fallback"  — the LLM chair never completed; the label is
+    #                               the deterministic fallback's failure default
+    #                               and must NEVER be read as an evidence
+    #                               judgement.
+    # None only when the chair neither completed nor had a fallback attached
+    # (retry bundle off + chair failed) or the council did not run.
+    chair_synthesis_basis: str | None = None
+    # Total attempts the chair made (initial pass + retries). 0 = never ran.
+    chair_attempts: int = 0
+    # Error CLASS NAME of the chair's last failed attempt (e.g.
+    # "LLMRateLimitError") — the provider/infrastructure failure exposed
+    # SEPARATELY from the semantic label. None when the chair completed.
+    chair_error_type: str | None = None
+    # Bounded token-usage/throttling accounting for the whole run (counts only:
+    # prompt/completion/total tokens, 429 count, retries, paced wait). Surfaced
+    # in ``to_metadata_dict`` for the admin/DFR views; never in the report body.
+    token_usage: dict[str, Any] | None = None
     # Phase 32A Slice 4: the deterministic committee-chair synthesis attached when
     # the LLM chair failed. It is NEVER a recommendation/valuation/price objective
     # (committee_label="insufficient_data", empty key_points ⇒ no citations). Kept
@@ -417,6 +439,15 @@ class CouncilResult(BaseModel):
             ),
             "human_review_required": True,
         }
+        # Phase 32A TPM slice: make an infra failure IMPOSSIBLE to mistake for
+        # an evidence judgement — every persisted payload that carries a
+        # committee_label also says WHO produced it and how the chair fared.
+        if self.chair_synthesis_basis is not None:
+            payload["committee_label_basis"] = self.chair_synthesis_basis
+        if self.chair_attempts:
+            payload["chair_attempts"] = self.chair_attempts
+        if self.chair_error_type is not None:
+            payload["chair_error_type"] = self.chair_error_type
         # Phase 32A Slice 4: surface the deterministic chair fallback ONLY when it
         # fired (keeps the OFF path + the retried-and-completed path byte-identical).
         if self.chair_fallback_used:
@@ -454,6 +485,16 @@ class CouncilResult(BaseModel):
             "source_reference_counts": dict(self.source_reference_counts),
             "source_gaps": list(self.source_gaps),
         }
+        # Phase 32A TPM slice: failure-vs-judgement semantics + bounded usage
+        # accounting (counts only) for the admin/DFR surfaces.
+        if self.chair_synthesis_basis is not None:
+            payload["committee_label_basis"] = self.chair_synthesis_basis
+        if self.chair_attempts:
+            payload["chair_attempts"] = self.chair_attempts
+        if self.chair_error_type is not None:
+            payload["chair_error_type"] = self.chair_error_type
+        if self.token_usage is not None:
+            payload["token_usage"] = dict(self.token_usage)
         # Phase 32A Slice 4: surface the deterministic chair fallback ONLY when it
         # fired (additive; keeps the OFF path metadata byte-identical).
         if self.chair_fallback_used:

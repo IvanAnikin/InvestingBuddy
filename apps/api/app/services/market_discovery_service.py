@@ -1451,10 +1451,40 @@ _ANALYSIS_IN_FLIGHT = {"pending", "running"}
 # A job in one of these states produced a linked report.
 _ANALYSIS_HAS_RESULT = {"completed", "completed_with_warnings"}
 
-# A job stuck in "running" longer than this is treated as abandoned (FastAPI
-# BackgroundTasks are process-local and not durable — an app restart mid-run
-# leaves the envelope in ``running`` forever otherwise).
-_ANALYSIS_STALE_RUNNING_MINUTES = 30
+# Fixed allowance (seconds) for everything in a full-analysis job that is NOT
+# the council or primary-document ingestion: data fetching, snapshot build,
+# report assembly/persistence, commits. Part of the derived stale threshold.
+_ANALYSIS_JOB_OVERHEAD_SECONDS = 300.0
+
+# Safety margin (minutes) on top of the derived worst-case job duration before
+# a ``running`` envelope may be treated as abandoned.
+_ANALYSIS_STALE_MARGIN_MINUTES = 10
+
+
+def analysis_job_stale_after_minutes(cfg=None) -> int:
+    """Effective abandoned-job threshold (minutes), coherent BY CONSTRUCTION.
+
+    Phase 32A TPM slice: the council wall budget was raised for the async era
+    (150s -> 600s) and paced attempts can wait for TPM headroom, so a fixed
+    literal here could mark a legitimately long-running job stale mid-council.
+    The threshold is therefore ``max(configured base, derived worst case)``
+    where the worst case = council wall budget + one full pacing wait (an
+    in-flight attempt can wait past the council deadline) + primary-document
+    ingestion budget + fixed orchestration overhead + margin. Raising any
+    council budget automatically raises this threshold with it. A job stuck in
+    ``running`` longer than this is treated as abandoned (FastAPI
+    BackgroundTasks are process-local and not durable — an app restart mid-run
+    leaves the envelope in ``running`` forever otherwise).
+    """
+    cfg = cfg or settings
+    worst_case_seconds = (
+        float(cfg.llm_council_total_budget_seconds)
+        + float(cfg.llm_council_pacing_max_wait_seconds)
+        + float(cfg.primary_document_ingestion_budget_seconds)
+        + _ANALYSIS_JOB_OVERHEAD_SECONDS
+    )
+    derived_minutes = int(worst_case_seconds // 60) + 1 + _ANALYSIS_STALE_MARGIN_MINUTES
+    return max(int(cfg.analysis_job_stale_after_minutes), derived_minutes)
 
 
 def _new_analysis_job_envelope(
@@ -1543,7 +1573,7 @@ def _analysis_job_is_stale(envelope: dict[str, Any]) -> bool:
     if started_dt is None:
         return False
     age = datetime.now(timezone.utc) - started_dt
-    return age > timedelta(minutes=_ANALYSIS_STALE_RUNNING_MINUTES)
+    return age > timedelta(minutes=analysis_job_stale_after_minutes())
 
 
 async def start_candidate_analysis(
