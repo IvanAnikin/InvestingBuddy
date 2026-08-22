@@ -127,17 +127,37 @@ async def test_stale_running_job_is_restartable() -> None:
     assert scheduled is True
 
 
-async def test_legacy_candidate_without_envelope_reads_as_completed() -> None:
-    """A candidate analysed BEFORE the async migration still renders honestly."""
-    report_id = uuid.uuid4()
+async def test_discovery_time_draft_is_never_read_as_a_completed_job() -> None:
+    """STAGING REGRESSION (2026-08-22). The DISCOVERY pipeline itself sets
+    ``analysis_report_id``: its signal extractor runs the deterministic
+    company-analysis workflow for every candidate and links the Phase-9 draft.
+
+    Reading that as "a full-analysis job already completed" made Run Full
+    Analysis short-circuit on every freshly discovered candidate — HTTP 202 in
+    0.3s with status=completed and NO LLM council run (observed live: candidate
+    3c4c9bc8 linked to discovery-time draft b64d800b). Only an explicitly
+    stored envelope counts as a job.
+    """
     cand = _candidate_obj(raw_signal_json={"provider_name": "free_real"})
-    cand.analysis_report_id = report_id
+    cand.analysis_report_id = uuid.uuid4()  # discovery-time deterministic draft
+    cand.agent_run_id = uuid.uuid4()
     cand.updated_at = datetime.now(timezone.utc)
 
-    envelope = mds.get_analysis_job_envelope(cand)
-    assert envelope is not None
-    assert envelope["status"] == "completed"
-    assert envelope["analysis_report_id"] == str(report_id)
+    assert mds.get_analysis_job_envelope(cand) is None
+
+
+async def test_freshly_discovered_candidate_actually_starts_a_job() -> None:
+    """The end-to-end consequence of the fix: a candidate carrying only a
+    discovery-time draft must SCHEDULE a real analysis, not report success."""
+    cand = _candidate_obj(raw_signal_json={"provider_name": "free_real"})
+    cand.analysis_report_id = uuid.uuid4()
+    db = _db()
+
+    envelope, scheduled = await mds.start_candidate_analysis(db, cand)
+
+    assert scheduled is True
+    assert envelope["status"] == "pending"
+    assert envelope["analysis_report_id"] is None
 
 
 async def test_no_job_ever_run_returns_none() -> None:
