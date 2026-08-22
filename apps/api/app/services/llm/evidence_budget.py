@@ -364,6 +364,19 @@ def _apply_category_budget(
     # narrative prose can never crowd out every slot within the same category.
     statement_floor = max(0, int(getattr(cfg, "llm_council_evidence_statement_floor", 3)))
     price_trend_cap = max(0, int(getattr(cfg, "llm_council_evidence_price_trend_cap", 3)))
+    # Product-readiness fix. The Valuation Guard agent reported "No current
+    # market price or share price data is provided" in a report whose own
+    # Financial Snapshot showed latest close 214.72 USD and a derived market cap
+    # — because the price/market items are T5/T6 and were crowded out of the
+    # 20-slot pack by the 12-item financial-fact floor plus T1 issuer press.
+    # A small FLOOR guarantees the current-price evidence reaches every agent
+    # (all agents share one pack), so the guard reasons about the real price
+    # instead of asserting its absence to the human reader. The cap is still the
+    # hard ceiling: a floor larger than the cap is incoherent.
+    price_trend_floor = max(
+        0, int(getattr(cfg, "llm_council_evidence_price_trend_floor", 2))
+    )
+    price_trend_floor = min(price_trend_floor, price_trend_cap)
     news_cap = max(0, int(getattr(cfg, "llm_council_evidence_news_cap", 8)))
     low_tier_news_cap = max(0, int(getattr(cfg, "llm_council_evidence_low_tier_news_cap", 4)))
     caps = {
@@ -457,6 +470,7 @@ def _apply_category_budget(
     financial_reserved = 0
     statement_reserved = 0
     pd_reserved = 0
+    price_reserved = 0
     for order, _item, category in ranked:
         if len(reserved) >= max_items:
             break
@@ -480,6 +494,12 @@ def _apply_category_budget(
         ):
             reserved.add(order)
             pd_reserved += 1
+        elif (
+            category == CATEGORY_PRICE_TREND_METRIC
+            and price_reserved < price_trend_floor
+        ):
+            reserved.add(order)
+            price_reserved += 1
 
     # 5. Fill: reserved first, then global rank skipping any capped category.
     selected: list[tuple[int, EvidenceItem]] = []

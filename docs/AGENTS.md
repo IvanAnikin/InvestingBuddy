@@ -56,6 +56,21 @@ Optional: `provider_name` (default: `mock`), `require_schema_valid` (default: `f
 > links to the resulting **final report** (LLM council when enabled) — not the
 > Phase 9 draft. The direct `POST /workflows/company-analysis/run` endpoint still
 > returns the Phase 9 draft unchanged. See `docs/API.md` → Phase 28A.1 / 28B.3.
+>
+> **Product-readiness note (2026-08-22).** Two further changes affect this flow:
+>
+> 1. `POST /market-discovery/candidates/{id}/run-analysis` is now an **async
+>    job** (HTTP 202 + poll `GET /candidates/{id}/analysis-job`) — see ADR-018.
+>    The workflow itself is unchanged; only where it runs changed.
+> 2. The deterministic **Bull / Bear / Risk / Valuation-Readiness** sections are
+>    **rebuilt** by the final-report generator after canonical evidence
+>    reconciliation (post-ingestion, post-council), because their workflow-time
+>    output predates citations, document ingestion and the council and was
+>    contradicting the council's own narrative in the same report. Only sections
+>    the workflow actually produced are refreshed, and a summary already
+>    carrying forbidden language is never rebuilt (that would launder poisoned
+>    state past the safety gate). The original workflow draft is retained in
+>    full as `legacy_draft_report_id`. See ADR-019.
 
 - `use_llm=false` (default): no LLM calls, fully offline, CI-safe.
 - `use_llm=true` with `llm_provider=mock`: mock LLM, still offline, no Azure credentials.

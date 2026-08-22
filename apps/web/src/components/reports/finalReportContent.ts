@@ -114,6 +114,12 @@ export const SECTION_ORDER: string[] = [
   "research_memo",
   "company_identity",
   "data_availability_summary",
+  // Product readiness — the explicit evidence-CHANNEL inventory. "Issuer
+  // primary document", "regulator structured facts", "regulator filing
+  // events", "issuer newsroom" and "persisted citations" are five different
+  // things; the report used to conflate them and claim "primary filings
+  // required" for a company whose SEC XBRL statements were fully sourced.
+  "evidence_channels",
   "financial_snapshot",
   "discovery_rationale",
   "internal_scorecard",
@@ -137,6 +143,7 @@ export const SECTION_LABELS: Record<string, string> = {
   research_memo: "Internal Research Memo",
   company_identity: "Company Identity",
   data_availability_summary: "Data Availability Summary",
+  evidence_channels: "Evidence Channels",
   financial_snapshot: "Financial Snapshot",
   discovery_rationale: "Discovery Rationale",
   internal_scorecard: "Internal Scorecard",
