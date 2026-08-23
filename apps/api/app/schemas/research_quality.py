@@ -123,6 +123,7 @@ def assess_source_quality(
     inventory: Any = None,
     identity: dict[str, Any] | None = None,
     catalyst_summary: dict[str, Any] | None = None,
+    primary_fact_count: int = 0,
 ) -> SourceQualityAssessment:
     """Derive all four dimensions from final reconciled state, in one place.
 
@@ -174,6 +175,15 @@ def assess_source_quality(
         count = getattr(fundamentals, "fact_count", 0)
         if count:
             fin_basis.append(f"{count} statement value(s) sourced")
+    elif int(primary_fact_count or 0) > 0:
+        # Facts extracted from an issuer primary document are real financial
+        # evidence. Requiring resolved "fundamentals" as well would repeat the
+        # source-METHOD-vs-fact-ABSENCE conflation this platform keeps fixing.
+        fin_label = QUALITY_STRONG
+        fin_basis.append(
+            f"{int(primary_fact_count)} validated primary-document financial "
+            "fact(s) extracted"
+        )
     else:
         financial_data = getattr(inventory, "financial_data", None)
         statement_fields = [
