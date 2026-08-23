@@ -31,6 +31,7 @@ from app.services.llm.field_review_council import (
     run_field_review_council,
 )
 from app.services.llm.field_review_schemas import (
+    AGENT_COMPARATIVE_FINANCIAL_QUALITY,
     AGENT_FIELD_CHAIR,
     FIELD_REVIEW_AGENT_ORDER,
     STATUS_COMPLETED,
@@ -147,6 +148,23 @@ def test_prompt_contract_bounds_per_company_output() -> None:
     # The chair's verdict entries carry the same bound.
     assert chair_prompt.count("<=200 chars") >= 2
     assert "field_uncertainties" in chair_prompt
+
+
+def test_chair_is_told_not_to_duplicate_per_company_output() -> None:
+    """The chair must not describe every company twice.
+
+    It emits ``chair_verdict`` (every company, exactly one bucket) AND could
+    emit ``company_notes`` for the same companies. Only the verdict drives the
+    persisted buckets, so duplicating doubled the chair's per-company output
+    and truncated the verdict — the payload that actually matters.
+    """
+    from app.services.llm import field_review_prompts as prompts
+
+    chair_prompt = prompts.field_chair_system_prompt()
+    assert '"company_notes" EMPTY' in chair_prompt
+    # Peer agents are NOT told to skip company_notes — that is their whole job.
+    peer = prompts.system_prompt_for(AGENT_COMPARATIVE_FINANCIAL_QUALITY)
+    assert '"company_notes" EMPTY' not in peer
 
 
 # ---------------------------------------------------------------------------

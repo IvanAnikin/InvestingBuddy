@@ -189,6 +189,9 @@ def field_chair_system_prompt() -> str:
         '  "field_uncertainties": ["<=150 chars each, max 6"],\n'
         '  "field_quality": "strong|adequate|thin|failed"\n'
         "}\n"
+        "Leave \"company_notes\" EMPTY: your per-company reasoning belongs in "
+        "the chair_verdict entries below, and duplicating it there wastes your "
+        "output budget and can truncate the verdict.\n"
         "These three buckets are the ONLY placements available. They mean, "
         "respectively: research this next; research this after the first group; "
         "cannot be compared yet because the evidence is too thin. They are NOT "

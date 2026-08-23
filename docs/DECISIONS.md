@@ -1323,3 +1323,14 @@ bounds its own at `<=150`, which is why its 200-per-candidate budget works) and
 that contract with roughly 5x headroom (chair: 3,440 at 2 companies, 6,040 at
 7, 8,640 at the supported maximum of 12, under a 9,000 cap). Bounding the
 contract is what makes the budget predictable rather than hopeful.
+
+**Second recalibration + chair de-duplication.** The bounded contract took the
+live 7-company review from 1/8 to **6/8** agents completing, but
+`comparative_financial_quality` still exceeded 3,420 and the chair still
+exceeded 6,040. Two changes: (a) the chair is now told to leave `company_notes`
+EMPTY — it emits `chair_verdict` covering every company in exactly one bucket,
+and only the verdict drives the persisted buckets, so emitting both made it
+describe every company twice and truncate the payload that actually matters;
+(b) constants resized from the observed shortfall (per-company 260→400, chair
+base extra 800→1200, chair per-company 260→400, cap 9,000→14,000), giving
+4,400/8,400 at 7 companies and 6,400/12,400 at the supported maximum of 12.
