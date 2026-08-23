@@ -96,7 +96,21 @@ _LIST_KEY_ALIASES = (
 def normalize_financial_data_summary(
     financial_data_summary: dict[str, Any] | None,
 ) -> dict[str, Any] | None:
-    """Return the summary with BOTH key spellings populated and consistent.
+    """DEPRECATED (Phase B) — superseded by ``FinancialDataSummary``.
+
+    This dual-spelling shim was the correct EMERGENCY fix for the
+    ``available_count=0`` incident, but it left the contract ambiguous: two
+    spellings were authoritative at once and every consumer had to pick one.
+    ``app.schemas.evidence_state.FinancialDataSummary`` replaces it — legacy
+    spellings normalise at ONE ingress boundary, counts are DERIVED from their
+    lists, and consumers read attributes.
+
+    It has NO production callers (enforced by
+    ``test_phase32b_evidence_contracts.py``) and is retained only so historical
+    tooling and tests that predate Phase B keep working. Do not call it from
+    new code.
+
+    Return the summary with BOTH key spellings populated and consistent.
 
     ``FinancialDataAgent`` serialises ``available_financial_data`` /
     ``missing_financial_data`` / ``warnings``; report/memo/scoring readers ask

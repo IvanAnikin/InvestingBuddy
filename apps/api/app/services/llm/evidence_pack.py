@@ -22,6 +22,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from app.schemas.evidence_state import FinancialDataSummary
 from app.services.llm.schemas import (
     EVIDENCE_PACK_VERSION,
     TIER_T1_PRIMARY_COMPANY_SOURCE,
@@ -509,7 +510,10 @@ def _add_financial_context(
         context = (
             fds.get("financial_context_summary")
             or fds.get("summary")
-            or ", ".join(str(x) for x in (fds.get("available_financial_data") or [])[:8])
+            or ", ".join(
+                (FinancialDataSummary.from_payload(fds) or FinancialDataSummary())
+                .available_fields[:8]
+            )
         )
         if context:
             builder.add(

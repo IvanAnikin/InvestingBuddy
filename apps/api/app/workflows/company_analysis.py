@@ -117,6 +117,7 @@ from app.integrations.providers.free_real_provider import (
     SOURCE_NOT_SOURCED,
 )
 from app.integrations.sec_issuer_registry import lookup_sec_issuer
+from app.schemas.evidence_state import FinancialDataSummary
 from app.schemas.report import ReportCreate
 from app.schemas.source import CitationCreate, SourceCreate
 from app.services import (
@@ -1032,6 +1033,7 @@ def build_company_analysis_graph(
                 company_snapshot=snapshot,
                 source_ids=source_ids,
             )
+            _typed_fds = FinancialDataSummary.from_agent_output(output)
             output_dict = financial_data_agent_output_to_dict(output)
             _run_holder["financial_data_summary"] = output_dict
 
@@ -1039,10 +1041,12 @@ def build_company_analysis_graph(
                 db,
                 step,
                 output_data={
-                    "available_count": len(output.available_financial_data),
-                    "missing_count": len(output.missing_financial_data),
-                    "warnings_count": len(output.warnings),
-                    "source_tier_summary": output.source_tier_summary,
+                    # Phase B: counts come from the typed contract (which
+                    # derives them), not from a second hand-rolled len().
+                    "available_count": _typed_fds.available_count,
+                    "missing_count": _typed_fds.missing_count,
+                    "warnings_count": _typed_fds.warnings_count,
+                    "source_tier_summary": _typed_fds.source_tier_summary,
                 },
             )
 
@@ -1054,13 +1058,14 @@ def build_company_analysis_graph(
             error_msg = f"financial_data_agent failed: {exc}"
             await agent_run_service.fail_agent_step(db, step, error_msg)
             # Non-fatal — workflow continues
+            # Phase B: the failure fallback emits the CANONICAL shape too, so
+            # a degraded run and a healthy run have the same contract.
             fallback = {
-                "available_financial_data": [],
-                "missing_financial_data": [],
-                "data_quality_notes": [error_msg],
-                "source_tier_summary": {},
-                "financial_context_summary": f"FinancialDataAgent failed: {exc}",
-                "warnings": [error_msg],
+                **FinancialDataSummary(
+                    data_quality_notes=[error_msg],
+                    financial_context_summary=f"FinancialDataAgent failed: {exc}",
+                    warnings=[error_msg],
+                ).to_payload(),
             }
             _run_holder["financial_data_summary"] = fallback
             return {"financial_data_summary": fallback}
@@ -2138,7 +2143,10 @@ def build_company_analysis_graph(
             content_md += "**Warnings:**\n\n"
             content_md += "\n".join(f"- {w}" for w in fda_warnings)
             content_md += "\n\n"
-        fda_missing = financial_data_summary.get("missing_financial_data", [])
+        fda_missing = (
+            FinancialDataSummary.from_payload(financial_data_summary)
+            or FinancialDataSummary()
+        ).missing_fields
         if fda_missing:
             content_md += f"**Missing financial data categories:** {len(fda_missing)} total.  \n\n"
 
@@ -2421,7 +2429,10 @@ def build_company_analysis_graph(
         # ── Missing Information ──────────────────────────────────────
         all_missing = list(dict.fromkeys(
             missing_fields
-            + financial_data_summary.get("missing_financial_data", [])
+            + (
+                FinancialDataSummary.from_payload(financial_data_summary)
+                or FinancialDataSummary()
+            ).missing_fields
         ))
         if all_missing:
             content_md += f"## Missing Information ({len(all_missing)} items)\n\n"

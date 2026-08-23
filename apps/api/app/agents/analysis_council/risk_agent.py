@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from app.schemas.evidence_state import FinancialDataSummary
 from app.services.canonical_evidence import resolve_price_provenance
 
 
@@ -123,13 +124,17 @@ def run_risk_agent(
         )
 
     # ── Financial risks ───────────────────────────────────────────────────
+    # Phase B: normalise the payload ONCE at ingress via the typed contract;
+    # below this line the code reads attributes, never string keys, so a
+    # producer rename fails at the boundary instead of silently reading [].
+    _fds = FinancialDataSummary.from_payload(financial_data_summary) or (
+        FinancialDataSummary()
+    )
     available_financials = [
-        f for f in financial_data_summary.get("available_financial_data", [])
-        if f.startswith("financials.")
+        f for f in _fds.available_fields if f.startswith("financials.")
     ]
     missing_financials = [
-        f for f in financial_data_summary.get("missing_financial_data", [])
-        if f.startswith("financials.")
+        f for f in _fds.missing_fields if f.startswith("financials.")
     ]
     if missing_financials and available_financials:
         # Partial: statement fundamentals are sourced but valuation inputs are

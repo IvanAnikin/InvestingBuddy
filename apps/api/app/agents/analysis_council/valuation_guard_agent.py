@@ -18,6 +18,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from app.schemas.evidence_state import FinancialDataSummary
+
 # Valuation inputs required for each method
 _DCF_REQUIRED = [
     "financials.free_cash_flow",
@@ -117,12 +119,12 @@ def run_valuation_guard_agent(
     overall_sq = source_quality_summary.get("overall_source_quality", "insufficient")
 
     # Available data from snapshot
-    available_financial_data = set(
-        financial_data_summary.get("available_financial_data", [])
+    # Phase B: typed ingress (see FinancialDataSummary). Attribute reads below.
+    _fds = FinancialDataSummary.from_payload(financial_data_summary) or (
+        FinancialDataSummary()
     )
-    missing_financial_data = set(
-        financial_data_summary.get("missing_financial_data", [])
-    )
+    available_financial_data = set(_fds.available_fields)
+    missing_financial_data = set(_fds.missing_fields)
 
     # ── Check identity prerequisites ──────────────────────────────────────
     for field_path in _IDENTITY_BLOCKERS:

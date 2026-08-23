@@ -45,6 +45,7 @@ from app.models.scorecard import Scorecard
 from app.models.screening import ScreeningCandidate
 from app.models.source import Citation, Source
 from app.schemas.catalyst import neutralize_forbidden_terms
+from app.schemas.evidence_state import FinancialDataSummary
 from app.schemas.final_report import (
     FINAL_REPORT_VERSION,
     INTERNAL_DISCLAIMER,
@@ -58,7 +59,6 @@ from app.services import safety_terms
 from app.services.canonical_evidence import (
     FundamentalsEvidence,
     build_evidence_channels,
-    normalize_financial_data_summary,
     resolve_fundamentals,
     resolve_price_provenance,
 )
@@ -1404,19 +1404,25 @@ def _build_data_availability_summary(
 
     Two causes, both closed here:
 
-    1. ``financial_data_summary`` is serialised by ``FinancialDataAgent`` with
+    1. ``financial_data_summary`` was serialised by ``FinancialDataAgent`` with
        the keys ``available_financial_data`` / ``missing_financial_data``, but
        this function asked for ``available_count`` / ``available_fields`` /
        ``missing_count`` / ``warnings_count`` and silently took the ``0`` / ``[]``
-       defaults. ``normalize_financial_data_summary`` now guarantees both
-       spellings, so the counts are the real ones.
+       defaults. Phase B replaces that with the typed
+       :class:`FinancialDataSummary`: legacy spellings normalise ONCE at
+       ingress, counts are DERIVED from the lists, and this function reads
+       attributes — so a count can no longer contradict the fields beside it.
     2. ``fundamentals_available`` came from a workflow flag that did not know
        about SEC/XBRL regulator-structured facts. It is now reconciled against
        the canonical ``FundamentalsEvidence`` — a company with real regulator
        statement facts is never reported as having none, and a bare flag can no
        longer claim availability the inventory cannot corroborate.
     """
-    financial_data_summary = normalize_financial_data_summary(financial_data_summary)
+    # Phase B typed ingress: the ONE place a legacy payload spelling is accepted.
+    _fds = FinancialDataSummary.from_payload(financial_data_summary) or (
+        FinancialDataSummary()
+    )
+    financial_data_summary = _fds.to_payload() if financial_data_summary else None
     tier = source_tier or "T6_model_estimate"
     # Phase 32A RC-2 — stop conflating tier==T6 with mock. A real T6-derived
     # metric is NOT mock; is_mock comes from the report-level provenance
@@ -1462,20 +1468,21 @@ def _build_data_availability_summary(
             "data_provenance": data_provenance,
             "fundamentals_available": resolved_fundamentals_available,
             **fundamentals_block,
-            "available_count": financial_data_summary.get("available_count", 0),
-            "missing_financial_fields_count": financial_data_summary.get(
-                "missing_count", 0
-            ),
-            "warnings_count": financial_data_summary.get("warnings_count", 0),
+            # Phase B: counts are DERIVED from the lists by the typed contract,
+            # so this block can no longer render a count that contradicts the
+            # fields beside it (the "Available Count = 0" defect).
+            "available_count": _fds.available_count,
+            "missing_financial_fields_count": _fds.missing_count,
+            "warnings_count": _fds.warnings_count,
             "available_fields": {
-                "value": financial_data_summary.get("available_fields", []),
+                "value": list(_fds.available_fields),
                 "provenance": "sourced_fact",
             },
             "missing_fields": {
-                "value": financial_data_summary.get("missing_fields", []),
+                "value": list(_fds.missing_fields),
                 "provenance": "sourced_fact",
             },
-            "warnings": financial_data_summary.get("warnings", []),
+            "warnings": list(_fds.warnings),
             "scope_note": cross_ref_note,
             "human_review_required": (
                 review_for_mock or not resolved_fundamentals_available
@@ -2093,9 +2100,12 @@ def _build_missing_information(
         for field in company_snapshot.get("missing_fields", []):
             missing.append({"field": field, "source": "company_snapshot"})
 
-    # From financial data
+    # From financial data. NOTE: the snapshot's ``missing_fields`` above and the
+    # financial agent's are DIFFERENT concepts that share a name; the typed
+    # contract keeps the second one scoped to its own model.
     if financial_data_summary:
-        for field in financial_data_summary.get("missing_fields", []):
+        _fd = FinancialDataSummary.from_payload(financial_data_summary)
+        for field in (_fd.missing_fields if _fd else []):
             if field not in [m["field"] for m in missing]:
                 missing.append({"field": field, "source": "financial_data_agent"})
 
@@ -4034,10 +4044,13 @@ def _assemble_final_report_content(
     Phase 24 adds a ``news_catalyst_discovery`` section. It is additive and does
     not affect the original required-section set.
     """
-    # Canonical key normalisation ONCE, at the entry point, so every section
+    # Phase B: typed normalisation ONCE, at the entry point, so every section
     # below (missing information, valuation readiness, bull/bear, research memo)
-    # reads the same real counts instead of a silent 0/[] default.
-    financial_data_summary = normalize_financial_data_summary(financial_data_summary)
+    # reads the same real counts instead of a silent 0/[] default. Legacy
+    # spellings are accepted here and nowhere downstream.
+    if financial_data_summary is not None:
+        _entry_fds = FinancialDataSummary.from_payload(financial_data_summary)
+        financial_data_summary = _entry_fds.to_payload() if _entry_fds else None
 
     company_name = None
     ticker = None
@@ -5290,7 +5303,8 @@ class FinalReportGeneratorService:
         # post-ingestion ones. Nothing is deleted — the original workflow draft
         # is retained in full as the legacy report (``legacy_draft_report_id``)
         # for audit.
-        canonical_fds = normalize_financial_data_summary(financial_data_summary) or {}
+        _canonical = FinancialDataSummary.from_payload(financial_data_summary)
+        canonical_fds = _canonical.to_payload() if _canonical else {}
         if company_snapshot:
             try:
                 report_content.update(

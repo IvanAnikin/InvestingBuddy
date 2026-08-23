@@ -397,24 +397,15 @@ def run_financial_data_agent(
 def financial_data_agent_output_to_dict(output: FinancialDataAgentOutput) -> dict:
     """Serialize output to a plain dict suitable for JSON storage.
 
-    Emits BOTH key spellings via ``normalize_financial_data_summary``. The agent
-    historically emitted only ``available_financial_data`` /
-    ``missing_financial_data`` while every downstream reader (final-report data
-    availability summary, internal research memo, scoring engine) asked for
-    ``available_count`` / ``available_fields`` / ``missing_count`` /
-    ``missing_fields`` / ``warnings_count`` and silently got the ``0`` / ``[]``
-    defaults. That is what rendered "Fundamentals Available = Yes" beside
-    "Available Count = 0" and "Available Fields = Not sourced" in a report whose
-    council was quoting real FY2026 SEC statement facts.
+    Phase B: goes through the typed :class:`FinancialDataSummary` contract, so
+    the canonical field names and the DERIVED counts are produced in exactly
+    one place. Previously this emitted the agent's own spelling while every
+    downstream reader asked for a different one and silently got ``0`` / ``[]``
+    — which rendered "Fundamentals Available = Yes" beside "Available Count =
+    0" in a report whose council was quoting real FY2026 SEC statement facts.
+    Renaming a field on the agent output now fails at
+    ``FinancialDataSummary.from_agent_output`` instead of degrading a report.
     """
-    from app.services.canonical_evidence import normalize_financial_data_summary
+    from app.schemas.evidence_state import FinancialDataSummary
 
-    raw = {
-        "available_financial_data": output.available_financial_data,
-        "missing_financial_data": output.missing_financial_data,
-        "data_quality_notes": output.data_quality_notes,
-        "source_tier_summary": output.source_tier_summary,
-        "financial_context_summary": output.financial_context_summary,
-        "warnings": output.warnings,
-    }
-    return normalize_financial_data_summary(raw) or raw
+    return FinancialDataSummary.from_agent_output(output).to_payload()

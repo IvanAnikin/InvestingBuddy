@@ -33,6 +33,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.schemas.evidence_state import FinancialDataSummary
 from app.services import safety_terms
 
 logger = logging.getLogger(__name__)
@@ -598,8 +599,12 @@ class ScoringEngine:
         vg = valuation_guard_summary or {}
         cc = committee_chair_summary or {}
 
-        available_count = fd.get("available_count", 0)
-        missing_count = fd.get("missing_count", 10)
+        # Phase B: typed ingress. ``missing`` keeps its historic pessimistic
+        # default of 10 when NO summary exists at all, but a summary that
+        # exists now yields its own true counts rather than a silent 0.
+        _fd = FinancialDataSummary.from_payload(fd)
+        available_count = _fd.available_count if _fd else 0
+        missing_count = _fd.missing_count if _fd else 10
         available_data = [
             f"field_{i}" for i in range(available_count)
         ]
@@ -1067,8 +1072,9 @@ class ScoringEngine:
     def _score_financial_strength_from_summary(
         self, fd: dict, source_tier: str
     ) -> DimensionScore:
-        available = fd.get("available_count", 0)
-        missing = fd.get("missing_count", 10)
+        _fd = FinancialDataSummary.from_payload(fd)
+        available = _fd.available_count if _fd else 0
+        missing = _fd.missing_count if _fd else 10
         total = available + missing
         if total == 0:
             return DimensionScore(

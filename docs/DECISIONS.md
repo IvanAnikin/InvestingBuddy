@@ -1346,3 +1346,72 @@ deployment (200 OK at both the default and an overridden budget) before merge.
 That reproduction — constructing the app's own client against staging and
 calling it directly — is the cheap check that should precede any future
 provider-parameter change.
+
+---
+
+## ADR-021: Typed Evidence Contracts and Boundary Fixtures (Phase B)
+
+**Date:** 2026-08-23
+**Status:** Accepted
+
+### Context
+
+Two incidents share one root cause: a producer and a consumer silently disagreed
+about the shape of decision-critical state, and the disagreement surfaced as a
+plausible DEFAULT rather than an error.
+
+1. **Internal.** `FinancialDataAgent` emitted `available_financial_data`;
+   report/memo/scoring consumers asked for `available_count` / `available_fields`
+   and silently got `0` / `[]`. A report quoting real SEC statement facts
+   rendered "Available Count = 0". Producer tests and consumer tests each
+   hand-built their *own* dict, so both passed.
+2. **External** (#129/#130). `AzureOpenAILLMClient` accepted a per-call
+   `max_tokens` and dropped it, while the fake client honoured it. Unit tests
+   were green and production used a stale default. The first correction then
+   sent a parameter combination the real stack rejects (HTTP 400).
+
+The emergency fix for (1) emitted *both* spellings. That was right at the time
+but left two authoritative names, so every consumer still had to choose.
+
+### Decision
+
+**Typed contracts in `app/schemas/evidence_state.py`** own decision-critical
+evidence state: `FieldProvenance`, `FinancialDataSummary`, `PriceSummary`,
+`FundamentalsResolution`, `EvidenceInventory`.
+
+The load-bearing property is not "Pydantic is nicer than dicts". It is that
+**counts are derived, never stored**: `available_count` is a property of
+`available_fields`, so "count 0 beside populated fields" is unrepresentable.
+Legacy spellings are accepted at exactly one ingress (`from_payload`) and never
+re-emitted; `normalize_financial_data_summary` is deprecated with zero
+production callers, enforced by a test.
+
+`fundamentals_available` is deliberately **not** on `FinancialDataSummary`:
+whether a company has usable fundamentals depends on regulator and issuer facts
+as well as this agent's list, and that judgement belongs to
+`FundamentalsResolution`. A second, naive answer would recreate the very
+"two truths" problem this phase removes.
+
+### Contract ownership rules
+
+1. Producers return typed state.
+2. Persist/render boundaries serialize typed state; nothing else does.
+3. Consumers read attributes, never undocumented dict keys.
+4. Legacy aliases normalize **once**, at ingress.
+5. Decision-critical facts carry field-level provenance; container provenance is
+   fallback-only and marked `inherited_from_container`.
+6. Fake adapters must implement the same public contract as real adapters —
+   signatures are compared in CI.
+7. **Provider-wrapper parameter changes require an adapter-boundary test AND
+   `scripts/live_provider_smoke.py` before staging deployment.**
+
+### Consequences
+
+- Contract fixtures run REAL producer → serialize → JSON → REAL consumer. The
+  §9 acceptance test derives its expectations from the producer object, so a
+  producer rename fails CI at the boundary (verified by deliberately injecting
+  the rename).
+- Compact counts-only payloads are preserved explicitly rather than collapsing
+  to zero — absence of names is not absence of data.
+- New payloads carry `evidence_state_schema_version`. No DB migration; head
+  stays 017.
