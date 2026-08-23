@@ -534,7 +534,7 @@ function CandidateDetailPanel({ candidateId }: { candidateId: string }) {
         {/* Fundamentals */}
         <GlassCard className="space-y-1 p-4 text-xs text-slate-300">
           <p className="mb-1 text-sm font-semibold text-slate-200">
-            Fundamentals (SEC / derived)
+            Financial Fundamentals
           </p>
           <p>Latest annual: {detail.latest_annual_fy ?? "—"}</p>
           <p>Revenue: {fmt(detail.revenue_mln, 0)}M · YoY {fmt(detail.revenue_growth_yoy_pct)}%</p>

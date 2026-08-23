@@ -253,7 +253,7 @@ export default async function ReportDetailPage({
           />
         ) : (
           <StatusPill
-            label="Legacy deterministic draft"
+            label="Historical diagnostic draft"
             color="amber"
             testId="report-kind-legacy"
           />
@@ -278,6 +278,22 @@ export default async function ReportDetailPage({
         )}
         <StatusPill label={report.report_type} color="gray" />
       </div>
+
+      {/* Phase C (G1/H-4): a pre-council historical draft must never read as
+          current research. It stays accessible for audit, but says plainly
+          what it is and that a current final report supersedes it. */}
+      {!isFinalReport && (
+        <SafetyBanner
+          variant="warning"
+          title="Pre-council historical diagnostic draft"
+          className="legacy-superseded-banner"
+        >
+          This is a deterministic draft produced BEFORE the LLM council and
+          primary-document ingestion ran. It is retained for audit only and is
+          superseded by the company&apos;s current final report. Do not read it
+          as the current research state.
+        </SafetyBanner>
+      )}
 
       {/* Safety disclaimer */}
       <SafetyBanner

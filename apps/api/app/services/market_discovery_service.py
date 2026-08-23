@@ -73,7 +73,7 @@ from app.services.market_universe_builder import (
     THEME_COMPANY_REGISTRY,
     build_universe,
 )
-from app.services.sector_taxonomy import get_supported_sector_aliases
+from app.services.sector_taxonomy import get_supported_sector_aliases, resolve_sector_classification
 from app.workflows.company_analysis import run_company_analysis
 
 logger = logging.getLogger(__name__)
@@ -282,6 +282,7 @@ def _build_candidate(
     ticker_value = str(signal.get("ticker") or extracted.ticker or "")
     ci_name = identity.get("company_name")
     ci_sector = identity.get("sector")
+    curated_sector: str | None = None
     ci_industry = identity.get("industry")
     ci_country = identity.get("country")
     name_source: str | None = None
@@ -331,9 +332,25 @@ def _build_candidate(
             name_source_tier = (
                 thesis_item.get("source_tier") or "T3_curated_reference_list"
             )
-        ci_sector = ci_sector or thesis_item.get("sector")
+        curated_sector = thesis_item.get("sector")
         ci_industry = ci_industry or thesis_item.get("industry")
         ci_country = ci_country or thesis_item.get("country")
+
+    # Phase C (V1): resolve provider-vs-curated sector disagreement
+    # DETERMINISTICALLY and keep the disagreement visible. Previously the
+    # provider's sector won whenever it existed, which persisted
+    # ``sector="Financials"`` beside ``industry="Real Estate Investment
+    # Trusts"`` on the same row while the curated "Real Estate" was discarded.
+    classification = resolve_sector_classification(
+        provider_sector=ci_sector,
+        curated_sector=curated_sector,
+        industry=ci_industry,
+    )
+    ci_sector = classification["canonical_sector"]
+    if isinstance(signal.get("identity"), dict):
+        # Diagnostics keep every input, so a conflict is inspectable rather
+        # than inferred from a contradictory row.
+        signal["identity"]["sector_classification"] = classification
 
     # Mirror the resolved display name (and its provenance) into the persisted
     # signal so the candidate detail and the row agree. ``legal_name`` is left
