@@ -1924,6 +1924,7 @@ def _build_evidence_quality(
     financial_data_summary: dict[str, Any] | None,
     canonical_fundamentals: Any,
     catalyst_discovery: dict[str, Any] | None,
+    primary_facts: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """The ONE evidence-quality surface, from the canonical assessment.
 
@@ -1947,6 +1948,12 @@ def _build_evidence_quality(
         inventory=inventory,
         identity=identity,
         catalyst_summary=_catalyst_counts(catalyst_discovery),
+        # Issuer facts extracted from a primary document are financial
+        # EVIDENCE even when no aggregator/regulator fundamentals resolved.
+        # Omitting them reported "insufficient" for a company whose report
+        # cited validated T1 issuer statement figures — source METHOD
+        # mistaken for fact ABSENCE all over again.
+        primary_fact_count=len(primary_facts or []),
     )
     payload = assessment.to_payload()
     payload.update(
@@ -1979,10 +1986,15 @@ def _catalyst_counts(catalyst_discovery: dict[str, Any] | None) -> dict[str, int
                 return len(value)
         return 0
 
+    # Key names come from ``CatalystSummary`` (app/schemas/catalyst.py). Live
+    # acceptance caught an earlier guess at these names silently yielding zero,
+    # which rendered "catalyst evidence: insufficient" for a company holding
+    # real SEC filings and issuer press — the alias-drift class this campaign
+    # exists to eliminate, reintroduced in a presentation layer.
     return {
-        "regulator_filing_count": _count("sec_filing_count", "filings_count", "filings"),
-        "issuer_press_count": _count("press_release_count", "press_count", "press_items"),
-        "independent_news_count": _count("news_count", "industry_event_count", "news_items"),
+        "regulator_filing_count": _count("filing_event_count"),
+        "issuer_press_count": _count("press_release_event_count"),
+        "independent_news_count": _count("news_event_count"),
     }
 
 
@@ -5454,6 +5466,7 @@ class FinalReportGeneratorService:
             financial_data_summary=financial_data_summary,
             canonical_fundamentals=_post_fundamentals,
             catalyst_discovery=catalyst_discovery,
+            primary_facts=primary_facts,
         )
         report_content["thin_evidence_state"] = _build_thin_evidence_state(
             company_snapshot=company_snapshot,
