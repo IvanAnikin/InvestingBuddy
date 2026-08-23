@@ -1334,22 +1334,3 @@ describe every company twice and truncate the payload that actually matters;
 (b) constants resized from the observed shortfall (per-company 260→400, chair
 base extra 800→1200, chair per-company 260→400, cap 9,000→14,000), giving
 4,400/8,400 at 7 companies and 6,400/12,400 at the supported maximum of 12.
-
-**True root cause (found on the third live run).** Raising the chair's computed
-budget from 6,040 to 8,400 changed *nothing* — the same two agents truncated
-identically. `AzureOpenAILLMClient._complete_raw` accepted `max_tokens` and
-never forwarded it to `ainvoke`; the model is constructed once with
-`max_tokens=llm_max_output_tokens` (1200), so **every real call used 1200**
-regardless of what the council computed. Every count-aware output budget in the
-codebase was inert against the real provider — this slice's *and* the discovery
-council's `discovery_max_output_tokens`, which had been latently broken since
-it was introduced and only appeared to work because discovery output happens to
-fit in 1200. The contract bounding above is what actually produced the 1/8 →
-6/8 improvement, by reducing real output rather than raising a cap that was
-never applied. `_ainvoke_chat` now takes a per-call `max_tokens` and passes it
-to `ainvoke`, overriding the construction-time default.
-
-The tests could not catch this: the fake client honours `max_tokens` faithfully,
-so `max_tokens_seen` assertions passed while production truncated — the same
-producer/consumer gap class as the `available_count` bug. New tests exercise the
-REAL invocation path with a stub model object (no credentials, no network).

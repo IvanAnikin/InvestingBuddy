@@ -15,7 +15,6 @@ Nothing here logs prompts, completions, endpoints or credentials.
 from __future__ import annotations
 
 import asyncio
-from typing import Any
 
 from app.core.config import Settings
 from app.services.llm.client import (
@@ -96,7 +95,6 @@ class AzureOpenAILLMClient(LLMClient):
             timeout,
             record_usage=self._record_usage,
             record_finish_reason=self._record_finish_reason,
-            max_tokens=max_tokens,
         )
 
 
@@ -150,7 +148,6 @@ class OpenAILLMClient(LLMClient):
             timeout,
             record_usage=self._record_usage,
             record_finish_reason=self._record_finish_reason,
-            max_tokens=max_tokens,
         )
 
 
@@ -265,7 +262,6 @@ async def _ainvoke_chat(
     timeout: int,
     record_usage=None,
     record_finish_reason=None,
-    max_tokens: int | None = None,
 ) -> str:
     """Invoke a langchain chat model with a hard timeout; return text content.
 
@@ -279,21 +275,8 @@ async def _ainvoke_chat(
     nothing here is logged.
     """
     messages = [("system", system), ("human", user)]
-    # Per-CALL output budget. The model is constructed with a default
-    # ``max_tokens``, but a council sizes each call from its own contract (e.g.
-    # ``field_review_max_output_tokens`` / ``discovery_max_output_tokens``), so
-    # the per-call value MUST override the construction-time default. Without
-    # this, every call silently used the constructor's value and every
-    # count-aware output budget in the codebase was inert against the real
-    # provider — the defect that made a 7-company field-review chair truncate
-    # no matter how large its computed budget was.
-    invoke_kwargs: dict[str, Any] = {}
-    if max_tokens is not None and int(max_tokens) > 0:
-        invoke_kwargs["max_tokens"] = int(max_tokens)
     try:
-        result = await asyncio.wait_for(
-            llm.ainvoke(messages, **invoke_kwargs), timeout=timeout
-        )
+        result = await asyncio.wait_for(llm.ainvoke(messages), timeout=timeout)
     except (asyncio.TimeoutError, TimeoutError) as exc:
         raise LLMTimeoutError("LLM call timed out") from exc
     except LLMError:
