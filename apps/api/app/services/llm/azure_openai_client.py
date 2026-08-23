@@ -15,6 +15,7 @@ Nothing here logs prompts, completions, endpoints or credentials.
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
 from app.core.config import Settings
 from app.services.llm.client import (
@@ -95,6 +96,7 @@ class AzureOpenAILLMClient(LLMClient):
             timeout,
             record_usage=self._record_usage,
             record_finish_reason=self._record_finish_reason,
+            max_tokens=max_tokens,
         )
 
 
@@ -148,6 +150,7 @@ class OpenAILLMClient(LLMClient):
             timeout,
             record_usage=self._record_usage,
             record_finish_reason=self._record_finish_reason,
+            max_tokens=max_tokens,
         )
 
 
@@ -262,6 +265,7 @@ async def _ainvoke_chat(
     timeout: int,
     record_usage=None,
     record_finish_reason=None,
+    max_tokens: int | None = None,
 ) -> str:
     """Invoke a langchain chat model with a hard timeout; return text content.
 
@@ -275,8 +279,25 @@ async def _ainvoke_chat(
     nothing here is logged.
     """
     messages = [("system", system), ("human", user)]
+    # Per-CALL output budget, overriding the construction-time default. Councils
+    # size each call from their own contract (``field_review_max_output_tokens``
+    # / ``discovery_max_output_tokens``); without this every real call silently
+    # used the constructor's value and those budgets were inert.
+    #
+    # The parameter MUST be ``max_completion_tokens``, not ``max_tokens``:
+    # langchain-openai (>=1.x) already translates the constructor's
+    # ``max_tokens`` into ``max_completion_tokens`` in the request payload, so
+    # sending ``max_tokens`` here puts BOTH in the payload and Azure rejects the
+    # call outright — HTTP 400 ``invalid_parameter_combination``, "Setting
+    # 'max_tokens' and 'max_completion_tokens' at the same time is not
+    # supported" (verified live against the staging deployment).
+    invoke_kwargs: dict[str, Any] = {}
+    if max_tokens is not None and int(max_tokens) > 0:
+        invoke_kwargs["max_completion_tokens"] = int(max_tokens)
     try:
-        result = await asyncio.wait_for(llm.ainvoke(messages), timeout=timeout)
+        result = await asyncio.wait_for(
+            llm.ainvoke(messages, **invoke_kwargs), timeout=timeout
+        )
     except (asyncio.TimeoutError, TimeoutError) as exc:
         raise LLMTimeoutError("LLM call timed out") from exc
     except LLMError:
