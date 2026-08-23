@@ -259,6 +259,32 @@ def classify_document_kind(text: str, url: str) -> str:
     return DOC_KIND_OTHER
 
 
+_PCT_ESCAPE_RE = re.compile(r"%([0-9a-fA-F]{2})")
+
+
+def normalize_url_path_encoding(path: str) -> str:
+    """Canonicalise percent-encoding in a URL path for COMPARISON.
+
+    Two things only, both semantics-preserving:
+
+    * a literal space becomes ``%20`` — a raw space is not legal in a URL, so
+      the encoded form is the canonical one;
+    * existing escapes are upper-cased (``%2f`` -> ``%2F``), which RFC 3986
+      §6.2.2.1 defines as equivalent.
+
+    Deliberately does NOT decode anything. Decoding ``%2F`` would conflate
+    ``a%2Fb`` with ``a/b``, which are genuinely different resources, and
+    re-encoding a decoded path risks double-encoding. Encoding-only is enough
+    to collapse the real-world divergence (``Annual Report 2025`` vs
+    ``Annual%20Report%202025``) while leaving reserved delimiters untouched.
+    """
+    if not path:
+        return path
+    return _PCT_ESCAPE_RE.sub(
+        lambda m: "%" + m.group(1).upper(), path.replace(" ", "%20")
+    )
+
+
 def document_identity(url: str) -> str:
     """Return the canonical dedup key for ``url``.
 
@@ -276,7 +302,12 @@ def document_identity(url: str) -> str:
         host = (parts.hostname or "").lower()
         if parts.port is not None:
             host = f"{host}:{parts.port}"
-        path = parts.path or "/"
+        # Normalise encoding BEFORE building the key, so the raw-space and
+        # percent-encoded forms of one document collapse to one identity.
+        # Live defect: Pandora's annual report was discovered under both forms
+        # and became two candidates, two attempts and two cache entries — one
+        # of which timed out while the other extracted 169 pages.
+        path = normalize_url_path_encoding(parts.path or "/")
         if len(path) > 1:
             path = path.rstrip("/") or "/"
         scheme = (parts.scheme or "https").lower()
