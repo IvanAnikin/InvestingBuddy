@@ -213,6 +213,38 @@ class Settings(BaseSettings):
     # Hard cap on companies included in ONE field-review pack (bounds prompt size
     # + cost). Companies beyond the cap are excluded with an honest reason.
     llm_field_review_council_max_companies: int = 12
+    # Output-token budget for ONE field-review agent call. Mirrors the discovery
+    # council's scaling (``llm_discovery_max_output_tokens_*`` above) for the
+    # SAME reason, observed live on staging 2026-08-23: EVERY field-review agent
+    # emits a ``company_notes`` array with one entry per compared company, so a
+    # flat budget truncates the reply mid-object as the field grows. A real
+    # 7-company review truncated the CHAIR and surfaced as a PERMANENT
+    # ``LLMJsonError`` (unparseable JSON is never retried, and the one-shot
+    # repair reuses the same budget, so it failed identically).
+    #
+    #     non-chair: min(cap, base + per_company * company_count)
+    #     chair:     min(cap, base + per_company * company_count
+    #                          + chair_base_extra
+    #                          + chair_per_company_extra * company_count)
+    #
+    # The chair needs strictly more than its peers because it emits the
+    # per-company ``company_notes`` AND a full ``chair_verdict`` — three
+    # priority buckets (strongest / second tier / blocked) in which EVERY
+    # company appears exactly once, each entry carrying company_ref, ticker,
+    # exchange, rationale, citation_ids, confidence and caveats — plus
+    # ``field_uncertainties``. ``chair_base_extra`` covers the three-bucket
+    # scaffolding; ``chair_per_company_extra`` covers one verdict entry.
+    #
+    # ``cap`` is a HARD ceiling that bounds worst-case cost and latency. The
+    # default covers the default ``llm_field_review_council_max_companies``
+    # (12 -> 6,600 chair tokens) WITHOUT clipping, so the cap exists to stop a
+    # raised company cap from making a single call unbounded, not to bite at the
+    # supported maximum. Does NOT affect the company or discovery councils.
+    llm_field_review_max_output_tokens_base: int = 1200
+    llm_field_review_max_output_tokens_per_company: int = 200
+    llm_field_review_max_output_tokens_chair_base_extra: int = 600
+    llm_field_review_max_output_tokens_chair_per_company_extra: int = 200
+    llm_field_review_max_output_tokens_cap: int = 7000
     # Field-review contract version. Bump when the agent set or output schema
     # changes. Independent of the other two councils' versions.
     llm_field_review_council_version: str = "v1"

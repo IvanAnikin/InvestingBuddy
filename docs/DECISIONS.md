@@ -1282,3 +1282,30 @@ The regression guard is structural rather than value-pinning: tests now assert
 `reserve >= 2 x pacing_max_wait` and that every council's non-reserved slice
 absorbs a full paced initial pass with headroom, for all three councils. That
 invariant, not the specific numbers, is what was missing.
+
+### Corrective (2026-08-23, live staging) — Deep Field Review chair output budget
+
+A real 7-company Deep Field Review completed 7/8 agents; the **chair** failed
+with `LLMJsonError`. Root cause: the field-review council passed the company
+council's **flat** `llm_max_output_tokens` (1200) to every agent regardless of
+field size, while the discovery council (ADR: `discovery_max_output_tokens`)
+already scaled with candidate count. Every field-review agent emits one
+`company_notes` entry per compared company, and the chair additionally emits a
+three-bucket `chair_verdict` in which every company appears exactly once — so
+the chair overflows first. An unparseable reply is **permanent**: `LLMJsonError`
+is not transient, and the one-shot repair reuses the same budget.
+
+`field_review_max_output_tokens(n, is_chair=…)` now mirrors the discovery
+pattern: `min(cap, base + per_company·n)`, plus `chair_base_extra +
+chair_per_company_extra·n` for the chair. Defaults give 2,600 (chair) at 2
+companies, 4,600 at 7, 6,600 at the supported maximum of 12 — under the 7,000
+cap, so the cap guards against a raised company cap rather than clipping the
+supported maximum. The same value feeds the provider call **and** the TPM
+pacer's admission estimate, so the enlarged chair request is not under-counted
+(which would re-introduce the 429 starvation ADR-020 removed).
+
+Truncation is now diagnosable: clients capture the provider `finish_reason`,
+and a JSON failure after a length finish raises `LLMJsonError(truncated=True)`,
+surfacing as `chair_error_type="LLMJsonError_truncated"`. It remains permanent
+and still routes to the explicit deterministic fallback — a truncated reply
+never becomes a ranking or an evidence-based judgement.

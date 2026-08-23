@@ -89,7 +89,12 @@ class AzureOpenAILLMClient(LLMClient):
         timeout: int,
     ) -> str:
         return await _ainvoke_chat(
-            self._llm, system, user, timeout, record_usage=self._record_usage
+            self._llm,
+            system,
+            user,
+            timeout,
+            record_usage=self._record_usage,
+            record_finish_reason=self._record_finish_reason,
         )
 
 
@@ -137,7 +142,12 @@ class OpenAILLMClient(LLMClient):
         timeout: int,
     ) -> str:
         return await _ainvoke_chat(
-            self._llm, system, user, timeout, record_usage=self._record_usage
+            self._llm,
+            system,
+            user,
+            timeout,
+            record_usage=self._record_usage,
+            record_finish_reason=self._record_finish_reason,
         )
 
 
@@ -165,6 +175,23 @@ def _extract_usage(result: object) -> tuple[int, int, int] | None:
                     tt = tu.get("total_tokens")
                     return pt, ct, tt if isinstance(tt, int) else pt + ct
     except (AttributeError, TypeError, ValueError):
+        return None
+    return None
+
+
+def _extract_finish_reason(result: object) -> str | None:
+    """Best-effort provider finish reason (e.g. "stop", "length").
+
+    Read from langchain's ``response_metadata``. Returns None when absent.
+    Never raises and never returns model content — only the short reason token.
+    """
+    try:
+        rm = getattr(result, "response_metadata", None)
+        if isinstance(rm, dict):
+            reason = rm.get("finish_reason") or rm.get("stop_reason")
+            if isinstance(reason, str) and reason:
+                return reason
+    except (AttributeError, TypeError):
         return None
     return None
 
@@ -234,6 +261,7 @@ async def _ainvoke_chat(
     user: str,
     timeout: int,
     record_usage=None,
+    record_finish_reason=None,
 ) -> str:
     """Invoke a langchain chat model with a hard timeout; return text content.
 
@@ -258,6 +286,8 @@ async def _ainvoke_chat(
     # Phase 32A TPM slice: record REAL provider token usage when present (counts
     # only). A missing/None extraction leaves the base class estimated record to
     # fill the gap; a failed call records nothing (no quota was spent).
+    if record_finish_reason is not None:
+        record_finish_reason(_extract_finish_reason(result))
     if record_usage is not None:
         usage = _extract_usage(result)
         if usage is not None:

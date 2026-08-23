@@ -124,6 +124,45 @@ def get_field_review_llm_client(settings: Settings | None = None) -> LLMClient |
 # ---------------------------------------------------------------------------
 
 
+def field_review_max_output_tokens(
+    company_count: int,
+    cfg: Settings | None = None,
+    *,
+    is_chair: bool = False,
+) -> int:
+    """The output-token budget for ONE field-review agent call.
+
+    ``min(cap, base + per_company * company_count)``, plus a chair-only extra.
+    Mirrors ``discovery_council.discovery_max_output_tokens`` for the same
+    reason: EVERY field-review agent emits a ``company_notes`` entry per
+    compared company, so a FLAT budget truncates the reply mid-object as the
+    field grows. Observed live (2026-08-23): a real 7-company review truncated
+    the CHAIR at the shared flat 1200, surfacing as a PERMANENT
+    ``LLMJsonError`` — unparseable JSON is never retried, and the one-shot
+    repair reuses the same budget, so it fails identically.
+
+    The chair gets strictly more than its peers because it emits the
+    per-company notes AND a full ``chair_verdict``: three priority buckets in
+    which every company appears exactly once (each with rationale, citations,
+    confidence and caveats) plus ``field_uncertainties``.
+
+    Computed ONCE per council run and threaded down, so every agent — and every
+    retry — in a run uses a stable budget. Negative/garbage counts floor at 0
+    (a zero-company pack gets exactly ``base``); the cap is a HARD ceiling and
+    always wins, so growth can never be unbounded.
+    """
+    cfg = cfg or default_settings
+    count = max(0, int(company_count))
+    scaled = cfg.llm_field_review_max_output_tokens_base + (
+        cfg.llm_field_review_max_output_tokens_per_company * count
+    )
+    if is_chair:
+        scaled += cfg.llm_field_review_max_output_tokens_chair_base_extra + (
+            cfg.llm_field_review_max_output_tokens_chair_per_company_extra * count
+        )
+    return min(cfg.llm_field_review_max_output_tokens_cap, scaled)
+
+
 def _coerce_output(agent_name: str, raw: dict[str, Any]) -> FieldReviewAgentOutput:
     """Validate the model's dict into the agent output, tolerating drift.
 
@@ -203,6 +242,7 @@ async def _run_agent_attempt(
     known_gaps: list[str] | None = None,
     pacer: TokenBudgetPacer | None = None,
     tracker: CouncilUsageTracker | None = None,
+    company_count: int = 0,
 ) -> tuple[FieldReviewAgentOutput, list[str], Exception | None]:
     """Run ONE attempt for an agent. Never raises.
 
@@ -214,6 +254,14 @@ async def _run_agent_attempt(
     the gap-attribution grounding check (corrective, post-#99/#100).
     """
     system, user = _messages_for(agent_name, pack_json, result)
+    is_chair = agent_name == AGENT_FIELD_CHAIR
+    # Output budget scales with the number of compared companies (see
+    # ``field_review_max_output_tokens``). The SAME value feeds the provider
+    # call and the pacer estimate, so the TPM scheduler admits the enlarged
+    # chair request correctly instead of under-counting it.
+    max_output_tokens = field_review_max_output_tokens(
+        company_count, cfg, is_chair=is_chair
+    )
     # Phase 32A TPM slice: advisory provider-aware pacing shared with the other
     # two councils (same deployment, same window); the chair draws on its
     # reserved slice.
@@ -221,9 +269,9 @@ async def _run_agent_attempt(
     paced_wait = 0.0
     if pacer is not None:
         lease = await pacer.acquire(
-            estimate_request_tokens(system, user, cfg.llm_max_output_tokens),
+            estimate_request_tokens(system, user, max_output_tokens),
             reserve_tokens=cfg.llm_council_chair_token_reserve,
-            use_reserve=(agent_name == AGENT_FIELD_CHAIR),
+            use_reserve=is_chair,
             max_wait_seconds=cfg.llm_council_pacing_max_wait_seconds,
         )
         paced_wait = lease.waited_seconds
@@ -231,7 +279,7 @@ async def _run_agent_attempt(
         raw = await client.complete_json(
             system,
             user,
-            max_tokens=cfg.llm_max_output_tokens,
+            max_tokens=max_output_tokens,
             temperature=cfg.llm_temperature,
             timeout=cfg.llm_request_timeout_seconds,
             repair_instruction=prompts.REPAIR_INSTRUCTION,
@@ -244,13 +292,19 @@ async def _run_agent_attempt(
             else:
                 pacer.settle(lease, usage.total_tokens if usage else None)
         if tracker is not None:
+            # Distinguish "the reply was cut off at the output-token limit"
+            # from any other malformed JSON, so a too-small budget is
+            # diagnosable instead of looking like a model quality problem.
+            error_type = type(exc).__name__
+            if getattr(exc, "truncated", False):
+                error_type = f"{error_type}_truncated"
             tracker.record_attempt(
                 agent_name,
                 prompt_tokens=usage.prompt_tokens if usage else 0,
                 completion_tokens=usage.completion_tokens if usage else 0,
                 total_tokens=usage.total_tokens if usage else 0,
                 estimated=bool(usage.estimated) if usage else False,
-                error_type=type(exc).__name__,
+                error_type=error_type,
                 paced_wait_seconds=paced_wait,
             )
         placeholder = FieldReviewAgentOutput(
@@ -259,7 +313,10 @@ async def _run_agent_attempt(
             summary="[Agent did not complete: provider error or timeout.]",
             safety_notes=[f"Agent failed ({type(exc).__name__})."],
         )
-        return placeholder, [f"{agent_name}: {type(exc).__name__}"], exc
+        warning = f"{agent_name}: {type(exc).__name__}"
+        if getattr(exc, "truncated", False):
+            warning += " (output truncated at the token limit)"
+        return placeholder, [warning], exc
     usage = client.consume_usage()
     if pacer is not None and lease is not None:
         pacer.settle(lease, usage.total_tokens if usage else None)
@@ -278,7 +335,7 @@ async def _run_agent_attempt(
         output,
         evidence_ids,
         company_ids,
-        is_chair=agent_name == AGENT_FIELD_CHAIR,
+        is_chair=is_chair,
         known_gaps=known_gaps,
     )
     return sanitized, issues, None
@@ -295,6 +352,7 @@ async def _timed_attempt(
     known_gaps: list[str] | None = None,
     pacer: TokenBudgetPacer | None = None,
     tracker: CouncilUsageTracker | None = None,
+    company_count: int = 0,
 ) -> tuple[FieldReviewAgentOutput, list[str], Exception | None, int]:
     """``_run_agent_attempt`` plus a wall-clock duration_ms for logging."""
     started = time.perf_counter()
@@ -309,6 +367,7 @@ async def _timed_attempt(
         known_gaps,
         pacer,
         tracker,
+        company_count,
     )
     duration_ms = int((time.perf_counter() - started) * 1000)
     return output, issues, exc, duration_ms
@@ -536,6 +595,7 @@ async def _retry_agent(
     known_gaps: list[str] | None = None,
     pacer: TokenBudgetPacer | None = None,
     tracker: CouncilUsageTracker | None = None,
+    company_count: int = 0,
 ) -> None:
     """Bounded retry loop for ONE transiently-failed agent.
 
@@ -610,6 +670,7 @@ async def _retry_agent(
             known_gaps,
             pacer,
             tracker,
+            company_count,
         )
         if exc is None:
             # Completed OR quarantined/unparsable — both are PERMANENT outcomes.
@@ -666,6 +727,7 @@ async def _run_single_pass(
     known_gaps: list[str] | None = None,
     pacer: TokenBudgetPacer | None = None,
     tracker: CouncilUsageTracker | None = None,
+    company_count: int = 0,
 ) -> None:
     """The retry-OFF path: one attempt per agent, no retries."""
     for agent_name in FIELD_REVIEW_AGENT_ORDER:
@@ -680,6 +742,7 @@ async def _run_single_pass(
             known_gaps,
             pacer,
             tracker,
+            company_count,
         )
         result.agents.append(output)
         result.warnings.extend(issues)
@@ -712,6 +775,7 @@ async def _run_with_retries(
     known_gaps: list[str] | None = None,
     pacer: TokenBudgetPacer | None = None,
     tracker: CouncilUsageTracker | None = None,
+    company_count: int = 0,
 ) -> None:
     """The retry-ON path: initial pass under a deadline + a priority retry pass."""
     deadline = clock() + cfg.llm_field_review_council_total_budget_seconds
@@ -746,6 +810,7 @@ async def _run_with_retries(
             known_gaps,
             pacer,
             tracker,
+            company_count,
         )
         result.agents.append(output)
         result.warnings.extend(issues)
@@ -790,6 +855,7 @@ async def _run_with_retries(
             known_gaps=known_gaps,
             pacer=pacer,
             tracker=tracker,
+            company_count=company_count,
         )
 
 
@@ -945,6 +1011,7 @@ async def run_field_review_council(
             known_gaps=known_gaps,
             pacer=pacer,
             tracker=tracker,
+            company_count=pack.company_count,
         )
     else:
         await _run_single_pass(
@@ -959,6 +1026,7 @@ async def run_field_review_council(
             known_gaps=known_gaps,
             pacer=pacer,
             tracker=tracker,
+            company_count=pack.company_count,
         )
 
     result.recount()
