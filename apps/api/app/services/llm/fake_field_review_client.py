@@ -58,6 +58,7 @@ class FakeFieldReviewLLMClient(LLMClient):
         transient_agents: set[str] | None = None,
         transient_failures: int = 1,
         transient_error: str = "rate_limit",
+        truncate_agents: set[str] | None = None,
         model: str = "fake-field-review-model",
     ) -> None:
         self._mode = mode
@@ -67,9 +68,13 @@ class FakeFieldReviewLLMClient(LLMClient):
         self._transient_agents = transient_agents or set()
         self._transient_failures = transient_failures
         self._transient_error = transient_error
+        self._truncate_agents = truncate_agents or set()
         self._model = model
         # Per-agent attempt counter — lets a transient failure "recover".
         self.attempts: dict[str, int] = {}
+        # Per-agent record of the output budget the council asked for, so a test
+        # can assert the SCALED ``max_tokens`` actually reaches the provider.
+        self.max_tokens_seen: dict[str, int] = {}
 
     @property
     def provider_name(self) -> str:
@@ -103,9 +108,17 @@ class FakeFieldReviewLLMClient(LLMClient):
             raise LLMTimeoutError("fake timeout")
 
         agent = self._agent_from_system(system)
+        self.max_tokens_seen[agent] = max_tokens
         is_repair = _REPAIR_MARKER in system
         if not is_repair:
             self.attempts[agent] = self.attempts.get(agent, 0) + 1
+        # Simulate a reply cut off at the output-token limit: the provider
+        # reports a length finish reason and the JSON stops mid-object. Both
+        # the first reply and the one-shot repair truncate, because the repair
+        # reuses the SAME budget — which is exactly why truncation is permanent.
+        if agent in self._truncate_agents:
+            self._record_finish_reason("length")
+            return '{"agent_name": "' + agent + '", "company_notes": [{"comp'
         if (
             agent in self._transient_agents
             and self.attempts.get(agent, 0) <= self._transient_failures

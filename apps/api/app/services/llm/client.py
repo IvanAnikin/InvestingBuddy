@@ -62,7 +62,19 @@ class LLMError(Exception):
 
 
 class LLMJsonError(LLMError):
-    """The model did not return usable JSON, even after one repair attempt."""
+    """The model did not return usable JSON, even after one repair attempt.
+
+    ``truncated`` is True when the provider reported a length/max-tokens finish
+    reason for the attempt — i.e. the reply was cut off mid-object rather than
+    being malformed for some other reason. Carried for DIAGNOSTICS only: a
+    truncated reply is still a PERMANENT failure (retrying with the same output
+    budget reproduces it exactly), so it must never be presented as an
+    evidence-based judgement.
+    """
+
+    def __init__(self, message: str = "invalid json", *, truncated: bool = False) -> None:
+        super().__init__(message)
+        self.truncated = truncated
 
 
 class LLMTimeoutError(LLMError):
@@ -144,6 +156,17 @@ class LLMClient(ABC):
     # assign their own value on first record. One client instance is created
     # per council run and its agents run sequentially, so this is safe.
     _usage: LLMUsage | None = None
+    # Provider finish reason of the most recent raw call (e.g. "stop",
+    # "length"). Used only to explain a JSON failure; never logged as content.
+    _last_finish_reason: str | None = None
+
+    def _record_finish_reason(self, reason: str | None) -> None:
+        self._last_finish_reason = str(reason) if reason else None
+
+    @property
+    def last_response_truncated(self) -> bool:
+        """True when the last raw call stopped because it hit the token limit."""
+        return (self._last_finish_reason or "").lower() in {"length", "max_tokens"}
 
     def _record_usage(
         self,
@@ -193,6 +216,7 @@ class LLMClient(ABC):
         provider error records nothing (a rate-limited call spends no quota).
         """
         calls_before = self._usage.calls if self._usage is not None else 0
+        self._record_finish_reason(None)
         raw = await self._complete_raw(
             system,
             user,
@@ -277,7 +301,18 @@ class LLMClient(ABC):
             temperature=temperature,
             timeout=timeout,
         )
-        return _extract_json(raw2)
+        try:
+            return _extract_json(raw2)
+        except LLMJsonError as exc:
+            # Attribute the failure when the provider says it ran out of output
+            # budget. Still PERMANENT — the repair reused the same budget, so a
+            # retry would truncate identically — but the operator now sees WHY.
+            if self.last_response_truncated:
+                raise LLMJsonError(
+                    "completion truncated at the output-token limit",
+                    truncated=True,
+                ) from exc
+            raise
 
 
 # ---------------------------------------------------------------------------
