@@ -1471,3 +1471,79 @@ labelled a *historical diagnostic draft*, not a report.
   presentation layer does not mutate the evidence inventory.
 - No DB migration; warning grouping is a read-time projection, versioned via
   `warnings_schema_version`.
+
+---
+
+## ADR-023: Phase D1 Investigation — Why European Issuers Are Evidence-Thin
+
+**Date:** 2026-08-23
+**Status:** Accepted (investigation); implementation deferred to D1a/D1b
+
+### Why an investigation ADR
+
+Phase D's brief required verifying the CFR catalyst state and the actual source
+architecture *before* writing connectors. Both checks changed what the
+implementation should be, so the findings are recorded here rather than
+discovered again later.
+
+### Finding 1 — CFR `catalyst: insufficient` is CORRECT, not a wiring bug
+
+The live payload shows `total_events: 0` with
+`source_classes_attempted: [company_press_release, company_source_discovery,
+industry_news, news_provider, sec_filings]` and
+`source_classes_successful: []`. Every class was tried; none produced an event.
+This is genuine source thinness, not another count/alias defect. (Note that
+`sec_filings` is attempted for a Swiss issuer — harmless, but a symptom of the
+US-first default.)
+
+### Finding 2 — the regulated-disclosure connectors already exist, by design as
+**reference-only**
+
+`nordic_disclosures.py`, `six_swiss.py`, `euronext_regulated_info.py`,
+`uk_fca_nsm.py` were delivered in Phase 29B.4. Their own docstrings state: *"No
+network call at report time"*, emitting one bounded T2 venue **reference** plus
+an honest gap, with live content retrieval explicitly deferred as "Task 2".
+
+So Phase D is **not** "build the Nordic connector" — it is "give the existing
+connectors a bounded fetch path". The `RegulatedDisclosureConnector` interface
+the brief describes largely exists.
+
+### Finding 3 — Pandora discovers ZERO documents, and the reason is generic
+
+`primary-documents` reports `discovered_count: 0` (CFR discovers 3), so nothing
+was even attempted. Live probes established why:
+
+1. **The curated URLs were stale.** `/investor/news-and-reports/reports` and
+   `/investor/news-and-reports/news` both return **404**; the site reorganised
+   to `/investor/reports-and-presentations` and
+   `/investor/announcements-and-events/company-announcements`. Fixed in this
+   change and re-verified 200.
+2. **The IR site is fetchable** — 200, ~196k chars, no bot protection. This is
+   *not* the JS-gated/blocked case seen elsewhere.
+3. **The documents are off-domain and extension-less.** The real artifacts live
+   on the issuer's content CDN as
+   `https://pandora.a.bigcontent.io/v1/static/Annual Report 2025` — no `.pdf`
+   suffix, spaces in the path, and a host outside the issuer's
+   `allowed_domains`. The 2025 annual report is additionally published as a
+   third-party **flipsnack.com** flipbook rather than a PDF.
+
+Extension-based discovery cannot see those links, and the domain allowlist
+(correctly) refuses them. Both behaviours are right in isolation; together they
+produce an honest but empty result.
+
+### Consequence — the D1a slice this implies
+
+1. Extend `VerifiedIssuerSource` with a curated **document CDN domain** per
+   issuer, so an issuer's own content host is allowlisted deliberately rather
+   than by loosening SSRF policy.
+2. Discover documents by **content-type sniffing** rather than `.pdf` suffix,
+   with URL canonicalisation for spaces.
+3. Only then consider a Nordic fetch path (D1b).
+
+This ordering follows the brief's own §5 preference: issuer-primary evidence
+first, exchange scraping only if it remains necessary.
+
+### What this change contains
+
+The registry URL correction and this record only. No fetch-path, allowlist or
+security change — those need their own reviewed slice.
