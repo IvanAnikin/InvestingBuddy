@@ -126,7 +126,27 @@ def test_seven_company_chair_budget_exceeds_the_old_flat_value() -> None:
     old_flat = app_settings.llm_max_output_tokens  # 1200, the failing value
     chair = field_review_max_output_tokens(7, is_chair=True)
     assert chair > old_flat
-    assert chair >= 3 * old_flat
+    assert chair >= 4 * old_flat
+
+
+def test_prompt_contract_bounds_per_company_output() -> None:
+    """The budget can only work if the CONTRACT bounds per-company output.
+
+    Live regression (2026-08-23): with the rationale unbounded, richer packs
+    made agents write proportionally more and SEVEN of eight truncated even on
+    a scaled budget. The discovery council bounds its rationale for exactly
+    this reason; the field review must too, or no cap is ever "enough".
+    """
+    from app.services.llm import field_review_prompts as prompts
+
+    contract = prompts.JSON_CONTRACT
+    assert '"rationale": "<=200 chars' in contract
+    assert '"claim": "<=200 chars"' in contract
+    assert "<=600 chars" in contract  # summary bound retained
+    chair_prompt = prompts.field_chair_system_prompt()
+    # The chair's verdict entries carry the same bound.
+    assert chair_prompt.count("<=200 chars") >= 2
+    assert "field_uncertainties" in chair_prompt
 
 
 # ---------------------------------------------------------------------------

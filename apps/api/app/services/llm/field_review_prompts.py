@@ -71,11 +71,13 @@ JSON_CONTRACT = (
     '  "summary": "<=600 chars, factual, comparative, no recommendation",\n'
     '  "company_notes": [\n'
     '    {"company_ref": "F1", "ticker": "...", "exchange": "...", '
-    '"rationale": "...", "citation_ids": ["F1","R2"], '
+    '"rationale": "<=200 chars, factual, no recommendation", '
+    '"citation_ids": ["F1","R2"], '
     '"confidence": "low|medium|high"}\n'
     "  ],\n"
     '  "field_notes": [\n'
-    '    {"claim": "...", "citation_ids": ["R1"], "confidence": "low|medium|high"}\n'
+    '    {"claim": "<=200 chars", "citation_ids": ["R1"], '
+    '"confidence": "low|medium|high"}\n'
     "  ],\n"
     '  "evidence_gaps": [],\n'
     '  "unsupported_claims": [],\n'
@@ -178,12 +180,13 @@ def field_chair_system_prompt() -> str:
         "{\n"
         '  "strongest_candidates": [\n'
         '    {"company_ref": "F1", "ticker": "...", "exchange": "...", '
-        '"rationale": "...", "citation_ids": ["F1"], '
+        '"rationale": "<=200 chars, factual, no recommendation", '
+        '"citation_ids": ["F1"], '
         '"confidence": "low|medium|high", "caveats": ["data_provenance=mock"]}\n'
         "  ],\n"
         '  "second_tier": [ ... same shape ... ],\n'
         '  "blocked_insufficient_evidence": [ ... same shape ... ],\n'
-        '  "field_uncertainties": ["..."],\n'
+        '  "field_uncertainties": ["<=150 chars each, max 6"],\n'
         '  "field_quality": "strong|adequate|thin|failed"\n'
         "}\n"
         "These three buckets are the ONLY placements available. They mean, "

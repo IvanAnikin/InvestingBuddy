@@ -240,11 +240,22 @@ class Settings(BaseSettings):
     # (12 -> 6,600 chair tokens) WITHOUT clipping, so the cap exists to stop a
     # raised company cap from making a single call unbounded, not to bite at the
     # supported maximum. Does NOT affect the company or discovery councils.
-    llm_field_review_max_output_tokens_base: int = 1200
-    llm_field_review_max_output_tokens_per_company: int = 200
-    llm_field_review_max_output_tokens_chair_base_extra: int = 600
-    llm_field_review_max_output_tokens_chair_per_company_extra: int = 200
-    llm_field_review_max_output_tokens_cap: int = 7000
+    #
+    # RECALIBRATED after the first live run of the scaled budget (2026-08-23):
+    # with all seven companies carrying FULL analyses (rather than thin
+    # discovery drafts) the pack grew to ~21.8k prompt tokens per agent and
+    # SEVEN of eight agents truncated. The budget was not the whole story — the
+    # prompt contract bounded only ``summary``, leaving the per-company
+    # ``rationale`` (and ``field_notes`` claims) UNBOUNDED, so richer packs made
+    # agents write proportionally more and no fixed cap could ever be "enough".
+    # The contract now bounds rationale/claim at <=200 chars (the discovery
+    # council bounds its own at <=150, which is why its 200/candidate works),
+    # and these constants are sized to that contract with ~5x headroom.
+    llm_field_review_max_output_tokens_base: int = 1600
+    llm_field_review_max_output_tokens_per_company: int = 260
+    llm_field_review_max_output_tokens_chair_base_extra: int = 800
+    llm_field_review_max_output_tokens_chair_per_company_extra: int = 260
+    llm_field_review_max_output_tokens_cap: int = 9000
     # Field-review contract version. Bump when the agent set or output schema
     # changes. Independent of the other two councils' versions.
     llm_field_review_council_version: str = "v1"

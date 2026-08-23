@@ -1309,3 +1309,17 @@ and a JSON failure after a length finish raises `LLMJsonError(truncated=True)`,
 surfacing as `chair_error_type="LLMJsonError_truncated"`. It remains permanent
 and still routes to the explicit deterministic fallback — a truncated reply
 never becomes a ranking or an evidence-based judgement.
+
+**Recalibration (same day, after the first live run of the scaled budget).** The
+scaled budget alone was not enough. With all seven companies carrying FULL
+analyses (rather than the thin discovery drafts of the earlier run) the pack
+grew to ~21.8k prompt tokens per agent and **seven of eight agents** truncated.
+The deeper cause: the field-review prompt bounded only `summary`, leaving the
+per-company `rationale` and `field_notes` claims **unbounded**, so a richer pack
+made every agent write proportionally more — no fixed cap could ever be
+"enough". The contract now bounds rationale/claim at `<=200 chars` (discovery
+bounds its own at `<=150`, which is why its 200-per-candidate budget works) and
+`field_uncertainties` at `<=150 chars each, max 6`; constants were resized to
+that contract with roughly 5x headroom (chair: 3,440 at 2 companies, 6,040 at
+7, 8,640 at the supported maximum of 12, under a 9,000 cap). Bounding the
+contract is what makes the budget predictable rather than hopeful.
