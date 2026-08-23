@@ -293,3 +293,84 @@ async def test_truncation_is_permanent_not_retried_forever() -> None:
 def test_truncation_flag_defaults_off_for_ordinary_json_errors() -> None:
     assert LLMJsonError("bad json").truncated is False
     assert LLMJsonError("cut off", truncated=True).truncated is True
+
+
+# ===========================================================================
+# The real client must APPLY the per-call budget — with the RIGHT parameter
+# ---------------------------------------------------------------------------
+# Two live regressions, in order:
+#  1. ``_complete_raw`` accepted ``max_tokens`` and never forwarded it, so every
+#     real call used the CONSTRUCTION-time default (1200) and every count-aware
+#     output budget in the codebase — this slice's and the discovery council's —
+#     was inert against the real provider.
+#  2. Forwarding it as ``max_tokens`` then broke EVERY call: langchain-openai
+#     already translates the constructor's ``max_tokens`` into
+#     ``max_completion_tokens``, so the payload carried both and Azure returned
+#     HTTP 400 ``invalid_parameter_combination`` (verified live).
+#
+# The fake client honours whatever it is given, which is why neither defect
+# showed up in unit tests. These exercise the REAL invocation path with a stub
+# model object — no credentials, no network.
+# ===========================================================================
+class _StubChatModel:
+    """Captures the kwargs a langchain chat model would receive."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def ainvoke(self, messages: Any, **kwargs: Any) -> Any:
+        self.calls.append(dict(kwargs))
+
+        class _Result:
+            content = '{"agent_name": "x", "status": "completed"}'
+            usage_metadata = {
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "total_tokens": 15,
+            }
+            response_metadata = {"finish_reason": "stop"}
+
+        return _Result()
+
+
+async def test_per_call_budget_uses_max_completion_tokens_only() -> None:
+    """Both halves of the contract, in one assertion pair.
+
+    Sending ``max_tokens`` alongside the constructor-derived
+    ``max_completion_tokens`` is what produced HTTP 400 on every call.
+    """
+    from app.services.llm.azure_openai_client import _ainvoke_chat
+
+    stub = _StubChatModel()
+    await _ainvoke_chat(stub, "sys", "user", 30, max_tokens=8400)
+    sent = stub.calls[-1]
+    assert sent.get("max_completion_tokens") == 8400, (
+        "the per-call output budget must reach the provider, or every "
+        "count-aware budget in the codebase is silently inert"
+    )
+    assert "max_tokens" not in sent, (
+        "sending max_tokens together with max_completion_tokens is rejected by "
+        "Azure with invalid_parameter_combination"
+    )
+
+
+async def test_no_per_call_budget_leaves_the_constructor_default() -> None:
+    from app.services.llm.azure_openai_client import _ainvoke_chat
+
+    for value in (None, 0):
+        stub = _StubChatModel()
+        await _ainvoke_chat(stub, "sys", "user", 30, max_tokens=value)
+        assert stub.calls[-1] == {}
+
+
+async def test_real_client_complete_raw_passes_its_budget_through() -> None:
+    """End of the chain: ``_complete_raw(max_tokens=N)`` must reach ainvoke."""
+    from app.services.llm.azure_openai_client import AzureOpenAILLMClient
+
+    client = AzureOpenAILLMClient.__new__(AzureOpenAILLMClient)  # no credentials
+    stub = _StubChatModel()
+    client._llm = stub  # type: ignore[attr-defined]
+    await client._complete_raw(
+        "sys", "user", max_tokens=6040, temperature=0.1, timeout=30
+    )
+    assert stub.calls[-1]["max_completion_tokens"] == 6040

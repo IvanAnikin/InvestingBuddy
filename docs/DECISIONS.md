@@ -1334,3 +1334,15 @@ describe every company twice and truncate the payload that actually matters;
 (b) constants resized from the observed shortfall (per-company 260→400, chair
 base extra 800→1200, chair per-company 260→400, cap 9,000→14,000), giving
 4,400/8,400 at 7 companies and 6,400/12,400 at the supported maximum of 12.
+
+**Correct parameter (verified live before shipping).** The first attempt at the
+above forwarded `max_tokens` and broke **every** call (0/8 agents, HTTP 400).
+langchain-openai (>=1.x) already translates the constructor's `max_tokens` into
+`max_completion_tokens`, so sending `max_tokens` per call put both in the
+payload: *"Setting 'max_tokens' and 'max_completion_tokens' at the same time is
+not supported"* (`invalid_parameter_combination`). The per-call override is
+therefore sent as **`max_completion_tokens`**, verified against the real staging
+deployment (200 OK at both the default and an overridden budget) before merge.
+That reproduction — constructing the app's own client against staging and
+calling it directly — is the cheap check that should precede any future
+provider-parameter change.
