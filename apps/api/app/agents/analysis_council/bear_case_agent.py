@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from app.schemas.evidence_state import FinancialDataSummary
 from app.services import safety_terms
 
 _FORBIDDEN_RECOMMENDATION_WORDS = {
@@ -144,13 +145,17 @@ def run_bear_case_agent(
             missing_evidence.extend(bull_missing)
 
     # ── Financial fundamentals completeness ───────────────────────────────
+    # Phase B: normalise the payload ONCE at ingress via the typed contract;
+    # below this line the code reads attributes, never string keys, so a
+    # producer rename fails at the boundary instead of silently reading [].
+    _fds = FinancialDataSummary.from_payload(financial_data_summary) or (
+        FinancialDataSummary()
+    )
     available_financials = [
-        f for f in financial_data_summary.get("available_financial_data", [])
-        if f.startswith("financials.")
+        f for f in _fds.available_fields if f.startswith("financials.")
     ]
     missing_financials = [
-        f for f in financial_data_summary.get("missing_financial_data", [])
-        if f.startswith("financials.")
+        f for f in _fds.missing_fields if f.startswith("financials.")
     ]
     missing_labels = [f.split(".", 1)[1].replace("_", " ") for f in missing_financials]
 

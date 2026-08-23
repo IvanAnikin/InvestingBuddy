@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
 from app.schemas.agent import WorkflowRunRequest, WorkflowRunResponse
+from app.schemas.evidence_state import FinancialDataSummary
 from app.workflows.company_analysis import run_company_analysis
 
 router = APIRouter(prefix="/workflows", tags=["workflows"])
@@ -96,13 +97,17 @@ async def run_company_analysis_endpoint(
     # Build compact summaries for API response (avoid large nested objects)
     fda_compact = None
     if financial_data_summary:
-        fda = financial_data_summary
+        # Phase B: counts come from the typed contract, where they are DERIVED
+        # from the lists — they can no longer disagree with them.
+        fda = FinancialDataSummary.from_payload(financial_data_summary) or (
+            FinancialDataSummary()
+        )
         fda_compact = {
-            "available_count": len(fda.get("available_financial_data", [])),
-            "missing_count": len(fda.get("missing_financial_data", [])),
-            "source_tier_summary": fda.get("source_tier_summary", {}),
-            "financial_context_summary": fda.get("financial_context_summary", ""),
-            "warnings_count": len(fda.get("warnings", [])),
+            "available_count": fda.available_count,
+            "missing_count": fda.missing_count,
+            "source_tier_summary": fda.source_tier_summary,
+            "financial_context_summary": fda.financial_context_summary,
+            "warnings_count": fda.warnings_count,
         }
 
     sq_compact = None

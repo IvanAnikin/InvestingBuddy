@@ -133,10 +133,13 @@ def test_financial_data_summary_emits_reader_facing_count_keys() -> None:
     summary = financial_data_agent_output_to_dict(
         run_financial_data_agent(_nvda_snapshot(), source_ids=["s1"])
     )
-    assert summary["available_count"] == len(summary["available_financial_data"])
+    assert summary["available_count"] == len(summary["available_fields"])
     assert summary["available_count"] > 0
-    assert summary["available_fields"] == summary["available_financial_data"]
-    assert summary["missing_count"] == len(summary["missing_financial_data"])
+    # Phase B: the legacy agent spelling is no longer re-emitted — it is
+    # accepted at ingress only, so consumers cannot pick the wrong one.
+    assert "available_financial_data" not in summary
+    assert "missing_financial_data" not in summary
+    assert summary["missing_count"] == len(summary["missing_fields"])
     assert summary["warnings_count"] == len(summary["warnings"])
 
 

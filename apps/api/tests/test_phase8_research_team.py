@@ -234,8 +234,11 @@ def test_financial_data_agent_output_to_dict_serializable():
     output = run_financial_data_agent(company_snapshot=snapshot)
     d = financial_data_agent_output_to_dict(output)
     assert isinstance(d, dict)
-    assert "available_financial_data" in d
-    assert "missing_financial_data" in d
+    # Phase B: the payload carries the CANONICAL spelling only; the legacy
+    # agent spelling is accepted at ingress but never re-emitted.
+    assert "available_fields" in d
+    assert "available_financial_data" not in d
+    assert "missing_fields" in d
     assert "source_tier_summary" in d
     assert "financial_context_summary" in d
     assert "warnings" in d
@@ -978,8 +981,10 @@ async def test_financial_data_agent_state_populated():
 
     fda = state["financial_data_summary"]
     assert isinstance(fda, dict)
-    assert "available_financial_data" in fda
-    assert "missing_financial_data" in fda
+    # Phase B: canonical spelling only (see FinancialDataSummary).
+    assert "available_fields" in fda
+    assert "available_financial_data" not in fda
+    assert "missing_fields" in fda
     assert "financial_context_summary" in fda
     assert "source_tier_summary" in fda
     assert "warnings" in fda
