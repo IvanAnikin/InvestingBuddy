@@ -251,11 +251,17 @@ class Settings(BaseSettings):
     # The contract now bounds rationale/claim at <=200 chars (the discovery
     # council bounds its own at <=150, which is why its 200/candidate works),
     # and these constants are sized to that contract with ~5x headroom.
+    # SECOND recalibration, from the live run of the bounded contract: 6 of 8
+    # agents then completed (up from 1), but ``comparative_financial_quality``
+    # still exceeded 3,420 and the chair still exceeded 6,040. Sized from that
+    # observed shortfall, with the chair additionally told to leave
+    # ``company_notes`` empty (its per-company reasoning belongs in
+    # ``chair_verdict``; emitting both made it describe every company twice).
     llm_field_review_max_output_tokens_base: int = 1600
-    llm_field_review_max_output_tokens_per_company: int = 260
-    llm_field_review_max_output_tokens_chair_base_extra: int = 800
-    llm_field_review_max_output_tokens_chair_per_company_extra: int = 260
-    llm_field_review_max_output_tokens_cap: int = 9000
+    llm_field_review_max_output_tokens_per_company: int = 400
+    llm_field_review_max_output_tokens_chair_base_extra: int = 1200
+    llm_field_review_max_output_tokens_chair_per_company_extra: int = 400
+    llm_field_review_max_output_tokens_cap: int = 14000
     # Field-review contract version. Bump when the agent set or output schema
     # changes. Independent of the other two councils' versions.
     llm_field_review_council_version: str = "v1"
