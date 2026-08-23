@@ -1415,3 +1415,59 @@ as well as this agent's list, and that judgement belongs to
   to zero — absence of names is not absence of data.
 - New payloads carry `evidence_state_schema_version`. No DB migration; head
   stays 017.
+
+---
+
+## ADR-022: One Human-Facing Research State (Phase C)
+
+**Date:** 2026-08-23
+**Status:** Accepted
+
+### Context
+
+Phase B made the platform's *evidence* correct and typed. The human-facing
+surfaces still exposed pipeline history: one report could describe its own
+evidence as `strong`, `adequate` and `weak` in different sections; a European
+discovery run emitted ~200 warning strings that were mostly the same handful
+repeated per candidate; a metadata-only issuer rendered twenty sections of
+"Not sourced"; generic surfaces used SEC-centric copy for non-US issuers; and
+data-centre REITs persisted `sector="Financials"` beside
+`industry="Real Estate Investment Trusts"` on the same row.
+
+### Decision
+
+**One canonical presentation of the evidence Phase B established**, in
+`app/schemas/research_quality.py`:
+
+- `SourceQualityAssessment` — four SEPARATE dimensions (identity, financial
+  evidence, catalyst evidence, overall), each carrying the machine-generated
+  `basis` that produced its label. Overall is the **weakest** contributing
+  dimension, never an average: strong identity data must not mask absent
+  financials. Computed once; sections read it rather than recomputing.
+- `WarningCollector` / `WarningGroup` — canonical codes, severity
+  (`info`/`warning`/`blocking`), deduplication with counts, and bounded
+  groups. Grouping is presentation only: raw instances are retained, BLOCKING
+  warnings are never merged, and genuinely unknown warnings are shown rather
+  than dropped. Derived **at read time** from the existing `warnings` column,
+  so no migration and historical runs gain the readable view for free.
+- `ThinEvidenceAssessment` — a deterministic, company-agnostic trigger (no
+  fundamentals AND no primary-document facts AND no catalysts) for a
+  short-form research state, so failing closed stops looking broken.
+
+**Sector classification** (`resolve_sector_classification`) resolves
+provider-vs-curated disagreement deterministically — industry rule, then
+curated reference, then provider — and **retains every input plus a
+`sector_conflict` flag**. Previously the provider silently won. The rule is
+keyed on the INDUSTRY label, never on a company, so no ticker is hardcoded.
+
+**Legacy drafts** stay persisted and reachable, but a pre-council draft now
+carries an explicit "superseded by the current final report" banner and is
+labelled a *historical diagnostic draft*, not a report.
+
+### Consequences
+
+- Presentation only: no change to extracted values, tiers, scope, evidence
+  caps, prompts, model, council scheduling or safety policy. A test asserts the
+  presentation layer does not mutate the evidence inventory.
+- No DB migration; warning grouping is a read-time projection, versioned via
+  `warnings_schema_version`.

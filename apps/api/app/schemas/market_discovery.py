@@ -20,7 +20,7 @@ import uuid
 from datetime import date, datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, computed_field, field_validator
+from pydantic import BaseModel, Field, computed_field, field_validator, model_validator
 
 INTERNAL_DISCLAIMER = (
     "INTERNAL ADMIN USE ONLY. NOT INVESTMENT ADVICE. NOT A PUBLIC RECOMMENDATION. "
@@ -118,7 +118,14 @@ class DiscoveryRunRead(BaseModel):
     candidate_count: int
     error_count: int
     lookback_days: int
+    # RAW instances, retained for diagnostics (historically ~200 near-duplicate
+    # strings on a European run). Human surfaces should render
+    # ``warning_groups`` instead — see Phase C.
     warnings: list[str] | None
+    # Phase C: canonical, deduplicated, severity-classified warnings. Computed
+    # from ``warnings`` on read, so no schema migration and no loss of history.
+    warning_groups: list[dict] = Field(default_factory=list)
+    warning_raw_count: int = 0
     config_json: dict | None
     safety_notes: dict | None
     created_by: str | None
@@ -133,6 +140,23 @@ class DiscoveryRunRead(BaseModel):
     is_async: bool = True
     message: str | None = None
     disclaimer: str = INTERNAL_DISCLAIMER
+
+    @model_validator(mode="after")
+    def _group_warnings(self) -> "DiscoveryRunRead":
+        """Derive the grouped view from the raw list on every read.
+
+        Phase C: a real European run produced ~200 warning strings, mostly the
+        same handful repeated per candidate. Grouping happens HERE rather than
+        at write time so no persisted data changes and historical runs gain the
+        readable view for free — no migration, no lost instances.
+        """
+        if self.warnings and not self.warning_groups:
+            from app.schemas.research_quality import WarningCollector
+
+            collector = WarningCollector.from_messages(list(self.warnings))
+            self.warning_groups = [g.to_payload() for g in collector.groups()]
+            self.warning_raw_count = len(collector.raw_instances)
+        return self
 
     @field_validator("mode", mode="before")
     @classmethod

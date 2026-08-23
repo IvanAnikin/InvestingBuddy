@@ -207,6 +207,77 @@ for _industry in INDUSTRY_TO_SECTOR:
     _INDUSTRY_ALIASES.setdefault(_norm_key(_industry), _industry)
 
 
+# Industry phrases that determine a sector regardless of what a provider says.
+# A REIT is the motivating case: providers commonly file REITs under
+# "Financials" (their pre-2016 GICS home) while curated references and the
+# company's own industry label say "Real Estate". Keyed on the INDUSTRY, so
+# this is a taxonomy rule, never a per-company override.
+_INDUSTRY_SECTOR_RULES: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("real estate investment trust", "reit", "real estate"), "Real Estate"),
+)
+
+
+def sector_from_industry(industry: str | None) -> str | None:
+    """The sector an INDUSTRY label implies, or None.
+
+    Used to resolve provider/curated disagreement deterministically without
+    naming any company.
+    """
+    text = (industry or "").strip().lower()
+    if not text:
+        return None
+    for needles, sector in _INDUSTRY_SECTOR_RULES:
+        if any(needle in text for needle in needles):
+            return sector
+    return None
+
+
+def resolve_sector_classification(
+    *,
+    provider_sector: str | None,
+    curated_sector: str | None,
+    industry: str | None = None,
+) -> dict[str, str | None | bool]:
+    """Resolve one canonical sector, RETAINING any disagreement.
+
+    Live defect (2026-08-23): the persisted candidate took the provider's
+    sector whenever it existed, so data-centre REITs showed
+    ``sector="Financials"`` beside ``industry="Real Estate Investment
+    Trusts"`` — self-contradictory on a single row — while the curated
+    registry's "Real Estate" was silently discarded.
+
+    Precedence, deterministic and company-agnostic:
+      1. an industry label that unambiguously implies a sector;
+      2. the curated reference classification;
+      3. the provider's classification;
+    with the inputs and any conflict preserved for diagnostics. Nothing is
+    mutated silently: a caller can always see what each source said.
+    """
+    provider = normalize_sector(provider_sector) or (provider_sector or None)
+    curated = normalize_sector(curated_sector) or (curated_sector or None)
+    implied = sector_from_industry(industry)
+
+    canonical: str | None
+    source: str
+    if implied:
+        canonical, source = implied, "industry_rule"
+    elif curated:
+        canonical, source = curated, "curated_reference"
+    else:
+        canonical, source = provider, "provider"
+
+    known = [s for s in (provider, curated, implied) if s]
+    conflict = len({s for s in known}) > 1
+    return {
+        "canonical_sector": canonical,
+        "canonical_source": source if canonical else None,
+        "provider_sector": provider,
+        "curated_sector": curated,
+        "industry_implied_sector": implied,
+        "sector_conflict": conflict,
+    }
+
+
 def normalize_sector(value: str | None) -> str | None:
     """
     Map any sector spelling/alias to its canonical sector name.

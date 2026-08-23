@@ -1,5 +1,37 @@
 # Gap Analysis
 
+> **STATUS AS OF 2026-08-23 (staging).** This document previously described the
+> pre-Phase-32A world and contradicted deployed reality. The summary below is
+> authoritative; the historical per-gap sections beneath it are retained for
+> audit and are NOT a current to-do list.
+>
+> ### CLOSED (merged, deployed to staging, live-verified)
+> | Item | Closed by |
+> |---|---|
+> | Browser HTTP 504 on Run Full Analysis | async job (#119), ADR-018 |
+> | Self-contradicting report / `available_count=0` | canonical evidence (#121/#123), ADR-019 |
+> | Price provenance inheriting the company provider | #121 (`resolve_price_provenance`) |
+> | Catalyst date sort dropping SEC filings | `event_sort_key` normalisation |
+> | Safety substring false positives (`sell-side`, `Watchmakers`) | shared `safety_terms` |
+> | Council TPM starvation / chair failures | token pacing + async-era budgets (#124/#125), ADR-020 |
+> | Field-review chair output truncation | output-budget scaling + bounded contract (#126-#128) |
+> | Per-call provider budget silently dropped | `max_completion_tokens` forwarding (#130) |
+> | Producer/consumer contract drift | typed evidence contracts (#131), ADR-021 |
+> | Source-quality label disagreement, warning wall, SEC-centric copy, sector conflict | Phase C, ADR-022 |
+>
+> ### OPEN (genuinely outstanding)
+> | Item | Notes |
+> |---|---|
+> | European source depth | Nasdaq Nordic / LSE / Euronext ingestion — Phase D |
+> | Durable job queue | BackgroundTasks are process-local; Service Bus is scale work |
+> | Claim-strength discipline | moat/governance claims from single anecdotes |
+> | Catalyst materiality ranking | marketing posts rank beside financing events |
+> | Observability dashboard | events exist; no aggregated view |
+> | Live OCR invocation proof | unblocked by the async job, still unobserved |
+>
+> ---
+
+
 **Last updated:** 2026-07-19  
 **Presentation state:** Phase 22.3 UI Modernization + Markdown Report Preview delivered (frontend/UI only) — the web/admin UI now uses a dark glassmorphism design system with a reduced-motion-safe animated background, and report content renders through a sanitized markdown preview (`react-markdown` + `remark-gfm` + `rehype-sanitize`, no `dangerouslySetInnerHTML`) with a Preview/Raw toggle, replacing the raw `<pre>` block. No backend, workflow, or report-generation logic changed; no public publishing added; all internal-only / not-investment-advice / human-review disclaimers preserved; no BUY/SELL/HOLD/WATCH, price target, fair value or upside.  
 **Deploy state:** Phase 22.3.1 Web Deploy Cache Hardening delivered (deploy/CI + frontend verification only) — fixes the stale prerendered homepage `/` seen under `WEBSITE_RUN_FROM_PACKAGE=1` + `alwaysOn=false`: added `/api/version` build-metadata endpoint + `x-ib-build-commit` `<meta>` tag, homepage rendered `force-dynamic`, CI bakes `NEXT_PUBLIC_*` build metadata, best-effort post-deploy restart (optional `AZURE_CREDENTIALS`), and a SHA-verified smoke check that fails loudly on a stale `/` or `/admin`. Build identifiers only, no secrets; no backend/report semantics changed.  
