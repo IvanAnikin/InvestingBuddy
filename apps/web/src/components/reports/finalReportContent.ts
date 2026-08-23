@@ -114,6 +114,10 @@ export const SECTION_ORDER: string[] = [
   "research_memo",
   "company_identity",
   "data_availability_summary",
+  // Phase C2 — the ONE canonical evidence-quality answer (four dimensions,
+  // each with its basis). Placed high because "how good is this evidence" is
+  // the second question a researcher asks, right after "what is this".
+  "evidence_quality",
   // Product readiness — the explicit evidence-CHANNEL inventory. "Issuer
   // primary document", "regulator structured facts", "regulator filing
   // events", "issuer newsroom" and "persisted citations" are five different
@@ -143,6 +147,8 @@ export const SECTION_LABELS: Record<string, string> = {
   research_memo: "Internal Research Memo",
   company_identity: "Company Identity",
   data_availability_summary: "Data Availability Summary",
+  evidence_quality: "Evidence Quality",
+  thin_evidence_state: "Evidence Status",
   evidence_channels: "Evidence Channels",
   financial_snapshot: "Financial Snapshot",
   discovery_rationale: "Discovery Rationale",
@@ -188,4 +194,47 @@ export interface ChecklistItem {
   required?: boolean;
   completed?: boolean;
   note?: string | null;
+}
+
+
+/**
+ * Phase C2 — the SHORT-FORM section order for an evidence-thin company.
+ *
+ * A metadata-only issuer previously rendered the full skeleton: twenty
+ * sections of "Not sourced", plus Bull/Bear/Risk blocks reasoning about
+ * evidence that does not exist. Failing closed is correct; looking broken
+ * while doing it is not. This order shows what IS known, states plainly what
+ * is missing (grouped, once), and stops — the analysis sections are omitted
+ * rather than rendered empty.
+ */
+export const THIN_SECTION_ORDER: string[] = [
+  "thin_evidence_state",
+  "company_identity",
+  "discovery_rationale",
+  "evidence_quality",
+  "financial_snapshot",
+  "committee_chair_summary",
+  "human_review_checklist",
+  "source_citation_appendix",
+];
+
+/**
+ * True when the backend's canonical ThinEvidenceAssessment marked this report
+ * evidence-thin. The judgement is made ONCE server-side from the reconciled
+ * evidence inventory; the UI never re-derives it.
+ */
+export function isThinEvidenceReport(
+  content: Record<string, unknown> | null | undefined,
+): boolean {
+  if (!content) return false;
+  const state = content["thin_evidence_state"];
+  if (!state || typeof state !== "object") return false;
+  return (state as Record<string, unknown>)["is_thin"] === true;
+}
+
+/** The section order this report should render, full or short-form. */
+export function sectionOrderFor(
+  content: Record<string, unknown> | null | undefined,
+): string[] {
+  return isThinEvidenceReport(content) ? THIN_SECTION_ORDER : SECTION_ORDER;
 }

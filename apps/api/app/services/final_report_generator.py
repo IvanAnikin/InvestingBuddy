@@ -45,7 +45,12 @@ from app.models.scorecard import Scorecard
 from app.models.screening import ScreeningCandidate
 from app.models.source import Citation, Source
 from app.schemas.catalyst import neutralize_forbidden_terms
-from app.schemas.evidence_state import FinancialDataSummary
+from app.schemas.evidence_state import (
+    EvidenceInventory,
+    FinancialDataSummary,
+    FundamentalsResolution,
+    PriceSummary,
+)
 from app.schemas.final_report import (
     FINAL_REPORT_VERSION,
     INTERNAL_DISCLAIMER,
@@ -54,6 +59,10 @@ from app.schemas.final_report import (
     HumanReviewChecklistItem,
     RegenerateSectionResponse,
     SafetyValidationResult,
+)
+from app.schemas.research_quality import (
+    assess_source_quality,
+    assess_thin_evidence,
 )
 from app.services import safety_terms
 from app.services.canonical_evidence import (
@@ -1906,6 +1915,187 @@ def _build_risk_analysis(risk_summary: dict[str, Any] | None) -> dict[str, Any]:
         "warnings": risk_summary.get("warnings", []),
         "human_review_required": True,
     }
+
+
+
+def _build_evidence_quality(
+    *,
+    company_snapshot: dict[str, Any] | None,
+    financial_data_summary: dict[str, Any] | None,
+    canonical_fundamentals: Any,
+    catalyst_discovery: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """The ONE evidence-quality surface, from the canonical assessment.
+
+    Phase C2. Manual QA found one report calling its own evidence ``strong``,
+    ``adequate`` and ``weak`` in different places, because each section derived
+    its own answer. This section renders
+    :func:`research_quality.assess_source_quality` — computed once from the
+    final reconciled state — and every human-facing quality claim reads it.
+
+    The legacy ``source_quality_review`` section is retained (it carries raw
+    source-tier counts and the Phase-8 agent's own notes, which are genuinely
+    diagnostic), but it is no longer the headline quality answer.
+    """
+    inventory = EvidenceInventory(
+        financial_data=FinancialDataSummary.from_payload(financial_data_summary),
+        price=PriceSummary.from_provenance(resolve_price_provenance(company_snapshot)),
+        fundamentals=FundamentalsResolution.from_evidence(canonical_fundamentals),
+    )
+    identity = (company_snapshot or {}).get("company_identity") or {}
+    assessment = assess_source_quality(
+        inventory=inventory,
+        identity=identity,
+        catalyst_summary=_catalyst_counts(catalyst_discovery),
+    )
+    payload = assessment.to_payload()
+    payload.update(
+        {
+            "type": "evidence_quality",
+            "note": (
+                "One canonical assessment of the evidence this report actually "
+                "holds. Dimensions are reported separately because they differ: "
+                "overall reflects the WEAKEST contributing dimension, never an "
+                "average."
+            ),
+            "human_review_required": True,
+        }
+    )
+    return payload
+
+
+def _catalyst_counts(catalyst_discovery: dict[str, Any] | None) -> dict[str, int]:
+    """Bounded catalyst counts for the quality/thin assessments."""
+    cd = catalyst_discovery or {}
+    nested = cd.get("summary")
+    summary: dict[str, Any] = nested if isinstance(nested, dict) else cd
+
+    def _count(*keys: str) -> int:
+        for key in keys:
+            value = summary.get(key)
+            if isinstance(value, int):
+                return value
+            if isinstance(value, list):
+                return len(value)
+        return 0
+
+    return {
+        "regulator_filing_count": _count("sec_filing_count", "filings_count", "filings"),
+        "issuer_press_count": _count("press_release_count", "press_count", "press_items"),
+        "independent_news_count": _count("news_count", "industry_event_count", "news_items"),
+    }
+
+
+def _build_thin_evidence_state(
+    *,
+    company_snapshot: dict[str, Any] | None,
+    financial_data_summary: dict[str, Any] | None,
+    canonical_fundamentals: Any,
+    catalyst_discovery: dict[str, Any] | None,
+    primary_facts: list[dict[str, Any]] | None,
+    primary_source_references: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    """Whether this company has too little evidence for a full analysis.
+
+    Phase C2. A metadata-only issuer previously rendered the entire report
+    skeleton — twenty sections of "Not sourced" plus Bull/Bear/Risk blocks
+    reasoning about evidence that does not exist. Failing closed is correct;
+    looking broken while doing it is not. Renderers read ``is_thin`` to choose
+    the short form.
+
+    The trigger is :func:`research_quality.assess_thin_evidence` — deterministic
+    and company-agnostic. Nothing here is issuer- or region-specific.
+    """
+    inventory = EvidenceInventory(
+        financial_data=FinancialDataSummary.from_payload(financial_data_summary),
+        price=PriceSummary.from_provenance(resolve_price_provenance(company_snapshot)),
+        fundamentals=FundamentalsResolution.from_evidence(canonical_fundamentals),
+    )
+    identity = (company_snapshot or {}).get("company_identity") or {}
+    locations = [
+        str(ref.get("url") or ref.get("landing_url") or "")
+        for ref in (primary_source_references or [])
+        if isinstance(ref, dict) and (ref.get("url") or ref.get("landing_url"))
+    ]
+    assessment = assess_thin_evidence(
+        inventory=inventory,
+        identity=identity,
+        primary_fact_count=len(primary_facts or []),
+        catalyst_summary=_catalyst_counts(catalyst_discovery),
+        source_locations=locations,
+    )
+    payload = assessment.to_payload()
+    payload.update(
+        {
+            "type": "thin_evidence_state",
+            # GROUPED missing-evidence statements: one line per category, never
+            # the same gap repeated across a dozen sections.
+            "missing_evidence_groups": _thin_missing_groups(
+                inventory=inventory,
+                primary_fact_count=len(primary_facts or []),
+                catalyst_counts=_catalyst_counts(catalyst_discovery),
+            )
+            if assessment.is_thin
+            else [],
+            "note": (
+                "Evidence is currently insufficient for a full company "
+                "analysis. This is an honest evidence state, not a conclusion "
+                "about the company."
+            )
+            if assessment.is_thin
+            else "",
+            "human_review_required": True,
+        }
+    )
+    return payload
+
+
+def _thin_missing_groups(
+    *,
+    inventory: Any,
+    primary_fact_count: int,
+    catalyst_counts: dict[str, int],
+) -> list[dict[str, str]]:
+    """One grouped line per genuinely-missing evidence category.
+
+    Lists only what is ACTUALLY missing — a category with evidence never
+    appears, so the short form cannot become its own wall of "not sourced".
+    """
+    groups: list[dict[str, str]] = []
+    if not getattr(inventory.fundamentals, "available", False):
+        groups.append(
+            {
+                "category": "Financial statements",
+                "status": "not yet ingested",
+                "detail": (
+                    "No regulator-structured or issuer-primary statement facts "
+                    "have been resolved for this company."
+                ),
+            }
+        )
+    if primary_fact_count == 0:
+        groups.append(
+            {
+                "category": "Primary issuer document",
+                "status": "not extracted",
+                "detail": (
+                    "No issuer annual report or equivalent primary document has "
+                    "been ingested and parsed."
+                ),
+            }
+        )
+    if sum(catalyst_counts.values()) == 0:
+        groups.append(
+            {
+                "category": "Catalysts",
+                "status": "none identified",
+                "detail": (
+                    "No regulator filing events, issuer press items or "
+                    "independent news were sourced in the lookback window."
+                ),
+            }
+        )
+    return groups
 
 
 def _build_source_quality_review(
@@ -4127,6 +4317,25 @@ def _assemble_final_report_content(
         "bull_case": _build_bull_case(bull_case_summary),
         "bear_case": _build_bear_case(bear_case_summary),
         "risk_analysis": _build_risk_analysis(risk_summary),
+        # Phase C2: the canonical evidence-quality answer. Additive (like
+        # evidence_channels / research_memo) so schema validation and legacy
+        # reports are untouched, but it is the surface humans should read.
+        "evidence_quality": _build_evidence_quality(
+            company_snapshot=company_snapshot,
+            financial_data_summary=financial_data_summary,
+            canonical_fundamentals=canonical_fundamentals,
+            catalyst_discovery=catalyst_discovery,
+        ),
+        "thin_evidence_state": _build_thin_evidence_state(
+            company_snapshot=company_snapshot,
+            financial_data_summary=financial_data_summary,
+            canonical_fundamentals=canonical_fundamentals,
+            catalyst_discovery=catalyst_discovery,
+            primary_facts=None,
+            primary_source_references=None,
+        ),
+        # Retained: raw source-tier counts + the Phase-8 agent's own notes are
+        # genuinely diagnostic. No longer the headline quality answer.
         "source_quality_review": _build_source_quality_review(
             source_quality_summary, sources
         ),
@@ -5234,6 +5443,27 @@ class FinalReportGeneratorService:
         )
         report_content["source_quality_review"] = _build_source_quality_review(
             source_quality_summary, sources, primary_facts=primary_facts
+        )
+        # Phase C2: recompute the canonical quality + thin state AFTER the
+        # council, from the same post-ingestion inventory every other surface
+        # now uses. Pre-council values would otherwise describe evidence the
+        # report no longer has (the #123 class of contradiction).
+        _post_fundamentals = resolve_fundamentals(company_snapshot, fundamentals_data)
+        report_content["evidence_quality"] = _build_evidence_quality(
+            company_snapshot=company_snapshot,
+            financial_data_summary=financial_data_summary,
+            canonical_fundamentals=_post_fundamentals,
+            catalyst_discovery=catalyst_discovery,
+        )
+        report_content["thin_evidence_state"] = _build_thin_evidence_state(
+            company_snapshot=company_snapshot,
+            financial_data_summary=financial_data_summary,
+            canonical_fundamentals=_post_fundamentals,
+            catalyst_discovery=catalyst_discovery,
+            primary_facts=primary_facts,
+            primary_source_references=list(
+                _memo_get(council_result, "primary_source_references", []) or []
+            ),
         )
         # Phase 32A RC-2 — mock ONLY on explicit provenance; unknown ≠ mock. Also
         # unconditional (Problem D) — see above.
