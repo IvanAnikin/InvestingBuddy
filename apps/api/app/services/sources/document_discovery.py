@@ -45,6 +45,7 @@ allowlisted host.
 
 from __future__ import annotations
 
+import contextvars
 import json
 import re
 from collections import deque
@@ -303,8 +304,84 @@ def _title_from_url(url: str) -> str:
 # --------------------------------------------------------------------------- #
 
 
-def _is_document_url(url: str) -> bool:
-    return url.lower().split("?", 1)[0].split("#", 1)[0].endswith(DOCUMENT_EXTENSIONS)
+# The current issuer's curated document hosts, scoped to one discovery run.
+#
+# A ContextVar rather than a threaded parameter: the discovery strategies are a
+# deep call tree and this is request-scoped, async-safe state. It defaults to
+# EMPTY, so every issuer without curated document hosts behaves exactly as
+# before, and it is always reset in a ``finally``.
+_DOCUMENT_DOMAINS: contextvars.ContextVar[tuple[str, ...]] = contextvars.ContextVar(
+    "document_domains", default=()
+)
+
+
+def _is_document_url(url: str, document_domains: tuple[str, ...] | None = None) -> bool:
+    """True when a URL is (or may be) a downloadable document.
+
+    Two acceptance paths:
+
+    1. A known document extension — the fast, unambiguous case.
+    2. An EXTENSION-LESS URL on one of this issuer's curated
+       ``document_domains``. Some issuers publish annual reports to a content
+       CDN with no file suffix (Pandora's "Annual Report 2025" is served as
+       ``application/pdf`` from a path with no extension and spaces in it), so
+       suffix matching alone silently finds nothing.
+
+    Path 2 only marks the link a CANDIDATE. The real type decision is made by
+    the fetcher from the response ``Content-Type`` (see
+    ``document_fetcher.classify_content_type``), so a curated host cannot make
+    an HTML page masquerade as a PDF. And because ``document_domains`` is
+    curated per issuer, no link discovered on a page can widen this set.
+    """
+    bare = url.lower().split("?", 1)[0].split("#", 1)[0]
+    if bare.endswith(DOCUMENT_EXTENSIONS):
+        return True
+    if document_domains is None:
+        document_domains = _DOCUMENT_DOMAINS.get()
+    if not document_domains:
+        return False
+    if _has_known_non_document_extension(bare):
+        return False
+    return registrable_host_allowed(host_of(url), document_domains)
+
+
+# Extensions that are definitely NOT downloadable documents. Keeps an
+# extension-less-document rule from sweeping up a CDN's assets and scripts.
+_NON_DOCUMENT_EXTENSIONS: tuple[str, ...] = (
+    ".js", ".css", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".ico",
+    ".woff", ".woff2", ".ttf", ".eot", ".mp4", ".webm", ".mp3", ".json",
+    ".xml", ".txt", ".zip", ".gz",
+)
+
+
+def _has_known_non_document_extension(bare_url: str) -> bool:
+    name = bare_url.rsplit("/", 1)[-1]
+    return name.endswith(_NON_DOCUMENT_EXTENSIONS)
+
+
+_URL_PREFIXES = ("http://", "https://", "//", "/", "./", "../")
+
+
+def _encode_url_spaces(value: str) -> str:
+    """Percent-encode literal spaces in something already shaped like a URL.
+
+    Official document URLs legitimately contain spaces — Pandora publishes
+    ``.../v1/static/Annual Report 2025``. ``_looks_like_url_string`` rejects any
+    whitespace, which is the right guard against free text in a JSON blob being
+    urljoin-ed, but it also discarded those valid links.
+
+    Encoding is applied ONLY to values that already start with a URL prefix, so
+    the free-text guard is untouched: prose without a scheme or leading slash is
+    still rejected by the prefix test below. Only the path is affected; query
+    semantics are left alone.
+    """
+    if not value:
+        return value
+    text = value.strip()
+    if not text.lower().startswith(_URL_PREFIXES) or " " not in text:
+        return value
+    head, sep, query = text.partition("?")
+    return head.replace(" ", "%20") + sep + query
 
 
 def _looks_like_url_string(value: str) -> bool:
@@ -338,6 +415,7 @@ def _normalize_candidate_url(
     parameters and would leave ``https://user:pass@host/…`` userinfo intact, which
     would then travel onto an ``EvidenceItem.url`` and into storage.
     """
+    raw = _encode_url_spaces(raw)
     if not _looks_like_url_string(raw):
         return None
     text = raw.strip()
@@ -1154,6 +1232,7 @@ def discover_documents(
     keywords: tuple[str, ...] = ANNUAL_REPORT_KEYWORDS,
     max_documents: int | None = None,
     strategies: tuple[str, ...] | None = None,
+    document_domains: tuple[str, ...] = (),
 ) -> list[DiscoveredDocument]:
     """Run every in-page discovery strategy over ONE already-fetched page.
 
@@ -1176,28 +1255,33 @@ def discover_documents(
 
     out: list[DiscoveredDocument] = []
     seen: set[str] = set()
-    for strategy in DEFAULT_STRATEGIES:
-        if strategy not in wanted:
-            continue
-        try:
-            found = _run_strategy(
-                strategy,
-                html,
-                base_url=base_url,
-                allowed_domains=allowed_domains,
-                keywords=keywords,
-                max_documents=cap,
-            )
-        except Exception:  # noqa: BLE001 - one bad strategy must not kill the rest
-            found = []
-        for doc in found:
-            if doc.identity in seen:
+    # Scope the curated document hosts to THIS run, and always reset.
+    token = _DOCUMENT_DOMAINS.set(tuple(document_domains or ()))
+    try:
+        for strategy in DEFAULT_STRATEGIES:
+            if strategy not in wanted:
                 continue
-            seen.add(doc.identity)
-            out.append(doc)
-        priority = sum(1 for d in out if d.doc_kind in _PRIORITY_KINDS)
-        if priority >= cap:
-            break
+            try:
+                found = _run_strategy(
+                    strategy,
+                    html,
+                    base_url=base_url,
+                    allowed_domains=allowed_domains,
+                    keywords=keywords,
+                    max_documents=cap,
+                )
+            except Exception:  # noqa: BLE001 - one bad strategy must not kill the rest
+                found = []
+            for doc in found:
+                if doc.identity in seen:
+                    continue
+                seen.add(doc.identity)
+                out.append(doc)
+            priority = sum(1 for d in out if d.doc_kind in _PRIORITY_KINDS)
+            if priority >= cap:
+                break
+    finally:
+        _DOCUMENT_DOMAINS.reset(token)
     return rank_documents(out)[:cap]
 
 

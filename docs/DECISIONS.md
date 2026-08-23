@@ -1547,3 +1547,79 @@ first, exchange scraping only if it remains necessary.
 
 The registry URL correction and this record only. No fetch-path, allowlist or
 security change — those need their own reviewed slice.
+
+---
+
+## ADR-024: Issuer-Scoped Document Hosts and Content-Type Document Discovery (Phase D1a)
+
+**Date:** 2026-08-23
+**Status:** Accepted
+
+### Context
+
+ADR-023 established why European issuers are evidence-thin. For Pandora
+specifically, three things combined to produce `discovered_count: 0`: stale
+registry URLs (fixed in #135), documents hosted on a content CDN outside the
+issuer's `allowed_domains`, and suffix-based discovery that cannot see an
+extension-less path. Verified live: the artifact is a real PDF
+(`Content-Type: application/pdf`, `%PDF-1.7`), served with spaces in the path,
+from a host the fetcher correctly refused.
+
+### Decision
+
+**A verified issuer may delegate document hosting to curated content hosts.**
+`VerifiedIssuerSource` gains `document_domains`, and `fetch_allowed_domains()`
+returns the issuer's own domains plus those hosts. This is a narrow **fetch
+authority**, not a source: the evidence remains an issuer publication, and the
+CDN never becomes an independent source.
+
+The trust properties that make this safe:
+
+- **Curated only.** The set comes from the code-defined registry. Nothing
+  discovered on a page can widen it, so a compromised issuer page cannot talk
+  the fetcher into a new host.
+- **Issuer-scoped.** One issuer's CDN is never usable by another.
+- **Redirects unchanged.** The existing fetcher re-checks the allowlist on
+  every hop with IP pinning, so a document host cannot be a stepping stone.
+- **Page fetches stay narrow.** Only document retrieval and document-link
+  discovery use the wider set; issuer HTML pages still come from issuer domains.
+- **Registry invariants.** Document domains must be lowercase, fully-qualified,
+  bare hostnames, non-wildcard, and must not duplicate an existing allowed
+  domain.
+
+**Discovery accepts extension-less candidates only on curated hosts.** The
+suffix fast-path is unchanged; an extension-less URL is a *candidate* only when
+its host is one of that issuer's curated document hosts and it does not carry a
+known non-document extension. **The type decision still belongs to the
+response** — `classify_content_type` reads `Content-Type` first — so a curated
+host cannot make an HTML page masquerade as a PDF.
+
+**URL spaces are encoded for URL-shaped values only.** `_looks_like_url_string`
+rejects whitespace, which correctly stops free text in a JSON blob being
+urljoin-ed but also discarded valid links. Encoding is applied only to values
+already starting with a URL prefix, so the free-text guard is untouched.
+
+### Alternatives rejected
+
+- Loosening the global allowlist, or auto-trusting hosts linked from issuer
+  pages — both make discovery an SSRF surface.
+- Probing every link's content type — unbounded network cost; the curated-host
+  pre-filter keeps probing proportionate.
+- A flipbook scraper for the third-party viewer Pandora also links: the direct
+  CDN artifact is the official downloadable document, so no third-party
+  integration is warranted.
+
+### Consequences
+
+- Pandora's annual report is now discovered end-to-end (verified live pre-merge
+  against the real page and registry entry).
+- Issuers without `document_domains` — including Richemont — are byte-identical.
+- No migration; the registry is code-defined.
+
+### Phase F follow-up: verified source registry liveness audit
+
+The Pandora entry carried a **404** URL while asserting it had been verified.
+Curated entries decay silently. A future periodic job should HEAD/GET each
+registry landing URL, record status and redirects, and **flag** stale entries
+for human review — never rewrite a registry URL automatically, since the
+correct replacement is a curation judgement.
