@@ -701,7 +701,11 @@ class CompanyIrConnector(SourceConnector):
             try:
                 child = await self._page_fetcher(
                     candidate.url,
-                    allowed_domains=v.allowed_domains,
+                    # The page URL still comes from the registry and is re-checked
+                    # before the request; the wider set is needed so document
+                    # links on the issuer's curated content host survive link
+                    # filtering. Every hop stays SSRF/IP-validated.
+                    allowed_domains=v.fetch_allowed_domains(),
                     keywords=ANNUAL_REPORT_KEYWORDS,
                     fallback_keywords=FALLBACK_REPORT_KEYWORDS,
                 )
@@ -775,7 +779,11 @@ class CompanyIrConnector(SourceConnector):
         start = time.monotonic()
         fetched = await self._page_fetcher(
             v.annual_reports_url,
-            allowed_domains=v.allowed_domains,
+            # The page URL still comes from the registry and is re-checked
+                    # before the request; the wider set is needed so document
+                    # links on the issuer's curated content host survive link
+                    # filtering. Every hop stays SSRF/IP-validated.
+                    allowed_domains=v.fetch_allowed_domains(),
             keywords=ANNUAL_REPORT_KEYWORDS,
             fallback_keywords=FALLBACK_REPORT_KEYWORDS,
         )
@@ -815,7 +823,11 @@ class CompanyIrConnector(SourceConnector):
             try:
                 fetched_ir = await self._page_fetcher(
                     v.investor_relations_url,
-                    allowed_domains=v.allowed_domains,
+                    # The page URL still comes from the registry and is re-checked
+                    # before the request; the wider set is needed so document
+                    # links on the issuer's curated content host survive link
+                    # filtering. Every hop stays SSRF/IP-validated.
+                    allowed_domains=v.fetch_allowed_domains(),
                     keywords=ANNUAL_REPORT_KEYWORDS,
                     fallback_keywords=FALLBACK_REPORT_KEYWORDS,
                 )
@@ -1013,7 +1025,9 @@ class CompanyIrConnector(SourceConnector):
         """Extract one annual-report document into bounded T1 evidence + facts."""
         assert self._document_extractor is not None
         v = self._verified
-        allowed = v.allowed_domains if v else ()
+        # Document retrieval may reach the issuer's curated content hosts
+        # (see VerifiedIssuerSource.fetch_allowed_domains). Page fetches do not.
+        allowed = v.fetch_allowed_domains() if v else ()
         # Prefer a downloadable document link (PDF); else the first report link.
         target = next((ln for ln in links if ln.is_document), links[0])
 
@@ -1231,10 +1245,14 @@ class CompanyIrConnector(SourceConnector):
             discovered = discover_documents(
                 body,
                 base_url=fetched.final_url or fetched.requested_url,
-                allowed_domains=self._verified.allowed_domains,
+                allowed_domains=self._verified.fetch_allowed_domains(),
                 cfg=self._cfg,
                 strategies=self._discovery_strategies(),
                 keywords=keywords,
+                # Curated, issuer-scoped content hosts: lets an extension-less
+                # artifact on the issuer's own CDN be treated as a document
+                # candidate. Type is still decided from the response.
+                document_domains=self._verified.document_domains,
             )
         except Exception:  # noqa: BLE001 - discovery must never break a run
             return links
@@ -1334,7 +1352,9 @@ class CompanyIrConnector(SourceConnector):
         council deadline so ingestion + council stays under the gateway timeout.
         """
         assert self._primary_document_extractor is not None
-        allowed = self._verified.allowed_domains if self._verified else ()
+        allowed = (
+            self._verified.fetch_allowed_domains() if self._verified else ()
+        )
         issuer_context = self._issuer_context(company)
         # Corrective (post-#99/#100): rank a FEW further candidates beyond the
         # normal per-issuer cap so the loop below can keep going, still

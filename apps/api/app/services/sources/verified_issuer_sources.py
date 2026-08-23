@@ -60,9 +60,31 @@ class VerifiedIssuerSource:
     investor_relations_url: str | None = None
     annual_reports_url: str | None = None
     press_releases_url: str | None = None
+    # Curated content hosts this issuer publishes its OWN documents on.
+    #
+    # Some issuers serve annual reports from a content CDN rather than their
+    # corporate domain (e.g. Pandora publishes to an Amplience host). Those
+    # artifacts are genuine issuer publications, but the host sits outside
+    # ``allowed_domains``, so the fetcher correctly refuses them.
+    #
+    # This is a NARROW fetch authority, not a source: it authorises retrieving
+    # artifacts LINKED FROM this issuer's verified pages, and it is scoped to
+    # THIS issuer — one issuer's CDN never becomes usable by another. Trust
+    # comes from curation here, never from a URL discovered at runtime, so no
+    # page can talk the fetcher into a new host. Exact hostnames only.
+    document_domains: tuple[str, ...] = field(default_factory=tuple)
     source_confidence: str = CONFIDENCE_VERIFIED_REFERENCE
     last_verified_note: str = ""
     warnings: tuple[str, ...] = field(default_factory=tuple)
+
+    def fetch_allowed_domains(self) -> tuple[str, ...]:
+        """Hosts a document fetch for THIS issuer may reach.
+
+        The issuer's own domains plus any curated document hosts. Callers pass
+        this to the fetcher, which re-checks it on every redirect hop, so a
+        document host cannot be used as a stepping stone off the allowlist.
+        """
+        return tuple(self.allowed_domains) + tuple(self.document_domains)
 
     def urls(self) -> list[str]:
         """All non-null page URLs on this entry."""
@@ -220,6 +242,10 @@ _ISSUERS: tuple[VerifiedIssuerSource, ...] = (
         country="Denmark",
         official_website_domain="pandoragroup.com",
         allowed_domains=("pandoragroup.com",),
+        # Verified live 2026-08-23: the reports page links three artifacts on
+        # this host; "Annual Report 2025" returns HTTP 206 with
+        # Content-Type: application/pdf and %PDF-1.7 magic bytes, no redirect.
+        document_domains=("pandora.a.bigcontent.io",),
         investor_relations_url="https://pandoragroup.com/investor",
         annual_reports_url="https://pandoragroup.com/investor/reports-and-presentations",
         press_releases_url=(
@@ -390,6 +416,19 @@ def validate_registry(issuers: tuple[VerifiedIssuerSource, ...] = _ISSUERS) -> N
             host = host_of(url)
             assert registrable_host_allowed(host, it.allowed_domains), (
                 f"{k}: URL host {host!r} not in allowed_domains {it.allowed_domains}"
+            )
+        # Document hosts are an EXTRA fetch authority, never a substitute for
+        # the issuer's own domains, and never a wildcard.
+        for dom in it.document_domains:
+            d = dom.strip().lower()
+            assert d and d == dom, f"{k}: document domain must be lowercase/trimmed: {dom!r}"
+            assert "*" not in d and "/" not in d and ":" not in d, (
+                f"{k}: document domain must be a bare hostname: {dom!r}"
+            )
+            assert "." in d, f"{k}: document domain must be fully qualified: {dom!r}"
+            assert not registrable_host_allowed(d, it.allowed_domains), (
+                f"{k}: document domain {dom!r} is already covered by "
+                "allowed_domains; do not duplicate trust"
             )
 
 
