@@ -798,6 +798,27 @@ async def _run_with_retries(
 # ---------------------------------------------------------------------------
 
 
+
+def _chair_failure_reason(attempts: int, last_error: str | None) -> str:
+    """Why the chair did not complete — never ``None`` when it failed.
+
+    Phase 32A TPM corrective (live staging, 2026-08-23): a chair that never got
+    an attempt (the wall budget was exhausted before its turn) recorded NO
+    error, so the failure surfaced as an empty ``chair_error_type`` — reading
+    like "no error" next to a failure-default label. The three outcomes are now
+    always distinguishable:
+
+      * ``budget_exhausted``       — never ran; council wall budget ran out.
+      * a provider error class     — ran and failed transiently/permanently
+                                     (e.g. ``LLMRateLimitError``).
+      * ``quarantined_or_unparsed``— ran and returned, but the safety/schema
+                                     gate rejected the output (a CONTENT
+                                     outcome, not an infrastructure one).
+    """
+    if last_error:
+        return last_error
+    return "budget_exhausted" if attempts == 0 else "quarantined_or_unparsed"
+
 def _aggregate_chair(
     pack: FieldReviewPack, chair: FieldReviewAgentOutput | None
 ) -> dict[str, list[dict[str, Any]]]:
@@ -1017,7 +1038,9 @@ async def run_field_review_council(
         result.chair_synthesis_basis = "deterministic_fallback"
     result.chair_attempts = tracker.attempts_for(AGENT_FIELD_CHAIR)
     if chair is None or chair.status != STATUS_COMPLETED:
-        result.chair_error_type = tracker.last_error_for(AGENT_FIELD_CHAIR)
+        result.chair_error_type = _chair_failure_reason(
+            result.chair_attempts, tracker.last_error_for(AGENT_FIELD_CHAIR)
+        )
     result.token_usage = tracker.usage_metadata()
 
     log_event(

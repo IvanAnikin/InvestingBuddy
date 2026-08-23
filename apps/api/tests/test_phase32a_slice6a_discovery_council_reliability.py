@@ -231,14 +231,14 @@ def test_config_defaults_present_and_off() -> None:
     # company council so an honored Azure retry-after can span a TPM window.
     assert app_settings.llm_discovery_council_retry_max_backoff_seconds == 60.0
     assert app_settings.llm_discovery_council_retry_max_retry_after_seconds == 90.0
-    assert app_settings.llm_discovery_council_retry_total_budget_seconds == 300.0
-    assert app_settings.llm_discovery_council_retry_critical_reserve_seconds == 60.0
-    # Since the TPM slice BOTH councils are async jobs; the company council's
-    # budget is now the larger one (it must span multiple TPM refill windows),
-    # so the old "discovery > company" inversion no longer holds. Assert only
-    # that both are strictly bounded and async-era sized.
-    assert app_settings.llm_discovery_council_retry_total_budget_seconds >= 300.0
-    assert app_settings.llm_council_total_budget_seconds >= 600.0
+    # TPM corrective (live staging, 2026-08-23): raised 300->900 / 60->300.
+    # Token pacing adds real wall time to every agent; the previous budget
+    # starved run_red_team + discovery_chair with ``budget_exhausted`` on a
+    # real 7-candidate run. See test_phase32a_council_tpm_resilience.py for
+    # the structural invariants these values must satisfy.
+    assert app_settings.llm_discovery_council_retry_total_budget_seconds == 900.0
+    assert app_settings.llm_discovery_council_retry_critical_reserve_seconds == 300.0
+    assert app_settings.llm_council_total_budget_seconds >= 1200.0
 
 
 def test_critical_and_reserved_sets() -> None:

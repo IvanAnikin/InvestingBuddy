@@ -283,8 +283,8 @@ def test_config_defaults_present_and_off() -> None:
     # now runs in an async job and must span provider TPM refill windows.
     assert app_settings.llm_council_retry_max_backoff_seconds == 60.0
     assert app_settings.llm_council_retry_max_retry_after_seconds == 90.0
-    assert app_settings.llm_council_total_budget_seconds == 600.0
-    assert app_settings.llm_council_critical_reserve_seconds == 180.0
+    assert app_settings.llm_council_total_budget_seconds == 1200.0
+    assert app_settings.llm_council_critical_reserve_seconds == 400.0
 
 
 # ===========================================================================

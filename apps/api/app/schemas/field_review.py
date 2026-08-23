@@ -182,6 +182,14 @@ class FieldReviewResponse(BaseModel):
     # them here alone would silently drop them.
     chair_fallback_used: bool = False
     deterministic_field_chair: dict[str, Any] | None = None
+    # Phase 32A TPM corrective — failure-vs-judgement semantics (same rationale
+    # as the discovery council's). ``chair_error_type`` carries an error CLASS
+    # NAME or ``budget_exhausted`` — never a message. Read explicitly in
+    # ``from_row`` below, per the NOTE above.
+    chair_synthesis_basis: str | None = None
+    chair_attempts: int = 0
+    chair_error_type: str | None = None
+    token_usage: dict[str, Any] | None = None
 
     candidates: list[FieldReviewCandidateRow] = Field(default_factory=list)
 
@@ -254,6 +262,10 @@ class FieldReviewResponse(BaseModel):
             agent_outputs=dict(review.get("agent_outputs") or {}),
             chair_fallback_used=bool(review.get("chair_fallback_used")),
             deterministic_field_chair=fallback_chair,
+            chair_synthesis_basis=review.get("chair_synthesis_basis"),
+            chair_attempts=int(review.get("chair_attempts") or 0),
+            chair_error_type=review.get("chair_error_type"),
+            token_usage=review.get("token_usage"),
             warnings=list(row.warnings_json or review.get("warnings") or []),
             candidates=[
                 FieldReviewCandidateRow.model_validate(c) for c in candidates or []

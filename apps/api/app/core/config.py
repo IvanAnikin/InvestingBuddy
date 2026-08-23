@@ -165,14 +165,22 @@ class Settings(BaseSettings):
     # refill window instead of firing back into the exhausted one.
     llm_discovery_council_retry_max_retry_after_seconds: float = 90.0
     # HARD total discovery-council wall-time cap (seconds). All retries live
-    # under this deadline. Materially higher than the company council's 150s:
-    # the discovery council is not bound by the inline gateway timeout.
-    llm_discovery_council_retry_total_budget_seconds: float = 300.0
+    # under this deadline. CORRECTIVE (live staging, 2026-08-23): raised
+    # 300 -> 900. Token pacing makes every agent wait for TPM headroom, so a
+    # budget sized for UNPACED execution starves the tail of the agent order:
+    # a real 7-candidate run exhausted 300s during the initial pass and both
+    # ``run_red_team`` and ``discovery_chair`` failed with ``budget_exhausted``
+    # (8 agents x ~3k tokens = ~2.4 windows = ~144s of pure pacing, before any
+    # call latency or retries). The discovery council is an async background
+    # job with no gateway ceiling, so the larger budget is safe and bounded.
+    llm_discovery_council_retry_total_budget_seconds: float = 900.0
     # Wall-time (seconds) reserved out of the total budget for the two protected
     # agents (run_red_team + discovery_chair) so earlier agents draining the
-    # budget cannot starve the adversarial check and the synthesis. Materially
-    # higher than the company council's 45s, matching the larger total budget.
-    llm_discovery_council_retry_critical_reserve_seconds: float = 60.0
+    # budget cannot starve the adversarial check and the synthesis. CORRECTIVE
+    # (live staging, 2026-08-23): raised 60 -> 300. The reserve must cover the
+    # two protected agents' own PACING waits plus their calls and retries, not
+    # just their calls — 60s could not, which is why both starved.
+    llm_discovery_council_retry_critical_reserve_seconds: float = 300.0
     # Inter-agent pacing (seconds) inside the discovery council's INITIAL pass
     # when the retry bundle is ON. The initial pass is already strictly
     # sequential (no asyncio.gather), but with no pacing all eight agents fire
@@ -234,11 +242,15 @@ class Settings(BaseSettings):
     # (Phase 32A TPM slice), matching the other two councils.
     llm_field_review_council_retry_max_retry_after_seconds: float = 90.0
     # HARD total wall-time cap (seconds) for the whole field-review council.
-    llm_field_review_council_total_budget_seconds: float = 600.0
+    # CORRECTIVE (live staging, 2026-08-23): raised 600 -> 900 for the same
+    # reason as the discovery council — token pacing adds real wall time to
+    # every agent, and the tail of the agent order must not starve.
+    llm_field_review_council_total_budget_seconds: float = 900.0
     # Wall-time (seconds) reserved out of the total budget for the two protected
     # agents (field_red_team + field_chair) so earlier agents draining the budget
-    # cannot starve the adversarial check and the synthesis.
-    llm_field_review_council_critical_reserve_seconds: float = 120.0
+    # cannot starve the adversarial check and the synthesis. CORRECTIVE (live
+    # staging, 2026-08-23): raised 120 -> 300 to cover their pacing waits too.
+    llm_field_review_council_critical_reserve_seconds: float = 300.0
 
     # ── Async full-analysis job (Phase 32A TPM slice) ──────────────────────
     # Base minutes after which a ``running`` analysis-job envelope written by a
@@ -532,13 +544,23 @@ class Settings(BaseSettings):
     # jobs always terminate. The analysis-job stale threshold is derived from
     # this value (see ``analysis_job_stale_after_minutes``), keeping the two
     # coherent by construction.
-    llm_council_total_budget_seconds: float = 600.0
+    # CORRECTIVE (live staging, 2026-08-23): 600 -> 1200. MEASURED: one real
+    # NVDA council spent 23,501 provider-reported tokens for 4 agents (~47k for
+    # a full 8) and, with three councils running CONCURRENTLY against one
+    # 10k-TPM deployment, accumulated 558s of pacing wait — overrunning 600s and
+    # leaving 4 agents ``budget_exhausted`` with ZERO 429s (the pacer worked;
+    # the budget was simply too small to hold the waiting). 1200s covers a full
+    # paced council plus two-way concurrency at 10k TPM. Three-way concurrency
+    # needs more PROVIDER CAPACITY, not a bigger budget.
+    llm_council_total_budget_seconds: float = 1200.0
     # Wall-time (seconds) reserved out of the total budget for the two protected
     # agents (red_team + committee_chair) so earlier agents draining the budget
     # cannot starve the adversarial check and the synthesis. Raised 45->180 with
     # the total budget (Phase 32A TPM slice): the chair retry now has room to
     # wait out a full TPM refill window inside its reserve.
-    llm_council_critical_reserve_seconds: float = 180.0
+    # CORRECTIVE (2026-08-23): 180 -> 400. The reserve must cover the two
+    # protected agents' PACING waits, not merely their calls.
+    llm_council_critical_reserve_seconds: float = 400.0
     # Inter-agent pacing (seconds) inside the company council's INITIAL pass
     # when the retry bundle is ON (same mechanism the discovery council already
     # uses). 0.0 disables pacing (default — byte-identical initial pass).
@@ -561,8 +583,12 @@ class Settings(BaseSettings):
     # Hard ceiling (seconds) a single paced request may WAIT for window
     # headroom before proceeding anyway (the provider 429 + bounded retries are
     # the correctness backstop — pacing is advisory and can never wedge a
-    # council or skip an agent).
-    llm_council_pacing_max_wait_seconds: float = 240.0
+    # council or skip an agent). CORRECTIVE (live staging, 2026-08-23): the
+    # sliding window is 60s, so the maximum USEFUL wait is one full window
+    # rotation; the original 240s let a SINGLE agent's advisory wait consume
+    # most of a council's wall budget, which is how the discovery council's
+    # red_team + chair hit ``budget_exhausted`` before they could start.
+    llm_council_pacing_max_wait_seconds: float = 90.0
     # Per-agent cap (characters) applied to each PRIOR agent summary inside the
     # committee chair's user message. 0 (default) = no compaction, byte-identical
     # chair prompt. When > 0 each completed agent's line keeps its truncated

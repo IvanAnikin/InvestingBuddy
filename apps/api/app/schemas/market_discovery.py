@@ -617,6 +617,16 @@ class DiscoveryCouncilReviewResponse(BaseModel):
     # itself part of the public API contract.
     chair_fallback_used: bool = False
     deterministic_discovery_chair: dict[str, Any] | None = None
+    # Phase 32A TPM corrective — failure-vs-judgement semantics. These are
+    # written by ``DiscoveryCouncilResult.to_storage_dict`` but were dropped
+    # here (Pydantic ignores undeclared extras), so the API could show
+    # ``run_quality="failed"`` with no way to tell an evidence judgement from a
+    # provider throttle or a wall-budget exhaustion. ``chair_error_type``
+    # carries an error CLASS NAME or ``budget_exhausted`` — never a message.
+    chair_synthesis_basis: str | None = None
+    chair_attempts: int = 0
+    chair_error_type: str | None = None
+    token_usage: dict[str, Any] | None = None
     human_review_required: bool = True
     publication_ready: bool = False
     created_at: str | None = None

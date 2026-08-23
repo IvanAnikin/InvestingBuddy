@@ -197,8 +197,8 @@ def _status(result) -> dict[str, str]:
 # Async-era config defaults (a silent revert must fail loudly)
 # ---------------------------------------------------------------------------
 def test_async_era_budget_defaults() -> None:
-    assert app_settings.llm_council_total_budget_seconds == 600.0
-    assert app_settings.llm_council_critical_reserve_seconds == 180.0
+    assert app_settings.llm_council_total_budget_seconds == 1200.0
+    assert app_settings.llm_council_critical_reserve_seconds == 400.0
     assert app_settings.llm_council_retry_max_retry_after_seconds == 90.0
     assert app_settings.llm_council_retry_max_backoff_seconds == 60.0
     # Pacing + compaction are OFF by default — a plain deploy is unchanged.
@@ -609,3 +609,132 @@ async def test_off_path_with_failed_chair_records_error_type() -> None:
     assert result.chair_synthesis_basis is None
     assert result.chair_error_type == "LLMTimeoutError"
     assert result.committee_label is None
+
+
+# ===========================================================================
+# CORRECTIVE (live staging, 2026-08-23) — budgets must accommodate PACING
+# ---------------------------------------------------------------------------
+# A real 7-candidate discovery run on staging completed 6/8 agents with BOTH
+# ``run_red_team`` and ``discovery_chair`` failing ``budget_exhausted``: token
+# pacing adds real wall time to every agent, but only the COMPANY council's
+# budget had been raised for the async/TPM era. These tests encode the
+# invariant that was missing when that shipped.
+# ===========================================================================
+from app.services.llm.council import _chair_failure_reason  # noqa: E402
+
+
+def test_chair_failure_reason_distinguishes_the_three_outcomes() -> None:
+    # Never ran (wall budget gone before its turn) — must NOT read as "no error".
+    assert _chair_failure_reason(0, None) == "budget_exhausted"
+    # Ran and failed against the provider.
+    assert _chair_failure_reason(2, "LLMRateLimitError") == "LLMRateLimitError"
+    # Ran and returned, but the safety/schema gate rejected it (CONTENT, not infra).
+    assert _chair_failure_reason(1, None) == "quarantined_or_unparsed"
+
+
+def test_pacing_max_wait_is_bounded_by_one_window_rotation() -> None:
+    # The pacer's sliding window is 60s, so a wait longer than ~one rotation
+    # buys nothing and can only starve later agents. The original 240s default
+    # let ONE agent consume most of a council's budget.
+    assert app_settings.llm_council_pacing_max_wait_seconds <= 90.0
+
+
+def test_every_council_reserve_can_cover_its_protected_agents_pacing() -> None:
+    """THE invariant that was missing: reserve >= both protected agents' waits.
+
+    Each council protects exactly two tail agents (red-team + chair). If the
+    reserve cannot cover their PACING waits — not merely their calls — they
+    starve with ``budget_exhausted``, which is precisely the staging failure.
+    """
+    wait = app_settings.llm_council_pacing_max_wait_seconds
+    for total, reserve, name in (
+        (
+            app_settings.llm_council_total_budget_seconds,
+            app_settings.llm_council_critical_reserve_seconds,
+            "company",
+        ),
+        (
+            app_settings.llm_discovery_council_retry_total_budget_seconds,
+            app_settings.llm_discovery_council_retry_critical_reserve_seconds,
+            "discovery",
+        ),
+        (
+            app_settings.llm_field_review_council_total_budget_seconds,
+            app_settings.llm_field_review_council_critical_reserve_seconds,
+            "field_review",
+        ),
+    ):
+        assert reserve >= 2 * wait, f"{name}: reserve {reserve}s < 2 x pacing {wait}s"
+        assert total > reserve, f"{name}: total {total}s must exceed reserve {reserve}s"
+
+
+def test_council_budgets_cover_a_full_paced_initial_pass() -> None:
+    """A full 8-agent initial pass must fit in the non-reserved budget.
+
+    At 10k TPM with ~3k-token requests a council needs ~2.4 sliding windows
+    (~144s) of pure pacing before any call latency or retries. Every council's
+    non-reserved slice must exceed that with real headroom.
+    """
+    paced_initial_pass_seconds = 8 * 3000 / 10_000 * 60  # ~144s
+    for total, reserve, name in (
+        (
+            app_settings.llm_council_total_budget_seconds,
+            app_settings.llm_council_critical_reserve_seconds,
+            "company",
+        ),
+        (
+            app_settings.llm_discovery_council_retry_total_budget_seconds,
+            app_settings.llm_discovery_council_retry_critical_reserve_seconds,
+            "discovery",
+        ),
+        (
+            app_settings.llm_field_review_council_total_budget_seconds,
+            app_settings.llm_field_review_council_critical_reserve_seconds,
+            "field_review",
+        ),
+    ):
+        non_reserved = total - reserve
+        assert non_reserved >= 2 * paced_initial_pass_seconds, (
+            f"{name}: non-reserved {non_reserved}s cannot absorb a paced "
+            f"initial pass (~{paced_initial_pass_seconds:.0f}s) with headroom"
+        )
+
+
+async def test_budget_exhausted_chair_reports_a_reason_not_silence(monkeypatch) -> None:
+    """End-to-end: a chair starved by the wall budget says WHY.
+
+    Reproduces the staging shape (chair never attempted) by collapsing the
+    total budget so the deadline passes during the initial pass.
+    """
+    monkeypatch.setattr(app_settings, "llm_council_retry_enabled", True)
+    monkeypatch.setattr(app_settings, "llm_council_total_budget_seconds", 0.0)
+    result = await _run(_pack(), FakeLLMClient())
+
+    assert result.chair_attempts == 0
+    assert result.chair_fallback_used is True
+    assert result.chair_synthesis_basis == "deterministic_fallback"
+    assert result.chair_error_type == "budget_exhausted"
+    payload = result.to_report_dict()
+    assert payload["committee_label_basis"] == "deterministic_fallback"
+    assert payload["chair_error_type"] == "budget_exhausted"
+
+
+def test_council_response_schemas_surface_failure_semantics() -> None:
+    """The API must not silently drop the new fields (Pydantic ignores extras).
+
+    Staging showed ``run_quality="failed"`` with no way to tell an evidence
+    judgement from a throttle: the fields were persisted but undeclared on the
+    response models.
+    """
+    from app.schemas.field_review import FieldReviewResponse
+    from app.schemas.market_discovery import DiscoveryCouncilReviewResponse
+
+    for model in (DiscoveryCouncilReviewResponse, FieldReviewResponse):
+        fields = model.model_fields
+        for name in (
+            "chair_synthesis_basis",
+            "chair_attempts",
+            "chair_error_type",
+            "token_usage",
+        ):
+            assert name in fields, f"{model.__name__} drops {name}"

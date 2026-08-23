@@ -1246,3 +1246,39 @@ guaranteed a clamped retry fired back into the same exhausted window.
   `chair_error_type`, `token_usage`) on all three councils' persisted outputs.
 - No database migration (head stays 017). No publication-gating change:
   `publication_ready=false`, `human_review_required=true` throughout.
+
+### Corrective (2026-08-23, live staging) — budgets must be sized WITH pacing
+
+The first live staging run of ADR-020 exposed a defect in the decision itself.
+Enabling the pacer on all three councils while raising only the COMPANY
+council's wall budget starved the tail of the other two: a real 7-candidate
+discovery run completed 6/8 agents with **both** `run_red_team` and
+`discovery_chair` failing `budget_exhausted` — the chair never ran at all.
+
+Arithmetic: at 10k TPM with ~3k-token requests, an 8-agent initial pass needs
+~2.4 sliding windows (~144s) of *pure pacing* before any call latency or
+retries. The discovery council's non-reserved slice was 240s (300 − 60), which
+that pass consumed. Three consequences, all fixed:
+
+1. `LLM_COUNCIL_PACING_MAX_WAIT_SECONDS` 240 → **90**. The window is 60s, so
+   the maximum *useful* wait is one rotation; 240s let a single agent's
+   advisory wait consume most of a council's budget.
+2. Discovery council 300 → **900s** total, 60 → **300s** reserve; field review
+   600 → **900s** total, 120 → **300s** reserve. A reserve must cover the two
+   protected agents' *pacing waits*, not merely their calls.
+3. `chair_error_type` is never empty on failure. A chair that never got an
+   attempt now reports `budget_exhausted` (vs a provider error class, vs
+   `quarantined_or_unparsed` for a content rejection) — previously it read as
+   "no error" beside a failure-default label, the exact silent downgrade this
+   ADR set out to eliminate.
+
+Also fixed: `chair_synthesis_basis` / `chair_attempts` / `chair_error_type` /
+`token_usage` were persisted by the discovery and field-review councils but
+**undeclared on their API response models**, so Pydantic silently dropped them
+— the API could show `run_quality="failed"` with no way to distinguish an
+evidence judgement from a throttle.
+
+The regression guard is structural rather than value-pinning: tests now assert
+`reserve >= 2 x pacing_max_wait` and that every council's non-reserved slice
+absorbs a full paced initial pass with headroom, for all three councils. That
+invariant, not the specific numbers, is what was missing.
