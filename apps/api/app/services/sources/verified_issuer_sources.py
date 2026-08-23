@@ -221,11 +221,23 @@ _ISSUERS: tuple[VerifiedIssuerSource, ...] = (
         official_website_domain="pandoragroup.com",
         allowed_domains=("pandoragroup.com",),
         investor_relations_url="https://pandoragroup.com/investor",
-        annual_reports_url="https://pandoragroup.com/investor/news-and-reports/reports",
-        press_releases_url="https://pandoragroup.com/investor/news-and-reports/news",
+        annual_reports_url="https://pandoragroup.com/investor/reports-and-presentations",
+        press_releases_url=(
+            "https://pandoragroup.com/investor/announcements-and-events/"
+            "company-announcements"
+        ),
         source_confidence=CONFIDENCE_VERIFIED_LIVE,
-        last_verified_note="IR landing confirmed 2026-07-25; reports index reference URL.",
-        warnings=("Reports are metadata-only; PDF text is not extracted in this phase.",),
+        last_verified_note=(
+            "Re-verified live 2026-08-23: IR landing 200. The previous "
+            "news-and-reports/* URLs both 404 — the site reorganised to "
+            "reports-and-presentations and announcements-and-events."
+        ),
+        warnings=(
+            "Report documents are hosted off-domain on the issuer's content CDN "
+            "(pandora.a.bigcontent.io) and carry no .pdf extension, so neither "
+            "the domain allowlist nor extension-based document discovery "
+            "reaches them yet (honest gap).",
+        ),
     ),
     VerifiedIssuerSource(
         ticker="MONC",
