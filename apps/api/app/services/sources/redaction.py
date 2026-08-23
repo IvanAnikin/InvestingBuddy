@@ -11,6 +11,7 @@ Nothing here ever raises — redaction must never break the path it protects.
 
 from __future__ import annotations
 
+import re
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from app.core.log_redaction import (
@@ -60,6 +61,18 @@ def strip_url_secrets(url: str | None) -> str | None:
         return url
 
 
+_PCT_ESCAPE_RE = re.compile(r"%([0-9a-fA-F]{2})")
+
+
+def _normalize_path_encoding(path: str) -> str:
+    """Encode literal spaces and upper-case existing escapes. Never decodes."""
+    if not path:
+        return path
+    return _PCT_ESCAPE_RE.sub(
+        lambda m: "%" + m.group(1).upper(), path.replace(" ", "%20")
+    )
+
+
 def canonicalize_source_url(url: str | None) -> str | None:
     """Return a canonical, credential-free form of ``url`` for persistence.
 
@@ -71,7 +84,13 @@ def canonicalize_source_url(url: str | None) -> str | None:
       - drops every credential-bearing query parameter (via ``strip_url_secrets``);
       - strips ``user:pass@`` userinfo from the authority;
       - lower-cases the scheme + host (path/query case is preserved);
-      - drops the fragment.
+      - drops the fragment;
+      - canonicalises PATH PERCENT-ENCODING (a literal space becomes ``%20``;
+        existing escapes are upper-cased). Encoding-only, never decoding, so
+        ``a%2Fb`` is never conflated with ``a/b``. Without this the SAME
+        document reachable as ``Annual Report 2025`` and
+        ``Annual%20Report%202025`` produced two identities, two fetch attempts
+        and two cache entries.
 
     Never raises: an unpar't URL is returned as the secret-stripped best effort.
     """
@@ -92,7 +111,13 @@ def canonicalize_source_url(url: str | None) -> str | None:
             # defensively and keep the rest.
             netloc = parts.netloc.rsplit("@", 1)[-1]
         return urlunsplit(
-            (parts.scheme.lower(), netloc, parts.path, parts.query, "")
+            (
+                parts.scheme.lower(),
+                netloc,
+                _normalize_path_encoding(parts.path),
+                parts.query,
+                "",
+            )
         )
     except (ValueError, TypeError):
         return cleaned
