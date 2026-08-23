@@ -13,7 +13,8 @@ import {
   type ReportContent,
   META_KEYS,
   SECTION_LABELS,
-  SECTION_ORDER,
+  isThinEvidenceReport,
+  sectionOrderFor,
   humanizeKey,
   isEmptyValue,
   noteText,
@@ -567,6 +568,10 @@ export default function FinalReportRenderer({
   safetyValid: boolean;
 }) {
   const validated = schemaValid && safetyValid;
+  // Phase C2: the backend decides thin-ness once, from the reconciled evidence
+  // inventory. The UI only picks which section order to walk.
+  const isThin = isThinEvidenceReport(content as Record<string, unknown>);
+  const sectionOrder = sectionOrderFor(content as Record<string, unknown>);
   return (
     <div className="space-y-4" data-testid="readable-report">
       {/* Phase 28A.2 task 6 — validated vs cautionary draft disclaimer. The
@@ -580,7 +585,21 @@ export default function FinalReportRenderer({
           : "Internal admin draft — schema or safety validation is incomplete. Not investment advice. Human review required. Public publishing is not implemented."}
       </p>
 
-      {SECTION_ORDER.map((key) => {
+      {/* Phase C2: an evidence-thin company renders the SHORT form. The
+          judgement is the backend's canonical ThinEvidenceAssessment; the UI
+          only chooses which section order to walk. */}
+      {isThin && (
+        <p
+          data-testid="thin-evidence-notice"
+          className="rounded-lg border border-amber-400/25 bg-amber-500/[0.09] px-3 py-2 text-xs text-amber-200"
+        >
+          Evidence is currently insufficient for a full company analysis. The
+          sections below show what is known and what is missing; analysis
+          sections are omitted rather than shown empty.
+        </p>
+      )}
+
+      {sectionOrder.map((key) => {
         const section = content[key];
         if (section == null) return null;
         if (key === "executive_summary")
