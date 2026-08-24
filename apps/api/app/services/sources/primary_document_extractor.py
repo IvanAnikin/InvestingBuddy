@@ -55,6 +55,12 @@ from app.services.sources.document_text_extractor import (
 )
 from app.services.sources.financial_fact_categories import select_category_diverse
 from app.services.sources.financial_metric_signal import excerpt_diversity_key
+from app.services.sources.financial_table_reconstructor import (
+    SECTION_TITLE_SIZE_RATIO,
+    ReconstructedFinancialTable,
+    page_title_of,
+    reconstruct_financial_tables,
+)
 from app.services.sources.ingestion_status import (
     FAILURE_CLIENT_UNAVAILABLE,
     FAILURE_EMPTY_EXTRACTION,
@@ -116,6 +122,10 @@ _PDF_FAILURE_GAP_DEFAULT = (
 _MAX_TOTAL_EXTRACTED_CHARS = 4_000_000
 # Table bounds (object-abuse guard): a single page/table cannot explode memory.
 _MAX_TABLES_PER_PAGE = 10
+# Per-page cap on reconstructed-table refusal diagnostics carried into
+# ``warnings`` — enough for an operator to see WHY a visible number did not
+# become a fact, bounded so a pathological page cannot flood the log.
+_MAX_TABLE_REJECTION_DIAGNOSTICS = 5
 _MAX_TABLE_ROWS = 200
 _MAX_TABLE_COLS = 40
 _MAX_CELL_CHARS = 400
@@ -168,6 +178,17 @@ class ExtractedTable(BaseModel):
     # a segment/business-unit heading label, or ``None`` when no scope signal
     # was found. Never guessed — see ``_infer_scope`` for how it is derived.
     scope: str | None = None
+    # Phase 32D — True when this grid was rebuilt GEOMETRICALLY from the
+    # page's positioned words (``financial_table_reconstructor``) rather than
+    # recovered from ruling lines by ``page.extract_tables()``. A borderless
+    # multi-year summary table has no rules to find, so this is the only way
+    # its column→year map survives. Consumers use it to know that the row's
+    # period came from an explicit, x-anchored column header rather than from
+    # the document's default period.
+    reconstructed: bool = False
+    # The period of each value column, in column order (reconstructed tables
+    # only) — the same strings that appear in the grid's header row.
+    column_periods: list[str] = Field(default_factory=list)
 
 
 class PrimaryDocumentExcerpt(BaseModel):
@@ -308,6 +329,18 @@ _SEGMENT_HEADING_MARKERS = (
     "business area",
     "business group",
     "business unit",
+    # IFRS 5. A discontinued operation / disposal group / held-for-sale
+    # position is reported SEPARATELY from the continuing Group result, so it
+    # is a distinct reporting scope and must never populate a Group slot.
+    # These are checked BEFORE ``_GROUP_HEADING_MARKERS`` below, which also
+    # makes them the guard against the standard's own phrase "disposal
+    # GROUP" reading as an issuer Group-scope claim — the same false-positive
+    # class as ``_PEER_GROUP_RE``, and a real one: on the Richemont annual
+    # report the YNAP disposal note's "Revenue 82" was scoped ``group`` and
+    # then contradicted the Group's actual EUR 22 420 million revenue.
+    "discontinued operation",
+    "disposal group",
+    "held for sale",
 )
 # Heading substrings that mark an entity-level (whole-company) figure.
 _GROUP_HEADING_MARKERS = ("consolidated", "group")
@@ -445,6 +478,67 @@ def scope_claim_signal(text: str | None) -> str | None:
     if any(marker in group_check_text for marker in _GROUP_HEADING_MARKERS):
         return "group"
     return None
+
+
+def resolve_reconstructed_table_scope(
+    table: ReconstructedFinancialTable,
+) -> str | None:
+    """Scope for a geometrically reconstructed multi-year table.
+
+    Resolved ONLY from headings found INSIDE the table's own region (its
+    x-window, between its own header row and where the region ended), never
+    from the page-level ``running_scope``. That page-level signal is derived
+    from the first 120 characters of an arbitrary text BLOCK and is carried
+    across contiguous pages, so on a real document it can be a stale segment
+    label from several pages earlier — proven against the real Pandora annual
+    report, whose page-14 Group five-year summary inherited a segment-shaped
+    label from a page-9 narrative paragraph. Attaching that to a Group table
+    would classify every Group figure on it as SEGMENT evidence (see
+    ``financial_fact_categories.financial_fact_category``, where any KNOWN
+    non-Group scope is segment) — a WRONG scope, which is strictly worse than
+    an honest unknown one.
+
+    The most restrictive signal wins: a segment heading anywhere in the region
+    governs it (§ "no multi-year table row may populate a Group canonical slot
+    if its context is clearly segment-level"), then an explicit Group /
+    consolidated heading, else ``None`` — never guessed.
+    """
+    group_seen = False
+    # Titles printed ABOVE the grid first, as consecutive (leaf, ancestor)
+    # pairs: that is the shape ``_infer_scope`` is built for — a specific
+    # leaf title carrying no scope vocabulary of its own ("Jewellery Maisons")
+    # nested under a section title that supplies the segment SIGNAL ("Sales
+    # and operating results by segment"). It returns the LEAF text, which is
+    # the useful label, so a reconstructed segment table ends up scoped
+    # exactly as the same page's prose already is.
+    above = table.preceding_headings
+    pairs: list[tuple[str, str | None]] = [
+        (heading, above[index + 1] if index + 1 < len(above) else None)
+        for index, heading in enumerate(above)
+    ]
+    if table.page_title:
+        # Every title above this table, deepest first, is also tried against
+        # the PAGE's own largest-type heading: a page that says "… by
+        # segment" once at the top governs every grid below it, not only the
+        # first one.
+        pairs.extend(
+            (heading, table.page_title) for heading in table.preceding_headings
+        )
+        pairs.append((table.page_title, None))
+    pairs.extend((heading, None) for heading in table.heading_candidates)
+    if table.page_title:
+        pairs.extend(
+            (heading, table.page_title) for heading in table.heading_candidates
+        )
+    for heading, ancestor in pairs:
+        scope = _infer_scope(heading, ancestor)
+        if scope is None:
+            continue
+        if scope == "group":
+            group_seen = True
+            continue
+        return scope
+    return "group" if group_seen else None
 
 
 def classify_statement_type(heading: str | None) -> str | None:
@@ -1354,10 +1448,20 @@ def extract_pdf(
     # silently inherit a section heading left over from an unrelated
     # earlier page any more than it may inherit a stale ``running_scope``.
     heading_stack: list[tuple[float, str]] = []
+    # Largest-type section title seen on the CURRENT contiguous page run, with
+    # its font size, for reconstructed-table scope resolution. A multi-page
+    # segment review states "… by segment" once, on its first page, and prints
+    # only each segment's own name on the pages after it; without carrying
+    # that title forward every table but the first loses its scope signal.
+    # Reset on exactly the same non-contiguous-jump condition as
+    # ``running_scope``/``heading_stack`` below, for exactly the same reason —
+    # a distant supplemental page must never inherit an unrelated section.
+    running_page_title: tuple[str, float, float] | None = None
 
     def _extract_one_page(page: object, page_no: int) -> None:
         """Extract text blocks + tables from ONE page; mutates the closures."""
         nonlocal total_chars, running_scope, last_processed_page_no
+        nonlocal running_page_title
         # Reset any inherited scope BEFORE processing this page's own content
         # when this page is not the immediate successor of the last page
         # actually processed — a non-contiguous jump (e.g. the leading
@@ -1368,6 +1472,7 @@ def extract_pdf(
         if last_processed_page_no is not None and page_no != last_processed_page_no + 1:
             running_scope = None
             heading_stack.clear()
+            running_page_title = None
         last_processed_page_no = page_no
         # -- text --
         # Phase 32A corrective: try a confident, generic two-column
@@ -1464,6 +1569,91 @@ def extract_pdf(
                     scope=page_scope,
                 )
             )
+        # -- borderless multi-year tables (Phase 32D) --
+        # ``page.extract_tables()`` above is RULING-LINE driven and finds
+        # nothing usable on a glossy "Five-year summary" page, which has no
+        # cell rules at all. This second, geometry-driven pass rebuilds such a
+        # grid from the page's own positioned words so the column→year map
+        # survives; it is purely ADDITIVE (a page with no qualifying header
+        # yields nothing and behaves exactly as before) and shares the same
+        # per-page table budget as the ruled pass.
+        # Skip the page entirely when the ruled pass ALREADY recovered a real
+        # grid there (>= 2 rows AND >= 2 columns). Rebuilding it a second time
+        # would only produce a duplicate candidate for every cell and a second
+        # provenance locator for the same figure. A DEGENERATE ruled result —
+        # the one-column artifact a borderless page yields, or a single
+        # stray row — does not count as recovered, which is exactly the
+        # Pandora five-year-summary case this feature exists for.
+        ruled_grid_recovered = any(
+            t.page_number == page_no and t.row_count >= 2 and t.col_count >= 2
+            for t in result.tables
+        )
+        remaining = _MAX_TABLES_PER_PAGE - len(raw_tables[:_MAX_TABLES_PER_PAGE])
+        if words and page_width > 0 and remaining > 0 and not ruled_grid_recovered:
+            try:
+                own_title = page_title_of(words)
+                # Only a SECTION-sized title (markedly larger than this page's
+                # own body text) starts a new carried section. A page whose
+                # biggest line is merely a leaf heading one notch up — the
+                # per-segment "Other" on Richemont's second segment page —
+                # leaves the governing section title from the page before it
+                # in force, which is what lets that page's table still resolve
+                # a segment scope.
+                if own_title is not None and own_title[2] >= SECTION_TITLE_SIZE_RATIO:
+                    running_page_title = own_title
+                rebuilt = reconstruct_financial_tables(
+                    words,
+                    page_width=page_width,
+                    page_number=page_no,
+                    carried_page_title=(
+                        running_page_title[0] if running_page_title else None
+                    ),
+                )
+            except Exception:  # noqa: BLE001 - a layout heuristic must never raise
+                rebuilt = []
+            for r_idx, rebuilt_table in enumerate(rebuilt[:remaining]):
+                if not rebuilt_table.promotable:
+                    # Geometry recovered, but the period form cannot be
+                    # represented losslessly by ``ExtractedFact.period`` (a
+                    # bare year). Surfaced as an honest gap, never flattened
+                    # onto a fiscal year it does not mean.
+                    reasons = sorted({rj.reason for rj in rebuilt_table.rejections})
+                    result.source_gaps.append(
+                        f"Page {page_no}: a "
+                        f"{len(rebuilt_table.columns)}-column financial table was "
+                        "reconstructed but its reporting periods are not "
+                        f"representable ({', '.join(reasons)}); no facts taken "
+                        "from it."
+                    )
+                    continue
+                grid = _bound_table(rebuilt_table.to_grid())
+                if len(grid) < 2:
+                    continue
+                result.tables.append(
+                    ExtractedTable(
+                        table_location=f"p{page_no}:m{r_idx}",
+                        table_index=len(raw_tables[:_MAX_TABLES_PER_PAGE]) + r_idx,
+                        page_number=page_no,
+                        rows=grid,
+                        row_count=len(grid),
+                        col_count=max(len(r) for r in grid),
+                        extraction_method=METHOD_NATIVE_PDF,
+                        scope=resolve_reconstructed_table_scope(rebuilt_table),
+                        reconstructed=True,
+                        column_periods=[c.period for c in rebuilt_table.columns],
+                    )
+                )
+                result.warnings.append(
+                    f"Page {page_no}: reconstructed a borderless "
+                    f"{len(rebuilt_table.columns)}-period financial table "
+                    f"({len(rebuilt_table.rows)} rows) from positioned text; "
+                    f"periods {', '.join(c.period for c in rebuilt_table.columns)}."
+                )
+                for rejection in rebuilt_table.rejections[:_MAX_TABLE_REJECTION_DIAGNOSTICS]:
+                    result.warnings.append(
+                        f"Page {page_no}: table cell not mapped "
+                        f"({rejection.reason}): {rejection.detail[:120]}"
+                    )
 
     try:
         # pdfplumber.open defaults to an empty password → this is the single

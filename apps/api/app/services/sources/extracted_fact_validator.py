@@ -158,7 +158,12 @@ _LABEL_PATTERNS: list[tuple[re.Pattern[str], str]] = [
         re.compile(r"total non[- ]current assets|non[- ]current assets", re.I),
         FIELD_NON_CURRENT_ASSETS,
     ),
-    (re.compile(r"net (?:financial )?debt", re.I), FIELD_NET_DEBT),
+    # "Net interest-bearing debt (NIBD)" is the standard Nordic/European
+    # phrasing of the same line item "net debt" names elsewhere.
+    (
+        re.compile(r"net (?:financial |interest[- ]bearing )?debt", re.I),
+        FIELD_NET_DEBT,
+    ),
     (re.compile(r"total (?:debt|borrowings)|gross debt", re.I), FIELD_TOTAL_DEBT),
     (re.compile(r"total assets", re.I), FIELD_TOTAL_ASSETS),
     (re.compile(r"total liabilities", re.I), FIELD_TOTAL_LIABILITIES),
@@ -186,7 +191,10 @@ _LABEL_PATTERNS: list[tuple[re.Pattern[str], str]] = [
         re.compile(
             r"net cash (?:generated |provided )?from operating activities"
             r"|cash flow from operations|operating cash flow"
-            r"|net cash flows? from operating activities",
+            r"|net cash flows? from operating activities"
+            # Plain IFRS cash-flow-statement caption, with no "net" prefix —
+            # the exact wording used on the real Pandora five-year summary.
+            r"|cash flows? from operating activities",
             re.I,
         ),
         FIELD_OPERATING_CASH_FLOW,
@@ -202,7 +210,16 @@ _LABEL_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     ),
     (
         re.compile(
-            r"net income|net profit|profit for the year|profit attributable", re.I
+            r"net income|net profit"
+            # "Profit for the year" is the bottom line; "profit for the year
+            # FROM continuing/discontinued operations" is a different, higher
+            # line of the same statement. A real income statement prints BOTH
+            # (Richemont: 3 464 from continuing operations, 3 484 for the
+            # year), so matching them to one label made a single table
+            # contradict itself and demoted the genuine bottom line.
+            r"|profit(?:/\(loss\))? for the year(?!\s+from\b)"
+            r"|profit attributable",
+            re.I,
         ),
         FIELD_NET_INCOME,
     ),
@@ -211,7 +228,14 @@ _LABEL_PATTERNS: list[tuple[re.Pattern[str], str]] = [
         FIELD_RECURRING_OPERATING_MARGIN,
     ),
     (
-        re.compile(r"(?<!recurring )operating margin", re.I),
+        # "EBIT margin" is the same ratio as "operating margin"; it must map
+        # to the PERCENT label, never be swallowed by the ``ebit\b`` money
+        # pattern below (which is why that pattern excludes a following
+        # "margin"). Without this a "EBIT margin, % | 23.9%" table row is
+        # read as an operating PROFIT row and, since ``_numeric_cells``
+        # rightly refuses a "23.9%" cell as a money value, silently yields
+        # nothing at all.
+        re.compile(r"(?<!recurring )(?:operating|ebit) margin", re.I),
         FIELD_OPERATING_MARGIN,
     ),
     (
@@ -224,7 +248,8 @@ _LABEL_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     ),
     (
         re.compile(
-            r"(?<!recurring )(?:operating profit|operating income|operating result|ebit\b)",
+            r"(?<!recurring )(?:operating profit|operating income|operating result"
+            r"|ebit\b(?!\s*margin))",
             re.I,
         ),
         FIELD_OPERATING_PROFIT,
@@ -357,6 +382,7 @@ class _Candidate:
         "scale",
         "page_number",
         "table_location",
+        "from_reconstructed_table",
         "method",
         "base_confidence",
         "fully_qualified",
@@ -382,6 +408,7 @@ class _Candidate:
         fully_qualified: bool,
         status: str,
         scope: str | None = None,
+        from_reconstructed_table: bool = False,
     ) -> None:
         self.label = label
         self.period = period
@@ -392,6 +419,7 @@ class _Candidate:
         self.scale = scale
         self.page_number = page_number
         self.table_location = table_location
+        self.from_reconstructed_table = from_reconstructed_table
         self.method = method
         self.base_confidence = base_confidence
         self.fully_qualified = fully_qualified
@@ -702,6 +730,7 @@ def _make_candidate(
         fully_qualified=fully_qualified,
         status=status,
         scope=table.scope,
+        from_reconstructed_table=table.reconstructed,
     )
     if note:
         cand.notes.append(note)
@@ -873,6 +902,67 @@ def _candidates_from_excerpts(extraction: PrimaryDocumentExtraction) -> list[_Ca
     return candidates
 
 
+def _supersede_prose_read_of_reconstructed_table(
+    candidates: list[_Candidate],
+) -> tuple[list[_Candidate], dict[tuple[str, int | None], int]]:
+    """Drop prose candidates that are a DEGRADED read of a reconstructed table.
+
+    When a borderless multi-year table is rebuilt geometrically
+    (``financial_table_reconstructor``), that same table's text ALSO reaches
+    the prose path — flattened, with the grid gone. The prose parser then sees
+    one metric label followed by five side-by-side values and, having no
+    column geometry left, associates whichever value its local heuristics
+    reach. On the real Pandora page 14 that produced ``operating_profit =
+    7,974`` for FY2025 alongside the reconstructed row's correct ``7,783`` —
+    two candidates for the SAME (label, period, scope), from the SAME method,
+    which ``_resolve_group`` can only read as an unresolvable same-method
+    disagreement. The CORRECT, column-anchored figure was demoted to
+    ``excerpt_only`` by the corrupted one.
+
+    These two candidates are not independent corroboration: they are one
+    printed table read twice, once with its geometry and once without. So a
+    non-reconstructed candidate for a label that a reconstructed table on the
+    SAME PAGE already covers is dropped BEFORE grouping, rather than being
+    allowed to manufacture a conflict.
+
+    Deliberately keyed on ``(label, page_number, scope)`` and NOT on period:
+    the whole failure mode is that the prose read's period is unreliable, so
+    matching on period would let exactly the mis-periodised candidate through.
+    SCOPE, by contrast, must be part of the key — a prose sentence often
+    carries entity/segment scope that a bare table grid cannot (on the real
+    Richemont annual report, page 9's prose states a "Specialist Watchmakers"
+    operating result of € 107 million while that page's reconstructed table
+    rows are unscoped). Those are two genuinely different figures, so the
+    prose one must survive; dropping it lost a real segment fact and is
+    exactly the Group/segment leakage this pipeline must never introduce.
+
+    Only that page's own prose, at that same scope, is affected — a genuine
+    restatement of the same metric elsewhere in the document (a narrative
+    page, a press release, a different filing) is untouched and still
+    corroborates or conflicts normally.
+
+    Returns the surviving candidates plus a ``(label, page_number) -> count``
+    map of what was superseded, so the resulting fact can say so.
+    """
+    covered: set[tuple[str, int | None, str | None]] = {
+        (c.label, c.page_number, c.scope)
+        for c in candidates
+        if c.from_reconstructed_table
+    }
+    if not covered:
+        return candidates, {}
+    kept: list[_Candidate] = []
+    superseded: dict[tuple[str, int | None], int] = {}
+    for candidate in candidates:
+        key = (candidate.label, candidate.page_number, candidate.scope)
+        if not candidate.from_reconstructed_table and key in covered:
+            counter = (candidate.label, candidate.page_number)
+            superseded[counter] = superseded.get(counter, 0) + 1
+            continue
+        kept.append(candidate)
+    return kept, superseded
+
+
 def _apply_subtotal_check(candidates: list[_Candidate]) -> None:
     """Downgrade a labelled subtotal to ``excerpt_only`` when it does not
     reconcile with its components for the same period (components are untouched)."""
@@ -948,6 +1038,39 @@ def _apply_balance_sheet_check(candidates: list[_Candidate]) -> None:
 # --------------------------------------------------------------------------- #
 
 
+def _may_conflict(a: "_Candidate", b: "_Candidate") -> bool:
+    """Whether two candidates for one (label, period, scope) may CONTRADICT.
+
+    Only two FULLY QUALIFIED candidates can. ``fully_qualified`` means this
+    validator has established everything needed to read the number as a
+    quantity: for money, its currency AND scale AND period; for a percentage
+    or a count, its period. A candidate lacking any of those is one whose
+    UNITS ARE UNKNOWN — it is already barred from becoming a fact on its own
+    (``_make_candidate`` marks it ``excerpt_only``), and comparing its bare
+    digits against a fully-qualified figure's digits compares two quantities
+    that are not in the same units. Calling that a contradiction is not
+    conservatism, it is a category error, and it lets a number nobody could
+    interpret veto one that is completely specified.
+
+    Two UNQUALIFIED candidates still conflict exactly as before — and the
+    outcome is unchanged either way, since neither could be validated. Two
+    QUALIFIED candidates still conflict exactly as before, so every genuine
+    disagreement between two properly-specified readings is still surfaced.
+
+    Both real-document failures this rule fixes were caused by an
+    uninterpretable number outranking a specified one:
+      * Pandora — a stray "Approx. -600" on the page-16 guidance page and a
+        bar-chart axis label on page 8 demoted the correct, column-anchored
+        five-year-summary revenue (32,549), EBIT (7,783) and prior-year EBIT
+        (7,974) to ``excerpt_only``.
+      * Richemont — an unlabelled "42" cell in a page-32 note table, whose
+        own table states no currency or scale, displaced the Group's
+        "profit for the year amounted to € 3 484 million" as the
+        representative value for net income.
+    """
+    return a.fully_qualified and b.fully_qualified
+
+
 def _resolve_group(
     key: tuple[str, str | None, str | None], group: list[_Candidate], cfg: Settings
 ) -> ValidatedFact:
@@ -975,6 +1098,8 @@ def _resolve_group(
     conflict = False
     for i in range(len(valued)):
         for j in range(i + 1, len(valued)):
+            if not _may_conflict(valued[i], valued[j]):
+                continue
             if not _candidates_agree(valued[i], valued[j]):
                 conflict = True
                 break
@@ -1156,6 +1281,7 @@ def validate_extracted_facts(
     # Phase 32A corrective (Problem A): prose excerpts are now ALSO a candidate
     # source, not just tables — see ``_candidates_from_excerpts``.
     candidates.extend(_candidates_from_excerpts(extraction))
+    candidates, superseded = _supersede_prose_read_of_reconstructed_table(candidates)
 
     # Group by (label, period, scope) so the same figure from >1 method/source
     # is reconciled, while a Group-scoped and a segment-scoped candidate for
@@ -1168,6 +1294,12 @@ def validate_extracted_facts(
     facts: list[ValidatedFact] = []
     for key, group in groups.items():
         fact = _resolve_group(key, group, cfg)
+        dropped = superseded.get((key[0], fact.page_number))
+        if dropped:
+            fact.validation_notes.append(
+                f"{dropped} prose restatement(s) of this figure on the same page "
+                "were superseded by the geometrically reconstructed table row."
+            )
         # Without a known issuer/filing context a fact can never be validated.
         if not issuer_known and fact.validation_status == VALIDATION_VALIDATED:
             fact.validation_status = VALIDATION_EXCERPT_ONLY

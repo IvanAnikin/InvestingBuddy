@@ -1313,12 +1313,36 @@ it regardless of config. A real Azure Document Intelligence adapter is deferred
 so scanned / JS-gated issuer PDFs (e.g. some Richemont reports) still degrade
 honestly to metadata-only / gaps this slice.
 
+**Borderless multi-year tables (Phase 32D).** `page.extract_tables()` finds tables
+from RULING LINES, so it recovers nothing usable from a glossy "Five-year
+summary" or a statement page held together purely by whitespace alignment — on
+the real Pandora Annual Report 2025 it returned a degenerate one-column artifact
+and produced zero candidates, while the same page's text reached the prose path
+FLATTENED, its column→year mapping already destroyed. A second, geometry-driven
+pass (`financial_table_reconstructor`) therefore rebuilds such a grid from the
+page's positioned words: rows clustered by `top`; header rows carrying ≥ 2 period
+tokens; those tokens split into one column group per PHYSICAL table (two tables
+printed side by side never share a header map); a group qualified only on uniform
+column pitch, distinct strictly-monotonic periods and a clean header band; x-bands
+midway between header centres; each numeric word assigned to the band containing
+its own centre, clear of both edges. It decides LAYOUT ONLY and emits the same
+header-first grid the validator already consumes. Everything ambiguous is refused
+with a machine-readable reason, and a period form `ExtractedFact.period` cannot
+represent losslessly (interim `H1 2026`, split-year `2025/26`) is detected,
+surfaced as a source gap and deliberately NOT promoted. See ADR-030.
+
 **Stricter fact validation.** `extracted_fact_validator` holds table/OCR-derived
 values to a higher bar — label/value/unit/period + table-column alignment +
 cross-field arithmetic (subtotals) + cross-method agreement, with OCR downgraded.
 Only a fact that clears the bar is `validated`; everything short is retained
 `excerpt_only` (`rejected` when it fails a hard check) and is never a structured
-fact. Metadata-only references never become facts or claim-verification. Every
+fact. Two candidates may only be judged to CONTRADICT each other when BOTH are
+fully qualified — a candidate whose currency/scale/period could not be
+established has unknown units, so comparing its bare digits against a fully
+specified figure is a category error. A prose candidate that is a DEGRADED READ
+of a page whose table was reconstructed (same label, page and scope) is
+superseded by it rather than allowed to conflict: the two are one printed table
+read twice, not independent corroboration. Metadata-only references never become facts or claim-verification. Every
 extracted fact is `needs_human_review=True`.
 
 **Evidence pack + citations.** When the master flag is on, the evidence budgeter
