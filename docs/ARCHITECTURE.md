@@ -412,6 +412,20 @@ separates lines a filing can close from market/derived metrics it cannot, so the
 report never asks a reviewer to "extract price to earnings from the annual
 report".
 
+**One issuer registry reaches every layer.** `verified_issuer_sources` (the
+code-defined, safety-validated allowlist) is now consulted by company-source
+discovery and by the discovery evidence pack, not only by the connector layer.
+Previously a report could cite an issuer's own annual report while News &
+Catalyst Discovery said no verified company source existed. The
+`document_domains` CDN host stays a narrow fetch authority and is never promoted
+to a news/publication source.
+
+**Discovery states three issuer-source states, not two.** `unknown` /
+`known_not_fetched` / `fetched`. A metadata-only discovery pass that has an
+issuer's IR and annual-report URLs on record but does not fetch them must say
+KNOWN-BUT-NOT-FETCHED — collapsing that into "unknown" told a council that eight
+European issuers had no identifiable primary sources.
+
 **Evidence channels are seven, not five.** Issuer-primary FACTS (T1) are a
 separate channel from regulator XBRL FACTS (T2) and from aggregator
 fundamentals (T5); previously a Danish issuer's own PDF facts were rendered

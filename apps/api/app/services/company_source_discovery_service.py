@@ -7,7 +7,10 @@ catalyst subsystem can collect T1 (company-owned) press releases and validate
 identity metadata.
 
 Discovery order (strongest evidence first, never fabricating a domain):
-  1. Curated verified issuer registry (maintained allowlist).
+  0. Verified issuer registry (``sources/verified_issuer_sources``) — the
+     code-defined, safety-validated allowlist the CONNECTOR layer already uses
+     to reach issuer IR pages and annual reports.
+  1. Curated verified issuer registry (``exchange_source_registry``).
   2. Existing ``profile.website`` (from identity enrichment).
   3. SEC submissions website (when supplied).
   4. GLEIF website (when supplied and the legal name matches strongly).
@@ -49,6 +52,10 @@ from app.schemas.company_sources import (
     VerificationMethod,
 )
 from app.services.news_relevance_scorer import brand_tokens
+from app.services.sources.verified_issuer_sources import (
+    CONFIDENCE_VERIFIED_LIVE,
+    get_verified_issuer_source,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -124,13 +131,62 @@ async def discover_company_sources(
         exchange=exchange,
         country=country,
     )
-    verified: list[SourceCandidate] = []
+    verified_list: list[SourceCandidate] = []
     candidates: list[SourceCandidate] = []
     rejected: list[SourceCandidate] = []
     warnings: list[str] = []
 
+    # 0. Verified issuer registry (Phase 32D2b) ---------------------------
+    # THE defect this closes: the platform maintained TWO independent issuer
+    # registries. ``verified_issuer_sources`` (code-defined, safety-validated,
+    # covering the European names) was read ONLY by the connector layer;
+    # ``KNOWN_ISSUER_SOURCES`` below covers seven US mega-caps and was the only
+    # one this discovery path consulted. So Pandora's report cited its own
+    # annual report from the verified registry's IR page while News & Catalyst
+    # Discovery reported ``has_verified_company_source: false`` and warned that
+    # "no company-owned website / IR / newsroom source could be confidently
+    # discovered for this issuer".
+    #
+    # Only the issuer's OWN pages are promoted here. ``document_domains`` (the
+    # CDN fetch authority added in Phase D1a) is deliberately NOT treated as a
+    # news/press source — it is a narrow retrieval permission for artifacts
+    # linked from these pages, not a publication venue.
+    verified = get_verified_issuer_source(ticker_u, exchange)
+    if verified:
+        result.company_website = f"https://{verified.official_website_domain}"
+        result.investor_relations_url = verified.investor_relations_url
+        result.newsroom_url = verified.press_releases_url
+        result.annual_reports_url = verified.annual_reports_url
+        for url, stype in (
+            (result.company_website, SourceType.company_homepage.value),
+            (verified.investor_relations_url, SourceType.investor_relations.value),
+            (verified.press_releases_url, SourceType.newsroom.value),
+            (verified.annual_reports_url, SourceType.investor_relations.value),
+        ):
+            if not url:
+                continue
+            verified_sources_confidence = (
+                0.98
+                if verified.source_confidence == CONFIDENCE_VERIFIED_LIVE
+                else 0.95
+            )
+            verified_list.append(
+                SourceCandidate(
+                    url=url,
+                    domain=extract_domain(url),
+                    source_type=stype,
+                    source_tier=_T1,
+                    confidence=verified_sources_confidence,
+                    verification_method=(
+                        VerificationMethod.verified_issuer_registry.value
+                    ),
+                    verified=True,
+                    warnings=list(verified.warnings),
+                )
+            )
+
     # 1. Curated verified issuer registry (highest confidence) -------------
-    curated = get_curated_issuer_source(ticker_u)
+    curated = get_curated_issuer_source(ticker_u) if not verified else None
     if curated:
         result.company_website = curated.website
         result.investor_relations_url = curated.investor_relations_url
@@ -144,7 +200,7 @@ async def discover_company_sources(
         ):
             if not url:
                 continue
-            verified.append(
+            verified_list.append(
                 SourceCandidate(
                     url=url,
                     domain=extract_domain(url),
@@ -193,7 +249,7 @@ async def discover_company_sources(
                 )
                 continue
             cand = _homepage_candidate(site, method, conf, tokens)
-            verified.append(cand)
+            verified_list.append(cand)
             result.company_website = site
             break
 
@@ -286,7 +342,7 @@ async def discover_company_sources(
                 verified=is_brand,
             )
             if is_brand:
-                verified.append(cand)
+                verified_list.append(cand)
                 is_ir = stype == SourceType.investor_relations.value
                 is_newsroom = stype == SourceType.newsroom.value
                 if is_ir and not result.investor_relations_url:
@@ -299,12 +355,12 @@ async def discover_company_sources(
                 candidates.append(cand)
 
     # Assemble + confidence ------------------------------------------------
-    result.verified_sources = verified
+    result.verified_sources = verified_list
     result.source_candidates = candidates
     result.rejected_sources = rejected
     result.warnings = warnings
 
-    if not verified:
+    if not verified_list:
         result.warnings.append(
             "Company primary news source unavailable: no company-owned website / "
             "IR / newsroom source could be confidently discovered for this issuer. "
@@ -314,7 +370,7 @@ async def discover_company_sources(
         result.confidence = 0.0
     else:
         result.confidence = round(
-            min(1.0, max(c.confidence for c in verified)), 2
+            min(1.0, max(c.confidence for c in verified_list)), 2
         )
 
     return result

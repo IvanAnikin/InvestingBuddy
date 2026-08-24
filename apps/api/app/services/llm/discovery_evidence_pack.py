@@ -25,6 +25,25 @@ from app.services.llm.discovery_schemas import (
     RunContext,
     RunFact,
 )
+from app.services.sources.verified_issuer_sources import get_verified_issuer_source
+
+# Phase 32D2b — a candidate's issuer primary-source state is TRI-state, and
+# discovery only ever expressed one of them.
+#
+# ``unknown``           we have no issuer IR / annual-report location on record.
+# ``known_not_fetched`` we DO have verified issuer IR + annual-report URLs on
+#                       record; this lightweight discovery pass simply does not
+#                       fetch them (full analysis does).
+# ``fetched``           issuer primary content was retrieved for this candidate.
+#
+# Collapsing the middle state into "unknown" is what made a live European run's
+# council conclude "No primary company news sources or IR websites confidently
+# identified for any candidate" for eight issuers whose IR and annual-report
+# pages are in the verified registry — and, for one of them, had already been
+# read end-to-end by the full analysis.
+ISSUER_SOURCE_UNKNOWN = "unknown"
+ISSUER_SOURCE_KNOWN_NOT_FETCHED = "known_not_fetched"
+ISSUER_SOURCE_FETCHED = "fetched"
 
 _TEXT_MAX = 240
 _MACRO_TEXT_MAX = 320
@@ -39,6 +58,12 @@ _DO_NOT_INFER = [
     "Do not fabricate analyst coverage or English-news volume.",
     "Internal scores are prioritization signals only, not a valuation.",
     "Only cite run facts (R#) and candidates (C#) that appear in this pack.",
+    # Phase 32D2b — the tri-state must not be flattened back to "absent" in the
+    # council's own prose.
+    "Do not describe a candidate whose issuer_primary_source_state is "
+    "known_not_fetched as having no primary source: its investor-relations and "
+    "annual-report locations are on record and simply were not fetched by this "
+    "metadata-only pass.",
 ]
 
 
@@ -220,6 +245,46 @@ def _score_breakdown(cand: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def issuer_primary_source_state(cand: dict[str, Any]) -> dict[str, Any]:
+    """KNOWN-BUT-NOT-FETCHED vs UNKNOWN, for one candidate.
+
+    Reads the same code-defined verified issuer registry the connector and
+    analysis layers use, so discovery cannot describe an issuer as having no
+    known primary source while another layer is reading its annual report.
+    Nothing is fetched here — this is metadata only, which is precisely the
+    distinction being drawn.
+    """
+    verified = get_verified_issuer_source(cand.get("ticker"), cand.get("exchange"))
+    if verified is None:
+        return {
+            "issuer_primary_source_state": ISSUER_SOURCE_UNKNOWN,
+            "issuer_primary_source_note": (
+                "No verified issuer investor-relations or annual-report location "
+                "is on record for this candidate."
+            ),
+        }
+    located = [
+        label
+        for label, url in (
+            ("investor relations", verified.investor_relations_url),
+            ("annual reports", verified.annual_reports_url),
+            ("company announcements", verified.press_releases_url),
+        )
+        if url
+    ]
+    return {
+        "issuer_primary_source_state": ISSUER_SOURCE_KNOWN_NOT_FETCHED,
+        "issuer_primary_source_locations": located,
+        "issuer_primary_source_confidence": verified.source_confidence,
+        "issuer_primary_source_note": (
+            "Verified issuer primary-source locations ARE on record "
+            f"({', '.join(located)}). This discovery pass is metadata-only and "
+            "does not fetch them; full company analysis does. Treat as "
+            "NOT-YET-FETCHED, not as absent."
+        ),
+    }
+
+
 def _data_coverage(cand: dict[str, Any]) -> dict[str, Any]:
     dc = cand.get("data_coverage")
     dc = dc if isinstance(dc, dict) else {}
@@ -233,6 +298,7 @@ def _data_coverage(cand: dict[str, Any]) -> dict[str, Any]:
             "source_quality": cand.get("source_quality"),
             "missing_info_count": cand.get("missing_info_count"),
             "blocking_gap_count": cand.get("blocking_gap_count"),
+            **issuer_primary_source_state(cand),
         }
     )
 
@@ -298,6 +364,34 @@ def _known_gaps(candidates: list[CandidateEvidence]) -> list[str]:
         gaps.append(
             f"{len(non_sec)} candidate(s) are not SEC-eligible; fundamentals may be "
             "not_sourced and require human research."
+        )
+    # Phase 32D2b — state the tri-state explicitly, because the council
+    # otherwise reports "no IR sources identified" for issuers whose IR and
+    # annual-report pages the platform demonstrably knows.
+    known_not_fetched = [
+        c
+        for c in candidates
+        if c.data_coverage.get("issuer_primary_source_state")
+        == ISSUER_SOURCE_KNOWN_NOT_FETCHED
+    ]
+    unknown_issuer = [
+        c
+        for c in candidates
+        if c.data_coverage.get("issuer_primary_source_state")
+        == ISSUER_SOURCE_UNKNOWN
+    ]
+    if known_not_fetched:
+        gaps.append(
+            f"{len(known_not_fetched)} candidate(s) have VERIFIED issuer "
+            "investor-relations / annual-report locations on record that this "
+            "metadata-only discovery pass did not fetch. Their primary sources "
+            "are KNOWN-BUT-NOT-FETCHED, not absent; full company analysis "
+            "fetches them."
+        )
+    if unknown_issuer:
+        gaps.append(
+            f"{len(unknown_issuer)} candidate(s) have NO verified issuer "
+            "primary-source location on record (genuinely unknown)."
         )
     unsafe = [c for c in candidates if c.safety_valid is False]
     if unsafe:
