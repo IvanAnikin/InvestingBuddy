@@ -813,3 +813,46 @@ def test_irregular_pitch_is_the_guard_that_rejects_a_prose_year_list():
             words_out, page_width=float(page.width), page_number=1
         ) == []
     assert REASON_IRREGULAR_COLUMN_PITCH  # vocabulary exists for the diagnostic
+
+
+# --------------------------------------------------------------------------- #
+# G. Extraction budget coherence
+#
+# The capability above is worthless if the extractor never reaches the page the
+# table is on. Measured live on staging (B1) against the real 169-page Pandora
+# Annual Report 2025: ~1.95s per page, and the previous 20s budget stopped at
+# page ELEVEN — three pages short of the five-year summary. Parsing a page IS
+# the cost (``page.objects`` accounts for essentially all of it), so there is
+# no cheaper pre-scan and no per-page work to skip; the budget itself had to
+# move.
+# --------------------------------------------------------------------------- #
+
+
+def test_a_documents_total_budget_can_actually_contain_its_own_parts():
+    """``total`` must exceed fetch + extraction, or the inner extraction budget
+    can never be spent and the outer one silently truncates the document."""
+    from app.core.config import settings as app_settings
+
+    assert app_settings.primary_document_total_timeout_seconds > (
+        app_settings.primary_document_fetch_timeout_seconds
+        + app_settings.primary_document_extraction_timeout_seconds
+    )
+
+
+def test_the_extraction_budget_can_reach_a_real_annual_reports_summary_page():
+    """A pace-based floor, pinned to the real measurement rather than a taste.
+
+    Pandora's five-year summary is on page 14 of 169. At the ~1.95s/page
+    observed on staging that needs ~27s of extraction budget; anything at or
+    below the old 20s cannot reach it no matter how correct the table logic is.
+    """
+    from app.core.config import settings as app_settings
+
+    observed_seconds_per_page_on_b1 = 1.95
+    summary_page = 14
+    needed = summary_page * observed_seconds_per_page_on_b1
+    assert app_settings.primary_document_extraction_timeout_seconds >= needed
+    # ... and the aggregate must hold that for more than one document.
+    assert app_settings.primary_document_ingestion_budget_seconds >= (
+        app_settings.primary_document_total_timeout_seconds
+    )
