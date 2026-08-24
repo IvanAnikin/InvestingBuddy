@@ -417,3 +417,103 @@ __all__ = [
     "make_pdf_bands",
     "make_pdf_with_sized_lines",
 ]
+
+
+# --------------------------------------------------------------------------- #
+# Positioned-text pages (Phase 32D — borderless multi-year financial tables)
+#
+# ``make_pdf_with_table`` above draws a RULED grid, which is what pdfplumber's
+# line-based ``extract_tables()`` needs. The tables this campaign exists for
+# have no rules at all: a five-year summary is held together purely by
+# whitespace alignment. These builders place each word at an exact (x, y) so a
+# test can pin the real geometry — right-aligned value columns under year
+# headers, two tables printed side by side — rather than a grid pdfplumber
+# would have found anyway.
+# --------------------------------------------------------------------------- #
+
+# Helvetica advance widths (1/1000 em) for the few glyphs these fixtures use.
+# Enough to right-align a numeric column the way a real report does.
+_HELVETICA_WIDTHS = {
+    " ": 278, ",": 278, ".": 278, "%": 889, "-": 333, "(": 333, ")": 333,
+    "/": 278, "€": 556, "£": 556, "$": 556,
+}
+_HELVETICA_DIGIT_WIDTH = 556
+_HELVETICA_DEFAULT_WIDTH = 556
+
+
+def helvetica_width(text: str, size: float) -> float:
+    """Approximate rendered width of ``text`` in Helvetica at ``size`` points."""
+    total = 0
+    for ch in text:
+        if ch.isdigit():
+            total += _HELVETICA_DIGIT_WIDTH
+        else:
+            total += _HELVETICA_WIDTHS.get(ch, _HELVETICA_DEFAULT_WIDTH)
+    return total * size / 1000.0
+
+
+def make_pdf_positioned_text(
+    pages: list[list[tuple[str, float, float, float]]],
+    *,
+    page_width: float = 907.0,
+    page_height: float = 510.0,
+) -> bytes:
+    """Build a PDF whose every word is placed at an exact position.
+
+    Each page is a list of ``(text, x_left, y_from_top, font_size)``. ``y`` is
+    measured DOWNWARD from the top of the page (the same direction pdfplumber
+    reports as ``top``), so a fixture reads in the same order as the page.
+    """
+    objs: list[bytes] = [b"<< /Type /Catalog /Pages 2 0 R >>"]
+    kids = " ".join(f"{3 + i * 2} 0 R" for i in range(len(pages)))
+    objs.append(f"<< /Type /Pages /Kids [{kids}] /Count {len(pages)} >>".encode())
+    font_obj_num = 3 + len(pages) * 2
+    for i, words in enumerate(pages):
+        content_num = 4 + i * 2
+        objs.append(
+            (
+                f"<< /Type /Page /Parent 2 0 R /MediaBox "
+                f"[0 0 {page_width} {page_height}] /Contents {content_num} 0 R "
+                f"/Resources << /Font << /F1 {font_obj_num} 0 R >> >> >>"
+            ).encode()
+        )
+        ops: list[str] = ["BT"]
+        for text, x, y_from_top, size in words:
+            esc = (
+                str(text)
+                .replace("\\", "\\\\")
+                .replace("(", "\\(")
+                .replace(")", "\\)")
+            )
+            # PDF y grows upward; subtract the font size so the value given is
+            # the TOP of the glyph box, matching pdfplumber's ``top``.
+            baseline = page_height - y_from_top - size
+            ops.append(f"/F1 {size} Tf 1 0 0 1 {x:.2f} {baseline:.2f} Tm ({esc}) Tj")
+        ops.append("ET")
+        cb = "\n".join(ops).encode()
+        objs.append(b"<< /Length %d >>\nstream\n" % len(cb) + cb + b"\nendstream")
+    objs.append(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+    return _assemble(objs)
+
+
+def right_aligned_row(
+    label: str,
+    values: list[str],
+    *,
+    y: float,
+    label_x: float,
+    column_right_edges: list[float],
+    size: float = 8.0,
+) -> list[tuple[str, float, float, float]]:
+    """One metric row whose values are RIGHT-aligned on their column edges.
+
+    This is how a real financial table sets a numeric column, and it is what
+    makes a value's own x-centre drift left as the number gets wider — the
+    exact geometry the column-assignment logic has to cope with.
+    """
+    out: list[tuple[str, float, float, float]] = [(label, label_x, y, size)]
+    for value, right_edge in zip(values, column_right_edges):
+        if value == "":
+            continue
+        out.append((value, right_edge - helvetica_width(value, size), y, size))
+    return out

@@ -186,17 +186,49 @@ from __future__ import annotations
 # -only Case-A revalidation of such a row can never recover this NEW
 # structural signal; it needs the ORIGINAL words/geometry, which excerpts_json
 # never persists. See ``EXTRACTION_TEXT_LAYER_MIN_VERSION`` below.
+# Version 10 (Phase 32D — multi-year financial table extraction) changes the
+# RAW TEXT/TABLE EXTRACTION layer itself, not just fact interpretation:
+# ``primary_document_extractor._extract_one_page`` now runs a SECOND,
+# geometry-driven table pass (``financial_table_reconstructor``) that rebuilds
+# BORDERLESS multi-year financial tables from the page's positioned words.
+# ``page.extract_tables()`` is ruling-line driven and recovers nothing usable
+# from such a page — on the real 169-page Pandora Annual Report 2025 it
+# returned a degenerate ONE-column artifact for the page-14 five-year summary
+# — so every figure in those grids previously reached the pipeline only as
+# flattened prose with its column→year mapping already destroyed.
+#
+# This MUST invalidate reuse of any pre-existing row, and specifically Case
+# A's "no table-derived active fact ⇒ safely re-derive from the persisted
+# excerpts alone, no re-fetch" fast path, for the same reason as the
+# version-4/5/6/9 bumps before it: ``ExtractedDocument.excerpts_json`` never
+# persists a raw table grid, so an excerpts-only replay can only ever
+# reproduce the flattened prose reading. Recovering the new column-anchored
+# facts needs the ORIGINAL words and their geometry, which only a full
+# re-extraction can supply. See ``EXTRACTION_TEXT_LAYER_MIN_VERSION`` below.
+#
+# The same slice also changed how already-extracted content is INTERPRETED
+# (all of which this bump covers too): "EBIT margin" now maps to the percent
+# operating-margin label instead of being swallowed by the ``ebit`` money
+# pattern; "cash flows from operating activities" and "net interest-bearing
+# debt" joined the metric vocabulary; "profit for the year FROM
+# continuing/discontinued operations" no longer matches plain net income;
+# IFRS 5 discontinued-operations / disposal-group / held-for-sale headings are
+# now a NON-Group scope (previously "disposal group" read as an issuer Group
+# claim); a prose candidate that is a degraded read of a page whose table was
+# reconstructed is superseded by it; and two candidates may only be judged to
+# CONTRADICT each other when BOTH are fully qualified.
 LEGACY_EXTRACTION_PIPELINE_VERSION = 1
-CURRENT_EXTRACTION_PIPELINE_VERSION = 9
+CURRENT_EXTRACTION_PIPELINE_VERSION = 10
 
 # The pipeline version at/after which persisted ``excerpts_json`` text is
 # guaranteed to have been produced by column-aware page extraction UNDER
 # THE CURRENT gutter-detection thresholds, THE CURRENT excerpt-ranking/
-# selection logic, AND (version 9+) THE CURRENT PDF section/ancestor-heading
-# detection. A document stamped below this version must undergo a full
-# re-extraction (never an excerpts-only replay) to pick up the corrected raw
-# text, selection, and/or structural heading context.
-EXTRACTION_TEXT_LAYER_MIN_VERSION = 9
+# selection logic, THE CURRENT PDF section/ancestor-heading detection (v9+),
+# AND (v10+) THE CURRENT geometric multi-year-table reconstruction. A document
+# stamped below this version must undergo a full re-extraction (never an
+# excerpts-only replay) to pick up the corrected raw text, selection,
+# structural heading context, and/or its borderless financial tables.
+EXTRACTION_TEXT_LAYER_MIN_VERSION = 10
 
 __all__ = [
     "LEGACY_EXTRACTION_PIPELINE_VERSION",

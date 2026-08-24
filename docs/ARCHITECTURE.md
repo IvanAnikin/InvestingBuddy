@@ -1,6 +1,13 @@
 # Architecture
 
+## Status: Phase 32D — Multi-Year Financial Table Extraction (**merged**; PR #144; **no migration** (Alembic head stays `017`), no schema change, no new flag; extraction `pipeline_version` `9 → 10`). A second, geometry-driven table pass (`app/services/sources/financial_table_reconstructor.py`) rebuilds BORDERLESS multi-year financial tables from a PDF page's positioned words, so a metric row, its value cell and its year/period COLUMN HEADER are associated deterministically before anything is promoted to a fact. `page.extract_tables()` is ruling-line driven and recovers nothing usable from a glossy "Five-year summary" page — on the real 169-page Pandora Annual Report 2025 it returned a degenerate one-column artifact, and every figure on that page reached the pipeline only as flattened prose with its column→year mapping already destroyed. See "Multi-Year Financial Table Reconstruction" below and ADR-030. Production is not provisioned and is untouched.
+
+<details>
+<summary>Previous status (Phase 32D2)</summary>
+
 ## Status: Phase 32D2 — One Final Reconciled Research State (**merged + deployed to STAGING**; API `f627666`, web `0584ff1`; PRs #138 #139 #140 #141 #142; **no migration**, no schema change, no new flag). After ingestion and council completion the final-report generator builds ONE reconciled research state (`app/services/final_research_state.py`) and rebuilds every deterministic human-facing surface from it — see "One Final Reconciled Research State" below and ADR-025..ADR-029. Production is not provisioned and is untouched.
+
+</details>
 
 <details>
 <summary>Previous status (Phase 31)</summary>
@@ -10,6 +17,100 @@
 </details>
 
 ---
+
+## Multi-Year Financial Table Reconstruction (Phase 32D)
+
+An issuer's most information-dense page is usually its **five-year summary** or
+its primary financial statements — one metric per row, one reporting period per
+column. Those tables are almost always **borderless**: nothing but whitespace
+alignment holds them together.
+
+`pdfplumber.Page.extract_tables()` finds tables from RULING LINES, so on such a
+page it recovers nothing usable. Measured on the real 169-page Pandora Annual
+Report 2025, page 14, it returned `[['2025'], ['32,549'], ['6%'], …]` — a
+one-column artifact whose only column is the row-header column
+`extracted_fact_validator` deliberately skips, yielding **zero** candidates. The
+same page's text still reached the prose path, but FLATTENED: one metric label
+followed by five side-by-side values, the column→year mapping already gone. The
+validator then correctly refused to promote almost any of it. The refusal was
+right; the missing capability was upstream of it.
+
+### The pass
+
+`app/services/sources/financial_table_reconstructor.py` works from the only
+representation that still carries the answer — the positioned word boxes
+`page.extract_words()` returns:
+
+1. **Rows** — words clustered by `top` only. (`primary_document_extractor.
+   _group_words_into_lines` additionally splits a row on any wide gap, which is
+   exactly wrong here: in a multi-year table those gaps ARE the columns.)
+2. **Header rows** — a row carrying ≥ 2 period tokens (`2025`, `FY2025`, and
+   the interim/split-year forms it detects but refuses to promote).
+3. **Column groups** — those tokens split into one group per PHYSICAL table, so
+   two tables printed side by side never share a header map. Pandora page 14 is
+   exactly this: "Financial highlights" and "Stock ratios" share every printed
+   row, with token gaps `42.0 / 42.5 / 42.5 / 42.5 / **257.0** / 42.5 / …`.
+4. **Qualification** — a group is only a header when its column pitch is
+   uniform, its periods are distinct and strictly monotonic, its period types
+   are homogeneous, and its header band is clean. The pitch test is what
+   rejects a body-text or footnote line that merely names several years.
+5. **Column bands** — x-intervals midway between adjacent header centres.
+6. **Cell assignment** — each numeric word goes to the band containing its own
+   x-centre, and only when it is comfortably clear of both band edges.
+7. **Region end** — the table stops where prose intrudes into the value zone.
+
+The result is handed back as a plain header-first grid, so the EXISTING,
+already-validated `extracted_fact_validator` machinery consumes it unchanged:
+`_column_periods` for the column→year map, `_table_currency_scale` for
+`DKK million`, `_match_label` for the metric vocabulary, the subtotal and
+balance-sheet cross-checks, scope grouping, and cross-method reconciliation.
+The reconstructor decides **layout only** — it never decides what a number
+means, never normalizes a value, and never promotes anything to a fact.
+
+### Fail-closed by construction
+
+Every ambiguity produces LESS, never a guess: a value equidistant between two
+columns is dropped; two values landing in one column discard the row; an
+irregularly-pitched header is not a header; and a period form
+`ExtractedFact.period` (a bare year) cannot represent losslessly — interim
+`H1 2026`, split-year `2025/26` — is detected, reported as a source gap, and
+deliberately **not** promoted rather than flattened onto a fiscal year it does
+not mean. Each refusal records a machine-readable reason
+(`ambiguous_period_column`, `column_alignment_uncertain`,
+`irregular_column_pitch`, …) so an operator can see why a visible number did
+not become a fact.
+
+A ruled grid the line-based detector already recovered properly (≥ 2 rows AND
+≥ 2 columns) is **not** rebuilt a second time.
+
+### Scope
+
+A reconstructed table's scope is resolved ONLY from headings inside or directly
+above its own region — never from the page-level running scope, which is
+derived from an arbitrary text block and carried across pages, and on the real
+Pandora report would have attached a stale segment-shaped label from page 9 to
+page 14's Group summary. A segment signal anywhere in the region wins over a
+Group one. A page's largest-type SECTION title carries across a contiguous page
+run, because a multi-page segment review states "… by segment" once and then
+prints only each segment's own name.
+
+### Downstream
+
+Two validator rules changed with it, both in the same bug class:
+
+* A prose candidate that is a **degraded read of a page whose table was
+  reconstructed** (same label, page and scope) is superseded by it. The two are
+  one printed table read twice, not independent corroboration — so the flattened
+  read can no longer manufacture a same-method "conflict" that demotes the
+  column-anchored figure.
+* Two candidates may only be judged to **CONTRADICT** each other when BOTH are
+  fully qualified. A candidate whose currency/scale/period could not be
+  established has unknown units; comparing its bare digits against a fully
+  specified figure is a category error, and it let an uninterpretable number
+  veto a completely specified one.
+
+See ADR-030.
+
 
 ## High-Level System Architecture
 

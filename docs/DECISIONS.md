@@ -1962,3 +1962,59 @@ absent inside the evidence of record.
 - JSON `null` is untouched: structured absence is correct and stays. Only the
   rendered WORD inside a string is the defect.
 - No behaviour change where a value is present.
+
+---
+
+## ADR-030: Rebuild Borderless Multi-Year Financial Tables From Page Geometry (Phase 32D)
+
+**Status:** Accepted — merged (PR #144). No migration (Alembic head stays `017`), no schema change, no new flag. Extraction `pipeline_version` `9 → 10`, `EXTRACTION_TEXT_LAYER_MIN_VERSION` `9 → 10`.
+
+### Context
+
+An issuer's densest page of reported financials is its five-year summary or its primary statements: one metric per row, one reporting period per column. Those tables are almost always **borderless** — nothing but whitespace alignment holds them together.
+
+`pdfplumber.Page.extract_tables()` finds tables from ruling lines. Measured against the real 169-page Pandora Annual Report 2025, page 14 ("FIVE-YEAR SUMMARY"), it returned `[['2025'], ['32,549'], ['6%'], …]`: a one-column artifact whose only column is the row-header column `extracted_fact_validator._numeric_cells` deliberately skips. The table path produced **zero** candidates.
+
+The same page's content still reached the prose path, but flattened — one metric label followed by five side-by-side values, the column→year mapping already destroyed. The validator refused to promote it, exactly as designed. The live report therefore said revenue was sourced and EBIT, EBITDA, net income, cash flow, debt, cash, assets and EPS were all missing, while every one of those numbers was printed on page 14.
+
+The loss was **not** in validation, and not in fact interpretation. It was that nothing ever rebuilt the grid.
+
+### Decision
+
+Add a SECOND, geometry-driven table pass that runs alongside — never instead of — the ruled one, working from `page.extract_words()`: cluster rows by `top`; find header rows carrying ≥ 2 period tokens; split those tokens into one column group per physical table; qualify a group only on uniform column pitch, distinct strictly-monotonic periods, homogeneous period types and a clean header band; build x-bands midway between header centres; assign each numeric word to the band containing its own centre, clear of both edges; end the region where prose intrudes.
+
+Hand the result back as a plain header-first grid so the **existing** validator consumes it unchanged. The new module decides layout only.
+
+### Alternatives considered
+
+* **Loosen the validator's ambiguity refusal** so a multi-value row promotes something. Rejected outright: it would assign years by position or magnitude. A false period assignment is the one failure this pipeline may never make.
+* **A general table-extraction engine / an external library.** Rejected as far more surface than the problem needs; financial statement and summary tables are a narrow, well-behaved shape.
+* **A separate parser for multi-year tables, with its own fact path.** Rejected — it would be a second source of truth. The new pass emits the same `ExtractedTable` shape the validator already trusts.
+
+### Consequences
+
+* Pandora page 14 now yields **52 validated, period-scoped facts** (was 2 usable): revenue, EBIT, EBIT margin, net income, total assets, equity, net interest-bearing debt, operating cash flow, free cash flow and headcount, each for FY2021–FY2025, in `DKK million`, with page and column provenance.
+* Richemont **regressed nothing** and gained exactness: the Group figures that were previously only available rounded from prose (`€22.4 billion`, `€4.5 billion`, `€5 billion`) now resolve to the statements' own `22 420`, `4 492` and `5 037`, and the consolidated balance sheet contributes total assets, liabilities and equity.
+* Historical years are ordinary facts distinguished by `period`; the existing `primary_fact_period_rank` pre-sort already makes the most recent one win a capped evidence slot, so a FY2021 column can never displace FY2025.
+* `pipeline_version` must advance, and `EXTRACTION_TEXT_LAYER_MIN_VERSION` with it: `excerpts_json` never persists a raw table grid, so an excerpts-only replay can only ever reproduce the flattened prose reading. Recovering the new column-anchored facts needs the original words and their geometry, which only a full re-extraction supplies.
+
+### Fail-closed rules this decision commits to
+
+A cell becomes a fact only when its metric, value, table region, period column, column association, unit and scope are all determined. Anything ambiguous is dropped and recorded with a machine-readable reason. Specifically:
+
+* A value equidistant between two columns is refused.
+* Two values landing in one column discard the row.
+* An irregularly-pitched "header" is not a header — this is what rejects a footnote that merely names several years (the real Pandora page-14 footnote has gaps `57.9 / 58.9 / 73.1`).
+* Periods must be distinct, strictly monotonic and of one type; the leftmost column is never assumed to be the newest.
+* A period form the `ExtractedFact.period` contract cannot represent losslessly — interim `H1 2026`, split-year `2025/26` — is detected, surfaced as a source gap, and **not** promoted. Calling an interim column a fiscal year is the exact error this ADR exists to prevent.
+
+### Related validator changes (same bug class)
+
+* **Prose supersession.** A prose candidate that is a degraded read of a page whose table was reconstructed (same label, page AND scope) is superseded by it. They are one printed table read twice, not independent corroboration. Keyed on scope as well as page, because a sentence often carries entity/segment scope a bare grid cannot — dropping Richemont page 9's "Specialist Watchmakers … € 107 million" would have lost a real segment fact.
+* **Conflict eligibility.** Two candidates may only CONTRADICT each other when BOTH are fully qualified. A candidate whose currency/scale/period could not be established has unknown units, and comparing its bare digits against a fully specified figure is a category error. It had let a stray "Approx. -600" on Pandora's guidance page demote the correct FY2025 revenue, and an unlabelled "42" in a Richemont note table displace the Group's `€ 3 484 million` profit for the year.
+* **Vocabulary.** "EBIT margin" maps to the percent operating-margin label rather than being swallowed by the `ebit` money pattern; "cash flows from operating activities" and "net interest-bearing debt" joined the metric patterns; "profit for the year FROM continuing/discontinued operations" no longer matches plain net income, because a real income statement prints both lines and one table was contradicting itself.
+* **Scope.** IFRS 5 "discontinued operations" / "disposal group" / "held for sale" are a NON-Group scope. The standard's own phrase "disposal GROUP" previously read as an issuer Group claim — the same false-positive class as the existing "peer group" guard — and let Richemont's YNAP disposal note contradict the Group's revenue.
+
+### Bounds
+
+Reconstruction is skipped for a page whose ruled pass already recovered a real grid (≥ 2 rows AND ≥ 2 columns), and for a page above the word cap. Regions per page, rows per region, header rows per page and column count are all bounded. Measured cost on the real documents: **~0.1 s per 40-page document**, against the ~8 s `extract_words()` the extractor was already spending for its existing column and heading passes.
