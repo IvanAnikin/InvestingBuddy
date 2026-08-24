@@ -259,10 +259,16 @@ _ISSUERS: tuple[VerifiedIssuerSource, ...] = (
             "reports-and-presentations and announcements-and-events."
         ),
         warnings=(
-            "Report documents are hosted off-domain on the issuer's content CDN "
-            "(pandora.a.bigcontent.io) and carry no .pdf extension, so neither "
-            "the domain allowlist nor extension-based document discovery "
-            "reaches them yet (honest gap).",
+            # Phase D1a closed the gap this warning described (issuer-scoped
+            # ``document_domains`` + content-type discovery). Left as a
+            # STANDING CAVEAT, not an open gap: the warning is rendered on the
+            # report's verified-source rows, and stating an already-closed gap
+            # there is the same contradiction class this campaign removes.
+            "Report documents are hosted off-domain on the issuer's own content "
+            "CDN (pandora.a.bigcontent.io) and carry no .pdf extension. Reachable "
+            "via the issuer-scoped document-host authority and content-type "
+            "discovery; the CDN is a retrieval permission for artifacts linked "
+            "from these pages, never a news or publication source.",
         ),
     ),
     VerifiedIssuerSource(

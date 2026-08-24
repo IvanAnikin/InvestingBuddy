@@ -50,6 +50,11 @@ class RelevanceLevel(str, Enum):
 
 # Verification methods, from strongest to weakest evidence of company ownership.
 class VerificationMethod(str, Enum):
+    # The code-defined, safety-validated issuer registry in
+    # ``app/services/sources/verified_issuer_sources.py`` — the strongest
+    # attribution the platform has, because a human curated it and the registry
+    # asserts HTTPS + host-allowlist + no-credential invariants on every URL.
+    verified_issuer_registry = "verified_issuer_registry"
     curated_verified_registry = "curated_verified_registry"
     profile_website = "profile_website"
     sec_submissions_website = "sec_submissions_website"
@@ -98,6 +103,11 @@ class CompanySourceDiscoveryResult(BaseModel):
     press_release_feed_url: str | None = None
     rss_feed_urls: list[str] = Field(default_factory=list)
     exchange_profile_url: str | None = None
+    # Phase 32D2b — the issuer's own annual-report index, when the verified
+    # issuer registry knows it. Distinct from ``investor_relations_url``: the
+    # connector layer already used this to reach Pandora's annual report while
+    # the catalyst/news layer reported "no verified company source exists".
+    annual_reports_url: str | None = None
 
     source_candidates: list[SourceCandidate] = Field(default_factory=list)
     verified_sources: list[SourceCandidate] = Field(default_factory=list)
@@ -147,6 +157,7 @@ class CompanySourceDiscoveryResult(BaseModel):
             "press_release_feed_url": self.press_release_feed_url,
             "rss_feed_urls": list(self.rss_feed_urls),
             "exchange_profile_url": self.exchange_profile_url,
+            "annual_reports_url": self.annual_reports_url,
             "confidence": self.confidence,
             "has_verified_company_source": self.has_verified_company_source,
             "verified_sources": [c.to_report_dict() for c in self.verified_sources],

@@ -1732,3 +1732,72 @@ invocation (genuinely pre-ingestion) does.
   `regulator_structured_facts` now get a T2-only answer, which is the correct
   one.
 - A company with nothing ingested renders exactly as before.
+
+---
+
+## ADR-026: One Issuer Registry, and a Tri-State for Discovery Source Metadata (Phase 32D2b)
+
+**Status:** Accepted — 2026-08-24
+
+### Problem
+
+Two issuer registries existed and neither layer knew about the other's:
+
+- `app/services/sources/verified_issuer_sources.py` — code-defined,
+  safety-validated (HTTPS, host allowlist, no credentials), covering the
+  European issuers this product researches. Read only by the connector /
+  document-ingestion layer.
+- `app/integrations/exchange_source_registry.KNOWN_ISSUER_SOURCES` — seven US
+  mega-caps. The only registry company-source / catalyst / news discovery
+  consulted.
+
+Live consequence on the Pandora report: it cited the issuer's own annual report,
+reached through the verified registry's IR page, while News & Catalyst Discovery
+rendered `has_verified_company_source: false` and warned "no company-owned
+website / IR / newsroom source could be confidently discovered for this issuer".
+
+Separately, the discovery evidence pack had no way to say "we know where this
+issuer's IR and annual reports are, we just did not fetch them in a
+metadata-only pass". A live European run's council therefore concluded "No
+primary company news sources or IR websites confidently identified for any
+candidate" for eight issuers whose IR and annual-report URLs are on record — one
+of which had already been read end-to-end by full analysis.
+
+### Decision
+
+1. `discover_company_sources` consults `get_verified_issuer_source(ticker,
+   exchange)` FIRST, promoting the issuer's own homepage / IR / annual-reports /
+   announcements URLs as T1 verified sources with a new
+   `VerificationMethod.verified_issuer_registry`. `annual_reports_url` is added
+   to `CompanySourceDiscoveryResult`.
+2. The discovery evidence pack carries a per-candidate TRI-state —
+   `unknown` / `known_not_fetched` / `fetched` — plus run-level known-gap lines
+   that count the two populations separately, and a `do_not_infer` rule
+   forbidding the council from restating `known_not_fetched` as absent.
+
+### Invariants
+
+- **`document_domains` is never promoted.** It is a narrow retrieval permission
+  for artifacts linked from the issuer's verified pages (ADR-024), not a
+  publication venue. A test asserts every registry CDN host stays out of the
+  discovered source set.
+- **Fail-closed is preserved.** An unknown ticker still reports
+  `has_verified_company_source: false`, confidence `0.0`, and the honest
+  warning.
+- **Registry-driven tests.** The bridge is asserted for EVERY registry entry, so
+  adding an entry without updating this path fails CI instead of producing a
+  live report that under-reports its own sources.
+- **Exchange still discriminates.** `get_verified_issuer_source(ticker,
+  wrong_exchange)` returns None — the ticker/venue collision guard is untouched.
+
+### Consequences
+
+- Issuers in the verified registry now get their own press/announcement pages as
+  press-release feed candidates. Those probes hit the issuer's OWN allowlisted
+  domain only, which is the same trust boundary the connector layer already
+  uses.
+- The stale Pandora registry caveat ("neither the domain allowlist nor
+  extension-based document discovery reaches them yet") is restated as a
+  standing caveat: ADR-024 closed that gap, and the warning is rendered on the
+  report's verified-source rows.
+- No migration; both registries stay code-defined.
