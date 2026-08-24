@@ -27,7 +27,34 @@ const MOCK_RUN = {
   candidate_count: 3,
   error_count: 1,
   lookback_days: 90,
-  warnings: ["NVDA: provider unavailable"],
+  warnings: [
+    "NVDA: provider unavailable",
+    "AAPL: 18 financial fundamental categories missing.",
+    "MSFT: 18 financial fundamental categories missing.",
+  ],
+  // Phase C: the backend derives these from `warnings` on EVERY read, so a
+  // real response always carries them. The admin UI must render THESE.
+  warning_groups: [
+    {
+      code: "NO_FUNDAMENTALS",
+      severity: "warning",
+      scope: "run",
+      message: "Financial fundamentals were not sourced.",
+      count: 2,
+      subjects: ["AAPL", "MSFT"],
+      samples: ["18 financial fundamental categories missing."],
+    },
+    {
+      code: "UNCLASSIFIED",
+      severity: "warning",
+      scope: "candidate",
+      message: "provider unavailable",
+      count: 1,
+      subjects: ["NVDA"],
+      samples: ["provider unavailable"],
+    },
+  ],
+  warning_raw_count: 3,
   config_json: { provider_name: "free_real" },
   safety_notes: { internal_only: true },
   created_by: null,
@@ -853,7 +880,10 @@ test.describe("Admin Discovery — async execution (Phase 25.1)", () => {
     );
     await page.goto("/admin/discovery");
     await expect(page.getByTestId("run-progress")).toContainText("failed");
-    await expect(page.locator("body")).toContainText("warning(s)");
+    // Phase 32D2c — warnings are surfaced GROUPED (raw instances stay one
+    // click away); a failed run must still show them.
+    await expect(page.getByTestId("run-warning-groups")).toBeVisible();
+    await expect(page.getByTestId("run-warning-group").first()).toBeVisible();
   });
 
   test("22. POST failure shows a user-friendly timeout message", async ({
@@ -2301,5 +2331,97 @@ test.describe("Admin Discovery — async council review (Phase 28B.2)", () => {
     const panelText =
       (await page.getByTestId("council-review-panel").textContent()) ?? "";
     expect(panelText.toLowerCase()).not.toContain("publish");
+  });
+
+  // Phase 32D2c — the agent summaries were inside a COLLAPSED <details>, so a
+  // reviewer saw an empty area while every sibling section rendered inline.
+  // `toContainText` reads collapsed DOM text and passed throughout; only a
+  // VISIBILITY assertion catches it.
+  test("C10. Agent summaries are VISIBLE without any interaction", async ({
+    page,
+  }) => {
+    await mockDiscoveryRoutes(page);
+    await page.route(COUNCIL_URL, (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(MOCK_COUNCIL_REVIEW),
+      }),
+    );
+    await page.goto("/admin/discovery");
+    await expect(page.getByTestId("council-agent-summaries")).toBeVisible();
+    const rows = page
+      .getByTestId("council-agent-summaries")
+      .getByTestId("agent-summary-row");
+    await expect(rows).toHaveCount(1);
+    await expect(rows.first()).toBeVisible();
+    await expect(rows.first()).toContainText("run_red_team");
+    await expect(rows.first()).toContainText("over-concentrated");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 32D2c — GROUPED run warnings on the candidate-queue surface
+// ---------------------------------------------------------------------------
+
+test.describe("Discovery run warnings (grouped)", () => {
+  test("W1. Grouped warnings render; the raw list is not the default view", async ({
+    page,
+  }) => {
+    await mockDiscoveryRoutes(page);
+    await page.goto("/admin/discovery");
+
+    const groups = page.getByTestId("run-warning-groups");
+    await expect(groups).toBeVisible();
+    await expect(groups).toContainText("2 warning group(s) from 3 instance(s)");
+    await expect(page.getByTestId("run-warning-group")).toHaveCount(2);
+    await expect(groups).toContainText("NO_FUNDAMENTALS");
+    await expect(groups).toContainText("Affects: AAPL, MSFT");
+
+    // Nothing is dropped: the raw instances stay reachable, behind a toggle.
+    await expect(page.getByTestId("run-warnings-raw")).toBeVisible();
+    await expect(page.getByTestId("run-warnings-raw")).toContainText(
+      "Show all 3 raw instance(s)",
+    );
+    // ...and are NOT what the reviewer sees first.
+    await expect(page.getByTestId("run-warnings-raw-only")).toHaveCount(0);
+  });
+
+  test("W2. A run without grouped warnings still shows its raw list", async ({
+    page,
+  }) => {
+    await mockDiscoveryRoutes(page);
+    const legacyRun = {
+      ...MOCK_RUN,
+      warning_groups: undefined,
+      warning_raw_count: undefined,
+      progress_pct: 100,
+      is_async: true,
+    };
+    await page.route(
+      "**/api/admin/proxy/api/v1/market-discovery/runs",
+      (route) =>
+        route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            runs: [legacyRun],
+            total: 1,
+            disclaimer: DISC,
+          }),
+        }),
+    );
+    await page.route(
+      `**/api/admin/proxy/api/v1/market-discovery/runs/${RUN_ID}`,
+      (route) =>
+        route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify(legacyRun),
+        }),
+    );
+    await page.goto("/admin/discovery");
+    await expect(page.getByTestId("run-warnings-raw-only")).toBeVisible();
+    await expect(page.getByTestId("run-warning-groups")).toHaveCount(0);
   });
 });
