@@ -1623,3 +1623,112 @@ Curated entries decay silently. A future periodic job should HEAD/GET each
 registry landing URL, record status and redirects, and **flag** stale entries
 for human review — never rewrite a registry URL automatically, since the
 correct replacement is a curation judgement.
+
+---
+
+## ADR-025: One Final Reconciled Research State (Phase 32D2)
+
+**Status:** Accepted — 2026-08-24
+**Context:** live manual QA of the Pandora final report (staging report
+`2ea1abcd-8f63-4984-9399-31bec6e95388`, staging SHA `f5e4058`).
+
+### Problem
+
+Pandora had, for the first time, real T1 issuer-primary evidence: an official
+169-page annual report, ingested, with two validated high-confidence facts
+(fiscal year 2025, revenue DKK 32.5bn). The LLM council read and cited them
+correctly. The SAME rendered report simultaneously asserted:
+
+| Correct, current | Stale, contradictory |
+|---|---|
+| `fundamentals_available: true` | `financials.revenue` in `missing_fields` |
+| `fundamentals_source: issuer_primary_document` | "All 18 core financial fundamental categories are missing (revenue, EBITDA, …)" |
+| `fundamentals_source_tier: T1_primary_filing` | "Financial fundamentals … none sourced at this phase" |
+| Financial Evidence Quality: `strong` | Bull case: "fundamentals (not yet sourced)" |
+| revenue DKK 32.5bn, page 8, source URL | Valuation: `financials.revenue` in `missing_inputs` |
+| 3 issuer documents extracted | "Source T1 primary filings (annual report / 10-K) for revenue, EBITDA, FCF" |
+| — | "All current data from SourceTier.T6_model_estimate only" |
+| — | Evidence channel "Regulator structured financial facts (SEC XBRL)" holding the issuer's PDF facts, for an issuer with no SEC registration |
+
+### Root causes (five, independent)
+
+1. **No owner for post-ingestion state.** Phase-8/9 agents run at workflow time,
+   before ingestion. Their output was rendered verbatim. Each previous
+   corrective (Problem D, Phase C2, the CFR/MC availability fix) repaired ONE
+   consumer and left the next one stale, because "what evidence do we have" had
+   no single answer.
+2. **One tier for two questions.** `provider_metadata.source_tier` describes the
+   IDENTITY/PRICE provider. It was used to decide "is a primary source behind
+   the financials?", so a T6 identity fallback overrode a T1 filing fact.
+3. **The rebuild was silently skipped.** `_rebuild_deterministic_sections`
+   refused to rebuild any summary whose safety scan hit — and it scanned WITHOUT
+   `_EXEMPT_FIELD_NAMES`. `valuation_guard_summary.disallowed_outputs` exists to
+   enumerate forbidden phrases ("Fair value estimate", "Price target"), so the
+   valuation section NEVER qualified for rebuild and nothing reported it.
+4. **`is_regulator_structured` included T1.** Issuer-published facts were routed
+   into the SEC-XBRL evidence channel.
+5. **`isinstance(tier, str)` on a `str`-mixin Enum is always True**, so
+   `tier if isinstance(tier, str) else tier.value` kept the ENUM. Equality and
+   membership still worked (no test failed); every f-string rendered
+   `SourceTier.T6_model_estimate` into prose a human reads.
+
+### Decision
+
+Introduce `app/services/final_research_state.py`. It is built ONCE, immediately
+after the council returns, and is the ONLY input the deterministic rebuilds
+accept. It carries:
+
+- `FundamentalsEvidence` resolved WITH the council's primary facts;
+- `FinancialEvidenceState` — per-CATEGORY resolution with each category's own
+  source, tier, period and URL, plus `open_statement_categories` (a filing can
+  close these) vs `open_market_categories` (it cannot);
+- a RECONCILED `financial_data_summary` (validated categories move missing →
+  available; stale count/"missing primary filing sources" warnings are
+  REWRITTEN, not deleted);
+- a RECONCILED `research_completeness_summary` (only gaps a validated fact truly
+  satisfies are closed; the "read the annual report" task is REPLACED by a
+  precise extraction-completeness task).
+
+Every deterministic surface — availability, missing information, research
+completeness, source quality, bull/bear/risk, valuation readiness, committee
+chair, executive summary, evidence channels, research memo — is rebuilt from it.
+
+The Phase-8/9 agents gain an optional `financial_evidence` keyword. Omitting it
+reproduces pre-32D2 behaviour exactly, which is what the workflow-time
+invocation (genuinely pre-ingestion) does.
+
+### Invariants
+
+- **Nothing is upgraded by inference.** A category resolves only from a
+  high-confidence, group-scoped fact carrying its own source URL. Medium
+  confidence and segment scope still resolve nothing.
+- **Absence survives.** The control test runs the identical pipeline with an
+  empty council: every "missing" claim must still be present.
+- **Idempotent.** Reconciling an already-reconciled summary is a no-op, so
+  regeneration does not accumulate notes.
+- **Two tiers are named separately**, never merged into one "source tier".
+- **One internal-status label per report.** The Phase-9 chair's vocabulary
+  (`research_incomplete`, `watchlist_candidate_for_review`) is now MAPPED to the
+  report's, and the chair's prose is restated to match; the agent's own label is
+  retained in `agent_internal_status` for audit. Previously the unmapped
+  fallback rewrote the structured field to `not_enough_data` while the prose
+  beside it kept saying `research_incomplete`.
+
+### Alternatives rejected
+
+- **Patch each surface again.** Four phases have now done this; each fixed the
+  surface under test and left the next one. The defect is architectural.
+- **Mutate `company_snapshot.provider_metadata.source_tier` to T1.** That would
+  make the identity and price data claim a provenance they do not have.
+- **Suppress the stale warnings.** Deleting a warning loses the real remaining
+  gap. They are rewritten to state what is genuinely still open.
+
+### Consequences
+
+- No migration; no schema change. The reconciled state is recorded in
+  `source_summary_json.final_research_state` (bounded counts/labels only) so a
+  reviewer can audit why a section says what it says.
+- `evidence_channels` grows from five to seven channels. Readers keying on
+  `regulator_structured_facts` now get a T2-only answer, which is the correct
+  one.
+- A company with nothing ingested renders exactly as before.

@@ -16,8 +16,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from app.integrations.financial_data_provider import normalize_source_tier
 from app.schemas.evidence_state import FinancialDataSummary
 from app.services.canonical_evidence import resolve_price_provenance
+from app.services.final_research_state import (
+    FinancialEvidenceState,
+    category_labels,
+)
 
 
 @dataclass
@@ -34,12 +39,34 @@ class RiskAgentOutput:
     warnings: list[str] = field(default_factory=list)
 
 
+def _data_quality_label(
+    is_mock: bool,
+    source_tier: str,
+    fin_ev: "FinancialEvidenceState | None",
+) -> str:
+    """One label that does not overstate OR understate the evidence.
+
+    A single tier cannot describe a report whose identity is T6 and whose
+    revenue is T1; stating only the identity tier is what made the risk summary
+    read "Data quality: T6_model_estimate" beside a validated filing figure.
+    """
+    if is_mock:
+        return "MOCK (synthetic)"
+    if fin_ev is not None and fin_ev.available and fin_ev.best_tier != source_tier:
+        return (
+            f"identity/price {source_tier}, financial statement facts "
+            f"{fin_ev.best_tier}"
+        )
+    return source_tier
+
+
 def run_risk_agent(
     company_snapshot: dict,
     financial_data_summary: dict,
     source_quality_summary: dict,
     research_completeness_summary: dict,
     upgraded_citation_validation: dict | None = None,
+    financial_evidence: "FinancialEvidenceState | None" = None,
 ) -> RiskAgentOutput:
     """
     Structure risks into categories for medium-term investment analysis.
@@ -67,7 +94,10 @@ def run_risk_agent(
     legal_name = identity.get("legal_name", "Unknown")
     sector = profile.get("sector", "unknown sector")
     country = profile.get("country_domicile") or identity.get("country_domicile", "unknown")
-    source_tier = provider_meta.get("source_tier", "T6_model_estimate")
+    source_tier = (
+        normalize_source_tier(provider_meta.get("source_tier")) or "T6_model_estimate"
+    )
+    fin_ev = financial_evidence
 
     # ── Business risks ────────────────────────────────────────────────────
     # From research completeness gaps
@@ -142,9 +172,22 @@ def run_risk_agent(
         missing_labels = [
             f.split(".", 1)[1].replace("_", " ") for f in missing_financials
         ]
+        # Phase 32D2 — name what is actually sourced, at its actual tier.
+        sourced_label = (
+            category_labels(fin_ev.resolved_categories)
+            if fin_ev is not None and fin_ev.resolved_categories
+            else ", ".join(
+                f.split(".", 1)[1].replace("_", " ") for f in available_financials[:5]
+            )
+        )
+        tier_clause = (
+            f" ({fin_ev.best_tier}, {fin_ev.best_source})"
+            if fin_ev is not None and fin_ev.available
+            else ""
+        )
         financial_risks.append(
             f"Financial data is partial: {len(available_financials)} statement categories "
-            "(revenue, net income, cash flow, balance sheet) are sourced; "
+            f"({sourced_label}) are sourced{tier_clause}; "
             f"{len(missing_financials)} valuation inputs remain missing "
             f"({', '.join(missing_labels[:5])}{'...' if len(missing_labels) > 5 else ''}). "
             "Leverage and liquidity can be partially assessed; market-based valuation cannot."
@@ -277,10 +320,19 @@ def run_risk_agent(
         )
 
     if source_tier in ("T6_model_estimate", "T5_api_aggregator"):
-        warnings.append(
-            f"Source tier {source_tier}: risk assessment based on aggregator data only. "
-            "Primary filings (T1/T2) required for reliable risk assessment."
-        )
+        if fin_ev is not None and fin_ev.is_primary_backed:
+            warnings.append(
+                f"Identity and price data are {source_tier}. Financial statement "
+                f"facts ({category_labels(fin_ev.resolved_categories)}) are "
+                f"{fin_ev.best_tier}; the statement lines not yet extracted "
+                "still limit the financial risk assessment."
+            )
+        else:
+            warnings.append(
+                f"Source tier {source_tier}: risk assessment based on aggregator "
+                "data only. Primary filings (T1/T2) required for reliable risk "
+                "assessment."
+            )
 
     # ── Risk summary ──────────────────────────────────────────────────────
     total_risks = (
@@ -300,7 +352,7 @@ def run_risk_agent(
         f"Risk assessment for {legal_name} ({ticker}), {sector}, {country}. "
         f"Total risk flags: {total_risks} "
         f"({unknown_count} marked UNKNOWN due to missing data). "
-        f"Data quality: {'MOCK (synthetic)' if is_mock else source_tier}. "
+        f"Data quality: {_data_quality_label(is_mock, source_tier, fin_ev)}. "
         "Assessment is incomplete — primary filings (T1/T2) required before any "
         "investment decision. This is an internal draft only."
     )

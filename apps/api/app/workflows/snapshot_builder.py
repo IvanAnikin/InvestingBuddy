@@ -27,6 +27,7 @@ from app.integrations.financial_data_provider import (
     FundamentalsData,
     PriceHistoryData,
     ProviderResponseMetadata,
+    normalize_source_tier,
 )
 from app.services.exchange_registry import price_quote_currency_for_exchange
 
@@ -71,7 +72,7 @@ def _make_datapoint(
 
 
 def _provider_note(meta: ProviderResponseMetadata) -> str:
-    tier = meta.source_tier if isinstance(meta.source_tier, str) else meta.source_tier.value
+    tier = normalize_source_tier(meta.source_tier)
     base = f"Data from {meta.provider_name} (tier {tier})"
     if meta.is_mock:
         base += " — MOCK DATA: not real financial data, not investment advice"
@@ -103,7 +104,7 @@ def build_company_snapshot(
     """
     meta = profile.meta
     retrieved_at = meta.retrieved_at.isoformat() if meta.retrieved_at else None
-    tier_value = meta.source_tier if isinstance(meta.source_tier, str) else meta.source_tier.value
+    tier_value = normalize_source_tier(meta.source_tier)
 
     missing_fields: list[str] = []
 
@@ -255,7 +256,7 @@ def build_schema_draft(
     The caller validates with validate_real_asset_report() and stores the result.
     """
     meta = profile.meta
-    tier_value = meta.source_tier if isinstance(meta.source_tier, str) else meta.source_tier.value
+    tier_value = normalize_source_tier(meta.source_tier)
     dq_value = (
         profile.data_quality
         if isinstance(profile.data_quality, str)
@@ -316,9 +317,7 @@ def build_schema_draft(
     if prices and prices.price_points:
         price_meta = prices.meta
         price_tier = (
-            price_meta.source_tier
-            if isinstance(price_meta.source_tier, str)
-            else price_meta.source_tier.value
+            normalize_source_tier(price_meta.source_tier)
         )
         price_dq = (
             prices.data_quality
@@ -354,9 +353,7 @@ def build_schema_draft(
         dp_by_field = {dp.field_name: dp for dp in fundamentals.datapoints}
         fund_meta = fundamentals.meta
         fund_tier = (
-            fund_meta.source_tier
-            if isinstance(fund_meta.source_tier, str)
-            else fund_meta.source_tier.value
+            normalize_source_tier(fund_meta.source_tier)
         )
         fund_source_name = f"EODHD fundamentals — {ticker}.{exchange}"
         fund_source_url = f"https://eodhd.com/financial-apis/fundamental-api/?s={ticker}.{exchange}"
@@ -708,7 +705,7 @@ def get_profile_citation_fields(profile: CompanyProfileData) -> list[dict]:
     source_quote, retrieved_at — ready to populate CitationCreate.
     """
     meta = profile.meta
-    tier_value = meta.source_tier if isinstance(meta.source_tier, str) else meta.source_tier.value
+    tier_value = normalize_source_tier(meta.source_tier)
     dq_value = (
         profile.data_quality
         if isinstance(profile.data_quality, str)
@@ -752,7 +749,7 @@ def get_price_citation_fields(prices: PriceHistoryData) -> list[dict]:
     Return citation descriptors for the price history data.
     """
     meta = prices.meta
-    tier_value = meta.source_tier if isinstance(meta.source_tier, str) else meta.source_tier.value
+    tier_value = normalize_source_tier(meta.source_tier)
     dq_value = (
         prices.data_quality
         if isinstance(prices.data_quality, str)

@@ -20,9 +20,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from app.integrations.financial_data_provider import normalize_source_tier
 from app.services.canonical_evidence import (
     PRIMARY_FACT_FIELDS,
     resolve_fundamentals,
+)
+from app.services.final_research_state import (
+    FinancialEvidenceState,
+    category_labels,
 )
 from app.services.sources.company_evidence import regulator_connector_for
 
@@ -148,6 +153,7 @@ def run_source_quality_agent(
     company_snapshot: dict,
     citation_source_tiers: list[str] | None = None,
     primary_facts: list[dict] | None = None,
+    financial_evidence: "FinancialEvidenceState | None" = None,
 ) -> SourceQualityAgentOutput:
     """
     Evaluate source quality from the company snapshot and citation metadata.
@@ -177,8 +183,20 @@ def run_source_quality_agent(
     is_mock = company_snapshot.get("is_mock", True)
 
     provider_name = provider_meta.get("provider_name", "unknown")
-    declared_tier = provider_meta.get("source_tier", "T6_model_estimate")
+    declared_tier = (
+        normalize_source_tier(provider_meta.get("source_tier")) or "T6_model_estimate"
+    )
     effective_tier = _classify_provider(provider_name, declared_tier)
+
+    # Phase 32D2 — the IDENTITY/PRICE provider tier and the FINANCIAL-EVIDENCE
+    # tier are different facts about a report and must never be collapsed.
+    # Pandora's identity comes from a T6 fallback and its price from a T5
+    # aggregator, while its revenue comes from the issuer's own annual report
+    # (T1). Reported as one number, that became "All current data from
+    # T6_model_estimate only" printed beside a validated T1 revenue figure.
+    fin_ev = financial_evidence
+    financial_tier = fin_ev.best_tier if fin_ev and fin_ev.available else None
+    financial_is_primary = bool(fin_ev and fin_ev.is_primary_backed)
 
     # ── Classify sources ──────────────────────────────────────────────────
     strong_sources: list[str] = []
@@ -195,7 +213,10 @@ def run_source_quality_agent(
 
     if price_summary.get("available"):
         price_provider = price_summary.get("provider_name", provider_name)
-        price_tier = _classify_provider(price_provider, effective_tier)
+        price_tier = _classify_provider(
+            price_provider,
+            normalize_source_tier(price_summary.get("source_tier")) or effective_tier,
+        )
         if price_tier in _STRONG_TIERS:
             strong_sources.append(
                 f"{price_provider} ({price_tier}): price history data"
@@ -204,6 +225,14 @@ def run_source_quality_agent(
             weak_sources.append(
                 f"{price_provider} ({price_tier}): price history data"
             )
+
+    # Financial-statement evidence is its OWN source row at its OWN tier.
+    if fin_ev is not None and fin_ev.available and financial_tier:
+        row = (
+            f"{fin_ev.best_source} ({financial_tier}): financial statement "
+            f"facts — {category_labels(fin_ev.resolved_categories)}"
+        )
+        (strong_sources if financial_tier in _STRONG_TIERS else weak_sources).append(row)
 
     # Incorporate citation source tiers if provided
     if citation_source_tiers:
@@ -250,6 +279,34 @@ def run_source_quality_agent(
             "Annual report / 10-K / 40-F — T1_primary_filing required for financials"
         )
         missing_primary.append(_jurisdiction_appropriate_regulator_line(company_snapshot))
+    elif fundamentals.is_issuer_primary:
+        # Phase 32D2 — the ISSUER'S OWN annual report has already been fetched,
+        # extracted and validated. Asking for it again is not a conservative
+        # gap, it is a false one: it told the Pandora reviewer that primary
+        # sourcing was outstanding while the report rendered a T1 revenue figure
+        # from that very document. State the REAL remaining gap instead — the
+        # statement lines that document has not yet given up.
+        open_note = (
+            " Statement lines still not extracted from it: "
+            f"{category_labels(fin_ev.open_statement_categories)}."
+            if fin_ev is not None and fin_ev.open_statement_categories
+            else ""
+        )
+        missing_primary.append(
+            "Issuer annual report — ALREADY INGESTED; "
+            f"{len(fundamentals.values)} statement fact(s) extracted at "
+            f"{fundamentals.source_tier}. Remaining gap is completeness, not "
+            f"acquisition.{open_note}"
+        )
+        # The document's NARRATIVE (MD&A, segment discussion, accounting
+        # notes) is a genuinely separate gap from its statement figures, and
+        # bounded excerpt extraction does not close it.
+        missing_primary.append(
+            "Annual report NARRATIVE (MD&A, segment discussion, accounting "
+            "notes) — statement figures are already sourced from "
+            f"{fundamentals.source} ({fundamentals.source_tier}); the filing's "
+            "narrative text is not"
+        )
     elif fundamentals.is_regulator_structured:
         # Regulator-backed structured statements ARE present. The remaining,
         # real gap is the filing NARRATIVE (MD&A, segment discussion, notes),
@@ -271,14 +328,30 @@ def run_source_quality_agent(
     )
 
     # ── Aggregator-only claims ────────────────────────────────────────────
+    # Phase 32D2 — a claim is "aggregator-only" when the field is BOTH sourced
+    # AND its strongest source is an aggregator. The previous rule tested only
+    # ``critical_field not in missing_fields``, and ``missing_fields`` is the
+    # snapshot's IDENTITY/PROFILE gap list, which never contains a
+    # ``financials.*`` path. So every financial field was flagged: Pandora's
+    # ``financials.revenue`` was reported as "sourced only from T6" (it is T1,
+    # from the issuer's annual report) and ``financials.ebitda`` was reported as
+    # aggregator-sourced when it is not sourced at all.
+    financially_backed = set(fin_ev.resolved_field_paths) if fin_ev else set()
+    primary_backed_fields = financially_backed if financial_is_primary else set()
     aggregator_only_claims: list[str] = []
     if effective_tier in _WEAK_TIERS:
-        for critical_field in _DECISION_CRITICAL_FIELDS:
-            # Only flag fields that are in the snapshot (not just missing)
-            if critical_field not in missing_fields:
-                aggregator_only_claims.append(
-                    f"{critical_field}: sourced only from {effective_tier} ({provider_name})"
-                )
+        for critical_field in sorted(_DECISION_CRITICAL_FIELDS):
+            if critical_field in primary_backed_fields:
+                continue  # backed by a T1/T2 filing fact — not aggregator-only
+            if critical_field.startswith("financials."):
+                # Only a field we actually hold can be "sourced only from" a tier.
+                if critical_field not in financially_backed:
+                    continue
+            elif critical_field in missing_fields:
+                continue
+            aggregator_only_claims.append(
+                f"{critical_field}: sourced only from {effective_tier} ({provider_name})"
+            )
 
     # ── Recommended upgrades ──────────────────────────────────────────────
     recommended_upgrades: list[str] = []
@@ -288,10 +361,17 @@ def run_source_quality_agent(
             "use Stooq (T5) for prices, GLEIF (T2) for LEI, "
             "SEC EDGAR (T2) for US filings"
         )
-    if effective_tier in _WEAK_TIERS:
+    if effective_tier in _WEAK_TIERS and not financial_is_primary:
         recommended_upgrades.append(
             f"Upgrade {provider_name} ({effective_tier}) data with T1 primary filing "
             "(annual report, 10-K, prospectus) for financial fundamentals"
+        )
+    elif effective_tier in _WEAK_TIERS and financial_is_primary:
+        # Identity/price remain aggregator-tier; the FINANCIALS do not.
+        recommended_upgrades.append(
+            f"Upgrade {provider_name} ({effective_tier}) IDENTITY and PRICE data "
+            f"to a primary/regulator source. Financial statement facts are "
+            f"already {financial_tier} and do not need re-sourcing."
         )
     # Phase 19.4.1: only recommend obtaining the LEI when it is actually missing.
     # When enrichment has already sourced the LEI (GLEIF, T2) it is present in the
@@ -300,10 +380,23 @@ def run_source_quality_agent(
         recommended_upgrades.append(
             "Obtain LEI from GLEIF API to confirm legal entity identity"
         )
-    recommended_upgrades.extend([
-        "Source latest annual report (T1) for revenue, EBITDA, debt metrics",
-        "Obtain sell-side coverage data from T3/T4 sources for peer comparison",
-    ])
+    # Phase 32D2 — never ask for a document that has already been read. When
+    # the issuer filing is ingested, the honest task is EXTRACTION COMPLETENESS
+    # against that same document, named line by line.
+    if financial_is_primary and fin_ev is not None:
+        if fin_ev.open_statement_categories:
+            recommended_upgrades.append(
+                "Extract the remaining statement lines from the "
+                f"already-ingested issuer filing ({financial_tier}): "
+                f"{category_labels(fin_ev.open_statement_categories)}"
+            )
+    else:
+        recommended_upgrades.append(
+            "Source latest annual report (T1) for revenue, EBITDA, debt metrics"
+        )
+    recommended_upgrades.append(
+        "Obtain sell-side coverage data from T3/T4 sources for peer comparison"
+    )
     # Phase 19.4.1: market cap / EV / P/E may be present only as DERIVED ESTIMATES
     # (T6, from free price + SEC data). Recommend upgrading them to a primary
     # source before publication — but never claim they are absent when present.
@@ -330,10 +423,19 @@ def run_source_quality_agent(
             "Mock provider active: all data is synthetic. "
             "No real financial claims can be supported."
         )
-    if effective_tier in _WEAK_TIERS:
+    if effective_tier in _WEAK_TIERS and not financial_is_primary:
         warnings.append(
             f"All current data from {effective_tier} ({provider_name}) only. "
             "Decision-critical fields lack primary source confirmation."
+        )
+    elif effective_tier in _WEAK_TIERS and financial_is_primary and fin_ev is not None:
+        # SCOPED, not blanket. "All current data is T6" was printed on a report
+        # holding a validated T1 revenue figure.
+        warnings.append(
+            f"Identity and price data are {effective_tier} ({provider_name}) "
+            f"only and lack primary source confirmation. Financial statement "
+            f"facts ({category_labels(fin_ev.resolved_categories)}) ARE "
+            f"primary-source backed at {financial_tier}."
         )
     if aggregator_only_claims:
         warnings.append(

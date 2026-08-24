@@ -18,7 +18,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from app.integrations.financial_data_provider import normalize_source_tier
 from app.schemas.evidence_state import FinancialDataSummary
+from app.services.final_research_state import (
+    FinancialEvidenceState,
+    category_labels,
+)
 
 # Valuation inputs required for each method
 _DCF_REQUIRED = [
@@ -84,12 +89,23 @@ def run_valuation_guard_agent(
     company_snapshot: dict,
     financial_data_summary: dict,
     source_quality_summary: dict,
+    financial_evidence: "FinancialEvidenceState | None" = None,
 ) -> ValuationGuardOutput:
     """
     Guard against premature valuation conclusions.
 
     Checks available financial data against minimum requirements for
     each valuation method and blocks valuation outputs unless conditions met.
+
+    ``financial_evidence`` (Phase 32D2) is the FINAL reconciled financial
+    evidence state. Without it this agent judged "is this a primary source?"
+    from ``provider_metadata.source_tier`` — the IDENTITY/PRICE provider — so a
+    company whose revenue came from its own T1 annual report but whose identity
+    came from a T6 fallback was scored ``not_ready`` with "financials.revenue"
+    listed as a MISSING valuation input, and was told to "Source T1 primary
+    filings (annual report / 10-K) for revenue" it already had. Passing None
+    preserves the pre-32D2 behaviour exactly (workflow-time invocation, before
+    any document has been ingested).
 
     Returns:
         ValuationGuardOutput — always returns, never raises.
@@ -114,9 +130,15 @@ def run_valuation_guard_agent(
     derived_market_cap = fundamentals_summary.get("market_cap_usd_m") is not None
     derived_ev = fundamentals_summary.get("enterprise_value_usd_m") is not None
 
-    source_tier = provider_meta.get("source_tier", "T6_model_estimate")
+    source_tier = (
+        normalize_source_tier(provider_meta.get("source_tier")) or "T6_model_estimate"
+    )
     provider_name = provider_meta.get("provider_name", "unknown")
     overall_sq = source_quality_summary.get("overall_source_quality", "insufficient")
+
+    fin_ev = financial_evidence
+    financial_tier = fin_ev.best_tier if fin_ev and fin_ev.available else None
+    financial_is_primary = bool(fin_ev and fin_ev.is_primary_backed)
 
     # Available data from snapshot
     # Phase B: typed ingress (see FinancialDataSummary). Attribute reads below.
@@ -178,15 +200,24 @@ def run_valuation_guard_agent(
 
     # ── Source tier check ─────────────────────────────────────────────────
     if source_tier in ("T6_model_estimate", "T5_api_aggregator"):
-        valuation_blockers.append(
-            f"Source tier is {source_tier} — valuation multiples from {provider_name} "
-            "must not be used as primary valuation inputs. "
-            "T1/T2 primary sources required for any valuation conclusion."
-        )
-        warnings.append(
-            f"Source tier {source_tier}: all current data is aggregator/estimate quality. "
-            "Valuation work requires primary filing data (T1/T2)."
-        )
+        if financial_is_primary and fin_ev is not None:
+            valuation_blockers.append(
+                f"Identity and price data are {source_tier} ({provider_name}) and "
+                "must not be used as primary valuation inputs. Financial "
+                f"statement facts ({category_labels(fin_ev.resolved_categories)}) "
+                f"ARE {financial_tier} primary-source backed."
+            )
+        else:
+            valuation_blockers.append(
+                f"Source tier is {source_tier} — valuation multiples from "
+                f"{provider_name} must not be used as primary valuation inputs. "
+                "T1/T2 primary sources required for any valuation conclusion."
+            )
+            warnings.append(
+                f"Source tier {source_tier}: all current data is "
+                "aggregator/estimate quality. Valuation work requires primary "
+                "filing data (T1/T2)."
+            )
 
     if overall_sq in ("weak", "insufficient"):
         valuation_blockers.append(
@@ -211,7 +242,12 @@ def run_valuation_guard_agent(
     # move from not_ready to partial — even though market-based inputs
     # (market cap, shares, EV) and EBITDA remain missing, which keeps every
     # actual valuation conclusion blocked.
-    primary_source = source_tier in ("T1_primary_filing", "T2_regulator_or_gov")
+    # Phase 32D2 — "is a primary source behind the FINANCIALS?" is the question
+    # this gate needs; the identity provider's tier does not answer it.
+    primary_source = financial_is_primary or source_tier in (
+        "T1_primary_filing",
+        "T2_regulator_or_gov",
+    )
     core_statement_inputs = [
         "financials.revenue",
         "financials.net_income",
@@ -262,8 +298,25 @@ def run_valuation_guard_agent(
 
     # ── Allowed next steps ────────────────────────────────────────────────
     if valuation_readiness == "not_ready":
+        if financial_is_primary and fin_ev is not None:
+            if fin_ev.open_statement_categories:
+                allowed_next_steps.append(
+                    "Extract the remaining STATEMENT lines from the "
+                    f"ALREADY-INGESTED issuer filing ({financial_tier}): "
+                    f"{category_labels(fin_ev.open_statement_categories)}."
+                )
+            if fin_ev.open_market_categories:
+                allowed_next_steps.append(
+                    "Source the market/derived valuation metrics separately "
+                    "(a filing does not state them): "
+                    f"{category_labels(fin_ev.open_market_categories)}."
+                )
+        else:
+            allowed_next_steps.append(
+                "Source T1 primary filings (annual report / 10-K) for revenue, "
+                "EBITDA, FCF."
+            )
         allowed_next_steps.extend([
-            "Source T1 primary filings (annual report / 10-K) for revenue, EBITDA, FCF.",
             "Verify legal entity via GLEIF (LEI lookup) and confirm ISIN.",
             "Source price history from exchange data or a T2/T3 provider.",
             "Complete Research Team outputs — resolve all blocking gaps first.",

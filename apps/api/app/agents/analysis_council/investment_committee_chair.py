@@ -27,7 +27,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from app.integrations.financial_data_provider import normalize_source_tier
 from app.services import safety_terms
+from app.services.final_research_state import FinancialEvidenceState
 
 # Allowed internal statuses
 ALLOWED_INTERNAL_STATUSES = {
@@ -84,6 +86,7 @@ def run_investment_committee_chair(
     source_quality_summary: dict,
     upgraded_citation_validation: dict | None = None,
     schema_valid: bool | None = None,
+    financial_evidence: "FinancialEvidenceState | None" = None,
 ) -> CommitteeChairOutput:
     """
     Synthesise Analysis Council outputs into an admin-only committee draft.
@@ -104,7 +107,16 @@ def run_investment_committee_chair(
 
     ticker = identity.get("ticker", "N/A")
     legal_name = identity.get("legal_name", "Unknown")
-    source_tier = provider_meta.get("source_tier", "T6_model_estimate")
+    source_tier = (
+        normalize_source_tier(provider_meta.get("source_tier")) or "T6_model_estimate"
+    )
+    # Phase 32D2 — ``needs_primary_sources`` must mean "we have no primary
+    # source", not "the identity provider is an aggregator". Pandora's live
+    # report carried that label while rendering a validated T1 revenue figure
+    # from the issuer's own annual report.
+    financial_is_primary = bool(
+        financial_evidence is not None and financial_evidence.is_primary_backed
+    )
 
     # ── Assess bull/bear balance ──────────────────────────────────────────
     bull_confidence = bull_case_summary.get("confidence_level", "low")
@@ -145,8 +157,10 @@ def run_investment_committee_chair(
             "Mock provider active — provisional status forced to 'research_incomplete'. "
             "Status is not meaningful with synthetic data."
         )
-    elif overall_sq in ("weak", "insufficient") and source_tier in (
-        "T6_model_estimate", "T5_api_aggregator"
+    elif (
+        overall_sq in ("weak", "insufficient")
+        and source_tier in ("T6_model_estimate", "T5_api_aggregator")
+        and not financial_is_primary
     ):
         provisional_internal_status = "needs_primary_sources"
     elif not quality_gate_status["citation_status_ok"] and citation_status == "failed":

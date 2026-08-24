@@ -81,6 +81,10 @@ from app.services.extracted_document_service import (
     load_reusable_documents,
     persist_primary_document_artifacts,
 )
+from app.services.final_research_state import (
+    FinancialEvidenceState,
+    build_final_research_state,
+)
 from app.services.llm.council import maybe_run_council
 from app.services.llm.schemas import (
     AGENT_RED_TEAM,
@@ -128,6 +132,52 @@ ALLOWED_INTERNAL_STATUSES = {
     "high_priority_for_human_review",
     "reject_due_to_data_quality",
 }
+
+
+# The Phase-9 committee chair has its OWN internal-status vocabulary, which is
+# NOT this module's. Two of its labels have no identical spelling here, so the
+# unmapped fallback silently rewrote them to ``not_enough_data`` — while the
+# committee's own prose, rendered in the same section, kept saying "Provisional
+# status: 'research_incomplete'". One section, two statuses. Mapping them
+# explicitly (and rewriting the prose to match) keeps ONE label per report.
+_CHAIR_STATUS_TO_REPORT_STATUS = {
+    "research_incomplete": "not_enough_data",
+    "watchlist_candidate_for_review": "high_priority_for_human_review",
+}
+
+
+def _map_chair_status(value: str | None) -> str | None:
+    """Translate a committee-chair status into this module's vocabulary."""
+    if value is None:
+        return None
+    if value in ALLOWED_INTERNAL_STATUSES:
+        return value
+    return _CHAIR_STATUS_TO_REPORT_STATUS.get(value)
+
+
+def _committee_summary_text(
+    committee_chair_summary: dict[str, Any] | None,
+    mapped_status: str,
+) -> str:
+    """The chair's summary prose, restated in the REPORT's status vocabulary.
+
+    The chair composes its narrative around its own labels, so a report that
+    maps them (see :func:`_map_chair_status`) must restate the prose too — or
+    the same section renders two different statuses, and the executive summary
+    (which reprints this text verbatim) renders a third.
+    """
+    text = (committee_chair_summary or {}).get("committee_summary", "")
+    if not isinstance(text, str):
+        return ""
+    agent_status = _coerce_status_value(
+        (committee_chair_summary or {}).get("provisional_internal_status")
+    )
+    if agent_status and agent_status != mapped_status:
+        text = text.replace(
+            f"Provisional status: '{agent_status}'",
+            f"Provisional status: '{mapped_status}'",
+        )
+    return text
 
 
 def _coerce_status_value(value: Any) -> str | None:
@@ -469,6 +519,7 @@ def _recompute_fresh_source_quality_summary(
     council_result: Any,
     base_summary: dict[str, Any] | None,
     primary_facts: list[dict[str, Any]] | None = None,
+    financial_evidence: FinancialEvidenceState | None = None,
 ) -> dict[str, Any]:
     """Problem D fix — recompute source-quality from FRESH evidence.
 
@@ -490,6 +541,7 @@ def _recompute_fresh_source_quality_summary(
         company_snapshot=company_snapshot or {},
         citation_source_tiers=fresh_tiers,
         primary_facts=primary_facts,
+        financial_evidence=financial_evidence,
     )
     return {
         **(base_summary or {}),
@@ -506,6 +558,11 @@ def _recompute_fresh_source_quality_summary(
         # report. They are recomputed here from the same fresh, fact-aware run.
         "missing_primary_sources": fresh.missing_primary_sources,
         "recommended_source_upgrades": fresh.recommended_source_upgrades,
+        # Phase 32D2 — the SCOPED claim list. The blanket
+        # ``aggregator_only_claims`` used to include every decision-critical
+        # financial field regardless of whether it was sourced at all, or
+        # sourced from a T1 filing.
+        "aggregator_only_claims": fresh.aggregator_only_claims,
     }
 
 
@@ -973,9 +1030,10 @@ def _build_executive_summary(
     # ALREADY-FINAL report may pass the rendered datapoint-shaped
     # ``provisional_internal_status`` (see ``_coerce_status_value``) rather
     # than a plain string — coerce defensively before the set-membership check.
-    status = _coerce_status_value(provisional_internal_status) or "not_enough_data"
-    if status not in ALLOWED_INTERNAL_STATUSES:
-        status = "not_enough_data"
+    status = (
+        _map_chair_status(_coerce_status_value(provisional_internal_status))
+        or "not_enough_data"
+    )
 
     overall_score = None
     score_note = "Scorecard not available."
@@ -989,8 +1047,9 @@ def _build_executive_summary(
 
     committee_note = "Analysis council summary not available."
     if committee_chair_summary:
-        committee_note = committee_chair_summary.get(
-            "committee_summary", "Analysis council summary not available."
+        committee_note = (
+            _committee_summary_text(committee_chair_summary, status)
+            or "Analysis council summary not available."
         )
 
     return {
@@ -1401,6 +1460,7 @@ def _build_data_availability_summary(
     *,
     data_provenance: str = "unknown",
     fundamentals: FundamentalsEvidence | None = None,
+    financial_evidence: FinancialEvidenceState | None = None,
 ) -> dict[str, Any]:
     """Data-availability surface, derived from the CANONICAL evidence inventory.
 
@@ -1468,6 +1528,26 @@ def _build_data_availability_summary(
             "fundamentals_channels": list(fundamentals.channels),
             "fundamentals_note": fundamentals.note(),
         }
+    # Phase 32D2 — state, in the SAME block, which financial categories are
+    # sourced and which are not. "fundamentals_available: true" beside a
+    # missing_fields list containing ``financials.revenue`` was the single most
+    # confusing line in the live Pandora report.
+    if financial_evidence is not None:
+        fundamentals_block["sourced_financial_categories"] = {
+            "value": list(financial_evidence.resolved_categories),
+            "source_tier": financial_evidence.best_tier,
+            "source": financial_evidence.best_source,
+            "provenance": "sourced_fact",
+        }
+        fundamentals_block["open_financial_categories"] = {
+            "value": list(financial_evidence.open_categories),
+            "provenance": "missing_data",
+        }
+        fundamentals_block["financial_evidence_note"] = (
+            financial_evidence.describe_sourced()
+            + " "
+            + financial_evidence.describe_open()
+        )
 
     if financial_data_summary:
         return {
@@ -2114,6 +2194,7 @@ def _build_source_quality_review(
     source_quality_summary: dict[str, Any] | None,
     sources: list[Source],
     primary_facts: list[dict[str, Any]] | None = None,
+    financial_evidence: FinancialEvidenceState | None = None,
 ) -> dict[str, Any]:
     section: dict[str, Any] = {
         "type": "source_quality_review",
@@ -2138,6 +2219,27 @@ def _build_source_quality_review(
             "provenance": "sourced_fact",
         }
         section["warnings"] = source_quality_summary.get("warnings", [])
+        # Phase 32D2 — the overall label above is an aggregate across identity,
+        # price, citations AND financial facts. Stating it alone let a reviewer
+        # read "Source quality: weak" beside "Financial Evidence Quality:
+        # strong" and conclude the report disagreed with itself. It did not —
+        # they answer different questions. Both scopes are now named.
+        if financial_evidence is not None and financial_evidence.available:
+            section["financial_evidence_source"] = {
+                "value": financial_evidence.best_source,
+                "source_tier": financial_evidence.best_tier,
+                "sourced_categories": list(financial_evidence.resolved_categories),
+                "open_categories": list(financial_evidence.open_categories),
+                "provenance": "sourced_fact",
+            }
+            section["scope_note"] = (
+                "``overall_source_quality`` aggregates identity, price, citation "
+                "and financial-fact sources. It is NOT the financial-evidence "
+                "quality on its own: financial statement facts here are "
+                f"{financial_evidence.best_tier} from "
+                f"{financial_evidence.best_source}. See 'evidence_quality' for "
+                "the per-dimension canonical assessment."
+            )
     else:
         section["note"] = {
             "value": "Source quality agent summary not available. Run company analysis workflow.",
@@ -2362,20 +2464,31 @@ def _build_committee_chair_summary(
     # Bug fix (Phase 32A Slice 6C): see ``_coerce_status_value`` — a caller
     # regenerating from an ALREADY-FINAL report re-parses the rendered,
     # datapoint-shaped ``provisional_internal_status`` here, not a plain string.
-    status = (
-        _coerce_status_value(committee_chair_summary.get("provisional_internal_status"))
-        or "not_enough_data"
+    agent_status = _coerce_status_value(
+        committee_chair_summary.get("provisional_internal_status")
     )
-    if status not in ALLOWED_INTERNAL_STATUSES:
-        status = "not_enough_data"
+    status = _map_chair_status(agent_status) or "not_enough_data"
+
+    # Keep the rendered prose on the SAME label as the structured field.
+    summary_text = _committee_summary_text(committee_chair_summary, status)
 
     return {
         "type": "committee_chair_summary",
         "available": True,
         "committee_summary": {
-            "value": committee_chair_summary.get("committee_summary", ""),
+            "value": summary_text,
             "provenance": "model_interpretation",
             "source": "investment_committee_chair_phase9",
+        },
+        # The agent's own label is retained for audit, never as a second answer.
+        "agent_internal_status": {
+            "value": agent_status,
+            "provenance": "model_interpretation",
+            "note": (
+                "The Phase-9 committee chair's own vocabulary. Mapped to the "
+                "report's internal-status vocabulary above; both are shown so "
+                "the translation is auditable, not hidden."
+            ),
         },
         "bull_bear_balance": {
             "value": committee_chair_summary.get("bull_bear_balance", "insufficient_data"),
@@ -2638,6 +2751,13 @@ def _rebuild_deterministic_sections(
     research_completeness_summary: dict[str, Any],
     scorecard: Scorecard | None,
     rebuild: frozenset[str],
+    financial_evidence: Any = None,
+    primary_facts: list[dict[str, Any]] | None = None,
+    upgraded_citation_validation: dict[str, Any] | None = None,
+    schema_valid: bool | None = None,
+    company_name: str | None = None,
+    ticker: str | None = None,
+    prior_committee_summary: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Re-run the deterministic council agents against the RECONCILED state.
 
@@ -2652,6 +2772,14 @@ def _rebuild_deterministic_sections(
     canonical (key-normalised, post-reconciliation) inputs — gives the reader
     ONE coherent current narrative. Returns only the section keys it rebuilt so
     the caller can ``update()`` the report content.
+
+    Phase 32D2 extends the rebuild to the COMMITTEE CHAIR and the EXECUTIVE
+    SUMMARY. The chair consumes bull/bear/risk/valuation/source-quality and
+    then stamps a headline ("Source quality: weak. Valuation readiness:
+    not_ready. Provisional status: needs_primary_sources"), and the executive
+    summary reprints that headline verbatim. Rebuilding the four inputs while
+    leaving the chair at its workflow-time value put a stale headline on top of
+    a corrected body — the same contradiction, one level up.
     """
     from app.agents.analysis_council.bear_case_agent import (
         bear_case_output_to_dict,
@@ -2660,6 +2788,10 @@ def _rebuild_deterministic_sections(
     from app.agents.analysis_council.bull_case_agent import (
         bull_case_output_to_dict,
         run_bull_case_agent,
+    )
+    from app.agents.analysis_council.investment_committee_chair import (
+        committee_chair_output_to_dict,
+        run_investment_committee_chair,
     )
     from app.agents.analysis_council.risk_agent import (
         risk_agent_output_to_dict,
@@ -2673,14 +2805,17 @@ def _rebuild_deterministic_sections(
     if not rebuild:
         return {}
 
-    # The bear case consumes the bull case, so both are computed whenever
-    # either is being refreshed — only the requested keys are returned.
+    # The bear case consumes the bull case, and the committee chair consumes
+    # all four, so every one is recomputed whenever any is refreshed — only the
+    # requested keys are returned.
     bull_dict = bull_case_output_to_dict(
         run_bull_case_agent(
             company_snapshot,
             financial_data_summary,
             source_quality_summary,
             research_completeness_summary,
+            primary_facts=primary_facts,
+            financial_evidence=financial_evidence,
         )
     )
     bear_dict = bear_case_output_to_dict(
@@ -2690,6 +2825,25 @@ def _rebuild_deterministic_sections(
             source_quality_summary,
             research_completeness_summary,
             bull_case_summary=bull_dict,
+            financial_evidence=financial_evidence,
+        )
+    )
+    risk_dict = risk_agent_output_to_dict(
+        run_risk_agent(
+            company_snapshot,
+            financial_data_summary,
+            source_quality_summary,
+            research_completeness_summary,
+            upgraded_citation_validation=upgraded_citation_validation,
+            financial_evidence=financial_evidence,
+        )
+    )
+    valuation_dict = valuation_guard_output_to_dict(
+        run_valuation_guard_agent(
+            company_snapshot,
+            financial_data_summary,
+            source_quality_summary,
+            financial_evidence=financial_evidence,
         )
     )
 
@@ -2699,26 +2853,42 @@ def _rebuild_deterministic_sections(
     if "bear_case" in rebuild:
         out["bear_case"] = _build_bear_case(bear_dict)
     if "risk_analysis" in rebuild:
-        out["risk_analysis"] = _build_risk_analysis(
-            risk_agent_output_to_dict(
-                run_risk_agent(
-                    company_snapshot,
-                    financial_data_summary,
-                    source_quality_summary,
-                    research_completeness_summary,
-                )
-            )
-        )
+        out["risk_analysis"] = _build_risk_analysis(risk_dict)
     if "valuation_readiness" in rebuild:
         out["valuation_readiness"] = _build_valuation_readiness(
-            valuation_guard_output_to_dict(
-                run_valuation_guard_agent(
-                    company_snapshot,
-                    financial_data_summary,
-                    source_quality_summary,
-                )
-            ),
+            valuation_dict, scorecard
+        )
+    if "committee_chair_summary" in rebuild:
+        chair_dict = committee_chair_output_to_dict(
+            run_investment_committee_chair(
+                company_snapshot,
+                bull_dict,
+                bear_dict,
+                risk_dict,
+                valuation_dict,
+                research_completeness_summary,
+                source_quality_summary,
+                upgraded_citation_validation=upgraded_citation_validation,
+                schema_valid=schema_valid,
+                financial_evidence=financial_evidence,
+            )
+        )
+        # Preserve any gate key the recomputation does not itself produce, so
+        # a rebuild never silently DROPS a field the stored draft carried. The
+        # recomputed gates always win where both exist.
+        prior_gates = (prior_committee_summary or {}).get("quality_gate_status")
+        if isinstance(prior_gates, dict):
+            chair_dict["quality_gate_status"] = {
+                **{k: v for k, v in prior_gates.items() if not isinstance(v, dict)},
+                **chair_dict["quality_gate_status"],
+            }
+        out["committee_chair_summary"] = _build_committee_chair_summary(chair_dict)
+        out["executive_summary"] = _build_executive_summary(
+            company_name,
+            ticker,
             scorecard,
+            chair_dict,
+            _coerce_status_value(chair_dict.get("provisional_internal_status")),
         )
     return out
 
@@ -5434,6 +5604,28 @@ class FinalReportGeneratorService:
 
         primary_facts = council_result.primary_facts
 
+        # ------------------------------------------------------------------
+        # Phase 32D2 — THE ONE FINAL RECONCILED RESEARCH STATE
+        # ------------------------------------------------------------------
+        # Everything below this line reads ``final_state``. Nothing below this
+        # line re-derives "what evidence do we have" from a pre-ingestion
+        # input. That rule is the whole fix: the Pandora report contradicted
+        # itself because eight surfaces each answered that question from
+        # whatever they happened to hold, and only three of them had been
+        # taught about post-ingestion evidence.
+        final_state = build_final_research_state(
+            company_snapshot=company_snapshot,
+            fundamentals_data=fundamentals_data,
+            primary_facts=primary_facts,
+            financial_data_summary=financial_data_summary,
+            research_completeness_summary=research_completeness_summary,
+            source_quality_summary=source_quality_summary,
+        )
+        financial_evidence = final_state.financial_evidence
+        # Reconciled values REPLACE the stale ones for every consumer below.
+        financial_data_summary = final_state.financial_data_summary
+        research_completeness_summary = final_state.research_completeness_summary
+
         # Problem D — stale source-quality reconciliation. ``source_quality_summary``
         # was computed at workflow node 6, BEFORE citations existed, BEFORE document
         # ingestion, and BEFORE the council ran (see that node's docstring). Now that
@@ -5452,15 +5644,19 @@ class FinalReportGeneratorService:
             council_result,
             source_quality_summary,
             primary_facts=primary_facts,
+            financial_evidence=financial_evidence,
         )
         report_content["source_quality_review"] = _build_source_quality_review(
-            source_quality_summary, sources, primary_facts=primary_facts
+            source_quality_summary,
+            sources,
+            primary_facts=primary_facts,
+            financial_evidence=financial_evidence,
         )
         # Phase C2: recompute the canonical quality + thin state AFTER the
         # council, from the same post-ingestion inventory every other surface
         # now uses. Pre-council values would otherwise describe evidence the
         # report no longer has (the #123 class of contradiction).
-        _post_fundamentals = resolve_fundamentals(company_snapshot, fundamentals_data)
+        _post_fundamentals = final_state.fundamentals
         report_content["evidence_quality"] = _build_evidence_quality(
             company_snapshot=company_snapshot,
             financial_data_summary=financial_data_summary,
@@ -5505,28 +5701,34 @@ class FinalReportGeneratorService:
             report_content["company_identity"] = _build_company_identity(
                 company_snapshot, company_record, primary_facts=primary_facts
             )
-            # STAGING REGRESSION (CFR/MC, 2026-08-22). The availability summary
-            # is assembled BEFORE the council, so its canonical inventory has no
-            # issuer-document facts yet. For a non-US issuer with no SEC XBRL
-            # that produced a NEW self-contradiction — "fundamentals_available:
-            # false" beside a financial snapshot whose own note said
-            # "Fundamentals sourced from issuer_primary_document
-            # (T1_primary_filing)". Recompute it from the SAME post-council
-            # inventory the snapshot used.
-            report_content["data_availability_summary"] = (
-                _build_data_availability_summary(
-                    financial_data_summary,
-                    fundamentals_available,
-                    source_tier,
-                    data_provenance=report_provenance,
-                    fundamentals=resolve_fundamentals(
-                        company_snapshot,
-                        fundamentals_data,
-                        primary_facts,
-                        financial_fields=_PRIMARY_FINANCIAL_FACT_FIELDS,
-                    ),
-                )
+
+        # Phase 32D2 — the availability + gap surfaces are rebuilt from the ONE
+        # reconciled state UNCONDITIONALLY. Gating them on ``primary_facts`` was
+        # the previous corrective's remaining hole: it repaired the availability
+        # summary's ``fundamentals_available`` flag while leaving
+        # ``missing_fields`` (which still listed ``financials.revenue``) and the
+        # whole-report ``missing_information`` union untouched, so ONE section
+        # said "fundamentals: issuer_primary_document / T1" and the list two
+        # lines below it said revenue was missing.
+        report_content["data_availability_summary"] = (
+            _build_data_availability_summary(
+                financial_data_summary,
+                fundamentals_available,
+                source_tier,
+                data_provenance=report_provenance,
+                fundamentals=final_state.fundamentals,
+                financial_evidence=financial_evidence,
             )
+        )
+        report_content["missing_information"] = _build_missing_information(
+            financial_data_summary,
+            research_completeness_summary,
+            company_snapshot,
+            candidate,
+        )
+        report_content["research_completeness_review"] = (
+            _build_research_completeness_review(research_completeness_summary)
+        )
 
         # ------------------------------------------------------------------
         # Canonical evidence-state reconciliation (product readiness)
@@ -5559,6 +5761,13 @@ class FinalReportGeneratorService:
                             research_completeness_summary or {}
                         ),
                         scorecard=scorecard,
+                        financial_evidence=financial_evidence,
+                        primary_facts=primary_facts,
+                        upgraded_citation_validation=upgraded_citation_validation,
+                        schema_valid=schema_valid,
+                        company_name=company_name,
+                        ticker=ticker,
+                        prior_committee_summary=committee_chair_summary,
                         # Only REFRESH sections the workflow actually produced.
                         # Rebuilding a section the workflow never ran would
                         # invent content and turn an honest "available: false"
@@ -5570,6 +5779,20 @@ class FinalReportGeneratorService:
                         # state past the final safety gate and hide from the
                         # admin that the state was compromised. The original is
                         # kept so the gate flags it.
+                        #
+                        # Phase 32D2 BUG FIX: the scan must use the SAME
+                        # ``_EXEMPT_FIELD_NAMES`` the real safety gate uses.
+                        # Without it, ``valuation_guard_summary`` NEVER
+                        # qualified for rebuild — its ``disallowed_outputs``
+                        # field exists precisely to enumerate forbidden
+                        # phrases ("Fair value estimate", "Price target",
+                        # "BUY, SELL, HOLD"), so the unexempted scan always hit
+                        # and the section was silently skipped. That is why the
+                        # live Pandora report still listed ``financials.revenue``
+                        # as a missing valuation input and told the reviewer to
+                        # "Source T1 primary filings (annual report / 10-K) for
+                        # revenue" it already had: the reconciliation ran, the
+                        # rebuild was dropped on the floor, and nothing said so.
                         rebuild=frozenset(
                             name
                             for name, summary in (
@@ -5577,8 +5800,15 @@ class FinalReportGeneratorService:
                                 ("bear_case", bear_case_summary),
                                 ("risk_analysis", risk_summary),
                                 ("valuation_readiness", valuation_guard_summary),
+                                (
+                                    "committee_chair_summary",
+                                    committee_chair_summary,
+                                ),
                             )
-                            if summary and not safety_terms.scan_value(summary)
+                            if summary
+                            and not safety_terms.scan_value(
+                                summary, exempt_keys=_EXEMPT_FIELD_NAMES
+                            )
                         ),
                     )
                 )
@@ -5594,12 +5824,7 @@ class FinalReportGeneratorService:
         # report used to conflate them and claim "primary filings required" for
         # a company whose SEC XBRL statements were fully sourced.
         report_content["evidence_channels"] = build_evidence_channels(
-            fundamentals=resolve_fundamentals(
-                company_snapshot,
-                fundamentals_data,
-                primary_facts,
-                financial_fields=_PRIMARY_FINANCIAL_FACT_FIELDS,
-            ),
+            fundamentals=final_state.fundamentals,
             primary_document_counts=_primary_document_state_counts(council_result),
             catalyst_summary=(catalyst_discovery or {}).get("summary"),
             citation_count=len(citations),
@@ -5857,6 +6082,11 @@ class FinalReportGeneratorService:
             # mixed / unknown). Stored in this flexible metadata dict, so no
             # schema/migration change is needed.
             "data_provenance": report_provenance,
+            # Phase 32D2 — the ONE reconciled state every human-facing surface
+            # was built from, recorded so a reviewer can audit WHY a section
+            # says what it says without re-deriving it. Bounded counts/labels
+            # only; no figures, no prose.
+            "final_research_state": final_state.to_payload(),
             # Phase 32A Slice 6B (C2) — real DiscoveryCandidate/DiscoveryRun
             # lineage (never a ScreeningCandidate). None when not available
             # (e.g. no discovery-run candidate is genuinely in play).
@@ -5909,9 +6139,19 @@ class FinalReportGeneratorService:
         # (a set-membership check) as a dict and raised
         # ``TypeError: unhashable type: 'dict'``.
         provisional_status = None
-        if committee_chair_summary:
+        # The report body's committee section is the authoritative label (it is
+        # rebuilt post-reconciliation); the response header must not disagree
+        # with it.
+        _rendered_committee = report_content.get("committee_chair_summary")
+        if isinstance(_rendered_committee, dict):
             provisional_status = _coerce_status_value(
-                committee_chair_summary.get("provisional_internal_status")
+                _rendered_committee.get("provisional_internal_status")
+            )
+        if not provisional_status and committee_chair_summary:
+            provisional_status = _map_chair_status(
+                _coerce_status_value(
+                    committee_chair_summary.get("provisional_internal_status")
+                )
             )
         if not provisional_status and scorecard:
             provisional_status = scorecard.internal_status
