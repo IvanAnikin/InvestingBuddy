@@ -90,10 +90,14 @@ def run_risk_agent(
     provider_meta = company_snapshot.get("provider_metadata", {})
     is_mock = company_snapshot.get("is_mock", True)
 
-    ticker = identity.get("ticker", "N/A")
-    legal_name = identity.get("legal_name", "Unknown")
-    sector = profile.get("sector", "unknown sector")
-    country = profile.get("country_domicile") or identity.get("country_domicile", "unknown")
+    ticker = identity.get("ticker") or "N/A"
+    legal_name = identity.get("legal_name") or "Unknown"
+    sector = profile.get("sector") or "sector not sourced"
+    country = (
+        profile.get("country_domicile")
+        or identity.get("country_domicile")
+        or "country not sourced"
+    )
     source_tier = (
         normalize_source_tier(provider_meta.get("source_tier")) or "T6_model_estimate"
     )
@@ -204,9 +208,13 @@ def run_risk_agent(
             "leverage, liquidity, and profitability assessment possible."
         )
 
+    # Phase 32D2e — ``.get(key, default)`` returns the default only when the key
+    # is ABSENT; a key present with value None returns None, which f-strings
+    # render as the Python literal. Live reports read "reporting currency is
+    # 'None'" beside a T1 revenue figure quoted in DKK.
+    reporting_currency = profile.get("reporting_currency") or "not sourced"
     financial_risks.append(
-        "Currency risk: reporting currency is "
-        f"'{profile.get('reporting_currency', 'unknown')}'. "
+        f"Currency risk: reporting currency is '{reporting_currency}'. "
         "FX exposure to investment base currency is unknown at this phase."
     )
 
@@ -226,7 +234,7 @@ def run_risk_agent(
         )
 
     market_risks.append(
-        f"Market depth risk: Exchange is {identity.get('exchange', 'unknown')}. "
+        f"Market depth risk: Exchange is {identity.get('exchange') or 'unknown'}. "
         "Liquidity and bid-ask spread data not sourced."
     )
 

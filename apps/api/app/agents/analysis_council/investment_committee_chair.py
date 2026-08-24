@@ -105,8 +105,8 @@ def run_investment_committee_chair(
     provider_meta = company_snapshot.get("provider_metadata", {})
     is_mock = company_snapshot.get("is_mock", True)
 
-    ticker = identity.get("ticker", "N/A")
-    legal_name = identity.get("legal_name", "Unknown")
+    ticker = identity.get("ticker") or "N/A"
+    legal_name = identity.get("legal_name") or "Unknown"
     source_tier = (
         normalize_source_tier(provider_meta.get("source_tier")) or "T6_model_estimate"
     )
