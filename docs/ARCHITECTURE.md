@@ -83,6 +83,23 @@ not become a fact.
 A ruled grid the line-based detector already recovered properly (≥ 2 rows AND
 ≥ 2 columns) is **not** rebuilt a second time.
 
+### Reaching the page at all
+
+The capability is worthless if extraction never reaches the page the table is
+on. Measured live on staging (B1) against the real Pandora annual report:
+~1.95s per page, and the previous 20s per-document extraction budget stopped at
+page **eleven** — three short of the five-year summary. Extraction was not
+failing; it was simply never arriving. Parsing a page IS the cost
+(`page.objects`, which `extract_words` / `extract_text` / `extract_tables` all
+need first, accounts for essentially all of it), so there is no cheaper
+relevance pre-scan available and no per-page work that can be skipped. The
+budgets moved instead: per-document extraction `20 → 60`s, per-document total
+`45 → 90`s, aggregate ingestion `60 → 180`s. The aggregate was held small
+because ingestion once ran inline inside a request bound by the ~230s gateway
+timeout; Full Analysis is an async background job now, so that ceiling no
+longer applies. These are ceilings, not targets — a document that finishes
+early spends nothing.
+
 ### Scope
 
 A reconstructed table's scope is resolved ONLY from headings inside or directly

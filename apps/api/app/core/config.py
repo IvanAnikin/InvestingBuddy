@@ -708,15 +708,37 @@ class Settings(BaseSettings):
     # Per-document fetch timeout budget (seconds).
     primary_document_fetch_timeout_seconds: int = 15
     # Per-document text-extraction timeout budget (seconds).
-    primary_document_extraction_timeout_seconds: int = 20
+    #
+    # Phase 32D raised this from 20s. Parsing a page of a glossy annual report
+    # IS the cost of extracting it — measured on the real 169-page Pandora
+    # Annual Report 2025, ``page.objects`` alone (which every one of
+    # ``extract_words`` / ``extract_text`` / ``extract_tables`` needs first)
+    # accounts for essentially all of it, so there is no cheaper relevance
+    # pre-scan to run and no per-page work that can be skipped. On staging's
+    # B1 tier that document extracted ~1.95s/page, and the old 20s budget
+    # stopped at page ELEVEN — while its five-year summary, and every reported
+    # financial figure on it, is on page 14. The extraction was not failing;
+    # it was simply never reaching the page. 60s reaches ~30 pages on B1 and
+    # the full ``primary_document_max_pdf_pages`` window on faster hardware.
+    primary_document_extraction_timeout_seconds: int = 60
     # HARD per-document total timeout (seconds): fetch + extract + parse for ONE
-    # document must complete inside this.
-    primary_document_total_timeout_seconds: int = 45
+    # document must complete inside this. Must stay above
+    # ``primary_document_fetch_timeout_seconds`` +
+    # ``primary_document_extraction_timeout_seconds`` or the inner budget can
+    # never be spent.
+    primary_document_total_timeout_seconds: int = 90
     # AGGREGATE ingestion wall-time budget (seconds) across ALL documents in one
-    # request. MUST stay small: ingestion runs BEFORE the council's ~150s
-    # wall-budget and the whole request must fit the ~230s Azure gateway timeout,
-    # so ingestion + council together must stay comfortably under it.
-    primary_document_ingestion_budget_seconds: int = 60
+    # request.
+    #
+    # This was held at 60s because ingestion ran INLINE, before the council's
+    # ~150s wall-budget, inside a request bound by the ~230s Azure gateway
+    # timeout. Full Analysis is now an ASYNC background job (see
+    # ``run_candidate_analysis`` / ``analysis_job_stale_after_minutes``, which
+    # derives its own staleness threshold from this value), so that ceiling no
+    # longer applies and an issuer's primary documents are no longer read
+    # against a clock set by a browser request. Still a hard ceiling, not a
+    # target: a document that finishes early spends nothing.
+    primary_document_ingestion_budget_seconds: int = 180
     # Hard cap on documents ingested for one issuer in a single request (bounds
     # cost + keeps one issuer from draining the aggregate budget).
     primary_document_max_docs_per_issuer: int = 3
