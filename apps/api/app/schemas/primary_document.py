@@ -28,6 +28,20 @@ class PrimaryDocumentFactRead(BaseModel):
     value_text: str | None
     unit: str | None
     currency: str | None
+    # Phase 32D — ``scale`` was already persisted on ``ExtractedFact`` and is
+    # REQUIRED by money validation, but was never exposed here. That was
+    # survivable while most facts came from prose, whose ``value_text`` states
+    # the magnitude in words ("sales reached EUR 22.4 billion"). A fact read
+    # off a reconstructed table cell carries the bare digits — "32,549" — so
+    # without the scale a reader cannot tell DKK 32,549 from DKK 32,549
+    # MILLION, a factor of a million.
+    #
+    # ``scope`` is deliberately NOT here: ``ExtractedFact`` has no such column.
+    # The validator computes an entity/segment scope and uses it (it is part of
+    # the fact identity that keeps a Group and a segment figure for the same
+    # metric/period apart), but it is only ever held in memory for the duration
+    # of a run. Exposing it would need a migration; see the Phase 32D handoff.
+    scale: str | None
     period: str | None
     page_number: int | None
     table_location: str | None

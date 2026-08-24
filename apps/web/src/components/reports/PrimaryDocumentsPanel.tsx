@@ -152,6 +152,10 @@ function FactRow({ fact }: { fact: PrimaryDocumentFact }) {
       </div>
       <p className="mt-1 text-sm text-slate-300">
         {value}
+        {/* Scale sits immediately after the digits, before the unit/currency:
+            a table-derived fact's value is the bare cell, so "32,549" alone
+            is a factor of a million away from what the document says. */}
+        {fact.scale && <span className="text-slate-500"> {fact.scale}</span>}
         {fact.unit && <span className="text-slate-500"> {fact.unit}</span>}
         {fact.currency && <span className="text-slate-500"> {fact.currency}</span>}
         {fact.period && <span className="text-slate-500"> · {fact.period}</span>}

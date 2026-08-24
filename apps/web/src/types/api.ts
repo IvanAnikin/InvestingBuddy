@@ -129,6 +129,11 @@ export interface PrimaryDocumentFact {
   value_text: string | null;
   unit: string | null;
   currency: string | null;
+  // Scale ("million"/"billion"/"thousand"). Required by backend money
+  // validation; a table-derived fact's own value_text is the bare cell
+  // ("32,549"), so the scale is the only thing separating DKK 32,549 from
+  // DKK 32,549 million.
+  scale: string | null;
   period: string | null;
   page_number: number | null;
   table_location: string | null;

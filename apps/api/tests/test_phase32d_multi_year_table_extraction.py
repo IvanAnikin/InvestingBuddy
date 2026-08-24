@@ -856,3 +856,20 @@ def test_the_extraction_budget_can_reach_a_real_annual_reports_summary_page():
     assert app_settings.primary_document_ingestion_budget_seconds >= (
         app_settings.primary_document_total_timeout_seconds
     )
+
+
+def test_a_table_derived_facts_scale_is_visible_to_a_human_reviewer():
+    """The admin surface must show the SCALE of a table-derived fact.
+
+    A prose fact's own ``value_text`` states the magnitude in words ("sales
+    reached EUR 22.4 billion"), so a reader could always tell what they were
+    looking at. A fact read off a reconstructed table cell carries the bare
+    digits — "32,549" — and DKK 32,549 is a factor of a million away from DKK
+    32,549 MILLION. The scale was already persisted and already REQUIRED by
+    money validation; it simply was not in the read schema.
+    """
+    from app.schemas.primary_document import PrimaryDocumentFactRead
+
+    assert "scale" in PrimaryDocumentFactRead.model_fields
+    # ``scope`` is deliberately absent — ``ExtractedFact`` has no such column.
+    assert "scope" not in PrimaryDocumentFactRead.model_fields
