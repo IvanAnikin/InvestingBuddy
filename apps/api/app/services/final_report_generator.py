@@ -112,6 +112,11 @@ logger = logging.getLogger(__name__)
 # Forbidden-term definitions live in app.services.safety_terms — the single
 # source of truth shared by every safety gate. Do not reintroduce a local list.
 
+# Phase 32D2d — private state key carrying the regeneration provenance notice
+# (see ``generate_from_report``). Underscore-prefixed so it can never collide
+# with a workflow-state field name.
+_REGENERATION_NOTICE_KEY = "_regeneration_notice"
+
 # Fields that enumerate what is NOT allowed — exempt from scanning
 _EXEMPT_FIELD_NAMES = frozenset(
     {
@@ -4644,6 +4649,46 @@ async def _load_report_by_id(
     return result.scalar_one_or_none()
 
 
+async def _load_workflow_draft_for_run(
+    db: AsyncSession, agent_run_id: uuid.UUID
+) -> Report | None:
+    """The lineage's Phase-9 DETERMINISTIC draft (``final_report_version IS NULL``).
+
+    Phase 32D2d. ``generate_from_report`` recovers its workflow state by
+    re-parsing the source report's markdown JSON blocks. That works for a
+    Phase-9 draft, whose blocks ARE the state envelope
+    (``company_snapshot`` / ``financial_data_summary`` / ``bull_case_summary``
+    / …). It silently produces NOTHING for an ALREADY-FINAL report, whose
+    blocks are the RENDERED SECTIONS (``financial_snapshot`` / ``bull_case`` /
+    …) under different key names.
+
+    A final report is exactly what an admin is looking at when they press
+    "Generate Final Report" on the report detail page, so this was easy to hit.
+    The result was a report that said "Bull case summary not available. Run
+    company analysis workflow.", "Company snapshot not available.",
+    "Valuation guard summary not available." and ``available_count: 0`` — beside
+    a company-identity section carrying a validated T1 fiscal year and a
+    financial snapshot carrying a validated T1 revenue figure. Observed live as
+    staging report ``835cc67b-4889-4de5-8c2d-7d8ac80c5fc4``.
+
+    A final report carries its lineage ``created_by_agent_run_id``, so the
+    ORIGINATING deterministic draft is recoverable by explicit signal — never by
+    ticker, name, or "latest by company". Returns None when the lineage
+    genuinely has no draft (e.g. citation persistence was off when it ran), and
+    the caller then degrades HONESTLY rather than silently.
+    """
+    result = await db.execute(
+        select(Report)
+        .where(
+            Report.created_by_agent_run_id == agent_run_id,
+            Report.final_report_version.is_(None),
+        )
+        .order_by(Report.created_at.desc())
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
 async def _load_latest_report_for_run(
     db: AsyncSession, agent_run_id: str
 ) -> Report | None:
@@ -5233,6 +5278,78 @@ class FinalReportGeneratorService:
             raise ValueError(f"Report {report_id} not found.")
 
         state = _extract_workflow_state_from_report(source_report)
+
+        # Phase 32D2d — regenerating FROM an already-final report. Its markdown
+        # carries the RENDERED SECTIONS, not the workflow-state envelope, so the
+        # parse above recovers nothing and every deterministic section renders
+        # "not available. Run company analysis workflow." beside the T1 facts
+        # the same report is showing. Recover the ORIGINATING Phase-9 draft by
+        # explicit lineage (``created_by_agent_run_id``), never by ticker/name.
+        state_recovered_from: uuid.UUID | None = None
+        if (
+            source_report.final_report_version is not None
+            and not state.get("company_snapshot")
+            and source_report.created_by_agent_run_id is not None
+        ):
+            lineage_draft = await _load_workflow_draft_for_run(
+                db, source_report.created_by_agent_run_id
+            )
+            if lineage_draft is not None:
+                recovered = _extract_workflow_state_from_report(lineage_draft)
+                if recovered.get("company_snapshot"):
+                    recovered[_REGENERATION_NOTICE_KEY] = {
+                        "type": "regeneration_notice",
+                        "source_report_is_final": True,
+                        "workflow_state_recovered": True,
+                        "recovered_from_report_id": str(lineage_draft.id),
+                        "note": (
+                            "Regenerated from an already-generated final "
+                            "report. Its analysis workflow state was recovered "
+                            "from the originating analysis-council draft of the "
+                            "same agent run (explicit lineage, never a "
+                            "name/ticker match)."
+                        ),
+                        "human_review_required": True,
+                    }
+                    state = recovered
+                    state_recovered_from = lineage_draft.id
+                    log_event(
+                        logger,
+                        "final_report_state_recovered_from_lineage_draft",
+                        source_report_id=str(source_report.id),
+                        draft_report_id=str(lineage_draft.id),
+                    )
+            if state_recovered_from is None:
+                log_event(
+                    logger,
+                    "final_report_state_unrecoverable_from_final_source",
+                    level=logging.WARNING,
+                    source_report_id=str(source_report.id),
+                )
+                # Degrade HONESTLY. The deterministic sections below will render
+                # "not available. Run company analysis workflow." — which is a
+                # FALSE instruction here: the workflow did run, its draft is
+                # simply not reachable from this source. Say so, prominently,
+                # instead of letting the reader act on it.
+                state[_REGENERATION_NOTICE_KEY] = {
+                    "type": "regeneration_notice",
+                    "source_report_is_final": True,
+                    "workflow_state_recovered": False,
+                    "note": (
+                        "This draft was regenerated FROM an already-generated "
+                        "final report. A final report stores rendered sections, "
+                        "not the analysis workflow's state, and the originating "
+                        "workflow draft could not be reached from it. Sections "
+                        "below that read 'summary not available. Run company "
+                        "analysis workflow.' are reporting an UNREACHABLE "
+                        "source, NOT a workflow that was never run — do not "
+                        "act on that instruction. Regenerate from the "
+                        "analysis-council draft, or re-run the analysis, to get "
+                        "a complete report."
+                    ),
+                    "human_review_required": True,
+                }
+
         scorecard = await _load_scorecard_for_report(db, report_id)
         if not scorecard and source_report.scorecard_id:
             scorecard = await _load_scorecard_by_id(db, source_report.scorecard_id)
@@ -5601,6 +5718,14 @@ class FinalReportGeneratorService:
         )
         if council_result.llm_used:
             report_content["llm_council_analysis"] = council_result.to_report_dict()
+
+        # Phase 32D2d — surface HOW this draft's inputs were obtained whenever
+        # that is not the ordinary path. Additive (not a required section), so
+        # schema validity is unaffected; added before validation so the safety
+        # gate scans it.
+        _regen_notice = state.get(_REGENERATION_NOTICE_KEY)
+        if isinstance(_regen_notice, dict):
+            report_content["regeneration_notice"] = _regen_notice
 
         primary_facts = council_result.primary_facts
 

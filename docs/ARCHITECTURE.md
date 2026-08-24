@@ -435,6 +435,14 @@ inside a COLLAPSED `<details>`; the e2e assertion used `toContainText`, which
 reads collapsed DOM text and passed while a reviewer saw an empty area. Both are
 now rendered inline, and the e2e tests assert VISIBILITY rather than DOM text.
 
+**Regeneration recovers state by explicit lineage.** A final report's markdown
+stores rendered SECTIONS, not the workflow-state envelope, so regenerating from
+one recovered nothing and rendered "Run company analysis workflow" beside the
+report's own T1 facts. `generate_from_report` now falls back to the originating
+Phase-9 draft of the same `created_by_agent_run_id` (never a ticker/name match),
+and declares the degradation in a `regeneration_notice` when that is impossible.
+See ADR-028.
+
 **Evidence channels are seven, not five.** Issuer-primary FACTS (T1) are a
 separate channel from regulator XBRL FACTS (T2) and from aggregator
 fundamentals (T5); previously a Danish issuer's own PDF facts were rendered

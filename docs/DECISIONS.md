@@ -1849,3 +1849,69 @@ with the UI.
   asserted the literal string "warning(s)"; it now asserts the grouped surface,
   because the surface intentionally changed.
 - No backend change. No API change. Presentation only.
+
+---
+
+## ADR-028: Regenerating From a Final Report Must Not Silently Lose Its State (Phase 32D2d)
+
+**Status:** Accepted — 2026-08-24
+
+### Problem
+
+`generate_from_report` recovers workflow state by re-parsing the source report's
+markdown JSON blocks. For a Phase-9 analysis-council draft those blocks ARE the
+state envelope (`company_snapshot` / `financial_data_summary` /
+`bull_case_summary` / …). For an ALREADY-FINAL report they are the RENDERED
+SECTIONS (`financial_snapshot` / `bull_case` / `company_identity` / …) — different
+key names — so the parse recovers nothing and every state key comes back `None`.
+
+A final report is exactly what an admin is looking at when they press "Generate
+Final Report" on the report detail page. Live staging report
+`835cc67b-4889-4de5-8c2d-7d8ac80c5fc4` is the result:
+
+```
+"Bull case summary not available. Run company analysis workflow."
+"Company snapshot not available. Run company analysis workflow first."
+"Valuation guard summary not available."
+"Financial data summary not available from analysis workflow."
+available_count: 0
+```
+
+rendered directly beside a company-identity section carrying a validated T1
+fiscal year, a financial snapshot carrying a validated T1 revenue figure, and a
+data-availability summary correctly reporting
+`fundamentals_source: issuer_primary_document / T1_primary_filing`.
+
+"Run company analysis workflow" is, in that state, a **false instruction**: the
+workflow had run. Its draft was simply unreachable from the report being
+regenerated.
+
+### Decision
+
+1. When the source report is a final report (`final_report_version` is set) AND
+   the parse recovered no `company_snapshot`, load the ORIGINATING Phase-9
+   deterministic draft of the same lineage —
+   `created_by_agent_run_id == source.created_by_agent_run_id` AND
+   `final_report_version IS NULL` — and parse its envelope instead.
+2. When recovery is impossible, degrade **loudly**: an additive
+   `regeneration_notice` section states that the sections below are reporting an
+   UNREACHABLE source, not a workflow that never ran, and tells the reader not
+   to act on the generic instruction.
+
+### Invariants
+
+- **Explicit lineage only.** A final report with no `created_by_agent_run_id`
+  never triggers the lookup — no ticker match, no name match, no "latest by
+  company" (which CLAUDE.md forbids and which would cross a company boundary).
+- **Additive.** `regeneration_notice` is not a required section, so schema
+  validity is unaffected, and it is added before validation so the safety gate
+  scans it.
+- **The ordinary path is untouched.** Regenerating from a Phase-9 draft adds no
+  notice and behaves exactly as before.
+
+### Consequences
+
+- No migration. The lineage column (`created_by_agent_run_id`) already exists on
+  final reports from Phase 32A Slice 3.
+- A lineage that ran with citation persistence OFF has no stored agent run, so
+  recovery is unavailable — and now says so, which is the point.
