@@ -17,10 +17,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from app.integrations.financial_data_provider import normalize_source_tier
 from app.services import safety_terms
 from app.services.canonical_evidence import (
+    PRIMARY_FACT_FIELDS,
     resolve_fundamentals,
     resolve_price_provenance,
+)
+from app.services.final_research_state import (
+    FinancialEvidenceState,
+    category_labels,
 )
 
 # Forbidden words in any output string
@@ -91,6 +97,8 @@ def run_bull_case_agent(
     source_quality_summary: dict,
     research_completeness_summary: dict,
     llm_sections: dict | None = None,
+    primary_facts: list[dict] | None = None,
+    financial_evidence: "FinancialEvidenceState | None" = None,
 ) -> BullCaseOutput:
     """
     Identify positive thesis elements from research package.
@@ -112,14 +120,26 @@ def run_bull_case_agent(
     profile = company_snapshot.get("profile", {})
     provider_meta = company_snapshot.get("provider_metadata", {})
     is_mock = company_snapshot.get("is_mock", True)
-    fundamentals = resolve_fundamentals(company_snapshot)
+    # Phase 32D2 — the council's validated issuer-document facts are part of
+    # "what fundamentals do we have". Omitting them printed "Price trend
+    # analysis requires cross-referencing with fundamentals (not yet sourced)"
+    # in a report whose own financial snapshot rendered a T1 revenue figure.
+    fundamentals = resolve_fundamentals(
+        company_snapshot,
+        None,
+        primary_facts,
+        financial_fields=PRIMARY_FACT_FIELDS,
+    )
+    fin_ev = financial_evidence
 
     ticker = identity.get("ticker", "N/A")
     legal_name = identity.get("legal_name", "Unknown")
     sector = profile.get("sector", "unknown sector")
     country = profile.get("country_domicile") or identity.get("country_domicile", "unknown")
     currency = profile.get("reporting_currency", "unknown")
-    source_tier = provider_meta.get("source_tier", "T6_model_estimate")
+    source_tier = (
+        normalize_source_tier(provider_meta.get("source_tier")) or "T6_model_estimate"
+    )
 
     # ── Evidence from identity / profile ─────────────────────────────────
     if legal_name and legal_name != "Unknown":
@@ -299,10 +319,22 @@ def run_bull_case_agent(
         )
     elif source_tier in ("T6_model_estimate", "T5_api_aggregator"):
         confidence_level = "low"
-        warnings.append(
-            f"Data source is {source_tier} — bull case confidence is low. "
-            "T1/T2 primary sources required."
-        )
+        if fin_ev is not None and fin_ev.is_primary_backed:
+            # Scoped, not blanket: identity/price are aggregator-tier, the
+            # financial facts are not. Confidence stays low (most statement
+            # lines are still missing) but the REASON must be accurate.
+            warnings.append(
+                f"Identity and price data are {source_tier} — bull case "
+                "confidence is low. Financial statement facts "
+                f"({category_labels(fin_ev.resolved_categories)}) are "
+                f"{fin_ev.best_tier}; the remaining statement lines are not "
+                "sourced."
+            )
+        else:
+            warnings.append(
+                f"Data source is {source_tier} — bull case confidence is low. "
+                "T1/T2 primary sources required."
+            )
     elif data_gaps >= 3:
         confidence_level = "low"
     elif data_gaps >= 1:

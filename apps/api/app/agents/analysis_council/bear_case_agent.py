@@ -15,8 +15,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from app.integrations.financial_data_provider import normalize_source_tier
 from app.schemas.evidence_state import FinancialDataSummary
 from app.services import safety_terms
+from app.services.final_research_state import (
+    FinancialEvidenceState,
+    category_labels,
+)
 
 _FORBIDDEN_RECOMMENDATION_WORDS = {
     "BUY",
@@ -87,6 +92,7 @@ def run_bear_case_agent(
     source_quality_summary: dict,
     research_completeness_summary: dict,
     bull_case_summary: dict | None = None,
+    financial_evidence: "FinancialEvidenceState | None" = None,
 ) -> BearCaseOutput:
     """
     Identify negative thesis elements from the research package.
@@ -109,8 +115,11 @@ def run_bear_case_agent(
     is_mock = company_snapshot.get("is_mock", True)
 
     sector = profile.get("sector", "unknown sector")
-    source_tier = provider_meta.get("source_tier", "T6_model_estimate")
+    source_tier = (
+        normalize_source_tier(provider_meta.get("source_tier")) or "T6_model_estimate"
+    )
     provider_name = provider_meta.get("provider_name", "unknown")
+    fin_ev = financial_evidence
 
     # ── Data quality as bear case evidence ───────────────────────────────
     overall_sq = source_quality_summary.get("overall_source_quality", "insufficient")
@@ -164,9 +173,24 @@ def run_bear_case_agent(
         # net income, cash flow, balance sheet) are sourced, but market/valuation
         # inputs remain missing. Do NOT claim revenue/net income/cash flow/debt
         # are absent when they are present — name the actually-missing inputs.
+        # Phase 32D2 — name the categories ACTUALLY sourced. The hardcoded
+        # "(revenue, net income, cash flow, balance sheet)" asserted four
+        # categories for a company that had one.
+        sourced_label = (
+            category_labels(fin_ev.resolved_categories)
+            if fin_ev is not None and fin_ev.resolved_categories
+            else ", ".join(
+                f.split(".", 1)[1].replace("_", " ") for f in available_financials[:5]
+            )
+        )
+        tier_clause = (
+            f" at {fin_ev.best_tier} from {fin_ev.best_source}"
+            if fin_ev is not None and fin_ev.available
+            else ""
+        )
         negative_thesis_points.append(
             f"Financial completeness is partial: {len(available_financials)} statement "
-            f"categories are sourced (revenue, net income, cash flow, balance sheet), "
+            f"categories are sourced ({sourced_label}){tier_clause}, "
             f"but {len(missing_financials)} valuation inputs remain missing "
             f"({', '.join(missing_labels[:5])}{'...' if len(missing_labels) > 5 else ''}). "
             "Market-based valuation cannot be completed at this phase."

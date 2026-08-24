@@ -23,7 +23,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from datetime import datetime
 from enum import Enum
-from typing import Any
+from typing import Any, overload
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -39,6 +39,34 @@ class SourceTier(str, Enum):
     T4_quality_media = "T4_quality_media"
     T5_api_aggregator = "T5_api_aggregator"
     T6_model_estimate = "T6_model_estimate"
+
+
+@overload
+def normalize_source_tier(value: None) -> None: ...
+
+
+@overload
+def normalize_source_tier(value: "SourceTier | str") -> str: ...
+
+
+def normalize_source_tier(value: Any) -> str | None:
+    """Return the plain tier STRING for a ``SourceTier``, a str, or None.
+
+    ``SourceTier`` is a ``str``-mixin Enum, so ``isinstance(tier, str)`` is
+    True. The historical guard ``tier if isinstance(tier, str) else tier.value``
+    therefore kept the ENUM MEMBER, not its value. Every ``==`` and ``in`` test
+    still passed (str-mixin equality), so nothing broke and no test noticed —
+    but ``f"{tier}"`` renders ``SourceTier.T6_model_estimate``, which is what
+    reviewers actually read. Live Pandora QA saw "All current data from
+    SourceTier.T6_model_estimate (free_real_not_sourced) only" in the report
+    body. One helper, used everywhere a tier crosses into text or JSON.
+    """
+    if value is None:
+        return None
+    raw = getattr(value, "value", None)
+    if isinstance(raw, str):
+        return raw
+    return str(value)
 
 
 class DataQuality(str, Enum):
@@ -221,7 +249,7 @@ def build_source_record(
     These can be passed directly to source_service.create_source() after
     constructing a SourceCreate schema from the returned dict.
     """
-    tier_value = meta.source_tier if isinstance(meta.source_tier, str) else meta.source_tier.value
+    tier_value = normalize_source_tier(meta.source_tier)
     return SourceRecordAttrs(
         source_type=_TIER_TO_SOURCE_TYPE.get(tier_value, "financial_data_api"),
         title=title or f"Provider data from {meta.provider_name}",

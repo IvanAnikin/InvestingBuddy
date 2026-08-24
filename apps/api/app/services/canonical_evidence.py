@@ -289,6 +289,27 @@ class FundamentalsEvidence:
 
     @property
     def is_regulator_structured(self) -> bool:
+        """A REGULATOR published these as structured facts (SEC XBRL, T2).
+
+        Narrowed in Phase 32D2. This used to include ``TIER_T1``, which meant a
+        fact extracted from the ISSUER's own annual report was reported under
+        the channel labelled "Regulator structured financial facts (SEC XBRL)".
+        Pandora's live report did exactly that: "available — 1 statement
+        field(s) from issuer_primary_document (T1_primary_filing)" under an SEC
+        XBRL heading, for a Danish issuer with no SEC registration at all.
+        Issuer-primary facts are STRONGER, not the same thing — see
+        :attr:`is_issuer_primary`.
+        """
+        return self.source_tier == TIER_T2
+
+    @property
+    def is_issuer_primary(self) -> bool:
+        """The ISSUER published these in its own primary document (T1)."""
+        return self.source_tier == TIER_T1
+
+    @property
+    def is_filing_backed(self) -> bool:
+        """Either of the two above — a filing stands behind the numbers."""
         return self.source_tier in (TIER_T1, TIER_T2)
 
     def note(self) -> str:
@@ -307,6 +328,15 @@ class FundamentalsEvidence:
                 "regulator-backed structured facts (T2_regulator_or_gov). "
                 "Annual figures; not TTM. EBITDA, market cap and enterprise "
                 "value are not part of SEC statement data and remain missing."
+            )
+        if self.source == "issuer_primary_document":
+            return (
+                "Financial-statement facts extracted from the issuer's OWN "
+                "primary document (annual report or equivalent) — "
+                "T1_primary_filing. Each value carries its own page reference "
+                "and source URL and requires human confirmation against the "
+                "filing. This is NOT regulator-structured XBRL data, and the "
+                "statement lines not extracted remain missing."
             )
         if self.source == "eodhd_fundamentals":
             return (
@@ -443,14 +473,20 @@ def resolve_fundamentals(
 # report's "primary filings required" / "the reports were scanned or JS-gated"
 # text next to a full set of real SEC XBRL statement facts.
 CHANNEL_ISSUER_DOCUMENT = "issuer_primary_document"
+CHANNEL_ISSUER_PRIMARY_FACTS = "issuer_primary_facts"
 CHANNEL_REGULATOR_FACTS = "regulator_structured_facts"
+CHANNEL_AGGREGATOR_FUNDAMENTALS = "aggregator_fundamentals"
 CHANNEL_REGULATOR_FILINGS = "regulator_filing_events"
 CHANNEL_ISSUER_NEWSROOM = "issuer_newsroom"
 CHANNEL_DB_CITATIONS = "db_citations"
 
 _CHANNEL_LABELS = {
     CHANNEL_ISSUER_DOCUMENT: "Issuer-primary document extraction",
+    CHANNEL_ISSUER_PRIMARY_FACTS: (
+        "Issuer primary-document financial facts (T1 filing)"
+    ),
     CHANNEL_REGULATOR_FACTS: "Regulator structured financial facts (SEC XBRL)",
+    CHANNEL_AGGREGATOR_FUNDAMENTALS: "Aggregator fundamentals (T5)",
     CHANNEL_REGULATOR_FILINGS: "Regulator filing events (SEC EDGAR)",
     CHANNEL_ISSUER_NEWSROOM: "Issuer newsroom / press releases",
     CHANNEL_DB_CITATIONS: "Persisted citations / council evidence",
@@ -512,9 +548,34 @@ def build_evidence_channels(
                 metadata_only_count=metadata_only,
                 failed_count=failed,
             ),
+            # Phase 32D2 — three DISTINCT financial-fact channels. The issuer
+            # publishing its own annual report, a regulator publishing XBRL,
+            # and an aggregator republishing either are not the same evidence
+            # and must never share a row. Pandora's live report rendered
+            # "1 statement field from issuer_primary_document" under the SEC
+            # XBRL heading, for a Danish issuer with no SEC registration.
+            _channel(
+                CHANNEL_ISSUER_PRIMARY_FACTS,
+                fundamentals.available and fundamentals.is_issuer_primary,
+                (
+                    f"available — {len(fundamentals.values)} statement field(s) "
+                    f"extracted from the issuer's own primary document "
+                    f"({fundamentals.source_tier})"
+                    if fundamentals.available and fundamentals.is_issuer_primary
+                    else "not sourced"
+                ),
+                field_count=(
+                    len(fundamentals.values) if fundamentals.is_issuer_primary else 0
+                ),
+                period=(
+                    fundamentals.period_label
+                    if fundamentals.is_issuer_primary
+                    else None
+                ),
+            ),
             _channel(
                 CHANNEL_REGULATOR_FACTS,
-                fundamentals.is_regulator_structured and fundamentals.available,
+                fundamentals.available and fundamentals.is_regulator_structured,
                 (
                     f"available — {len(fundamentals.values)} statement field(s) "
                     f"from {fundamentals.source} ({fundamentals.source_tier})"
@@ -526,8 +587,32 @@ def build_evidence_channels(
                     if fundamentals.is_regulator_structured
                     else 0
                 ),
-                period=fundamentals.period_label,
-                form_type=fundamentals.form_type,
+                period=(
+                    fundamentals.period_label
+                    if fundamentals.is_regulator_structured
+                    else None
+                ),
+                form_type=(
+                    fundamentals.form_type
+                    if fundamentals.is_regulator_structured
+                    else None
+                ),
+            ),
+            _channel(
+                CHANNEL_AGGREGATOR_FUNDAMENTALS,
+                fundamentals.available and not fundamentals.is_filing_backed,
+                (
+                    f"available — {len(fundamentals.values)} field(s) from "
+                    f"{fundamentals.source} ({fundamentals.source_tier}); "
+                    "not filing-verified"
+                    if fundamentals.available and not fundamentals.is_filing_backed
+                    else "not sourced"
+                ),
+                field_count=(
+                    len(fundamentals.values)
+                    if fundamentals.available and not fundamentals.is_filing_backed
+                    else 0
+                ),
             ),
             _channel(
                 CHANNEL_REGULATOR_FILINGS,

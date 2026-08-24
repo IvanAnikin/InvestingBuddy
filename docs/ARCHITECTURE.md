@@ -355,13 +355,67 @@ asserting "annual report required for financials" after that annual report has
 been read. Caught on CFR/MC during the 2026-08-22 staging regression.
 
 **Post-reconciliation rebuild.** The deterministic Bull / Bear / Risk /
-Valuation-Readiness sections are recomputed by the final-report generator AFTER
-ingestion + council + fresh source-quality reconciliation, so the human-facing
-report carries one current narrative instead of a pre-ingestion snapshot beside
-a post-council one. Only sections the workflow produced are refreshed; a summary
-already carrying forbidden language is never rebuilt (that would launder
-poisoned upstream state past the safety gate). The original workflow draft is
-retained in full for audit. See ADR-019.
+Valuation-Readiness / Committee-Chair / Executive-Summary sections are recomputed
+by the final-report generator AFTER ingestion + council + fresh source-quality
+reconciliation, so the human-facing report carries one current narrative instead
+of a pre-ingestion snapshot beside a post-council one. Only sections the workflow
+produced are refreshed; a summary already carrying forbidden language is never
+rebuilt (that would launder poisoned upstream state past the safety gate). The
+original workflow draft is retained in full for audit. See ADR-019.
+
+---
+
+## One Final Reconciled Research State (Phase 32D2, 2026-08-24)
+
+`app/services/final_research_state.py` owns the answer to "what evidence does
+this report have AFTER ingestion". It is built ONCE, immediately after the
+council returns, and every deterministic human-facing surface is rebuilt from
+it. **No surface below that point re-derives evidence state from a
+pre-ingestion input.**
+
+```
+council returns primary_facts
+    ↓
+build_final_research_state()
+    ├─ resolve_fundamentals(..., primary_facts)      canonical inventory
+    ├─ build_financial_evidence_state()              per-CATEGORY resolution:
+    │                                                issuer doc (T1) ▸ SEC XBRL (T2)
+    │                                                ▸ aggregator; strongest wins
+    ├─ reconcile_financial_data_summary()            missing -> available for the
+    │                                                categories actually validated
+    └─ reconcile_research_completeness()             closes only the schema gaps a
+                                                     validated fact truly satisfies
+    ↓
+data_availability_summary · missing_information · research_completeness_review ·
+source_quality_review · evidence_quality · thin_evidence_state ·
+evidence_channels · bull_case · bear_case · risk_analysis · valuation_readiness ·
+committee_chair_summary · executive_summary · research_memo
+```
+
+**Why it exists.** Manual QA on the Pandora final report found one document
+saying `fundamentals_source: issuer_primary_document / T1_primary_filing` and
+`financials.revenue -> missing_fields`, "All 18 core financial fundamental
+categories are missing", "fundamentals (not yet sourced)", "Source T1 primary
+filings for revenue" and "All current data from T6 only" — all at once, all
+about the same validated DKK 32.5bn revenue figure. Each earlier corrective
+repaired one surface; nothing owned the answer.
+
+**Two tiers, not one.** The IDENTITY/PRICE provider tier and the FINANCIAL
+EVIDENCE tier are separate facts about a report and are reported separately. A
+company can have T6 identity, T5 price and T1 financials simultaneously; a
+single "source tier" cannot express that and produced "all current data is T6".
+
+**Absence is preserved.** Reconciliation only moves a category that a validated,
+high-confidence, group-scoped fact actually closes. Everything else stays
+missing in every surface, with the same words. `STATEMENT_CATEGORIES` further
+separates lines a filing can close from market/derived metrics it cannot, so the
+report never asks a reviewer to "extract price to earnings from the annual
+report".
+
+**Evidence channels are seven, not five.** Issuer-primary FACTS (T1) are a
+separate channel from regulator XBRL FACTS (T2) and from aggregator
+fundamentals (T5); previously a Danish issuer's own PDF facts were rendered
+under the heading "Regulator structured financial facts (SEC XBRL)".
 
 ---
 
