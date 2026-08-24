@@ -656,6 +656,24 @@ export interface ThesisDiscoveryRunCreate {
   notes?: string;
 }
 
+/**
+ * Phase C — canonical, deduplicated, severity-classified run warnings.
+ *
+ * The backend has emitted these since Phase C (`DiscoveryRunRead` derives them
+ * from the raw list on every read, so historical runs have them too). The admin
+ * UI kept rendering `warnings` — the RAW list, ~200 near-duplicate strings on a
+ * European run — because this type never declared the grouped field.
+ */
+export interface DiscoveryWarningGroup {
+  code: string;
+  severity: "info" | "warning" | "blocking" | string;
+  scope: "run" | "candidate" | string;
+  message: string;
+  count: number;
+  subjects: string[];
+  samples: string[];
+}
+
 export interface DiscoveryRun {
   id: string;
   status: string;
@@ -673,7 +691,11 @@ export interface DiscoveryRun {
   candidate_count: number;
   error_count: number;
   lookback_days: number;
+  // RAW instances, retained for diagnostics. Human surfaces render
+  // `warning_groups`; the raw list stays reachable behind an explicit toggle.
   warnings: string[] | null;
+  warning_groups?: DiscoveryWarningGroup[];
+  warning_raw_count?: number;
   config_json: Record<string, unknown> | null;
   safety_notes: Record<string, unknown> | null;
   created_by: string | null;

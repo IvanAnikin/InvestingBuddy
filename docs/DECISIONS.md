@@ -1801,3 +1801,51 @@ of which had already been read end-to-end by full analysis.
   standing caveat: ADR-024 closed that gap, and the warning is rendered on the
   report's verified-source rows.
 - No migration; both registries stay code-defined.
+
+---
+
+## ADR-027: Admin Surfaces Render the Canonical Shape (Phase 32D2c)
+
+**Status:** Accepted — 2026-08-24
+
+### Problem
+
+Two admin-UI defects, both of the same kind: the backend already produced the
+right answer and the UI rendered something else, while the test suite agreed
+with the UI.
+
+1. **Raw warnings on the candidate queue.** `DiscoveryRunRead` has derived
+   `warning_groups` from the raw list on every read since Phase C (canonical,
+   deduplicated, severity-classified, bounded to 8 groups, raw instances
+   retained). A live European run returned 200 raw strings and 8 groups; the
+   admin page rendered the 200. Root cause: the TypeScript `DiscoveryRun`
+   interface never declared `warning_groups`, so nothing referenced it and
+   nothing failed.
+2. **Agent summaries appeared blank.** The discovery-council and field-review
+   agent summaries were rendered inside a COLLAPSED `<details>`, while every
+   sibling section (evidence gaps, next source tasks, council notes) renders
+   inline. The payload was never at fault — a live run returned eight agents
+   each with a non-empty summary — and the e2e assertion
+   (`expect(panel).toContainText("run_red_team")`) reads collapsed DOM text, so
+   it passed throughout.
+
+### Decision
+
+- Declare `DiscoveryWarningGroup`, `warning_groups` and `warning_raw_count` in
+  `types/api.ts`, and render grouped warnings on the candidate-queue surface:
+  severity pill, canonical code, message, collapsed-instance count and affected
+  subjects. Nothing is dropped — per-group original wording and the complete raw
+  list stay one click away, and a run whose payload predates grouping still
+  renders its raw list.
+- Render agent summaries inline (`AgentSummaries`), for both the discovery
+  council and the deep field review.
+- **e2e assertions move from `toContainText` to `toBeVisible`.** A collapsed
+  disclosure cannot satisfy a visibility assertion, so this specific regression
+  cannot recur silently.
+
+### Consequences
+
+- The pre-existing test "21. Failed run shows failed status and warnings"
+  asserted the literal string "warning(s)"; it now asserts the grouped surface,
+  because the surface intentionally changed.
+- No backend change. No API change. Presentation only.

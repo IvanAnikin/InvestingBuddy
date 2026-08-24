@@ -426,6 +426,15 @@ issuer's IR and annual-report URLs on record but does not fetch them must say
 KNOWN-BUT-NOT-FETCHED — collapsing that into "unknown" told a council that eight
 European issuers had no identifiable primary sources.
 
+**Admin surfaces render the canonical shape.** The backend has emitted grouped
+warnings (`DiscoveryRunRead.warning_groups`) since Phase C, but the admin
+candidate queue kept rendering the RAW list because the TypeScript type never
+declared the grouped field — 200 near-duplicate strings where the backend
+already had 8 groups. Discovery/field-review agent summaries were rendered
+inside a COLLAPSED `<details>`; the e2e assertion used `toContainText`, which
+reads collapsed DOM text and passed while a reviewer saw an empty area. Both are
+now rendered inline, and the e2e tests assert VISIBILITY rather than DOM text.
+
 **Evidence channels are seven, not five.** Issuer-primary FACTS (T1) are a
 separate channel from regulator XBRL FACTS (T2) and from aggregator
 fundamentals (T5); previously a Danish issuer's own PDF facts were rendered

@@ -929,6 +929,114 @@ function councilActionBadgeCls(action: string | null): string {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Run warnings — GROUPED (Phase 32D2c)
+//
+// The backend has emitted `warning_groups` since Phase C: canonical, deduped,
+// severity-classified, bounded to 8 groups, with the raw instances retained for
+// diagnostics. This surface kept rendering `warnings` — the RAW list — because
+// the TypeScript type never declared the grouped field, so nobody noticed the
+// backend already had the answer. A real European run produced 200 raw strings
+// here, mostly the same handful repeated per candidate.
+//
+// Grouping is PRESENTATION ONLY. Nothing is dropped: the raw instances stay one
+// click away, the count of collapsed instances is shown per group, and a
+// BLOCKING group is never merged or hidden.
+// ---------------------------------------------------------------------------
+
+const WARNING_SEVERITY_COLOR: Record<string, PillColor> = {
+  blocking: "red",
+  warning: "amber",
+  info: "blue",
+};
+
+function RunWarnings({ run }: { run: DiscoveryRun }) {
+  const groups = run.warning_groups ?? [];
+  const raw = run.warnings ?? [];
+  const rawCount = run.warning_raw_count ?? raw.length;
+  if (groups.length === 0 && raw.length === 0) return null;
+
+  // A run whose backend predates grouping still shows something honest.
+  if (groups.length === 0) {
+    return (
+      <details className="text-xs text-amber-300/80" data-testid="run-warnings-raw-only">
+        <summary className="cursor-pointer">{rawCount} warning(s)</summary>
+        <ul className="mt-1 list-inside list-disc break-words text-slate-400">
+          {raw.slice(0, 12).map((w, i) => (
+            <li key={i}>{w}</li>
+          ))}
+        </ul>
+      </details>
+    );
+  }
+
+  return (
+    <div className="space-y-1.5" data-testid="run-warning-groups">
+      <p className="text-xs font-semibold text-slate-300">
+        {groups.length} warning group(s) from {rawCount} instance(s)
+      </p>
+      <ul className="space-y-1">
+        {groups.map((g) => (
+          <li
+            key={`${g.code}:${g.message}`}
+            className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2"
+            data-testid="run-warning-group"
+          >
+            <div className="flex flex-wrap items-center gap-2">
+              <StatusPill
+                label={g.severity}
+                color={WARNING_SEVERITY_COLOR[g.severity] ?? "gray"}
+              />
+              <span className="font-mono text-[11px] text-slate-400">
+                {g.code}
+              </span>
+              <span className="text-[11px] text-slate-500">
+                &times;{g.count}
+                {g.scope === "run" ? " (run-level)" : ""}
+              </span>
+            </div>
+            <p className="mt-1 text-xs text-slate-300">{g.message}</p>
+            {g.subjects.length > 0 && (
+              <p className="mt-0.5 text-[11px] text-slate-500">
+                Affects: {g.subjects.join(", ")}
+              </p>
+            )}
+            {g.samples.length > 0 && (
+              <details className="mt-1 text-[11px] text-slate-500">
+                <summary className="cursor-pointer">
+                  Original wording ({g.samples.length} sample
+                  {g.samples.length === 1 ? "" : "s"})
+                </summary>
+                <ul className="mt-1 list-inside list-disc break-words">
+                  {g.samples.map((sample, i) => (
+                    <li key={i}>{sample}</li>
+                  ))}
+                </ul>
+              </details>
+            )}
+          </li>
+        ))}
+      </ul>
+      {raw.length > 0 && (
+        <details
+          className="text-[11px] text-slate-500"
+          data-testid="run-warnings-raw"
+        >
+          <summary className="cursor-pointer">
+            Show all {rawCount} raw instance(s)
+          </summary>
+          <ul className="mt-1 max-h-64 list-inside list-disc overflow-y-auto break-words">
+            {raw.map((w, i) => (
+              <li key={i}>{w}</li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </div>
+  );
+}
+
+
 function CouncilStat({
   label,
   value,
@@ -1014,6 +1122,51 @@ function CouncilStringList({
     </div>
   );
 }
+
+// ---------------------------------------------------------------------------
+// Agent summaries (Phase 32D2c)
+//
+// These were rendered inside a COLLAPSED <details>, so a reviewer opening the
+// panel saw an empty area where every other council section (evidence gaps,
+// next source tasks, council notes) renders inline. The payload was never the
+// problem — a live run returned eight agents each with a non-empty summary —
+// and the e2e assertion used `toContainText`, which reads collapsed DOM text
+// and therefore passed while a human saw nothing.
+//
+// The per-agent summary IS the reasoning a reviewer needs, so it renders like
+// the sections beside it: visible, no interaction required. The e2e test now
+// asserts VISIBILITY, which a collapsed disclosure cannot satisfy.
+// ---------------------------------------------------------------------------
+
+function AgentSummaries({
+  summaries,
+  testid,
+}: {
+  summaries: { name: string; summary: string }[];
+  testid: string;
+}) {
+  if (summaries.length === 0) return null;
+  return (
+    <div data-testid={testid}>
+      <p className="text-xs font-semibold text-slate-200">
+        Agent summaries ({summaries.length})
+      </p>
+      <ul className="mt-1 space-y-1">
+        {summaries.map(({ name, summary }) => (
+          <li
+            key={name}
+            className="text-xs text-slate-400"
+            data-testid="agent-summary-row"
+          >
+            <span className="font-semibold text-slate-300">{name}:</span>{" "}
+            {summary}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 
 function DiscoveryCouncilBody({ review }: { review: DiscoveryCouncilReview }) {
   const agentSummaries = Object.entries(review.agent_outputs ?? {})
@@ -1121,21 +1274,10 @@ function DiscoveryCouncilBody({ review }: { review: DiscoveryCouncilReview }) {
         testid="council-warnings"
       />
 
-      {agentSummaries.length > 0 && (
-        <details data-testid="council-agent-summaries">
-          <summary className="cursor-pointer text-xs font-semibold text-slate-200">
-            Agent summaries ({agentSummaries.length})
-          </summary>
-          <ul className="mt-1 space-y-1">
-            {agentSummaries.map(({ name, summary }) => (
-              <li key={name} className="text-xs text-slate-400">
-                <span className="font-semibold text-slate-300">{name}:</span>{" "}
-                {summary}
-              </li>
-            ))}
-          </ul>
-        </details>
-      )}
+      <AgentSummaries
+        summaries={agentSummaries}
+        testid="council-agent-summaries"
+      />
 
       <p className="text-[11px] text-slate-500">{review.disclaimer}</p>
     </div>
@@ -1553,21 +1695,10 @@ function FieldReviewBody({ review }: { review: FieldReview }) {
         testid="field-review-warnings"
       />
 
-      {agentSummaries.length > 0 && (
-        <details data-testid="field-review-agent-summaries">
-          <summary className="cursor-pointer text-xs font-semibold text-slate-200">
-            Agent summaries ({agentSummaries.length})
-          </summary>
-          <ul className="mt-1 space-y-1">
-            {agentSummaries.map(({ name, summary }) => (
-              <li key={name} className="text-xs text-slate-400">
-                <span className="font-semibold text-slate-300">{name}:</span>{" "}
-                {summary}
-              </li>
-            ))}
-          </ul>
-        </details>
-      )}
+      <AgentSummaries
+        summaries={agentSummaries}
+        testid="field-review-agent-summaries"
+      />
 
       <p className="text-[11px] text-slate-500">{review.disclaimer}</p>
     </div>
@@ -3105,18 +3236,7 @@ export default function DiscoveryPage() {
                 can also refresh this page.
               </p>
             )}
-            {selectedRun.warnings && selectedRun.warnings.length > 0 && (
-              <details className="text-xs text-amber-300/80">
-                <summary className="cursor-pointer">
-                  {selectedRun.warnings.length} warning(s)
-                </summary>
-                <ul className="mt-1 list-inside list-disc break-words text-slate-400">
-                  {selectedRun.warnings.slice(0, 12).map((w, i) => (
-                    <li key={i}>{w}</li>
-                  ))}
-                </ul>
-              </details>
-            )}
+            <RunWarnings run={selectedRun} />
           </div>
 
           {candidatesError && (
