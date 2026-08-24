@@ -114,7 +114,10 @@ def run_bear_case_agent(
     snapshot_missing = company_snapshot.get("missing_fields", [])
     is_mock = company_snapshot.get("is_mock", True)
 
-    sector = profile.get("sector", "unknown sector")
+    # Phase 32D2e — ``.get(key, default)`` returns the default only when the key
+    # is ABSENT. A key present with value None returns None, which renders as
+    # the Python literal in the report body.
+    sector = profile.get("sector") or "unknown sector"
     source_tier = (
         normalize_source_tier(provider_meta.get("source_tier")) or "T6_model_estimate"
     )

@@ -761,12 +761,22 @@ def get_price_citation_fields(prices: PriceHistoryData) -> list[dict]:
         return []
 
     latest = prices.price_points[-1]
+    # Phase 32D2e — the RAW provider currency is honestly None (Slice 6B stopped
+    # fabricating USD) and the real quote currency is resolved from the exchange
+    # everywhere else. Interpolating the raw value rendered "Latest close 783.0
+    # None" into a persisted citation quote, for a price series whose own
+    # summary correctly says DKK. Resolve it here too, and say "currency not
+    # sourced" when it genuinely is not — never the Python literal.
+    quote_currency = prices.currency or price_quote_currency_for_exchange(
+        prices.exchange
+    )
+    currency_label = quote_currency or "currency not sourced"
     return [
         {
             "field_path": "price_history.latest_close",
             "claim_text": "latest_close",
             "source_quote": (
-                f"Latest close {latest.close} {prices.currency} on {latest.date} "
+                f"Latest close {latest.close} {currency_label} on {latest.date} "
                 f"from {meta.provider_name}"
             ),
             "source_tier": tier_value,

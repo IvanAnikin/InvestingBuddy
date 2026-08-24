@@ -132,11 +132,18 @@ def run_bull_case_agent(
     )
     fin_ev = financial_evidence
 
-    ticker = identity.get("ticker", "N/A")
-    legal_name = identity.get("legal_name", "Unknown")
-    sector = profile.get("sector", "unknown sector")
-    country = profile.get("country_domicile") or identity.get("country_domicile", "unknown")
-    currency = profile.get("reporting_currency", "unknown")
+    ticker = identity.get("ticker") or "N/A"
+    legal_name = identity.get("legal_name") or "Unknown"
+    # Phase 32D2e — ``.get(key, default)`` returns the default only when the key
+    # is ABSENT. A key present with value None returns None, which renders as
+    # the Python literal in the report body.
+    sector = profile.get("sector") or "unknown sector"
+    country = (
+        profile.get("country_domicile")
+        or identity.get("country_domicile")
+        or "unknown"
+    )
+    currency = profile.get("reporting_currency") or "not sourced"
     source_tier = (
         normalize_source_tier(provider_meta.get("source_tier")) or "T6_model_estimate"
     )
@@ -158,7 +165,7 @@ def run_bull_case_agent(
     if currency:
         evidence_used.append(
             f"Reporting currency: {currency}. "
-            f"Exchange: {identity.get('exchange', 'N/A')}."
+            f"Exchange: {identity.get('exchange') or 'N/A'}."
         )
 
     # ── Price history as positive evidence ────────────────────────────────

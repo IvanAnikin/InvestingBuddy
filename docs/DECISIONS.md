@@ -1915,3 +1915,50 @@ regenerated.
   final reports from Phase 32A Slice 3.
 - A lineage that ran with citation persistence OFF has no stored agent run, so
   recovery is unavailable — and now says so, which is the point.
+
+---
+
+## ADR-029: `None` Must Never Reach a Human-Facing String (Phase 32D2e)
+
+**Status:** Accepted — 2026-08-24
+**Context:** found during Phase 32D2 live acceptance on staging.
+
+### Problem
+
+`dict.get(key, default)` returns the default only when the key is ABSENT. A key
+PRESENT with the value `None` returns `None`, which an f-string renders as the
+four characters `None`.
+
+The company snapshot deliberately stores honest absences as explicit `None`
+values (Phase 32A Slice 6B stopped fabricating placeholders), so every
+`profile.get("sector", "unknown sector")` in the deterministic agents was a
+latent leak. Live acceptance found three, all in the report body:
+
+```
+"Currency risk: reporting currency is 'None'."
+"Risk assessment for PNDORA (PNDORA), None, Denmark."
+"Latest close 783.0 None on 2026-08-21 from eodhd_price_only"
+```
+
+The third is the most serious: it is a persisted CITATION quote, and the price
+currency is not actually unknown — the price summary's own field says `DKK` and
+`price_quote_currency_for_exchange` resolves it. The quote interpolated the RAW
+provider value, which is honestly `None`, so a SOURCED currency was rendered as
+absent inside the evidence of record.
+
+### Decision
+
+- Replace every `get(key, literal_default)` on a snapshot identity/profile field
+  with `get(key) or literal_default` in the deterministic agents.
+- Resolve the price citation's currency the same way the rest of the pipeline
+  does (explicit provider currency ⇒ exchange-derived quote currency), and
+  render `"currency not sourced"` when it genuinely is not known.
+- A regression test asserts that NO string field of any deterministic agent's
+  output contains the bare word `None`, using a snapshot whose identity and
+  profile keys are all present-with-`None` — the exact failure shape.
+
+### Consequences
+
+- JSON `null` is untouched: structured absence is correct and stays. Only the
+  rendered WORD inside a string is the defect.
+- No behaviour change where a value is present.

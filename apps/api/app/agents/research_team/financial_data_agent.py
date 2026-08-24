@@ -358,8 +358,8 @@ def run_financial_data_agent(
         )
 
     # ── Build summary narrative ───────────────────────────────────────────
-    ticker = identity.get("ticker", "N/A")
-    legal_name = identity.get("legal_name", "Unknown")
+    ticker = identity.get("ticker") or "N/A"
+    legal_name = identity.get("legal_name") or "Unknown"
     country = identity.get("country_domicile") or "unknown country"
     sector = profile.get("sector") or "unknown sector"
     currency = profile.get("reporting_currency") or "unknown currency"
