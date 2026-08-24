@@ -42,9 +42,17 @@ Reuse policy (``extracted_document_service.load_reusable_documents``):
         re-judged or silently trusted either.
 
 Bump this integer whenever a semantic change is made to the code that
-INTERPRETS already-extracted text into a fact (see the list above). Do NOT
-bump for a cosmetic / comment / logging-only change, or a change to
-extraction caps/budgets that does not alter what a given excerpt means.
+INTERPRETS already-extracted text into a fact (see the list above) — and
+whenever a change alters WHICH TEXT GETS EXTRACTED AT ALL. That second case
+includes a change to an extraction CAP OR BUDGET that lets the extractor
+reach content it previously never read: a row persisted under the smaller
+budget is genuinely INCOMPLETE, not merely under-interpreted, and no
+excerpts-only replay can recover pages that were never opened. (An earlier
+version of this note said the opposite — "do NOT bump for a change to
+extraction caps/budgets" — which holds only for the narrow reading that a cap
+change cannot alter what a given EXCERPT means. It can absolutely alter which
+excerpts EXIST, and that distinction cost a live acceptance cycle; see version
+11 below.) Do NOT bump for a cosmetic / comment / logging-only change.
 """
 
 from __future__ import annotations
@@ -217,18 +225,40 @@ from __future__ import annotations
 # claim); a prose candidate that is a degraded read of a page whose table was
 # reconstructed is superseded by it; and two candidates may only be judged to
 # CONTRADICT each other when BOTH are fully qualified.
+# Version 11 (Phase 32D live-acceptance corrective) raised the per-document
+# extraction wall-budget (``primary_document_extraction_timeout_seconds``
+# 20 → 60, with the per-document total and the aggregate ingestion budget
+# moved to match). This is a RAW-EXTRACTION-LAYER change of the same class as
+# versions 4/5/6/9, even though not a line of parsing logic moved with it: on
+# staging's B1 tier the real 169-page Pandora annual report extracts at
+# ~1.95s/page, so under the old 20s budget its persisted ``excerpts_json``
+# STOPPED AT PAGE ELEVEN — the five-year summary on page 14, and every
+# reported financial figure on it, had never been read at all. Such a row is
+# INCOMPLETE, not merely under-interpreted, and no excerpts-only replay can
+# recover a page that was never opened.
+#
+# The bump is also the only mechanism that can invalidate it. The version-10
+# deploy DID trigger one full re-extraction — which then truncated at page 11
+# under the still-20s budget, succeeded, and was stamped version 10. From that
+# moment ``doc.pipeline_version == CURRENT`` took the unconditional
+# same-version fast path in ``load_reusable_documents``, and the corrected
+# budget could never take effect — exactly as the version-5 note above warns.
+# A truncated-but-"successful" extraction stamped current is the trap; only
+# advancing CURRENT clears it.
 LEGACY_EXTRACTION_PIPELINE_VERSION = 1
-CURRENT_EXTRACTION_PIPELINE_VERSION = 10
+CURRENT_EXTRACTION_PIPELINE_VERSION = 11
 
 # The pipeline version at/after which persisted ``excerpts_json`` text is
 # guaranteed to have been produced by column-aware page extraction UNDER
 # THE CURRENT gutter-detection thresholds, THE CURRENT excerpt-ranking/
 # selection logic, THE CURRENT PDF section/ancestor-heading detection (v9+),
-# AND (v10+) THE CURRENT geometric multi-year-table reconstruction. A document
-# stamped below this version must undergo a full re-extraction (never an
-# excerpts-only replay) to pick up the corrected raw text, selection,
-# structural heading context, and/or its borderless financial tables.
-EXTRACTION_TEXT_LAYER_MIN_VERSION = 10
+# (v10+) THE CURRENT geometric multi-year-table reconstruction, AND (v11+) THE
+# CURRENT extraction wall-budget — i.e. it actually reached the pages that
+# budget now allows. A document stamped below this version must undergo a full
+# re-extraction (never an excerpts-only replay) to pick up the corrected raw
+# text, selection, structural heading context, its borderless financial
+# tables, and/or the pages an earlier, smaller budget never opened.
+EXTRACTION_TEXT_LAYER_MIN_VERSION = 11
 
 __all__ = [
     "LEGACY_EXTRACTION_PIPELINE_VERSION",
