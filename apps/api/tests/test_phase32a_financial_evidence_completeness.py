@@ -234,7 +234,10 @@ def test_lvmh_shaped_fixture_group_facts_promoted():
     revenue = _by(facts, FIELD_REVENUE, "group")
     assert revenue is not None
     assert revenue.value_numeric == 38600.0
-    assert revenue.period == "2026"
+    # Private-use readiness PR-D — the fixture says "H1 2026" in every
+    # sentence, so the period is H1 2026. Stamping it "2026" presented a
+    # half-year figure as the full year (``INTERIM_AS_ANNUAL``).
+    assert revenue.period == "H1 2026"
 
     rop = _by(facts, FIELD_RECURRING_OPERATING_PROFIT, "group")
     assert rop is not None and rop.value_numeric == 9300.0

@@ -726,18 +726,93 @@ def _sentence_around(text: str, pos: int) -> str:
     return text[start:end]
 
 
+# Private-use readiness PR-D — INTERIM PERIOD MARKERS in prose.
+#
+# Before this, ``_period_near`` returned a BARE YEAR for every prose fact. On a
+# real Hermès half-year release, "consolidated revenue in the first half of 2026
+# amounted to EUR8.2 billion" was stamped ``period="2026"`` — a HALF-YEAR figure
+# presented as the full year 2026, and eligible to fill the annual revenue slot.
+# That is the ``INTERIM_AS_ANNUAL`` contradiction class in its purest form, and
+# it becomes reachable the moment the pipeline starts ingesting interim
+# documents (which is the point of this phase).
+#
+# The marker is only honoured when it appears in the value's OWN local window,
+# exactly like scope: a "first half" mentioned in an unrelated sentence must not
+# reclassify a full-year figure.
+_HALF_MARKERS: tuple[tuple[str, str], ...] = (
+    ("first half", "H1"),
+    ("first-half", "H1"),
+    ("1st half", "H1"),
+    ("half-year", "H1"),
+    ("half year", "H1"),
+    ("first six months", "H1"),
+    ("six months ended", "H1"),
+    ("six-month period ended", "H1"),
+    ("second half", "H2"),
+    ("second-half", "H2"),
+    ("2nd half", "H2"),
+)
+_QUARTER_WORD_MARKERS: tuple[tuple[str, str], ...] = (
+    ("first quarter", "Q1"),
+    ("second quarter", "Q2"),
+    ("third quarter", "Q3"),
+    ("fourth quarter", "Q4"),
+    ("1st quarter", "Q1"),
+    ("2nd quarter", "Q2"),
+    ("3rd quarter", "Q3"),
+    ("4th quarter", "Q4"),
+)
+# The compact forms, matched on word boundaries only so "H1" cannot fire inside
+# a hex fragment and "Q1" cannot fire inside a part number.
+_INTERIM_TOKEN_RE = re.compile(r"\b(H[12]|Q[1-4])\b")
+_YEAR_RE = re.compile(r"\b(?:19|20)\d{2}\b")
+
+
+def _interim_marker_near(window_text: str) -> str | None:
+    """The interim marker stated in ``window_text``, or None.
+
+    A quarter beats a half when both appear, because a quarter is the more
+    specific claim ("Q2 of the first half of 2026" describes Q2). Returns None
+    when the text states no interim marker at all — a full-year figure is NOT
+    given an invented one.
+    """
+    lowered = window_text.lower()
+    for phrase, marker in _QUARTER_WORD_MARKERS:
+        if phrase in lowered:
+            return marker
+    for phrase, marker in _HALF_MARKERS:
+        if phrase in lowered:
+            return marker
+    token = _INTERIM_TOKEN_RE.search(window_text)
+    return token.group(1).upper() if token else None
+
+
 def _period_near(text: str, pos: int, *, window: int = 120) -> str | None:
     """Best-effort period from the year NEAREST ``pos`` (a matched value's own
     position) rather than the first year mentioned anywhere in the excerpt —
     a comparative aside elsewhere in the excerpt ("...up from EUR8.1bn in
     2025...") must never steal an unrelated fact's period (a real,
-    live-observed failure — Phase 32A corrective)."""
+    live-observed failure — Phase 32A corrective).
+
+    When the SAME local window also states an interim marker, the period is
+    returned in the interim form the canonical period model understands
+    (``"H1 2026"`` / ``"Q2 2026"``) rather than the bare year. A period with no
+    interim marker stays a bare year — this never invents one.
+    """
     lo, hi = max(0, pos - window), min(len(text), pos + window)
-    m = re.search(r"\b(19|20)\d{2}\b", text[lo:hi])
+    local = text[lo:hi]
+    m = _YEAR_RE.search(local)
     if m:
-        return m.group(0)
-    m = re.search(r"\b(19|20)\d{2}\b", text)
-    return m.group(0) if m else None
+        year = m.group(0)
+        marker = _interim_marker_near(local)
+        return f"{marker} {year}" if marker else year
+    m = _YEAR_RE.search(text)
+    if not m:
+        return None
+    # The year came from OUTSIDE the local window, so the local window's
+    # interim marker (if any) is not reliably about that year. Fail closed to
+    # the bare year rather than pairing two signals that were never adjacent.
+    return m.group(0)
 
 
 def _parse_excerpt(excerpt: DocumentExcerpt, source_url: str | None) -> list[PrimaryFact]:

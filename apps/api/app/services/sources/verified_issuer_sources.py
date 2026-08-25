@@ -163,12 +163,18 @@ _ISSUERS: tuple[VerifiedIssuerSource, ...] = (
         country="Switzerland",
         official_website_domain="swatchgroup.com",
         allowed_domains=("swatchgroup.com",),
-        investor_relations_url="https://www.swatchgroup.com/en/investors",
-        annual_reports_url="https://www.swatchgroup.com/en/investors/annual-report",
+        investor_relations_url="https://www.swatchgroup.com/en/investors-space",
+        annual_reports_url="https://www.swatchgroup.com/en/investors-space/annual-report",
         press_releases_url="https://www.swatchgroup.com/en/services/archive",
-        source_confidence=CONFIDENCE_VERIFIED_REFERENCE,
-        last_verified_note="Known-stable IR reference URLs; live fetch may be JS-gated.",
-        warnings=("Live fetch may be blocked or JavaScript-gated; treat as metadata.",),
+        source_confidence=CONFIDENCE_VERIFIED_LIVE,
+        last_verified_note=(
+            "Re-verified live 2026-08-25: the previously registered "
+            "/en/investors and /en/investors/annual-report BOTH 404 — the site "
+            "moved to /en/investors-space. The corrected annual-report page "
+            "returns 200 and links the FY2025 annual report and the H1 2026 "
+            "half-year report as direct PDFs on the issuer's own domain."
+        ),
+        warnings=(),
     ),
     VerifiedIssuerSource(
         ticker="MC",
@@ -194,11 +200,20 @@ _ISSUERS: tuple[VerifiedIssuerSource, ...] = (
         country="France",
         official_website_domain="hermes.com",
         allowed_domains=("hermes.com", "finance.hermes.com", "assets-finance.hermes.com"),
-        investor_relations_url="https://www.hermes.com/en/investors/",
-        annual_reports_url="https://www.hermes.com/en/financial-publications/",
-        press_releases_url="https://www.hermes.com/en/press-releases-and-news/",
+        # NOTE: no ``document_domains`` entry — ``assets-finance.hermes.com`` is
+        # already inside ``allowed_domains`` above (it is a subdomain of the
+        # issuer's own registrable domain), and duplicating the trust would say
+        # the same permission twice in two mechanisms.
+        investor_relations_url="https://finance.hermes.com/en/",
+        annual_reports_url="https://finance.hermes.com/en/financial-publications/",
+        press_releases_url="https://finance.hermes.com/en/press-releases-and-news",
         source_confidence=CONFIDENCE_VERIFIED_LIVE,
-        last_verified_note="IR, financial-publications + press index confirmed 2026-07-25.",
+        last_verified_note=(
+            "Re-verified live 2026-08-25: the registered www.hermes.com/en/... "
+            "paths return 403 to the research bot; the issuer's dedicated "
+            "finance.hermes.com subdomain serves the same indexes with 200 and "
+            "links documents on assets-finance.hermes.com."
+        ),
         warnings=(
             "Universal Registration Document is French primary disclosure; "
             "local-language extraction pending Phase 30 translation.",
@@ -211,14 +226,24 @@ _ISSUERS: tuple[VerifiedIssuerSource, ...] = (
         country="France",
         official_website_domain="kering.com",
         allowed_domains=("kering.com",),
+        # Verified live 2026-08-25: the publications index embeds a document
+        # list whose PDFs are served from the issuer's own asset host. Same
+        # posture as Pandora's CDN — a retrieval permission for artifacts
+        # linked from the issuer's pages, never a news or publication source.
+        document_domains=("assets-keringcom.keringapps.com",),
         investor_relations_url="https://www.kering.com/en/finance/",
         annual_reports_url="https://www.kering.com/en/finance/publications/",
         press_releases_url="https://www.kering.com/en/news/",
-        source_confidence=CONFIDENCE_VERIFIED_REFERENCE,
-        last_verified_note="Known-stable finance/publications URLs; site uses bot protection.",
+        source_confidence=CONFIDENCE_VERIFIED_LIVE,
+        last_verified_note=(
+            "Re-verified live 2026-08-25: the publications index returns 200 to "
+            "the research bot (the previously recorded bot-protection block did "
+            "not reproduce) and lists the FY2025 Universal Registration Document "
+            "and the H1 2026 press release + First-Half Report."
+        ),
         warnings=(
-            "Site uses bot protection; live fetch is often blocked (honest gap "
-            "returned). Universal Registration Document is French primary disclosure.",
+            "Universal Registration Document is the French primary annual "
+            "disclosure; an English edition is published alongside it.",
         ),
     ),
     VerifiedIssuerSource(
@@ -282,8 +307,18 @@ _ISSUERS: tuple[VerifiedIssuerSource, ...] = (
         annual_reports_url="https://www.monclergroup.com/en/investors/results-and-reports",
         press_releases_url="https://www.monclergroup.com/en/media/press-releases",
         source_confidence=CONFIDENCE_VERIFIED_REFERENCE,
-        last_verified_note="Known-stable IR URLs; site returned 403 to research bot.",
-        warnings=("Site returned 403 to the research bot; live fetch may be blocked.",),
+        last_verified_note=(
+            "Re-checked 2026-08-25: every monclergroup.com path returns 403 "
+            "with the site's own 'Monclergroup - Maintenance' page — a "
+            "transient site outage, NOT an anti-bot block. The issuer's "
+            "regulated disclosures remain reachable through the Italian "
+            "CONSOB-authorised storage mechanism."
+        ),
+        warnings=(
+            "Issuer website was serving a maintenance page at last check; "
+            "regulated disclosures are retrieved from the official Italian "
+            "storage mechanism instead.",
+        ),
     ),
     # ── Optional follow-up test issuers ──────────────────────────────────────
     VerifiedIssuerSource(

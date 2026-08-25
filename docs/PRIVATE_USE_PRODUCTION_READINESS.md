@@ -427,7 +427,8 @@ The campaign may return READY only if every item in §52 of the program brief (A
 |---|---|---|---|---|
 | [#149](https://github.com/IvanAnikin/InvestingBuddy/pull/149) | PR-A — persist Group/segment fact scope | `6b7b4cb` | green | **018** applied to staging 2026-08-25 |
 | [#150](https://github.com/IvanAnikin/InvestingBuddy/pull/150) | PR-B — historical financial series | `8b516e3` | green | none |
-| _(PR-C in flight)_ | PR-C — snapshot expansion, source-neutral copy, DFR gaps | | | none |
+| [#151](https://github.com/IvanAnikin/InvestingBuddy/pull/151) | PR-C — snapshot expansion, source-neutral copy, DFR gaps | `99df1b9` | green | none |
+| _(PR-D in flight)_ | PR-D — current-period (interim) evidence | | | none |
 
 ## 30. Final status
 

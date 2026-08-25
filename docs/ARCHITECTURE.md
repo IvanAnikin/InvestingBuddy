@@ -1,6 +1,13 @@
 # Architecture
 
-## Status: Private-Use Production Readiness — PR-C: Richer Canonical Snapshot, Source-Neutral Copy, Per-Company DFR Gaps (**branch, pre-merge**; **no migration**, Alembic head stays `018`). The canonical snapshot field set is now DERIVED from the parser's own exported vocabulary (`primary_fact_parser.FINANCIAL_STATEMENT_FIELDS`), so it cannot drift from what is actually extractable — it went from 7 fields to 15, and `total_equity` / `net_cash` / `operating_margin` stopped counting as no fundamental anywhere. US filing vocabulary ("10-K / 40-F", "SEC statement fundamentals") is replaced by jurisdiction-resolved wording. The Deep Field Review pack now states per-company identity completeness so a comparative council cannot generalise one company's missing LEI onto another. See ADR-033.
+## Status: Private-Use Production Readiness — PR-D: Current-Period (Interim) Evidence (**branch, pre-merge**; **no migration**, Alembic head stays `018`; extraction `pipeline_version` `12 → 13`). Every target issuer had published something newer than its last annual report, and none of it could reach a report: interim documents could never survive the per-issuer selection cap, interim figures were stamped with bare years, and an interim figure could occupy the canonical annual slot. Selection is now period- and recency-aware with a reserved current-period slot; prose and table headers recognise interim markers from the value's own local window; and `<field>_primary_filing` (latest ANNUAL) and `<field>_current_period` (latest INTERIM) are separate, explicitly non-comparable slots. Nothing is annualised. See ADR-034.
+
+<details>
+<summary>Previous status (Readiness PR-C)</summary>
+
+## Status: Private-Use Production Readiness — PR-C: Richer Canonical Snapshot, Source-Neutral Copy, Per-Company DFR Gaps (merged `99df1b9`; **no migration**, Alembic head stays `018`). The canonical snapshot field set is now DERIVED from the parser's own exported vocabulary (`primary_fact_parser.FINANCIAL_STATEMENT_FIELDS`), so it cannot drift from what is actually extractable — it went from 7 fields to 15, and `total_equity` / `net_cash` / `operating_margin` stopped counting as no fundamental anywhere. US filing vocabulary ("10-K / 40-F", "SEC statement fundamentals") is replaced by jurisdiction-resolved wording. The Deep Field Review pack now states per-company identity completeness so a comparative council cannot generalise one company's missing LEI onto another. See ADR-033.
+
+</details>
 
 <details>
 <summary>Previous status (Readiness PR-B)</summary>

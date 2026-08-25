@@ -84,6 +84,7 @@ from app.services.sources.primary_fact_parser import (
     FIELD_TOTAL_EQUITY,
     PrimaryFact,
     _find_currency,
+    _interim_marker_near,
     _norm_number,
     _parse_excerpt,
     _scale_word,
@@ -455,14 +456,26 @@ def _find_scale(text: str) -> str | None:
 
 
 def _column_periods(table: ExtractedTable) -> dict[int, str]:
-    """Map column index → period (a 4-digit year) from the first row that has
-    year tokens (the header). Later columns without a year are left unmapped."""
+    """Map column index → period from the first row that has year tokens (the
+    header). Later columns without a year are left unmapped.
+
+    Private-use readiness PR-D: a header cell that ALSO states an interim
+    marker maps to the interim period, not the bare year. A real interim
+    release heads its columns "First-half 2025 | First-half 2026"; reading
+    those as ``2025`` / ``2026`` presents half-year revenue as full-year
+    revenue — the ``INTERIM_AS_ANNUAL`` contradiction. The marker is read from
+    the header cell ITSELF, so a column that genuinely is a full year (e.g. the
+    "FY 2025" comparison column an interim report often prints alongside) keeps
+    its bare year.
+    """
     for row in table.rows:
         found: dict[int, str] = {}
         for col, cell in enumerate(row):
-            m = _YEAR_RE.search(cell or "")
+            text = cell or ""
+            m = _YEAR_RE.search(text)
             if m:
-                found[col] = m.group(0)
+                marker = _interim_marker_near(text)
+                found[col] = f"{marker} {m.group(0)}" if marker else m.group(0)
         if found:
             return found
     return {}
