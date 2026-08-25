@@ -226,7 +226,7 @@ def test_registry_summary_counts_after_commodity_layer():
     # + 3 patent office / index events (29D.2) + 3 permit / regulatory-event
     # sources (29D.3) = 34 enabled; the procurement, patent and permit venues were
     # promoted out of the planned set (7 -> 2).
-    assert summary["enabled"] == 35  # +1: local-language business press (Phase 30B)
+    assert summary["enabled"] == 36  # +1: local-language business press (Phase 30B)  # +1: Italian regulated disclosures (readiness PR-E)
     assert summary["scaffolded"] == 2
     assert summary["planned"] == 1  # only OpenBB remains planned (Phase 30B)
     assert summary["total"] == len(reg.all_sources())

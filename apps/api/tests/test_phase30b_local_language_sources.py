@@ -220,10 +220,10 @@ def test_5_registry_promotes_local_language_press_to_enabled():
     # The regulator-layer promotions (11) + 29C/29D reference sources (23) + this
     # local-language press promotion => 35 enabled; OpenBB is the last planned row.
     summary = reg.summary()
-    assert summary["enabled"] == 35
+    assert summary["enabled"] == 36  # +1: Italian regulated disclosures (readiness PR-E)
     assert summary["planned"] == 1
     assert summary["scaffolded"] == 2
-    assert summary["total"] == 38
+    assert summary["total"] == 39
     assert summary["total"] == len(reg.all_sources())
 
 

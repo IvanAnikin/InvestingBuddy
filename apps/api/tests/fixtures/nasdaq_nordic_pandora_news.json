@@ -1,0 +1,193 @@
+{
+  "results" : {
+    "item" : [ {
+      "disclosureId" : 1459976,
+      "categoryId" : 66,
+      "headline" : "Trading in Pandora A/S shares by Board members, Executives and Associated persons",
+      "language" : "en",
+      "languages" : [ "en" ],
+      "cnsCategory" : "Managers' Transactions",
+      "messageUrl" : "https://view.news.eu.nasdaq.com/view?id=baca43f60c340ba4ccceb470d683fbfb3&lang=en&src=listed",
+      "releaseTime" : "2026-08-25 08:00:00",
+      "published" : "2026-08-25 08:00:00",
+      "market" : "Main Market, Copenhagen",
+      "attachment" : [ {
+        "mimetype" : "application/pdf",
+        "fileName" : "Pandora_Company_Announcement_No_1018.pdf",
+        "attachmentUrl" : "https://attachment.news.eu.nasdaq.com/a7290151e9e3ea82fb2b13d20aa33ab65"
+      } ],
+      "company" : "Pandora A/S",
+      "cnsTypeId" : "6"
+    }, {
+      "disclosureId" : 1459387,
+      "categoryId" : 144,
+      "headline" : "Major shareholder announcement",
+      "language" : "en",
+      "languages" : [ "en" ],
+      "cnsCategory" : "Major shareholder announcements",
+      "messageUrl" : "https://view.news.eu.nasdaq.com/view?id=b7b5bbc05659ac46188285839b8d16a9e&lang=en&src=listed",
+      "releaseTime" : "2026-08-20 14:53:40",
+      "published" : "2026-08-20 14:53:40",
+      "market" : "Main Market, Copenhagen",
+      "attachment" : [ {
+        "mimetype" : "application/pdf",
+        "fileName" : "Pandora_Company_Announcement_No_1017.pdf",
+        "attachmentUrl" : "https://attachment.news.eu.nasdaq.com/a5517a57ac26cc44b34507234d6aab193"
+      } ],
+      "company" : "Pandora A/S",
+      "cnsTypeId" : "6"
+    }, {
+      "disclosureId" : 1458532,
+      "categoryId" : 66,
+      "headline" : "Trading in Pandora A/S shares by Board members, Executives and Associated persons",
+      "language" : "en",
+      "languages" : [ "en" ],
+      "cnsCategory" : "Managers' Transactions",
+      "messageUrl" : "https://view.news.eu.nasdaq.com/view?id=be82b412d2a4c8d91a8db101b52d9c27e&lang=en&src=listed",
+      "releaseTime" : "2026-08-17 08:00:00",
+      "published" : "2026-08-17 08:00:00",
+      "market" : "Main Market, Copenhagen",
+      "attachment" : [ {
+        "mimetype" : "application/pdf",
+        "fileName" : "Pandora_Company_Announcement_No_1016.pdf",
+        "attachmentUrl" : "https://attachment.news.eu.nasdaq.com/a396acec5152acb097352f50de702a774"
+      } ],
+      "company" : "Pandora A/S",
+      "cnsTypeId" : "6"
+    }, {
+      "disclosureId" : 1457989,
+      "categoryId" : 428,
+      "headline" : "Pandora delivers 3% organic growth in Q2 - guidance upgraded",
+      "language" : "en",
+      "languages" : [ "en" ],
+      "cnsCategory" : "Inside information",
+      "messageUrl" : "https://view.news.eu.nasdaq.com/view?id=b342fdd9fad7ac927b7c03cb7f0f10885&lang=en&src=listed",
+      "releaseTime" : "2026-08-12 17:30:00",
+      "published" : "2026-08-12 17:30:00",
+      "market" : "Main Market, Copenhagen",
+      "attachment" : [ {
+        "mimetype" : "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "fileName" : "Pandora Appendix Company Announcement Q2 2026.xlsx",
+        "attachmentUrl" : "https://attachment.news.eu.nasdaq.com/a7e99b54d30ba771e9b82a2bf04b0dece"
+      }, {
+        "mimetype" : "application/pdf",
+        "fileName" : "Pandora Q2 2026 Interim Report Company announcement_No_1015.pdf",
+        "attachmentUrl" : "https://attachment.news.eu.nasdaq.com/aada3dfb478410f5fc7fe5a9a60d0448c"
+      } ],
+      "company" : "Pandora A/S",
+      "cnsTypeId" : "6"
+    }, {
+      "disclosureId" : 1457864,
+      "categoryId" : 428,
+      "headline" : "Bang & Olufsen appoints new executive leadership team  ",
+      "language" : "en",
+      "languages" : [ "en" ],
+      "cnsCategory" : "Inside information",
+      "messageUrl" : "https://view.news.eu.nasdaq.com/view?id=bd543aaa0f1d4e5815689103dbaf57a3e&lang=en&src=listed",
+      "releaseTime" : "2026-08-12 09:00:12",
+      "published" : "2026-08-12 09:00:12",
+      "market" : "Main Market, Copenhagen",
+      "attachment" : [ {
+        "mimetype" : "application/pdf",
+        "fileName" : "BO_2611_company announcement.pdf",
+        "attachmentUrl" : "https://attachment.news.eu.nasdaq.com/ab6a5e4c62f1f72fa61abda77b42ea163"
+      } ],
+      "company" : "Bang & Olufsen A/S",
+      "cnsTypeId" : "6"
+    }, {
+      "disclosureId" : 1457079,
+      "categoryId" : 428,
+      "headline" : "Pandora appoints Paulo Garcia as new CFO as Anders Boyer will retire",
+      "language" : "en",
+      "languages" : [ "en" ],
+      "cnsCategory" : "Inside information",
+      "messageUrl" : "https://view.news.eu.nasdaq.com/view?id=bc94ad97dbd22d11641eef513adf214b8&lang=en&src=listed",
+      "releaseTime" : "2026-08-06 08:16:00",
+      "published" : "2026-08-06 08:16:00",
+      "market" : "Main Market, Copenhagen",
+      "attachment" : [ {
+        "mimetype" : "application/pdf",
+        "fileName" : "Pandora_Company_Announcement_No_1014.pdf",
+        "attachmentUrl" : "https://attachment.news.eu.nasdaq.com/abff9f4a136df54c7f19fe35150378db7"
+      } ],
+      "company" : "Pandora A/S",
+      "cnsTypeId" : "6"
+    }, {
+      "disclosureId" : 1440932,
+      "categoryId" : 66,
+      "headline" : "Trading in Pandora A/S shares by board members, executives and associated persons",
+      "language" : "en",
+      "languages" : [ "en" ],
+      "cnsCategory" : "Managers' Transactions",
+      "messageUrl" : "https://view.news.eu.nasdaq.com/view?id=b20c23aef9fd23552a9074aa76a6a60fe&lang=en&src=listed",
+      "releaseTime" : "2026-05-08 10:42:46",
+      "published" : "2026-05-08 10:42:46",
+      "market" : "Main Market, Copenhagen",
+      "attachment" : [ {
+        "mimetype" : "application/pdf",
+        "fileName" : "Pandora_Company_Announcement_No_1013.pdf",
+        "attachmentUrl" : "https://attachment.news.eu.nasdaq.com/a6e69bbe4e8c57fa50d7802ca02c20b0b"
+      } ],
+      "company" : "Pandora A/S",
+      "cnsTypeId" : "6"
+    }, {
+      "disclosureId" : 1439953,
+      "categoryId" : 153,
+      "headline" : "2% ORGANIC GROWTH IN Q1 2026 - GUIDANCE UNCHANGED ",
+      "language" : "en",
+      "languages" : [ "en" ],
+      "cnsCategory" : "Interim report (Q1 and Q3)",
+      "messageUrl" : "https://view.news.eu.nasdaq.com/view?id=b2ebecdd723694c033745b4afb09a9977&lang=en&src=listed",
+      "releaseTime" : "2026-05-06 07:30:00",
+      "published" : "2026-05-06 07:30:00",
+      "market" : "Main Market, Copenhagen",
+      "attachment" : [ {
+        "mimetype" : "application/pdf",
+        "fileName" : "Pandora Q1 2026 Interim Report Company announcement_No_1012.pdf",
+        "attachmentUrl" : "https://attachment.news.eu.nasdaq.com/a620efe73e6c089c13ae7ec6a6c74ba9f"
+      }, {
+        "mimetype" : "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "fileName" : "Pandora Appendix Company Announcement Q1 2026.xlsx",
+        "attachmentUrl" : "https://attachment.news.eu.nasdaq.com/a83732d7422b497af8f75194566c31098"
+      } ],
+      "company" : "Pandora A/S",
+      "cnsTypeId" : "6"
+    }, {
+      "disclosureId" : 1433841,
+      "categoryId" : 144,
+      "headline" : "Pandora reduces treasury shares to less than 5% of share capital",
+      "language" : "en",
+      "languages" : [ "en" ],
+      "cnsCategory" : "Major shareholder announcements",
+      "messageUrl" : "https://view.news.eu.nasdaq.com/view?id=bf4d252d2aec34f0d689e76cb48af6d15&lang=en&src=listed",
+      "releaseTime" : "2026-04-13 12:42:13",
+      "published" : "2026-04-13 12:42:13",
+      "market" : "Main Market, Copenhagen",
+      "attachment" : [ {
+        "mimetype" : "application/pdf",
+        "fileName" : "Pandora_Company_Announcement_No_1011.pdf",
+        "attachmentUrl" : "https://attachment.news.eu.nasdaq.com/a531e552448d73b9c0627ba9d55fc2053"
+      } ],
+      "company" : "Pandora A/S",
+      "cnsTypeId" : "6"
+    }, {
+      "disclosureId" : 1433554,
+      "categoryId" : 75,
+      "headline" : "Reduction of Pandora A/S' share capital",
+      "language" : "en",
+      "languages" : [ "en" ],
+      "cnsCategory" : "Total number of voting rights and capital",
+      "messageUrl" : "https://view.news.eu.nasdaq.com/view?id=b2fcd3e8af8005f9da4a07c97291bab01&lang=en&src=listed",
+      "releaseTime" : "2026-04-10 10:43:47",
+      "published" : "2026-04-10 10:43:47",
+      "market" : "Main Market, Copenhagen",
+      "attachment" : [ {
+        "mimetype" : "application/pdf",
+        "fileName" : "Pandora_Company_Announcement_No_1010.pdf",
+        "attachmentUrl" : "https://attachment.news.eu.nasdaq.com/abffe0a8db7f0595853a6514c7f3f1789"
+      } ],
+      "company" : "Pandora A/S",
+      "cnsTypeId" : "6"
+    } ]
+  }
+}
