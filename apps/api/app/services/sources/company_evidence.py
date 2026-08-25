@@ -104,6 +104,11 @@ REGULATOR_REFERENCE_IDS = frozenset(
         "deutsche_boerse",
         "nordic_disclosures",
         "six_swiss",
+        # Private-use readiness PR-E — Italy's CONSOB-authorised storage
+        # mechanism. Without this entry an Italian issuer resolved to
+        # ``borsa_italiana`` but the connector was never runnable, so the
+        # mapping had no effect.
+        "borsa_italiana",
     }
 )
 
@@ -808,6 +813,7 @@ async def collect_company_source_evidence(
     # Generic scaffolds yield honest gaps only; the dedicated regulator
     # connectors (e.g. uk_fca_nsm, Phase 29B.4A) additionally yield a bounded
     # T2 regulator-transport SOURCE REFERENCE (never a fabricated filing).
+    live_disclosures = bool(getattr(cfg, "source_live_disclosures_enabled", False))
     for sid in _relevant_scaffold_ids(registry, company, requested):
         conn = registry.connectors().get(sid)
         if conn is None:
@@ -816,6 +822,30 @@ async def collect_company_source_evidence(
         items.extend(res.evidence_items[:max_items])
         gaps.extend(res.source_gaps)
         warnings.extend(res.warnings)
+        # Private-use readiness PR-E corrective (found by LIVE acceptance):
+        # ``fetch_events`` is where a venue's LIVE regulated disclosures are
+        # retrieved, and this loop only ever called ``fetch_filings`` — so the
+        # live-retrieval work reached the connector and stopped there. Every
+        # unit test passed because they called ``fetch_events`` directly.
+        #
+        # Only called when live retrieval is enabled: with the flag off
+        # ``fetch_events`` returns the same venue reference ``fetch_filings``
+        # just returned, and adding a duplicate reference item would be its own
+        # small contradiction.
+        if not live_disclosures:
+            continue
+        event_res = await conn.call_safe(conn.fetch_events, company, query)
+        # The reference item is already present from ``fetch_filings`` above;
+        # take only the EVENTS so the same venue pointer is not listed twice.
+        items.extend(
+            [
+                item
+                for item in event_res.evidence_items
+                if getattr(item, "source_type", None) == "regulated_disclosure_event"
+            ][:max_items]
+        )
+        gaps.extend(event_res.source_gaps)
+        warnings.extend(event_res.warnings)
 
     # -- Local-language business-press reference (Phase 30B) ---------------
     # For a verified non-US issuer whose home market is FR / DE / IT / DA, add a

@@ -213,6 +213,64 @@ def _structured_facts(
     return out
 
 
+def _historical_facts_from_artifacts(artifacts: "list[Any] | None") -> list[dict[str, Any]]:
+    # Local imports keep this module free of an import cycle with the
+    # extraction layer (the same pattern the persistence writer uses).
+    """Every validated fact from the ingested documents — UNCAPPED.
+
+    Live-acceptance corrective (2026-08-26). ``_historical_facts`` reads the
+    EVIDENCE ITEMS, and those are capped per document
+    (``primary_document_evidence_cap``, default 10) so a rich document cannot
+    flood the council prompt. That cap is correct for the prompt and fatal for a
+    SERIES: the real Pandora annual report yields 52 period-scoped facts
+    covering FY2021-FY2025, of which only ~10 became evidence items — so every
+    metric arrived as a single FY2025 observation and the report said
+    "no multi-period financial series was reconstructed" beside a database
+    holding five years of them.
+
+    The artifacts carry the COMPLETE validated fact set for each document, and
+    they are populated on every deep-ingestion path regardless of the
+    persistence flags. Reading them here keeps the prompt bound exactly where it
+    belongs — PR-B already renders each series as ONE dense line — while letting
+    the series see everything that was actually extracted.
+
+    Low-confidence facts stay excluded, as in the evidence-item path.
+    """
+    from app.services.sources.extracted_fact_validator import VALIDATION_VALIDATED
+    from app.services.sources.primary_document_extractor import _confidence_bucket
+
+    out: list[dict[str, Any]] = []
+    for artifact in artifacts or []:
+        url = getattr(artifact, "source_url", None)
+        for fact in getattr(artifact, "validated_facts", None) or []:
+            if getattr(fact, "validation_status", None) != VALIDATION_VALIDATED:
+                continue
+            confidence = getattr(fact, "confidence", 0.0)
+            if isinstance(confidence, str):
+                bucket = confidence
+            else:
+                bucket = _confidence_bucket(float(confidence or 0.0))
+            if bucket not in ("high", "medium"):
+                continue
+            out.append(
+                {
+                    "field": getattr(fact, "label", None),
+                    "value": getattr(fact, "value_text", None),
+                    "numeric_value": getattr(fact, "value_numeric", None),
+                    "unit": getattr(fact, "unit", None),
+                    "currency": getattr(fact, "currency", None),
+                    "scale": getattr(fact, "scale", None),
+                    "period": getattr(fact, "period", None),
+                    "scope": getattr(fact, "scope", None),
+                    "page_number": getattr(fact, "page_number", None),
+                    "table_location": getattr(fact, "table_location", None),
+                    "confidence": bucket,
+                    "source_url": url,
+                }
+            )
+    return out
+
+
 def _historical_facts(evidence_items: list[Any]) -> list[dict[str, Any]]:
     """High AND medium confidence facts — private-use readiness PR-B.
 
@@ -1488,7 +1546,12 @@ async def maybe_run_council(
                 connector_gap_messages = collected.gap_messages()
                 primary_documents = _primary_document_summary(collected.evidence_items)
                 primary_facts = _primary_facts(collected.evidence_items)
-                historical_facts = _historical_facts(collected.evidence_items)
+                # Prefer the COMPLETE artifact fact sets; fall back to the
+                # (capped) evidence items when no artifact is available, e.g.
+                # the shallow/metadata-only path.
+                historical_facts = _historical_facts_from_artifacts(
+                    collected.primary_document_artifacts
+                ) or _historical_facts(collected.evidence_items)
                 # Phase 32A Slice 5 (3c-i): capture the deep artifacts for persistence
                 # ONLY when both the ingestion + citation persistence flags are on.
                 # Either flag off ⇒ list stays empty ⇒ nothing to persist downstream.
@@ -1641,6 +1704,11 @@ async def maybe_run_council(
             extra_known_gaps=source_gaps,
             connector_evidence=connector_evidence,
             connector_gap_messages=connector_gap_messages,
+            # The COMPLETE (uncapped) fact set the multi-period series are built
+            # from — see ``_historical_facts_from_artifacts``. The pack still
+            # renders each series as ONE dense line, so this widens what the
+            # series can SEE without widening the prompt.
+            historical_facts=historical_facts,
             # Compress the pack when the connector layer is on (staging) so a
             # larger primary-source pack cannot balloon the prompt / TPM budget.
             apply_budget=cfg.source_connector_enabled,

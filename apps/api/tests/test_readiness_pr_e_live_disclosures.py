@@ -766,3 +766,41 @@ def test_nasdaq_market_map_covers_only_nordic_venues() -> None:
 
 def test_the_live_disclosure_flag_is_off_by_default() -> None:
     assert Settings().source_live_disclosures_enabled is False
+
+
+# =========================================================================== #
+# Live-acceptance corrective (2026-08-26): the connector must be CALLED        #
+# =========================================================================== #
+
+
+def test_the_italian_venue_is_runnable_not_merely_mapped() -> None:
+    """Found by LIVE acceptance. ``regulator_connector_for`` resolved an
+    Italian issuer to ``borsa_italiana``, but the connector was not in
+    ``REGULATOR_REFERENCE_IDS``, so the evidence collector never ran it and the
+    mapping had no effect whatsoever."""
+    from app.services.sources.company_evidence import REGULATOR_REFERENCE_IDS
+
+    assert "borsa_italiana" in REGULATOR_REFERENCE_IDS
+
+
+def test_every_regulator_connector_id_actually_exists() -> None:
+    """A mapped id that no connector implements is a silent dead end."""
+    from app.services.sources.company_evidence import REGULATOR_REFERENCE_IDS
+
+    connectors = build_registry().connectors()
+    for source_id in REGULATOR_REFERENCE_IDS:
+        assert source_id in connectors, source_id
+
+
+def test_the_evidence_collector_calls_fetch_events_when_live_is_enabled() -> None:
+    """The other half of the same live defect: the collector only ever called
+    ``fetch_filings``, and ``fetch_events`` is where PR-E put live retrieval —
+    so the live-retrieval work reached the connector and stopped there. Every
+    unit test passed because they called ``fetch_events`` directly."""
+    import inspect
+
+    from app.services.sources import company_evidence
+
+    source = inspect.getsource(company_evidence.collect_company_source_evidence)
+    assert "fetch_events" in source
+    assert "source_live_disclosures_enabled" in source

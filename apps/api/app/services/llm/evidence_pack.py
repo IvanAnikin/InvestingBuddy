@@ -744,6 +744,7 @@ def _add_historical_series(
     *,
     max_lines: int,
     max_periods: int,
+    historical_facts: "list[dict[str, Any]] | None" = None,
 ) -> None:
     """Add the compact multi-period trend slice — private-use readiness PR-B.
 
@@ -760,7 +761,14 @@ def _add_historical_series(
     """
     if builder.full or max_lines <= 0:
         return
-    facts = _facts_from_connector_evidence(connector_evidence)
+    # Prefer the caller's COMPLETE fact set. Deriving from ``connector_evidence``
+    # reads the per-document-CAPPED evidence items, which is correct for the
+    # prompt and fatal for a series: a real annual report yields ~50
+    # period-scoped facts of which only ~10 become items, so every metric
+    # arrives as one observation and no trend can exist.
+    facts = list(historical_facts or []) or _facts_from_connector_evidence(
+        connector_evidence
+    )
     if not facts:
         return
     history = build_financial_history(facts, max_periods=max_periods)
@@ -815,6 +823,7 @@ def build_evidence_pack(
     extra_known_gaps: list[str] | None = None,
     connector_evidence: list[Any] | None = None,
     connector_gap_messages: list[str] | None = None,
+    historical_facts: list[dict[str, Any]] | None = None,
     apply_budget: bool = False,
     budget_cfg: Any | None = None,
 ) -> EvidencePack:
@@ -860,6 +869,7 @@ def build_evidence_pack(
     _add_historical_series(
         builder,
         connector_evidence,
+        historical_facts=historical_facts,
         max_lines=int(
             getattr(budget_cfg, "llm_council_history_max_series", DEFAULT_MAX_HISTORY_SERIES)
             or DEFAULT_MAX_HISTORY_SERIES

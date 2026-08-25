@@ -500,3 +500,82 @@ def test_report_section_never_claims_publication_readiness() -> None:
     text = str(section).lower()
     for banned in ("buy", "sell", "price target", "fair value", "upside"):
         assert banned not in text
+
+
+# =========================================================================== #
+# Live-acceptance correctives (2026-08-26)                                    #
+# =========================================================================== #
+
+
+def test_the_series_sees_every_extracted_fact_not_only_the_capped_items() -> None:
+    """Found by LIVE acceptance, not by a unit test.
+
+    The council pack derived its series from the EVIDENCE ITEMS, and those are
+    capped per document (``primary_document_evidence_cap``, default 10) so a
+    rich document cannot flood the prompt. That cap is right for the prompt and
+    fatal for a series: the real Pandora annual report yields 52 period-scoped
+    facts covering FY2021-FY2025, of which only ~10 became items — so every
+    metric arrived as a single FY2025 observation and the live report said
+    "no multi-period financial series was reconstructed" while the database held
+    five years of them for nine metrics.
+
+    The complete set now reaches the series builder explicitly; the prompt stays
+    bound because a series is still ONE dense line.
+    """
+    complete = [
+        fact(metric, float(1000 + i), str(year))
+        for metric in ("revenue", "operating_profit", "net_income")
+        for i, year in enumerate(range(2021, 2026))
+    ]
+    # Only two of those fifteen facts survived the per-document cap.
+    capped_items = [
+        _fact_item("revenue", 32549.0, "2025", confidence="high"),
+        _fact_item("operating_profit", 7783.0, "2025", confidence="high"),
+    ]
+
+    builder = _Builder(max_items=40)
+    _add_historical_series(builder, capped_items, max_lines=8, max_periods=5)
+    assert builder.items == [], "capped items alone cannot support a trend"
+
+    builder = _Builder(max_items=40)
+    _add_historical_series(
+        builder, capped_items, max_lines=8, max_periods=5, historical_facts=complete
+    )
+    assert len(builder.items) == 3
+    for item in builder.items:
+        assert "FY2021" in (item.excerpt or "") and "FY2025" in (item.excerpt or "")
+
+
+def test_a_pandora_shaped_five_year_fact_set_yields_a_full_series() -> None:
+    """The exact live shape: nine metrics x five years, Group-scoped."""
+    metrics = {
+        "revenue": (23400, 26463, 28133, 31673, 32549),
+        "operating_profit": (5510, 6395, 6871, 7749, 7783),
+        "net_income": (4142, 4665, 4864, 5343, 5241),
+        "operating_cash_flow": (6100, 6300, 6500, 7000, 7361),
+        "free_cash_flow": (4100, 4300, 4500, 4800, 5022),
+        "total_assets": (25000, 26000, 27000, 28500, 29603),
+        "total_equity": (4000, 4200, 4500, 5000, 5282),
+        "net_debt": (9000, 10000, 11000, 12500, 13719),
+        "employees": (30533, 34299, 37142, 41326, 42281),
+    }
+    facts = [
+        fact(
+            metric,
+            float(value),
+            str(year),
+            currency=None if metric == "employees" else "DKK",
+            scale=None if metric == "employees" else "million",
+        )
+        for metric, values in metrics.items()
+        for year, value in zip(range(2021, 2026), values)
+    ]
+    history = build_financial_history(facts)
+    assert len(history.series) == len(metrics)
+    assert all(s.period_count == 5 for s in history.series)
+    assert all(s.comparability == COMPARABLE for s in history.series)
+    revenue = history.for_metric("revenue")[0]
+    assert revenue.points[-1].value == 32549.0
+    assert revenue.points[0].value == 23400.0
+    # And the council would be told the direction, not just the endpoints.
+    assert any(c.calculation == CALC_PERCENT_CHANGE for c in revenue.changes)
