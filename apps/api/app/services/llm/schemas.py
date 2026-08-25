@@ -311,6 +311,15 @@ class CouncilResult(BaseModel):
     # a real high-confidence fact exists. Carries no raw document text or excerpt
     # body — only the fact fields + short provenance.
     primary_facts: list[dict[str, Any]] = Field(default_factory=list)
+    # Private-use readiness PR-B: the SAME structured facts widened to include
+    # MEDIUM confidence, kept separately so the two uses stay honest.
+    # ``primary_facts`` feeds canonical single-value report slots, where a
+    # medium-confidence figure must never be presented as THE number.
+    # ``historical_facts`` feeds multi-period SERIES, where dropping the
+    # medium-confidence middle years of a five-year table would leave the
+    # report saying "no historical trend" beside a complete one. Low confidence
+    # is excluded from both. Carries no raw document text.
+    historical_facts: list[dict[str, Any]] = Field(default_factory=list)
     # Phase 29C.1: bounded, reference-only MACRO CONTEXT for this company's broad
     # theme (sector/industry → official macro statistics publishers). Each entry
     # is a source reference (identity + landing URL + the indicators it covers)
@@ -478,6 +487,7 @@ class CouncilResult(BaseModel):
             "agents": [a.to_dict() for a in self.agents],
             "primary_documents": list(self.primary_documents),
             "primary_facts": list(self.primary_facts),
+            "historical_facts": list(self.historical_facts),
             "macro_context": list(self.macro_context),
             "event_context": list(self.event_context),
             "translated_excerpts": list(self.translated_excerpts),

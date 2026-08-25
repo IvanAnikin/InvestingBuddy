@@ -2093,3 +2093,73 @@ implicit "unscoped means Group" convention is *retained* on the fresh path — a
 deliberate, now-explicitly-tested decision rather than an accident, because
 changing it would silently drop every legitimately unscoped Group figure that
 issuers publish without a scope word.
+
+---
+
+## ADR-032: Historical Series Are a Bounded, Fail-Closed Contract — Not Raw Facts in a Prompt
+
+**Date:** 2026-08-25
+**Status:** Accepted
+
+### Context
+
+Phase 32D gave the extractor the ability to rebuild borderless multi-year
+tables. On a real Pandora annual report that produced ~52 period-scoped facts
+covering FY2021–FY2025. Almost none of it reached a human: every downstream
+consumer — `_high_confidence_facts_for`, the canonical snapshot, the council
+evidence pack — takes ONE representative value per field and drops the rest. A
+council could be handed a complete five-year revenue series and still report
+"no historical revenue trend information".
+
+The naive fix — push all 52 facts into the council prompt — fails for two
+independent reasons. It blows a TPM-paced token budget and crowds out every
+other kind of evidence; and it hands a model the raw material to compare things
+that must never be compared (Group against segment, FY against H1, DKK against
+EUR).
+
+### Decision
+
+A typed, bounded series contract sits between extraction and every consumer.
+
+1. **`financial_period.py`** — a `ReportingPeriod` value model that can hold
+   `FY2025` and `H1 2026` at the same time, orders them, and *refuses* to
+   compare across period types. `is_more_recent` returns `False` for an interim
+   vs an annual period on purpose: an interim result sits beside an annual one,
+   it does not supersede it.
+2. **`financial_history.py`** — series are keyed by the FULL identity
+   `(metric, scope, period type, currency, unit, scale)`. A currency mismatch
+   therefore produces *two series*, not one bad trend. Comparability is
+   fail-closed and its reasons are explicit; an unscoped fact never enters a
+   series at all, because it might be the Group's or a segment's.
+3. **Bounded by design** — at most 5 periods per series and at most 8 series
+   lines in the council pack, each a single dense line stating its own scope and
+   unit. That is a token bound, not a research bound: the full series still
+   reach the deterministic report surfaces.
+4. **Derived arithmetic only** — absolute change, percentage change, and
+   percentage-POINT change for metrics that are already percentages. Each
+   carries its own inputs and formula. A zero base emits no percentage change,
+   because an undefined ratio is not infinite growth.
+5. **Two fact widths.** `CouncilResult.primary_facts` (high confidence only)
+   feeds canonical single-value slots; `historical_facts` (high + medium) feeds
+   series. A medium-confidence figure must not be presented as *the* number, and
+   dropping the medium-confidence middle years of a five-year table would leave
+   the report asserting "no trend" beside a complete one.
+
+### Consequences
+
+**Positive.** A researcher and the council both see real direction over time,
+with scope, period type, unit and page-level provenance on every observation. A
+missing year is named rather than interpolated. A restatement is resolved
+deterministically by source strength and the losing value is retained as a
+superseded point, so the restatement stays auditable. "No comparable trend" is
+now a statement the system can make *with a reason*, which is different from
+silence.
+
+**Negative / accepted.** Series are capped at five periods, so a longer table is
+truncated to its newest periods — the older ones remain in the database and in
+the primary-documents surface, just not in the trend. Interim series are built
+only when explicitly requested, which means PR-D must wire the request rather
+than get it for free. And a legitimately unscoped Group fact (issuers do publish
+figures without a scope word) produces no series at all; that is the
+deliberate fail-closed cost of never letting a segment trend masquerade as the
+Group's.

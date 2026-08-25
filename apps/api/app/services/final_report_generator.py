@@ -96,6 +96,12 @@ from app.services.real_asset_report_completer import build_schema_complete_repor
 from app.services.report_validation_service import validate_real_asset_report
 from app.services.sources.extracted_fact_validator import IssuerContext
 from app.services.sources.fact_scope import GROUP_SCOPE_LABELS, parse_scope
+from app.services.sources.financial_history import (
+    COMPARABLE,
+    MIN_PERIODS_FOR_TREND,
+    build_financial_history,
+    history_evidence_lines,
+)
 from app.services.sources.ingestion_attempts import attempts_for_primary_documents
 from app.services.sources.redaction import (
     canonicalize_source_url,
@@ -1751,6 +1757,133 @@ def _build_financial_snapshot(
     ):
         section[f"{field}_primary_filing"] = _primary_fact_dp(fact)
 
+    return section
+
+
+def _build_historical_trends(
+    historical_facts: list[dict[str, Any]] | None,
+    *,
+    max_periods: int | None = None,
+) -> dict[str, Any]:
+    """The deterministic multi-period trend surface — private-use readiness PR-B.
+
+    Phase 32D taught the extractor to rebuild borderless five-year tables; this
+    is where that work reaches a human. Every series states its own scope,
+    period type, currency/scale and provenance, so a segment trend can never be
+    read as the Group's and an interim series can never be read as an annual
+    one.
+
+    Honest when empty: with no multi-period facts the section is present and
+    says so, rather than being absent (an absent section is indistinguishable
+    from a bug) or implying a trend that was never observed. Derived numbers are
+    limited to absolute change, percentage change and percentage-POINT change,
+    each carrying its own inputs and formula. No forecast, no projection, no
+    expected return.
+    """
+    cap = int(max_periods or settings.financial_history_max_periods)
+    history = build_financial_history(historical_facts or [], max_periods=cap)
+
+    section: dict[str, Any] = {
+        "type": "historical_trends",
+        "max_periods": cap,
+        "human_review_required": True,
+    }
+    if not history.available:
+        section["available"] = False
+        section["note"] = {
+            "value": (
+                "No multi-period financial series was reconstructed for this "
+                "company. A trend needs at least two comparable periods of the "
+                "same metric, scope, period type and currency."
+            ),
+            "provenance": "missing_data",
+        }
+        section["series"] = {"value": [], "provenance": "missing_data"}
+        if history.skipped_reasons:
+            # Why there is no trend is research signal in its own right.
+            section["not_series_reasons"] = {
+                "value": dict(sorted(history.skipped_reasons.items())),
+                "provenance": "sourced_fact",
+            }
+        return section
+
+    rows: list[dict[str, Any]] = []
+    for series in history.series:
+        if series.period_count < MIN_PERIODS_FOR_TREND:
+            # A single observation is not a trend; it is already presented as a
+            # datapoint in the financial snapshot and repeating it here would
+            # imply a direction that was never observed.
+            continue
+        rows.append(
+            {
+                "metric": series.metric,
+                "scope": series.scope_label,
+                "scope_type": series.scope.scope_type,
+                "period_type": series.period_type,
+                "currency": series.currency,
+                "scale": series.scale,
+                "unit": series.unit_label(),
+                "periods": [
+                    {
+                        "period": point.period_label,
+                        "value": point.value,
+                        "value_text": point.value_text,
+                        "source_url": point.source_url,
+                        "page_number": point.page_number,
+                        "table_location": point.table_location,
+                        "superseded": point.superseded,
+                    }
+                    for point in series.points
+                ],
+                "comparability": series.comparability,
+                "comparability_reasons": list(series.comparability_reasons),
+                "completeness": series.completeness,
+                "missing_periods": list(series.missing_periods),
+                "derived_changes": [
+                    {
+                        "calculation": change.calculation,
+                        "from_period": change.from_period,
+                        "to_period": change.to_period,
+                        "from_value": change.from_value,
+                        "to_value": change.to_value,
+                        "value": change.value,
+                        "unit": change.unit,
+                        "formula": change.formula,
+                        "provenance": change.provenance,
+                    }
+                    for change in series.changes
+                ],
+                "source_tier": "T1_primary_filing",
+                "human_review_required": True,
+            }
+        )
+
+    section["available"] = bool(rows)
+    section["series"] = {
+        "value": rows,
+        "provenance": "sourced_fact" if rows else "missing_data",
+    }
+    section["series_count"] = len(rows)
+    section["comparable_series_count"] = sum(
+        1 for r in rows if r["comparability"] == COMPARABLE
+    )
+    section["summary_lines"] = {
+        "value": history_evidence_lines(history, max_lines=12),
+        "provenance": "sourced_fact",
+    }
+    section["note"] = {
+        "value": (
+            "Descriptive multi-period series reconstructed from issuer primary "
+            "documents. Changes shown are arithmetic differences between stated "
+            "periods — never a forecast, projection, or expected return."
+        ),
+        "provenance": "sourced_fact",
+    }
+    if history.skipped_reasons:
+        section["not_series_reasons"] = {
+            "value": dict(sorted(history.skipped_reasons.items())),
+            "provenance": "sourced_fact",
+        }
     return section
 
 
@@ -4506,6 +4639,11 @@ def _assemble_final_report_content(
         "financial_snapshot": _build_financial_snapshot(
             company_snapshot, fundamentals_data
         ),
+        # Private-use readiness PR-B — additive (like evidence_channels /
+        # research_memo), so schema validation and legacy reports are
+        # untouched. Rebuilt after the council with real facts; present and
+        # honestly empty before then, never absent.
+        "historical_trends": _build_historical_trends(None),
         "internal_scorecard": _build_internal_scorecard(scorecard),
         "valuation_readiness": _build_valuation_readiness(
             valuation_guard_summary, scorecard
@@ -5737,6 +5875,12 @@ class FinalReportGeneratorService:
             report_content["regeneration_notice"] = _regen_notice
 
         primary_facts = council_result.primary_facts
+        # PR-B: the wider (high + medium) fact set the multi-period series are
+        # built from. Falls back to ``primary_facts`` for a council result
+        # produced before this field existed.
+        historical_facts = (
+            getattr(council_result, "historical_facts", None) or primary_facts
+        )
 
         # ------------------------------------------------------------------
         # Phase 32D2 — THE ONE FINAL RECONCILED RESEARCH STATE
@@ -5835,6 +5979,15 @@ class FinalReportGeneratorService:
             report_content["company_identity"] = _build_company_identity(
                 company_snapshot, company_record, primary_facts=primary_facts
             )
+
+        # Private-use readiness PR-B — rebuilt UNCONDITIONALLY from the wider
+        # (high + medium confidence) fact set. Not gated on ``primary_facts``:
+        # a company whose facts are all medium-confidence has no canonical
+        # snapshot datapoints and yet may have a perfectly good five-year
+        # series, and gating here would hide it.
+        report_content["historical_trends"] = _build_historical_trends(
+            historical_facts or primary_facts
+        )
 
         # Phase 32D2 — the availability + gap surfaces are rebuilt from the ONE
         # reconciled state UNCONDITIONALLY. Gating them on ``primary_facts`` was

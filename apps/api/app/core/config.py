@@ -680,6 +680,19 @@ class Settings(BaseSettings):
     # allowlist-only (no arbitrary-URL fetch surface), never fabricates a filing —
     # a blocked / JS-gated / scanned document degrades to an honest gap — and every
     # extracted fact is human-review-required and never a recommendation.
+    # ── Historical financial series (private-use readiness PR-B) ──────────
+    # How many comparable annual periods a single metric/scope series may
+    # carry. The newest win; older periods are dropped, never averaged away.
+    # Bounded because the extractor can produce ~50 period-scoped facts for one
+    # issuer and an unbounded series would grow both the report and the council
+    # prompt without adding research value.
+    financial_history_max_periods: int = 5
+    # How many series LINES the council evidence pack may carry. Each line is
+    # one dense string covering up to ``financial_history_max_periods`` periods,
+    # so this is a TOKEN bound, not a research bound — the full history still
+    # reaches the deterministic report surfaces.
+    llm_council_history_max_series: int = 8
+
     primary_document_ingestion_enabled: bool = False
     # Optional OCR pass for scanned (image-only) PDFs. OFF by default AND gated
     # behind the master flag; kept separate so OCR (which needs a raster path added

@@ -1,6 +1,13 @@
 # Architecture
 
-## Status: Private-Use Production Readiness — PR-A: Persisted Fact Scope (**branch, pre-merge**; migration `018`, Alembic head `017 → 018`; extraction `pipeline_version` `11 → 12`). Fact scope stops being an in-memory string. `app/services/sources/fact_scope.py` is now the single vocabulary for Group-vs-segment, and `extracted_facts` persists `scope_type` / `scope_name` / `scope_key` so a segment figure cannot lose its attribution across a DB round-trip and be promoted into a canonical Group slot on a cache-reused run. See `docs/PRIVATE_USE_PRODUCTION_READINESS.md` and ADR-031. Production is not provisioned and is untouched.
+## Status: Private-Use Production Readiness — PR-B: Historical Financial Series (**branch, pre-merge**; **no migration**, Alembic head stays `018`). The multi-year facts Phase 32D learned to extract now reach a human and the council. `app/services/sources/financial_period.py` can represent `FY2025` and `H1 2026` at once and refuses to compare across period types; `app/services/sources/financial_history.py` builds bounded series keyed by the FULL identity (metric, scope, period type, currency, unit, scale), so a currency mismatch yields two series rather than one bad trend. A new `historical_trends` report section and a bounded 8-line council slice carry it. See ADR-032.
+
+<details>
+<summary>Previous status (Readiness PR-A)</summary>
+
+## Status: Private-Use Production Readiness — PR-A: Persisted Fact Scope (merged `6b7b4cb`; migration `018`, Alembic head `017 → 018`; extraction `pipeline_version` `11 → 12`). Fact scope stops being an in-memory string. `app/services/sources/fact_scope.py` is now the single vocabulary for Group-vs-segment, and `extracted_facts` persists `scope_type` / `scope_name` / `scope_key` so a segment figure cannot lose its attribution across a DB round-trip and be promoted into a canonical Group slot on a cache-reused run. See `docs/PRIVATE_USE_PRODUCTION_READINESS.md` and ADR-031. Production is not provisioned and is untouched.
+
+</details>
 
 <details>
 <summary>Previous status (Phase 32D)</summary>

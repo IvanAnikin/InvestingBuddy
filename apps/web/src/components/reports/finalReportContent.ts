@@ -125,6 +125,10 @@ export const SECTION_ORDER: string[] = [
   // required" for a company whose SEC XBRL statements were fully sourced.
   "evidence_channels",
   "financial_snapshot",
+  // Private-use readiness PR-B — the multi-period series reconstructed from
+  // the issuer's own primary documents. Sits directly under the snapshot: "what
+  // is it now" then "what changed over time" is the order a researcher reads in.
+  "historical_trends",
   "discovery_rationale",
   "internal_scorecard",
   "llm_council_analysis",
@@ -151,6 +155,7 @@ export const SECTION_LABELS: Record<string, string> = {
   thin_evidence_state: "Evidence Status",
   evidence_channels: "Evidence Channels",
   financial_snapshot: "Financial Snapshot",
+  historical_trends: "Historical Trends",
   discovery_rationale: "Discovery Rationale",
   internal_scorecard: "Internal Scorecard",
   llm_council_analysis: "LLM Council Analysis",

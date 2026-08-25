@@ -505,6 +505,125 @@ function DisallowedOutputsNotice({ data }: { data: Record<string, unknown> }) {
   );
 }
 
+// --------------------------------------------------------------------------
+// Historical Trends (private-use readiness PR-B)
+//
+// The generic renderer would flatten a series into an unreadable nested blob.
+// A trend is a table: one row per metric/scope, one column per period. Scope
+// and unit are shown on every row, because a segment trend read as the Group's
+// is exactly the contradiction this section exists to prevent.
+// --------------------------------------------------------------------------
+
+type TrendPeriod = {
+  period?: string;
+  value?: number | null;
+  superseded?: boolean;
+};
+
+type TrendSeries = {
+  metric?: string;
+  scope?: string;
+  scope_type?: string | null;
+  period_type?: string;
+  unit?: string | null;
+  periods?: TrendPeriod[];
+  comparability?: string;
+  comparability_reasons?: string[];
+  completeness?: string;
+  missing_periods?: string[];
+  derived_changes?: {
+    calculation?: string;
+    from_period?: string;
+    to_period?: string;
+    value?: number;
+    unit?: string;
+  }[];
+};
+
+function TrendRow({ series }: { series: TrendSeries }) {
+  const periods = (series.periods ?? []).filter((p) => !p.superseded);
+  const comparable = series.comparability === "comparable";
+  return (
+    <li className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-sm font-semibold text-slate-100">
+          {humanizeKey(series.metric ?? "metric")}
+        </span>
+        {series.scope ? (
+          <span className="rounded bg-white/10 px-1.5 py-0.5 text-[10px] text-slate-300">
+            {series.scope}
+          </span>
+        ) : null}
+        {series.unit ? (
+          <span className="text-[10px] text-slate-500">{series.unit}</span>
+        ) : null}
+        {series.period_type && series.period_type !== "annual" ? (
+          <span className="rounded bg-amber-400/10 px-1.5 py-0.5 text-[10px] text-amber-200">
+            {series.period_type}
+          </span>
+        ) : null}
+        {!comparable ? (
+          <span className="rounded bg-amber-400/10 px-1.5 py-0.5 text-[10px] text-amber-200">
+            not comparable
+          </span>
+        ) : null}
+      </div>
+      <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1">
+        {periods.map((p) => (
+          <span key={p.period} className="text-sm text-slate-300">
+            <span className="text-[10px] text-slate-500">{p.period}</span>{" "}
+            {p.value != null ? p.value.toLocaleString() : "n/a"}
+          </span>
+        ))}
+      </div>
+      <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-slate-500">
+        {(series.derived_changes ?? []).map((c, i) => (
+          <span key={i}>
+            {humanizeKey(c.calculation ?? "change")} {c.from_period}&rarr;{c.to_period}:{" "}
+            {c.value != null ? c.value.toLocaleString() : "n/a"}
+            {c.unit}
+          </span>
+        ))}
+        {(series.missing_periods ?? []).length > 0 ? (
+          <span className="text-amber-300">
+            missing: {(series.missing_periods ?? []).join(", ")}
+          </span>
+        ) : null}
+        {!comparable && (series.comparability_reasons ?? []).length > 0 ? (
+          <span className="text-amber-300">
+            {(series.comparability_reasons ?? []).join(", ")}
+          </span>
+        ) : null}
+      </div>
+    </li>
+  );
+}
+
+function HistoricalTrendsSection({ section }: { section: Record<string, unknown> }) {
+  const rows = ((section.series as { value?: TrendSeries[] } | undefined)?.value ??
+    []) as TrendSeries[];
+  const note = noteText(section.note);
+  return (
+    <SectionShell title="Historical Trends" testId="section-historical-trends">
+      {rows.length === 0 ? (
+        <p className="text-sm text-slate-400">
+          {note ??
+            "No multi-period financial series was reconstructed for this company."}
+        </p>
+      ) : (
+        <>
+          <ul className="flex flex-col gap-2">
+            {rows.map((s, i) => (
+              <TrendRow key={`${s.metric}-${s.scope}-${i}`} series={s} />
+            ))}
+          </ul>
+          {note ? <p className="mt-3 text-[11px] text-slate-500">{note}</p> : null}
+        </>
+      )}
+    </SectionShell>
+  );
+}
+
 function ResearchMemoSection({ section }: { section: Record<string, unknown> }) {
   const header = noteText(section.header);
   const memoNote = noteText(section.note);
@@ -610,6 +729,8 @@ export default function FinalReportRenderer({
           return <ChecklistSection key={key} section={section as Record<string, unknown>} />;
         if (key === "source_citation_appendix")
           return <AppendixSection key={key} section={section as Record<string, unknown>} />;
+        if (key === "historical_trends")
+          return <HistoricalTrendsSection key={key} section={section as Record<string, unknown>} />;
         if (key === "llm_council_analysis")
           return <CouncilSummarySection key={key} section={section as Record<string, unknown>} />;
         return (

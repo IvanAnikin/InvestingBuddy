@@ -186,6 +186,46 @@ def _primary_document_summary(evidence_items: list[Any]) -> list[dict[str, Any]]
     return list(groups.values())
 
 
+def _structured_facts(
+    evidence_items: list[Any], *, confidences: "frozenset[str]"
+) -> list[dict[str, Any]]:
+    """Structured fact payloads from fact-shaped EvidenceItems.
+
+    Reads only the STRUCTURED ``primary_fact`` payload each item carries
+    (field / value / numeric_value / unit / currency / scale / period / scope +
+    short page/excerpt provenance) — never the raw excerpt body or document
+    text. The item's own token-stripped URL is preferred as provenance.
+    """
+    out: list[dict[str, Any]] = []
+    for it in evidence_items:
+        if getattr(it, "source_type", None) not in _DOCUMENT_FACT_TYPES:
+            continue
+        pf = getattr(it, "primary_fact", None)
+        if pf is None:
+            continue
+        if getattr(pf, "confidence", None) not in confidences:
+            continue
+        data = pf.model_dump(mode="json") if hasattr(pf, "model_dump") else dict(pf)
+        url = getattr(it, "url", None)
+        if url:
+            data["source_url"] = url
+        out.append(data)
+    return out
+
+
+def _historical_facts(evidence_items: list[Any]) -> list[dict[str, Any]]:
+    """High AND medium confidence facts — private-use readiness PR-B.
+
+    Deliberately wider than ``_primary_facts``. A canonical single-value slot
+    must not be filled by a medium-confidence figure; a five-year SERIES whose
+    middle years are medium-confidence is still a real, citeable trend, and
+    dropping them is how a report ends up asserting "no historical revenue
+    trend information" beside a complete table. Low confidence stays out of
+    both.
+    """
+    return _structured_facts(evidence_items, confidences=frozenset({"high", "medium"}))
+
+
 def _primary_facts(evidence_items: list[Any]) -> list[dict[str, Any]]:
     """Structured, bounded HIGH-CONFIDENCE primary facts — Phase 29B.3.
 
@@ -205,21 +245,7 @@ def _primary_facts(evidence_items: list[Any]) -> list[dict[str, Any]]:
     (already used by ``_primary_document_summary``) is the correct, complete
     set of fact-shaped source_types — reusing it here is the fix.
     """
-    out: list[dict[str, Any]] = []
-    for it in evidence_items:
-        if getattr(it, "source_type", None) not in _DOCUMENT_FACT_TYPES:
-            continue
-        pf = getattr(it, "primary_fact", None)
-        if pf is None:
-            continue
-        if getattr(pf, "confidence", None) != "high":
-            continue
-        data = pf.model_dump(mode="json") if hasattr(pf, "model_dump") else dict(pf)
-        url = getattr(it, "url", None)
-        if url:
-            data["source_url"] = url
-        out.append(data)
-    return out
+    return _structured_facts(evidence_items, confidences=frozenset({"high"}))
 
 
 # Phase 31 hotfix: extracted document TEXT excerpt types (exclude the parsed
@@ -1382,6 +1408,7 @@ async def maybe_run_council(
         connector_gap_messages = None
         primary_documents: list[dict[str, Any]] = []
         primary_facts: list[dict[str, Any]] = []
+        historical_facts: list[dict[str, Any]] = []
         # Phase 31 hotfix: bounded, secret-free PRIMARY-source references (verified
         # metadata-only items) + their counts + honest source-gap strings. Stay
         # empty (and unattached) when the connector layer is off → byte-identical.
@@ -1461,6 +1488,7 @@ async def maybe_run_council(
                 connector_gap_messages = collected.gap_messages()
                 primary_documents = _primary_document_summary(collected.evidence_items)
                 primary_facts = _primary_facts(collected.evidence_items)
+                historical_facts = _historical_facts(collected.evidence_items)
                 # Phase 32A Slice 5 (3c-i): capture the deep artifacts for persistence
                 # ONLY when both the ingestion + citation persistence flags are on.
                 # Either flag off ⇒ list stays empty ⇒ nothing to persist downstream.
@@ -1645,6 +1673,11 @@ async def maybe_run_council(
         # report can present real T1 datapoints (with each fact's own provenance).
         if primary_facts:
             result.primary_facts = primary_facts
+        # Private-use readiness PR-B: the wider (high + medium) fact set the
+        # multi-period series are built from. Attached only when non-empty →
+        # dark-by-default byte-identical.
+        if historical_facts:
+            result.historical_facts = historical_facts
         # Phase 31 hotfix: attach the bounded metadata-only PRIMARY-source
         # references + counts + honest gaps so the report / memo can surface which
         # verified primary sources were located (distinct from extracted text and
