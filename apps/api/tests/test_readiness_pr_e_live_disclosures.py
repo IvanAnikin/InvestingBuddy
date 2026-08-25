@@ -60,6 +60,7 @@ from app.services.sources.venue_disclosures import (
     disclosure_events_to_evidence,
     fetch_emarket_storage_disclosures,
     fetch_nasdaq_nordic_disclosures,
+    issuer_search_term,
     parse_emarket_listing,
     parse_nasdaq_payload,
 )
@@ -688,6 +689,75 @@ def test_every_curated_venue_id_belongs_to_a_verified_issuer() -> None:
     registry already verifies, never an arbitrary string."""
     for ticker in EMARKET_ISSUER_IDS:
         assert get_verified_issuer_source(ticker, "MI") is not None, ticker
+
+
+# =========================================================================== #
+# Live-acceptance corrective (2026-08-26): the SEARCH term                     #
+# =========================================================================== #
+
+
+@pytest.mark.parametrize(
+    "legal_name,expected",
+    [
+        ("Pandora A/S", "Pandora"),
+        ("Moncler S.p.A.", "Moncler"),
+        ("Kering SA", "Kering"),
+        ("Compagnie Financière Richemont SA", "Compagnie Financière Richemont"),
+        # "Group" / "International" are part of the NAME, not a legal form.
+        ("Burberry Group plc", "Burberry Group"),
+        ("The Swatch Group AG", "The Swatch Group"),
+        ("Hermès International SCA", "Hermès International"),
+    ],
+)
+def test_only_the_legal_form_suffix_is_stripped_from_a_search_term(
+    legal_name: str, expected: str
+) -> None:
+    """Found by LIVE acceptance, not by a unit test.
+
+    The venue's ``freeText`` matches the announcement BODY. Searching the full
+    legal name "Pandora A/S" returned the routine managers'-transaction notices
+    — whose boilerplate title literally contains "Pandora A/S shares" — while
+    silently DROPPING the Q2 2026 results and the CFO appointment, because no
+    headline carries a legal-form suffix. The suffix is the part of a legal
+    name LEAST likely to appear in the text being searched.
+    """
+    assert issuer_search_term(legal_name) == expected
+
+
+def test_a_search_term_is_never_empty() -> None:
+    """An issuer whose name is nothing but a legal form keeps its name rather
+    than being searched for ""."""
+    assert issuer_search_term("A/S") == "A/S"
+    assert issuer_search_term("") == ""
+
+
+def test_widening_the_search_does_not_widen_what_becomes_an_event() -> None:
+    """Precision stays where it belongs: every returned row is still matched
+    against the issuer's FULL name before it can become an event."""
+    events, _ = parse_nasdaq_payload(
+        _NASDAQ_FIXTURE,
+        issuer_ticker="PNDORA",
+        issuer_name="Pandora A/S",
+        country="Denmark",
+        cutoff=_CUTOFF,
+        max_events=25,
+    )
+    assert events
+    assert all((e.issuer_name or "").startswith("Pandora") for e in events)
+
+
+def test_the_query_url_carries_the_trimmed_term() -> None:
+    fetch = _FakeFetch(_NASDAQ_FIXTURE)
+    asyncio.run(
+        fetch_nasdaq_nordic_disclosures(
+            issuer_ticker="PNDORA", issuer_name="Pandora A/S", exchange="CO",
+            country="Denmark", cfg=_cfg(), max_events=5, lookback_days=400,
+            fetcher=fetch,
+        )
+    )
+    url = fetch.calls[0]["url"]
+    assert "freeText=Pandora&" in url
+    assert "A%2FS" not in url
 
 
 def test_nasdaq_market_map_covers_only_nordic_venues() -> None:

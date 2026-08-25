@@ -136,6 +136,51 @@ def _limitation(reason: str, detail: str | None = None) -> str:
 # --------------------------------------------------------------------------- #
 
 
+#: Corporate legal-form suffixes. Standard company-law vocabulary across the
+#: target jurisdictions — not an issuer-specific list.
+_LEGAL_FORM_SUFFIXES: tuple[str, ...] = (
+    "a/s", "aktieselskab", "asa", "ab", "abp", "oyj", "oy",
+    "sa", "s.a.", "s.a", "sca", "s.c.a.", "se", "spa", "s.p.a.", "s.p.a",
+    "nv", "n.v.", "bv", "b.v.", "ag", "a.g.", "gmbh", "kgaa",
+    "plc", "p.l.c.", "ltd", "limited", "inc", "inc.", "corp", "corporation",
+)
+# NOTE: "Group" / "Holding" / "International" are deliberately NOT here. They
+# look like suffixes but they are part of the NAME — "Burberry Group" and "The
+# Swatch Group" are what those issuers are called, and trimming them would
+# widen the search past the issuer rather than past its legal form.
+
+
+def issuer_search_term(issuer_name: str) -> str:
+    """The name to SEARCH a venue with, given an issuer's full legal name.
+
+    Live-acceptance corrective (2026-08-26). The Nasdaq Nordic service's
+    ``freeText`` matches the announcement BODY, not just the issuer field. A
+    query for the full legal name "Pandora A/S" therefore returned the routine
+    managers'-transaction notices — whose boilerplate title literally contains
+    "Pandora A/S shares" — while SILENTLY DROPPING the two announcements a
+    researcher actually wants: the Q2 2026 results ("Pandora delivers 3%
+    organic growth in Q2 - guidance upgraded") and the CFO appointment. Neither
+    contains the legal-form suffix, because no headline does.
+
+    So the suffix is the part of a legal name LEAST likely to appear in the
+    text being searched, and including it is not "more precise" — it is a
+    filter that removes the most substantive disclosures.
+
+    Stripping it widens the SEARCH only. Precision is preserved where it
+    belongs: every returned row is still checked against the issuer's full name
+    by ``_issuer_name_matches`` before it can become an event, so a foreign
+    issuer that merely mentions this one is still rejected.
+
+    Never returns an empty string — an issuer whose name is nothing but legal
+    form keeps its original name rather than being searched for "".
+    """
+    words = _WS_RE.sub(" ", (issuer_name or "").strip()).split(" ")
+    while len(words) > 1 and words[-1].strip(",.").casefold() in _LEGAL_FORM_SUFFIXES:
+        words = words[:-1]
+    trimmed = " ".join(words).strip(" ,.")
+    return trimmed or (issuer_name or "").strip()
+
+
 def _nasdaq_query_url(market: str, issuer_name: str, *, limit: int) -> str:
     """The venue's own documented query surface, with every bound set."""
     params = [
@@ -144,7 +189,9 @@ def _nasdaq_query_url(market: str, issuer_name: str, *, limit: int) -> str:
         ("showCnsSpecific", "true"),
         ("showCompany", "true"),
         ("countResults", "false"),
-        ("freeText", issuer_name),
+        # SEARCH on the trimmed name; MATCH on the full one — see
+        # ``issuer_search_term``.
+        ("freeText", issuer_search_term(issuer_name)),
         ("market", market),
         ("globalName", "NordicMainMarket"),
         ("displayLanguage", "en"),
@@ -605,6 +652,7 @@ __all__ = [
     "disclosure_events_to_evidence",
     "fetch_emarket_storage_disclosures",
     "fetch_nasdaq_nordic_disclosures",
+    "issuer_search_term",
     "parse_emarket_listing",
     "parse_nasdaq_payload",
 ]
