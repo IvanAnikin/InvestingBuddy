@@ -2163,3 +2163,75 @@ than get it for free. And a legitimately unscoped Group fact (issuers do publish
 figures without a scope word) produces no series at all; that is the
 deliberate fail-closed cost of never letting a segment trend masquerade as the
 Group's.
+
+---
+
+## ADR-033: Field Vocabularies Are Derived From the Parser, and a Gap Is Per Company
+
+**Date:** 2026-08-25
+**Status:** Accepted
+
+### Context
+
+Three related defects, all of the same shape: a fact was known in one place and
+described differently — or not at all — in another.
+
+**The snapshot was narrower than the evidence.** Two hand-maintained field sets
+existed: `final_report_generator._PRIMARY_FINANCIAL_FACT_FIELDS` (7 fields) and
+`canonical_evidence.PRIMARY_FACT_FIELDS` (12). Neither matched the parser, which
+routinely produces 15. Worse, they had drifted in *both* directions: the
+canonical set listed `shareholders_equity` and `earnings_per_share`, which the
+parser has never emitted, and omitted `total_equity` and `net_cash`, which it
+emits routinely. A validated `total_equity` fact therefore counted as no
+fundamental anywhere — extracted, validated, persisted, cited, and never shown.
+
+**The copy was US-centric.** "Annual report / 10-K / 40-F" and "SEC statement
+fundamentals" were emitted unconditionally, including for a Danish issuer whose
+figures came from its own annual report and which has no SEC registration at
+all. The same report elsewhere correctly labelled those facts issuer-primary, so
+this was a live self-contradiction, not just awkward wording.
+
+**A DFR gap was not per company.** The comparative pack carried no identity
+completeness signal at all. Asked which identity fields were missing, the
+council had only free-text gap prose and generalised one company's missing LEI
+into "both companies are missing LEI" — while the other's report rendered a
+sourced one.
+
+### Decision
+
+1. **The parser exports its own vocabulary.** `FINANCIAL_STATEMENT_FIELDS`,
+   `IDENTITY_FIELDS` and `NON_INTERCHANGEABLE_FIELD_PAIRS` live next to the
+   `FIELD_*` constants that define them. Both consumer sets are now derived from
+   them, so the drift class is unrepresentable rather than merely fixed.
+   `employees` is explicitly identity, not a fundamental.
+2. **Jurisdiction resolves the filing vocabulary.** `annual_filing_name()` uses
+   the *same* exchange/country signal the regulator line already used. An
+   unresolved jurisdiction keeps the existing US wording — this never guesses.
+   `_statement_source_label()` names the channel the statements actually came
+   from instead of asserting SEC.
+3. **Identity completeness is stated, not inferred.** Every DFR company summary
+   carries `identity_fields_present` / `identity_fields_missing`, derived
+   strictly from that company's own exact-linked report. A field the report never
+   carried counts as missing — honest, and it lets the council tell "absent"
+   from "not asked". The prompt is told explicitly that a missing field is per
+   company.
+4. **The discovery card is labelled, not recomputed.** Discovery scores stay
+   immutable; once a full analysis exists the card says so and points at it.
+
+### Consequences
+
+**Positive.** A researcher sees every validated statement field the issuer
+published, each with its own period, scale, currency, scope and source URL.
+`net_debt` / `total_debt`, `net_cash` / `cash_and_equivalents` and
+`operating_profit` / `recurring_operating_profit` are distinct slots that can
+never alias. European issuers are described in their own filing vocabulary. A
+DFR field gap is now a fact the pack states rather than something a model infers
+across companies, which also makes it deterministically testable.
+
+**Negative / accepted.** A richer snapshot is a larger section, so a reader has
+more to scan — mitigated by the fact that unsourced fields are absent rather
+than null-filled. Italy has no regulated-disclosure connector mapping yet, so an
+Italian issuer still falls back to the generic filing wording; PR-E adds it with
+the live venue. And the derived sets mean a future parser vocabulary addition
+automatically widens the snapshot, which is the intent but does require the new
+field to be genuinely canonical before it is exported.

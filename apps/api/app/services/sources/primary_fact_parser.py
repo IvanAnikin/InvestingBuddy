@@ -58,6 +58,65 @@ FIELD_CASH = "cash_and_equivalents"
 FIELD_TOTAL_EQUITY = "total_equity"
 FIELD_EMPLOYEES = "employees"
 
+# Private-use readiness PR-C — the parser's OWN vocabulary, exported so every
+# consumer admits exactly the fields this parser can actually produce.
+#
+# Two sets existed before this: ``canonical_evidence.PRIMARY_FACT_FIELDS`` and
+# ``final_report_generator._PRIMARY_FINANCIAL_FACT_FIELDS``. They disagreed with
+# each other AND with reality — the first listed ``shareholders_equity`` and
+# ``earnings_per_share``, which this parser has never emitted, while omitting
+# ``total_equity`` and ``net_cash``, which it emits routinely. A ``total_equity``
+# fact therefore counted as no fundamental anywhere. Deriving both sets from
+# here makes that class of drift unrepresentable.
+
+#: Statement facts (income statement / cash flow / balance sheet). These are the
+#: fields that may fill a canonical financial-snapshot slot.
+FINANCIAL_STATEMENT_FIELDS: frozenset[str] = frozenset(
+    {
+        FIELD_REVENUE,
+        FIELD_OPERATING_PROFIT,
+        FIELD_RECURRING_OPERATING_PROFIT,
+        FIELD_OPERATING_MARGIN,
+        FIELD_RECURRING_OPERATING_MARGIN,
+        FIELD_NET_INCOME,
+        FIELD_OPERATING_CASH_FLOW,
+        FIELD_FREE_CASH_FLOW,
+        FIELD_OPERATING_FREE_CASH_FLOW,
+        FIELD_TOTAL_ASSETS,
+        FIELD_TOTAL_EQUITY,
+        FIELD_CASH,
+        FIELD_TOTAL_DEBT,
+        FIELD_NET_DEBT,
+        FIELD_NET_CASH,
+    }
+)
+
+#: Company-identity facts. Never a financial fundamental — ``employees`` is a
+#: real, useful figure but "we know the headcount" must not read as "we have
+#: financial statements".
+IDENTITY_FIELDS: frozenset[str] = frozenset(
+    {
+        FIELD_LEGAL_NAME,
+        FIELD_REPORTING_CURRENCY,
+        FIELD_FISCAL_YEAR,
+        FIELD_EMPLOYEES,
+    }
+)
+
+#: Pairs that must NEVER be treated as interchangeable. Kept next to the
+#: vocabulary that defines them so a new consumer cannot quietly conflate them:
+#: net debt is not total debt, net cash is not cash, and an operating profit is
+#: not an EBITDA.
+NON_INTERCHANGEABLE_FIELD_PAIRS: tuple[tuple[str, str], ...] = (
+    (FIELD_NET_DEBT, FIELD_TOTAL_DEBT),
+    (FIELD_NET_CASH, FIELD_CASH),
+    (FIELD_NET_DEBT, FIELD_NET_CASH),
+    (FIELD_OPERATING_PROFIT, FIELD_RECURRING_OPERATING_PROFIT),
+    (FIELD_OPERATING_CASH_FLOW, FIELD_FREE_CASH_FLOW),
+    (FIELD_FREE_CASH_FLOW, FIELD_OPERATING_FREE_CASH_FLOW),
+    (FIELD_OPERATING_MARGIN, FIELD_RECURRING_OPERATING_MARGIN),
+)
+
 
 class PrimaryFact(BaseModel):
     """One high-confidence primary fact parsed from a document excerpt."""
@@ -920,4 +979,7 @@ __all__ = [
     "FIELD_CASH",
     "FIELD_TOTAL_EQUITY",
     "FIELD_EMPLOYEES",
+    "FINANCIAL_STATEMENT_FIELDS",
+    "IDENTITY_FIELDS",
+    "NON_INTERCHANGEABLE_FIELD_PAIRS",
 ]

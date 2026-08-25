@@ -174,6 +174,41 @@ def _financial_facts(
     return facts, sorted(missing)[:MAX_LIST_ITEMS]
 
 
+# Private-use readiness PR-C — the identity fields a comparative review is
+# routinely asked about. Kept small and explicit: each must be answerable
+# strictly from ONE company's own persisted report section.
+IDENTITY_COMPLETENESS_FIELDS: tuple[str, ...] = (
+    "legal_name",
+    "ticker",
+    "exchange",
+    "country_domicile",
+    "isin",
+    "lei",
+    "sector",
+    "reporting_currency",
+)
+
+
+def _identity_completeness(identity: dict[str, Any]) -> tuple[list[str], list[str]]:
+    """(present, missing) identity field names for ONE company's OWN report.
+
+    Reads only the datapoints of the report section handed in, so a field can
+    never be marked missing because a DIFFERENT company lacked it. A datapoint
+    the section does not carry at all counts as missing (honest: the report did
+    not answer it) rather than being omitted from both lists, which would leave
+    the council unable to distinguish "absent" from "not asked".
+    """
+    present: list[str] = []
+    missing: list[str] = []
+    for name in IDENTITY_COMPLETENESS_FIELDS:
+        value = _dp_value(identity, name)
+        if value is None or (isinstance(value, str) and not value.strip()):
+            missing.append(name)
+        else:
+            present.append(name)
+    return present, missing
+
+
 def _evidence_quality(
     review: dict[str, Any], source_summary: dict[str, Any]
 ) -> FieldEvidenceQuality:
@@ -355,6 +390,7 @@ def build_company_summary(
 
     council_agents = _council_agent_map(source_summary)
     facts, missing_fields = _financial_facts(snapshot)
+    identity_present, identity_missing = _identity_completeness(identity)
     provenance = _report_provenance(source_summary)
 
     caveats: list[str] = []
@@ -403,6 +439,8 @@ def build_company_summary(
         country=candidate.country or _clip(_dp_value(identity, "country_domicile")),
         sector=candidate.sector or _clip(_dp_value(identity, "sector")),
         industry=candidate.industry,
+        identity_fields_present=identity_present,
+        identity_fields_missing=identity_missing,
         discovery=FieldDiscoveryRelevance(
             rank=candidate.rank,
             candidate_score=candidate.candidate_score,

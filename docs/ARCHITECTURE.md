@@ -1,6 +1,13 @@
 # Architecture
 
-## Status: Private-Use Production Readiness — PR-B: Historical Financial Series (**branch, pre-merge**; **no migration**, Alembic head stays `018`). The multi-year facts Phase 32D learned to extract now reach a human and the council. `app/services/sources/financial_period.py` can represent `FY2025` and `H1 2026` at once and refuses to compare across period types; `app/services/sources/financial_history.py` builds bounded series keyed by the FULL identity (metric, scope, period type, currency, unit, scale), so a currency mismatch yields two series rather than one bad trend. A new `historical_trends` report section and a bounded 8-line council slice carry it. See ADR-032.
+## Status: Private-Use Production Readiness — PR-C: Richer Canonical Snapshot, Source-Neutral Copy, Per-Company DFR Gaps (**branch, pre-merge**; **no migration**, Alembic head stays `018`). The canonical snapshot field set is now DERIVED from the parser's own exported vocabulary (`primary_fact_parser.FINANCIAL_STATEMENT_FIELDS`), so it cannot drift from what is actually extractable — it went from 7 fields to 15, and `total_equity` / `net_cash` / `operating_margin` stopped counting as no fundamental anywhere. US filing vocabulary ("10-K / 40-F", "SEC statement fundamentals") is replaced by jurisdiction-resolved wording. The Deep Field Review pack now states per-company identity completeness so a comparative council cannot generalise one company's missing LEI onto another. See ADR-033.
+
+<details>
+<summary>Previous status (Readiness PR-B)</summary>
+
+## Status: Private-Use Production Readiness — PR-B: Historical Financial Series (merged `8b516e3`; **no migration**, Alembic head stays `018`). The multi-year facts Phase 32D learned to extract now reach a human and the council. `app/services/sources/financial_period.py` can represent `FY2025` and `H1 2026` at once and refuses to compare across period types; `app/services/sources/financial_history.py` builds bounded series keyed by the FULL identity (metric, scope, period type, currency, unit, scale), so a currency mismatch yields two series rather than one bad trend. A new `historical_trends` report section and a bounded 8-line council slice carry it. See ADR-032.
+
+</details>
 
 <details>
 <summary>Previous status (Readiness PR-A)</summary>
