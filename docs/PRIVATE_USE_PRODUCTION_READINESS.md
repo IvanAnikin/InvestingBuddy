@@ -429,7 +429,8 @@ The campaign may return READY only if every item in §52 of the program brief (A
 | [#150](https://github.com/IvanAnikin/InvestingBuddy/pull/150) | PR-B — historical financial series | `8b516e3` | green | none |
 | [#151](https://github.com/IvanAnikin/InvestingBuddy/pull/151) | PR-C — snapshot expansion, source-neutral copy, DFR gaps | `99df1b9` | green | none |
 | [#152](https://github.com/IvanAnikin/InvestingBuddy/pull/152) | PR-D — current-period (interim) evidence | `3f45268` | green | none |
-| _(PR-E in flight)_ | PR-E — live regulated disclosures | | | none |
+| [#153](https://github.com/IvanAnikin/InvestingBuddy/pull/153) | PR-E — live regulated disclosures | `dc3df2e` | green | none |
+| _(PR-F in flight)_ | PR-F — consistency invariants + job durability | | | none |
 
 ## 30. Final status
 

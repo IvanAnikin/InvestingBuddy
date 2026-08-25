@@ -1,3 +1,7 @@
+import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 
 from app.api.v1.admin_reports import router as admin_reports_router
@@ -18,6 +22,7 @@ from app.core.config import settings
 from app.core.logging_config import configure_logging
 from app.core.request_logging import install_request_logging
 from app.core.staging_auth import install_staging_basic_auth
+from app.core.structured_logging import log_event
 
 # ── Logging (Phase 27.1D) ───────────────────────────────────────────────────
 # Configure a stdout handler at settings.log_level BEFORE the app is built so
@@ -26,11 +31,64 @@ from app.core.staging_auth import install_staging_basic_auth
 # drops INFO). No secrets are ever configured or logged here.
 configure_logging()
 
+@asynccontextmanager
+async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    """Startup/shutdown hooks.
+
+    Private-use readiness PR-F — ORPHANED-JOB VISIBILITY. A full analysis runs
+    in a process-local background task, so a restart mid-run leaves its stored
+    envelope on ``running`` forever. The state was always recoverable (a fresh
+    POST past the stale threshold restarts it) but nothing SAID so, and the
+    first process to notice is this one: it is starting up precisely because
+    the process that owned those jobs is gone.
+
+    The sweep is READ-ONLY on purpose. It does not rewrite the envelope, so the
+    dead worker's audit trail survives and a job still running under another
+    live process is never stolen from it. It also never re-enqueues: silently
+    restarting an expensive council run on every deploy is not recovery, it is
+    a surprise. It logs what was lost; the API reports the same jobs as
+    ``interrupted`` with ``recoverable=true``, and a human decides.
+
+    Failure here never blocks startup — a diagnostic that can take the API down
+    is worse than the diagnostic is worth.
+    """
+    try:
+        from app.db.session import async_session_factory
+        from app.services.market_discovery_service import (
+            sweep_interrupted_analysis_jobs,
+        )
+
+        async with async_session_factory() as session:
+            interrupted = await sweep_interrupted_analysis_jobs(session)
+        for job in interrupted:
+            log_event(
+                logging.getLogger(__name__),
+                "analysis_job_interrupted_by_restart",
+                candidate_id=job.get("candidate_id"),
+                ticker=job.get("ticker"),
+                previous_status=job.get("status"),
+                started_at=job.get("started_at"),
+            )
+        if interrupted:
+            log_event(
+                logging.getLogger(__name__),
+                "analysis_job_interruption_sweep_completed",
+                interrupted_count=len(interrupted),
+            )
+    except Exception as exc:  # noqa: BLE001 - never block startup on a diagnostic
+        logging.getLogger(__name__).warning(
+            "analysis_job_interruption_sweep_failed error_type=%s",
+            type(exc).__name__,
+        )
+    yield
+
+
 app = FastAPI(
     title=settings.app_name,
     version="0.8.0",
     docs_url="/api/docs",
     redoc_url="/api/redoc",
+    lifespan=_lifespan,
 )
 
 # ── Staging Basic Auth (server-to-server) ──────────────────────────────────
