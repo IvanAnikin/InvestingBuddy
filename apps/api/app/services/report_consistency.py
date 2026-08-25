@@ -468,6 +468,13 @@ def _check_period_contradictions(
         newest = latest_by_metric.get(metric)
         shown = parse_period(entry.get("period"))
         if newest and shown.period_type == PERIOD_TYPE_ANNUAL and shown.year:
+            # A slot that DISCLOSES the newer period is not presenting a
+            # historical figure as current — it is stating exactly which period
+            # it can stand behind and where the newer one is. That is the
+            # honest resolution when the newer figure fell below the confidence
+            # bar for a canonical slot; hiding either would be the defect.
+            if entry.get("newer_period_available"):
+                continue
             if shown.year < newest:
                 audit.findings.append(
                     ConsistencyFinding(
