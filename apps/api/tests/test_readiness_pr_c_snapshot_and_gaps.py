@@ -366,3 +366,52 @@ def test_one_companys_gap_never_appears_on_another_summary() -> None:
     ]
     union = set(summaries[1].identity_fields_missing)
     assert not (union & set(summaries[0].identity_fields_missing))
+
+
+# =========================================================================== #
+# Live-acceptance corrective (2026-08-26): newer-period disclosure            #
+# =========================================================================== #
+
+
+def test_a_newer_lower_confidence_period_is_disclosed_not_promoted() -> None:
+    """A canonical slot keeps the newest HIGH-confidence figure and SAYS that a
+    newer one exists — found live on a Kering report showing FY2024 revenue
+    beside an FY2025 series."""
+    facts_high = [_fact("revenue", 16874.0, period="2024")]
+    facts_wider = facts_high + [
+        _fact("revenue", 14675.0, period="2025", confidence="medium")
+    ]
+    section = _build_financial_snapshot(
+        _snapshot(), None, facts_high, historical_facts=facts_wider
+    )
+    dp = section["revenue_primary_filing"]
+    # The slot still shows the figure it can stand behind...
+    assert dp["numeric_value"] == 16874.0
+    assert dp["period"] == "2024"
+    # ...and discloses the newer one.
+    assert dp["newer_period_available"]["period"] == "FY2025"
+    assert dp["newer_period_available"]["value"] == 14675.0
+    assert dp["newer_period_available"]["confidence"] == "medium"
+
+
+def test_no_disclosure_when_the_slot_already_holds_the_newest_period() -> None:
+    facts = [_fact("revenue", 32549.0, period="2025")]
+    section = _build_financial_snapshot(_snapshot(), None, facts, historical_facts=facts)
+    assert "newer_period_available" not in section["revenue_primary_filing"]
+
+
+def test_a_newer_segment_figure_never_claims_to_supersede_a_group_one() -> None:
+    """A newer SEGMENT figure is not a newer version of the Group figure."""
+    group = [_fact("revenue", 22420.0, period="2025")]
+    wider = group + [
+        _fact("revenue", 3100.0, period="2026", scope="Specialist Watchmakers")
+    ]
+    section = _build_financial_snapshot(_snapshot(), None, group, historical_facts=wider)
+    assert "newer_period_available" not in section["revenue_primary_filing"]
+
+
+def test_an_interim_period_never_counts_as_a_newer_annual_period() -> None:
+    annual = [_fact("revenue", 32549.0, period="2025")]
+    wider = annual + [_fact("revenue", 14328.0, period="H1 2026", confidence="medium")]
+    section = _build_financial_snapshot(_snapshot(), None, annual, historical_facts=wider)
+    assert "newer_period_available" not in section["revenue_primary_filing"]

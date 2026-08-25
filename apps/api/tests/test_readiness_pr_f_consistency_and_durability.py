@@ -532,3 +532,52 @@ def test_a_stored_envelope_round_trips_through_the_candidate() -> None:
     envelope = _envelope("running", age_minutes=1)
     _store_analysis_job_envelope(candidate, envelope)
     assert get_analysis_job_envelope(candidate) == envelope
+
+
+# =========================================================================== #
+# Live-acceptance corrective (2026-08-26): disclosing a newer period          #
+# =========================================================================== #
+
+
+def test_a_disclosed_newer_period_is_not_a_historical_as_current_finding() -> None:
+    """Found by the invariant checker itself, on a live Kering report.
+
+    The canonical slot showed FY2024 revenue while the report's own Historical
+    Trends section showed FY2025 — because the FY2025 fact fell below the
+    confidence bar a canonical slot requires. Promoting it would violate that
+    bar; hiding the difference is what made it read as a contradiction. So the
+    slot DISCLOSES it, and a slot that says exactly which period it can stand
+    behind, and where the newer one is, is not presenting historical as
+    current."""
+    report = _clean_report()
+    report["financial_snapshot"]["revenue_primary_filing"] = _dp(
+        16874.0,
+        period="2024",
+        scope="group",
+        newer_period_available={
+            "period": "FY2025",
+            "value": 14675.0,
+            "confidence": "medium",
+            "note": "A newer FY2025 figure exists at medium confidence.",
+        },
+    )
+    report["historical_trends"]["series"]["value"][0]["periods"] = [
+        {"period": "FY2024", "value": 16874.0},
+        {"period": "FY2025", "value": 14675.0},
+    ]
+    audit = audit_report_consistency(report)
+    assert HISTORICAL_AS_CURRENT not in audit.counts()
+
+
+def test_an_undisclosed_older_period_is_still_a_finding() -> None:
+    """The disclosure must be an explanation, not an escape hatch."""
+    report = _clean_report()
+    report["financial_snapshot"]["revenue_primary_filing"] = _dp(
+        16874.0, period="2024", scope="group"
+    )
+    report["historical_trends"]["series"]["value"][0]["periods"] = [
+        {"period": "FY2024", "value": 16874.0},
+        {"period": "FY2025", "value": 14675.0},
+    ]
+    audit = audit_report_consistency(report)
+    assert HISTORICAL_AS_CURRENT in audit.counts()

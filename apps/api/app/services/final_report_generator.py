@@ -95,7 +95,7 @@ from app.services.llm.schemas import (
 from app.services.real_asset_report_completer import build_schema_complete_report
 from app.services.report_validation_service import validate_real_asset_report
 from app.services.sources.extracted_fact_validator import IssuerContext
-from app.services.sources.fact_scope import GROUP_SCOPE_LABELS, parse_scope
+from app.services.sources.fact_scope import GROUP_SCOPE_LABELS, parse_scope, same_scope
 from app.services.sources.financial_history import (
     COMPARABLE,
     MIN_PERIODS_FOR_TREND,
@@ -1243,6 +1243,61 @@ def _high_confidence_facts_for(
     return [(field, entry[1]) for field, entry in best.items()]
 
 
+def _newer_period_for(
+    field: str,
+    selected: dict[str, Any],
+    primary_facts: list[dict[str, Any]] | None,
+) -> dict[str, Any] | None:
+    """Disclose a NEWER annual period the canonical slot could not take.
+
+    Returns ``None`` — the overwhelmingly common case — when the selected fact
+    already is the newest annual period the report holds for this field and
+    scope. Only a fact of the SAME scope counts: a newer segment figure is not
+    a newer version of a Group figure, and saying so would be its own
+    contradiction.
+    """
+    chosen_period = parse_period(selected.get("period"))
+    if chosen_period.period_type != PERIOD_TYPE_ANNUAL or not chosen_period.year:
+        return None
+    chosen_scope = parse_scope(selected.get("scope"))
+
+    best: tuple[int, dict[str, Any]] | None = None
+    for candidate in primary_facts or []:
+        if candidate.get("field") != field or candidate is selected:
+            continue
+        if candidate.get("numeric_value") is None:
+            continue
+        if not same_scope(candidate.get("scope"), selected.get("scope")):
+            # An unscoped fact cannot be shown to be the same series as a
+            # scoped one, so it is never used to claim a newer period exists.
+            if not (chosen_scope.is_unknown and parse_scope(candidate.get("scope")).is_unknown):
+                continue
+        period = parse_period(candidate.get("period"))
+        if period.period_type != PERIOD_TYPE_ANNUAL or not period.year:
+            continue
+        if period.year <= chosen_period.year:
+            continue
+        if best is None or period.year > best[0]:
+            best = (period.year, candidate)
+
+    if best is None:
+        return None
+    year, candidate = best
+    confidence = str(candidate.get("confidence") or "unstated")
+    return {
+        "period": f"FY{year}",
+        "value": candidate.get("numeric_value"),
+        "confidence": confidence,
+        "note": (
+            f"A newer FY{year} figure for this field was extracted at "
+            f"{confidence} confidence, below the bar for this slot. It is shown "
+            "in Historical Trends. The value above is the newest figure this "
+            "report can present as the canonical annual datapoint."
+        ),
+        "provenance": "sourced_fact",
+    }
+
+
 def _current_period_facts_for(
     primary_facts: list[dict[str, Any]] | None,
     fields: frozenset[str],
@@ -1696,7 +1751,16 @@ def _build_financial_snapshot(
     company_snapshot: dict[str, Any] | None,
     fundamentals_data: dict[str, Any] | None,
     primary_facts: list[dict[str, Any]] | None = None,
+    historical_facts: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    """Build the financial snapshot.
+
+    ``historical_facts`` is the WIDER (high + medium confidence) fact set. It is
+    never used to FILL a slot — the confidence bar on a canonical slot exists so
+    a lower-confidence figure is never presented as THE number — only to
+    DISCLOSE that a newer annual period exists, via
+    ``newer_period_available``. See ``_newer_period_for``.
+    """
     section: dict[str, Any] = {
         "type": "financial_snapshot",
         "human_review_required": True,
@@ -1825,10 +1889,30 @@ def _build_financial_snapshot(
     # T5 eodhd values are preserved untouched. Each carries the fact's OWN
     # source_url + T1 tier + provenance + needs_human_review. With no matching
     # high-confidence fact this loop is a no-op and the section is unchanged.
-    for field, fact in _high_confidence_facts_for(
+    selected_annual = _high_confidence_facts_for(
         primary_facts, _PRIMARY_FINANCIAL_FACT_FIELDS
-    ):
-        section[f"{field}_primary_filing"] = _primary_fact_dp(fact)
+    )
+    for field, fact in selected_annual:
+        dp = _primary_fact_dp(fact)
+        # Live-acceptance corrective (2026-08-26). A canonical slot takes the
+        # latest HIGH-confidence annual fact. When the report ALSO holds a NEWER
+        # annual period for the same field that did not clear that bar, the
+        # snapshot showed the older year with no explanation while the report's
+        # own Historical Trends section displayed the newer one — a real
+        # ``HISTORICAL_AS_CURRENT`` reading, caught live on a Kering report
+        # showing FY2024 revenue beside an FY2025 series.
+        #
+        # Promoting the newer fact is the wrong fix: the confidence bar on a
+        # canonical slot exists precisely so a lower-confidence figure is never
+        # presented as THE number. So the difference is DISCLOSED instead. The
+        # slot still shows what it can stand behind, and a reader is told, on
+        # the datapoint itself, that a newer period exists and where to see it.
+        newer = _newer_period_for(
+            field, fact, list(primary_facts or []) + list(historical_facts or [])
+        )
+        if newer is not None:
+            dp["newer_period_available"] = newer
+        section[f"{field}_primary_filing"] = dp
 
     # Private-use readiness PR-D — the LATEST INTERIM datapoint of each field,
     # in its OWN slot. A private research tool cannot rely only on annual data
@@ -6079,7 +6163,10 @@ class FinalReportGeneratorService:
         # identical. This runs BEFORE validation so the safety gate scans it.
         if primary_facts:
             report_content["financial_snapshot"] = _build_financial_snapshot(
-                company_snapshot, fundamentals_data, primary_facts=primary_facts
+                company_snapshot,
+                fundamentals_data,
+                primary_facts=primary_facts,
+                historical_facts=historical_facts,
             )
             report_content["company_identity"] = _build_company_identity(
                 company_snapshot, company_record, primary_facts=primary_facts
