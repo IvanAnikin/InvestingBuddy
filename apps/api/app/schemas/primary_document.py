@@ -36,13 +36,17 @@ class PrimaryDocumentFactRead(BaseModel):
     # without the scale a reader cannot tell DKK 32,549 from DKK 32,549
     # MILLION, a factor of a million.
     #
-    # ``scope`` is deliberately NOT here: ``ExtractedFact`` has no such column.
-    # The validator computes an entity/segment scope and uses it (it is part of
-    # the fact identity that keeps a Group and a segment figure for the same
-    # metric/period apart), but it is only ever held in memory for the duration
-    # of a run. Exposing it would need a migration; see the Phase 32D handoff.
     scale: str | None
     period: str | None
+    # Private-use readiness PR-A (migration 018) — the fact's PERSISTED
+    # entity/segment scope, which the Phase 32D note above correctly flagged as
+    # missing. It is part of the fact identity that keeps a Group and a segment
+    # figure for the same metric/period apart, and the admin surface is where a
+    # human verifies that separation actually held. ``scope_type`` is the
+    # decidable form; ``scope_name`` the as-found label; ``None``/``None``
+    # means the document stated no scope (never "it is the Group").
+    scope_type: str | None = None
+    scope_name: str | None = None
     page_number: int | None
     table_location: str | None
     extraction_method: str

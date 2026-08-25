@@ -46,6 +46,7 @@ from app.services.sources.extraction_pipeline_version import (
     CURRENT_EXTRACTION_PIPELINE_VERSION,
     EXTRACTION_TEXT_LAYER_MIN_VERSION,
 )
+from app.services.sources.fact_scope import parse_scope, scope_columns, scope_from_columns
 from app.services.sources.redaction import canonicalize_source_url
 
 if TYPE_CHECKING:  # avoid a runtime import cycle — attributes are read by name
@@ -106,6 +107,18 @@ def _numeric_key(value: float | Decimal | None) -> float | None:
         return round(float(value), 6)
     except (TypeError, ValueError):
         return None
+
+
+def _scope_key_of(fact: Any) -> str | None:
+    """The scope identity of an in-memory ``ValidatedFact`` for dedup/compare.
+
+    Private-use readiness PR-A. Scope is now part of a fact's IDENTITY: a Group
+    operating profit and a Specialist Watchmakers operating profit for the same
+    period and the same value are two different facts, and collapsing them (as
+    the old ``(label, period, value)`` key did) is how a segment figure ends up
+    standing in for a Group one.
+    """
+    return parse_scope(getattr(fact, "scope", None)).scope_key
 
 
 def _to_decimal(value: float | None) -> Decimal | None:
@@ -399,16 +412,20 @@ async def _persist_validated_facts(
         if getattr(f, "validation_status", None) == _VALIDATION_VALIDATED
     ]
 
-    new_keys: set[tuple[str, str | None, float | None]] = {
+    # Private-use readiness PR-A — SCOPE is part of fact identity. Without it a
+    # Group and a segment figure that share (label, period, value) collapse into
+    # one row, which is precisely how a segment number reaches a Group slot.
+    new_keys: set[tuple[str, str | None, float | None, str | None]] = {
         (
             _norm_label(getattr(fact, "label", None)),
             getattr(fact, "period", None),
             _numeric_key(getattr(fact, "value_numeric", None)),
+            _scope_key_of(fact),
         )
         for fact in validated
     }
 
-    old_keys: set[tuple[str, str | None, float | None]] = set()
+    old_keys: set[tuple[str, str | None, float | None, str | None]] = set()
     if reused:
         rows = (
             await session.execute(
@@ -416,6 +433,7 @@ async def _persist_validated_facts(
                     ExtractedFact.label,
                     ExtractedFact.period,
                     ExtractedFact.value_numeric,
+                    ExtractedFact.scope_key,
                 ).where(
                     ExtractedFact.extracted_document_id == document.id,
                     ExtractedFact.is_active.is_(True),
@@ -423,8 +441,8 @@ async def _persist_validated_facts(
             )
         ).all()
         old_keys = {
-            (_norm_label(label), period, _numeric_key(value_numeric))
-            for label, period, value_numeric in rows
+            (_norm_label(label), period, _numeric_key(value_numeric), scope_key)
+            for label, period, value_numeric, scope_key in rows
         }
         if old_keys == new_keys:
             # Unchanged generation — nothing to supersede, no new rows.
@@ -442,13 +460,14 @@ async def _persist_validated_facts(
         # any) already reflects that; nothing left to insert.
         return reused and bool(old_keys)
 
-    existing_keys: set[tuple[str, str | None, float | None]] = set()
+    existing_keys: set[tuple[str, str | None, float | None, str | None]] = set()
     wrote = False
     for fact in validated:
         key = (
             _norm_label(getattr(fact, "label", None)),
             getattr(fact, "period", None),
             _numeric_key(getattr(fact, "value_numeric", None)),
+            _scope_key_of(fact),
         )
         if key in existing_keys:
             result.facts_deduped += 1
@@ -478,6 +497,7 @@ async def _persist_validated_facts(
                 validation_status=_VALIDATION_VALIDATED,
                 needs_human_review=bool(getattr(fact, "needs_human_review", True)),
                 is_active=True,
+                **scope_columns(getattr(fact, "scope", None)),
             )
         )
         result.facts_created += 1
@@ -729,6 +749,13 @@ def _rebuild_artifact(
             confidence=float(fact.confidence or 0.0),
             validation_status=VALIDATION_VALIDATED,
             needs_human_review=bool(fact.needs_human_review),
+            # Private-use readiness PR-A — restore the PERSISTED scope. This
+            # line is the whole point of migration 018: without it every
+            # cache-reused segment fact came back unscoped, and an unscoped
+            # fact is treated as the Group figure downstream.
+            scope=scope_from_columns(
+                fact.scope_type, fact.scope_name, fact.scope_key
+            ).label,
         )
         for fact in facts
     ]
@@ -842,14 +869,17 @@ def _insert_active_facts(
     nothing else to dedupe against; this is a full supersession, not a
     merge.
     """
-    seen: set[tuple[str, str | None, float | None]] = set()
+    seen: set[tuple[str, str | None, float | None, str | None]] = set()
     for fact in facts:
         if getattr(fact, "validation_status", None) != _VALIDATION_VALIDATED:
             continue
+        # Scope participates in identity here for the same reason it does in
+        # ``_persist_validated_facts`` — see ``_scope_key_of``.
         key = (
             _norm_label(getattr(fact, "label", None)),
             getattr(fact, "period", None),
             _numeric_key(getattr(fact, "value_numeric", None)),
+            _scope_key_of(fact),
         )
         if key in seen:
             continue
@@ -878,6 +908,7 @@ def _insert_active_facts(
                 validation_status=_VALIDATION_VALIDATED,
                 needs_human_review=bool(getattr(fact, "needs_human_review", True)),
                 is_active=True,
+                **scope_columns(getattr(fact, "scope", None)),
             )
         )
 

@@ -95,6 +95,7 @@ from app.services.llm.schemas import (
 from app.services.real_asset_report_completer import build_schema_complete_report
 from app.services.report_validation_service import validate_real_asset_report
 from app.services.sources.extracted_fact_validator import IssuerContext
+from app.services.sources.fact_scope import GROUP_SCOPE_LABELS, parse_scope
 from app.services.sources.ingestion_attempts import attempts_for_primary_documents
 from app.services.sources.redaction import (
     canonicalize_source_url,
@@ -1110,9 +1111,14 @@ _PRIMARY_IDENTITY_FACT_FIELDS: frozenset[str] = frozenset(
 # slot — a real, live-observed regression (Phase 32A corrective): a
 # Specialist Watchmakers segment revenue of €3.1bn was silently presented as
 # if it were the Group's €22.4bn consolidated sales figure.
-_GROUP_SCOPE_LABELS: frozenset[str] = frozenset(
-    {"group", "the group", "consolidated", "consolidated group"}
-)
+#
+# Private-use readiness PR-A: the vocabulary itself now lives in
+# ``app.services.sources.fact_scope`` — ONE table, shared by the parser, the
+# persistence layer (migration 018) and this reader, so a label the writer
+# recorded as ``group`` cannot be read back as a segment (or vice versa)
+# because two modules drifted. Re-exported here under the historical name so
+# existing importers keep working.
+_GROUP_SCOPE_LABELS: frozenset[str] = GROUP_SCOPE_LABELS
 
 
 def _primary_fact_dp(fact: dict[str, Any]) -> dict[str, Any]:
@@ -1170,9 +1176,12 @@ def _high_confidence_facts_for(
             continue
         # Phase 32A corrective — only a Group-scoped (or unscoped, the
         # existing implicit Group convention) fact may fill a canonical
-        # ``<field>_primary_filing`` slot; see ``_GROUP_SCOPE_LABELS``.
-        scope = fact.get("scope")
-        if scope and scope.strip().lower() not in _GROUP_SCOPE_LABELS:
+        # ``<field>_primary_filing`` slot. Private-use readiness PR-A routes the
+        # decision through the one canonical vocabulary
+        # (``fact_scope.parse_scope``), which is also what the DB columns were
+        # written from — so a segment fact that survived a cache round-trip is
+        # still recognised as a segment fact here.
+        if parse_scope(fact.get("scope")).is_segment:
             continue
         seen.add(field)  # type: ignore[arg-type]
         out.append((field, fact))  # type: ignore[arg-type]

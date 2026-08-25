@@ -1,8 +1,15 @@
 # Architecture
 
+## Status: Private-Use Production Readiness — PR-A: Persisted Fact Scope (**branch, pre-merge**; migration `018`, Alembic head `017 → 018`; extraction `pipeline_version` `11 → 12`). Fact scope stops being an in-memory string. `app/services/sources/fact_scope.py` is now the single vocabulary for Group-vs-segment, and `extracted_facts` persists `scope_type` / `scope_name` / `scope_key` so a segment figure cannot lose its attribution across a DB round-trip and be promoted into a canonical Group slot on a cache-reused run. See `docs/PRIVATE_USE_PRODUCTION_READINESS.md` and ADR-031. Production is not provisioned and is untouched.
+
+<details>
+<summary>Previous status (Phase 32D)</summary>
+
 ## Status: Phase 32D — Multi-Year Financial Table Extraction (**merged + deployed to STAGING**; API/web `bfac6e1`; PRs #144 #145 #146 #147; **no migration** (Alembic head stays `017`), no schema change, no new flag; extraction `pipeline_version` `9 → 11`). A second, geometry-driven table pass (`app/services/sources/financial_table_reconstructor.py`) rebuilds BORDERLESS multi-year financial tables from a PDF page's positioned words, so a metric row, its value cell and its year/period COLUMN HEADER are associated deterministically before anything is promoted to a fact. `page.extract_tables()` is ruling-line driven and recovers nothing usable from a glossy "Five-year summary" page — on the real 169-page Pandora Annual Report 2025 it returned a degenerate one-column artifact, and every figure on that page reached the pipeline only as flattened prose with its column→year mapping already destroyed. See "Multi-Year Financial Table Reconstruction" below and ADR-030.
 
 **Live staging acceptance:** the real Pandora annual report now yields **52 validated period-scoped facts** (was 2) — revenue, EBIT, EBIT margin, net income, total assets, equity, net interest-bearing debt, operating cash flow, free cash flow and headcount, each for FY2021–FY2025 in `DKK million`, each carrying `page=14` and its own reconstructed-table locator. Richemont regressed nothing (21 facts, was 15; every accepted Group and segment figure intact, and no segment figure reached a Group slot). The Deep Field Review moved Pandora from `second_tier` ("limited financial data restricted to revenue for 2025") to `strongest_candidates`, citing free cash flow, net debt, total assets and equity by name. Production is not provisioned and is untouched.
+
+</details>
 
 <details>
 <summary>Previous status (Phase 32D2)</summary>

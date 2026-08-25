@@ -168,6 +168,19 @@ class ExtractedFact(Base):
     is_active: Mapped[bool] = mapped_column(
         sa.Boolean, nullable=False, default=True, server_default=sa.true()
     )
+    # Private-use readiness PR-A (migration 018) — the fact's PERSISTED
+    # entity/segment scope. Before this, ``ValidatedFact.scope`` existed only in
+    # memory: it was dropped on write and defaulted to ``None`` on cache
+    # rehydration, so a reused document handed the report layer segment facts
+    # with no scope — and an ABSENT scope is the pipeline's implicit "this is
+    # the Group figure" convention. See ``app.services.sources.fact_scope`` for
+    # the one place the semantics are decided.
+    #   scope_type  'group' | 'segment' | NULL(unknown, never coerced to group)
+    #   scope_name  normalized as-found segment label (NULL for group/unknown)
+    #   scope_key   derived identity dedupe/supersession/series compare on
+    scope_type: Mapped[str | None] = mapped_column(sa.String(20))
+    scope_name: Mapped[str | None] = mapped_column(sa.String(200))
+    scope_key: Mapped[str | None] = mapped_column(sa.String(220))
     created_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True), default=_utcnow, server_default=sa.func.now()
     )
@@ -178,5 +191,8 @@ class ExtractedFact(Base):
         ),
         sa.Index(
             "ix_extracted_facts_document_active", "extracted_document_id", "is_active"
+        ),
+        sa.Index(
+            "ix_extracted_facts_document_scope", "extracted_document_id", "scope_key"
         ),
     )
