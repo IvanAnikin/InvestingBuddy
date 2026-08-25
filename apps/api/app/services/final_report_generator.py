@@ -103,6 +103,10 @@ from app.services.sources.financial_history import (
     history_evidence_lines,
 )
 from app.services.sources.ingestion_attempts import attempts_for_primary_documents
+from app.services.sources.primary_fact_parser import (
+    FINANCIAL_STATEMENT_FIELDS,
+    IDENTITY_FIELDS,
+)
 from app.services.sources.redaction import (
     canonicalize_source_url,
     strip_url_secrets,
@@ -1088,26 +1092,29 @@ def _build_executive_summary(
 # Phase 29B.3 — which parsed primary-fact fields belong to which report section.
 # Financial-statement facts flow into the financial snapshot; identity facts flow
 # into company identity. A fact is only ever inserted when it is high-confidence.
-_PRIMARY_FINANCIAL_FACT_FIELDS: frozenset[str] = frozenset(
-    {
-        "revenue",
-        "operating_profit",
-        "net_income",
-        "free_cash_flow",
-        "total_assets",
-        "total_debt",
-        "cash_and_equivalents",
-    }
-)
-_PRIMARY_IDENTITY_FACT_FIELDS: frozenset[str] = frozenset(
-    {
-        "reporting_currency",
-        "fiscal_year",
-        "employees",
-        "business_profile",
-        "segments",
-    }
-)
+# Private-use readiness PR-C: DERIVED from the parser's own exported vocabulary
+# rather than restated. The previous hand-maintained set admitted seven fields
+# while the parser routinely produced fifteen, so a validated ``operating_margin``,
+# ``operating_cash_flow``, ``net_debt``, ``net_cash``, ``total_equity`` or
+# ``recurring_operating_profit`` was extracted, validated, persisted, cited —
+# and then never shown. The extractor knew more than the snapshot exposed.
+#
+# ``net_debt`` / ``total_debt``, ``net_cash`` / ``cash_and_equivalents`` and
+# ``operating_profit`` / ``recurring_operating_profit`` are distinct SLOTS here,
+# never aliases of one another — see
+# ``primary_fact_parser.NON_INTERCHANGEABLE_FIELD_PAIRS``.
+_PRIMARY_FINANCIAL_FACT_FIELDS: frozenset[str] = FINANCIAL_STATEMENT_FIELDS
+# ``employees`` is an identity fact, not a fundamental: knowing the headcount
+# must never read as "we have financial statements". ``business_profile`` /
+# ``segments`` are accepted here for forward compatibility with a richer parser
+# vocabulary; the parser does not emit them today, so they are simply inert.
+# ``company_legal_name`` is deliberately EXCLUDED: the section already resolves
+# ``legal_name`` with care (placeholder-ticker detection, DB-record fallback),
+# and inserting a second, separately-resolved key for the same concept is the
+# two-sources-of-truth pattern this campaign removes, not a richer answer.
+_PRIMARY_IDENTITY_FACT_FIELDS: frozenset[str] = (
+    IDENTITY_FIELDS - {"company_legal_name"}
+) | frozenset({"business_profile", "segments"})
 
 # Phase 32A corrective — scope labels that mean "this fact IS the
 # Group/consolidated figure" (the existing implicit convention for every OTHER

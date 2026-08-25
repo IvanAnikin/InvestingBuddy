@@ -297,6 +297,17 @@ class FieldReviewCompanySummary(BaseModel):
     country: str | None = None
     sector: str | None = None
     industry: str | None = None
+    # Private-use readiness PR-C — per-company IDENTITY COMPLETENESS, derived
+    # from THIS company's own exact-linked report and nothing else.
+    #
+    # Root cause it closes: the pack carried no identity-completeness signal at
+    # all. A comparative council asked "which identity fields are missing?" had
+    # only free-text gap prose to work from, and generalised one company's
+    # missing LEI into a claim that BOTH companies lacked one — while the other
+    # company's report rendered a sourced LEI. A field gap must be a fact the
+    # pack states per company, not something a model infers across companies.
+    identity_fields_present: list[str] = Field(default_factory=list)
+    identity_fields_missing: list[str] = Field(default_factory=list)
 
     # ── Discovery relevance (read straight off the candidate row) ────────
     discovery: FieldDiscoveryRelevance = Field(

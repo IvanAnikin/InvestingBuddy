@@ -429,10 +429,29 @@ function CandidateDetailPanel({ candidateId }: { candidateId: string }) {
       </div>
 
       {/* Score breakdown */}
-      <GlassCard className="space-y-2 p-4">
+      <GlassCard className="space-y-2 p-4" testId="discovery-score-breakdown">
         <p className="mb-1 text-sm font-semibold text-slate-200">
           Score breakdown — internal prioritization only
         </p>
+        {/*
+          Private-use readiness PR-C — discovery scores are computed ONCE, at
+          discovery time, and are deliberately immutable: re-deriving them after
+          a full analysis would destroy the record of why the candidate was
+          surfaced. But once a full analysis exists, an unlabelled
+          "Fundamentals 0 / Data completeness 0" beside a report carrying a
+          validated T1 revenue figure reads as a live contradiction. Label the
+          snapshot rather than recompute it, and point at the current state.
+        */}
+        {reportId && (
+          <p
+            className="rounded border border-amber-400/20 bg-amber-400/5 px-2 py-1.5 text-[11px] text-amber-200"
+            data-testid="discovery-stage-snapshot-note"
+          >
+            Discovery-stage snapshot — these scores describe what was known AT
+            DISCOVERY and are never recomputed. A full analysis has since run;
+            the Final Analysis report below is the current research state.
+          </p>
+        )}
         <ScoreBar label="Momentum" value={detail.momentum_score} />
         <ScoreBar label="Catalyst" value={detail.catalyst_score} />
         <ScoreBar label="Fundamentals" value={detail.fundamentals_score} />

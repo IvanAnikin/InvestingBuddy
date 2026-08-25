@@ -46,21 +46,58 @@ _REGULATOR_DISPLAY_NAMES: dict[str, str] = {
 }
 
 
+# Private-use readiness PR-C — the ANNUAL-DOCUMENT name, per jurisdiction.
+#
+# "Annual report / 10-K / 40-F" is a US filing vocabulary. Stating it as the
+# generic requirement for a Danish, Swiss, French or Italian issuer is a
+# SOURCE_TIER/channel contradiction: it names a document the issuer will never
+# file, and it reads as though a US filing were the standard the report is
+# holding the company to. The DOCUMENT the issuer actually publishes is named
+# instead, resolved from the same exchange/country signal the regulator line
+# already uses. An unresolved jurisdiction keeps the existing US wording — this
+# never guesses.
+_FILING_DISPLAY_NAMES: dict[str, str] = {
+    "uk_fca_nsm": "Annual report and accounts (UK)",
+    "euronext_regulated_info": "Annual report / universal registration document (URD)",
+    "deutsche_boerse": "Annual report / Geschäftsbericht",
+    "nordic_disclosures": "Annual report / interim financial report (Nasdaq Nordic)",
+    "six_swiss": "Annual report (SIX-listed issuer)",
+}
+_GENERIC_FILING_NAME = "Annual report / 10-K / 40-F"
+
+
+def _regulator_connector_id(company_snapshot: dict) -> str | None:
+    """The issuer's home regulated-disclosure connector, or None when unresolved."""
+    identity: dict = (company_snapshot or {}).get("company_identity") or {}
+    exchange = identity.get("exchange")
+    country = identity.get("country_domicile")
+    if not exchange and not country:
+        return None
+    try:
+        return regulator_connector_for(exchange, country)
+    except Exception:  # noqa: BLE001 - a registry lookup must never fail a report
+        return None
+
+
+def annual_filing_name(company_snapshot: dict) -> str:
+    """The annual-document name for THIS issuer's jurisdiction.
+
+    Falls back to the US wording only when the jurisdiction genuinely does not
+    resolve — an unresolved issuer is not silently relabelled.
+    """
+    connector_id = _regulator_connector_id(company_snapshot)
+    if not connector_id:
+        return _GENERIC_FILING_NAME
+    return _FILING_DISPLAY_NAMES.get(connector_id, _GENERIC_FILING_NAME)
+
+
 def _jurisdiction_appropriate_regulator_line(company_snapshot: dict) -> str:
     """The "missing regulatory filings" line, swapped to the issuer's actual
     home regulator when resolvable — never guessed when unresolved (a US
     issuer, or any issuer whose exchange/country does not resolve to a known
     regulator, keeps the generic "SEC EDGAR / SEDAR+" wording unchanged)."""
     generic = "SEC EDGAR / SEDAR+ filings — T2_regulator_or_gov needed for regulatory data"
-    identity: dict = (company_snapshot or {}).get("company_identity") or {}
-    exchange = identity.get("exchange")
-    country = identity.get("country_domicile")
-    if not exchange and not country:
-        return generic
-    try:
-        connector_id = regulator_connector_for(exchange, country)
-    except Exception:
-        connector_id = None
+    connector_id = _regulator_connector_id(company_snapshot)
     display_name = _REGULATOR_DISPLAY_NAMES.get(connector_id) if connector_id else None
     if not display_name:
         return generic
@@ -276,7 +313,8 @@ def run_source_quality_agent(
     )
     if not fundamentals.available:
         missing_primary.append(
-            "Annual report / 10-K / 40-F — T1_primary_filing required for financials"
+            f"{annual_filing_name(company_snapshot)} — T1_primary_filing "
+            "required for financials"
         )
         missing_primary.append(_jurisdiction_appropriate_regulator_line(company_snapshot))
     elif fundamentals.is_issuer_primary:
@@ -312,15 +350,16 @@ def run_source_quality_agent(
         # real gap is the filing NARRATIVE (MD&A, segment discussion, notes),
         # which structured XBRL statement data does not carry.
         missing_primary.append(
-            "Annual report / 10-K / 40-F NARRATIVE (MD&A, segment discussion, "
-            "accounting notes) — structured "
+            f"{annual_filing_name(company_snapshot)} NARRATIVE (management "
+            "commentary, segment discussion, accounting notes) — structured "
             f"{fundamentals.source} statement facts are already sourced "
             f"({fundamentals.source_tier}); the filing's narrative text is not"
         )
     else:
         missing_primary.append(
-            "Annual report / 10-K / 40-F — T1/T2 filing needed to validate the "
-            f"aggregator fundamentals currently sourced from {fundamentals.source}"
+            f"{annual_filing_name(company_snapshot)} — T1/T2 filing needed to "
+            f"validate the aggregator fundamentals currently sourced from "
+            f"{fundamentals.source}"
         )
         missing_primary.append(_jurisdiction_appropriate_regulator_line(company_snapshot))
     missing_primary.append(
@@ -358,13 +397,14 @@ def run_source_quality_agent(
     if is_mock or effective_tier == "T6_model_estimate":
         recommended_upgrades.append(
             "Replace mock/T6 data with live provider: "
-            "use Stooq (T5) for prices, GLEIF (T2) for LEI, "
-            "SEC EDGAR (T2) for US filings"
+            "use Stooq (T5) for prices, GLEIF (T2) for LEI, and the issuer's "
+            "own regulated-disclosure venue (T2) for filings"
         )
     if effective_tier in _WEAK_TIERS and not financial_is_primary:
         recommended_upgrades.append(
-            f"Upgrade {provider_name} ({effective_tier}) data with T1 primary filing "
-            "(annual report, 10-K, prospectus) for financial fundamentals"
+            f"Upgrade {provider_name} ({effective_tier}) data with a T1 primary "
+            f"filing ({annual_filing_name(company_snapshot)}) for financial "
+            "fundamentals"
         )
     elif effective_tier in _WEAK_TIERS and financial_is_primary:
         # Identity/price remain aggregator-tier; the FINANCIALS do not.

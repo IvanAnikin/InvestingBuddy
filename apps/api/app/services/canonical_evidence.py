@@ -61,6 +61,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.services.sources.primary_fact_parser import FINANCIAL_STATEMENT_FIELDS
+
 TIER_T1 = "T1_primary_filing"
 TIER_T2 = "T2_regulator_or_gov"
 TIER_T5 = "T5_api_aggregator"
@@ -252,22 +254,16 @@ SEC_STATEMENT_FIELDS: tuple[str, ...] = (
 # Kept here (not in the report generator) so the source-quality agent and the
 # report builders admit exactly the same facts — a gap the report says is closed
 # must be the same gap the agent stops asserting.
-PRIMARY_FACT_FIELDS: frozenset[str] = frozenset(
-    {
-        "revenue",
-        "operating_profit",
-        "net_income",
-        "ebitda",
-        "operating_cash_flow",
-        "free_cash_flow",
-        "total_assets",
-        "total_debt",
-        "net_debt",
-        "cash_and_equivalents",
-        "shareholders_equity",
-        "earnings_per_share",
-    }
-)
+#
+# Private-use readiness PR-C: this is now DERIVED from the parser's own exported
+# vocabulary rather than restated. The hand-maintained copy had drifted from
+# reality in both directions — it listed ``shareholders_equity`` and
+# ``earnings_per_share``, which the parser has never emitted, and omitted
+# ``total_equity`` and ``net_cash``, which it emits routinely, so a real
+# ``total_equity`` fact counted as no fundamental anywhere. ``ebitda`` is
+# retained as an ALIAS the parser does not currently produce but a future
+# vocabulary addition might, and which some aggregator payloads use.
+PRIMARY_FACT_FIELDS: frozenset[str] = FINANCIAL_STATEMENT_FIELDS | frozenset({"ebitda"})
 
 
 @dataclass(frozen=True)

@@ -85,6 +85,21 @@ class ValuationGuardOutput:
     warnings: list[str] = field(default_factory=list)
 
 
+# Private-use readiness PR-C — name the channel the statements ACTUALLY came
+# from. "SEC statement fundamentals" was emitted unconditionally, including for
+# a Danish issuer whose figures came from its own annual report and which has no
+# SEC registration at all. That is a SOURCE_TIER contradiction: the report
+# elsewhere correctly labels the same facts issuer-primary.
+def _statement_source_label(fin_ev: object) -> str:
+    if fin_ev is None or not getattr(fin_ev, "available", False):
+        return "statement fundamentals"
+    if getattr(fin_ev, "is_issuer_primary", False):
+        return "issuer-primary statement fundamentals"
+    if getattr(fin_ev, "is_primary_backed", False):
+        return "regulator structured statement fundamentals"
+    return "statement fundamentals"
+
+
 def run_valuation_guard_agent(
     company_snapshot: dict,
     financial_data_summary: dict,
@@ -280,16 +295,17 @@ def run_valuation_guard_agent(
             if derived_ev:
                 derived_bits.append("enterprise value")
             valuation_blockers.append(
-                "Valuation conclusion withheld: SEC statement fundamentals "
+                f"Valuation conclusion withheld: {_statement_source_label(fin_ev)} "
                 f"({', '.join(core_available)}) are available and "
                 f"{', '.join(derived_bits)} is present only as a DERIVED "
-                "ESTIMATE (T6, from free price + SEC data). EBITDA, EV/EBITDA and "
+                "ESTIMATE (T6, from free price data plus those statements). "
+                "EBITDA, EV/EBITDA and "
                 "validated market inputs remain unavailable — no valuation "
                 "multiple or DCF conclusion is produced at this phase."
             )
         else:
             valuation_blockers.append(
-                "Valuation conclusion withheld: SEC statement fundamentals "
+                f"Valuation conclusion withheld: {_statement_source_label(fin_ev)} "
                 f"({', '.join(core_available)}) are available, but market-based "
                 "inputs (market capitalization, shares outstanding, enterprise value) "
                 "and EBITDA are not — no valuation multiple or DCF conclusion is "
@@ -313,8 +329,8 @@ def run_valuation_guard_agent(
                 )
         else:
             allowed_next_steps.append(
-                "Source T1 primary filings (annual report / 10-K) for revenue, "
-                "EBITDA, FCF."
+                "Source T1 primary filings (the issuer's annual/interim "
+                "financial report) for revenue, EBITDA, FCF."
             )
         allowed_next_steps.extend([
             "Verify legal entity via GLEIF (LEI lookup) and confirm ISIN.",

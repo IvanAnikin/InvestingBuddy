@@ -56,6 +56,12 @@ SAFETY_RULES = (
     "- If a company's summary is missing a field, say it is missing. Never fill "
     "a gap with an assumption presented as fact, and never carry one company's "
     "value across to another.\n"
+    "- A MISSING FIELD IS PER COMPANY. Each company summary states its own "
+    "identity_fields_present / identity_fields_missing and its own "
+    "missing_financial_fields. Read those lists for the specific company you "
+    "are describing. Never say two companies share a gap unless that field "
+    "appears in BOTH of their missing lists, and never call a field missing "
+    "for a company that lists it as present.\n"
     "- Every factual claim MUST cite one or more ids that exist in the pack: run "
     'facts (e.g. ["R1"]) and/or companies (e.g. ["F2"]). If you cannot cite it, '
     "put it in evidence_gaps or unsupported_claims instead of stating it.\n"
