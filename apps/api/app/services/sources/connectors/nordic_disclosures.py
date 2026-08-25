@@ -42,6 +42,8 @@ Guarantees (mirrors the company-IR static/metadata report path):
 
 from __future__ import annotations
 
+from app.core.config import Settings
+from app.core.config import settings as default_settings
 from app.services.exchange_registry import normalize_exchange
 from app.services.sources.connector_base import (
     CompanyContext,
@@ -51,9 +53,14 @@ from app.services.sources.connector_base import (
     SourceConnector,
     _now,
 )
+from app.services.sources.disclosure_events import DisclosureFeed
 from app.services.sources.evidence import EvidenceItem, build_evidence_item
 from app.services.sources.gaps import GapSeverity, GapType, SourceGap
 from app.services.sources.taxonomy import T2_REGULATOR_OR_GOV, ConnectorStatus
+from app.services.sources.venue_disclosures import (
+    disclosure_events_to_evidence,
+    fetch_nasdaq_nordic_disclosures,
+)
 from app.services.sources.verified_issuer_sources import (
     VerifiedIssuerSource,
     get_verified_issuer_source,
@@ -102,10 +109,23 @@ class NordicDisclosuresConnector(SourceConnector):
     supported_source_ids = ("nordic_disclosures",)
     status = ConnectorStatus.enabled
 
-    def __init__(self, *, verified_source: VerifiedIssuerSource | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        verified_source: VerifiedIssuerSource | None = None,
+        cfg: "Settings | None" = None,
+        disclosure_fetcher=None,
+    ) -> None:
         # An explicitly injected verified source (tests / preview) takes
         # precedence; otherwise the connector resolves identity itself.
         self._verified = verified_source
+        self._cfg = cfg or default_settings
+        # Private-use readiness PR-E — injectable so tests exercise the live
+        # path against a fixture without a network call. Defaults to the real,
+        # SSRF-guarded venue retrieval.
+        self._disclosure_fetcher = (
+            disclosure_fetcher or fetch_nasdaq_nordic_disclosures
+        )
 
     # -- Eligibility -------------------------------------------------------
 
@@ -263,7 +283,73 @@ class NordicDisclosuresConnector(SourceConnector):
     async def fetch_events(
         self, company: CompanyContext, query: QueryContext
     ) -> ConnectorResult:
-        return self._reference_result(company)
+        """Live regulated disclosures when enabled, else the venue reference.
+
+        Private-use readiness PR-E. With ``source_live_disclosures_enabled``
+        off this is byte-for-byte the previous reference-only behaviour. With
+        it on, the exchange's OWN company-news service is queried under the
+        bounds in ``venue_disclosures`` and each announcement becomes a typed
+        event; a venue that fails degrades back to the reference plus an
+        honest, machine-readable limitation — never a fabricated announcement.
+        """
+        if not getattr(self._cfg, "source_live_disclosures_enabled", False):
+            return self._reference_result(company)
+        verified = self._nordic_issuer(company)
+        if verified is None:
+            return ConnectorResult(
+                connector_key=self.connector_key,
+                source_gaps=[self._not_eligible_gap()],
+            )
+
+        feed = await self._disclosure_fetcher(
+            issuer_ticker=verified.ticker,
+            issuer_name=verified.company_name,
+            exchange=company.exchange or verified.exchange,
+            country=verified.country,
+            cfg=self._cfg,
+            max_events=int(getattr(self._cfg, "live_disclosure_max_events", 15)),
+            lookback_days=int(
+                getattr(self._cfg, "live_disclosure_lookback_days", 400)
+            ),
+        )
+        if not feed.events:
+            result = self._reference_result(company)
+            result.source_gaps.append(self._live_unavailable_gap(verified, feed))
+            return result
+
+        items = disclosure_events_to_evidence(
+            feed.events,
+            source_id="nordic_disclosures",
+            transport_label=_TRANSPORT_LABEL,
+            id_prefix="NORDICEVT",
+            max_items=int(getattr(self._cfg, "live_disclosure_max_events", 15)),
+        )
+        # The venue reference is retained alongside the events: it is what tells
+        # a reader WHERE these came from and where to look for more.
+        return ConnectorResult(
+            connector_key=self.connector_key,
+            evidence_items=[self._reference_item(verified), *items],
+            source_gaps=[self._translation_gap(verified)],
+        )
+
+    def _live_unavailable_gap(
+        self, verified: VerifiedIssuerSource, feed: "DisclosureFeed"
+    ) -> SourceGap:
+        """Honest, machine-readable record of WHY no live event was retrieved."""
+        detail = "; ".join(feed.limitations) or "no disclosures in the lookback window"
+        return SourceGap(
+            connector_key=self.connector_key,
+            source_id="nordic_disclosures",
+            gap_type=GapType.primary_filing_unavailable,
+            severity=GapSeverity.info,
+            message=(
+                f"Live regulated disclosures for {verified.company_name} were "
+                f"requested from {NORDIC_DISCLOSURE_NAME} but none were "
+                f"retrieved ({detail}). The venue reference is provided instead; "
+                "no announcement was assumed or fabricated."
+            ),
+            blocks_research_complete=False,
+        )
 
     # -- Health ------------------------------------------------------------
 

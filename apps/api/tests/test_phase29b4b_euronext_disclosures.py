@@ -221,7 +221,7 @@ def test_8_registry_promotes_euronext_to_enabled_reference_connector():
     # index event sources (Phase 29D.2) plus 3 reference-only permit /
     # regulatory-event sources (Phase 29D.3).
     summary = reg.summary()
-    assert summary["enabled"] == 35  # +1: local-language business press (Phase 30B)
+    assert summary["enabled"] == 36  # +1: local-language business press (Phase 30B)  # +1: Italian regulated disclosures (readiness PR-E)
     assert summary["scaffolded"] == 2
 
 

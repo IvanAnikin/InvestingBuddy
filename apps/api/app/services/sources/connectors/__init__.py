@@ -1,5 +1,6 @@
 """Concrete source connectors — Phase 29A framework wiring + Phase 29B connectors."""
 
+from app.services.sources.connectors.borsa_italiana import BorsaItalianaConnector
 from app.services.sources.connectors.company_ir import CompanyIrConnector
 from app.services.sources.connectors.deutsche_boerse import DeutscheBoerseConnector
 from app.services.sources.connectors.euronext_regulated_info import (
@@ -52,6 +53,7 @@ __all__ = [
     "UkFcaNsmConnector",
     "EuronextRegulatedConnector",
     "DeutscheBoerseConnector",
+    "BorsaItalianaConnector",
     "NordicDisclosuresConnector",
     "SixSwissConnector",
     "LocalLanguagePressConnector",

@@ -269,7 +269,7 @@ def test_registry_summary_counts_after_policy_layer():
     # + 5 policy / government (29C.3) + 2 procurement / tender events (29D.1)
     # + 3 patent office / index events (29D.2) + 3 permit / regulatory-event
     # sources (29D.3) = 34 enabled.
-    assert summary["enabled"] == 35  # +1: local-language business press (Phase 30B)
+    assert summary["enabled"] == 36  # +1: local-language business press (Phase 30B)  # +1: Italian regulated disclosures (readiness PR-E)
     assert summary["scaffolded"] == 2
     assert summary["planned"] == 1  # only OpenBB remains planned (Phase 30B)
     assert summary["total"] == len(reg.all_sources())

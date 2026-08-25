@@ -43,6 +43,10 @@ _REGULATOR_DISPLAY_NAMES: dict[str, str] = {
     "deutsche_boerse": "the German regulated-information venue (Deutsche Börse / Bundesanzeiger)",
     "nordic_disclosures": "Nasdaq Nordic company disclosures",
     "six_swiss": "SIX Swiss Exchange regulatory disclosures",
+    "borsa_italiana": (
+        "eMarket Storage, the CONSOB-authorised Italian regulated-information "
+        "storage mechanism"
+    ),
 }
 
 
@@ -62,6 +66,7 @@ _FILING_DISPLAY_NAMES: dict[str, str] = {
     "deutsche_boerse": "Annual report / Geschäftsbericht",
     "nordic_disclosures": "Annual report / interim financial report (Nasdaq Nordic)",
     "six_swiss": "Annual report (SIX-listed issuer)",
+    "borsa_italiana": "Annual / half-year financial report (Relazione finanziaria)",
 }
 _GENERIC_FILING_NAME = "Annual report / 10-K / 40-F"
 

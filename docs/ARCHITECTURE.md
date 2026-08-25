@@ -1,6 +1,13 @@
 # Architecture
 
-## Status: Private-Use Production Readiness — PR-D: Current-Period (Interim) Evidence (**branch, pre-merge**; **no migration**, Alembic head stays `018`; extraction `pipeline_version` `12 → 13`). Every target issuer had published something newer than its last annual report, and none of it could reach a report: interim documents could never survive the per-issuer selection cap, interim figures were stamped with bare years, and an interim figure could occupy the canonical annual slot. Selection is now period- and recency-aware with a reserved current-period slot; prose and table headers recognise interim markers from the value's own local window; and `<field>_primary_filing` (latest ANNUAL) and `<field>_current_period` (latest INTERIM) are separate, explicitly non-comparable slots. Nothing is annualised. See ADR-034.
+## Status: Private-Use Production Readiness — PR-E: Live Regulated Disclosures (**branch, pre-merge**; **no migration**, Alembic head stays `018`; ONE new OFF-by-default flag `SOURCE_LIVE_DISCLOSURES_ENABLED`). The four venue connectors were reference-only by design — a researcher asking "what did this issuer just announce?" got a link to a search page. Two venues publish a legitimate official machine-readable surface and are now retrieved live under strict bounds: **Nasdaq Nordic** (the exchange's own company-news service) and **eMarket Storage** (the CONSOB-authorised Italian storage mechanism — a NEW connector for a venue that previously had no mapping at all). Every venue normalises into one `DisclosureEvent`, and the same announcement reaching the system from the issuer AND the exchange merges into ONE event carrying BOTH provenances. SIX, Euronext Paris and LSE/FCA NSM stay reference-only, the last deliberately: it is defended by a proof-of-work challenge that this campaign will not bypass. See ADR-035.
+
+<details>
+<summary>Previous status (Readiness PR-D)</summary>
+
+## Status: Private-Use Production Readiness — PR-D: Current-Period (Interim) Evidence (merged `3f45268`; **no migration**, Alembic head stays `018`; extraction `pipeline_version` `12 → 13`). Every target issuer had published something newer than its last annual report, and none of it could reach a report: interim documents could never survive the per-issuer selection cap, interim figures were stamped with bare years, and an interim figure could occupy the canonical annual slot. Selection is now period- and recency-aware with a reserved current-period slot; prose and table headers recognise interim markers from the value's own local window; and `<field>_primary_filing` (latest ANNUAL) and `<field>_current_period` (latest INTERIM) are separate, explicitly non-comparable slots. Nothing is annualised. See ADR-034.
+
+</details>
 
 <details>
 <summary>Previous status (Readiness PR-C)</summary>

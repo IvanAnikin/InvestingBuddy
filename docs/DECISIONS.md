@@ -2309,3 +2309,85 @@ multi-period interim table that mixes column types (Pandora's "Q2 2026 | Q2 2025
 | H1 2026 | H1 2025 | FY 2025") is still refused by the table reconstructor's
 monotonicity check — correctly fail-closed, and its figures still reach the
 pipeline through prose; widening that check is deliberately out of scope here.
+
+---
+
+## ADR-035: Regulated Disclosures Normalise Into One Event Model, and Merge Without Losing Provenance
+
+**Date:** 2026-08-25
+**Status:** Accepted
+
+### Context
+
+Four venue connectors existed (`nordic_disclosures`, `six_swiss`,
+`euronext_regulated_info`, `uk_fca_nsm`) and every one was reference-only by
+design: it emitted a pointer to the issuer's regulated-disclosure venue plus an
+honest gap saying the filing CONTENT is not fetched. For a private research
+system that is half an answer — a researcher asking "what did this issuer just
+announce?" got a link to a search page.
+
+Italy was worse: no connector, and no `MI` / `Italy` entry in
+`regulator_connector_for` at all, so an Italian issuer fell through to the
+generic region scaffold and its report described its filings in US vocabulary.
+
+Researching the venues on 2026-08-25 produced an uneven answer, which is the
+interesting part. Two venues publish a legitimate, official, machine-readable
+surface. Three do not, and one of those is actively defended against automation.
+
+### Decision
+
+**Upgrade the existing connectors in place; add exactly one.** No parallel
+architecture. Live retrieval is gated behind `SOURCE_LIVE_DISCLOSURES_ENABLED`,
+off by default, so enabling it is an operator decision rather than a deploy
+side-effect, and with it off every connector is byte-for-byte unchanged.
+
+**Live where a legitimate surface exists:**
+
+| Venue | Surface | Status |
+|---|---|---|
+| Nasdaq Nordic (CO/ST/HE/OL) | the exchange's own company-news service — JSON, per issuer, with headline, venue category, official URL and typed attachments | **live** |
+| eMarket Storage (Italy) | the CONSOB-authorised storage mechanism; per-issuer listing with a dated row and the official PDF | **live** (new connector) |
+| SIX Swiss | no public per-issuer API found; issuers publish Art. 53 LR ad-hoc announcements on their own sites | reference; issuer-primary path covers it |
+| Euronext Paris | company news is modal-loaded and paginated; the server-rendered page carries a handful of rows | reference |
+| LSE / FCA NSM | NSM portal returns 403, its search API rejects every documented index, and the issuer's own site is behind a proof-of-work challenge | **reference — deliberately not bypassed** |
+
+**One event model.** Every venue normalises into `DisclosureEvent`, so an
+Italian and a Danish disclosure reach the council, the report and the DFR in the
+same shape, and a venue that cannot be retrieved degrades without any consumer
+noticing a different shape.
+
+**Dedupe is semantic, and merging is additive.** The key is
+`(issuer, publication DATE, normalized title)` — date-level because the issuer's
+newsroom and the exchange stamp the same announcement minutes apart, and
+title-normalized because the exchange prefixes its own announcement number.
+Deliberately NOT URL-based: the two channels host it at different URLs, which is
+the whole reason it appears twice. When two records merge, `provenances` keeps
+BOTH channels and every optional field survives from whichever copy had it — an
+announcement confirmed by two independent channels is better evidence than one,
+and throwing away a channel would hide that.
+
+**Category is descriptive, never a judgement.** The venue's own structured label
+wins; a headline only refines a label that is regulatory rather than
+content-bearing ("Inside information" says how a disclosure is *regulated*, not
+what it is *about*). Nothing here says an event is material, bullish, or a
+reason to trade.
+
+### Consequences
+
+**Positive.** Denmark and Italy now yield real, dated, categorised, citeable
+announcements with official URLs and attachments — including, for Italy, an
+issuer whose own website was serving a maintenance page. The issuer-vs-exchange
+duplicate appears once, with both provenances. Italy finally has a regulated
+-disclosure identity, which also fixes the US filing vocabulary PR-C had to
+leave in place for Italian issuers.
+
+**Negative / accepted.** Three of five venues remain reference-only, and one of
+them (LSE/FCA NSM) is genuinely inaccessible without bypassing an anti-bot
+mechanism, which this campaign will not do — recorded as a limitation rather
+than worked around. The Italian venue needs a curated issuer id per company,
+because it exposes its filter as an opaque numeric id with no derivable relation
+to the ticker; the curation is a trust relationship exactly like the verified
+-issuer registry, and every line of parsing around it stays generic. And the
+Italian venue publishes each announcement twice, once per language: both are
+kept, English ordered first, because dropping the local-language twin would
+require asserting that two differently-worded headlines mean the same thing.

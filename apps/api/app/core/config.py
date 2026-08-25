@@ -680,6 +680,21 @@ class Settings(BaseSettings):
     # allowlist-only (no arbitrary-URL fetch surface), never fabricates a filing —
     # a blocked / JS-gated / scanned document degrades to an honest gap — and every
     # extracted fact is human-review-required and never a recommendation.
+    # ── Live regulated disclosures (private-use readiness PR-E) ───────────
+    # Master switch for BOUNDED LIVE retrieval from an official regulated-
+    # disclosure venue. OFF by default: with it off every venue connector keeps
+    # its existing reference-only behaviour byte-for-byte, so enabling live
+    # retrieval is a deliberate operator decision, not a deploy side-effect.
+    source_live_disclosures_enabled: bool = False
+    # Hard per-issuer bounds. A regulated-disclosure feed is a CURRENT-state
+    # signal, so a wide lookback buys little and costs prompt budget.
+    live_disclosure_lookback_days: int = 400
+    live_disclosure_max_events: int = 15
+    # Wall-clock budget for ALL venue retrieval for ONE company. Exceeding it
+    # stops STARTING new venue calls and records an honest limitation — it
+    # never truncates a response mid-parse into a partial event.
+    live_disclosure_budget_seconds: int = 20
+
     # ── Historical financial series (private-use readiness PR-B) ──────────
     # How many comparable annual periods a single metric/scope series may
     # carry. The newest win; older periods are dropped, never averaged away.

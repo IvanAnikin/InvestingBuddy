@@ -130,6 +130,12 @@ _EXCHANGE_TO_REGULATOR: dict[str, str] = {
     "CO": "nordic_disclosures",  # Nasdaq Copenhagen
     "SW": "six_swiss",  # SIX Swiss Exchange
     "VX": "six_swiss",  # SIX Swiss (blue chip)
+    # Private-use readiness PR-E — Italy had NO mapping, so an Italian issuer
+    # fell through to the generic region scaffold and its report described its
+    # filings in US vocabulary.
+    "MI": "borsa_italiana",  # Euronext Milan / Borsa Italiana
+    "MIL": "borsa_italiana",
+    "BIT": "borsa_italiana",
 }
 _COUNTRY_TO_REGULATOR: dict[str, str] = {
     "United Kingdom": "uk_fca_nsm",
@@ -138,6 +144,7 @@ _COUNTRY_TO_REGULATOR: dict[str, str] = {
     "Germany": "deutsche_boerse",
     "Denmark": "nordic_disclosures",
     "Switzerland": "six_swiss",
+    "Italy": "borsa_italiana",
 }
 
 

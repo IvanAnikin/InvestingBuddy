@@ -30,6 +30,7 @@ from app.services.sources.connector_base import ConnectorHealth, SourceConnector
 from app.services.sources.connectors import (
     ALL_EVENT_SOURCES,
     ALL_MACRO_SOURCES,
+    BorsaItalianaConnector,
     CompanyIrConnector,
     DeutscheBoerseConnector,
     EuronextRegulatedConnector,
@@ -496,6 +497,32 @@ def build_registry(cfg: Settings | None = None) -> SourceRegistry:
             ),
         ),
         RegisteredSource(
+            source_id="borsa_italiana",
+            name="Italian Regulated Disclosures (eMarket Storage / CONSOB)",
+            provider_type=ProviderType.regulator,
+            tier=T2_REGULATOR_OR_GOV,
+            status=SourceStatus.enabled,
+            enabled=True,
+            jurisdiction="IT",
+            region="Europe",
+            language="mixed",
+            cost_model=CostModel.free,
+            access_mode=AccessMode.web_scrape,
+            connector_key="borsa_italiana",
+            connector_implemented=True,
+            capabilities=["fetch_filings", "fetch_events"],
+            reliability_note=(
+                "Italy's regulated information is filed with eMarket Storage, the "
+                "storage mechanism authorised by CONSOB. Emits a T2 venue SOURCE "
+                "REFERENCE always, and — when SOURCE_LIVE_DISCLOSURES_ENABLED is "
+                "on — bounded LIVE regulated-disclosure EVENTS for issuers with a "
+                "curated venue id (publication timestamp, headline, category and "
+                "the official PDF). The venue publishes an Italian and an English "
+                "edition of the same announcement; both are retained with their "
+                "own URL and language. No fabricated filings, notices, or dates."
+            ),
+        ),
+        RegisteredSource(
             source_id="six_swiss",
             name="SIX Swiss Exchange Regulatory Disclosures",
             provider_type=ProviderType.regulator,
@@ -695,6 +722,7 @@ def build_registry(cfg: Settings | None = None) -> SourceRegistry:
         "deutsche_boerse": DeutscheBoerseConnector(),
         "nordic_disclosures": NordicDisclosuresConnector(),
         "six_swiss": SixSwissConnector(),
+        "borsa_italiana": BorsaItalianaConnector(),
         "gleif": WrappedProviderConnector(
             connector_key="gleif",
             source_ids=("gleif",),
