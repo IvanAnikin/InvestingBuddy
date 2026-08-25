@@ -91,47 +91,53 @@ def _get(facts, label: str, period: str, scope=None):
 
 
 def test_all_seven_group_metrics_survive_the_bounded_evidence_path():
+    """Private-use readiness PR-D: the periods below are ``H1 2026`` / ``H1 2025``,
+    not ``2026`` / ``2025``. Every figure in this fixture is explicitly labelled
+    "first half of 2026" in the prose and "First-half 2026" in the table header;
+    stamping them with a bare year presented HALF-YEAR revenue of EUR38.6bn as
+    the FULL YEAR's — the ``INTERIM_AS_ANNUAL`` contradiction. The document is
+    the authority here, and it says first half."""
     facts = _validated()
 
-    revenue = _get(facts, "revenue", "2026")
-    assert revenue is not None, "revenue 2026 must validate"
+    revenue = _get(facts, "revenue", "H1 2026")
+    assert revenue is not None, "H1 2026 revenue must validate"
     assert revenue.value_numeric == 38644.0
     assert revenue.scale == "million"
 
-    rop = _get(facts, "recurring_operating_profit", "2026")
-    assert rop is not None, "profit from recurring operations 2026 must validate"
+    rop = _get(facts, "recurring_operating_profit", "H1 2026")
+    assert rop is not None, "H1 2026 profit from recurring operations must validate"
     assert rop.value_numeric == 8691.0
     assert rop.scale == "million"
 
-    margin = _get(facts, "operating_margin", "2026")
+    margin = _get(facts, "operating_margin", "H1 2026")
     assert margin is not None
     assert margin.value_numeric == 22.5
 
-    net_income = _get(facts, "net_income", "2026")
+    net_income = _get(facts, "net_income", "H1 2026")
     assert net_income is not None
     assert net_income.value_numeric == 5697.0
     assert net_income.scale == "million"
 
-    ofcf = _get(facts, "operating_free_cash_flow", "2026")
+    ofcf = _get(facts, "operating_free_cash_flow", "H1 2026")
     assert ofcf is not None
     assert ofcf.value_numeric == 4100.0
     assert ofcf.scale == "million"
 
-    net_debt = _get(facts, "net_debt", "2026")
+    net_debt = _get(facts, "net_debt", "H1 2026")
     assert net_debt is not None
     assert net_debt.value_numeric == 8245.0
     assert net_debt.scale == "million"
 
-    equity = _get(facts, "total_equity", "2026")
+    equity = _get(facts, "total_equity", "H1 2026")
     assert equity is not None, "bare 'Equity' table row must validate"
     assert equity.value_numeric == 69694.0
     assert equity.scale == "million"
 
 
 def test_prior_year_recurring_operating_profit_still_present():
-    """The comparison-period (2025) table value must not regress."""
+    """The comparison-period (H1 2025) table value must not regress."""
     facts = _validated()
-    prior = _get(facts, "recurring_operating_profit", "2025")
+    prior = _get(facts, "recurring_operating_profit", "H1 2025")
     assert prior is not None
     assert prior.value_numeric == 9012.0
 
@@ -140,7 +146,7 @@ def test_period_qualifier_does_not_capture_the_year_as_a_money_value():
     """Regression guard for the root cause: 'for the first half of 2026'
     must never itself be parsed as an €2,026 (or similar) money figure."""
     facts = _validated()
-    rop = _get(facts, "recurring_operating_profit", "2026")
+    rop = _get(facts, "recurring_operating_profit", "H1 2026")
     assert rop is not None
     assert rop.value_numeric != 2026.0
 

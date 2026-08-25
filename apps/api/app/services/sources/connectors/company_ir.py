@@ -63,8 +63,12 @@ from app.services.sources.document_discovery import (
     DOC_KIND_OTHER,
     DOC_KIND_PRESENTATION,
     DOC_KIND_RESULTS_RELEASE,
+    PERIOD_CLASS_CURRENT,
     STRATEGY_ANCHORS,
+    classify_document_kind,
     discover_documents,
+    document_period_class,
+    document_recency_hint,
 )
 from app.services.sources.document_text_extractor import (
     EVIDENCE_TYPE_BUSINESS,
@@ -188,6 +192,39 @@ class PrimaryDocumentBundle:
 # enabled (evidence-preview live path, or the council path when both connector +
 # document-extraction flags are on). Never raises.
 DocumentExtractor = Callable[..., Awaitable[PrimaryDocumentBundle]]
+
+
+def _reserve_current_period(
+    ordered: list[SafeLink],
+    *,
+    cap: int,
+    kind_of: "Callable[[SafeLink], str | None]",
+    recency: "Callable[[SafeLink], tuple[int, int]]",
+) -> list[SafeLink]:
+    """Promote the newest CURRENT-PERIOD link into the capped selection.
+
+    ``ordered`` is already ranked (annual first, then results, then interim);
+    this only guarantees that ONE current-period document survives the cap when
+    the cap would otherwise be filled entirely by annual reports. Everything
+    else keeps its existing order, so the deepest source is still fetched first.
+    Returns at most ``cap`` links.
+    """
+    head = ordered[:cap]
+    if cap <= 1 or any(
+        document_period_class(kind_of(link)) == PERIOD_CLASS_CURRENT for link in head
+    ):
+        return head
+    candidates = [
+        link
+        for link in ordered
+        if document_period_class(kind_of(link)) == PERIOD_CLASS_CURRENT
+    ]
+    if not candidates:
+        return head
+    newest = max(candidates, key=lambda link: recency(link))
+    # Displace the LAST slot: the earlier entries are the higher-ranked (and for
+    # an annual report, deeper) sources, and this must not cost the annual.
+    return head[: cap - 1] + [newest]
 
 
 class PrimaryDocumentArtifact(BaseModel):
@@ -1301,13 +1338,45 @@ class CompanyIrConnector(SourceConnector):
         marketing PDF whose link text happens to contain a keyword.
         """
 
-        def rank(link: SafeLink) -> tuple[int, int, int]:
-            kind = self._document_kinds.get(link.url, (None, None))[0]
-            kind_rank = _DOC_KIND_RANK.get(kind, _DOC_KIND_RANK_DEFAULT)
+        def explicit_kind(link: SafeLink) -> str | None:
+            """The DISCOVERY layer's classification, or None.
+
+            Kept as the primary ranking key exactly as before: a kind the
+            discovery layer asserted is a stronger signal than one inferred
+            from link text here, and an unclassified link must keep ranking at
+            the neutral default rather than being promoted past a real
+            downloadable document on the strength of its anchor wording.
+            """
+            return self._document_kinds.get(link.url, (None, None))[0]
+
+        def inferred_kind(link: SafeLink) -> str | None:
+            """Explicit classification, else one inferred from text + URL.
+
+            Used ONLY for the current-period reserve below, never for the rank:
+            it lets a genuinely current-period document compete for the
+            reserved slot instead of being invisible because the discovery
+            layer never saw it, without disturbing the existing ordering.
+            """
+            explicit = explicit_kind(link)
+            if explicit is not None:
+                return explicit
+            return classify_document_kind(link.text or "", link.url or "")
+
+        def recency(link: SafeLink) -> tuple[int, int]:
+            return document_recency_hint(link.text or "", link.url or "")
+
+        def rank(link: SafeLink) -> tuple[int, int, int, int, int]:
+            kind_rank = _DOC_KIND_RANK.get(explicit_kind(link), _DOC_KIND_RANK_DEFAULT)
             text = (link.text or "").lower()
             material = 0 if any(m in text for m in _MATERIAL_DOCUMENT_MARKERS) else 1
             doc = 0 if link.is_document else 1
-            return (kind_rank, material, doc)
+            year, ordinal = recency(link)
+            # Private-use readiness PR-D — recency joins the key as the LAST
+            # term, so it only ever breaks a tie the previous key left to DOM
+            # order. Richemont's results page links roughly thirty annual
+            # reports back to 1993 and every one of them ties on the first
+            # three terms; which was ingested came down to document order.
+            return (kind_rank, material, doc, -year, -ordinal)
 
         seen: set[str] = set()
         ordered: list[SafeLink] = []
@@ -1317,7 +1386,15 @@ class CompanyIrConnector(SourceConnector):
             seen.add(link.url)
             ordered.append(link)
         cap = self._max_docs_per_issuer if limit is None else limit
-        return ordered[:cap]
+
+        # Private-use readiness PR-D — reserve a slot for the newest
+        # CURRENT-PERIOD document. Ordering by kind alone means an issuer with
+        # many annual reports can never have its latest interim/results release
+        # ingested, so the report can only ever describe the last full year.
+        # The reserve is honoured only when such a document actually exists.
+        return _reserve_current_period(
+            ordered, cap=cap, kind_of=inferred_kind, recency=recency
+        )
 
     def _stamp_provenance(
         self, artifact: PrimaryDocumentArtifact, target: SafeLink

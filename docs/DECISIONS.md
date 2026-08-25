@@ -2235,3 +2235,77 @@ Italian issuer still falls back to the generic filing wording; PR-E adds it with
 the live venue. And the derived sets mean a future parser vocabulary addition
 automatically widens the snapshot, which is the intent but does require the new
 field to be genuinely canonical before it is exported.
+
+---
+
+## ADR-034: Current-Period Evidence Sits Beside the Annual, Never Instead of It
+
+**Date:** 2026-08-25
+**Status:** Accepted
+
+### Context
+
+A private investment research tool cannot rely only on annual data when newer
+official reporting exists. As of 2026-08-25 every target issuer had published
+something newer than its last annual report — Pandora's Q2 2026 interim report
+(12 Aug 2026), Richemont's FY27 Q1 sales (15 Jul 2026), Hermès' H1 2026 results
+(29 Jul 2026), Kering's H1 2026 (28 Jul 2026), Swatch's H1 2026, Moncler's H1
+2026 (22 Jul 2026). None of it could reach a report.
+
+Three independent blockers, each confirmed against the code:
+
+1. **Interim documents could never be selected.** `rank_documents` orders
+   strictly by kind (annual 0 < results 1 < interim 2) under a 3-document cap.
+   Richemont's results page links roughly thirty annual reports back to 1993, so
+   the cap was always exhausted before an interim was reached — and among the
+   annuals there was no recency term at all, so DOM order decided which one was
+   ingested.
+2. **Interim figures were stamped as full years.** `_period_near` returned a
+   bare year for every prose fact, so "revenue in the first half of 2026
+   amounted to €8.2 billion" produced `period="2026"`. A table headed
+   "First-half 2026" did the same. Two accepted test fixtures — both explicitly
+   H1 releases — asserted exactly that wrong period, which is how it survived.
+3. **An interim figure could occupy the annual slot.**
+   `_high_confidence_facts_for` took the first high-confidence fact per field,
+   safe only while every ingested document was an annual report.
+
+### Decision
+
+Interim evidence is ingested, labelled, and kept **beside** the annual figures.
+
+1. **Period-aware, recency-aware selection.** A `document_recency_hint` parsed
+   from title/URL joins the rank as its LAST term (so it only breaks ties the
+   old key left to document order), and a reserve guarantees one current-period
+   document survives the per-issuer cap — honoured only when such a document
+   exists, so no slot is wasted. The reserve uses text-inferred classification;
+   the RANK still uses only the discovery layer's own classification, so a
+   landing page can never outrank a real PDF.
+2. **Interim markers are read from the value's own local window** — the same
+   discipline scope already uses. A marker in an unrelated sentence cannot
+   reclassify a full-year figure, and a sentence with no marker keeps its bare
+   year. This never invents an interim period.
+3. **Two canonical selectors.** `_high_confidence_facts_for` returns the LATEST
+   ANNUAL fact per field and refuses interim facts outright;
+   `_current_period_facts_for` returns the latest interim fact into its own
+   `<field>_current_period` slot, with a note stating explicitly that the two
+   are not comparable and that nothing has been annualised.
+4. **No annualisation.** Deliberately not implemented, and asserted against.
+5. `CURRENT_EXTRACTION_PIPELINE_VERSION` advances `12 → 13`.
+
+### Consequences
+
+**Positive.** A researcher sees FY2025 revenue *and* H1 2026 revenue, each with
+its own period, and cannot mistake one for the other. The newest annual report
+is now chosen deliberately rather than by DOM accident. `INTERIM_AS_ANNUAL`
+becomes structurally hard: an interim period is a distinct type that the
+canonical annual selector rejects.
+
+**Negative / accepted.** The recency hint accepts a two-digit fiscal year
+(`fy26`) that `financial_period.parse_period` deliberately refuses — acceptable
+because it is a *retrieval preference* whose worst case is a suboptimal document
+choice, and never becomes a fact's period. Reserving a current-period slot costs
+one of three per-issuer document slots on issuers that publish both. And a
+multi-period interim table that mixes column types (Pandora's "Q2 2026 | Q2 2025
+| H1 2026 | H1 2025 | FY 2025") is still refused by the table reconstructor's
+monotonicity check — correctly fail-closed, and its figures still reach the
+pipeline through prose; widening that check is deliberately out of scope here.

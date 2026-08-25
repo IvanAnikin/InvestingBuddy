@@ -258,8 +258,18 @@ from __future__ import annotations
 # contradiction migration 018 exists to make unrepresentable. Advancing the
 # version forces each such document back through the current parser, where
 # scope is derived AND persisted.
+# Version 13 (private-use readiness PR-D) changes what a fact's PERIOD MEANS.
+# ``_period_near`` and ``_column_periods`` now recognise interim markers, so
+# "revenue in the first half of 2026" yields ``H1 2026`` where every version
+# <= 12 produced a bare ``2026``, and a table headed "First-half 2026" does the
+# same. This is an interpretation-layer change of the same class as versions
+# 2/3: the persisted text is unchanged, but replaying a version-12 row would
+# keep presenting a HALF-YEAR figure as a full year — the ``INTERIM_AS_ANNUAL``
+# contradiction — and would let it occupy a canonical annual slot. Two accepted
+# fixtures (both explicitly H1 releases) asserted exactly that wrong period
+# before this bump, which is how long it went unnoticed.
 LEGACY_EXTRACTION_PIPELINE_VERSION = 1
-CURRENT_EXTRACTION_PIPELINE_VERSION = 12
+CURRENT_EXTRACTION_PIPELINE_VERSION = 13
 
 # The pipeline version at/after which persisted ``excerpts_json`` text is
 # guaranteed to have been produced by column-aware page extraction UNDER

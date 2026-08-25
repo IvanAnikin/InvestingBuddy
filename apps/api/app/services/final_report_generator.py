@@ -102,6 +102,10 @@ from app.services.sources.financial_history import (
     build_financial_history,
     history_evidence_lines,
 )
+from app.services.sources.financial_period import (
+    PERIOD_TYPE_ANNUAL,
+    parse_period,
+)
 from app.services.sources.ingestion_attempts import attempts_for_primary_documents
 from app.services.sources.primary_fact_parser import (
     FINANCIAL_STATEMENT_FIELDS,
@@ -1170,20 +1174,15 @@ def _primary_fact_dp(fact: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _high_confidence_facts_for(
+def _eligible_canonical_facts(
     primary_facts: list[dict[str, Any]] | None,
     fields: frozenset[str],
 ) -> list[tuple[str, dict[str, Any]]]:
-    """(field, fact) pairs for high-confidence facts whose field is in ``fields``.
-
-    De-duplicates on field (first high-confidence fact wins) so a section never
-    grows two datapoints for the same field.
-    """
+    """Every high-confidence, non-segment fact whose field is in ``fields``."""
     out: list[tuple[str, dict[str, Any]]] = []
-    seen: set[str] = set()
     for fact in primary_facts or []:
         field = fact.get("field")
-        if field not in fields or field in seen:
+        if field not in fields:
             continue
         if fact.get("confidence") != "high":
             continue
@@ -1196,9 +1195,76 @@ def _high_confidence_facts_for(
         # still recognised as a segment fact here.
         if parse_scope(fact.get("scope")).is_segment:
             continue
-        seen.add(field)  # type: ignore[arg-type]
         out.append((field, fact))  # type: ignore[arg-type]
     return out
+
+
+def _high_confidence_facts_for(
+    primary_facts: list[dict[str, Any]] | None,
+    fields: frozenset[str],
+) -> list[tuple[str, dict[str, Any]]]:
+    """(field, fact) pairs for the canonical ANNUAL datapoint of each field.
+
+    De-duplicates on field so a section never grows two datapoints for the same
+    field.
+
+    Private-use readiness PR-D — WHICH fact wins is now a period decision, not
+    document order. The old rule was "first high-confidence fact wins", which
+    was safe only while every ingested document was an annual report. The
+    moment interim documents are ingested (the point of this phase), an
+    H1 2026 revenue could arrive before the FY2025 one and silently occupy the
+    canonical revenue slot — presenting a half-year figure as the full year.
+
+    The order of preference is:
+      1. the LATEST ANNUAL period (a canonical slot describes a full year);
+      2. a fact whose period could not be parsed at all — the pre-existing
+         behaviour for undated facts, preserved so nothing that worked before
+         stops working;
+      3. nothing. An interim fact is NEVER promoted here; it is presented
+         separately by ``_current_period_facts_for``.
+    """
+    best: dict[str, tuple[tuple[int, int, int], dict[str, Any]]] = {}
+    for field, fact in _eligible_canonical_facts(primary_facts, fields):
+        period = parse_period(fact.get("period"))
+        if period.is_interim:
+            continue
+        if period.period_type == PERIOD_TYPE_ANNUAL:
+            key = (2, period.year or 0, 0)
+        elif period.is_unknown:
+            key = (1, 0, 0)
+        else:
+            # A split-year period ("2025/26") is a real full-year period but
+            # its calendar mapping depends on a fiscal convention the document
+            # may not state, so it ranks below an unambiguous annual year.
+            key = (1, period.year or 0, 0)
+        current = best.get(field)  # type: ignore[arg-type]
+        if current is None or key > current[0]:
+            best[field] = (key, fact)  # type: ignore[index]
+    return [(field, entry[1]) for field, entry in best.items()]
+
+
+def _current_period_facts_for(
+    primary_facts: list[dict[str, Any]] | None,
+    fields: frozenset[str],
+) -> list[tuple[str, dict[str, Any]]]:
+    """(field, fact) pairs for the LATEST INTERIM datapoint of each field.
+
+    Presented in their OWN slots, never merged into the annual ones: FY2025
+    revenue and H1 2026 revenue are both true, and the answer to "what is
+    revenue" depends on which period the reader means. Comparison is within one
+    interim type only — H1 2026 beats H1 2025, and never beats H2 2025, because
+    those measure different spans.
+    """
+    best: dict[str, tuple[tuple[int, int], dict[str, Any]]] = {}
+    for field, fact in _eligible_canonical_facts(primary_facts, fields):
+        period = parse_period(fact.get("period"))
+        if not period.is_interim:
+            continue
+        key = (period.year or 0, period.ordinal or 0)
+        current = best.get(field)  # type: ignore[arg-type]
+        if current is None or key > current[0]:
+            best[field] = (key, fact)  # type: ignore[index]
+    return [(field, entry[1]) for field, entry in best.items()]
 
 
 def _build_company_identity(
@@ -1763,6 +1829,38 @@ def _build_financial_snapshot(
         primary_facts, _PRIMARY_FINANCIAL_FACT_FIELDS
     ):
         section[f"{field}_primary_filing"] = _primary_fact_dp(fact)
+
+    # Private-use readiness PR-D — the LATEST INTERIM datapoint of each field,
+    # in its OWN slot. A private research tool cannot rely only on annual data
+    # when newer official reporting exists, but an interim figure must never
+    # overwrite the annual one: FY2025 revenue and H1 2026 revenue are both
+    # true and answer different questions. The suffix, the period on every
+    # datapoint, and the note below all say which is which.
+    current_period = _current_period_facts_for(
+        primary_facts, _PRIMARY_FINANCIAL_FACT_FIELDS
+    )
+    for field, fact in current_period:
+        dp = _primary_fact_dp(fact)
+        dp["period_basis"] = "interim"
+        section[f"{field}_current_period"] = dp
+    if current_period:
+        periods = sorted(
+            {
+                parse_period(fact.get("period")).label()
+                for _, fact in current_period
+            }
+        )
+        section["current_period_note"] = {
+            "value": (
+                "Fields suffixed `_current_period` are the issuer's LATEST "
+                f"INTERIM reporting ({', '.join(periods)}). They cover part of "
+                "a year and are NOT comparable with the `_primary_filing` "
+                "annual figures beside them. No interim figure has been "
+                "annualised or extrapolated."
+            ),
+            "provenance": "sourced_fact",
+            "periods": periods,
+        }
 
     return section
 

@@ -120,14 +120,25 @@ _ANNUAL_KEYWORDS: tuple[str, ...] = (
 _INTERIM_KEYWORDS: tuple[str, ...] = (
     "half-year",
     "half year",
+    "halfyear",
     "interim",
     "first-half",
     "first half",
+    "firsthalf",
+    "half yearly",
+    "half-yearly",
+    "six months",
+    "six-month",
     "quarterly",
 )
 # Short period tokens are matched on word boundaries only ("h1" must not hit
 # "high1" or a hex hash fragment).
 _INTERIM_SHORT_RE = re.compile(r"\b(?:h1|q1|q2|q3)\b")
+# "URD" is the standard EU abbreviation for the Universal Registration Document
+# — the annual filing for a French issuer. Matched only when a year follows, so
+# the three-letter token can never fire on an unrelated slug. Generic EU
+# regulatory vocabulary, not an issuer-specific pattern.
+_URD_ABBREV_RE = re.compile(r"\burd[\s-]?((?:19|20)\d{2})\b")
 _RESULTS_KEYWORDS: tuple[str, ...] = (
     "results release",
     "results announcement",
@@ -220,21 +231,45 @@ class DiscoveredDocument:
 # --------------------------------------------------------------------------- #
 
 
-def _haystacks(text: str, url: str) -> tuple[str, str]:
-    """Return the raw lower-cased haystack and a separator-normalised variant.
+def _haystacks(text: str, url: str) -> tuple[str, str, str]:
+    """Return the raw lower-cased haystack, a separator-normalised variant, and
+    a fully COMPACTED variant.
 
     The normalised variant turns ``annual-report-2024.pdf`` into
     ``annual report 2024.pdf`` so URL slugs match the same keyword table as
-    human link text. It only ever *widens* a match, so anchor behaviour from
+    human link text.
+
+    The compacted variant (private-use readiness PR-D) removes separators
+    entirely, because real issuer filenames routinely run the words together:
+    ``hermes_20260729_pr_firsthalfresults_va.pdf`` and
+    ``pr_halfyear_report_2026_en_0.pdf`` are both genuine current-period
+    reports that the two-variant scan classified as ``other``, so neither could
+    ever be selected as a current-period document.
+
+    Every variant only ever *widens* a match, so anchor behaviour from
     Slice 5A is preserved.
     """
     raw = f"{text or ''} {url or ''}".lower()
     normalised = raw.replace("%20", " ").replace("-", " ").replace("_", " ").replace("+", " ")
-    return raw, normalised
+    compacted = re.sub(r"[^a-z0-9]", "", normalised)
+    return raw, normalised, compacted
 
 
-def _contains_any(haystacks: tuple[str, str], keywords: tuple[str, ...]) -> bool:
-    return any(kw in haystacks[0] or kw in haystacks[1] for kw in keywords)
+def _contains_any(haystacks: tuple[str, str, str], keywords: tuple[str, ...]) -> bool:
+    """True when any keyword appears in ANY haystack variant.
+
+    The keyword is compacted for the compacted haystack, so one keyword table
+    covers "half-year", "half year" and "halfyear" without a second list to
+    keep in sync.
+    """
+    for kw in keywords:
+        if kw in haystacks[0] or kw in haystacks[1]:
+            return True
+        compact_kw = re.sub(r"[^a-z0-9]", "", kw)
+        # A very short compacted keyword would match inside unrelated words.
+        if len(compact_kw) >= 8 and compact_kw in haystacks[2]:
+            return True
+    return False
 
 
 def classify_document_kind(text: str, url: str) -> str:
@@ -248,7 +283,7 @@ def classify_document_kind(text: str, url: str) -> str:
         hay = _haystacks(text, url)
     except (AttributeError, TypeError):
         return DOC_KIND_OTHER
-    if _contains_any(hay, _ANNUAL_KEYWORDS):
+    if _contains_any(hay, _ANNUAL_KEYWORDS) or _URD_ABBREV_RE.search(hay[1]):
         return DOC_KIND_ANNUAL_REPORT
     if _contains_any(hay, _INTERIM_KEYWORDS) or _INTERIM_SHORT_RE.search(hay[1]):
         return DOC_KIND_INTERIM_REPORT
@@ -257,6 +292,174 @@ def classify_document_kind(text: str, url: str) -> str:
     if _contains_any(hay, _PRESENTATION_KEYWORDS):
         return DOC_KIND_PRESENTATION
     return DOC_KIND_OTHER
+
+
+# --------------------------------------------------------------------------- #
+# Period-aware selection — private-use readiness PR-D
+#
+# The problem this solves: ``rank_documents`` orders strictly by KIND (annual 0
+# < results 1 < interim 2) and ``primary_document_max_docs_per_issuer`` is 3. On
+# an issuer page listing many annual reports — Richemont's results page links
+# roughly thirty, back to 1993 — no interim document can EVER be selected, and
+# among the annuals there is no recency preference at all: DOM order wins. A
+# private research tool that only ever reads the annual report, and not even
+# reliably the newest one, cannot answer "what did they report last quarter".
+#
+# Two additions, both generic (no issuer-specific URL patterns):
+#   * a RECENCY hint parsed from the title/URL, and
+#   * a QUOTA that reserves a slot for the newest ANNUAL and a slot for the
+#     newest CURRENT-PERIOD document instead of a flat kind-rank truncation.
+# --------------------------------------------------------------------------- #
+
+#: The two selection classes. ``current_period`` covers interim reports, results
+#: releases and trading updates alike: from a RETRIEVAL standpoint they answer
+#: the same question ("what is the most recent thing this issuer reported?").
+#: What KIND of period a document actually covers is decided later, from the
+#: document's own content, never from this classification.
+PERIOD_CLASS_ANNUAL = "annual"
+PERIOD_CLASS_CURRENT = "current_period"
+PERIOD_CLASS_OTHER = "other"
+
+_PERIOD_CLASS_BY_KIND: dict[str, str] = {
+    DOC_KIND_ANNUAL_REPORT: PERIOD_CLASS_ANNUAL,
+    DOC_KIND_INTERIM_REPORT: PERIOD_CLASS_CURRENT,
+    DOC_KIND_RESULTS_RELEASE: PERIOD_CLASS_CURRENT,
+}
+
+# Recency hints. These are ORDERING signals for choosing which document to
+# fetch — deliberately more permissive than ``financial_period.parse_period``,
+# which governs what a FACT's period is and refuses to guess. A two-digit
+# "fy26" is good enough to prefer one file over another; it is never allowed to
+# become a fact's period. If this hint is wrong the cost is a suboptimal
+# document choice, and the document's own content still decides every period it
+# reports.
+_DOC_YEAR_4_RE = re.compile(r"(?:^|[^\d])((?:19|20)\d{2})(?:[^\d]|$)")
+_DOC_FY_2_RE = re.compile(r"\bfy[\s-]?(\d{2})\b", re.IGNORECASE)
+_DOC_HALF_RE = re.compile(r"\bh([12])\b", re.IGNORECASE)
+_DOC_ISO_DATE_RE = re.compile(r"((?:19|20)\d{2})(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])")
+_DOC_QUARTER_RE = re.compile(r"\bq([1-4])\b", re.IGNORECASE)
+#: Years outside this window are almost certainly not a reporting period (a
+#: phone number, a document id, a street address).
+_MIN_DOC_YEAR = 1990
+_MAX_DOC_YEAR = 2100
+
+
+def document_period_class(doc_kind: str | None) -> str:
+    """Which selection quota a document kind competes in."""
+    return _PERIOD_CLASS_BY_KIND.get(doc_kind or "", PERIOD_CLASS_OTHER)
+
+
+def document_recency_hint(text: str, url: str) -> tuple[int, int]:
+    """A best-effort ``(year, ordinal)`` recency key. ``(0, 0)`` when unknown.
+
+    ORDERING ONLY — see the module note above. The ordinal is the half/quarter
+    number when the title states one, so "Q2 2026" sorts after "Q1 2026".
+    Never raises.
+    """
+    try:
+        hay = _haystacks(text, url)[1]
+    except (AttributeError, TypeError):
+        return (0, 0)
+
+    year = 0
+    for match in _DOC_YEAR_4_RE.finditer(hay):
+        candidate = int(match.group(1))
+        if _MIN_DOC_YEAR <= candidate <= _MAX_DOC_YEAR:
+            year = max(year, candidate)
+    if year == 0:
+        # A compact publication date in the filename ("hermes_20260729_pr_...")
+        # — extremely common, and invisible to the 4-digit year scan because it
+        # is surrounded by digits.
+        for match in _DOC_ISO_DATE_RE.finditer(hay.replace(" ", "")):
+            candidate = int(match.group(1))
+            if _MIN_DOC_YEAR <= candidate <= _MAX_DOC_YEAR:
+                year = max(year, candidate)
+    if year == 0:
+        fy = _DOC_FY_2_RE.search(hay)
+        if fy:
+            year = 2000 + int(fy.group(1))
+
+    ordinal = 0
+    quarter = _DOC_QUARTER_RE.search(hay)
+    if quarter:
+        ordinal = int(quarter.group(1))
+    else:
+        half = _DOC_HALF_RE.search(hay)
+        if half:
+            # A half maps onto the quarter scale so H1 and Q2 order sensibly
+            # against each other within the same year.
+            ordinal = int(half.group(1)) * 2
+    return (year, ordinal)
+
+
+def select_period_diverse(
+    documents: "list[DiscoveredDocument]",
+    *,
+    max_documents: int,
+    reserve_current_period: int = 1,
+    reserve_annual: int = 1,
+) -> "list[DiscoveredDocument]":
+    """Choose documents so BOTH the latest annual and the latest current-period
+    report can be ingested within one bounded per-issuer cap.
+
+    Order of the result: newest annual first (it is the deepest source), then
+    newest current-period, then everything else by the existing kind rank. The
+    reserves are honoured only when a candidate of that class actually exists —
+    an issuer that publishes no interim reporting simply gets more annuals, and
+    no slot is wasted holding a place for a document that is not there.
+
+    Pure and deterministic; never raises.
+    """
+    cap = max(1, int(max_documents or 1))
+    if not documents:
+        return []
+
+    def recency(doc: "DiscoveredDocument") -> tuple[int, int]:
+        return document_recency_hint(doc.title or "", doc.url or "")
+
+    by_class: dict[str, list[DiscoveredDocument]] = {}
+    for doc in documents:
+        by_class.setdefault(document_period_class(doc.doc_kind), []).append(doc)
+
+    # Within a class, newest first; ties fall back to the existing kind rank so
+    # behaviour stays stable for undated documents.
+    for bucket in by_class.values():
+        bucket.sort(
+            key=lambda d: (
+                -recency(d)[0],
+                -recency(d)[1],
+                _KIND_RANK.get(d.doc_kind, len(_KIND_RANK)),
+                0 if d.is_document else 1,
+            )
+        )
+
+    chosen: list[DiscoveredDocument] = []
+    seen: set[str] = set()
+
+    def take(bucket_key: str, count: int) -> None:
+        for doc in by_class.get(bucket_key, []):
+            if len(chosen) >= cap or count <= 0:
+                return
+            if doc.identity in seen:
+                continue
+            seen.add(doc.identity)
+            chosen.append(doc)
+            count -= 1
+
+    take(PERIOD_CLASS_ANNUAL, max(0, int(reserve_annual)))
+    take(PERIOD_CLASS_CURRENT, max(0, int(reserve_current_period)))
+
+    # Fill any remaining slots by the ordinary ranking, newest-first within kind.
+    for doc in rank_documents(
+        sorted(documents, key=lambda d: (-recency(d)[0], -recency(d)[1]))
+    ):
+        if len(chosen) >= cap:
+            break
+        if doc.identity in seen:
+            continue
+        seen.add(doc.identity)
+        chosen.append(doc)
+    return chosen
 
 
 _PCT_ESCAPE_RE = re.compile(r"%([0-9a-fA-F]{2})")
@@ -1387,4 +1590,10 @@ __all__ = [
     "document_identity",
     "find_json_endpoints",
     "rank_documents",
+    "PERIOD_CLASS_ANNUAL",
+    "PERIOD_CLASS_CURRENT",
+    "PERIOD_CLASS_OTHER",
+    "document_period_class",
+    "document_recency_hint",
+    "select_period_diverse",
 ]
