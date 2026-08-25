@@ -35,6 +35,11 @@ from app.services.llm.schemas import (
     EvidencePack,
     SourcePolicy,
 )
+from app.services.sources.financial_history import (
+    DEFAULT_MAX_PERIODS,
+    MIN_PERIODS_FOR_TREND,
+    build_financial_history,
+)
 from app.services.sources.redaction import strip_url_secrets
 
 _EXCERPT_MAX = 280
@@ -125,6 +130,12 @@ _ALLOWED_TIERS = [
     "T5_api_aggregator",
     TIER_T6_MODEL_ESTIMATE,
 ]
+
+
+#: How many historical SERIES lines the council pack may carry. Each is one
+#: dense line covering up to five periods, so this is a token bound, not a
+#: research bound — the full history stays available to the report layer.
+DEFAULT_MAX_HISTORY_SERIES = 8
 
 
 def _node_value(node: Any) -> Any:
@@ -701,6 +712,99 @@ def _known_gaps(report_content: dict[str, Any]) -> list[str]:
     return list(seen)
 
 
+def _facts_from_connector_evidence(connector_evidence: "list[Any] | None") -> list[dict[str, Any]]:
+    """Every structured fact carried by the connector evidence, as plain dicts.
+
+    Deliberately WIDER than ``council._primary_facts``: that function keeps only
+    ``confidence == "high"`` facts because it feeds canonical single-value
+    report slots, where a medium-confidence figure must not be presented as THE
+    number. A trend is a different question — a five-year revenue series whose
+    middle years are medium-confidence is still a real, citeable trend, and
+    dropping them would leave the council saying "no historical revenue trend"
+    beside a complete series. Low confidence is still excluded.
+    """
+    out: list[dict[str, Any]] = []
+    for item in connector_evidence or []:
+        pf = getattr(item, "primary_fact", None)
+        if pf is None:
+            continue
+        if getattr(pf, "confidence", None) not in ("high", "medium"):
+            continue
+        data = pf.model_dump(mode="json") if hasattr(pf, "model_dump") else dict(pf)
+        url = getattr(item, "url", None)
+        if url:
+            data.setdefault("source_url", url)
+        out.append(data)
+    return out
+
+
+def _add_historical_series(
+    builder: _Builder,
+    connector_evidence: "list[Any] | None",
+    *,
+    max_lines: int,
+    max_periods: int,
+) -> None:
+    """Add the compact multi-period trend slice — private-use readiness PR-B.
+
+    ONE evidence item per series, each a single dense line stating its own
+    scope, unit and periods. This is the whole design constraint: the extractor
+    can produce ~50 period-scoped facts for a single issuer, and pushing those
+    in as ~50 items would blow the council's token budget and crowd out every
+    other kind of evidence. A series line costs roughly one item and carries
+    the shape of five years.
+
+    Added straight after the connector items so it survives the cap, and marked
+    ``historical_financial_series`` so the budgeter and the citation checker can
+    both recognise it for what it is.
+    """
+    if builder.full or max_lines <= 0:
+        return
+    facts = _facts_from_connector_evidence(connector_evidence)
+    if not facts:
+        return
+    history = build_financial_history(facts, max_periods=max_periods)
+    if not history.available:
+        return
+
+    ordered = sorted(
+        history.series,
+        key=lambda s: (0 if s.scope.is_group else 1, s.metric, s.scope_label),
+    )
+    added = 0
+    for series in ordered:
+        if builder.full or added >= max_lines:
+            break
+        # A single-observation "series" is already covered by the ordinary
+        # per-fact evidence; repeating it here would spend a slot to say
+        # nothing new.
+        if series.period_count < MIN_PERIODS_FOR_TREND:
+            continue
+        line = series.compact_line()
+        if not series.is_comparable:
+            line += " (not comparable: " + ", ".join(series.comparability_reasons) + ")"
+        elif series.missing_periods:
+            line += " (missing: " + ", ".join(series.missing_periods) + ")"
+        for change in series.changes:
+            line += (
+                f" | {change.calculation} {change.from_period}->{change.to_period}: "
+                f"{change.value}{change.unit}"
+            )
+        first = series.points[0]
+        added += builder.add(
+            source_tier=TIER_T1_PRIMARY_FILING,
+            source_type="historical_financial_series",
+            title=f"{series.metric} history ({series.scope_label})",
+            url=first.source_url,
+            date=series.points[-1].period_label,
+            excerpt=line,
+            data_quality="B",
+            fields_supported=[series.metric],
+            scope=series.scope.label,
+            period=series.points[-1].period.key,
+        )
+
+
 def build_evidence_pack(
     *,
     report_content: dict[str, Any],
@@ -753,6 +857,18 @@ def build_evidence_pack(
         if builder.full:
             break
         builder.add_framework_item(fw_item)
+    _add_historical_series(
+        builder,
+        connector_evidence,
+        max_lines=int(
+            getattr(budget_cfg, "llm_council_history_max_series", DEFAULT_MAX_HISTORY_SERIES)
+            or DEFAULT_MAX_HISTORY_SERIES
+        ),
+        max_periods=int(
+            getattr(budget_cfg, "financial_history_max_periods", DEFAULT_MAX_PERIODS)
+            or DEFAULT_MAX_PERIODS
+        ),
+    )
     _add_sec_fundamentals(builder, company_snapshot, tier_split=budgets_enabled)
     _add_financial_snapshot(builder, report_content)
     if budgets_enabled:
