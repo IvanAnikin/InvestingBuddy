@@ -1547,6 +1547,86 @@ def _store_analysis_job_envelope(
     candidate.raw_signal_json = new_raw
 
 
+#: Private-use readiness PR-F — a job whose worker died. DERIVED at read time
+#: from ``started_at`` + the stale threshold; never a stored status, so it can
+#: never disagree with the timestamps it is computed from.
+ANALYSIS_STATUS_INTERRUPTED = "interrupted"
+
+
+def describe_analysis_job(envelope: dict[str, Any] | None) -> dict[str, Any]:
+    """The envelope a HUMAN should see, with abandonment made explicit.
+
+    Private-use readiness PR-F. A long-running analysis runs in a process-local
+    background task, so an app restart mid-run leaves the stored envelope on
+    ``running`` forever. The state was always recoverable — a fresh POST past
+    the stale threshold restarts it — but nothing SAID so: the status endpoint
+    reported ``running`` indefinitely, and a researcher watching it had no way
+    to tell a job that is working from one that died an hour ago.
+
+    This does not invent a new stored state (that would be a second source of
+    truth about the same job). It derives ``interrupted`` at read time from the
+    same ``started_at`` and threshold the restart decision already uses, so the
+    two can never disagree, and marks it ``recoverable`` so the caller knows
+    re-running is safe rather than duplicative.
+    """
+    if not envelope:
+        return {}
+    out = dict(envelope)
+    if out.get("status") in _ANALYSIS_IN_FLIGHT and _analysis_job_is_stale(out):
+        out["status"] = ANALYSIS_STATUS_INTERRUPTED
+        out["recoverable"] = True
+        out["interrupted_reason"] = (
+            "No progress within the expected worst-case duration "
+            f"({analysis_job_stale_after_minutes()} min). The worker that owned "
+            "this job is gone — most likely an app restart. Nothing was lost: "
+            "re-running is safe and will not duplicate a completed report."
+        )
+    return out
+
+
+async def sweep_interrupted_analysis_jobs(
+    session: AsyncSession, *, limit: int = 200
+) -> list[dict[str, Any]]:
+    """Report every in-flight analysis job whose worker is gone. READ-ONLY.
+
+    Private-use readiness PR-F. Called once at application startup, when the
+    process that owned any in-flight job has by definition just died. It writes
+    NOTHING: the stored envelope stays exactly as the dead worker left it, so
+    the audit trail of what that worker was doing is intact, and a job that is
+    genuinely still running under ANOTHER live process (App Service can run
+    more than one) is not stolen from it. Its whole job is to make the loss
+    VISIBLE — in the logs at startup, and via the derived ``interrupted``
+    status the API already reports.
+
+    Returns a bounded, secret-free summary for logging.
+    """
+    rows = (
+        await session.execute(
+            select(DiscoveryCandidate)
+            .where(DiscoveryCandidate.raw_signal_json.isnot(None))
+            .order_by(DiscoveryCandidate.updated_at.desc())
+            .limit(max(1, limit))
+        )
+    ).scalars()
+
+    interrupted: list[dict[str, Any]] = []
+    for candidate in rows:
+        envelope = get_analysis_job_envelope(candidate)
+        if not envelope or envelope.get("status") not in _ANALYSIS_IN_FLIGHT:
+            continue
+        if not _analysis_job_is_stale(envelope):
+            continue
+        interrupted.append(
+            {
+                "candidate_id": str(candidate.id),
+                "ticker": candidate.ticker,
+                "status": envelope.get("status"),
+                "started_at": envelope.get("started_at"),
+            }
+        )
+    return interrupted
+
+
 def get_analysis_job_envelope(
     candidate: DiscoveryCandidate,
 ) -> dict[str, Any] | None:

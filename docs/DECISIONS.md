@@ -2391,3 +2391,78 @@ to the ticker; the curation is a trust relationship exactly like the verified
 Italian venue publishes each announcement twice, once per language: both are
 kept, English ordered first, because dropping the local-language twin would
 require asserting that two differently-worded headlines mean the same thing.
+
+---
+
+## ADR-036: Contradiction Classes Become Assertions; an Abandoned Job Says So
+
+**Date:** 2026-08-25
+**Status:** Accepted
+
+### Context
+
+**Consistency.** Every corrective slice in this codebase's history has been the
+same story: a report said two incompatible things at once, a human noticed, and
+a targeted fix followed. A Specialist Watchmakers figure in a Group slot.
+"Source the annual report" beside a T1 revenue figure extracted from that very
+report. "All current data is T6" next to a validated T1 fact. A Python `None`
+rendered into a sentence. "SEC XBRL" over a Danish issuer's own PDF.
+
+Every one of those was found by *reading*. That does not scale, and it is not a
+readiness bar. Worse, each fix was verified against the specific report that
+exposed it, so nothing prevented the same CLASS from reappearing elsewhere.
+
+**Durability.** A full analysis runs in a process-local `BackgroundTasks`, so an
+app restart mid-run leaves the stored envelope on `running` forever. The state
+was always *recoverable* — a DB-backed envelope plus a derived stale threshold,
+and a fresh POST past that threshold restarts it — but nothing SAID so. The
+status endpoint reported `running` indefinitely, and a researcher watching it
+could not tell a job that is working from one that died an hour ago.
+
+### Decision
+
+**One audit module, semantic first.** `report_consistency.py` turns the thirteen
+named contradiction classes into checks that run over an assembled report. They
+are SEMANTIC assertions against typed sections; text scanning is used only for
+the two classes that genuinely *are* about rendered text (`None` and enum-repr
+leakage), because a brittle string scan fails on wording changes and passes on
+real contradictions — the worst of both. The audit is read-only and never
+raises: an audit that crashes on a malformed report tells a reader nothing.
+
+**Every invariant is tested from both sides.** A violating report must be
+caught AND a correct report must not be flagged. A checker that only ever fires
+is as useless as one that never does — so the negative cases are explicit:
+"none of the above" is not a `None` leak, "section 4.2" is not an enum repr, a
+URL containing `None` is not a rendering defect, `10-K` is correct for a US
+issuer, and a genuinely missing field stays listed as missing.
+
+**An abandoned job is reported as abandoned.** `interrupted` is DERIVED at read
+time from the same `started_at` and threshold the restart decision already uses,
+so the two can never disagree — it is deliberately not a stored status, which
+would be a second source of truth about the same job. It carries
+`recoverable=true`, because the useful thing to tell a researcher is not "this
+failed" but "nothing was lost; re-running is safe".
+
+**The startup sweep is read-only and does not re-enqueue.** The first process to
+notice orphaned jobs is the one starting up, precisely because the process that
+owned them is gone. It logs what was lost and stops there: it does not rewrite
+the envelope (the dead worker's audit trail survives, and a job still running
+under another live process is never stolen from it), and it does not silently
+restart an expensive council run on every deploy — that is a surprise, not
+recovery. A human decides.
+
+### Consequences
+
+**Positive.** The acceptance question "does this report contradict itself?"
+becomes a command rather than a reading exercise, and it generalises to reports
+this campaign never saw. `is_clean` is a usable gate. A researcher watching a
+long analysis learns within the stale window whether it is alive.
+
+**Negative / accepted.** The audit runs over an assembled report, so it catches
+a contradiction after assembly rather than preventing it at the source — it is a
+safety net, not a type system. Its US-vocabulary check needs the issuer's
+country supplied by the caller, and is silent when that is unknown (correct: it
+must not guess a jurisdiction). And `interrupted` only appears once the derived
+threshold has elapsed, which for a long council run is deliberately generous —
+reporting a slow job as dead would be a worse failure than reporting a dead one
+as slow.

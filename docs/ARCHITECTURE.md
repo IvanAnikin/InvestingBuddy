@@ -1,6 +1,13 @@
 # Architecture
 
-## Status: Private-Use Production Readiness — PR-E: Live Regulated Disclosures (**branch, pre-merge**; **no migration**, Alembic head stays `018`; ONE new OFF-by-default flag `SOURCE_LIVE_DISCLOSURES_ENABLED`). The four venue connectors were reference-only by design — a researcher asking "what did this issuer just announce?" got a link to a search page. Two venues publish a legitimate official machine-readable surface and are now retrieved live under strict bounds: **Nasdaq Nordic** (the exchange's own company-news service) and **eMarket Storage** (the CONSOB-authorised Italian storage mechanism — a NEW connector for a venue that previously had no mapping at all). Every venue normalises into one `DisclosureEvent`, and the same announcement reaching the system from the issuer AND the exchange merges into ONE event carrying BOTH provenances. SIX, Euronext Paris and LSE/FCA NSM stay reference-only, the last deliberately: it is defended by a proof-of-work challenge that this campaign will not bypass. See ADR-035.
+## Status: Private-Use Production Readiness — PR-F: Consistency Invariants + Job Durability Visibility (**branch, pre-merge**; **no migration**, Alembic head stays `018`). `app/services/report_consistency.py` turns the thirteen named contradiction classes into semantic assertions that run over an assembled report, each tested from BOTH sides so a checker that fires on a correct report is caught. And an analysis job whose worker died now reports `interrupted` + `recoverable` — derived at read time from the same threshold the restart decision uses, with a read-only startup sweep that logs what was lost rather than silently re-running an expensive council on every deploy. See ADR-036.
+
+<details>
+<summary>Previous status (Readiness PR-E)</summary>
+
+## Status: Private-Use Production Readiness — PR-E: Live Regulated Disclosures (merged `dc3df2e`; **no migration**, Alembic head stays `018`; ONE new OFF-by-default flag `SOURCE_LIVE_DISCLOSURES_ENABLED`). The four venue connectors were reference-only by design — a researcher asking "what did this issuer just announce?" got a link to a search page. Two venues publish a legitimate official machine-readable surface and are now retrieved live under strict bounds: **Nasdaq Nordic** (the exchange's own company-news service) and **eMarket Storage** (the CONSOB-authorised Italian storage mechanism — a NEW connector for a venue that previously had no mapping at all). Every venue normalises into one `DisclosureEvent`, and the same announcement reaching the system from the issuer AND the exchange merges into ONE event carrying BOTH provenances. SIX, Euronext Paris and LSE/FCA NSM stay reference-only, the last deliberately: it is defended by a proof-of-work challenge that this campaign will not bypass. See ADR-035.
+
+</details>
 
 <details>
 <summary>Previous status (Readiness PR-D)</summary>

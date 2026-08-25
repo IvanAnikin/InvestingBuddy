@@ -374,6 +374,12 @@ _JOB_MESSAGES = {
     ),
     "running": "Full analysis is running. Poll for progress.",
     "failed": "Full analysis failed. See 'error'.",
+    # Private-use readiness PR-F — an abandoned job reads as abandoned rather
+    # than as one that is still working.
+    "interrupted": (
+        "Full analysis was INTERRUPTED — the worker that owned it is gone "
+        "(most likely an app restart). Nothing was lost; re-run it safely."
+    ),
 }
 
 
@@ -501,6 +507,12 @@ async def get_candidate_analysis_job(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="No full-analysis job has been run for this candidate.",
         )
+    # Private-use readiness PR-F — report abandonment honestly. A job whose
+    # worker died (an app restart mid-run) otherwise reads as ``running``
+    # forever, and a researcher watching it cannot tell a working job from a
+    # dead one. Derived at read time from the SAME threshold the restart
+    # decision uses, so the two can never disagree.
+    envelope = svc.describe_analysis_job(envelope)
     return RunCandidateAnalysisResponse.from_job_envelope(
         candidate_id=candidate_id,
         ticker=candidate.ticker,
