@@ -2018,3 +2018,78 @@ A cell becomes a fact only when its metric, value, table region, period column, 
 ### Bounds
 
 Reconstruction is skipped for a page whose ruled pass already recovered a real grid (≥ 2 rows AND ≥ 2 columns), and for a page above the word cap. Regions per page, rows per region, header rows per page and column count are all bounded. Measured cost on the real documents: **~0.1 s per 40-page document**, against the ~8 s `extract_words()` the extractor was already spending for its existing column and heading passes.
+
+---
+
+## ADR-031: Fact Scope Is a Persisted, Typed Column — Not an In-Memory String
+
+**Date:** 2026-08-25
+**Status:** Accepted
+
+### Context
+
+A financial fact's *scope* — is this the consolidated Group figure, or one
+business area's? — has been computed since the Phase 32A corrective slice. It
+kept a Specialist Watchmakers operating profit of €107m from being presented as
+the Group's €4,492m, a real live-observed regression.
+
+But scope was a free-text `str | None` that lived only in memory, and three
+layers each carried their own interpretation of it: the heading inferencer, the
+prose inferencer, and the report layer's local `_GROUP_SCOPE_LABELS` set.
+Nothing persisted it. `_persist_validated_facts` wrote every other field of a
+`ValidatedFact` and dropped `scope`; `_rebuild_artifact` — the cache-reuse and
+revalidation fast path — rebuilt facts with `scope=None`.
+
+The consequence was worse than "we lose a nice-to-have label". An **absent**
+scope is the pipeline's long-standing implicit "this is the Group figure"
+convention. So the fresh path was correct and the *cached* path silently
+converted every segment fact into a Group-eligible one. Any report generated
+from a reused document could promote a segment figure into a canonical Group
+slot — the exact contradiction class (`SCOPE_CONTRADICTION`) that the
+private-use readiness campaign exists to make unrepresentable.
+
+Fact identity made it worse: the dedupe key was `(label, period, value)`. A
+Group and a segment figure that happened to share a value collapsed into one
+row, and the survivor was stored unscoped.
+
+### Decision
+
+Scope becomes a **persisted, typed, decidable** value.
+
+1. `app/services/sources/fact_scope.py` is the single source of truth for scope
+   semantics: `FactScope(scope_type, scope_name)` with a derived `scope_key`,
+   one `GROUP_SCOPE_LABELS` vocabulary, and one `parse_scope()` that every
+   producer and consumer routes through. `final_report_generator` re-exports the
+   vocabulary under its historical name rather than keeping a second copy.
+2. Migration `018` adds `scope_type` / `scope_name` / `scope_key` to
+   `extracted_facts` — additive, nullable, indexed on
+   `(extracted_document_id, scope_key)`.
+3. `scope_key` joins `(label, period, value)` in the fact **identity** used by
+   dedupe and supersession, in both persistence paths.
+4. `UNKNOWN` (`scope_type IS NULL`) is a first-class third state, distinct from
+   `group`. It is never coerced to `group` at write time, a `segment` row that
+   lost its name degrades to UNKNOWN rather than to `group`, and two UNKNOWN
+   scopes are **not** declared the same series (`same_scope` is fail-closed).
+5. **No backfill.** No pre-018 row carries a recoverable scope signal, so every
+   one stays NULL.
+6. `CURRENT_EXTRACTION_PIPELINE_VERSION` advances `11 → 12`, so pre-018 rows are
+   revalidated under current semantics instead of replayed unchanged.
+
+### Consequences
+
+**Positive.** The `SCOPE_CONTRADICTION` class is closed on the persisted path,
+not just the fresh one. "Is this the Group figure?" is a column lookup, not a
+string match, so two modules cannot drift. A Group and a segment figure for the
+same metric, period and value can both exist. The admin primary-documents
+surface can now show a human which scope a fact actually carried, which is what
+makes the guarantee verifiable rather than merely asserted.
+
+**Negative / accepted.** Advancing the pipeline version invalidates every cached
+document once, so the next run per issuer re-extracts (a one-off cost this
+campaign pays deliberately, and then proves cache reuse against). Legacy rows
+stay UNKNOWN forever, which is honest but means their Group-vs-segment
+attribution is only recovered when the document is next re-extracted. The
+implicit "unscoped means Group" convention is *retained* on the fresh path — a
+deliberate, now-explicitly-tested decision rather than an accident, because
+changing it would silently drop every legitimately unscoped Group figure that
+issuers publish without a scope word.

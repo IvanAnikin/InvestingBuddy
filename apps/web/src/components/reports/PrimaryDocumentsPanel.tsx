@@ -141,6 +141,12 @@ function FactRow({ fact }: { fact: PrimaryDocumentFact }) {
     fact.value_numeric !== null && fact.value_numeric !== undefined
       ? fact.value_numeric.toLocaleString()
       : (fact.value_text ?? "n/a");
+  const scopeLabel =
+    fact.scope_type === "group"
+      ? "Group"
+      : fact.scope_type === "segment" && fact.scope_name
+        ? fact.scope_name
+        : null;
   return (
     <li className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2">
       <div className="flex flex-wrap items-center gap-2">
@@ -159,6 +165,10 @@ function FactRow({ fact }: { fact: PrimaryDocumentFact }) {
         {fact.unit && <span className="text-slate-500"> {fact.unit}</span>}
         {fact.currency && <span className="text-slate-500"> {fact.currency}</span>}
         {fact.period && <span className="text-slate-500"> · {fact.period}</span>}
+        {/* Scope is what keeps a Group figure and a segment figure for the
+            same metric and period apart. A fact with no stated scope shows
+            nothing here rather than an implied "Group". */}
+        {scopeLabel && <span className="text-slate-500"> · {scopeLabel}</span>}
       </p>
       <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-slate-500">
         {fact.page_number != null && <span>Page {fact.page_number}</span>}

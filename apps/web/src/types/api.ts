@@ -135,6 +135,11 @@ export interface PrimaryDocumentFact {
   // DKK 32,549 million.
   scale: string | null;
   period: string | null;
+  // Persisted entity/segment scope (migration 018). `group` | `segment` |
+  // null. A null scope means the document stated none — it does NOT mean
+  // "this is the Group figure", and the UI must not imply that it does.
+  scope_type: string | null;
+  scope_name: string | null;
   page_number: number | null;
   table_location: string | null;
   extraction_method: string;

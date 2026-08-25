@@ -245,8 +245,21 @@ from __future__ import annotations
 # budget could never take effect — exactly as the version-5 note above warns.
 # A truncated-but-"successful" extraction stamped current is the trap; only
 # advancing CURRENT clears it.
+# Version 12 (private-use readiness PR-A) persists fact SCOPE for the first
+# time (migration 018: ``scope_type`` / ``scope_name`` / ``scope_key``). This
+# is an INTERPRETATION-layer change of the same class as versions 2/3: scope is
+# now part of a fact's IDENTITY, so the (label, period, value) dedupe key that
+# every version ≤ 11 row was written under could legitimately have COLLAPSED a
+# Group figure and a segment figure that happened to share a value — and the
+# survivor was stored with no scope at all. Every pre-018 row is therefore
+# scope-UNKNOWN by construction, and an unknown scope is read downstream under
+# the pipeline's implicit-Group convention. Replaying those rows unchanged
+# would carry that ambiguity into a canonical Group slot, which is exactly the
+# contradiction migration 018 exists to make unrepresentable. Advancing the
+# version forces each such document back through the current parser, where
+# scope is derived AND persisted.
 LEGACY_EXTRACTION_PIPELINE_VERSION = 1
-CURRENT_EXTRACTION_PIPELINE_VERSION = 11
+CURRENT_EXTRACTION_PIPELINE_VERSION = 12
 
 # The pipeline version at/after which persisted ``excerpts_json`` text is
 # guaranteed to have been produced by column-aware page extraction UNDER
