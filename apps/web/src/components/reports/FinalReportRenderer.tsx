@@ -641,6 +641,7 @@ type DisclosureRow = {
   language?: string | null;
   requires_translation?: boolean;
   provenance?: string[];
+  channel_count?: number;
 };
 
 function RegulatedDisclosuresSection({ section }: { section: Record<string, unknown> }) {
@@ -684,9 +685,9 @@ function RegulatedDisclosuresSection({ section }: { section: Record<string, unkn
               </div>
               <div className="mt-1 flex flex-wrap gap-x-3 text-[11px] text-slate-500">
                 {e.venue ? <span>{e.venue}</span> : null}
-                {(e.provenance ?? []).length > 1 ? (
+                {(e.channel_count ?? 1) > 1 ? (
                   <span className="text-emerald-300">
-                    confirmed by {(e.provenance ?? []).length} channels
+                    confirmed by {e.channel_count} official channels
                   </span>
                 ) : null}
               </div>

@@ -425,9 +425,16 @@ def parse_emarket_listing(
         if cutoff is not None and published is not None and published < cutoff:
             continue
         headline = _EMARKET_DATE_RE.sub("", text, count=1).strip()
-        upper_name = issuer_name.strip().upper()
-        if upper_name and headline.upper().startswith(upper_name):
-            headline = headline[len(upper_name) :].strip(" -–—:")
+        # The venue prefixes every row with the issuer's SHORT name ("MONCLER
+        # H1 2026 Financial Results"), not its legal name, so stripping the
+        # legal name left the prefix in place — visible on a live report and,
+        # worse, baked into the dedupe key, where it would stop the same
+        # announcement matching a copy published without it.
+        for candidate in (issuer_search_term(issuer_name), issuer_name):
+            prefix = (candidate or "").strip().upper()
+            if prefix and headline.upper().startswith(prefix):
+                headline = headline[len(prefix) :].strip(" -–—:")
+                break
         pdfs = [
             h if h.startswith("http") else f"https://{_EMARKET_HOST}{h}"
             for h in _HREF_RE.findall(fragment)

@@ -2150,6 +2150,9 @@ def _build_regulated_disclosures(
                 # than one official channel is better-sourced than one carried
                 # by a single channel, and that is worth showing.
                 "provenance": list(e.get("provenance") or []),
+                # Distinct from ``len(provenance)``: only official CHANNELS
+                # count. See ``council._regulated_disclosure_events``.
+                "channel_count": int(e.get("channel_count") or 1),
                 "human_review_required": True,
             }
             for e in rows

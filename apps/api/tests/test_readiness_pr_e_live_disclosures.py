@@ -883,3 +883,54 @@ def test_multi_channel_confirmation_is_visible() -> None:
         ]
     )
     assert len(section["events"]["value"][0]["provenance"]) == 2
+
+
+def test_the_venue_short_name_prefix_is_stripped_from_a_headline() -> None:
+    """The Italian venue prefixes every row with the issuer's SHORT name
+    ("MONCLER H1 2026 Financial Results"), not its legal name — so stripping
+    the LEGAL name left the prefix in place. Visible on a live report, and
+    worse, baked into the dedupe key, where it would stop the same
+    announcement matching a copy published without it."""
+    events, _ = parse_emarket_listing(
+        _EMARKET_FIXTURE,
+        issuer_ticker="MONC",
+        issuer_name="Moncler S.p.A.",  # the LEGAL name, as the registry holds it
+        cutoff=_CUTOFF,
+        max_events=10,
+    )
+    assert events
+    assert all(not (e.title or "").upper().startswith("MONCLER") for e in events)
+    assert any("H1 2026 Financial Results" == e.title for e in events)
+
+
+def test_channel_count_counts_channels_not_provenance_lines() -> None:
+    """``provenance`` also carries publication metadata and review notes;
+    counting those turned a single-channel event into "confirmed by 6
+    channels" on a live report."""
+    from app.services.llm.council import _regulated_disclosure_events
+
+    events, _ = parse_nasdaq_payload(
+        _NASDAQ_FIXTURE, issuer_ticker="PNDORA", issuer_name="Pandora A/S",
+        country="Denmark", cutoff=_CUTOFF, max_events=3,
+    )
+    items = disclosure_events_to_evidence(
+        events, source_id="nordic_disclosures", transport_label="t",
+        id_prefix="E", max_items=3,
+    )
+    payload = _regulated_disclosure_events(items)
+    assert payload
+    for entry in payload:
+        assert entry["channel_count"] == 1
+        assert len(entry["provenance"]) > 1
+
+
+def test_a_merged_two_channel_event_reports_two_channels() -> None:
+    from app.services.llm.council import _regulated_disclosure_events
+
+    merged = merge_events([[_issuer_copy(), _exchange_copy()]])
+    items = disclosure_events_to_evidence(
+        merged, source_id="nordic_disclosures", transport_label="t",
+        id_prefix="E", max_items=2,
+    )
+    payload = _regulated_disclosure_events(items)
+    assert payload[0]["channel_count"] == 2

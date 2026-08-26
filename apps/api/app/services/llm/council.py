@@ -242,6 +242,18 @@ def _regulated_disclosure_events(evidence_items: list[Any]) -> list[dict[str, An
                     getattr(item, "requires_translation", False)
                 ),
                 "provenance": list(getattr(item, "provenance", None) or []),
+                # How many official CHANNELS carried this announcement. Counted
+                # from the venue provenances only — the provenance list also
+                # carries publication metadata and review notes, and counting
+                # those would inflate "confirmed by N channels" into
+                # meaninglessness (a single-channel event read as six).
+                "channel_count": sum(
+                    1
+                    for line in (getattr(item, "provenance", None) or [])
+                    if "(exchange-operated)" in line
+                    or "storage mechanism" in line
+                    or "issuer newsroom" in line
+                ),
             }
         )
     return out
