@@ -1545,13 +1545,34 @@ async def maybe_run_council(
                 connector_evidence = collected.evidence_items
                 connector_gap_messages = collected.gap_messages()
                 primary_documents = _primary_document_summary(collected.evidence_items)
-                primary_facts = _primary_facts(collected.evidence_items)
                 # Prefer the COMPLETE artifact fact sets; fall back to the
                 # (capped) evidence items when no artifact is available, e.g.
                 # the shallow/metadata-only path.
                 historical_facts = _historical_facts_from_artifacts(
                     collected.primary_document_artifacts
                 ) or _historical_facts(collected.evidence_items)
+                # Live-acceptance corrective (2026-08-26). ``primary_facts``
+                # decides which fact fills a CANONICAL slot, and it was read
+                # from the per-document-CAPPED evidence items — so WHICH period
+                # occupied the canonical slot depended on evidence-pack
+                # ordering rather than on the period itself. Observed on a live
+                # Kering report: the canonical revenue slot held a rounded
+                # "€17.2 billion" FY2024 prose figure while a HIGH-confidence
+                # FY2025 figure of €14,675m existed and simply had not survived
+                # the cap.
+                #
+                # The high-confidence subset of the COMPLETE set is strictly
+                # better: same confidence bar, nothing arbitrary about which
+                # facts are visible. The cap still applies where it belongs —
+                # to the evidence pack the council reads.
+                complete_high = [
+                    fact
+                    for fact in historical_facts
+                    if fact.get("confidence") == "high"
+                ]
+                primary_facts = complete_high or _primary_facts(
+                    collected.evidence_items
+                )
                 # Phase 32A Slice 5 (3c-i): capture the deep artifacts for persistence
                 # ONLY when both the ingestion + citation persistence flags are on.
                 # Either flag off ⇒ list stays empty ⇒ nothing to persist downstream.

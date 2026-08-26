@@ -434,12 +434,13 @@ The campaign may return READY only if every item in §52 of the program brief (A
 | [#155](https://github.com/IvanAnikin/InvestingBuddy/pull/155) | Corrective — search a venue by name, not legal form | `d73b4ed` | green | none |
 | [#156](https://github.com/IvanAnikin/InvestingBuddy/pull/156) | Corrective — series see every fact; call `fetch_events` | `8558bc2` | green | none |
 | [#157](https://github.com/IvanAnikin/InvestingBuddy/pull/157) | Corrective — disclose a newer annual period | `d71353c` | green | none |
+| [#158](https://github.com/IvanAnikin/InvestingBuddy/pull/158) | Corrective — apply the implicit-Group convention consistently | `7048e2c` | green | none |
 
 **Deployment ledger**
 
 | Item | Value |
 |---|---|
-| staging API | `d71353c` (`/health`, `environment=staging`) |
+| staging API | `7048e2c` (`/health`, `environment=staging`) |
 | staging web | apps/web tree provably identical to HEAD (path-filtered deploy) |
 | Alembic head (staging) | `018` |
 | extraction pipeline version | `13` |
@@ -449,13 +450,14 @@ The campaign may return READY only if every item in §52 of the program brief (A
 
 ### Correctives found by LIVE acceptance
 
-All three passed every unit test. Each tested the *piece*; live running tested the *path*.
+All four passed every unit test first. Each unit test exercised the *piece*; running live exercised the *path*.
 
 | # | Defect | How it was found |
 |---|---|---|
 | 1 | Venue searched by full legal name (`"Pandora A/S"`) returned only boilerplate managers'-transaction notices and **silently dropped** the Q2 2026 results and the CFO appointment — no headline carries a legal-form suffix | running the connector against the real Nasdaq Nordic service |
-| 2 | Historical series were derived from the per-document-**capped** evidence items, so 52 persisted period-scoped facts became one observation per metric and the report said "no multi-period series was reconstructed"; and the venue connectors' `fetch_events` was **never called** by the evidence collector | inspecting a live Pandora report against `GET /reports/{id}/primary-documents` |
+| 2 | Historical series were derived from the per-document-**capped** evidence items, so 52 persisted period-scoped facts became one observation per metric and the report claimed "no multi-period series was reconstructed"; separately the venue connectors' `fetch_events` was **never called** by the evidence collector, and `borsa_italiana` was missing from the runnable regulator set | comparing a live Pandora report against `GET /reports/{id}/primary-documents` |
 | 3 | A canonical slot showed FY2024 revenue while the report's own series showed FY2025 (which fell below the slot's confidence bar) | **the PR-F invariant checker itself**, on a live Kering report |
+| 4 | The fix for #3 did not fire: the selected fact was unscoped, and fail-closed scope matching refused to compare it with a Group-scoped candidate — even though the slot had already placed it there under the implicit-Group convention | re-running live acceptance after #157 |
 
 ## 30. Final status
 
