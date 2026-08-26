@@ -437,6 +437,9 @@ The campaign may return READY only if every item in §52 of the program brief (A
 | [#158](https://github.com/IvanAnikin/InvestingBuddy/pull/158) | Corrective — apply the implicit-Group convention consistently | `7048e2c` | green | none |
 | [#159](https://github.com/IvanAnikin/InvestingBuddy/pull/159) | Corrective — canonical fact from the complete high-confidence set | `74b1158` | green | none |
 | [#160](https://github.com/IvanAnikin/InvestingBuddy/pull/160) | Corrective — state the DFR identity-gap spread | `d66842c` | green | none |
+| [#161](https://github.com/IvanAnikin/InvestingBuddy/pull/161) | Docs — campaign status and live acceptance | `acf6871` | n/a (docs) | none |
+| [#162](https://github.com/IvanAnikin/InvestingBuddy/pull/162) | Surface the retrieved regulated disclosures to a human | `024cbd2` | green | none |
+| [#163](https://github.com/IvanAnikin/InvestingBuddy/pull/163) | Polish — strip venue short-name prefix; count channels | `abd1f7a` | green | none |
 | [#158](https://github.com/IvanAnikin/InvestingBuddy/pull/158) | Corrective — apply the implicit-Group convention consistently | `7048e2c` | green | none |
 
 **Deployment ledger**
@@ -444,12 +447,30 @@ The campaign may return READY only if every item in §52 of the program brief (A
 | Item | Value |
 |---|---|
 | staging API | `7048e2c` (`/health`, `environment=staging`) |
-| staging web | apps/web tree provably identical to HEAD (path-filtered deploy) |
+| staging web | `abd1f7a` (`/api/version`, build `32970640276`) |
 | Alembic head (staging) | `018` |
 | extraction pipeline version | `13` |
 | `SOURCE_LIVE_DISCLOSURES_ENABLED` | `true` on staging (off by default in code) |
 | Azure OpenAI capacity | unchanged at 60 |
 | production | not provisioned, untouched |
+
+### Definitive live acceptance (staging `abd1f7a`, 2026-08-26)
+
+Discovery run **`aeee88d6-d228-4b46-b46d-86da99e1704d`** — "European luxury goods
+companies", 8 candidates, discovery council **8/8 agents, real LLM chair, no fallback**.
+
+| Issuer | Venue | Country | Report | Annual | Current | T1 facts | Series | Disclosures | Council |
+|---|---|---|---|---|---|---|---|---|---|
+| PNDORA | Nasdaq Copenhagen | Denmark | `a3d6ef3e` | FY2025 | — | 9 | **6 × FY2021–FY2025** | 5 (Nasdaq Nordic) | 8/8 real chair |
+| CFR | SIX Swiss | Switzerland | `eb7f2f7e` | FY2026 | — | 6 | **5 segment series** | 0 (venue reference only) | 8/8 real chair |
+| RMS | Euronext Paris | France | `f3fc5507` | FY2026 | H1 | 4 | 0 | 0 (venue reference only) | 8/8 real chair |
+| KER | Euronext Paris | France | `77e1257e` | FY2025 | **H1 2026** | 12 | 4 | 0 (venue reference only) | 8/8 real chair |
+| MONC | Euronext Milan | Italy | `fc948705` | — | — | 0 (honest) | 0 | **5 (eMarket Storage)** | 8/8 real chair |
+
+**Deep Field Review `d1c0c98f-d3a9-4d5f-b2cd-56d0d6cb6c46`** — 8/8 agents, real chair,
+exact report lineage for all five, `safety_valid=true`, `publication_ready=false`.
+
+**Report consistency: 0 serious findings across all five reports.**
 
 ### Correctives found by LIVE acceptance
 
@@ -463,6 +484,8 @@ All four passed every unit test first. Each unit test exercised the *piece*; run
 | 4 | The fix for #3 did not fire: the selected fact was unscoped, and fail-closed scope matching refused to compare it with a Group-scoped candidate — even though the slot had already placed it there under the implicit-Group convention | re-running live acceptance after #157 |
 | 5 | *Which* period filled a canonical slot depended on evidence-pack ordering: `primary_facts` was read from the **capped** evidence items, so a rounded FY2024 prose figure occupied the revenue slot while a high-confidence FY2025 figure existed and had simply not survived the cap | inspecting the Kering report after #158 |
 | 6 | The DFR correctly reported ISIN and sector missing for all five companies, then wrote a task to source "(ISIN, LEI)" for all — while three of five had a sourced LEI. Per-company grounding removed false claims about *individuals*; it did not stop five lists being *merged* | verifying the live DFR against the per-company data |
+| 7 | The connector retrieved **fifteen** real Pandora announcements that informed the council — but a researcher could not SEE any of them: the council persists only sources it CITES, and `news_catalyst_discovery` is built by a different agent that never sees connector evidence | inspecting the live reports' catalyst section against the connector's own output |
+| 8 | The Italian venue prefixes rows with the issuer's SHORT name, so stripping the LEGAL name left "MONCLER " in the headline — and in the dedupe key; and "confirmed by N channels" counted provenance lines, inflating a single-channel event to six | reading the rendered live reports |
 | — | **Operational, not a defect:** five concurrent full analyses on the single-worker B1 staging tier exceed the 45-minute stale threshold; run in batches of two | two consecutive interrupted batches, then a single run completing in **5.2 min** |
 | 4 | The fix for #3 did not fire: the selected fact was unscoped, and fail-closed scope matching refused to compare it with a Group-scoped candidate — even though the slot had already placed it there under the implicit-Group convention | re-running live acceptance after #157 |
 
@@ -483,15 +506,16 @@ All four passed every unit test first. Each unit test exercised the *piece*; run
 | **Consistency invariants** | All thirteen classes assertable over an assembled report, each tested from both sides. |
 | **Job durability** | `interrupted` + `recoverable` derived at read time; read-only startup sweep that logs orphans without re-enqueuing. |
 
-### LIVE VALIDATED (staging `d66842c`)
+### LIVE VALIDATED (staging `abd1f7a`)
 
 * Fresh discovery run `aeee88d6-d228-4b46-b46d-86da99e1704d` — 8 candidates, discovery council **8/8 agents, real LLM chair, no fallback**.
 * **5 issuers**, **4 countries**, **4 venues** completed end-to-end; every council **8/8 agents, 0 failed, real chair**.
 * **0 serious consistency findings** across all five reports.
+* Live regulated disclosures visible on the report surface: **Pandora's Q2 2026 results announcement** (Nasdaq Nordic, 12 Aug 2026) and **Moncler's H1 2026 Financial Results** (eMarket Storage, 22 Jul 2026) — the latter retrieved from the CONSOB-authorised venue while the issuer's own site was serving a maintenance page.
 * Pandora: 9 canonical facts matching the accepted baseline exactly, plus **6 five-year series (FY2021–FY2025)**.
 * Richemont: Group figures matching the accepted baseline, plus **5 independent segment series** — Jewellery Maisons, Specialist Watchmakers and Other each tracked separately, with no segment figure in a Group slot.
 * Kering: current-period **H1 2026** facts in their own labelled slots beside FY2025 annual facts.
-* Deep Field Review `655ea60a-c2b6-458f-bddb-4257d973c3ea` — 8/8 agents, real chair; identity gaps verified **field-by-field against the underlying per-company data**.
+* Deep Field Review `d1c0c98f-d3a9-4d5f-b2cd-56d0d6cb6c46` — 8/8 agents, real chair, **exact report lineage** for all five; identity gaps verified **field-by-field against the underlying per-company data** (ISIN and sector genuinely missing for all five; LEI, present for three, is no longer over-generalised).
 * Job durability proven live: a deploy recycled the container mid-run, all five jobs reported `interrupted` + `recoverable`, and a plain re-POST recovered them.
 
 ### DEFERRED — NON-BLOCKING
