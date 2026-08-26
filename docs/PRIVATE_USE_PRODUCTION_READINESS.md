@@ -1,6 +1,6 @@
 # Private-Use Production Readiness — Technical Specification
 
-**Status:** LIVE (updated throughout the campaign)
+**Status:** CLOSED 2026-08-26 — READY FOR MANUAL PRIVATE-USE PRODUCTION VERIFICATION
 **Owner:** InvestingBuddy engineering
 **Started:** 2026-08-25
 **Baseline:** staging API/web `bfac6e1`, Alembic head `017`, extraction pipeline version `11`
@@ -435,6 +435,9 @@ The campaign may return READY only if every item in §52 of the program brief (A
 | [#156](https://github.com/IvanAnikin/InvestingBuddy/pull/156) | Corrective — series see every fact; call `fetch_events` | `8558bc2` | green | none |
 | [#157](https://github.com/IvanAnikin/InvestingBuddy/pull/157) | Corrective — disclose a newer annual period | `d71353c` | green | none |
 | [#158](https://github.com/IvanAnikin/InvestingBuddy/pull/158) | Corrective — apply the implicit-Group convention consistently | `7048e2c` | green | none |
+| [#159](https://github.com/IvanAnikin/InvestingBuddy/pull/159) | Corrective — canonical fact from the complete high-confidence set | `74b1158` | green | none |
+| [#160](https://github.com/IvanAnikin/InvestingBuddy/pull/160) | Corrective — state the DFR identity-gap spread | `d66842c` | green | none |
+| [#158](https://github.com/IvanAnikin/InvestingBuddy/pull/158) | Corrective — apply the implicit-Group convention consistently | `7048e2c` | green | none |
 
 **Deployment ledger**
 
@@ -458,8 +461,53 @@ All four passed every unit test first. Each unit test exercised the *piece*; run
 | 2 | Historical series were derived from the per-document-**capped** evidence items, so 52 persisted period-scoped facts became one observation per metric and the report claimed "no multi-period series was reconstructed"; separately the venue connectors' `fetch_events` was **never called** by the evidence collector, and `borsa_italiana` was missing from the runnable regulator set | comparing a live Pandora report against `GET /reports/{id}/primary-documents` |
 | 3 | A canonical slot showed FY2024 revenue while the report's own series showed FY2025 (which fell below the slot's confidence bar) | **the PR-F invariant checker itself**, on a live Kering report |
 | 4 | The fix for #3 did not fire: the selected fact was unscoped, and fail-closed scope matching refused to compare it with a Group-scoped candidate — even though the slot had already placed it there under the implicit-Group convention | re-running live acceptance after #157 |
+| 5 | *Which* period filled a canonical slot depended on evidence-pack ordering: `primary_facts` was read from the **capped** evidence items, so a rounded FY2024 prose figure occupied the revenue slot while a high-confidence FY2025 figure existed and had simply not survived the cap | inspecting the Kering report after #158 |
+| 6 | The DFR correctly reported ISIN and sector missing for all five companies, then wrote a task to source "(ISIN, LEI)" for all — while three of five had a sourced LEI. Per-company grounding removed false claims about *individuals*; it did not stop five lists being *merged* | verifying the live DFR against the per-company data |
+| — | **Operational, not a defect:** five concurrent full analyses on the single-worker B1 staging tier exceed the 45-minute stale threshold; run in batches of two | two consecutive interrupted batches, then a single run completing in **5.2 min** |
+| 4 | The fix for #3 did not fire: the selected fact was unscoped, and fail-closed scope matching refused to compare it with a Group-scoped candidate — even though the slot had already placed it there under the implicit-Group convention | re-running live acceptance after #157 |
 
 ## 30. Final status
 
-_To be completed at campaign close: IMPLEMENTED / DEFERRED NON-BLOCKING / BLOCKED /
-LIVE VALIDATED / PRIVATE-USE READINESS STATUS._
+**Campaign closed 2026-08-26. Status: READY FOR MANUAL PRIVATE-USE PRODUCTION VERIFICATION.**
+
+### IMPLEMENTED
+
+| Area | What now holds |
+|---|---|
+| **Scope persistence** (migration `018`) | `scope_type` / `scope_name` / `scope_key` on `extracted_facts`; scope is part of fact identity; survives extract → persist → reload → cache reuse → report. `UNKNOWN` is a real third state, never coerced to `group`. |
+| **Historical series** | `ReportingPeriod` + `FinancialHistorySeries`; series keyed by the full identity (metric, scope, period type, currency, unit, scale); fail-closed comparability; ≤5 periods, ≤8 council lines; descriptive arithmetic only. |
+| **Canonical snapshot** | Field set **derived** from the parser's own vocabulary — 7 → 15 fields. `net_debt`/`total_debt`, `net_cash`/`cash`, `operating_profit`/`recurring_operating_profit` are distinct slots that cannot alias. |
+| **Source-neutral copy** | `annual_filing_name()` and `_statement_source_label()` resolve from the issuer's own jurisdiction; US wording is kept only where the jurisdiction is genuinely unresolved or genuinely US. |
+| **Current-period evidence** | Period- and recency-aware document selection with a reserved current-period slot; interim markers read from the value's own local window; `<field>_primary_filing` (latest annual) and `<field>_current_period` (latest interim) are separate, explicitly non-comparable slots. **No annualisation.** |
+| **Live regulated disclosures** | One `DisclosureEvent` model; **live** retrieval from Nasdaq Nordic and eMarket Storage (Italy); semantic dedupe that merges an issuer copy with an exchange copy while keeping **both** provenances. |
+| **Consistency invariants** | All thirteen classes assertable over an assembled report, each tested from both sides. |
+| **Job durability** | `interrupted` + `recoverable` derived at read time; read-only startup sweep that logs orphans without re-enqueuing. |
+
+### LIVE VALIDATED (staging `d66842c`)
+
+* Fresh discovery run `aeee88d6-d228-4b46-b46d-86da99e1704d` — 8 candidates, discovery council **8/8 agents, real LLM chair, no fallback**.
+* **5 issuers**, **4 countries**, **4 venues** completed end-to-end; every council **8/8 agents, 0 failed, real chair**.
+* **0 serious consistency findings** across all five reports.
+* Pandora: 9 canonical facts matching the accepted baseline exactly, plus **6 five-year series (FY2021–FY2025)**.
+* Richemont: Group figures matching the accepted baseline, plus **5 independent segment series** — Jewellery Maisons, Specialist Watchmakers and Other each tracked separately, with no segment figure in a Group slot.
+* Kering: current-period **H1 2026** facts in their own labelled slots beside FY2025 annual facts.
+* Deep Field Review `655ea60a-c2b6-458f-bddb-4257d973c3ea` — 8/8 agents, real chair; identity gaps verified **field-by-field against the underlying per-company data**.
+* Job durability proven live: a deploy recycled the container mid-run, all five jobs reported `interrupted` + `recoverable`, and a plain re-POST recovered them.
+
+### DEFERRED — NON-BLOCKING
+
+* **LSE / FCA NSM** and **Burberry** — the NSM portal returns 403, its search API rejects every documented index, and the issuer's own site is behind a proof-of-work challenge. **Not bypassed by design.** UK is therefore not in the accepted five.
+* **LVMH** — the publications index is client-rendered only; no server-rendered document list to discover from.
+* **SIX Swiss** and **Euronext Paris** remain venue-reference-only; both issuers' ad-hoc announcements are reachable through the issuer-primary path, which is what the accepted Richemont result uses.
+* **Moncler** — `monclergroup.com` was serving its own maintenance page throughout; its regulated disclosures were still retrieved from the CONSOB-authorised venue. Its report is honestly evidence-thin.
+* **Multi-period interim tables that mix column types** (Pandora's `Q2 2026 | Q2 2025 | H1 2026 | H1 2025 | FY 2025`) are still refused by the table reconstructor's monotonicity check — correctly fail-closed; those figures reach the pipeline through prose.
+* **Operational:** five concurrent full analyses exceed the 45-minute stale threshold on the single-worker B1 staging tier. Run in batches of two; a single analysis completes in ~5 minutes.
+
+### BLOCKED
+
+None.
+
+### PRIVATE-USE READINESS STATUS
+
+**READY FOR MANUAL PRIVATE-USE PRODUCTION VERIFICATION.** Production is not
+provisioned and was not touched at any point in this campaign.
