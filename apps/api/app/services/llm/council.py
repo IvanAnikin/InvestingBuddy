@@ -213,6 +213,40 @@ def _structured_facts(
     return out
 
 
+def _regulated_disclosure_events(evidence_items: list[Any]) -> list[dict[str, Any]]:
+    """The live regulated disclosures, as bounded dicts for the report.
+
+    PR-E retrieves these from official venues and they already inform the
+    council through the evidence pack. But the council only PERSISTS a source
+    it actually cites, and the ``news_catalyst_discovery`` section is built by a
+    different agent that never sees connector evidence — so a researcher asking
+    "what did this issuer just announce?" could not see them anywhere, even
+    though the system had fetched fifteen of them from the exchange.
+
+    Carries only what the venue published plus its provenance. No materiality,
+    no direction, no consequence for a decision.
+    """
+    out: list[dict[str, Any]] = []
+    for item in evidence_items:
+        if getattr(item, "source_type", None) != "regulated_disclosure_event":
+            continue
+        out.append(
+            {
+                "title": getattr(item, "title", None),
+                "date": getattr(item, "date", None),
+                "venue": getattr(item, "content_source", None),
+                "url": getattr(item, "url", None),
+                "source_tier": getattr(item, "content_source_tier", None),
+                "language": getattr(item, "original_language", None),
+                "requires_translation": bool(
+                    getattr(item, "requires_translation", False)
+                ),
+                "provenance": list(getattr(item, "provenance", None) or []),
+            }
+        )
+    return out
+
+
 def _historical_facts_from_artifacts(artifacts: "list[Any] | None") -> list[dict[str, Any]]:
     # Local imports keep this module free of an import cycle with the
     # extraction layer (the same pattern the persistence writer uses).
@@ -1467,6 +1501,7 @@ async def maybe_run_council(
         primary_documents: list[dict[str, Any]] = []
         primary_facts: list[dict[str, Any]] = []
         historical_facts: list[dict[str, Any]] = []
+        regulated_disclosure_events: list[dict[str, Any]] = []
         # Phase 31 hotfix: bounded, secret-free PRIMARY-source references (verified
         # metadata-only items) + their counts + honest source-gap strings. Stay
         # empty (and unattached) when the connector layer is off → byte-identical.
@@ -1548,6 +1583,9 @@ async def maybe_run_council(
                 # Prefer the COMPLETE artifact fact sets; fall back to the
                 # (capped) evidence items when no artifact is available, e.g.
                 # the shallow/metadata-only path.
+                regulated_disclosure_events = _regulated_disclosure_events(
+                    collected.evidence_items
+                )
                 historical_facts = _historical_facts_from_artifacts(
                     collected.primary_document_artifacts
                 ) or _historical_facts(collected.evidence_items)
@@ -1767,6 +1805,10 @@ async def maybe_run_council(
         # dark-by-default byte-identical.
         if historical_facts:
             result.historical_facts = historical_facts
+        # PR-E follow-through: the live regulated disclosures, so a human can
+        # SEE what the council was given.
+        if regulated_disclosure_events:
+            result.regulated_disclosure_events = regulated_disclosure_events
         # Phase 31 hotfix: attach the bounded metadata-only PRIMARY-source
         # references + counts + honest gaps so the report / memo can surface which
         # verified primary sources were located (distinct from extracted text and

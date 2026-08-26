@@ -129,6 +129,10 @@ export const SECTION_ORDER: string[] = [
   // the issuer's own primary documents. Sits directly under the snapshot: "what
   // is it now" then "what changed over time" is the order a researcher reads in.
   "historical_trends",
+  // Private-use readiness PR-E — the issuer's LIVE regulated disclosures.
+  // Placed next to the financial surfaces because "what did they just
+  // announce" is asked in the same breath as "what do the numbers say".
+  "regulated_disclosures",
   "discovery_rationale",
   "internal_scorecard",
   "llm_council_analysis",
@@ -156,6 +160,7 @@ export const SECTION_LABELS: Record<string, string> = {
   evidence_channels: "Evidence Channels",
   financial_snapshot: "Financial Snapshot",
   historical_trends: "Historical Trends",
+  regulated_disclosures: "Regulated Disclosures",
   discovery_rationale: "Discovery Rationale",
   internal_scorecard: "Internal Scorecard",
   llm_council_analysis: "LLM Council Analysis",

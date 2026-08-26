@@ -804,3 +804,82 @@ def test_the_evidence_collector_calls_fetch_events_when_live_is_enabled() -> Non
     source = inspect.getsource(company_evidence.collect_company_source_evidence)
     assert "fetch_events" in source
     assert "source_live_disclosures_enabled" in source
+
+
+# =========================================================================== #
+# PR-E follow-through: a HUMAN can see the retrieved disclosures              #
+# =========================================================================== #
+
+
+def test_retrieved_disclosures_reach_a_human_facing_report_section() -> None:
+    """Found by inspecting live reports: the connector retrieved fifteen real
+    announcements for Pandora — including the Q2 results and the CFO
+    appointment — and they informed the council through the evidence pack, but
+    a researcher could not SEE them anywhere. The council only persists a
+    source it CITES, and ``news_catalyst_discovery`` is built by a different
+    agent that never sees connector evidence."""
+    from app.services.final_report_generator import _build_regulated_disclosures
+
+    events, _ = parse_nasdaq_payload(
+        _NASDAQ_FIXTURE, issuer_ticker="PNDORA", issuer_name="Pandora A/S",
+        country="Denmark", cutoff=_CUTOFF, max_events=15,
+    )
+    payload = [
+        {
+            "title": e.title,
+            "date": e.date_key,
+            "venue": e.venue,
+            "url": e.official_url,
+            "source_tier": e.source_tier,
+            "language": e.language,
+            "provenance": list(e.provenances),
+        }
+        for e in events
+    ]
+    section = _build_regulated_disclosures(payload)
+    assert section["available"] is True
+    assert section["event_count"] == len(events)
+    titles = " ".join(str(r["title"]) for r in section["events"]["value"])
+    assert "organic growth in Q2" in titles
+    assert section["latest_event_date"]["value"]
+    assert section["venues"]["value"] == [VENUE_NASDAQ_NORDIC]
+
+
+def test_the_disclosure_section_is_present_and_honest_when_empty() -> None:
+    """Absent and empty must be distinguishable."""
+    from app.services.final_report_generator import _build_regulated_disclosures
+
+    section = _build_regulated_disclosures(None)
+    assert section["type"] == "regulated_disclosures"
+    assert section["available"] is False
+    assert section["events"]["value"] == []
+    assert "None" not in str(section["note"]["value"])
+
+
+def test_the_disclosure_section_asserts_no_materiality_or_advice() -> None:
+    from app.services.final_report_generator import _build_regulated_disclosures
+
+    section = _build_regulated_disclosures(
+        [{"title": "Q2 results", "date": "2026-08-12", "venue": "v"}]
+    )
+    blob = str(section).lower()
+    for banned in ("buy", "sell", "price target", "upside", "downside", "undervalued"):
+        assert banned not in blob
+    assert "no materiality, direction, or trading consequence is asserted" in blob
+
+
+def test_multi_channel_confirmation_is_visible() -> None:
+    """A merged issuer+exchange announcement must show it was confirmed twice."""
+    from app.services.final_report_generator import _build_regulated_disclosures
+
+    section = _build_regulated_disclosures(
+        [
+            {
+                "title": "Q2 results",
+                "date": "2026-08-12",
+                "venue": "Issuer newsroom + Nasdaq Nordic",
+                "provenance": ["issuer newsroom", "Nasdaq Nordic company news"],
+            }
+        ]
+    )
+    assert len(section["events"]["value"][0]["provenance"]) == 2

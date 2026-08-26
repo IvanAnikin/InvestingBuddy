@@ -624,6 +624,83 @@ function HistoricalTrendsSection({ section }: { section: Record<string, unknown>
   );
 }
 
+// --------------------------------------------------------------------------
+// Regulated Disclosures (private-use readiness PR-E)
+//
+// Each row is what an official venue published. The provenance list matters:
+// an announcement carried by BOTH the issuer and the exchange is better
+// sourced than one carried by a single channel, and merging them without
+// showing that would throw the signal away.
+// --------------------------------------------------------------------------
+
+type DisclosureRow = {
+  title?: string | null;
+  date?: string | null;
+  venue?: string | null;
+  url?: string | null;
+  language?: string | null;
+  requires_translation?: boolean;
+  provenance?: string[];
+};
+
+function RegulatedDisclosuresSection({ section }: { section: Record<string, unknown> }) {
+  const rows = ((section.events as { value?: DisclosureRow[] } | undefined)?.value ??
+    []) as DisclosureRow[];
+  const note = noteText(section.note);
+  return (
+    <SectionShell title="Regulated Disclosures" testId="section-regulated-disclosures">
+      {rows.length === 0 ? (
+        <p className="text-sm text-slate-400">
+          {note ?? "No regulated disclosure was retrieved for this issuer."}
+        </p>
+      ) : (
+        <ul className="flex flex-col gap-2">
+          {rows.map((e, i) => (
+            <li
+              key={`${e.date}-${i}`}
+              className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2"
+            >
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-[10px] text-slate-500">{e.date ?? "date not stated"}</span>
+                {e.url ? (
+                  <a
+                    href={e.url}
+                    target="_blank"
+                    rel="noreferrer noopener"
+                    className="text-sm font-semibold text-sky-200 underline decoration-dotted"
+                  >
+                    {e.title ?? "Untitled disclosure"}
+                  </a>
+                ) : (
+                  <span className="text-sm font-semibold text-slate-100">
+                    {e.title ?? "Untitled disclosure"}
+                  </span>
+                )}
+                {e.requires_translation ? (
+                  <span className="rounded bg-amber-400/10 px-1.5 py-0.5 text-[10px] text-amber-200">
+                    {e.language ?? "local language"}
+                  </span>
+                ) : null}
+              </div>
+              <div className="mt-1 flex flex-wrap gap-x-3 text-[11px] text-slate-500">
+                {e.venue ? <span>{e.venue}</span> : null}
+                {(e.provenance ?? []).length > 1 ? (
+                  <span className="text-emerald-300">
+                    confirmed by {(e.provenance ?? []).length} channels
+                  </span>
+                ) : null}
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+      <p className="mt-3 text-[11px] text-slate-500">
+        {noteText(section.disclaimer)}
+      </p>
+    </SectionShell>
+  );
+}
+
 function ResearchMemoSection({ section }: { section: Record<string, unknown> }) {
   const header = noteText(section.header);
   const memoNote = noteText(section.note);
@@ -729,6 +806,13 @@ export default function FinalReportRenderer({
           return <ChecklistSection key={key} section={section as Record<string, unknown>} />;
         if (key === "source_citation_appendix")
           return <AppendixSection key={key} section={section as Record<string, unknown>} />;
+        if (key === "regulated_disclosures")
+          return (
+            <RegulatedDisclosuresSection
+              key={key}
+              section={section as Record<string, unknown>}
+            />
+          );
         if (key === "historical_trends")
           return <HistoricalTrendsSection key={key} section={section as Record<string, unknown>} />;
         if (key === "llm_council_analysis")
