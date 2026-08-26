@@ -1,6 +1,13 @@
 # Architecture
 
-## Status: Private-Use Production Readiness — PR-F: Consistency Invariants + Job Durability Visibility (**branch, pre-merge**; **no migration**, Alembic head stays `018`). `app/services/report_consistency.py` turns the thirteen named contradiction classes into semantic assertions that run over an assembled report, each tested from BOTH sides so a checker that fires on a correct report is caught. And an analysis job whose worker died now reports `interrupted` + `recoverable` — derived at read time from the same threshold the restart decision uses, with a read-only startup sweep that logs what was lost rather than silently re-running an expensive council on every deploy. See ADR-036.
+## Status: Private-Use Production Readiness — **CLOSED, LIVE-VALIDATED ON STAGING** (API `d66842c`; migration `018`, Alembic head `017 → 018`; extraction `pipeline_version` `11 → 13`; PRs #149-#160). Ten PRs: six phases plus four correctives that live acceptance found and unit tests did not. Fact scope is persisted and part of fact identity; multi-year facts become bounded comparable series; the canonical snapshot is derived from the parser's own vocabulary (7 → 15 fields); interim evidence sits beside annual evidence in its own labelled slots and is never annualised; regulated disclosures are retrieved live from Nasdaq Nordic and the CONSOB-authorised Italian storage and deduplicated across channels without losing provenance; the thirteen contradiction classes are assertable; and an abandoned analysis job reports `interrupted` + `recoverable` instead of `running` forever. Live: 5 issuers / 4 countries / 4 venues, every council 8/8 with a real chair, **0 serious consistency findings**. See `docs/PRIVATE_USE_PRODUCTION_READINESS.md` and ADR-031..ADR-036. Production is not provisioned and is untouched.
+
+<details>
+<summary>Previous status (Readiness PR-F)</summary>
+
+## Status: Private-Use Production Readiness — PR-F: Consistency Invariants + Job Durability Visibility (merged `eac749e`; **no migration**, Alembic head stays `018`). `app/services/report_consistency.py` turns the thirteen named contradiction classes into semantic assertions that run over an assembled report, each tested from BOTH sides so a checker that fires on a correct report is caught. And an analysis job whose worker died now reports `interrupted` + `recoverable` — derived at read time from the same threshold the restart decision uses, with a read-only startup sweep that logs what was lost rather than silently re-running an expensive council on every deploy. See ADR-036.
+
+</details>
 
 <details>
 <summary>Previous status (Readiness PR-E)</summary>
