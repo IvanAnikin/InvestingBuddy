@@ -425,14 +425,37 @@ The campaign may return READY only if every item in §52 of the program brief (A
 
 | PR | Purpose | Merge SHA | CI | Migration |
 |---|---|---|---|---|
-| [#149](https://github.com/IvanAnikin/InvestingBuddy/pull/149) | PR-A — persist Group/segment fact scope | `6b7b4cb` | green | **018** applied to staging 2026-08-25 |
-| [#150](https://github.com/IvanAnikin/InvestingBuddy/pull/150) | PR-B — historical financial series | `8b516e3` | green | none |
+| [#149](https://github.com/IvanAnikin/InvestingBuddy/pull/149) | PR-A — persist Group/segment fact scope | `6b7b4cb` | green | **018** (applied to staging 2026-08-25) |
+| [#150](https://github.com/IvanAnikin/InvestingBuddy/pull/150) | PR-B — bounded historical financial series | `8b516e3` | green | none |
 | [#151](https://github.com/IvanAnikin/InvestingBuddy/pull/151) | PR-C — snapshot expansion, source-neutral copy, DFR gaps | `99df1b9` | green | none |
 | [#152](https://github.com/IvanAnikin/InvestingBuddy/pull/152) | PR-D — current-period (interim) evidence | `3f45268` | green | none |
 | [#153](https://github.com/IvanAnikin/InvestingBuddy/pull/153) | PR-E — live regulated disclosures | `dc3df2e` | green | none |
 | [#154](https://github.com/IvanAnikin/InvestingBuddy/pull/154) | PR-F — consistency invariants + job durability | `eac749e` | green | none |
 | [#155](https://github.com/IvanAnikin/InvestingBuddy/pull/155) | Corrective — search a venue by name, not legal form | `d73b4ed` | green | none |
 | [#156](https://github.com/IvanAnikin/InvestingBuddy/pull/156) | Corrective — series see every fact; call `fetch_events` | `8558bc2` | green | none |
+| [#157](https://github.com/IvanAnikin/InvestingBuddy/pull/157) | Corrective — disclose a newer annual period | `d71353c` | green | none |
+
+**Deployment ledger**
+
+| Item | Value |
+|---|---|
+| staging API | `d71353c` (`/health`, `environment=staging`) |
+| staging web | apps/web tree provably identical to HEAD (path-filtered deploy) |
+| Alembic head (staging) | `018` |
+| extraction pipeline version | `13` |
+| `SOURCE_LIVE_DISCLOSURES_ENABLED` | `true` on staging (off by default in code) |
+| Azure OpenAI capacity | unchanged at 60 |
+| production | not provisioned, untouched |
+
+### Correctives found by LIVE acceptance
+
+All three passed every unit test. Each tested the *piece*; live running tested the *path*.
+
+| # | Defect | How it was found |
+|---|---|---|
+| 1 | Venue searched by full legal name (`"Pandora A/S"`) returned only boilerplate managers'-transaction notices and **silently dropped** the Q2 2026 results and the CFO appointment — no headline carries a legal-form suffix | running the connector against the real Nasdaq Nordic service |
+| 2 | Historical series were derived from the per-document-**capped** evidence items, so 52 persisted period-scoped facts became one observation per metric and the report said "no multi-period series was reconstructed"; and the venue connectors' `fetch_events` was **never called** by the evidence collector | inspecting a live Pandora report against `GET /reports/{id}/primary-documents` |
+| 3 | A canonical slot showed FY2024 revenue while the report's own series showed FY2025 (which fell below the slot's confidence bar) | **the PR-F invariant checker itself**, on a live Kering report |
 
 ## 30. Final status
 

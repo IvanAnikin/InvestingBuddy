@@ -415,3 +415,34 @@ def test_an_interim_period_never_counts_as_a_newer_annual_period() -> None:
     wider = annual + [_fact("revenue", 14328.0, period="H1 2026", confidence="medium")]
     section = _build_financial_snapshot(_snapshot(), None, annual, historical_facts=wider)
     assert "newer_period_available" not in section["revenue_primary_filing"]
+
+
+def test_an_unscoped_slot_still_discloses_a_newer_group_period() -> None:
+    """The live Kering shape: an UNSCOPED FY2024 prose figure occupies the
+    Group slot (under the pipeline's implicit-Group convention) while the
+    report's own Group series carries FY2025. Refusing the same convention one
+    line later would let the slot claim "this is the Group revenue" while
+    silently declining to mention a newer Group revenue exists."""
+    high = [_fact("revenue", 17.2, scope=None, period="2024", scale="billion")]
+    wider = high + [
+        _fact("revenue", 14675.0, scope="group", period="2025", confidence="medium")
+    ]
+    dp = _build_financial_snapshot(_snapshot(), None, high, historical_facts=wider)[
+        "revenue_primary_filing"
+    ]
+    assert dp["newer_period_available"]["period"] == "FY2025"
+
+
+def test_a_newer_segment_period_is_ignored_even_for_an_unscoped_slot() -> None:
+    """The asymmetry must hold in both directions."""
+    high = [_fact("revenue", 17.2, scope=None, period="2024", scale="billion")]
+    wider = high + [
+        _fact(
+            "revenue", 3100.0, scope="Specialist Watchmakers", period="2025",
+            confidence="medium",
+        )
+    ]
+    dp = _build_financial_snapshot(_snapshot(), None, high, historical_facts=wider)[
+        "revenue_primary_filing"
+    ]
+    assert "newer_period_available" not in dp
