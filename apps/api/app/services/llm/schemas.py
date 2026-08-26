@@ -320,6 +320,12 @@ class CouncilResult(BaseModel):
     # report saying "no historical trend" beside a complete one. Low confidence
     # is excluded from both. Carries no raw document text.
     historical_facts: list[dict[str, Any]] = Field(default_factory=list)
+    # PR-E follow-through: the LIVE regulated disclosures retrieved from an
+    # official venue (headline / date / venue / official URL / language /
+    # provenance). They already informed the council through the evidence pack;
+    # this is what lets a HUMAN see them. Carries no materiality, direction, or
+    # consequence for a decision.
+    regulated_disclosure_events: list[dict[str, Any]] = Field(default_factory=list)
     # Phase 29C.1: bounded, reference-only MACRO CONTEXT for this company's broad
     # theme (sector/industry → official macro statistics publishers). Each entry
     # is a source reference (identity + landing URL + the indicators it covers)
@@ -488,6 +494,7 @@ class CouncilResult(BaseModel):
             "primary_documents": list(self.primary_documents),
             "primary_facts": list(self.primary_facts),
             "historical_facts": list(self.historical_facts),
+            "regulated_disclosure_events": list(self.regulated_disclosure_events),
             "macro_context": list(self.macro_context),
             "event_context": list(self.event_context),
             "translated_excerpts": list(self.translated_excerpts),

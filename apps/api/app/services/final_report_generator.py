@@ -2095,6 +2095,78 @@ def _build_historical_trends(
     return section
 
 
+def _build_regulated_disclosures(
+    events: list[dict[str, Any]] | None,
+    *,
+    max_events: int = 15,
+) -> dict[str, Any]:
+    """The issuer's LIVE regulated disclosures — private-use readiness PR-E.
+
+    A deterministic re-presentation of what an official venue published: the
+    headline, the date, the venue, the official URL, the language, and which
+    channels carried it. Nothing here is model-derived and nothing asserts that
+    an announcement is material, positive, negative, or a reason to act — a
+    regulated disclosure is a record that something was announced.
+
+    Present and honestly empty when nothing was retrieved, so "no announcements
+    in the window" is distinguishable from "this section is missing".
+    """
+    rows = [e for e in (events or []) if isinstance(e, dict)][:max_events]
+    section: dict[str, Any] = {
+        "type": "regulated_disclosures",
+        "available": bool(rows),
+        "event_count": len(rows),
+        "human_review_required": True,
+        "disclaimer": (
+            "Official regulated disclosures, re-presented as published. A "
+            "disclosure is a record that something was announced — no "
+            "materiality, direction, or trading consequence is asserted, and "
+            "none of this is investment advice."
+        ),
+    }
+    if not rows:
+        section["note"] = {
+            "value": (
+                "No regulated disclosure was retrieved for this issuer in the "
+                "lookback window. This may mean the issuer published none, or "
+                "that its venue could not be retrieved — see the source gaps."
+            ),
+            "provenance": "missing_data",
+        }
+        section["events"] = {"value": [], "provenance": "missing_data"}
+        return section
+
+    section["events"] = {
+        "value": [
+            {
+                "title": e.get("title"),
+                "date": e.get("date"),
+                "venue": e.get("venue"),
+                "url": e.get("url"),
+                "source_tier": e.get("source_tier"),
+                "language": e.get("language"),
+                "requires_translation": bool(e.get("requires_translation")),
+                # Which channels carried it. An announcement confirmed by more
+                # than one official channel is better-sourced than one carried
+                # by a single channel, and that is worth showing.
+                "provenance": list(e.get("provenance") or []),
+                "human_review_required": True,
+            }
+            for e in rows
+        ],
+        "provenance": "sourced_fact",
+    }
+    venues = sorted({str(e.get("venue")) for e in rows if e.get("venue")})
+    section["venues"] = {"value": venues, "provenance": "sourced_fact"}
+    dates = sorted(str(e.get("date")) for e in rows if e.get("date"))
+    if dates:
+        section["latest_event_date"] = {
+            "value": dates[-1],
+            "provenance": "sourced_fact",
+        }
+    return section
+
+
 def _build_internal_scorecard(scorecard: Scorecard | None) -> dict[str, Any]:
     if scorecard is None:
         return {
@@ -4852,6 +4924,9 @@ def _assemble_final_report_content(
         # untouched. Rebuilt after the council with real facts; present and
         # honestly empty before then, never absent.
         "historical_trends": _build_historical_trends(None),
+        # Private-use readiness PR-E — present and honestly empty before the
+        # council runs; rebuilt below with the real retrieved events.
+        "regulated_disclosures": _build_regulated_disclosures(None),
         "internal_scorecard": _build_internal_scorecard(scorecard),
         "valuation_readiness": _build_valuation_readiness(
             valuation_guard_summary, scorecard
@@ -6198,6 +6273,9 @@ class FinalReportGeneratorService:
         # series, and gating here would hide it.
         report_content["historical_trends"] = _build_historical_trends(
             historical_facts or primary_facts
+        )
+        report_content["regulated_disclosures"] = _build_regulated_disclosures(
+            getattr(council_result, "regulated_disclosure_events", None)
         )
 
         # Phase 32D2 — the availability + gap surfaces are rebuilt from the ONE
