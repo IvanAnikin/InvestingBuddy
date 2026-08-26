@@ -446,3 +446,26 @@ def test_a_newer_segment_period_is_ignored_even_for_an_unscoped_slot() -> None:
         "revenue_primary_filing"
     ]
     assert "newer_period_available" not in dp
+
+
+def test_the_latest_annual_wins_regardless_of_how_facts_were_ordered() -> None:
+    """Live-acceptance corrective (2026-08-26).
+
+    ``primary_facts`` decides which fact fills a canonical slot, and it was read
+    from the per-document-CAPPED evidence items — so WHICH period occupied the
+    slot depended on evidence-pack ordering rather than on the period itself.
+    Observed live: a Kering canonical revenue slot held a rounded "€17.2
+    billion" FY2024 prose figure while a HIGH-confidence FY2025 figure of
+    €14,675m existed and simply had not survived the cap.
+    """
+    facts = [
+        _fact("revenue", 17.2, period="2024", scale="billion"),
+        _fact("revenue", 14675.0, period="2025"),
+    ]
+    for ordering in (facts, list(reversed(facts))):
+        section = _build_financial_snapshot(_snapshot(), None, ordering)
+        dp = section["revenue_primary_filing"]
+        assert dp["period"] == "2025"
+        assert dp["numeric_value"] == 14675.0
+        # The newest period IS the slot, so there is nothing newer to disclose.
+        assert "newer_period_available" not in dp
