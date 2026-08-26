@@ -469,3 +469,89 @@ def test_the_latest_annual_wins_regardless_of_how_facts_were_ordered() -> None:
         assert dp["numeric_value"] == 14675.0
         # The newest period IS the slot, so there is nothing newer to disclose.
         assert "newer_period_available" not in dp
+
+
+# =========================================================================== #
+# Live DFR corrective (2026-08-26): the identity-gap SPREAD                   #
+# =========================================================================== #
+
+
+def test_identity_gaps_are_split_into_all_versus_some() -> None:
+    """A live Deep Field Review correctly reported ISIN and sector missing for
+    all five companies, then wrote a research task to source "(ISIN, LEI)" for
+    all of them — while three of the five already had a sourced LEI. PR-C's
+    per-company lists removed the false claims about individual companies; they
+    did not remove the temptation to merge five lists into one. The merged
+    answer is now a FACT the pack states."""
+    from app.services.field_review_evidence_pack import _identity_gap_spread
+
+    class _C:
+        def __init__(self, ticker, missing):
+            self.ticker = ticker
+            self.id = ticker
+            self.identity_fields_missing = missing
+
+    companies = [
+        _C("PNDORA", ["isin", "lei", "sector"]),
+        _C("CFR", ["isin", "sector"]),
+        _C("RMS", ["isin", "sector"]),
+        _C("KER", ["isin", "sector"]),
+        _C("MONC", ["isin", "lei", "sector"]),
+    ]
+    all_missing, some_missing = _identity_gap_spread(companies)
+    assert all_missing == ["isin", "sector"]
+    assert some_missing == [("lei", ["MONC", "PNDORA"])]
+
+
+def test_a_field_nobody_is_missing_appears_in_neither_list() -> None:
+    from app.services.field_review_evidence_pack import _identity_gap_spread
+
+    class _C:
+        def __init__(self, ticker, missing):
+            self.ticker = ticker
+            self.id = ticker
+            self.identity_fields_missing = missing
+
+    all_missing, some_missing = _identity_gap_spread(
+        [_C("A", ["isin"]), _C("B", ["isin"])]
+    )
+    assert all_missing == ["isin"]
+    assert some_missing == []
+
+
+def test_the_spread_is_empty_for_an_empty_review() -> None:
+    from app.services.field_review_evidence_pack import _identity_gap_spread
+
+    assert _identity_gap_spread([]) == ([], [])
+
+
+def test_the_pack_states_the_spread_as_a_known_gap() -> None:
+    """The council must be able to CITE it rather than infer it."""
+    import uuid as _uuid
+
+    from app.models.discovery import DiscoveryRun
+    from app.services.field_review_evidence_pack import build_field_review_pack
+    from app.services.llm.field_review_schemas import FieldReviewCompanySummary
+
+    def _c(ref, ticker, missing):
+        return FieldReviewCompanySummary(
+            id=ref,
+            ticker=ticker,
+            identity_fields_missing=missing,
+            data_provenance="real",
+        )
+
+    run = DiscoveryRun(
+        id=_uuid.uuid4(), mode="thesis", status="completed", candidate_count=2
+    )
+    pack = build_field_review_pack(
+        run=run,
+        companies=[_c("F1", "A", ["isin", "lei"]), _c("F2", "B", ["isin"])],
+        missing=[],
+        analyzed_candidate_count=2,
+    )
+    joined = " ".join(pack.known_gaps)
+    assert "missing for EVERY company" in joined
+    assert "isin" in joined
+    assert "missing for SOME companies only" in joined
+    assert "lei" in joined
