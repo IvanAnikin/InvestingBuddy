@@ -1252,9 +1252,23 @@ def _newer_period_for(
 
     Returns ``None`` — the overwhelmingly common case — when the selected fact
     already is the newest annual period the report holds for this field and
-    scope. Only a fact of the SAME scope counts: a newer segment figure is not
-    a newer version of a Group figure, and saying so would be its own
-    contradiction.
+    scope. A newer SEGMENT figure never counts: it is not a newer version of a
+    Group figure, and saying so would be its own contradiction.
+
+    An UNSCOPED fact is compared as Group here, and only here. That is not a
+    weakening of the fail-closed scope rule — it is the same rule applied
+    consistently. This function only ever runs on a fact the canonical-slot
+    selector ALREADY placed in a Group slot, and it placed an unscoped fact
+    there under the pipeline's long-standing implicit convention that an
+    absent scope means Group (see ``_high_confidence_facts_for`` and
+    ``fact_scope``). Refusing the same convention one line later would let the
+    slot claim "this is the Group revenue" while silently declining to mention
+    that a newer Group revenue exists. Live-observed: a Kering slot carried an
+    unscoped FY2024 prose figure while the report's own Group series showed
+    FY2025.
+
+    The asymmetry is deliberate and safe: this DISCLOSES a difference, it never
+    fills a slot. Being wrong here costs an extra note, not a wrong number.
     """
     chosen_period = parse_period(selected.get("period"))
     if chosen_period.period_type != PERIOD_TYPE_ANNUAL or not chosen_period.year:
@@ -1267,10 +1281,15 @@ def _newer_period_for(
             continue
         if candidate.get("numeric_value") is None:
             continue
+        candidate_scope = parse_scope(candidate.get("scope"))
+        if candidate_scope.is_segment:
+            # A newer segment figure is never a newer version of a Group one.
+            continue
         if not same_scope(candidate.get("scope"), selected.get("scope")):
-            # An unscoped fact cannot be shown to be the same series as a
-            # scoped one, so it is never used to claim a newer period exists.
-            if not (chosen_scope.is_unknown and parse_scope(candidate.get("scope")).is_unknown):
+            # Neither is a segment at this point, so both are Group-or-unknown
+            # and the implicit-Group convention applies to both — see the
+            # docstring for why that is consistent rather than lenient.
+            if chosen_scope.is_segment:
                 continue
         period = parse_period(candidate.get("period"))
         if period.period_type != PERIOD_TYPE_ANNUAL or not period.year:
