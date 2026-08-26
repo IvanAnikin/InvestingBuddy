@@ -551,6 +551,37 @@ def _run_facts(
     return facts
 
 
+def _identity_gap_spread(
+    companies: list[FieldReviewCompanySummary],
+) -> tuple[list[str], list[tuple[str, list[str]]]]:
+    """(fields missing for EVERY company, fields missing for SOME) — exact.
+
+    Computed from each company's own ``identity_fields_missing``, so it can
+    never disagree with the per-company lists it summarises. A field nobody is
+    missing appears in neither list.
+    """
+    if not companies:
+        return [], []
+    per_company = {
+        (c.ticker or c.id): set(c.identity_fields_missing or []) for c in companies
+    }
+    every_field: set[str] = set()
+    for gaps in per_company.values():
+        every_field |= gaps
+
+    all_missing: list[str] = []
+    some_missing: list[tuple[str, list[str]]] = []
+    for field in sorted(every_field):
+        lacking = sorted(
+            name for name, gaps in per_company.items() if field in gaps
+        )
+        if len(lacking) == len(per_company):
+            all_missing.append(field)
+        elif lacking:
+            some_missing.append((field, lacking))
+    return all_missing, some_missing
+
+
 def build_field_review_pack(
     *,
     run: DiscoveryRun,
@@ -563,6 +594,35 @@ def build_field_review_pack(
     config = _as_dict(run.config_json)
 
     known_gaps: list[str] = []
+    # Private-use readiness (live DFR corrective, 2026-08-26) — state, ONCE and
+    # deterministically, which identity fields are missing for EVERY company
+    # and which for only some.
+    #
+    # PR-C gave each company its own present/missing lists, and that removed the
+    # false claims about individual companies. What it did not remove was the
+    # temptation to generalise across them: a live review correctly reported
+    # ISIN and sector as missing for all five companies, then wrote a research
+    # task saying to source "(ISIN, LEI)" for all of them — while three of the
+    # five already had a sourced LEI. A model asked to summarise five lists will
+    # merge them; the fix is to hand it the merged answer as a FACT rather than
+    # leave it to infer one.
+    all_missing, some_missing = _identity_gap_spread(companies)
+    if all_missing:
+        known_gaps.append(
+            "Identity fields missing for EVERY company in this review: "
+            + ", ".join(all_missing)
+            + "."
+        )
+    if some_missing:
+        known_gaps.append(
+            "Identity fields missing for SOME companies only — never say these "
+            "are missing for all: "
+            + "; ".join(
+                f"{field} (missing for {', '.join(tickers)})"
+                for field, tickers in some_missing
+            )
+            + "."
+        )
     if missing:
         known_gaps.append(
             f"{len(missing)} candidate(s) in this run could not be compared; "
