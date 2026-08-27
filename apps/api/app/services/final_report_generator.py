@@ -107,6 +107,11 @@ from app.services.sources.financial_period import (
     parse_period,
 )
 from app.services.sources.ingestion_attempts import attempts_for_primary_documents
+from app.services.sources.period_state import (
+    _recency_key,
+    build_reporting_period_state,
+    periods_of,
+)
 from app.services.sources.primary_fact_parser import (
     FINANCIAL_STATEMENT_FIELDS,
     IDENTITY_FIELDS,
@@ -1163,6 +1168,12 @@ def _primary_fact_dp(fact: dict[str, Any]) -> dict[str, Any]:
         "currency": fact.get("currency"),
         "scale": fact.get("scale"),
         "period": fact.get("period"),
+        # The fact's own entity/segment scope. Carried onto the datapoint so a
+        # reader (and ``report_consistency._check_scope_contradiction``, which
+        # already reads this key) can see WHICH entity a canonical slot
+        # describes. Without it that invariant could never fire, because an
+        # absent scope reads as the implicit-Group convention.
+        "scope": fact.get("scope"),
         "provenance": "sourced_fact" if source_url else "missing_data",
         "source_tier": "T1_primary_filing",
         "source": "company_ir_primary_document",
@@ -1325,16 +1336,22 @@ def _current_period_facts_for(
 
     Presented in their OWN slots, never merged into the annual ones: FY2025
     revenue and H1 2026 revenue are both true, and the answer to "what is
-    revenue" depends on which period the reader means. Comparison is within one
-    interim type only — H1 2026 beats H1 2025, and never beats H2 2025, because
-    those measure different spans.
+    revenue" depends on which period the reader means.
+
+    Current-period acceptance corrective — recency is decided by when a period
+    ENDS (``period_state._recency_key``), not by its bare ordinal. Ranking on
+    the ordinal put half-years and quarters on ONE scale, where H2 2026 and
+    Q2 2026 tie at 2 although they end six months apart, and H1 2026 lost to
+    Q1 2026 although it ends three months later. An issuer that reports both —
+    Pandora states H1 and Q2 figures in the same release — is exactly where
+    that mattered.
     """
-    best: dict[str, tuple[tuple[int, int], dict[str, Any]]] = {}
+    best: dict[str, tuple[tuple[int, int, int], dict[str, Any]]] = {}
     for field, fact in _eligible_canonical_facts(primary_facts, fields):
         period = parse_period(fact.get("period"))
         if not period.is_interim:
             continue
-        key = (period.year or 0, period.ordinal or 0)
+        key = _recency_key(period)
         current = best.get(field)  # type: ignore[arg-type]
         if current is None or key > current[0]:
             best[field] = (key, fact)  # type: ignore[index]
@@ -1946,6 +1963,33 @@ def _build_financial_snapshot(
         dp = _primary_fact_dp(fact)
         dp["period_basis"] = "interim"
         section[f"{field}_current_period"] = dp
+    # Current-period acceptance — the FOUR reporting states, named on the
+    # report itself. A reader should not have to infer from the presence or
+    # absence of a `_current_period` suffix which periods this issuer has
+    # actually reported; and a state that is genuinely absent is stated as
+    # absent rather than left blank, because "no current-period reporting was
+    # retrieved" is a finding.
+    #
+    # Derived from the SLOTS THIS SECTION FILLED, never from the whole fact
+    # set: a fact below the canonical confidence bar is not something the
+    # report presents, and naming its period here would state a "latest annual
+    # period" the section itself does not show — the same contradiction class
+    # the invariant checker caught live between a canonical slot and a series.
+    # Where a newer annual period exists below the bar, the datapoint says so
+    # itself (``newer_period_available``).
+    state = build_reporting_period_state(
+        periods_of([fact for _field, fact in selected_annual])
+        + periods_of([fact for _field, fact in current_period])
+    )
+    section["reporting_periods"] = {
+        **state.as_labels(),
+        "provenance": "derived",
+        "note": (
+            "Separate, simultaneously-true states — never comparable with each "
+            "other and never annualised."
+        ),
+    }
+
     if current_period:
         periods = sorted(
             {

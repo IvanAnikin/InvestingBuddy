@@ -37,6 +37,7 @@ from app.services.sources.document_fetcher import (
     DocumentFetchResult,
     safe_fetch_document,
 )
+from app.services.sources.document_period import document_period_of
 from app.services.sources.document_text_extractor import extract_document_text
 from app.services.sources.extracted_fact_validator import (
     IssuerContext,
@@ -516,6 +517,9 @@ async def _artifact_from_fetch(
             extraction,
             issuer_context=issuer_context or IssuerContext(),
             cfg=cfg,
+            document_period=document_period_of(
+                title=title, url=artifact.source_url, extraction=extraction
+            ),
         )
     return artifact
 

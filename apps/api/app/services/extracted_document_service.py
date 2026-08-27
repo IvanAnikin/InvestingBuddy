@@ -1061,6 +1061,7 @@ async def _revalidate_document(
 
     # Case A — complete reconstruction from the persisted excerpts alone.
     from app.services.sources.connectors.company_ir import PrimaryDocumentArtifact
+    from app.services.sources.document_period import document_period_of
     from app.services.sources.extracted_fact_validator import (
         IssuerContext,
         validate_extracted_facts,
@@ -1084,8 +1085,17 @@ async def _revalidate_document(
         # complete reconstruction here (never a degradation).
         tables=[],
     )
+    # The document's own period must be resolved the SAME way on the cached
+    # path as on the live one, or a reused document would re-derive different
+    # periods than a fresh extraction of the identical bytes — the cache
+    # round-trip defect class this campaign already paid for once with scope.
     validated_facts = validate_extracted_facts(
-        extraction, issuer_context=issuer_context or IssuerContext(), cfg=cfg
+        extraction,
+        issuer_context=issuer_context or IssuerContext(),
+        cfg=cfg,
+        document_period=document_period_of(
+            title=doc.title, url=doc.canonical_url, extraction=extraction
+        ),
     )
     await _deactivate_active_facts(session, doc.id)
     _insert_active_facts(session, doc.id, validated_facts)

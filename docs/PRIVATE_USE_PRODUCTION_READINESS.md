@@ -322,6 +322,60 @@ Results-day **supporting material** (presentation, transcript, appendix, analyst
 aide-memoire) is demoted generically, so "the newest current-period document" is a determinate
 choice rather than a DOM-order one.
 
+### 13.2 Current-period PERIOD TRUTH (added by the current-period acceptance correction)
+
+Reaching the current-period document made a second, more dangerous class of defect reachable.
+A new pure module, `app/services/sources/document_period.py`, answers the prior question
+`financial_period` never asked: **what period is this DOCUMENT about?**
+
+`detect_document_period(title, url, headings, text)` reads the document's OWN words, strongest
+rule first — the issuer's combined fiscal label (`fy27-q1` → **Q1 2027**), then an unambiguous
+four-digit label (`Q2 2026`, `H1 2026`), then a period-end sentence ("for its first quarter
+ended 30 June 2026"). Nothing is derived from a fiscal calendar, a publication date or a
+registry. A nine-month cumulative period is **refused**, not mapped: it is neither a quarter nor
+a half, and this model has no representation for it. An annual report states no interim period,
+so every existing behaviour is unchanged.
+
+That period then governs four things:
+
+1. **The undated-figure fallback is period-TYPED.** The old fallback supplied the document's
+   most common explicit token — in Richemont's quarterly release, the bare `2026` from its
+   exchange-rate table, corporate calendar and copyright line — so an undated "Group sales at
+   € 6.3 billion" became **annual 2026 revenue** beside the € 22.4 bn FY2026 figure. It now
+   inherits the document's own period (`Q1 2027`).
+2. **A bare-year table column inside an interim document is not a full year.** Pandora's Q2 2026
+   lease note heads its columns `| 2026 | 2025 |` with the qualifier "30 June" wrapped onto the
+   row beneath; read as full years it produced a *validated* "FY2025 revenue" of DKK 248 m (from
+   a row labelled "Variable leases linked to revenue"). Recovering the intended period from a
+   wrapped date row is a table-geometry problem this layer does not attempt — it **fails closed**
+   and leaves the column unmapped.
+3. **An interim document is never an AUTHORITY for a full year.** Its own year is not over, so a
+   figure read as that year loses its period entirely; a prior-year comparative keeps its period
+   but is demoted to excerpt-only, because the annual report is the authority. Nothing is
+   deleted and every demotion states its reason on the fact.
+4. Both the live extraction path and the **cached rebuild** path resolve it identically, or a
+   reused document would re-derive different periods from the same bytes.
+
+**The four reporting states** (`app/services/sources/period_state.py`) are now typed and named
+on the report itself, under `financial_snapshot.reporting_periods`:
+
+| State | Example | Meaning |
+|---|---|---|
+| `latest_annual` | FY2025 | the last completed financial year |
+| `latest_interim` | H1 2026 | the last half-year reported |
+| `latest_quarter` | Q2 2026 | the last quarter reported |
+| `latest_current_period` | Q2 2026 | the newest of the two part-year states |
+
+Recency is decided by when a period **ENDS**, not by its bare ordinal: ranking on the ordinal put
+half-years and quarters on one scale, where H2 2026 and Q2 2026 tied at 2 although they end six
+months apart. A quarter wins the tie with the half it ends beside, following the same
+"more specific claim" precedent as the interim-marker parser. The states are derived from the
+slots the section actually filled — never from the whole fact set — so they cannot name a period
+the report does not show, and three consistency invariants assert exactly that.
+
+`select_latest_annual` never falls back to an interim period: a canonical annual slot may only
+hold a full year, and the honest answer when none exists is *unknown*.
+
 ## 14. Regulated-disclosure connector architecture
 
 Existing connectors are **upgraded in place** (no parallel architecture) from

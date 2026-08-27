@@ -56,7 +56,16 @@ from pydantic import BaseModel, Field
 
 from app.core.config import Settings
 from app.core.config import settings as default_settings
+from app.services.sources.document_period import (
+    UNKNOWN_DOCUMENT_PERIOD,
+    DocumentPeriod,
+)
 from app.services.sources.document_text_extractor import DocumentExcerpt
+from app.services.sources.financial_period import (
+    PERIOD_TYPE_ANNUAL,
+    format_period,
+    parse_period,
+)
 from app.services.sources.primary_document_extractor import (
     METHOD_HTML,
     METHOD_NATIVE_PDF,
@@ -455,7 +464,10 @@ def _find_scale(text: str) -> str | None:
     return _scale_word(m.group(1).rstrip("s")) if m else None
 
 
-def _column_periods(table: ExtractedTable) -> dict[int, str]:
+def _column_periods(
+    table: ExtractedTable,
+    document_period: DocumentPeriod = UNKNOWN_DOCUMENT_PERIOD,
+) -> dict[int, str]:
     """Map column index → period from the first row that has year tokens (the
     header). Later columns without a year are left unmapped.
 
@@ -467,17 +479,43 @@ def _column_periods(table: ExtractedTable) -> dict[int, str]:
     the header cell ITSELF, so a column that genuinely is a full year (e.g. the
     "FY 2025" comparison column an interim report often prints alongside) keeps
     its bare year.
+
+    Current-period acceptance corrective: inside a document that covers PART of
+    a year, a BARE-YEAR column header is not evidence of a full year. Pandora's
+    Q2 2026 lease note heads its columns ``| 2026 | 2025 |`` with the qualifier
+    ``30 June`` wrapped onto the row beneath, so both columns are balance dates
+    six months into their years — and reading them as full years produced a
+    "validated" FY2025 figure inside an interim document, competing for the
+    canonical annual slot against the annual report's own.
+
+    Recovering the intended period from a wrapped date row is a table-geometry
+    problem this layer deliberately does not attempt. It FAILS CLOSED instead:
+    the column is left UNMAPPED, so its values stay excerpt-only with no period
+    rather than becoming annual facts. A genuine full-year comparative column
+    inside an interim report loses its period here — an acceptable cost,
+    because the issuer's annual report is ingested separately and is the
+    authority for annual figures, whereas a wrong annual figure presented as
+    the canonical one is not recoverable downstream.
     """
     for row in table.rows:
         found: dict[int, str] = {}
+        untrusted = False
         for col, cell in enumerate(row):
             text = cell or ""
             m = _YEAR_RE.search(text)
             if m:
                 marker = _interim_marker_near(text)
+                if marker is None and document_period.is_interim:
+                    untrusted = True
+                    continue
                 found[col] = f"{marker} {m.group(0)}" if marker else m.group(0)
         if found:
             return found
+        if untrusted:
+            # The header row WAS located; it simply cannot be trusted to name a
+            # full year here. Scanning on would hunt for a bare year deeper in
+            # the body, which is exactly the wrong recovery.
+            return {}
     return {}
 
 
@@ -623,9 +661,10 @@ def _candidates_from_table(
     table: ExtractedTable,
     excerpts_by_page: dict[int | None, list[str]],
     issuer: IssuerContext,
+    document_period: DocumentPeriod = UNKNOWN_DOCUMENT_PERIOD,
 ) -> list[_Candidate]:
     """Turn one bounded table into per-cell candidates + run the subtotal check."""
-    col_period = _column_periods(table)
+    col_period = _column_periods(table, document_period)
     currency, scale = _table_currency_scale(table, excerpts_by_page, issuer)
     candidates: list[_Candidate] = []
 
@@ -755,7 +794,38 @@ def _make_candidate(
 # --------------------------------------------------------------------------- #
 
 
-def _candidates_from_excerpts(extraction: PrimaryDocumentExtraction) -> list[_Candidate]:
+def _resolve_fallback_period(
+    parsed: "list[tuple[PrimaryFact, Any]]",
+    document_period: DocumentPeriod,
+) -> tuple[str | None, bool]:
+    """The period an undated prose fact may inherit, and whether it is INTERIM.
+
+    Current-period acceptance corrective. The fallback was the document's most
+    common explicit period token, which is right for an annual report and
+    actively wrong for anything shorter: Richemont's quarterly sales release
+    prints the bare token ``2026`` throughout (exchange-rate tables, corporate
+    calendar, copyright line), so an undated "Group sales at € 6.3 billion" was
+    inheriting ``2026`` and presenting one quarter's sales as full-year revenue
+    beside the € 22.4 billion FY2026 figure.
+
+    When the document itself says which PART of a year it covers, that is the
+    period an undated figure in it belongs to, and the bare-year majority vote
+    is not consulted at all — a majority of tokens is not evidence about a
+    period the document already stated. When the document states no period the
+    old behaviour is kept exactly.
+    """
+    if document_period.is_interim:
+        return format_period(document_period.period), True
+    periods_seen = [fact.period for fact, _exc in parsed if fact.period]
+    if not periods_seen:
+        return None, False
+    return Counter(periods_seen).most_common(1)[0][0], False
+
+
+def _candidates_from_excerpts(
+    extraction: PrimaryDocumentExtraction,
+    document_period: DocumentPeriod = UNKNOWN_DOCUMENT_PERIOD,
+) -> list[_Candidate]:
     """Turn each bounded PROSE excerpt into fact candidates.
 
     Before this fix, ``validate_extracted_facts`` looked ONLY at
@@ -820,10 +890,9 @@ def _candidates_from_excerpts(extraction: PrimaryDocumentExtraction) -> list[_Ca
         for fact in _parse_excerpt(wrapper, None):
             parsed.append((fact, exc))
 
-    dominant_period: str | None = None
-    periods_seen = [fact.period for fact, _exc in parsed if fact.period]
-    if periods_seen:
-        dominant_period = Counter(periods_seen).most_common(1)[0][0]
+    dominant_period, from_document_period = _resolve_fallback_period(
+        parsed, document_period
+    )
 
     # Explicit-period (never inferred) anchor magnitudes per (label, scope,
     # period) — consulted below so the period-inference fallback never drags
@@ -908,11 +977,76 @@ def _candidates_from_excerpts(extraction: PrimaryDocumentExtraction) -> list[_Ca
             cand.notes.append(fact.parser_warning)
         if inferred_period:
             cand.notes.append(
-                "Period inferred from the document's own dominant reporting "
-                "period; this candidate's own local text stated no year."
+                (
+                    "Period taken from the period this DOCUMENT states it "
+                    f"covers ({document_period.label()}, from "
+                    f"{document_period.basis}); this candidate's own local text "
+                    "stated no period."
+                )
+                if from_document_period
+                else (
+                    "Period inferred from the document's own dominant reporting "
+                    "period; this candidate's own local text stated no year."
+                )
             )
         candidates.append(cand)
     return candidates
+
+
+def _refuse_annual_authority_of_interim_document(
+    candidates: list[_Candidate], document_period: DocumentPeriod
+) -> None:
+    """An interim document is never an AUTHORITY for a full year.
+
+    Two distinct problems, one rule.
+
+    **Its own year is not over.** A Q2 2026 report cannot state full-year 2026
+    results, yet its prose says "Revenue of DKK 7.2 billion" beside the token
+    ``2026`` with no interim marker close enough to read, and the parser had no
+    reason to doubt the year — producing a *validated* FY2026 Group revenue of
+    DKK 7.2 billion from one quarter. That would then take the canonical annual
+    revenue slot outright, because FY2026 sorts later than the FY2025 the
+    annual report actually reports. Which interim span the value belongs to
+    (the quarter? the half? year to date?) is not determinable from a bare
+    year, so it is not relabelled — relabelling is the same guess in the other
+    direction. The period is dropped and the figure retained as an excerpt.
+
+    **Prior years are abbreviated comparatives.** An interim report restates
+    last year's figures in condensed form. Those are real and stay visible with
+    their period, but they must not compete with the annual report for the same
+    canonical annual slot, where a disagreement would be resolved by whichever
+    fact the evidence pack happened to order first. They are demoted to
+    excerpt-only, which is what keeps a canonical annual slot sourced from an
+    ANNUAL document.
+
+    Nothing is deleted, nothing is relabelled, and every demotion states its
+    reason on the fact.
+    """
+    if not document_period.is_interim:
+        return
+    year = document_period.period.year
+    for cand in candidates:
+        parsed = parse_period(cand.period)
+        if parsed.period_type != PERIOD_TYPE_ANNUAL:
+            continue
+        if year is not None and parsed.year == year:
+            cand.period = None
+            cand.fully_qualified = False
+            cand.status = VALIDATION_EXCERPT_ONLY
+            cand.notes.append(
+                f"Read as full-year {year} inside a document covering "
+                f"{document_period.label()} — a period of that same, unfinished "
+                "year. Retained without a period rather than presented as a "
+                "full year it cannot be."
+            )
+            continue
+        if cand.status == VALIDATION_VALIDATED:
+            cand.status = VALIDATION_EXCERPT_ONLY
+            cand.notes.append(
+                f"A full-year figure restated inside a {document_period.label()} "
+                "report. Retained with its period, but not promoted: the "
+                "issuer's annual report is the authority for an annual figure."
+            )
 
 
 def _supersede_prose_read_of_reconstructed_table(
@@ -1270,8 +1404,15 @@ def validate_extracted_facts(
     *,
     issuer_context: IssuerContext,
     cfg: Settings | None = None,
+    document_period: DocumentPeriod = UNKNOWN_DOCUMENT_PERIOD,
 ) -> list[ValidatedFact]:
     """Validate an extraction's tables into candidate structured facts.
+
+    ``document_period`` is the period the DOCUMENT itself states it covers (see
+    ``document_period.detect_document_period``). It is consulted for one thing
+    only: which period an undated prose figure may inherit. A document that
+    covers one quarter can never hand an ANNUAL period to anything. Left
+    unknown — the common case for an annual report — behaviour is unchanged.
 
     Every returned fact is ``needs_human_review=True`` and carries its method,
     confidence, unit, currency, scale, period, page number and table location.
@@ -1290,11 +1431,14 @@ def validate_extracted_facts(
 
     candidates: list[_Candidate] = []
     for table in extraction.tables:
-        candidates.extend(_candidates_from_table(table, excerpts_by_page, issuer))
+        candidates.extend(
+            _candidates_from_table(table, excerpts_by_page, issuer, document_period)
+        )
     # Phase 32A corrective (Problem A): prose excerpts are now ALSO a candidate
     # source, not just tables — see ``_candidates_from_excerpts``.
-    candidates.extend(_candidates_from_excerpts(extraction))
+    candidates.extend(_candidates_from_excerpts(extraction, document_period))
     candidates, superseded = _supersede_prose_read_of_reconstructed_table(candidates)
+    _refuse_annual_authority_of_interim_document(candidates, document_period)
 
     # Group by (label, period, scope) so the same figure from >1 method/source
     # is reconciled, while a Group-scoped and a segment-scoped candidate for
