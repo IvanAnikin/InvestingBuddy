@@ -268,8 +268,35 @@ from __future__ import annotations
 # contradiction — and would let it occupy a canonical annual slot. Two accepted
 # fixtures (both explicitly H1 releases) asserted exactly that wrong period
 # before this bump, which is how long it went unnoticed.
+# Version 14 (current-period acceptance) again changes what a fact's PERIOD
+# MEANS, and what SCOPE it is reported under — an interpretation-layer change of
+# the same class as versions 2/3/13. The persisted text is unchanged; replaying a
+# version-13 row would reproduce four wrong readings this slice removed:
+#   * an undated prose figure inside an interim document inherited the
+#     document's most common bare YEAR, so a quarterly release's headline
+#     ("Group sales at EUR 6.3 billion", no year in the sentence) became annual
+#     revenue. It now inherits the period the DOCUMENT states it covers
+#     (``document_period.detect_document_period``), with that period's TYPE.
+#   * a BARE-YEAR table column header inside an interim document was read as a
+#     full year; where the qualifier ("30 June") wrapped onto the row beneath,
+#     that produced a "validated FY2025 revenue" from a lease note. Such a
+#     column is now left unmapped — fail closed.
+#   * an interim document could produce a VALIDATED annual fact at all. Its own
+#     unfinished year now loses its period; a prior-year comparative keeps its
+#     period but is demoted to excerpt-only, because the annual report is the
+#     authority for an annual figure.
+#   * a label-colon headline ("STONE ISLAND REVENUES: EUR 200.3 million") had no
+#     grammatical subject, so it came out UNSCOPED — read downstream under the
+#     implicit-Group convention. A bounded headline rule now reads the
+#     qualifier. Separately, "a 14.0% incidence ON revenues, compared with
+#     EUR 170.4 million" no longer yields that expense comparison as revenue.
+# Every persisted version-13 row was written under all four of those readings,
+# so replaying one unchanged would carry an interim figure — or a brand's — into
+# a canonical annual Group slot. ``EXTRACTION_TEXT_LAYER_MIN_VERSION`` does NOT
+# advance: no raw-text or table-extraction behaviour changed, so Case A's
+# excerpts-only re-derivation remains complete and sufficient here.
 LEGACY_EXTRACTION_PIPELINE_VERSION = 1
-CURRENT_EXTRACTION_PIPELINE_VERSION = 13
+CURRENT_EXTRACTION_PIPELINE_VERSION = 14
 
 # The pipeline version at/after which persisted ``excerpts_json`` text is
 # guaranteed to have been produced by column-aware page extraction UNDER
