@@ -460,6 +460,23 @@ the councils can see it for what it is.
   became a claim about both. `None` means the report does not show that state; it never means
   "same as the other company".
 
+### 14.3 Correctives found by LIVE running (current-period acceptance)
+
+Both passed every unit test first, and both were invisible to the fixtures for the same reason:
+each needed a shape only a real document produces.
+
+| # | Defect | How it was found |
+|---|---|---|
+| 1 | The period-search window reached BACK across a sentence boundary. On Pandora's Q2 2026 report, page 27, "…DKK 1,253 million **in 2025**, … the 8.7% last year. EBIT EBIT for the first half of 2026 was DKK 2,951 million" gave this year's EBIT the previous sentence's year and — with "first half" also in the window — stamped it **H1 2025**. The window is now clipped backwards at a sentence terminator, the same "a label may only claim what is in its own clause" principle the money patterns already use. Choosing the numerically *nearest* year instead was tried and is worse: "…in H1 2025. Free cash flow in H1 2026 was …" puts the previous sentence's year closer to the label than its own, and it moved three correct Moncler facts onto the prior year. | reading the fresh live reports |
+| 2 | "the latest interim FOR THIS FIELD" is not "the current period". Every results release restates last year's figures beside this year's; where only the comparative survived for one field, that field's slot held a **prior-year** period under a heading that says current — a live Moncler report showed `revenue_current_period` as **Q2 2025** beside an H1 2026 EBIT. The report now decides ONE current period and a slot may only hold a fact whose period ENDS at that same point (keeping H1 2026 and Q2 2026 together, both ending 30 June). A field with nothing that current has no current-period slot, exactly as a field with no annual fact has no `_primary_filing` slot. | comparing the fresh live reports field by field |
+
+**Documented limitation.** A prior-year comparative stated in a PARENTHETICAL inside the same
+sentence ("Net result: EUR 164,715 thousand … (EUR 153,460 thousand in H1 2025)") can still take
+the wrong year, because sentence-boundary clipping cannot help within one sentence. It no longer
+reaches any canonical slot — the current-period rule above excludes it — but it remains as
+evidence with a wrong period. Resolving it needs intra-sentence value/period association, which is
+a separate slice.
+
 ## 15. Source / provenance hierarchy
 
 `T1_primary_filing` (issuer-owned document) > `T1_primary_company_source` (issuer transport)

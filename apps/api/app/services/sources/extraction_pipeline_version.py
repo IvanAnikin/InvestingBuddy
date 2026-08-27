@@ -295,8 +295,15 @@ from __future__ import annotations
 # a canonical annual Group slot. ``EXTRACTION_TEXT_LAYER_MIN_VERSION`` does NOT
 # advance: no raw-text or table-extraction behaviour changed, so Case A's
 # excerpts-only re-derivation remains complete and sufficient here.
+# Version 15 (current-period LIVE-acceptance corrective) fixes one more reading
+# of already-extracted text, found by running version 14 against the real
+# issuers: the period-search window reached BACK across a sentence boundary, so
+# "…in 2025, … the 8.7% last year. EBIT EBIT for the first half of 2026 was DKK
+# 2,951 million" gave this year's EBIT the previous sentence's 2025 and — with
+# "first half" also in the window — stamped it H1 2025. Every version-14 row was
+# written under that reading, so it must not be replayed.
 LEGACY_EXTRACTION_PIPELINE_VERSION = 1
-CURRENT_EXTRACTION_PIPELINE_VERSION = 14
+CURRENT_EXTRACTION_PIPELINE_VERSION = 15
 
 # The pipeline version at/after which persisted ``excerpts_json`` text is
 # guaranteed to have been produced by column-aware page extraction UNDER

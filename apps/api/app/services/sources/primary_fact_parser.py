@@ -843,6 +843,16 @@ def _interim_marker_near(window_text: str) -> str | None:
     return token.group(1).upper() if token else None
 
 
+#: A sentence terminator, for clipping a period-search window backwards. The
+#: whitespace lookahead is the whole guard: a decimal point inside a figure
+#: ("8.2%") is followed by a digit, never by a space. A lookbehind on the digit
+#: was tried and is wrong in exactly the case that matters — a sentence ending
+#: in a YEAR ("…in H1 2025. Free cash flow in H1 2026 was …") has a digit
+#: before its full stop, so the boundary would be missed precisely where the
+#: previous sentence's year is about to be stolen.
+_SENTENCE_BOUNDARY_RE = re.compile(r"[.!?\n](?=\s)")
+
+
 def _period_near(text: str, pos: int, *, window: int = 120) -> str | None:
     """Best-effort period from the year NEAREST ``pos`` (a matched value's own
     position) rather than the first year mentioned anywhere in the excerpt —
@@ -855,7 +865,27 @@ def _period_near(text: str, pos: int, *, window: int = 120) -> str | None:
     (``"H1 2026"`` / ``"Q2 2026"``) rather than the bare year. A period with no
     interim marker stays a bare year — this never invents one.
     """
-    lo, hi = max(0, pos - window), min(len(text), pos + window)
+    # Current-period acceptance corrective: the window must not reach BACK
+    # across a sentence boundary. It did, and a real live failure followed —
+    # "…DKK 1,253 million in 2025, corresponding to 8.2% of revenue in 2026, a
+    # touch lower than the 8.7% last year. EBIT EBIT for the first half of 2026
+    # was DKK 2,951 million" gave this year's EBIT the 2025 from the PREVIOUS
+    # sentence and, with "first half" also in the window, stamped it H1 2025.
+    #
+    # Clipping backwards (and keeping the existing first-year-in-window rule
+    # otherwise) is the SAME principle the money patterns already rely on: a
+    # label may only claim what is in its own clause. Choosing the numerically
+    # nearest year instead was tried and is WORSE — "…in H1 2025. Free cash
+    # flow in H1 2026 was equal to EUR 34.0 million" puts the previous
+    # sentence's year closer to the label than its own, so it moved three
+    # correct facts onto the prior year.
+    lo = max(0, pos - window)
+    boundary = None
+    for match in _SENTENCE_BOUNDARY_RE.finditer(text, lo, pos):
+        boundary = match.end()
+    if boundary is not None:
+        lo = boundary
+    hi = min(len(text), pos + window)
     local = text[lo:hi]
     m = _YEAR_RE.search(local)
     if m:

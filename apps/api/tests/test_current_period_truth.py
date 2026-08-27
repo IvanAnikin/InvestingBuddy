@@ -666,3 +666,124 @@ async def test_current_period_facts_survive_cache_reuse(session) -> None:
         "latest_quarter": "Q2 2026",
         "latest_current_period": "Q2 2026",
     }
+
+
+# =========================================================================== #
+# LIVE-ACCEPTANCE CORRECTIVES                                                 #
+#                                                                             #
+# Both found by running the fixed pipeline against the real issuers, and both #
+# invisible to every test above — the first because no fixture put a prior    #
+# sentence's year next to a label, the second because no fixture gave one     #
+# field a current figure and another only a prior-year comparative.           #
+# =========================================================================== #
+
+
+def test_a_previous_sentences_year_cannot_steal_a_facts_period() -> None:
+    """Live Pandora Q2 2026 report, page 27, verbatim.
+
+    The period window reached BACK across a full stop, found the previous
+    sentence's 2025, and — with "first half" also in range — stamped this
+    year's EBIT as H1 2025.
+    """
+    text = (
+        "Administrative expenses ended at DKK 1,172 million in the first half "
+        "of 2026 compared with DKK 1,253 million in 2025, corresponding to "
+        "8.2% of revenue in 2026, a touch lower than the 8.7% last year. EBIT "
+        "EBIT for the first half of 2026 was DKK 2,951 million, resulting in "
+        "an EBIT margin of 20.6% vs. 20.3% in 2025."
+    )
+    extraction = _extraction(
+        excerpts=[_excerpt(text, heading="Income statement review", page=27)]
+    )
+    facts = validate_extracted_facts(
+        extraction,
+        issuer_context=_ISSUER,
+        document_period=detect_document_period(title="Issuer Q2 2026 Interim Report"),
+    )
+    ebit = [f for f in facts if f.label == "operating_profit" and f.value_numeric == 2951]
+    assert ebit
+    assert parse_period(ebit[0].period).key == "2026-H1"
+
+
+def test_a_sentence_ending_in_a_year_is_still_a_sentence_boundary() -> None:
+    """The case a digit-lookbehind guard would miss — and it is exactly the case
+    where the previous sentence's year is about to be stolen."""
+    text = (
+        "Cash conversion improved against H1 2025. Free cash flow in H1 2026 "
+        "was equal to EUR 34.0 million after capex."
+    )
+    extraction = _extraction(excerpts=[_excerpt(text, heading="Cash flow")])
+    facts = validate_extracted_facts(
+        extraction,
+        issuer_context=_ISSUER,
+        document_period=detect_document_period(title="Issuer H1 2026 Results"),
+    )
+    fcf = [f for f in facts if f.label == "free_cash_flow"]
+    assert fcf
+    assert parse_period(fcf[0].period).key == "2026-H1"
+
+
+def test_a_decimal_point_is_not_a_sentence_boundary() -> None:
+    """Over-clipping would drop the very year the window exists to find."""
+    text = "Operating margin of 20.6% and revenue of DKK 14,328 million in H1 2026."
+    extraction = _extraction(excerpts=[_excerpt(text, heading="Highlights")])
+    facts = validate_extracted_facts(
+        extraction,
+        issuer_context=_ISSUER,
+        document_period=detect_document_period(title="Issuer Q2 2026 Interim Report"),
+    )
+    revenue = [f for f in facts if f.label == "revenue"]
+    assert revenue
+    assert parse_period(revenue[0].period).key == "2026-H1"
+
+
+def test_a_current_period_slot_never_holds_a_prior_period() -> None:
+    """Live Moncler report: ``revenue_current_period`` read Q2 2025 beside an
+    H1 2026 EBIT, under a heading that says current."""
+    facts = [
+        _fact("operating_profit", 245.4, "H1 2026", currency="EUR"),
+        _fact("net_income", 164.7, "H1 2026", currency="EUR"),
+        _fact("revenue", 91.1, "Q2 2025", currency="EUR"),
+    ]
+    section = _build_financial_snapshot(None, None, primary_facts=facts)
+    assert section["operating_profit_current_period"]["value"] == "245.4"
+    assert "revenue_current_period" not in section
+    assert section["reporting_periods"]["latest_current_period"] == "H1 2026"
+    assert section["reporting_periods"]["latest_quarter"] is None
+
+
+def test_a_half_and_a_quarter_ending_together_are_one_current_period() -> None:
+    """H1 2026 and Q2 2026 both end 30 June: an issuer stating both is
+    reporting ONE current period two ways, not two different ones."""
+    facts = [
+        _fact("revenue", 14328, "H1 2026"),
+        _fact("operating_profit", 2026, "Q2 2026"),
+    ]
+    section = _build_financial_snapshot(None, None, primary_facts=facts)
+    assert section["revenue_current_period"]["period"] == "H1 2026"
+    assert section["operating_profit_current_period"]["period"] == "Q2 2026"
+    assert section["reporting_periods"]["latest_interim"] == "H1 2026"
+    assert section["reporting_periods"]["latest_quarter"] == "Q2 2026"
+
+
+def test_the_current_period_note_never_lists_a_prior_period() -> None:
+    facts = [
+        _fact("operating_profit", 245.4, "H1 2026"),
+        _fact("revenue", 91.1, "Q2 2025"),
+    ]
+    section = _build_financial_snapshot(None, None, primary_facts=facts)
+    note = section["current_period_note"]
+    assert note["periods"] == ["H1 2026"]
+    assert "2025" not in note["value"]
+
+
+def test_the_older_figure_is_excluded_from_the_slot_not_deleted() -> None:
+    """It stays available as evidence; the historical series is where a
+    comparison belongs."""
+    facts = [
+        _fact("revenue", 14328, "H1 2026"),
+        _fact("revenue", 13900, "H1 2025"),
+    ]
+    current = dict(_current_period_facts_for(facts, _PRIMARY_FINANCIAL_FACT_FIELDS))
+    assert current["revenue"]["numeric_value"] == 14328
+    assert len(facts) == 2  # nothing removed from the caller's own list

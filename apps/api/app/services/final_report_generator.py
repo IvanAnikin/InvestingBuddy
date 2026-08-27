@@ -104,12 +104,14 @@ from app.services.sources.financial_history import (
 )
 from app.services.sources.financial_period import (
     PERIOD_TYPE_ANNUAL,
+    ReportingPeriod,
     parse_period,
 )
 from app.services.sources.ingestion_attempts import attempts_for_primary_documents
 from app.services.sources.period_state import (
     _recency_key,
     build_reporting_period_state,
+    period_end_quarter,
     periods_of,
 )
 from app.services.sources.primary_fact_parser import (
@@ -1345,17 +1347,50 @@ def _current_period_facts_for(
     Q1 2026 although it ends three months later. An issuer that reports both —
     Pandora states H1 and Q2 figures in the same release — is exactly where
     that mattered.
+
+    Live-acceptance corrective: "the latest interim FOR THIS FIELD" is not the
+    same claim as "the current period", and the difference showed on a real
+    report. Every results release restates last year's figures beside this
+    year's; where only the comparative survived for one field, that field's
+    slot held a PRIOR-year period under a heading that says current — a live
+    Moncler report showed ``revenue_current_period`` as Q2 2025 beside an
+    H1 2026 EBIT, and a live Pandora report showed H1 2025 EBIT beside H1 2026
+    revenue. So the report first decides ONE current period — the newest any
+    eligible fact reports — and a slot may then only hold a fact whose period
+    ENDS at that same point (which keeps H1 2026 and Q2 2026 together, both
+    ending 30 June). A field with nothing that current simply has no
+    current-period slot, exactly as a field with no annual fact has no
+    ``_primary_filing`` slot. The older figure is not deleted: it remains
+    evidence, and the historical series is where a comparison belongs.
     """
-    best: dict[str, tuple[tuple[int, int, int], dict[str, Any]]] = {}
+    eligible: list[tuple[str, ReportingPeriod, dict[str, Any]]] = []
     for field, fact in _eligible_canonical_facts(primary_facts, fields):
         period = parse_period(fact.get("period"))
-        if not period.is_interim:
+        if period.is_interim:
+            eligible.append((field, period, fact))
+    if not eligible:
+        return []
+
+    current_end = max(_period_end_key(p) for _f, p, _fact in eligible)
+    best: dict[str, tuple[tuple[int, int, int], dict[str, Any]]] = {}
+    for field, period, fact in eligible:
+        if _period_end_key(period) != current_end:
             continue
         key = _recency_key(period)
         current = best.get(field)  # type: ignore[arg-type]
         if current is None or key > current[0]:
             best[field] = (key, fact)  # type: ignore[index]
     return [(field, entry[1]) for field, entry in best.items()]
+
+
+def _period_end_key(period: ReportingPeriod) -> tuple[int, int]:
+    """When a part-year period ENDS, as ``(year, quarter)``.
+
+    H1 2026 and Q2 2026 both end 30 June 2026 and therefore share a key: an
+    issuer that states both in one release is reporting one current period two
+    ways, not two different ones.
+    """
+    return (period.year or 0, period_end_quarter(period) or 0)
 
 
 def _build_company_identity(
