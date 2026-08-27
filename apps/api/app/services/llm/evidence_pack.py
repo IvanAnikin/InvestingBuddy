@@ -35,10 +35,16 @@ from app.services.llm.schemas import (
     EvidencePack,
     SourcePolicy,
 )
+from app.services.sources.fact_scope import parse_scope
 from app.services.sources.financial_history import (
     DEFAULT_MAX_PERIODS,
     MIN_PERIODS_FOR_TREND,
     build_financial_history,
+)
+from app.services.sources.financial_period import parse_period
+from app.services.sources.period_state import (
+    build_reporting_period_state,
+    periods_of,
 )
 from app.services.sources.redaction import strip_url_secrets
 
@@ -813,6 +819,113 @@ def _add_historical_series(
         )
 
 
+#: Hard bound on current-period lines. A results release states a handful of
+#: headline figures; more than this is a sign something went wrong upstream.
+DEFAULT_MAX_CURRENT_PERIOD_LINES = 8
+
+
+def _add_current_period_state(
+    builder: _Builder,
+    historical_facts: "list[dict[str, Any]] | None",
+    *,
+    max_lines: int = DEFAULT_MAX_CURRENT_PERIOD_LINES,
+) -> None:
+    """Add the issuer's CURRENT-PERIOD reporting, explicitly labelled.
+
+    Current-period acceptance. Interim facts do reach the council as ordinary
+    per-fact items, but nothing tells it which of them are the issuer's NEWEST
+    reporting, and nothing states that they are not comparable with the annual
+    figures beside them. A council that cannot see the difference will write the
+    two into one sentence.
+
+    So this mirrors ``_add_historical_series``: one compact, dense line per
+    metric and scope, each stating its own period, and one leading line naming
+    the state. Every line says the period in words — ``H1 2026``, ``Q1 2027`` —
+    so an interim figure can never read as a year.
+
+    No arithmetic of any kind: no annualisation, no run-rate, no comparison
+    with the annual figure. The council is given the facts and told they are
+    different spans.
+    """
+    if builder.full or max_lines <= 0:
+        return
+    facts = list(historical_facts or [])
+    if not facts:
+        return
+    state = build_reporting_period_state(periods_of(facts))
+    if not state.has_current_period:
+        return
+
+    # Every fact whose period is one of the two part-year states — a release
+    # commonly states BOTH ("H1 2026 revenue" and "Q2 2026 revenue"), and both
+    # are the issuer's current reporting.
+    wanted = {
+        p.key
+        for p in (state.latest_current_period, state.latest_interim, state.latest_quarter)
+        if not p.is_unknown
+    }
+    selected: list[tuple[str, str, dict[str, Any]]] = []
+    for fact in facts:
+        period = parse_period(fact.get("period"))
+        if period.is_unknown or period.key not in wanted:
+            continue
+        metric = fact.get("field") or fact.get("label")
+        if not isinstance(metric, str) or fact.get("numeric_value") is None:
+            continue
+        selected.append((metric, period.key or "", fact))
+    if not selected:
+        return
+
+    labels = state.as_labels()
+    builder.add(
+        source_tier=TIER_T1_PRIMARY_FILING,
+        source_type="current_period_financial_state",
+        title="Current-period reporting state",
+        excerpt=(
+            f"Latest annual period: {labels['latest_annual'] or 'not reported'}. "
+            f"Latest interim: {labels['latest_interim'] or 'not reported'}. "
+            f"Latest quarter: {labels['latest_quarter'] or 'not reported'}. "
+            "An interim or quarterly figure covers PART of a year: it does not "
+            "supersede the annual figure, is not comparable with it, and has "
+            "not been annualised or extrapolated."
+        ),
+        data_quality="B",
+        period=state.latest_current_period.key,
+    )
+
+    added = 0
+    seen: set[tuple[str, str, str]] = set()
+    for metric, period_key, fact in sorted(selected, key=lambda t: (t[0], t[1])):
+        if builder.full or added >= max_lines:
+            break
+        scope = parse_scope(fact.get("scope"))
+        key = (metric, period_key, scope.scope_key or "")
+        if key in seen:
+            continue
+        seen.add(key)
+        period = parse_period(fact.get("period"))
+        unit = " ".join(
+            b for b in (fact.get("currency"), fact.get("scale")) if isinstance(b, str)
+        )
+        value = fact.get("value") or fact.get("numeric_value")
+        added += builder.add(
+            source_tier=TIER_T1_PRIMARY_FILING,
+            source_type="current_period_financial_state",
+            title=f"{metric} — {period.label()} ({scope.human_label()})",
+            url=fact.get("source_url"),
+            date=period.label(),
+            excerpt=(
+                f"{metric} ({scope.human_label()}) for {period.label()}: "
+                f"{value}{f' {unit}' if unit else ''}. Part-year figure — not "
+                "comparable with an annual figure."
+            ),
+            data_quality="B",
+            fields_supported=[metric],
+            scope=fact.get("scope"),
+            period=period.key,
+        )
+
+
 def build_evidence_pack(
     *,
     report_content: dict[str, Any],
@@ -877,6 +990,21 @@ def build_evidence_pack(
         max_periods=int(
             getattr(budget_cfg, "financial_history_max_periods", DEFAULT_MAX_PERIODS)
             or DEFAULT_MAX_PERIODS
+        ),
+    )
+    # Directly after the trend slice, and for the same reason: what the issuer
+    # reported MOST RECENTLY is as material as how it has trended, and both
+    # must survive the cap.
+    _add_current_period_state(
+        builder,
+        historical_facts,
+        max_lines=int(
+            getattr(
+                budget_cfg,
+                "llm_council_current_period_max_lines",
+                DEFAULT_MAX_CURRENT_PERIOD_LINES,
+            )
+            or DEFAULT_MAX_CURRENT_PERIOD_LINES
         ),
     )
     _add_sec_fundamentals(builder, company_snapshot, tier_split=budgets_enabled)

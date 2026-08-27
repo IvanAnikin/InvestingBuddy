@@ -70,6 +70,8 @@ from app.services.llm.token_pacer import (
 from app.services.sources.company_evidence import (
     SEC_DOCUMENT_EXCERPT_TYPE,
     SEC_DOCUMENT_FACT_TYPE,
+    VENUE_DOCUMENT_EXCERPT_TYPE,
+    VENUE_DOCUMENT_FACT_TYPE,
     collect_company_source_evidence,
     press_items_from_catalyst,
     sec_filings_from_catalyst,
@@ -129,12 +131,22 @@ _DOCUMENT_SOURCE_TYPES = frozenset(
         # citations were always correct.
         SEC_DOCUMENT_EXCERPT_TYPE,
         SEC_DOCUMENT_FACT_TYPE,
+        # Current-period acceptance: the issuer's own filing, retrieved from an
+        # official regulated venue.
+        VENUE_DOCUMENT_EXCERPT_TYPE,
+        VENUE_DOCUMENT_FACT_TYPE,
     }
 )
 
 # Fact-shaped source_types within _DOCUMENT_SOURCE_TYPES — used to route an item
 # to fact_count vs excerpt_count in _primary_document_summary.
-_DOCUMENT_FACT_TYPES = frozenset({"company_ir_financial_fact", SEC_DOCUMENT_FACT_TYPE})
+_DOCUMENT_FACT_TYPES = frozenset(
+    {
+        "company_ir_financial_fact",
+        SEC_DOCUMENT_FACT_TYPE,
+        VENUE_DOCUMENT_FACT_TYPE,
+    }
+)
 
 
 def _primary_document_summary(evidence_items: list[Any]) -> list[dict[str, Any]]:

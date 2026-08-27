@@ -438,6 +438,28 @@ Group EBIT, net result and free cash flow ARE extracted. This is an honest absen
 number, and resolving it needs excerpt-level value/label association work that is a separate
 slice, not a current-period defect.
 
+### 14.2 Current-period evidence reaching the two councils
+
+Retrieving a current-period document, and dating its figures correctly, is only worth anything if
+the councils can see it for what it is.
+
+* **The company council** gets a compact, explicitly-labelled current-period slice, added directly
+  after the historical-trend slice and for the same reason: what an issuer reported MOST RECENTLY
+  is as material as how it has trended, and both must survive the evidence cap. One header line
+  naming all four states, then one dense line per metric and scope, each stating its own period in
+  words (`H1 2026`, `Q1 2027`) so an interim figure can never read as a year. Every line says the
+  two are not comparable and that nothing has been annualised. No arithmetic of any kind.
+* **Budgeting:** `regulated_disclosure_financial_fact` matched no budget category and fell to
+  `source_reference` — the bucket dropped FIRST under pressure. For an issuer whose own website is
+  down those are the only financial facts it has, so it now budgets as primary-document evidence,
+  exactly as `sec_filing_financial_fact` does and for the same reason.
+* **The Deep Field Review** carries each candidate's four reporting states as a stated field, read
+  off THAT candidate's own exact-linked report. It previously had to read a `_current_period`
+  SUFFIX to know what a datapoint meant, and had no way to state "no current-period reporting was
+  retrieved for this company" — the same shape as the live defect where one company's missing LEI
+  became a claim about both. `None` means the report does not show that state; it never means
+  "same as the other company".
+
 ## 15. Source / provenance hierarchy
 
 `T1_primary_filing` (issuer-owned document) > `T1_primary_company_source` (issuer transport)
