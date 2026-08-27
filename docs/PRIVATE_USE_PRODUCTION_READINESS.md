@@ -294,6 +294,34 @@ Document selection becomes **period-aware and recency-aware**:
 * An interim value never overwrites an annual value: they are different periods, full stop.
 * **No annualisation** of interim results is implemented in this campaign.
 
+### 13.1 Current-period RETRIEVAL (added by the current-period acceptance correction)
+
+The selection rules above were implemented and unit-tested in PR-D, and the final acceptance
+matrix still showed `Current = —` for two issuers whose current-period reports this system
+could fetch and extract. The whole loss was upstream of selection:
+
+| Stage | Defect | Fix |
+|---|---|---|
+| Discovery | A **Next.js App Router** page streams its content as `self.__next_f.push([1,"…"])` — JSON-encoded string FRAGMENTS of one logical stream. `next_data` looks for a hydration script id App Router never emits, and `embedded_json` needs a balanced literal inside ONE script body. Pandora's Q2 2026 interim report lived only there, so the interim INDEX page became the "current-period document". | New bounded strategy **`next_flight`**: reassemble the pushed chunks into one capped buffer, then read URLs from their own quoted JSON string values (which is what lets an official URL containing spaces survive). No browser, no JS execution, no extra fetch; identical https / safe-host / allowlist / secret-strip guards. |
+| Classification | `ANNUAL_REPORT_KEYWORDS` covers annual, full-year, half-year and "interim" wording and has **no quarterly vocabulary at all**. Richemont's newest reporting is a quarterly SALES release, so the reserve had nothing to reserve a slot for. | New `CURRENT_PERIOD_KEYWORDS` (period wording only — never general press wording) combined into `_INDEX_KEYWORDS` for depth-0 discovery. |
+| Selection | The reserve was applied at the end of the `max_docs_per_issuer + _MAX_THIN_FALLBACK_DOCS` candidate list, but ingestion **stops at `max_docs_per_issuer`** once one document has real financial content. The reserved document was ranked, logged and never fetched. | `_rank_deep_targets(..., reserve_within=max_docs_per_issuer)` — the reserve now lands where ingestion actually reaches. |
+
+Widening the candidate set exposed three ordering defects that had been masked by the narrower
+one, each of which chose the wrong document live:
+
+* a ZIP archive named `… (PAND-2025-12-31-en.zip)` counted as a document, because the filename
+  ends in a parenthesis — trailing brackets are now stripped before the extension test;
+* the anchor-**wording** heuristic sat ahead of both downloadability and recency, so a news page
+  headlined "Richemont publishes FY26 Annual Report" outranked the report PDF beside it (labelled
+  merely "Download"), and Pandora's "Annual Report 2024" outranked "Annual Report 2025". The rank
+  is now `(kind, downloadable, recency, supporting-material, wording)`;
+* one document reached the ranker under two spellings (raw-space href vs percent-encoded) and
+  spent two of three bounded slots on itself — de-duplication now uses `document_identity`.
+
+Results-day **supporting material** (presentation, transcript, appendix, analyst consensus,
+aide-memoire) is demoted generically, so "the newest current-period document" is a determinate
+choice rather than a DOM-order one.
+
 ## 14. Regulated-disclosure connector architecture
 
 Existing connectors are **upgraded in place** (no parallel architecture) from

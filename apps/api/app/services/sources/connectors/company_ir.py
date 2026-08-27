@@ -67,6 +67,7 @@ from app.services.sources.document_discovery import (
     STRATEGY_ANCHORS,
     classify_document_kind,
     discover_documents,
+    document_identity,
     document_period_class,
     document_recency_hint,
 )
@@ -100,6 +101,7 @@ from app.services.sources.primary_fact_parser import PrimaryFact
 from app.services.sources.redaction import canonicalize_source_url
 from app.services.sources.safe_web_fetcher import (
     ANNUAL_REPORT_KEYWORDS,
+    CURRENT_PERIOD_KEYWORDS,
     FALLBACK_REPORT_KEYWORDS,
     PRESS_KEYWORDS,
     SafeFetchResult,
@@ -194,6 +196,39 @@ class PrimaryDocumentBundle:
 DocumentExtractor = Callable[..., Awaitable[PrimaryDocumentBundle]]
 
 
+#: Generic vocabulary for material that ACCOMPANIES a results release rather
+#: than being it. A results day publishes a bundle — the report, plus a
+#: presentation, a transcript, an appendix, an analyst-consensus spreadsheet, an
+#: aide-memoire — and every one of them carries the same period in its title, so
+#: they all tie on recency. Live-observed: Pandora's Q2 2026 bundle put
+#: "Appendix Company Announcement Q2 2026" ahead of the interim report itself
+#: purely because it appeared first. Never issuer-specific.
+_SUPPORTING_MATERIAL_MARKERS: tuple[str, ...] = (
+    "appendix",
+    "presentation",
+    "transcript",
+    "webcast",
+    "podcast",
+    "slides",
+    "consensus",
+    "aide memoire",
+    "aide-memoire",
+    "fact sheet",
+    "factsheet",
+    "data pack",
+    "databook",
+    "spreadsheet",
+    "excel",
+)
+
+
+def _is_supporting_material(link: SafeLink) -> bool:
+    """True when a link is results-day SUPPORTING material, not the report."""
+    hay = f"{link.text or ''} {link.url or ''}".lower()
+    hay = hay.replace("%20", " ").replace("-", " ").replace("_", " ")
+    return any(marker in hay for marker in _SUPPORTING_MATERIAL_MARKERS)
+
+
 def _reserve_current_period(
     ordered: list[SafeLink],
     *,
@@ -208,6 +243,12 @@ def _reserve_current_period(
     the cap would otherwise be filled entirely by annual reports. Everything
     else keeps its existing order, so the deepest source is still fetched first.
     Returns at most ``cap`` links.
+
+    WHICH current-period candidate wins is fully deterministic: newest period
+    first, then the report itself ahead of results-day supporting material, then
+    a downloadable document ahead of a landing page, then the URL. Picking the
+    plain maximum on recency alone let DOM order decide between an issuer's
+    interim report and the appendix published beside it.
     """
     head = ordered[:cap]
     if cap <= 1 or any(
@@ -221,7 +262,16 @@ def _reserve_current_period(
     ]
     if not candidates:
         return head
-    newest = max(candidates, key=lambda link: recency(link))
+    newest = min(
+        candidates,
+        key=lambda link: (
+            -recency(link)[0],
+            -recency(link)[1],
+            1 if _is_supporting_material(link) else 0,
+            0 if link.is_document else 1,
+            link.url or "",
+        ),
+    )
     # Displace the LAST slot: the earlier entries are the higher-ranked (and for
     # an annual report, deeper) sources, and this must not cost the annual.
     return head[: cap - 1] + [newest]
@@ -364,7 +414,17 @@ _MAX_CHILD_LANDING_PAGES = 3
 # ``PRESS_KEYWORDS`` so that link is discoverable; still a single bounded hop,
 # never a general crawler.
 _HOP_KEYWORDS: tuple[str, ...] = tuple(
-    dict.fromkeys((*ANNUAL_REPORT_KEYWORDS, *PRESS_KEYWORDS))
+    dict.fromkeys((*ANNUAL_REPORT_KEYWORDS, *PRESS_KEYWORDS, *CURRENT_PERIOD_KEYWORDS))
+)
+
+# The vocabulary used at DEPTH 0 — on the issuer's own registered index pages.
+# ``ANNUAL_REPORT_KEYWORDS`` alone cannot see a quarterly sales release, so an
+# issuer whose newest reporting IS that release had no current-period candidate
+# to reserve a slot for, however well the reserve worked. Widened with period
+# vocabulary only (never general press wording), so the bounded candidate cap
+# still spends its slots on the issuer's financial reporting.
+_INDEX_KEYWORDS: tuple[str, ...] = tuple(
+    dict.fromkeys((*ANNUAL_REPORT_KEYWORDS, *CURRENT_PERIOD_KEYWORDS))
 )
 
 # Corrective (post-#99/#100): when every document ingested within the normal
@@ -743,7 +803,7 @@ class CompanyIrConnector(SourceConnector):
                     # links on the issuer's curated content host survive link
                     # filtering. Every hop stays SSRF/IP-validated.
                     allowed_domains=v.fetch_allowed_domains(),
-                    keywords=ANNUAL_REPORT_KEYWORDS,
+                    keywords=_INDEX_KEYWORDS,
                     fallback_keywords=FALLBACK_REPORT_KEYWORDS,
                 )
             except Exception:  # noqa: BLE001 - a bounded hop must never break the run
@@ -821,7 +881,7 @@ class CompanyIrConnector(SourceConnector):
                     # links on the issuer's curated content host survive link
                     # filtering. Every hop stays SSRF/IP-validated.
                     allowed_domains=v.fetch_allowed_domains(),
-            keywords=ANNUAL_REPORT_KEYWORDS,
+            keywords=_INDEX_KEYWORDS,
             fallback_keywords=FALLBACK_REPORT_KEYWORDS,
         )
         latency_ms = int((time.monotonic() - start) * 1000)
@@ -865,7 +925,7 @@ class CompanyIrConnector(SourceConnector):
                     # links on the issuer's curated content host survive link
                     # filtering. Every hop stays SSRF/IP-validated.
                     allowed_domains=v.fetch_allowed_domains(),
-                    keywords=ANNUAL_REPORT_KEYWORDS,
+                    keywords=_INDEX_KEYWORDS,
                     fallback_keywords=FALLBACK_REPORT_KEYWORDS,
                 )
             except Exception:  # noqa: BLE001 - a second index fetch must never break the run
@@ -1253,7 +1313,7 @@ class CompanyIrConnector(SourceConnector):
         self,
         fetched: SafeFetchResult,
         *,
-        keywords: tuple[str, ...] = ANNUAL_REPORT_KEYWORDS,
+        keywords: tuple[str, ...] = _INDEX_KEYWORDS,
     ) -> list[SafeLink]:
         """Merge anchor links with the richer, non-browser discovery strategies.
 
@@ -1324,7 +1384,11 @@ class CompanyIrConnector(SourceConnector):
         return links
 
     def _rank_deep_targets(
-        self, links: list[SafeLink], *, limit: int | None = None
+        self,
+        links: list[SafeLink],
+        *,
+        limit: int | None = None,
+        reserve_within: int | None = None,
     ) -> list[SafeLink]:
         """Order report links most-material-first, de-dup by URL, cap per issuer.
 
@@ -1365,25 +1429,54 @@ class CompanyIrConnector(SourceConnector):
         def recency(link: SafeLink) -> tuple[int, int]:
             return document_recency_hint(link.text or "", link.url or "")
 
-        def rank(link: SafeLink) -> tuple[int, int, int, int, int]:
+        def rank(link: SafeLink) -> tuple[int, int, int, int, int, int]:
             kind_rank = _DOC_KIND_RANK.get(explicit_kind(link), _DOC_KIND_RANK_DEFAULT)
             text = (link.text or "").lower()
             material = 0 if any(m in text for m in _MATERIAL_DOCUMENT_MARKERS) else 1
             doc = 0 if link.is_document else 1
             year, ordinal = recency(link)
-            # Private-use readiness PR-D — recency joins the key as the LAST
-            # term, so it only ever breaks a tie the previous key left to DOM
-            # order. Richemont's results page links roughly thirty annual
-            # reports back to 1993 and every one of them ties on the first
-            # three terms; which was ingested came down to document order.
-            return (kind_rank, material, doc, -year, -ordinal)
+            # Current-period acceptance corrective — DOWNLOADABILITY, then
+            # RECENCY, then link WORDING. ``material`` is a weak anchor-text
+            # heuristic from Slice 5A, kept only as a last tie-break; ahead of
+            # the other two it actively chose the wrong document twice, live:
+            #   * a news page headlined "Richemont publishes FY26 Annual
+            #     Report" scored 0 while the report PDF beside it, labelled
+            #     merely "Download", scored 1 — so two announcements ABOUT the
+            #     report took the slots the report itself needed;
+            #   * Pandora's "Annual Report 2024" (anchor text "Annual Report
+            #     PDF") outranked "Annual Report 2025" (anchor text "Download
+            #     the full report") purely on wording, and the report described
+            #     the wrong year.
+            # A page that announces a document is never a better source than
+            # the document, and an older edition is never a better source than
+            # the current one.
+            #
+            # A results-day bundle (report + presentation + transcript +
+            # appendix + consensus file) ties on EVERY term above, because they
+            # all carry the same period. Demoting the supporting material is
+            # what makes "the newest current-period document" a determinate
+            # choice instead of a DOM-order one.
+            supporting = 1 if _is_supporting_material(link) else 0
+            # Private-use readiness PR-D — recency was originally the LAST
+            # term, breaking ties the earlier terms left to DOM order:
+            # Richemont's results page links roughly thirty annual reports back
+            # to 1993 and every one of them ties on kind and downloadability.
+            return (kind_rank, doc, -year, -ordinal, supporting, material)
 
+        # De-dup on the canonical DOCUMENT IDENTITY, not the raw URL string.
+        # One document reaches this list under two spellings — the anchor's
+        # raw-space href and the discovery layer's percent-encoded form of the
+        # same path — and a literal string compare treats them as two
+        # candidates, spending two of three bounded ingestion slots on one
+        # document. ``document_identity`` is the existing canonical key for
+        # exactly this (its own docstring cites this Pandora case).
         seen: set[str] = set()
         ordered: list[SafeLink] = []
         for link in sorted(links, key=rank):
-            if link.url in seen:
+            identity = document_identity(link.url) or link.url
+            if identity in seen:
                 continue
-            seen.add(link.url)
+            seen.add(identity)
             ordered.append(link)
         cap = self._max_docs_per_issuer if limit is None else limit
 
@@ -1392,9 +1485,23 @@ class CompanyIrConnector(SourceConnector):
         # many annual reports can never have its latest interim/results release
         # ingested, so the report can only ever describe the last full year.
         # The reserve is honoured only when such a document actually exists.
-        return _reserve_current_period(
-            ordered, cap=cap, kind_of=inferred_kind, recency=recency
+        #
+        # Current-period acceptance corrective: the reserve must be applied at
+        # the position the ingestion loop actually REACHES, not at the end of
+        # the longer thin-fallback candidate list. ``_extract_primary_documents_deep``
+        # asks for ``max_docs_per_issuer + _MAX_THIN_FALLBACK_DOCS`` candidates
+        # but stops ingesting at ``max_docs_per_issuer`` as soon as one document
+        # has real financial content — so a current-period document reserved
+        # into the LAST of five slots was ranked, logged and never fetched.
+        # Live-observed on Richemont: three annual documents ingested, the FY26
+        # interim report sitting in slot five, and ``Current = —`` on the report.
+        reserve_at = cap if reserve_within is None else max(1, min(cap, reserve_within))
+        head = _reserve_current_period(
+            ordered, cap=reserve_at, kind_of=inferred_kind, recency=recency
         )
+        chosen = {link.url for link in head}
+        tail = [link for link in ordered if link.url not in chosen]
+        return (head + tail)[:cap]
 
     def _stamp_provenance(
         self, artifact: PrimaryDocumentArtifact, target: SafeLink
@@ -1437,7 +1544,9 @@ class CompanyIrConnector(SourceConnector):
         # normal per-issuer cap so the loop below can keep going, still
         # bounded, when every document within the normal cap turns out thin.
         targets = self._rank_deep_targets(
-            links, limit=self._max_docs_per_issuer + _MAX_THIN_FALLBACK_DOCS
+            links,
+            limit=self._max_docs_per_issuer + _MAX_THIN_FALLBACK_DOCS,
+            reserve_within=self._max_docs_per_issuer,
         )
 
         items: list[EvidenceItem] = []

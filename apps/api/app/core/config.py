@@ -835,7 +835,7 @@ class Settings(BaseSettings):
     # Ordered, comma-separated discovery strategies. Bounded, non-browser methods
     # only — there is deliberately no crawler and no headless browser here.
     primary_document_discovery_strategies: str = (
-        "anchors,json_ld,next_data,embedded_json"
+        "anchors,json_ld,next_data,embedded_json,next_flight"
     )
     # NOTE: there is deliberately NO "JSON endpoint fetch" knob. The discovery
     # layer's ``find_json_endpoints`` only REPORTS same-origin endpoints it saw on

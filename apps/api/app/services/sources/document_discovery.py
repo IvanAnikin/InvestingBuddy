@@ -80,6 +80,7 @@ STRATEGY_ANCHORS = "anchors"
 STRATEGY_JSON_LD = "json_ld"
 STRATEGY_NEXT_DATA = "next_data"
 STRATEGY_EMBEDDED_JSON = "embedded_json"
+STRATEGY_NEXT_FLIGHT = "next_flight"
 STRATEGY_FEED = "feed"
 STRATEGY_JSON_ENDPOINT = "json_endpoint"
 
@@ -91,6 +92,7 @@ DEFAULT_STRATEGIES: tuple[str, ...] = (
     STRATEGY_JSON_LD,
     STRATEGY_NEXT_DATA,
     STRATEGY_EMBEDDED_JSON,
+    STRATEGY_NEXT_FLIGHT,
 )
 
 # Ranking: an annual report beats a results release beats an interim report
@@ -187,6 +189,14 @@ _MAX_REGEX_MATCHES = 200
 _MAX_XML_ELEMENTS = 5_000
 _MAX_FEED_CONTAINERS = 200
 
+# Next.js App Router streaming payload (``self.__next_f.push([1,"…"])``). The
+# pushed chunks are JSON-encoded string fragments of ONE logical stream, so they
+# are concatenated before scanning; these bound that buffer and the scan over it.
+_MAX_FLIGHT_PUSHES = 400
+_MAX_FLIGHT_BUFFER_CHARS = 2_000_000
+#: How far back from a URL field the title-bearing sibling key is looked for.
+_FLIGHT_TITLE_LOOKBACK = 300
+
 # Script identifiers whose whole body is a JSON hydration payload.
 _HYDRATION_SCRIPT_IDS: tuple[str, ...] = ("__next_data__", "__nuxt_data__", "__nuxt__")
 # ``window.<name> = { ... };`` hydration assignments.
@@ -211,6 +221,23 @@ _FEED_DATE_TAGS: tuple[str, ...] = ("pubdate", "published", "updated", "lastmod"
 _ABS_DOC_RE = re.compile(r"(https://[^\s\"'<>()\\]{1,400}?\.pdf)", re.IGNORECASE)
 _REL_DOC_RE = re.compile(r"[\"'](/[^\s\"'<>()\\]{1,400}?\.pdf)[\"']", re.IGNORECASE)
 _QUOTED_URL_RE = re.compile(r"[\"'](https://[^\s\"'<>()\\]{1,400}|/[^\s\"'<>()\\]{1,400})[\"']")
+
+# Next.js App Router flight payload scanning. The decoded stream is JSON-shaped
+# text, so a URL is read from its own quoted JSON string VALUE rather than by
+# sniffing for a ``.pdf`` suffix — official document URLs legitimately contain
+# spaces (Pandora publishes ``…/static/Annual Report 2025``) and carry no
+# extension at all. Backslashes are excluded so no escape sequence is ever
+# half-decoded into a URL.
+_FLIGHT_PUSH_RE = re.compile(r"__next_f\s*\.\s*push\s*\(")
+_FLIGHT_URL_FIELD_RE = re.compile(
+    r'"(?:url|href|src|link|file|fileurl|downloadurl|documenturl|value)"'
+    r'\s*:\s*"([^"\\]{1,400})"',
+    re.IGNORECASE,
+)
+_FLIGHT_TITLE_FIELD_RE = re.compile(
+    r'"(?:name|title|text|label|headline|linktext)"\s*:\s*"([^"\\]{1,200})"',
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -588,8 +615,17 @@ _NON_DOCUMENT_EXTENSIONS: tuple[str, ...] = (
 )
 
 
+#: Trailing characters an issuer's own filename routinely wraps an extension in.
+#: Live-observed: Pandora publishes its machine-readable annual report as
+#: ``Annual Report 2025 XHTML (PAND-2025-12-31-en.zip)`` — the name ends in a
+#: parenthesis, so the plain suffix test saw no known extension, and an
+#: extension-less-document CDN then made a ZIP archive look like a candidate
+#: report. It displaced the real PDF from the bounded per-issuer cap.
+_FILENAME_TRAILERS = ")]}>\"'.,;"
+
+
 def _has_known_non_document_extension(bare_url: str) -> bool:
-    name = bare_url.rsplit("/", 1)[-1]
+    name = bare_url.rsplit("/", 1)[-1].rstrip(_FILENAME_TRAILERS)
     return name.endswith(_NON_DOCUMENT_EXTENSIONS)
 
 
@@ -1278,7 +1314,131 @@ def discover_from_embedded_json(
 
 
 # --------------------------------------------------------------------------- #
-# Strategy 5 — RSS / Atom / sitemap XML (text fetched by the CALLER)
+# Strategy 5 — Next.js App Router streaming payload (``self.__next_f.push``)
+#
+# The successor to ``__NEXT_DATA__``. An App Router page does not ship one
+# hydration script with an id this module can recognise: it streams its RSC
+# payload as a sequence of ``self.__next_f.push([1,"<json-encoded chunk>"])``
+# calls, each chunk a FRAGMENT of one logical stream. A single JSON value
+# routinely spans several pushes, so no individual script body parses as JSON
+# and both ``next_data`` (wrong script id) and ``embedded_json`` (no balanced
+# literal, and its ``.pdf`` prefilter never fires) find nothing.
+#
+# Live-observed gap this closes: Pandora's interim-reports page serves ZERO
+# report anchors. Its Q2 2026 interim report — the issuer's own current-period
+# filing — sits only in this payload, so the current-period reserve could
+# select the interim INDEX page and never the report itself.
+#
+# Deliberately NOT a JSON parse of the reassembled stream: the buffer is
+# truncated by the fetcher's own byte cap, and the real payload starts far past
+# the module-manifest arrays at the head, so a balanced-literal walk finds only
+# those. Instead the decoded, JSON-SHAPED text is scanned for URL-bearing keys
+# — the same idea as the existing regex fallback, but reading a quoted JSON
+# string VALUE, which is what lets a URL containing spaces survive.
+#
+# Still no browser, no JS execution, no extra fetch, and every candidate passes
+# the identical https / safe-host / allowlist / secret-strip guards.
+# --------------------------------------------------------------------------- #
+
+
+def _flight_chunks(body: str) -> list[str]:
+    """Decode the string fragments pushed by one ``self.__next_f`` script.
+
+    Each push is ``push([<id>, "<chunk>"])``; only the STRING elements are
+    kept. A push whose argument is not decodable JSON is skipped rather than
+    guessed at. Bounded by ``_MAX_FLIGHT_PUSHES``. Never raises.
+    """
+    chunks: list[str] = []
+    index = 0
+    pushes = 0
+    while pushes < _MAX_FLIGHT_PUSHES:
+        match = _FLIGHT_PUSH_RE.search(body, index)
+        if match is None:
+            break
+        pushes += 1
+        index = match.end()
+        start = _first_json_start(body, match.end(), window=8)
+        if start is None:
+            continue
+        literal = _balanced_json_slice(body, start)
+        if literal is None:
+            continue
+        index = start + len(literal)
+        payload = _load_json(literal)
+        if isinstance(payload, list):
+            chunks.extend(part for part in payload if isinstance(part, str))
+        elif isinstance(payload, str):
+            chunks.append(payload)
+    return chunks
+
+
+def _flight_buffer(html: str) -> str:
+    """Reassemble every flight chunk on the page into ONE bounded buffer."""
+    parts: list[str] = []
+    total = 0
+    for _attrs, body in _parse_document(html).scripts:
+        if "__next_f" not in body:
+            continue
+        for chunk in _flight_chunks(body):
+            if total >= _MAX_FLIGHT_BUFFER_CHARS:
+                return "".join(parts)
+            parts.append(chunk)
+            total += len(chunk)
+    return "".join(parts)[:_MAX_FLIGHT_BUFFER_CHARS]
+
+
+def _flight_title_before(buffer: str, position: int) -> str:
+    """The nearest title-bearing key before ``position``, else "".
+
+    A best-effort DISPLAY hint only: it decides the candidate's title (and so
+    its keyword match and classification), never its URL. Wrong here costs a
+    document being classified ``other`` — never a wrong or invented link.
+    """
+    low = max(0, position - _FLIGHT_TITLE_LOOKBACK)
+    title = ""
+    for match in _FLIGHT_TITLE_FIELD_RE.finditer(buffer, low, position):
+        title = match.group(1)
+    return title.strip()
+
+
+def discover_from_next_flight(
+    html: str,
+    *,
+    base_url: str,
+    allowed_domains: tuple[str, ...],
+    max_documents: int = DEFAULT_MAX_DOCUMENTS,
+    keywords: tuple[str, ...] = ANNUAL_REPORT_KEYWORDS,
+) -> list[DiscoveredDocument]:
+    """Extract document URLs from a Next.js App Router streaming payload."""
+    out: list[DiscoveredDocument] = []
+    seen: set[str] = set()
+    try:
+        buffer = _flight_buffer(html)
+        if not buffer:
+            return out
+        matches = 0
+        for match in _FLIGHT_URL_FIELD_RE.finditer(buffer):
+            matches += 1
+            if matches > _MAX_REGEX_MATCHES:
+                break
+            absolute = _normalize_candidate_url(
+                match.group(1), base_url=base_url, allowed_domains=allowed_domains
+            )
+            if not absolute:
+                continue
+            title = _flight_title_before(buffer, match.start())
+            if not _is_candidate_document(absolute, title, keywords):
+                continue
+            doc = _make_document(absolute, title, STRATEGY_NEXT_FLIGHT)
+            if not _add_document(out, seen, doc, max_documents):
+                break
+    except Exception:  # noqa: BLE001 - discovery must never crash a run
+        return out
+    return out
+
+
+# --------------------------------------------------------------------------- #
+# Strategy 6 — RSS / Atom / sitemap XML (text fetched by the CALLER)
 # --------------------------------------------------------------------------- #
 
 
@@ -1544,6 +1704,14 @@ def _run_strategy(
             max_documents=max_documents,
             keywords=keywords,
         )
+    if strategy == STRATEGY_NEXT_FLIGHT:
+        return discover_from_next_flight(
+            html,
+            base_url=base_url,
+            allowed_domains=allowed_domains,
+            max_documents=max_documents,
+            keywords=keywords,
+        )
     if strategy == STRATEGY_NEXT_DATA:
         return discover_from_next_data(
             html,
@@ -1579,6 +1747,7 @@ __all__ = [
     "STRATEGY_JSON_ENDPOINT",
     "STRATEGY_JSON_LD",
     "STRATEGY_NEXT_DATA",
+    "STRATEGY_NEXT_FLIGHT",
     "DiscoveredDocument",
     "classify_document_kind",
     "discover_documents",
@@ -1587,6 +1756,7 @@ __all__ = [
     "discover_from_feed",
     "discover_from_json_ld",
     "discover_from_next_data",
+    "discover_from_next_flight",
     "document_identity",
     "find_json_endpoints",
     "rank_documents",
