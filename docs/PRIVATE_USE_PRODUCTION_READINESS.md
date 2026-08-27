@@ -393,6 +393,51 @@ DisclosureEvent
 Venues and their live status are recorded in §J of the final handoff and in the live-status
 table below (§27).
 
+### 14.1 Current-period document from an official regulated venue
+
+Moncler's acceptance row read `Annual — / Current — / 0 T1 facts`. Its own investor site has
+served an HTTP 403 maintenance page on every path throughout this campaign, so nothing could be
+retrieved from it — while the same H1 2026 Financial Results were already being retrieved, in
+full, from the Italian CONSOB-authorised storage mechanism. The connector held the official PDF
+URL, put it in an evidence item, and nobody ever opened it.
+
+Opening it is **not a secondary-source substitution**: a storage mechanism holds the document the
+issuer FILED, unaltered, under a statutory obligation — the same primary filing over a different,
+official transport. The distinction is preserved where it matters: transport stays
+`T2_regulator_or_gov`, content stays `T1_primary_filing`, and the venue is named on every item.
+
+`app/services/sources/disclosure_documents.py` is the pure selection half. It fetches nothing and
+is fail-closed at every step: only a **results** disclosure qualifies, only one that states a
+current period in its own headline, only one whose document sits on the **venue's own registered
+host**, and never a "Notice of publication of …" (a storage mechanism publishes both the two-page
+notice and the report). The step is a genuine **fallback** — it runs only when the issuer's own
+site produced no current-period document, so an issuer serving its own interim report is
+unaffected — and it opens **at most one** document, through the same SSRF-guarded,
+magic-byte-checked, byte- and page-capped extractor everything else uses. When nothing qualifies,
+a precise technical reason is recorded; there is no silent absence and no substitute source.
+
+Two extraction defects the real Moncler document then exposed, both of which would have put a
+WRONG number in a canonical Group slot:
+
+* **A label-colon headline is not a sentence.** "STONE ISLAND REVENUES: EUR 200.3 million" has no
+  grammatical subject and no reporting verb, so no scope rule matched and the figure came out
+  UNSCOPED — which the pipeline reads as the implicit Group convention. The real Group figure
+  (EUR 1,289.9 m) was correctly refused as ambiguous (four revenue magnitudes in one excerpt),
+  leaving a **brand's** revenue as the only candidate for the Group current-period slot. A bounded
+  headline rule now reads the qualifier: Group vocabulary → `group`, a named entity → that
+  segment, a period ("H1") → refused.
+* **A ratio base is not a figure.** "…a 14.0% incidence **on** revenues, compared with EUR 170.4
+  million in H1 2025" yielded EUR 170.4 m as H1 2025 revenue. The parser already excluded "of "
+  before a revenue label for exactly this reason; "on " is the same construction and is now
+  excluded too.
+
+**Documented limitation:** Moncler's H1 2026 **Group revenue** is still not extracted. Its release
+states four revenue magnitudes in one excerpt (Group, prior-year Group, and one brand each), and
+the parser's ambiguity refusal — deliberate, and correct — declines all of them. Its H1 2026
+Group EBIT, net result and free cash flow ARE extracted. This is an honest absence, not a wrong
+number, and resolving it needs excerpt-level value/label association work that is a separate
+slice, not a current-period defect.
+
 ## 15. Source / provenance hierarchy
 
 `T1_primary_filing` (issuer-owned document) > `T1_primary_company_source` (issuer transport)

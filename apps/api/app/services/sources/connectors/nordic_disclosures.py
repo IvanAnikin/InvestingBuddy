@@ -53,11 +53,12 @@ from app.services.sources.connector_base import (
     SourceConnector,
     _now,
 )
-from app.services.sources.disclosure_events import DisclosureFeed
+from app.services.sources.disclosure_events import DisclosureEvent, DisclosureFeed
 from app.services.sources.evidence import EvidenceItem, build_evidence_item
 from app.services.sources.gaps import GapSeverity, GapType, SourceGap
 from app.services.sources.taxonomy import T2_REGULATOR_OR_GOV, ConnectorStatus
 from app.services.sources.venue_disclosures import (
+    NASDAQ_NORDIC_DOCUMENT_DOMAINS,
     disclosure_events_to_evidence,
     fetch_nasdaq_nordic_disclosures,
 )
@@ -109,6 +110,10 @@ class NordicDisclosuresConnector(SourceConnector):
     supported_source_ids = ("nordic_disclosures",)
     status = ConnectorStatus.enabled
 
+    #: Where THIS venue's own documents live. A document is only ever fetched
+    #: under this explicit allowlist, never under a host read off the URL.
+    disclosure_document_domains: tuple[str, ...] = NASDAQ_NORDIC_DOCUMENT_DOMAINS
+
     def __init__(
         self,
         *,
@@ -126,6 +131,11 @@ class NordicDisclosuresConnector(SourceConnector):
         self._disclosure_fetcher = (
             disclosure_fetcher or fetch_nasdaq_nordic_disclosures
         )
+        # Current-period acceptance — the events THIS connector retrieved, kept
+        # so the evidence collector can decide whether one of them holds a
+        # current-period document worth opening. The connector retrieves and
+        # states; the collector decides.
+        self.collected_disclosure_events: list[DisclosureEvent] = []
 
     # -- Eligibility -------------------------------------------------------
 
@@ -317,6 +327,7 @@ class NordicDisclosuresConnector(SourceConnector):
             result.source_gaps.append(self._live_unavailable_gap(verified, feed))
             return result
 
+        self.collected_disclosure_events = list(feed.events)
         items = disclosure_events_to_evidence(
             feed.events,
             source_id="nordic_disclosures",

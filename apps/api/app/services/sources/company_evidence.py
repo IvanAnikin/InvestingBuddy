@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Awaitable, Callable, Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
@@ -61,6 +61,11 @@ from app.services.sources.connectors.local_language_press import (
     local_language_press_source_for,
 )
 from app.services.sources.connectors.sec_edgar import FilingsFetcher, SecEdgarConnector
+from app.services.sources.disclosure_documents import (
+    CurrentPeriodDisclosure,
+    has_current_period_document,
+    select_current_period_disclosure,
+)
 from app.services.sources.evidence import (
     EvidenceItem,
     PrimaryFactRef,
@@ -78,12 +83,18 @@ from app.services.sources.financial_fact_categories import (
 )
 from app.services.sources.gaps import GapSeverity, GapType, SourceGap
 from app.services.sources.ocr_provider import OcrBudget, OcrProvider
+from app.services.sources.period_state import _recency_key
 from app.services.sources.primary_document_extractor import (
     STATUS_EXTRACTED,
     _confidence_bucket,
 )
 from app.services.sources.registry import SourceRegistry, build_registry
-from app.services.sources.taxonomy import SEC_TRANSPORT_LABEL, sec_tier_pair
+from app.services.sources.taxonomy import (
+    SEC_TRANSPORT_LABEL,
+    T1_PRIMARY_FILING,
+    T2_REGULATOR_OR_GOV,
+    sec_tier_pair,
+)
 from app.services.sources.verified_issuer_sources import get_verified_issuer_source
 
 if TYPE_CHECKING:  # reuse lookup is a plain in-memory dict — never a DB session.
@@ -92,6 +103,11 @@ if TYPE_CHECKING:  # reuse lookup is a plain in-memory dict — never a DB sessi
 # Source ids whose connectors can produce live company evidence in this phase.
 SEC_ID = "sec_edgar"
 COMPANY_IR_ID = "company_ir"
+
+#: Excerpt cap for the ONE document opened from a regulated venue. Deliberately
+#: smaller than a full annual-report budget: this is a current-period
+#: supplement, and it must not crowd out the annual report's own evidence.
+_VENUE_DOCUMENT_MAX_EXCERPTS = 8
 
 # Dedicated regulator connectors (Phase 29B.4A/29B.4B/29B.4C). Unlike the generic
 # scaffolds, these are real connectors that emit a bounded T2 regulator-transport
@@ -213,6 +229,14 @@ SecPrimaryDocumentExtractor = Callable[..., Awaitable[list[PrimaryDocumentArtifa
 # EDGAR provenance stay separable.
 SEC_DOCUMENT_EXCERPT_TYPE = "sec_filing_excerpt"
 SEC_DOCUMENT_FACT_TYPE = "sec_filing_financial_fact"
+
+# Current-period acceptance — a primary filing reached through an official
+# regulated STORAGE / venue transport rather than the issuer's own website.
+# Distinct source_types so a reader (and every counter) can see the transport
+# was the venue, while the CONTENT tier stays T1: the document is the one the
+# issuer filed, unaltered.
+VENUE_DOCUMENT_EXCERPT_TYPE = "regulated_disclosure_document_excerpt"
+VENUE_DOCUMENT_FACT_TYPE = "regulated_disclosure_financial_fact"
 
 # Share of the AGGREGATE ingestion budget the SEC filing-body leg may consume for
 # a US issuer that also runs the issuer-IR leg. Without this the SEC path could
@@ -560,6 +584,215 @@ async def _safe_sec_document_artifacts(
     return list(artifacts or [])
 
 
+async def _ingest_regulated_storage_document(
+    extractor: PrimaryDocumentDeepExtractor,
+    selection: "CurrentPeriodDisclosure",
+    *,
+    company: CompanyContext,
+    allowed_domains: tuple[str, ...],
+    connector_key: str,
+    source_id: str,
+    cfg: Settings,
+    ocr_provider: Any | None = None,
+    ocr_budget: Any | None = None,
+) -> tuple[list[EvidenceItem], list[SourceGap], list[PrimaryDocumentArtifact]]:
+    """Open ONE current-period document held by an official regulated venue.
+
+    Current-period acceptance. Moncler's own site has served an HTTP 403
+    maintenance page throughout this campaign, so its acceptance row read
+    ``— / — / 0 T1 facts`` while the very same H1 2026 Financial Results were
+    already being retrieved from the Italian CONSOB-authorised storage
+    mechanism — the connector had the official PDF URL and nobody opened it.
+
+    This is the same primary filing over a different, official transport, not a
+    secondary source: a storage mechanism holds what the issuer filed, under a
+    statutory obligation. So the CONTENT tier stays ``T1_primary_filing`` while
+    the TRANSPORT tier is the venue's ``T2_regulator_or_gov``, and every item
+    names the venue.
+
+    Exactly one document, under the venue's OWN registered host allowlist,
+    through the same SSRF-guarded, magic-byte-checked, byte- and page-capped
+    extractor every other document uses. Every failure degrades to a gap that
+    states the venue, the document and the technical reason — never a
+    fabricated figure and never a silent absence.
+    """
+    items: list[EvidenceItem] = []
+
+    def _gap(message: str) -> SourceGap:
+        return SourceGap(
+            connector_key=connector_key,
+            source_id=source_id,
+            gap_type=GapType.primary_filing_unavailable,
+            severity=GapSeverity.info,
+            message=message,
+            blocks_research_complete=False,
+        )
+
+    try:
+        artifact = await extractor(
+            selection.url,
+            allowed_domains=allowed_domains,
+            title_hint=selection.title,
+            issuer_context=IssuerContext(
+                company_name=company.company_name, ticker=company.ticker
+            ),
+            cfg=cfg,
+            ocr_provider=ocr_provider,
+            ocr_budget=ocr_budget,
+        )
+    except Exception:  # noqa: BLE001 - a venue document never breaks a report
+        return (
+            [],
+            [
+                _gap(
+                    f"The issuer's {selection.period.label()} document held by "
+                    f"{selection.venue} could not be retrieved (extractor "
+                    "error); no current-period figure was taken from it."
+                )
+            ],
+            [],
+        )
+
+    extraction = artifact.extraction
+    if (
+        extraction is None
+        or artifact.status != STATUS_EXTRACTED
+        or not extraction.has_content
+    ):
+        reason = artifact.failure_code or artifact.status or "not extracted"
+        return (
+            [],
+            [
+                *artifact.source_gaps,
+                _gap(
+                    f"The issuer's {selection.period.label()} document held by "
+                    f"{selection.venue} was located but not extracted "
+                    f"({reason}); no current-period figure was taken from it."
+                ),
+            ],
+            [],
+        )
+
+    issuer = company.company_name or company.ticker or "Issuer"
+    doc_title = artifact.title or selection.title
+    doc_hash = artifact.content_hash or extraction.content_hash
+    transport = f"{selection.venue} (official regulated venue)"
+
+    for n, exc in enumerate(extraction.excerpts[:_VENUE_DOCUMENT_MAX_EXCERPTS], start=1):
+        items.append(
+            build_evidence_item(
+                id=f"VENUEDOCX{n}",
+                source_id=source_id,
+                source_name=selection.venue,
+                provider_transport=transport,
+                provider_transport_tier=T2_REGULATOR_OR_GOV,
+                content_source=f"{issuer} {doc_title}".strip(),
+                content_source_tier=T1_PRIMARY_FILING,
+                source_type=VENUE_DOCUMENT_EXCERPT_TYPE,
+                title=f"{doc_title} — excerpt",
+                url=artifact.source_url,
+                excerpt=exc.text,
+                language=extraction.language,
+                data_quality="B" if exc.confidence >= 0.75 else "C",
+                confidence=_confidence_bucket(exc.confidence),
+                fields_supported=[exc.evidence_type],
+                provenance=[
+                    p
+                    for p in (
+                        "Extracted from the issuer's own filing, retrieved from "
+                        f"{selection.venue}",
+                        f"reporting_period={selection.period.label()}",
+                        f"page={exc.page_number}" if exc.page_number else "page=unknown",
+                        f"method={exc.extraction_method}",
+                        f"confidence={exc.confidence:.2f}",
+                    )
+                    if p
+                ],
+                document_content_hash=doc_hash,
+                warnings=[
+                    "Bounded excerpt from a regulated-venue copy of the issuer's "
+                    "own filing; not the full document. Human review required."
+                ],
+            )
+        )
+
+    for j, fact in enumerate(
+        (
+            f
+            for f in artifact.validated_facts
+            if f.validation_status == VALIDATION_VALIDATED
+        ),
+        start=1,
+    ):
+        value_str = fact.value_text or (
+            str(fact.value_numeric) if fact.value_numeric is not None else ""
+        )
+        unit_bits = " ".join(b for b in (fact.scale, fact.currency, fact.unit) if b)
+        conf_bucket = _confidence_bucket(fact.confidence)
+        items.append(
+            build_evidence_item(
+                id=f"VENUEFACT{j}",
+                source_id=source_id,
+                source_name=selection.venue,
+                provider_transport=transport,
+                provider_transport_tier=T2_REGULATOR_OR_GOV,
+                content_source=f"{issuer} {doc_title}".strip(),
+                content_source_tier=T1_PRIMARY_FILING,
+                source_type=VENUE_DOCUMENT_FACT_TYPE,
+                title=f"{doc_title}: {fact.label}",
+                url=artifact.source_url,
+                date=fact.period,
+                excerpt=(
+                    f"{fact.label} = {value_str}"
+                    + (f" ({unit_bits})" if unit_bits else "")
+                    + (f" [{fact.period}]" if fact.period else "")
+                ),
+                scope=fact.scope,
+                data_quality="B" if conf_bucket == "high" else "C",
+                confidence=conf_bucket,
+                fields_supported=[fact.label],
+                provenance=[
+                    p
+                    for p in (
+                        "Validated from the issuer's own filing, retrieved from "
+                        f"{selection.venue} (stricter grid validation)",
+                        f"document_reporting_period={selection.period.label()}",
+                        f"page={fact.page_number}" if fact.page_number else "page=unknown",
+                        f"table={fact.table_location}" if fact.table_location else None,
+                        f"method={fact.extraction_method}",
+                        f"confidence={fact.confidence:.2f}",
+                        "needs_human_review=true",
+                    )
+                    if p
+                ],
+                document_content_hash=doc_hash,
+                warnings=(
+                    [note for note in fact.validation_notes if note]
+                    + [
+                        "Validated primary fact from a regulated-venue copy of "
+                        "the issuer's own filing. Human review required."
+                    ]
+                ),
+                primary_fact=PrimaryFactRef(
+                    field=fact.label,
+                    value=value_str or fact.label,
+                    numeric_value=fact.value_numeric,
+                    unit=fact.unit,
+                    currency=fact.currency,
+                    scale=fact.scale,
+                    period=fact.period,
+                    scope=fact.scope,
+                    page_number=fact.page_number,
+                    excerpt_id=fact.table_location,
+                    source_url=artifact.source_url,
+                    confidence=conf_bucket,
+                ),
+            )
+        )
+
+    return items, list(artifact.source_gaps), [artifact]
+
+
 async def collect_company_source_evidence(
     *,
     company: CompanyContext,
@@ -814,6 +1047,9 @@ async def collect_company_source_evidence(
     # connectors (e.g. uk_fca_nsm, Phase 29B.4A) additionally yield a bounded
     # T2 regulator-transport SOURCE REFERENCE (never a fabricated filing).
     live_disclosures = bool(getattr(cfg, "source_live_disclosures_enabled", False))
+    # Connectors that actually ran a live disclosure retrieval, kept so the
+    # current-period document step below can ask them what they found.
+    disclosure_connectors: list[Any] = []
     for sid in _relevant_scaffold_ids(registry, company, requested):
         conn = registry.connectors().get(sid)
         if conn is None:
@@ -846,6 +1082,82 @@ async def collect_company_source_evidence(
         )
         gaps.extend(event_res.source_gaps)
         warnings.extend(event_res.warnings)
+        disclosure_connectors.append(conn)
+
+    # -- Current-period document from an official regulated venue ----------
+    # Current-period acceptance. The venue path is a FALLBACK, not a parallel
+    # source: it runs only when the issuer's own site produced no current-period
+    # document. Moncler's site has served an HTTP 403 maintenance page
+    # throughout this campaign while the same H1 2026 results sat, retrievable,
+    # in the Italian CONSOB-authorised storage mechanism — the connector held
+    # the official PDF URL and nobody opened it.
+    #
+    # Bounded to ONE document, fetched under the VENUE's own registered host
+    # allowlist (never a host read off the URL), through the same guarded
+    # extractor every other document uses.
+    if (
+        primary_document_extractor is not None
+        and live_disclosures
+        and disclosure_connectors
+        and not has_current_period_document(primary_document_artifacts)
+    ):
+        selection: CurrentPeriodDisclosure | None = None
+        chosen_conn = None
+        for conn in disclosure_connectors:
+            domains = tuple(getattr(conn, "disclosure_document_domains", ()) or ())
+            events = list(getattr(conn, "collected_disclosure_events", ()) or [])
+            if not domains or not events:
+                continue
+            found = select_current_period_disclosure(events, allowed_domains=domains)
+            if found is None:
+                continue
+            if selection is None or _recency_key(found.period.period) > _recency_key(
+                selection.period.period
+            ):
+                selection, chosen_conn = found, conn
+        if selection is None:
+            # A precise, technical reason — never a silent absence. This is the
+            # honest outcome when a venue publishes only notices, or publishes
+            # nothing current, or its documents sit off its registered hosts.
+            if any(
+                getattr(c, "collected_disclosure_events", None)
+                for c in disclosure_connectors
+            ):
+                gaps.append(
+                    SourceGap(
+                        connector_key="company_evidence",
+                        source_id="company_evidence",
+                        gap_type=GapType.primary_filing_unavailable,
+                        severity=GapSeverity.info,
+                        message=(
+                            "Regulated disclosures were retrieved, but none was a "
+                            "current-period results filing holding a fetchable "
+                            "document on the venue's own host, so no "
+                            "current-period figure could be sourced this way. "
+                            "No secondary source was substituted."
+                        ),
+                        blocks_research_complete=False,
+                    )
+                )
+        else:
+            venue_items, venue_gaps, venue_artifacts = (
+                await _ingest_regulated_storage_document(
+                    primary_document_extractor,
+                    selection,
+                    company=company,
+                    allowed_domains=tuple(
+                        getattr(chosen_conn, "disclosure_document_domains", ())
+                    ),
+                    connector_key=getattr(chosen_conn, "connector_key", "company_evidence"),
+                    source_id=getattr(chosen_conn, "connector_key", "company_evidence"),
+                    cfg=cfg,
+                    ocr_provider=ocr_provider,
+                    ocr_budget=ocr_budget,
+                )
+            )
+            items.extend(venue_items[:max_items])
+            gaps.extend(venue_gaps)
+            primary_document_artifacts.extend(venue_artifacts)
 
     # -- Local-language business-press reference (Phase 30B) ---------------
     # For a verified non-US issuer whose home market is FR / DE / IT / DA, add a
