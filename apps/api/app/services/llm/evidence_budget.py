@@ -97,6 +97,13 @@ _PRIMARY_DOCUMENT_TYPES = frozenset(
         "company_ir_business_description",
         "company_ir_risk_excerpt",
         "sec_filing_financial_fact",
+        # Current-period acceptance: the same reasoning for a fact validated
+        # from a table inside the issuer's own filing when that filing was
+        # retrieved from an official regulated venue rather than the issuer's
+        # own site. For an issuer whose website is down, these are the ONLY
+        # financial facts it has — landing them in the lowest-priority
+        # ``source_reference`` bucket would drop them first under pressure.
+        "regulated_disclosure_financial_fact",
     }
 )
 # Statement/table-derived financial content (Phase 32A Problem C):

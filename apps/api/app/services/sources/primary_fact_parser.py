@@ -32,6 +32,7 @@ from app.services.sources.document_text_extractor import (
     DocumentExcerpt,
     DocumentTextExtraction,
 )
+from app.services.sources.financial_period import parse_period
 from app.services.sources.primary_document_extractor import (
     _infer_scope,
     scope_claim_signal,
@@ -341,10 +342,20 @@ _PERCENT_TREND_CLAUSE = (
 _ALL_LABEL_ALTS: list[str] = []
 
 
+def _exclusion_guard(exclude_prefix: "str | tuple[str, ...] | None") -> str:
+    """Negative lookbehinds for prefixes that turn a label into a RATIO base."""
+    if not exclude_prefix:
+        return ""
+    prefixes = (
+        (exclude_prefix,) if isinstance(exclude_prefix, str) else tuple(exclude_prefix)
+    )
+    return "".join(rf"(?<!{re.escape(prefix)})" for prefix in prefixes)
+
+
 def _money_pattern(
     label_alts: str,
     *,
-    exclude_prefix: str | None = None,
+    exclude_prefix: "str | tuple[str, ...] | None" = None,
 ) -> re.Pattern[str]:
     """Build a label -> (number, scale) pattern.
 
@@ -361,7 +372,7 @@ def _money_pattern(
     ``strict_clause`` period guard, which only blocked a full stop and left
     same-sentence adversative-clause and semicolon-separated captures open.
     """
-    guard = rf"(?<!{re.escape(exclude_prefix)})" if exclude_prefix else ""
+    guard = _exclusion_guard(exclude_prefix)
     _ALL_LABEL_ALTS.append(label_alts)
     return re.compile(
         rf"{guard}(?:{label_alts})"
@@ -392,8 +403,10 @@ def _money_pattern(
 # no absolute level stated afterward yields NO match at all (Phase 32A
 # corrective, PR #107 merge-blocker fix), while "...rose 120 basis points to
 # 20.0%" still correctly parses the trailing 20.0 as the level.
-def _percent_pattern(label_alts: str, *, exclude_prefix: str | None = None) -> re.Pattern[str]:
-    guard = rf"(?<!{re.escape(exclude_prefix)})" if exclude_prefix else ""
+def _percent_pattern(
+    label_alts: str, *, exclude_prefix: "str | tuple[str, ...] | None" = None
+) -> re.Pattern[str]:
+    guard = _exclusion_guard(exclude_prefix)
     _ALL_LABEL_ALTS.append(label_alts)
     return re.compile(
         rf"{guard}(?:{label_alts})"
@@ -416,8 +429,14 @@ _MONEY_FIELDS: list[tuple[str, re.Pattern[str]]] = [
         # headline sales figure of their own, and matching them let an
         # unrelated nearby number (a margin percentage, a duration in
         # months) be mistaken for a revenue value.
+        # Current-period acceptance extends the SAME reasoning to "on ": an
+        # incidence/ratio is expressed on the revenue base just as often as of
+        # it ("a 14.0% incidence on revenues, compared with EUR 170.4 million
+        # in H1 2025"), and that sentence — about general and administrative
+        # EXPENSES — was yielding EUR 170.4 million as H1 2025 REVENUE.
         _money_pattern(
-            r"revenue|net sales|total sales|sales|turnover", exclude_prefix="of "
+            r"revenue|net sales|total sales|sales|turnover",
+            exclude_prefix=("of ", "on "),
         ),
     ),
     (
@@ -640,6 +659,26 @@ _POSSESSIVE_SUBJECT_RE = re.compile(
     r"(?:were|was|have|has|remained|continued)\b(?:(?![.!?]).){0,60}?\btheir\b"
 )
 
+# "<QUALIFIER> REVENUES: EUR 200.3 million" — the label-colon headline shape a
+# results release uses to report each entity in turn. Current-period acceptance:
+# Moncler's H1 2026 release lists "GROUP CONSOLIDATED REVENUES:", "MONCLER
+# REVENUES:" and "STONE ISLAND REVENUES:" in the same document, and none of them
+# is a grammatical subject followed by a reporting verb, so every one came out
+# UNSCOPED — which the pipeline reads as the implicit Group convention. The
+# Group figure was correctly refused as ambiguous (four magnitudes in one
+# excerpt), leaving a BRAND's revenue as the only candidate for the Group
+# current-period slot.
+#
+# Bounded on purpose: only the top-line metric nouns (where a preceding
+# qualifier really is the reporting entity), only an ALL-CAPS qualifier of at
+# most four words, and a qualifier that reads as a PERIOD is refused outright.
+# Generic press-release grammar, never an issuer's vocabulary.
+_HEADLINE_SCOPE_RE = re.compile(
+    r"(?:^\s*|[.!?;\u2022\uf0b7]\s*)"
+    r"([A-Z][A-Z0-9&'\u2019.\-]*(?:\s+[A-Z][A-Z0-9&'\u2019.\-]*){0,3})\s+"
+    r"(?:REVENUES?|SALES|TURNOVER)\s*:"
+)
+
 _GROUP_SUBJECT_WORDS = frozenset({"group", "the group"})
 # Generic financial-statement vocabulary that is never itself a business/
 # segment NAME — excluded so a plain metric noun accidentally captured as a
@@ -682,6 +721,23 @@ def _infer_prose_scope(sentence: str) -> str | None:
     """
     if not sentence:
         return None
+    m = _HEADLINE_SCOPE_RE.search(sentence)
+    if m:
+        subject = " ".join(m.group(1).split()).strip(" .,")
+        lowered = subject.lower()
+        if lowered in _GROUP_SUBJECT_WORDS or "group" in lowered.split() or (
+            "consolidated" in lowered
+        ):
+            return "group"
+        # A qualifier that is really a PERIOD ("H1", "FY26") names no entity.
+        # Fail closed rather than inventing a segment called "H1".
+        if (
+            not parse_period(subject).is_unknown
+            or lowered in _GENERIC_SCOPE_BLOCKLIST
+            or len(lowered) < 3
+        ):
+            return None
+        return _clean_scope_label(subject.title())
     m = _GROUP_OWNED_SEGMENT_RE.search(sentence)
     if m:
         label = _clean_scope_label(m.group(1))

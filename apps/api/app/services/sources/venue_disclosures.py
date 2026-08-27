@@ -74,6 +74,13 @@ _NASDAQ_ALLOWED = (
 _EMARKET_HOST = "www.emarketstorage.it"
 _EMARKET_ALLOWED = (_EMARKET_HOST, "emarketstorage.it")
 
+#: The hosts a venue's own DOCUMENTS live on. Exported so a caller that wants
+#: to open one (current-period acceptance) fetches it under the SAME explicit
+#: allowlist the listing was retrieved under — never under a host taken from
+#: the URL it is about to fetch.
+NASDAQ_NORDIC_DOCUMENT_DOMAINS: tuple[str, ...] = _NASDAQ_ALLOWED
+EMARKET_STORAGE_DOCUMENT_DOMAINS: tuple[str, ...] = _EMARKET_ALLOWED
+
 _NASDAQ_QUERY_URL = f"https://{_NASDAQ_NEWS_HOST}/news/query.action"
 _EMARKET_LIST_URL = f"https://{_EMARKET_HOST}/it/comunicati-finanziari"
 
@@ -657,6 +664,8 @@ __all__ = [
     "VENUE_EMARKET_STORAGE",
     "VENUE_NASDAQ_NORDIC",
     "disclosure_events_to_evidence",
+    "EMARKET_STORAGE_DOCUMENT_DOMAINS",
+    "NASDAQ_NORDIC_DOCUMENT_DOMAINS",
     "fetch_emarket_storage_disclosures",
     "fetch_nasdaq_nordic_disclosures",
     "issuer_search_term",

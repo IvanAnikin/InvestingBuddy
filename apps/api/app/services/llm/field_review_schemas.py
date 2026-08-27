@@ -215,6 +215,22 @@ class FieldNamedValue(BaseModel):
     provenance: str | None = None
 
 
+class FieldReportingPeriods(BaseModel):
+    """Which periods ONE report actually shows. Never computed here.
+
+    Read from the linked report's own `financial_snapshot.reporting_periods`
+    block, which is itself derived from the slots that report filled. A state
+    the report does not show is ``None`` — an explicit absence, so a council
+    can say "no current-period reporting was retrieved for this company"
+    instead of borrowing another company's answer.
+    """
+
+    latest_annual: str | None = None
+    latest_interim: str | None = None
+    latest_quarter: str | None = None
+    latest_current_period: str | None = None
+
+
 class FieldDiscoveryRelevance(BaseModel):
     """Discovery-time relevance signals, read straight off the candidate row.
 
@@ -312,6 +328,20 @@ class FieldReviewCompanySummary(BaseModel):
     # ── Discovery relevance (read straight off the candidate row) ────────
     discovery: FieldDiscoveryRelevance = Field(
         default_factory=FieldDiscoveryRelevance
+    )
+
+    # Current-period acceptance — the FOUR reporting states, read straight off
+    # THIS candidate's own exact-linked report and nothing else.
+    #
+    # Root cause it closes: a comparative council asked "how current is each
+    # company's financial evidence?" had to infer it from a `_current_period`
+    # SUFFIX on a datapoint name, or from prose. Currentness is the question a
+    # research-priority review exists to answer, so it is stated per company as
+    # a fact rather than inferred across companies — the same lesson the
+    # identity-completeness fields above encode. ``None`` means the report does
+    # not show that state; it never means "same as the other company".
+    reporting_periods: FieldReportingPeriods = Field(
+        default_factory=lambda: FieldReportingPeriods()
     )
 
     # ── Already-persisted analysis content ───────────────────────────────

@@ -139,6 +139,9 @@ _NON_FACT_SNAPSHOT_KEYS: frozenset[str] = frozenset(
         "note",
         "fundamentals_note",
         "current_period_note",
+        # The four derived reporting STATES, not a datapoint. Checked by
+        # ``_check_period_contradictions`` against the slots it summarises.
+        "reporting_periods",
     }
 )
 
@@ -436,6 +439,56 @@ def _check_period_contradictions(
                     detail=(
                         f"Current-period slot '{key}' holds a full-year period "
                         f"({period.label()})."
+                    ),
+                    sections=("financial_snapshot",),
+                )
+            )
+
+    # The four reporting states must agree with the slots they summarise.
+    # Derived from those slots today, so a finding here means a future change
+    # started computing them from something else.
+    states = _as_dict(snapshot.get("reporting_periods"))
+    if states:
+        stated_annual = parse_period(states.get("latest_annual"))
+        if stated_annual.is_interim:
+            audit.findings.append(
+                ConsistencyFinding(
+                    invariant=INTERIM_AS_ANNUAL,
+                    severity=SEVERITY_SERIOUS,
+                    detail=(
+                        "Reporting states name an INTERIM period as the latest "
+                        f"ANNUAL period ({stated_annual.label()})."
+                    ),
+                    sections=("financial_snapshot",),
+                )
+            )
+        stated_current = parse_period(states.get("latest_current_period"))
+        if stated_current.period_type == PERIOD_TYPE_ANNUAL:
+            audit.findings.append(
+                ConsistencyFinding(
+                    invariant=CURRENT_PERIOD_CONTRADICTION,
+                    severity=SEVERITY_SERIOUS,
+                    detail=(
+                        "Reporting states name a FULL-YEAR period as the latest "
+                        f"current period ({stated_current.label()})."
+                    ),
+                    sections=("financial_snapshot",),
+                )
+            )
+        slot_annual = {
+            parse_period(entry.get("period")).key
+            for key, entry in datapoints.items()
+            if key.endswith("_primary_filing")
+        } - {None}
+        if slot_annual and stated_annual.key and stated_annual.key not in slot_annual:
+            audit.findings.append(
+                ConsistencyFinding(
+                    invariant=INTERIM_AS_ANNUAL,
+                    severity=SEVERITY_SERIOUS,
+                    detail=(
+                        f"Reporting states name {stated_annual.label()} as the "
+                        "latest annual period, which no annual slot holds "
+                        f"({sorted(p for p in slot_annual if p)})."
                     ),
                     sections=("financial_snapshot",),
                 )

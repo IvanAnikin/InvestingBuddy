@@ -701,7 +701,7 @@ after merge/deploy approval, then:
   |---|---|---|
   | `PRIMARY_DOCUMENT_PIN_DNS_ENABLED` | `true` | Resolve-then-connect IP pinning (closes the ADR-014 rebinding TOCTOU). Kill-switch only — turning it off reverts to the weaker Slice 5A check-then-connect behaviour. |
   | `PRIMARY_DOCUMENT_MAX_DISCOVERY_CANDIDATES` | `12` | Cap on document candidates kept from ONE issuer page across all strategies. |
-  | `PRIMARY_DOCUMENT_DISCOVERY_STRATEGIES` | `anchors,json_ld,next_data,embedded_json` | Ordered, bounded, non-browser strategies. No crawler, no headless browser. |
+  | `PRIMARY_DOCUMENT_DISCOVERY_STRATEGIES` | `anchors,json_ld,next_data,embedded_json,next_flight` | Ordered, bounded, non-browser strategies. No crawler, no headless browser. `next_flight` reads a Next.js **App Router** streaming payload (`self.__next_f.push`), the successor to `__NEXT_DATA__`. |
   | `PRIMARY_DOCUMENT_SEC_BODY_ENABLED` | `true` | Official SEC filing-body retrieval (10-K / 20-F / 10-Q / 6-K / 8-K). Inert unless the master flag is on. |
   | `PRIMARY_DOCUMENT_SEC_MAX_BODIES` | `2` | Cap on SEC filing bodies fetched per issuer per request. |
   | `SEC_REQUEST_MIN_INTERVAL_MS` | `120` | Client-side SEC throttle. More conservative than SEC's published ~10 req/s ceiling. |

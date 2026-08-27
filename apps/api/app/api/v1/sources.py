@@ -21,6 +21,8 @@ from app.services import source_service
 from app.services.sources.company_evidence import (
     SEC_DOCUMENT_EXCERPT_TYPE,
     SEC_DOCUMENT_FACT_TYPE,
+    VENUE_DOCUMENT_EXCERPT_TYPE,
+    VENUE_DOCUMENT_FACT_TYPE,
     collect_company_source_evidence,
 )
 from app.services.sources.connector_base import CompanyContext
@@ -47,6 +49,8 @@ _DOCUMENT_SOURCE_TYPES = frozenset(
         # evidence — keep both in sync when either changes.
         SEC_DOCUMENT_EXCERPT_TYPE,
         SEC_DOCUMENT_FACT_TYPE,
+        VENUE_DOCUMENT_EXCERPT_TYPE,
+        VENUE_DOCUMENT_FACT_TYPE,
     }
 )
 

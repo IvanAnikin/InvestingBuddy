@@ -37,6 +37,7 @@ from app.services.llm.field_review_schemas import (
     FieldDocumentCoverage,
     FieldEvidenceQuality,
     FieldNamedValue,
+    FieldReportingPeriods,
     FieldReviewCompanySummary,
     FieldReviewPack,
     FieldRunContext,
@@ -172,6 +173,24 @@ def _financial_facts(
             )
         )
     return facts, sorted(missing)[:MAX_LIST_ITEMS]
+
+
+def _reporting_periods(snapshot: dict[str, Any]) -> FieldReportingPeriods:
+    """The four reporting states, read off THIS report's own snapshot.
+
+    Never recomputed and never borrowed: a state the linked report does not
+    show stays ``None``, so the freshness comparison is over each company's
+    exact linked report state rather than an inference across companies.
+    """
+    block = snapshot.get("reporting_periods")
+    if not isinstance(block, dict):
+        return FieldReportingPeriods()
+    return FieldReportingPeriods(
+        latest_annual=_clip(block.get("latest_annual")),
+        latest_interim=_clip(block.get("latest_interim")),
+        latest_quarter=_clip(block.get("latest_quarter")),
+        latest_current_period=_clip(block.get("latest_current_period")),
+    )
 
 
 # Private-use readiness PR-C — the identity fields a comparative review is
@@ -390,6 +409,7 @@ def build_company_summary(
 
     council_agents = _council_agent_map(source_summary)
     facts, missing_fields = _financial_facts(snapshot)
+    reporting_periods = _reporting_periods(snapshot)
     identity_present, identity_missing = _identity_completeness(identity)
     provenance = _report_provenance(source_summary)
 
@@ -451,6 +471,7 @@ def build_company_summary(
             source_quality=candidate.source_quality,
             catalyst_coverage_status=candidate.catalyst_coverage_status,
         ),
+        reporting_periods=reporting_periods,
         financial_facts=facts,
         missing_financial_fields=missing_fields,
         primary_documents=docs,

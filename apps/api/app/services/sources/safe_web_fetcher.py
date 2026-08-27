@@ -99,6 +99,41 @@ ANNUAL_REPORT_KEYWORDS: tuple[str, ...] = (
     "results release",
     "quarterly results",
 )
+# Link text keywords that mark a CURRENT-PERIOD (quarterly / part-year)
+# publication — private-use readiness, current-period acceptance.
+#
+# ``ANNUAL_REPORT_KEYWORDS`` already covers half-year and "interim" wording, but
+# it has no vocabulary at all for the quarterly SALES release many European
+# issuers publish between their interim and annual reports. Live-observed:
+# Richemont's ``…-fy27-q1-sales-en.pdf`` (the quarter ended 30 June 2026, its
+# newest reporting) matched no keyword, so the current-period reserve had
+# nothing newer than the FY26 interim report to reserve a slot for.
+#
+# Deliberately narrow: period vocabulary only. Adding general press-release
+# wording here would pull a boutique opening or a product launch into the same
+# bounded candidate cap as the issuer's own financial reporting.
+CURRENT_PERIOD_KEYWORDS: tuple[str, ...] = (
+    "q1 sales",
+    "q2 sales",
+    "q3 sales",
+    "q4 sales",
+    "quarterly sales",
+    "quarterly report",
+    "quarterly statement",
+    "quarterly financial report",
+    "first quarter",
+    "second quarter",
+    "third quarter",
+    "fourth quarter",
+    "nine months",
+    "nine-month",
+    "interim management statement",
+    "trading update",
+    "trading statement",
+    "sales announcement",
+    "sales release",
+)
+
 # Only used when no annual/financial report link is found on the page.
 FALLBACK_REPORT_KEYWORDS: tuple[str, ...] = ("sustainability report", "esg report")
 
@@ -600,6 +635,7 @@ __all__ = [
     "extract_links",
     "safe_fetch_page",
     "ANNUAL_REPORT_KEYWORDS",
+    "CURRENT_PERIOD_KEYWORDS",
     "FALLBACK_REPORT_KEYWORDS",
     "PRESS_KEYWORDS",
 ]

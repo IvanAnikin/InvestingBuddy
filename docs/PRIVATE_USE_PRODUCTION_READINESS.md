@@ -294,6 +294,88 @@ Document selection becomes **period-aware and recency-aware**:
 * An interim value never overwrites an annual value: they are different periods, full stop.
 * **No annualisation** of interim results is implemented in this campaign.
 
+### 13.1 Current-period RETRIEVAL (added by the current-period acceptance correction)
+
+The selection rules above were implemented and unit-tested in PR-D, and the final acceptance
+matrix still showed `Current = —` for two issuers whose current-period reports this system
+could fetch and extract. The whole loss was upstream of selection:
+
+| Stage | Defect | Fix |
+|---|---|---|
+| Discovery | A **Next.js App Router** page streams its content as `self.__next_f.push([1,"…"])` — JSON-encoded string FRAGMENTS of one logical stream. `next_data` looks for a hydration script id App Router never emits, and `embedded_json` needs a balanced literal inside ONE script body. Pandora's Q2 2026 interim report lived only there, so the interim INDEX page became the "current-period document". | New bounded strategy **`next_flight`**: reassemble the pushed chunks into one capped buffer, then read URLs from their own quoted JSON string values (which is what lets an official URL containing spaces survive). No browser, no JS execution, no extra fetch; identical https / safe-host / allowlist / secret-strip guards. |
+| Classification | `ANNUAL_REPORT_KEYWORDS` covers annual, full-year, half-year and "interim" wording and has **no quarterly vocabulary at all**. Richemont's newest reporting is a quarterly SALES release, so the reserve had nothing to reserve a slot for. | New `CURRENT_PERIOD_KEYWORDS` (period wording only — never general press wording) combined into `_INDEX_KEYWORDS` for depth-0 discovery. |
+| Selection | The reserve was applied at the end of the `max_docs_per_issuer + _MAX_THIN_FALLBACK_DOCS` candidate list, but ingestion **stops at `max_docs_per_issuer`** once one document has real financial content. The reserved document was ranked, logged and never fetched. | `_rank_deep_targets(..., reserve_within=max_docs_per_issuer)` — the reserve now lands where ingestion actually reaches. |
+
+Widening the candidate set exposed three ordering defects that had been masked by the narrower
+one, each of which chose the wrong document live:
+
+* a ZIP archive named `… (PAND-2025-12-31-en.zip)` counted as a document, because the filename
+  ends in a parenthesis — trailing brackets are now stripped before the extension test;
+* the anchor-**wording** heuristic sat ahead of both downloadability and recency, so a news page
+  headlined "Richemont publishes FY26 Annual Report" outranked the report PDF beside it (labelled
+  merely "Download"), and Pandora's "Annual Report 2024" outranked "Annual Report 2025". The rank
+  is now `(kind, downloadable, recency, supporting-material, wording)`;
+* one document reached the ranker under two spellings (raw-space href vs percent-encoded) and
+  spent two of three bounded slots on itself — de-duplication now uses `document_identity`.
+
+Results-day **supporting material** (presentation, transcript, appendix, analyst consensus,
+aide-memoire) is demoted generically, so "the newest current-period document" is a determinate
+choice rather than a DOM-order one.
+
+### 13.2 Current-period PERIOD TRUTH (added by the current-period acceptance correction)
+
+Reaching the current-period document made a second, more dangerous class of defect reachable.
+A new pure module, `app/services/sources/document_period.py`, answers the prior question
+`financial_period` never asked: **what period is this DOCUMENT about?**
+
+`detect_document_period(title, url, headings, text)` reads the document's OWN words, strongest
+rule first — the issuer's combined fiscal label (`fy27-q1` → **Q1 2027**), then an unambiguous
+four-digit label (`Q2 2026`, `H1 2026`), then a period-end sentence ("for its first quarter
+ended 30 June 2026"). Nothing is derived from a fiscal calendar, a publication date or a
+registry. A nine-month cumulative period is **refused**, not mapped: it is neither a quarter nor
+a half, and this model has no representation for it. An annual report states no interim period,
+so every existing behaviour is unchanged.
+
+That period then governs four things:
+
+1. **The undated-figure fallback is period-TYPED.** The old fallback supplied the document's
+   most common explicit token — in Richemont's quarterly release, the bare `2026` from its
+   exchange-rate table, corporate calendar and copyright line — so an undated "Group sales at
+   € 6.3 billion" became **annual 2026 revenue** beside the € 22.4 bn FY2026 figure. It now
+   inherits the document's own period (`Q1 2027`).
+2. **A bare-year table column inside an interim document is not a full year.** Pandora's Q2 2026
+   lease note heads its columns `| 2026 | 2025 |` with the qualifier "30 June" wrapped onto the
+   row beneath; read as full years it produced a *validated* "FY2025 revenue" of DKK 248 m (from
+   a row labelled "Variable leases linked to revenue"). Recovering the intended period from a
+   wrapped date row is a table-geometry problem this layer does not attempt — it **fails closed**
+   and leaves the column unmapped.
+3. **An interim document is never an AUTHORITY for a full year.** Its own year is not over, so a
+   figure read as that year loses its period entirely; a prior-year comparative keeps its period
+   but is demoted to excerpt-only, because the annual report is the authority. Nothing is
+   deleted and every demotion states its reason on the fact.
+4. Both the live extraction path and the **cached rebuild** path resolve it identically, or a
+   reused document would re-derive different periods from the same bytes.
+
+**The four reporting states** (`app/services/sources/period_state.py`) are now typed and named
+on the report itself, under `financial_snapshot.reporting_periods`:
+
+| State | Example | Meaning |
+|---|---|---|
+| `latest_annual` | FY2025 | the last completed financial year |
+| `latest_interim` | H1 2026 | the last half-year reported |
+| `latest_quarter` | Q2 2026 | the last quarter reported |
+| `latest_current_period` | Q2 2026 | the newest of the two part-year states |
+
+Recency is decided by when a period **ENDS**, not by its bare ordinal: ranking on the ordinal put
+half-years and quarters on one scale, where H2 2026 and Q2 2026 tied at 2 although they end six
+months apart. A quarter wins the tie with the half it ends beside, following the same
+"more specific claim" precedent as the interim-marker parser. The states are derived from the
+slots the section actually filled — never from the whole fact set — so they cannot name a period
+the report does not show, and three consistency invariants assert exactly that.
+
+`select_latest_annual` never falls back to an interim period: a canonical annual slot may only
+hold a full year, and the honest answer when none exists is *unknown*.
+
 ## 14. Regulated-disclosure connector architecture
 
 Existing connectors are **upgraded in place** (no parallel architecture) from
@@ -310,6 +392,73 @@ DisclosureEvent
 
 Venues and their live status are recorded in §J of the final handoff and in the live-status
 table below (§27).
+
+### 14.1 Current-period document from an official regulated venue
+
+Moncler's acceptance row read `Annual — / Current — / 0 T1 facts`. Its own investor site has
+served an HTTP 403 maintenance page on every path throughout this campaign, so nothing could be
+retrieved from it — while the same H1 2026 Financial Results were already being retrieved, in
+full, from the Italian CONSOB-authorised storage mechanism. The connector held the official PDF
+URL, put it in an evidence item, and nobody ever opened it.
+
+Opening it is **not a secondary-source substitution**: a storage mechanism holds the document the
+issuer FILED, unaltered, under a statutory obligation — the same primary filing over a different,
+official transport. The distinction is preserved where it matters: transport stays
+`T2_regulator_or_gov`, content stays `T1_primary_filing`, and the venue is named on every item.
+
+`app/services/sources/disclosure_documents.py` is the pure selection half. It fetches nothing and
+is fail-closed at every step: only a **results** disclosure qualifies, only one that states a
+current period in its own headline, only one whose document sits on the **venue's own registered
+host**, and never a "Notice of publication of …" (a storage mechanism publishes both the two-page
+notice and the report). The step is a genuine **fallback** — it runs only when the issuer's own
+site produced no current-period document, so an issuer serving its own interim report is
+unaffected — and it opens **at most one** document, through the same SSRF-guarded,
+magic-byte-checked, byte- and page-capped extractor everything else uses. When nothing qualifies,
+a precise technical reason is recorded; there is no silent absence and no substitute source.
+
+Two extraction defects the real Moncler document then exposed, both of which would have put a
+WRONG number in a canonical Group slot:
+
+* **A label-colon headline is not a sentence.** "STONE ISLAND REVENUES: EUR 200.3 million" has no
+  grammatical subject and no reporting verb, so no scope rule matched and the figure came out
+  UNSCOPED — which the pipeline reads as the implicit Group convention. The real Group figure
+  (EUR 1,289.9 m) was correctly refused as ambiguous (four revenue magnitudes in one excerpt),
+  leaving a **brand's** revenue as the only candidate for the Group current-period slot. A bounded
+  headline rule now reads the qualifier: Group vocabulary → `group`, a named entity → that
+  segment, a period ("H1") → refused.
+* **A ratio base is not a figure.** "…a 14.0% incidence **on** revenues, compared with EUR 170.4
+  million in H1 2025" yielded EUR 170.4 m as H1 2025 revenue. The parser already excluded "of "
+  before a revenue label for exactly this reason; "on " is the same construction and is now
+  excluded too.
+
+**Documented limitation:** Moncler's H1 2026 **Group revenue** is still not extracted. Its release
+states four revenue magnitudes in one excerpt (Group, prior-year Group, and one brand each), and
+the parser's ambiguity refusal — deliberate, and correct — declines all of them. Its H1 2026
+Group EBIT, net result and free cash flow ARE extracted. This is an honest absence, not a wrong
+number, and resolving it needs excerpt-level value/label association work that is a separate
+slice, not a current-period defect.
+
+### 14.2 Current-period evidence reaching the two councils
+
+Retrieving a current-period document, and dating its figures correctly, is only worth anything if
+the councils can see it for what it is.
+
+* **The company council** gets a compact, explicitly-labelled current-period slice, added directly
+  after the historical-trend slice and for the same reason: what an issuer reported MOST RECENTLY
+  is as material as how it has trended, and both must survive the evidence cap. One header line
+  naming all four states, then one dense line per metric and scope, each stating its own period in
+  words (`H1 2026`, `Q1 2027`) so an interim figure can never read as a year. Every line says the
+  two are not comparable and that nothing has been annualised. No arithmetic of any kind.
+* **Budgeting:** `regulated_disclosure_financial_fact` matched no budget category and fell to
+  `source_reference` — the bucket dropped FIRST under pressure. For an issuer whose own website is
+  down those are the only financial facts it has, so it now budgets as primary-document evidence,
+  exactly as `sec_filing_financial_fact` does and for the same reason.
+* **The Deep Field Review** carries each candidate's four reporting states as a stated field, read
+  off THAT candidate's own exact-linked report. It previously had to read a `_current_period`
+  SUFFIX to know what a datapoint meant, and had no way to state "no current-period reporting was
+  retrieved for this company" — the same shape as the live defect where one company's missing LEI
+  became a claim about both. `None` means the report does not show that state; it never means
+  "same as the other company".
 
 ## 15. Source / provenance hierarchy
 
