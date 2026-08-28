@@ -867,6 +867,34 @@ The admin Primary Documents panel renders the scope label rather than a bare "fa
 lineage regression tests cover all three real document shapes — multi-year annual, annual +
 annual-results + quarter, and single regulated-storage current-period — from both sides.
 
+### 29.7 Fact-count verification (staging `2e1e342`, 2026-08-28)
+
+All three reports regenerated **serially** in lineage `48837187-3ec0-475c-a56e-5cc17f582d7b`.
+
+| Issuer | Report | Council | Consistency |
+|---|---|---|---|
+| PNDORA | `2c661528-82f4-4293-9fba-1890c9fff301` | 8/8, 0 failed, real chair | **0 findings** |
+| CFR | `eff5cf93-df3c-47fd-9d2b-f2133192c076` | 8/8, 0 failed, real chair | **0 findings** |
+| MONC | `6a08c411-7bbd-4756-9fb4-309192a35a37` | 8/8, 0 failed, real chair | **0 findings** |
+
+**Deep Field Review `6a81afe4-6e86-4aac-8d15-52f128acd31c`** — 8/8, 0 failed, real LLM chair (no
+fallback), `safety_valid=true`, `publication_ready=false`, exact lineage over those three.
+
+Every displayed count now names its population, and **no unqualified `fact_count` key exists
+anywhere** in either payload:
+
+| | PNDORA | CFR | MONC |
+|---|---|---|---|
+| `report_primary_fact_count` — *Report primary facts* | 55 | 34 | 8 |
+| `cited_evidence_fact_count` — *Cited evidence facts* | 14, 3 | 9, 4, 1 | 8 |
+| `persisted_validated_fact_count` — *Persisted validated facts* | 52, 3, 0 | 24, 9, 1 | 8 |
+| `validated_fact_count` (run) — *Persisted validated facts* | 55 | 34 | 8 |
+| `field_count` — *Canonical statement fields* | 9 | 5 | 4 |
+
+Richemont's `4` (cited) and `24` (persisted) are the same document and now say so. The
+per-document persisted count is asserted equal to the rows returned beside it, so the two cannot
+drift. The four definitions are stated once per payload.
+
 ## 30. Final status
 
 **Campaign closed 2026-08-26. Status: READY FOR MANUAL PRIVATE-USE PRODUCTION VERIFICATION.**
