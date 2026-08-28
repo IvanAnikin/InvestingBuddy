@@ -57,6 +57,14 @@ from app.services.canonical_evidence import (
     FundamentalsEvidence,
     build_evidence_channels,
 )
+from app.services.fact_count_scopes import (
+    ALL_SCOPES,
+    CANONICAL_FIELDS,
+    CITED_EVIDENCE,
+    REPORT_PRIMARY,
+    label_for,
+)
+from app.services.fact_count_scopes import definitions as fact_count_definitions
 from app.services.report_consistency import (
     ALL_INVARIANTS,
     CONNECTOR_STATE_CONTRADICTION,
@@ -369,13 +377,16 @@ def _report(**over) -> dict:
         },
         "research_memo": {
             "primary_evidence_summary": {
-                "primary_fact_count": 8,
+                "report_primary_fact_count": 8,
+                "fact_count_scope": REPORT_PRIMARY.key,
+                "fact_count_label": REPORT_PRIMARY.label,
                 "primary_documents": [
                     {
                         "title": "H1 2026 Financial Results",
-                        "fact_count": 0,
+                        "cited_evidence_fact_count": 0,
                         "excerpt_count": 5,
-                        "counts_basis": "Counts the CITED-EVIDENCE items…",
+                        "fact_count_scope": CITED_EVIDENCE.key,
+                        "fact_count_label": CITED_EVIDENCE.label,
                     }
                 ],
             }
@@ -561,20 +572,63 @@ def test_explaining_that_sec_does_not_cover_this_issuer_is_not_a_mismatch() -> N
     assert JURISDICTION_TASK_MISMATCH not in _invariants(report)
 
 
-def test_disagreeing_counts_with_no_stated_basis_are_caught() -> None:
+def test_differently_scoped_counts_may_differ_freely() -> None:
+    """THE point of the rule. Richemont's per-document 4 and 24 are the same
+    document, both correct, counting different populations. Forcing them to
+    agree would mean hiding facts or inventing them."""
     report = _report()
-    del report["research_memo"]["primary_evidence_summary"]["primary_documents"][0][
-        "counts_basis"
-    ]
+    summary = report["research_memo"]["primary_evidence_summary"]
+    assert summary["report_primary_fact_count"] == 8
+    assert summary["primary_documents"][0]["cited_evidence_fact_count"] == 0
+    assert FACT_COUNT_SEMANTICS_MISMATCH not in _invariants(report)
+
+
+def test_an_unqualified_fact_count_with_no_scope_is_caught() -> None:
+    """The wording defect itself: a bare "fact_count" naming no population."""
+    report = _report()
+    row = report["research_memo"]["primary_evidence_summary"]["primary_documents"][0]
+    del row["cited_evidence_fact_count"]
+    del row["fact_count_scope"]
+    row["fact_count"] = 0
     assert FACT_COUNT_SEMANTICS_MISMATCH in _invariants(report)
 
 
-def test_agreeing_counts_need_no_basis() -> None:
+def test_a_bare_fact_count_is_allowed_once_it_states_its_scope() -> None:
     report = _report()
-    summary = report["research_memo"]["primary_evidence_summary"]
-    summary["primary_fact_count"] = 0
-    del summary["primary_documents"][0]["counts_basis"]
+    row = report["research_memo"]["primary_evidence_summary"]["primary_documents"][0]
+    del row["cited_evidence_fact_count"]
+    row["fact_count"] = 0
     assert FACT_COUNT_SEMANTICS_MISMATCH not in _invariants(report)
+
+
+def test_two_counts_on_one_object_claim_one_population_and_must_agree() -> None:
+    report = _report()
+    row = report["research_memo"]["primary_evidence_summary"]["primary_documents"][0]
+    row["persisted_validated_fact_count"] = 8
+    assert FACT_COUNT_SEMANTICS_MISMATCH in _invariants(report)
+
+
+def test_two_agreeing_counts_on_one_object_are_fine() -> None:
+    report = _report()
+    row = report["research_memo"]["primary_evidence_summary"]["primary_documents"][0]
+    row["persisted_validated_fact_count"] = 0
+    assert FACT_COUNT_SEMANTICS_MISMATCH not in _invariants(report)
+
+
+def test_every_scope_has_a_label_and_a_definition() -> None:
+    for scope in ALL_SCOPES:
+        assert scope.label and scope.label[0].isupper()
+        assert scope.definition.endswith(".")
+        assert label_for(scope.key) == scope.label
+    assert label_for("not-a-scope") is None
+    assert set(fact_count_definitions()) == {s.key for s in ALL_SCOPES}
+
+
+def test_a_field_count_is_never_labelled_a_fact_count() -> None:
+    """Five canonical fields resolved from thirty-four facts is not a
+    contradiction, and the vocabulary says so."""
+    assert "field" in CANONICAL_FIELDS.label.lower()
+    assert "not a fact count" in CANONICAL_FIELDS.definition.lower()
 
 
 def test_the_four_invariants_are_registered_and_serious() -> None:

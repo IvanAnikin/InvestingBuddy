@@ -82,6 +82,8 @@ from app.services.extracted_document_service import (
     load_reusable_documents,
     persist_primary_document_artifacts,
 )
+from app.services.fact_count_scopes import CITED_EVIDENCE, REPORT_PRIMARY
+from app.services.fact_count_scopes import definitions as fact_count_definitions
 from app.services.final_research_state import (
     FinancialEvidenceState,
     build_final_research_state,
@@ -3850,21 +3852,6 @@ def _memo_datapoint_value(section: dict[str, Any] | None, key: str) -> Any:
     return dp
 
 
-#: The two fact-count populations a report displays, each named on the row that
-#: carries it. Manual-QA corrective: a document card read "5 excerpt(s), 0
-#: fact(s)" beside a report-level "primary fact count 8" drawn from the SAME
-#: document, with nothing saying they count different things.
-_COUNTS_BASIS_EVIDENCE_PACK = (
-    "Counts the CITED-EVIDENCE items built from this document (what the council "
-    "was given and may cite), which the evidence budget bounds. It is not the "
-    "count of validated facts extracted — see primary_fact_count."
-)
-_COUNTS_BASIS_VALIDATED_SET = (
-    "The COMPLETE set of validated facts this report holds, across every "
-    "ingested document. Per-document rows count cited evidence items instead."
-)
-
-
 def _memo_safe_text(text: Any) -> Any:
     """Neutralise forbidden language in model-generated free text (no-op if clean).
 
@@ -3911,7 +3898,10 @@ def _sec_primary_document_extracted(primary_documents: list[Any]) -> bool:
         domain = str(doc.get("domain") or "")
         if domain != "sec.gov" and not domain.endswith(".sec.gov"):
             continue
-        if (int(doc.get("excerpt_count") or 0) + int(doc.get("fact_count") or 0)) > 0:
+        if (
+            int(doc.get("excerpt_count") or 0)
+            + int(doc.get("cited_evidence_fact_count") or doc.get("fact_count") or 0)
+        ) > 0:
             return True
     return False
 
@@ -4426,17 +4416,15 @@ def _build_research_memo(
                 "domain": d.get("domain"),
                 "tier": d.get("tier"),
                 "excerpt_count": d.get("excerpt_count", 0),
-                "fact_count": d.get("fact_count", 0),
-                # Manual-QA corrective — ONE authoritative meaning per count.
-                # These two are the CITED-EVIDENCE population for this document
-                # (what the council was given and can cite), which is bounded by
-                # the evidence budget. ``primary_fact_count`` beside them is the
-                # COMPLETE validated set persisted for the whole report. Both
-                # are true and they are not the same number; a reader seeing a
-                # zero here must be able to tell "this document produced no
-                # facts" from "no fact from this document reached the evidence
-                # pack", and before this line said so they could not.
-                "counts_basis": _COUNTS_BASIS_EVIDENCE_PACK,
+                # Manual-QA corrective — the key NAMES its population. It was a
+                # bare ``fact_count``, and a reader had four differently-scoped
+                # numbers on one page all called "fact(s)": Richemont's "4" here
+                # and "24" on the Primary Documents tab are the SAME document,
+                # both correct, counting the cited-evidence items and the
+                # persisted rows respectively.
+                "cited_evidence_fact_count": d.get("fact_count", 0),
+                "fact_count_scope": CITED_EVIDENCE.key,
+                "fact_count_label": CITED_EVIDENCE.label,
                 "requires_translation": bool(d.get("requires_translation", False)),
                 "warnings": _memo_safe_list(d.get("warnings")),
             }
@@ -4468,8 +4456,12 @@ def _build_research_memo(
     if fact_rows or doc_rows:
         primary_evidence_summary = {
             "primary_document_count": len(doc_rows),
-            "primary_fact_count": len(fact_rows),
-            "primary_fact_count_basis": _COUNTS_BASIS_VALIDATED_SET,
+            "report_primary_fact_count": len(fact_rows),
+            "fact_count_scope": REPORT_PRIMARY.key,
+            "fact_count_label": REPORT_PRIMARY.label,
+            # Stated ONCE, so a reader can resolve any count on this page
+            # without repeating the definition on every row.
+            "fact_count_scope_definitions": fact_count_definitions(),
             "primary_source_reference_count": primary_source_reference_count,
             "primary_document_reference_count": primary_document_reference_count,
             "extracted_primary_document_count": len(doc_rows),
@@ -4513,7 +4505,9 @@ def _build_research_memo(
             "primary_document_reference_count": primary_document_reference_count,
             "extracted_primary_document_count": 0,
             "primary_document_count": 0,
-            "primary_fact_count": 0,
+            "report_primary_fact_count": 0,
+            "fact_count_scope": REPORT_PRIMARY.key,
+            "fact_count_label": REPORT_PRIMARY.label,
             "metadata_only_source_count": metadata_only_source_count,
             "source_gap_count": source_gap_count,
             "extracted_document_text_available": False,
@@ -4549,7 +4543,9 @@ def _build_research_memo(
         )
         primary_evidence_summary = {
             "primary_document_count": 0,
-            "primary_fact_count": 0,
+            "report_primary_fact_count": 0,
+            "fact_count_scope": REPORT_PRIMARY.key,
+            "fact_count_label": REPORT_PRIMARY.label,
             "primary_source_reference_count": 0,
             "primary_document_reference_count": 0,
             "extracted_primary_document_count": 0,

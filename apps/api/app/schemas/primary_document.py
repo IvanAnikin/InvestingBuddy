@@ -16,7 +16,10 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+from app.services.fact_count_scopes import PERSISTED_VALIDATED
+from app.services.fact_count_scopes import definitions as fact_count_definitions
 
 
 class PrimaryDocumentFactRead(BaseModel):
@@ -98,6 +101,13 @@ class PrimaryDocumentRead(BaseModel):
     reused: bool
     excerpts: list[PrimaryDocumentExcerptRead]
     facts: list[PrimaryDocumentFactRead]
+    # Manual-QA corrective — the count NAMES its population. The research memo
+    # shows a per-document count too, and for the same Richemont document the
+    # two read 4 and 24: both correct, one counting cited-evidence items and
+    # one counting persisted rows, and nothing said which was which.
+    persisted_validated_fact_count: int = 0
+    fact_count_scope: str = PERSISTED_VALIDATED.key
+    fact_count_label: str = PERSISTED_VALIDATED.label
 
 
 class PrimaryDocumentSummary(BaseModel):
@@ -108,7 +118,15 @@ class PrimaryDocumentSummary(BaseModel):
     failed_count: int
     native_count: int
     ocr_count: int
+    #: Active persisted rows across every unique document in this run. Named by
+    #: ``fact_count_scope`` so it cannot be read as the report's own primary
+    #: -fact count or as a per-document cited-evidence count.
     validated_fact_count: int
+    fact_count_scope: str = PERSISTED_VALIDATED.key
+    fact_count_label: str = PERSISTED_VALIDATED.label
+    fact_count_scope_definitions: dict[str, str] = Field(
+        default_factory=fact_count_definitions
+    )
     reused_count: int
     evidence_reference_count: int
 
