@@ -792,6 +792,46 @@ The channel now counts both official sources and keeps them separately decomposa
 (`filing_event_count`, `regulated_disclosure_count`), and `CONNECTOR_STATE_CONTRADICTION` gained
 a structured arm that catches the shape directly rather than relying on prose.
 
+### 29.5 Manual-QA verification (staging `17648f5`, 2026-08-28)
+
+Report content is PERSISTED, so corrected deterministic copy needs regeneration. All three were
+regenerated **serially** in the same thesis lineage
+`48837187-3ec0-475c-a56e-5cc17f582d7b`.
+
+| Issuer | Report | Council | Consistency |
+|---|---|---|---|
+| PNDORA | `c0c2028a-17e3-465c-8726-90734080ae92` | 8/8, 0 failed, real chair | **0 findings** |
+| CFR | `21971572-7b98-4787-833c-585c93ccca55` | 8/8, 0 failed, real chair | **0 findings** |
+| MONC | `af17b241-c948-4093-b126-02f0361f99ce` | 8/8, 0 failed, real chair | **0 findings** |
+
+**Deep Field Review `83bdea30-1748-46cb-8081-6190b60da21d`** — 8/8 agents, 0 failed, real LLM
+chair (no fallback, 1 attempt), `safety_valid=true`, `publication_ready=false`. Exact lineage:
+those three reports and nothing else; the five other candidates are recorded `draft_only`.
+
+**Count semantics.** Moncler's H1 2026 document now reads **5 excerpt(s), 8 fact(s)** — matching
+the 8 facts persisted for it — and every count row states the population it counts. Pandora (55)
+and Richemont (34) still differ from their per-document evidence-item totals, because those are
+genuinely different populations, and each row now says which.
+
+**Connector state.** Pandora and Moncler carry *"Live regulated disclosures were retrieved from
+… in this run"* (Moncler adds *"and the issuer's own filing held there was opened and
+extracted"*), each still stating that retrieval is bounded to the lookback window. **Richemont
+correctly RETAINS** *"Switzerland regulated-disclosure connector scaffolded"* and *"…is published
+via SIX Swiss Exchange regulatory disclosures"*, because SIX genuinely stayed reference-only —
+the negative control. No SEC gap asserts another connector's state.
+
+**Jurisdiction tasks.** PNDORA → *Nasdaq Nordic company disclosures (Danish FSA)*; CFR → *SIX
+Swiss Exchange regulatory disclosures*; MONC → *eMarket Storage (CONSOB-authorised)*. No SEC
+EDGAR or SEDAR+ recommendation on any of the three.
+
+**Incompleteness copy.** All three: *"Assessment is incomplete — the issuer's own primary filing
+is ingested, but the remaining statement lines (…) and identity/regulatory confirmation are still
+required before any investment decision."* The warning is intact.
+
+**Channels.** Regulator rows name the issuer's own venue and carry it in a separate `venue` field;
+the official-events row reports *"available — 5 live regulated disclosure(s)"* for Pandora and
+Moncler and *"not sourced"* for Richemont, matching each report's own disclosure section exactly.
+
 ## 30. Final status
 
 **Campaign closed 2026-08-26. Status: READY FOR MANUAL PRIVATE-USE PRODUCTION VERIFICATION.**
