@@ -54,6 +54,19 @@ DUPLICATE_DOCUMENT_IDENTITY = "DUPLICATE_DOCUMENT_IDENTITY"
 DUPLICATE_EVENT_IDENTITY = "DUPLICATE_EVENT_IDENTITY"
 HISTORICAL_AS_CURRENT = "HISTORICAL_AS_CURRENT"
 INTERIM_AS_ANNUAL = "INTERIM_AS_ANNUAL"
+# ── Manual-QA invariants ─────────────────────────────────────────────────── #
+#: The report displays live regulated disclosures from a venue AND says that
+#: venue's connector is scaffolded / not fetched / disabled.
+CONNECTOR_STATE_CONTRADICTION = "CONNECTOR_STATE_CONTRADICTION"
+#: The report holds validated T1 primary-filing facts AND still asks generically
+#: for primary filings as though none existed.
+PRIMARY_FILING_REQUIRED_CONTRADICTION = "PRIMARY_FILING_REQUIRED_CONTRADICTION"
+#: A non-US issuer is told to verify itself against a US/Canadian venue that
+#: does not list it, while its own venue is known.
+JURISDICTION_TASK_MISMATCH = "JURISDICTION_TASK_MISMATCH"
+#: A per-document count and the report-level fact count disagree with nothing
+#: on the row saying they count different populations.
+FACT_COUNT_SEMANTICS_MISMATCH = "FACT_COUNT_SEMANTICS_MISMATCH"
 
 ALL_INVARIANTS: tuple[str, ...] = (
     FACT_PRESENT_AND_MISSING,
@@ -69,6 +82,10 @@ ALL_INVARIANTS: tuple[str, ...] = (
     DUPLICATE_EVENT_IDENTITY,
     HISTORICAL_AS_CURRENT,
     INTERIM_AS_ANNUAL,
+    CONNECTOR_STATE_CONTRADICTION,
+    PRIMARY_FILING_REQUIRED_CONTRADICTION,
+    JURISDICTION_TASK_MISMATCH,
+    FACT_COUNT_SEMANTICS_MISMATCH,
 )
 
 SEVERITY_SERIOUS = "serious"
@@ -89,6 +106,10 @@ SERIOUS_INVARIANTS: frozenset[str] = frozenset(
         ENUM_REPR_LEAK,
         HISTORICAL_AS_CURRENT,
         INTERIM_AS_ANNUAL,
+        CONNECTOR_STATE_CONTRADICTION,
+        PRIMARY_FILING_REQUIRED_CONTRADICTION,
+        JURISDICTION_TASK_MISMATCH,
+        FACT_COUNT_SEMANTICS_MISMATCH,
     }
 )
 
@@ -272,6 +293,10 @@ def audit_report_consistency(
         _check_duplicate_documents,
         _check_duplicate_events,
         _check_text_leaks,
+        _check_connector_state,
+        _check_primary_filing_required,
+        _check_jurisdiction_tasks,
+        _check_fact_count_semantics,
     ):
         try:
             check(content, audit, company_country=company_country)
@@ -678,6 +703,204 @@ def _check_duplicate_events(
                     sections=("news_catalyst_discovery",),
                 )
             )
+
+
+# ── Manual-QA invariants ─────────────────────────────────────────────────── #
+#
+# Each of these was a real, live-observed contradiction in an otherwise
+# "0 findings" report. They are text-layer checks by necessity — the defect IS
+# the prose — but each is anchored to a STRUCTURED fact elsewhere in the same
+# report, so a finding always means two parts of one document disagree, never
+# that a sentence merely looked wrong.
+
+#: Wording that asserts a connector is not live. Matched only against gap/limitation
+#: prose, and only for a report that is simultaneously DISPLAYING live disclosures.
+_CONNECTOR_NOT_LIVE_MARKERS: tuple[str, ...] = (
+    "connector scaffolded",
+    "not fetched at report time",
+    "live retrieval is disabled",
+    "scaffolded, not yet live",
+    "pending regulator integration",
+)
+
+#: Generic demands for primary filings, forbidden once T1 filing facts exist.
+_PRIMARY_FILING_REQUIRED_MARKERS: tuple[str, ...] = (
+    "primary filings (t1/t2) required",
+    "primary filings required",
+    "no primary filing",
+)
+
+#: US/Canadian venues. Naming one as the place to verify a non-US issuer whose
+#: own venue is known is the mismatch.
+_US_CA_VENUE_MARKERS: tuple[str, ...] = ("sec edgar", "sedar+", "sedar")
+
+_T1_TIERS: frozenset[str] = frozenset(
+    {"T1_primary_filing", "T1_primary_company_source"}
+)
+
+
+def _live_disclosure_venues(content: dict[str, Any]) -> set[str]:
+    """Venues this report actually DISPLAYS live disclosures from."""
+    section = _as_dict(content.get("regulated_disclosures"))
+    if not section.get("available"):
+        return set()
+    venues: set[str] = set()
+    for event in _dp_value(section, "events") or []:
+        if isinstance(event, dict) and isinstance(event.get("venue"), str):
+            venues.add(event["venue"].strip())
+    return {v for v in venues if v}
+
+
+def _has_t1_primary_facts(content: dict[str, Any]) -> bool:
+    """True when the report presents at least one T1 primary-filing datapoint."""
+    snapshot = _as_dict(content.get("financial_snapshot"))
+    for key, entry in _snapshot_datapoints(snapshot).items():
+        if not key.endswith(("_primary_filing", "_current_period")):
+            continue
+        if str(entry.get("source_tier") or "") in _T1_TIERS:
+            return True
+    return False
+
+
+def _check_connector_state(
+    content: dict[str, Any], audit: ConsistencyAudit, **_: Any
+) -> None:
+    """Live disclosures displayed AND the venue called not-live."""
+    venues = _live_disclosure_venues(content)
+    if not venues:
+        return
+    for path, text in _iter_text(content):
+        if path.startswith("regulated_disclosures"):
+            continue
+        lowered = text.lower()
+        marker = next(
+            (m for m in _CONNECTOR_NOT_LIVE_MARKERS if m in lowered), None
+        )
+        if marker is None:
+            continue
+        audit.findings.append(
+            ConsistencyFinding(
+                invariant=CONNECTOR_STATE_CONTRADICTION,
+                severity=SEVERITY_SERIOUS,
+                detail=(
+                    f"The report displays live regulated disclosures from "
+                    f"{sorted(venues)} while stating '{marker}' at {path}."
+                ),
+                sections=("regulated_disclosures",),
+            )
+        )
+        return
+
+
+def _check_primary_filing_required(
+    content: dict[str, Any], audit: ConsistencyAudit, **_: Any
+) -> None:
+    """T1 filing facts present AND a generic demand for primary filings."""
+    if not _has_t1_primary_facts(content):
+        return
+    for path, text in _iter_text(content):
+        lowered = text.lower()
+        marker = next(
+            (m for m in _PRIMARY_FILING_REQUIRED_MARKERS if m in lowered), None
+        )
+        if marker is None:
+            continue
+        audit.findings.append(
+            ConsistencyFinding(
+                invariant=PRIMARY_FILING_REQUIRED_CONTRADICTION,
+                severity=SEVERITY_SERIOUS,
+                detail=(
+                    "The report presents validated T1 primary-filing datapoints "
+                    f"while stating '{marker}' at {path}, as though none existed."
+                ),
+                sections=("financial_snapshot",),
+            )
+        )
+        return
+
+
+def _check_jurisdiction_tasks(
+    content: dict[str, Any], audit: ConsistencyAudit, **_: Any
+) -> None:
+    """A non-US issuer told to verify itself against SEC EDGAR / SEDAR+.
+
+    Gated on the report's OWN identity: an issuer whose exchange or domicile
+    this report does not state is not judged, and a US issuer is never flagged —
+    SEC EDGAR is genuinely where it should be verified.
+    """
+    identity = _as_dict(content.get("company_identity"))
+    country = str(_dp_value(identity, "country_domicile") or "").strip().lower()
+    if not country or country in {"united states", "usa", "us"}:
+        return
+    for path, text in _iter_text(content):
+        lowered = text.lower()
+        if not any(m in lowered for m in _US_CA_VENUE_MARKERS):
+            continue
+        # Only a TASK/next-step recommendation is a mismatch. A gap explaining
+        # that SEC EDGAR does not cover this issuer is correct and necessary.
+        if not any(
+            verb in lowered
+            for verb in ("cross-check", "cross check", "verify against", "obtain from")
+        ):
+            continue
+        audit.findings.append(
+            ConsistencyFinding(
+                invariant=JURISDICTION_TASK_MISMATCH,
+                severity=SEVERITY_SERIOUS,
+                detail=(
+                    f"A {country.title()} issuer is directed to a US/Canadian "
+                    f"venue at {path}: {text[:120]}"
+                ),
+                sections=("research_completeness_review",),
+            )
+        )
+        return
+
+
+def _check_fact_count_semantics(
+    content: dict[str, Any], audit: ConsistencyAudit, **_: Any
+) -> None:
+    """Two displayed fact counts must agree, or say they count different things.
+
+    A document row reading "0 fact(s)" beside a report-level "primary fact
+    count: 8" drawn from that same document is unreadable unless the row states
+    what it counts. Either is acceptable; silence is not.
+    """
+    memo = _as_dict(content.get("research_memo"))
+    summary = _as_dict(memo.get("primary_evidence_summary"))
+    if not summary:
+        return
+    report_total = summary.get("primary_fact_count")
+    if not isinstance(report_total, int):
+        return
+    rows = summary.get("primary_documents")
+    if not isinstance(rows, list):
+        return
+    row_total = sum(
+        int(r.get("fact_count") or 0) for r in rows if isinstance(r, dict)
+    )
+    if row_total == report_total:
+        return
+    unlabelled = [
+        r
+        for r in rows
+        if isinstance(r, dict) and not str(r.get("counts_basis") or "").strip()
+    ]
+    if not unlabelled:
+        return
+    audit.findings.append(
+        ConsistencyFinding(
+            invariant=FACT_COUNT_SEMANTICS_MISMATCH,
+            severity=SEVERITY_SERIOUS,
+            detail=(
+                f"Per-document fact counts total {row_total} while the report "
+                f"states {report_total}, and "
+                f"{len(unlabelled)} document row(s) do not say which population "
+                "they count."
+            ),
+            sections=("research_memo",),
+        )
+    )
 
 
 def _check_text_leaks(

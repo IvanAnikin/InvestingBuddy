@@ -150,8 +150,11 @@ def test_an_empty_or_malformed_report_never_crashes() -> None:
 
 
 def test_every_named_invariant_is_registered() -> None:
-    assert len(ALL_INVARIANTS) == 13
+    # 13 from PR-F, plus the four manual-QA state/copy invariants (see
+    # ``tests/test_manual_qa_state_and_copy.py``).
+    assert len(ALL_INVARIANTS) == 17
     assert SERIOUS_INVARIANTS <= set(ALL_INVARIANTS)
+    assert len(set(ALL_INVARIANTS)) == len(ALL_INVARIANTS)
 
 
 # =========================================================================== #

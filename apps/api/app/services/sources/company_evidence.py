@@ -44,6 +44,10 @@ from app.services.exchange_registry import (
     region_for_exchange,
 )
 from app.services.sources.connector_base import CompanyContext, QueryContext
+from app.services.sources.connector_state import (
+    ConnectorRunState,
+    reconcile_connector_state_gaps,
+)
 from app.services.sources.connectors.company_ir import (
     _LOCAL_LANGUAGE_COUNTRIES,
     CompanyIrConnector,
@@ -167,6 +171,38 @@ _COUNTRY_TO_REGULATOR: dict[str, str] = {
     "Switzerland": "six_swiss",
     "Italy": "borsa_italiana",
 }
+
+
+#: SHORT venue names for the regulator connector ids ``regulator_connector_for``
+#: can resolve — the form that reads well inside a channel LABEL, as opposed to
+#: the longer prose forms the two research agents carry for their own sentences.
+#: Manual-QA corrective: without this, every regulator channel was labelled
+#: "(SEC EDGAR)" / "(SEC XBRL)" regardless of jurisdiction.
+#: ``test_every_regulator_connector_has_a_display_name`` asserts this stays
+#: complete as connectors are added.
+_REGULATOR_VENUE_NAMES: dict[str, str] = {
+    "uk_fca_nsm": "FCA National Storage Mechanism",
+    "euronext_regulated_info": "Euronext Regulated Information / AMF",
+    "deutsche_boerse": "Deutsche Börse / Bundesanzeiger",
+    "nordic_disclosures": "Nasdaq Nordic",
+    "six_swiss": "SIX Swiss Exchange",
+    "borsa_italiana": "eMarket Storage (CONSOB)",
+}
+
+
+def regulator_venue_display_name(
+    exchange: str | None, country: str | None
+) -> str | None:
+    """The issuer's own regulated-disclosure venue, or ``None``.
+
+    ``None`` means "no venue resolved for this jurisdiction" — never a guess,
+    and never a fallback to a US venue.
+    """
+    try:
+        connector_id = regulator_connector_for(exchange, country)
+    except Exception:  # noqa: BLE001 - a label must never break a report
+        return None
+    return _REGULATOR_VENUE_NAMES.get(connector_id or "")
 
 
 def regulator_connector_for(
@@ -406,6 +442,13 @@ _DOCUMENT_SOURCE_TYPES = frozenset(
         "company_ir_business_description",
         "company_ir_risk_excerpt",
         "company_ir_financial_fact",
+        # Manual-QA corrective: the regulated-venue copy of the issuer's own
+        # filing is a primary DOCUMENT like any other, so its excerpts and
+        # facts must go through the SAME fact-reservation as the issuer-IR
+        # ones. Leaving them out of this set is what let the generic
+        # per-source cap evict every venue fact — see the call site.
+        VENUE_DOCUMENT_EXCERPT_TYPE,
+        VENUE_DOCUMENT_FACT_TYPE,
     }
 )
 
@@ -1000,24 +1043,17 @@ async def collect_company_source_evidence(
         primary_document_artifacts.extend(ir.collected_primary_document_artifacts)
 
     # -- Non-US primary-disclosure context (Phase 29B.1) -------------------
-    # For a verified non-US issuer, home-regulator connectors are still
-    # scaffolded — say so honestly, and note the translation limitation.
-    if verified and not (is_us_exchange(company.exchange) or is_sec_eligible(company.exchange)):
-        gaps.append(
-            SourceGap(
-                connector_key="company_ir",
-                source_id="company_ir",
-                gap_type=GapType.connector_scaffolded,
-                severity=GapSeverity.info,
-                message=(
-                    f"{verified.country} regulated-disclosure connector scaffolded; "
-                    "company IR annual report used as primary source pending "
-                    "regulator integration."
-                ),
-                suggested_followup_phase="Phase 29B.x",
-                blocks_research_complete=False,
-            )
-        )
+    # For a verified non-US issuer, note the translation limitation. The
+    # "home-regulator connector is still scaffolded" claim used to be emitted
+    # HERE, before the regulator connectors had run — so it survived into
+    # reports that went on to display live disclosures from exactly the
+    # connector it called scaffolded. It now runs after them, gated on what
+    # they actually reached (see ``_regulator_scaffolded_gap`` below).
+    non_us_verified = bool(
+        verified
+        and not (is_us_exchange(company.exchange) or is_sec_eligible(company.exchange))
+    )
+    if non_us_verified and verified is not None:
         # Problem F follow-up (found during live staging acceptance): this gap
         # used to fire from the issuer's country alone (``verified.country in
         # _LOCAL_LANGUAGE_COUNTRIES``), independent of what language the
@@ -1050,6 +1086,11 @@ async def collect_company_source_evidence(
     # Connectors that actually ran a live disclosure retrieval, kept so the
     # current-period document step below can ask them what they found.
     disclosure_connectors: list[Any] = []
+    # Manual-QA corrective — what each connector ACTUALLY reached in THIS run,
+    # so its own "scaffolded / not fetched / disabled" gaps can be reconciled
+    # against it instead of surviving into a report that displays live events
+    # from the same connector. See ``sources/connector_state``.
+    connector_state = ConnectorRunState()
     for sid in _relevant_scaffold_ids(registry, company, requested):
         conn = registry.connectors().get(sid)
         if conn is None:
@@ -1083,6 +1124,7 @@ async def collect_company_source_evidence(
         gaps.extend(event_res.source_gaps)
         warnings.extend(event_res.warnings)
         disclosure_connectors.append(conn)
+        connector_state.observe_events(sid, event_res.evidence_items)
 
     # -- Current-period document from an official regulated venue ----------
     # Current-period acceptance. The venue path is a FALLBACK, not a parallel
@@ -1155,9 +1197,55 @@ async def collect_company_source_evidence(
                     ocr_budget=ocr_budget,
                 )
             )
-            items.extend(venue_items[:max_items])
+            # Manual-QA corrective. This was ``venue_items[:max_items]``, and
+            # the adapter emits excerpts before facts — so with a per-source cap
+            # of five, five excerpts survived and EVERY validated fact was
+            # evicted. The report then showed "5 excerpt(s), 0 fact(s)" for a
+            # document whose eight facts it was simultaneously presenting in its
+            # own current-period slots, and the council never saw them as
+            # citable evidence at all.
+            #
+            # This is the exact defect ``_prioritize_ir_items`` already exists
+            # to prevent (see the note above it) — it was simply never applied
+            # to the venue path. It is not IR-specific: it reserves a bounded,
+            # category-diverse set of structured facts OUTSIDE the generic cap,
+            # so typed facts never compete with prose for the same slots.
+            reserved_venue_facts, rest_venue_items = _prioritize_ir_items(
+                _dedup_evidence(venue_items),
+                financial_fact_cap=cfg.company_ir_financial_fact_cap,
+            )
+            items.extend(reserved_venue_facts + rest_venue_items[:max_items])
             gaps.extend(venue_gaps)
             primary_document_artifacts.extend(venue_artifacts)
+            if venue_artifacts:
+                connector_state.observe_document(
+                    getattr(chosen_conn, "connector_key", None),
+                    venue=selection.venue,
+                )
+
+    # Manual-QA corrective — emitted only when NO dedicated regulator connector
+    # reached live data for this issuer in this run. ``verified`` is truthy
+    # whenever ``non_us_verified`` is.
+    if non_us_verified and not connector_state.any_live and verified is not None:
+        gaps.append(
+            SourceGap(
+                connector_key="company_ir",
+                source_id="company_ir",
+                gap_type=GapType.connector_scaffolded,
+                severity=GapSeverity.info,
+                message=(
+                    f"{verified.country} regulated-disclosure connector scaffolded; "
+                    "company IR annual report used as primary source pending "
+                    "regulator integration."
+                ),
+                suggested_followup_phase="Phase 29B.x",
+                blocks_research_complete=False,
+            )
+        )
+
+    # Manual-QA corrective — every remaining gap that claims a connector is not
+    # live is now checked against what that connector actually reached.
+    gaps = reconcile_connector_state_gaps(gaps, connector_state)
 
     # -- Local-language business-press reference (Phase 30B) ---------------
     # For a verified non-US issuer whose home market is FR / DE / IT / DA, add a
@@ -1238,6 +1326,7 @@ __all__ = [
     "sec_filings_from_catalyst",
     "press_items_from_catalyst",
     "regulator_connector_for",
+    "regulator_venue_display_name",
     "SEC_ID",
     "COMPANY_IR_ID",
     "REGULATOR_REFERENCE_IDS",

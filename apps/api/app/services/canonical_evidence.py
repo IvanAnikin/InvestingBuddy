@@ -476,17 +476,31 @@ CHANNEL_REGULATOR_FILINGS = "regulator_filing_events"
 CHANNEL_ISSUER_NEWSROOM = "issuer_newsroom"
 CHANNEL_DB_CITATIONS = "db_citations"
 
+#: Manual-QA corrective — the regulator channels used to be labelled
+#: "Regulator structured financial facts (SEC XBRL)" and "Regulator filing
+#: events (SEC EDGAR)" for EVERY issuer. On a Danish or Italian report that
+#: names a venue the issuer has no relationship with, and reads as though the
+#: platform looked in the wrong place. SEC EDGAR / XBRL remain exactly right
+#: for an SEC-eligible issuer, so the venue is now stated when it is KNOWN to
+#: apply and the label is source-neutral otherwise; the concrete provider is
+#: carried separately in ``detail``/``venue`` so nothing is lost.
 _CHANNEL_LABELS = {
     CHANNEL_ISSUER_DOCUMENT: "Issuer-primary document extraction",
     CHANNEL_ISSUER_PRIMARY_FACTS: (
         "Issuer primary-document financial facts (T1 filing)"
     ),
-    CHANNEL_REGULATOR_FACTS: "Regulator structured financial facts (SEC XBRL)",
+    CHANNEL_REGULATOR_FACTS: "Regulator structured financial facts",
     CHANNEL_AGGREGATOR_FUNDAMENTALS: "Aggregator fundamentals (T5)",
-    CHANNEL_REGULATOR_FILINGS: "Regulator filing events (SEC EDGAR)",
+    CHANNEL_REGULATOR_FILINGS: "Official regulated disclosures / filing events",
     CHANNEL_ISSUER_NEWSROOM: "Issuer newsroom / press releases",
     CHANNEL_DB_CITATIONS: "Persisted citations / council evidence",
 }
+
+#: The venue suffix added to a regulator channel label when the issuer's own
+#: venue is known. ``None`` venue ⇒ the source-neutral label above, never a
+#: guessed jurisdiction.
+_SEC_VENUE_FACTS = "SEC XBRL"
+_SEC_VENUE_FILINGS = "SEC EDGAR"
 
 
 def build_evidence_channels(
@@ -496,6 +510,9 @@ def build_evidence_channels(
     catalyst_summary: dict[str, Any] | None = None,
     citation_count: int = 0,
     council_evidence_count: int = 0,
+    sec_eligible: bool = False,
+    regulator_facts_venue: str | None = None,
+    regulator_filings_venue: str | None = None,
 ) -> dict[str, Any]:
     """An explicit, non-contradictory inventory of the evidence channels.
 
@@ -513,14 +530,32 @@ def build_evidence_channels(
     filing_events = int(summary.get("filing_event_count") or 0)
     press_events = int(summary.get("press_release_event_count") or 0)
 
+    facts_venue = regulator_facts_venue or (_SEC_VENUE_FACTS if sec_eligible else None)
+    filings_venue = (
+        regulator_filings_venue or (_SEC_VENUE_FILINGS if sec_eligible else None)
+    )
+    venue_by_channel = {
+        CHANNEL_REGULATOR_FACTS: facts_venue,
+        CHANNEL_REGULATOR_FILINGS: filings_venue,
+    }
+
     def _channel(key: str, available: bool, detail: str, **extra: Any) -> dict:
-        return {
+        label = _CHANNEL_LABELS[key]
+        venue = venue_by_channel.get(key)
+        if venue:
+            label = f"{label} ({venue})"
+        entry = {
             "channel": key,
-            "label": _CHANNEL_LABELS[key],
+            "label": label,
             "available": available,
             "detail": detail,
             **extra,
         }
+        if key in venue_by_channel:
+            # Stated even when None, so a reader can tell "no venue resolved"
+            # from "this row simply does not have one".
+            entry["venue"] = venue
+        return entry
 
     return {
         "type": "evidence_channels",
