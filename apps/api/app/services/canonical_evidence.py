@@ -503,6 +503,16 @@ _SEC_VENUE_FACTS = "SEC XBRL"
 _SEC_VENUE_FILINGS = "SEC EDGAR"
 
 
+def _regulator_event_detail(filing_events: int, regulated_disclosures: int) -> str:
+    """State each official-event source separately, never as one blurred total."""
+    parts: list[str] = []
+    if filing_events:
+        parts.append(f"{filing_events} regulator filing event(s)")
+    if regulated_disclosures:
+        parts.append(f"{regulated_disclosures} live regulated disclosure(s)")
+    return f"available — {', '.join(parts)}" if parts else "not sourced"
+
+
 def build_evidence_channels(
     *,
     fundamentals: FundamentalsEvidence,
@@ -513,6 +523,7 @@ def build_evidence_channels(
     sec_eligible: bool = False,
     regulator_facts_venue: str | None = None,
     regulator_filings_venue: str | None = None,
+    regulated_disclosure_count: int = 0,
 ) -> dict[str, Any]:
     """An explicit, non-contradictory inventory of the evidence channels.
 
@@ -529,6 +540,8 @@ def build_evidence_channels(
     summary = catalyst_summary if isinstance(catalyst_summary, dict) else {}
     filing_events = int(summary.get("filing_event_count") or 0)
     press_events = int(summary.get("press_release_event_count") or 0)
+    regulated_disclosures = max(0, int(regulated_disclosure_count or 0))
+    regulator_events = filing_events + regulated_disclosures
 
     facts_venue = regulator_facts_venue or (_SEC_VENUE_FACTS if sec_eligible else None)
     filings_venue = (
@@ -645,15 +658,20 @@ def build_evidence_channels(
                     else 0
                 ),
             ),
+            # Manual-QA corrective — this counted SEC filing events ONLY. Once
+            # the label stopped saying "SEC EDGAR" and named the issuer's own
+            # venue, the row read "Official regulated disclosures / filing
+            # events (eMarket Storage (CONSOB)) — not sourced, 0 events" on a
+            # report DISPLAYING five live disclosures from that venue. The
+            # channel is "official regulated disclosures / filing events", so
+            # it counts both; the two sources stay separately visible.
             _channel(
                 CHANNEL_REGULATOR_FILINGS,
-                filing_events > 0,
-                (
-                    f"available — {filing_events} filing event(s)"
-                    if filing_events
-                    else "not sourced"
-                ),
-                event_count=filing_events,
+                regulator_events > 0,
+                _regulator_event_detail(filing_events, regulated_disclosures),
+                event_count=regulator_events,
+                filing_event_count=filing_events,
+                regulated_disclosure_count=regulated_disclosures,
             ),
             _channel(
                 CHANNEL_ISSUER_NEWSROOM,

@@ -6529,6 +6529,9 @@ class FinalReportGeneratorService:
             sec_eligible=is_sec_eligible(_channel_exchange),
             regulator_facts_venue=_channel_venue,
             regulator_filings_venue=_channel_venue,
+            regulated_disclosure_count=len(
+                getattr(council_result, "regulated_disclosure_events", None) or []
+            ),
         )
 
         # Phase 31 hotfix: when the connector layer located verified PRIMARY-SOURCE

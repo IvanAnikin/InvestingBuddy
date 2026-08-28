@@ -779,6 +779,19 @@ The check now also requires the sentence's SUBJECT to be the regulated-disclosur
 is silent on all three regenerated ones. An invariant that fires on a true sentence is itself a
 defect — it trains a reader to ignore the audit.
 
+### 29.4 The regulator-event channel counts what it is named after
+
+Making the label truthful exposed a contradiction the old wording had hidden. The channel now
+reads *"Official regulated disclosures / filing events (eMarket Storage (CONSOB))"* — and it was
+reporting **"not sourced, 0 events"** on a report displaying **five live disclosures from that
+venue**, because it had only ever counted SEC filing events from the catalyst summary. Under the
+old "(SEC EDGAR)" label that was arguably true; under a truthful label it is a plain
+contradiction.
+
+The channel now counts both official sources and keeps them separately decomposable
+(`filing_event_count`, `regulated_disclosure_count`), and `CONNECTOR_STATE_CONTRADICTION` gained
+a structured arm that catches the shape directly rather than relying on prose.
+
 ## 30. Final status
 
 **Campaign closed 2026-08-26. Status: READY FOR MANUAL PRIVATE-USE PRODUCTION VERIFICATION.**
