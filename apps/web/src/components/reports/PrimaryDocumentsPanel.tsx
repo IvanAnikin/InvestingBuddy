@@ -107,7 +107,13 @@ function SummaryRow({ summary }: { summary: PrimaryDocumentIngestionSummary }) {
       <SummaryTile label="OCR" value={summary.ocr_count} />
       <SummaryTile label="Metadata only" value={summary.metadata_only_count} />
       <SummaryTile label="Failed" value={summary.failed_count} />
-      <SummaryTile label="Validated facts" value={summary.validated_fact_count} />
+      {/* Manual-QA: the tile is named after the population it counts. The
+          research memo shows a differently-scoped per-document count, and
+          "Validated facts" alone read as if it were the same number. */}
+      <SummaryTile
+        label={summary.fact_count_label ?? "Persisted validated facts"}
+        value={summary.validated_fact_count}
+      />
       <SummaryTile label="Reused" value={summary.reused_count} />
     </div>
   );
@@ -239,8 +245,10 @@ function DocumentCard({ doc }: { doc: PrimaryDocument }) {
       {hasDetail && (
         <details className="group text-xs">
           <summary className="cursor-pointer select-none text-slate-400 hover:text-slate-200">
-            {doc.excerpts.length} excerpt(s), {doc.facts.length} fact(s) — show
-            detail
+            {doc.excerpts.length} excerpt(s),{" "}
+            {doc.persisted_validated_fact_count ?? doc.facts.length}{" "}
+            {(doc.fact_count_label ?? "Persisted validated facts").toLowerCase()} —
+            show detail
           </summary>
           <div className="mt-2 space-y-3">
             {doc.excerpts.length > 0 && (

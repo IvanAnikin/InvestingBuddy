@@ -199,7 +199,7 @@ def test_memo_surfaces_metadata_only_references_when_no_extraction() -> None:
     )
     pes = memo["primary_evidence_summary"]
     assert pes["primary_source_reference_count"] > 0
-    assert pes["primary_fact_count"] == 0
+    assert pes["report_primary_fact_count"] == 0
     assert pes["primary_document_count"] == 0
     assert pes["extracted_document_text_available"] is False
     assert pes["primary_facts_available"] is False
@@ -234,7 +234,7 @@ def test_memo_empty_evidence_keeps_honest_empty_branch() -> None:
     )
     pes = memo["primary_evidence_summary"]
     assert pes["primary_document_count"] == 0
-    assert pes["primary_fact_count"] == 0
+    assert pes["report_primary_fact_count"] == 0
     assert pes["primary_source_reference_count"] == 0
     assert "0 primary facts" in pes["note"]["value"]
     assert pes["note"]["provenance"] == "missing_data"

@@ -182,6 +182,13 @@ export interface PrimaryDocument {
   reused: boolean;
   excerpts: PrimaryDocumentExcerpt[];
   facts: PrimaryDocumentFact[];
+  // Manual-QA: the count NAMES its population. The research memo shows a
+  // per-document count too, and for the same document the two can read 4 and
+  // 24 — both correct, one counting cited-evidence items and one persisted
+  // rows. Neither may be rendered as an unqualified "fact count".
+  persisted_validated_fact_count: number;
+  fact_count_scope: string;
+  fact_count_label: string;
 }
 
 // Named distinctly from `PrimaryDocumentSummary` above (Phase 29B.2's
@@ -196,6 +203,9 @@ export interface PrimaryDocumentIngestionSummary {
   native_count: number;
   ocr_count: number;
   validated_fact_count: number;
+  fact_count_scope: string;
+  fact_count_label: string;
+  fact_count_scope_definitions: Record<string, string>;
   reused_count: number;
   evidence_reference_count: number;
 }

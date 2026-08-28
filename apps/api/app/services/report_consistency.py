@@ -905,50 +905,113 @@ def _check_jurisdiction_tasks(
         return
 
 
+def _fact_count_entries(node: Any, path: str = "") -> "list[tuple[str, str, int, str | None]]":
+    """Every displayed fact count, as ``(path, key, value, scope)``.
+
+    A "fact count" is any integer key ending in ``fact_count`` — including a
+    bare one, which is exactly what this invariant exists to catch. ``scope``
+    comes from the sibling ``fact_count_scope``, so a count and its scope must
+    live on the same object; a count with no scope beside it is unscoped by
+    definition.
+    """
+    out: list[tuple[str, str, int, str | None]] = []
+    if isinstance(node, dict):
+        scope = node.get("fact_count_scope")
+        scope = scope if isinstance(scope, str) and scope.strip() else None
+        for key, value in node.items():
+            child = f"{path}.{key}" if path else str(key)
+            if key.endswith("fact_count") and isinstance(value, int):
+                out.append((child, str(key), value, scope))
+            else:
+                out.extend(_fact_count_entries(value, child))
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            out.extend(_fact_count_entries(value, f"{path}[{index}]"))
+    return out
+
+
 def _check_fact_count_semantics(
     content: dict[str, Any], audit: ConsistencyAudit, **_: Any
 ) -> None:
-    """Two displayed fact counts must agree, or say they count different things.
+    """Every displayed fact count names its scope, and one scope has one value.
 
-    A document row reading "0 fact(s)" beside a report-level "primary fact
-    count: 8" drawn from that same document is unreadable unless the row states
-    what it counts. Either is acceptable; silence is not.
+    A single report was showing four differently-scoped numbers all worded
+    "fact(s)": a document's cited-evidence items, that same document's
+    persisted rows, the report's own primary-fact total, and a distinct-field
+    count. Richemont's "4" and "24" are the SAME document. Every number was
+    correct and the page was unreadable.
+
+    The rule is deliberately NOT "make the counts agree" — forcing agreement
+    would mean hiding facts the report holds or inflating a count past the rows
+    that exist. It is:
+
+      * a count whose key does not name a population must carry an explicit
+        ``fact_count_scope`` (see ``services/fact_count_scopes``); and
+      * two counts sharing a scope, at the same level, must not disagree.
+
+    Counts of DIFFERENT scopes are free to differ — that is the point.
     """
-    memo = _as_dict(content.get("research_memo"))
-    summary = _as_dict(memo.get("primary_evidence_summary"))
-    if not summary:
+    entries = _fact_count_entries(content)
+    if not entries:
         return
-    report_total = summary.get("primary_fact_count")
-    if not isinstance(report_total, int):
-        return
-    rows = summary.get("primary_documents")
-    if not isinstance(rows, list):
-        return
-    row_total = sum(
-        int(r.get("fact_count") or 0) for r in rows if isinstance(r, dict)
-    )
-    if row_total == report_total:
-        return
-    unlabelled = [
-        r
-        for r in rows
-        if isinstance(r, dict) and not str(r.get("counts_basis") or "").strip()
-    ]
-    if not unlabelled:
-        return
-    audit.findings.append(
-        ConsistencyFinding(
-            invariant=FACT_COUNT_SEMANTICS_MISMATCH,
-            severity=SEVERITY_SERIOUS,
-            detail=(
-                f"Per-document fact counts total {row_total} while the report "
-                f"states {report_total}, and "
-                f"{len(unlabelled)} document row(s) do not say which population "
-                "they count."
-            ),
-            sections=("research_memo",),
+
+    for path, key, _value, scope in entries:
+        if scope is not None or key != "fact_count":
+            continue
+        audit.findings.append(
+            ConsistencyFinding(
+                invariant=FACT_COUNT_SEMANTICS_MISMATCH,
+                severity=SEVERITY_SERIOUS,
+                detail=(
+                    f"'{path}' displays an unqualified fact count with no "
+                    "fact_count_scope, so a reader cannot tell which population "
+                    "it counts."
+                ),
+                sections=("research_memo",),
+            )
         )
-    )
+        return
+
+    # Two counts on the SAME object necessarily share that object's scope, so
+    # they describe one population and must agree. Counts on DIFFERENT objects
+    # are free to differ — a per-document persisted count and a whole-run
+    # persisted total share a scope and legitimately are not the same number.
+    for path, values in sorted(_fact_counts_per_object(content).items()):
+        if len(values) > 1:
+            audit.findings.append(
+                ConsistencyFinding(
+                    invariant=FACT_COUNT_SEMANTICS_MISMATCH,
+                    severity=SEVERITY_SERIOUS,
+                    detail=(
+                        f"'{path or 'report'}' carries fact counts "
+                        f"{sorted(values.items())} under ONE scope, so they "
+                        "claim to count the same population and disagree."
+                    ),
+                    sections=("research_memo",),
+                )
+            )
+            return
+
+
+def _fact_counts_per_object(
+    node: Any, path: str = ""
+) -> "dict[str, dict[str, int]]":
+    """``{object path: {key: value}}`` for objects carrying >1 fact count."""
+    out: dict[str, dict[str, int]] = {}
+    if isinstance(node, dict):
+        local = {
+            k: v
+            for k, v in node.items()
+            if k.endswith("fact_count") and isinstance(v, int)
+        }
+        if len(set(local.values())) > 1:
+            out[path] = local
+        for key, value in node.items():
+            out.update(_fact_counts_per_object(value, f"{path}.{key}" if path else str(key)))
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            out.update(_fact_counts_per_object(value, f"{path}[{index}]"))
+    return out
 
 
 def _check_text_leaks(

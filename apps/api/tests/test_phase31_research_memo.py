@@ -481,7 +481,9 @@ def test_memo_cites_primary_facts_from_council() -> None:
         _rich_report_content(), _rich_council(), source_tier="T1_primary_filing"
     )
     pes = memo["primary_evidence_summary"]
-    assert pes["primary_fact_count"] == 3
+    # Manual-QA: the key now NAMES its population (report primary facts).
+    assert pes["report_primary_fact_count"] == 3
+    assert pes["fact_count_label"] == "Report primary facts"
     assert pes["primary_document_count"] == 1
 
     fact_rows = pes["primary_facts"]["value"]
@@ -594,7 +596,7 @@ def test_memo_thin_content_degrades_honestly() -> None:
 
     # Primary evidence is honest-empty — no fabricated facts.
     pes = memo["primary_evidence_summary"]
-    assert pes["primary_fact_count"] == 0
+    assert pes["report_primary_fact_count"] == 0
     assert pes["primary_document_count"] == 0
     note = pes["note"]["value"].lower()
     assert "0 primary facts" in note

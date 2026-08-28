@@ -213,6 +213,9 @@ async def get_report_primary_documents(
                 reused=reused,
                 excerpts=excerpts,
                 facts=facts,
+                # Derived, never a second stored number: the count IS the rows
+                # returned on this row, so the two can never drift apart.
+                persisted_validated_fact_count=len(facts),
             )
         )
 

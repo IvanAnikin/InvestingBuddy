@@ -832,6 +832,41 @@ required before any investment decision."* The warning is intact.
 the official-events row reports *"available — 5 live regulated disclosure(s)"* for Pandora and
 Moncler and *"not sourced"* for Richemont, matching each report's own disclosure section exactly.
 
+## 29.6 One authoritative meaning per fact count
+
+The first pass at this labelled the two counts a Moncler report showed. Manual QA then found the
+same class on **Richemont**, where the research memo shows `1 / 9 / 4` for three documents while
+the Primary Documents tab shows `9 / 24 / 1` for the same three, under a report-level total of
+`34` — every number correct, nothing saying which population each counts. Traced across the three
+live reports:
+
+| surface | population | PNDORA | CFR | MONC |
+|---|---|---|---|---|
+| research memo, per document | fact-shaped **evidence items** built for the council (budget-bounded) | 3, 14 | 1, 9, 4 | 8 |
+| research memo, total | the report's **high-confidence primary facts** | 55 | 34 | 8 |
+| Primary Documents tab, per document | active **persisted rows** for that document | 52, 0, 3 | 9, 24, 1 | 8 |
+| Primary Documents tab, summary | active persisted rows across the run | 55 | 34 | 8 |
+| evidence channel "issuer primary facts" | distinct canonical **fields** — not facts | 9 | 5 | 4 |
+
+Richemont's "4" and "24" are the **same document**; so are Pandora's "14" and "52".
+
+`app/services/fact_count_scopes.py` is now the closed vocabulary — `Persisted validated facts`,
+`Report primary facts`, `Cited evidence facts`, `Canonical statement fields` — each with a label
+and a one-line definition. The rule is **not** "make the numbers agree": forcing agreement would
+mean hiding facts the report holds or inflating a count past the rows that exist. It is:
+
+* every displayed fact count NAMES its population — the key itself
+  (`report_primary_fact_count`, `cited_evidence_fact_count`,
+  `persisted_validated_fact_count`) plus a `fact_count_scope` / `fact_count_label`, with the
+  definitions stated once per report; and
+* two counts on one object claim one population and must agree.
+
+Counts of different scopes are free to differ — that is the point. `FACT_COUNT_SEMANTICS_MISMATCH`
+was rewritten to that contract: a bare, unscoped `fact_count` anywhere in a report is a finding.
+The admin Primary Documents panel renders the scope label rather than a bare "fact(s)". Generic
+lineage regression tests cover all three real document shapes — multi-year annual, annual +
+annual-results + quarter, and single regulated-storage current-period — from both sides.
+
 ## 30. Final status
 
 **Campaign closed 2026-08-26. Status: READY FOR MANUAL PRIVATE-USE PRODUCTION VERIFICATION.**
