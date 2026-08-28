@@ -655,6 +655,81 @@ All four passed every unit test first. Each unit test exercised the *piece*; run
 | — | **Operational, not a defect:** five concurrent full analyses on the single-worker B1 staging tier exceed the 45-minute stale threshold; run in batches of two | two consecutive interrupted batches, then a single run completing in **5.2 min** |
 | 4 | The fix for #3 did not fire: the selected fact was unscoped, and fail-closed scope matching refused to compare it with a Group-scoped candidate — even though the slot had already placed it there under the implicit-Group convention | re-running live acceptance after #157 |
 
+## 29.1 Current-period acceptance (staging `c93e085`, 2026-08-28)
+
+The campaign closed with `Current = —` for PNDORA and CFR and `0 T1 facts` for MONC, though each
+had published an official current-period report this system could fetch and extract. All three
+failures were reproduced live against `3b316ff` before anything was changed, and each lost the
+document at a **different stage** — see §13.1 (retrieval), §13.2 (period truth), §14.1 (the
+regulated-venue path) and §14.3 (the two correctives live running then found).
+
+**PRs [#165](https://github.com/IvanAnikin/InvestingBuddy/pull/165) → `3ea6b42` and
+[#166](https://github.com/IvanAnikin/InvestingBuddy/pull/166) → `c93e085`**, both CI-green.
+Alembic head **unchanged at 018** — no schema change. Extraction pipeline version **13 → 15**.
+No `apps/web` change (deployed web `abd1f7a` proven tree-identical to the API SHA).
+
+Thesis discovery run **`48837187-3ec0-475c-a56e-5cc17f582d7b`** — "European luxury goods
+companies", 8 candidates. All three analyses run **serially** (see the gotcha below).
+
+| Issuer | Report | Latest annual | Latest current | Current-period source | Council | Consistency |
+|---|---|---|---|---|---|---|
+| **PNDORA** | `a17f94b2` | **FY2025** | **H1 2026** | Q2 2026 Interim Report, issuer CDN | 8/8, real chair | 0 findings |
+| **CFR** | `dc3d8352` | **FY2026** | **Q1 2027** | FY27 Q1 sales ad-hoc, 15 Jul 2026 | 8/8, real chair | 0 findings |
+| **MONC** | `06c8a0d3` | — (site down) | **H1 2026** | H1 2026 Financial Results, eMarket Storage, 22 Jul 2026 | 8/8, real chair | 0 findings |
+
+**PNDORA** — FY2025 baseline intact and unchanged (revenue DKK 32,549 m, EBIT DKK 7,783 m,
+operating margin 23.9%, OCF DKK 7,361 m, FCF DKK 5,022 m, net debt DKK 13,719 m, total assets
+DKK 29,603 m, total equity DKK 5,282 m) beside H1 2026 revenue DKK 14,328 m, EBIT DKK 2,951 m and
+net profit DKK 1,817 m. **Two separate documents**: Annual Report 2025 (52 facts) and the Q2 2026
+interim report (3 facts).
+
+**CFR** — FY2026 Group revenue **€22.4 bn is untouched** beside **Q1 2027** sales of €6.3 bn.
+**Three separate documents**: the FY26 annual report, the FY26 annual-results ad-hoc announcement,
+and the FY27 Q1 sales ad-hoc announcement (1 fact — the €6.3 bn). Before this work that same
+€6.3 bn was being read as **annual 2026 revenue**.
+
+**MONC** — H1 2026 EBIT €245.4 m, net result €164.7 m and free cash flow €34.0 m, ingested from
+the CONSOB-authorised storage while the issuer's own site still returns HTTP 403. Content tier
+`T1_primary_filing`, transport tier `T2_regulator_or_gov`, venue named on every item.
+
+**Deep Field Review `28f56e51-9591-4585-bf48-7d9fe2523a15`** — 8/8 agents, 0 failed, real LLM
+chair (`llm_chair`, no fallback, 1 attempt), `safety_valid=true`, `publication_ready=false`.
+**Exact report lineage**: `dc3d8352` (CFR), `a17f94b2` (PNDORA), `06c8a0d3` (MONC) — the three
+fresh reports and nothing else; the five other candidates are recorded as `draft_only`. Each
+candidate carries its OWN report's four reporting states, so currentness is compared per company
+rather than inferred across companies.
+
+### Remaining limitations (honest, not worked around)
+
+* **Moncler's H1 2026 Group REVENUE is not extracted.** Its release states four revenue magnitudes
+  in one excerpt (Group, prior-year Group, and one per brand) and the parser's ambiguity refusal —
+  deliberate, and correct — declines all of them. An honest absence, not a wrong number.
+* **A prior-year comparative in a PARENTHETICAL can still take the wrong year** ("Net result: EUR
+  164,715 thousand … (EUR 153,460 thousand in H1 2025)"). Sentence-boundary clipping cannot help
+  within one sentence. It no longer reaches any canonical slot, but remains as evidence with a
+  wrong period. Intra-sentence value/period association is a separate slice.
+* **Moncler has no annual baseline**, because `monclergroup.com` still returns HTTP 403 on every
+  path. The storage mechanism supplies the current period only.
+* **Pandora's Annual Report 2024** extracts `metadata_only` — a genuine second-document limitation,
+  not a current-period one. FY2021-FY2025 series come from the 2025 report.
+
+### GOTCHAS for future work
+
+* **Manual-ticker discovery must use a BARE ticker plus a separate `exchange`.** Passing
+  `PNDORA.CO` with `exchange=CO` leaves the combined form on the company record, and
+  `get_verified_issuer_source` only splits a combined ticker when `exchange` is **not** given — so
+  the verified-issuer registry never matches, the company-IR and regulator connectors never run,
+  and the report comes back with zero primary documents and no financial slots at all. One full
+  acceptance batch was lost to this.
+* **After merging, wait for the container recycle before starting an analysis.** The deploy
+  workflow reports success and `/health` can already answer from the OLD container; a recycle a few
+  minutes later killed two in-flight jobs. They correctly reported `interrupted` + `recoverable`
+  after the 45-minute threshold and a plain re-POST recovered them — but that is 45 minutes lost.
+* **Run analyses SERIALLY after a pipeline-version bump.** Version 15 forces a full re-extraction
+  of every cached document, including a 169-page annual report; two concurrent runs on the
+  single-worker B1 tier no longer fit the stale threshold, even though two concurrent runs were
+  fine with warm caches.
+
 ## 30. Final status
 
 **Campaign closed 2026-08-26. Status: READY FOR MANUAL PRIVATE-USE PRODUCTION VERIFICATION.**
