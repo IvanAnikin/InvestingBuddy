@@ -420,6 +420,38 @@ def test_a_not_live_claim_with_no_live_events_is_not_flagged() -> None:
     assert CONNECTOR_STATE_CONTRADICTION not in _invariants(report)
 
 
+def test_a_true_not_fetched_claim_about_a_DIFFERENT_channel_is_not_flagged() -> None:
+    """Found by running the invariant against the regenerated reports.
+
+    "Danish-language business-press articles about X are not fetched at report
+    time" is TRUE, is about a T4 news reference rather than a filing venue, and
+    was being reported as a contradiction with the live disclosure feed. An
+    invariant that fires on a true sentence trains a reader to ignore the audit.
+    """
+    report = _report()
+    report["source_quality_review"] = {
+        "warnings": [
+            "Italian-language business-press articles about the issuer "
+            "(Milano Finanza) are not fetched at report time; only a bounded "
+            "local-language coverage reference is provided."
+        ]
+    }
+    assert CONNECTOR_STATE_CONTRADICTION not in _invariants(report)
+
+
+def test_a_not_fetched_claim_ABOUT_THE_FILING_VENUE_is_still_caught() -> None:
+    """The narrowing must not blunt the invariant."""
+    report = _report()
+    report["source_quality_review"] = {
+        "warnings": [
+            "Italian regulated-disclosure content for the issuer is filed via "
+            "eMarket Storage but is not fetched at report time; only a source "
+            "reference to the venue is provided."
+        ]
+    }
+    assert CONNECTOR_STATE_CONTRADICTION in _invariants(report)
+
+
 def test_primary_facts_beside_a_generic_filing_demand_is_caught() -> None:
     report = _report()
     report["risk_analysis"] = {

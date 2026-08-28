@@ -766,6 +766,19 @@ and to stay silent on the legitimate cases: `CONNECTOR_STATE_CONTRADICTION`,
 `"SEC XBRL" in label` for a Danish issuer, two lines after forbidding "SEC" on the issuer row of
 the same report — it encoded the defect it sat beside. It now asserts the issuer's own venue.
 
+### 29.3 One corrective to the new invariants
+
+Running `CONNECTOR_STATE_CONTRADICTION` against the regenerated reports flagged a sentence that
+is TRUE: *"Danish-language business-press articles about Pandora A/S (Børsen) are not fetched at
+report time"*. That is a T4 news reference, not a filing venue, and it is correctly not fetched.
+The marker `not fetched at report time` was matching any subject.
+
+The check now also requires the sentence's SUBJECT to be the regulated-disclosure channel
+(`regulated disclosure` / `primary filing` / `filing content` / `regulator` / `storage mechanism`
+/ `disclosure venue`). Verified from both sides: it still fires on all three pre-fix reports and
+is silent on all three regenerated ones. An invariant that fires on a true sentence is itself a
+defect — it trains a reader to ignore the audit.
+
 ## 30. Final status
 
 **Campaign closed 2026-08-26. Status: READY FOR MANUAL PRIVATE-USE PRODUCTION VERIFICATION.**
