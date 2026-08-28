@@ -104,11 +104,17 @@ class SecEdgarConnector(SourceConnector):
                 gap_type=GapType.source_not_eligible,
                 severity=GapSeverity.info,
                 message=(
+                    # Manual-QA corrective: this used to end "(scaffolded, not
+                    # yet live)". That is a claim about a DIFFERENT connector's
+                    # state, which this one cannot see and was wrong about — it
+                    # was printed on reports carrying live Nasdaq Nordic and
+                    # eMarket Storage disclosures. SEC states its own
+                    # ineligibility and stops there; the home-regulator
+                    # connector reports its own state itself.
                     "SEC EDGAR covers US issuers only; "
                     f"{company.ticker or 'this issuer'} on exchange "
                     f"'{company.exchange}' is not SEC-eligible. Its primary "
-                    "filings are sourced through the issuer's home regulator "
-                    "(scaffolded, not yet live)."
+                    "filings are sourced through the issuer's home regulator."
                 ),
                 blocks_research_complete=False,
             )

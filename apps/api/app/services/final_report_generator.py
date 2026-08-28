@@ -77,6 +77,7 @@ from app.services.data_provenance import (
 )
 from app.services.discovery_signal_extractor import is_placeholder_company_name
 from app.services.document_ingestion_attempt_service import record_ingestion_attempts
+from app.services.exchange_registry import is_sec_eligible
 from app.services.extracted_document_service import (
     load_reusable_documents,
     persist_primary_document_artifacts,
@@ -94,6 +95,7 @@ from app.services.llm.schemas import (
 )
 from app.services.real_asset_report_completer import build_schema_complete_report
 from app.services.report_validation_service import validate_real_asset_report
+from app.services.sources.company_evidence import regulator_venue_display_name
 from app.services.sources.extracted_fact_validator import IssuerContext
 from app.services.sources.fact_scope import GROUP_SCOPE_LABELS, parse_scope, same_scope
 from app.services.sources.financial_history import (
@@ -3848,6 +3850,21 @@ def _memo_datapoint_value(section: dict[str, Any] | None, key: str) -> Any:
     return dp
 
 
+#: The two fact-count populations a report displays, each named on the row that
+#: carries it. Manual-QA corrective: a document card read "5 excerpt(s), 0
+#: fact(s)" beside a report-level "primary fact count 8" drawn from the SAME
+#: document, with nothing saying they count different things.
+_COUNTS_BASIS_EVIDENCE_PACK = (
+    "Counts the CITED-EVIDENCE items built from this document (what the council "
+    "was given and may cite), which the evidence budget bounds. It is not the "
+    "count of validated facts extracted — see primary_fact_count."
+)
+_COUNTS_BASIS_VALIDATED_SET = (
+    "The COMPLETE set of validated facts this report holds, across every "
+    "ingested document. Per-document rows count cited evidence items instead."
+)
+
+
 def _memo_safe_text(text: Any) -> Any:
     """Neutralise forbidden language in model-generated free text (no-op if clean).
 
@@ -4410,6 +4427,16 @@ def _build_research_memo(
                 "tier": d.get("tier"),
                 "excerpt_count": d.get("excerpt_count", 0),
                 "fact_count": d.get("fact_count", 0),
+                # Manual-QA corrective — ONE authoritative meaning per count.
+                # These two are the CITED-EVIDENCE population for this document
+                # (what the council was given and can cite), which is bounded by
+                # the evidence budget. ``primary_fact_count`` beside them is the
+                # COMPLETE validated set persisted for the whole report. Both
+                # are true and they are not the same number; a reader seeing a
+                # zero here must be able to tell "this document produced no
+                # facts" from "no fact from this document reached the evidence
+                # pack", and before this line said so they could not.
+                "counts_basis": _COUNTS_BASIS_EVIDENCE_PACK,
                 "requires_translation": bool(d.get("requires_translation", False)),
                 "warnings": _memo_safe_list(d.get("warnings")),
             }
@@ -4442,6 +4469,7 @@ def _build_research_memo(
         primary_evidence_summary = {
             "primary_document_count": len(doc_rows),
             "primary_fact_count": len(fact_rows),
+            "primary_fact_count_basis": _COUNTS_BASIS_VALIDATED_SET,
             "primary_source_reference_count": primary_source_reference_count,
             "primary_document_reference_count": primary_document_reference_count,
             "extracted_primary_document_count": len(doc_rows),
@@ -6481,6 +6509,15 @@ class FinalReportGeneratorService:
         # newsroom" and "persisted citations" are five DIFFERENT things; the
         # report used to conflate them and claim "primary filings required" for
         # a company whose SEC XBRL statements were fully sourced.
+        # Manual-QA corrective — the regulator channels name the issuer's OWN
+        # venue. A Danish or Italian report labelled them "(SEC EDGAR)" /
+        # "(SEC XBRL)", naming a venue those issuers have no relationship with.
+        _channel_identity = (company_snapshot or {}).get("company_identity") or {}
+        _channel_exchange = _channel_identity.get("exchange")
+        _channel_country = _channel_identity.get("country_domicile")
+        _channel_venue = regulator_venue_display_name(
+            _channel_exchange, _channel_country
+        )
         report_content["evidence_channels"] = build_evidence_channels(
             fundamentals=final_state.fundamentals,
             primary_document_counts=_primary_document_state_counts(council_result),
@@ -6489,6 +6526,9 @@ class FinalReportGeneratorService:
             council_evidence_count=int(
                 getattr(council_result, "evidence_item_count", 0) or 0
             ),
+            sec_eligible=is_sec_eligible(_channel_exchange),
+            regulator_facts_venue=_channel_venue,
+            regulator_filings_venue=_channel_venue,
         )
 
         # Phase 31 hotfix: when the connector layer located verified PRIMARY-SOURCE

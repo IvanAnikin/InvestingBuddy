@@ -280,8 +280,15 @@ _REGULATOR_DISPLAY_NAMES: dict[str, str] = {
     "uk_fca_nsm": "the UK FCA National Storage Mechanism (NSM)",
     "euronext_regulated_info": "Euronext Regulated Information / AMF filings",
     "deutsche_boerse": "the German regulated-information venue (Deutsche Börse / Bundesanzeiger)",
-    "nordic_disclosures": "Nasdaq Nordic company disclosures",
+    "nordic_disclosures": "Nasdaq Nordic company disclosures (Danish FSA)",
     "six_swiss": "SIX Swiss Exchange regulatory disclosures",
+    # Manual-QA corrective: ``borsa_italiana`` was added to the connector
+    # registry and never to this map, so every Italian issuer silently fell
+    # through to the generic wording and a Moncler report asked a researcher to
+    # "cross-check company name and domicile against SEC EDGAR or SEDAR+" —
+    # neither of which lists it. ``test_every_regulator_connector_has_a_display_name``
+    # now makes that drift impossible to repeat.
+    "borsa_italiana": "eMarket Storage (CONSOB-authorised)",
 }
 
 

@@ -730,6 +730,42 @@ rather than inferred across companies.
   single-worker B1 tier no longer fit the stale threshold, even though two concurrent runs were
   fine with warm caches.
 
+## 29.2 Manual-QA state/copy reconciliation (staging, 2026-08-28)
+
+Browser QA of the three accepted current-period reports found five places where a report told a
+reader something about its OWN state that the same report disproved a section later. None is an
+extraction or period defect; all four current-period invariants still passed on every one of them.
+
+| # | Contradiction | Root cause |
+|---|---|---|
+| 1 | A document card read **"5 excerpt(s), 0 fact(s)"** for the very document whose **8** facts the report was presenting in its own current-period slots | The venue adapter emits excerpts before facts and the caller truncated with the generic per-source cap (**5**) — five excerpts survived and every validated fact was evicted, so the council never saw them as citable evidence either. `_prioritize_ir_items` already exists to prevent exactly this and was never applied to the venue path. Separately the two counts describe genuinely different populations and neither row said so. |
+| 2 | *"Denmark regulated-disclosure connector scaffolded … pending regulator integration"* beside live Nasdaq Nordic announcements; *"live retrieval is disabled"* above eight facts extracted from a document opened at that venue | `fetch_filings` returns the venue reference plus an honest "content not fetched" gap; `fetch_events` then does the live retrieval. Both results were kept. The SEC connector separately asserted a **different** connector's state ("scaffolded, not yet live"), which it cannot see. |
+| 3 | An Italian issuer told to *"Cross-check company name and domicile against SEC EDGAR or SEDAR+"* | `borsa_italiana` was added to the connector registry and never to the research agent's display-name map, so Italian issuers silently fell through to the generic US/Canada wording. |
+| 4 | *"primary filings (T1/T2) required"* on a report already presenting validated T1 statement facts | A fixed string in the risk summary, while the warnings block beside it was already truth-conditional. |
+| 5 | *"Regulator filing events (SEC EDGAR)"* / *"(SEC XBRL)"* for a Danish or Italian issuer | One global label for every jurisdiction. |
+
+**Fixes.** Venue evidence now goes through the same category-diverse fact reservation as issuer-IR
+evidence, so typed facts never compete with prose for the same slots; both count rows carry an
+explicit `counts_basis` naming the population they count. A new pure
+`sources/connector_state.py` records what each connector ACTUALLY reached in the run and replaces
+— never silently drops — any gap whose `source_id` + typed `gap_type` that run disproved; the
+"home regulator is scaffolded" gap now runs after the regulator loop, gated on it. The SEC gap
+stops asserting another connector's state. `borsa_italiana` gains display names, and
+`test_every_regulator_connector_has_a_display_name` asserts all three maps stay complete.
+The risk summary's incompleteness REASON is now derived from `FinancialEvidenceState` — the
+warning itself is unchanged and still withholds an investment decision. Regulator channel labels
+name the issuer's own venue, stay source-neutral when none resolves, and still say SEC for an
+SEC-eligible issuer.
+
+**Four new consistency invariants** (13 → 17), each verified to fire on the pre-fix live reports
+and to stay silent on the legitimate cases: `CONNECTOR_STATE_CONTRADICTION`,
+`PRIMARY_FILING_REQUIRED_CONTRADICTION`, `JURISDICTION_TASK_MISMATCH`,
+`FACT_COUNT_SEMANTICS_MISMATCH`.
+
+**Note on an existing test.** `test_yes_evidence_channel_taxonomy_is_correct` asserted
+`"SEC XBRL" in label` for a Danish issuer, two lines after forbidding "SEC" on the issuer row of
+the same report — it encoded the defect it sat beside. It now asserts the issuer's own venue.
+
 ## 30. Final status
 
 **Campaign closed 2026-08-26. Status: READY FOR MANUAL PRIVATE-USE PRODUCTION VERIFICATION.**

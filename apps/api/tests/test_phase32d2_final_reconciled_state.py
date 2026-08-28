@@ -523,11 +523,18 @@ async def test_yes_evidence_channel_taxonomy_is_correct(report) -> None:
     assert issuer["available"] is True
     assert "SEC" not in issuer["label"]
     assert "XBRL" not in issuer["label"]
-    # The SEC XBRL channel is HONESTLY not sourced for this issuer.
+    # The regulator-facts channel is HONESTLY not sourced for this issuer.
     regulator = channels["regulator_structured_facts"]
     assert regulator["available"] is False
     assert regulator["field_count"] == 0
-    assert "SEC XBRL" in regulator["label"]
+    # Manual-QA corrective: this line used to assert ``"SEC XBRL" in label``,
+    # which encoded the very defect it sat beside — the two assertions above
+    # forbid "SEC" on the ISSUER row for this Danish issuer, while this one
+    # required it on the row underneath. A regulator channel now names the
+    # issuer's OWN venue, and says SEC only for an SEC-eligible issuer.
+    assert "SEC" not in regulator["label"]
+    assert regulator["venue"] == "Nasdaq Nordic"
+    assert "Nasdaq Nordic" in regulator["label"]
 
 
 # ===========================================================================

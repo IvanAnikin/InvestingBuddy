@@ -60,6 +60,41 @@ def _data_quality_label(
     return source_tier
 
 
+def _incompleteness_clause(fin_ev: "FinancialEvidenceState | None") -> str:
+    """Why the assessment is incomplete, in terms of what is ACTUALLY missing.
+
+    Manual-QA corrective: this sentence was the fixed string "Assessment is
+    incomplete — primary filings (T1/T2) required before any investment
+    decision", printed unchanged on reports that had already ingested a T1
+    primary filing and were presenting validated statement facts from it one
+    section above. A reader has no way to tell that from a report with no
+    primary evidence at all, and the two need completely different work.
+
+    The warning is NOT softened — every branch still says the assessment is
+    incomplete and still withholds an investment decision. Only the stated
+    REASON changes, to the one that is true. The primary-backed wording reuses
+    the same vocabulary as the warnings block above so the two cannot drift.
+    """
+    if fin_ev is None or not fin_ev.is_primary_backed:
+        return (
+            "Assessment is incomplete — primary filings (T1/T2) required before "
+            "any investment decision."
+        )
+    remaining = category_labels(fin_ev.open_categories) if fin_ev.open_categories else ""
+    if remaining:
+        return (
+            "Assessment is incomplete — the issuer's own primary filing is "
+            f"ingested, but the remaining statement lines ({remaining}) and "
+            "identity/regulatory confirmation are still required before any "
+            "investment decision."
+        )
+    return (
+        "Assessment is incomplete — the issuer's own primary filing is ingested; "
+        "identity/regulatory confirmation is still required before any "
+        "investment decision."
+    )
+
+
 def run_risk_agent(
     company_snapshot: dict,
     financial_data_summary: dict,
@@ -361,8 +396,7 @@ def run_risk_agent(
         f"Total risk flags: {total_risks} "
         f"({unknown_count} marked UNKNOWN due to missing data). "
         f"Data quality: {_data_quality_label(is_mock, source_tier, fin_ev)}. "
-        "Assessment is incomplete — primary filings (T1/T2) required before any "
-        "investment decision. This is an internal draft only."
+        f"{_incompleteness_clause(fin_ev)} This is an internal draft only."
     )
 
     return RiskAgentOutput(
