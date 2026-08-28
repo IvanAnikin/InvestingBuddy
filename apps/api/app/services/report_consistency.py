@@ -713,14 +713,31 @@ def _check_duplicate_events(
 # report, so a finding always means two parts of one document disagree, never
 # that a sentence merely looked wrong.
 
-#: Wording that asserts a connector is not live. Matched only against gap/limitation
-#: prose, and only for a report that is simultaneously DISPLAYING live disclosures.
+#: Wording that asserts something is not live. Matched only against a report
+#: that is simultaneously DISPLAYING live disclosures.
 _CONNECTOR_NOT_LIVE_MARKERS: tuple[str, ...] = (
     "connector scaffolded",
     "not fetched at report time",
     "live retrieval is disabled",
     "scaffolded, not yet live",
     "pending regulator integration",
+)
+
+#: …AND the SUBJECT of that sentence must be the regulated-disclosure channel.
+#:
+#: Found by running the invariant against the regenerated reports: "Danish
+#: -language business-press articles about … are not fetched at report time" is
+#: TRUE, is about a T4 news reference rather than a filing venue, and was being
+#: flagged as a contradiction. An invariant that fires on a true sentence is
+#: itself a defect — it trains a reader to ignore the audit.
+_REGULATED_DISCLOSURE_SUBJECT_MARKERS: tuple[str, ...] = (
+    "regulated disclosure",
+    "regulated-disclosure",
+    "primary filing",
+    "filing content",
+    "regulator",
+    "storage mechanism",
+    "disclosure venue",
 )
 
 #: Generic demands for primary filings, forbidden once T1 filing facts exist.
@@ -777,6 +794,11 @@ def _check_connector_state(
             (m for m in _CONNECTOR_NOT_LIVE_MARKERS if m in lowered), None
         )
         if marker is None:
+            continue
+        if not any(m in lowered for m in _REGULATED_DISCLOSURE_SUBJECT_MARKERS):
+            # A true "not fetched" statement about a DIFFERENT channel (the
+            # local-language business press, an aggregator) is not a
+            # contradiction with a live filing venue.
             continue
         audit.findings.append(
             ConsistencyFinding(
