@@ -786,6 +786,32 @@ def _check_connector_state(
     venues = _live_disclosure_venues(content)
     if not venues:
         return
+
+    # The same contradiction in structured form: the official-events CHANNEL
+    # reporting "not sourced / 0" while the report displays live disclosures
+    # from that venue. Found only after the label stopped saying "SEC EDGAR"
+    # and started naming the issuer's own venue — the channel had never counted
+    # anything but SEC filing events.
+    for channel in _as_dict(content.get("evidence_channels")).get("channels") or []:
+        if not isinstance(channel, dict):
+            continue
+        if channel.get("channel") != "regulator_filing_events":
+            continue
+        if channel.get("available") is False:
+            audit.findings.append(
+                ConsistencyFinding(
+                    invariant=CONNECTOR_STATE_CONTRADICTION,
+                    severity=SEVERITY_SERIOUS,
+                    detail=(
+                        "The official regulated-disclosure channel reports "
+                        f"'{channel.get('detail')}' while the report displays "
+                        f"live disclosures from {sorted(venues)}."
+                    ),
+                    sections=("evidence_channels", "regulated_disclosures"),
+                )
+            )
+        break
+
     for path, text in _iter_text(content):
         if path.startswith("regulated_disclosures"):
             continue

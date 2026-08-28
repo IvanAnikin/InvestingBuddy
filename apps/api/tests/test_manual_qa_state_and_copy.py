@@ -452,6 +452,62 @@ def test_a_not_fetched_claim_ABOUT_THE_FILING_VENUE_is_still_caught() -> None:
     assert CONNECTOR_STATE_CONTRADICTION in _invariants(report)
 
 
+def test_an_events_channel_saying_not_sourced_beside_live_events_is_caught() -> None:
+    """The structured form of the same contradiction, exposed only once the
+    label stopped saying "SEC EDGAR": the channel had never counted anything
+    but SEC filing events."""
+    report = _report()
+    report["evidence_channels"] = {
+        "channels": [
+            {
+                "channel": "regulator_filing_events",
+                "label": "Official regulated disclosures / filing events (eMarket Storage)",
+                "available": False,
+                "detail": "not sourced",
+                "event_count": 0,
+            }
+        ]
+    }
+    assert CONNECTOR_STATE_CONTRADICTION in _invariants(report)
+
+
+def test_an_events_channel_reporting_the_live_events_is_not_flagged() -> None:
+    report = _report()
+    report["evidence_channels"] = {
+        "channels": [
+            {
+                "channel": "regulator_filing_events",
+                "label": "Official regulated disclosures / filing events (eMarket Storage)",
+                "available": True,
+                "detail": "available — 5 live regulated disclosure(s)",
+                "event_count": 5,
+            }
+        ]
+    }
+    assert CONNECTOR_STATE_CONTRADICTION not in _invariants(report)
+
+
+def test_the_events_channel_counts_both_official_sources_separately() -> None:
+    from app.services.canonical_evidence import build_evidence_channels
+
+    out = build_evidence_channels(
+        fundamentals=FundamentalsEvidence(available=False),
+        catalyst_summary={"filing_event_count": 2},
+        regulated_disclosure_count=5,
+        regulator_filings_venue="eMarket Storage (CONSOB)",
+    )
+    channel = next(
+        c for c in out["channels"] if c["channel"] == "regulator_filing_events"
+    )
+    assert channel["available"] is True
+    assert channel["event_count"] == 7
+    assert channel["filing_event_count"] == 2
+    assert channel["regulated_disclosure_count"] == 5
+    # Never blurred into one number a reader cannot decompose.
+    assert "2 regulator filing event(s)" in channel["detail"]
+    assert "5 live regulated disclosure(s)" in channel["detail"]
+
+
 def test_primary_facts_beside_a_generic_filing_demand_is_caught() -> None:
     report = _report()
     report["risk_analysis"] = {
