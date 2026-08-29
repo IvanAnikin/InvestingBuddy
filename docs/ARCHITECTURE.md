@@ -210,9 +210,43 @@ Azure Application Insights
 
 ### Frontend (`apps/web/`)
 - Next.js 16, React 19, TypeScript, Tailwind CSS v4, App Router
-- Public report pages, admin dashboard, user account (V2)
 - Communicates with backend via server-side proxy (Phase 17+) — credentials never in browser
-- Status: **Phase 23 — admin authentication + allowlist enforced on `/admin/*` and the admin proxy, on top of the Phase 22.3 modern dark glassmorphism UI + safe markdown report preview**
+- Status: **user-facing product experience — a public landing page plus an authenticated `/research` workspace, layered ON TOP of the unchanged `/admin` operational surface**
+
+#### Route map
+
+The web app has three route families with different audiences and different
+gates. Nothing was removed when the product layer was added: every `/admin`
+route still exists, still renders, and remains the full diagnostic record.
+
+| Route | Audience | Gate | Purpose |
+|---|---|---|---|
+| `/` | anyone | public | Product landing page. Presentational + navigational only: renders no research and reads no report. |
+| `/login`, `/unauthorized` | anyone | public | Sign-in and the not-allowlisted state. |
+| `/research` | researcher | session + allowlist | Command centre: the two entry points and recent research. |
+| `/research/company` | researcher | session + allowlist | Analyze one company. Resolves it against the research universe, registers it inline if absent, then runs the workflow. |
+| `/research/discover` | researcher | session + allowlist | Natural-language thesis discovery, candidate list, and per-candidate deep dive. |
+| `/research/reports` | researcher | session + allowlist | Research library: reporting state, evidence quality and council state per report. |
+| `/research/reports/[id]` | researcher | session + allowlist | The reader-facing research report. |
+| `/admin/**` | operator | session + allowlist | Unchanged operational + diagnostic surface (review workflow, raw JSON, extraction provenance, source health, backtesting, ticker-mode discovery). |
+
+The two report views are two presentations of the SAME report and link to each
+other: `/research/reports/[id]` → "Technical details", and
+`/admin/reports/[id]` → "Open clean research view". No old URL changed.
+
+#### Product presentation layer
+
+`/research/reports/[id]` derives its view (`components/research/reportView.ts`)
+from the same structured `report_content` the admin renderer reads. It derives
+no new facts. Specifically it does NOT reconcile figures the backend reported as
+conflicting, does not fill a missing slot from a neighbouring one, does not
+average the evidence-quality dimensions, and does not merge annual with interim
+reporting — `<field>_primary_filing` and `<field>_current_period` render in
+separate, explicitly non-comparable columns, and the part-year column carries a
+standing "not annualised" statement.
+
+A trend series the backend marked `not_comparable` is listed with its reason
+rather than charted, and a single-period series is never drawn as a line.
   - `src/proxy.ts` — Next 16 **Proxy** (renamed `middleware`, Node runtime); gates `/admin/:path*` (→ `/login` unauthenticated, `/unauthorized` when not allowlisted) and `/api/admin/proxy/:path*` (401/403); `/`, `/login`, `/unauthorized`, `/api/auth/*`, `/api/version` and static assets stay public
   - `src/lib/auth/*` — dependency-free HMAC-signed httpOnly session cookie (`session.ts`), server-session reader (`server.ts`), forwarded-host/callback URL helpers (`url.ts`)
   - `/api/auth/github` + `/api/auth/callback/github` — GitHub OAuth (secret used server-side only; access token read once for the verified email then discarded); `/api/auth/signout`; `/api/auth/dev-login` — deterministic sign-in gated on `AUTH_TEST_MODE` (local/CI only, 404 in prod)

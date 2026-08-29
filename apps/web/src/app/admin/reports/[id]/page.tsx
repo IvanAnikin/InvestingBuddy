@@ -224,13 +224,24 @@ export default async function ReportDetailPage({
       data-testid="report-detail-container"
       className="ib-fade-up w-full space-y-6 xl:w-[90vw] xl:max-w-[90vw] xl:ml-[calc(50%_-_45vw)]"
     >
-      {/* Back */}
-      <Link
-        href="/admin/reports"
-        className="text-sm text-slate-500 transition-colors hover:text-slate-200"
-      >
-        ← All Reports
-      </Link>
+      {/* Back + the reader-facing view of this same report */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <Link
+          href="/admin/reports"
+          className="text-sm text-slate-500 transition-colors hover:text-slate-200"
+        >
+          ← All Reports
+        </Link>
+        {/* This page stays the full diagnostic record. The research view is the
+            same report presented for reading rather than for operating. */}
+        <Link
+          href={`/research/reports/${report.id}`}
+          data-testid="open-research-view"
+          className="rounded-lg border border-white/15 bg-white/5 px-3 py-1.5 text-xs font-semibold text-slate-200 transition-colors hover:bg-white/10"
+        >
+          Open clean research view →
+        </Link>
+      </div>
 
       {/* Header badges */}
       <div className="flex flex-wrap gap-2">

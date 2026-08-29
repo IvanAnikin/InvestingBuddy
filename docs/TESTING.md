@@ -102,13 +102,31 @@ cd apps/api && .venv/bin/pytest tests/ -q && .venv/bin/ruff check . && echo "ALL
 
 ## Frontend Test Stack
 
-Phase 1:
 - TypeScript strict mode
 - ESLint
 - `npm run build` as smoke test
+- Playwright end-to-end suite (`apps/web/tests/e2e`), run against a local dev
+  server whose SSR fetches point at a zero-dependency mock backend
+  (`tests/support/mock-backend.mjs`). No live environment or provider is
+  contacted, and `AUTH_TEST_MODE=true` provides a deterministic sign-in so no
+  real OAuth is exercised.
 
-Phase 2+ (future):
-- Playwright for end-to-end testing
+### Product-experience specs
+
+| Spec | Covers |
+|---|---|
+| `home.spec.ts` | The public landing page: positioning copy, both primary CTAs, no forbidden trading/publishing control, and that the admin entry appears only for a signed-in allowlisted admin. |
+| `research-experience.spec.ts` | Access control on every `/research` route, the four research surfaces, the round trip between the reader-facing and technical report views, and that all existing `/admin` routes still render. |
+| `research-responsive-a11y.spec.ts` | Horizontal-overflow check at 1440 / 1280 / 768 / 390, the mobile navigation, `prefers-reduced-motion`, console-error freedom, and keyboard access (skip link, arrow-key tablists). |
+| `visual-audit.spec.ts` | Programmatic legibility audit: WCAG AA contrast against the effective composited background, text clipped by its own box, controls without an accessible name, and heading order. |
+| `visual-qa.spec.ts` | Screenshot capture for human review. Skipped unless `IB_SHOTS` is set. |
+
+Regenerate the review screenshots with:
+
+```bash
+cd apps/web
+IB_SHOTS=/absolute/output/dir npx playwright test tests/e2e/visual-qa.spec.ts
+```
 
 ---
 
@@ -120,12 +138,13 @@ cd apps/web
 npm run typecheck
 npm run lint
 npm run build
+npm run test:e2e
 ```
 
 ### Quick full frontend check
 
 ```bash
-cd apps/web && npm run typecheck && npm run lint && npm run build && echo "ALL FRONTEND CHECKS PASSED"
+cd apps/web && npm run typecheck && npm run lint && npm run build && npm run test:e2e && echo "ALL FRONTEND CHECKS PASSED"
 ```
 
 ---

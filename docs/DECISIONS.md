@@ -2466,3 +2466,93 @@ must not guess a jurisdiction). And `interrupted` only appears once the derived
 threshold has elapsed, which for a long council run is deliberately generous —
 reporting a slow job as dead would be a worse failure than reporting a dead one
 as slow.
+
+---
+
+## ADR-037: The Product Layer Presents the Research State — It Never Reconciles It
+
+**Date:** 2026-08-29
+**Status:** Accepted
+
+### Context
+
+Everything the platform had built up to this point — discovery, primary-document
+ingestion, period- and scope-aware extraction, the reconciled research state,
+the council — was reachable only through an operator's console. `/admin` opens
+with a red compliance strip, then a red disclaimer card, then a thirty-row
+metadata table, and the actual research begins somewhere below the fold. That is
+the right surface for someone diagnosing the pipeline. It is the wrong surface
+for someone deciding whether to spend an afternoon on a company, and it made a
+serious research tool read as an internal engineering dashboard.
+
+The obvious way to fix that is also the dangerous one. A "cleaner" report view
+is, mechanically, a view that shows fewer things — and the things easiest to
+drop are exactly the ones this codebase spent six campaigns learning to keep: the
+annual/interim distinction, the Group/segment scope, the missing-evidence
+inventory, the fact that a committee label can be a failure default rather than a
+judgement. Simplifying the presentation and simplifying the truth look identical
+in a design review and are opposites in a research product.
+
+### Decision
+
+**A new route family, not a rewrite.** `/research/*` is added alongside `/admin/*`,
+which is untouched. Both report views render the SAME report and link to each
+other. No existing URL changed, so no bookmark broke, and the diagnostic record
+remains the diagnostic record.
+
+**The product layer derives nothing.** `components/research/reportView.ts` reads
+the same structured `report_content` the admin renderer reads and reshapes it for
+a reader. It is explicitly forbidden from doing the four things that would make
+it a second, competing source of truth: it does not reconcile figures the backend
+reported as conflicting, does not fill a missing slot from a neighbouring one,
+does not average the evidence-quality dimensions (the backend already reports the
+weakest, on purpose), and does not merge annual with interim reporting. Where the
+backend says "unknown", the view says "not reported" — never a plausible default.
+
+**Simplify repetition, not meaning.** The admin report states "not investment
+advice / human review required / not publication-ready" in six places. Repeating
+that after every section of a reader-facing report does not make it more true; it
+makes it invisible. So it is stated once, in a fixed compact status strip, with
+the full wording one disclosure away — and the underlying safety metadata is
+completely unchanged. What is NOT reduced: missing evidence, source weakness,
+conflicts, incomplete research state, and the annual-versus-current distinction
+all stay on the page.
+
+**The dangerous flattenings are structural, not editorial.** `<field>_primary_filing`
+and `<field>_current_period` render in two separate columns that never share a
+row, and the part-year column carries a standing "not annualised" line rather
+than a footnote. A trend series the backend marked `not_comparable` is listed
+with its reason and deliberately *not* drawn, because a line between two
+non-comparable figures is a false statement in visual form; a single-period
+series is not drawn either, because a flat line reads as stability. A committee
+label produced by `deterministic_fallback` says in words that the chair never
+completed and that the label is not a judgement about the evidence.
+
+**Auth is extended, not weakened.** `/research/:path*` joins the existing proxy
+matcher and reuses the same GitHub OAuth, session cookie and allowlist. These are
+Server Components that fetch the backend directly with a server-side credential,
+so the matcher entry is load-bearing: without it they would render private
+research to anyone. Only `/`, which renders no research and reads no report,
+stays public.
+
+### Consequences
+
+**Positive.** A researcher reaches "analyze a company", "discover", or an existing
+report in one or two clicks, and reads a report that opens with the company and
+its reporting state rather than with build metadata. The operator keeps every
+diagnostic they had. The two views cannot drift apart on the facts, because only
+one of them derives anything.
+
+**Negative / accepted.** There are now two renderers over one payload, so a new
+`report_content` section appears in the admin view (which walks the section list
+generically) before it appears in the research view (which curates). That is the
+deliberate trade: the research view is a curation, and a curation has to be
+updated on purpose. A section that only the admin view knows about is a missing
+feature; a section the research view *invents* would be a defect, and only the
+second is prevented by construction.
+
+Company research also still runs as one long synchronous request. The product
+surface makes that honest — an elapsed timer, the stage list, and a statement
+that the run continues server-side — but it does not fix it. Moving the
+single-company workflow onto the async job envelope the discovery path already
+uses is a backend change and was deliberately left out of a presentation slice.

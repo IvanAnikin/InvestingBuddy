@@ -53,7 +53,10 @@ test.describe("Phase 23 — unauthenticated is blocked", () => {
   test("15. / (home) stays public", async ({ page }) => {
     await page.goto("/");
     expect(new URL(page.url()).pathname).toBe("/");
-    await expect(page.locator("h1")).toContainText("InvestingBuddy");
+    // The landing page is the product surface, not the admin one: it renders
+    // the marketing hero rather than any report or research control.
+    await expect(page.locator("h1")).toContainText("Evidence-first");
+    await expect(page.getByRole("banner")).toContainText("InvestingBuddy");
   });
 
   test("login page renders the sign-in control", async ({ page }) => {

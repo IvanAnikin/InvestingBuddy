@@ -292,3 +292,170 @@ body {
     scroll-behavior: auto !important;
   }
 }
+
+/* ===========================================================================
+ * User-facing product experience (landing + /research workspace).
+ *
+ * Additive layer only — nothing above is modified, so every existing /admin
+ * surface renders byte-identically. The product surfaces reuse the established
+ * dark base but trade the admin chrome's heavy glass for a calmer, editorial
+ * "research terminal" treatment: hairline borders, generous whitespace, one
+ * restrained accent, and motion that communicates state rather than decorates.
+ * ========================================================================= */
+
+:root {
+  /* Product surface tokens. Deliberately low-contrast against the base so
+     that TYPE, not colour, carries the hierarchy. */
+  --ib-surface: rgba(255, 255, 255, 0.026);
+  --ib-surface-raised: rgba(255, 255, 255, 0.05);
+  --ib-line: rgba(148, 163, 184, 0.16);
+  --ib-line-strong: rgba(148, 163, 184, 0.3);
+  --ib-ink: #f1f5f9;
+  --ib-ink-2: #b6c2d3;
+  --ib-ink-3: #7e8ca0;
+  --ib-accent: #7cc7f5;
+  --ib-accent-quiet: rgba(124, 199, 245, 0.14);
+}
+
+/* The decorative aurora is tuned for the admin chrome. On a product surface it
+   competes with the content, so it is quieted (never removed — the pages still
+   sit on the same field, just further back). */
+body:has([data-ib-surface="product"]) .ib-bg-blob {
+  opacity: 0.22;
+}
+body:has([data-ib-surface="product"]) .ib-bg-grid {
+  opacity: 0.55;
+}
+
+/* --- Surfaces ------------------------------------------------------------ */
+
+.ib-panel {
+  border: 1px solid var(--ib-line);
+  background: var(--ib-surface);
+  border-radius: 0.875rem;
+}
+
+.ib-panel-hover {
+  transition:
+    border-color 220ms ease,
+    background-color 220ms ease,
+    transform 220ms ease;
+}
+.ib-panel-hover:hover {
+  border-color: var(--ib-line-strong);
+  background: var(--ib-surface-raised);
+  transform: translateY(-2px);
+}
+
+/* Hairline rule used between editorial blocks. */
+.ib-rule {
+  border: 0;
+  border-top: 1px solid var(--ib-line);
+}
+
+/* --- Focus --------------------------------------------------------------- */
+
+/* One visible, consistent focus ring across every product surface. Applied via
+   :focus-visible so pointer users never see it, keyboard users always do. */
+[data-ib-surface="product"] a:focus-visible,
+[data-ib-surface="product"] button:focus-visible,
+[data-ib-surface="product"] input:focus-visible,
+[data-ib-surface="product"] select:focus-visible,
+[data-ib-surface="product"] textarea:focus-visible,
+[data-ib-surface="product"] summary:focus-visible,
+[data-ib-surface="product"] [tabindex]:focus-visible {
+  outline: 2px solid var(--ib-accent);
+  outline-offset: 2px;
+  border-radius: 0.5rem;
+}
+
+/* --- Scroll reveal ------------------------------------------------------- */
+
+/* Elements start slightly offset and settle once observed. `transform` +
+   `opacity` only, so there is no layout shift and the compositor can keep it
+   on the GPU. The un-revealed state is applied by the client component only
+   after it confirms motion is allowed, so a no-JS or reduced-motion visitor
+   sees the finished state immediately and nothing is ever hidden behind an
+   animation that will not run. */
+.ib-reveal {
+  opacity: 0;
+  transform: translateY(14px);
+  transition:
+    opacity 620ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 620ms cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: opacity, transform;
+}
+.ib-reveal.ib-revealed {
+  opacity: 1;
+  transform: none;
+}
+
+/* --- Pipeline diagram ---------------------------------------------------- */
+
+/* The connector between two pipeline stages. The dash travels along the line
+   to suggest flow direction without moving any layout box. */
+.ib-flow-line {
+  position: relative;
+  overflow: hidden;
+  background: var(--ib-line);
+}
+.ib-flow-line::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    var(--ib-accent) 45%,
+    transparent 90%
+  );
+  transform: translateX(-100%);
+  animation: ib-flow-travel 3.2s linear infinite;
+}
+.ib-flow-line-vertical::after {
+  background: linear-gradient(
+    180deg,
+    transparent 0%,
+    var(--ib-accent) 45%,
+    transparent 90%
+  );
+  animation-name: ib-flow-travel-vertical;
+}
+
+@keyframes ib-flow-travel {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(100%); }
+}
+@keyframes ib-flow-travel-vertical {
+  from { transform: translateY(-100%); }
+  to { transform: translateY(100%); }
+}
+
+/* --- Arrow / underline micro-interactions -------------------------------- */
+
+.ib-arrow {
+  display: inline-block;
+  transition: transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.ib-arrow-host:hover .ib-arrow,
+.ib-arrow-host:focus-visible .ib-arrow {
+  transform: translateX(3px);
+}
+
+/* --- Reduced motion ------------------------------------------------------ */
+
+@media (prefers-reduced-motion: reduce) {
+  .ib-reveal {
+    opacity: 1 !important;
+    transform: none !important;
+    transition: none !important;
+  }
+  .ib-flow-line::after {
+    animation: none !important;
+    opacity: 0.5;
+    transform: none !important;
+  }
+  .ib-panel-hover:hover {
+    transform: none;
+  }
+}
