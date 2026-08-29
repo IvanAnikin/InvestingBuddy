@@ -44,10 +44,16 @@ Not chosen:
 
 ## Environments
 
+InvestingBuddy runs **one** deployed environment. It is the private-use
+production environment; its resource names keep the historical `stg` token.
+
 | Environment | Resource Group | Branch | Status |
 |---|---|---|---|
-| Staging | `ib-stg-rg` | `main` | Bicep written; deploy pending OIDC + secrets setup |
-| Production | `ib-prod-rg` | `release/*` | Future — Phase 5+ |
+| Private-use production (sole environment) | `ib-stg-rg` | `main` | **Live** |
+
+There is no separate staging deployment and no `production.bicepparam`. A
+second environment would be a deliberate infrastructure decision — see
+`docs/DEPLOYMENT.md` → *Single-environment model*.
 
 ---
 

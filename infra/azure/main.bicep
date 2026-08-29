@@ -1,18 +1,24 @@
-// InvestingBuddy — Azure Staging Infrastructure
+// InvestingBuddy — Azure Infrastructure (single deployed environment)
 // Region: westeurope | Resource group: ib-stg-rg
 // Deploy: az deployment group create --resource-group ib-stg-rg \
 //           --template-file infra/azure/main.bicep \
 //           --parameters infra/azure/parameters/staging.bicepparam \
 //           --parameters dbAdminPassword=<password-from-key-vault>
 //
-// WARNING: This template targets STAGING only (ib-stg-rg).
-// Do NOT target ib-prod-rg or any production resource group.
+// InvestingBuddy runs ONE deployed environment, which serves as the private-use
+// production environment. Its resource names carry the historical `stg` token
+// (ib-stg-rg / ib-stg-api / ib-stg-web); they were kept to avoid a pointless
+// hostname, OAuth-callback and database migration. There is no second
+// environment and no `production` parameter file — see docs/DEPLOYMENT.md.
+//
+// WARNING: This template targets ib-stg-rg only. Standing up any additional
+// environment is a deliberate infrastructure decision, not a parameter change.
 
 targetScope = 'resourceGroup'
 
 // ── Parameters ────────────────────────────────────────────────────────────
 
-@description('Environment tag — stg or prod')
+@description('Environment name token used in resource naming. The single deployed environment uses the historical value "stg".')
 param env string = 'stg'
 
 @description('Azure region for all resources')
@@ -60,21 +66,6 @@ var storageName = '${projectShort}${env}storage'
 var insightsName = '${projectShort}-${env}-insights'
 var logsName = '${projectShort}-${env}-logs'
 var docIntelName = '${projectShort}-${env}-docintel'
-
-// ── Role Definition IDs (built-in Azure roles) ────────────────────────────
-
-var kvSecretsOfficerRoleId = subscriptionResourceId(
-  'Microsoft.Authorization/roleDefinitions',
-  'b86a8fe4-44ce-4948-aee5-eccb2c155cd7'
-)
-var kvSecretsUserRoleId = subscriptionResourceId(
-  'Microsoft.Authorization/roleDefinitions',
-  '4633458b-17de-408a-b874-0445c86b69e6'
-)
-var storageBlobDataContributorRoleId = subscriptionResourceId(
-  'Microsoft.Authorization/roleDefinitions',
-  'ba92f5b4-2d11-453d-a403-e96b0029c9fe'
-)
 
 // ── Module: Monitoring ─────────────────────────────────────────────────────
 
@@ -165,58 +156,21 @@ module postgresModule 'modules/postgres.bicep' = {
 }
 
 // ── RBAC Assignments ───────────────────────────────────────────────────────
-// Scoped to existing KV/Storage resources after modules deploy them.
-// Uses existing references so Bicep can set the correct scope for roleAssignments.
+// Delegated to modules/rbac.bicep because roleAssignment name/scope must be
+// computable at the START of a deployment, which is impossible here: the
+// principal IDs are App Service module outputs. Module parameters resolve
+// before the module deploys, so the same expressions are legal inside it.
+// Every assignment is still guarded by skipRbac.
 
-resource kvExisting 'Microsoft.KeyVault/vaults@2023-07-01' existing = {
-  name: kvModule.outputs.kvName
-}
-
-resource storageExisting 'Microsoft.Storage/storageAccounts@2023-05-01' existing = {
-  name: storageModule.outputs.storageAccountName
-}
-
-// API managed identity → Key Vault Secrets User
-resource apiKvSecretsUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!skipRbac) {
-  name: guid(kvExisting.id, appServiceModule.outputs.apiManagedIdentityPrincipalId, kvSecretsUserRoleId)
-  scope: kvExisting
-  properties: {
-    roleDefinitionId: kvSecretsUserRoleId
-    principalId: appServiceModule.outputs.apiManagedIdentityPrincipalId
-    principalType: 'ServicePrincipal'
-  }
-}
-
-// Web managed identity → Key Vault Secrets User
-resource webKvSecretsUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!skipRbac) {
-  name: guid(kvExisting.id, appServiceModule.outputs.webManagedIdentityPrincipalId, kvSecretsUserRoleId)
-  scope: kvExisting
-  properties: {
-    roleDefinitionId: kvSecretsUserRoleId
-    principalId: appServiceModule.outputs.webManagedIdentityPrincipalId
-    principalType: 'ServicePrincipal'
-  }
-}
-
-// API managed identity → Storage Blob Data Contributor
-resource apiStorageBlobContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!skipRbac) {
-  name: guid(storageExisting.id, appServiceModule.outputs.apiManagedIdentityPrincipalId, storageBlobDataContributorRoleId)
-  scope: storageExisting
-  properties: {
-    roleDefinitionId: storageBlobDataContributorRoleId
-    principalId: appServiceModule.outputs.apiManagedIdentityPrincipalId
-    principalType: 'ServicePrincipal'
-  }
-}
-
-// GitHub Actions SP → Key Vault Secrets Officer (optional — set githubActionsPrincipalId to activate)
-resource githubActionsKvOfficer 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!skipRbac && !empty(githubActionsPrincipalId)) {
-  name: guid(kvExisting.id, githubActionsPrincipalId, kvSecretsOfficerRoleId)
-  scope: kvExisting
-  properties: {
-    roleDefinitionId: kvSecretsOfficerRoleId
-    principalId: githubActionsPrincipalId
-    principalType: 'ServicePrincipal'
+module rbacModule 'modules/rbac.bicep' = {
+  name: 'rbac'
+  params: {
+    kvName: kvModule.outputs.kvName
+    storageName: storageModule.outputs.storageAccountName
+    apiPrincipalId: appServiceModule.outputs.apiManagedIdentityPrincipalId
+    webPrincipalId: appServiceModule.outputs.webManagedIdentityPrincipalId
+    githubActionsPrincipalId: githubActionsPrincipalId
+    skipRbac: skipRbac
   }
 }
 

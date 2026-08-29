@@ -1,16 +1,57 @@
 # Deployment
 
-## Status: Phase 12 — Azure Staging Infrastructure Provisioned (Bicep + GitHub Actions active)
+## Status: single private-use production environment (`ib-stg-rg`), live
 
 ---
 
-## Environment Overview
+## Single-environment model
+
+InvestingBuddy has **one** deployed environment. It is the private-use
+production environment.
 
 | Environment | Purpose | Resource Group | Status |
 |---|---|---|---|
 | Local | Development | Docker Compose | Available from Phase 1 |
-| Staging | Pre-production testing | `ib-stg-rg` | Bicep written; App Service, DB, KV, Storage ready to provision |
-| Production | Live platform | `ib-prod-rg` | Phase 5+ |
+| **Private-use production** (sole deployed environment) | Private, authenticated, human-reviewed internal research | `ib-stg-rg` | **Live** |
+
+Canonical URLs:
+
+| Surface | URL |
+|---|---|
+| Web | `https://ib-stg-web.azurewebsites.net` |
+| API | `https://ib-stg-api.azurewebsites.net` |
+
+**There is currently no separate staging deployment.** Changes are developed and
+tested locally, validated through CI, and deliberately deployed to this single
+private environment only when approved.
+
+### Why the resource names still say `stg`
+
+`ib-stg-rg`, `ib-stg-api`, `ib-stg-web`, `ib-stg-psql` and their siblings are
+**historical resource names**, retained deliberately. Renaming or recreating
+them would force a hostname change, a new GitHub OAuth App and callback URL, a
+database migration and avoidable downtime — all for a cosmetic label. The names
+carry no operational meaning: read `ib-stg-*` as "the one deployed
+environment".
+
+Likewise `APP_ENV=staging` on `ib-stg-api` is a **runtime compatibility value,
+not a description of the deployment's role** — see
+[APP_ENV semantics](#app_env-semantics--do-not-change-this-casually) below.
+
+| Label | Value |
+|---|---|
+| Physical Azure resource names | `ib-stg-*` (legacy, retained) |
+| `APP_ENV` runtime value | `staging` (legacy, load-bearing for security) |
+| Operational deployment role | **PRIVATE-USE PRODUCTION** |
+
+Restoring a separate staging environment would be a **deliberate infrastructure
+decision** — new resource group, new database, new OAuth App, new CI targets and
+an owner decision to pay for it. It is not a parameter change and must not be
+done implicitly.
+
+This environment is **private, authenticated, human-reviewed internal research
+only**. It is not a public investment-advice product and has no public
+publishing path.
 
 ---
 
@@ -98,11 +139,107 @@ Storage Account exception: `ib{env}storage` (no hyphens)
 
 ---
 
-## Staging URLs (after provisioning)
+## APP_ENV semantics — do not change this casually
 
-> **Status: not yet provisioned.** No Phase A resources have been deployed.
-> The URLs below will only resolve after `az deployment group create` is run.
-> Staging smoke tests cannot be run until provisioning is complete.
+`ib-stg-api` runs with `APP_ENV=staging`. That value is **load-bearing for
+security**, not cosmetic.
+
+At the accepted application commit `614f86f`, `app_env` has exactly three
+consumers in the API:
+
+| Location | Effect of `app_env` |
+|---|---|
+| `apps/api/app/main.py` | `if settings.app_env == "staging" and settings.staging_basic_auth:` → installs HTTP Basic Auth on **every route except `/health`** |
+| `apps/api/app/api/v1/health.py` | Echoes the value as `environment` in the `/health` payload |
+| `apps/api/app/core/config.py` | Declares the setting, default `"development"` |
+
+Nothing else branches on it. Specifically, `app_env` does **not** affect CORS,
+logging, debug behaviour, feature flags, source/connector behaviour, background
+job behaviour, OAuth, or any safety control — each of those is driven by its own
+independent setting (`DEBUG`, `REQUEST_LOGGING_ENABLED`, the `SOURCE_*` and
+`LLM_*` flags, and so on).
+
+**Therefore: setting `APP_ENV=production` on `ib-stg-api` would remove the API's
+only application-level authentication.** `ib-stg-api` has no App Service access
+restrictions (`Allow all`), so the Basic Auth gate is the sole control standing
+between the public internet and the API. Flipping the label to obtain a nicer
+string in `/health` would leave the backend fully open.
+
+`APP_ENV` therefore stays `staging` and is documented here as a historical
+runtime compatibility value. `/health` truthfully reports the runtime value of
+`APP_ENV`; it is not a claim that a separate production deployment exists. The
+deployment's operational role is recorded in this document, in
+`infra/azure/README.md` and in `docs/SECURITY.md`.
+
+Changing `APP_ENV` on this app is only safe **after** the backend enforces its
+own authentication outside `staging`, or after equivalent network-level access
+restrictions are in place. Neither is in scope today.
+
+---
+
+## Backup / rollback (single environment)
+
+- PITR is enabled on `ib-stg-psql`: 7-day backup retention, geo-redundant backup
+  disabled.
+- **Rollback = redeploy a known accepted artifact.** Rebuild the ZIPs from the
+  target commit in a detached worktree (`git worktree add --detach <dir> <sha>`)
+  and `az webapp deploy` them to `ib-stg-api` / `ib-stg-web`. Confirm the
+  rollback by polling `/health` (API) and `/api/version` (web) until both report
+  the intended `commit_sha`.
+- Restore the database **only** when a migration or data change requires it, via
+  `az postgres flexible-server restore` to a new server followed by repointing
+  `DATABASE_URL`. Never restore merely to prove the procedure works.
+
+---
+
+## Historical: the temporary `ib-prod-rg` environment (provisioned and removed 2026-08-29)
+
+*Retained as a deployment record. These resources no longer exist — do not use
+any instruction in this section.*
+
+A separate production environment was provisioned on 2026-08-29 from accepted
+commit `614f86f` and **removed the same day** when the owner decided
+InvestingBuddy should run a single private environment rather than a
+staging/production pair.
+
+It consisted of `ib-prod-rg` containing `ib-prod-plan`, `ib-prod-api`,
+`ib-prod-web`, `ib-prod-psql` (PostgreSQL 16, `northeurope`), `ib-prod-vault`,
+`ibprodstorage01`, `ib-prod-insights` and `ib-prod-logs`. It reused the shared
+`ib-stg-openai` and `ib-stg-docintel` inference accounts, which live in
+`ib-stg-rg` and were unaffected by its removal.
+
+Removal facts:
+
+- The two environments shared **no mutable database state** — `ib-prod-psql` and
+  `ib-stg-psql` are separate servers.
+- `ib-prod-psql` held only deployment smoke-test output: 2 companies (PNDORA,
+  CFR), 7 reports all in `draft`, 0 `report_review_events`, 590 rows total, all
+  created within one 19-minute window. Nothing user-authored, nothing published.
+- No GitHub OAuth App was ever registered for `ib-prod-web`, so no one ever
+  logged into it.
+- `ibprodstorage01` contained 0 blobs.
+- A final logical snapshot was taken before deletion and stored outside the
+  repository. It is a disposable rollback aid, not an authoritative dataset.
+- `ib-prod-vault` had purge protection enabled, so the resource group is gone
+  but the vault **name stays reserved in a soft-deleted state until its
+  scheduled purge on 2026-11-27** and cannot be purged early. This is the one
+  documented residue of the removed environment. Soft-deleted vaults incur no
+  cost and expose nothing; `az keyvault list-deleted` shows it.
+
+Its one durable lesson is recorded above under
+[APP_ENV semantics](#app_env-semantics--do-not-change-this-casually): the
+`ib-prod-api` deployment ran at `APP_ENV=production` with **no application-level
+authentication**, protected only by App Service default-`Deny` access
+restrictions. That asymmetry is why the surviving environment keeps
+`APP_ENV=staging`.
+
+---
+
+## Canonical URLs (`ib-stg-rg` — the sole deployed environment)
+
+> **Status: live.** These are the private-use production URLs. The `stg`
+> hostnames are historical names, retained deliberately — see
+> [Single-environment model](#single-environment-model).
 
 | Service | URL |
 |---|---|
@@ -112,8 +249,10 @@ Storage Account exception: `ib{env}storage` (no hyphens)
 | Web | `https://ib-stg-web.azurewebsites.net` |
 | Admin | `https://ib-stg-web.azurewebsites.net/admin` |
 
-**Security note:** Staging URLs are not public-safe until access control is configured.
-See [Security Limitations](#security-limitations) below.
+**Security note:** the API is protected by server-to-server HTTP Basic Auth
+(the `APP_ENV=staging` gate) and the web admin surface by GitHub OAuth plus the
+`ADMIN_ALLOWED_EMAILS` allowlist. See [Security Limitations](#security-limitations)
+below and `docs/SECURITY.md`.
 
 ---
 
@@ -1721,9 +1860,14 @@ Full setup details: [`infra/azure/README.md`](../infra/azure/README.md)
 
 ```
 feature/*   → PR → CI (lint + test + build) → merge to main
-main        → CI → staging deployment (deploy-api-staging + deploy-web-staging)
-release/*   → production deployment (Phase 5+)
+main        → CI → deployment to the single private-use production environment
+              (deploy-api-staging + deploy-web-staging — workflow names are
+               historical, like the resource names)
 ```
+
+There is no `release/*` production track: there is only one environment. Adding
+one would require standing up a second environment first, which is a deliberate
+infrastructure decision.
 
 Never commit directly to `main` once deployment is active.
 
