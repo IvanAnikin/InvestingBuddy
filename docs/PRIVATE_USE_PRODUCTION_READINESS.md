@@ -895,6 +895,104 @@ Richemont's `4` (cited) and `24` (persisted) are the same document and now say s
 per-document persisted count is asserted equal to the rows returned beside it, so the two cannot
 drift. The four definitions are stated once per payload.
 
+## 31. Final-report regeneration lineage (staging `2e1e342`)
+
+### 31.1 The defect
+
+Manually regenerating the **accepted** Pandora report
+(`a17f94b2-987c-4ccd-8a38-81b431cd92aa` → `06b2f640-2991-4714-8ce1-186d3c1e5295`,
+both on agent run `f472b983-ea3c-4afb-b6da-3bac0dbcb06c`) produced a report that
+had lost, in its body:
+
+| Field | Accepted report | Regenerated report |
+|---|---|---|
+| `company_identity.legal_name` | `Pandora A/S` | **`PNDORA`** |
+| Why It Surfaced | available | **unavailable** |
+| Discovery Rationale | `48837187-…` / `34ac619a-…` | **"No screening candidate is linked"** |
+| `discovery_lineage` | available | **unavailable** |
+
+The regenerated row still carried the correct `company_id`
+(`6e051384-7458-41d1-9f59-afba72177f88`) and `created_by_agent_run_id`. The
+linkage was never missing — `generate_from_report` never asked for it.
+
+### 31.2 Root cause
+
+Three independent omissions in `generate_from_report`, all on the same line of
+reasoning: a regeneration was treated as a fresh assembly rather than as a
+continuation of a known lineage.
+
+1. **`candidate=None` was hardcoded** and no `discovery_lineage` was threaded,
+   so `_build_discovery_rationale` / `_build_discovery_lineage_from_dict` both
+   rendered "not available" — even though the source report carries its own
+   exact lineage in `source_summary_json.discovery_lineage`, and the
+   `DiscoveryCandidate` row still pointed at it by FK.
+2. **`company_record` was resolved only when the re-parsed workflow state had no
+   company snapshot.** After the 32D2d lineage-draft recovery it always has one,
+   so the snapshot's `legal_name` was used verbatim. For a venue SEC EDGAR does
+   not cover that value is deliberately the **ticker**
+   (`free_real_provider._not_sourced_profile`) — which is exactly what
+   `_build_company_identity`'s company-record repair exists for. It simply never
+   had a company record to repair from.
+3. The research memo's `why_surfaced` read the legacy-shaped
+   `discovery_rationale` even when that rationale had itself been built from
+   `DiscoveryCandidate` lineage, whose legacy-shaped fields are structurally
+   empty — producing an `available: true` block with nothing in it.
+
+### 31.3 The fix
+
+`app/services/report_lineage.py` — one resolver, explicit signals only:
+
+* company: `reports.company_id` → `scorecards.company_id` →
+  `discovery_candidates.agent_run_id` → `discovery_candidates.analysis_report_id`
+* discovery: `DiscoveryCandidate` rows reachable by exact FK (this report, its
+  recovered workflow draft, its agent run) → the lineage persisted on the source
+  report
+* legacy screening candidate: `scorecards.screening_candidate_id` only — there is
+  deliberately **no** "latest candidate for this company" arm
+
+**Fails closed.** Two distinct candidates reachable by the same exact signal, or
+a persisted lineage that contradicts the candidate row, raises
+`AmbiguousReportLineageError` → **HTTP 409**, and no report is written.
+
+`resolve_display_company_name` is now the single rule for "is this name really a
+name", shared by `company_identity`, the executive summary, the report title and
+the council's issuer context — so they can no longer disagree. A genuine
+snapshot-resolved name still wins; a company row that is itself a bare ticker
+displaces nothing.
+
+The regenerated report records `source_summary_json.regenerated_from`
+(parent report, company, agent run, discovery run, candidate, and **which**
+signal supplied each). `reports` has no parent-report column, so this is
+additive metadata — **no migration; head stays `018`**.
+
+### 31.4 Jurisdiction-aware regulated-disclosure source class
+
+Catalyst discovery attempts SEC EDGAR for every issuer, so the Pandora report
+listed `sec_filings` as attempted, `sec_recent_filings` as **missing**, and
+carried "SEC CIK not available for PNDORA" as a warning — naming a venue this
+Danish issuer has no relationship with as the gap in its regulated-disclosure
+coverage, directly beside a Regulated Disclosures section listing **five Nasdaq
+Nordic** announcements.
+
+`app/services/sources/jurisdiction_source_classes.py` reclassifies, never
+deletes. For an issuer whose venue SEC EDGAR does not cover, the SEC classes move
+into `not_applicable_sources` carrying the provider's own message, and the
+issuer's real channel is reported in their place, named after its venue
+(`Nasdaq Nordic`, `eMarket Storage (CONSOB)`, `SIX Swiss Exchange`, …) with its
+state sourced from what was actually retrieved — "successful" only when
+disclosures were, an honest gap when they were not. An **SEC-eligible** issuer,
+and an issuer with **no resolvable exchange** (the legacy ticker-only default),
+are left byte-for-byte unchanged: a genuine SEC attempt is never hidden.
+
+### 31.5 Tests
+
+`tests/test_report_regeneration_lineage.py` (33 cases) and
+`tests/test_jurisdiction_source_classes.py` (15 cases). The lineage tests run
+against a real in-memory SQLite async database — the linkage is resolved through
+actual `WHERE` clauses over real FK columns — and every case is parametrised over
+**two** issuer fixtures in two jurisdictions (PNDORA/Nasdaq Copenhagen,
+MONC/Borsa Italiana), so nothing can pass by special-casing a ticker.
+
 ## 30. Final status
 
 **Campaign closed 2026-08-26. Status: READY FOR MANUAL PRIVATE-USE PRODUCTION VERIFICATION.**

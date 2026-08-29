@@ -53,9 +53,9 @@ from app.services.final_report_generator import (
     FinalReportGeneratorService,
     _build_company_identity,
     _extract_workflow_state_from_report,
-    _resolve_company_record_from_lineage,
 )
 from app.services.real_asset_report_completer import build_schema_complete_report
+from app.services.report_lineage import ResolvedReportLineage, resolve_company_record
 from app.services.sources.redaction import url_has_secret
 from app.workflows.company_analysis import (
     _ENVELOPE_LIST_CAP,
@@ -212,8 +212,8 @@ async def _run_from_report(
         patch.object(frg, "_load_sources_for_citations", AsyncMock(return_value=[])),
         patch.object(
             frg,
-            "_resolve_company_record_from_lineage",
-            AsyncMock(return_value=resolver),
+            "_resolve_regeneration_lineage",
+            AsyncMock(return_value=ResolvedReportLineage(company_record=resolver)),
         ),
     ]
     for p in patches:
@@ -409,25 +409,31 @@ async def test_resolver_recovers_identity_via_agent_run_candidate() -> None:
     cand = _discovery_candidate(agent_run_id=run_id)
     source_report = _report_with_markdown("# legacy", created_by_agent_run_id=run_id)
 
+    # The candidate arms scan every exact-FK match (so a conflicting second row
+    # is VISIBLE rather than silently truncated to the first) — scalars().all().
     result = MagicMock()
-    result.scalar_one_or_none.return_value = cand
+    result.scalar_one_or_none.return_value = None
+    result.scalars.return_value.all.return_value = [cand]
     db = AsyncMock(spec=AsyncSession)
     db.execute = AsyncMock(return_value=result)
 
-    record = await _resolve_company_record_from_lineage(db, source_report, None)
+    record, signal = await resolve_company_record(db, source_report, None)
     assert record is not None
     assert record["name"] == "Apple Inc."
     assert record["ticker"] == "AAPL"
+    assert signal == "discovery_candidate.agent_run_id"
 
 
 async def test_resolver_returns_none_when_no_lineage() -> None:
     source_report = _report_with_markdown("# legacy")  # no agent run
     result = MagicMock()
     result.scalar_one_or_none.return_value = None
+    result.scalars.return_value.all.return_value = []
     db = AsyncMock(spec=AsyncSession)
     db.execute = AsyncMock(return_value=result)
-    record = await _resolve_company_record_from_lineage(db, source_report, None)
+    record, signal = await resolve_company_record(db, source_report, None)
     assert record is None
+    assert signal is None
 
 
 async def test_legacy_report_with_resolvable_parent_never_unknown(mock_db) -> None:

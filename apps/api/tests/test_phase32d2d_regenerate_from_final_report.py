@@ -50,6 +50,7 @@ from app.services.final_report_generator import (
     FinalReportGeneratorService,
 )
 from app.services.llm.schemas import CouncilResult
+from app.services.report_lineage import ResolvedReportLineage
 
 AGENT_RUN_ID = uuid.uuid4()
 
@@ -178,7 +179,9 @@ async def _regenerate(
         patch.object(frg, "_load_citations_for_report", AsyncMock(return_value=[])),
         patch.object(frg, "_load_sources_for_citations", AsyncMock(return_value=[])),
         patch.object(
-            frg, "_resolve_company_record_from_lineage", AsyncMock(return_value=None)
+            frg,
+            "_resolve_regeneration_lineage",
+            AsyncMock(return_value=ResolvedReportLineage()),
         ),
         patch.object(
             frg, "maybe_run_council", AsyncMock(return_value=CouncilResult(llm_used=False))
@@ -242,7 +245,9 @@ async def test_recovery_uses_the_agent_run_lineage_only(mock_db: AsyncMock) -> N
         patch.object(frg, "_load_citations_for_report", AsyncMock(return_value=[])),
         patch.object(frg, "_load_sources_for_citations", AsyncMock(return_value=[])),
         patch.object(
-            frg, "_resolve_company_record_from_lineage", AsyncMock(return_value=None)
+            frg,
+            "_resolve_regeneration_lineage",
+            AsyncMock(return_value=ResolvedReportLineage()),
         ),
         patch.object(
             frg, "maybe_run_council", AsyncMock(return_value=CouncilResult(llm_used=False))

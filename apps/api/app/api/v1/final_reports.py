@@ -30,6 +30,7 @@ from app.schemas.final_report import (
     RegenerateSectionResponse,
 )
 from app.services.final_report_generator import FinalReportGeneratorService
+from app.services.report_lineage import AmbiguousReportLineageError
 
 router = APIRouter(prefix="/final-reports", tags=["final-reports"])
 logger = logging.getLogger(__name__)
@@ -152,6 +153,9 @@ async def generate_from_company(
     description=(
         "ADMIN/DEV ONLY. Generates a structured internal final report draft "
         "from an existing report and its linked workflow artifacts. "
+        "Preserves the source report's EXACT lineage (company, agent run, "
+        "discovery run, discovery candidate, discovery rationale). Returns 409 "
+        "when two exact linkages conflict — it never picks a winner. "
         "Report is saved with status=draft, review_status=draft, "
         "human_review_required=True. "
         "NOT investment advice. No BUY/SELL/HOLD/WATCH recommendation is produced. "
@@ -164,6 +168,17 @@ async def generate_from_report(
 ) -> FinalReportResponse:
     try:
         return await _svc.generate_from_report(db, report_id)
+    except AmbiguousReportLineageError as exc:
+        # Two equally-exact linkages disagree about this report's discovery
+        # origin. Regeneration FAILS CLOSED rather than picking one — a wrong
+        # candidate/discovery-run attribution is worse than no report. 409, not
+        # 404: the problem is too much linkage, not a missing record.
+        logger.warning(
+            "Final report regeneration from report %s has ambiguous lineage: %s",
+            report_id,
+            exc,
+        )
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
