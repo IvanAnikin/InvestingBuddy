@@ -1907,6 +1907,7 @@ Response (200 for **GET .../field-review**):
 | POST | `/api/v1/final-reports/from-scorecard/{scorecard_id}` | ✅ Live | Generate final report from scored candidate |
 | POST | `/api/v1/final-reports/from-candidate/{candidate_id}` | ✅ Live | Generate final report from discovery candidate |
 | POST | `/api/v1/final-reports/from-company/{company_id}` | ✅ Live | Generate final report from the company's own most-recent completed analysis (company-scoped; 404 when none) |
+| POST | `/api/v1/final-reports/from-report/{report_id}` | ✅ Live | Regenerate a final report from an existing report, preserving its exact lineage (409 on conflicting lineage) |
 | POST | `/api/v1/final-reports/{report_id}/validate` | ✅ Live | Re-validate an existing report |
 | POST | `/api/v1/final-reports/{report_id}/regenerate-section` | ✅ Live | Regenerate a single section of an existing report |
 
@@ -1927,6 +1928,37 @@ no BUY/SELL/HOLD/WATCH, price target, or fair value is produced.
 > will return 404 even if the company clearly has older reports. Run a fresh
 > company analysis to produce a company-linked report, or use
 > `from-report/{report_id}` to regenerate from a specific pre-existing report.
+
+**POST /api/v1/final-reports/from-report/{report_id}** — Regenerate from a report
+
+A regeneration is **not** a new discovery. The route carries the source report's
+**exact** lineage forward, resolved from explicit signals only — the lineage
+persisted on the source report (`source_summary_json.discovery_lineage`) and
+foreign keys (`reports.company_id`, `reports.created_by_agent_run_id`,
+`discovery_candidates.analysis_report_id`, `discovery_candidates.agent_run_id`,
+`scorecards.company_id` / `scorecards.screening_candidate_id`). Never a
+ticker/name match; never "the latest candidate for this company".
+
+Preserved on the regenerated draft:
+
+| Preserved | Where it lands |
+|---|---|
+| `company_id` | `reports.company_id` (behind `REPORT_CITATION_PERSISTENCE_ENABLED`) |
+| Canonical legal name | `company_identity.legal_name` — a snapshot `legal_name` that is only the ticker (the non-US `_not_sourced_profile` safety stub) is repaired from the company row, never left as the ticker |
+| Agent run id | `reports.created_by_agent_run_id` |
+| `candidate_id` / `discovery_run_id` | `discovery_lineage` + `discovery_rationale` sections and `source_summary_json.discovery_lineage` |
+| Discovery rationale | `discovery_rationale` + the research memo's "Why It Surfaced" |
+| Parent report reference | `source_summary_json.regenerated_from` (`reports` has no parent-report column; this is additive metadata, no migration) |
+
+**409 Conflict** — two equally-exact linkages disagree (two discovery
+candidates reachable by the same FK, or a persisted lineage that contradicts the
+candidate row). Regeneration **fails closed** and writes nothing rather than
+choosing one; a wrong candidate/discovery-run attribution is worse than no
+report. 404 remains "no such report".
+
+Genuine absence is preserved honestly: a report whose run truly had no discovery
+candidate regenerates with `discovery_lineage.available=false`, and nothing is
+inferred to fill the gap.
 
 **POST /api/v1/final-reports/from-scorecard/{scorecard_id}** — Generate from scorecard
 

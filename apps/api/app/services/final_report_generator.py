@@ -75,7 +75,6 @@ from app.services.data_provenance import (
     derive_data_provenance,
     provenance_to_is_mock,
 )
-from app.services.discovery_signal_extractor import is_placeholder_company_name
 from app.services.document_ingestion_attempt_service import record_ingestion_attempts
 from app.services.exchange_registry import is_sec_eligible
 from app.services.extracted_document_service import (
@@ -96,6 +95,11 @@ from app.services.llm.schemas import (
     PersistableEvidence,
 )
 from app.services.real_asset_report_completer import build_schema_complete_report
+from app.services.report_lineage import (
+    ResolvedReportLineage,
+    resolve_display_company_name,
+    resolve_report_lineage,
+)
 from app.services.report_validation_service import validate_real_asset_report
 from app.services.sources.company_evidence import regulator_venue_display_name
 from app.services.sources.extracted_fact_validator import IssuerContext
@@ -112,6 +116,9 @@ from app.services.sources.financial_period import (
     parse_period,
 )
 from app.services.sources.ingestion_attempts import attempts_for_primary_documents
+from app.services.sources.jurisdiction_source_classes import (
+    classify_source_classes,
+)
 from app.services.sources.period_state import (
     _recency_key,
     build_reporting_period_state,
@@ -1428,18 +1435,16 @@ def _build_company_identity(
         # (seeded via discovery_signal_extractor.ensure_company). Prefer the DB
         # record's name in that one narrow case — never otherwise, so a genuine
         # snapshot-resolved name (SEC/GLEIF/company_ir) still wins as before.
-        resolved_legal_name = snapshot_legal_name
-        legal_name_source = "company_snapshot"
-        if (
-            snapshot_ticker
-            and is_placeholder_company_name(snapshot_legal_name, snapshot_ticker)
-            and company_record
-            and not is_placeholder_company_name(
-                company_record.get("name"), snapshot_ticker
-            )
-        ):
-            resolved_legal_name = company_record.get("name")
-            legal_name_source = "company_db_record"
+        # ONE rule for "is this name really a name", shared with the report
+        # title and the council's issuer context (``resolve_display_company_name``).
+        resolved_legal_name = resolve_display_company_name(
+            snapshot_legal_name, snapshot_ticker, company_record
+        )
+        legal_name_source = (
+            "company_db_record"
+            if resolved_legal_name != snapshot_legal_name
+            else "company_snapshot"
+        )
         identity["legal_name"] = _dp(resolved_legal_name, legal_name_source)
         identity["ticker"] = _dp(ci.get("ticker"), "company_snapshot")
         identity["exchange"] = _dp(ci.get("exchange"), "company_snapshot")
@@ -3680,6 +3685,66 @@ def _build_news_catalyst_discovery(
     }
 
 
+def _apply_jurisdiction_source_classes(
+    section: dict[str, Any],
+    *,
+    exchange: str | None,
+    country: str | None,
+    regulated_disclosure_count: int,
+) -> None:
+    """Name the regulated-disclosure source class after the issuer's own venue.
+
+    Mutates an already-built ``news_catalyst_discovery`` section in place.
+    Nothing is deleted: an SEC class that does not apply to this jurisdiction is
+    re-filed under ``not_applicable_sources`` together with the provider's own
+    message, and the issuer's real channel takes its place in the attempted /
+    successful / missing lists. See
+    ``app.services.sources.jurisdiction_source_classes`` for the rules — this
+    function only wires the section's fields to them.
+
+    No-op for an SEC-eligible issuer, for an issuer with no resolvable venue,
+    and for a section that never named an SEC class.
+    """
+    view = classify_source_classes(
+        exchange=exchange,
+        country=country,
+        attempted=section.get("source_classes_attempted"),
+        successful=section.get("source_classes_successful"),
+        missing=section.get("missing_sources"),
+        warnings=section.get("warnings"),
+        regulated_disclosure_count=regulated_disclosure_count,
+    )
+    if not view.reclassified:
+        return
+
+    section["source_classes_attempted"] = view.source_classes_attempted
+    section["source_classes_successful"] = view.source_classes_successful
+    section["missing_sources"] = view.missing_sources
+    section["warnings"] = view.warnings
+    section["not_applicable_sources"] = {
+        "value": view.not_applicable_sources,
+        "provenance": "sourced_fact",
+        "note": (
+            "Source classes that do not apply to this issuer's jurisdiction. "
+            "They were not counted as gaps — the channel that DOES serve this "
+            "issuer is listed under the source classes above and detailed in "
+            "the Regulated Disclosures section."
+        ),
+    }
+    section["regulated_disclosure_channel"] = {
+        "value": view.regulated_disclosure_venue,
+        "provenance": (
+            "sourced_fact" if view.regulated_disclosure_venue else "missing_data"
+        ),
+        "sec_eligible": view.sec_eligible,
+        "retrieved_event_count": regulated_disclosure_count,
+        "note": (
+            "The regulated-disclosure venue for this issuer's listing venue. "
+            "Filing events under this section are this venue's, not SEC EDGAR's."
+        ),
+    }
+
+
 def _build_industry_macro_context(
     macro_context: list[dict[str, Any]],
 ) -> dict[str, Any]:
@@ -4303,7 +4368,20 @@ def _build_research_memo(
     }
 
     # -- why_surfaced: from discovery rationale ----------------------------
-    if discovery_rationale.get("available"):
+    # A rationale carrying ``source: "discovery_run"`` was itself built from the
+    # DiscoveryCandidate lineage (``_build_discovery_rationale``'s no-legacy-
+    # candidate branch). Its legacy-shaped fields are then structurally empty —
+    # ``DiscoveryCandidate`` has no ``discovery_reasons_json`` — so reading it
+    # here produced an "available: true" block with nothing in it, and dropped
+    # the run/candidate ids the reader actually needs. Prefer the rendered
+    # lineage section in that case. A genuine legacy ``ScreeningCandidate``
+    # rationale (no ``source`` marker) still wins, unchanged.
+    _rationale_is_lineage_derived = (
+        discovery_rationale.get("source") == "discovery_run"
+    )
+    if discovery_rationale.get("available") and not (
+        _rationale_is_lineage_derived and discovery_lineage.get("available")
+    ):
         why_surfaced = {
             "available": True,
             "discovery_reasons": {
@@ -4962,8 +5040,13 @@ def _assemble_final_report_content(
 
     if company_snapshot:
         ci = company_snapshot.get("company_identity", {})
-        company_name = ci.get("legal_name")
         ticker = ci.get("ticker")
+        # Same shared rule as ``_build_company_identity`` — the executive
+        # summary must not head a report "PNDORA" while the identity section
+        # below it says "Pandora A/S".
+        company_name = resolve_display_company_name(
+            ci.get("legal_name"), ticker, company_record
+        )
     elif company_record:
         company_name = company_record.get("name")
         ticker = company_record.get("ticker")
@@ -5295,93 +5378,27 @@ async def _load_sources_for_citations(
     return list(result.scalars().all())
 
 
-async def _resolve_company_record_from_lineage(
+async def _resolve_regeneration_lineage(
     db: AsyncSession,
     source_report: Report | None,
     scorecard: Scorecard | None,
-) -> dict[str, Any] | None:
-    """Best-effort identity recovery from PUBLIC research lineage (Phase 32A RC-5).
+    state_recovered_from: uuid.UUID | None = None,
+) -> ResolvedReportLineage:
+    """Resolve the EXACT lineage a regeneration must carry forward.
 
-    Used by ``generate_from_report`` when the re-parsed markdown carries no
-    company snapshot, so a KNOWN parent never silently degrades to "Unknown".
-    Reads only public research entities (discovery candidates, scorecard→company)
-    — NEVER personalized / portfolio / private tables (rule 10). ``AgentRun`` has
-    no ``company_id`` column, so the run is resolved via the discovery candidate.
-    Priority:
+    Thin seam over ``app.services.report_lineage`` (kept module-level so it can
+    be substituted in tests). Supersedes the old
+    ``_resolve_company_record_from_lineage``, which recovered identity ONLY,
+    only when the workflow state carried no company snapshot, and never looked
+    at ``Report.company_id`` — so regenerating a report whose snapshot carried
+    the ticker-as-legal-name safety stub re-announced the TICKER as the legal
+    name, and dropped the discovery candidate / discovery run entirely.
 
-      1. source_report.created_by_agent_run_id → DiscoveryCandidate.agent_run_id
-      2. scorecard.company_id → Company
-      3. DiscoveryCandidate.analysis_report_id == source_report.id
-
-    Returns a ``company_record`` dict, or ``None`` when identity is genuinely
-    unresolvable (the caller then leaves it honestly unresolved + human-review
-    flagged — it is never fabricated and never relabelled as mock). Identity
-    only is recovered; the candidate's ``snapshot_json`` is deliberately NOT
-    promoted to a financial snapshot here, so stale candidate numbers are never
-    presented as sourced (the report-level provenance stays ``unknown``).
+    Raises ``AmbiguousReportLineageError`` when two exact linkages conflict.
     """
-    from app.models.company import Company
-    from app.models.discovery import DiscoveryCandidate
-
-    def _record_from_candidate(cand: DiscoveryCandidate) -> dict[str, Any] | None:
-        name = cand.legal_name or cand.company_name
-        if not name and not cand.ticker:
-            return None
-        return {
-            "name": name,
-            "ticker": cand.ticker,
-            "exchange": cand.exchange,
-            "country": cand.country,
-            "sector": cand.sector,
-        }
-
-    # 1. source report's agent run → discovery candidate (identity + lineage).
-    if source_report is not None and source_report.created_by_agent_run_id:
-        cand_result = await db.execute(
-            select(DiscoveryCandidate)
-            .where(
-                DiscoveryCandidate.agent_run_id
-                == source_report.created_by_agent_run_id
-            )
-            .order_by(DiscoveryCandidate.created_at.desc())
-            .limit(1)
-        )
-        cand = cand_result.scalar_one_or_none()
-        if cand is not None:
-            rec = _record_from_candidate(cand)
-            if rec is not None:
-                return rec
-
-    # 2. scorecard.company_id → Company (public research entity).
-    if scorecard is not None and scorecard.company_id:
-        company_result = await db.execute(
-            select(Company).where(Company.id == scorecard.company_id)
-        )
-        company = company_result.scalar_one_or_none()
-        if company is not None:
-            return {
-                "id": str(company.id),
-                "name": company.name,
-                "ticker": company.ticker,
-                "exchange": company.exchange,
-                "country": company.country,
-                "sector": company.sector,
-                "industry": company.industry,
-            }
-
-    # 3. discovery candidate whose analysis_report_id links back to this report.
-    if source_report is not None:
-        link_result = await db.execute(
-            select(DiscoveryCandidate)
-            .where(DiscoveryCandidate.analysis_report_id == source_report.id)
-            .order_by(DiscoveryCandidate.created_at.desc())
-            .limit(1)
-        )
-        cand = link_result.scalar_one_or_none()
-        if cand is not None:
-            return _record_from_candidate(cand)
-
-    return None
+    return await resolve_report_lineage(
+        db, source_report, scorecard, state_recovered_from=state_recovered_from
+    )
 
 
 def _extract_workflow_state_from_report(
@@ -5895,26 +5912,51 @@ class FinalReportGeneratorService:
         )
         sources = await _load_sources_for_citations(db, citations)
 
-        # Phase 32A RC-5 — when the re-parsed markdown carries no company
-        # snapshot (a legacy pre-envelope draft), hydrate identity from PUBLIC
-        # research lineage so a KNOWN parent never degrades to "Unknown". Only
-        # takes effect when the state lacks identity — the assembler prefers the
-        # snapshot's own identity when present. Never fabricates a name.
-        company_record = None
-        if not state.get("company_snapshot"):
-            company_record = await _resolve_company_record_from_lineage(
-                db, source_report, scorecard
-            )
+        # LINEAGE PRESERVATION — a regeneration is not a new discovery.
+        #
+        # The company, the agent run, the discovery run and the discovery
+        # candidate that produced the SOURCE report are already known exactly,
+        # by foreign key. They are resolved here and threaded through verbatim.
+        # Three things used to be lost at this exact point, and all three were
+        # visible on the regenerated staging Pandora report:
+        #
+        #   * identity — ``company_record`` was resolved ONLY when the re-parsed
+        #     state carried no company snapshot. With a snapshot present (the
+        #     normal case, and the case after the 32D2d lineage-draft recovery
+        #     above), the snapshot's ``legal_name`` was used verbatim — and for
+        #     a venue SEC EDGAR does not cover that value is deliberately the
+        #     TICKER (``free_real_provider._not_sourced_profile``). The report
+        #     announced "PNDORA" as a legal name while ``companies.name`` said
+        #     "Pandora A/S". Now resolved ALWAYS; ``_build_company_identity``
+        #     still prefers a genuine snapshot name, so this only ever repairs
+        #     the placeholder case.
+        #   * ``candidate`` — hardcoded ``None``, so the discovery rationale was
+        #     unconditionally "No screening candidate linked to this report."
+        #   * ``discovery_lineage`` — never passed, so the discovery run id and
+        #     candidate id the source report carries in its own
+        #     ``source_summary_json`` were dropped, and the research memo's
+        #     "Why It Surfaced" reported an unavailable origin for a report that
+        #     had one.
+        #
+        # Exact signals only (persisted lineage + FKs) — never a ticker/name
+        # match, never "the latest candidate for this company". Conflicting
+        # linkage raises ``AmbiguousReportLineageError`` (409) rather than
+        # picking a winner; genuine absence stays honestly absent.
+        lineage = await _resolve_regeneration_lineage(
+            db, source_report, scorecard, state_recovered_from
+        )
 
         return await self._generate_and_save(
             db=db,
             scorecard=scorecard,
-            candidate=None,
+            candidate=lineage.screening_candidate,
             source_report=source_report,
-            company_record=company_record,
+            company_record=lineage.company_record,
             citations=citations,
             sources=sources,
             state=state,
+            discovery_lineage=lineage.discovery_lineage,
+            lineage=lineage,
         )
 
     async def generate_from_workflow_state(
@@ -6123,6 +6165,7 @@ class FinalReportGeneratorService:
         sources: list[Source],
         state: dict[str, Any],
         discovery_lineage: dict[str, Any] | None = None,
+        lineage: ResolvedReportLineage | None = None,
     ) -> FinalReportResponse:
         company_snapshot = state.get("company_snapshot")
         financial_data_summary = state.get("financial_data_summary")
@@ -6189,9 +6232,15 @@ class FinalReportGeneratorService:
         exchange: str | None = None
         if company_snapshot:
             ci = company_snapshot.get("company_identity", {})
-            company_name = ci.get("legal_name")
             ticker = ci.get("ticker")
             exchange = ci.get("exchange")
+            # The snapshot's legal_name can legitimately BE the ticker (the
+            # not-sourced-profile safety stub). One shared resolver decides
+            # this, so the report title, the council's issuer context and the
+            # company_identity section can never disagree about the name.
+            company_name = resolve_display_company_name(
+                ci.get("legal_name"), ticker, company_record
+            )
         elif company_record:
             company_name = company_record.get("name")
             ticker = company_record.get("ticker")
@@ -6605,6 +6654,33 @@ class FinalReportGeneratorService:
                 }
                 _appendix["primary_document_note"] = _APPENDIX_PRIMARY_DOC_NOTE
 
+        # Jurisdiction-aware regulated-disclosure SOURCE CLASS.
+        #
+        # Catalyst discovery attempts SEC EDGAR for every issuer, so a Danish or
+        # Italian report listed ``sec_filings`` as attempted, ``sec_recent_filings``
+        # as MISSING, and carried "SEC CIK not available for <TICKER>" as a
+        # warning — naming a venue the issuer has no relationship with as the gap
+        # in its regulated-disclosure coverage, directly beside a Regulated
+        # Disclosures section listing that issuer's actual venue announcements.
+        #
+        # Reclassified, never deleted: the SEC classes move into an explicit
+        # ``not_applicable_sources`` entry carrying the provider's own message,
+        # and the issuer's real channel is reported in their place with its state
+        # sourced from what was actually retrieved. Runs AFTER the council so the
+        # retrieved-disclosure count is real, and BEFORE validation so the safety
+        # gate scans it. An SEC-eligible issuer (or one with no resolvable venue)
+        # is left byte-for-byte unchanged.
+        _news_section = report_content.get("news_catalyst_discovery")
+        if isinstance(_news_section, dict) and _news_section.get("available"):
+            _apply_jurisdiction_source_classes(
+                _news_section,
+                exchange=exchange or (company_record or {}).get("exchange"),
+                country=_channel_country or (company_record or {}).get("country"),
+                regulated_disclosure_count=len(
+                    getattr(council_result, "regulated_disclosure_events", None) or []
+                ),
+            )
+
         # Phase 29C.1: optional MACRO CONTEXT block. When ``source_macro_enabled``
         # is on and the council surfaced reference-only macro sources for this
         # company's broad theme, render them as an OPTIONAL industry_macro_context
@@ -6786,9 +6862,18 @@ class FinalReportGeneratorService:
             "final_research_state": final_state.to_payload(),
             # Phase 32A Slice 6B (C2) — real DiscoveryCandidate/DiscoveryRun
             # lineage (never a ScreeningCandidate). None when not available
-            # (e.g. no discovery-run candidate is genuinely in play).
+            # (e.g. no discovery-run candidate is genuinely in play). This is
+            # ALSO the durable record a later regeneration recovers its lineage
+            # from when the candidate row's ``analysis_report_id`` has since
+            # been re-pointed at a newer report.
             "discovery_lineage": discovery_lineage,
         }
+        # The parent this draft was regenerated FROM, and which explicit signal
+        # supplied each part of its lineage. ``reports`` has no parent-report
+        # column, so this lives in the existing flexible metadata dict — no
+        # schema change, no migration. None for a first-generation report.
+        if lineage is not None:
+            source_summary_for_save["regenerated_from"] = lineage.as_provenance()
 
         # Phase 32A Slice 3 — resolve the report's lineage from EXPLICIT signals
         # only (public research entities). from-report / from-company read the
