@@ -14,6 +14,27 @@ For security review rules see `.claude/skills/security-review/SKILL.md`.
 
 ---
 
+## Deployment topology
+
+InvestingBuddy has **one** deployed environment, which is the private-use
+production environment:
+
+| | |
+|---|---|
+| Resource group | `ib-stg-rg` |
+| Web | `https://ib-stg-web.azurewebsites.net` |
+| API | `https://ib-stg-api.azurewebsites.net` |
+| `APP_ENV` | `staging` — a historical runtime value that **gates the API's Basic Auth**, not a description of the deployment's role |
+| Operational role | PRIVATE-USE PRODUCTION |
+
+There is **no separate staging deployment** and no production deployment under
+any other name. The `ib-stg-*` resource names are historical and were retained
+to avoid a needless hostname, OAuth-callback and database migration. Any threat
+model that assumes a throwaway staging tier is wrong: this environment holds the
+real research history. See `docs/DEPLOYMENT.md` → *Single-environment model*.
+
+---
+
 ## Authentication
 
 ### Admin authentication — Phase 23 (implemented)
@@ -51,6 +72,14 @@ Clerk for the MVP admin surface.
 - **Backend Basic Auth remains** as a server-to-server defense: the proxy adds
   it only after the human admin is authenticated and authorized. The browser
   never calls the backend directly and never sees the credential.
+  **`APP_ENV` is load-bearing here.** `install_staging_basic_auth` is wired in
+  `apps/api/app/main.py` only when `APP_ENV == "staging"`. The sole deployed
+  environment (`ib-stg-api`) runs at `APP_ENV=staging` and has **no** App
+  Service access restrictions, so this Basic Auth gate is the only control
+  between the public internet and the API. Changing `APP_ENV` to `production`
+  would silently remove it. Do not change that value without first giving the
+  backend its own authentication outside `staging`, or adding equivalent
+  network-level restrictions. See `docs/DEPLOYMENT.md` → *APP_ENV semantics*.
 - **Local/CI auth:** `AUTH_TEST_MODE=true` enables a deterministic credential
   sign-in (`/api/auth/dev-login`) so Playwright/local dev never need real OAuth.
   It is hard-gated (returns 404 otherwise) and **must stay unset in
