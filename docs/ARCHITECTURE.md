@@ -224,7 +224,7 @@ route still exists, still renders, and remains the full diagnostic record.
 | `/` | anyone | public | Product landing page. Presentational + navigational only: renders no research and reads no report. |
 | `/login`, `/unauthorized` | anyone | public | Sign-in and the not-allowlisted state. |
 | `/research` | researcher | session + allowlist | Command centre: the two entry points and recent research. |
-| `/research/company` | researcher | session + allowlist | Analyze one company. Resolves it against the research universe, registers it inline if absent, then runs the workflow. |
+| `/research/company` | researcher | session + allowlist | Analyze one company. Resolves it against the research universe, registers it inline if absent, then runs BOTH backend steps (see below). |
 | `/research/discover` | researcher | session + allowlist | Natural-language thesis discovery, candidate list, and per-candidate deep dive. |
 | `/research/reports` | researcher | session + allowlist | Research library: reporting state, evidence quality and council state per report. |
 | `/research/reports/[id]` | researcher | session + allowlist | The reader-facing research report. |
@@ -233,6 +233,38 @@ route still exists, still renders, and remains the full diagnostic record.
 The two report views are two presentations of the SAME report and link to each
 other: `/research/reports/[id]` → "Technical details", and
 `/admin/reports/[id]` → "Open clean research view". No old URL changed.
+
+#### One workflow, two presentations
+
+`apps/web/src/lib/workflows.ts` owns everything that decides WHAT the backend is
+asked to do — the provider vocabulary and the request builders — and both
+consoles import it. `/admin/analysis` and `/research/company` call
+`buildCompanyAnalysisRequest`; `/admin/discovery` and `/research/discover` call
+`buildThesisDiscoveryRequest`. Neither surface has its own provider list or its
+own defaults, so they cannot drift apart on the contract while differing on
+presentation. The module makes no network call, which is what lets a test
+assert the payload directly.
+
+Two facts about the backend that the product surface has to respect:
+
+- **A full company report takes TWO calls.** `POST /workflows/company-analysis/run`
+  writes a DETERMINISTIC DRAFT (no `final_report_version`); the structured
+  report — the one the research view renders, and the one the council
+  contributes to — comes from `POST /final-reports/from-report/{draft_id}`. The
+  admin console makes these two button presses on two pages. `/research/company`
+  chains them in one action, reports which step is in flight, and links to the
+  report the SECOND call returns. If step two fails, step one's success is
+  reported as exactly that and the draft stays reachable.
+- **`use_llm` is not the council.** The workflow's `use_llm` flag gates the
+  `generate_research_sections` node only. The research council is a server-side
+  setting (`LLM_COUNCIL_ENABLED`) applied when the final report is generated,
+  and no request flag turns it on or off. Both consoles label the control for
+  what it does.
+
+A discovery candidate's `analysis_report_id` is likewise NOT a "has been
+researched" flag: the screening scan writes one for every ticker it touches.
+Both consoles therefore always offer the research action and surface a linked
+report separately.
 
 #### Product presentation layer
 

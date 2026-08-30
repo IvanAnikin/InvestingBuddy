@@ -14,6 +14,10 @@ import {
   parseThesis,
   runCandidateAnalysis,
 } from "@/lib/api";
+import {
+  DISCOVERY_DEFAULTS,
+  buildThesisDiscoveryRequest,
+} from "@/lib/workflows";
 import type {
   DiscoveryCandidate,
   DiscoveryRun,
@@ -99,14 +103,22 @@ export default function DiscoveryWorkbench() {
   const [country, setCountry] = useState("");
   const [sector, setSector] = useState("");
   const [industry, setIndustry] = useState("");
-  const [maxUniverse, setMaxUniverse] = useState("25");
-  const [maxCandidates, setMaxCandidates] = useState("10");
+  const [maxUniverse, setMaxUniverse] = useState(
+    String(DISCOVERY_DEFAULTS.maxUniverseSize),
+  );
+  const [maxCandidates, setMaxCandidates] = useState(
+    String(DISCOVERY_DEFAULTS.maxCandidates),
+  );
+  // True when the last parse attempt failed, so the scope shown is unknown
+  // rather than merely empty.
+  const [parseFailed, setParseFailed] = useState(false);
 
   // A field the reader has set by hand is never overwritten by a later parse.
+  // Industry has no entry here because it is never auto-filled at all — see
+  // `ThesisDiscoveryInput.industry` in src/lib/workflows.ts.
   const regionEdited = useRef(false);
   const countryEdited = useRef(false);
   const sectorEdited = useRef(false);
-  const industryEdited = useRef(false);
 
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -151,25 +163,46 @@ export default function DiscoveryWorkbench() {
     };
   }, []);
 
-  // Debounced autofill from the written thesis.
+  // Debounced scope detection from the written thesis.
+  //
+  // Two rules make this safe to run on every keystroke. Inference only ever
+  // fills region / country / sector — the same three the admin console fills —
+  // and never industry, so the universe is never silently narrowed to a
+  // category the reader did not ask for. And whenever detection produces
+  // nothing, whether because the text is too short, the parser found no scope,
+  // or the request failed, the inferred fields are CLEARED. A filter inferred
+  // from the previous thesis must never survive into the next one.
   useEffect(() => {
     const text = thesis.trim();
+
+    function clearInferred() {
+      if (!regionEdited.current) setRegion("");
+      if (!countryEdited.current) setCountry("");
+      if (!sectorEdited.current) setSector("");
+    }
+
     if (text.length < 3) {
       setDetected(null);
+      setParseFailed(false);
+      clearInferred();
       return;
     }
+
     let cancelled = false;
     const handle = window.setTimeout(async () => {
       try {
         const d = await parseThesis(text);
         if (cancelled) return;
         setDetected(d);
+        setParseFailed(false);
         if (!regionEdited.current) setRegion(d.region ?? "");
         if (!countryEdited.current) setCountry(d.country ?? "");
         if (!sectorEdited.current) setSector(d.sector ?? "");
-        if (!industryEdited.current) setIndustry(d.industry ?? "");
       } catch {
-        /* non-fatal: manual entry still works */
+        if (cancelled) return;
+        setDetected(null);
+        setParseFailed(true);
+        clearInferred();
       }
     }, 400);
     return () => {
@@ -177,6 +210,28 @@ export default function DiscoveryWorkbench() {
       window.clearTimeout(handle);
     };
   }, [thesis]);
+
+  // Hand every filter back to inference. Used by the "reset to detected scope"
+  // control, which is what makes a sticky manual edit correctable instead of
+  // silently riding along on an unrelated later query.
+  function resetFiltersToDetected() {
+    regionEdited.current = false;
+    countryEdited.current = false;
+    sectorEdited.current = false;
+    setRegion(detected?.region ?? "");
+    setCountry(detected?.country ?? "");
+    setSector(detected?.sector ?? "");
+    setIndustry("");
+  }
+
+  // True when a filter differs from what the parser detects for the CURRENT
+  // text — i.e. the request will be narrower or broader than the words say.
+  const filtersOverridden =
+    industry.trim() !== "" ||
+    (detected !== null &&
+      (region !== (detected.region ?? "") ||
+        country !== (detected.country ?? "") ||
+        sector !== (detected.sector ?? "")));
 
   // Recent runs, so returning to the page resumes where you left off.
   useEffect(() => {
@@ -271,15 +326,20 @@ export default function DiscoveryWorkbench() {
     setSubmitting(true);
     setSubmitError(null);
     try {
-      const created = await createThesisDiscoveryRun({
-        thesis_text: thesis.trim(),
-        region: region || undefined,
-        country: country || undefined,
-        sector: sector || undefined,
-        industry: industry || undefined,
-        max_universe_size: parseInt(maxUniverse, 10) || undefined,
-        max_candidates: parseInt(maxCandidates, 10) || undefined,
-      });
+      // Built by the SAME helper the admin console uses, so an identical
+      // description produces an identical run on either surface — including
+      // the lookback window and provider the admin console has always sent.
+      const created = await createThesisDiscoveryRun(
+        buildThesisDiscoveryRequest({
+          thesisText: thesis,
+          region,
+          country,
+          sector,
+          industry,
+          maxUniverseSize: parseInt(maxUniverse, 10) || undefined,
+          maxCandidates: parseInt(maxCandidates, 10) || undefined,
+        }),
+      );
       setRuns((prev) => [created, ...prev]);
       setRun(created);
       setRunId(created.id);
@@ -354,6 +414,18 @@ export default function DiscoveryWorkbench() {
             ))}
           </div>
 
+          {parseFailed && (
+            <p
+              className="text-xs text-amber-300"
+              data-testid="thesis-parse-failed"
+              aria-live="polite"
+            >
+              The scope of this description could not be read just now, so no
+              filter has been inferred from it. You can still set the filters
+              yourself, or leave them open.
+            </p>
+          )}
+
           {detected && (
             <p
               className="text-xs text-[color:var(--ib-ink-3)]"
@@ -361,15 +433,37 @@ export default function DiscoveryWorkbench() {
               aria-live="polite"
             >
               {detected.needs_narrowing
-                ? "No theme or sector recognised yet — add a sector, industry or region so the universe stays bounded."
-                : `Detected: ${[
-                    detected.region,
-                    detected.country,
-                    detected.sector,
-                    detected.industry,
-                  ]
-                    .filter(Boolean)
-                    .join(" · ")}. Adjust anything below.`}
+                ? "No theme or sector recognised yet — add a sector or region below so the universe stays bounded."
+                : `Detected scope: ${
+                    [detected.region, detected.country, detected.sector]
+                      .filter(Boolean)
+                      .join(" · ") || "none"
+                  }.${
+                    detected.industry
+                      ? ` The backend reads this as ${detected.industry} and will apply that itself — it is not added as a filter here.`
+                      : ""
+                  }`}
+            </p>
+          )}
+
+          {/* A filter you set by hand stays set, deliberately. This says so out
+              loud and offers one click back to the detected scope, so an
+              override from an earlier query can never quietly narrow a later
+              one. */}
+          {filtersOverridden && (
+            <p
+              className="flex flex-wrap items-center gap-2 text-xs text-[color:var(--ib-ink-3)]"
+              data-testid="filters-overridden"
+            >
+              Filters below differ from the detected scope and will be sent as
+              you set them.
+              <button
+                type="button"
+                onClick={resetFiltersToDetected}
+                className="rounded-md border border-[color:var(--ib-line)] px-2 py-1 text-xs text-[color:var(--ib-ink-2)] transition-colors hover:border-[color:var(--ib-line-strong)]"
+              >
+                Reset to detected scope
+              </button>
             </p>
           )}
 
@@ -447,14 +541,15 @@ export default function DiscoveryWorkbench() {
               </label>
 
               <label className="text-xs text-[color:var(--ib-ink-3)]">
-                Industry
+                Industry{" "}
+                <span className="text-[color:var(--ib-ink-3)]">
+                  — narrows further; never inferred
+                </span>
                 <select
                   className={`${inputCls} mt-1`}
+                  data-testid="industry-filter"
                   value={industry}
-                  onChange={(e) => {
-                    industryEdited.current = true;
-                    setIndustry(e.target.value);
-                  }}
+                  onChange={(e) => setIndustry(e.target.value)}
                 >
                   <option value="" className="bg-[#0a0f1c]">
                     Any
@@ -524,7 +619,11 @@ export default function DiscoveryWorkbench() {
           </div>
 
           {submitError && (
-            <p role="alert" className="text-sm text-rose-300">
+            <p
+              role="alert"
+              data-testid="discovery-error"
+              className="text-sm text-rose-300"
+            >
               {submitError}
             </p>
           )}
@@ -609,9 +708,16 @@ export default function DiscoveryWorkbench() {
           <ul className="space-y-3" data-testid="discovery-candidates">
             {candidates.map((c) => {
               const job = jobs[c.id];
-              const reportId = job?.analysis_report_id ?? c.analysis_report_id;
-              const jobRunning =
-                job && !TERMINAL_JOB_STATUSES.has(job.status);
+              const jobRunning = job && !TERMINAL_JOB_STATUSES.has(job.status);
+              // A report produced by a full analysis THIS session — the only
+              // thing that justifies calling a candidate researched.
+              const researchedReportId = job?.analysis_report_id ?? null;
+              // A report merely LINKED to the candidate. The screening scan
+              // writes one of these for every ticker it touches, so its
+              // presence says a report exists — not that a full analysis ran.
+              // Treating the two as the same is what made every freshly
+              // screened candidate claim it had already been researched.
+              const linkedReportId = c.analysis_report_id;
               return (
                 <li key={c.id}>
                   <Surface className="p-5">
@@ -626,10 +732,15 @@ export default function DiscoveryWorkbench() {
                           {c.sector ? ` · ${c.sector}` : ""}
                         </p>
                       </div>
-                      <div className="flex shrink-0 items-center gap-3">
-                        {reportId && (
+                      {/* The research action is ALWAYS offered, exactly as the
+                          admin console offers it: only an in-flight job
+                          disables it. A linked report is surfaced beside it as
+                          a quiet secondary link, never as a replacement. */}
+                      <div className="flex shrink-0 flex-wrap items-center gap-3">
+                        {researchedReportId ? (
                           <Link
-                            href={`/research/reports/${reportId}`}
+                            href={`/research/reports/${researchedReportId}`}
+                            data-testid="candidate-open-research"
                             className="ib-arrow-host rounded-lg border border-[color:var(--ib-line-strong)] px-3 py-1.5 text-sm text-[color:var(--ib-ink)] hover:bg-[color:var(--ib-surface-raised)]"
                           >
                             Open research{" "}
@@ -637,10 +748,10 @@ export default function DiscoveryWorkbench() {
                               →
                             </span>
                           </Link>
-                        )}
-                        {!reportId && (
+                        ) : (
                           <button
                             type="button"
+                            data-testid="candidate-research"
                             disabled={Boolean(jobRunning)}
                             onClick={() => void startCandidateResearch(c)}
                             className="rounded-lg border border-[color:var(--ib-line-strong)] px-3 py-1.5 text-sm text-[color:var(--ib-ink)] transition-colors hover:bg-[color:var(--ib-surface-raised)] disabled:opacity-50"
@@ -649,6 +760,15 @@ export default function DiscoveryWorkbench() {
                               ? jobStateLabel(job?.status)
                               : "Research this company"}
                           </button>
+                        )}
+                        {!researchedReportId && linkedReportId && (
+                          <Link
+                            href={`/research/reports/${linkedReportId}`}
+                            data-testid="candidate-linked-report"
+                            className="text-xs text-[color:var(--ib-ink-3)] underline underline-offset-4 hover:text-[color:var(--ib-ink-2)]"
+                          >
+                            View linked report
+                          </Link>
                         )}
                       </div>
                     </div>
@@ -689,14 +809,12 @@ export default function DiscoveryWorkbench() {
                       </div>
                       <div>
                         <dt className="text-[color:var(--ib-ink-3)]">
-                          Research state
+                          Full analysis
                         </dt>
                         <dd className="text-[color:var(--ib-ink-2)]">
-                          {reportId
-                            ? "Researched"
-                            : job
-                              ? jobStateLabel(job.status)
-                              : "Not researched"}
+                          {job
+                            ? jobStateLabel(job.status)
+                            : "not started from here"}
                         </dd>
                       </div>
                     </dl>

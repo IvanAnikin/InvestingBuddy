@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import ProductFooter from "@/components/product/ProductFooter";
 import ProductNav from "@/components/product/ProductNav";
+import PreviewDataNotice from "@/components/research/PreviewDataNotice";
 import SkipLink from "@/components/product/SkipLink";
 import { getServerSession } from "@/lib/auth/server";
 
@@ -38,6 +39,7 @@ export default async function ResearchLayout({
   return (
     <div data-ib-surface="product" className="flex min-h-screen flex-col">
       <SkipLink />
+      <PreviewDataNotice />
       <ProductNav
         items={NAV}
         admin={Boolean(session?.allowed)}

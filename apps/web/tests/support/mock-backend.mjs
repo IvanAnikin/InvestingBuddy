@@ -802,6 +802,18 @@ function mockMarkdownReport(id) {
 // CHANNEL inventory. This is the shape the user-facing research report must
 // render without ever letting the two period kinds read as comparable.
 const PERIODS_REPORT_ID = "00000000-0000-0000-0000-0000000000a3";
+// What the company-analysis workflow writes: a deterministic draft with no
+// final_report_version. It is NOT the structured report.
+const DRAFT_REPORT_ID = "00000000-0000-0000-0000-0000000000e9";
+
+// Distinct run ids per thesis, so a test can prove the run it is shown is the
+// run its own request created — not a leftover from a previous one.
+const THESIS_RUN_IDS = {
+  "European luxury goods companies": "77777777-0000-0000-0000-0000000001ux",
+  "European defense suppliers benefiting from NATO spending":
+    "77777777-0000-0000-0000-000000000def",
+  __default: "77777777-0000-0000-0000-000000000027",
+};
 
 function mockPeriodsReport(id) {
   const base = mockCouncilReport(id);
@@ -986,6 +998,98 @@ function mockPeriodsReport(id) {
   return base;
 }
 
+const DISC =
+  "INTERNAL ADMIN USE ONLY. NOT INVESTMENT ADVICE. NOT A PUBLIC RECOMMENDATION.";
+
+const KNOWN_RUN_IDS = new Set(Object.values(THESIS_RUN_IDS));
+
+const THESIS_BY_RUN_ID = Object.fromEntries(
+  Object.entries(THESIS_RUN_IDS)
+    .filter(([thesis]) => thesis !== "__default")
+    .map(([thesis, id]) => [id, thesis]),
+);
+
+/** One screening candidate. Scores are internal research-priority only. */
+function mockCandidate(runId, overrides) {
+  return {
+    id: "cccccccc-0000-0000-0000-000000000000",
+    discovery_run_id: runId,
+    ticker: "KER",
+    exchange: "PA",
+    company_name: "Kering SA",
+    sector: "Consumer Discretionary",
+    industry: "Luxury Goods",
+    country: "France",
+    candidate_score: 0.0,
+    candidate_score_grade: "data_insufficient",
+    rank: 1,
+    momentum_score: 0,
+    fundamentals_score: 0,
+    catalyst_score: 4,
+    source_quality_score: 21,
+    data_completeness_score: 0,
+    risk_penalty_score: 26,
+    labels_json: [],
+    score_explanation:
+      "Internal prioritization score only. It ranks a candidate for internal human research triage and implies no investment action.",
+    momentum_label: null,
+    catalyst_coverage_status: "none_found",
+    latest_catalyst_date: null,
+    positive_catalyst_count: 0,
+    high_strength_catalyst_count: 0,
+    press_release_event_count: 0,
+    news_event_count: 0,
+    filing_event_count: 0,
+    primary_or_regulator_event_count: 0,
+    aggregator_only_event_count: 0,
+    source_quality: "weak",
+    missing_info_count: 24,
+    blocking_gap_count: 30,
+    analysis_report_id: null,
+    agent_run_id: null,
+    human_review_required: true,
+    is_public: false,
+    safety_valid: true,
+    schema_valid: false,
+    created_at: "2026-08-29T10:00:00Z",
+    disclaimer: DISC,
+    ...overrides,
+  };
+}
+
+/** The run envelope, shaped like DiscoveryRunRead. */
+function mockThesisRun(runId, thesis) {
+  return {
+    id: runId,
+    status: "pending",
+    mode: "thesis",
+    provider_name: "free_real",
+    universe_source: "thesis_generated",
+    universe_count: 2,
+    requested_tickers: ["KER", "RMS"],
+    thesis_text: thesis,
+    parsed_thesis_json: null,
+    universe_json: null,
+    processed_count: 0,
+    candidate_count: 0,
+    error_count: 0,
+    lookback_days: 90,
+    warnings: [],
+    warning_groups: [],
+    config_json: { mode: "thesis" },
+    safety_notes: { internal_only: true, no_recommendation: true },
+    created_by: null,
+    human_review_required: true,
+    started_at: null,
+    completed_at: null,
+    created_at: "2026-08-29T10:00:00Z",
+    updated_at: "2026-08-29T10:00:00Z",
+    is_async: true,
+    progress_pct: 0,
+    disclaimer: DISC,
+  };
+}
+
 function mockCompany(id, ticker, exchange, name) {
   return {
     id,
@@ -1006,7 +1110,16 @@ function mockCompany(id, ticker, exchange, name) {
   };
 }
 
+// Two REAL issuer identities plus the generic fixture. The real ones exist so
+// the contract tests can assert that the exact selected company travels to the
+// backend — the failure they guard against is a selected company arriving as a
+// different one.
+const PNDORA_ID = "00000000-0000-0000-0000-0000000000b3";
+const CFR_ID = "00000000-0000-0000-0000-0000000000b4";
+
 const MOCK_COMPANIES = [
+  mockCompany(PNDORA_ID, "PNDORA", "CO", "Pandora A/S"),
+  mockCompany(CFR_ID, "CFR", "SW", "Compagnie Financiere Richemont SA"),
   mockCompany(
     "00000000-0000-0000-0000-0000000000b1",
     "IBTEST",
@@ -1210,38 +1323,94 @@ const server = createServer((req, res) => {
     path === "/api/v1/workflows/company-analysis/run" &&
     req.method === "POST"
   ) {
-    return send(res, 202, {
-      agent_run_id: "aaaaaaaa-0000-0000-0000-000000000001",
-      draft_report_id: COUNCIL_REPORT_ID,
-      status: "completed",
-      summary:
-        "Internal analysis draft generated for InvestingBuddy Test Company (IBTEST). Human review required.",
-      company_name: "InvestingBuddy Test Company",
-      ticker: "IBTEST",
-      provider_name: "mock",
-      is_mock: true,
-      llm_used: true,
-      llm_provider: "mock",
+    let raw = "";
+    req.on("data", (chunk) => (raw += chunk));
+    req.on("end", () => {
+      let body = {};
+      try {
+        body = JSON.parse(raw || "{}");
+      } catch {
+        body = {};
+      }
+      // Answer about the company that was ASKED FOR. Echoing the request is
+      // what lets a preview reveal an identity bug instead of masking it.
+      const company =
+        MOCK_COMPANIES.find((c) => c.id === body.company_id) ??
+        MOCK_COMPANIES.find(
+          (c) => c.ticker === body.ticker && c.exchange === body.exchange,
+        ) ??
+        null;
+      if (!company) {
+        return send(res, 422, {
+          detail: "Company not found in database (mock backend)",
+        });
+      }
+      send(res, 202, {
+        agent_run_id: "aaaaaaaa-0000-0000-0000-000000000001",
+        draft_report_id: DRAFT_REPORT_ID,
+        status: "completed",
+        summary:
+          `Internal analysis draft generated for ${company.name} ` +
+          `(${company.ticker}). Human review required.`,
+        company_name: company.name,
+        ticker: company.ticker,
+        provider_name: body.provider_name ?? "free_real",
+        is_mock: body.provider_name === "mock",
+        llm_used: Boolean(body.use_llm),
+        llm_provider: body.use_llm ? (body.llm_provider ?? null) : null,
+        schema_valid: true,
+        validation_errors: [],
+        research_team_warnings: [],
+        analysis_council_warnings: [],
+        human_review_required: true,
+        provisional_internal_status: "research_incomplete",
+        quality_gate_status: null,
+        bull_case_summary: null,
+        bear_case_summary: null,
+        risk_summary: null,
+        valuation_guard_summary: null,
+        committee_chair_summary: null,
+        disclaimer:
+          "INTERNAL ADMIN USE ONLY. NOT INVESTMENT ADVICE. NOT A PUBLIC RECOMMENDATION.",
+      });
+    });
+    return;
+  }
+
+  // The final-report generator: the SECOND step both consoles run. It returns a
+  // NEW report id — the structured report — which is what the research view
+  // renders and what the caller must navigate to.
+  const fromReport = /^\/api\/v1\/final-reports\/from-report\/([^/]+)$/.exec(
+    path,
+  );
+  if (fromReport && req.method === "POST") {
+    return send(res, 201, {
+      report_id: PERIODS_REPORT_ID,
+      status: "draft",
+      review_status: "draft",
       schema_valid: true,
-      validation_errors: [],
-      research_team_warnings: [],
-      analysis_council_warnings: [],
+      safety_valid: true,
       human_review_required: true,
-      provisional_internal_status: "research_incomplete",
-      quality_gate_status: null,
-      bull_case_summary: null,
-      bear_case_summary: null,
-      risk_summary: null,
-      valuation_guard_summary: null,
-      committee_chair_summary: null,
+      research_complete: false,
+      publication_ready: false,
+      internal_status: "research_incomplete",
+      sections_generated: ["executive_summary", "financial_snapshot"],
+      missing_sections: [],
+      safety_validation: { passed: true },
+      schema_validation_errors: [],
+      schema_validation_warnings: [],
+      validation_warnings: [],
+      scorecard_id: null,
+      source_count: 1,
+      citation_count: 0,
+      human_review_checklist: [],
       disclaimer:
         "INTERNAL ADMIN USE ONLY. NOT INVESTMENT ADVICE. NOT A PUBLIC RECOMMENDATION.",
     });
   }
 
   // Phase 25 / 25.1 — Market Candidate Discovery (internal only, async runs).
-  const DISC =
-    "INTERNAL ADMIN USE ONLY. NOT INVESTMENT ADVICE. NOT A PUBLIC RECOMMENDATION.";
+
   // Phase 27.1C — controlled selector options for the thesis form.
   if (path === "/api/v1/market-discovery/supported-filters") {
     return send(res, 200, {
@@ -1413,80 +1582,71 @@ const server = createServer((req, res) => {
 
   // Phase 27 — thesis / market-segment discovery run (POST returns pending).
   if (path === "/api/v1/market-discovery/thesis-runs" && req.method === "POST") {
-    return send(res, 201, {
-      id: "77777777-0000-0000-0000-000000000027",
-      status: "pending",
-      mode: "thesis",
-      provider_name: "free_real",
-      universe_source: "thesis_generated",
-      universe_count: 2,
-      requested_tickers: ["RHM", "BA"],
-      thesis_text: "European defense suppliers benefiting from NATO spending",
-      parsed_thesis_json: {
-        normalized_text: "European defense suppliers benefiting from NATO spending",
-        themes: ["defense"],
-        sectors: ["Industrials"],
-        industries: ["Aerospace & Defense"],
-        regions: ["Europe"],
-        countries: [],
-        keywords: ["defense", "nato"],
-        exclusion_keywords: [],
-        size_hints: [],
-        source_intent_hints: [],
-        catalyst_hints: ["spending"],
-        risk_hints: [],
-        unmatched_terms: [],
+    let raw = "";
+    req.on("data", (chunk) => (raw += chunk));
+    req.on("end", () => {
+      let body = {};
+      try {
+        body = JSON.parse(raw || "{}");
+      } catch {
+        body = {};
+      }
+      // Echo the SUBMITTED thesis and filters. The previous fixture returned a
+      // fixed defense run whatever was asked, which made a preview of a luxury
+      // query display a defense run — indistinguishable, on screen, from the UI
+      // submitting the wrong thing. A mock may be deterministic; it must not be
+      // unfaithful about what it was asked.
+      const thesis = String(body.thesis_text ?? "");
+      const runId = THESIS_RUN_IDS[thesis] ?? THESIS_RUN_IDS.__default;
+      send(res, 201, {
+        id: runId,
+        status: "pending",
+        mode: "thesis",
+        provider_name: body.provider_name ?? "free_real",
+        universe_source: "thesis_generated",
+        universe_count: 2,
+        requested_tickers: ["RHM", "BA"],
+        thesis_text: thesis,
+        parsed_thesis_json: {
+          normalized_text: thesis,
+          themes: [],
+          sectors: body.sector ? [body.sector] : [],
+          industries: body.industry ? [body.industry] : [],
+          regions: body.region ? [body.region] : [],
+          countries: body.country ? [body.country] : [],
+          keywords: [],
+          exclusion_keywords: [],
+          size_hints: [],
+          source_intent_hints: [],
+          catalyst_hints: [],
+          risk_hints: [],
+          unmatched_terms: [],
+          warnings: [],
+          confidence: 1.0,
+          needs_narrowing: false,
+        },
+        universe_json: null,
+        processed_count: 0,
+        candidate_count: 0,
+        error_count: 0,
+        lookback_days: body.lookback_days ?? 90,
         warnings: [],
-        confidence: 1.0,
-        needs_narrowing: false,
-      },
-      universe_json: {
-        items: [
-          {
-            ticker: "RHM",
-            company_name: "Rheinmetall AG",
-            exchange: "XETRA",
-            country: "Germany",
-            region: "Europe",
-            sector: "Industrials",
-            industry: "Aerospace & Defense",
-            theme: "defense",
-            matched_keywords: ["defense"],
-            relevance_reason: "matches theme 'defense'; region 'Europe'",
-            universe_source: "curated_theme_registry",
-            source_tier: "T3_curated_reference_list",
-            relevance_score_pre_scan: 90.0,
-            metadata_not_sourced: false,
-            warnings: [],
-          },
-        ],
-        excluded: [
-          { ticker: "LMT", company_name: "Lockheed Martin Corp.", reason: "region mismatch" },
-        ],
-        source_summary: { selected: 2, excluded: 1 },
-        warnings: [],
-        needs_narrowing: false,
-        requested_max: 25,
-      },
-      processed_count: 0,
-      candidate_count: 0,
-      error_count: 0,
-      lookback_days: 90,
-      warnings: [],
-      config_json: { mode: "thesis" },
-      safety_notes: { internal_only: true, no_recommendation: true },
-      created_by: null,
-      human_review_required: true,
-      started_at: null,
-      completed_at: null,
-      created_at: "2026-07-19T10:00:00Z",
-      updated_at: "2026-07-19T10:00:00Z",
-      is_async: true,
-      progress_pct: 0,
-      message:
-        "Thesis discovery run started. A bounded universe was generated and is being scanned in the background.",
-      disclaimer: DISC,
+        config_json: { mode: "thesis" },
+        safety_notes: { internal_only: true, no_recommendation: true },
+        created_by: null,
+        human_review_required: true,
+        started_at: null,
+        completed_at: null,
+        created_at: "2026-07-19T10:00:00Z",
+        updated_at: "2026-07-19T10:00:00Z",
+        is_async: true,
+        progress_pct: 0,
+        message:
+          "Thesis discovery run started. A bounded universe was generated and is being scanned in the background.",
+        disclaimer: DISC,
+      });
     });
+    return;
   }
 
   if (path === "/api/v1/market-discovery/runs") {
@@ -1521,20 +1681,99 @@ const server = createServer((req, res) => {
     }
     return send(res, 200, { runs: [], total: 0, disclaimer: DISC });
   }
-  // Candidates for a run (empty in the mock backend).
+  // Candidates for a run. Two shapes on purpose:
+  //
+  //   KER — carries an `analysis_report_id`. The real screening scan writes one
+  //         of these for EVERY ticker it touches, so its presence means "a
+  //         report is linked", NOT "a full analysis has run". A candidate in
+  //         this state must still offer to be researched.
+  //   RMS — carries none.
   const discCands =
     /^\/api\/v1\/market-discovery\/runs\/([^/]+)\/candidates$/.exec(path);
   if (discCands) {
+    const runId = discCands[1];
+    if (!KNOWN_RUN_IDS.has(runId)) {
+      return send(res, 200, {
+        candidates: [],
+        total: 0,
+        run_id: runId,
+        disclaimer: DISC,
+      });
+    }
+    const candidates = [
+      mockCandidate(runId, {
+        id: "cccccccc-0000-0000-0000-000000000001",
+        ticker: "KER",
+        exchange: "PA",
+        company_name: "Kering SA",
+        country: "France",
+        analysis_report_id: "aaaaaaaa-1111-0000-0000-000000000001",
+      }),
+      mockCandidate(runId, {
+        id: "cccccccc-0000-0000-0000-000000000002",
+        ticker: "RMS",
+        exchange: "PA",
+        company_name: "Hermes International SCA",
+        country: "France",
+        analysis_report_id: null,
+      }),
+    ];
     return send(res, 200, {
-      candidates: [],
-      total: 0,
-      run_id: discCands[1],
+      candidates,
+      total: candidates.length,
+      run_id: runId,
       disclaimer: DISC,
     });
   }
   const discRun = /^\/api\/v1\/market-discovery\/runs\/([^/]+)$/.exec(path);
   if (discRun) {
-    return send(res, 404, { detail: "Discovery run not found (mock backend)" });
+    const runId = discRun[1];
+    if (!KNOWN_RUN_IDS.has(runId)) {
+      return send(res, 404, { detail: "Discovery run not found (mock backend)" });
+    }
+    return send(res, 200, {
+      ...mockThesisRun(runId, THESIS_BY_RUN_ID[runId] ?? ""),
+      status: "completed",
+      processed_count: 2,
+      candidate_count: 2,
+      progress_pct: 100,
+    });
+  }
+
+  // Start a full analysis for ONE candidate (async job envelope).
+  const candRun =
+    /^\/api\/v1\/market-discovery\/candidates\/([^/]+)\/run-analysis$/.exec(
+      path,
+    );
+  if (candRun && req.method === "POST") {
+    return send(res, 202, {
+      candidate_id: candRun[1],
+      ticker: "KER",
+      status: "pending",
+      analysis_report_id: null,
+      agent_run_id: null,
+      provider_name: "free_real",
+      message: "Full analysis started in the background.",
+      human_review_required: true,
+      disclaimer: DISC,
+    });
+  }
+  const candJob =
+    /^\/api\/v1\/market-discovery\/candidates\/([^/]+)\/analysis-job$/.exec(
+      path,
+    );
+  if (candJob) {
+    return send(res, 200, {
+      candidate_id: candJob[1],
+      ticker: "KER",
+      status: "completed",
+      analysis_report_id: PERIODS_REPORT_ID,
+      agent_run_id: "aaaaaaaa-0000-0000-0000-000000000001",
+      provider_name: "free_real",
+      message: "Full analysis complete.",
+      human_review_required: true,
+      disclaimer: DISC,
+    });
   }
 
   // Source registry + connector framework (Phase 29A). Secret-free by design.

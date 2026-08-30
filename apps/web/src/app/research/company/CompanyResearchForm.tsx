@@ -4,7 +4,19 @@ import Link from "next/link";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import PrimaryCTA from "@/components/product/PrimaryCTA";
 import Surface from "@/components/product/Surface";
-import { createCompany, fetchCompanies, runAnalysis } from "@/lib/api";
+import {
+  createCompany,
+  fetchCompanies,
+  generateFinalReportFromReport,
+  runAnalysis,
+} from "@/lib/api";
+import {
+  DATA_PROVIDERS,
+  LLM_SECTION_PROVIDERS,
+  PROVIDER_FREE_REAL,
+  buildCompanyAnalysisRequest,
+  isOfflineProvider,
+} from "@/lib/workflows";
 import type { Company, WorkflowRunResponse } from "@/types/api";
 
 // The research universe is the set of companies the backend can analyse: the
@@ -14,38 +26,32 @@ import type { Company, WorkflowRunResponse } from "@/types/api";
 // in it yet — registers it inline through the same endpoint the admin uses.
 const UNIVERSE_PAGE_SIZE = 200;
 
-const PROVIDERS: { value: string; label: string; note: string }[] = [
-  {
-    value: "free_real",
-    label: "Free real data (recommended)",
-    note: "Regulator filings, price history and internal trend signals. No paid access required.",
-  },
-  {
-    value: "eodhd_free_real",
-    label: "EODHD price + regulator filings",
-    note: "EODHD price data (no paid fundamentals) combined with regulator filings.",
-  },
-  {
-    value: "sec_edgar_fundamentals",
-    label: "Regulator fundamentals only",
-    note: "Structured statement facts only. Applies to SEC-registered issuers.",
-  },
-  {
-    value: "mock",
-    label: "Offline placeholder data",
-    note: "No external calls. For checking the workflow itself, never for research.",
-  },
-];
+// The clean flow runs the SAME two backend steps the admin console runs, in the
+// same order: the company-analysis workflow, then the final-report generator.
+// The admin console makes them two button presses on two pages; here they are
+// one action — but they are the same two endpoints, and the reader is told
+// which one is in flight.
+type RunPhase = "analysis" | "report";
 
-const STAGES = [
-  "Resolving company identity",
-  "Locating the issuer's primary documents",
-  "Extracting period-labelled financial facts",
-  "Retrieving regulated disclosures",
-  "Assembling and citing the evidence pack",
-  "Running the research council and red team",
-  "Assembling the research report",
-];
+const PHASE_STAGES: Record<RunPhase, string[]> = {
+  analysis: [
+    "Resolving company identity",
+    "Locating the issuer's primary documents",
+    "Extracting period-labelled financial facts",
+    "Retrieving regulated disclosures",
+    "Assembling and citing the evidence",
+  ],
+  report: [
+    "Reconciling the evidence into one research state",
+    "Running the research council, if enabled on this server",
+    "Assembling the structured research report",
+  ],
+};
+
+const PHASE_LABEL: Record<RunPhase, string> = {
+  analysis: "Collecting and extracting evidence",
+  report: "Assembling the research report",
+};
 
 const inputCls =
   "w-full rounded-lg border border-[color:var(--ib-line)] bg-[color:var(--ib-surface)] px-3.5 py-2.5 text-sm text-[color:var(--ib-ink)] placeholder:text-[color:var(--ib-ink-3)] focus:border-[color:var(--ib-line-strong)] focus:outline-none";
@@ -73,14 +79,25 @@ export default function CompanyResearchForm() {
   const [registerError, setRegisterError] = useState<string | null>(null);
 
   const [showAdvanced, setShowAdvanced] = useState(false);
-  const [provider, setProvider] = useState("free_real");
-  const [useLlm, setUseLlm] = useState(true);
+  const [provider, setProvider] = useState(PROVIDER_FREE_REAL);
+  // Mirrors the admin console's default. `use_llm` gates the LLM-drafted
+  // research-sections node, NOT the research council — the council is a
+  // server-side setting applied when the final report is generated, and no
+  // request flag can turn it on or off.
+  const [useLlmSections, setUseLlmSections] = useState(false);
+  const [llmSectionProvider, setLlmSectionProvider] = useState("azure_openai");
   const [requireSchemaValid, setRequireSchemaValid] = useState(false);
 
-  const [running, setRunning] = useState(false);
+  const [phase, setPhase] = useState<RunPhase | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<WorkflowRunResponse | null>(null);
+  // The id of the STRUCTURED report the clean view renders. Null until the
+  // final-report step succeeds — the draft the workflow writes is not one.
+  const [finalReportId, setFinalReportId] = useState<string | null>(null);
+  const [reportError, setReportError] = useState<string | null>(null);
+
+  const running = phase !== null;
 
   const wrapperRef = useRef<HTMLDivElement | null>(null);
 
@@ -177,23 +194,58 @@ export default function CompanyResearchForm() {
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
     if (!selected) return;
-    setRunning(true);
+
     setElapsed(0);
     setError(null);
+    setReportError(null);
     setResult(null);
+    setFinalReportId(null);
+
+    // The request is built by the SAME helper the admin console uses, from the
+    // selected Company record — never re-derived from what the input displays.
+    const request = buildCompanyAnalysisRequest({
+      company: selected,
+      providerName: provider,
+      useLlmSections,
+      llmProvider: llmSectionProvider,
+      requireSchemaValid,
+    });
+
+    setPhase("analysis");
+    let run: WorkflowRunResponse;
     try {
-      const response = await runAnalysis({
-        company_id: selected.id,
-        provider_name: provider,
-        use_llm: useLlm,
-        llm_provider: useLlm ? "azure_openai" : undefined,
-        require_schema_valid: requireSchemaValid,
-      });
-      setResult(response);
+      run = await runAnalysis(request);
+      setResult(run);
     } catch (e) {
       setError(e instanceof Error ? e.message : "The research run failed.");
+      setPhase(null);
+      return;
+    }
+
+    // The workflow writes a DETERMINISTIC DRAFT. The structured report — the
+    // one the research view renders, and the one the council contributes to —
+    // is produced by the final-report generator, exactly as the admin console
+    // does it from the draft's own page. Skipping this step would leave the
+    // reader on a draft with no structured content.
+    if (!run.draft_report_id) {
+      setPhase(null);
+      return;
+    }
+
+    setPhase("report");
+    try {
+      const finalReport = await generateFinalReportFromReport(run.draft_report_id);
+      setFinalReportId(finalReport.report_id);
+    } catch (e) {
+      // The evidence run DID succeed. Say exactly that, and point at what
+      // exists — never present a half-finished run as a finished report.
+      setReportError(
+        e instanceof Error
+          ? e.message
+          : "The research report could not be assembled.",
+      );
     } finally {
-      setRunning(false);
+      setPhase(null);
     }
   }
 
@@ -385,36 +437,69 @@ export default function CompanyResearchForm() {
                 </label>
                 <select
                   id="provider"
+                  data-testid="provider-select"
                   className={inputCls}
                   value={provider}
                   onChange={(e) => setProvider(e.target.value)}
                 >
-                  {PROVIDERS.map((p) => (
+                  {DATA_PROVIDERS.map((p) => (
                     <option key={p.value} value={p.value} className="bg-[#0a0f1c]">
-                      {p.label}
+                      {p.productLabel}
                     </option>
                   ))}
                 </select>
                 <p className="mt-1.5 text-xs text-[color:var(--ib-ink-3)]">
-                  {PROVIDERS.find((p) => p.value === provider)?.note}
+                  {DATA_PROVIDERS.find((p) => p.value === provider)?.note}
                 </p>
+                {isOfflineProvider(provider) && (
+                  <p className="mt-1.5 text-xs font-medium text-amber-300">
+                    This provider fabricates placeholder data. Nothing it
+                    produces is real research.
+                  </p>
+                )}
               </div>
 
               <label className="flex cursor-pointer items-start gap-2.5 text-sm text-[color:var(--ib-ink-2)]">
                 <input
                   type="checkbox"
-                  checked={useLlm}
-                  onChange={(e) => setUseLlm(e.target.checked)}
+                  data-testid="use-llm-sections"
+                  checked={useLlmSections}
+                  onChange={(e) => setUseLlmSections(e.target.checked)}
                   className="mt-0.5 accent-sky-400"
                 />
                 <span>
-                  Run the research council
+                  Add LLM-drafted research sections
                   <span className="block text-xs text-[color:var(--ib-ink-3)]">
-                    Turning this off produces a deterministic evidence-only
-                    draft with no analysis, bull/bear or red team.
+                    An optional extra drafting pass over the collected evidence.
+                    It requires Azure OpenAI credentials. It is not the research
+                    council — the council is configured on the server and runs
+                    when the report is assembled, whatever this is set to.
                   </span>
                 </span>
               </label>
+
+              {useLlmSections && (
+                <div className="ml-6">
+                  <label
+                    htmlFor="llm-section-provider"
+                    className="mb-1.5 block text-xs text-[color:var(--ib-ink-3)]"
+                  >
+                    LLM backend for those sections
+                  </label>
+                  <select
+                    id="llm-section-provider"
+                    className={inputCls}
+                    value={llmSectionProvider}
+                    onChange={(e) => setLlmSectionProvider(e.target.value)}
+                  >
+                    {LLM_SECTION_PROVIDERS.map((v) => (
+                      <option key={v} value={v} className="bg-[#0a0f1c]">
+                        {v}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
 
               <label className="flex cursor-pointer items-start gap-2.5 text-sm text-[color:var(--ib-ink-2)]">
                 <input
@@ -457,7 +542,10 @@ export default function CompanyResearchForm() {
         <Surface className="p-6" testId="research-progress">
           <div className="flex flex-wrap items-baseline justify-between gap-2">
             <p className="text-sm font-medium text-[color:var(--ib-ink)]">
-              Research in progress
+              {phase ? PHASE_LABEL[phase] : "Research in progress"}
+              <span className="ml-2 text-xs font-normal text-[color:var(--ib-ink-3)]">
+                step {phase === "report" ? "2" : "1"} of 2
+              </span>
             </p>
             <p
               className="font-mono text-xs text-[color:var(--ib-ink-3)]"
@@ -474,7 +562,7 @@ export default function CompanyResearchForm() {
             either way and the report will appear in your research library.
           </p>
           <ol className="mt-4 grid gap-x-8 gap-y-1.5 sm:grid-cols-2">
-            {STAGES.map((stage) => (
+            {(phase ? PHASE_STAGES[phase] : []).map((stage: string) => (
               <li
                 key={stage}
                 className="flex gap-2.5 text-sm text-[color:var(--ib-ink-3)]"
@@ -517,7 +605,7 @@ export default function CompanyResearchForm() {
       {result && (
         <Surface className="p-6 sm:p-7" testId="research-result">
           <p className="text-xs font-medium uppercase tracking-[0.14em] text-[color:var(--ib-ink-3)]">
-            Research complete
+            {finalReportId ? "Research complete" : "Evidence run complete"}
           </p>
           <h2 className="mt-2 text-xl font-semibold tracking-tight text-[color:var(--ib-ink)]">
             {result.company_name ?? selected?.name}
@@ -537,13 +625,18 @@ export default function CompanyResearchForm() {
               <dd className="text-sm text-[color:var(--ib-ink)]">
                 {result.provider_name ?? "—"}
               </dd>
+              {result.provider_name && isOfflineProvider(result.provider_name) && (
+                <dd className="mt-1 text-xs font-medium text-amber-300">
+                  Placeholder data — not real research.
+                </dd>
+              )}
             </div>
             <div>
               <dt className="text-xs text-[color:var(--ib-ink-3)]">
-                Research council
+                LLM research sections
               </dt>
               <dd className="text-sm text-[color:var(--ib-ink)]">
-                {result.llm_used ? "Ran" : "Not run"}
+                {result.llm_used ? "Drafted" : "Not used"}
               </dd>
             </div>
             <div>
@@ -577,13 +670,47 @@ export default function CompanyResearchForm() {
             </div>
           )}
 
-          {result.draft_report_id && (
+          {/* The report step failed after a successful evidence run. Report
+              exactly that: the evidence exists, the structured report does
+              not, and the draft is reachable. Never a finished-looking link
+              to something that was not finished. */}
+          {reportError && (
+            <div
+              className="mt-5 rounded-lg border border-amber-400/25 p-4"
+              data-testid="report-step-error"
+            >
+              <p className="text-sm font-medium text-amber-200">
+                The evidence run finished, but the research report could not be
+                assembled
+              </p>
+              <p className="mt-2 text-xs leading-relaxed text-[color:var(--ib-ink-2)]">
+                {reportError}
+              </p>
+              {result.draft_report_id && (
+                <p className="mt-2 text-xs text-[color:var(--ib-ink-3)]">
+                  The evidence draft this run produced is at{" "}
+                  <Link
+                    href={`/admin/reports/${result.draft_report_id}`}
+                    className="underline underline-offset-4"
+                  >
+                    the technical report page
+                  </Link>
+                  , where it can be assembled again.
+                </p>
+              )}
+            </div>
+          )}
+
+          {finalReportId && (
             <div className="mt-6 flex flex-wrap items-center gap-3">
-              <PrimaryCTA href={`/research/reports/${result.draft_report_id}`}>
+              <PrimaryCTA
+                href={`/research/reports/${finalReportId}`}
+                testId="open-research-report"
+              >
                 Open the research report
               </PrimaryCTA>
               <Link
-                href={`/admin/reports/${result.draft_report_id}`}
+                href={`/admin/reports/${finalReportId}`}
                 className="text-sm text-[color:var(--ib-ink-3)] underline underline-offset-4 hover:text-[color:var(--ib-ink-2)]"
               >
                 View technical report

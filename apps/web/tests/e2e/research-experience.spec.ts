@@ -87,7 +87,7 @@ test.describe("Analyze a company", () => {
     await page.goto("/research/company");
     const input = page.getByTestId("company-query");
     await input.click();
-    await input.fill("IBTEST");
+    await input.fill("PNDORA");
     await page
       .getByRole("option")
       .first()
@@ -99,13 +99,21 @@ test.describe("Analyze a company", () => {
 
     const result = page.getByTestId("research-result");
     await expect(result).toBeVisible();
+    // The run answers about the company that was selected.
+    await expect(result).toContainText("Pandora");
+
+    // A full report takes BOTH backend steps: the workflow writes a draft, and
+    // the final-report generator turns it into the structured report. The
+    // reader is linked to the SECOND one — the draft has no structured content
+    // for the research view to render.
     await expect(result).toContainText("Research complete");
+    await expect(page.getByTestId("open-research-report")).toHaveAttribute(
+      "href",
+      `/research/reports/${PERIODS_REPORT_ID}`,
+    );
+    // The technical view of the same report stays one click away.
     await expect(
-      result.locator(`a[href="/research/reports/${COUNCIL_REPORT_ID}"]`),
-    ).toBeVisible();
-    // The technical view of the same run stays one click away.
-    await expect(
-      result.locator(`a[href="/admin/reports/${COUNCIL_REPORT_ID}"]`),
+      result.locator(`a[href="/admin/reports/${PERIODS_REPORT_ID}"]`),
     ).toBeVisible();
   });
 });
