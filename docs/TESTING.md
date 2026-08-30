@@ -102,13 +102,57 @@ cd apps/api && .venv/bin/pytest tests/ -q && .venv/bin/ruff check . && echo "ALL
 
 ## Frontend Test Stack
 
-Phase 1:
 - TypeScript strict mode
 - ESLint
 - `npm run build` as smoke test
+- Playwright end-to-end suite (`apps/web/tests/e2e`), run against a local dev
+  server whose SSR fetches point at a zero-dependency mock backend
+  (`tests/support/mock-backend.mjs`). No live environment or provider is
+  contacted, and `AUTH_TEST_MODE=true` provides a deterministic sign-in so no
+  real OAuth is exercised.
 
-Phase 2+ (future):
-- Playwright for end-to-end testing
+### Product-experience specs
+
+| Spec | Covers |
+|---|---|
+| `home.spec.ts` | The public landing page: positioning copy, both primary CTAs, no forbidden trading/publishing control, and that the admin entry appears only for a signed-in allowlisted admin. |
+| `research-experience.spec.ts` | Access control on every `/research` route, the four research surfaces, the round trip between the reader-facing and technical report views, and that all existing `/admin` routes still render. |
+| `research-responsive-a11y.spec.ts` | Horizontal-overflow check at 1440 / 1280 / 768 / 390, the mobile navigation, `prefers-reduced-motion`, console-error freedom, and keyboard access (skip link, arrow-key tablists). |
+| `visual-audit.spec.ts` | Programmatic legibility audit: WCAG AA contrast against the effective composited background, text clipped by its own box, controls without an accessible name, and heading order. |
+| `visual-qa.spec.ts` | Screenshot capture for human review. Skipped unless `IB_SHOTS` is set. |
+| `workflow-contract.spec.ts` | **CONTRACT** — what each console puts on the wire. Captures the request body in the browser and asserts the company identity, provider, flags, thesis text and inferred filters, plus parity between `/admin/*` and `/research/*`, honest failure states, and that a linked report is not mistaken for a completed analysis. |
+
+### Mock mode vs real integration
+
+The suite above runs against `tests/support/mock-backend.mjs` — deterministic,
+offline, and the right tool for UI behaviour, error states and screenshots.
+
+It is not a substitute for real integration, and one thing makes that concrete:
+a fixture can answer anything. `workflow-contract.spec.ts` exists precisely
+because of that gap — it asserts what the UI ASKS FOR rather than what it is
+told, so a fixture cannot make a wrong request look right. The mock backend now
+also ECHOES the request (company, thesis, provider) rather than answering with a
+fixed fixture, so a preview run reveals an identity or thesis bug instead of
+masking it.
+
+For a real end-to-end check, run the full local stack (Docker PostgreSQL +
+FastAPI + Next.js, see `.claude/skills/local-dev-operator/SKILL.md`) and drive
+the UI against it. `/research/*` renders a "Preview data" strip whenever the
+backend's own `/health.environment` reports `test`, so it is never ambiguous
+which backend a screen is showing.
+
+**Two dev servers must not share `apps/web/.next`.** `next.config.ts` sets
+`lockDistDir: false`, which disables the guard, and running the Playwright dev
+server on `:3100` alongside a manual one on `:3000` corrupts the route manifest
+— routes start 404ing in ways that look like application bugs. Stop one before
+starting the other.
+
+Regenerate the review screenshots with:
+
+```bash
+cd apps/web
+IB_SHOTS=/absolute/output/dir npx playwright test tests/e2e/visual-qa.spec.ts
+```
 
 ---
 
@@ -120,12 +164,13 @@ cd apps/web
 npm run typecheck
 npm run lint
 npm run build
+npm run test:e2e
 ```
 
 ### Quick full frontend check
 
 ```bash
-cd apps/web && npm run typecheck && npm run lint && npm run build && echo "ALL FRONTEND CHECKS PASSED"
+cd apps/web && npm run typecheck && npm run lint && npm run build && npm run test:e2e && echo "ALL FRONTEND CHECKS PASSED"
 ```
 
 ---

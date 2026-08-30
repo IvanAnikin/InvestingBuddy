@@ -3,6 +3,12 @@
 import Link from "next/link";
 import { useState } from "react";
 import { runAnalysis } from "@/lib/api";
+import {
+  DATA_PROVIDERS,
+  LLM_SECTION_PROVIDERS,
+  buildCompanyAnalysisRequest,
+  type DataProviderOption,
+} from "@/lib/workflows";
 import type {
   CommitteeChairSummary,
   QualityGateStatus,
@@ -14,79 +20,10 @@ import GlassCard from "@/components/ui/GlassCard";
 import SafetyBanner from "@/components/ui/SafetyBanner";
 import StatusPill, { type PillColor } from "@/components/ui/StatusPill";
 
-type ProviderTag =
-  | "recommended"
-  | "paid"
-  | "price-only"
-  | "us-only"
-  | "legacy"
-  | "offline";
-
-interface ProviderOption {
-  value: string;
-  label: string;
-  // Short note shown under the dropdown when this provider is selected.
-  note?: string;
-  tag?: ProviderTag;
-}
-
-// Order mirrors the Phase 19.2 recommended real-data stack first, then the
-// individual sub-providers, then the legacy / paid full providers last so the
-// paid EODHD full provider is not selected by accident.
-const PROVIDERS: ProviderOption[] = [
-  {
-    value: "mock",
-    label: "mock — Mock / offline CI-safe",
-    tag: "offline",
-    note: "Offline placeholder data. Safe for CI and smoke tests. No external calls.",
-  },
-  {
-    value: "free_real",
-    label: "free_real — Free real data: SEC + price + trend",
-    tag: "recommended",
-    note: "Recommended real-data provider. Combines SEC EDGAR data, price data, and internal trend signals. No paid access required.",
-  },
-  {
-    value: "eodhd_free_real",
-    label: "eodhd_free_real — EODHD price-only + SEC",
-    note: "EODHD price data (no paid fundamentals) combined with SEC EDGAR data.",
-  },
-  {
-    value: "eodhd_price_only",
-    label: "eodhd_price_only — EODHD price-only",
-    tag: "price-only",
-    note: "Price data only. No fundamentals.",
-  },
-  {
-    value: "sec_edgar_fundamentals",
-    label: "sec_edgar_fundamentals — SEC EDGAR fundamentals only",
-    tag: "us-only",
-    note: "U.S. SEC-registered companies only.",
-  },
-  {
-    value: "stooq",
-    label: "stooq — Stooq price data",
-    tag: "price-only",
-    note: "Price data only.",
-  },
-  {
-    value: "gleif",
-    label: "gleif — GLEIF identity",
-    note: "Legal entity identity data only (GLEIF).",
-  },
-  {
-    value: "sec_edgar",
-    label: "sec_edgar — Legacy SEC EDGAR",
-    tag: "legacy",
-    note: "Legacy SEC EDGAR provider. Prefer sec_edgar_fundamentals or free_real.",
-  },
-  {
-    value: "eodhd",
-    label: "eodhd — EODHD full provider (paid fundamentals required)",
-    tag: "paid",
-    note: "Requires paid EODHD Fundamentals access. On the free plan the /fundamentals call fails with 403. Use free_real or eodhd_free_real instead.",
-  },
-];
+// Provider vocabulary is shared with the /research surface (src/lib/workflows.ts)
+// so the two consoles can never offer different provider values for the same
+// workflow. Only the LABEL differs: an operator recognises the identifier.
+type ProviderTag = NonNullable<DataProviderOption["tag"]>;
 
 const PROVIDER_TAG_STYLES: Record<
   ProviderTag,
@@ -99,8 +36,6 @@ const PROVIDER_TAG_STYLES: Record<
   legacy: { label: "Legacy", color: "amber" },
   offline: { label: "Offline", color: "gray" },
 };
-
-const LLM_PROVIDERS = ["mock", "azure_openai"];
 
 const inputCls =
   "w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-sky-400/50 focus:outline-none focus:ring-2 focus:ring-sky-500/40";
@@ -229,7 +164,7 @@ export default function AnalysisPage() {
   const [result, setResult] = useState<WorkflowRunResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const selectedProvider = PROVIDERS.find((p) => p.value === providerName);
+  const selectedProvider = DATA_PROVIDERS.find((p) => p.value === providerName);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -238,14 +173,16 @@ export default function AnalysisPage() {
     setResult(null);
 
     try {
-      const res = await runAnalysis({
-        ticker: ticker.trim().toUpperCase() || undefined,
-        exchange: exchange.trim().toUpperCase() || undefined,
-        provider_name: providerName,
-        use_llm: useLlm,
-        llm_provider: useLlm ? llmProvider : undefined,
-        require_schema_valid: requireSchemaValid,
-      });
+      const res = await runAnalysis(
+        buildCompanyAnalysisRequest({
+          ticker,
+          exchange,
+          providerName,
+          useLlmSections: useLlm,
+          llmProvider,
+          requireSchemaValid,
+        }),
+      );
       setResult(res);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unexpected error");
@@ -305,9 +242,9 @@ export default function AnalysisPage() {
               value={providerName}
               onChange={(e) => setProviderName(e.target.value)}
             >
-              {PROVIDERS.map((p) => (
+              {DATA_PROVIDERS.map((p) => (
                 <option key={p.value} value={p.value} className="bg-slate-900">
-                  {p.label}
+                  {p.adminLabel}
                 </option>
               ))}
             </select>
@@ -371,7 +308,7 @@ export default function AnalysisPage() {
                   value={llmProvider}
                   onChange={(e) => setLlmProvider(e.target.value)}
                 >
-                  {LLM_PROVIDERS.map((p) => (
+                  {LLM_SECTION_PROVIDERS.map((p) => (
                     <option key={p} value={p} className="bg-slate-900">
                       {p}
                     </option>

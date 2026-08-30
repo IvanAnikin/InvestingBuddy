@@ -56,9 +56,16 @@ Clerk for the MVP admin surface.
   emails may reach `/admin/*`. An empty/unset allowlist authorizes nobody.
 - **Enforcement (defense-in-depth):**
   - The Next.js **Proxy** (`apps/web/src/proxy.ts`, the Next 16 successor to
-    `middleware`) gates `/admin/:path*` (redirect to `/login` when
-    unauthenticated, `/unauthorized` when not allowlisted) and
+    `middleware`) gates `/admin/:path*` and `/research/:path*` (redirect to
+    `/login` when unauthenticated, `/unauthorized` when not allowlisted) and
     `/api/admin/proxy/:path*` (401 / 403).
+    **`/research/:path*` must stay in that matcher.** The research workspace is
+    built from Server Components that fetch the backend DIRECTLY with the
+    server-side `BACKEND_BASIC_AUTH` credential (the same pattern `/admin` uses
+    for SSR). Without a matcher entry those pages would render private research
+    to any anonymous visitor — the proxy is the only thing standing in front of
+    them. The public landing page at `/` is deliberately NOT matched: it is
+    presentational, renders no research and reads no report.
   - The admin **API proxy route** independently re-checks auth + allowlist
     before attaching any backend credential (401 unauthenticated, 403 not
     allowed, 404 for a disallowed backend path).
@@ -306,23 +313,30 @@ admin email for auditability.
 
 ### How to verify (staging)
 
-- Logged out: `/admin` and `/admin/discovery` redirect to `/login`;
+- Logged out: `/admin`, `/admin/discovery`, `/research` and
+  `/research/reports/<id>` redirect to `/login` (preserving `callbackUrl`);
   `GET /api/admin/proxy/health` returns **401**.
-- Signed in but not allowlisted: `/admin/*` redirects to `/unauthorized`;
-  proxy returns **403**.
-- Allowlisted admin: `/admin/*` loads; the shell shows the admin identity +
-  Sign out.
-- Public routes stay public: `/` and `/api/version` load without a session.
+- Signed in but not allowlisted: `/admin/*` and `/research/*` redirect to
+  `/unauthorized`; proxy returns **403**.
+- Allowlisted admin: `/admin/*` and `/research/*` load; the shell shows the
+  admin identity + Sign out.
+- Public routes stay public: `/` and `/api/version` load without a session. The
+  landing page must show the marketing hero and no report data.
 
 ---
 
 ## Current Security Status (Phase 23 — Admin/Auth Hardening)
 
-Implemented: authenticated + allowlisted admin access to `/admin/*` and the
-admin API proxy; httpOnly signed session cookie; backend Basic Auth retained as
-server-to-server defense; no secrets committed (`.env.example` placeholders
-only). No public publishing, no recommendation output, no paid plans, no broker
-integration exist.
+Implemented: authenticated + allowlisted access to `/admin/*`, `/research/*`
+and the admin API proxy; httpOnly signed session cookie; backend Basic Auth
+retained as server-to-server defense; no secrets committed (`.env.example`
+placeholders only). No public publishing, no recommendation output, no paid
+plans, no broker integration exist.
+
+The user-facing product layer changed no authentication behaviour: it added a
+route family to the existing proxy matcher and reused the same GitHub OAuth,
+the same session cookie and the same allowlist. The only surface it made
+public is the presentational landing page at `/`, which was already public.
 
 Security review should be triggered before:
 - Changing the authentication/authorization model or session handling

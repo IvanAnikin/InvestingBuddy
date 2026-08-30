@@ -8,12 +8,20 @@
 //                              /login (preserving callbackUrl); redirect
 //                              authenticated-but-not-allowlisted users to
 //                              /unauthorized.
+//   /research/:path*         → the user-facing research workspace. Same gate,
+//                              same reasons: these routes execute research and
+//                              render private reports. They are Server
+//                              Components that fetch the backend DIRECTLY with
+//                              a server-side credential, so without this entry
+//                              they would render private research to anyone.
 //   /api/admin/proxy/:path*  → API proxy: 401 unauthenticated, 403 not allowed.
 //                              (The route handler re-checks independently as
 //                              defense-in-depth and attaches identity headers.)
 //
 // Everything else — /, /login, /unauthorized, /api/auth/*, /api/version, and
-// all static/_next assets — is intentionally NOT matched and stays public.
+// all static/_next assets — is intentionally NOT matched and stays public. The
+// landing page at / is presentational: it renders no research and reads no
+// report, so it is safe to serve unauthenticated.
 
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
@@ -58,5 +66,5 @@ export async function proxy(request: NextRequest): Promise<NextResponse> {
 }
 
 export const config = {
-  matcher: ["/admin/:path*", "/api/admin/proxy/:path*"],
+  matcher: ["/admin/:path*", "/research/:path*", "/api/admin/proxy/:path*"],
 };

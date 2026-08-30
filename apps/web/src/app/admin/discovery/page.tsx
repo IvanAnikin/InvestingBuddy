@@ -39,6 +39,7 @@ import type {
   SupportedThemesResponse,
   ThesisDiscoveryRunCreate,
 } from "@/types/api";
+import { buildThesisDiscoveryRequest } from "@/lib/workflows";
 import GlassCard from "@/components/ui/GlassCard";
 import SafetyBanner from "@/components/ui/SafetyBanner";
 import StatusPill, { type PillColor } from "@/components/ui/StatusPill";
@@ -2404,16 +2405,17 @@ export default function DiscoveryPage() {
     setSubmitting(true);
     setSubmitError(null);
     setStartedMsg(null);
-    const payload: ThesisDiscoveryRunCreate = {
-      thesis_text: thesisText.trim(),
-      region: thesisRegion.trim() || undefined,
-      country: thesisCountry.trim() || undefined,
-      sector: thesisSector.trim() || undefined,
-      max_universe_size: parseInt(thesisMaxUniverse, 10) || 25,
-      max_candidates: parseInt(thesisMaxCandidates, 10) || 10,
-      lookback_days: parseInt(thesisLookback, 10) || 90,
-      provider_name: "free_real",
-    };
+    // Shared with the /research/discover surface (src/lib/workflows.ts) so an
+    // identical description produces an identical run on either surface.
+    const payload: ThesisDiscoveryRunCreate = buildThesisDiscoveryRequest({
+      thesisText,
+      region: thesisRegion,
+      country: thesisCountry,
+      sector: thesisSector,
+      maxUniverseSize: parseInt(thesisMaxUniverse, 10) || undefined,
+      maxCandidates: parseInt(thesisMaxCandidates, 10) || undefined,
+      lookbackDays: parseInt(thesisLookback, 10) || undefined,
+    });
     try {
       const run = await createThesisDiscoveryRun(payload);
       setSelectedRunId(run.id);
