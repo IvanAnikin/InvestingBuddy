@@ -6,6 +6,7 @@
 // recommendation, rating, price target, fair value, or upside/downside.
 
 import GlassCard from "@/components/ui/GlassCard";
+import { formatNumber } from "@/lib/format";
 import StatusPill, { type PillColor } from "@/components/ui/StatusPill";
 import {
   type ChecklistItem,
@@ -48,7 +49,7 @@ function ScalarValue({ value, currency }: { value: unknown; currency?: string })
   if (typeof value === "number")
     return (
       <span className="text-slate-200">
-        {value.toLocaleString()} {currency ?? ""}
+        {formatNumber(value)} {currency ?? ""}
       </span>
     );
   return <span className="whitespace-pre-line text-slate-200">{String(value)}</span>;
@@ -572,7 +573,7 @@ function TrendRow({ series }: { series: TrendSeries }) {
         {periods.map((p) => (
           <span key={p.period} className="text-sm text-slate-300">
             <span className="text-[10px] text-slate-500">{p.period}</span>{" "}
-            {p.value != null ? p.value.toLocaleString() : "n/a"}
+            {p.value != null ? formatNumber(p.value) : "n/a"}
           </span>
         ))}
       </div>
@@ -580,7 +581,7 @@ function TrendRow({ series }: { series: TrendSeries }) {
         {(series.derived_changes ?? []).map((c, i) => (
           <span key={i}>
             {humanizeKey(c.calculation ?? "change")} {c.from_period}&rarr;{c.to_period}:{" "}
-            {c.value != null ? c.value.toLocaleString() : "n/a"}
+            {c.value != null ? formatNumber(c.value) : "n/a"}
             {c.unit}
           </span>
         ))}

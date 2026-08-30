@@ -120,6 +120,7 @@ cd apps/api && .venv/bin/pytest tests/ -q && .venv/bin/ruff check . && echo "ALL
 | `research-responsive-a11y.spec.ts` | Horizontal-overflow check at 1440 / 1280 / 768 / 390, the mobile navigation, `prefers-reduced-motion`, console-error freedom, and keyboard access (skip link, arrow-key tablists). |
 | `visual-audit.spec.ts` | Programmatic legibility audit: WCAG AA contrast against the effective composited background, text clipped by its own box, controls without an accessible name, and heading order. |
 | `visual-qa.spec.ts` | Screenshot capture for human review. Skipped unless `IB_SHOTS` is set. |
+| `live-defect-regressions.spec.ts` | The two defects that reached production in PR #176: SSR/browser hydration mismatch from host-dependent date formatting (browser contexts pinned to Europe/Prague AND Pacific/Kiritimati), and horizontal overflow at 390px from long unbroken external strings. Both were verified by reverting the fix and confirming the test fails. |
 | `workflow-contract.spec.ts` | **CONTRACT** — what each console puts on the wire. Captures the request body in the browser and asserts the company identity, provider, flags, thesis text and inferred filters, plus parity between `/admin/*` and `/research/*`, honest failure states, and that a linked report is not mistaken for a completed analysis. |
 
 ### Mock mode vs real integration
@@ -140,6 +141,23 @@ FastAPI + Next.js, see `.claude/skills/local-dev-operator/SKILL.md`) and drive
 the UI against it. `/research/*` renders a "Preview data" strip whenever the
 backend's own `/health.environment` reports `test`, so it is never ambiguous
 which backend a screen is showing.
+
+### Conditions a single-machine suite cannot produce
+
+Two defect classes shipped in PR #176 because the suite had no way to create
+the conditions they need. Both now have fixtures and tests:
+
+- **Host divergence.** SSR and hydration run in one process on one machine
+  locally, so they always agree on locale and time zone. Tests must pin a
+  browser context to a zone far enough to flip the calendar day —
+  `Pacific/Kiritimati` (UTC+14) catches what `Europe/Prague` does not, because
+  a +02:00 offset only flips the day for timestamps in the last hours of a UTC
+  day and the fixtures sit at 10:00 UTC.
+- **Real-world string lengths.** Fixtures with short titles and short field
+  names cannot reveal a layout that breaks on a 140-character CDN URL. The
+  `PERIODS_REPORT_ID` fixture now carries an untitled document with a long
+  percent-encoded URL, an untitled appendix source, and 70-character dotted
+  field paths.
 
 **Two dev servers must not share `apps/web/.next`.** `next.config.ts` sets
 `lockDistDir: false`, which disables the guard, and running the Playwright dev

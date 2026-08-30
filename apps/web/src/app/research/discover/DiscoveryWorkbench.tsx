@@ -14,6 +14,7 @@ import {
   parseThesis,
   runCandidateAnalysis,
 } from "@/lib/api";
+import { formatDate } from "@/lib/format";
 import {
   DISCOVERY_DEFAULTS,
   buildThesisDiscoveryRequest,
@@ -610,7 +611,7 @@ export default function DiscoveryWorkbench() {
                   {runs.map((r) => (
                     <option key={r.id} value={r.id} className="bg-[#0a0f1c]">
                       {(r.thesis_text ?? r.universe_source ?? "run").slice(0, 48)}{" "}
-                      · {new Date(r.created_at).toLocaleDateString()}
+                      · {formatDate(r.created_at)}
                     </option>
                   ))}
                 </select>

@@ -15,11 +15,11 @@ function DatapointRow({ dp }: { dp: FinancialDatapoint }) {
   return (
     <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-0.5 border-b border-[color:var(--ib-line)] py-2.5 last:border-0">
       <span className="text-sm text-[color:var(--ib-ink-3)]">{dp.label}</span>
-      <span className="text-right">
-        <span className="block font-mono text-sm text-[color:var(--ib-ink)]">
+      <span className="ib-breakable text-right">
+        <span className="ib-breakable block font-mono text-sm text-[color:var(--ib-ink)]">
           {dp.display}
         </span>
-        <span className="block text-[10px] text-[color:var(--ib-ink-3)]">
+        <span className="ib-breakable block text-[10px] text-[color:var(--ib-ink-3)]">
           {[dp.period, dp.scope].filter(Boolean).join(" · ") || "period not stated"}
         </span>
         {dp.newerPeriod && (
@@ -75,7 +75,7 @@ function Column({
       )}
 
       {note && (
-        <p className="mt-4 border-t border-[color:var(--ib-line)] pt-3 text-xs leading-relaxed text-[color:var(--ib-ink-3)]">
+        <p className="ib-breakable mt-4 border-t border-[color:var(--ib-line)] pt-3 text-xs leading-relaxed text-[color:var(--ib-ink-3)]">
           {note}
         </p>
       )}
@@ -110,7 +110,7 @@ export default function FinancialSnapshot({
       </h2>
 
       {!hasAnything && (
-        <p className="mt-3 max-w-2xl text-sm leading-relaxed text-[color:var(--ib-ink-3)]">
+        <p className="ib-breakable mt-3 max-w-2xl text-sm leading-relaxed text-[color:var(--ib-ink-3)]">
           {fallbackNote ??
             "No financial statement figure was sourced for this company. That is a finding, not a gap in this view — the analysis sections below reflect it."}
         </p>
@@ -173,7 +173,7 @@ export default function FinancialSnapshot({
             ))}
           </div>
           {statementsNote && (
-            <p className="mt-4 border-t border-[color:var(--ib-line)] pt-3 text-xs leading-relaxed text-[color:var(--ib-ink-3)]">
+            <p className="ib-breakable mt-4 border-t border-[color:var(--ib-line)] pt-3 text-xs leading-relaxed text-[color:var(--ib-ink-3)]">
               {statementsNote}
             </p>
           )}

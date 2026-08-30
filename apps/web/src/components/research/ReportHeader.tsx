@@ -1,5 +1,6 @@
 import Link from "next/link";
 import Surface from "@/components/product/Surface";
+import { formatDate } from "@/lib/format";
 import type { CouncilView, IdentityView, ReportingPeriods } from "./reportView";
 
 /**
@@ -38,17 +39,17 @@ export default function ReportHeader({
         ? `${council.completed} agent${council.completed === 1 ? "" : "s"} completed`
         : "Not run",
     ],
-    ["Last researched", new Date(updatedAt).toLocaleDateString()],
+    ["Last researched", formatDate(updatedAt)],
   ];
 
   return (
     <Surface as="header" className="p-6 sm:p-8" testId="report-header">
       <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-4">
-        <div className="min-w-0">
-          <h1 className="text-3xl font-semibold tracking-tight text-[color:var(--ib-ink)]">
+        <div className="ib-breakable">
+          <h1 className="ib-breakable text-3xl font-semibold tracking-tight text-[color:var(--ib-ink)]">
             {identity.companyName ?? "Company not identified"}
           </h1>
-          <p className="mt-1.5 font-mono text-sm text-[color:var(--ib-ink-3)]">
+          <p className="ib-breakable mt-1.5 font-mono text-sm text-[color:var(--ib-ink-3)]">
             {[identity.ticker, identity.exchange, identity.sector]
               .filter(Boolean)
               .join(" · ") || "identity not sourced"}
@@ -88,7 +89,9 @@ export default function ReportHeader({
         {facts.map(([label, value]) => (
           <div key={label}>
             <dt className="text-xs text-[color:var(--ib-ink-3)]">{label}</dt>
-            <dd className="mt-0.5 text-sm text-[color:var(--ib-ink)]">{value}</dd>
+            <dd className="ib-breakable mt-0.5 text-sm text-[color:var(--ib-ink)]">
+              {value}
+            </dd>
           </div>
         ))}
       </dl>

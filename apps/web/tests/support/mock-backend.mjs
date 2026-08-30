@@ -975,6 +975,28 @@ function mockPeriodsReport(id) {
     ],
   };
 
+  // Regression fixture: machine field paths long enough to overflow a phone.
+  // The previous fixture's "identity.isin" wrapped fine at 390px and so hid a
+  // real defect that only appeared against live data.
+  rc.missing_information = {
+    type: "missing_information",
+    total_missing_items: 4,
+    missing_items: {
+      value: [
+        {
+          field: "fundamentals.consolidated_statement_of_comprehensive_income.operating_expenses",
+          source: "company_snapshot",
+        },
+        {
+          field: "profile.reporting_currency_translation_reference_rate",
+          source: "company_snapshot",
+        },
+        { field: "identity.isin", source: "company_snapshot" },
+        { field: "financials.ebitda", source: "financial_data_agent" },
+      ],
+    },
+  };
+
   rc.regulated_disclosures = {
     type: "regulated_disclosures",
     events: {
@@ -992,6 +1014,25 @@ function mockPeriodsReport(id) {
     },
     disclaimer:
       "Regulated disclosures are retrieved from official venues. Human review required.",
+  };
+
+  // Regression fixture: an appendix source with no title, so its URL is the
+  // only label available — the same fallback path as the untitled document in
+  // the primary-documents route.
+  rc.source_citation_appendix = {
+    type: "source_citation_appendix",
+    sources: {
+      value: [
+        {
+          source_type: "company_ir",
+          source_tier: "T1_primary_filing",
+          title: null,
+          url: "https://example-issuer.a.bigcontent.io/v1/static/Interim%20Financial%20Report%20First%20Half%20Year%20Twenty%20Twenty%20Six.pdf",
+        },
+      ],
+      total: 1,
+    },
+    citations: { value: [], total: 0 },
   };
 
   base.content_markdown = finalReportMarkdown(rc);
@@ -1215,6 +1256,37 @@ const server = createServer((req, res) => {
               excerpts: [],
               facts: [],
               persisted_validated_fact_count: 52,
+              fact_count_scope: "persisted_validated",
+              fact_count_label: "persisted validated facts",
+            },
+            {
+              // Regression fixture: NO title, and a long percent-encoded CDN
+              // URL. This is the shape that pushed the whole page sideways at
+              // 390px live — every previous fixture had a short title, so no
+              // local test could have caught it.
+              attempt_id: "dddddddd-0000-0000-0000-000000000003",
+              canonical_url:
+                "https://example-issuer.a.bigcontent.io/v1/static/Annual%20Report%202025%20Consolidated%20Financial%20Statements%20And%20Notes%20Final%20Signed.pdf",
+              title: null,
+              source_type: "company_ir",
+              source_tier: "T1_primary_filing",
+              doc_kind: "annual_report",
+              discovery_strategy: "issuer_document_domain",
+              attempted_at: "2026-08-20T09:02:00Z",
+              status: "extracted",
+              failure_code: null,
+              mime_type: "application/pdf",
+              extraction_method: "native_pdf",
+              page_count: 88,
+              fetch_ms: 3100,
+              extraction_ms: 9400,
+              total_ms: 12500,
+              pinned: false,
+              content_hash: "sha256:mock-untitled",
+              reused: false,
+              excerpts: [],
+              facts: [],
+              persisted_validated_fact_count: 7,
               fact_count_scope: "persisted_validated",
               fact_count_label: "persisted validated facts",
             },

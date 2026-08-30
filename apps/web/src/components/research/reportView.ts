@@ -26,6 +26,7 @@ import {
   unwrap,
   type ReportContent,
 } from "@/components/reports/finalReportContent";
+import { formatNumber } from "@/lib/format";
 import type { EvidenceLabel } from "./ResearchStatusBadge";
 import { evidenceLabelOf } from "./ResearchStatusBadge";
 
@@ -136,9 +137,7 @@ function formatDatapoint(dp: Record<string, unknown>): string | null {
   const unit = str(dp["unit"]);
 
   if (typeof numeric === "number" && Number.isFinite(numeric)) {
-    const parts = [
-      numeric.toLocaleString("en-US", { maximumFractionDigits: 2 }),
-    ];
+    const parts = [formatNumber(numeric)];
     if (unit === "%") return `${parts.join(" ")}%`;
     if (scale && SCALE_WORD[scale]) parts.push(SCALE_WORD[scale]);
     if (currency) parts.push(currency);
@@ -148,7 +147,7 @@ function formatDatapoint(dp: Record<string, unknown>): string | null {
 
   const raw = dp["value"];
   if (typeof raw === "number" && Number.isFinite(raw)) {
-    const parts = [raw.toLocaleString("en-US", { maximumFractionDigits: 2 })];
+    const parts = [formatNumber(raw)];
     if (currency) parts.push(currency);
     else if (unit) parts.push(unit);
     return parts.join(" ");
