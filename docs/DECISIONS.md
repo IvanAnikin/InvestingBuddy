@@ -2649,3 +2649,91 @@ it is slower than the single workflow call and has a partial-failure state to
 report — which it does, rather than presenting an unfinished run as finished.
 And the industry filter is reachable only by choosing it deliberately: a reader
 who wants a narrow industry must say so, which is the intended trade.
+
+---
+
+## ADR-039: Presentation Formatting Is a Contract, and External Strings Are Assumed Hostile
+
+**Date:** 2026-08-30
+**Status:** Accepted
+
+### Context
+
+Two defects reached the live environment in PR #176 and were found only by
+verifying against it. Neither was catchable by the suite that shipped with it,
+and for the same underlying reason: the suite ran one machine and one set of
+fixtures, and each defect needed a *second* set of conditions to appear.
+
+**The date.** `/research/reports` threw React #418 on every load. `ReportLibrary`
+is a Client Component rendering `new Date(...).toLocaleDateString()`, so the
+text was produced twice — once by the Azure container, once by the browser — and
+`toLocaleDateString` reads the runtime's own locale AND time zone. Locale changes
+the shape of the output; the time zone can change the calendar day outright. On
+a developer's laptop the two renders happen in the same process on the same
+machine and always agree, so the bug is structurally invisible locally.
+
+**The overflow.** The clean report scrolled sideways at 390px (scrollWidth 508).
+`EvidencePanel` fell back to `doc.canonical_url` when a document had no title,
+and a real issuer CDN link is 140 characters of percent-encoded text with
+nothing to break at. Every fixture had a short title and a short field name, so
+again the condition never arose locally.
+
+### Decision
+
+**One formatting contract, pinned on both axes.** `apps/web/src/lib/format.ts`
+exports `formatDate`, `formatDateTime`, `formatNumber` and `isoTimestamp`, all
+built on `Intl` formatters with an explicit locale (`en-US`) and an explicit
+time zone (`UTC`). No user-facing component calls a host-default `toLocale*`
+overload. UTC is chosen because these timestamps record when the *server* did
+something and every other surface — the technical view, the API, the logs —
+already speaks UTC; showing a reader's local day would put a different date
+beside the same event elsewhere. `isoTimestamp` supplies the exact instant to a
+`title`, so pinning the displayed day loses nothing.
+
+The audit covered every locale-sensitive call in the app, not just the reported
+one. The four new user-facing date renders moved to the helper. `FinalReportRenderer`
+was also fixed: it has no `"use client"` directive but is imported by one, so it
+ships to the client and hydrates, and its bare `toLocaleString()` on numbers is
+the same hazard one step quieter — latent only while the container and the
+reader both default to `en-US`. The remaining admin calls were left alone after
+checking each: they are either Server Components (rendered once, never
+hydrated) or client components whose data arrives from a `useEffect` fetch, so
+their dates are never in the SSR HTML and cannot mismatch.
+
+**Strings from outside the product are assumed hostile to layout.** A single
+`.ib-breakable` utility sets `overflow-wrap: anywhere` plus `min-width: 0`, and
+it is applied wherever a value the UI did not author is rendered: document
+titles and URLs, appendix sources, disclosure titles and venues, evidence-channel
+details, machine field paths, scope names, comparability reasons, council prose
+and provider warnings. `overflow-wrap: anywhere` breaks only where a break is
+needed, so ordinary prose still wraps at spaces; `word-break: break-all` would
+chop every line mid-word. Nothing is clipped and no ancestor hides overflow —
+a test asserts that `html`/`body` do not set `overflow-x: hidden`, because
+hiding the symptom would satisfy a naive scrollWidth check while the content
+was still cut off.
+
+**An untitled document is labelled from its own URL.** `documentLabel` derives
+"host — decoded final segment" rather than dumping the raw link. It invents
+nothing: every part comes from the URL, the full URL remains the `href` and the
+`title`, and a URL with no usable segment falls back to the host and then to the
+URL unchanged.
+
+### Consequences
+
+**Positive.** The formatting hazard is now structural rather than per-line: a
+new component that needs a date reaches for the helper. Long external strings
+cannot break the page layout regardless of what an issuer names a file. Both
+regression tests were verified by reverting each fix and watching them fail.
+
+**Negative / accepted.** Displayed dates are UTC, so a reader far from Greenwich
+may see the previous calendar day for a late-evening event; the `title` carries
+the exact instant, and consistency with every other surface is worth more than
+matching each reader's midnight. `documentLabel` is a heuristic — it produces a
+readable label, not the issuer's official document title, which is why the full
+URL stays one hover away.
+
+**A note on what the tests taught.** Reverting the date fix made the UTC+14 case
+fail while the Europe/Prague case still passed: Prague only flips the calendar
+day for timestamps in the last hours of a UTC day, and the fixtures' timestamps
+sit at 10:00 UTC. Sampling one nearby zone would have reproduced the original
+blind spot. Divergence tests need to span the extremes, not merely differ.

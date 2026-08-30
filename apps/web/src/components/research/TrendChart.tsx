@@ -1,3 +1,4 @@
+import { formatNumber } from "@/lib/format";
 import type { TrendSeriesView } from "./reportView";
 
 /**
@@ -25,7 +26,7 @@ const PAD_Y = 8;
 
 function formatValue(value: number | null): string {
   if (value === null) return "n/a";
-  return value.toLocaleString("en-US", { maximumFractionDigits: 2 });
+  return formatNumber(value);
 }
 
 function humanizeMetric(metric: string): string {
@@ -63,11 +64,11 @@ export default function TrendChart({ series }: { series: TrendSeriesView }) {
   return (
     <li className="rounded-lg border border-[color:var(--ib-line)] p-4">
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        <span className="text-sm font-medium text-[color:var(--ib-ink)]">
+        <span className="ib-breakable text-sm font-medium text-[color:var(--ib-ink)]">
           {humanizeMetric(series.metric)}
         </span>
         {series.scope && (
-          <span className="rounded border border-[color:var(--ib-line)] px-1.5 py-0.5 text-[10px] text-[color:var(--ib-ink-3)]">
+          <span className="ib-breakable rounded border border-[color:var(--ib-line)] px-1.5 py-0.5 text-[10px] text-[color:var(--ib-ink-3)]">
             {series.scope}
           </span>
         )}
@@ -128,7 +129,7 @@ export default function TrendChart({ series }: { series: TrendSeriesView }) {
       </dl>
 
       {!series.comparable && (
-        <p className="mt-2.5 text-xs leading-relaxed text-amber-300/90">
+        <p className="ib-breakable mt-2.5 text-xs leading-relaxed text-amber-300/90">
           Not charted — these periods are not comparable
           {series.comparabilityReasons.length > 0
             ? `: ${series.comparabilityReasons.join("; ")}`
@@ -141,7 +142,7 @@ export default function TrendChart({ series }: { series: TrendSeriesView }) {
         </p>
       )}
       {series.missingPeriods.length > 0 && (
-        <p className="mt-2 text-xs text-amber-300/90">
+        <p className="ib-breakable mt-2 text-xs text-amber-300/90">
           Missing: {series.missingPeriods.join(", ")}
         </p>
       )}

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useMemo, useState } from "react";
 import Surface from "@/components/product/Surface";
 import type { LibraryRow } from "@/components/research/reportView";
+import { formatDate, isoTimestamp } from "@/lib/format";
 import { evidenceWord } from "@/components/research/ResearchStatusBadge";
 
 type FilterId = "all" | "recent" | "council" | "needs-review" | "incomplete";
@@ -186,7 +187,12 @@ export default function ReportLibrary({ rows }: { rows: LibraryRow[] }) {
                     {REVIEW_LABELS[row.reviewStatus] ?? row.reviewStatus}
                   </td>
                   <td className="whitespace-nowrap px-3 py-3.5 text-xs text-[color:var(--ib-ink-3)]">
-                    {new Date(row.updatedAt).toLocaleDateString()}
+                    <time
+                      dateTime={isoTimestamp(row.updatedAt)}
+                      title={isoTimestamp(row.updatedAt)}
+                    >
+                      {formatDate(row.updatedAt)}
+                    </time>
                   </td>
                   <td className="whitespace-nowrap px-5 py-3.5 text-right">
                     <Link
@@ -207,11 +213,11 @@ export default function ReportLibrary({ rows }: { rows: LibraryRow[] }) {
               <li key={row.id} className="px-5 py-4">
                 <Link
                   href={`/research/reports/${row.id}`}
-                  className="block font-medium text-[color:var(--ib-ink)]"
+                  className="ib-breakable block font-medium text-[color:var(--ib-ink)]"
                 >
                   {row.company ?? row.title}
                 </Link>
-                <p className="mt-0.5 font-mono text-xs text-[color:var(--ib-ink-3)]">
+                <p className="ib-breakable mt-0.5 font-mono text-xs text-[color:var(--ib-ink-3)]">
                   {row.ticker ?? "—"}
                   {row.exchange ? ` · ${row.exchange}` : ""}
                 </p>

@@ -4,6 +4,7 @@ import Surface from "@/components/product/Surface";
 import { fetchReports } from "@/lib/api";
 import type { Report } from "@/types/api";
 import { reportCompanyLabel } from "@/components/research/reportView";
+import { formatDate } from "@/lib/format";
 
 export const dynamic = "force-dynamic";
 
@@ -147,7 +148,7 @@ export default async function ResearchHomePage() {
                         </span>
                         <span className="block truncate text-xs text-[color:var(--ib-ink-3)]">
                           {ticker ? `${ticker} · ` : ""}
-                          {new Date(report.updated_at).toLocaleDateString()}
+                          {formatDate(report.updated_at)}
                         </span>
                       </span>
                       <span className="ib-arrow text-sm text-[color:var(--ib-ink-3)]">

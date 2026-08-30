@@ -8,6 +8,31 @@ import type {
 } from "./reportView";
 
 /**
+ * A readable label for a document that arrived without a title.
+ *
+ * The fallback used to be the raw canonical URL, and a real issuer CDN link is
+ * long, percent-encoded and unbroken — it is neither readable nor containable.
+ * This derives "pandoragroup.com — Annual Report 2025" from the same URL. It
+ * invents nothing: every part is decoded from the URL itself, the full URL is
+ * still the link target and still sits in the `title`, and a URL that yields no
+ * usable last segment falls back to the host, then to the URL unchanged.
+ */
+export function documentLabel(title: string | null, url: string | null): string {
+  if (title && title.trim()) return title.trim();
+  if (!url) return "Untitled document";
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname.replace(/^www\./, "");
+    const last = parsed.pathname.split("/").filter(Boolean).pop();
+    if (!last) return host;
+    const name = decodeURIComponent(last).replace(/\.[a-z0-9]{2,5}$/i, "");
+    return name ? `${host} — ${name}` : host;
+  } catch {
+    return url;
+  }
+}
+
+/**
  * What this report was actually built from.
  *
  * Three things that are routinely conflated are kept apart here, because that
@@ -44,26 +69,27 @@ function DocumentCard({
             href={url}
             target="_blank"
             rel="noreferrer noopener"
-            className="text-sm font-medium text-[color:var(--ib-ink)] underline decoration-dotted underline-offset-4"
+            title={url}
+            className="ib-breakable text-sm font-medium text-[color:var(--ib-ink)] underline decoration-dotted underline-offset-4"
           >
             {title}
           </a>
         ) : (
-          <span className="text-sm font-medium text-[color:var(--ib-ink)]">
+          <span className="ib-breakable text-sm font-medium text-[color:var(--ib-ink)]">
             {title}
           </span>
         )}
-        <span className="font-mono text-xs text-[color:var(--ib-ink-3)]">
+        <span className="shrink-0 font-mono text-xs text-[color:var(--ib-ink-3)]">
           {facts} {factLabel}
         </span>
       </div>
       {meta.length > 0 && (
-        <p className="mt-1 text-xs text-[color:var(--ib-ink-3)]">
+        <p className="ib-breakable mt-1 text-xs text-[color:var(--ib-ink-3)]">
           {meta.join(" · ")}
         </p>
       )}
       {warnings.length > 0 && (
-        <p className="mt-2 text-xs leading-relaxed text-amber-300/80">
+        <p className="ib-breakable mt-2 text-xs leading-relaxed text-amber-300/80">
           {warnings.join(" · ")}
         </p>
       )}
@@ -111,11 +137,11 @@ export default function EvidencePanel({
                     : "bg-[color:var(--ib-line-strong)]"
                 }`}
               />
-              <span className="min-w-0">
-                <span className="block text-sm text-[color:var(--ib-ink-2)]">
+              <span className="ib-breakable">
+                <span className="ib-breakable block text-sm text-[color:var(--ib-ink-2)]">
                   {channel.label}
                 </span>
-                <span className="block text-xs leading-relaxed text-[color:var(--ib-ink-3)]">
+                <span className="ib-breakable block text-xs leading-relaxed text-[color:var(--ib-ink-3)]">
                   {channel.detail}
                 </span>
               </span>
@@ -134,7 +160,7 @@ export default function EvidencePanel({
             {documents.slice(0, 8).map((doc) => (
               <DocumentCard
                 key={doc.attempt_id}
-                title={doc.title ?? doc.canonical_url}
+                title={documentLabel(doc.title, doc.canonical_url)}
                 url={doc.canonical_url}
                 meta={[
                   doc.doc_kind ?? "",
@@ -182,17 +208,18 @@ export default function EvidencePanel({
                       href={event.url}
                       target="_blank"
                       rel="noreferrer noopener"
-                      className="text-sm text-[color:var(--ib-ink)] underline decoration-dotted underline-offset-4"
+                      title={event.url}
+                      className="ib-breakable text-sm text-[color:var(--ib-ink)] underline decoration-dotted underline-offset-4"
                     >
                       {event.title}
                     </a>
                   ) : (
-                    <span className="text-sm text-[color:var(--ib-ink)]">
+                    <span className="ib-breakable text-sm text-[color:var(--ib-ink)]">
                       {event.title}
                     </span>
                   )}
                 </div>
-                <p className="mt-1 text-xs text-[color:var(--ib-ink-3)]">
+                <p className="ib-breakable mt-1 text-xs text-[color:var(--ib-ink-3)]">
                   {[
                     event.venue,
                     event.channelCount > 1
@@ -220,18 +247,19 @@ export default function EvidencePanel({
         {appendix.sources.length > 0 ? (
           <ul className="mt-3 space-y-2">
             {appendix.sources.slice(0, 10).map((source, i) => (
-              <li key={i} className="text-sm">
+              <li key={i} className="ib-breakable text-sm">
                 {source.url ? (
                   <a
                     href={source.url}
                     target="_blank"
                     rel="noreferrer noopener"
-                    className="text-[color:var(--ib-ink-2)] underline decoration-dotted underline-offset-4 hover:text-[color:var(--ib-ink)]"
+                    title={source.url}
+                    className="ib-breakable text-[color:var(--ib-ink-2)] underline decoration-dotted underline-offset-4 hover:text-[color:var(--ib-ink)]"
                   >
-                    {source.title}
+                    {documentLabel(source.title, source.url)}
                   </a>
                 ) : (
-                  <span className="text-[color:var(--ib-ink-2)]">
+                  <span className="ib-breakable text-[color:var(--ib-ink-2)]">
                     {source.title}
                   </span>
                 )}
@@ -244,7 +272,7 @@ export default function EvidencePanel({
             ))}
           </ul>
         ) : (
-          <p className="mt-3 max-w-2xl text-sm leading-relaxed text-[color:var(--ib-ink-3)]">
+          <p className="ib-breakable mt-3 max-w-2xl text-sm leading-relaxed text-[color:var(--ib-ink-3)]">
             {appendix.note ??
               (appendix.primaryReferenceCount > 0
                 ? `${appendix.primaryReferenceCount} primary-source reference(s) were located, but no citation has been persisted against a claim yet.`

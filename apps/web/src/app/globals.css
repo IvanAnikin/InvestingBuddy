@@ -459,3 +459,25 @@ body:has([data-ib-surface="product"]) .ib-bg-grid {
     transform: none;
   }
 }
+
+/* ---------------------------------------------------------------------------
+ * Containment for strings the product did not author.
+ *
+ * Document titles, canonical URLs, machine field paths, source identifiers and
+ * provider warnings all arrive from outside and can be arbitrarily long with no
+ * space to break at. A 446-character CDN URL in a card on a 390px screen pushes
+ * the whole PAGE sideways, which is why this is a layout contract rather than a
+ * per-component patch.
+ *
+ * `overflow-wrap: anywhere` breaks only where a break is NEEDED to avoid
+ * overflow, so ordinary words still wrap at spaces and stay readable —
+ * `word-break: break-all` would chop every line mid-word instead. Nothing is
+ * clipped or hidden: the full string still renders, it just wraps.
+ * ------------------------------------------------------------------------- */
+
+.ib-breakable {
+  overflow-wrap: anywhere;
+  /* A flex/grid child defaults to min-width:auto, which refuses to shrink below
+     its content and defeats the wrap above. */
+  min-width: 0;
+}

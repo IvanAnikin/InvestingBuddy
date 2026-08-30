@@ -156,7 +156,7 @@ export default async function ResearchReportPage({
               <h2 className="text-lg font-semibold tracking-tight text-[color:var(--ib-ink)]">
                 Summary
               </h2>
-              <p className="mt-3 max-w-3xl whitespace-pre-line text-sm leading-relaxed text-[color:var(--ib-ink-2)]">
+              <p className="ib-breakable mt-3 max-w-3xl whitespace-pre-line text-sm leading-relaxed text-[color:var(--ib-ink-2)]">
                 {view.summary}
               </p>
             </Surface>
@@ -188,7 +188,7 @@ export default async function ResearchReportPage({
                 ))}
               </ul>
               {view.trends.note && (
-                <p className="mt-4 border-t border-[color:var(--ib-line)] pt-3 text-xs leading-relaxed text-[color:var(--ib-ink-3)]">
+                <p className="ib-breakable mt-4 border-t border-[color:var(--ib-line)] pt-3 text-xs leading-relaxed text-[color:var(--ib-ink-3)]">
                   {view.trends.note}
                 </p>
               )}
@@ -248,8 +248,15 @@ export default async function ResearchReportPage({
                 </p>
                 <ul className="mt-4 grid gap-x-8 gap-y-1.5 sm:grid-cols-2">
                   {view.missing.items.map((item, i) => (
-                    <li key={i} className="text-sm text-[color:var(--ib-ink-2)]">
-                      <span className="font-mono text-xs">{item.field}</span>
+                    <li
+                      key={i}
+                      className="ib-breakable text-sm text-[color:var(--ib-ink-2)]"
+                    >
+                      {/* A dotted machine path has no space to break at; the
+                          exact token is preserved, it simply wraps. */}
+                      <span className="ib-breakable font-mono text-xs">
+                        {item.field}
+                      </span>
                       {item.source && (
                         <span className="ml-2 text-xs text-[color:var(--ib-ink-3)]">
                           ({item.source})
@@ -295,7 +302,7 @@ export default async function ResearchReportPage({
                       </span>
                     </dt>
                     {dim.basis.length > 0 && (
-                      <dd className="mt-1.5 text-xs leading-relaxed text-[color:var(--ib-ink-3)]">
+                      <dd className="ib-breakable mt-1.5 text-xs leading-relaxed text-[color:var(--ib-ink-3)]">
                         {dim.basis.join(" · ")}
                       </dd>
                     )}
@@ -321,7 +328,7 @@ export default async function ResearchReportPage({
                       aria-hidden="true"
                       className="mt-2.5 h-px w-3 shrink-0 bg-[color:var(--ib-line-strong)]"
                     />
-                    <span>{step}</span>
+                    <span className="ib-breakable">{step}</span>
                   </li>
                 ))}
               </ul>

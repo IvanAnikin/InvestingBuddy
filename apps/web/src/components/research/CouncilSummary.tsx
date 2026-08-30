@@ -80,7 +80,7 @@ export default function CouncilSummary({
                   }`}
                 />
                 <span className="min-w-0">
-                  <span className="block text-sm text-[color:var(--ib-ink)]">
+                  <span className="ib-breakable block text-sm text-[color:var(--ib-ink)]">
                     {COUNCIL_AGENT_LABELS[agent.agent_name] ?? agent.agent_name}
                   </span>
                   <span className="block text-xs text-[color:var(--ib-ink-3)]">
@@ -99,7 +99,7 @@ export default function CouncilSummary({
           <p className="text-xs font-medium uppercase tracking-[0.14em] text-[color:var(--ib-ink-3)]">
             Red team
           </p>
-          <p className="mt-2 max-w-3xl text-sm leading-relaxed text-[color:var(--ib-ink-2)]">
+          <p className="ib-breakable mt-2 max-w-3xl text-sm leading-relaxed text-[color:var(--ib-ink-2)]">
             {council.redTeam.summary}
           </p>
           {council.redTeam.key_points.length > 0 && (
@@ -113,7 +113,7 @@ export default function CouncilSummary({
                     aria-hidden="true"
                     className="mt-2 h-px w-3 shrink-0 bg-[color:var(--ib-line-strong)]"
                   />
-                  <span>{point.claim}</span>
+                  <span className="ib-breakable">{point.claim}</span>
                 </li>
               ))}
             </ul>
@@ -137,7 +137,7 @@ export default function CouncilSummary({
                   aria-hidden="true"
                   className="mt-2 h-px w-3 shrink-0 bg-[color:var(--ib-line-strong)]"
                 />
-                <span>{q}</span>
+                <span className="ib-breakable">{q}</span>
               </li>
             ))}
           </ul>
@@ -151,7 +151,9 @@ export default function CouncilSummary({
           </p>
           <ul className="mt-2 space-y-1 text-sm leading-relaxed text-[color:var(--ib-ink-2)]">
             {council.unsupportedClaims.slice(0, 5).map((claim, i) => (
-              <li key={i}>{claim}</li>
+              <li key={i} className="ib-breakable">
+                {claim}
+              </li>
             ))}
           </ul>
         </div>

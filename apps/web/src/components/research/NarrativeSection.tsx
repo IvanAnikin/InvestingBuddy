@@ -62,7 +62,7 @@ export default function NarrativeSection({
                       aria-hidden="true"
                       className="mt-2.5 h-px w-3 shrink-0 bg-[color:var(--ib-line-strong)]"
                     />
-                    <span>{point}</span>
+                    <span className="ib-breakable">{point}</span>
                   </li>
                 ))}
               </ul>
