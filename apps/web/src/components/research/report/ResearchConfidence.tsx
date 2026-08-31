@@ -20,11 +20,14 @@ export default function ResearchConfidence({
   dimensions,
   confidence,
   missingItems,
+  numericConflicts = 0,
   reportId,
 }: {
   dimensions: EvidenceDimension[];
   confidence: ResearchConfidenceView;
   missingItems: MissingItem[];
+  /** Council sentences withheld because they contradicted a canonical figure. */
+  numericConflicts?: number;
   reportId: string;
 }) {
   const overall = dimensions.find(
@@ -37,6 +40,7 @@ export default function ResearchConfidence({
     dimensions.length > 0 ||
     confidence.limitations.length > 0 ||
     confidence.recordGaps.length > 0 ||
+    numericConflicts > 0 ||
     missingItems.length > 0;
   if (!hasAnything) return null;
 
@@ -103,6 +107,20 @@ export default function ResearchConfidence({
             ))}
           </ul>
         </div>
+      )}
+
+      {numericConflicts > 0 && (
+        <p
+          className="mt-6 rounded-lg border border-amber-400/25 px-4 py-3 text-sm leading-relaxed text-amber-200"
+          data-testid="numeric-conflicts"
+        >
+          {numericConflicts} council statement
+          {numericConflicts === 1 ? "" : "s"} quoted a figure that does not
+          reconcile with this report&apos;s own canonical financials, so
+          {numericConflicts === 1 ? " it was" : " they were"} withheld rather
+          than shown beside a number it contradicts. The technical view has
+          both.
+        </p>
       )}
 
       {confidence.unsupportedClaims.length > 0 && (

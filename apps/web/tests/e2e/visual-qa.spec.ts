@@ -1,3 +1,4 @@
+import { expect } from "@playwright/test";
 import { adminTest as test } from "../support/auth";
 
 /**
@@ -30,6 +31,44 @@ const PAGES = [
   { name: "08-admin-report", path: `/admin/reports/${PERIODS_REPORT_ID}` },
 ];
 
+/**
+ * Reveal every scroll-revealed section before capturing.
+ *
+ * A `fullPage: true` screenshot resizes the viewport to the whole document, so
+ * anything the IntersectionObserver never fired for is captured at
+ * `opacity: 0` — which is what produced the large blank vertical bands in the
+ * previous review set. That was a capture artifact: a person scrolling the page
+ * sees every section (`landing-reveal-audit.spec.ts` asserts it at four
+ * widths). This walks the page so the observers fire, then WAITS for the
+ * transitions to finish rather than guessing at a duration.
+ *
+ * `document.documentElement.scrollHeight` is the scrolling element's height;
+ * `body.scrollHeight` under-reports it and leaves the last section unscrolled.
+ */
+async function settle(page: import("@playwright/test").Page) {
+  await page.evaluate(async () => {
+    const step = Math.round(window.innerHeight * 0.75);
+    for (let y = 0; y < document.documentElement.scrollHeight; y += step) {
+      window.scrollTo(0, y);
+      await new Promise((r) => setTimeout(r, 140));
+    }
+    window.scrollTo(0, document.documentElement.scrollHeight);
+    await new Promise((r) => setTimeout(r, 300));
+    window.scrollTo(0, 0);
+  });
+  await expect
+    .poll(
+      () =>
+        page.evaluate(
+          () =>
+            document.querySelectorAll(".ib-reveal:not(.ib-revealed)").length,
+        ),
+      { timeout: 15_000 },
+    )
+    .toBe(0);
+  await page.waitForTimeout(600);
+}
+
 test.describe("@visual capture", () => {
   test.skip(!OUT, "Set IB_SHOTS to capture review screenshots.");
 
@@ -39,17 +78,7 @@ test.describe("@visual capture", () => {
         await page.setViewportSize({ width: vp.width, height: vp.height });
         await page.goto(target.path);
         await page.waitForLoadState("networkidle");
-        // Let scroll-reveal settle: scroll to the bottom, then back to the top,
-        // so a full-page capture shows revealed content rather than mid-fade.
-        await page.evaluate(async () => {
-          const step = window.innerHeight;
-          for (let y = 0; y < document.body.scrollHeight; y += step) {
-            window.scrollTo(0, y);
-            await new Promise((r) => setTimeout(r, 90));
-          }
-          window.scrollTo(0, 0);
-        });
-        await page.waitForTimeout(700);
+        await settle(page);
         await page.screenshot({
           path: `${OUT}/${target.name}--${vp.name}.png`,
           fullPage: true,
@@ -73,17 +102,6 @@ const REVIEW_VIEWPORTS = [
   { name: "mobile-390", width: 390, height: 844 },
 ];
 
-async function settle(page: import("@playwright/test").Page) {
-  await page.evaluate(async () => {
-    const step = window.innerHeight;
-    for (let y = 0; y < document.body.scrollHeight; y += step) {
-      window.scrollTo(0, y);
-      await new Promise((r) => setTimeout(r, 90));
-    }
-    window.scrollTo(0, 0);
-  });
-  await page.waitForTimeout(500);
-}
 
 async function startDiscovery(
   page: import("@playwright/test").Page,
@@ -178,6 +196,66 @@ test.describe("@visual investor experience v2", () => {
       await page.waitForTimeout(400);
       await evidence.screenshot({
         path: `${OUT}/14-evidence-expanded--${vp.name}.png`,
+      });
+    });
+
+    // §29's investment-content states: the sections a reader judges the
+    // research by, captured on their own so a reviewer sees the content rather
+    // than a page-length ribbon.
+    for (const [name, testId] of [
+      ["16-investment-summary", "investment-summary"],
+      ["17-key-financials", "key-financials"],
+      ["18-business-quality", "business-quality"],
+      ["19-recent-developments", "recent-developments"],
+      ["20-resilience-exposure", "resilience-exposure"],
+      ["21-key-risks", "risk-analysis"],
+      ["22-red-team", "red-team"],
+      ["23-chair-synthesis", "chair-synthesis"],
+      ["24-open-questions", "open-questions"],
+      ["25-research-confidence", "research-confidence"],
+    ] as const) {
+      test(`@visual ${name} @ ${vp.name}`, async ({ page }) => {
+        await page.setViewportSize(vp);
+        await page.goto(`/research/reports/${PERIODS_REPORT_ID}`);
+        const section = page.getByTestId(testId);
+        await section.waitFor();
+        await section.scrollIntoViewIfNeeded();
+        await page.waitForTimeout(400);
+        await section.screenshot({ path: `${OUT}/${name}--${vp.name}.png` });
+      });
+    }
+
+    test(`@visual 26-bull-bear @ ${vp.name}`, async ({ page }) => {
+      await page.setViewportSize(vp);
+      await page.goto(`/research/reports/${PERIODS_REPORT_ID}`);
+      await page.getByTestId("bull-case").waitFor();
+      await page.getByTestId("bull-case").scrollIntoViewIfNeeded();
+      await page.waitForTimeout(400);
+      // Both cases together — they are read as a pair.
+      const box = await page.getByTestId("bull-case").boundingBox();
+      const bear = await page.getByTestId("bear-case").boundingBox();
+      if (box && bear) {
+        await page.screenshot({
+          path: `${OUT}/26-bull-bear--${vp.name}.png`,
+          clip: {
+            x: Math.min(box.x, bear.x),
+            y: Math.min(box.y, bear.y),
+            width: Math.max(box.x + box.width, bear.x + bear.width) - Math.min(box.x, bear.x),
+            height: Math.max(box.y + box.height, bear.y + bear.height) - Math.min(box.y, bear.y),
+          },
+        });
+      }
+    });
+
+    test(`@visual 27-report-top @ ${vp.name}`, async ({ page }) => {
+      await page.setViewportSize(vp);
+      await page.goto(`/research/reports/${PERIODS_REPORT_ID}`);
+      await page.getByTestId("report-header").waitFor();
+      await page.waitForTimeout(500);
+      // The first two screens — §40's acceptance test.
+      await page.screenshot({
+        path: `${OUT}/27-report-top--${vp.name}.png`,
+        clip: { x: 0, y: 0, width: vp.width, height: Math.min(vp.height * 2, 2000) },
       });
     });
 

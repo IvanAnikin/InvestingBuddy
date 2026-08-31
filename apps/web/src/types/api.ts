@@ -96,15 +96,47 @@ export interface LlmCouncilRiskGap {
   severity?: string;
 }
 
+/**
+ * What the cited evidence MEANS for the business — the council's actual
+ * analysis, as opposed to the facts it rests on.
+ *
+ * Absent on reports generated before the field existed, which readers treat as
+ * "no interpretation recorded" rather than as an error.
+ */
+export interface LlmCouncilImplication {
+  statement: string;
+  mechanism?: string;
+  /** supportive | pressuring | mixed | neutral. */
+  direction?: string;
+  citation_ids?: string[];
+  confidence?: string;
+}
+
+/** The chair's investment-facing synthesis. committee_chair only. */
+export interface LlmCommitteeSynthesis {
+  /** constructive | mixed | cautious | insufficient_evidence. */
+  fundamental_setup?: string;
+  strongest_positive_evidence?: string[];
+  strongest_negative_evidence?: string[];
+  resilience_factors?: string[];
+  fragility_factors?: string[];
+  key_debate?: string;
+  what_would_strengthen?: string[];
+  what_would_weaken?: string[];
+  what_to_watch?: string[];
+}
+
 export interface LlmCouncilAgent {
   agent_name: string;
   status: string;
   summary: string;
   key_points: LlmCouncilKeyPoint[];
+  implications?: LlmCouncilImplication[];
   risks_or_gaps: LlmCouncilRiskGap[];
   unsupported_claims: string[];
   safety_notes: string[];
   committee_label?: string | null;
+  synthesis?: LlmCommitteeSynthesis | null;
 }
 
 // Phase 29B.2 — compact, secret-free summary of any bounded primary-document
@@ -873,6 +905,13 @@ export interface DiscoveryCouncilCandidateEntry {
   exchange?: string | null;
   rationale?: string | null;
   confidence?: string | null;
+  // The BUSINESS comparison. Absent on reviews produced before these existed,
+  // which the UI treats as "not assessed" rather than as an error.
+  upside_drivers?: string[];
+  downside_drivers?: string[];
+  resilience?: string | null;
+  key_financial_signal?: string | null;
+  strongest_dimension?: string | null;
 }
 
 // One discovery-council agent's PERSISTED output, as stored under
@@ -890,6 +929,11 @@ export interface DiscoveryCouncilAgentCandidateNote {
   rationale?: string | null;
   citation_ids?: string[];
   confidence?: string | null;
+  upside_drivers?: string[];
+  downside_drivers?: string[];
+  resilience?: string | null;
+  key_financial_signal?: string | null;
+  strongest_dimension?: string | null;
 }
 
 export interface DiscoveryCouncilAgentRunNote {

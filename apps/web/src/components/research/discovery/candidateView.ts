@@ -13,6 +13,7 @@
 
 import type { DiscoveryCandidate } from "@/types/api";
 import {
+  comparisonDimensionLabel,
   councilPlacementFor,
   discoveryAgentLabel,
   type CouncilPriorityEntry,
@@ -73,47 +74,53 @@ export function researchReadiness(c: DiscoveryCandidate): ResearchReadiness {
   return "partial";
 }
 
+/**
+ * What could make this candidate more valuable.
+ *
+ * The council's own `upside_drivers` come first — they are a judgement about
+ * THIS business. A screening label is a property of the data, so it follows,
+ * and only when the council said nothing. A gap count never appears here at
+ * all: "fewer missing fields" is not a reason to research a company.
+ */
 export function candidateStrengths(
   c: DiscoveryCandidate,
   placement: CouncilPriorityEntry | null,
 ): string[] {
-  const out: string[] = [];
-  for (const label of c.labels_json ?? []) {
-    if (STANDING_LABELS.has(label)) continue;
-    const word = STRENGTH_LABELS[label];
-    if (word) out.push(word);
+  const out: string[] = [...(placement?.upsideDrivers ?? [])];
+
+  if (out.length === 0) {
+    for (const s of placement?.supporting ?? []) {
+      if (s.rationale) out.push(`${discoveryAgentLabel(s.agent)}: ${s.rationale}`);
+    }
   }
-  // The council's own supporting reasons come first when it ran: they are a
-  // judgement about THIS candidate, where a screening label is a property.
-  const supporting = (placement?.supporting ?? [])
-    .map((s) =>
-      s.rationale ? `${discoveryAgentLabel(s.agent)}: ${s.rationale}` : null,
-    )
-    .filter((s): s is string => Boolean(s));
-  return [...supporting, ...out].slice(0, 3);
+  if (out.length === 0) {
+    for (const label of c.labels_json ?? []) {
+      if (STANDING_LABELS.has(label)) continue;
+      const word = STRENGTH_LABELS[label];
+      if (word) out.push(word);
+    }
+  }
+  return out.slice(0, 3);
 }
 
+/** What could pressure it. Same ordering rule, same exclusion of gap counts. */
 export function candidateConcerns(
   c: DiscoveryCandidate,
   placement: CouncilPriorityEntry | null,
 ): string[] {
-  const out: string[] = [];
-  const concerns = (placement?.concerns ?? [])
-    .map((x) =>
-      x.rationale ? `${discoveryAgentLabel(x.agent)}: ${x.rationale}` : null,
-    )
-    .filter((s): s is string => Boolean(s));
-  out.push(...concerns);
+  const out: string[] = [...(placement?.downsideDrivers ?? [])];
 
-  for (const label of c.labels_json ?? []) {
-    if (STANDING_LABELS.has(label)) continue;
-    const word = CONCERN_LABELS[label];
-    if (word) out.push(word);
+  if (out.length === 0) {
+    for (const x of placement?.concerns ?? []) {
+      if (x.rationale) out.push(`${discoveryAgentLabel(x.agent)}: ${x.rationale}`);
+    }
   }
-  if ((c.blocking_gap_count ?? 0) > 0) {
-    out.push(
-      `${c.blocking_gap_count} gap(s) blocked the screen from completing`,
-    );
+  if (out.length === 0) {
+    for (const label of c.labels_json ?? []) {
+      if (STANDING_LABELS.has(label)) continue;
+      const word = CONCERN_LABELS[label];
+      if (word) out.push(word);
+    }
   }
   return out.slice(0, 2);
 }
@@ -149,6 +156,28 @@ const ALL_DIMENSIONS: (ComparisonDimension & {
       const placement = councilPlacementFor(view, c);
       return placement ? placement.action : "not placed";
     },
+  },
+  {
+    key: "stands_out",
+    label: "Stands out on",
+    hint: "The business dimension the council judged strongest here.",
+    numeric: false,
+    supported: (candidates, view) =>
+      candidates.some((c) => councilPlacementFor(view, c)?.strongestDimension),
+    value: (c, view) =>
+      comparisonDimensionLabel(
+        councilPlacementFor(view, c)?.strongestDimension,
+      ) ?? "—",
+  },
+  {
+    key: "key_signal",
+    label: "Key financial signal",
+    hint: "The single number the council judged most telling for this issuer.",
+    numeric: false,
+    supported: (candidates, view) =>
+      candidates.some((c) => councilPlacementFor(view, c)?.keyFinancialSignal),
+    value: (c, view) =>
+      councilPlacementFor(view, c)?.keyFinancialSignal ?? "—",
   },
   {
     key: "priority",
@@ -188,7 +217,7 @@ const ALL_DIMENSIONS: (ComparisonDimension & {
   {
     key: "gaps",
     label: "Known gaps",
-    hint: "Fields the screen could not source; blocking gaps stopped it.",
+    hint: "Fields the screen could not source. These reduce confidence in the comparison — they are not the comparison.",
     numeric: true,
     supported: (candidates) =>
       candidates.some(

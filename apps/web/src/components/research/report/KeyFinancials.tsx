@@ -1,6 +1,10 @@
 import Surface from "@/components/product/Surface";
-import { sourceTierWord } from "@/components/research/reportSections";
-import { groupFinancials } from "@/components/research/reportSections";
+import {
+  directionFor,
+  groupFinancials,
+  sourceTierWord,
+  type MetricDirection,
+} from "@/components/research/reportSections";
 import type {
   FinancialDatapoint,
   FinancialSnapshotView,
@@ -19,7 +23,14 @@ import type {
  * "Cash generation" card reads as "this company generates no cash".
  */
 
-function Row({ dp }: { dp: FinancialDatapoint }) {
+function Row({
+  dp,
+  direction,
+}: {
+  dp: FinancialDatapoint;
+  /** The change since the previous COMPARABLE annual period, when one exists. */
+  direction?: MetricDirection | null;
+}) {
   const tier = sourceTierWord(dp.sourceTier);
   return (
     <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-0.5 border-b border-[color:var(--ib-line)] py-2.5 last:border-0">
@@ -28,6 +39,17 @@ function Row({ dp }: { dp: FinancialDatapoint }) {
         <span className="ib-breakable block font-mono text-sm text-[color:var(--ib-ink)]">
           {dp.display}
         </span>
+        {direction && (
+          <span
+            className={`block font-mono text-xs ${
+              direction.improving ? "text-emerald-300/90" : "text-amber-300/90"
+            }`}
+            title={`${direction.from} → ${direction.to}`}
+            data-testid="metric-direction"
+          >
+            {direction.change} vs {direction.from}
+          </span>
+        )}
         <span className="ib-breakable block text-[10px] text-[color:var(--ib-ink-3)]">
           {[dp.period, dp.scope].filter(Boolean).join(" · ") ||
             "period not stated"}
@@ -53,6 +75,7 @@ function Column({
   caution,
   note,
   testId,
+  directions,
 }: {
   kicker: string;
   period: string | null;
@@ -60,6 +83,8 @@ function Column({
   caution?: string;
   note?: string | null;
   testId?: string;
+  /** Annual only — a part-year figure has no comparable prior period here. */
+  directions?: Map<string, MetricDirection>;
 }) {
   if (datapoints.length === 0) return null;
   return (
@@ -78,7 +103,11 @@ function Column({
       )}
       <div className="mt-3">
         {datapoints.map((dp) => (
-          <Row key={dp.key} dp={dp} />
+          <Row
+            key={dp.key}
+            dp={dp}
+            direction={directions ? directionFor(directions, dp.key) : null}
+          />
         ))}
       </div>
       {note && (
@@ -92,8 +121,15 @@ function Column({
 
 export default function KeyFinancials({
   snapshot,
+  directions,
 }: {
   snapshot: FinancialSnapshotView;
+  /**
+   * Per-metric change between the two most recent COMPARABLE annual periods.
+   * Applied to the annual column only: an interim figure has no comparable
+   * prior period in this report, and inventing one would mean annualising.
+   */
+  directions?: Map<string, MetricDirection>;
 }) {
   const groups = groupFinancials(snapshot);
   const { periods, latestClose, statementsNote, currentPeriodNote, fallbackNote } =
@@ -155,6 +191,7 @@ export default function KeyFinancials({
                   kicker="Annual"
                   period={periods?.latestAnnual ?? null}
                   datapoints={group.annual}
+                  directions={directions}
                   testId={`${group.key}-annual`}
                 />
                 <Column

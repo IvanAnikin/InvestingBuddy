@@ -31,8 +31,45 @@ function Findings({ agent }: { agent: CouncilAgentDetail }) {
         </p>
       )}
 
+      {/* The agent's ANALYSIS comes before the facts it rests on. A reader
+          asking what this agent concluded should not have to read six figures
+          first — those are already in the financial section. */}
+      {agent.implications.length > 0 && (
+        <div className="mt-3.5" data-testid="agent-implications">
+          <p className="text-xs font-medium uppercase tracking-[0.14em] text-[color:var(--ib-ink-3)]">
+            What it means
+          </p>
+          <ul className="mt-2 space-y-2.5">
+            {agent.implications.slice(0, 5).map((imp, i) => (
+              <li key={i} className="flex gap-3">
+                <span
+                  aria-hidden="true"
+                  className={`mt-2 h-1.5 w-1.5 shrink-0 rounded-full ${
+                    imp.direction === "supportive"
+                      ? "bg-emerald-400"
+                      : imp.direction === "pressuring"
+                        ? "bg-rose-400"
+                        : "bg-[color:var(--ib-line-strong)]"
+                  }`}
+                />
+                <span className="min-w-0">
+                  <span className="ib-breakable block text-sm leading-relaxed text-[color:var(--ib-ink-2)]">
+                    {imp.statement}
+                  </span>
+                  {imp.mechanism && (
+                    <span className="ib-breakable block text-xs leading-relaxed text-[color:var(--ib-ink-3)]">
+                      {imp.mechanism}
+                    </span>
+                  )}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {agent.findings.length > 0 && (
-        <ul className="mt-3 space-y-2">
+        <ul className="mt-3.5 space-y-2" data-testid="agent-findings">
           {agent.findings.slice(0, 5).map((f, i) => (
             <li
               key={i}

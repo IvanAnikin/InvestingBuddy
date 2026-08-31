@@ -10,6 +10,7 @@ import KeyFinancials from "@/components/research/report/KeyFinancials";
 import OpenQuestions from "@/components/research/report/OpenQuestions";
 import RecentDevelopments from "@/components/research/report/RecentDevelopments";
 import RedTeam from "@/components/research/report/RedTeam";
+import ResilienceExposure from "@/components/research/report/ResilienceExposure";
 import ResearchConfidence from "@/components/research/report/ResearchConfidence";
 import ResearchCouncil from "@/components/research/report/ResearchCouncil";
 import NarrativeSection from "@/components/research/NarrativeSection";
@@ -26,6 +27,8 @@ import {
   buildInvestorReportView,
   buildResearchConfidence,
   findAgent,
+  metricDirections,
+  reconcileCouncilNumbers,
 } from "@/components/research/reportSections";
 import {
   buildResearchLinkState,
@@ -99,7 +102,14 @@ export default async function ResearchReportPage({
 
   const council = readCouncilMetadata(report.source_summary_json);
   const view = buildResearchReportView(report, council);
-  const investor = buildInvestorReportView(report.content_markdown, council);
+  // Council prose and the canonical figures are two representations of the
+  // same facts. Where they disagree the sentence is withheld and said to
+  // conflict — never silently resolved in favour of one of them.
+  const investor = reconcileCouncilNumbers(
+    buildInvestorReportView(report.content_markdown, council),
+    view.snapshot,
+    view.trends.series,
+  );
   const confidence = buildResearchConfidence(
     investor.risks,
     view.missing.total,
@@ -213,9 +223,8 @@ export default async function ResearchReportPage({
           {/* 1. The research itself, first. */}
           <InvestmentSummary
             chair={investor.chair}
+            reading={investor.reading}
             summary={view.summary}
-            bull={view.bull}
-            bear={view.bear}
             evidenceWordLabel={
               view.evidence.overall ? evidenceWord(view.evidence.overall) : null
             }
@@ -223,7 +232,10 @@ export default async function ResearchReportPage({
           />
 
           {/* 2. The numbers. */}
-          <KeyFinancials snapshot={view.snapshot} />
+          <KeyFinancials
+            snapshot={view.snapshot}
+            directions={metricDirections(view.trends.series)}
+          />
 
           {/* 3. What changed over time. */}
           {view.trends.series.length > 0 && (
@@ -297,6 +309,8 @@ export default async function ResearchReportPage({
             </div>
           )}
 
+          {!view.thin && <ResilienceExposure reading={investor.reading} />}
+
           {/* 7. Risks to the BUSINESS. Research limitations are further down,
                  under research confidence, where they belong. */}
           {!view.thin && (
@@ -333,6 +347,7 @@ export default async function ResearchReportPage({
             dimensions={view.evidence.dimensions}
             confidence={confidence}
             missingItems={view.missing.items}
+            numericConflicts={investor.numericConflicts}
             reportId={report.id}
           />
 

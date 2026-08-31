@@ -110,6 +110,17 @@ export interface FinancialDatapoint {
   label: string;
   /** Ready-to-render figure, or null when the slot holds no value. */
   display: string | null;
+  /**
+   * The extractor's own number, unconverted, or null when the slot holds only
+   * text. Carried so the report can compare a figure with another period of
+   * the SAME metric, and so council prose can be reconciled against it —
+   * never so this layer can rescale or restate it.
+   */
+  numericValue: number | null;
+  /** The scale word the number was extracted under ("million", "billion"). */
+  scale: string | null;
+  unit: string | null;
+  currency: string | null;
   period: string | null;
   scope: string | null;
   sourceUrl: string | null;
@@ -167,10 +178,21 @@ function toDatapoint(
   const display = formatDatapoint(dp);
   if (display === null) return null;
   const newer = asRecord(dp["newer_period_available"]);
+  const numeric = dp["numeric_value"];
+  const bare = dp["value"];
   return {
     key,
     label,
     display,
+    numericValue:
+      typeof numeric === "number" && Number.isFinite(numeric)
+        ? numeric
+        : typeof bare === "number" && Number.isFinite(bare)
+          ? bare
+          : null,
+    scale: str(dp["scale"]),
+    unit: str(dp["unit"]),
+    currency: str(dp["currency"]),
     period: str(dp["period"]),
     scope: str(dp["scope"]),
     sourceUrl: str(dp["source_url"]),

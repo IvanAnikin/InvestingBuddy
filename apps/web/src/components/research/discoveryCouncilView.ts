@@ -158,10 +158,40 @@ export interface CouncilPriorityEntry {
   /** The chair's own reason for placing this candidate here. */
   rationale: string | null;
   confidence: string | null;
+  /**
+   * The BUSINESS comparison, as the council recorded it. Empty on reviews
+   * produced before these fields existed, where the rationale was all there
+   * was — and where "fewer missing fields" was doing the comparing.
+   */
+  upsideDrivers: string[];
+  downsideDrivers: string[];
+  resilience: string | null;
+  keyFinancialSignal: string | null;
+  strongestDimension: string | null;
   /** Other agents that placed this candidate in the SAME band, with why. */
   supporting: { agent: string; rationale: string | null }[];
   /** Other agents that placed it in a DIFFERENT band, with why. */
   concerns: { agent: string; action: string; rationale: string | null }[];
+}
+
+/** The comparison dimensions the council may name, in human words. */
+export const COMPARISON_DIMENSION_LABELS: Record<string, string> = {
+  growth_quality: "Quality of growth",
+  profitability: "Profitability",
+  cash_generation: "Cash generation",
+  balance_sheet_resilience: "Balance-sheet resilience",
+  business_quality: "Business quality",
+  catalysts: "Catalysts",
+  downside_risk: "Downside risk",
+  valuation_context: "Valuation context",
+  evidence_confidence: "Evidence confidence",
+};
+
+export function comparisonDimensionLabel(
+  dimension: string | null | undefined,
+): string | null {
+  if (!dimension) return null;
+  return COMPARISON_DIMENSION_LABELS[dimension] ?? dimension.replace(/_/g, " ");
 }
 
 export interface CouncilAgentView {
@@ -362,6 +392,11 @@ export function buildDiscoveryCouncilView(
         exchange: text(entry.exchange),
         rationale: text(entry.rationale),
         confidence: text(entry.confidence),
+        upsideDrivers: (entry.upside_drivers ?? []).filter(Boolean),
+        downsideDrivers: (entry.downside_drivers ?? []).filter(Boolean),
+        resilience: text(entry.resilience),
+        keyFinancialSignal: text(entry.key_financial_signal),
+        strongestDimension: text(entry.strongest_dimension),
         supporting: others
           .filter((p) => p.action === band)
           .map((p) => ({ agent: p.agent, rationale: p.rationale })),

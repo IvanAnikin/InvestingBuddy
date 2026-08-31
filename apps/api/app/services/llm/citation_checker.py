@@ -45,8 +45,13 @@ from app.services.llm.gap_attribution import ground_gap_text
 from app.services.llm.schemas import (
     AGENT_COMMITTEE_CHAIR,
     ALLOWED_COMMITTEE_LABELS,
+    ALLOWED_FUNDAMENTAL_SETUPS,
+    ALLOWED_IMPLICATION_DIRECTIONS,
     DEFAULT_COMMITTEE_LABEL,
+    DEFAULT_FUNDAMENTAL_SETUP,
+    DEFAULT_IMPLICATION_DIRECTION,
     STATUS_FAILED,
+    AgentImplication,
     AgentKeyPoint,
     CouncilAgentOutput,
 )
@@ -218,10 +223,12 @@ def _quarantine(output: CouncilAgentOutput, hit_count: int, tiers: list[str]) ->
             "investment-action language. Nothing from this agent was kept.]"
         ),
         key_points=[],
+        implications=[],
         risks_or_gaps=[],
         unsupported_claims=[],
         safety_notes=[note],
         committee_label=None,
+        synthesis=None,
     )
 
 
@@ -337,6 +344,56 @@ def check_and_sanitize(
         )
     output.risks_or_gaps = clean_risks
 
+    # 2c. Citation + vocabulary integrity for IMPLICATIONS.
+    #
+    # An implication is an interpretation of specific evidence, so it must cite
+    # the evidence it interprets: an un-cited interpretation is an opinion the
+    # reader cannot check. Its `direction` is a closed vocabulary, coerced
+    # rather than trusted, so no rating word can enter through it.
+    clean_implications: list[AgentImplication] = []
+    for imp in output.implications:
+        valid, invalid = _split_citations(imp.citation_ids, evidence_ids)
+        if invalid:
+            issues.append(
+                f"{output.agent_name}: dropped {len(invalid)} implication "
+                "citation id(s) not present in the evidence pack."
+            )
+        statement = (imp.statement or "").strip()
+        if not statement:
+            continue
+        if not valid and len(statement) >= _MATERIAL_MIN_LEN:
+            output.unsupported_claims.append(statement)
+            issues.append(
+                f"{output.agent_name}: an un-cited material implication was "
+                "moved to unsupported_claims."
+            )
+            continue
+        direction = (imp.direction or "").strip().lower()
+        if direction not in ALLOWED_IMPLICATION_DIRECTIONS:
+            issues.append(
+                f"{output.agent_name}: implication direction "
+                f"'{imp.direction}' not in the allowed set; coerced to "
+                f"'{DEFAULT_IMPLICATION_DIRECTION}'."
+            )
+            direction = DEFAULT_IMPLICATION_DIRECTION
+        checked_implication = imp.model_copy(
+            update={"citation_ids": valid, "direction": direction}
+        )
+
+        # The same semantic-grounding rules key_points obey. An interpretation
+        # that mixes a segment figure with a Group topic is wrong in exactly
+        # the way a fact would be.
+        if evidence_by_id and _implication_violates_grounding(
+            checked_implication, evidence_by_id, known_scope_labels
+        ):
+            issues.append(
+                f"{output.agent_name}: dropped an implication citing evidence "
+                "with incompatible scope/period (semantic mismatch)."
+            )
+            continue
+        clean_implications.append(checked_implication)
+    output.implications = clean_implications
+
     # 4. Committee-label integrity.
     if output.agent_name == AGENT_COMMITTEE_CHAIR:
         if output.committee_label not in ALLOWED_COMMITTEE_LABELS:
@@ -346,4 +403,48 @@ def check_and_sanitize(
             )
             output.committee_label = DEFAULT_COMMITTEE_LABEL
 
+        # 4b. Fundamental-setup integrity. A closed vocabulary, coerced not
+        # trusted — it is the closest thing to a verdict the council produces.
+        if output.synthesis is not None:
+            setup = (output.synthesis.fundamental_setup or "").strip().lower()
+            if setup not in ALLOWED_FUNDAMENTAL_SETUPS:
+                issues.append(
+                    "committee_chair: fundamental_setup not in the allowed "
+                    f"set; coerced to '{DEFAULT_FUNDAMENTAL_SETUP}'."
+                )
+                output.synthesis = output.synthesis.model_copy(
+                    update={"fundamental_setup": DEFAULT_FUNDAMENTAL_SETUP}
+                )
+    elif output.synthesis is not None:
+        # Only the chair synthesizes. An agent that returned one is dropped
+        # rather than allowed to speak for the committee.
+        issues.append(
+            f"{output.agent_name}: dropped a synthesis block returned by a "
+            "non-chair agent."
+        )
+        output.synthesis = None
+
     return output, issues
+
+
+def _implication_violates_grounding(
+    imp: AgentImplication,
+    evidence_by_id: dict[str, Any],
+    known_scope_labels: frozenset[str],
+) -> bool:
+    """Apply the key-point grounding rules to an implication's statement.
+
+    Reuses the existing checks by presenting the implication as the claim shape
+    they already understand, so the two kinds of statement cannot drift apart
+    on what counts as a scope or period violation.
+    """
+    proxy = AgentKeyPoint(
+        claim=f"{imp.statement} {imp.mechanism}".strip(),
+        citation_ids=list(imp.citation_ids),
+        confidence=imp.confidence,
+    )
+    return (
+        _violates_scope_or_period_compatibility(proxy, evidence_by_id)
+        or _violates_macro_category_match(proxy, evidence_by_id)
+        or _violates_unscoped_scope_claim(proxy, evidence_by_id, known_scope_labels)
+    )

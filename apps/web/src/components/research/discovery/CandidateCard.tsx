@@ -193,18 +193,42 @@ export default function CandidateCard({
       {(strengths.length > 0 || concerns.length > 0) && (
         <div className="mt-4 grid gap-4 sm:grid-cols-2">
           <Points
-            title="Strengths"
+            title="Could drive value higher"
             points={strengths}
             tone="text-emerald-300/80"
             testId="candidate-strengths"
           />
           <Points
-            title="Concerns"
+            title="Could pressure value"
             points={concerns}
             tone="text-amber-300/80"
             testId="candidate-concerns"
           />
         </div>
+      )}
+
+      {(placement?.resilience || placement?.keyFinancialSignal) && (
+        <dl
+          className="mt-4 flex flex-wrap gap-x-8 gap-y-2 text-xs"
+          data-testid="candidate-signals"
+        >
+          {placement.keyFinancialSignal && (
+            <div className="min-w-0">
+              <dt className="text-[color:var(--ib-ink-3)]">Key signal</dt>
+              <dd className="ib-breakable text-[color:var(--ib-ink-2)]">
+                {placement.keyFinancialSignal}
+              </dd>
+            </div>
+          )}
+          {placement.resilience && (
+            <div className="min-w-0">
+              <dt className="text-[color:var(--ib-ink-3)]">Resilience</dt>
+              <dd className="ib-breakable text-[color:var(--ib-ink-2)]">
+                {placement.resilience}
+              </dd>
+            </div>
+          )}
+        </dl>
       )}
 
       {candidateWarnings.length > 0 && (

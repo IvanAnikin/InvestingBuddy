@@ -32,6 +32,48 @@ const REVIEWED_THESIS = "European luxury goods companies";
 const UNREVIEWED_THESIS =
   "European defense suppliers benefiting from NATO spending";
 
+/**
+ * Rating tokens as WORDS, read from the untransformed DOM text.
+ *
+ * `innerText` returns CSS-transformed text, so a `text-transform: uppercase`
+ * heading — "What to watch next" — comes back as "WHAT TO WATCH NEXT" and a
+ * naive substring scan for "WATCH" fires on the product's own required copy.
+ * `textContent` is the text as authored, and word boundaries stop "watch"
+ * matching inside "watchlist" or "holdings".
+ */
+async function ratingWordsIn(
+  page: import("@playwright/test").Page,
+): Promise<string[]> {
+  return page.evaluate(() => {
+    const main = document.querySelector("main");
+    if (!main) return [];
+    // The standing status strip carries the NEGATED disclaimer — "contains no
+    // rating, price target, fair value or return projection". That is static
+    // app copy asserting the absence of the very thing this scan looks for, so
+    // scanning it would flag the safety statement as a safety violation. It is
+    // excluded here and asserted separately, by the caller, as the copy it is.
+    const clone = main.cloneNode(true) as HTMLElement;
+    clone
+      .querySelectorAll('[data-testid="research-status"]')
+      .forEach((el) => el.remove());
+    const text = clone.textContent ?? "";
+    const hits: string[] = [];
+    for (const token of ["BUY", "SELL", "HOLD", "WATCH"]) {
+      if (new RegExp(`\\b${token}\\b`).test(text)) hits.push(token);
+    }
+    for (const phrase of [
+      "price target",
+      "fair value",
+      "expected return",
+      "percentage upside",
+      "percentage downside",
+    ]) {
+      if (text.toLowerCase().includes(phrase)) hits.push(phrase);
+    }
+    return hits;
+  });
+}
+
 async function runDiscovery(
   page: import("@playwright/test").Page,
   thesis: string,
@@ -177,17 +219,7 @@ test.describe("Discovery — research council review", () => {
   }) => {
     await runDiscovery(page, REVIEWED_THESIS);
     await expect(page.getByTestId("discovery-council")).toBeVisible();
-    const body = await page.locator("main").innerText();
-    for (const term of [
-      "BUY",
-      "SELL",
-      "HOLD",
-      "WATCH",
-      "price target",
-      "fair value",
-    ]) {
-      expect(body).not.toContain(term);
-    }
+    expect(await ratingWordsIn(page)).toEqual([]);
   });
 });
 
@@ -311,14 +343,23 @@ test.describe("Company report — investor reading order", () => {
 
     const summary = page.getByTestId("investment-summary");
     await expect(summary).toBeVisible();
-    await expect(summary).toContainText("Research summary");
-    await expect(summary.getByTestId("summary-positives")).toContainText(
-      "each of the last five reported annual periods",
+    await expect(summary).toContainText("Investment research summary");
+
+    // The two questions an investor actually opens with.
+    await expect(summary.getByTestId("could-drive-higher")).toContainText(
+      "Five consecutive years of revenue growth",
     );
-    await expect(summary.getByTestId("summary-concerns")).toContainText(
-      "volume, price and mix",
+    await expect(summary.getByTestId("could-pressure")).toContainText(
+      "little balance-sheet room",
     );
-    // The research-queue label is shown in human words, never as a rating.
+
+    // A research characterisation, in words, never a rating.
+    await expect(summary.getByTestId("fundamental-setup")).toContainText("Mixed");
+    for (const rating of ["BUY", "SELL", "HOLD", "WATCH"]) {
+      await expect(summary).not.toContainText(rating);
+    }
+
+    // The research-queue label is shown in human words, never as a token.
     await expect(summary.getByTestId("summary-research-state")).toContainText(
       "More evidence needed",
     );
@@ -528,19 +569,20 @@ test.describe("Company report — investor reading order", () => {
 
     // No rating vocabulary anywhere in the reading flow, and no price target
     // or projection — including in the sections that are new.
-    const body = await page.locator("main").innerText();
-    for (const term of [
-      "BUY",
-      "SELL",
-      "HOLD",
-      "WATCH",
-      "price target",
-      "fair value",
-      "upside",
-      "downside",
-    ]) {
-      expect(body).not.toContain(term);
-    }
+    //
+    // Bare "upside"/"downside" are deliberately NOT in this list: the product
+    // is required to assess downside resilience, and the backend's own safety
+    // gate permits the bare words for exactly that reason while banning the
+    // projection phrasings. A test stricter than the policy it guards would
+    // forbid the language the product must produce.
+    expect(await ratingWordsIn(page)).toEqual([]);
+
+    // The one place those phrases DO appear is the standing status strip, and
+    // there they appear negated. That is the safety statement, not a breach.
+    await page.getByText("What this means").click();
+    await expect(status).toContainText(
+      "no rating, price target, fair value or return projection",
+    );
 
     // And no control that would act on a security.
     const buttons = page.locator("button");

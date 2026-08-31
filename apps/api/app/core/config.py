@@ -74,7 +74,20 @@ class Settings(BaseSettings):
     llm_model: str = ""
     # Sampling + output controls. Low temperature keeps council output stable.
     llm_temperature: float = 0.1
-    llm_max_output_tokens: int = 1200
+    # Output-token budget for ONE company-council agent call.
+    #
+    # Raised from 1200 with the investment-analysis contract. Each agent now
+    # returns an `implications` array — statement + mechanism + direction +
+    # citations per entry — on top of key_points and risks_or_gaps, and a reply
+    # that does not fit is CUT OFF mid-object and surfaces as a PERMANENT
+    # LLMJsonError (unparseable JSON is never retried, and the one-shot repair
+    # reuses the same budget). Verified against a real 18-item Pandora pack on
+    # the live deployment: at 1200 the financial analyst and the source critic
+    # both failed that way; the six that fitted returned 3-5 implications each.
+    #
+    # This is also the token pacer's admission estimate, so it is sized to the
+    # contract rather than padded.
+    llm_max_output_tokens: int = 2200
     llm_request_timeout_seconds: int = 40
     # Hard cap on evidence items passed to the council (bounds prompt size + cost).
     llm_council_max_evidence_items: int = 40
@@ -121,9 +134,17 @@ class Settings(BaseSettings):
     # ``llm_discovery_council_max_candidates`` (25) and exists to stop a raised
     # candidate cap from making a single call unbounded. Does NOT affect the
     # company council (``llm_max_output_tokens`` is unchanged).
+    # Raised with the business-facing candidate_notes contract (upside/downside
+    # drivers, resilience, key financial signal). Each note carries roughly 100
+    # more tokens than the rationale-only shape these numbers were set for, and
+    # a budget that cannot hold the reply truncates it mid-object into a
+    # PERMANENT LLMJsonError. The per-candidate rate absorbs that; the cap moves
+    # with it so a 25-candidate run is not silently clipped back to the old
+    # ceiling. The budget is also the pacer's admission estimate, so it is sized
+    # to the contract rather than padded.
     llm_discovery_max_output_tokens_base: int = 1200
-    llm_discovery_max_output_tokens_per_candidate: int = 200
-    llm_discovery_max_output_tokens_cap: int = 5000
+    llm_discovery_max_output_tokens_per_candidate: int = 300
+    llm_discovery_max_output_tokens_cap: int = 7000
 
     # ── LLM discovery council reliability / retry (Phase 32A Slice 6A) ─────
     # Master gate for the discovery-council reliability bundle: transient-error

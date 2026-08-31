@@ -3,6 +3,7 @@
 import Link from "next/link";
 import Surface from "@/components/product/Surface";
 import {
+  comparisonDimensionLabel,
   discoveryAgentLabel,
   internalActionLabel,
   internalActionShort,
@@ -102,6 +103,76 @@ function PriorityEntryCard({
         <p className="ib-breakable mt-2 text-sm leading-relaxed text-[color:var(--ib-ink-2)]">
           {entry.rationale}
         </p>
+      )}
+
+      {/* The BUSINESS comparison. What could make this company more or less
+          valuable — not how many fields the screen managed to fill. */}
+      {(entry.upsideDrivers.length > 0 || entry.downsideDrivers.length > 0) && (
+        <div className="mt-3 grid gap-4 sm:grid-cols-2" data-testid="council-entry-drivers">
+          {entry.upsideDrivers.length > 0 && (
+            <div>
+              <p className="text-xs font-medium uppercase tracking-[0.14em] text-emerald-300/80">
+                Could drive value higher
+              </p>
+              <ul className="mt-1.5 space-y-1">
+                {entry.upsideDrivers.map((d, i) => (
+                  <li
+                    key={i}
+                    className="ib-breakable text-sm leading-relaxed text-[color:var(--ib-ink-2)]"
+                  >
+                    {d}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {entry.downsideDrivers.length > 0 && (
+            <div>
+              <p className="text-xs font-medium uppercase tracking-[0.14em] text-amber-300/80">
+                Could pressure value
+              </p>
+              <ul className="mt-1.5 space-y-1">
+                {entry.downsideDrivers.map((d, i) => (
+                  <li
+                    key={i}
+                    className="ib-breakable text-sm leading-relaxed text-[color:var(--ib-ink-2)]"
+                  >
+                    {d}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
+
+      {(entry.resilience || entry.keyFinancialSignal || entry.strongestDimension) && (
+        <dl className="mt-3 flex flex-wrap gap-x-8 gap-y-2 text-xs">
+          {entry.strongestDimension && (
+            <div>
+              <dt className="text-[color:var(--ib-ink-3)]">Stands out on</dt>
+              <dd className="ib-breakable text-[color:var(--ib-ink-2)]">
+                {comparisonDimensionLabel(entry.strongestDimension)}
+              </dd>
+            </div>
+          )}
+          {entry.keyFinancialSignal && (
+            <div className="min-w-0">
+              <dt className="text-[color:var(--ib-ink-3)]">Key signal</dt>
+              <dd className="ib-breakable text-[color:var(--ib-ink-2)]">
+                {entry.keyFinancialSignal}
+              </dd>
+            </div>
+          )}
+          {entry.resilience && (
+            <div className="min-w-0">
+              <dt className="text-[color:var(--ib-ink-3)]">Resilience</dt>
+              <dd className="ib-breakable text-[color:var(--ib-ink-2)]">
+                {entry.resilience}
+              </dd>
+            </div>
+          )}
+        </dl>
       )}
 
       {entry.supporting.length > 0 && (

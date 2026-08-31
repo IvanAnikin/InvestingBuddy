@@ -171,9 +171,13 @@ def _use_old_flat_budget(monkeypatch) -> None:
 # 1. Config defaults
 # ===========================================================================
 def test_config_defaults() -> None:
+    # Raised with the business-facing candidate_notes contract: each note now
+    # carries upside/downside drivers, a resilience line and a key financial
+    # signal alongside the rationale, which is roughly 100 more output tokens
+    # per candidate than the rationale-only shape these numbers were set for.
     assert app_settings.llm_discovery_max_output_tokens_base == 1200
-    assert app_settings.llm_discovery_max_output_tokens_per_candidate == 200
-    assert app_settings.llm_discovery_max_output_tokens_cap == 5000
+    assert app_settings.llm_discovery_max_output_tokens_per_candidate == 300
+    assert app_settings.llm_discovery_max_output_tokens_cap == 7000
     # The cap must comfortably clear the default candidate cap's fixed shell.
     assert (
         app_settings.llm_discovery_max_output_tokens_cap
@@ -181,9 +185,19 @@ def test_config_defaults() -> None:
     )
 
 
-def test_company_council_budget_is_untouched() -> None:
-    """This hotfix is scoped to the DISCOVERY council only."""
-    assert app_settings.llm_max_output_tokens == 1200
+def test_company_council_budget_is_independent_of_this_scaling() -> None:
+    """The discovery scaling is separate; the company budget is a flat value.
+
+    It is no longer 1200: the investment-analysis contract added an
+    `implications` array per agent, and a real Pandora pack truncated two of
+    eight agents at the old ceiling. What this test guards is that the company
+    council does NOT use the discovery council's per-candidate scaling.
+    """
+    assert app_settings.llm_max_output_tokens == 2200
+    assert (
+        app_settings.llm_max_output_tokens
+        != app_settings.llm_discovery_max_output_tokens_cap
+    )
 
 
 # ===========================================================================
@@ -192,15 +206,15 @@ def test_company_council_budget_is_untouched() -> None:
 def test_budget_scales_with_candidate_count() -> None:
     cfg = Settings()
     assert discovery_max_output_tokens(0, cfg) == 1200
-    assert discovery_max_output_tokens(3, cfg) == 1800
-    assert discovery_max_output_tokens(8, cfg) == 2800
-    # 1200 + 200*25 = 6200 -> the cap binds at the configured max_candidates.
-    assert discovery_max_output_tokens(25, cfg) == 5000
+    assert discovery_max_output_tokens(3, cfg) == 2100
+    assert discovery_max_output_tokens(8, cfg) == 3600
+    # 1200 + 300*25 = 8700 -> the cap binds at the configured max_candidates.
+    assert discovery_max_output_tokens(25, cfg) == 7000
 
 
 def test_budget_cap_is_a_hard_ceiling() -> None:
     cfg = Settings()
-    assert discovery_max_output_tokens(1000, cfg) == 5000
+    assert discovery_max_output_tokens(1000, cfg) == 7000
 
 
 def test_budget_is_monotonic_and_floors_garbage_counts() -> None:
@@ -225,7 +239,7 @@ async def test_every_agent_call_uses_the_scaled_budget() -> None:
     fake = FakeDiscoveryLLMClient()
     await _run(pack, fake)
     expected = discovery_max_output_tokens(pack.candidate_count)
-    assert expected == 2800
+    assert expected == 3600
     assert set(fake.max_tokens_seen) == set(DISCOVERY_COUNCIL_AGENT_ORDER)
     for seen in fake.max_tokens_seen.values():
         assert seen == [expected]
@@ -252,7 +266,7 @@ async def test_smaller_pack_gets_a_smaller_budget() -> None:
     pack = _pack(3)
     fake = FakeDiscoveryLLMClient()
     await _run(pack, fake)
-    assert fake.max_tokens_seen[AGENT_RUN_COORDINATOR] == [1800]
+    assert fake.max_tokens_seen[AGENT_RUN_COORDINATOR] == [2100]
 
 
 # ===========================================================================
@@ -305,7 +319,7 @@ async def test_large_run_with_capped_rationales_needs_the_scaled_budget(
     monkeypatch.undo()
     fake_new = FakeDiscoveryLLMClient(mode="budget_truncated", rationale_chars=150)
     new = await _run(_pack(25), fake_new)
-    assert fake_new.max_tokens_seen[AGENT_RUN_COORDINATOR] == [5000]  # cap
+    assert fake_new.max_tokens_seen[AGENT_RUN_COORDINATOR] == [7000]  # cap
     assert new.agents_failed == 0
     assert new.agents_completed == len(DISCOVERY_COUNCIL_AGENT_ORDER)
 

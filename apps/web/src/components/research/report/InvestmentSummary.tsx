@@ -1,20 +1,20 @@
 import Surface from "@/components/product/Surface";
-import type { NarrativeGroup } from "@/components/research/reportView";
-import {
-  bullBearBalanceWord,
-  internalStatusWord,
-  type ChairView,
-} from "@/components/research/reportSections";
+import type { ChairView, DirectionalPoint, InvestmentReading } from "@/components/research/reportSections";
+import { bullBearBalanceWord, internalStatusWord } from "@/components/research/reportSections";
 
 /**
- * The first substantial thing a reader meets.
+ * The first substantial thing a reader meets, and the section that decides
+ * whether this reads as research or as a build log.
  *
- * It answers "what is the overall reading of this company, what looks good,
- * and what does not" before the page says anything about pipelines, providers
- * or source tiers. Every line comes from a section the backend already wrote:
- * the committee chair's synthesis, and the strongest points of the bull and
- * bear cases as those agents ranked them. Nothing is generated here, and a
- * sparse chair result produces a short section rather than a padded one.
+ * It answers, in order: what is the overall setup, what could make this
+ * business materially more valuable, what could pressure it, and what should be
+ * monitored. Every point comes from what the council persisted — the chair's
+ * own synthesis first, then each agent's implications grouped by the direction
+ * THAT AGENT gave its own statement. Nothing is generated or summarised here.
+ *
+ * When the council recorded no interpretation — which is the case for every
+ * report produced before the implication field existed — the section says so
+ * plainly instead of filling the space with figures the reader can already see.
  */
 
 function Points({
@@ -22,11 +22,13 @@ function Points({
   points,
   tone,
   testId,
+  limit = 5,
 }: {
   title: string;
-  points: string[];
+  points: DirectionalPoint[];
   tone: string;
   testId: string;
+  limit?: number;
 }) {
   if (points.length === 0) return null;
   return (
@@ -34,17 +36,27 @@ function Points({
       <p className={`text-xs font-medium uppercase tracking-[0.14em] ${tone}`}>
         {title}
       </p>
-      <ul className="mt-2 space-y-1.5">
-        {points.map((point, i) => (
-          <li
-            key={i}
-            className="flex gap-3 text-sm leading-relaxed text-[color:var(--ib-ink-2)]"
-          >
+      <ul className="mt-2 space-y-2.5">
+        {points.slice(0, limit).map((point, i) => (
+          <li key={i} className="flex gap-3">
             <span
               aria-hidden="true"
               className="mt-2.5 h-px w-3 shrink-0 bg-[color:var(--ib-line-strong)]"
             />
-            <span className="ib-breakable">{point}</span>
+            <span className="min-w-0">
+              <span className="ib-breakable block text-sm leading-relaxed text-[color:var(--ib-ink-2)]">
+                {point.statement}
+              </span>
+              {point.mechanism && (
+                <span className="ib-breakable mt-0.5 block text-xs leading-relaxed text-[color:var(--ib-ink-3)]">
+                  {point.mechanism}
+                </span>
+              )}
+              <span className="mt-0.5 block text-xs text-[color:var(--ib-ink-3)]">
+                {point.source}
+                {point.confidence ? ` · ${point.confidence} confidence` : ""}
+              </span>
+            </span>
           </li>
         ))}
       </ul>
@@ -52,36 +64,25 @@ function Points({
   );
 }
 
-function firstPoints(groups: NarrativeGroup[], limit: number): string[] {
-  // The agents put their thesis points first; take from that group, not from
-  // whichever group happens to be longest.
-  const primary = groups[0]?.points ?? [];
-  return primary.slice(0, limit);
-}
-
 export default function InvestmentSummary({
   chair,
+  reading,
   summary,
-  bull,
-  bear,
   evidenceWordLabel,
   councilLine,
 }: {
   chair: ChairView;
+  reading: InvestmentReading;
   /** The report's own executive committee note, used when the chair is sparse. */
   summary: string | null;
-  bull: NarrativeGroup[];
-  bear: NarrativeGroup[];
   evidenceWordLabel: string | null;
   councilLine: string;
 }) {
   const prose = chair.summary ?? chair.agentSummary ?? summary;
-  const positives = firstPoints(bull, 3);
-  const concerns = firstPoints(bear, 3);
   const balance = bullBearBalanceWord(chair.balance);
   const status = internalStatusWord(chair.internalStatus);
 
-  if (!prose && positives.length === 0 && concerns.length === 0) return null;
+  if (!prose && reading.empty) return null;
 
   return (
     <Surface
@@ -90,9 +91,17 @@ export default function InvestmentSummary({
       testId="investment-summary"
       id="summary"
     >
-      <h2 className="text-lg font-semibold tracking-tight text-[color:var(--ib-ink)]">
-        Research summary
-      </h2>
+      <div className="flex flex-wrap items-baseline justify-between gap-3">
+        <h2 className="text-lg font-semibold tracking-tight text-[color:var(--ib-ink)]">
+          Investment research summary
+        </h2>
+        {reading.setupWord && (
+          <p className="text-sm text-[color:var(--ib-ink-2)]" data-testid="fundamental-setup">
+            Fundamental setup:{" "}
+            <span className="text-[color:var(--ib-ink)]">{reading.setupWord}</span>
+          </p>
+        )}
+      </div>
 
       {prose ? (
         <p className="ib-breakable mt-3 max-w-3xl whitespace-pre-line text-sm leading-relaxed text-[color:var(--ib-ink-2)]">
@@ -105,21 +114,58 @@ export default function InvestmentSummary({
         </p>
       )}
 
-      {(positives.length > 0 || concerns.length > 0) && (
-        <div className="mt-6 grid gap-6 sm:grid-cols-2">
-          <Points
-            title="Key positives"
-            points={positives}
-            tone="text-emerald-300/80"
-            testId="summary-positives"
-          />
-          <Points
-            title="Key concerns"
-            points={concerns}
-            tone="text-amber-300/80"
-            testId="summary-concerns"
-          />
-        </div>
+      {reading.empty ? (
+        <p
+          className="mt-5 max-w-2xl rounded-lg border border-[color:var(--ib-line)] px-4 py-3 text-sm leading-relaxed text-[color:var(--ib-ink-3)]"
+          data-testid="no-interpretation-recorded"
+        >
+          This report&apos;s council recorded facts but no interpretation of
+          them, so there is no investment reading to show. The figures and each
+          agent&apos;s findings are below.
+        </p>
+      ) : (
+        <>
+          <div className="mt-6 grid gap-6 lg:grid-cols-2">
+            <Points
+              title="What could drive value higher"
+              points={reading.couldDriveHigher}
+              tone="text-emerald-300/80"
+              testId="could-drive-higher"
+            />
+            <Points
+              title="What could pressure value"
+              points={reading.couldPressure}
+              tone="text-amber-300/80"
+              testId="could-pressure"
+            />
+          </div>
+
+          {reading.whatToWatch.length > 0 && (
+            <div
+              className="mt-7 border-t border-[color:var(--ib-line)] pt-5"
+              data-testid="what-to-watch"
+              id="watch"
+            >
+              <p className="text-xs font-medium uppercase tracking-[0.14em] text-[color:var(--ib-ink-3)]">
+                What to watch next
+              </p>
+              <ul className="mt-2.5 grid gap-x-8 gap-y-2 sm:grid-cols-2">
+                {reading.whatToWatch.map((item, i) => (
+                  <li
+                    key={i}
+                    className="flex gap-3 text-sm leading-relaxed text-[color:var(--ib-ink-2)]"
+                  >
+                    <span
+                      aria-hidden="true"
+                      className="mt-2.5 h-px w-3 shrink-0 bg-[color:var(--ib-line-strong)]"
+                    />
+                    <span className="ib-breakable">{item}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </>
       )}
 
       <dl

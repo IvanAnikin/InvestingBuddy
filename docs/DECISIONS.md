@@ -2854,3 +2854,115 @@ called. Fixtures made it look right. The live reports made it obviously wrong �
 the top six questions for PNDORA were four blocking-gap records and a valuation
 input list. A fixture written by the same person who writes the derivation will
 agree with it; only real payloads disagree.
+
+---
+
+## ADR-041: The Council's Job Is Interpretation, and Its Output Contract Says So
+
+**Date:** 2026-08-31
+**Status:** Accepted
+
+### Context
+
+ADR-040 put the research first in the reading order and routed the record-keeping
+out of the argument sections. Real use showed the ordering was right and the
+CONTENT underneath it was still not decision-useful: the agents were describing
+the data package rather than the business.
+
+Measured on the live persisted council output for PNDORA, CFR, MRNA and MONC —
+252 bullets across eight agents — **8% were economic interpretation, 51% were
+bare restatements of figures already in the report, and 41% were statements
+about what data was missing.** All eight agents produced near-identical text.
+Three of them restated the same six figures verbatim.
+
+That was not a rendering fault. The agents were doing exactly what the contract
+asked. The JSON shape said `"summary": "<=600 chars, factual"`; the safety rules
+said every factual claim must cite evidence; and the only other field was
+`risks_or_gaps`. A model given a slot for FACTS, a slot for GAPS and an
+instruction to be factual will produce facts and gaps. There was nowhere to put
+what the evidence MEANS, so nothing meant anything.
+
+### Decision
+
+**Add the missing slot, and gate it as hard as a fact.** `AgentImplication`
+carries a `statement`, the `mechanism` it rests on, a `direction` from a closed
+set (supportive / pressuring / mixed / neutral) and its own citations. It is
+deliberately separate from `key_points`: a figure and an interpretation of that
+figure are different kinds of statement, and a research reader has to be able to
+tell them apart. The citation checker applies the same rules it applies to a
+fact — un-cited material interpretations move to `unsupported_claims`, invalid
+ids are dropped, scope/period grounding is enforced, and the direction is
+coerced rather than trusted.
+
+**Give each agent its own job back.** The role instructions now ask the
+Financial Analyst for growth quality, margin direction, cash conversion,
+leverage and capital allocation; the Business analyst for durability; the
+Catalyst analyst for what changed, why it matters and what to watch; the Risk
+analyst for a chain from risk to financial consequence; the Valuation analyst
+for observable context rather than a list of absent inputs; and the Red Team for
+the economic case rather than the completeness of the pack. The Source Quality
+Critic keeps the evidence as its subject — it is the one role whose job that is.
+
+**Let the chair answer the question a reader has.** `CommitteeSynthesis` carries
+a `fundamental_setup` (constructive / mixed / cautious / insufficient_evidence),
+the strongest evidence each way, resilience and fragility factors, the key
+debate, what would strengthen or weaken the case, and what to watch. The setup
+is a research characterisation with a closed vocabulary — there is no
+BUY/SELL/HOLD analogue in it and none can be introduced by drift.
+
+**Directional language is allowed; actions and projections are not.** An
+analysis that may not say a factor "could pressure future equity value" cannot
+do its job. What stays forbidden is the ACTION (BUY/SELL/HOLD/WATCH) and the
+unsourceable NUMBER (price target, fair value, expected return, percentage
+upside). The production safety gate already drew that line correctly — it bans
+"upside of" and permits "downside risks" — and one test that was stricter than
+the policy it guarded was corrected to use the gate itself.
+
+**Numbers in council prose must reconcile with the report's own figures.**
+Where a sentence states a figure for a metric and period the report holds
+canonically, and it disagrees, the sentence is WITHHELD and reported as
+conflicting. It is never silently resolved in favour of one of the two.
+
+### Consequences
+
+**Positive, measured on a real payload.** Re-running the updated council against
+the live Pandora evidence (18 items, 55 structured facts): all 8 agents
+completed, producing 34 implications where the field previously did not exist.
+Economic interpretation rose 8% → **32%**; data-completeness talk fell 41% →
+**21%**. The chair returned an issuer-specific synthesis — "net debt up 376%
+over five years", "watch free cash flow generation and capital expenditure
+levels", a key debate naming the disagreement between the financial analyst and
+the red team.
+
+**Negative / accepted.** A richer contract costs output tokens. The company
+council's flat 1200-token budget could not hold it: on the real Pandora pack two
+of eight agents truncated mid-object into a permanent `LLMJsonError`. Raised to
+2200, all eight complete. The discovery council's per-candidate rate rose 200 →
+300 and its cap 5000 → 7000 for the same reason. Both budgets are also the token
+pacer's admission estimate, so throughput per minute falls accordingly — sized to
+the contract, not padded.
+
+**The numeric guard needed four corrections before it was fit to suppress
+anything**, every one found by running it over real council prose rather than
+fixtures:
+
+1. `H1`/`FY2025` were read as the numbers 1 and 2025.
+2. A trailing comma was swallowed into the number, so `2026,` looked like a
+   grouped magnitude and escaped the bare-year rule.
+3. Every number in a sentence was tested against the one metric detected in it,
+   so "net debt 13,719m vs equity 5,282m … if EBIT falls" was called a
+   contradictory operating-profit claim. Fixed with proximity.
+4. Only the snapshot's headline slots were canonical, so the council citing a
+   historical period the report also holds was called wrong.
+
+Before those fixes it flagged **13 of 111** real sentences, all false positives.
+After them: **0 false positives, 18 checked consistent, and both seeded
+contradictions still caught.** A guard that suppresses correct analysis is worse
+than no guard, which is why it only adjudicates a metric AND a period the report
+actually holds, at group scope, in the same written form.
+
+**What the live run taught.** The first AFTER measurement was invalid: the
+evidence pack was built without the structured facts, so the council saw a share
+price and correctly answered "not enough data". Measuring a prompt change
+requires giving the model the same evidence the real pipeline gives it —
+otherwise the measurement is of the harness.

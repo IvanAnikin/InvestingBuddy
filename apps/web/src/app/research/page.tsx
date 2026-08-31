@@ -188,34 +188,24 @@ export default async function ResearchHomePage() {
         )}
       </section>
 
-      {/* Operational surface */}
-      <section className="mt-14 border-t border-[color:var(--ib-line)] pt-8">
-        <h2 className="text-sm font-semibold text-[color:var(--ib-ink)]">
-          Operational &amp; diagnostic tools
-        </h2>
-        <p className="mt-2 max-w-2xl text-sm leading-relaxed text-[color:var(--ib-ink-3)]">
-          The admin workspace is unchanged and remains the place for pipeline
-          diagnostics: raw report JSON, per-document extraction provenance,
-          source-connector health, the review workflow, backtesting, and the
-          ticker-mode discovery runner.
-        </p>
-        <div className="mt-4 flex flex-wrap gap-2">
-          {[
-            { href: "/admin", label: "Admin dashboard" },
-            { href: "/admin/reports", label: "Draft reports" },
-            { href: "/admin/sources", label: "Sources" },
-            { href: "/admin/backtesting", label: "Backtesting" },
-          ].map((l) => (
-            <Link
-              key={l.href}
-              href={l.href}
-              className="rounded-lg border border-[color:var(--ib-line)] px-3 py-1.5 text-sm text-[color:var(--ib-ink-2)] transition-colors hover:border-[color:var(--ib-line-strong)]"
-            >
-              {l.label}
-            </Link>
-          ))}
-        </div>
-      </section>
+      {/* The admin surface is reachable from the navigation and the footer on
+          every page. A research workspace does not need a content block about
+          pipeline diagnostics — one quiet line is the right weight. */}
+      <p
+        className="mt-14 border-t border-[color:var(--ib-line)] pt-6 text-xs leading-relaxed text-[color:var(--ib-ink-3)]"
+        data-testid="admin-diagnostics-link"
+      >
+        Raw report JSON, per-document extraction provenance, source-connector
+        health, the review workflow, backtesting and the ticker-mode discovery
+        runner are in{" "}
+        <Link
+          href="/admin"
+          className="underline underline-offset-4 hover:text-[color:var(--ib-ink-2)]"
+        >
+          admin &amp; diagnostics
+        </Link>
+        .
+      </p>
     </div>
   );
 }

@@ -909,6 +909,60 @@ Every section includes provenance labels on all values: `sourced_fact`, `model_i
 | Catalyst Analyst | Near-term and medium-term catalysts |
 | Investment Committee Chair | Synthesizes outputs, resolves disagreements, assigns rating |
 
+### The investment-analysis contract (2026-08-31)
+
+Every LLM council agent returns an **`implications`** array beside its
+`key_points`, and it is the most important field it produces.
+
+The split is deliberate and load-bearing:
+
+| Field | Holds | Example |
+|---|---|---|
+| `key_points` | FACT — what the evidence says. Must cite. | "Revenue grew 12% and operating margin expanded 180bps." |
+| `implications` | INTERPRETATION — what it MEANS, with the `mechanism` and a `direction`. Must cite. | "Margin expanded while revenue grew, consistent with operating leverage rather than price-led growth." |
+| `risks_or_gaps` | What is MISSING, where the absence changes a conclusion. | "No segment breakdown, so margin sustainability cannot be attributed." |
+
+`direction` is a closed set — `supportive | pressuring | mixed | neutral` — and
+is coerced, not trusted. The committee chair additionally returns a
+`synthesis`: `fundamental_setup` (`constructive | mixed | cautious |
+insufficient_evidence`), the strongest evidence each way, resilience and
+fragility factors, the key debate, what would strengthen or weaken the case, and
+what to watch. `fundamental_setup` is a research characterisation with no
+BUY/SELL/HOLD analogue and a closed vocabulary, so a rating cannot enter by
+drift.
+
+**Why it exists.** Measured across the live persisted output for PNDORA, CFR,
+MRNA and MONC — 252 bullets — the council was 8% economic interpretation, 51%
+bare restatement of figures already in the report, and 41% statements about
+missing data, with all eight agents writing nearly the same text. There was
+nowhere to put an interpretation: the contract asked for a "factual" summary,
+citable facts, and gaps. Re-running the updated council against the real Pandora
+pack produced 34 implications and moved the mix to 32% economic / 21% data. See
+ADR-041.
+
+**Directional language is permitted; actions and projections are not.** An agent
+may say a factor could support or pressure future equity value, strengthens or
+weakens the earnings outlook, improves or erodes downside resilience. It may not
+produce BUY/SELL/HOLD/WATCH, a price target, a fair value, an expected return or
+a percentage upside/downside. The production safety gate draws that line: it
+bans the projection phrasings ("upside of", "downside to") and deliberately
+permits the bare words, because "downside risks" is ordinary research prose.
+
+**Budgets moved with the contract.** A richer per-agent JSON needs room:
+`llm_max_output_tokens` 1200 → 2200 (at 1200 two of eight agents truncated
+mid-object into a permanent `LLMJsonError` on a real 18-item pack), and the
+discovery council's per-candidate rate 200 → 300 with its cap 5000 → 7000. Both
+values are also the token pacer's admission estimate.
+
+**Discovery candidates are compared as businesses.** `CandidateNote` gained
+`upside_drivers`, `downside_drivers`, `resilience`, `key_financial_signal` and
+`strongest_dimension` (a closed set: growth quality, profitability, cash
+generation, balance-sheet resilience, business quality, catalysts, downside
+risk, valuation context, evidence confidence). Missing-field and blocking-gap
+counts reduce CONFIDENCE in the comparison; they are not the comparison.
+
+---
+
 ### Team 3: Validation & Publishing Team
 
 | Agent | Responsibility |

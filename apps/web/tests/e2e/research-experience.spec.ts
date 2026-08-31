@@ -57,10 +57,13 @@ test.describe("Research home", () => {
     page,
   }) => {
     await page.goto("/research");
-    await expect(page.locator("body")).toContainText(
-      "Operational & diagnostic tools",
+    // Reachable, but no longer a content block. A research workspace does not
+    // need a section about pipeline diagnostics — the navigation, the footer
+    // and one closing line are the right weight.
+    await expect(page.getByTestId("admin-diagnostics-link")).toContainText(
+      "admin & diagnostics",
     );
-    await expect(page.locator('a[href="/admin/reports"]').first()).toBeVisible();
+    await expect(page.locator('a[href="/admin"]').first()).toBeVisible();
   });
 });
 

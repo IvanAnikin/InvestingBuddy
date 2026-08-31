@@ -23,7 +23,11 @@
 //     translated for display only. Stored values are never rewritten, and the
 //     raw code stays available.
 
-import type { LlmCouncilAgent, LlmCouncilMetadata } from "@/types/api";
+import type {
+  LlmCommitteeSynthesis,
+  LlmCouncilAgent,
+  LlmCouncilMetadata,
+} from "@/types/api";
 import {
   extractFinalReportContent,
   noteText,
@@ -32,11 +36,18 @@ import {
 } from "@/components/reports/finalReportContent";
 import { isRecordGapStatement, partitionRecordGaps } from "./recordGaps";
 import {
+  CONFLICT_NOTICE,
+  canonicalFigures,
+  checkSentence,
+  type CanonicalFigure,
+} from "./numericConsistency";
+import {
   asRecord,
   fieldText,
   stringList,
   type FinancialDatapoint,
   type FinancialSnapshotView,
+  type TrendSeriesView,
 } from "./reportView";
 
 function str(value: unknown): string | null {
@@ -125,6 +136,14 @@ const COUNCIL_AGENT_LABELS_LOCAL: Record<string, string> = {
   committee_chair: "Chair",
 };
 
+export interface AgentImplicationView {
+  statement: string;
+  mechanism: string | null;
+  /** supportive | pressuring | mixed | neutral. */
+  direction: string;
+  confidence: string | null;
+}
+
 export interface CouncilAgentDetail {
   name: string;
   label: string;
@@ -134,6 +153,11 @@ export interface CouncilAgentDetail {
   summary: string | null;
   /** The agent's own key findings, each with the confidence it stated. */
   findings: { claim: string; confidence: string | null; dataQuality: string | null }[];
+  /**
+   * What those findings MEAN. This is the agent's analysis; `findings` is the
+   * evidence it rests on, and the two are never merged.
+   */
+  implications: AgentImplicationView[];
   /** What the agent flagged as a risk or a gap, with its severity. */
   concerns: { item: string; severity: string | null }[];
   unsupportedClaims: string[];
@@ -157,6 +181,14 @@ function agentDetail(agent: LlmCouncilAgent): CouncilAgentDetail {
       .filter(
         (p): p is CouncilAgentDetail["findings"][number] => Boolean(p.claim),
       ),
+    implications: (agent.implications ?? [])
+      .map((i) => ({
+        statement: str(i.statement),
+        mechanism: str(i.mechanism),
+        direction: str(i.direction) ?? "neutral",
+        confidence: str(i.confidence),
+      }))
+      .filter((i): i is AgentImplicationView => Boolean(i.statement)),
     concerns: (agent.risks_or_gaps ?? [])
       .map((g) => ({ item: str(g.item), severity: str(g.severity) }))
       .filter((g): g is CouncilAgentDetail["concerns"][number] => Boolean(g.item)),
@@ -221,6 +253,72 @@ export function bullBearBalanceWord(balance: string | null): string | null {
   return BALANCE_WORDS[balance] ?? balance.replace(/_/g, " ");
 }
 
+/** The chair's investment-facing synthesis, as the backend persisted it. */
+export interface CommitteeSynthesisView {
+  present: boolean;
+  fundamentalSetup: string | null;
+  strongestPositive: string[];
+  strongestNegative: string[];
+  resilience: string[];
+  fragility: string[];
+  keyDebate: string | null;
+  whatWouldStrengthen: string[];
+  whatWouldWeaken: string[];
+  whatToWatch: string[];
+}
+
+export const EMPTY_SYNTHESIS: CommitteeSynthesisView = {
+  present: false,
+  fundamentalSetup: null,
+  strongestPositive: [],
+  strongestNegative: [],
+  resilience: [],
+  fragility: [],
+  keyDebate: null,
+  whatWouldStrengthen: [],
+  whatWouldWeaken: [],
+  whatToWatch: [],
+};
+
+/**
+ * The fundamental setup, in human words.
+ *
+ * A research characterisation of what the evidence supports. It has no
+ * BUY/SELL/HOLD meaning and the wording is chosen so it cannot be read as one.
+ */
+const SETUP_WORDS: Record<string, string> = {
+  constructive: "Constructive",
+  mixed: "Mixed",
+  cautious: "Cautious",
+  insufficient_evidence: "Not enough evidence to characterise",
+};
+
+export function fundamentalSetupWord(setup: string | null): string | null {
+  if (!setup) return null;
+  return SETUP_WORDS[setup] ?? setup.replace(/_/g, " ");
+}
+
+function synthesisView(
+  agents: CouncilAgentDetail[],
+  raw: LlmCommitteeSynthesis | null | undefined,
+): CommitteeSynthesisView {
+  void agents;
+  if (!raw) return EMPTY_SYNTHESIS;
+  const list = (v: string[] | undefined) => (v ?? []).filter(Boolean);
+  return {
+    present: true,
+    fundamentalSetup: str(raw.fundamental_setup),
+    strongestPositive: list(raw.strongest_positive_evidence),
+    strongestNegative: list(raw.strongest_negative_evidence),
+    resilience: list(raw.resilience_factors),
+    fragility: list(raw.fragility_factors),
+    keyDebate: str(raw.key_debate),
+    whatWouldStrengthen: list(raw.what_would_strengthen),
+    whatWouldWeaken: list(raw.what_would_weaken),
+    whatToWatch: list(raw.what_to_watch),
+  };
+}
+
 export interface ChairView {
   present: boolean;
   /** The chair's synthesis prose, from the report's own committee section. */
@@ -232,17 +330,21 @@ export interface ChairView {
   openQuestions: string[];
   nextSteps: string[];
   note: string | null;
+  /** The structured investment synthesis, when the chair produced one. */
+  synthesis: CommitteeSynthesisView;
 }
 
 export function buildChair(
   content: ReportContent | null,
   agents: CouncilAgentDetail[],
+  rawSynthesis: LlmCommitteeSynthesis | null = null,
 ): ChairView {
   const section = asRecord(content?.["committee_chair_summary"]);
   const chairAgent = findAgent(agents, "committee_chair");
+  const synthesis = synthesisView(agents, rawSynthesis);
   if (!section) {
     return {
-      present: Boolean(chairAgent?.summary),
+      present: Boolean(chairAgent?.summary) || synthesis.present,
       summary: null,
       agentSummary: chairAgent?.summary ?? null,
       balance: null,
@@ -250,6 +352,7 @@ export function buildChair(
       openQuestions: [],
       nextSteps: [],
       note: null,
+      synthesis,
     };
   }
   return {
@@ -261,6 +364,7 @@ export function buildChair(
     openQuestions: stringList(section["primary_open_questions"]),
     nextSteps: stringList(section["research_next_steps"]),
     note: noteText(section["note"]),
+    synthesis,
   };
 }
 
@@ -488,6 +592,78 @@ export function groupFinancials(
 }
 
 // ---------------------------------------------------------------------------
+// Direction, not just level
+// ---------------------------------------------------------------------------
+
+export interface MetricDirection {
+  /** "+8.2%" for a value, "+120 bps" for something already in percent. */
+  change: string;
+  /** The two periods the change is measured between. */
+  from: string;
+  to: string;
+  improving: boolean;
+}
+
+/**
+ * The change in a metric between its two most recent comparable periods.
+ *
+ * A level without a direction is half the information: "operating margin 23.9%"
+ * says much less than "23.9%, +120bps". But a direction computed across
+ * incomparable periods is a fabrication, so this only ever reads a series the
+ * BACKEND marked ``comparable``, of the SAME period type, for the same metric
+ * and scope — and it never touches interim figures, because comparing a half
+ * year to a full one is the error this whole report is built to avoid.
+ *
+ * Percentage metrics move in basis points; everything else in percent.
+ */
+export function metricDirections(
+  series: TrendSeriesView[],
+): Map<string, MetricDirection> {
+  const out = new Map<string, MetricDirection>();
+  for (const s of series) {
+    if (!s.comparable) continue;
+    if (s.periodType !== "annual") continue;
+    const points = s.points.filter(
+      (p): p is { period: string; value: number } => p.value !== null,
+    );
+    if (points.length < 2) continue;
+
+    const previous = points[points.length - 2];
+    const latest = points[points.length - 1];
+    if (previous.value === 0) continue;
+
+    const isPercent = (s.unit ?? "").trim() === "%";
+    const delta = latest.value - previous.value;
+    const change = isPercent
+      ? `${delta >= 0 ? "+" : ""}${Math.round(delta * 100)} bps`
+      : `${delta >= 0 ? "+" : ""}${((delta / Math.abs(previous.value)) * 100).toFixed(1)}%`;
+
+    // One entry per metric+scope, so a segment series never overwrites the
+    // Group's direction for the same metric.
+    out.set(`${s.metric}::${s.scope ?? "group"}`, {
+      change,
+      from: previous.period,
+      to: latest.period,
+      improving: delta >= 0,
+    });
+  }
+  return out;
+}
+
+/** The Group-level direction for one canonical metric key, when there is one. */
+export function directionFor(
+  directions: Map<string, MetricDirection>,
+  metricKey: string,
+): MetricDirection | null {
+  return (
+    directions.get(`${metricKey}::group`) ??
+    directions.get(`${metricKey}::null`) ??
+    directions.get(`${metricKey}::`) ??
+    null
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Risks — the company's, kept apart from the research's
 // ---------------------------------------------------------------------------
 
@@ -587,6 +763,219 @@ export function buildOpenQuestions(
 }
 
 // ---------------------------------------------------------------------------
+// Numeric consistency
+// ---------------------------------------------------------------------------
+
+/**
+ * Reconcile every numeric claim in council prose against the report's own
+ * canonical figures, and WITHHOLD any that contradicts them.
+ *
+ * A report that shows "revenue of DKK 14,328m" in one section and a council
+ * sentence asserting a different revenue for the same period is not showing two
+ * views; it is contradicting itself, and a reader has no way to know which to
+ * trust. Choosing one would be worse: this layer has no basis for preferring
+ * the prose or the fact, and silently picking is exactly what the report must
+ * not do.
+ *
+ * So a conflicting sentence is replaced with a statement that it conflicts.
+ * The check runs only where a metric this report actually carries is named —
+ * everything else is left exactly as written.
+ */
+export function reconcileNumbers<T>(
+  items: T[],
+  read: (item: T) => string,
+  replace: (item: T, notice: string) => T,
+  canonical: Map<string, CanonicalFigure[]>,
+): { items: T[]; conflicts: number } {
+  if (canonical.size === 0) return { items, conflicts: 0 };
+  let conflicts = 0;
+  const out = items.map((item) => {
+    const { verdict } = checkSentence(read(item), canonical);
+    if (verdict !== "conflicting") return item;
+    conflicts += 1;
+    return replace(item, CONFLICT_NOTICE);
+  });
+  return { items: out, conflicts };
+}
+
+/** Apply the reconciliation across everything a reader sees as council prose. */
+export function reconcileCouncilNumbers(
+  view: InvestorReportView,
+  snapshot: FinancialSnapshotView,
+  trends: TrendSeriesView[] = [],
+): InvestorReportView & { numericConflicts: number } {
+  // Every period the report holds, headline slots AND the multi-year series.
+  const canonical = canonicalFigures(snapshot, trends);
+  if (canonical.size === 0) return { ...view, numericConflicts: 0 };
+
+  let conflicts = 0;
+
+  const agents = view.agents.map((agent) => {
+    const findings = reconcileNumbers(
+      agent.findings,
+      (f) => f.claim,
+      (f, notice) => ({ ...f, claim: notice }),
+      canonical,
+    );
+    const implications = reconcileNumbers(
+      agent.implications,
+      (i) => `${i.statement} ${i.mechanism ?? ""}`,
+      (i, notice) => ({ ...i, statement: notice, mechanism: null }),
+      canonical,
+    );
+    conflicts += findings.conflicts + implications.conflicts;
+    return {
+      ...agent,
+      findings: findings.items,
+      implications: implications.items,
+    };
+  });
+
+  const points = (list: DirectionalPoint[]) =>
+    reconcileNumbers(
+      list,
+      (p) => `${p.statement} ${p.mechanism ?? ""}`,
+      (p, notice) => ({ ...p, statement: notice, mechanism: null }),
+      canonical,
+    );
+  const higher = points(view.reading.couldDriveHigher);
+  const pressure = points(view.reading.couldPressure);
+  const resilience = points(view.reading.resilience);
+  const fragility = points(view.reading.fragility);
+  conflicts +=
+    higher.conflicts +
+    pressure.conflicts +
+    resilience.conflicts +
+    fragility.conflicts;
+
+  return {
+    ...view,
+    agents,
+    reading: {
+      ...view.reading,
+      couldDriveHigher: higher.items,
+      couldPressure: pressure.items,
+      resilience: resilience.items,
+      fragility: fragility.items,
+    },
+    numericConflicts: conflicts,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// The investment reading
+// ---------------------------------------------------------------------------
+
+export interface DirectionalPoint {
+  statement: string;
+  mechanism: string | null;
+  source: string;
+  confidence: string | null;
+}
+
+export interface InvestmentReading {
+  /** The chair's overall characterisation, in human words. */
+  setupWord: string | null;
+  /** What could make the business/equity materially more valuable. */
+  couldDriveHigher: DirectionalPoint[];
+  /** What could pressure it. */
+  couldPressure: DirectionalPoint[];
+  /** What limits downside if conditions deteriorate. */
+  resilience: DirectionalPoint[];
+  /** What could create disproportionate downside. */
+  fragility: DirectionalPoint[];
+  /** Specific, measurable things to monitor next. */
+  whatToWatch: string[];
+  keyDebate: string | null;
+  whatWouldStrengthen: string[];
+  whatWouldWeaken: string[];
+  /** True when the council recorded no interpretation at all. */
+  empty: boolean;
+}
+
+/**
+ * The investment reading, assembled from what the council already persisted.
+ *
+ * Two sources, in order. The chair's structured synthesis is the committee's
+ * own answer and comes first. Beneath it sit the individual agents'
+ * implications, grouped by the DIRECTION each agent gave its own statement —
+ * not by this layer's reading of the words.
+ *
+ * Nothing is generated here and nothing is summarised. An agent that recorded
+ * no implication contributes nothing, and a report whose council predates the
+ * implication field produces an empty reading, which the UI states rather than
+ * papers over.
+ */
+export function buildInvestmentReading(chair: ChairView, agents: CouncilAgentDetail[]): InvestmentReading {
+  const seen = new Set<string>();
+  const take = (statement: string): boolean => {
+    const key = statement.trim().toLowerCase();
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  };
+
+  const higher: DirectionalPoint[] = [];
+  const pressure: DirectionalPoint[] = [];
+
+  for (const point of chair.synthesis.strongestPositive) {
+    if (take(point)) {
+      higher.push({ statement: point, mechanism: null, source: "Chair", confidence: null });
+    }
+  }
+  for (const point of chair.synthesis.strongestNegative) {
+    if (take(point)) {
+      pressure.push({ statement: point, mechanism: null, source: "Chair", confidence: null });
+    }
+  }
+
+  for (const agent of agents) {
+    if (agent.name === "committee_chair") continue;
+    for (const imp of agent.implications) {
+      if (!take(imp.statement)) continue;
+      const point: DirectionalPoint = {
+        statement: imp.statement,
+        mechanism: imp.mechanism,
+        source: agent.label,
+        confidence: imp.confidence,
+      };
+      if (imp.direction === "supportive") higher.push(point);
+      else if (imp.direction === "pressuring") pressure.push(point);
+      // "mixed" and "neutral" belong to neither column. Forcing them into one
+      // would be this layer deciding which way an agent leaned.
+    }
+  }
+
+  const asPoints = (items: string[], source: string): DirectionalPoint[] =>
+    items.map((statement) => ({
+      statement,
+      mechanism: null,
+      source,
+      confidence: null,
+    }));
+
+  const reading: InvestmentReading = {
+    setupWord: fundamentalSetupWord(chair.synthesis.fundamentalSetup),
+    couldDriveHigher: higher,
+    couldPressure: pressure,
+    resilience: asPoints(chair.synthesis.resilience, "Chair"),
+    fragility: asPoints(chair.synthesis.fragility, "Chair"),
+    whatToWatch: chair.synthesis.whatToWatch,
+    keyDebate: chair.synthesis.keyDebate,
+    whatWouldStrengthen: chair.synthesis.whatWouldStrengthen,
+    whatWouldWeaken: chair.synthesis.whatWouldWeaken,
+    empty: false,
+  };
+  reading.empty =
+    higher.length === 0 &&
+    pressure.length === 0 &&
+    reading.resilience.length === 0 &&
+    reading.fragility.length === 0 &&
+    reading.whatToWatch.length === 0;
+  return reading;
+}
+
+// ---------------------------------------------------------------------------
 // Research confidence
 // ---------------------------------------------------------------------------
 
@@ -652,6 +1041,8 @@ export function buildResearchConfidence(
 export interface InvestorReportView {
   agents: CouncilAgentDetail[];
   chair: ChairView;
+  /** What the council concluded about the business, grouped for a reader. */
+  reading: InvestmentReading;
   businessQuality: BusinessQualityView;
   catalysts: CatalystsView;
   risks: RiskGroups;
@@ -669,7 +1060,10 @@ export function buildInvestorReportView(
 ): InvestorReportView {
   const content = extractFinalReportContent(contentMarkdown);
   const agents = buildCouncilAgentDetails(council);
-  const chair = buildChair(content, agents);
+  const rawSynthesis =
+    (council?.agents ?? []).find((a) => a.agent_name === "committee_chair")
+      ?.synthesis ?? null;
+  const chair = buildChair(content, agents, rawSynthesis);
   const risks = buildRiskGroups(content);
   const { questions, recordGaps } = buildOpenQuestions(chair, agents);
 
@@ -682,6 +1076,7 @@ export function buildInvestorReportView(
   return {
     agents,
     chair,
+    reading: buildInvestmentReading(chair, agents),
     businessQuality: buildBusinessQuality(agents),
     catalysts: buildCatalysts(content, agents),
     risks,

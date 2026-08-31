@@ -821,6 +821,26 @@ function mockCouncilReport(id) {
               data_quality: "B",
             },
           ],
+          implications: [
+          {
+            statement:
+              "Margin held while revenue grew, which points to operating leverage rather than price-led growth.",
+            mechanism:
+              "revenue growth + flat margin -> EBIT grows with the top line -> stronger cash generation if it persists",
+            direction: "supportive",
+            citation_ids: ["E1"],
+            confidence: "medium",
+          },
+          {
+            statement:
+              "Free cash flow covers roughly two thirds of operating cash flow, so capex is absorbing a third of what the business generates.",
+            mechanism:
+              "OCF 7,361m - FCF 5,022m -> ~2,300m capex -> reinvestment need constrains distributable cash",
+            direction: "mixed",
+            citation_ids: ["E1"],
+            confidence: "medium",
+          },
+          ],
           risks_or_gaps: [
             {
               item: "What explains the margin held despite input-cost pressure?",
@@ -852,6 +872,26 @@ function mockCouncilReport(id) {
               data_quality: "B",
             },
           ],
+          implications: [
+          {
+            statement:
+              "In-house manufacturing is what the filing links its gross margin to, which is a cost-side advantage rather than a pricing one.",
+            mechanism:
+              "vertical integration -> lower unit cost -> margin advantage that competitors can replicate with scale",
+            direction: "supportive",
+            citation_ids: ["E1"],
+            confidence: "medium",
+          },
+          {
+            statement:
+              "Owned retail carries fixed occupancy cost, so the margin that looks like strength in growth would invert in a demand slowdown.",
+            mechanism:
+              "owned stores -> fixed cost base -> operating leverage works both ways",
+            direction: "pressuring",
+            citation_ids: ["E1"],
+            confidence: "medium",
+          },
+          ],
           risks_or_gaps: [
             {
               item:
@@ -877,6 +917,17 @@ function mockCouncilReport(id) {
               data_quality: "A",
             },
           ],
+          implications: [
+          {
+            statement:
+              "The H1 disclosure is the only company event in the window, so there is no operational change pending that the evidence can point to.",
+            mechanism:
+              "no announced capacity, contract or regulatory change -> near-term revenue path is the existing base",
+            direction: "neutral",
+            citation_ids: ["E1"],
+            confidence: "medium",
+          },
+          ],
           risks_or_gaps: [],
           unsupported_claims: [],
           safety_notes: [],
@@ -887,6 +938,17 @@ function mockCouncilReport(id) {
           summary:
             "Disclosure quality is adequate for the annual period. Leverage after the interim cash movements could not be computed from what was retrieved.",
           key_points: [],
+          implications: [
+          {
+            statement:
+              "Net debt exceeds equity, which limits how much of a demand shock the balance sheet can absorb before it constrains reinvestment.",
+            mechanism:
+              "net debt 13,719m vs equity 5,282m -> leverage above 2x book -> covenant and refinancing sensitivity rises if EBIT falls",
+            direction: "pressuring",
+            citation_ids: ["E1"],
+            confidence: "medium",
+          },
+          ],
           risks_or_gaps: [
             {
               item: "What is leverage after the current-period cash movements?",
@@ -903,6 +965,17 @@ function mockCouncilReport(id) {
           summary:
             "Inputs present: latest close, revenue, operating profit. Inputs missing: EBITDA and share count. No valuation is produced here.",
           key_points: [],
+          implications: [
+          {
+            statement:
+              "Latest close and the annual earnings base are both present, so an earnings multiple is observable; enterprise value is not, so no cash-adjusted comparison can be made.",
+            mechanism:
+              "price + net income available -> P/E computable; market cap absent -> EV multiples are not",
+            direction: "neutral",
+            citation_ids: ["E1"],
+            confidence: "medium",
+          },
+          ],
           risks_or_gaps: [
             {
               item: "EBITDA is not available from the statements retrieved.",
@@ -919,6 +992,17 @@ function mockCouncilReport(id) {
           summary:
             "Financial claims rest on the issuer's own filings. Catalyst coverage rests on a single channel.",
           key_points: [],
+          implications: [
+          {
+            statement:
+              "Catalyst coverage rests on the issuer's own channel, so an adverse development would reach this report late.",
+            mechanism:
+              "single issuer-controlled channel -> no independent corroboration -> negative news is systematically slower to appear",
+            direction: "pressuring",
+            citation_ids: ["E1"],
+            confidence: "medium",
+          },
+          ],
           risks_or_gaps: [
             {
               item:
@@ -951,6 +1035,26 @@ function mockCouncilReport(id) {
               data_quality: "A",
             },
           ],
+          implications: [
+          {
+            statement:
+              "The five-year revenue series is the whole positive case, and nothing retrieved separates volume from price or mix.",
+            mechanism:
+              "growth asserted from a revenue line alone -> if it is price-led it does not repeat -> the durability claim is unsupported",
+            direction: "pressuring",
+            citation_ids: ["E1"],
+            confidence: "medium",
+          },
+          {
+            statement:
+              "The margin that looks defensive is measured in a period with no demand shock in it, so it has not been tested.",
+            mechanism:
+              "stable margin through a benign period -> no evidence about behaviour under stress -> resilience is assumed, not shown",
+            direction: "pressuring",
+            citation_ids: ["E1"],
+            confidence: "medium",
+          },
+          ],
           risks_or_gaps: [
             {
               item: "Is the current revenue growth rate sustainable?",
@@ -975,10 +1079,59 @@ function mockCouncilReport(id) {
               data_quality: "A",
             },
           ],
+          implications: [
+          {
+            statement:
+              "The annual picture is well evidenced and internally consistent; what it does not establish is why the growth happened.",
+            mechanism:
+              "consistent statements -> reliable base; missing decomposition -> no view on repeatability",
+            direction: "mixed",
+            citation_ids: ["E1"],
+            confidence: "medium",
+          },
+          ],
           risks_or_gaps: [],
           unsupported_claims: [],
           safety_notes: [],
           committee_label: "requires_more_evidence",
+          // The chair's investment-facing synthesis. This is what the reader
+          // meets first, so the fixture carries the whole shape — an empty one
+          // would let a report that says nothing about the business pass.
+          synthesis: {
+            fundamental_setup: "mixed",
+            strongest_positive_evidence: [
+              "Five consecutive years of revenue growth with the operating margin intact.",
+              "Free cash flow of DKK 5,022m against DKK 7,361m of operating cash flow — the business converts profit into cash.",
+            ],
+            strongest_negative_evidence: [
+              "Net debt of DKK 13,719m against equity of DKK 5,282m leaves little balance-sheet room.",
+              "Nothing retrieved separates volume, price and mix, so the growth driver is unestablished.",
+            ],
+            resilience_factors: [
+              "Cash generation has been positive in every reported year, so the leverage is serviced from operations rather than refinancing.",
+              "In-house manufacturing gives a cost lever that does not depend on pricing.",
+            ],
+            fragility_factors: [
+              "Owned retail carries fixed occupancy cost, so a demand fall hits margin faster than revenue.",
+              "Leverage above two times book equity narrows the response available if EBIT falls.",
+            ],
+            key_debate:
+              "The financial analyst reads the stable margin as operating leverage; the red team reads it as an untested margin in a benign period.",
+            what_would_strengthen: [
+              "A volume/price/mix decomposition showing growth is volume-led.",
+              "An interim balance sheet showing net debt falling against EBIT.",
+            ],
+            what_would_weaken: [
+              "Gross margin compressing while revenue growth slows.",
+              "Capex rising as a share of operating cash flow without a revenue response.",
+            ],
+            what_to_watch: [
+              "Organic revenue growth in the next interim disclosure",
+              "Gross-margin direction against the input-cost commentary",
+              "Net debt after the current-period cash movements",
+              "Free-cash-flow conversion against the 68% annual level",
+            ],
+          },
         },
       ],
       // Phase 29B.2 — bounded primary-document (annual report) evidence the
@@ -1350,6 +1503,43 @@ function mockPeriodsReport(id) {
   return base;
 }
 
+// A report whose COUNCIL contradicts its own canonical financials.
+//
+// This is not hypothetical: council prose and the financial snapshot are two
+// representations of the same facts, produced by different paths, and a report
+// showing both while they disagree gives a reader no way to know which is
+// right. The fixture states an annual revenue the snapshot does not support, so
+// the reconciliation has something real to catch.
+const CONFLICT_REPORT_ID = "00000000-0000-0000-0000-0000000000a4";
+
+function mockConflictReport(id) {
+  const base = mockPeriodsReport(id);
+  base.title =
+    "Internal Analysis Draft — IBTEST — contradictory council figure [MOCK DATA]";
+  base.company_id = null;
+  const council = JSON.parse(JSON.stringify(base.source_summary_json));
+  const analyst = council.llm_council.agents.find(
+    (a) => a.agent_name === "financial_analyst",
+  );
+  // The snapshot's annual revenue is 32,516m DKK. This says 41,900m.
+  analyst.key_points.unshift({
+    claim: "Full-year revenue was DKK 41,900 million.",
+    citation_ids: ["E1"],
+    confidence: "high",
+    data_quality: "A",
+  });
+  analyst.implications.unshift({
+    statement:
+      "Revenue of DKK 41,900 million represents a step change in scale for the group.",
+    mechanism: "higher revenue base -> operating leverage on a fixed cost base",
+    direction: "supportive",
+    citation_ids: ["E1"],
+    confidence: "high",
+  });
+  base.source_summary_json = council;
+  return base;
+}
+
 const DISC =
   "INTERNAL ADMIN USE ONLY. NOT INVESTMENT ADVICE. NOT A PUBLIC RECOMMENDATION.";
 
@@ -1394,6 +1584,15 @@ function discoveryCouncilReview(runId) {
         rationale:
           "Most complete evidence package in the cohort and the only candidate with a current-period filing retrieved.",
         confidence: "medium",
+        upside_drivers: [
+          "Owned retail is the largest and fastest-growing channel in its segment table.",
+        ],
+        downside_drivers: [
+          "Fixed occupancy cost in owned retail inverts the operating leverage in a downturn.",
+        ],
+        resilience: "Positive free cash flow in every reported year.",
+        key_financial_signal: "FCF conversion of 68% of operating cash flow.",
+        strongest_dimension: "cash_generation",
       },
       {
         candidate_ref: "C3",
@@ -1403,6 +1602,15 @@ function discoveryCouncilReview(runId) {
         rationale:
           "Segment disclosure is granular enough to test the thesis directly.",
         confidence: "low",
+        upside_drivers: [
+          "Segment disclosure is granular enough to attribute growth to a division.",
+        ],
+        downside_drivers: [
+          "Concentration in one end market carries the whole thesis.",
+        ],
+        resilience: "Net cash position absorbs a demand slowdown without refinancing.",
+        key_financial_signal: "Operating margin above 20% at group level.",
+        strongest_dimension: "business_quality",
       },
     ],
     candidates_to_monitor: [
@@ -1413,6 +1621,15 @@ function discoveryCouncilReview(runId) {
         exchange: "PA",
         rationale: "No fundamentals were sourced; revisit once a filing lands.",
         confidence: "medium",
+        upside_drivers: [
+          "Brand pricing power is visible in the gross margin.",
+        ],
+        downside_drivers: [
+          "No fundamentals were sourced, so nothing about cash generation is established.",
+        ],
+        resilience: "Not assessed — no financial statements retrieved.",
+        key_financial_signal: "Not sourced.",
+        strongest_dimension: "evidence_confidence",
       },
     ],
     candidates_to_reject: [],
@@ -1463,6 +1680,15 @@ function discoveryCouncilReview(runId) {
             rationale: "Most complete data coverage in the cohort.",
             citation_ids: ["C1"],
             confidence: "medium",
+            upside_drivers: [
+              "Owned retail is the largest and fastest-growing channel in its segment table.",
+            ],
+            downside_drivers: [
+              "Fixed occupancy cost in owned retail inverts the operating leverage in a downturn.",
+            ],
+            resilience: "Positive free cash flow in every reported year.",
+            key_financial_signal: "FCF conversion of 68% of operating cash flow.",
+            strongest_dimension: "cash_generation",
           },
           {
             candidate_ref: "C2",
@@ -1472,6 +1698,15 @@ function discoveryCouncilReview(runId) {
             rationale: "Fundamentals were not sourced.",
             citation_ids: ["C2"],
             confidence: "medium",
+            upside_drivers: [
+              "Brand pricing power is visible in the gross margin.",
+            ],
+            downside_drivers: [
+              "No fundamentals were sourced, so nothing about cash generation is established.",
+            ],
+            resilience: "Not assessed — no financial statements retrieved.",
+            key_financial_signal: "Not sourced.",
+            strongest_dimension: "evidence_confidence",
           },
           {
             candidate_ref: "C3",
@@ -1481,6 +1716,15 @@ function discoveryCouncilReview(runId) {
             rationale: "Segment disclosure supports a direct thesis test.",
             citation_ids: ["C3"],
             confidence: "low",
+            upside_drivers: [
+              "Segment disclosure is granular enough to attribute growth to a division.",
+            ],
+            downside_drivers: [
+              "Concentration in one end market carries the whole thesis.",
+            ],
+            resilience: "Net cash position absorbs a demand slowdown without refinancing.",
+            key_financial_signal: "Operating margin above 20% at group level.",
+            strongest_dimension: "business_quality",
           },
         ],
         run_notes: [],
@@ -1533,6 +1777,15 @@ function discoveryCouncilReview(runId) {
             rationale: "A current-period filing was retrieved.",
             citation_ids: ["C1"],
             confidence: "high",
+            upside_drivers: [
+              "Owned retail is the largest and fastest-growing channel in its segment table.",
+            ],
+            downside_drivers: [
+              "Fixed occupancy cost in owned retail inverts the operating leverage in a downturn.",
+            ],
+            resilience: "Positive free cash flow in every reported year.",
+            key_financial_signal: "FCF conversion of 68% of operating cash flow.",
+            strongest_dimension: "cash_generation",
           },
           {
             // The SAME candidate the prioritisation analyst put in
@@ -1545,6 +1798,15 @@ function discoveryCouncilReview(runId) {
             rationale: "No primary document was retrieved for this issuer.",
             citation_ids: ["C3"],
             confidence: "medium",
+            upside_drivers: [
+              "Segment disclosure is granular enough to attribute growth to a division.",
+            ],
+            downside_drivers: [
+              "Concentration in one end market carries the whole thesis.",
+            ],
+            resilience: "Net cash position absorbs a demand slowdown without refinancing.",
+            key_financial_signal: "Operating margin above 20% at group level.",
+            strongest_dimension: "business_quality",
           },
         ],
         run_notes: [],
@@ -1598,6 +1860,15 @@ function discoveryCouncilReview(runId) {
               "Most complete evidence package in the cohort and the only candidate with a current-period filing retrieved.",
             citation_ids: ["C1"],
             confidence: "medium",
+            upside_drivers: [
+              "Owned retail is the largest and fastest-growing channel in its segment table.",
+            ],
+            downside_drivers: [
+              "Fixed occupancy cost in owned retail inverts the operating leverage in a downturn.",
+            ],
+            resilience: "Positive free cash flow in every reported year.",
+            key_financial_signal: "FCF conversion of 68% of operating cash flow.",
+            strongest_dimension: "cash_generation",
           },
           {
             candidate_ref: "C3",
@@ -1608,6 +1879,15 @@ function discoveryCouncilReview(runId) {
               "Segment disclosure is granular enough to test the thesis directly.",
             citation_ids: ["C3"],
             confidence: "low",
+            upside_drivers: [
+              "Segment disclosure is granular enough to attribute growth to a division.",
+            ],
+            downside_drivers: [
+              "Concentration in one end market carries the whole thesis.",
+            ],
+            resilience: "Net cash position absorbs a demand slowdown without refinancing.",
+            key_financial_signal: "Operating margin above 20% at group level.",
+            strongest_dimension: "business_quality",
           },
           {
             candidate_ref: "C2",
@@ -1617,6 +1897,15 @@ function discoveryCouncilReview(runId) {
             rationale: "No fundamentals were sourced; revisit once a filing lands.",
             citation_ids: ["C2"],
             confidence: "medium",
+            upside_drivers: [
+              "Brand pricing power is visible in the gross margin.",
+            ],
+            downside_drivers: [
+              "No fundamentals were sourced, so nothing about cash generation is established.",
+            ],
+            resilience: "Not assessed — no financial statements retrieved.",
+            key_financial_signal: "Not sourced.",
+            strongest_dimension: "evidence_confidence",
           },
         ],
         run_notes: [
@@ -1936,6 +2225,9 @@ const server = createServer((req, res) => {
     }
     if (rid === PERIODS_REPORT_ID) {
       return send(res, 200, mockPeriodsReport(rid));
+    }
+    if (rid === CONFLICT_REPORT_ID) {
+      return send(res, 200, mockConflictReport(rid));
     }
     if (rid === LEGACY_REPORT_ID) {
       return send(res, 200, mockLegacyReport(rid));
