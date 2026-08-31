@@ -118,10 +118,11 @@ cd apps/api && .venv/bin/pytest tests/ -q && .venv/bin/ruff check . && echo "ALL
 | `home.spec.ts` | The public landing page: positioning copy, both primary CTAs, no forbidden trading/publishing control, and that the admin entry appears only for a signed-in allowlisted admin. |
 | `research-experience.spec.ts` | Access control on every `/research` route, the four research surfaces, the round trip between the reader-facing and technical report views, and that all existing `/admin` routes still render. |
 | `research-responsive-a11y.spec.ts` | Horizontal-overflow check at 1440 / 1280 / 768 / 390, the mobile navigation, `prefers-reduced-motion`, console-error freedom, and keyboard access (skip link, arrow-key tablists). |
-| `visual-audit.spec.ts` | Programmatic legibility audit: WCAG AA contrast against the effective composited background, text clipped by its own box, controls without an accessible name, and heading order. |
+| `visual-audit.spec.ts` | Programmatic legibility audit: WCAG AA contrast against the effective composited background, text clipped by its own box, controls without an accessible name, and heading order — on static pages AND on the driven states (council review, candidate comparison, every disclosure open) that a page visit alone never reaches. |
 | `visual-qa.spec.ts` | Screenshot capture for human review. Skipped unless `IB_SHOTS` is set. |
 | `live-defect-regressions.spec.ts` | The two defects that reached production in PR #176: SSR/browser hydration mismatch from host-dependent date formatting (browser contexts pinned to Europe/Prague AND Pacific/Kiritimati), and horizontal overflow at 390px from long unbroken external strings. Both were verified by reverting the fix and confirming the test fails. |
 | `workflow-contract.spec.ts` | **CONTRACT** — what each console puts on the wire. Captures the request body in the browser and asserts the company identity, provider, flags, thesis text and inferred filters, plus parity between `/admin/*` and `/research/*`, honest failure states, and that a linked report is not mistaken for a completed analysis. |
+| `investor-research-experience.spec.ts` | The discovery council on the reader-facing surface (it appears when a review is persisted, it is never started by a page load, the trigger uses the existing backend action, it stays tied to its own `discovery_run_id`, it presents bands rather than an invented ranking, and disagreement comes from differing `internal_action` values); the three candidate CTA states; and the report's reading order — every agent's conclusion, red team, chair, questions sourced from the council, company risk kept apart from research limitation, record entries routed to research confidence, evidence progressively disclosed, and the annual/current separation intact. Plus overflow at 1440 / 1280 / 768 / 390 **with every disclosure open**. |
 
 ### Mock mode vs real integration
 
@@ -158,6 +159,19 @@ the conditions they need. Both now have fixtures and tests:
   `PERIODS_REPORT_ID` fixture now carries an untitled document with a long
   percent-encoded URL, an untitled appendix source, and 70-character dotted
   field paths.
+- **Content behind a disclosure.** A collapsed `<details>` has no layout, so a
+  containment or contrast check run against one measures nothing while passing.
+  Every such check opens all disclosures first. (`toContainText` reads collapsed
+  DOM text and would pass either way — that is how an empty council panel once
+  shipped green.)
+- **Fixtures agree with the derivation that wrote them.** A fixture authored
+  alongside a view model cannot disagree with it. The record-gap routing rules
+  were written from live report payloads, not from fixtures: the first
+  implementation sourced "open research questions" from the chair's
+  `primary_open_questions`, which fixtures made look correct and which on three
+  of four live issuers opened with
+  `Blocking gap: Required field missing: identity.isin`. Read real payloads
+  read-only before trusting a derivation about their shape.
 
 **Two dev servers must not share `apps/web/.next`.** `next.config.ts` sets
 `lockDistDir: false`, which disables the guard, and running the Playwright dev

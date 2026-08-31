@@ -2,6 +2,7 @@ import Link from "next/link";
 import PrimaryCTA from "@/components/product/PrimaryCTA";
 import Surface from "@/components/product/Surface";
 import { buildLibraryRow, type LibraryRow } from "@/components/research/reportView";
+import { classifyReports } from "@/components/research/reportResolution";
 import { fetchReports } from "@/lib/api";
 import ReportLibrary from "./ReportLibrary";
 
@@ -19,7 +20,16 @@ const LIBRARY_PAGE_SIZE = 50;
 async function loadRows(): Promise<{ rows: LibraryRow[]; error: string | null }> {
   try {
     const data = await fetchReports(LIBRARY_PAGE_SIZE, 0);
-    return { rows: data.items.map(buildLibraryRow), error: null };
+    // Which report is a company's CURRENT research is a question about the
+    // cohort, not about any one report — so it is answered here, once, where
+    // the whole page of reports is in hand.
+    const kinds = classifyReports(data.items);
+    return {
+      rows: data.items.map((report) =>
+        buildLibraryRow(report, kinds.get(report.id) ?? "screening_draft"),
+      ),
+      error: null,
+    };
   } catch (e) {
     return {
       rows: [],
@@ -48,8 +58,8 @@ export default async function ResearchLibraryPage() {
             Research library
           </h1>
           <p className="mt-3 text-base leading-relaxed text-[color:var(--ib-ink-2)]">
-            Everything you have researched, with the reporting state and evidence
-            quality each report actually holds.
+            Current research first. Screening drafts and superseded reports are
+            kept — they are simply not presented as the current state.
           </p>
         </header>
         <PrimaryCTA href="/research/company" tone="secondary">

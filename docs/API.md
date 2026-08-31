@@ -1066,7 +1066,7 @@ These endpoints are for **internal admin and development use only**. They expose
 
 | Method | Path | Status | Description |
 |---|---|---|---|
-| GET | `/api/v1/reports` | ✅ Live | List all draft reports (admin only) |
+| GET | `/api/v1/reports` | ✅ Live | List draft reports (admin only); optional `company_id` scope filter |
 | GET | `/api/v1/reports/{report_id}` | ✅ Live | Get a single draft report by ID (admin only) |
 | GET | `/api/v1/reports/{report_id}/primary-documents` | ✅ Live | Primary-document ingestion provenance for a report's generating run (admin/dev only) — Phase 32A Slice 5B.3 |
 | POST | `/api/v1/admin/reports/{report_id}/mark-under-review` | ✅ Live | Move report to under_review (admin only) |
@@ -1077,7 +1077,15 @@ These endpoints are for **internal admin and development use only**. They expose
 
 **GET /api/v1/reports** — List draft reports
 
-Query parameters: `limit` (default 50), `offset` (default 0)
+Query parameters: `limit` (default 50), `offset` (default 0),
+`company_id` (optional UUID)
+
+`company_id` is a read-only scope filter on `reports.company_id` (migration
+012). It answers "which reports exist for this company?" exactly, so a caller
+can resolve a company's CURRENT research report without paging the global list
+and filtering client side. It changes nothing else: ordering stays newest-first
+(`created_at DESC, id DESC`) and the item shape is unchanged. Omitting it keeps
+the unfiltered global listing.
 
 Response `200 OK`:
 ```json

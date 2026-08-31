@@ -2737,3 +2737,120 @@ fail while the Europe/Prague case still passed: Prague only flips the calendar
 day for timestamps in the last hours of a UTC day, and the fixtures' timestamps
 sit at 10:00 UTC. Sampling one nearby zone would have reproduced the original
 blind spot. Divergence tests need to span the extremes, not merely differ.
+
+---
+
+## ADR-040: The Reader Gets the Research; the Record Is Reported as the Record
+
+**Date:** 2026-08-31
+**Status:** Accepted
+
+### Context
+
+ADR-037 built a reader-facing surface that refuses to flatten the research
+state. Real use showed it succeeded at that and stopped short of the point:
+what it presented was still, largely, what the PIPELINE did.
+
+Two things were concretely wrong, both verified against the live database
+(~1,000 reports, 19 companies) rather than against fixtures:
+
+**Discovery had a council and never showed it.** The run-level discovery council
+has existed since Phase 28B. It reads a whole candidate set, places each
+candidate into an internal research-priority band with a cited reason, records
+where its agents disagreed, and writes a chair synthesis — and all of that was
+visible only in `/admin/discovery`. The reader-facing page showed candidate
+cards and an internal score, so a person could see WHICH companies a run
+surfaced and nothing about what the council made of them.
+
+**The report gave the wrong things prominence.** Measured on live PNDORA / CFR /
+MRNA / MONC reports: `risk_analysis` carried 1 business risk against 7–8
+source-quality risks, and "Key risks" showed them as one list. The chair's
+`primary_open_questions` — the section a reader would take as "what remains
+unresolved about this company" — opened with
+`Blocking gap: Required field missing: identity.isin` on three of four issuers.
+`bear_case.key_unknowns` was six-sevenths machine record entries. Meanwhile
+`business_moat` (500–620 characters of substance per issuer), every agent's
+`key_points` and `risks_or_gaps`, `bull_case.assumptions` and
+`bear_case.potential_headwinds` were persisted and rendered nowhere.
+
+The report was not missing research. It was showing the record instead of it.
+
+### Decision
+
+**Reuse the council; never build a second one.** `/research/discover` reads and,
+on explicit request, starts the EXISTING run-level council through the same
+endpoint, job and persisted result the admin console uses. There is no second
+prompt, no browser-side summarisation, and no council run triggered by a page
+load — a council costs real tokens, so it starts when a person asks.
+
+**Present the council's own shape, and say what shape that is.** The chair emits
+BUCKETS, not a ranking; its JSON contract has no rank field. Candidates render
+in the order returned, and the UI states that the council does not rank within a
+band rather than numbering them as though it did. Disagreement is defined as two
+agents assigning different `internal_action` values to the same candidate — one
+closed vocabulary compared like for like. Comparing two pieces of agent prose
+and calling the difference a disagreement would manufacture the feature.
+
+**Route each statement to the section that describes what it is.** Three splits,
+all deterministic:
+
+- A risk to the BUSINESS and a limit on the RESEARCH are different claims.
+  `data_quality_risks` and `source_quality_risks` move out of "Key risks" and
+  into research confidence.
+- A record-completeness entry is not an argument. The deterministic layer writes
+  fixed, generated forms — `Blocking gap: …`, `Required section absent: …`,
+  `Legal entity verification not complete: …`, bare dotted machine paths. A
+  predicate matching that FORM (not its meaning) routes them out of the bear
+  case and the open-questions list into research confidence, where they are
+  reported in full.
+- Open research questions come from the COUNCIL — red team first, then each
+  analyst in run order — because those are written about the business. The chair
+  section's list is assembled deterministically from bear-case unknowns and
+  bull-case missing evidence, and is used only when no council ran.
+
+**Progressive disclosure is about weight, never about content.** Evidence,
+sources, channels and the exhaustive machine-gap list are all still present,
+complete and unedited; they sit behind one disclosure instead of interrupting
+the reading flow. Source-tier codes are translated for DISPLAY only — the stored
+value is unchanged and remains on the element as its `title`.
+
+**"Current research" is resolved, not guessed.** A candidate's
+`analysis_report_id` points at whatever the screening scan linked, which for 126
+of the newest 200 live reports is a legacy pre-council draft. The resolution
+uses the backend's own semantics — `final_report_version` as the legacy marker,
+parseable `report_content` as the structured test, newest-for-that-company by
+`(created_at DESC, id DESC)` — over a company-scoped read, and never a global
+newest, a title match or the first row returned.
+
+### Consequences
+
+**Positive.** The council's judgement reaches the person it was produced for.
+Every agent's conclusion, the red team's challenge and the chair's synthesis are
+readable without entering the admin console. A candidate card no longer offers a
+pre-council draft as though it were research, and a reader who lands on an old
+artefact is told so and given the current one. The record is still complete: it
+is reported as the record.
+
+**Negative / accepted.** The routing predicates are matched against the
+deterministic layer's current output FORMS. If that layer changes its wording,
+a record entry would read as an analytical one again — which is why the
+predicate matches generated prefixes and machine-path shapes rather than
+keywords, and why it was validated against four live issuers before being
+trusted. Reader-facing "open questions" now depend on the council having run;
+where it did not, the section falls back to a list that is honestly weaker.
+And resolving a candidate's current report costs two reads per candidate, which
+is the price of not guessing.
+
+**One backend change, and only one.** `GET /api/v1/reports` gained an optional
+`company_id` read filter. Paging the global list and filtering client side is a
+window, and with ~1,000 reports on one company-heavy environment that window
+silently loses a company's current report. Nothing else server-side moved: no
+migration, no new endpoint, no change to research semantics, ingestion, period
+normalisation, council architecture, discovery scoring or report generation.
+
+**What the live data taught.** The first implementation sourced open questions
+from the chair's `primary_open_questions` because that is what the field is
+called. Fixtures made it look right. The live reports made it obviously wrong —
+the top six questions for PNDORA were four blocking-gap records and a valuation
+input list. A fixture written by the same person who writes the derivation will
+agree with it; only real payloads disagree.

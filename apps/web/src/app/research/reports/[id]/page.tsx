@@ -2,9 +2,16 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import Surface from "@/components/product/Surface";
 import MarkdownReportPreview from "@/components/reports/MarkdownReportPreview";
-import CouncilSummary from "@/components/research/CouncilSummary";
-import EvidencePanel from "@/components/research/EvidencePanel";
-import FinancialSnapshot from "@/components/research/FinancialSnapshot";
+import BusinessQuality from "@/components/research/report/BusinessQuality";
+import ChairSynthesis from "@/components/research/report/ChairSynthesis";
+import EvidenceDisclosure from "@/components/research/report/EvidenceDisclosure";
+import InvestmentSummary from "@/components/research/report/InvestmentSummary";
+import KeyFinancials from "@/components/research/report/KeyFinancials";
+import OpenQuestions from "@/components/research/report/OpenQuestions";
+import RecentDevelopments from "@/components/research/report/RecentDevelopments";
+import RedTeam from "@/components/research/report/RedTeam";
+import ResearchConfidence from "@/components/research/report/ResearchConfidence";
+import ResearchCouncil from "@/components/research/report/ResearchCouncil";
 import NarrativeSection from "@/components/research/NarrativeSection";
 import ReportHeader from "@/components/research/ReportHeader";
 import ResearchStatusBadge, {
@@ -15,7 +22,17 @@ import {
   buildResearchReportView,
   readCouncilMetadata,
 } from "@/components/research/reportView";
-import { fetchReport, fetchReportPrimaryDocuments } from "@/lib/api";
+import {
+  buildInvestorReportView,
+  buildResearchConfidence,
+  findAgent,
+} from "@/components/research/reportSections";
+import {
+  buildResearchLinkState,
+  NO_RESEARCH_LINK,
+  type ResearchLinkState,
+} from "@/components/research/reportResolution";
+import { fetchReport, fetchReports, fetchReportPrimaryDocuments } from "@/lib/api";
 import type { Report, ReportPrimaryDocumentsResponse } from "@/types/api";
 
 export const dynamic = "force-dynamic";
@@ -45,22 +62,64 @@ async function getPrimaryDocuments(
   }
 }
 
+/**
+ * Where this report sits among its company's other reports.
+ *
+ * A reader who opens a legacy or superseded artefact must not be stranded in
+ * it. Resolving that needs the company's own report list — a scoped read, not
+ * the global newest report, and not a guess from the title.
+ */
+async function getResearchLink(report: Report): Promise<ResearchLinkState> {
+  if (!report.company_id) {
+    return buildResearchLinkState(report, [report]);
+  }
+  try {
+    const cohort = await fetchReports(50, 0, { companyId: report.company_id });
+    return buildResearchLinkState(report, cohort.items);
+  } catch {
+    // Without the cohort nothing can be claimed about supersession, so nothing
+    // is: the report renders as itself with no "current research" offer.
+    return NO_RESEARCH_LINK;
+  }
+}
+
 export default async function ResearchReportPage({
   params,
 }: {
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const [report, primaryDocuments] = await Promise.all([
-    getReport(id),
-    getPrimaryDocuments(id),
-  ]);
-
+  const report = await getReport(id);
   if (!report) notFound();
+
+  const [primaryDocuments, link] = await Promise.all([
+    getPrimaryDocuments(id),
+    getResearchLink(report),
+  ]);
 
   const council = readCouncilMetadata(report.source_summary_json);
   const view = buildResearchReportView(report, council);
+  const investor = buildInvestorReportView(report.content_markdown, council);
+  const confidence = buildResearchConfidence(
+    investor.risks,
+    view.missing.total,
+    investor.agents,
+    // Record-completeness entries lifted out of the bear case and the chair's
+    // open-question list. They are reported here, where they describe what
+    // they actually describe, rather than as investment arguments.
+    [...investor.recordGaps, ...view.narrativeRecordGaps],
+  );
   const isFinal = Boolean(report.final_report_version);
+
+  // A newer structured report exists for this company and this is not it.
+  const supersededBy =
+    link.currentReportId && link.currentReportId !== report.id
+      ? link.currentReportId
+      : null;
+
+  const councilLine = view.council.used
+    ? `${view.council.completed} council agent${view.council.completed === 1 ? "" : "s"}`
+    : "council did not run";
 
   const statusStrip = (
     <ResearchStatusBadge
@@ -98,6 +157,7 @@ export default async function ResearchReportPage({
         updatedAt={view.updatedAt}
         reportId={report.id}
         isFinal={isFinal}
+        supersededBy={supersededBy}
       />
 
       {statusStrip}
@@ -150,21 +210,22 @@ export default async function ResearchReportPage({
             </Surface>
           )}
 
-          {/* Summary */}
-          {view.summary && (
-            <Surface as="section" className="p-6 sm:p-7" testId="report-summary">
-              <h2 className="text-lg font-semibold tracking-tight text-[color:var(--ib-ink)]">
-                Summary
-              </h2>
-              <p className="ib-breakable mt-3 max-w-3xl whitespace-pre-line text-sm leading-relaxed text-[color:var(--ib-ink-2)]">
-                {view.summary}
-              </p>
-            </Surface>
-          )}
+          {/* 1. The research itself, first. */}
+          <InvestmentSummary
+            chair={investor.chair}
+            summary={view.summary}
+            bull={view.bull}
+            bear={view.bear}
+            evidenceWordLabel={
+              view.evidence.overall ? evidenceWord(view.evidence.overall) : null
+            }
+            councilLine={councilLine}
+          />
 
-          <FinancialSnapshot snapshot={view.snapshot} />
+          {/* 2. The numbers. */}
+          <KeyFinancials snapshot={view.snapshot} />
 
-          {/* Historical trends */}
+          {/* 3. What changed over time. */}
           {view.trends.series.length > 0 && (
             <Surface
               as="section"
@@ -173,7 +234,7 @@ export default async function ResearchReportPage({
               id="trends"
             >
               <h2 className="text-lg font-semibold tracking-tight text-[color:var(--ib-ink)]">
-                Historical trends
+                Historical performance
               </h2>
               <p className="mt-2 max-w-2xl text-sm leading-relaxed text-[color:var(--ib-ink-3)]">
                 Reconstructed from the issuer&apos;s own multi-period tables.
@@ -195,7 +256,18 @@ export default async function ResearchReportPage({
             </Surface>
           )}
 
-          {/* Cases */}
+          {/* 4. The business. */}
+          {!view.thin && <BusinessQuality business={investor.businessQuality} />}
+
+          {/* 5. What has happened lately. */}
+          {!view.thin && (
+            <RecentDevelopments
+              catalysts={investor.catalysts}
+              disclosures={view.disclosures}
+            />
+          )}
+
+          {/* 6. The two cases. */}
           {!view.thin && (
             <div className="grid gap-5 lg:grid-cols-2">
               <NarrativeSection
@@ -204,6 +276,11 @@ export default async function ResearchReportPage({
                 groups={view.bull}
                 testId="bull-case"
                 emptyMessage="No bull-case argument was produced from the evidence available."
+                footnote={
+                  view.bullConfidence
+                    ? `Stated confidence: ${view.bullConfidence}.`
+                    : undefined
+                }
               />
               <NarrativeSection
                 title="Bear case"
@@ -211,65 +288,56 @@ export default async function ResearchReportPage({
                 groups={view.bear}
                 testId="bear-case"
                 emptyMessage="No bear-case argument was produced from the evidence available."
+                footnote={
+                  view.bearConfidence
+                    ? `Stated confidence: ${view.bearConfidence}.`
+                    : undefined
+                }
               />
             </div>
           )}
 
+          {/* 7. Risks to the BUSINESS. Research limitations are further down,
+                 under research confidence, where they belong. */}
           {!view.thin && (
             <NarrativeSection
               title="Key risks"
-              groups={view.risks}
+              groups={investor.risks.company}
               testId="risk-analysis"
               id="risks"
-              emptyMessage="No risk was recorded against the evidence in this report. That is an absence of analysis, not an absence of risk."
+              emptyMessage="No risk to the business was recorded against the evidence in this report. That is an absence of analysis, not an absence of risk."
+              footnote={investor.risks.summary ?? undefined}
             />
           )}
 
-          <CouncilSummary council={view.council} reportId={report.id} />
+          {/* 8. Who looked at it, and what each of them concluded. */}
+          <ResearchCouncil
+            council={view.council}
+            agents={investor.agents}
+            reportId={report.id}
+          />
 
-          {/* Missing information — kept prominent on purpose. */}
-          <Surface
-            as="section"
-            className="border-amber-400/20 p-6 sm:p-7"
-            testId="missing-information"
-            id="missing"
-          >
-            <h2 className="text-lg font-semibold tracking-tight text-[color:var(--ib-ink)]">
-              Important missing information
-            </h2>
-            {view.missing.items.length === 0 ? (
-              <p className="mt-3 max-w-2xl text-sm leading-relaxed text-[color:var(--ib-ink-3)]">
-                No specific gap was recorded for this report.
-              </p>
-            ) : (
-              <>
-                <p className="mt-2 text-sm text-[color:var(--ib-ink-3)]">
-                  {view.missing.total} item(s) the research could not source.
-                </p>
-                <ul className="mt-4 grid gap-x-8 gap-y-1.5 sm:grid-cols-2">
-                  {view.missing.items.map((item, i) => (
-                    <li
-                      key={i}
-                      className="ib-breakable text-sm text-[color:var(--ib-ink-2)]"
-                    >
-                      {/* A dotted machine path has no space to break at; the
-                          exact token is preserved, it simply wraps. */}
-                      <span className="ib-breakable font-mono text-xs">
-                        {item.field}
-                      </span>
-                      {item.source && (
-                        <span className="ml-2 text-xs text-[color:var(--ib-ink-3)]">
-                          ({item.source})
-                        </span>
-                      )}
-                    </li>
-                  ))}
-                </ul>
-              </>
-            )}
-          </Surface>
+          {view.council.used && (
+            <RedTeam redTeam={findAgent(investor.agents, "red_team")} />
+          )}
 
-          <EvidencePanel
+          <ChairSynthesis
+            chair={investor.chair}
+            chairAgent={findAgent(investor.agents, "committee_chair")}
+          />
+
+          <OpenQuestions questions={investor.openQuestions} />
+
+          {/* 9. How far the evidence goes. */}
+          <ResearchConfidence
+            dimensions={view.evidence.dimensions}
+            confidence={confidence}
+            missingItems={view.missing.items}
+            reportId={report.id}
+          />
+
+          {/* 10. Source transparency, kept complete and kept collapsed. */}
+          <EvidenceDisclosure
             primaryDocuments={primaryDocuments}
             disclosures={view.disclosures}
             appendix={view.appendix}
@@ -277,42 +345,8 @@ export default async function ResearchReportPage({
             reportId={report.id}
           />
 
-          {/* Evidence quality, per dimension, with the basis for each. */}
-          {view.evidence.dimensions.length > 0 && (
-            <Surface as="section" className="p-6 sm:p-7" testId="evidence-quality">
-              <h2 className="text-lg font-semibold tracking-tight text-[color:var(--ib-ink)]">
-                Evidence quality
-              </h2>
-              <p className="mt-2 max-w-2xl text-sm leading-relaxed text-[color:var(--ib-ink-3)]">
-                Assessed once, per dimension. The overall figure is the weakest
-                contributing dimension — never an average.
-              </p>
-              <dl className="mt-5 space-y-4">
-                {view.evidence.dimensions.map((dim) => (
-                  <div
-                    key={dim.key}
-                    className="border-b border-[color:var(--ib-line)] pb-4 last:border-0 last:pb-0"
-                  >
-                    <dt className="flex flex-wrap items-baseline gap-x-3">
-                      <span className="text-sm font-medium text-[color:var(--ib-ink)]">
-                        {dim.label}
-                      </span>
-                      <span className="text-sm text-[color:var(--ib-ink-2)]">
-                        {dim.value ? evidenceWord(dim.value) : "not assessed"}
-                      </span>
-                    </dt>
-                    {dim.basis.length > 0 && (
-                      <dd className="ib-breakable mt-1.5 text-xs leading-relaxed text-[color:var(--ib-ink-3)]">
-                        {dim.basis.join(" · ")}
-                      </dd>
-                    )}
-                  </div>
-                ))}
-              </dl>
-            </Surface>
-          )}
-
-          {/* Next steps */}
+          {/* Deterministic research memo next steps, when the backend flag that
+              produces them is on. */}
           {view.nextSteps.length > 0 && (
             <Surface as="section" className="p-6 sm:p-7" testId="next-steps">
               <h2 className="text-lg font-semibold tracking-tight text-[color:var(--ib-ink)]">
@@ -338,10 +372,9 @@ export default async function ResearchReportPage({
       )}
 
       <p className="pt-2 text-xs leading-relaxed text-[color:var(--ib-ink-3)]">
-        Every figure above keeps the document, period and scope it was extracted
-        from. The full technical provenance — raw report JSON, per-document
-        excerpts, per-fact page and table location, validation flags and the
-        review timeline — is on the{" "}
+        Internal research requiring human review. The full technical record —
+        raw report JSON, per-document excerpts, per-fact page and table
+        location, validation flags and the review timeline — is on the{" "}
         <Link
           href={`/admin/reports/${report.id}`}
           className="underline underline-offset-4 hover:text-[color:var(--ib-ink-2)]"

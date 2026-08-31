@@ -103,23 +103,74 @@ export default function EvidencePanel({
   appendix,
   channels,
   reportId,
+  /**
+   * "bare" drops the panel's own card and heading so the caller can place the
+   * same content inside a disclosure. The content is identical either way —
+   * source transparency is reduced in VISUAL WEIGHT here, never in substance.
+   */
+  variant = "section",
 }: {
   primaryDocuments: ReportPrimaryDocumentsResponse | null;
   disclosures: DisclosureView[];
   appendix: AppendixView;
   channels: EvidenceChannelView[];
   reportId: string;
+  variant?: "section" | "bare";
 }) {
   const documents = (primaryDocuments?.documents ?? []).filter(
     (d) => d.status !== "discovered",
   );
   const summary = primaryDocuments?.summary;
 
+  if (variant === "bare") {
+    return (
+      <div data-testid="evidence-panel-bare">
+        <EvidenceBody
+          documents={documents}
+          summary={summary}
+          disclosures={disclosures}
+          appendix={appendix}
+          channels={channels}
+          reportId={reportId}
+        />
+      </div>
+    );
+  }
+
   return (
     <Surface as="section" className="p-6 sm:p-7" testId="evidence-panel" id="evidence">
       <h2 className="text-lg font-semibold tracking-tight text-[color:var(--ib-ink)]">
         Primary evidence
       </h2>
+      <EvidenceBody
+        documents={documents}
+        summary={summary}
+        disclosures={disclosures}
+        appendix={appendix}
+        channels={channels}
+        reportId={reportId}
+      />
+    </Surface>
+  );
+}
+
+function EvidenceBody({
+  documents,
+  summary,
+  disclosures,
+  appendix,
+  channels,
+  reportId,
+}: {
+  documents: NonNullable<ReportPrimaryDocumentsResponse["documents"]>;
+  summary: ReportPrimaryDocumentsResponse["summary"] | undefined;
+  disclosures: DisclosureView[];
+  appendix: AppendixView;
+  channels: EvidenceChannelView[];
+  reportId: string;
+}) {
+  return (
+    <>
 
       {/* Channels — each one reports its own state. */}
       {channels.length > 0 && (
@@ -302,6 +353,6 @@ export default function EvidencePanel({
         — per-document excerpts, per-fact page and table location, extraction
         method, and every ingestion attempt including the failures.
       </p>
-    </Surface>
+    </>
   );
 }

@@ -6,7 +6,7 @@ They are not public-facing and must not be exposed without authentication.
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
@@ -21,10 +21,26 @@ router = APIRouter(tags=["reports"])
 async def list_reports(
     limit: int = 50,
     offset: int = 0,
+    company_id: uuid.UUID | None = Query(
+        default=None,
+        description=(
+            "Optional read filter: return only the reports linked to this "
+            "company (reports.company_id, migration 012). Omitting it keeps "
+            "the unfiltered global listing."
+        ),
+    ),
     db: AsyncSession = Depends(get_db),
 ) -> ReportList:
-    """List all draft reports (admin/dev only). Not a public endpoint."""
-    reports, total = await report_service.list_reports(db, limit=limit, offset=offset)
+    """List draft reports (admin/dev only). Not a public endpoint.
+
+    ``company_id`` is a plain, read-only scope filter. It lets a caller resolve
+    which report is a company's CURRENT research report without paging the
+    global list, and it neither selects nor ranks anything on the caller's
+    behalf — ordering (newest first) and report content are unchanged.
+    """
+    reports, total = await report_service.list_reports(
+        db, limit=limit, offset=offset, company_id=company_id
+    )
     return ReportList(items=[ReportRead.model_validate(r) for r in reports], total=total)
 
 

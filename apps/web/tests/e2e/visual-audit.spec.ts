@@ -188,3 +188,66 @@ test.describe("Visual audit — research surfaces", () => {
     });
   }
 });
+
+
+// ---------------------------------------------------------------------------
+// The states a page visit alone cannot reach
+//
+// The council review, the candidate comparison and the expanded evidence and
+// gap disclosures only exist after the page has been driven. A static visit
+// audits none of them, which is exactly how a legibility failure inside a
+// disclosure survives a full green suite.
+// ---------------------------------------------------------------------------
+
+async function openEveryDisclosure(page: import("@playwright/test").Page) {
+  await page.evaluate(() => {
+    for (const d of Array.from(document.querySelectorAll("details"))) {
+      (d as HTMLDetailsElement).open = true;
+    }
+  });
+}
+
+test.describe("Visual audit — driven states", () => {
+  for (const width of [1440, 390]) {
+    test(`the discovery council and comparison pass the audit at ${width}px`, async ({
+      page,
+    }) => {
+      await page.setViewportSize({ width, height: width === 390 ? 844 : 1000 });
+      await page.goto("/research/discover");
+      await page
+        .getByTestId("discovery-thesis")
+        .fill("European luxury goods companies");
+      // The scope parse is debounced AND this route compiles on first request
+      // in dev, so the first navigation of a run can be slow. Waiting on the
+      // detected scope is what keeps the click out of an in-flight debounce.
+      await expect(page.getByTestId("thesis-detected")).toBeVisible({
+        timeout: 30_000,
+      });
+      await page.getByTestId("run-discovery").click();
+      await expect(page.getByTestId("discovery-council")).toBeVisible();
+      await expect(page.getByTestId("candidate-comparison")).toBeVisible();
+      await openEveryDisclosure(page);
+
+      const result = await audit(page);
+      expect(result.lowContrast).toEqual([]);
+      expect(result.clipped).toEqual([]);
+      expect(result.unnamed).toEqual([]);
+      if (width === 1440) assertHeadingOrder(result.headings);
+    });
+
+    test(`the report passes the audit with every disclosure open at ${width}px`, async ({
+      page,
+    }) => {
+      await page.setViewportSize({ width, height: width === 390 ? 844 : 1000 });
+      await page.goto(`/research/reports/${PERIODS_REPORT_ID}`);
+      await expect(page.getByTestId("research-council")).toBeVisible();
+      await openEveryDisclosure(page);
+
+      const result = await audit(page);
+      expect(result.lowContrast).toEqual([]);
+      expect(result.clipped).toEqual([]);
+      expect(result.unnamed).toEqual([]);
+      if (width === 1440) assertHeadingOrder(result.headings);
+    });
+  }
+});

@@ -176,12 +176,33 @@ test.describe("Research library", () => {
 
   test("filters and searches without a page reload", async ({ page }) => {
     await page.goto("/research/reports");
-    await page.getByRole("button", { name: "Evidence incomplete" }).click();
+    await page.getByRole("button", { name: "Needs refresh" }).click();
     await expect(page.getByTestId("report-library")).toBeVisible();
 
     await page.getByRole("button", { name: "All" }).click();
     await page.getByLabel("Search by company or ticker").fill("nothing-matches");
     await expect(page.locator("body")).toContainText("Nothing matches that");
+  });
+
+  test("leads with current research and names everything else", async ({
+    page,
+  }) => {
+    await page.goto("/research/reports");
+    const library = page.getByTestId("report-library");
+    await expect(library).toBeVisible();
+
+    // The default view is CURRENT research. A screening draft and a superseded
+    // report both exist in the fixture and neither is in it.
+    await expect(library).toContainText("InvestingBuddy Test Company");
+    await expect(library).not.toContainText("InvestingBuddy Second Company");
+    await expect(page.getByTestId("library-row-kind")).toHaveCount(0);
+
+    // They are not hidden — they are one click away, and labelled.
+    await page.getByRole("button", { name: "Screening only" }).click();
+    await expect(library).toContainText("Screening draft");
+
+    await page.getByRole("button", { name: "Superseded" }).click();
+    await expect(library).toContainText("Superseded");
   });
 });
 
@@ -221,11 +242,14 @@ test.describe("Research report", () => {
     page,
   }) => {
     await page.goto(`/research/reports/${PERIODS_REPORT_ID}`);
-    const snapshot = page.getByTestId("financial-snapshot");
-    await expect(snapshot).toBeVisible();
+    const financials = page.getByTestId("key-financials");
+    await expect(financials).toBeVisible();
 
-    const annual = page.getByTestId("snapshot-annual");
-    const current = page.getByTestId("snapshot-current");
+    // Revenue and operating profit are both profitability figures, so the
+    // annual and current-period columns of THAT group are where the two
+    // periods meet — and they must stay apart there.
+    const annual = page.getByTestId("profitability-annual");
+    const current = page.getByTestId("profitability-current");
     await expect(annual).toContainText("FY2025");
     await expect(annual).toContainText("32,516 m DKK");
     await expect(current).toContainText("H1 2026");
@@ -249,19 +273,21 @@ test.describe("Research report", () => {
     await expect(trends.locator("svg")).toHaveCount(1);
   });
 
-  test("summarises the council and keeps the gaps visible", async ({ page }) => {
+  test("shows the council and keeps the gaps reachable", async ({ page }) => {
     await page.goto(`/research/reports/${PERIODS_REPORT_ID}`);
-    await expect(page.getByTestId("council-summary")).toContainText(
+    await expect(page.getByTestId("research-council")).toContainText(
       "Financial analyst",
     );
-    await expect(page.getByTestId("missing-information")).toContainText(
-      "Important missing information",
-    );
-    await expect(page.getByTestId("evidence-panel")).toContainText(
+    // The evidence and the machine-level gaps are still complete — they are
+    // now progressively disclosed rather than placed in the reading flow.
+    await expect(page.getByTestId("evidence-disclosure")).toContainText(
       "Annual Report 2025",
     );
-    await expect(page.getByTestId("evidence-quality")).toContainText(
+    await expect(page.getByTestId("research-confidence")).toContainText(
       "weakest contributing dimension",
+    );
+    await expect(page.getByTestId("technical-gaps")).toContainText(
+      "View all 4 technical gaps",
     );
   });
 

@@ -1,6 +1,7 @@
 import Link from "next/link";
 import PrimaryCTA from "@/components/product/PrimaryCTA";
 import Surface from "@/components/product/Surface";
+import { classifyReports } from "@/components/research/reportResolution";
 import { fetchReports } from "@/lib/api";
 import type { Report } from "@/types/api";
 import { reportCompanyLabel } from "@/components/research/reportView";
@@ -35,8 +36,18 @@ async function recentReports(): Promise<{
   error: string | null;
 }> {
   try {
-    const data = await fetchReports(6, 0);
-    return { items: data.items, total: data.total, error: null };
+    const data = await fetchReports(50, 0);
+    // Show CURRENT research, the same thing the library leads with. The list
+    // used to be every report newest-first, so a screening draft written by the
+    // discovery scan could sit at the top of "recent research" looking exactly
+    // like research. When no current report exists yet, everything is shown —
+    // an empty list would be the wrong answer, not a tidier one.
+    const kinds = classifyReports(data.items);
+    const current = data.items.filter(
+      (r) => kinds.get(r.id) === "current_research",
+    );
+    const items = current.length > 0 ? current : data.items;
+    return { items: items.slice(0, 6), total: items.length, error: null };
   } catch (e) {
     return {
       items: [],
@@ -143,10 +154,14 @@ export default async function ResearchHomePage() {
                       className="ib-arrow-host flex flex-wrap items-center gap-x-4 gap-y-1 px-5 py-4 transition-colors hover:bg-[color:var(--ib-surface-raised)]"
                     >
                       <span className="min-w-0 flex-1">
-                        <span className="block truncate text-sm font-medium text-[color:var(--ib-ink)]">
+                        {/* A report with no sourced company name falls back to
+                            its own title, which can be long. It WRAPS rather
+                            than being cut off mid-word: a clipped label is a
+                            legibility failure, not a tidy one. */}
+                        <span className="ib-breakable block text-sm font-medium text-[color:var(--ib-ink)]">
                           {company ?? report.title}
                         </span>
-                        <span className="block truncate text-xs text-[color:var(--ib-ink-3)]">
+                        <span className="ib-breakable block text-xs text-[color:var(--ib-ink-3)]">
                           {ticker ? `${ticker} · ` : ""}
                           {formatDate(report.updated_at)}
                         </span>
