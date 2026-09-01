@@ -1662,7 +1662,17 @@ is decidable rather than inferred. Pull the logs and read the trace:
 ```bash
 az webapp log download -g ib-stg-rg -n ib-stg-web --log-file weblogs.zip
 unzip -o -q weblogs.zip -d weblogs
-grep -h "^\[auth\]" weblogs/LogFiles/*_default_docker.log
+# NOTE: no "^" anchor — App Service prefixes every line with an ISO timestamp,
+# which you want to keep anyway (it orders the two arrivals of a replayed code).
+grep -h "\[auth\]" weblogs/LogFiles/*_default_docker.log
+```
+
+A real trace from `ib-stg-web` looks like this:
+
+```text
+2026-09-01T19:30:36.63Z [auth] flow_start flow=9d1bac28 dest=/research/discover had_session=false proto=https arr=9eaf86f9-… purpose=- uptime_s=149 ua=curl/8.7.1
+2026-09-01T19:30:36.98Z [auth] callback_received flow=none code_fp=dc0c6d6873e1 state_ok=false had_session=false flow_age_s=- dest=/ proto=https arr=4bc2b4f9-… purpose=- uptime_s=149 ua=curl/8.7.1
+2026-09-01T19:30:36.98Z [auth] flow_failed reason=state_mismatch flow=none code_fp=dc0c6d6873e1 …
 ```
 
 | Field | Reads as |
