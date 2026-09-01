@@ -159,6 +159,91 @@ test.describe("Phase 23 — sign out", () => {
   });
 });
 
+test.describe("Post-sign-in destination", () => {
+  test("20. signing in without a requested destination lands on the home page", async ({
+    page,
+  }) => {
+    const res = await page.request.post("/api/auth/dev-login", {
+      form: { email: ADMIN_EMAIL },
+      maxRedirects: 0,
+    });
+    expect(res.status()).toBe(307);
+    const loc = res.headers()["location"] ?? "";
+    expect(new URL(loc, "http://localhost").pathname).toBe("/");
+  });
+
+  test("21. the /login sign-in link targets the home page by default", async ({
+    page,
+  }) => {
+    await page.goto("/login");
+    const href = await page
+      .getByRole("link", { name: "Sign in to Admin" })
+      .getAttribute("href");
+    const url = new URL(href ?? "", "http://localhost");
+    expect(url.pathname).toBe("/api/auth/github");
+    expect(url.searchParams.get("callbackUrl")).toBe("/");
+  });
+
+  test("22. an already-signed-in admin visiting /login is sent to the home page", async ({
+    page,
+  }) => {
+    await signInAsAdmin(page);
+    await page.goto("/login");
+    expect(new URL(page.url()).pathname).toBe("/");
+  });
+
+  test("23. a requested /admin destination still wins over the home default", async ({
+    page,
+  }) => {
+    await page.goto("/admin/discovery");
+    const loginUrl = new URL(page.url());
+    expect(loginUrl.searchParams.get("callbackUrl")).toBe("/admin/discovery");
+
+    const res = await page.request.post("/api/auth/dev-login", {
+      form: { email: ADMIN_EMAIL, callbackUrl: "/admin/discovery" },
+      maxRedirects: 0,
+    });
+    expect(new URL(res.headers()["location"] ?? "", "http://localhost").pathname)
+      .toBe("/admin/discovery");
+  });
+
+  test("24. a requested /research destination survives sign-in (was dropped to /admin)", async ({
+    page,
+  }) => {
+    await page.goto("/research/discover");
+    const loginUrl = new URL(page.url());
+    expect(loginUrl.pathname).toBe("/login");
+    expect(loginUrl.searchParams.get("callbackUrl")).toBe("/research/discover");
+
+    // The login page must round-trip it rather than silently swapping in /admin.
+    const href = await page
+      .getByRole("link", { name: "Sign in to Admin" })
+      .getAttribute("href");
+    expect(
+      new URL(href ?? "", "http://localhost").searchParams.get("callbackUrl"),
+    ).toBe("/research/discover");
+
+    const res = await page.request.post("/api/auth/dev-login", {
+      form: { email: ADMIN_EMAIL, callbackUrl: "/research/discover" },
+      maxRedirects: 0,
+    });
+    expect(new URL(res.headers()["location"] ?? "", "http://localhost").pathname)
+      .toBe("/research/discover");
+  });
+
+  test("25. a foreign callbackUrl is still refused (open-redirect guard)", async ({
+    page,
+  }) => {
+    const res = await page.request.post("/api/auth/dev-login", {
+      form: { email: ADMIN_EMAIL, callbackUrl: "https://evil.example/admin" },
+      maxRedirects: 0,
+    });
+    const loc = new URL(res.headers()["location"] ?? "", "http://localhost");
+    expect(loc.host).not.toContain("evil.example");
+    expect(loc.pathname).toBe("/");
+  });
+});
+
 test.describe("Phase 23 hotfix — canonical redirect origin (never 0.0.0.0)", () => {
   test("16. unauthenticated /admin redirect targets /login on the public host, not an internal origin", async ({
     page,

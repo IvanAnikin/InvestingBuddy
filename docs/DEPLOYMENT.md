@@ -1645,6 +1645,53 @@ Copy `.env.example` to `.env`. The defaults work for local Docker development.
 Verify: logged-out `/admin` → `/login`; logged-out `GET /api/admin/proxy/health`
 → 401; `/` and `/api/version` stay public.
 
+### Sign-in flow tracing (`code_already_used`)
+
+Staging sign-in intermittently dead-ends on `/login?error=code_already_used`
+(GitHub's `bad_verification_code`) after the app has been idle. That branch is
+only reachable **after** the CSRF state matched, and the `ib_oauth_state` cookie
+lives for 600s — so the failing request always belongs to a live, ≤10-minute
+flow whose authorization code had already been spent. The suspected trigger is
+that `ib-stg-web` runs with `alwaysOn=false`: cold starts measured from the
+container logs range **34–167s**, long enough for a client to abandon and retry
+the callback while the first request is still being served.
+
+`src/lib/auth/log.ts` emits one `key=value` line per step so the next occurrence
+is decidable rather than inferred. Pull the logs and read the trace:
+
+```bash
+az webapp log download -g ib-stg-rg -n ib-stg-web --log-file weblogs.zip
+unzip -o -q weblogs.zip -d weblogs
+grep -h "^\[auth\]" weblogs/LogFiles/*_default_docker.log
+```
+
+| Field | Reads as |
+|---|---|
+| `flow` | Correlates `flow_start` with its `callback_received`. |
+| `code_fp` | Truncated SHA-256 of the authorization code. **Two `callback_received` lines with the same `code_fp` prove one code was submitted twice**; different values mean two separate flows. |
+| `state_ok` | Whether the CSRF state matched. `false` ⇒ the state cookie expired (>10 min). |
+| `had_session` | Whether a valid session cookie was already present — tells you if an earlier attempt had already succeeded. |
+| `flow_age_s` | Seconds between clicking sign-in and the callback arriving. A large value means the user sat on a hung page or an interstitial. |
+| `uptime_s` | Seconds since the Node process started. A low value ⇒ a cold container served the request. |
+| `purpose` | `Sec-Purpose`/`Purpose` header — non-`-` means a browser **prefetched** rather than navigated, i.e. a phantom duplicate request. |
+| `proto` | `x-forwarded-proto`. `http` would mean the request arrived over plaintext. |
+| `ua` / `arr` | User agent (identifies scanners/prefetchers) and Azure's request correlation id. |
+
+Diagnosis from one trace:
+
+- Two `callback_received` with the **same `code_fp`** → replay. Compare `purpose`
+  (prefetch), `ua` (scanner), and `uptime_s` (cold start) to attribute it.
+- One `callback_received`, `state_ok=true`, code already spent → the code was
+  consumed by a request that never reached this log (e.g. a different instance).
+- `had_session=true` on the failing arrival → an earlier attempt **did** succeed
+  and the user is being shown an error despite holding a valid session.
+
+**Secret discipline:** the authorization code, OAuth access token, client secret,
+session token and user email are never written. The code appears only as
+`code_fp`, which is not reversible. (Note: `next dev` locally prints full request
+URLs including `?code=`; the production `standalone` server does not log
+requests at all.)
+
 ---
 
 ## GitHub Actions Secrets Required

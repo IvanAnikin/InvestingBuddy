@@ -437,6 +437,25 @@ Sign-in:  /login → /api/auth/github → GitHub OAuth → /api/auth/callback/gi
           verified email) → sets ib_admin_session cookie → back to callbackUrl.
 ```
 
+**Post-sign-in destination.** `callbackUrl` is normalized by
+`toSafeInternalPath` (`src/lib/auth/url.ts`) to a same-site *path*, never an
+absolute URL, so it can never become an open redirect. It accepts the home page
+(`/`) and the Proxy-gated surfaces (`/admin`, `/admin/…`, `/research`,
+`/research/…`); anything else falls back to `DEFAULT_POST_LOGIN_PATH` (`/`).
+Signing in without a requested destination therefore lands on the **home page**,
+while a deep link that triggered the sign-in still returns the user to the page
+they asked for.
+
+**Sign-in flow tracing.** `src/lib/auth/log.ts` emits one `key=value` line per
+step — `flow_start`, `callback_received`, `token_exchange`, `signed_in`,
+`flow_failed`, `signed_out` — to diagnose intermittent `code_already_used`
+failures on staging. The authorization code, OAuth access token, client secret,
+session token and user email are **never** logged; the code appears only as
+`code_fp`, a truncated SHA-256 digest, so two arrivals of the same code are
+identifiable without the code being recoverable. See
+[DEPLOYMENT.md](DEPLOYMENT.md#sign-in-flow-tracing-code_already_used) for how to
+read a trace.
+
 Required App Service env vars for `ib-stg-web` (server-only, no `NEXT_PUBLIC_` prefix):
 - `AUTH_SECRET` — signs the admin session cookie (Key Vault ref)
 - `ADMIN_ALLOWED_EMAILS` — comma-separated admin allowlist
