@@ -14,14 +14,22 @@ import type { NextRequest } from "next/server";
 import {
   OAUTH_STATE_COOKIE,
   SESSION_COOKIE,
+  isAllowedEmail,
   sessionCookieOptions,
   signSession,
 } from "@/lib/auth/session";
 import {
+  DEFAULT_POST_LOGIN_PATH,
   buildPublicUrl,
   getPublicAuthOrigin,
   toSafeInternalPath,
 } from "@/lib/auth/url";
+import {
+  authError,
+  authLog,
+  codeFingerprint,
+  requestContext,
+} from "@/lib/auth/log";
 
 export const dynamic = "force-dynamic";
 
@@ -37,7 +45,12 @@ const TOKEN_ERROR_REASONS: Record<string, string> = {
   redirect_uri_mismatch: "redirect_uri_mismatch",
 };
 
-function loginError(request: NextRequest, reason: string): NextResponse {
+function loginError(
+  request: NextRequest,
+  reason: string,
+  trace: Record<string, string | number> = {},
+): NextResponse {
+  authError("flow_failed", { reason, ...trace });
   const url = buildPublicUrl("/login", request);
   url.searchParams.set("error", reason);
   const res = NextResponse.redirect(url);
@@ -55,34 +68,65 @@ interface GithubEmail {
 }
 
 export async function GET(request: NextRequest): Promise<NextResponse> {
+  const context = requestContext(request);
   const clientId = process.env.AUTH_GITHUB_ID ?? "";
   const clientSecret = process.env.AUTH_GITHUB_SECRET ?? "";
   if (!clientId || !clientSecret) {
-    return loginError(request, "oauth_not_configured");
+    return loginError(request, "oauth_not_configured", context);
   }
 
   const params = request.nextUrl.searchParams;
   const code = params.get("code");
   const returnedState = params.get("state");
-  if (!code || !returnedState) {
-    return loginError(request, "invalid_response");
-  }
+
+  // Fingerprint before any early return: the whole point of the trace is to be
+  // able to line up two arrivals of the SAME code, including failed ones.
+  const codeFp = await codeFingerprint(code);
 
   // Validate CSRF state against the cookie set when the flow started.
   let expectedState = "";
-  let callbackUrl = "/admin";
+  let callbackUrl = DEFAULT_POST_LOGIN_PATH;
+  let flow = "none";
+  let flowAgeSeconds: number | string = "-";
   const stateCookie = request.cookies.get(OAUTH_STATE_COOKIE)?.value;
   if (stateCookie) {
     try {
       const parsed = JSON.parse(stateCookie);
       expectedState = String(parsed.state ?? "");
       callbackUrl = toSafeInternalPath(parsed.callbackUrl);
+      flow = String(parsed.flow ?? "none");
+      if (typeof parsed.startedAt === "number") {
+        flowAgeSeconds = Math.max(
+          0,
+          Math.floor(Date.now() / 1000) - parsed.startedAt,
+        );
+      }
     } catch {
       expectedState = "";
     }
   }
-  if (!expectedState || expectedState !== returnedState) {
-    return loginError(request, "state_mismatch");
+
+  const stateOk = Boolean(expectedState) && expectedState === returnedState;
+  // THE line to grep. Two `callback_received` entries sharing one `code_fp`
+  // prove the same authorization code reached this route twice; `flow_age_s`
+  // says how long the user waited between clicking sign-in and landing here,
+  // and `uptime_s` says whether a cold container served it.
+  const trace = {
+    flow,
+    code_fp: codeFp,
+    state_ok: String(stateOk),
+    had_session: String(Boolean(request.cookies.get(SESSION_COOKIE)?.value)),
+    flow_age_s: String(flowAgeSeconds),
+    dest: callbackUrl,
+    ...context,
+  };
+  authLog("callback_received", trace);
+
+  if (!code || !returnedState) {
+    return loginError(request, "invalid_response", trace);
+  }
+  if (!stateOk) {
+    return loginError(request, "state_mismatch", trace);
   }
 
   // Exchange the authorization code for an access token (server-side only).
@@ -97,6 +141,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     access_token?: string;
     error?: string;
   } = {};
+  const exchangeStartedAt = Date.now();
   try {
     const tokenRes = await fetch(GITHUB_TOKEN_URL, {
       method: "POST",
@@ -111,23 +156,41 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     tokenStatus = tokenRes.status;
     tokenJson = await tokenRes.json();
   } catch (err) {
-    console.error(
-      `[auth] github token exchange unreachable: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
-    return loginError(request, "token_exchange_unreachable");
+    authError("token_exchange", {
+      ...trace,
+      ok: "false",
+      outcome: "unreachable",
+      ms: Date.now() - exchangeStartedAt,
+      detail: err instanceof Error ? err.message : String(err),
+    });
+    return loginError(request, "token_exchange_unreachable", trace);
   }
 
   const accessToken = String(tokenJson.access_token ?? "");
+  const exchangeMs = Date.now() - exchangeStartedAt;
   if (!accessToken) {
     // Only GitHub's error slug is logged — never the code, secret or token.
     const ghError = String(tokenJson.error ?? "unknown_error");
-    console.error(
-      `[auth] github token exchange rejected: http=${tokenStatus} error=${ghError}`,
+    authError("token_exchange", {
+      ...trace,
+      ok: "false",
+      outcome: "rejected",
+      http: tokenStatus,
+      error: ghError,
+      ms: exchangeMs,
+    });
+    return loginError(
+      request,
+      TOKEN_ERROR_REASONS[ghError] ?? "token_exchange_failed",
+      trace,
     );
-    return loginError(request, TOKEN_ERROR_REASONS[ghError] ?? "token_exchange_failed");
   }
+  authLog("token_exchange", {
+    ...trace,
+    ok: "true",
+    http: tokenStatus,
+    ms: exchangeMs,
+  });
 
   // Resolve identity. The token is discarded after this block.
   let email = "";
@@ -153,21 +216,28 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       if (primary) email = primary.email;
     }
   } catch {
-    return loginError(request, "identity_lookup_failed");
+    return loginError(request, "identity_lookup_failed", trace);
   }
 
   if (!email) {
-    return loginError(request, "no_verified_email");
+    return loginError(request, "no_verified_email", trace);
   }
 
   const token = await signSession(email, name || email);
   if (!token) {
-    return loginError(request, "session_unavailable");
+    return loginError(request, "session_unavailable", trace);
   }
 
   // Redirect to the original destination on the canonical public origin (never
   // request.url / the internal container origin). If the account is not
   // allowlisted the Proxy bounces it to /unauthorized on arrival.
+  // `allowed` (not the email) is logged — enough to explain a bounce to
+  // /unauthorized without writing an identity into the platform logs.
+  authLog("signed_in", {
+    ...trace,
+    allowed: String(isAllowedEmail(email)),
+  });
+
   const res = NextResponse.redirect(buildPublicUrl(callbackUrl, request));
   res.cookies.set(SESSION_COOKIE, token, sessionCookieOptions());
   res.cookies.set(OAUTH_STATE_COOKIE, "", {

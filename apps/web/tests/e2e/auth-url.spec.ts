@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import type { NextRequest } from "next/server";
 import {
+  DEFAULT_POST_LOGIN_PATH,
   buildPublicUrl,
   getPublicAuthOrigin,
   toSafeInternalPath,
@@ -90,17 +91,41 @@ test.describe("buildPublicUrl", () => {
 });
 
 test.describe("toSafeInternalPath", () => {
-  test("passes through relative admin paths", () => {
+  test("passes through relative paths on a gated surface", () => {
     expect(toSafeInternalPath("/admin")).toBe("/admin");
     expect(toSafeInternalPath("/admin/discovery")).toBe("/admin/discovery");
   });
 
-  test("normalizes empty / non-admin / protocol-relative to /admin", () => {
-    expect(toSafeInternalPath(undefined)).toBe("/admin");
-    expect(toSafeInternalPath("")).toBe("/admin");
-    expect(toSafeInternalPath("/")).toBe("/admin");
-    expect(toSafeInternalPath("/login")).toBe("/admin");
-    expect(toSafeInternalPath("//evil.example/admin")).toBe("/admin");
+  test("keeps /research destinations instead of dropping them to /admin", () => {
+    // The Proxy gates /research/* and sets callbackUrl accordingly, so these
+    // must survive: previously they failed the admin-only check and every
+    // /research sign-in silently landed on /admin.
+    expect(toSafeInternalPath("/research")).toBe("/research");
+    expect(toSafeInternalPath("/research/discover")).toBe("/research/discover");
+    expect(toSafeInternalPath("/research/company/PNDORA")).toBe(
+      "/research/company/PNDORA",
+    );
+  });
+
+  test("keeps a query string on an allowed destination", () => {
+    expect(toSafeInternalPath("/admin?tab=runs")).toBe("/admin?tab=runs");
+    expect(toSafeInternalPath("/research/discover?q=luxury")).toBe(
+      "/research/discover?q=luxury",
+    );
+  });
+
+  test("defaults to the home page, not /admin", () => {
+    expect(toSafeInternalPath(undefined)).toBe(DEFAULT_POST_LOGIN_PATH);
+    expect(toSafeInternalPath(undefined)).toBe("/");
+    expect(toSafeInternalPath("")).toBe("/");
+    expect(toSafeInternalPath("/")).toBe("/");
+  });
+
+  test("normalizes unknown / protocol-relative paths to the home page", () => {
+    expect(toSafeInternalPath("/login")).toBe("/");
+    expect(toSafeInternalPath("//evil.example/admin")).toBe("/");
+    expect(toSafeInternalPath("/\\\\evil.example")).toBe("/");
+    expect(toSafeInternalPath("not-rooted")).toBe("/");
   });
 
   test("reduces a same-origin absolute URL (AUTH_URL host) to its path", () => {
@@ -109,6 +134,7 @@ test.describe("toSafeInternalPath", () => {
     expect(toSafeInternalPath(`${PUBLIC}/admin/discovery`)).toBe(
       "/admin/discovery",
     );
+    expect(toSafeInternalPath(`${PUBLIC}/`)).toBe("/");
   });
 
   test("reduces an internal container URL (0.0.0.0:8080) to its path", () => {
@@ -119,16 +145,18 @@ test.describe("toSafeInternalPath", () => {
     );
   });
 
-  test("rejects a foreign origin (open-redirect guard) → /admin", () => {
+  test("rejects a foreign origin (open-redirect guard) → home", () => {
     process.env.AUTH_URL = PUBLIC;
-    expect(toSafeInternalPath("https://evil.example/admin")).toBe("/admin");
-    expect(toSafeInternalPath("http://evil.example/admin/discovery")).toBe(
-      "/admin",
-    );
+    expect(toSafeInternalPath("https://evil.example/admin")).toBe("/");
+    expect(toSafeInternalPath("http://evil.example/admin/discovery")).toBe("/");
   });
 
-  test("rejects an internal URL that escapes the admin surface → /admin", () => {
+  test("rejects an internal URL that escapes the gated surfaces → home", () => {
     process.env.AUTH_URL = PUBLIC;
-    expect(toSafeInternalPath("https://0.0.0.0:8080/etc/passwd")).toBe("/admin");
+    expect(toSafeInternalPath("https://0.0.0.0:8080/etc/passwd")).toBe("/");
+  });
+
+  test("an explicit fallback still wins over the home default", () => {
+    expect(toSafeInternalPath("/login", "/admin")).toBe("/admin");
   });
 });

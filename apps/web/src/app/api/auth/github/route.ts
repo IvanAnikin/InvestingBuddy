@@ -8,8 +8,13 @@
 
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
-import { OAUTH_STATE_COOKIE, sessionCookieOptions } from "@/lib/auth/session";
+import {
+  OAUTH_STATE_COOKIE,
+  SESSION_COOKIE,
+  sessionCookieOptions,
+} from "@/lib/auth/session";
 import { getBaseUrl, safeCallbackPath } from "@/lib/auth/url";
+import { authLog, newFlowId, requestContext } from "@/lib/auth/log";
 
 export const dynamic = "force-dynamic";
 
@@ -28,6 +33,10 @@ export function GET(request: NextRequest): NextResponse {
     request.nextUrl.searchParams.get("callbackUrl"),
   );
   const state = crypto.randomUUID();
+  // Correlation id for the trace. Kept separate from `state` so the CSRF token
+  // itself is never written to a log.
+  const flow = newFlowId();
+  const startedAt = Math.floor(Date.now() / 1000);
   const baseUrl = getBaseUrl(request);
   const redirectUri = `${baseUrl}/api/auth/callback/github`;
 
@@ -38,10 +47,19 @@ export function GET(request: NextRequest): NextResponse {
   authorize.searchParams.set("state", state);
   authorize.searchParams.set("allow_signup", "false");
 
+  authLog("flow_start", {
+    flow,
+    dest: callbackUrl,
+    // A flow started while a session cookie is already present means the
+    // browser re-entered sign-in without signing out.
+    had_session: String(Boolean(request.cookies.get(SESSION_COOKIE)?.value)),
+    ...requestContext(request),
+  });
+
   const res = NextResponse.redirect(authorize);
   res.cookies.set(
     OAUTH_STATE_COOKIE,
-    JSON.stringify({ state, callbackUrl }),
+    JSON.stringify({ state, callbackUrl, flow, startedAt }),
     { ...sessionCookieOptions(600), maxAge: 600 },
   );
   return res;

@@ -56,12 +56,36 @@ export function buildPublicUrl(path: string, request: NextRequest): URL {
   return new URL(path, `${getPublicAuthOrigin(request)}/`);
 }
 
+/**
+ * Where sign-in lands when no specific destination was requested — the public
+ * home page. A deep link that triggered the sign-in (the Proxy sets
+ * `callbackUrl` when it bounces an unauthenticated request) still wins, so
+ * asking for /admin/discovery while logged out returns you there.
+ */
+export const DEFAULT_POST_LOGIN_PATH = "/";
+
+/**
+ * Route roots a post-login redirect may target, besides the home page. These
+ * are exactly the surfaces the Proxy gates — anything else is not a place a
+ * sign-in can legitimately end up, and is replaced by the fallback.
+ */
+const ALLOWED_CALLBACK_ROOTS = ["/admin", "/research"];
+
 function sanitizePath(raw: string, fallback: string): string {
-  // Reject protocol-relative ("//host") and non-rooted values.
+  // Reject protocol-relative ("//host") and non-rooted values. Backslashes are
+  // normalized to "/" by some browsers, so treat "/\\host" as hostile too.
   if (!raw.startsWith("/") || raw.startsWith("//")) return fallback;
-  // Keep the surface tight: only admin routes are valid post-login targets.
-  if (raw !== "/admin" && !raw.startsWith("/admin/")) return fallback;
-  return raw;
+  if (raw.startsWith("/\\")) return fallback;
+
+  // Compare on the path alone so a query string ("/admin?tab=runs") does not
+  // fail an otherwise valid destination.
+  const [pathname] = raw.split(/[?#]/, 1);
+  if (pathname === DEFAULT_POST_LOGIN_PATH) return raw;
+
+  const onGatedSurface = ALLOWED_CALLBACK_ROOTS.some(
+    (root) => pathname === root || pathname.startsWith(`${root}/`),
+  );
+  return onGatedSurface ? raw : fallback;
 }
 
 function publicAuthHost(): string | null {
@@ -78,19 +102,20 @@ function publicAuthHost(): string | null {
  * Normalize an untrusted callbackUrl to a safe, same-site *path* (always
  * starting with `/`). This prevents both open redirects and internal-origin
  * leakage:
- *   - relative admin paths (`/admin`, `/admin/…`) pass through unchanged;
+ *   - the home page (`/`) and relative paths on a gated surface (`/admin`,
+ *     `/admin/…`, `/research`, `/research/…`) pass through unchanged;
  *   - absolute URLs whose host is the public origin (AUTH_URL) or a known
  *     internal container host are reduced to their `pathname + search`
- *     (re-validated as an admin path);
- *   - everything else (foreign origin, protocol-relative, non-admin path) is
- *     replaced with the fallback (`/admin`).
+ *     (re-validated against the same allowlist);
+ *   - everything else (foreign origin, protocol-relative, unknown path) is
+ *     replaced with the fallback (`/` by default).
  *
  * The returned value is a PATH, never an absolute URL — the caller re-anchors it
  * on the canonical public origin via {@link buildPublicUrl}.
  */
 export function toSafeInternalPath(
   raw: string | null | undefined,
-  fallback = "/admin",
+  fallback: string = DEFAULT_POST_LOGIN_PATH,
 ): string {
   if (!raw) return fallback;
 

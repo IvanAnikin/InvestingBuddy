@@ -11,10 +11,18 @@ import {
   sessionCookieOptions,
 } from "@/lib/auth/session";
 import { buildPublicUrl } from "@/lib/auth/url";
+import { authLog, requestContext } from "@/lib/auth/log";
 
 export const dynamic = "force-dynamic";
 
 function clearAndRedirect(request: NextRequest): NextResponse {
+  // Recorded so a later `flow_start had_session=false` can be read as "the
+  // session expired" rather than "the user signed out".
+  authLog("signed_out", {
+    method: request.method,
+    had_session: String(Boolean(request.cookies.get(SESSION_COOKIE)?.value)),
+    ...requestContext(request),
+  });
   // Build on the canonical public origin (AUTH_URL) — never request.url, which
   // on Azure is the internal container origin (0.0.0.0:8080).
   const res = NextResponse.redirect(buildPublicUrl("/login", request));
