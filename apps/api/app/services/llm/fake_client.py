@@ -157,11 +157,31 @@ class FakeLLMClient(LLMClient):
                 }
             )
 
+        # The INTERPRETATION slot. The fake exercises it for every agent so the
+        # offline path cannot pass while the field that carries the analysis is
+        # empty — which is exactly the state this council was in before it
+        # existed.
+        implications = []
+        if evidence_ids:
+            implications.append(
+                {
+                    "statement": (
+                        f"The {agent} agent's reading of that datapoint and "
+                        "what it implies for the business."
+                    ),
+                    "mechanism": "evidenced datapoint -> economic consequence",
+                    "direction": "neutral",
+                    "citation_ids": cite,
+                    "confidence": "low",
+                }
+            )
+
         output: dict = {
             "agent_name": agent,
             "status": "completed",
             "summary": summary,
             "key_points": key_points,
+            "implications": implications,
             "risks_or_gaps": [
                 {
                     "item": "Evidence is bounded and may be incomplete.",
@@ -177,4 +197,31 @@ class FakeLLMClient(LLMClient):
             output["committee_label"] = (
                 "requires_more_evidence" if evidence_ids else DEFAULT_COMMITTEE_LABEL
             )
+            output["synthesis"] = {
+                "fundamental_setup": (
+                    "mixed" if evidence_ids else "insufficient_evidence"
+                ),
+                "strongest_positive_evidence": [
+                    "A deterministic positive point drawn from the pack."
+                ],
+                "strongest_negative_evidence": [
+                    "A deterministic negative point drawn from the pack."
+                ],
+                "resilience_factors": [
+                    "A deterministic factor limiting downside."
+                ],
+                "fragility_factors": [
+                    "A deterministic factor that could amplify downside."
+                ],
+                "key_debate": (
+                    "Where the fake council's agents would disagree, if they "
+                    "disagreed."
+                ),
+                "what_would_strengthen": ["A development that would strengthen the case."],
+                "what_would_weaken": ["A development that would weaken the case."],
+                "what_to_watch": [
+                    "A specific measurable indicator for this issuer.",
+                    "A second specific measurable indicator.",
+                ],
+            }
         return output

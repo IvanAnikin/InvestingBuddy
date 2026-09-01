@@ -35,10 +35,12 @@ export default function DiscoverPage() {
         <DiscoveryWorkbench />
       </div>
 
+      {/* The council review is part of THIS page now. Saying otherwise was
+          true before PR #178 and is not any more. */}
       <p className="mt-12 border-t border-[color:var(--ib-line)] pt-5 text-xs leading-relaxed text-[color:var(--ib-ink-3)]">
-        Discovery prioritises research, not investments. Ticker-list runs, the
-        discovery council review, the deep field review and the raw per-ticker
-        warning stream remain on the{" "}
+        Discovery prioritises research, not investments. The research council
+        review runs here. Ticker-list runs, the deep field review and the raw
+        per-ticker warning stream remain on the{" "}
         <Link
           href="/admin/discovery"
           className="underline underline-offset-4 hover:text-[color:var(--ib-ink-2)]"

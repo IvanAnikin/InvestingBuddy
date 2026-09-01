@@ -20,12 +20,32 @@ def _utcnow() -> datetime:
 
 
 async def list_reports(
-    db: AsyncSession, limit: int = 50, offset: int = 0
+    db: AsyncSession,
+    limit: int = 50,
+    offset: int = 0,
+    company_id: uuid.UUID | None = None,
 ) -> tuple[list[Report], int]:
-    count_result = await db.execute(select(func.count()).select_from(Report))
+    """List reports newest-first, optionally scoped to ONE company.
+
+    ``company_id`` is a plain read filter on the first-class FK added in
+    migration 012. It exists so a caller can ask "which reports exist for this
+    company?" exactly, instead of paging the global list and filtering client
+    side — a window that silently drops a company's current report as soon as
+    the library grows past one page. It changes nothing about ordering,
+    selection or report content; ``None`` keeps the original global behaviour
+    byte-for-byte.
+    """
+    where = [Report.company_id == company_id] if company_id is not None else []
+    count_result = await db.execute(
+        select(func.count()).select_from(Report).where(*where)
+    )
     total = count_result.scalar_one()
     result = await db.execute(
-        select(Report).order_by(Report.created_at.desc()).offset(offset).limit(limit)
+        select(Report)
+        .where(*where)
+        .order_by(Report.created_at.desc(), Report.id.desc())
+        .offset(offset)
+        .limit(limit)
     )
     return list(result.scalars().all()), total
 

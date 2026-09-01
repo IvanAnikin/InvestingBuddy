@@ -211,7 +211,7 @@ Azure Application Insights
 ### Frontend (`apps/web/`)
 - Next.js 16, React 19, TypeScript, Tailwind CSS v4, App Router
 - Communicates with backend via server-side proxy (Phase 17+) — credentials never in browser
-- Status: **user-facing product experience — a public landing page plus an authenticated `/research` workspace, layered ON TOP of the unchanged `/admin` operational surface**
+- Status: **investor research experience — a public landing page plus an authenticated `/research` workspace that surfaces the discovery council and reads as a research memo, layered ON TOP of the unchanged `/admin` operational surface**
 
 #### Route map
 
@@ -266,19 +266,129 @@ researched" flag: the screening scan writes one for every ticker it touches.
 Both consoles therefore always offer the research action and surface a linked
 report separately.
 
+#### Which report is a company's CURRENT research?
+
+`components/research/reportResolution.ts` is the single answer, and it uses only
+the backend's own semantics:
+
+1. `final_report_version` is the legacy marker — the final-report generator
+   always stamps one, so a NULL version is a legacy Phase-9 draft. This is
+   exactly what the API's `report_kind: "final" | "legacy"` already means.
+2. Structured research has parseable `report_content`.
+3. "Current" is the newest such report FOR THAT COMPANY, ordered
+   `(created_at DESC, id DESC)` — the same ordering `generate_from_company`
+   uses server side.
+
+Supersession requires a company link on both reports: an unlinked report is
+never claimed to be superseded and never supersedes. The cohort comes from
+`GET /api/v1/reports?company_id=…`, a plain read filter — the live database
+holds ~1,000 reports across 19 companies, so filtering a 50-row page client side
+would silently lose a company's current report.
+
+Every reader-facing surface uses this: discovery candidate CTAs
+(`Run full research` / `Open research report` / a legacy artefact named as one),
+the research library's default view, and the report page's "Open current
+research" action on a legacy or superseded artefact. Nothing is deleted or
+rewritten — an old report still renders itself, it is simply not presented as
+the current state.
+
 #### Product presentation layer
 
-`/research/reports/[id]` derives its view (`components/research/reportView.ts`)
-from the same structured `report_content` the admin renderer reads. It derives
-no new facts. Specifically it does NOT reconcile figures the backend reported as
-conflicting, does not fill a missing slot from a neighbouring one, does not
-average the evidence-quality dimensions, and does not merge annual with interim
-reporting — `<field>_primary_filing` and `<field>_current_period` render in
-separate, explicitly non-comparable columns, and the part-year column carries a
-standing "not annualised" statement.
+`/research/reports/[id]` derives its view (`components/research/reportView.ts`
+and `components/research/reportSections.ts`) from the same structured
+`report_content` the admin renderer reads. It derives no new facts. Specifically
+it does NOT reconcile figures the backend reported as conflicting, does not fill
+a missing slot from a neighbouring one, does not average the evidence-quality
+dimensions, and does not merge annual with interim reporting —
+`<field>_primary_filing` and `<field>_current_period` render in separate,
+explicitly non-comparable columns, and the part-year column carries a standing
+"not annualised" statement.
 
 A trend series the backend marked `not_comparable` is listed with its reason
 rather than charted, and a single-period series is never drawn as a line.
+
+The reading order is the research, then the evidence behind it, then the
+machinery: summary → key financials → historical performance → business quality
+→ recent developments → bull → bear → key risks → council → red team → chair →
+open questions → research confidence → evidence (collapsed) → technical view.
+Three routing rules keep that order honest:
+
+- **A company risk and a research limitation are different things.**
+  `risk_analysis.business_risks` / `financial_risks` / `market_risks` /
+  `regulatory_geopolitical_risks` are the company's; `data_quality_risks` and
+  `source_quality_risks` are limits on what the research could establish and are
+  reported under research confidence. On live reports the second group is 10–12
+  entries against 5–8 in the first, so filing them together made a missing
+  EBITDA field read like a hazard the business faces.
+- **A record-completeness entry is not an argument.** The deterministic layer
+  writes fixed forms — `Blocking gap: Required field missing: identity.isin`,
+  `Legal entity verification not complete: …`, bare dotted machine paths — into
+  `bear_case.key_unknowns` and the chair's `primary_open_questions`.
+  `isRecordGapStatement` matches on that FORM (verified against four live
+  issuers: it caught every record entry and none of their 137 council-written
+  gaps) and routes them to research confidence. Nothing is dropped.
+- **Open research questions come from the COUNCIL**, red team first, then each
+  analyst in run order. The chair section's `primary_open_questions` is
+  assembled deterministically from the bear case's key unknowns and the bull
+  case's missing evidence; on three of four live issuers its FIRST entry was
+  `Blocking gap: Required field missing: identity.isin`. It is used only when no
+  council ran.
+
+Source-tier and source-type codes (`T1_primary_filing`, `company_ir`) are
+translated for DISPLAY only — the stored value is unchanged and stays on the
+element as its `title`.
+
+#### Economic signal vs research limitation — one routing rule
+
+`components/research/investorSignal.ts` decides what KIND every surfaced
+statement is, and every investor-facing section goes through it. Nine kinds:
+economic support, economic pressure, resilience, fragility, catalyst, company
+risk, investor question, research limitation, technical gap. No score, no model.
+
+It decides in three steps — record form, then wording, then role:
+
+- `isRecordGapStatement` → technical gap.
+- `isEvidenceStatement` → research limitation. Four patterns: an ABSENCE word
+  beside an EVIDENCE noun; an evidence-subject phrase with no absence
+  ("coverage rests on the issuer's own channel"); an EPISTEMIC CONSEQUENCE,
+  where what is limited is assessment, confidence or comparability rather than
+  the business; and evidence PRESENCE framed as a finding ("closing price is
+  available as a factual data point").
+- The **Source Quality Critic** is a research limitation whatever it writes.
+  Source weakness changes CONFIDENCE in a conclusion; it does not change a
+  company's value.
+
+Only then does the slot decide. Nothing is dropped — every routed statement is
+reported under research confidence, and the committee-synthesis section renders
+its four lists AFTER routing so it cannot contradict the summary on the same
+page.
+
+Verified on live council output for PNDORA, CFR, MRNA and MONC: zero
+source/data-gap statements in either economic column, zero Source Critic
+statements in any economic section, and 89 of 90 `risks_or_gaps` items routed to
+research confidence — which is why "Open research questions" is sourced from the
+chair's `key_debate` rather than from those gaps. See ADR-042.
+
+#### The run-level discovery council on the reader-facing surface
+
+`/research/discover` reads and, on explicit request, starts the EXISTING
+run-level council (`GET`/`POST /market-discovery/runs/{id}/council-review`) —
+the same job, endpoint and persisted result the admin console uses. There is no
+second council and no prompt in the browser. Mounting the page only READS; a
+council run costs tokens, so it starts when a person asks.
+
+`components/research/discoveryCouncilView.ts` reshapes that payload without
+adding to it:
+
+- The chair emits BUCKETS (`research_next` / `monitor_for_evidence` /
+  `insufficient_data` / `reject_for_now`), not an ordered list — its JSON
+  contract has no rank field. Candidates render in the order returned and the
+  absence of an ordering is stated rather than filled in.
+- Disagreement is two agents assigning DIFFERENT `internal_action` values to the
+  same candidate — one closed vocabulary compared like for like, never two
+  pieces of prose held against each other.
+- Internal actions render as research priority ("Highest research priority"),
+  never as an investment action.
   - `src/proxy.ts` — Next 16 **Proxy** (renamed `middleware`, Node runtime); gates `/admin/:path*` (→ `/login` unauthenticated, `/unauthorized` when not allowlisted) and `/api/admin/proxy/:path*` (401/403); `/`, `/login`, `/unauthorized`, `/api/auth/*`, `/api/version` and static assets stay public
   - `src/lib/auth/*` — dependency-free HMAC-signed httpOnly session cookie (`session.ts`), server-session reader (`server.ts`), forwarded-host/callback URL helpers (`url.ts`)
   - `/api/auth/github` + `/api/auth/callback/github` — GitHub OAuth (secret used server-side only; access token read once for the verified email then discarded); `/api/auth/signout`; `/api/auth/dev-login` — deterministic sign-in gated on `AUTH_TEST_MODE` (local/CI only, 404 in prod)

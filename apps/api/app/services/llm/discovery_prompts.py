@@ -68,7 +68,14 @@ JSON_CONTRACT = (
     '  "candidate_notes": [\n'
     '    {"candidate_ref": "C1", "ticker": "...", "exchange": "...", '
     '"internal_action": "research_next|monitor_for_evidence|insufficient_data|reject_for_now", '
-    '"rationale": "<=150 chars, factual, no recommendation", '
+    '"rationale": "<=150 chars: WHY this candidate, in business terms", '
+    '"upside_drivers": ["what could make this business more valuable"], '
+    '"downside_drivers": ["what could make it less valuable"], '
+    '"resilience": "<=120 chars: what limits downside here", '
+    '"key_financial_signal": "<=120 chars: the one number that matters most", '
+    '"strongest_dimension": "growth_quality|profitability|cash_generation|'
+    'balance_sheet_resilience|business_quality|catalysts|downside_risk|'
+    'valuation_context|evidence_confidence", '
     '"citation_ids": ["C1","R2"], "confidence": "low|medium|high"}\n'
     "  ],\n"
     '  "run_notes": [\n'
@@ -82,11 +89,36 @@ JSON_CONTRACT = (
 )
 
 
+# What the comparison is FOR. The same defect the company council had: the
+# per-candidate rationales were about data coverage, so the comparison a reader
+# saw was "which candidate has fewer missing fields" — a fact about the
+# pipeline, not about the businesses.
+COMPARISON_CONTRACT = (
+    "WHAT THE COMPARISON IS FOR:\n"
+    "A reader is deciding where to spend real research time. Compare these "
+    "candidates as BUSINESSES, on the dimensions that decide that: quality of "
+    "growth, profitability, cash generation, balance-sheet resilience, business "
+    "quality, catalysts, the major downside risks, valuation context where "
+    "observable, and how confident the evidence makes you.\n"
+    "Missing fields, source counts and blocking-gap counts REDUCE CONFIDENCE. "
+    "They are not the comparison. 'Candidate A has 4 missing fields and "
+    "candidate B has 12' tells a reader nothing about which business is worth "
+    "researching — say what each one IS and what could make it more or less "
+    "valuable, then let evidence confidence qualify that.\n"
+    "You may use directional language about business value: could support or "
+    "pressure future equity value, strengthens or weakens the earnings "
+    "outlook, improves or erodes downside resilience. You may NOT produce "
+    "BUY/SELL/HOLD/WATCH, a price target, a fair value, or a return "
+    "projection, and internal_action remains a research-workflow state."
+)
+
 OUTPUT_DISCIPLINE = (
     "OUTPUT DISCIPLINE:\n"
     "- Be terse and respect every per-field length cap above. A reply that runs "
     "past the output budget is cut off mid-object and is then unusable.\n"
     "- Emit at most ONE candidate_notes entry per candidate.\n"
+    "- At most TWO upside_drivers and TWO downside_drivers per candidate, each "
+    "<=100 chars. Name the biggest ones; a long list is not a better answer.\n"
     "- next_source_tasks must name sourcing venues that actually apply to THIS "
     "run's jurisdiction, as stated in the evidence pack's run_context "
     "(region / country) and the candidates' own exchange / country fields. Do "
@@ -101,6 +133,7 @@ def _base_header(agent_name: str, role: str) -> str:
         f"run's whole candidate set and decides internal research priority.\n\n"
         f"{INJECTION_GUARD}\n\n"
         f"{SAFETY_RULES}\n\n"
+        f"{COMPARISON_CONTRACT}\n\n"
         f"{JSON_CONTRACT}\n\n"
         f"{OUTPUT_DISCIPLINE}"
     )
@@ -119,12 +152,15 @@ _ROLE_INSTRUCTIONS: dict[str, tuple[str, str]] = {
     ),
     AGENT_CANDIDATE_PRIORITIZATION: (
         "Candidate Prioritization Analyst",
-        "Assign each candidate an internal_action using ONLY internal scores, "
-        "evidence sufficiency, data gaps, source quality and thesis relevance "
-        "from the pack. Allowed actions: research_next, monitor_for_evidence, "
-        "insufficient_data, reject_for_now. Give a short cited rationale per "
-        "candidate. Never use a rating, price target, fair value or "
-        "upside/downside.",
+        "Decide which candidates deserve deeper research FIRST, and say why in "
+        "business terms. For each candidate name what could drive its value "
+        "higher (upside_drivers), what could pressure it (downside_drivers), "
+        "what limits its downside (resilience), the single number that matters "
+        "most (key_financial_signal), and the dimension it stands out on "
+        "(strongest_dimension). Then assign internal_action: research_next, "
+        "monitor_for_evidence, insufficient_data, reject_for_now.\n"
+        "Internal scores and data coverage inform your CONFIDENCE, not your "
+        "rationale. Never use a rating or a price target.",
     ),
     AGENT_NOVELTY_COVERAGE: (
         "Novelty / Coverage-Gap Analyst",
@@ -177,16 +213,22 @@ def discovery_chair_system_prompt() -> str:
     return (
         f"{header}\n\n"
         "YOUR TASK: Produce the final INTERNAL run decision from the evidence and "
-        "the other agents' summaries provided to you. In addition to the JSON "
-        'shape above, set a "run_quality" field to EXACTLY ONE of these internal '
-        "labels (NOT a recommendation):\n"
+        "the other agents' summaries provided to you.\n\n"
+        "Your summary should characterise the COHORT as an investor would read "
+        "it: which names look strongest for deeper research and why, which look "
+        "most resilient, which carry the highest fundamental risk, and where "
+        "the evidence genuinely cannot distinguish between them. Only claim a "
+        "category the evidence supports — an empty category is a finding, an "
+        "invented one is not.\n\n"
+        'In addition to the JSON shape above, set a "run_quality" field to '
+        "EXACTLY ONE of these internal labels (NOT a recommendation):\n"
         "  strong | adequate | thin | failed\n"
         "Populate candidate_notes with each candidate you place into "
         "research_next / monitor_for_evidence / insufficient_data / reject_for_now "
-        "(internal_action), and use next_source_tasks for concrete sourcing "
-        "follow-ups. Never use BUY, SELL, HOLD or WATCH. Choose run_quality "
-        "'thin' or 'failed' when the evidence is too sparse to support "
-        "prioritization."
+        "(internal_action), each with its business-facing fields, and use "
+        "next_source_tasks for concrete sourcing follow-ups. Never use BUY, "
+        "SELL, HOLD or WATCH. Choose run_quality 'thin' or 'failed' when the "
+        "evidence is too sparse to support prioritization."
     )
 
 

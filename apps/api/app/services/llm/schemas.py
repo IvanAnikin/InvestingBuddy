@@ -75,6 +75,37 @@ ALLOWED_COMMITTEE_LABELS: frozenset[str] = frozenset(
 )
 DEFAULT_COMMITTEE_LABEL = "insufficient_data"
 
+# ---------------------------------------------------------------------------
+# Investment-implication vocabulary
+#
+# The council's persisted output was measured against four live issuers before
+# this was added: 8% of its bullets were economic interpretation, 51% were bare
+# figure restatements and 41% were statements about what data was missing. All
+# eight agents produced near-identical text, because the only slots available
+# were a "factual" summary, citable FACTS (``key_points``) and everything else
+# (``risks_or_gaps``). There was nowhere to say what the evidence MEANS.
+#
+# ``AgentImplication`` is that slot. It is kept SEPARATE from ``key_points`` on
+# purpose: a fact and an interpretation of that fact are different kinds of
+# statement and a research reader has to be able to tell them apart.
+# ---------------------------------------------------------------------------
+
+# Which way an implication points for the business/equity. These are directions
+# of ANALYSIS, never actions: "supportive" means the evidence supports a
+# stronger fundamental setup, not that anything should be bought.
+ALLOWED_IMPLICATION_DIRECTIONS: frozenset[str] = frozenset(
+    {"supportive", "pressuring", "mixed", "neutral"}
+)
+DEFAULT_IMPLICATION_DIRECTION = "neutral"
+
+# The chair's characterisation of the fundamental setup. A research
+# characterisation, NOT a recommendation — there is no BUY/SELL/HOLD analogue
+# here and the vocabulary is closed so one cannot be introduced by drift.
+ALLOWED_FUNDAMENTAL_SETUPS: frozenset[str] = frozenset(
+    {"constructive", "mixed", "cautious", "insufficient_evidence"}
+)
+DEFAULT_FUNDAMENTAL_SETUP = "insufficient_evidence"
+
 # Agent lifecycle statuses.
 STATUS_COMPLETED = "completed"
 STATUS_FAILED = "failed"
@@ -224,6 +255,45 @@ class AgentRiskGap(BaseModel):
     severity: str = "low"  # low | medium | high
 
 
+class AgentImplication(BaseModel):
+    """What the cited evidence MEANS for the business or the equity.
+
+    Deliberately not a ``key_point``: ``statement`` is an interpretation, and a
+    reader has to be able to tell it apart from the figure it interprets.
+    ``mechanism`` carries the causal chain the interpretation rests on (e.g.
+    "margin expansion with flat capex → higher FCF conversion"), which is what
+    makes the reasoning checkable rather than merely assertive.
+    """
+
+    statement: str
+    mechanism: str = ""
+    # One of ALLOWED_IMPLICATION_DIRECTIONS.
+    direction: str = DEFAULT_IMPLICATION_DIRECTION
+    citation_ids: list[str] = Field(default_factory=list)
+    confidence: str = "low"  # low | medium | high
+
+
+class CommitteeSynthesis(BaseModel):
+    """The chair's investment-facing synthesis (committee_chair only).
+
+    Every field is a research characterisation. ``fundamental_setup`` is the
+    closest thing to a verdict the council may produce and its vocabulary is
+    closed — there is no rating in it, and none can be introduced by drift.
+    """
+
+    # One of ALLOWED_FUNDAMENTAL_SETUPS.
+    fundamental_setup: str = DEFAULT_FUNDAMENTAL_SETUP
+    strongest_positive_evidence: list[str] = Field(default_factory=list)
+    strongest_negative_evidence: list[str] = Field(default_factory=list)
+    resilience_factors: list[str] = Field(default_factory=list)
+    fragility_factors: list[str] = Field(default_factory=list)
+    key_debate: str = ""
+    what_would_strengthen: list[str] = Field(default_factory=list)
+    what_would_weaken: list[str] = Field(default_factory=list)
+    # Specific, measurable indicators tied to THIS issuer — never a checklist.
+    what_to_watch: list[str] = Field(default_factory=list)
+
+
 class CouncilAgentOutput(BaseModel):
     """Structured output from one council agent — the only shape ever stored."""
 
@@ -231,11 +301,17 @@ class CouncilAgentOutput(BaseModel):
     status: str = STATUS_COMPLETED  # completed | failed | skipped
     summary: str = ""
     key_points: list[AgentKeyPoint] = Field(default_factory=list)
+    # What those facts MEAN. Absent on reports generated before this field
+    # existed, which is a normal state the readers treat as "no interpretation
+    # recorded" rather than as an error.
+    implications: list[AgentImplication] = Field(default_factory=list)
     risks_or_gaps: list[AgentRiskGap] = Field(default_factory=list)
     unsupported_claims: list[str] = Field(default_factory=list)
     safety_notes: list[str] = Field(default_factory=list)
     # committee_chair only — one of ALLOWED_COMMITTEE_LABELS.
     committee_label: str | None = None
+    # committee_chair only — the investment-facing synthesis.
+    synthesis: CommitteeSynthesis | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return self.model_dump(mode="json")

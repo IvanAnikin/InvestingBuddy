@@ -122,12 +122,19 @@ def test_max_supported_company_count_is_not_clipped_by_the_cap() -> None:
     assert chair < app_settings.llm_field_review_max_output_tokens_cap
 
 
+# The company-council budget that failed live for a seven-company field review.
+# A HISTORICAL constant, not the current setting: `llm_max_output_tokens` has
+# since risen with the investment-analysis contract, and reading it here would
+# make this assertion drift with an unrelated change instead of pinning the
+# value it is about.
+_OLD_FLAT_BUDGET = 1200
+
+
 def test_seven_company_chair_budget_exceeds_the_old_flat_value() -> None:
     """C: the exact live-failure shape now gets materially more room."""
-    old_flat = app_settings.llm_max_output_tokens  # 1200, the failing value
     chair = field_review_max_output_tokens(7, is_chair=True)
-    assert chair > old_flat
-    assert chair >= 4 * old_flat
+    assert chair > _OLD_FLAT_BUDGET
+    assert chair >= 4 * _OLD_FLAT_BUDGET
 
 
 def test_prompt_contract_bounds_per_company_output() -> None:

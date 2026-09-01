@@ -943,10 +943,19 @@ def test_38_council_over_document_evidence_is_safe():
     assert result.llm_used is True
     report = result.to_report_dict()
     assert report["human_review_required"] is True
-    # No forbidden recommendation/valuation vocabulary anywhere in the output.
-    import json
 
-    assert not _has_forbidden(json.dumps(report))
+    # Scanned with the PRODUCTION safety gate, not the crude substring list this
+    # module uses for parsed document facts.
+    #
+    # The two differ on purpose, and the difference is the point. The gate bans
+    # the projection phrasings ("upside of", "downside to") and every rating
+    # token, but deliberately permits the bare words — "downside risks" and
+    # "downside resilience" are ordinary research prose, and the council is now
+    # expected to assess exactly that. A test stricter than the policy it
+    # guards would forbid the language the product is required to produce.
+    from app.services import safety_terms
+
+    assert safety_terms.scan_value(report) == []
 
 
 def test_39_council_receives_cited_evidence_ids():

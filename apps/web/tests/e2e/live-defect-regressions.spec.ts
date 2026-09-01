@@ -18,6 +18,23 @@ import { adminTest as test } from "../support/auth";
 
 const PERIODS_REPORT_ID = "00000000-0000-0000-0000-0000000000a3";
 
+/**
+ * Open every <details> on the page.
+ *
+ * The reader-facing report now discloses evidence and the machine-level gap
+ * list progressively, which is the point — but a collapsed <details> has no
+ * layout at all, so a containment check run against one measures nothing. This
+ * defect class (a long unbroken external string pushing the page sideways at
+ * 390px) is only observable once the content is actually laid out.
+ */
+async function expandAllDisclosures(page: import("@playwright/test").Page) {
+  await page.evaluate(() => {
+    for (const d of Array.from(document.querySelectorAll("details"))) {
+      (d as HTMLDetailsElement).open = true;
+    }
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Defect 1 — hydration must not depend on the host's locale or time zone
 // ---------------------------------------------------------------------------
@@ -173,13 +190,19 @@ test.describe("Mobile containment at 390px", () => {
     await page.goto(`/research/reports/${PERIODS_REPORT_ID}`);
     await expect(page.getByTestId("report-header")).toBeVisible();
 
+    // Evidence and the machine-level gaps are now behind disclosures. They must
+    // be OPENED before measuring: a collapsed <details> has no layout, so an
+    // unopened one would let this containment check pass without ever laying
+    // out the long strings it exists to catch.
+    await expandAllDisclosures(page);
+
     // The fixtures this asserts against are the point: an untitled document
     // whose only label is a 140-character CDN URL, and dotted field paths of
     // 70+ characters. Without them this assertion passes vacuously.
-    await expect(page.getByTestId("evidence-panel")).toContainText(
+    await expect(page.getByTestId("evidence-disclosure")).toContainText(
       "example-issuer.a.bigcontent.io",
     );
-    await expect(page.getByTestId("missing-information")).toContainText(
+    await expect(page.getByTestId("technical-gaps")).toContainText(
       "consolidated_statement_of_comprehensive_income",
     );
 
@@ -212,7 +235,8 @@ test.describe("Mobile containment at 390px", () => {
     page,
   }) => {
     await page.goto(`/research/reports/${PERIODS_REPORT_ID}`);
-    const panel = page.getByTestId("evidence-panel");
+    await expandAllDisclosures(page);
+    const panel = page.getByTestId("evidence-disclosure");
     await expect(panel).toBeVisible();
 
     // An untitled document is labelled from its own URL — host plus the
@@ -250,7 +274,8 @@ test.describe("Containment is wrapping, not clipping", () => {
   }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(`/research/reports/${PERIODS_REPORT_ID}`);
-    await expect(page.getByTestId("evidence-panel")).toBeVisible();
+    await expandAllDisclosures(page);
+    await expect(page.getByTestId("evidence-disclosure")).toBeVisible();
 
     const hidden = await page.evaluate(() => {
       const bad: string[] = [];
@@ -268,7 +293,7 @@ test.describe("Containment is wrapping, not clipping", () => {
     // taller than one line, and it does not scroll inside its own box.
     const box = await page.evaluate(() => {
       const a = document.querySelector(
-        '[data-testid="evidence-panel"] a[href*="bigcontent.io"]',
+        '[data-testid="evidence-disclosure"] a[href*="bigcontent.io"]',
       ) as HTMLElement | null;
       if (!a) return null;
       const s = getComputedStyle(a);

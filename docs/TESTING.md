@@ -118,10 +118,14 @@ cd apps/api && .venv/bin/pytest tests/ -q && .venv/bin/ruff check . && echo "ALL
 | `home.spec.ts` | The public landing page: positioning copy, both primary CTAs, no forbidden trading/publishing control, and that the admin entry appears only for a signed-in allowlisted admin. |
 | `research-experience.spec.ts` | Access control on every `/research` route, the four research surfaces, the round trip between the reader-facing and technical report views, and that all existing `/admin` routes still render. |
 | `research-responsive-a11y.spec.ts` | Horizontal-overflow check at 1440 / 1280 / 768 / 390, the mobile navigation, `prefers-reduced-motion`, console-error freedom, and keyboard access (skip link, arrow-key tablists). |
-| `visual-audit.spec.ts` | Programmatic legibility audit: WCAG AA contrast against the effective composited background, text clipped by its own box, controls without an accessible name, and heading order. |
+| `visual-audit.spec.ts` | Programmatic legibility audit: WCAG AA contrast against the effective composited background, text clipped by its own box, controls without an accessible name, and heading order — on static pages AND on the driven states (council review, candidate comparison, every disclosure open) that a page visit alone never reaches. |
 | `visual-qa.spec.ts` | Screenshot capture for human review. Skipped unless `IB_SHOTS` is set. |
 | `live-defect-regressions.spec.ts` | The two defects that reached production in PR #176: SSR/browser hydration mismatch from host-dependent date formatting (browser contexts pinned to Europe/Prague AND Pacific/Kiritimati), and horizontal overflow at 390px from long unbroken external strings. Both were verified by reverting the fix and confirming the test fails. |
 | `workflow-contract.spec.ts` | **CONTRACT** — what each console puts on the wire. Captures the request body in the browser and asserts the company identity, provider, flags, thesis text and inferred filters, plus parity between `/admin/*` and `/research/*`, honest failure states, and that a linked report is not mistaken for a completed analysis. |
+| `investment-decision-content.spec.ts` | Whether the research is DECISION-USEFUL: the summary opens with what could raise and pressure value, the setup is characterised without being rated, what-to-watch names this issuer's own figures, resilience is separated from fragility and neither is scored, each agent contributes an interpretation with its mechanism, a data gap is never filed as a business risk, machine paths stay collapsed, council numbers cannot contradict the report's canonical figures, and discovery compares businesses rather than gap counts. |
+| `investment-decision-content.spec.ts` (Signal routing block) | The economic/limitation boundary: the source critic cannot populate an economic section, an evidence statement never reads as a value driver, a research limitation never appears as a company risk, missing EBITDA stays in confidence, open questions are about the business, gap counts and disclosure coverage are not primary comparison columns, the new chair synthesis beats the legacy fallback, and the investor financial view contains no `_current_period` / `_primary_filing` / `T1_primary_filing`. |
+| `landing-reveal-audit.spec.ts` | Whether every scroll-revealed landing section actually becomes visible on a normal scroll at 1440 / 1280 / 768 / 390, and that a reduced-motion visitor never receives a hidden one. Distinguishes a real reveal bug from a full-page-capture artifact. |
+| `investor-research-experience.spec.ts` | The discovery council on the reader-facing surface (it appears when a review is persisted, it is never started by a page load, the trigger uses the existing backend action, it stays tied to its own `discovery_run_id`, it presents bands rather than an invented ranking, and disagreement comes from differing `internal_action` values); the three candidate CTA states; and the report's reading order — every agent's conclusion, red team, chair, questions sourced from the council, company risk kept apart from research limitation, record entries routed to research confidence, evidence progressively disclosed, and the annual/current separation intact. Plus overflow at 1440 / 1280 / 768 / 390 **with every disclosure open**. |
 
 ### Mock mode vs real integration
 
@@ -158,6 +162,32 @@ the conditions they need. Both now have fixtures and tests:
   `PERIODS_REPORT_ID` fixture now carries an untitled document with a long
   percent-encoded URL, an untitled appendix source, and 70-character dotted
   field paths.
+- **Content behind a disclosure.** A collapsed `<details>` has no layout, so a
+  containment or contrast check run against one measures nothing while passing.
+  Every such check opens all disclosures first. (`toContainText` reads collapsed
+  DOM text and would pass either way — that is how an empty council panel once
+  shipped green.)
+- **A prompt change cannot be measured on a starved pack.** The first attempt
+  to measure the updated council re-ran it against an evidence pack built from
+  `report_content` alone — 8 items, no structured facts. Every agent correctly
+  answered "there is not enough data", which measured the harness, not the
+  prompts. Pass the same `historical_facts` the live pipeline passes.
+- **A guard that suppresses content must be validated on real prose.** The
+  numeric-consistency check flagged 13 of 111 real council sentences before it
+  was fit to ship, every one a false positive: period tokens read as numbers
+  (`H1` → 1), a trailing comma making `2026,` look like a magnitude, every
+  number in a sentence tested against the one metric it named, and a canonical
+  set that held only the headline slots while the council cited history the
+  report also carries. Verify against real output, count the false positives,
+  and only then let it withhold anything.
+- **Fixtures agree with the derivation that wrote them.** A fixture authored
+  alongside a view model cannot disagree with it. The record-gap routing rules
+  were written from live report payloads, not from fixtures: the first
+  implementation sourced "open research questions" from the chair's
+  `primary_open_questions`, which fixtures made look correct and which on three
+  of four live issuers opened with
+  `Blocking gap: Required field missing: identity.isin`. Read real payloads
+  read-only before trusting a derivation about their shape.
 
 **Two dev servers must not share `apps/web/.next`.** `next.config.ts` sets
 `lockDistDir: false`, which disables the guard, and running the Playwright dev

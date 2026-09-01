@@ -2737,3 +2737,341 @@ fail while the Europe/Prague case still passed: Prague only flips the calendar
 day for timestamps in the last hours of a UTC day, and the fixtures' timestamps
 sit at 10:00 UTC. Sampling one nearby zone would have reproduced the original
 blind spot. Divergence tests need to span the extremes, not merely differ.
+
+---
+
+## ADR-040: The Reader Gets the Research; the Record Is Reported as the Record
+
+**Date:** 2026-08-31
+**Status:** Accepted
+
+### Context
+
+ADR-037 built a reader-facing surface that refuses to flatten the research
+state. Real use showed it succeeded at that and stopped short of the point:
+what it presented was still, largely, what the PIPELINE did.
+
+Two things were concretely wrong, both verified against the live database
+(~1,000 reports, 19 companies) rather than against fixtures:
+
+**Discovery had a council and never showed it.** The run-level discovery council
+has existed since Phase 28B. It reads a whole candidate set, places each
+candidate into an internal research-priority band with a cited reason, records
+where its agents disagreed, and writes a chair synthesis — and all of that was
+visible only in `/admin/discovery`. The reader-facing page showed candidate
+cards and an internal score, so a person could see WHICH companies a run
+surfaced and nothing about what the council made of them.
+
+**The report gave the wrong things prominence.** Measured on live PNDORA / CFR /
+MRNA / MONC reports: `risk_analysis` carried 1 business risk against 7–8
+source-quality risks, and "Key risks" showed them as one list. The chair's
+`primary_open_questions` — the section a reader would take as "what remains
+unresolved about this company" — opened with
+`Blocking gap: Required field missing: identity.isin` on three of four issuers.
+`bear_case.key_unknowns` was six-sevenths machine record entries. Meanwhile
+`business_moat` (500–620 characters of substance per issuer), every agent's
+`key_points` and `risks_or_gaps`, `bull_case.assumptions` and
+`bear_case.potential_headwinds` were persisted and rendered nowhere.
+
+The report was not missing research. It was showing the record instead of it.
+
+### Decision
+
+**Reuse the council; never build a second one.** `/research/discover` reads and,
+on explicit request, starts the EXISTING run-level council through the same
+endpoint, job and persisted result the admin console uses. There is no second
+prompt, no browser-side summarisation, and no council run triggered by a page
+load — a council costs real tokens, so it starts when a person asks.
+
+**Present the council's own shape, and say what shape that is.** The chair emits
+BUCKETS, not a ranking; its JSON contract has no rank field. Candidates render
+in the order returned, and the UI states that the council does not rank within a
+band rather than numbering them as though it did. Disagreement is defined as two
+agents assigning different `internal_action` values to the same candidate — one
+closed vocabulary compared like for like. Comparing two pieces of agent prose
+and calling the difference a disagreement would manufacture the feature.
+
+**Route each statement to the section that describes what it is.** Three splits,
+all deterministic:
+
+- A risk to the BUSINESS and a limit on the RESEARCH are different claims.
+  `data_quality_risks` and `source_quality_risks` move out of "Key risks" and
+  into research confidence.
+- A record-completeness entry is not an argument. The deterministic layer writes
+  fixed, generated forms — `Blocking gap: …`, `Required section absent: …`,
+  `Legal entity verification not complete: …`, bare dotted machine paths. A
+  predicate matching that FORM (not its meaning) routes them out of the bear
+  case and the open-questions list into research confidence, where they are
+  reported in full.
+- Open research questions come from the COUNCIL — red team first, then each
+  analyst in run order — because those are written about the business. The chair
+  section's list is assembled deterministically from bear-case unknowns and
+  bull-case missing evidence, and is used only when no council ran.
+
+**Progressive disclosure is about weight, never about content.** Evidence,
+sources, channels and the exhaustive machine-gap list are all still present,
+complete and unedited; they sit behind one disclosure instead of interrupting
+the reading flow. Source-tier codes are translated for DISPLAY only — the stored
+value is unchanged and remains on the element as its `title`.
+
+**"Current research" is resolved, not guessed.** A candidate's
+`analysis_report_id` points at whatever the screening scan linked, which for 126
+of the newest 200 live reports is a legacy pre-council draft. The resolution
+uses the backend's own semantics — `final_report_version` as the legacy marker,
+parseable `report_content` as the structured test, newest-for-that-company by
+`(created_at DESC, id DESC)` — over a company-scoped read, and never a global
+newest, a title match or the first row returned.
+
+### Consequences
+
+**Positive.** The council's judgement reaches the person it was produced for.
+Every agent's conclusion, the red team's challenge and the chair's synthesis are
+readable without entering the admin console. A candidate card no longer offers a
+pre-council draft as though it were research, and a reader who lands on an old
+artefact is told so and given the current one. The record is still complete: it
+is reported as the record.
+
+**Negative / accepted.** The routing predicates are matched against the
+deterministic layer's current output FORMS. If that layer changes its wording,
+a record entry would read as an analytical one again — which is why the
+predicate matches generated prefixes and machine-path shapes rather than
+keywords, and why it was validated against four live issuers before being
+trusted. Reader-facing "open questions" now depend on the council having run;
+where it did not, the section falls back to a list that is honestly weaker.
+And resolving a candidate's current report costs two reads per candidate, which
+is the price of not guessing.
+
+**One backend change, and only one.** `GET /api/v1/reports` gained an optional
+`company_id` read filter. Paging the global list and filtering client side is a
+window, and with ~1,000 reports on one company-heavy environment that window
+silently loses a company's current report. Nothing else server-side moved: no
+migration, no new endpoint, no change to research semantics, ingestion, period
+normalisation, council architecture, discovery scoring or report generation.
+
+**What the live data taught.** The first implementation sourced open questions
+from the chair's `primary_open_questions` because that is what the field is
+called. Fixtures made it look right. The live reports made it obviously wrong —
+the top six questions for PNDORA were four blocking-gap records and a valuation
+input list. A fixture written by the same person who writes the derivation will
+agree with it; only real payloads disagree.
+
+---
+
+## ADR-041: The Council's Job Is Interpretation, and Its Output Contract Says So
+
+**Date:** 2026-08-31
+**Status:** Accepted
+
+### Context
+
+ADR-040 put the research first in the reading order and routed the record-keeping
+out of the argument sections. Real use showed the ordering was right and the
+CONTENT underneath it was still not decision-useful: the agents were describing
+the data package rather than the business.
+
+Measured on the live persisted council output for PNDORA, CFR, MRNA and MONC —
+252 bullets across eight agents — **8% were economic interpretation, 51% were
+bare restatements of figures already in the report, and 41% were statements
+about what data was missing.** All eight agents produced near-identical text.
+Three of them restated the same six figures verbatim.
+
+That was not a rendering fault. The agents were doing exactly what the contract
+asked. The JSON shape said `"summary": "<=600 chars, factual"`; the safety rules
+said every factual claim must cite evidence; and the only other field was
+`risks_or_gaps`. A model given a slot for FACTS, a slot for GAPS and an
+instruction to be factual will produce facts and gaps. There was nowhere to put
+what the evidence MEANS, so nothing meant anything.
+
+### Decision
+
+**Add the missing slot, and gate it as hard as a fact.** `AgentImplication`
+carries a `statement`, the `mechanism` it rests on, a `direction` from a closed
+set (supportive / pressuring / mixed / neutral) and its own citations. It is
+deliberately separate from `key_points`: a figure and an interpretation of that
+figure are different kinds of statement, and a research reader has to be able to
+tell them apart. The citation checker applies the same rules it applies to a
+fact — un-cited material interpretations move to `unsupported_claims`, invalid
+ids are dropped, scope/period grounding is enforced, and the direction is
+coerced rather than trusted.
+
+**Give each agent its own job back.** The role instructions now ask the
+Financial Analyst for growth quality, margin direction, cash conversion,
+leverage and capital allocation; the Business analyst for durability; the
+Catalyst analyst for what changed, why it matters and what to watch; the Risk
+analyst for a chain from risk to financial consequence; the Valuation analyst
+for observable context rather than a list of absent inputs; and the Red Team for
+the economic case rather than the completeness of the pack. The Source Quality
+Critic keeps the evidence as its subject — it is the one role whose job that is.
+
+**Let the chair answer the question a reader has.** `CommitteeSynthesis` carries
+a `fundamental_setup` (constructive / mixed / cautious / insufficient_evidence),
+the strongest evidence each way, resilience and fragility factors, the key
+debate, what would strengthen or weaken the case, and what to watch. The setup
+is a research characterisation with a closed vocabulary — there is no
+BUY/SELL/HOLD analogue in it and none can be introduced by drift.
+
+**Directional language is allowed; actions and projections are not.** An
+analysis that may not say a factor "could pressure future equity value" cannot
+do its job. What stays forbidden is the ACTION (BUY/SELL/HOLD/WATCH) and the
+unsourceable NUMBER (price target, fair value, expected return, percentage
+upside). The production safety gate already drew that line correctly — it bans
+"upside of" and permits "downside risks" — and one test that was stricter than
+the policy it guarded was corrected to use the gate itself.
+
+**Numbers in council prose must reconcile with the report's own figures.**
+Where a sentence states a figure for a metric and period the report holds
+canonically, and it disagrees, the sentence is WITHHELD and reported as
+conflicting. It is never silently resolved in favour of one of the two.
+
+### Consequences
+
+**Positive, measured on a real payload.** Re-running the updated council against
+the live Pandora evidence (18 items, 55 structured facts): all 8 agents
+completed, producing 34 implications where the field previously did not exist.
+Economic interpretation rose 8% → **32%**; data-completeness talk fell 41% →
+**21%**. The chair returned an issuer-specific synthesis — "net debt up 376%
+over five years", "watch free cash flow generation and capital expenditure
+levels", a key debate naming the disagreement between the financial analyst and
+the red team.
+
+**Negative / accepted.** A richer contract costs output tokens. The company
+council's flat 1200-token budget could not hold it: on the real Pandora pack two
+of eight agents truncated mid-object into a permanent `LLMJsonError`. Raised to
+2200, all eight complete. The discovery council's per-candidate rate rose 200 →
+300 and its cap 5000 → 7000 for the same reason. Both budgets are also the token
+pacer's admission estimate, so throughput per minute falls accordingly — sized to
+the contract, not padded.
+
+**The numeric guard needed four corrections before it was fit to suppress
+anything**, every one found by running it over real council prose rather than
+fixtures:
+
+1. `H1`/`FY2025` were read as the numbers 1 and 2025.
+2. A trailing comma was swallowed into the number, so `2026,` looked like a
+   grouped magnitude and escaped the bare-year rule.
+3. Every number in a sentence was tested against the one metric detected in it,
+   so "net debt 13,719m vs equity 5,282m … if EBIT falls" was called a
+   contradictory operating-profit claim. Fixed with proximity.
+4. Only the snapshot's headline slots were canonical, so the council citing a
+   historical period the report also holds was called wrong.
+
+Before those fixes it flagged **13 of 111** real sentences, all false positives.
+After them: **0 false positives, 18 checked consistent, and both seeded
+contradictions still caught.** A guard that suppresses correct analysis is worse
+than no guard, which is why it only adjudicates a metric AND a period the report
+actually holds, at group scope, in the same written form.
+
+**What the live run taught.** The first AFTER measurement was invalid: the
+evidence pack was built without the structured facts, so the council saw a share
+price and correctly answered "not enough data". Measuring a prompt change
+requires giving the model the same evidence the real pipeline gives it —
+otherwise the measurement is of the harness.
+
+---
+
+## ADR-042: One Routing Rule Decides Economic Signal from Research Limitation
+
+**Date:** 2026-09-01
+**Status:** Accepted
+
+### Context
+
+ADR-041 gave the council somewhere to put an interpretation, and it started
+producing them. Human review of the rendered pages found the remaining problem:
+the reader-facing surface still mixed two kinds of statement under one heading.
+
+"Net debt rose while equity fell, which raises refinancing risk" and "Catalyst
+coverage rests on the issuer's own channel" are both true and both matter. Only
+the first is a reason a business might become less valuable. Shown together
+under "what could pressure value", the second tells a reader that the research
+process is a hazard the company faces.
+
+The leak had two sources, and neither was fixable by editing a section:
+
+* **Role.** The Source Quality Critic writes fluently about economics — on
+  Richemont it produced "The Jewellery Maisons segment remains the core profit
+  driver". Its subject is nonetheless the evidence, and it attached
+  `direction: pressuring` to statements that then landed in an economic column.
+* **Wording.** Any agent can write an evidence statement. The chair's own
+  "strongest negative evidence" on Moncler included "Absence of full annual
+  financial data and key metrics".
+
+### Decision
+
+**One classification rule, in the view-model layer, applied everywhere.**
+`classifySignal` answers with one of nine kinds — economic support, economic
+pressure, resilience, fragility, catalyst, company risk, investor question,
+research limitation, technical gap. No score, no model, no per-section
+exception.
+
+It decides in three steps:
+
+1. **Record form** (`isRecordGapStatement`) → technical gap.
+2. **Wording** (`isEvidenceStatement`) → research limitation. Four patterns,
+   each learned from live output: an ABSENCE word beside an EVIDENCE noun; an
+   evidence-subject phrase carrying no absence ("coverage rests on the issuer's
+   own channel"); an EPISTEMIC CONSEQUENCE, where what is limited is assessment,
+   confidence, visibility or comparability rather than the business; and
+   evidence PRESENCE framed as a finding ("closing price is available as a
+   factual data point" was offered as strongest positive evidence).
+3. **Role.** The Source Quality Critic's output is a research limitation
+   whatever it says. Source weakness changes CONFIDENCE in a conclusion; it does
+   not change a company's value.
+
+Only after those does the slot decide what the statement would otherwise be.
+
+**Nothing is dropped.** Every routed statement is reported under research
+confidence. The chair section renders its four lists AFTER routing, so it cannot
+show as a "strongest negative" a line the summary just moved — the two would
+contradict each other on the same page.
+
+**The comparison compares businesses.** Candidate columns are now council view,
+growth signal, profitability signal, cash generation, resilience, key catalyst
+and main downside; evidence confidence, research readiness and the deterministic
+score follow them and are labelled as qualifying the answer rather than being
+it. Known gaps and disclosure coverage are no longer columns; they sit in a
+collapsed "Research limitations" disclosure on each card. A dimension the
+council did not establish says **"Not established"** — it never borrows a
+completeness number.
+
+**Open research questions are about the business.** On live data every one of
+the 90 `risks_or_gaps` items across four issuers was an evidence statement, so
+89 route to research confidence and the section's real source is the chair's
+`key_debate`. A section with nothing to say says so rather than filling itself.
+
+**The chair prefers its structured synthesis.** Setup, strongest evidence each
+way, resilience, fragility, key debate, what would strengthen or weaken, what to
+watch. `research_next_steps` is a sourcing to-do list, so it comes last and
+collapsed; the legacy fields are a fallback for reports written before the
+synthesis existed.
+
+**The investor financial view speaks English.** Notes naming `_current_period`
+or `T1_primary_filing` are replaced with the same facts in words. The originals
+survive verbatim under Evidence & sources, so nothing is edited away.
+
+### Consequences
+
+**Positive, measured on live output for PNDORA, CFR, MRNA and MONC.** Zero
+source/data-gap statements in "what could drive value higher" or "what could
+pressure value"; zero Source Critic statements in any economic section; open
+questions reduced to the committee's own key debate. Both control sets hold —
+every known evidence statement is caught, and none of the real economic
+implications is.
+
+**Negative / accepted.** The wording rule is a set of patterns matched against
+prose, and prose changes. It is calibrated against four issuers' output at one
+point in time, with an explicit economic control set that must keep passing —
+but a future model phrasing an evidence limitation in a shape none of the four
+patterns covers would reach an economic column again. That is why the rule is
+one function with one test suite rather than filters scattered per section.
+
+It also errs toward routing OUT. On Moderna, an issuer with almost no financial
+evidence, both economic columns are now empty and the page says the council
+recorded no interpretation. That is the correct answer for that report and it
+looks like a bug until the reason is read.
+
+**A statement mixing an economic claim with an epistemic caveat stays economic.**
+"Positive revenue growth and profitability indicate ongoing business momentum,
+but the part-year data limits full-year trend assessment" is kept as a value
+driver: its main clause is about the business. Over-suppressing a hedged but
+real finding would be the worse failure.

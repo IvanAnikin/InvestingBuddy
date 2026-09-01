@@ -246,6 +246,21 @@ class FakeDiscoveryLLMClient(LLMClient):
                         "rationale": self._rationale(),
                         "citation_ids": cite,
                         "confidence": "low",
+                        # The business-facing comparison fields. Exercised for
+                        # every candidate so the offline path cannot pass while
+                        # the comparison is still a gap count.
+                        "upside_drivers": [
+                            "A deterministic driver that could raise this "
+                            "candidate's value."
+                        ],
+                        "downside_drivers": [
+                            "A deterministic driver that could pressure it."
+                        ],
+                        "resilience": "A deterministic factor limiting downside.",
+                        "key_financial_signal": (
+                            "The one deterministic number that matters most here."
+                        ),
+                        "strongest_dimension": "cash_generation",
                     }
                 )
 

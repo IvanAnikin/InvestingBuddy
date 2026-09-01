@@ -7,19 +7,52 @@ import type { LibraryRow } from "@/components/research/reportView";
 import { formatDate, isoTimestamp } from "@/lib/format";
 import { evidenceWord } from "@/components/research/ResearchStatusBadge";
 
-type FilterId = "all" | "recent" | "council" | "needs-review" | "incomplete";
+/**
+ * The library's default is CURRENT research.
+ *
+ * The list used to be every report newest-first, which meant a screening draft
+ * written by the discovery scan sat above a company's real research and looked
+ * exactly like it. Nothing is deleted or hidden — the other states are one
+ * click away and are named for what they are.
+ */
+type FilterId =
+  | "current"
+  | "needs-refresh"
+  | "screening"
+  | "historical"
+  | "needs-review"
+  | "all";
 
 const FILTERS: { id: FilterId; label: string; hint: string }[] = [
-  { id: "all", label: "All", hint: "Every report in the library" },
-  { id: "recent", label: "Recently researched", hint: "Updated in the last 30 days" },
-  { id: "council", label: "Council completed", hint: "The research council ran end to end" },
-  { id: "needs-review", label: "Needs review", hint: "No human has signed off yet" },
   {
-    id: "incomplete",
-    label: "Evidence incomplete",
-    hint: "Evidence was assessed weak or insufficient",
+    id: "current",
+    label: "Current research",
+    hint: "The newest structured research report for each company",
   },
+  {
+    id: "needs-refresh",
+    label: "Needs refresh",
+    hint: "Current research whose council did not run, or whose evidence was weak",
+  },
+  {
+    id: "screening",
+    label: "Screening only",
+    hint: "Pre-council drafts from the discovery scan — not research",
+  },
+  {
+    id: "historical",
+    label: "Superseded",
+    hint: "Research kept as history because a newer report exists",
+  },
+  { id: "needs-review", label: "Needs review", hint: "No human has signed off yet" },
+  { id: "all", label: "All", hint: "Every report in the library" },
 ];
+
+const KIND_WORDS: Record<LibraryRow["kind"], string> = {
+  current_research: "Current",
+  superseded_research: "Superseded",
+  screening_draft: "Screening draft",
+};
 
 const REVIEW_LABELS: Record<string, string> = {
   draft: "Not reviewed",
@@ -41,21 +74,34 @@ const EVIDENCE_TONE: Record<string, string> = {
 
 function matchesFilter(row: LibraryRow, filter: FilterId): boolean {
   switch (filter) {
-    case "recent":
-      return Date.now() - new Date(row.updatedAt).getTime() < THIRTY_DAYS_MS;
-    case "council":
-      return row.councilUsed && row.councilCompleted > 0;
+    case "current":
+      return row.kind === "current_research";
+    case "needs-refresh":
+      return (
+        row.kind === "current_research" &&
+        (!row.councilUsed ||
+          row.evidence === "weak" ||
+          row.evidence === "insufficient" ||
+          Date.now() - new Date(row.updatedAt).getTime() > THIRTY_DAYS_MS)
+      );
+    case "screening":
+      return row.kind === "screening_draft";
+    case "historical":
+      return row.kind === "superseded_research";
     case "needs-review":
       return row.reviewStatus === "draft" || row.reviewStatus === "under_review";
-    case "incomplete":
-      return row.evidence === "weak" || row.evidence === "insufficient";
     default:
       return true;
   }
 }
 
 export default function ReportLibrary({ rows }: { rows: LibraryRow[] }) {
-  const [filter, setFilter] = useState<FilterId>("all");
+  // Land on current research. If none exists yet, "All" is the only honest
+  // starting view — an empty default would read as "you have researched
+  // nothing" when in fact screening drafts exist.
+  const [filter, setFilter] = useState<FilterId>(
+    rows.some((r) => r.kind === "current_research") ? "current" : "all",
+  );
   const [query, setQuery] = useState("");
 
   const visible = useMemo(() => {
@@ -160,8 +206,15 @@ export default function ReportLibrary({ rows }: { rows: LibraryRow[] }) {
                     <span className="block truncate font-mono text-xs text-[color:var(--ib-ink-3)]">
                       {row.ticker ?? "—"}
                       {row.exchange ? ` · ${row.exchange}` : ""}
-                      {!row.isFinal ? " · historical draft" : ""}
                     </span>
+                    {row.kind !== "current_research" && (
+                      <span
+                        data-testid="library-row-kind"
+                        className="mt-1 inline-block rounded border border-[color:var(--ib-line)] px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-[color:var(--ib-ink-3)]"
+                      >
+                        {KIND_WORDS[row.kind]}
+                      </span>
+                    )}
                   </td>
                   <td className="px-3 py-3.5 text-[color:var(--ib-ink-2)]">
                     {row.latestAnnual ?? "—"}
@@ -221,6 +274,14 @@ export default function ReportLibrary({ rows }: { rows: LibraryRow[] }) {
                   {row.ticker ?? "—"}
                   {row.exchange ? ` · ${row.exchange}` : ""}
                 </p>
+                {row.kind !== "current_research" && (
+                  <span
+                    data-testid="library-row-kind"
+                    className="mt-1.5 inline-block rounded border border-[color:var(--ib-line)] px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-[color:var(--ib-ink-3)]"
+                  >
+                    {KIND_WORDS[row.kind]}
+                  </span>
+                )}
                 <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
                   <div>
                     <dt className="text-[color:var(--ib-ink-3)]">Latest annual</dt>

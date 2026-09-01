@@ -67,6 +67,11 @@ export interface Report {
   schema_validation_json: Record<string, unknown> | null;
   source_summary_json: Record<string, unknown> | null;
   scorecard_id: string | null;
+  // Phase 32A hotfix (migration 012) — the company this report is about. The
+  // API has always returned it; the type omitted it, which is why the UI could
+  // only ever reason about a report in isolation and never about which of a
+  // company's reports is the CURRENT one.
+  company_id: string | null;
 }
 
 export interface ReportList {
@@ -91,15 +96,47 @@ export interface LlmCouncilRiskGap {
   severity?: string;
 }
 
+/**
+ * What the cited evidence MEANS for the business — the council's actual
+ * analysis, as opposed to the facts it rests on.
+ *
+ * Absent on reports generated before the field existed, which readers treat as
+ * "no interpretation recorded" rather than as an error.
+ */
+export interface LlmCouncilImplication {
+  statement: string;
+  mechanism?: string;
+  /** supportive | pressuring | mixed | neutral. */
+  direction?: string;
+  citation_ids?: string[];
+  confidence?: string;
+}
+
+/** The chair's investment-facing synthesis. committee_chair only. */
+export interface LlmCommitteeSynthesis {
+  /** constructive | mixed | cautious | insufficient_evidence. */
+  fundamental_setup?: string;
+  strongest_positive_evidence?: string[];
+  strongest_negative_evidence?: string[];
+  resilience_factors?: string[];
+  fragility_factors?: string[];
+  key_debate?: string;
+  what_would_strengthen?: string[];
+  what_would_weaken?: string[];
+  what_to_watch?: string[];
+}
+
 export interface LlmCouncilAgent {
   agent_name: string;
   status: string;
   summary: string;
   key_points: LlmCouncilKeyPoint[];
+  implications?: LlmCouncilImplication[];
   risks_or_gaps: LlmCouncilRiskGap[];
   unsupported_claims: string[];
   safety_notes: string[];
   committee_label?: string | null;
+  synthesis?: LlmCommitteeSynthesis | null;
 }
 
 // Phase 29B.2 — compact, secret-free summary of any bounded primary-document
@@ -868,6 +905,55 @@ export interface DiscoveryCouncilCandidateEntry {
   exchange?: string | null;
   rationale?: string | null;
   confidence?: string | null;
+  // The BUSINESS comparison. Absent on reviews produced before these existed,
+  // which the UI treats as "not assessed" rather than as an error.
+  upside_drivers?: string[];
+  downside_drivers?: string[];
+  resilience?: string | null;
+  key_financial_signal?: string | null;
+  strongest_dimension?: string | null;
+}
+
+// One discovery-council agent's PERSISTED output, as stored under
+// `DiscoveryCouncilReview.agent_outputs[agent_name]`. Mirrors the backend's
+// `DiscoveryCouncilAgentOutput` (app/services/llm/discovery_schemas.py). The
+// payload has always been sent; it was typed as `unknown`, so every consumer
+// could read only `summary` and the rest of each agent's reasoning — its
+// per-candidate notes and its cited run-level claims — stayed invisible.
+export interface DiscoveryCouncilAgentCandidateNote {
+  candidate_ref?: string | null;
+  ticker?: string | null;
+  exchange?: string | null;
+  /** research_next | monitor_for_evidence | insufficient_data | reject_for_now. */
+  internal_action?: string | null;
+  rationale?: string | null;
+  citation_ids?: string[];
+  confidence?: string | null;
+  upside_drivers?: string[];
+  downside_drivers?: string[];
+  resilience?: string | null;
+  key_financial_signal?: string | null;
+  strongest_dimension?: string | null;
+}
+
+export interface DiscoveryCouncilAgentRunNote {
+  claim: string;
+  citation_ids?: string[];
+  confidence?: string | null;
+}
+
+export interface DiscoveryCouncilAgentOutput {
+  agent_name: string;
+  status?: string;
+  summary?: string;
+  candidate_notes?: DiscoveryCouncilAgentCandidateNote[];
+  run_notes?: DiscoveryCouncilAgentRunNote[];
+  evidence_gaps?: string[];
+  unsupported_claims?: string[];
+  safety_notes?: string[];
+  next_source_tasks?: string[];
+  /** discovery_chair only: strong | adequate | thin | failed. */
+  run_quality?: string | null;
 }
 
 // Phase 28B.2 — the council review is produced by an asynchronous job. The
@@ -908,7 +994,7 @@ export interface DiscoveryCouncilReview {
   candidates_insufficient_data?: DiscoveryCouncilCandidateEntry[];
   evidence_gaps?: string[];
   next_source_tasks?: string[];
-  agent_outputs?: Record<string, unknown>;
+  agent_outputs?: Record<string, DiscoveryCouncilAgentOutput>;
   warnings?: string[];
   safety_valid?: boolean;
   human_review_required?: boolean;
@@ -920,7 +1006,7 @@ export interface DiscoveryCouncilReview {
   // attached instead — lets the admin UI show a partial/failed council
   // degraded gracefully rather than silently.
   chair_fallback_used?: boolean;
-  deterministic_discovery_chair?: Record<string, unknown> | null;
+  deterministic_discovery_chair?: DiscoveryCouncilAgentOutput | null;
   // Phase 32A TPM slice (ADR-020): failure-vs-judgement semantics + bounded
   // token accounting (counts only).
   chair_synthesis_basis?: string | null;

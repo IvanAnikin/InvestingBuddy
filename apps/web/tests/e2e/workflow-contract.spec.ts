@@ -581,19 +581,20 @@ test.describe("Contract — discovery candidate state", () => {
     // touches. Reading that as "already researched" hid the research action on
     // every freshly screened candidate — the admin console never did that, and
     // neither may this one.
+    //
+    // KER points at a legacy pre-council draft and RMS points at nothing, so
+    // both still offer research. MC points at a company that genuinely HAS a
+    // current structured report, so it offers that instead.
     await expect(candidates.getByTestId("candidate-research")).toHaveCount(2);
     await expect(candidates.getByTestId("candidate-open-research")).toHaveCount(
-      0,
-    );
-
-    // The linked report is still reachable, as a quiet secondary link, and only
-    // for the candidate that actually has one.
-    await expect(candidates.getByTestId("candidate-linked-report")).toHaveCount(
       1,
     );
 
-    // And the state cell reports the JOB, not the linkage.
-    await expect(candidates).toContainText("not started from here");
+    // The legacy artefact stays reachable — named for what it is, never as
+    // "the report for this company".
+    const legacy = candidates.getByTestId("candidate-legacy-report");
+    await expect(legacy).toHaveCount(1);
+    await expect(legacy).toContainText("historical screening draft");
     await expect(candidates).not.toContainText("Researched");
   });
 
@@ -614,7 +615,14 @@ test.describe("Contract — discovery candidate state", () => {
 
     const candidates = page.getByTestId("discovery-candidates");
     await expect(candidates).toBeVisible();
-    await candidates.getByTestId("candidate-research").first().click();
+
+    // Scope to KERING's own card. Another candidate on this run already has a
+    // current report, so an unscoped `.first()` would pass without the click
+    // having done anything.
+    const kering = candidates
+      .getByTestId("candidate-card")
+      .filter({ hasText: "Kering" });
+    await kering.getByTestId("candidate-research").click();
 
     // The candidate's own id is what travels.
     await expect.poll(() => urls.length, { timeout: 15_000 }).toBeGreaterThan(0);
@@ -622,9 +630,10 @@ test.describe("Contract — discovery candidate state", () => {
       "/market-discovery/candidates/cccccccc-0000-0000-0000-000000000001/run-analysis",
     );
 
-    // Once the job completes, THAT report becomes openable.
-    await expect(
-      candidates.getByTestId("candidate-open-research").first(),
-    ).toHaveAttribute("href", `/research/reports/${PERIODS_REPORT_ID}`);
+    // Once the job completes, THAT report becomes openable on THAT card.
+    await expect(kering.getByTestId("candidate-open-research")).toHaveAttribute(
+      "href",
+      `/research/reports/${PERIODS_REPORT_ID}`,
+    );
   });
 });

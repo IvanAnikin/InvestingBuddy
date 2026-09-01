@@ -1,6 +1,7 @@
 import Link from "next/link";
 import PrimaryCTA from "@/components/product/PrimaryCTA";
 import Surface from "@/components/product/Surface";
+import { classifyReports } from "@/components/research/reportResolution";
 import { fetchReports } from "@/lib/api";
 import type { Report } from "@/types/api";
 import { reportCompanyLabel } from "@/components/research/reportView";
@@ -35,8 +36,18 @@ async function recentReports(): Promise<{
   error: string | null;
 }> {
   try {
-    const data = await fetchReports(6, 0);
-    return { items: data.items, total: data.total, error: null };
+    const data = await fetchReports(50, 0);
+    // Show CURRENT research, the same thing the library leads with. The list
+    // used to be every report newest-first, so a screening draft written by the
+    // discovery scan could sit at the top of "recent research" looking exactly
+    // like research. When no current report exists yet, everything is shown —
+    // an empty list would be the wrong answer, not a tidier one.
+    const kinds = classifyReports(data.items);
+    const current = data.items.filter(
+      (r) => kinds.get(r.id) === "current_research",
+    );
+    const items = current.length > 0 ? current : data.items;
+    return { items: items.slice(0, 6), total: items.length, error: null };
   } catch (e) {
     return {
       items: [],
@@ -143,10 +154,14 @@ export default async function ResearchHomePage() {
                       className="ib-arrow-host flex flex-wrap items-center gap-x-4 gap-y-1 px-5 py-4 transition-colors hover:bg-[color:var(--ib-surface-raised)]"
                     >
                       <span className="min-w-0 flex-1">
-                        <span className="block truncate text-sm font-medium text-[color:var(--ib-ink)]">
+                        {/* A report with no sourced company name falls back to
+                            its own title, which can be long. It WRAPS rather
+                            than being cut off mid-word: a clipped label is a
+                            legibility failure, not a tidy one. */}
+                        <span className="ib-breakable block text-sm font-medium text-[color:var(--ib-ink)]">
                           {company ?? report.title}
                         </span>
-                        <span className="block truncate text-xs text-[color:var(--ib-ink-3)]">
+                        <span className="ib-breakable block text-xs text-[color:var(--ib-ink-3)]">
                           {ticker ? `${ticker} · ` : ""}
                           {formatDate(report.updated_at)}
                         </span>
@@ -173,34 +188,24 @@ export default async function ResearchHomePage() {
         )}
       </section>
 
-      {/* Operational surface */}
-      <section className="mt-14 border-t border-[color:var(--ib-line)] pt-8">
-        <h2 className="text-sm font-semibold text-[color:var(--ib-ink)]">
-          Operational &amp; diagnostic tools
-        </h2>
-        <p className="mt-2 max-w-2xl text-sm leading-relaxed text-[color:var(--ib-ink-3)]">
-          The admin workspace is unchanged and remains the place for pipeline
-          diagnostics: raw report JSON, per-document extraction provenance,
-          source-connector health, the review workflow, backtesting, and the
-          ticker-mode discovery runner.
-        </p>
-        <div className="mt-4 flex flex-wrap gap-2">
-          {[
-            { href: "/admin", label: "Admin dashboard" },
-            { href: "/admin/reports", label: "Draft reports" },
-            { href: "/admin/sources", label: "Sources" },
-            { href: "/admin/backtesting", label: "Backtesting" },
-          ].map((l) => (
-            <Link
-              key={l.href}
-              href={l.href}
-              className="rounded-lg border border-[color:var(--ib-line)] px-3 py-1.5 text-sm text-[color:var(--ib-ink-2)] transition-colors hover:border-[color:var(--ib-line-strong)]"
-            >
-              {l.label}
-            </Link>
-          ))}
-        </div>
-      </section>
+      {/* The admin surface is reachable from the navigation and the footer on
+          every page. A research workspace does not need a content block about
+          pipeline diagnostics — one quiet line is the right weight. */}
+      <p
+        className="mt-14 border-t border-[color:var(--ib-line)] pt-6 text-xs leading-relaxed text-[color:var(--ib-ink-3)]"
+        data-testid="admin-diagnostics-link"
+      >
+        Raw report JSON, per-document extraction provenance, source-connector
+        health, the review workflow, backtesting and the ticker-mode discovery
+        runner are in{" "}
+        <Link
+          href="/admin"
+          className="underline underline-offset-4 hover:text-[color:var(--ib-ink-2)]"
+        >
+          admin &amp; diagnostics
+        </Link>
+        .
+      </p>
     </div>
   );
 }

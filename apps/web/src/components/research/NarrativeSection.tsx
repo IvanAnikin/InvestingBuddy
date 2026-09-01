@@ -15,6 +15,8 @@ export default function NarrativeSection({
   accent,
   id,
   testId,
+  /** A closing line the section itself carries (e.g. the agent's confidence). */
+  footnote,
 }: {
   title: string;
   groups: NarrativeGroup[];
@@ -22,6 +24,7 @@ export default function NarrativeSection({
   accent?: "positive" | "negative";
   id?: string;
   testId?: string;
+  footnote?: string;
 }) {
   const dot =
     accent === "positive"
@@ -69,6 +72,12 @@ export default function NarrativeSection({
             </div>
           ))}
         </div>
+      )}
+
+      {footnote && (
+        <p className="ib-breakable mt-5 border-t border-[color:var(--ib-line)] pt-3 text-xs leading-relaxed text-[color:var(--ib-ink-3)]">
+          {footnote}
+        </p>
       )}
     </Surface>
   );

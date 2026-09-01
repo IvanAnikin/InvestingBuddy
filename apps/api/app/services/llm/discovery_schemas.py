@@ -135,6 +135,25 @@ ALLOWED_RUN_QUALITY: frozenset[str] = frozenset(
 )
 DEFAULT_RUN_QUALITY = "thin"
 
+# What separates one candidate from another. The discovery council's persisted
+# output had the same defect the company council's did: its per-candidate
+# rationales were dominated by data-coverage counts, so the comparison a reader
+# saw was "which candidate has fewer missing fields" rather than "which
+# business looks most worth the work".
+ALLOWED_COMPARISON_DIMENSIONS: frozenset[str] = frozenset(
+    {
+        "growth_quality",
+        "profitability",
+        "cash_generation",
+        "balance_sheet_resilience",
+        "business_quality",
+        "catalysts",
+        "downside_risk",
+        "valuation_context",
+        "evidence_confidence",
+    }
+)
+
 
 # ---------------------------------------------------------------------------
 # Evidence pack
@@ -249,6 +268,15 @@ class CandidateNote(BaseModel):
     rationale: str = ""
     citation_ids: list[str] = Field(default_factory=list)
     confidence: str = "low"  # low | medium | high
+    # What the candidate looks like as a BUSINESS, not as a data package.
+    # Empty on reviews produced before these fields existed, which readers
+    # treat as "not assessed" rather than as an error.
+    upside_drivers: list[str] = Field(default_factory=list)
+    downside_drivers: list[str] = Field(default_factory=list)
+    resilience: str = ""
+    key_financial_signal: str = ""
+    # Which of ALLOWED_COMPARISON_DIMENSIONS this candidate stands out on.
+    strongest_dimension: str | None = None
 
 
 class RunNote(BaseModel):

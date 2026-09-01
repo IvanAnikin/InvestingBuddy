@@ -29,6 +29,8 @@ import {
 import { formatNumber } from "@/lib/format";
 import type { EvidenceLabel } from "./ResearchStatusBadge";
 import { evidenceLabelOf } from "./ResearchStatusBadge";
+import type { ResearchArtefactKind } from "./reportResolution";
+import { partitionRecordGaps } from "./recordGaps";
 
 // ---------------------------------------------------------------------------
 // Small readers
@@ -108,6 +110,17 @@ export interface FinancialDatapoint {
   label: string;
   /** Ready-to-render figure, or null when the slot holds no value. */
   display: string | null;
+  /**
+   * The extractor's own number, unconverted, or null when the slot holds only
+   * text. Carried so the report can compare a figure with another period of
+   * the SAME metric, and so council prose can be reconciled against it —
+   * never so this layer can rescale or restate it.
+   */
+  numericValue: number | null;
+  /** The scale word the number was extracted under ("million", "billion"). */
+  scale: string | null;
+  unit: string | null;
+  currency: string | null;
   period: string | null;
   scope: string | null;
   sourceUrl: string | null;
@@ -165,10 +178,21 @@ function toDatapoint(
   const display = formatDatapoint(dp);
   if (display === null) return null;
   const newer = asRecord(dp["newer_period_available"]);
+  const numeric = dp["numeric_value"];
+  const bare = dp["value"];
   return {
     key,
     label,
     display,
+    numericValue:
+      typeof numeric === "number" && Number.isFinite(numeric)
+        ? numeric
+        : typeof bare === "number" && Number.isFinite(bare)
+          ? bare
+          : null,
+    scale: str(dp["scale"]),
+    unit: str(dp["unit"]),
+    currency: str(dp["currency"]),
     period: str(dp["period"]),
     scope: str(dp["scope"]),
     sourceUrl: str(dp["source_url"]),
@@ -503,12 +527,25 @@ function buildNarrative(
   content: ReportContent | null,
   key: string,
   groups: { field: string; label: string }[],
+  /**
+   * Fields whose contents are routed through the record-gap partition. The
+   * deterministic layer writes machine-record entries into some narrative
+   * slots (`bear_case.key_unknowns` is dominated by them on live reports), and
+   * an argument section is the wrong place for them. Nothing is discarded —
+   * the caller collects them and reports them under research confidence.
+   */
+  partitionFields: { fields: Set<string>; collect: string[] } | null = null,
 ): NarrativeGroup[] {
   const section = asRecord(content?.[key]);
   if (!section) return [];
   const out: NarrativeGroup[] = [];
   for (const { field, label } of groups) {
-    const points = stringList(section[field]);
+    let points = stringList(section[field]);
+    if (partitionFields?.fields.has(field)) {
+      const split = partitionRecordGaps(points);
+      partitionFields.collect.push(...split.recordGaps);
+      points = split.analytical;
+    }
     if (points.length > 0) out.push({ label, points });
   }
   return out;
@@ -649,6 +686,12 @@ export interface ResearchReportView {
   disclosures: DisclosureView[];
   bull: NarrativeGroup[];
   bear: NarrativeGroup[];
+  /** Record-completeness entries lifted out of the narrative sections. */
+  narrativeRecordGaps: string[];
+  /** The agent's own stated confidence in each case, when it recorded one. */
+  bullConfidence: string | null;
+  bearConfidence: string | null;
+  /** Risks to the BUSINESS. Research limitations are reported separately. */
   risks: NarrativeGroup[];
   missing: { items: MissingItem[]; total: number };
   appendix: AppendixView;
@@ -669,6 +712,10 @@ export function buildResearchReportView(
   // synthesis. It is OFF by default, so its absence is normal and the view
   // simply has no next-steps block rather than inventing one.
   const memo = asRecord(content?.["research_memo"]);
+  // Record entries routed out of the narrative sections, handed back so the
+  // research-confidence section can report them.
+  const narrativeRecordGaps: string[] = [];
+
   const memoSteps = asRecord(memo?.["research_next_steps"]);
   const nextSteps = memoSteps
     ? Object.entries(memoSteps)
@@ -689,18 +736,38 @@ export function buildResearchReportView(
     bull: buildNarrative(content, "bull_case", [
       { field: "positive_thesis_points", label: "Thesis points" },
       { field: "potential_tailwinds", label: "Potential tailwinds" },
+      { field: "assumptions", label: "What needs to be true" },
     ]),
-    bear: buildNarrative(content, "bear_case", [
-      { field: "negative_thesis_points", label: "Thesis points" },
-      { field: "key_unknowns", label: "Key unknowns" },
-    ]),
+    bear: buildNarrative(
+      content,
+      "bear_case",
+      [
+        { field: "negative_thesis_points", label: "Thesis points" },
+        { field: "potential_headwinds", label: "Potential headwinds" },
+        { field: "key_unknowns", label: "Key unknowns" },
+      ],
+      { fields: new Set(["key_unknowns"]), collect: narrativeRecordGaps },
+    ),
+    bullConfidence: fieldText(
+      asRecord(content?.["bull_case"])?.["confidence_level"],
+    ),
+    bearConfidence: fieldText(
+      asRecord(content?.["bear_case"])?.["confidence_level"],
+    ),
+    // Company risks ONLY. `data_quality_risks` and `source_quality_risks` are
+    // limits on what this research could establish, not risks to the business,
+    // and listing them beside "Business" made a missing EBITDA field read like
+    // a hazard the company faces. They are reported under research confidence.
     risks: buildNarrative(content, "risk_analysis", [
       { field: "business_risks", label: "Business" },
       { field: "financial_risks", label: "Financial" },
       { field: "market_risks", label: "Market" },
-      { field: "data_quality_risks", label: "Data quality" },
-      { field: "source_quality_risks", label: "Source quality" },
+      {
+        field: "regulatory_geopolitical_risks",
+        label: "Regulatory & geopolitical",
+      },
     ]),
+    narrativeRecordGaps,
     missing: buildMissing(content),
     appendix: buildAppendix(content),
     council: buildCouncil(council),
@@ -739,6 +806,7 @@ export function reportCompanyLabel(report: Report): {
 
 export interface LibraryRow {
   id: string;
+  kind: ResearchArtefactKind;
   title: string;
   company: string | null;
   ticker: string | null;
@@ -765,7 +833,15 @@ export interface LibraryRow {
  * issuer published no interim report" are different statements, and the row
  * makes neither on the other's behalf.
  */
-export function buildLibraryRow(report: Report): LibraryRow {
+export function buildLibraryRow(
+  report: Report,
+  /**
+   * Where this report sits among its company's others. Resolved by the caller,
+   * which is the only place that holds the cohort — a single report cannot know
+   * whether a newer one exists.
+   */
+  kind: ResearchArtefactKind = "screening_draft",
+): LibraryRow {
   const content = extractFinalReportContent(report.content_markdown);
   const identity = buildIdentity(content);
   const snapshot = buildFinancialSnapshot(content);
@@ -774,6 +850,7 @@ export function buildLibraryRow(report: Report): LibraryRow {
 
   return {
     id: report.id,
+    kind,
     title: report.title,
     company: identity.companyName,
     ticker: identity.ticker,

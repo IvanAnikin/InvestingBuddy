@@ -95,6 +95,29 @@ function errorMessage(status: number, body: unknown): string {
   return `HTTP ${status}`;
 }
 
+/**
+ * A failed API call, carrying the HTTP status.
+ *
+ * Callers have to distinguish "this resource does not exist yet" from "the
+ * request failed" — a discovery run with no council review answers 404, and
+ * that is a normal state, not an error to show a reader. Sniffing the message
+ * for the word "not found" worked until the backend phrased it differently, so
+ * the status travels instead.
+ */
+export class ApiError extends Error {
+  readonly status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
+export function isNotFound(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 404;
+}
+
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(buildUrl(path), {
     ...init,
@@ -112,7 +135,7 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
     } catch {
       // Non-JSON error body — keep the status-code fallback.
     }
-    throw new Error(detail);
+    throw new ApiError(res.status, detail);
   }
 
   return res.json() as Promise<T>;
@@ -154,13 +177,21 @@ export async function runAnalysis(
   );
 }
 
+// `companyId` scopes the listing to ONE company (a read-only filter on the
+// reports.company_id FK). It is what makes "this company's current research
+// report" an exact question instead of a guess made from whatever fits on the
+// first page of the global list.
 export async function fetchReports(
   limit = 50,
   offset = 0,
+  options?: { companyId?: string | null },
 ): Promise<ReportList> {
-  return apiFetch<ReportList>(
-    `/api/v1/reports?limit=${limit}&offset=${offset}`,
-  );
+  const params = new URLSearchParams({
+    limit: String(limit),
+    offset: String(offset),
+  });
+  if (options?.companyId) params.set("company_id", options.companyId);
+  return apiFetch<ReportList>(`/api/v1/reports?${params.toString()}`);
 }
 
 export async function fetchReport(id: string): Promise<Report> {

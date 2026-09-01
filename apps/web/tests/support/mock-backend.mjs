@@ -12,6 +12,12 @@ const PORT = Number(process.env.PORT ?? 8799);
 
 // Rich markdown used to exercise the rendered markdown preview: heading, list,
 // blockquote (disclaimer), bold text, table and inline code.
+// Company ids are declared up here because the report fixtures below stamp
+// them: which company a report belongs to is what makes "current research"
+// answerable at all.
+const IBTEST_COMPANY_ID = "00000000-0000-0000-0000-0000000000b1";
+const IBTWO_COMPANY_ID = "00000000-0000-0000-0000-0000000000b2";
+
 const REPORT_MARKDOWN = [
   "# InvestingBuddy Test Company — Internal Draft",
   "",
@@ -171,30 +177,126 @@ function sampleReportContent({ withCouncil }) {
         provenance: "missing_data",
       },
     },
+    // The committee chair's own section, which the reader-facing report leads
+    // with. Its `provisional_internal_status` is a research-queue label and
+    // must never render as an investment rating.
+    committee_chair_summary: {
+      type: "committee_chair_summary",
+      available: true,
+      committee_summary: {
+        value:
+          "The annual financial picture is well evidenced and the interim period is kept separate from it. Business quality is partly established: the manufacturing model and channel mix are visible, customer concentration is not. The case cannot be taken further until the growth decomposition and the post-interim leverage position are sourced.",
+        provenance: "model_interpretation",
+      },
+      bull_bear_balance: {
+        value: "insufficient_data",
+        provenance: "model_interpretation",
+      },
+      provisional_internal_status: {
+        value: "requires_more_evidence",
+        provenance: "model_interpretation",
+        note: "Research queue label only — not a public investment recommendation.",
+      },
+      // Assembled deterministically from the bear case's key unknowns and the
+      // bull case's missing evidence, which is why it is record-shaped on live
+      // reports. It is NOT the source of the reader-facing open questions when
+      // a council ran.
+      primary_open_questions: {
+        value: [
+          "Blocking gap: Required field missing: identity.sector_classification",
+          "Valuation blocked: 1 inputs missing (financials.ebitda).",
+        ],
+        provenance: "model_interpretation",
+      },
+      research_next_steps: {
+        value: [
+          "Source the volume/price/mix decomposition from the segment note.",
+          "Retrieve the interim balance sheet to compute post-period leverage.",
+        ],
+        provenance: "model_interpretation",
+      },
+      human_review_required: true,
+    },
     bull_case: {
       type: "bull_case",
       available: true,
       positive_thesis_points: {
         value: [
-          "Operates in the Information Technology sector; sector-level tailwinds may be relevant pending further research.",
-          "Price data available — enables tracking of recent price movement.",
+          "Revenue grew in each of the last five reported annual periods, on the issuer's own multi-year table.",
+          "The group operating margin held in FY2025 despite input-cost pressure named in the annual report.",
+          "In-house manufacturing is linked in the filing to the gross-margin level.",
         ],
         provenance: "model_interpretation",
       },
+      potential_tailwinds: {
+        value: ["Owned retail is the largest and fastest-growing channel in the segment table."],
+        provenance: "model_interpretation",
+      },
+      assumptions: {
+        value: ["That the FY2025 channel mix persists into the current year."],
+        provenance: "assumption",
+      },
+      confidence_level: { value: "medium", provenance: "model_interpretation" },
     },
     bear_case: {
       type: "bear_case",
       available: true,
       negative_thesis_points: {
-        value: ["Fundamentals not yet sourced — thesis cannot be validated."],
+        value: [
+          "Nothing retrieved separates volume, price and mix, so the growth driver is unestablished.",
+          "The segment margin series is not comparable across the period.",
+        ],
         provenance: "model_interpretation",
       },
+      potential_headwinds: {
+        value: ["Input-cost pressure is named in the annual report and not quantified."],
+        provenance: "model_interpretation",
+      },
+      key_unknowns: {
+        value: [
+          "Post-interim leverage, which the retrieved statements do not support.",
+          // The deterministic layer writes machine RECORD entries into this
+          // slot — on live reports six of seven key_unknowns look exactly like
+          // this. A bear case is an argument, so these belong under research
+          // confidence, and the fixture carries them to prove they go there.
+          "Blocking gap: Required field missing: identity.isin",
+          "Legal entity verification not complete: identity.lei absent.",
+        ],
+        provenance: "missing_data",
+      },
+      confidence_level: { value: "low", provenance: "model_interpretation" },
     },
     risk_analysis: {
       type: "risk_analysis",
       available: true,
+      business_risks: {
+        value: [
+          "Channel mix is concentrated in owned retail, which carries fixed operating cost.",
+        ],
+        provenance: "model_interpretation",
+      },
+      financial_risks: {
+        value: ["Leverage after the current-period cash movements is unestablished."],
+        provenance: "model_interpretation",
+      },
+      market_risks: {
+        value: ["Discretionary demand is cyclical in the issuer's stated end markets."],
+        provenance: "model_interpretation",
+      },
+      // These two are NOT risks to the business. The reader-facing report has
+      // to file them under research confidence, and this fixture is what
+      // proves it does.
       data_quality_risks: {
-        value: ["Fundamentals missing; conclusions are provisional."],
+        value: ["EBITDA is not available from the statements retrieved."],
+        provenance: "sourced_fact",
+      },
+      source_quality_risks: {
+        value: ["Catalyst coverage rests on the issuer's own channel alone."],
+        provenance: "sourced_fact",
+      },
+      risk_summary_text: {
+        value:
+          "Business risk is concentrated in channel mix and discretionary demand; the financial risk that matters is unmeasured rather than adverse.",
         provenance: "model_interpretation",
       },
     },
@@ -222,6 +324,41 @@ function sampleReportContent({ withCouncil }) {
       available: true,
       coverage_status: "adequate",
       lookback_days: 90,
+      // The EVENT is sourced; category / direction / strength / materiality are
+      // model-derived labels. The reader-facing report must show that
+      // difference, so the fixture carries both on the same row.
+      recent_events: {
+        value: [
+          {
+            event_date: "2026-08-12",
+            headline: "Issuer publishes interim report for the first half of 2026",
+            source_name: "Issuer newsroom",
+            source_url: "https://example-issuer.test/disclosures/h1-2026",
+            source_tier: "T1_primary_filing",
+            catalyst_category: "financial_results",
+            catalyst_direction: "neutral",
+            catalyst_strength: "moderate",
+            materiality: "decision_relevant",
+            materiality_reason: "Reports the current-period figures directly",
+            model_label_tier: "T6_model_estimate",
+          },
+          {
+            event_date: "2026-06-30",
+            headline: "Issuer opens a distribution centre in the Nordic region",
+            source_name: "Issuer newsroom",
+            source_url: "https://example-issuer.test/news/distribution-centre",
+            source_tier: "T1_primary_filing",
+            catalyst_category: "operations",
+            catalyst_direction: "positive",
+            catalyst_strength: "low",
+            materiality: "contextual",
+            materiality_reason: "Capacity change with no disclosed financial effect",
+            model_label_tier: "T6_model_estimate",
+          },
+        ],
+        provenance: "sourced_fact",
+      },
+      sec_filing_events: { value: [], provenance: "sourced_fact" },
       disclaimer:
         "Catalyst categories/directions/strengths are model-derived (T6_model_estimate), not sourced facts. No valuation conclusion or trading action is produced. Human review is required.",
     },
@@ -621,6 +758,10 @@ function mockReport(id) {
     },
     source_summary_json: null,
     scorecard_id: null,
+    // Migration 012 — the company this report is about. The API has always
+    // returned it; the fixture omitted it, which made "is this the company's
+    // current research report?" unanswerable offline.
+    company_id: null,
   };
 }
 
@@ -633,6 +774,12 @@ function mockCouncilReport(id) {
   const base = mockReport(id);
   base.title =
     "LLM Council Analysis Draft — IBTEST — InvestingBuddy Test Company [MOCK DATA]";
+  // Same company as the periods report below, and OLDER — so this one is the
+  // superseded research and that one is current. Without a pair like this the
+  // "do not present an old artefact as current" rule cannot be tested.
+  base.company_id = IBTEST_COMPANY_ID;
+  base.created_at = "2026-08-10T10:00:00Z";
+  base.updated_at = "2026-08-10T10:00:00Z";
   base.content_markdown = finalReportMarkdown(sampleReportContent({ withCouncil: true }));
   base.source_summary_json = {
     total_sources: 3,
@@ -648,22 +795,272 @@ function mockCouncilReport(id) {
       agents_failed: 0,
       agents_skipped: 0,
       committee_label: "requires_more_evidence",
+      // Every agent the council runs, each with the structured output the
+      // backend actually persists. The reader-facing report has to show what
+      // each one CONCLUDED, so a fixture carrying only names and statuses
+      // would let an empty implementation pass.
       agents: [
         {
           agent_name: "financial_analyst",
           status: "completed",
           summary:
-            "Deterministic fake summary for the financial_analyst agent. Internal draft only.",
+            "Revenue grew for a fifth consecutive year and the operating margin held, but the interim period covers half a year and cannot be read against it.",
           key_points: [
             {
-              claim: "An evidenced datapoint was observed in the pack.",
+              claim:
+                "FY2025 revenue of DKK 32,516m is the fifth consecutive annual increase.",
               citation_ids: ["E1"],
-              confidence: "low",
-              data_quality: "C",
+              confidence: "high",
+              data_quality: "A",
+            },
+            {
+              claim:
+                "Operating profit of DKK 7,845m implies a group operating margin in the mid-twenties.",
+              citation_ids: ["E1"],
+              confidence: "medium",
+              data_quality: "B",
             },
           ],
+          implications: [
+          {
+            statement:
+              "Margin held while revenue grew, which points to operating leverage rather than price-led growth.",
+            mechanism:
+              "revenue growth + flat margin -> EBIT grows with the top line -> stronger cash generation if it persists",
+            direction: "supportive",
+            citation_ids: ["E1"],
+            confidence: "medium",
+          },
+          {
+            statement:
+              "Free cash flow covers roughly two thirds of operating cash flow, so capex is absorbing a third of what the business generates.",
+            mechanism:
+              "OCF 7,361m - FCF 5,022m -> ~2,300m capex -> reinvestment need constrains distributable cash",
+            direction: "mixed",
+            citation_ids: ["E1"],
+            confidence: "medium",
+          },
+          ],
           risks_or_gaps: [
-            { item: "Evidence is bounded and may be incomplete.", citation_ids: ["E2"], severity: "low" },
+            {
+              item: "What explains the margin held despite input-cost pressure?",
+              citation_ids: ["E2"],
+              severity: "medium",
+            },
+          ],
+          unsupported_claims: [],
+          safety_notes: [],
+        },
+        {
+          agent_name: "business_moat",
+          status: "completed",
+          summary:
+            "A vertically integrated branded manufacturer selling through owned and partner retail. Pricing power is visible in the gross margin, but customer concentration could not be established from the filings retrieved.",
+          key_points: [
+            {
+              claim:
+                "The issuer manufactures in-house, which the annual report links to its gross-margin level.",
+              citation_ids: ["E1"],
+              confidence: "medium",
+              data_quality: "B",
+            },
+            {
+              claim:
+                "Owned retail is the largest channel by revenue in the segment table.",
+              citation_ids: ["E1"],
+              confidence: "medium",
+              data_quality: "B",
+            },
+          ],
+          implications: [
+          {
+            statement:
+              "In-house manufacturing is what the filing links its gross margin to, which is a cost-side advantage rather than a pricing one.",
+            mechanism:
+              "vertical integration -> lower unit cost -> margin advantage that competitors can replicate with scale",
+            direction: "supportive",
+            citation_ids: ["E1"],
+            confidence: "medium",
+          },
+          {
+            statement:
+              "Owned retail carries fixed occupancy cost, so the margin that looks like strength in growth would invert in a demand slowdown.",
+            mechanism:
+              "owned stores -> fixed cost base -> operating leverage works both ways",
+            direction: "pressuring",
+            citation_ids: ["E1"],
+            confidence: "medium",
+          },
+          ],
+          risks_or_gaps: [
+            {
+              item:
+                "Customer and geographic concentration are not disclosed at a level the filings retrieved can support.",
+              citation_ids: ["E2"],
+              severity: "medium",
+            },
+          ],
+          unsupported_claims: [],
+          safety_notes: [],
+        },
+        {
+          agent_name: "catalyst",
+          status: "completed",
+          summary:
+            "One regulated interim disclosure in the window. No strategic announcement, capacity change or contract award was retrieved.",
+          key_points: [
+            {
+              claim:
+                "The H1 2026 interim report was published to the issuer's listing venue on 12 August 2026.",
+              citation_ids: ["E3"],
+              confidence: "high",
+              data_quality: "A",
+            },
+          ],
+          implications: [
+          {
+            statement:
+              "The H1 disclosure is the only company event in the window, so there is no operational change pending that the evidence can point to.",
+            mechanism:
+              "no announced capacity, contract or regulatory change -> near-term revenue path is the existing base",
+            direction: "neutral",
+            citation_ids: ["E1"],
+            confidence: "medium",
+          },
+          ],
+          risks_or_gaps: [],
+          unsupported_claims: [],
+          safety_notes: [],
+        },
+        {
+          agent_name: "risk_governance",
+          status: "completed",
+          summary:
+            "Disclosure quality is adequate for the annual period. Leverage after the interim cash movements could not be computed from what was retrieved.",
+          key_points: [],
+          implications: [
+          {
+            statement:
+              "Net debt exceeds equity, which limits how much of a demand shock the balance sheet can absorb before it constrains reinvestment.",
+            mechanism:
+              "net debt 13,719m vs equity 5,282m -> leverage above 2x book -> covenant and refinancing sensitivity rises if EBIT falls",
+            direction: "pressuring",
+            citation_ids: ["E1"],
+            confidence: "medium",
+          },
+          ],
+          risks_or_gaps: [
+            {
+              item: "What is leverage after the current-period cash movements?",
+              citation_ids: ["E2"],
+              severity: "high",
+            },
+          ],
+          unsupported_claims: [],
+          safety_notes: [],
+        },
+        {
+          agent_name: "valuation_guard",
+          status: "completed",
+          summary:
+            "Inputs present: latest close, revenue, operating profit. Inputs missing: EBITDA and share count. No valuation is produced here.",
+          key_points: [],
+          implications: [
+          {
+            statement:
+              "Latest close and the annual earnings base are both present, so an earnings multiple is observable; enterprise value is not, so no cash-adjusted comparison can be made.",
+            mechanism:
+              "price + net income available -> P/E computable; market cap absent -> EV multiples are not",
+            direction: "neutral",
+            citation_ids: ["E1"],
+            confidence: "medium",
+          },
+          ],
+          risks_or_gaps: [
+            {
+              item: "EBITDA is not available from the statements retrieved.",
+              citation_ids: ["E2"],
+              severity: "low",
+            },
+          ],
+          unsupported_claims: [],
+          safety_notes: [],
+        },
+        {
+          agent_name: "source_quality_critic",
+          status: "completed",
+          summary:
+            "Financial claims rest on the issuer's own filings. Catalyst coverage rests on a single channel.",
+          key_points: [],
+          implications: [
+          {
+            statement:
+              "Catalyst coverage rests on the issuer's own channel, so an adverse development would reach this report late.",
+            mechanism:
+              "single issuer-controlled channel -> no independent corroboration -> negative news is systematically slower to appear",
+            direction: "pressuring",
+            citation_ids: ["E1"],
+            confidence: "medium",
+          },
+          ],
+          risks_or_gaps: [
+            {
+              item:
+                "No independent news coverage was retrieved, so catalyst evidence rests on the issuer's own channel alone.",
+              citation_ids: ["E4"],
+              severity: "medium",
+            },
+          ],
+          unsupported_claims: [],
+          safety_notes: [],
+        },
+        {
+          agent_name: "red_team",
+          status: "completed",
+          summary:
+            "The positive reading leans on five years of revenue growth without establishing what drove it. Volume, price and mix are not separated anywhere in the evidence.",
+          key_points: [
+            {
+              claim:
+                "Growth is asserted from the revenue series alone; no volume or price decomposition was retrieved.",
+              citation_ids: ["E1"],
+              confidence: "medium",
+              data_quality: "B",
+            },
+            {
+              claim:
+                "The segment margin series is not comparable across the period, so segment strength cannot be inferred from it.",
+              citation_ids: ["E1"],
+              confidence: "high",
+              data_quality: "A",
+            },
+          ],
+          implications: [
+          {
+            statement:
+              "The five-year revenue series is the whole positive case, and nothing retrieved separates volume from price or mix.",
+            mechanism:
+              "growth asserted from a revenue line alone -> if it is price-led it does not repeat -> the durability claim is unsupported",
+            direction: "pressuring",
+            citation_ids: ["E1"],
+            confidence: "medium",
+          },
+          {
+            statement:
+              "The margin that looks defensive is measured in a period with no demand shock in it, so it has not been tested.",
+            mechanism:
+              "stable margin through a benign period -> no evidence about behaviour under stress -> resilience is assumed, not shown",
+            direction: "pressuring",
+            citation_ids: ["E1"],
+            confidence: "medium",
+          },
+          ],
+          risks_or_gaps: [
+            {
+              item: "Is the current revenue growth rate sustainable?",
+              citation_ids: ["E1"],
+              severity: "high",
+            },
           ],
           unsupported_claims: [],
           safety_notes: [],
@@ -671,12 +1068,70 @@ function mockCouncilReport(id) {
         {
           agent_name: "committee_chair",
           status: "completed",
-          summary: "Internal synthesis of the council over bounded evidence.",
-          key_points: [],
+          summary:
+            "The annual picture is well evidenced and the interim period is clearly separated from it. The case cannot be taken further until the growth decomposition and the post-interim leverage position are sourced.",
+          key_points: [
+            {
+              claim:
+                "Annual financial evidence comes from the issuer's own filing and is internally consistent.",
+              citation_ids: ["E1"],
+              confidence: "high",
+              data_quality: "A",
+            },
+          ],
+          implications: [
+          {
+            statement:
+              "The annual picture is well evidenced and internally consistent; what it does not establish is why the growth happened.",
+            mechanism:
+              "consistent statements -> reliable base; missing decomposition -> no view on repeatability",
+            direction: "mixed",
+            citation_ids: ["E1"],
+            confidence: "medium",
+          },
+          ],
           risks_or_gaps: [],
           unsupported_claims: [],
           safety_notes: [],
           committee_label: "requires_more_evidence",
+          // The chair's investment-facing synthesis. This is what the reader
+          // meets first, so the fixture carries the whole shape — an empty one
+          // would let a report that says nothing about the business pass.
+          synthesis: {
+            fundamental_setup: "mixed",
+            strongest_positive_evidence: [
+              "Five consecutive years of revenue growth with the operating margin intact.",
+              "Free cash flow of DKK 5,022m against DKK 7,361m of operating cash flow — the business converts profit into cash.",
+            ],
+            strongest_negative_evidence: [
+              "Net debt of DKK 13,719m against equity of DKK 5,282m leaves little balance-sheet room.",
+              "Nothing retrieved separates volume, price and mix, so the growth driver is unestablished.",
+            ],
+            resilience_factors: [
+              "Cash generation has been positive in every reported year, so the leverage is serviced from operations rather than refinancing.",
+              "In-house manufacturing gives a cost lever that does not depend on pricing.",
+            ],
+            fragility_factors: [
+              "Owned retail carries fixed occupancy cost, so a demand fall hits margin faster than revenue.",
+              "Leverage above two times book equity narrows the response available if EBIT falls.",
+            ],
+            key_debate:
+              "The financial analyst reads the stable margin as operating leverage; the red team reads it as an untested margin in a benign period.",
+            what_would_strengthen: [
+              "A volume/price/mix decomposition showing growth is volume-led.",
+              "An interim balance sheet showing net debt falling against EBIT.",
+            ],
+            what_would_weaken: [
+              "Gross margin compressing while revenue growth slows.",
+              "Capex rising as a share of operating cash flow without a revenue response.",
+            ],
+            what_to_watch: [
+              "Organic revenue growth in the next interim disclosure",
+              "Gross-margin direction against the input-cost commentary",
+              "Net debt after the current-period cash movements",
+              "Free-cash-flow conversion against the 68% annual level",
+            ],
+          },
         },
       ],
       // Phase 29B.2 — bounded primary-document (annual report) evidence the
@@ -763,7 +1218,12 @@ const LEGACY_REPORT_ID = "00000000-0000-0000-0000-0000000000e9";
 
 function mockLegacyReport(id) {
   const base = mockReport(id);
-  base.title = "InvestingBuddy Test Company — Analysis Council Draft [MOCK DATA]";
+  base.title = "InvestingBuddy Second Company — Analysis Council Draft [MOCK DATA]";
+  // A DIFFERENT company, with no structured research at all — the state a
+  // freshly screened discovery candidate is really in.
+  base.company_id = IBTWO_COMPANY_ID;
+  base.created_at = "2026-07-15T10:00:00Z";
+  base.updated_at = "2026-07-15T10:00:00Z";
   base.final_report_version = null;
   base.source_summary_json = null;
   base.schema_validation_json = null;
@@ -819,6 +1279,10 @@ function mockPeriodsReport(id) {
   const base = mockCouncilReport(id);
   base.title =
     "Internal Analysis Draft — IBTEST — InvestingBuddy Test Company (annual + interim) [MOCK DATA]";
+  // The NEWEST structured report for this company: the current research.
+  base.company_id = IBTEST_COMPANY_ID;
+  base.created_at = "2026-08-25T10:00:00Z";
+  base.updated_at = "2026-08-25T10:00:00Z";
   const rc = sampleReportContent({ withCouncil: true });
 
   rc.financial_snapshot = {
@@ -857,6 +1321,111 @@ function mockPeriodsReport(id) {
     revenue_current_period: {
       value: "14,301",
       numeric_value: 14301,
+      currency: "DKK",
+      scale: "million",
+      period: "H1 2026",
+      scope: "group",
+      period_basis: "interim",
+      provenance: "sourced_fact",
+      source_tier: "T1_primary_filing",
+      confidence: "high",
+    },
+    // The rest of the canonical set, shaped like a real issuer's. A live
+    // Pandora report carries twelve of these slots across profitability, cash
+    // generation and the balance sheet; a fixture with two made the investor
+    // financial section look thin for reasons that had nothing to do with the
+    // code rendering it.
+    operating_margin_primary_filing: {
+      value: "24.1",
+      numeric_value: 24.1,
+      unit: "%",
+      period: "FY2025",
+      scope: "group",
+      provenance: "sourced_fact",
+      source_tier: "T1_primary_filing",
+      confidence: "high",
+    },
+    net_income_primary_filing: {
+      value: "5,241",
+      numeric_value: 5241,
+      currency: "DKK",
+      scale: "million",
+      period: "FY2025",
+      scope: "group",
+      provenance: "sourced_fact",
+      source_tier: "T1_primary_filing",
+      confidence: "high",
+    },
+    operating_cash_flow_primary_filing: {
+      value: "7,361",
+      numeric_value: 7361,
+      currency: "DKK",
+      scale: "million",
+      period: "FY2025",
+      scope: "group",
+      provenance: "sourced_fact",
+      source_tier: "T1_primary_filing",
+      confidence: "high",
+    },
+    free_cash_flow_primary_filing: {
+      value: "5,022",
+      numeric_value: 5022,
+      currency: "DKK",
+      scale: "million",
+      period: "FY2025",
+      scope: "group",
+      provenance: "sourced_fact",
+      source_tier: "T1_primary_filing",
+      confidence: "high",
+    },
+    total_assets_primary_filing: {
+      value: "29,603",
+      numeric_value: 29603,
+      currency: "DKK",
+      scale: "million",
+      period: "FY2025",
+      scope: "group",
+      provenance: "sourced_fact",
+      source_tier: "T1_primary_filing",
+      confidence: "high",
+    },
+    total_equity_primary_filing: {
+      value: "5,282",
+      numeric_value: 5282,
+      currency: "DKK",
+      scale: "million",
+      period: "FY2025",
+      scope: "group",
+      provenance: "sourced_fact",
+      source_tier: "T1_primary_filing",
+      confidence: "high",
+    },
+    net_debt_primary_filing: {
+      value: "13,719",
+      numeric_value: 13719,
+      currency: "DKK",
+      scale: "million",
+      period: "FY2025",
+      scope: "group",
+      provenance: "sourced_fact",
+      source_tier: "T1_primary_filing",
+      confidence: "high",
+    },
+    operating_profit_current_period: {
+      value: "2,951",
+      numeric_value: 2951,
+      currency: "DKK",
+      scale: "million",
+      period: "H1 2026",
+      scope: "group",
+      period_basis: "interim",
+      provenance: "sourced_fact",
+      source_tier: "T1_primary_filing",
+      confidence: "high",
+    },
+    net_income_current_period: {
+      value: "1,817",
+      numeric_value: 1817,
       currency: "DKK",
       scale: "million",
       period: "H1 2026",
@@ -908,6 +1477,54 @@ function mockPeriodsReport(id) {
             { period: "FY2023", value: 28100 },
             { period: "FY2024", value: 31200 },
             { period: "FY2025", value: 32516 },
+          ],
+        },
+        {
+          metric: "operating_cash_flow",
+          scope: "group",
+          scope_type: "group",
+          period_type: "annual",
+          unit: "DKK million",
+          comparability: "comparable",
+          completeness: "complete",
+          missing_periods: [],
+          periods: [
+            { period: "FY2022", value: 6410 },
+            { period: "FY2023", value: 6980 },
+            { period: "FY2024", value: 8721 },
+            { period: "FY2025", value: 7361 },
+          ],
+        },
+        {
+          metric: "free_cash_flow",
+          scope: "group",
+          scope_type: "group",
+          period_type: "annual",
+          unit: "DKK million",
+          comparability: "comparable",
+          completeness: "complete",
+          missing_periods: [],
+          periods: [
+            { period: "FY2022", value: 4890 },
+            { period: "FY2023", value: 5110 },
+            { period: "FY2024", value: 5240 },
+            { period: "FY2025", value: 5022 },
+          ],
+        },
+        {
+          metric: "net_debt",
+          scope: "group",
+          scope_type: "group",
+          period_type: "annual",
+          unit: "DKK million",
+          comparability: "comparable",
+          completeness: "complete",
+          missing_periods: [],
+          periods: [
+            { period: "FY2022", value: 9120 },
+            { period: "FY2023", value: 10480 },
+            { period: "FY2024", value: 12060 },
+            { period: "FY2025", value: 13719 },
           ],
         },
         {
@@ -1039,8 +1656,438 @@ function mockPeriodsReport(id) {
   return base;
 }
 
+// A report whose COUNCIL contradicts its own canonical financials.
+//
+// This is not hypothetical: council prose and the financial snapshot are two
+// representations of the same facts, produced by different paths, and a report
+// showing both while they disagree gives a reader no way to know which is
+// right. The fixture states an annual revenue the snapshot does not support, so
+// the reconciliation has something real to catch.
+const CONFLICT_REPORT_ID = "00000000-0000-0000-0000-0000000000a4";
+
+function mockConflictReport(id) {
+  const base = mockPeriodsReport(id);
+  base.title =
+    "Internal Analysis Draft — IBTEST — contradictory council figure [MOCK DATA]";
+  base.company_id = null;
+  const council = JSON.parse(JSON.stringify(base.source_summary_json));
+  const analyst = council.llm_council.agents.find(
+    (a) => a.agent_name === "financial_analyst",
+  );
+  // The snapshot's annual revenue is 32,516m DKK. This says 41,900m.
+  analyst.key_points.unshift({
+    claim: "Full-year revenue was DKK 41,900 million.",
+    citation_ids: ["E1"],
+    confidence: "high",
+    data_quality: "A",
+  });
+  analyst.implications.unshift({
+    statement:
+      "Revenue of DKK 41,900 million represents a step change in scale for the group.",
+    mechanism: "higher revenue base -> operating leverage on a fixed cost base",
+    direction: "supportive",
+    citation_ids: ["E1"],
+    confidence: "high",
+  });
+  base.source_summary_json = council;
+  return base;
+}
+
 const DISC =
   "INTERNAL ADMIN USE ONLY. NOT INVESTMENT ADVICE. NOT A PUBLIC RECOMMENDATION.";
+
+// ---------------------------------------------------------------------------
+// Run-level discovery council review (Phase 28B)
+//
+// The user-facing discovery page reads this EXISTING review and starts the
+// EXISTING job — it defines no council of its own. The fixture therefore has
+// to carry the whole persisted shape: the chair's buckets, every agent's own
+// candidate notes (which is the only honest basis for showing disagreement),
+// the run-level claims, and the gaps.
+// ---------------------------------------------------------------------------
+
+const COUNCIL_DISCLAIMER =
+  "Internal, citation-bound discovery-run research aid. NOT investment advice " +
+  "and NOT a public recommendation. No rating, no valuation conclusion, and no " +
+  "return projection is produced. Every claim cites bounded run/candidate " +
+  "evidence; human review is required.";
+
+function discoveryCouncilReview(runId) {
+  return {
+    run_id: runId,
+    status: "completed",
+    review_available: true,
+    llm_used: true,
+    council_version: "v1",
+    provider: "fake",
+    model: "fake-discovery-council-model",
+    evidence_pack_version: "v1",
+    evidence_item_count: 11,
+    candidate_count: 3,
+    agents_completed: 8,
+    agents_failed: 0,
+    agents_skipped: 0,
+    run_quality: "adequate",
+    candidates_to_research_next: [
+      {
+        candidate_ref: "C1",
+        candidate_id: "cccccccc-0000-0000-0000-000000000001",
+        ticker: "KER",
+        exchange: "PA",
+        rationale:
+          "Most complete evidence package in the cohort and the only candidate with a current-period filing retrieved.",
+        confidence: "medium",
+        upside_drivers: [
+          "Owned retail is the largest and fastest-growing channel in its segment table.",
+        ],
+        downside_drivers: [
+          "Fixed occupancy cost in owned retail inverts the operating leverage in a downturn.",
+        ],
+        resilience: "Positive free cash flow in every reported year.",
+        key_financial_signal: "FCF conversion of 68% of operating cash flow.",
+        strongest_dimension: "cash_generation",
+      },
+      {
+        candidate_ref: "C3",
+        candidate_id: "cccccccc-0000-0000-0000-000000000003",
+        ticker: "MC",
+        exchange: "PA",
+        rationale:
+          "Segment disclosure is granular enough to test the thesis directly.",
+        confidence: "low",
+        upside_drivers: [
+          "Segment disclosure is granular enough to attribute growth to a division.",
+        ],
+        downside_drivers: [
+          "Concentration in one end market carries the whole thesis.",
+        ],
+        resilience: "Net cash position absorbs a demand slowdown without refinancing.",
+        key_financial_signal: "Operating margin above 20% at group level.",
+        strongest_dimension: "business_quality",
+      },
+    ],
+    candidates_to_monitor: [
+      {
+        candidate_ref: "C2",
+        candidate_id: "cccccccc-0000-0000-0000-000000000002",
+        ticker: "RMS",
+        exchange: "PA",
+        rationale: "No fundamentals were sourced; revisit once a filing lands.",
+        confidence: "medium",
+        upside_drivers: [
+          "Brand pricing power is visible in the gross margin.",
+        ],
+        downside_drivers: [
+          "No fundamentals were sourced, so nothing about cash generation is established.",
+        ],
+        resilience: "Not assessed — no financial statements retrieved.",
+        key_financial_signal: "Not sourced.",
+        strongest_dimension: "evidence_confidence",
+      },
+    ],
+    candidates_to_reject: [],
+    candidates_insufficient_data: [],
+    evidence_gaps: [
+      "No candidate has an independently sourced current-period balance sheet.",
+      "Sell-side coverage depth is unavailable for every candidate in this cohort.",
+    ],
+    next_source_tasks: [
+      "Retrieve the Euronext regulated-information feed for each candidate.",
+    ],
+    warnings: [],
+    safety_valid: true,
+    human_review_required: true,
+    publication_ready: false,
+    created_at: "2026-08-30T12:00:00Z",
+    disclaimer: COUNCIL_DISCLAIMER,
+    agent_outputs: {
+      run_coordinator: {
+        agent_name: "run_coordinator",
+        status: "completed",
+        summary:
+          "Three candidates were screened against a European luxury-goods description. All three are French-listed, so the cohort matches the description but not its breadth.",
+        candidate_notes: [],
+        run_notes: [
+          {
+            claim: "All three candidates are listed on the same venue.",
+            citation_ids: ["R1"],
+            confidence: "high",
+          },
+        ],
+        evidence_gaps: [],
+        unsupported_claims: [],
+        safety_notes: [],
+        next_source_tasks: [],
+      },
+      candidate_prioritization: {
+        agent_name: "candidate_prioritization",
+        status: "completed",
+        summary:
+          "KER carries the most complete evidence; MC is close behind on disclosure granularity; RMS has no sourced fundamentals.",
+        candidate_notes: [
+          {
+            candidate_ref: "C1",
+            ticker: "KER",
+            exchange: "PA",
+            internal_action: "research_next",
+            rationale: "Most complete data coverage in the cohort.",
+            citation_ids: ["C1"],
+            confidence: "medium",
+            upside_drivers: [
+              "Owned retail is the largest and fastest-growing channel in its segment table.",
+            ],
+            downside_drivers: [
+              "Fixed occupancy cost in owned retail inverts the operating leverage in a downturn.",
+            ],
+            resilience: "Positive free cash flow in every reported year.",
+            key_financial_signal: "FCF conversion of 68% of operating cash flow.",
+            strongest_dimension: "cash_generation",
+          },
+          {
+            candidate_ref: "C2",
+            ticker: "RMS",
+            exchange: "PA",
+            internal_action: "monitor_for_evidence",
+            rationale: "Fundamentals were not sourced.",
+            citation_ids: ["C2"],
+            confidence: "medium",
+            upside_drivers: [
+              "Brand pricing power is visible in the gross margin.",
+            ],
+            downside_drivers: [
+              "No fundamentals were sourced, so nothing about cash generation is established.",
+            ],
+            resilience: "Not assessed — no financial statements retrieved.",
+            key_financial_signal: "Not sourced.",
+            strongest_dimension: "evidence_confidence",
+          },
+          {
+            candidate_ref: "C3",
+            ticker: "MC",
+            exchange: "PA",
+            internal_action: "research_next",
+            rationale: "Segment disclosure supports a direct thesis test.",
+            citation_ids: ["C3"],
+            confidence: "low",
+            upside_drivers: [
+              "Segment disclosure is granular enough to attribute growth to a division.",
+            ],
+            downside_drivers: [
+              "Concentration in one end market carries the whole thesis.",
+            ],
+            resilience: "Net cash position absorbs a demand slowdown without refinancing.",
+            key_financial_signal: "Operating margin above 20% at group level.",
+            strongest_dimension: "business_quality",
+          },
+        ],
+        run_notes: [],
+        evidence_gaps: [],
+        unsupported_claims: [],
+        safety_notes: [],
+        next_source_tasks: [],
+      },
+      novelty_coverage: {
+        agent_name: "novelty_coverage",
+        status: "completed",
+        summary:
+          "None of the three looks under-researched: all are large, widely followed issuers on a major venue.",
+        candidate_notes: [],
+        run_notes: [],
+        evidence_gaps: ["Coverage-depth proxies are unavailable for this cohort."],
+        unsupported_claims: [],
+        safety_notes: [],
+        next_source_tasks: [],
+      },
+      diversity_anti_convergence: {
+        agent_name: "diversity_anti_convergence",
+        status: "completed",
+        summary:
+          "The cohort is concentrated in one country and one venue, so differences between candidates are within-market rather than structural.",
+        candidate_notes: [],
+        run_notes: [
+          {
+            claim: "Three of three candidates are French-listed.",
+            citation_ids: ["R1", "C1"],
+            confidence: "high",
+          },
+        ],
+        evidence_gaps: [],
+        unsupported_claims: [],
+        safety_notes: [],
+        next_source_tasks: [],
+      },
+      evidence_sufficiency: {
+        agent_name: "evidence_sufficiency",
+        status: "completed",
+        summary:
+          "Only KER has enough sourced evidence for a full analysis today. MC needs a filing retrieved first.",
+        candidate_notes: [
+          {
+            candidate_ref: "C1",
+            ticker: "KER",
+            exchange: "PA",
+            internal_action: "research_next",
+            rationale: "A current-period filing was retrieved.",
+            citation_ids: ["C1"],
+            confidence: "high",
+            upside_drivers: [
+              "Owned retail is the largest and fastest-growing channel in its segment table.",
+            ],
+            downside_drivers: [
+              "Fixed occupancy cost in owned retail inverts the operating leverage in a downturn.",
+            ],
+            resilience: "Positive free cash flow in every reported year.",
+            key_financial_signal: "FCF conversion of 68% of operating cash flow.",
+            strongest_dimension: "cash_generation",
+          },
+          {
+            // The SAME candidate the prioritisation analyst put in
+            // research_next. Two agents, two bands — a real disagreement, and
+            // the only kind this product is allowed to show.
+            candidate_ref: "C3",
+            ticker: "MC",
+            exchange: "PA",
+            internal_action: "insufficient_data",
+            rationale: "No primary document was retrieved for this issuer.",
+            citation_ids: ["C3"],
+            confidence: "medium",
+            upside_drivers: [
+              "Segment disclosure is granular enough to attribute growth to a division.",
+            ],
+            downside_drivers: [
+              "Concentration in one end market carries the whole thesis.",
+            ],
+            resilience: "Net cash position absorbs a demand slowdown without refinancing.",
+            key_financial_signal: "Operating margin above 20% at group level.",
+            strongest_dimension: "business_quality",
+          },
+        ],
+        run_notes: [],
+        evidence_gaps: [],
+        unsupported_claims: [],
+        safety_notes: [],
+        next_source_tasks: [],
+      },
+      risk_gatekeeper: {
+        agent_name: "risk_gatekeeper",
+        status: "completed",
+        summary:
+          "Nothing in the cohort should be gated on governance grounds. The gating risk is stale data, not disclosure quality.",
+        candidate_notes: [],
+        run_notes: [],
+        evidence_gaps: [],
+        unsupported_claims: [],
+        safety_notes: [],
+        next_source_tasks: [],
+      },
+      run_red_team: {
+        agent_name: "run_red_team",
+        status: "completed",
+        summary:
+          "This result is the obvious one: three of the largest names in the sector. A screen that returns only mega-caps has not narrowed anything.",
+        candidate_notes: [],
+        run_notes: [
+          {
+            claim: "No candidate below large-cap scale entered the cohort.",
+            citation_ids: ["R1"],
+            confidence: "medium",
+          },
+        ],
+        evidence_gaps: [],
+        unsupported_claims: [],
+        safety_notes: [],
+        next_source_tasks: [],
+      },
+      discovery_chair: {
+        agent_name: "discovery_chair",
+        status: "completed",
+        summary:
+          "The cohort matches the description but not its breadth: three large French-listed issuers, differing mainly in how much evidence was retrieved rather than in what they do. KER is the strongest candidate for deeper research on evidence completeness alone; MC is worth research if a filing can be retrieved first, and the council did not agree on that. RMS should wait for fundamentals.",
+        candidate_notes: [
+          {
+            candidate_ref: "C1",
+            ticker: "KER",
+            exchange: "PA",
+            internal_action: "research_next",
+            rationale:
+              "Most complete evidence package in the cohort and the only candidate with a current-period filing retrieved.",
+            citation_ids: ["C1"],
+            confidence: "medium",
+            upside_drivers: [
+              "Owned retail is the largest and fastest-growing channel in its segment table.",
+            ],
+            downside_drivers: [
+              "Fixed occupancy cost in owned retail inverts the operating leverage in a downturn.",
+            ],
+            resilience: "Positive free cash flow in every reported year.",
+            key_financial_signal: "FCF conversion of 68% of operating cash flow.",
+            strongest_dimension: "cash_generation",
+          },
+          {
+            candidate_ref: "C3",
+            ticker: "MC",
+            exchange: "PA",
+            internal_action: "research_next",
+            rationale:
+              "Segment disclosure is granular enough to test the thesis directly.",
+            citation_ids: ["C3"],
+            confidence: "low",
+            upside_drivers: [
+              "Segment disclosure is granular enough to attribute growth to a division.",
+            ],
+            downside_drivers: [
+              "Concentration in one end market carries the whole thesis.",
+            ],
+            resilience: "Net cash position absorbs a demand slowdown without refinancing.",
+            key_financial_signal: "Operating margin above 20% at group level.",
+            strongest_dimension: "business_quality",
+          },
+          {
+            candidate_ref: "C2",
+            ticker: "RMS",
+            exchange: "PA",
+            internal_action: "monitor_for_evidence",
+            rationale: "No fundamentals were sourced; revisit once a filing lands.",
+            citation_ids: ["C2"],
+            confidence: "medium",
+            upside_drivers: [
+              "Brand pricing power is visible in the gross margin.",
+            ],
+            downside_drivers: [
+              "No fundamentals were sourced, so nothing about cash generation is established.",
+            ],
+            resilience: "Not assessed — no financial statements retrieved.",
+            key_financial_signal: "Not sourced.",
+            strongest_dimension: "evidence_confidence",
+          },
+        ],
+        run_notes: [
+          {
+            claim:
+              "Evidence completeness, not business quality, is what separates these candidates today.",
+            citation_ids: ["C1", "C2", "C3"],
+            confidence: "medium",
+          },
+        ],
+        evidence_gaps: [],
+        unsupported_claims: [],
+        safety_notes: [],
+        next_source_tasks: [
+          "Retrieve the Euronext regulated-information feed for each candidate.",
+        ],
+        run_quality: "adequate",
+      },
+    },
+  };
+}
+
+// Which runs already carry a persisted review. The luxury run does — that is
+// the "read what exists" path. The defense run does not, which is the "the
+// council has not run, and the page must not start it by itself" path. A POST
+// moves a run into this set, so the trigger is testable end to end.
+const COUNCIL_REVIEWED_RUNS = new Set([
+  THESIS_RUN_IDS["European luxury goods companies"],
+]);
 
 const KNOWN_RUN_IDS = new Set(Object.values(THESIS_RUN_IDS));
 
@@ -1162,17 +2209,12 @@ const MOCK_COMPANIES = [
   mockCompany(PNDORA_ID, "PNDORA", "CO", "Pandora A/S"),
   mockCompany(CFR_ID, "CFR", "SW", "Compagnie Financiere Richemont SA"),
   mockCompany(
-    "00000000-0000-0000-0000-0000000000b1",
+    IBTEST_COMPANY_ID,
     "IBTEST",
     "NASDAQ",
     "InvestingBuddy Test Company",
   ),
-  mockCompany(
-    "00000000-0000-0000-0000-0000000000b2",
-    "IBTWO",
-    "CO",
-    "InvestingBuddy Second Company",
-  ),
+  mockCompany(IBTWO_COMPANY_ID, "IBTWO", "CO", "InvestingBuddy Second Company"),
 ];
 
 function send(res, status, body) {
@@ -1337,6 +2379,9 @@ const server = createServer((req, res) => {
     if (rid === PERIODS_REPORT_ID) {
       return send(res, 200, mockPeriodsReport(rid));
     }
+    if (rid === CONFLICT_REPORT_ID) {
+      return send(res, 200, mockConflictReport(rid));
+    }
     if (rid === LEGACY_REPORT_ID) {
       return send(res, 200, mockLegacyReport(rid));
     }
@@ -1349,12 +2394,24 @@ const server = createServer((req, res) => {
   // Report list. Carries more than one shape so the research library's filters
   // and search have something real to work on.
   if (path === "/api/v1/reports") {
-    const id = "00000000-0000-0000-0000-000000000099";
-    const items = [
+    // Three companies' worth of shapes, so "which report is this company's
+    // CURRENT research?" is a real question here rather than a formality:
+    //   IBTEST  — a current structured report AND an older superseded one.
+    //   IBTWO   — a legacy pre-council draft and nothing else.
+    //   (none)  — an unlinked report, which can never be claimed superseded.
+    const unlinked = "00000000-0000-0000-0000-000000000099";
+    const all = [
       mockPeriodsReport(PERIODS_REPORT_ID),
       mockCouncilReport(COUNCIL_REPORT_ID),
-      mockReport(id),
+      mockLegacyReport(LEGACY_REPORT_ID),
+      mockReport(unlinked),
     ];
+    // `company_id` is a plain read filter — the same one the real endpoint
+    // applies in SQL.
+    const companyId = url.searchParams.get("company_id");
+    const items = companyId
+      ? all.filter((r) => r.company_id === companyId)
+      : all;
     return send(res, 200, { items, total: items.length });
   }
 
@@ -1772,6 +2829,16 @@ const server = createServer((req, res) => {
         disclaimer: DISC,
       });
     }
+    // Three linkage shapes, one per CTA state the product must distinguish:
+    //
+    //   KER — linked to a LEGACY pre-council draft whose company has no
+    //         structured research. "Run full research", and the draft offered
+    //         as a named secondary. This is the state that produced the
+    //         "View linked report → pre-council historical draft" defect.
+    //   RMS — nothing linked at all: screening only.
+    //   MC  — linked to a SUPERSEDED structured report whose company DOES have
+    //         a newer one. The card must offer the newer one, not the link it
+    //         happens to carry.
     const candidates = [
       mockCandidate(runId, {
         id: "cccccccc-0000-0000-0000-000000000001",
@@ -1779,7 +2846,19 @@ const server = createServer((req, res) => {
         exchange: "PA",
         company_name: "Kering SA",
         country: "France",
-        analysis_report_id: "aaaaaaaa-1111-0000-0000-000000000001",
+        candidate_score: 60.9,
+        candidate_score_grade: "medium_internal_interest",
+        source_quality: "adequate",
+        catalyst_coverage_status: "adequate",
+        missing_info_count: 4,
+        blocking_gap_count: 0,
+        labels_json: [
+          "internal_research_candidate",
+          "needs_human_review",
+          "fundamentals_available",
+          "catalyst_rich_candidate",
+        ],
+        analysis_report_id: LEGACY_REPORT_ID,
       }),
       mockCandidate(runId, {
         id: "cccccccc-0000-0000-0000-000000000002",
@@ -1787,7 +2866,34 @@ const server = createServer((req, res) => {
         exchange: "PA",
         company_name: "Hermes International SCA",
         country: "France",
+        candidate_score: 41.2,
+        source_quality: "weak",
+        missing_info_count: 12,
+        blocking_gap_count: 2,
+        labels_json: [
+          "internal_research_candidate",
+          "needs_human_review",
+          "data_sparse",
+        ],
         analysis_report_id: null,
+      }),
+      mockCandidate(runId, {
+        id: "cccccccc-0000-0000-0000-000000000003",
+        ticker: "MC",
+        exchange: "PA",
+        company_name: "LVMH Moet Hennessy Louis Vuitton SE",
+        country: "France",
+        candidate_score: 55.4,
+        source_quality: "adequate",
+        catalyst_coverage_status: "adequate",
+        missing_info_count: 6,
+        blocking_gap_count: 0,
+        labels_json: [
+          "internal_research_candidate",
+          "needs_human_review",
+          "positive_momentum_candidate",
+        ],
+        analysis_report_id: COUNCIL_REPORT_ID,
       }),
     ];
     return send(res, 200, {
@@ -1797,6 +2903,31 @@ const server = createServer((req, res) => {
       disclaimer: DISC,
     });
   }
+  // Run-level discovery council review. GET reads what exists (404 until a job
+  // has run — the honest "no council here yet" answer the real endpoint gives);
+  // POST starts the EXISTING job. Nothing here runs because a page loaded.
+  const councilReview =
+    /^\/api\/v1\/market-discovery\/runs\/([^/]+)\/council-review$/.exec(path);
+  if (councilReview) {
+    const runId = councilReview[1];
+    if (req.method === "POST") {
+      // Deliberately does NOT move the run into the reviewed set. The trigger
+      // path has to stay reproducible: a POST that persisted would make the
+      // "the council has not run yet" state depend on which test ran first,
+      // and a state that only holds on the first run is not a fixture.
+      return send(res, 202, {
+        ...discoveryCouncilReview(runId),
+        message: "Discovery council review started.",
+      });
+    }
+    if (!COUNCIL_REVIEWED_RUNS.has(runId)) {
+      return send(res, 404, {
+        detail: "No discovery council review found for this run.",
+      });
+    }
+    return send(res, 200, discoveryCouncilReview(runId));
+  }
+
   const discRun = /^\/api\/v1\/market-discovery\/runs\/([^/]+)$/.exec(path);
   if (discRun) {
     const runId = discRun[1];
@@ -1806,9 +2937,33 @@ const server = createServer((req, res) => {
     return send(res, 200, {
       ...mockThesisRun(runId, THESIS_BY_RUN_ID[runId] ?? ""),
       status: "completed",
-      processed_count: 2,
-      candidate_count: 2,
+      processed_count: 3,
+      candidate_count: 3,
       progress_pct: 100,
+      // Grouped warnings, as the backend has emitted since Phase C. One is
+      // cohort-wide and one names a single candidate — the split the page has
+      // to make so a shared limitation is not repeated under every card.
+      warning_raw_count: 4,
+      warning_groups: [
+        {
+          code: "aggregator_tier_only",
+          severity: "warning",
+          scope: "run",
+          message: "Some citations rest on aggregator-tier sources only.",
+          count: 3,
+          subjects: ["KER", "RMS", "MC"],
+          samples: ["KER: citation rests on an aggregator-tier source."],
+        },
+        {
+          code: "fundamentals_not_sourced",
+          severity: "warning",
+          scope: "candidate",
+          message: "Financial fundamentals were not sourced for this candidate.",
+          count: 1,
+          subjects: ["RMS"],
+          samples: ["RMS: fundamentals not sourced."],
+        },
+      ],
     });
   }
 

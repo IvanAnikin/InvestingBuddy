@@ -229,3 +229,37 @@ async def test_reports_endpoints_are_accessible_without_auth(
     with patch(_LIST, new_callable=AsyncMock, return_value=([], 0)):
         response = await client.get(endpoint)
     assert response.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# GET /api/v1/reports?company_id= — read-only scope filter
+#
+# Investor Research Experience V2 needs to resolve which report is a company's
+# CURRENT research report. Paging the global list and filtering client-side is
+# a window that silently loses a company's report once the library grows, so
+# the scope is applied where the data is.
+# ---------------------------------------------------------------------------
+
+
+async def test_list_reports_passes_company_id(client: AsyncClient) -> None:
+    company = uuid.UUID("11111111-1111-1111-1111-111111111111")
+    with patch(_LIST, new_callable=AsyncMock, return_value=([], 0)) as mock_list:
+        response = await client.get(f"/api/v1/reports?company_id={company}")
+
+    assert response.status_code == 200
+    _, kwargs = mock_list.call_args
+    assert kwargs.get("company_id") == company
+
+
+async def test_list_reports_company_id_defaults_to_none(client: AsyncClient) -> None:
+    """Omitting the filter keeps the unfiltered global listing."""
+    with patch(_LIST, new_callable=AsyncMock, return_value=([], 0)) as mock_list:
+        await client.get("/api/v1/reports")
+
+    _, kwargs = mock_list.call_args
+    assert kwargs.get("company_id") is None
+
+
+async def test_list_reports_rejects_non_uuid_company_id(client: AsyncClient) -> None:
+    response = await client.get("/api/v1/reports?company_id=not-a-uuid")
+    assert response.status_code == 422

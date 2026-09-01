@@ -194,6 +194,13 @@ def _aggregate_chair(
             "exchange": note.exchange or (cand.exchange if cand else None),
             "rationale": note.rationale,
             "confidence": note.confidence,
+            # The business-facing comparison, carried through to the bucket so
+            # a reader sees WHY a candidate is placed where it is.
+            "upside_drivers": list(note.upside_drivers),
+            "downside_drivers": list(note.downside_drivers),
+            "resilience": note.resilience,
+            "key_financial_signal": note.key_financial_signal,
+            "strongest_dimension": note.strongest_dimension,
         }
         field = _ACTION_TO_FIELD.get(note.internal_action)
         if field:
