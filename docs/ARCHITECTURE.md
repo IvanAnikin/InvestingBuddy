@@ -338,6 +338,37 @@ Source-tier and source-type codes (`T1_primary_filing`, `company_ir`) are
 translated for DISPLAY only — the stored value is unchanged and stays on the
 element as its `title`.
 
+#### Economic signal vs research limitation — one routing rule
+
+`components/research/investorSignal.ts` decides what KIND every surfaced
+statement is, and every investor-facing section goes through it. Nine kinds:
+economic support, economic pressure, resilience, fragility, catalyst, company
+risk, investor question, research limitation, technical gap. No score, no model.
+
+It decides in three steps — record form, then wording, then role:
+
+- `isRecordGapStatement` → technical gap.
+- `isEvidenceStatement` → research limitation. Four patterns: an ABSENCE word
+  beside an EVIDENCE noun; an evidence-subject phrase with no absence
+  ("coverage rests on the issuer's own channel"); an EPISTEMIC CONSEQUENCE,
+  where what is limited is assessment, confidence or comparability rather than
+  the business; and evidence PRESENCE framed as a finding ("closing price is
+  available as a factual data point").
+- The **Source Quality Critic** is a research limitation whatever it writes.
+  Source weakness changes CONFIDENCE in a conclusion; it does not change a
+  company's value.
+
+Only then does the slot decide. Nothing is dropped — every routed statement is
+reported under research confidence, and the committee-synthesis section renders
+its four lists AFTER routing so it cannot contradict the summary on the same
+page.
+
+Verified on live council output for PNDORA, CFR, MRNA and MONC: zero
+source/data-gap statements in either economic column, zero Source Critic
+statements in any economic section, and 89 of 90 `risks_or_gaps` items routed to
+research confidence — which is why "Open research questions" is sourced from the
+chair's `key_debate` rather than from those gaps. See ADR-042.
+
 #### The run-level discovery council on the reader-facing surface
 
 `/research/discover` reads and, on explicit request, starts the EXISTING

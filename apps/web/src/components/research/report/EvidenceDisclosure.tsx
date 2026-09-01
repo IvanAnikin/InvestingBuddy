@@ -22,12 +22,20 @@ export default function EvidenceDisclosure({
   appendix,
   channels,
   reportId,
+  sourceNotes = [],
 }: {
   primaryDocuments: ReportPrimaryDocumentsResponse | null;
   disclosures: DisclosureView[];
   appendix: AppendixView;
   channels: EvidenceChannelView[];
   reportId: string;
+  /**
+   * The backend's own period and source notes, verbatim. The investor page
+   * states the same facts in words because the originals name fields and tier
+   * codes (`_current_period`, `T1_primary_filing`) — this is where the exact
+   * text stays, unedited, so nothing is rewritten away.
+   */
+  sourceNotes?: string[];
 }) {
   const documents = (primaryDocuments?.documents ?? []).filter(
     (d) => d.status !== "discovered",
@@ -85,6 +93,27 @@ export default function EvidenceDisclosure({
             reportId={reportId}
             variant="bare"
           />
+
+          {sourceNotes.length > 0 && (
+            <div
+              className="mt-6 border-t border-[color:var(--ib-line)] pt-5"
+              data-testid="source-notes"
+            >
+              <p className="text-xs font-medium uppercase tracking-[0.14em] text-[color:var(--ib-ink-3)]">
+                Source notes, as recorded
+              </p>
+              <ul className="mt-2 space-y-2">
+                {sourceNotes.map((note, i) => (
+                  <li
+                    key={i}
+                    className="ib-breakable text-xs leading-relaxed text-[color:var(--ib-ink-3)]"
+                  >
+                    {note}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </div>
       </details>
     </Surface>

@@ -13,7 +13,6 @@
 
 import type { DiscoveryCandidate } from "@/types/api";
 import {
-  comparisonDimensionLabel,
   councilPlacementFor,
   discoveryAgentLabel,
   type CouncilPriorityEntry,
@@ -143,9 +142,41 @@ function score(value: number | null | undefined): string {
   return typeof value === "number" ? value.toFixed(1) : "—";
 }
 
+/**
+ * A dimension has no value unless the COUNCIL established one.
+ *
+ * "Not established" is a real answer and the honest one. Substituting evidence
+ * completeness for it — showing a gap count where a growth signal belongs —
+ * is what made the comparison a comparison of data packages.
+ */
+const NOT_ESTABLISHED = "Not established";
+
+/**
+ * The council's own words for a candidate on one dimension.
+ *
+ * It is returned only when the council named THAT dimension as the candidate's
+ * strongest; the key financial signal is the sentence it wrote about it. This
+ * layer never infers a growth or margin signal from a score.
+ */
+function dimensionSignal(
+  view: DiscoveryCouncilView,
+  candidate: DiscoveryCandidate,
+  dimension: string,
+): string | null {
+  const placement = councilPlacementFor(view, candidate);
+  if (!placement || placement.strongestDimension !== dimension) return null;
+  return placement.keyFinancialSignal ?? placement.rationale ?? null;
+}
+
 const ALL_DIMENSIONS: (ComparisonDimension & {
   supported: (candidates: DiscoveryCandidate[], view: DiscoveryCouncilView) => boolean;
 })[] = [
+  // ── What the council concluded about the BUSINESS ─────────────────────
+  //
+  // These come first because they are the comparison. A reader deciding where
+  // to spend research time needs to know which company looks economically
+  // interesting; how completely each one was screened qualifies that answer
+  // and is reported after it.
   {
     key: "council",
     label: "Council view",
@@ -158,75 +189,74 @@ const ALL_DIMENSIONS: (ComparisonDimension & {
     },
   },
   {
-    key: "stands_out",
-    label: "Stands out on",
-    hint: "The business dimension the council judged strongest here.",
+    key: "growth",
+    label: "Growth signal",
+    hint: "What the council said about growth and its quality.",
     numeric: false,
     supported: (candidates, view) =>
-      candidates.some((c) => councilPlacementFor(view, c)?.strongestDimension),
-    value: (c, view) =>
-      comparisonDimensionLabel(
-        councilPlacementFor(view, c)?.strongestDimension,
-      ) ?? "—",
+      candidates.some((c) => dimensionSignal(view, c, "growth_quality")),
+    value: (c, view) => dimensionSignal(view, c, "growth_quality") ?? NOT_ESTABLISHED,
   },
   {
-    key: "key_signal",
-    label: "Key financial signal",
-    hint: "The single number the council judged most telling for this issuer.",
+    key: "profitability",
+    label: "Profitability signal",
+    hint: "Margin level and direction, where the council established one.",
     numeric: false,
     supported: (candidates, view) =>
-      candidates.some((c) => councilPlacementFor(view, c)?.keyFinancialSignal),
+      candidates.some((c) => dimensionSignal(view, c, "profitability")),
+    value: (c, view) => dimensionSignal(view, c, "profitability") ?? NOT_ESTABLISHED,
+  },
+  {
+    key: "cash",
+    label: "Cash generation",
+    hint: "Free cash flow, conversion or direction, where established.",
+    numeric: false,
+    supported: (candidates, view) =>
+      candidates.some((c) => dimensionSignal(view, c, "cash_generation")),
+    value: (c, view) => dimensionSignal(view, c, "cash_generation") ?? NOT_ESTABLISHED,
+  },
+  {
+    key: "resilience",
+    label: "Resilience",
+    hint: "What the council judged would limit downside — net cash, leverage, recurring demand.",
+    numeric: false,
+    supported: (candidates, view) =>
+      candidates.some((c) => councilPlacementFor(view, c)?.resilience),
     value: (c, view) =>
-      councilPlacementFor(view, c)?.keyFinancialSignal ?? "—",
+      councilPlacementFor(view, c)?.resilience ?? NOT_ESTABLISHED,
   },
   {
-    key: "priority",
-    label: "Research priority",
-    hint: "The deterministic screening score, 0–100. Not a rating.",
-    numeric: true,
-    supported: (candidates) =>
-      candidates.some((c) => typeof c.candidate_score === "number"),
-    value: (c) => score(c.candidate_score),
+    key: "catalyst",
+    label: "Key catalyst",
+    hint: "The strongest thing the council thought could change the picture.",
+    numeric: false,
+    supported: (candidates, view) =>
+      candidates.some((c) => councilPlacementFor(view, c)?.upsideDrivers.length),
+    value: (c, view) =>
+      councilPlacementFor(view, c)?.upsideDrivers[0] ?? NOT_ESTABLISHED,
   },
   {
-    key: "thesis",
-    label: "Thesis fit",
-    hint: "How closely the screen matched this candidate to the description.",
-    numeric: true,
-    supported: (candidates) =>
-      candidates.some((c) => typeof c.thesis_relevance_score === "number"),
-    value: (c) => score(c.thesis_relevance_score),
+    key: "downside",
+    label: "Main downside",
+    hint: "The strongest thing the council thought could pressure it.",
+    numeric: false,
+    supported: (candidates, view) =>
+      candidates.some((c) => councilPlacementFor(view, c)?.downsideDrivers.length),
+    value: (c, view) =>
+      councilPlacementFor(view, c)?.downsideDrivers[0] ?? NOT_ESTABLISHED,
   },
+  // The key financial signal is not a column of its own: it is the value the
+  // dimension columns above already carry, and repeating it would widen the
+  // table without adding a comparison. It stays on the candidate card.
+
+  // ── Then how much to trust the above ──────────────────────────────────
   {
     key: "evidence",
     label: "Evidence confidence",
-    hint: "The screen's own assessment of what backed its numbers.",
+    hint: "How much weight the comparison above can carry. It qualifies the answer; it is not the answer.",
     numeric: false,
     supported: (candidates) => candidates.some((c) => c.source_quality),
     value: (c) => c.source_quality ?? "not assessed",
-  },
-  {
-    key: "disclosures",
-    label: "Disclosure coverage",
-    hint: "Whether recent official disclosures were found for the issuer.",
-    numeric: false,
-    supported: (candidates) =>
-      candidates.some((c) => c.catalyst_coverage_status),
-    value: (c) => c.catalyst_coverage_status ?? "not assessed",
-  },
-  {
-    key: "gaps",
-    label: "Known gaps",
-    hint: "Fields the screen could not source. These reduce confidence in the comparison — they are not the comparison.",
-    numeric: true,
-    supported: (candidates) =>
-      candidates.some(
-        (c) => c.missing_info_count != null || c.blocking_gap_count != null,
-      ),
-    value: (c) =>
-      `${c.missing_info_count ?? 0}${
-        (c.blocking_gap_count ?? 0) > 0 ? ` · ${c.blocking_gap_count} blocking` : ""
-      }`,
   },
   {
     key: "readiness",
@@ -235,6 +265,15 @@ const ALL_DIMENSIONS: (ComparisonDimension & {
     numeric: false,
     supported: () => true,
     value: (c) => READINESS_WORD[researchReadiness(c)],
+  },
+  {
+    key: "priority",
+    label: "Research priority",
+    hint: "The deterministic screening score, 0-100. Not a rating, and not a view on value.",
+    numeric: true,
+    supported: (candidates) =>
+      candidates.some((c) => typeof c.candidate_score === "number"),
+    value: (c) => score(c.candidate_score),
   },
 ];
 

@@ -272,8 +272,11 @@ test.describe("Research report", () => {
     await expect(trends).toContainText("Not charted");
     await expect(trends).toContainText("segment definition changed");
     await expect(trends).toContainText("Segment A");
-    // One line for the comparable series only.
-    await expect(trends.locator("svg")).toHaveCount(1);
+    // A line for each COMPARABLE series and none for the segment one, whose
+    // definition changed mid-period. Drawing that would be a false statement
+    // in visual form.
+    const comparableSeries = 4; // revenue, OCF, FCF, net debt
+    await expect(trends.locator("svg")).toHaveCount(comparableSeries);
   });
 
   test("shows the council and keeps the gaps reachable", async ({ page }) => {

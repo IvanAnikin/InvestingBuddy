@@ -2966,3 +2966,112 @@ evidence pack was built without the structured facts, so the council saw a share
 price and correctly answered "not enough data". Measuring a prompt change
 requires giving the model the same evidence the real pipeline gives it —
 otherwise the measurement is of the harness.
+
+---
+
+## ADR-042: One Routing Rule Decides Economic Signal from Research Limitation
+
+**Date:** 2026-09-01
+**Status:** Accepted
+
+### Context
+
+ADR-041 gave the council somewhere to put an interpretation, and it started
+producing them. Human review of the rendered pages found the remaining problem:
+the reader-facing surface still mixed two kinds of statement under one heading.
+
+"Net debt rose while equity fell, which raises refinancing risk" and "Catalyst
+coverage rests on the issuer's own channel" are both true and both matter. Only
+the first is a reason a business might become less valuable. Shown together
+under "what could pressure value", the second tells a reader that the research
+process is a hazard the company faces.
+
+The leak had two sources, and neither was fixable by editing a section:
+
+* **Role.** The Source Quality Critic writes fluently about economics — on
+  Richemont it produced "The Jewellery Maisons segment remains the core profit
+  driver". Its subject is nonetheless the evidence, and it attached
+  `direction: pressuring` to statements that then landed in an economic column.
+* **Wording.** Any agent can write an evidence statement. The chair's own
+  "strongest negative evidence" on Moncler included "Absence of full annual
+  financial data and key metrics".
+
+### Decision
+
+**One classification rule, in the view-model layer, applied everywhere.**
+`classifySignal` answers with one of nine kinds — economic support, economic
+pressure, resilience, fragility, catalyst, company risk, investor question,
+research limitation, technical gap. No score, no model, no per-section
+exception.
+
+It decides in three steps:
+
+1. **Record form** (`isRecordGapStatement`) → technical gap.
+2. **Wording** (`isEvidenceStatement`) → research limitation. Four patterns,
+   each learned from live output: an ABSENCE word beside an EVIDENCE noun; an
+   evidence-subject phrase carrying no absence ("coverage rests on the issuer's
+   own channel"); an EPISTEMIC CONSEQUENCE, where what is limited is assessment,
+   confidence, visibility or comparability rather than the business; and
+   evidence PRESENCE framed as a finding ("closing price is available as a
+   factual data point" was offered as strongest positive evidence).
+3. **Role.** The Source Quality Critic's output is a research limitation
+   whatever it says. Source weakness changes CONFIDENCE in a conclusion; it does
+   not change a company's value.
+
+Only after those does the slot decide what the statement would otherwise be.
+
+**Nothing is dropped.** Every routed statement is reported under research
+confidence. The chair section renders its four lists AFTER routing, so it cannot
+show as a "strongest negative" a line the summary just moved — the two would
+contradict each other on the same page.
+
+**The comparison compares businesses.** Candidate columns are now council view,
+growth signal, profitability signal, cash generation, resilience, key catalyst
+and main downside; evidence confidence, research readiness and the deterministic
+score follow them and are labelled as qualifying the answer rather than being
+it. Known gaps and disclosure coverage are no longer columns; they sit in a
+collapsed "Research limitations" disclosure on each card. A dimension the
+council did not establish says **"Not established"** — it never borrows a
+completeness number.
+
+**Open research questions are about the business.** On live data every one of
+the 90 `risks_or_gaps` items across four issuers was an evidence statement, so
+89 route to research confidence and the section's real source is the chair's
+`key_debate`. A section with nothing to say says so rather than filling itself.
+
+**The chair prefers its structured synthesis.** Setup, strongest evidence each
+way, resilience, fragility, key debate, what would strengthen or weaken, what to
+watch. `research_next_steps` is a sourcing to-do list, so it comes last and
+collapsed; the legacy fields are a fallback for reports written before the
+synthesis existed.
+
+**The investor financial view speaks English.** Notes naming `_current_period`
+or `T1_primary_filing` are replaced with the same facts in words. The originals
+survive verbatim under Evidence & sources, so nothing is edited away.
+
+### Consequences
+
+**Positive, measured on live output for PNDORA, CFR, MRNA and MONC.** Zero
+source/data-gap statements in "what could drive value higher" or "what could
+pressure value"; zero Source Critic statements in any economic section; open
+questions reduced to the committee's own key debate. Both control sets hold —
+every known evidence statement is caught, and none of the real economic
+implications is.
+
+**Negative / accepted.** The wording rule is a set of patterns matched against
+prose, and prose changes. It is calibrated against four issuers' output at one
+point in time, with an explicit economic control set that must keep passing —
+but a future model phrasing an evidence limitation in a shape none of the four
+patterns covers would reach an economic column again. That is why the rule is
+one function with one test suite rather than filters scattered per section.
+
+It also errs toward routing OUT. On Moderna, an issuer with almost no financial
+evidence, both economic columns are now empty and the page says the council
+recorded no interpretation. That is the correct answer for that report and it
+looks like a bug until the reason is read.
+
+**A statement mixing an economic claim with an epistemic caveat stays economic.**
+"Positive revenue growth and profitability indicate ongoing business momentum,
+but the part-year data limits full-year trend assessment" is kept as a value
+driver: its main clause is about the business. Over-suppressing a hedged but
+real finding would be the worse failure.

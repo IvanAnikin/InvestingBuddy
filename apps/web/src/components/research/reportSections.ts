@@ -34,7 +34,12 @@ import {
   unwrap,
   type ReportContent,
 } from "@/components/reports/finalReportContent";
-import { isRecordGapStatement, partitionRecordGaps } from "./recordGaps";
+import { partitionRecordGaps } from "./recordGaps";
+import {
+  classifySignal,
+  isEconomicSignal,
+  type SignalContext,
+} from "./investorSignal";
 import {
   CONFLICT_NOTICE,
   canonicalFigures,
@@ -687,20 +692,43 @@ const RESEARCH_LIMITATION_FIELDS: { field: string; label: string }[] = [
   { field: "source_quality_risks", label: "Source quality" },
 ];
 
-export function buildRiskGroups(content: ReportContent | null): RiskGroups {
+export function buildRiskGroups(
+  content: ReportContent | null,
+): RiskGroups & { routedLimitations: string[] } {
   const section = asRecord(content?.["risk_analysis"]);
-  const collect = (defs: { field: string; label: string }[]) => {
+  const routedLimitations: string[] = [];
+
+  const collect = (
+    defs: { field: string; label: string }[],
+    route: boolean,
+  ) => {
     const out: { label: string; points: string[] }[] = [];
     for (const { field, label } of defs) {
-      const points = stringList(section?.[field]);
+      let points = stringList(section?.[field]);
+      if (route) {
+        // A company-risk slot holding an evidence statement is a
+        // misclassification upstream, not a hazard the business faces.
+        const kept: string[] = [];
+        for (const point of points) {
+          const signal = classifySignal(point, {
+            agent: "risk_governance",
+            slot: "company_risk",
+          });
+          if (signal === "company_risk") kept.push(point);
+          else routedLimitations.push(point);
+        }
+        points = kept;
+      }
       if (points.length > 0) out.push({ label, points });
     }
     return out;
   };
+
   return {
-    company: collect(COMPANY_RISK_FIELDS),
-    researchLimitations: collect(RESEARCH_LIMITATION_FIELDS),
+    company: collect(COMPANY_RISK_FIELDS, true),
+    researchLimitations: collect(RESEARCH_LIMITATION_FIELDS, false),
     summary: fieldText(section?.["risk_summary_text"]),
+    routedLimitations,
   };
 }
 
@@ -732,34 +760,49 @@ export interface OpenQuestion {
 export function buildOpenQuestions(
   chair: ChairView,
   agents: CouncilAgentDetail[],
-): { questions: OpenQuestion[]; recordGaps: string[] } {
+): {
+  questions: OpenQuestion[];
+  recordGaps: string[];
+  researchLimitations: string[];
+} {
   const seen = new Set<string>();
   const questions: OpenQuestion[] = [];
   const recordGaps: string[] = [];
+  const researchLimitations: string[] = [];
 
-  const push = (question: string, source: string) => {
+  const push = (question: string, source: string, agent: string) => {
     const value = question.trim();
     const key = value.toLowerCase();
     if (!key || seen.has(key)) return;
     seen.add(key);
-    if (isRecordGapStatement(value)) recordGaps.push(value);
+    const signal = classifySignal(value, { agent, slot: "risk_or_gap" });
+    if (signal === "technical_gap") recordGaps.push(value);
+    else if (signal === "research_limitation") researchLimitations.push(value);
     else questions.push({ question: value, source });
   };
 
+  // The committee's own statement of what is unresolved. On live reports this
+  // is the ONLY genuine investor question the council produces: every single
+  // `risks_or_gaps` item across PNDORA and CFR — 49 of them — was a statement
+  // about what evidence was missing, not about the business.
+  if (chair.synthesis.keyDebate) {
+    push(chair.synthesis.keyDebate, "Chair — key debate", "committee_chair");
+  }
+
   const redTeam = findAgent(agents, "red_team");
-  for (const c of redTeam?.concerns ?? []) push(c.item, "Red team");
+  for (const c of redTeam?.concerns ?? []) push(c.item, "Red team", "red_team");
 
   for (const agent of agents) {
     if (agent.name === "red_team") continue;
-    for (const c of agent.concerns) push(c.item, agent.label);
+    for (const c of agent.concerns) push(c.item, agent.label, agent.name);
   }
 
   // Only when there is no council to read.
   if (agents.length === 0) {
-    for (const q of chair.openQuestions) push(q, "Chair");
+    for (const q of chair.openQuestions) push(q, "Chair", "committee_chair");
   }
 
-  return { questions, recordGaps };
+  return { questions, recordGaps, researchLimitations };
 }
 
 // ---------------------------------------------------------------------------
@@ -876,6 +919,15 @@ export interface DirectionalPoint {
 export interface InvestmentReading {
   /** The chair's overall characterisation, in human words. */
   setupWord: string | null;
+  /**
+   * The chair's OWN four lists, after routing. The committee-synthesis section
+   * renders these rather than the raw fields so it cannot show as a "strongest
+   * negative" something the summary just routed to research confidence.
+   */
+  chairPositive: string[];
+  chairNegative: string[];
+  chairResilience: string[];
+  chairFragility: string[];
   /** What could make the business/equity materially more valuable. */
   couldDriveHigher: DirectionalPoint[];
   /** What could pressure it. */
@@ -906,8 +958,12 @@ export interface InvestmentReading {
  * implication field produces an empty reading, which the UI states rather than
  * papers over.
  */
-export function buildInvestmentReading(chair: ChairView, agents: CouncilAgentDetail[]): InvestmentReading {
+export function buildInvestmentReading(
+  chair: ChairView,
+  agents: CouncilAgentDetail[],
+): InvestmentReading & { routedLimitations: string[] } {
   const seen = new Set<string>();
+  const routedLimitations: string[] = [];
   const take = (statement: string): boolean => {
     const key = statement.trim().toLowerCase();
     if (!key || seen.has(key)) return false;
@@ -917,60 +973,96 @@ export function buildInvestmentReading(chair: ChairView, agents: CouncilAgentDet
 
   const higher: DirectionalPoint[] = [];
   const pressure: DirectionalPoint[] = [];
+  const resilience: DirectionalPoint[] = [];
+  const fragility: DirectionalPoint[] = [];
 
-  for (const point of chair.synthesis.strongestPositive) {
-    if (take(point)) {
-      higher.push({ statement: point, mechanism: null, source: "Chair", confidence: null });
+  /**
+   * Place one statement, or route it out.
+   *
+   * Every economic section goes through here, so nothing reaches "what could
+   * drive value higher" without having been asked whether it is about the
+   * company at all. A statement that turns out to be about the EVIDENCE is not
+   * dropped — it is collected for the research-confidence section, where it
+   * describes what it actually describes.
+   */
+  const place = (
+    statement: string,
+    context: SignalContext,
+    point: Omit<DirectionalPoint, "statement">,
+  ) => {
+    if (!take(statement)) return;
+    const signal = classifySignal(statement, context);
+    if (!isEconomicSignal(signal)) {
+      routedLimitations.push(statement);
+      return;
     }
-  }
-  for (const point of chair.synthesis.strongestNegative) {
-    if (take(point)) {
-      pressure.push({ statement: point, mechanism: null, source: "Chair", confidence: null });
+    const full: DirectionalPoint = { statement, ...point };
+    if (signal === "economic_support") higher.push(full);
+    else if (signal === "economic_pressure") pressure.push(full);
+    else if (signal === "resilience") resilience.push(full);
+    else if (signal === "fragility") fragility.push(full);
+  };
+
+  const chairPoint = { mechanism: null, source: "Chair", confidence: null };
+  const chairKept: Record<string, string[]> = {
+    chair_positive: [],
+    chair_negative: [],
+    chair_resilience: [],
+    chair_fragility: [],
+  };
+  for (const [slot, points] of [
+    ["chair_positive", chair.synthesis.strongestPositive],
+    ["chair_negative", chair.synthesis.strongestNegative],
+    ["chair_resilience", chair.synthesis.resilience],
+    ["chair_fragility", chair.synthesis.fragility],
+  ] as const) {
+    for (const point of points) {
+      const signal = classifySignal(point, {
+        agent: "committee_chair",
+        slot,
+      });
+      if (isEconomicSignal(signal)) chairKept[slot].push(point);
+      place(point, { agent: "committee_chair", slot }, chairPoint);
     }
   }
 
   for (const agent of agents) {
     if (agent.name === "committee_chair") continue;
     for (const imp of agent.implications) {
-      if (!take(imp.statement)) continue;
-      const point: DirectionalPoint = {
-        statement: imp.statement,
-        mechanism: imp.mechanism,
-        source: agent.label,
-        confidence: imp.confidence,
-      };
-      if (imp.direction === "supportive") higher.push(point);
-      else if (imp.direction === "pressuring") pressure.push(point);
-      // "mixed" and "neutral" belong to neither column. Forcing them into one
-      // would be this layer deciding which way an agent leaned.
+      place(
+        imp.statement,
+        { agent: agent.name, slot: "implication", direction: imp.direction },
+        {
+          mechanism: imp.mechanism,
+          source: agent.label,
+          confidence: imp.confidence,
+        },
+      );
     }
   }
 
-  const asPoints = (items: string[], source: string): DirectionalPoint[] =>
-    items.map((statement) => ({
-      statement,
-      mechanism: null,
-      source,
-      confidence: null,
-    }));
-
-  const reading: InvestmentReading = {
+  const reading: InvestmentReading & { routedLimitations: string[] } = {
     setupWord: fundamentalSetupWord(chair.synthesis.fundamentalSetup),
+    chairPositive: chairKept.chair_positive,
+    chairNegative: chairKept.chair_negative,
+    chairResilience: chairKept.chair_resilience,
+    chairFragility: chairKept.chair_fragility,
     couldDriveHigher: higher,
     couldPressure: pressure,
-    resilience: asPoints(chair.synthesis.resilience, "Chair"),
-    fragility: asPoints(chair.synthesis.fragility, "Chair"),
+    resilience,
+    fragility,
     whatToWatch: chair.synthesis.whatToWatch,
     keyDebate: chair.synthesis.keyDebate,
     whatWouldStrengthen: chair.synthesis.whatWouldStrengthen,
     whatWouldWeaken: chair.synthesis.whatWouldWeaken,
     empty: false,
+    routedLimitations,
   };
   reading.empty =
     higher.length === 0 &&
     pressure.length === 0 &&
-    reading.resilience.length === 0 &&
-    reading.fragility.length === 0 &&
+    resilience.length === 0 &&
+    fragility.length === 0 &&
     reading.whatToWatch.length === 0;
   return reading;
 }
@@ -999,6 +1091,8 @@ export function buildResearchConfidence(
   missingTotal: number,
   agents: CouncilAgentDetail[],
   recordGaps: string[] = [],
+  /** Statements routed out of the investment sections by the signal rule. */
+  routed: string[] = [],
 ): ResearchConfidenceView {
   const limitations: string[] = [];
   for (const group of risks.researchLimitations) {
@@ -1006,6 +1100,11 @@ export function buildResearchConfidence(
   }
   const critic = findAgent(agents, "source_quality_critic");
   for (const concern of critic?.concerns ?? []) limitations.push(concern.item);
+  // The Source Quality Critic's whole output belongs here, including anything
+  // it phrased economically — its subject is the evidence, and evidence
+  // weakness changes CONFIDENCE in a conclusion, not the conclusion.
+  for (const imp of critic?.implications ?? []) limitations.push(imp.statement);
+  limitations.push(...routed);
 
   const seen = new Set<string>();
   const deduped = limitations.filter((l) => {
@@ -1052,6 +1151,12 @@ export interface InvestorReportView {
    * research-confidence section can report them without any being lost.
    */
   recordGaps: string[];
+  /**
+   * Statements routed out of the investment sections because their subject was
+   * the EVIDENCE, not the company. Source weakness changes confidence in a
+   * conclusion; it does not change a company's value.
+   */
+  routedLimitations: string[];
 }
 
 export function buildInvestorReportView(
@@ -1065,7 +1170,11 @@ export function buildInvestorReportView(
       ?.synthesis ?? null;
   const chair = buildChair(content, agents, rawSynthesis);
   const risks = buildRiskGroups(content);
-  const { questions, recordGaps } = buildOpenQuestions(chair, agents);
+  const reading = buildInvestmentReading(chair, agents);
+  const { questions, recordGaps, researchLimitations } = buildOpenQuestions(
+    chair,
+    agents,
+  );
 
   // The chair's open-question list is deterministic and record-shaped on live
   // reports. Whether or not it was the source above, its record entries are
@@ -1076,11 +1185,19 @@ export function buildInvestorReportView(
   return {
     agents,
     chair,
-    reading: buildInvestmentReading(chair, agents),
+    reading,
     businessQuality: buildBusinessQuality(agents),
     catalysts: buildCatalysts(content, agents),
     risks,
     openQuestions: questions,
     recordGaps: [...recordGaps, ...chairRecords],
+    // Everything routed out of an investment section because its subject was
+    // the evidence rather than the company. Reported under research
+    // confidence — nothing is dropped, it is filed.
+    routedLimitations: [
+      ...reading.routedLimitations,
+      ...risks.routedLimitations,
+      ...researchLimitations,
+    ],
   };
 }

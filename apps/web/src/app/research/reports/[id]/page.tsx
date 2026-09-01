@@ -118,6 +118,7 @@ export default async function ResearchReportPage({
     // open-question list. They are reported here, where they describe what
     // they actually describe, rather than as investment arguments.
     [...investor.recordGaps, ...view.narrativeRecordGaps],
+    investor.routedLimitations,
   );
   const isFinal = Boolean(report.final_report_version);
 
@@ -338,6 +339,7 @@ export default async function ResearchReportPage({
           <ChairSynthesis
             chair={investor.chair}
             chairAgent={findAgent(investor.agents, "committee_chair")}
+            reading={investor.reading}
           />
 
           <OpenQuestions questions={investor.openQuestions} />
@@ -358,6 +360,11 @@ export default async function ResearchReportPage({
             appendix={view.appendix}
             channels={view.channels}
             reportId={report.id}
+            sourceNotes={[
+              view.snapshot.currentPeriodNote,
+              view.snapshot.statementsNote,
+              view.snapshot.periods?.note ?? null,
+            ].filter((n): n is string => Boolean(n))}
           />
 
           {/* Deterministic research memo next steps, when the backend flag that

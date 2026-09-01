@@ -58,9 +58,11 @@ export default function CandidateComparison({
           Candidates side by side
         </h2>
         <p className="mt-2 max-w-2xl text-sm leading-relaxed text-[color:var(--ib-ink-3)]">
-          Each column reports one measured thing. They are shown separately on
-          purpose — none of them is combined into an overall figure, because
-          they answer different questions.
+          What the council concluded about each business comes first; how much
+          evidence stands behind that conclusion comes after it. Each column
+          reports one measured thing — none of them is combined into an overall
+          figure, because they answer different questions. A dimension the
+          council did not establish says so rather than borrowing a gap count.
         </p>
       </div>
 
@@ -98,7 +100,7 @@ export default function CandidateComparison({
                 {dimensions.map((d) => (
                   <td
                     key={d.key}
-                    className={`px-3 py-3.5 text-[color:var(--ib-ink-2)] ${
+                    className={`ib-breakable max-w-[16rem] px-3 py-3.5 align-top text-[color:var(--ib-ink-2)] ${
                       d.numeric ? "text-right font-mono" : ""
                     }`}
                   >

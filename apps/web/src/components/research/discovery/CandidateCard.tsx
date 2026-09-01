@@ -10,6 +10,7 @@ import {
   researchReadiness,
 } from "./candidateView";
 import {
+  comparisonDimensionLabel,
   councilPlacementFor,
   internalActionLabel,
   type DiscoveryCouncilView,
@@ -170,7 +171,7 @@ export default function CandidateCard({
         </div>
       </div>
 
-      {/* What the council made of it */}
+      {/* Why it surfaced, in the council's words. */}
       {council.hasReview && (
         <p
           className="mt-4 text-sm leading-relaxed text-[color:var(--ib-ink-2)]"
@@ -180,6 +181,13 @@ export default function CandidateCard({
           {placement ? (
             <>
               {internalActionLabel(placement.action)}
+              {placement.strongestDimension ? (
+                <span className="text-[color:var(--ib-ink-3)]">
+                  {" "}
+                  · strongest on{" "}
+                  {comparisonDimensionLabel(placement.strongestDimension)}
+                </span>
+              ) : null}
               {placement.rationale ? (
                 <span className="ib-breakable"> — {placement.rationale}</span>
               ) : null}
@@ -244,7 +252,10 @@ export default function CandidateCard({
         </ul>
       )}
 
-      {/* Readiness + the deterministic score, secondary by design. */}
+      {/* Evidence confidence + the deterministic score, secondary by design.
+          The gap counts sit one level further down again: they qualify how much
+          the drivers above can be trusted, and they are not a reason to
+          research a company. */}
       <div className="mt-5 flex flex-wrap items-center gap-x-6 gap-y-2 border-t border-[color:var(--ib-line)] pt-3.5 text-xs">
         <span className={READINESS_TONE[readiness]}>
           {READINESS_WORD[readiness]}
@@ -257,17 +268,26 @@ export default function CandidateCard({
             </span>
           </span>
         )}
-        {c.score_explanation && (
-          <details className="text-[color:var(--ib-ink-3)]">
-            <summary className="cursor-pointer list-none underline decoration-dotted underline-offset-4 hover:text-[color:var(--ib-ink-2)]">
-              Score components
-            </summary>
-            {/* The screening service's own wording, unedited. */}
-            <p className="ib-breakable mt-2 max-w-prose leading-relaxed">
-              {c.score_explanation}
+
+        <details className="text-[color:var(--ib-ink-3)]" data-testid="candidate-limitations">
+          <summary className="cursor-pointer list-none underline decoration-dotted underline-offset-4 hover:text-[color:var(--ib-ink-2)]">
+            Research limitations
+          </summary>
+          <div className="mt-2 max-w-prose space-y-1.5 leading-relaxed">
+            <p>
+              {c.missing_info_count ?? 0} field(s) the screen could not source
+              {(c.blocking_gap_count ?? 0) > 0
+                ? `, ${c.blocking_gap_count} of which blocked it from completing`
+                : ""}
+              . Evidence confidence: {c.source_quality ?? "not assessed"}.
+              Disclosure coverage: {c.catalyst_coverage_status ?? "not assessed"}.
             </p>
-          </details>
-        )}
+            {c.score_explanation && (
+              /* The screening service's own wording, unedited. */
+              <p className="ib-breakable">{c.score_explanation}</p>
+            )}
+          </div>
+        </details>
 
         {/* State C: a linked artefact that is NOT current research. It stays
             reachable and is named for what it is. */}

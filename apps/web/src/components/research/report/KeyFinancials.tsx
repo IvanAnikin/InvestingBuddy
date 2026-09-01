@@ -119,6 +119,22 @@ function Column({
   );
 }
 
+/**
+ * The backend's period/source notes carry field names and tier codes:
+ * "Fields suffixed `_current_period` are the issuer's LATEST INTERIM
+ * reporting", "resolved from the issuer's own primary document
+ * (T1_primary_filing)". Those are true and they belong in the evidence and
+ * technical views. On the investor page they are implementation vocabulary
+ * doing the job of a sentence, so the SAME facts are stated in words here and
+ * the original text stays reachable, unedited, under Evidence & sources.
+ */
+const IMPLEMENTATION_VOCABULARY =
+  /_current_period|_primary_filing|\bT[1-6]_[a-z_]+|snapshot_financials\.|fundamentals\./i;
+
+function hasImplementationVocabulary(text: string | null | undefined): boolean {
+  return Boolean(text && IMPLEMENTATION_VOCABULARY.test(text));
+}
+
 export default function KeyFinancials({
   snapshot,
   directions,
@@ -198,8 +214,12 @@ export default function KeyFinancials({
                   kicker="Current period"
                   period={periods?.latestCurrent ?? null}
                   datapoints={group.current}
-                  caution="Part-year figures — not annualised and not comparable with the annual column."
-                  note={currentPeriodNote}
+                  caution="Part-year figures — not annualised and not directly comparable with the annual period."
+                  note={
+                    hasImplementationVocabulary(currentPeriodNote)
+                      ? null
+                      : currentPeriodNote
+                  }
                   testId={`${group.key}-current`}
                 />
                 <Column
@@ -216,7 +236,9 @@ export default function KeyFinancials({
 
       {statementsNote && (
         <p className="ib-breakable mt-5 border-t border-[color:var(--ib-line)] pt-3 text-xs leading-relaxed text-[color:var(--ib-ink-3)]">
-          {statementsNote}
+          {hasImplementationVocabulary(statementsNote)
+            ? "Figures sourced from the issuer's own filing. The full source and tier detail is under Evidence & sources."
+            : statementsNote}
         </p>
       )}
 

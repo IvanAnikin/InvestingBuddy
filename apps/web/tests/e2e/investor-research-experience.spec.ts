@@ -415,8 +415,15 @@ test.describe("Company report — investor reading order", () => {
     await expect(chair.getByTestId("chair-next-steps")).toContainText(
       "volume/price/mix decomposition",
     );
-    // Recommendation means RESEARCH action here, and says so.
-    await expect(chair).toContainText("These are research actions");
+    // Recommendation means RESEARCH action here, and says so — last, and
+    // collapsed, because a sourcing to-do list is not a synthesis.
+    await expect(chair).toContainText(
+      "Research actions — what to source or check next",
+    );
+    await expect(chair.getByTestId("chair-next-steps")).toHaveJSProperty(
+      "open",
+      false,
+    );
   });
 
   test("asks the questions that matter, and files the field paths elsewhere", async ({
@@ -550,9 +557,19 @@ test.describe("Company report — investor reading order", () => {
       annual.locator('[title="T1_primary_filing"]').first(),
     ).toBeAttached();
 
-    // And the backend's own prose is reproduced exactly, code and all: the
-    // translation is a display choice, never an edit to what was written.
+    // The investor page states the same fact in words instead of quoting a
+    // note that names a tier code...
     await expect(financials).toContainText(
+      "Figures sourced from the issuer's own filing",
+    );
+    await expect(financials).not.toContainText("T1_primary_filing");
+    await expect(financials).not.toContainText("_current_period");
+
+    // ...and the backend's own prose survives verbatim under the evidence
+    // disclosure. The translation is a display choice, never an edit.
+    const evidence = page.getByTestId("evidence-disclosure");
+    await evidence.locator("summary").first().click();
+    await expect(evidence.getByTestId("source-notes")).toContainText(
       "resolved from the issuer's own primary document (T1_primary_filing)",
     );
   });
@@ -613,11 +630,18 @@ test.describe("Company report — investor reading order", () => {
   }) => {
     await page.goto(`/research/reports/${PERIODS_REPORT_ID}`);
     const financials = page.getByTestId("key-financials");
+    // The fixture carries a real issuer's canonical set, so the groups an
+    // investor reads by are all present.
     await expect(financials.getByTestId("financial-group-profitability")).toBeVisible();
-    // Nothing in the fixture sources a cash-flow figure, so no cash card is
-    // rendered — an empty one would read as "this company generates no cash".
-    await expect(page.getByTestId("financial-group-cash")).toHaveCount(0);
-    await expect(financials).not.toContainText("Cash generation");
+    await expect(financials.getByTestId("financial-group-cash")).toBeVisible();
+    await expect(financials.getByTestId("financial-group-balance_sheet")).toBeVisible();
+
+    // And a slot the report never sourced is simply absent. Rendering it empty
+    // would read as "this company holds no cash".
+    await expect(financials).not.toContainText("Cash & equivalents");
+    await expect(financials).not.toContainText("Total debt");
+    // No regulator statement block either — this issuer files no SEC XBRL.
+    await expect(financials).not.toContainText("Reported statements");
   });
 });
 
