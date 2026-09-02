@@ -62,7 +62,20 @@ resource apiApp 'Microsoft.Web/sites@2023-12-01' = {
       alwaysOn: true
       healthCheckPath: '/health'
       // gunicorn installed via pyproject.toml [deploy] extra
-      appCommandLine: 'gunicorn -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000 --workers 2 --timeout 120 app.main:app'
+      //
+      // --workers 1: B1 has ~1.75 GB and the agent stack is import-heavy, so a
+      // second worker roughly doubles resident memory (observed at 93-95% with
+      // one). docs/DEPLOYMENT.md forbids 2 until the plan is scaled to B2/S1+.
+      // This file said 2 while the live app ran 1 — no workflow applies this
+      // bicep, so the contradiction sat here as a trap for a manual apply.
+      //
+      // --timeout 300: for an async UvicornWorker this is a HEARTBEAT timeout.
+      // It must exceed any single stretch that keeps the event loop from being
+      // scheduled, or gunicorn SIGKILLs the worker and every in-flight research
+      // run dies. Kept in step with DEPLOYED_GUNICORN_WORKER_TIMEOUT_SECONDS in
+      // app/core/config.py, which tests/test_worker_timeout_invariant.py checks
+      // against the document-ingestion budget.
+      appCommandLine: 'gunicorn -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000 --workers 1 --timeout 300 app.main:app'
       appSettings: [
         { name: 'APP_ENV', value: 'staging' }
         { name: 'LLM_PROVIDER', value: 'mock' }

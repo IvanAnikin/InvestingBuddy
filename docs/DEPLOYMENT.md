@@ -444,6 +444,110 @@ a deliberate reliability trade-off, not an oversight:
 scaling the plan to **B2 / S1 or higher**, where the extra memory headroom exists.
 The startup command is intentionally pinned to `--workers 1` for the current stack.
 
+> `infra/azure/modules/appservice.bicep` contradicted this for a long time —
+> it declared `--workers 2` while the live app ran `--workers 1`. No workflow
+> applies that bicep, so it sat as a trap for anyone running it by hand. It is
+> now pinned to 1 and `tests/test_worker_timeout_invariant.py` keeps it there.
+
+### Gunicorn `--timeout` is a heartbeat, not a request timeout
+
+With an async `UvicornWorker`, `--timeout` does **not** bound a request — it
+bounds how long the worker may go without reporting liveness. Because the worker
+reports liveness *from the event loop*, any stretch of work that keeps the loop
+from being scheduled for longer than `--timeout` gets the worker `SIGKILL`ed.
+
+The deployed value is mirrored in code as
+`app.core.config.DEPLOYED_GUNICORN_WORKER_TIMEOUT_SECONDS` and must stay **above**
+`primary_document_ingestion_budget_seconds`. These drifted apart (120 vs 180),
+which is what made the 2026-08/09 worker kills inevitable rather than unlucky.
+`tests/test_worker_timeout_invariant.py` fails CI if they cross again, and also
+asserts the bicep startup command matches the constant.
+
+Changing the timeout means changing **all four** together:
+
+1. `DEPLOYED_GUNICORN_WORKER_TIMEOUT_SECONDS` in `apps/api/app/core/config.py`
+2. `appCommandLine` in `infra/azure/modules/appservice.bicep`
+3. the live App Service startup command
+4. this document
+
+The live startup command is set with:
+
+```bash
+az webapp config set \
+  --name ib-stg-api --resource-group ib-stg-rg \
+  --startup-file "gunicorn app.main:app --workers 1 \
+    --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000 --timeout 300"
+```
+
+This restarts the app, so run it when no analysis job is in flight.
+
+### Document parsing must never run on the event loop
+
+With **one** worker, anything that blocks the event loop blocks the entire API —
+and if it blocks long enough, gunicorn kills the process.
+
+`ib-stg-api` starts with `--timeout 120`. For an async `UvicornWorker` that is a
+**heartbeat** timeout, not a request timeout: the worker must keep getting
+scheduled to report liveness. Primary-document parsing (`pypdf`, `pdfplumber`,
+the table validator) is pure-Python and CPU-bound, so calling it directly from an
+`async def` starved that heartbeat. Gunicorn then logged
+`[CRITICAL] WORKER TIMEOUT` and `SIGKILL`ed the only worker — destroying every
+in-flight research run and returning **502** for every concurrent request.
+
+This happened **six times between 2026-08-24 and 2026-09-02** (outages of 15–44s
+each). It is not a rare edge case: `primary_document_ingestion_budget_seconds`
+defaults to **180**, which is larger than the **120s** worker timeout, so a single
+slow document was *permitted* to outlive the worker. One measured ingestion took
+186s.
+
+`live_fetchers._parse_off_loop` now runs every such parse in a worker thread via
+`asyncio.to_thread`, keeping the loop free so the heartbeat is always made.
+
+Two limits worth knowing:
+
+- **The GIL still applies.** These parsers are pure Python, so the thread keeps
+  consuming the core. This removes the *crash* and the API freeze; it does not
+  make extraction cheaper. Reducing the work itself is the reuse/negative-cache
+  path in `extracted_document_service`.
+- **A Python thread cannot be cancelled.** The offload is deliberately *not*
+  wrapped in `asyncio.wait_for` — a timeout would hand back control while the
+  thread kept burning CPU invisibly, and would let a second parse start on top of
+  the abandoned one. The aggregate ingestion budget still bounds how many
+  documents are *started*.
+
+**When adding any new CPU-bound work to a request or background-task path, route
+it through `_parse_off_loop` (or `asyncio.to_thread`).** A direct call is a
+latent worker kill. `tests/test_ingestion_event_loop_not_blocked.py` asserts the
+parse runs off the loop thread and that the loop stays schedulable throughout.
+
+### A killed job is reported dead immediately, not after 45 minutes
+
+Job *execution* is process-local: the work runs in the API process that accepted
+it, so a worker restart stops it. Detecting that used to rely on elapsed time
+alone — a `running` job past its derived worst case, currently **45 minutes**.
+A run killed two minutes in therefore kept reporting `running` for the rest of
+the hour, which is how a dead job came to look like a slow one.
+
+With `--workers 1` there is a faster certainty: if a job's `started_at` precedes
+this process's boot time, the process that was running it no longer exists.
+`research_job.is_orphaned` uses that, so an interrupted run is visible as soon as
+the API is back (~20s) instead of 45 minutes later.
+
+Notes:
+
+- The rule **disables itself at 2+ workers** (`DEPLOYED_GUNICORN_WORKERS`), where
+  the premise fails — gunicorn respawns workers individually, so a fresh worker's
+  boot time says nothing about a peer's in-flight jobs. It falls back to elapsed
+  time there.
+- It also covers `pending` jobs, which the elapsed-time rule never considered at
+  all; such a job previously blocked resubmission indefinitely.
+- Status stays **derived, never stored** — consistent with the rest of
+  `research_job`. The dead worker's last write is left exactly as it was, so the
+  audit trail of what it was doing survives.
+- Both rules live in the single `is_stale` predicate because it drives *both*
+  what the reader is shown and whether a resubmit may start a fresh run. Splitting
+  them would let the UI say "re-running is safe" while submit refused to start one.
+
 ### Async discovery runs on the single B1 worker (Phase 25.1)
 
 A `free_real` market-discovery run executes the full company-analysis workflow

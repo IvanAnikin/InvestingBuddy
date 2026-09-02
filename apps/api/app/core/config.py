@@ -1,5 +1,39 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+#: The ``--timeout`` of the DEPLOYED gunicorn startup command, mirrored here so
+#: Python-side budgets can be checked against it.
+#:
+#: This is NOT a setting the app reads at runtime — gunicorn owns it. It is a
+#: declared fact about the deployment, and it exists because the two silently
+#: drifted apart: ``--timeout 120`` against a 180s document-ingestion budget.
+#: For an async ``UvicornWorker`` this is a HEARTBEAT timeout, so any single
+#: stretch of work that keeps the event loop from being scheduled for longer
+#: than this gets the worker SIGKILLed — killing every in-flight research run
+#: and 502-ing every concurrent request (six such outages on ib-stg-api between
+#: 2026-08-24 and 2026-09-02).
+#:
+#: Change this ONLY together with:
+#:   * the ``appCommandLine`` in ``infra/azure/modules/appservice.bicep``
+#:   * the live App Service startup command (``az webapp config set``)
+#:   * ``docs/DEPLOYMENT.md``
+#: ``tests/test_worker_timeout_invariant.py`` enforces the budget relationship.
+DEPLOYED_GUNICORN_WORKER_TIMEOUT_SECONDS = 300
+
+#: The ``--workers`` of the DEPLOYED gunicorn startup command.
+#:
+#: Like the timeout above, a declared fact about the deployment rather than a
+#: runtime setting. It is 1 on the B1 plan and ``docs/DEPLOYMENT.md`` forbids
+#: raising it before scaling to B2/S1+ (the agent stack is import-heavy and B1
+#: has ~1.75 GB, already observed at 93-95% with one worker).
+#:
+#: ``research_job`` reads this to decide whether a job that started BEFORE this
+#: process booted can safely be called abandoned: with exactly one worker a
+#: restart kills every in-flight job, so the answer is knowable immediately
+#: instead of after a 45-minute worst-case timer. With 2+ workers it is NOT
+#: knowable that way — a peer worker may still be running that job — so the
+#: shortcut disables itself automatically when this is raised.
+DEPLOYED_GUNICORN_WORKERS = 1
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
@@ -787,6 +821,12 @@ class Settings(BaseSettings):
     # longer applies and an issuer's primary documents are no longer read
     # against a clock set by a browser request. Still a hard ceiling, not a
     # target: a document that finishes early spends nothing.
+    #
+    # ⚠ COUPLED TO THE GUNICORN WORKER TIMEOUT. This must stay UNDER
+    # ``DEPLOYED_GUNICORN_WORKER_TIMEOUT_SECONDS`` (top of this module): the two
+    # drifted apart (180 vs 120), so one slow document was PERMITTED to outlive
+    # the worker, which gunicorn then SIGKILLed mid-run. Enforced by
+    # ``tests/test_worker_timeout_invariant.py``.
     primary_document_ingestion_budget_seconds: int = 180
     # Hard cap on documents ingested for one issuer in a single request (bounds
     # cost + keeps one issuer from draining the aggregate budget).
