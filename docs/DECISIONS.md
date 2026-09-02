@@ -3194,6 +3194,27 @@ before, because 107 was in the comparison set for the group key. Every
 previously-fixed false positive stays fixed (H1 as a period, bare years,
 trailing commas, percent-beside-amount, historical series).
 
+**Positive, from auditing the three live reports.** Two further false-positive
+classes, both older than this corrective and both only visible on real prose:
+
+* **A number belongs to one metric.** "Total assets of DKK 29.603 billion
+  relative to revenue and equity suggest a capital-intensive business" states
+  the total-assets figure correctly, but "revenue" sits inside the proximity
+  window, so 29.603bn was tested as a revenue claim against DKK 32,549m and the
+  sentence was withheld. A number that is some OTHER named metric's figure is
+  no longer evidence against this one. The exclusion is per-METRIC and
+  scope-filtered on purpose: a number matching a DIFFERENT SCOPE of the SAME
+  metric is exactly the mis-scoping the guard exists to catch, so it excuses
+  nothing.
+* **A multiple is not a level.** "net debt ~2.6x equity" states a relationship.
+  Reading 2.6 as a net-debt level contradicted DKK 13,719m.
+
+Re-audited across all three live reports: PNDORA **0 withheld** (was 2, both
+false), CFR **0** (was 32 on the pre-corrective report), MRNA **8 — all
+genuine**: its own canonical total assets are 10,961m USD while all eight
+agents state $12.338bn. Two representations of one fact disagreeing is what
+this guard is for, and it is doing it.
+
 **Negative / accepted.** An unscoped claim is cleared by matching ANY scope.
 That is deliberate: for a guard that SUPPRESSES content, the correct failure
 mode is a missed contradiction rather than an invented one. A sentence that

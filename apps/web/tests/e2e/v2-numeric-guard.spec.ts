@@ -414,6 +414,67 @@ test.describe("a percentage is a percentage however the extractor spells it", ()
 });
 
 // ---------------------------------------------------------------------------
+// A number belongs to ONE metric, and a multiple is not a level
+// ---------------------------------------------------------------------------
+
+test.describe("shared sentences and multiples", () => {
+  /**
+   * Both cases are verbatim from the LIVE Pandora report generated on
+   * 2026-09-02 — the only two statements the scope-aware guard still withheld
+   * on it, and both were correct.
+   */
+  const index = buildCanonicalIndex(
+    snapshot([
+      dp({ key: "revenue", numericValue: 32549, currency: "DKK", period: "2025" }),
+      dp({ key: "total_assets", numericValue: 29603, currency: "DKK", period: "2025" }),
+      dp({ key: "total_equity", numericValue: 5282, currency: "DKK", period: "2025" }),
+      dp({ key: "net_debt", numericValue: 13719, currency: "DKK", period: "2025" }),
+    ]),
+  );
+
+  test("a figure belonging to another named metric is not held against this one", () => {
+    // 29.603bn is the TOTAL ASSETS figure and it is correct. "revenue" sits
+    // inside the proximity window, so the guard used to test 29.603 as a
+    // revenue claim, find it did not match 32,549m, and withhold the sentence.
+    const { verdict } = checkSentence(
+      "Total assets of DKK 29.603 billion relative to revenue and equity suggest a capital-intensive business requiring asset management to maintain returns.",
+      index,
+    );
+    expect(verdict).toBe("consistent");
+  });
+
+  test("a multiple is a relationship, not a level", () => {
+    const { verdict } = checkSentence(
+      "Significant net debt relative to equity (net debt ~2.6x equity) indicates leverage that could pressure financial stability.",
+      index,
+    );
+    expect(verdict).not.toBe("conflicting");
+  });
+
+  test("...and a WRONG level in a shared sentence is still caught", () => {
+    // 44.0bn is nobody's figure here, so it is a real contradiction and the
+    // shared-sentence rule must not excuse it.
+    const { verdict } = checkSentence(
+      "Total assets of DKK 29.603 billion and revenue of DKK 44.0 billion suggest a capital-intensive business.",
+      index,
+    );
+    expect(verdict).toBe("conflicting");
+  });
+
+  test("a genuine balance-sheet contradiction is still caught", () => {
+    // The LIVE Moderna case: every one of its eight agents stated total assets
+    // of $12.338bn while the report's own canonical figure was 10,961m. Two
+    // representations of one fact, disagreeing — which is what the guard is
+    // for. Reproduced here on the Pandora index with the same shape.
+    const { verdict } = checkSentence(
+      "Total assets were DKK 12.338 billion at the year end.",
+      index,
+    );
+    expect(verdict).toBe("conflicting");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 27. The existing fixes must survive
 // ---------------------------------------------------------------------------
 
