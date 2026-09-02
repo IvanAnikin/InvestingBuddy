@@ -34,7 +34,7 @@ from typing import Any
 import pytest
 
 from app.core.config import settings as app_settings
-from app.services import market_discovery_service, research_job
+from app.services import market_discovery_service
 from app.services.llm.azure_openai_client import _extract_usage
 from app.services.llm.client import LLMRateLimitError, LLMTimeoutError
 from app.services.llm.council import _prior_summaries, run_council
@@ -562,31 +562,15 @@ def test_stale_threshold_covers_derived_worst_case(monkeypatch) -> None:
     assert grown > worst_case_minutes
 
 
-def test_running_job_within_council_budget_is_not_stale(monkeypatch) -> None:
-    """The ELAPSED-TIME rule alone: 15 minutes in is not yet abandoned.
-
-    ``PROCESS_BOOT_AT`` is pinned older than the job because the other
-    abandonment rule (``research_job.is_orphaned``) would otherwise fire on this
-    backdated envelope: in a long-lived pytest process any "started 15 minutes
-    ago" fixture necessarily predates the process. In production that shape means
-    the process really did restart mid-run, which is exactly what that rule is
-    for — so pin the boot time here to isolate the rule under test rather than
-    weaken either one.
-    """
+def test_running_job_within_council_budget_is_not_stale() -> None:
     started = datetime.now(timezone.utc) - timedelta(minutes=15)
-    monkeypatch.setattr(
-        research_job, "PROCESS_BOOT_AT", started - timedelta(minutes=1)
-    )
     envelope = {"status": "running", "started_at": started.isoformat()}
     assert market_discovery_service._analysis_job_is_stale(envelope) is False
 
 
-def test_running_job_beyond_threshold_is_stale(monkeypatch) -> None:
+def test_running_job_beyond_threshold_is_stale() -> None:
     threshold = market_discovery_service.analysis_job_stale_after_minutes()
     started = datetime.now(timezone.utc) - timedelta(minutes=threshold + 5)
-    monkeypatch.setattr(
-        research_job, "PROCESS_BOOT_AT", started - timedelta(minutes=1)
-    )
     envelope = {"status": "running", "started_at": started.isoformat()}
     assert market_discovery_service._analysis_job_is_stale(envelope) is True
 

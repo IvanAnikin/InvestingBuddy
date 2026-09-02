@@ -24,6 +24,38 @@ from app.models.review_event import ReportReviewEvent
 from app.models.source import Citation, Source
 
 # ---------------------------------------------------------------------------
+# Process-lifecycle isolation
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _pin_process_boot_at(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin ``research_job.PROCESS_BOOT_AT`` far in the past for every test.
+
+    ``is_orphaned`` calls a job dead when its ``started_at`` predates the boot of
+    THIS process. That is a statement about a real process lifecycle, and a test
+    session is not one: ``PROCESS_BOOT_AT`` is fixed at import, so any fixture
+    that backdates ``started_at`` by N minutes would be judged orphaned or not
+    depending purely on whether the session had been running longer than N
+    minutes by the time that test executed.
+
+    That made outcomes depend on suite ordering and total runtime — the same test
+    passed in a long full run and failed in isolation. Pinning the boot time to
+    the distant past makes orphan detection inert by default, so unrelated tests
+    exercise the elapsed-time rule they were written for.
+
+    Tests that mean to exercise orphaning set ``PROCESS_BOOT_AT`` themselves; a
+    later ``monkeypatch.setattr`` in the test body simply wins over this one. See
+    ``tests/test_orphaned_job_detection.py``.
+    """
+    from app.services import research_job
+
+    monkeypatch.setattr(
+        research_job, "PROCESS_BOOT_AT", datetime(2000, 1, 1, tzinfo=timezone.utc)
+    )
+
+
+# ---------------------------------------------------------------------------
 # DB mock
 # ---------------------------------------------------------------------------
 
