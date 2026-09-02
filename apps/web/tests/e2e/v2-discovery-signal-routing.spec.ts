@@ -74,6 +74,20 @@ const LIVE_COMPANY_RISK_SLOT = [
   "UNKNOWN: Regulatory environment in Denmark not yet assessed. Sector-specific regulatory risks require T2/T3 research.",
 ];
 
+/**
+ * The Key Risks FOOTNOTE, verbatim from the live PNDORA report. It is the last
+ * route by which a source-tier code reached the company-risk section, and it
+ * is unambiguously a statement about the research.
+ */
+const LIVE_RISK_SUMMARY =
+  "Risk assessment for PNDORA (PNDORA), sector not sourced, Denmark. Total " +
+  "risk flags: 19 (3 marked UNKNOWN due to missing data). Data quality: " +
+  "identity/price T6_model_estimate, financial statement facts " +
+  "T1_primary_filing. Assessment is incomplete — the issuer's own primary " +
+  "filing is ingested, but the remaining statement lines and " +
+  "identity/regulatory confirmation are still required before any investment " +
+  "decision. This is an internal draft only.";
+
 /** The only two GENUINE company risks in those same slots, both from MRNA. */
 const LIVE_REAL_COMPANY_RISKS = [
   "Clinical development risk — pipeline assets may fail trials.",
@@ -213,5 +227,19 @@ test.describe("Key Risks carries company risk only", () => {
         `wrongly routed: ${statement}`,
       ).toBe(false);
     }
+  });
+});
+
+test.describe("the Key Risks footnote", () => {
+  test("the live risk-summary line is routed to research confidence", () => {
+    expect(isEvidenceStatement(LIVE_RISK_SUMMARY)).toBe(true);
+  });
+
+  test("a summary that IS about the business would be kept", () => {
+    expect(
+      isEvidenceStatement(
+        "Business risk is concentrated in channel mix and discretionary demand.",
+      ),
+    ).toBe(false);
   });
 });
