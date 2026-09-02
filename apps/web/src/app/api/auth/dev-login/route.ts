@@ -16,12 +16,26 @@ import {
   signSession,
 } from "@/lib/auth/session";
 import { buildPublicUrl, toSafeInternalPath } from "@/lib/auth/url";
+import { authRedirect, withAuthHeaders } from "@/lib/auth/response";
 
 export const dynamic = "force-dynamic";
 
+/**
+ * GET is never part of the test sign-in (the form posts). Answering 404 keeps
+ * the route's whole surface identical to a route that does not exist, instead
+ * of a 405 that confirms one does.
+ */
+export function GET(): NextResponse {
+  return withAuthHeaders(
+    NextResponse.json({ error: "Not found" }, { status: 404 }),
+  );
+}
+
 export async function POST(request: NextRequest): Promise<NextResponse> {
   if (!isTestAuthMode()) {
-    return NextResponse.json({ error: "Not found" }, { status: 404 });
+    return withAuthHeaders(
+      NextResponse.json({ error: "Not found" }, { status: 404 }),
+    );
   }
 
   const contentType = request.headers.get("content-type") ?? "";
@@ -43,24 +57,26 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   }
 
   if (!email) {
-    return NextResponse.json({ error: "email is required" }, { status: 400 });
+    return withAuthHeaders(
+      NextResponse.json({ error: "email is required" }, { status: 400 }),
+    );
   }
 
   const token = await signSession(email, name || email);
   if (!token) {
     // AUTH_SECRET not configured — cannot issue a session.
-    return NextResponse.json(
-      { error: "AUTH_SECRET is not configured" },
-      { status: 500 },
+    return withAuthHeaders(
+      NextResponse.json(
+        { error: "AUTH_SECRET is not configured" },
+        { status: 500 },
+      ),
     );
   }
 
   const isForm = !contentType.includes("application/json");
   const res = isForm
-    ? NextResponse.redirect(
-        buildPublicUrl(toSafeInternalPath(callbackUrl), request),
-      )
-    : NextResponse.json({ ok: true, email });
+    ? authRedirect(buildPublicUrl(toSafeInternalPath(callbackUrl), request))
+    : withAuthHeaders(NextResponse.json({ ok: true, email }));
   res.cookies.set(SESSION_COOKIE, token, sessionCookieOptions());
   return res;
 }

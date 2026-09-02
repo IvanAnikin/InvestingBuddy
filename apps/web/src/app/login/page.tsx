@@ -14,21 +14,41 @@ export const metadata = {
   title: "Admin Sign In — InvestingBuddy",
 };
 
+// What the user is told when a sign-in did not complete.
+//
+// Every message says the same two things: the previous attempt is over, and the
+// button below starts a new one. None of them ask the user to interpret a
+// provider slug — `code_already_used` and friends stay in the logs, which is
+// where they are diagnostic. The three legacy keys are still mapped so an error
+// URL held in a tab from before this change still renders a sentence.
 const ERROR_MESSAGES: Record<string, string> = {
+  oauth_callback_expired:
+    "Your previous sign-in attempt expired. Start a new sign-in below.",
+  oauth_state_invalid:
+    "That sign-in attempt is no longer valid. Start a new sign-in below.",
+  oauth_provider_error:
+    "The sign-in provider could not complete this attempt. Start a new sign-in below.",
+  oauth_user_not_authorized:
+    "That account is not authorized for this workspace.",
+  oauth_internal_error: "Sign-in is temporarily unavailable. Try again later.",
   oauth_not_configured: "Sign-in is not configured on this environment.",
-  state_mismatch: "Your sign-in request expired or was invalid. Try again.",
-  invalid_response: "The sign-in response was invalid. Try again.",
-  token_exchange_failed: "Could not complete sign-in with the provider.",
+  invalid_response:
+    "That sign-in attempt is no longer valid. Start a new sign-in below.",
   token_exchange_unreachable:
     "Could not reach the sign-in provider. Try again in a moment.",
-  code_already_used:
-    "That sign-in link was already used or has expired. Start again from this page in a fresh tab.",
   oauth_client_rejected:
     "The provider rejected this deployment's sign-in credentials. Contact an administrator.",
   redirect_uri_mismatch:
     "The sign-in redirect address is misconfigured. Contact an administrator.",
   identity_lookup_failed: "Could not read your account identity. Try again.",
   no_verified_email: "Your provider account has no verified email.",
+  // Superseded reason codes, kept so an older error URL still reads sensibly.
+  state_mismatch:
+    "That sign-in attempt is no longer valid. Start a new sign-in below.",
+  code_already_used:
+    "Your previous sign-in attempt expired. Start a new sign-in below.",
+  token_exchange_failed:
+    "The sign-in provider could not complete this attempt. Start a new sign-in below.",
   session_unavailable: "Sign-in is temporarily unavailable. Try again later.",
 };
 
@@ -47,7 +67,10 @@ export default async function LoginPage({
   }
 
   const testMode = isTestAuthMode();
-  const errorMessage = error ? ERROR_MESSAGES[error] ?? "Sign-in failed." : null;
+  const errorMessage = error
+    ? ERROR_MESSAGES[error] ??
+      "That sign-in attempt did not complete. Start a new sign-in below."
+    : null;
 
   return (
     <main className="relative mx-auto flex min-h-screen max-w-lg flex-col justify-center px-6 py-16">
@@ -75,7 +98,7 @@ export default async function LoginPage({
           {errorMessage && (
             <div className="mt-4">
               <SafetyBanner variant="warning" title="Sign-in problem">
-                <p>{errorMessage}</p>
+                <p data-testid="login-error">{errorMessage}</p>
               </SafetyBanner>
             </div>
           )}

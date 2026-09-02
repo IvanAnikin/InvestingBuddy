@@ -109,6 +109,14 @@ export default defineConfig({
               AUTH_TEST_MODE: "true",
               AUTH_TRUST_HOST: "true",
               ADMIN_ALLOWED_EMAILS: "test-admin@example.com",
+              // Real GitHub OAuth, offline: the callback route runs unmodified
+              // against a stand-in provider that enforces single-use codes, so
+              // the replay behaviour is exercised rather than simulated. The
+              // credentials are obvious fakes and the override is inert unless
+              // AUTH_TEST_MODE=true (src/lib/auth/github-endpoints.ts).
+              AUTH_GITHUB_ID: "fake-e2e-client-id",
+              AUTH_GITHUB_SECRET: "fake-e2e-client-secret-not-a-real-value",
+              AUTH_GITHUB_TEST_BASE_URL: `http://127.0.0.1:${MOCK_BACKEND_PORT}/__mock_github__`,
             },
             timeout: 120_000,
             stdout: "pipe",

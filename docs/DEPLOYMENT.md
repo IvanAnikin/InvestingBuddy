@@ -1645,16 +1645,50 @@ Copy `.env.example` to `.env`. The defaults work for local Docker development.
 Verify: logged-out `/admin` → `/login`; logged-out `GET /api/admin/proxy/health`
 → 401; `/` and `/api/version` stay public.
 
-### Sign-in flow tracing (`code_already_used`)
+### Sign-in flow tracing (stale / replayed OAuth callback)
 
-Staging sign-in intermittently dead-ends on `/login?error=code_already_used`
-(GitHub's `bad_verification_code`) after the app has been idle. That branch is
-only reachable **after** the CSRF state matched, and the `ib_oauth_state` cookie
-lives for 600s — so the failing request always belongs to a live, ≤10-minute
-flow whose authorization code had already been spent. The suspected trigger is
-that `ib-stg-web` runs with `alwaysOn=false`: cold starts measured from the
-container logs range **34–167s**, long enough for a client to abandon and retry
-the callback while the first request is still being served.
+**Resolved 2026-09-02** — kept because the trace is how the next sign-in
+anomaly gets decided, and because the resolution is only legible against it.
+
+Staging sign-in intermittently dead-ended on `/login?error=code_already_used`
+(GitHub's `bad_verification_code`) after the app had been idle. The
+instrumentation below captured the failure end to end. One authorization code
+arrived three times:
+
+```text
+11:45:07  callback_received  flow=08d7fe3a  state_ok=true   had_session=false   ua=Chrome/151
+11:45:07  token_exchange     ok=true                                            ← code spent, successfully
+11:45:08  signed_in          allowed=true                                       ← 3xx + Set-Cookie session
+                                                                                       + Set-Cookie state="" (clear)
+11:45:10  callback_received  flow=none      state_ok=false  had_session=false   ua=Chrome/146   ← a different client
+11:46:06  callback_received  flow=08d7fe3a  state_ok=true   had_session=false   ua=Chrome/151
+11:46:07  token_exchange     ok=false  error=bad_verification_code
+11:46:07  flow_failed        reason=code_already_used
+```
+
+The last arrival is the proof. Fifty-nine seconds after a **successful**
+sign-in, the same browser returned still holding the `ib_oauth_state` cookie
+that success had cleared (`state_ok=true`, same `flow`) and still without the
+session cookie it had set (`had_session=false`). Both `Set-Cookie` headers ride
+the *same* response, so neither taking effect means the browser discarded that
+response wholesale rather than committing it — the navigation was cancelled
+client-side, with Chrome's "Dangerous site" interstitial on screen. The server
+had done everything right; the user was left signed out holding a URL whose
+one-time code was already spent, and the retry re-exchanged it.
+
+Note what the trace ruled *out*: `uptime_s` was 3244–3369 throughout, so the
+container was warm and the `alwaysOn=false` cold start (34–167s, still true of
+`ib-stg-web`) played no part in this incident. `purpose=-` on every line rules
+out a browser prefetch. The 11:45:10 arrival came from a **different**
+user-agent with no cookies at all — some client fetched the live callback URL
+2.3s after the browser did; it failed the state check and got nothing, which is
+what fail-closed state validation is for.
+
+The fix (`src/lib/auth/oauth-transactions.ts`) never retries a spent code.
+Exactly one request owns each code; a later arrival is answered from the
+recorded outcome, and is answered *with a session* only when it presents the
+matching state cookie — the proof of ownership the discarded-response browser
+still has and an unrelated fetcher never does.
 
 `src/lib/auth/log.ts` emits one `key=value` line per step so the next occurrence
 is decidable rather than inferred. Pull the logs and read the trace:
@@ -1687,14 +1721,21 @@ A real trace from `ib-stg-web` looks like this:
 | `proto` | `x-forwarded-proto`. `http` would mean the request arrived over plaintext. |
 | `ua` / `arr` | User agent (identifies scanners/prefetchers) and Azure's request correlation id. |
 
+| `outcome` (on `signed_in`) | `fresh` = first exchange. `replayed` = answered from the transaction registry without touching GitHub. `session_already_present` = a spent code arrived alongside a session that had landed. |
+
 Diagnosis from one trace:
 
 - Two `callback_received` with the **same `code_fp`** → replay. Compare `purpose`
   (prefetch), `ua` (scanner), and `uptime_s` (cold start) to attribute it.
-- One `callback_received`, `state_ok=true`, code already spent → the code was
-  consumed by a request that never reached this log (e.g. a different instance).
-- `had_session=true` on the failing arrival → an earlier attempt **did** succeed
-  and the user is being shown an error despite holding a valid session.
+- `signed_in outcome=replayed` → the recovery path did its job; the user was
+  signed in without the code being presented to GitHub twice.
+- A repeat arrival whose `ua` differs from the `flow_start` line is a third
+  party that picked the URL up, not the user. It must show `state_ok=false`.
+- One `callback_received`, `state_ok=true`, code already spent, and no
+  registry entry → the code was consumed by a request this process never saw
+  (a restart, or a second instance). Expect a clean `oauth_callback_expired`.
+- `had_session=true` on a failing arrival → an earlier attempt **did** succeed;
+  the user is redirected on to their destination rather than shown an error.
 
 **Secret discipline:** the authorization code, OAuth access token, client secret,
 session token and user email are never written. The code appears only as
