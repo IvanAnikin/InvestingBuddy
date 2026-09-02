@@ -444,6 +444,43 @@ a deliberate reliability trade-off, not an oversight:
 scaling the plan to **B2 / S1 or higher**, where the extra memory headroom exists.
 The startup command is intentionally pinned to `--workers 1` for the current stack.
 
+> `infra/azure/modules/appservice.bicep` contradicted this for a long time —
+> it declared `--workers 2` while the live app ran `--workers 1`. No workflow
+> applies that bicep, so it sat as a trap for anyone running it by hand. It is
+> now pinned to 1 and `tests/test_worker_timeout_invariant.py` keeps it there.
+
+### Gunicorn `--timeout` is a heartbeat, not a request timeout
+
+With an async `UvicornWorker`, `--timeout` does **not** bound a request — it
+bounds how long the worker may go without reporting liveness. Because the worker
+reports liveness *from the event loop*, any stretch of work that keeps the loop
+from being scheduled for longer than `--timeout` gets the worker `SIGKILL`ed.
+
+The deployed value is mirrored in code as
+`app.core.config.DEPLOYED_GUNICORN_WORKER_TIMEOUT_SECONDS` and must stay **above**
+`primary_document_ingestion_budget_seconds`. These drifted apart (120 vs 180),
+which is what made the 2026-08/09 worker kills inevitable rather than unlucky.
+`tests/test_worker_timeout_invariant.py` fails CI if they cross again, and also
+asserts the bicep startup command matches the constant.
+
+Changing the timeout means changing **all four** together:
+
+1. `DEPLOYED_GUNICORN_WORKER_TIMEOUT_SECONDS` in `apps/api/app/core/config.py`
+2. `appCommandLine` in `infra/azure/modules/appservice.bicep`
+3. the live App Service startup command
+4. this document
+
+The live startup command is set with:
+
+```bash
+az webapp config set \
+  --name ib-stg-api --resource-group ib-stg-rg \
+  --startup-file "gunicorn app.main:app --workers 1 \
+    --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000 --timeout 300"
+```
+
+This restarts the app, so run it when no analysis job is in flight.
+
 ### Document parsing must never run on the event loop
 
 With **one** worker, anything that blocks the event loop blocks the entire API —
