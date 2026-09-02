@@ -3199,6 +3199,22 @@ That is deliberate: for a guard that SUPPRESSES content, the correct failure
 mode is a missed contradiction rather than an invented one. A sentence that
 genuinely means Group but does not say so, quoting a segment's number, passes.
 
+**Positive, and only visible on live data.** Auditing the guard against the
+freshly generated live Richemont report exposed a second, older defect in the
+same layer: the extractor does not spell "percentage" one way. A reconstructed
+trend series carries `"%"`; the financial snapshot carries `"percent"`. Testing
+for the literal `"%"` classified the canonical group margin as an AMOUNT, so the
+guard looked for a non-percent number near "operating margin", found the €4.5bn
+operating profit in the same sentence, and called
+
+> Group operating profit was €4.5 billion with an operating margin of 20.0% in 2026.
+
+a contradiction of a canonical margin of exactly 20. NINE correct Group
+statements were withheld that way on that one report — every agent that stated
+the group result, and the chair. Unit spellings are now normalised once, at
+index-build time, so "canonical" means one form. Re-audited against the same
+live report: **0 withheld, 63 consistent** (was 9 withheld, 52 consistent).
+
 **Negative / accepted.** Council agent SUMMARIES are still not reconciled — the
 guard covers findings, implications and the chair's lists. Widening it to
 summaries would risk replacing a whole agent's summary with a conflict notice,
