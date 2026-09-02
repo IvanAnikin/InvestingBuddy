@@ -457,10 +457,14 @@ test.describe("Company report — investor reading order", () => {
   }) => {
     await page.goto(`/research/reports/${PERIODS_REPORT_ID}`);
 
-    // The bear case keeps its argument and loses the record entries the
-    // deterministic layer writes into the same slot.
+    // The bear case is now argued by the COUNCIL, not lifted from the
+    // deterministic layer — the live corrective's Blocker B. So it carries the
+    // council's own reasoning, and none of the record entries the
+    // deterministic `key_unknowns` slot is full of on live reports. (The
+    // deterministic prose itself stays available, unedited, on the technical
+    // report page.)
     const bear = page.getByTestId("bear-case");
-    await expect(bear).toContainText("Post-interim leverage");
+    await expect(bear).toContainText("Net debt exceeds equity");
     await expect(bear).not.toContainText("Blocking gap");
     await expect(bear).not.toContainText("identity.isin");
 

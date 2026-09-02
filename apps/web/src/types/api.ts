@@ -892,6 +892,73 @@ export interface RunCandidateAnalysisResponse {
   disclaimer: string;
 }
 
+// The product front door's ASYNC company-research job.
+//
+// `/research/company` used to run the whole pipeline inside the browser's
+// request and blew the ~230s Azure gateway ceiling on live data — a 502 at
+// ~206s or a 504 at ~240s after minutes of real work. The submit now creates a
+// durable job and returns; this is what the UI polls.
+//
+// `status` is a WORKFLOW lifecycle state and `stage` is which part of the
+// pipeline is running. Neither is ever an investment action.
+export type CompanyResearchJobStatus =
+  | "pending"
+  | "running"
+  | "interrupted"
+  | "completed"
+  | "completed_with_warnings"
+  | "failed";
+
+export interface CompanyResearchStage {
+  key: string;
+  label: string;
+  complete: boolean;
+  current: boolean;
+}
+
+export interface CompanyResearchJobCompany {
+  id: string;
+  ticker: string;
+  exchange: string;
+  name?: string | null;
+}
+
+export interface CompanyResearchJobCreate {
+  company_id?: string;
+  ticker?: string;
+  exchange?: string;
+  provider_name?: string;
+  use_llm?: boolean;
+  llm_provider?: string | null;
+  require_schema_valid?: boolean;
+}
+
+export interface CompanyResearchJob {
+  job_id: string;
+  status: CompanyResearchJobStatus | string;
+  stage: string;
+  stage_label: string;
+  stages: CompanyResearchStage[];
+  company?: CompanyResearchJobCompany | null;
+  provider_name: string;
+  started_at?: string | null;
+  completed_at?: string | null;
+  workflow_status?: string | null;
+  error?: string | null;
+  /** Set on an `interrupted` job: its worker is gone and re-running is safe. */
+  recoverable?: boolean | null;
+  interrupted_reason?: string | null;
+  /** The STRUCTURED final report. Null until the assembly step succeeds. */
+  analysis_report_id?: string | null;
+  agent_run_id?: string | null;
+  legacy_draft_report_id?: string | null;
+  report?: ReportLinkSummary | null;
+  warnings?: string[];
+  message: string;
+  human_review_required: boolean;
+  disclaimer: string;
+}
+
 // Phase 28B — run-level LLM discovery council review. Persisted inside
 // DiscoveryRun.config_json.discovery_council (no schema migration). Internal
 // research PRIORITY only — allowed per-candidate actions are research_next /

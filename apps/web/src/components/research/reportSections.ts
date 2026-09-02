@@ -42,9 +42,9 @@ import {
 } from "./investorSignal";
 import {
   CONFLICT_NOTICE,
-  canonicalFigures,
+  buildCanonicalIndex,
   checkSentence,
-  type CanonicalFigure,
+  type CanonicalIndex,
 } from "./numericConsistency";
 import {
   asRecord,
@@ -52,6 +52,7 @@ import {
   stringList,
   type FinancialDatapoint,
   type FinancialSnapshotView,
+  type NarrativeGroup,
   type TrendSeriesView,
 } from "./reportView";
 
@@ -96,6 +97,83 @@ export function sourceTierWord(tier: string | null | undefined): string | null {
 export function sourceTypeWord(type: string | null | undefined): string | null {
   if (!type) return null;
   return SOURCE_TYPE_WORDS[type] ?? type.replace(/_/g, " ");
+}
+
+// ---------------------------------------------------------------------------
+// Implementation vocabulary, translated for display
+// ---------------------------------------------------------------------------
+//
+// The deterministic layer writes its own identifiers straight into prose:
+// "supported at T1_primary_filing", "provider returned free_real_not_sourced",
+// "identity.isin absent". Those are true and they are useful — to an engineer
+// reading the technical report. In a reader-facing bull case they are noise
+// that makes correct analysis look like a log line.
+//
+// So they are TRANSLATED, not deleted. Deleting would lose the sentence's
+// meaning, and rewriting the stored value would make the clean view and the
+// technical view disagree about what the pipeline said. The raw record is
+// untouched and stays on the technical report page; only the rendered string
+// changes.
+
+/** Provider / source-state codes the deterministic layer emits in prose. */
+const IMPLEMENTATION_WORDS: Record<string, string> = {
+  free_real_not_sourced: "not sourced by the market-data provider",
+  issuer_primary_document: "the issuer's own document",
+  primary_filing: "the issuer's filing",
+  current_period: "the current reporting period",
+  model_interpretation: "model interpretation",
+  sourced_fact: "a sourced fact",
+  missing_data: "not available",
+  not_sourced: "not sourced",
+};
+
+/** A source-tier code as it appears inside a sentence. */
+const TIER_CODE_RE = /\bT[1-6]_[a-z][a-z0-9_]*\b/g;
+
+/**
+ * A dotted machine field path inside a sentence — `identity.isin`,
+ * `fundamentals.ebitda_mln`.
+ *
+ * Every segment must be lowercase and at least two characters, which is what
+ * keeps ordinary prose ("e.g.", "i.e.", "vs.") out of it.
+ */
+const FIELD_PATH_RE = /\b[a-z][a-z0-9_]+(?:\.[a-z][a-z0-9_]+)+\b/g;
+
+/** ACRONYMS a humanised field leaf should keep in capitals. */
+const FIELD_ACRONYMS = new Set(["isin", "lei", "cik", "sec", "ebit", "ebitda", "eps", "fcf"]);
+
+function humaniseFieldLeaf(path: string): string {
+  const leaf = path.split(".").pop() ?? path;
+  return leaf
+    .split("_")
+    .map((word) => (FIELD_ACRONYMS.has(word) ? word.toUpperCase() : word))
+    .join(" ");
+}
+
+/**
+ * One statement with its implementation vocabulary put into human words.
+ *
+ * Pure and idempotent: a sentence carrying none of it comes back unchanged.
+ */
+export function humaniseTechnical(text: string): string {
+  let out = text;
+  for (const [code, word] of Object.entries(IMPLEMENTATION_WORDS)) {
+    out = out.replace(new RegExp(`\\b${code}\\b`, "g"), word);
+  }
+  out = out.replace(
+    TIER_CODE_RE,
+    (code) => sourceTierWord(code) ?? code.replace(/_/g, " "),
+  );
+  out = out.replace(FIELD_PATH_RE, (path) => {
+    const known = SOURCE_TYPE_WORDS[path];
+    return known ?? humaniseFieldLeaf(path);
+  });
+  return out;
+}
+
+/** True when a statement still carries implementation vocabulary. */
+export function hasImplementationVocabulary(text: string): boolean {
+  return humaniseTechnical(text) !== text;
 }
 
 // ---------------------------------------------------------------------------
@@ -828,9 +906,9 @@ export function reconcileNumbers<T>(
   items: T[],
   read: (item: T) => string,
   replace: (item: T, notice: string) => T,
-  canonical: Map<string, CanonicalFigure[]>,
+  canonical: CanonicalIndex,
 ): { items: T[]; conflicts: number } {
-  if (canonical.size === 0) return { items, conflicts: 0 };
+  if (canonical.figures.size === 0) return { items, conflicts: 0 };
   let conflicts = 0;
   const out = items.map((item) => {
     const { verdict } = checkSentence(read(item), canonical);
@@ -847,9 +925,11 @@ export function reconcileCouncilNumbers(
   snapshot: FinancialSnapshotView,
   trends: TrendSeriesView[] = [],
 ): InvestorReportView & { numericConflicts: number } {
-  // Every period the report holds, headline slots AND the multi-year series.
-  const canonical = canonicalFigures(snapshot, trends);
-  if (canonical.size === 0) return { ...view, numericConflicts: 0 };
+  // Every period AND every scope the report holds — headline slots and the
+  // multi-year series, Group and segment alike. A segment claim is adjudicated
+  // against that segment, never against the consolidated total.
+  const canonical = buildCanonicalIndex(snapshot, trends);
+  if (canonical.figures.size === 0) return { ...view, numericConflicts: 0 };
 
   let conflicts = 0;
 
@@ -891,15 +971,52 @@ export function reconcileCouncilNumbers(
     resilience.conflicts +
     fragility.conflicts;
 
+  // The chair's own four lists and its strengthen/weaken conditions. These
+  // are rendered as plain sentences in the committee synthesis AND, since the
+  // two cases are assembled from the council rather than from the
+  // deterministic narrative, as the bull and bear arguments themselves. A
+  // number that contradicts the report's canonical figures must be withheld
+  // there too — otherwise the guard would cover the agents' prose and not the
+  // committee's conclusion drawn from it.
+  const sentences = (list: string[]) =>
+    reconcileNumbers(
+      list,
+      (t) => t,
+      (_t, notice) => notice,
+      canonical,
+    );
+  const chairPositive = sentences(view.reading.chairPositive);
+  const chairNegative = sentences(view.reading.chairNegative);
+  const chairResilience = sentences(view.reading.chairResilience);
+  const chairFragility = sentences(view.reading.chairFragility);
+  const strengthen = sentences(view.reading.whatWouldStrengthen);
+  const weaken = sentences(view.reading.whatWouldWeaken);
+  const watch = sentences(view.reading.whatToWatch);
+  conflicts +=
+    chairPositive.conflicts +
+    chairNegative.conflicts +
+    chairResilience.conflicts +
+    chairFragility.conflicts +
+    strengthen.conflicts +
+    weaken.conflicts +
+    watch.conflicts;
+
   return {
     ...view,
     agents,
     reading: {
       ...view.reading,
+      chairPositive: chairPositive.items,
+      chairNegative: chairNegative.items,
+      chairResilience: chairResilience.items,
+      chairFragility: chairFragility.items,
       couldDriveHigher: higher.items,
       couldPressure: pressure.items,
       resilience: resilience.items,
       fragility: fragility.items,
+      whatWouldStrengthen: strengthen.items,
+      whatWouldWeaken: weaken.items,
+      whatToWatch: watch.items,
     },
     numericConflicts: conflicts,
   };
@@ -1065,6 +1182,231 @@ export function buildInvestmentReading(
     fragility.length === 0 &&
     reading.whatToWatch.length === 0;
   return reading;
+}
+
+// ---------------------------------------------------------------------------
+// The two cases, as the COUNCIL argued them
+// ---------------------------------------------------------------------------
+
+/**
+ * The bull and bear cases a reader is shown.
+ *
+ * WHAT WAS WRONG. The clean report rendered `bull_case` and `bear_case`
+ * verbatim from the deterministic Phase-9 layer. Those sections are written
+ * for an engineer: on live PNDORA / CFR / MRNA reports their points named
+ * source tiers (`T1_primary_filing`, `T6_model_estimate`), provider states
+ * (`free_real_not_sourced`), machine field paths (`identity.isin`) and
+ * blocking-gap counts. A reader opening "Bear case" was told, as the argument
+ * against owning the business, that an ISIN had not been sourced.
+ *
+ * Meanwhile the council HAD argued both cases — in `implications`, in the
+ * chair's `strongest_positive_evidence` / `strongest_negative_evidence`, in
+ * `resilience_factors` / `fragility_factors`, in `what_would_strengthen` /
+ * `what_would_weaken`, and in the red team's own economic challenges. None of
+ * it reached these two sections.
+ *
+ * So the cases are now ASSEMBLED from that structured output. Deterministic
+ * rendering only: no model is called because a report was opened, nothing is
+ * summarised, and every line is something the council already wrote. Each line
+ * passes the same signal rule the rest of the reader-facing view uses, so an
+ * evidence statement can never appear as an investment argument — it is routed
+ * to research confidence, where it describes what it actually describes.
+ *
+ * LEGACY. A report whose council predates the structured fields still renders:
+ * the deterministic narrative is used, but each point is put through the same
+ * routing and its implementation vocabulary is translated. The unedited
+ * original stays on the technical report page, and no stored record is
+ * changed.
+ */
+export interface InvestmentCase {
+  groups: NarrativeGroup[];
+  /**
+   * Where the argument came from. "council" is the structured council output;
+   * "legacy" is the deterministic narrative, routed and translated; "none"
+   * means neither produced an argument, which the section states.
+   */
+  basis: "council" | "legacy" | "none";
+}
+
+export interface InvestmentCases {
+  bull: InvestmentCase;
+  bear: InvestmentCase;
+  /** Statements routed out of either case because their subject was evidence. */
+  routedLimitations: string[];
+  /** Record-completeness entries routed out of either case. */
+  recordGaps: string[];
+}
+
+/** A directional point rendered as one line: the claim, then its mechanism. */
+function pointLine(point: DirectionalPoint): string {
+  const mechanism = point.mechanism?.trim();
+  return mechanism ? `${point.statement} — ${mechanism}` : point.statement;
+}
+
+function nonEmptyGroup(
+  label: string,
+  points: string[],
+): NarrativeGroup | null {
+  const cleaned = points.map((p) => humaniseTechnical(p.trim())).filter(Boolean);
+  const seen = new Set<string>();
+  const deduped = cleaned.filter((p) => {
+    const key = p.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  return deduped.length > 0 ? { label, points: deduped } : null;
+}
+
+export function buildInvestmentCases(
+  reading: InvestmentReading,
+  agents: CouncilAgentDetail[],
+  legacyBull: NarrativeGroup[],
+  legacyBear: NarrativeGroup[],
+): InvestmentCases {
+  const routedLimitations: string[] = [];
+  const recordGaps: string[] = [];
+
+  /** Keep only what is an economic argument; file the rest where it belongs. */
+  const economic = (points: string[], context: SignalContext): string[] => {
+    const kept: string[] = [];
+    for (const point of points) {
+      const value = point.trim();
+      if (!value) continue;
+      const signal = classifySignal(value, context);
+      if (signal === "technical_gap") recordGaps.push(value);
+      else if (!isEconomicSignal(signal)) routedLimitations.push(value);
+      else kept.push(value);
+    }
+    return kept;
+  };
+
+  // ── Bull ────────────────────────────────────────────────────────────────
+  const bullGroups: NarrativeGroup[] = [];
+  const positive = nonEmptyGroup(
+    "The committee's strongest positive evidence",
+    reading.chairPositive,
+  );
+  if (positive) bullGroups.push(positive);
+
+  const higher = nonEmptyGroup(
+    "What could make the business more valuable",
+    reading.couldDriveHigher.map(pointLine),
+  );
+  if (higher) bullGroups.push(higher);
+
+  const resilience = nonEmptyGroup(
+    "What limits the downside",
+    reading.resilience.map(pointLine),
+  );
+  if (resilience) bullGroups.push(resilience);
+
+  // The catalyst agent's OWN interpretation of the events it read. A catalyst
+  // is only part of the positive case when the agent said it pointed that way.
+  const catalystAgent = findAgent(agents, "catalyst");
+  const catalystPoints = economic(
+    (catalystAgent?.implications ?? [])
+      .filter((i) => i.direction === "supportive")
+      .map((i) => (i.mechanism ? `${i.statement} — ${i.mechanism}` : i.statement)),
+    { agent: "catalyst", slot: "catalyst" },
+  );
+  const catalystGroup = nonEmptyGroup(
+    "Developments that could change the picture",
+    catalystPoints,
+  );
+  if (catalystGroup) bullGroups.push(catalystGroup);
+
+  const strengthen = nonEmptyGroup(
+    "What would strengthen the case",
+    economic(reading.whatWouldStrengthen, {
+      agent: "committee_chair",
+      slot: "chair_positive",
+    }),
+  );
+  if (strengthen) bullGroups.push(strengthen);
+
+  // ── Bear ────────────────────────────────────────────────────────────────
+  const bearGroups: NarrativeGroup[] = [];
+  const negative = nonEmptyGroup(
+    "The committee's strongest negative evidence",
+    reading.chairNegative,
+  );
+  if (negative) bearGroups.push(negative);
+
+  const pressure = nonEmptyGroup(
+    "What could pressure the business",
+    reading.couldPressure.map(pointLine),
+  );
+  if (pressure) bearGroups.push(pressure);
+
+  const fragility = nonEmptyGroup(
+    "Where it is fragile",
+    reading.fragility.map(pointLine),
+  );
+  if (fragility) bearGroups.push(fragility);
+
+  // The red team's ECONOMIC challenge. Its `concerns` are overwhelmingly about
+  // the evidence and are routed to research confidence by the same rule; its
+  // implications are where its argument against the business actually is.
+  const redTeam = findAgent(agents, "red_team");
+  const redTeamPoints = economic(
+    (redTeam?.implications ?? []).map((i) =>
+      i.mechanism ? `${i.statement} — ${i.mechanism}` : i.statement,
+    ),
+    { agent: "red_team", slot: "implication", direction: "pressuring" },
+  );
+  const redTeamGroup = nonEmptyGroup(
+    "The red team's challenge",
+    redTeamPoints,
+  );
+  if (redTeamGroup) bearGroups.push(redTeamGroup);
+
+  const weaken = nonEmptyGroup(
+    "What would weaken the case",
+    economic(reading.whatWouldWeaken, {
+      agent: "committee_chair",
+      slot: "chair_negative",
+    }),
+  );
+  if (weaken) bearGroups.push(weaken);
+
+  // ── Legacy fallback ─────────────────────────────────────────────────────
+  //
+  // Only when the council produced no argument at all. The deterministic
+  // narrative is routed through the SAME rule and translated, so an old report
+  // stays readable without bringing tier codes and field paths back with it.
+  const routeLegacy = (
+    groups: NarrativeGroup[],
+    slot: SignalContext["slot"],
+  ): NarrativeGroup[] => {
+    const out: NarrativeGroup[] = [];
+    for (const group of groups) {
+      const kept = economic(group.points, { agent: "deterministic", slot });
+      const built = nonEmptyGroup(group.label, kept);
+      if (built) out.push(built);
+    }
+    return out;
+  };
+
+  let bull: InvestmentCase = { groups: bullGroups, basis: "council" };
+  if (bullGroups.length === 0) {
+    const legacy = routeLegacy(legacyBull, "chair_positive");
+    bull = {
+      groups: legacy,
+      basis: legacy.length > 0 ? "legacy" : "none",
+    };
+  }
+
+  let bear: InvestmentCase = { groups: bearGroups, basis: "council" };
+  if (bearGroups.length === 0) {
+    const legacy = routeLegacy(legacyBear, "chair_negative");
+    bear = {
+      groups: legacy,
+      basis: legacy.length > 0 ? "legacy" : "none",
+    };
+  }
+
+  return { bull, bear, routedLimitations, recordGaps };
 }
 
 // ---------------------------------------------------------------------------

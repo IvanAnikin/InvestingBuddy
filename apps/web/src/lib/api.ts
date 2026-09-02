@@ -19,6 +19,8 @@ import type {
   FinalReportResponse,
   FinalReportValidateResponse,
   CompanyList,
+  CompanyResearchJob,
+  CompanyResearchJobCreate,
   HealthResponse,
   Report,
   ReportList,
@@ -439,6 +441,43 @@ export async function getCandidateAnalysisJob(
 ): Promise<RunCandidateAnalysisResponse> {
   return apiFetch<RunCandidateAnalysisResponse>(
     `/api/v1/market-discovery/candidates/${candidateId}/analysis-job`,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Async company research — the product front door
+// ---------------------------------------------------------------------------
+//
+// Starts the research job and returns immediately (HTTP 202) with the job
+// envelope in "pending". It does NOT wait for the pipeline: that is the whole
+// point, because waiting is what produced the live 502/504. Poll
+// getCompanyResearchJob() for the stage and the final report link.
+export async function startCompanyResearchJob(
+  payload: CompanyResearchJobCreate,
+): Promise<CompanyResearchJob> {
+  return apiFetch<CompanyResearchJob>("/api/v1/company-research/jobs", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function getCompanyResearchJob(
+  jobId: string,
+): Promise<CompanyResearchJob> {
+  return apiFetch<CompanyResearchJob>(
+    `/api/v1/company-research/jobs/${jobId}`,
+  );
+}
+
+// The most recent research job for ONE company. This is how a refreshed page
+// finds a run it started — the job id is not only in the browser. Company-
+// scoped: never a global-latest lookup. Answers 404 when there is none, which
+// is a normal state.
+export async function getLatestCompanyResearchJob(
+  companyId: string,
+): Promise<CompanyResearchJob> {
+  return apiFetch<CompanyResearchJob>(
+    `/api/v1/company-research/jobs?company_id=${encodeURIComponent(companyId)}`,
   );
 }
 

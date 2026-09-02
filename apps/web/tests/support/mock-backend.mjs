@@ -1693,6 +1693,451 @@ function mockConflictReport(id) {
   return base;
 }
 
+// ---------------------------------------------------------------------------
+// A SEGMENT-REPORTING issuer, shaped like Richemont
+// ---------------------------------------------------------------------------
+//
+// Every previous report fixture reported at GROUP scope only, so no local test
+// could have caught what the live CFR report did: the numeric guard built its
+// canonical set from Group figures alone and tested EVERY council sentence
+// against them. "Specialist Watchmakers operating profit of EUR 107m" was held
+// up against the GROUP operating profit of ~EUR 4.5bn, called a contradiction,
+// and withheld — 32 statements suppressed in one report, including the ones
+// that made the segment picture legible.
+//
+// This fixture carries the three scopes a segment reporter actually has, and a
+// council that talks about all of them: correctly-scoped segment claims that
+// must SURVIVE, and mis-scoped claims that must still be caught.
+const SCOPE_REPORT_ID = "00000000-0000-0000-0000-0000000000a5";
+const SCOPE_COMPANY_ID = "00000000-0000-0000-0000-0000000000b4";
+
+function scopeCouncilAgent(name, claims, implications, summary) {
+  return {
+    agent_name: name,
+    status: "completed",
+    // Qualitative, like a real agent summary. A summary is not passed through
+    // the numeric guard — it reconciles the agent's FINDINGS and
+    // IMPLICATIONS — so putting a figure here would be testing something this
+    // fixture is not for.
+    summary: summary ?? "",
+    key_points: claims.map((claim) => ({
+      claim,
+      citation_ids: ["E1"],
+      confidence: "high",
+      data_quality: "A",
+    })),
+    implications: (implications ?? []).map((statement) => ({
+      statement,
+      mechanism: null,
+      direction: "supportive",
+      citation_ids: ["E1"],
+      confidence: "medium",
+    })),
+    risks_or_gaps: [],
+    unsupported_claims: [],
+    safety_notes: [],
+  };
+}
+
+function mockScopeReport(id) {
+  const base = mockReport(id);
+  base.title =
+    "LLM Council Analysis Draft — CFRTEST — Segment Reporting Test Issuer [MOCK DATA]";
+  base.company_id = SCOPE_COMPANY_ID;
+  base.created_at = "2026-08-28T10:00:00Z";
+  base.updated_at = "2026-08-28T10:00:00Z";
+
+  const rc = sampleReportContent({ withCouncil: true });
+  rc.executive_summary.company_name = "Segment Reporting Test Issuer";
+  rc.executive_summary.ticker = "CFRTEST";
+  rc.company_identity.legal_name.value = "Segment Reporting Test Issuer";
+  rc.company_identity.ticker.value = "CFRTEST";
+
+  // GROUP figures. The consolidated slots, as the report layer fills them.
+  rc.financial_snapshot = {
+    type: "financial_snapshot",
+    human_review_required: true,
+    source_tier: "T1_primary_filing",
+    reporting_periods: {
+      latest_annual: { value: "FY2026", provenance: "sourced_fact" },
+      latest_current_period: { value: "Q1 FY2027", provenance: "sourced_fact" },
+    },
+    revenue_primary_filing: {
+      value: "22,400",
+      numeric_value: 22400,
+      currency: "EUR",
+      scale: "million",
+      period: "FY2026",
+      scope: "group",
+      provenance: "sourced_fact",
+      source_tier: "T1_primary_filing",
+      confidence: "high",
+    },
+    operating_profit_primary_filing: {
+      value: "4,500",
+      numeric_value: 4500,
+      currency: "EUR",
+      scale: "million",
+      period: "FY2026",
+      scope: "group",
+      provenance: "sourced_fact",
+      source_tier: "T1_primary_filing",
+      confidence: "high",
+    },
+    operating_margin_primary_filing: {
+      value: "20.1",
+      numeric_value: 20.1,
+      unit: "%",
+      period: "FY2026",
+      scope: "group",
+      provenance: "sourced_fact",
+      source_tier: "T1_primary_filing",
+      confidence: "high",
+    },
+    revenue_current_period: {
+      value: "6,300",
+      numeric_value: 6300,
+      currency: "EUR",
+      scale: "million",
+      period: "Q1 FY2027",
+      scope: "group",
+      period_basis: "quarter",
+      provenance: "sourced_fact",
+      source_tier: "T1_primary_filing",
+      confidence: "high",
+    },
+  };
+
+  // The SEGMENT series, alongside the Group one. Two periods each, which is
+  // what the history reconstructor requires before it emits a series at all.
+  rc.historical_trends = {
+    type: "historical_trends",
+    available: true,
+    max_periods: 5,
+    series: {
+      value: [
+        {
+          metric: "operating_profit",
+          scope: "group",
+          scope_type: "group",
+          period_type: "annual",
+          currency: "EUR",
+          unit: "EUR million",
+          comparability: "comparable",
+          completeness: "complete",
+          missing_periods: [],
+          periods: [
+            { period: "FY2025", value: 4200 },
+            { period: "FY2026", value: 4500 },
+          ],
+        },
+        {
+          metric: "operating_profit",
+          scope: "Jewellery Maisons",
+          scope_type: "segment",
+          period_type: "annual",
+          currency: "EUR",
+          unit: "EUR million",
+          comparability: "comparable",
+          completeness: "complete",
+          missing_periods: [],
+          periods: [
+            { period: "FY2025", value: 4780 },
+            { period: "FY2026", value: 5037 },
+          ],
+        },
+        {
+          metric: "operating_profit",
+          scope: "Specialist Watchmakers",
+          scope_type: "segment",
+          period_type: "annual",
+          currency: "EUR",
+          unit: "EUR million",
+          comparability: "comparable",
+          completeness: "complete",
+          missing_periods: [],
+          periods: [
+            { period: "FY2025", value: 203 },
+            { period: "FY2026", value: 107 },
+          ],
+        },
+        {
+          metric: "operating_margin",
+          scope: "Specialist Watchmakers",
+          scope_type: "segment",
+          period_type: "annual",
+          currency: null,
+          unit: "%",
+          comparability: "comparable",
+          completeness: "complete",
+          missing_periods: [],
+          periods: [
+            { period: "FY2025", value: 6.1 },
+            { period: "FY2026", value: 3.4 },
+          ],
+        },
+      ],
+      provenance: "sourced_fact",
+    },
+    human_review_required: true,
+  };
+
+  base.content_markdown = finalReportMarkdown(rc);
+  base.source_summary_json = {
+    total_sources: 3,
+    total_citations: 2,
+    llm_council: {
+      llm_used: true,
+      council_version: "v1",
+      provider: "fake",
+      model: "fake-council-model",
+      evidence_pack_version: "v1",
+      evidence_item_count: 6,
+      agents_completed: 8,
+      agents_failed: 0,
+      agents_skipped: 0,
+      committee_label: "requires_more_evidence",
+      agents: [
+        // MUST SURVIVE — correctly scoped, and each one contradicts the GROUP
+        // figure for its metric, which is exactly why the old guard killed it.
+        scopeCouncilAgent(
+          "financial_analyst",
+          [
+            "Specialist Watchmakers operating profit was EUR 107m in FY2026.",
+            "The Specialist Watchmakers operating margin was 3.4% in FY2026.",
+            "Jewellery Maisons operating profit was EUR 5,037m in FY2026.",
+            "Group operating profit was EUR 4,500m in FY2026.",
+          ],
+          [
+            "Specialist Watchmakers operating profit of EUR 107m is a small fraction of the group total, so the division is not what drives consolidated earnings.",
+          ],
+          "The consolidated result is carried by the jewellery division; the watch division is close to break-even.",
+        ),
+        // MUST BE CAUGHT — the number is real, the SCOPE it is attached to is
+        // not. A guard that only knew Group figures could not tell these two
+        // classes apart, and it suppressed the first while passing nothing.
+        scopeCouncilAgent(
+          "red_team",
+          [
+            "Group operating profit was EUR 107m in FY2026.",
+            "The group operating margin was 3.4% in FY2026.",
+          ],
+          [],
+          "The positive reading rests on one division holding its margin.",
+        ),
+        {
+          agent_name: "committee_chair",
+          status: "completed",
+          summary:
+            "The consolidated result is carried by one division; the watch division is close to break-even.",
+          key_points: [],
+          implications: [],
+          risks_or_gaps: [],
+          unsupported_claims: [],
+          safety_notes: [],
+          synthesis: {
+            fundamental_setup: "mixed",
+            strongest_positive_evidence: [
+              "Jewellery Maisons operating profit of EUR 5,037m in FY2026 exceeds the group total, so the other divisions are a net drag rather than a contributor.",
+            ],
+            strongest_negative_evidence: [
+              "Specialist Watchmakers operating margin fell to 3.4% in FY2026, leaving the division with almost no cushion.",
+            ],
+            resilience_factors: [
+              "The jewellery division's margin absorbs the watch division's losses at the group level.",
+            ],
+            fragility_factors: [
+              "Group profitability depends on a single division holding its margin.",
+            ],
+            key_debate:
+              "Whether the watch division's FY2026 operating profit of EUR 107m is cyclical or structural.",
+            what_would_strengthen: [
+              "A recovery in Specialist Watchmakers operating profit above the EUR 203m it earned in FY2025.",
+            ],
+            what_would_weaken: [
+              "A further fall in the Specialist Watchmakers operating margin below 3.4%.",
+            ],
+            what_to_watch: [
+              "Specialist Watchmakers operating profit in the next annual period.",
+            ],
+          },
+        },
+      ],
+    },
+  };
+  return base;
+}
+
+// ---------------------------------------------------------------------------
+// A LEGACY report whose bull/bear are written in implementation vocabulary
+// ---------------------------------------------------------------------------
+//
+// The clean report used to render `bull_case` / `bear_case` verbatim from the
+// deterministic layer. On live PNDORA / CFR / MRNA reports those slots name
+// source tiers, provider states and machine field paths, so the argument a
+// reader was shown for owning a business included the sentence that an ISIN
+// had not been sourced.
+//
+// This report has NO council at all, which is the case the legacy fallback
+// exists for. Its prose must still render — routed, and with the
+// implementation vocabulary translated.
+const LEGACY_TECH_REPORT_ID = "00000000-0000-0000-0000-0000000000a6";
+
+function mockLegacyTechnicalReport(id) {
+  const base = mockReport(id);
+  base.title =
+    "Internal Analysis Draft — IBTEST — legacy deterministic prose [MOCK DATA]";
+  base.company_id = null;
+  base.created_at = "2026-06-01T10:00:00Z";
+  base.updated_at = "2026-06-01T10:00:00Z";
+
+  const rc = sampleReportContent({ withCouncil: false });
+  rc.bull_case = {
+    type: "bull_case",
+    available: true,
+    positive_thesis_points: {
+      value: [
+        "Revenue is supported at T1_primary_filing and grew for a fifth consecutive year.",
+        "Owned retail is the largest channel by revenue in the segment table.",
+      ],
+      provenance: "model_interpretation",
+    },
+    potential_tailwinds: {
+      value: ["Input costs eased in the period covered by the issuer_primary_document."],
+      provenance: "model_interpretation",
+    },
+    confidence_level: { value: "medium", provenance: "model_interpretation" },
+  };
+  rc.bear_case = {
+    type: "bear_case",
+    available: true,
+    negative_thesis_points: {
+      value: [
+        "Discretionary demand is cyclical in the issuer's stated end markets.",
+        "Valuation inputs are at T6_model_estimate and free_real_not_sourced.",
+      ],
+      provenance: "model_interpretation",
+    },
+    key_unknowns: {
+      value: [
+        "Blocking gap: Required field missing: identity.isin",
+        "fundamentals.ebitda_mln",
+      ],
+      provenance: "missing_data",
+    },
+    confidence_level: { value: "low", provenance: "model_interpretation" },
+  };
+  base.content_markdown = finalReportMarkdown(rc);
+  base.source_summary_json = { total_sources: 1, total_citations: 0 };
+  return base;
+}
+
+// ---------------------------------------------------------------------------
+// Async company-research jobs (in-memory, per mock-backend process)
+// ---------------------------------------------------------------------------
+
+const COMPANY_JOB_STAGES = [
+  ["queued", "Queued"],
+  ["company_identity", "Resolving the company's identity"],
+  ["source_discovery", "Locating the issuer's sources"],
+  ["primary_document_ingestion", "Reading the issuer's own documents"],
+  ["financial_extraction", "Extracting period-labelled financial facts"],
+  ["evidence_validation", "Validating and citing the evidence"],
+  ["council_analysis", "Running the research council"],
+  ["final_report_assembly", "Assembling the research report"],
+  ["completed", "Complete"],
+];
+
+const COMPANY_JOBS = new Map();
+let companyJobSeq = 0;
+
+const COMPANY_JOB_DISCLAIMER =
+  "INTERNAL USE ONLY. NOT INVESTMENT ADVICE. NOT A PUBLIC RECOMMENDATION. " +
+  "No rating, price target, fair value or return projection is produced. " +
+  "Human review is required before any use.";
+
+function companyJobPayload(job) {
+  const index = COMPANY_JOB_STAGES.findIndex(([key]) => key === job.stage);
+  return {
+    job_id: job.job_id,
+    status: job.status,
+    stage: job.stage,
+    stage_label:
+      (COMPANY_JOB_STAGES.find(([key]) => key === job.stage) ?? [])[1] ??
+      job.stage,
+    stages: COMPANY_JOB_STAGES.map(([key, label], i) => ({
+      key,
+      label,
+      complete: i < index,
+      current: i === index,
+    })),
+    company: job.company,
+    provider_name: job.provider_name,
+    started_at: job.started_at,
+    completed_at: job.completed_at,
+    workflow_status: job.status === "completed" ? "completed" : null,
+    error: null,
+    recoverable: null,
+    interrupted_reason: null,
+    analysis_report_id: job.analysis_report_id,
+    agent_run_id: "aaaaaaaa-0000-0000-0000-000000000001",
+    legacy_draft_report_id: null,
+    report: job.analysis_report_id
+      ? {
+          report_id: job.analysis_report_id,
+          report_kind: "final",
+          llm_used: true,
+          schema_valid: true,
+          safety_valid: true,
+        }
+      : null,
+    warnings: [],
+    message:
+      job.status === "completed"
+        ? `Research complete for ${job.company.ticker}. Internal draft only — human review required.`
+        : "Research is running on the server. Internal draft only — human review required.",
+    human_review_required: true,
+    disclaimer: COMPANY_JOB_DISCLAIMER,
+  };
+}
+
+function newCompanyJob(company, providerName) {
+  companyJobSeq += 1;
+  const job = {
+    job_id: `00000000-0000-0000-0000-00000000f${String(companyJobSeq).padStart(3, "0")}`,
+    status: "pending",
+    stage: "queued",
+    polls: 0,
+    company: {
+      id: company.id,
+      ticker: company.ticker,
+      exchange: company.exchange,
+      name: company.name,
+    },
+    provider_name: providerName ?? "free_real",
+    started_at: new Date().toISOString(),
+    completed_at: null,
+    analysis_report_id: null,
+  };
+  COMPANY_JOBS.set(job.job_id, job);
+  return companyJobPayload(job);
+}
+
+/** Advance one stage per poll, so the UI's progress path is deterministic. */
+function advanceCompanyJob(job, { advance = true } = {}) {
+  if (advance && job.status !== "completed") {
+    job.polls += 1;
+    const next = Math.min(job.polls, COMPANY_JOB_STAGES.length - 1);
+    job.stage = COMPANY_JOB_STAGES[next][0];
+    job.status = job.stage === "completed" ? "completed" : "running";
+    if (job.status === "completed") {
+      job.completed_at = new Date().toISOString();
+      job.analysis_report_id = PERIODS_REPORT_ID;
+    }
+  }
+  return companyJobPayload(job);
+}
+
 const DISC =
   "INTERNAL ADMIN USE ONLY. NOT INVESTMENT ADVICE. NOT A PUBLIC RECOMMENDATION.";
 
@@ -2382,6 +2827,12 @@ const server = createServer((req, res) => {
     if (rid === CONFLICT_REPORT_ID) {
       return send(res, 200, mockConflictReport(rid));
     }
+    if (rid === SCOPE_REPORT_ID) {
+      return send(res, 200, mockScopeReport(rid));
+    }
+    if (rid === LEGACY_TECH_REPORT_ID) {
+      return send(res, 200, mockLegacyTechnicalReport(rid));
+    }
     if (rid === LEGACY_REPORT_ID) {
       return send(res, 200, mockLegacyReport(rid));
     }
@@ -2420,6 +2871,77 @@ const server = createServer((req, res) => {
   // couple of real-shaped entries. The admin dashboard only renders `total`.
   if (path === "/api/v1/companies" && req.method === "GET") {
     return send(res, 200, { items: MOCK_COMPANIES, total: MOCK_COMPANIES.length });
+  }
+
+  // ── Async company research (the product front door) ────────────────────
+  //
+  // The real endpoints commit a job and return; the pipeline runs behind them.
+  // The fixture models the same lifecycle so the UI's submit → poll → open
+  // path is exercised end to end without waiting minutes for anything: a job
+  // reports `pending`, then `running` with a stage, then `completed` with the
+  // report it produced. Polls, not elapsed time, drive it, so the test is
+  // deterministic.
+  const companyJobDetail =
+    /^\/api\/v1\/company-research\/jobs\/([^/]+)$/.exec(path);
+  if (companyJobDetail && req.method === "GET") {
+    const job = COMPANY_JOBS.get(companyJobDetail[1]);
+    if (!job) {
+      return send(res, 404, {
+        detail: `No company-research job ${companyJobDetail[1]} exists.`,
+      });
+    }
+    return send(res, 200, advanceCompanyJob(job));
+  }
+
+  if (path === "/api/v1/company-research/jobs" && req.method === "GET") {
+    const companyId = url.searchParams.get("company_id");
+    const found = [...COMPANY_JOBS.values()]
+      .filter((j) => j.company?.id === companyId)
+      .pop();
+    if (!found) {
+      return send(res, 404, {
+        detail: "No company-research job has been run for this company.",
+      });
+    }
+    return send(res, 200, advanceCompanyJob(found));
+  }
+
+  if (path === "/api/v1/company-research/jobs" && req.method === "POST") {
+    let raw = "";
+    req.on("data", (chunk) => (raw += chunk));
+    req.on("end", () => {
+      let body = {};
+      try {
+        body = JSON.parse(raw || "{}");
+      } catch {
+        body = {};
+      }
+      const company =
+        MOCK_COMPANIES.find((c) => c.id === body.company_id) ??
+        MOCK_COMPANIES.find(
+          (c) => c.ticker === body.ticker && c.exchange === body.exchange,
+        ) ??
+        null;
+      if (!company) {
+        return send(res, 404, { detail: "Company not found (mock backend)" });
+      }
+      // IDEMPOTENT: a second submit while a job for this company is in flight
+      // joins the first one. A double-click must not buy a second council run.
+      const inFlight = [...COMPANY_JOBS.values()].find(
+        (j) =>
+          j.company?.id === company.id &&
+          (j.status === "pending" || j.status === "running"),
+      );
+      if (inFlight) {
+        return send(res, 202, {
+          ...advanceCompanyJob(inFlight, { advance: false }),
+          message:
+            "Research is already in progress for this company — no second run was started.",
+        });
+      }
+      return send(res, 202, newCompanyJob(company, body.provider_name));
+    });
+    return;
   }
 
   // Register a company (the inline "add this company" path).

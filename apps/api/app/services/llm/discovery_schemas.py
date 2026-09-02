@@ -211,6 +211,13 @@ class CandidateEvidence(BaseModel):
     score_breakdown: dict[str, Any] = Field(default_factory=dict)
     data_coverage: dict[str, Any] = Field(default_factory=dict)
     catalyst_summary: dict[str, Any] = Field(default_factory=dict)
+    #: Bounded economic signals lifted from this company's CURRENT structured
+    #: research report, when one already exists on this platform (see
+    #: ``current_research_resolver``). Empty means no current research exists —
+    #: which the council must read as "not established", never as a negative.
+    #: Nothing here is fetched or computed for the council: every value was
+    #: persisted by a completed research run.
+    research_signals: dict[str, Any] = Field(default_factory=dict)
     safety_valid: bool | None = None
     human_review_required: bool = True
     is_public: bool = False

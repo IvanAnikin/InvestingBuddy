@@ -42,6 +42,7 @@ import pathlib
 import re
 import uuid
 from datetime import datetime, timezone
+from typing import Awaitable, Callable
 
 from langgraph.graph import END, StateGraph
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -145,6 +146,11 @@ WORKFLOW_NAME = "company_analysis"
 WORKFLOW_VERSION = "5.0.0"
 
 _logger = logging.getLogger(__name__)
+
+#: Awaited with one graph node's name as that node completes. Used by the async
+#: company-research job to persist honest stage progress; never used to compute
+#: a percentage, because the graph does not know how long a node will take.
+NodeProgressCallback = Callable[[str], Awaitable[None]]
 
 
 # ---------------------------------------------------------------------------
@@ -2701,6 +2707,7 @@ async def run_company_analysis(
     require_schema_valid: bool = False,
     use_llm: bool = False,
     llm_provider: str | None = None,
+    on_node: NodeProgressCallback | None = None,
 ) -> CompanyAnalysisState:
     """
     Execute the company analysis workflow and return the final state.
@@ -2712,6 +2719,12 @@ async def run_company_analysis(
     require_schema_valid — if True and schema validation fails, status will be "failed".
     use_llm — if True, the generate_research_sections LLM node runs. Default False.
     llm_provider — override config LLM provider (None = use LLM_PROVIDER config, default: mock).
+    on_node — optional progress callback, awaited with each graph node's name as
+        that node completes. Supplied by the async company-research job so a
+        reader watching a five-minute run sees WHICH stage is in flight instead
+        of a spinner. It is the graph's OWN node names — no stage vocabulary is
+        invented, and no percentage is fabricated. When it is None the graph is
+        invoked exactly as before.
     """
     initial_state: CompanyAnalysisState = {
         "company_id": company_id,
@@ -2780,7 +2793,28 @@ async def run_company_analysis(
         use_llm=use_llm,
         llm_provider=llm_provider,
     )
-    final_state: CompanyAnalysisState = await graph.ainvoke(initial_state)
+    if on_node is None:
+        final_state: CompanyAnalysisState = await graph.ainvoke(initial_state)
+    else:
+        # Same graph, same reducers, same result — the multi-mode stream simply
+        # also reports which node just finished. The last ``values`` payload is
+        # the final state (asserted equal to ``ainvoke``'s in
+        # ``test_async_company_research``), so nothing is re-merged here.
+        final_state = initial_state
+        async for mode, chunk in graph.astream(
+            initial_state, stream_mode=["updates", "values"]
+        ):
+            if mode == "values":
+                final_state = chunk
+            elif mode == "updates" and isinstance(chunk, dict):
+                for node_name in chunk:
+                    try:
+                        await on_node(str(node_name))
+                    except Exception:  # noqa: BLE001 - progress is never fatal
+                        _logger.warning(
+                            "Company analysis progress callback failed for node %s.",
+                            node_name,
+                        )
 
     # If caller requires schema-valid output and we got an invalid draft, fail
     if require_schema_valid and not final_state.get("schema_valid"):

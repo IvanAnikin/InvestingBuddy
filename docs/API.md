@@ -3032,3 +3032,131 @@ not weaken the Slice-2 financial floor / news caps. `schema_valid` /
 `human_review_required` stays `true`; no recommendation / valuation. OCR is a NoOp
 seam this slice — a scanned document degrades honestly to metadata-only (a real
 Azure Document Intelligence adapter is deferred; see `docs/DECISIONS.md` ADR-014).
+
+---
+
+## POST-V2 Live Corrective — Async Company Research (internal; the product front door)
+
+**Status: implemented on `fix/v2-live-acceptance-blockers`. No DB migration (head stays `018`). No new flag.**
+
+### Why these endpoints exist
+
+`/research/company` ran the pipeline inside the browser's HTTP request: `POST
+/api/v1/workflows/company-analysis/run` followed by `POST
+/api/v1/final-reports/from-report/{id}`. On live data that is ~154s of
+primary-document ingestion plus ~145–190s of council, against an Azure App
+Service gateway ceiling of ~230s. The measured live results were **HTTP 502 at
+~206s** and **HTTP 504 at ~240s**, a rolled-back transaction, and a user who had
+waited five minutes for an error. The product's primary entry point was
+unusable.
+
+These endpoints reuse the mechanism the discovery-candidate CTA already runs in
+production: the POST commits a job and returns immediately; the work runs in a
+background task with its own DB session; the UI polls a plain GET.
+
+The two synchronous endpoints above are **unchanged** and remain in use by
+`/admin/analysis`, which is an engineering tool.
+
+### What "durable" means here
+
+* **Job STATE is durable.** The job row and its `pending` envelope are committed
+  to PostgreSQL before any expensive work starts. Closing the browser,
+  navigating away or losing the network cannot affect the run, and the state is
+  recoverable afterwards by job id or by company.
+* **Job EXECUTION is process-local.** This deployment has no queue broker or
+  worker service, so the work runs in the API process that accepted it. An
+  app-process recycle mid-run stops it. That is reported, not hidden: such a job
+  reads as `interrupted` with `recoverable: true`, DERIVED at read time from the
+  same threshold the restart decision uses (see `app/services/research_job.py`),
+  everything already persisted stays persisted, and re-running is safe.
+
+### Storage
+
+`AgentRun` (`workflow_name="company_research_job"`) plus one `AgentStep`
+(`agent_name="company_research_job"`) whose `output_json` holds the envelope.
+Existing tables, no migration, and the system's own auditable record of "a
+workflow ran".
+
+### `POST /api/v1/company-research/jobs` → `202 Accepted`
+
+Request:
+
+```json
+{
+  "company_id": "36281134-1010-40c8-893b-75afdd2ccab2",
+  "provider_name": "free_real",
+  "use_llm": false,
+  "llm_provider": null,
+  "require_schema_valid": false
+}
+```
+
+Identity is `company_id`, or the exact `(ticker, exchange)` pair the company is
+registered under. It is resolved against the database **once**, before the job
+is created, and carried on the job from there — nothing downstream re-derives
+which company this is from a label. `404` when the company is not in the
+universe; `422` when neither identity form is supplied.
+
+**Idempotent.** While a job for this company is `pending`/`running` the current
+state is returned and no second (expensive) run starts — which covers a
+double-click, a browser retry and a network retry alike. An abandoned job does
+not block a new one.
+
+Measured submit latency, live local stack, real provider: **0.162s**.
+
+### `GET /api/v1/company-research/jobs/{job_id}`
+
+Returns the job envelope. `status` is the lifecycle state (`pending` |
+`running` | `interrupted` | `completed` | `completed_with_warnings` |
+`failed`) — never an investment action. `stage` is which part of the pipeline is
+running, and `stages[]` carries every stage with its human label and
+`complete`/`current` flags.
+
+Stages are the **company-analysis graph's own node names** mapped onto reader
+words (`app/services/research_job.NODE_TO_STAGE`), so no stage vocabulary is
+invented. **No percentage is produced** — the graph cannot know how long a node
+will take, and claiming "62% complete" would be a fabrication.
+
+`analysis_report_id` is the STRUCTURED final report this job produced; it is
+null until the assembly step succeeds (the deterministic draft the workflow
+writes is not one, and is reported separately as `legacy_draft_report_id`).
+
+### `GET /api/v1/company-research/jobs?company_id={id}`
+
+The most recent job for ONE company. This is how a reader who refreshed the
+page, closed the tab or came back later finds the run they started — the job id
+is not only in the browser. Strictly company-scoped; never a global-latest
+lookup. `404` when that company has never been researched.
+
+### Discovery-council response — economic fields (Blocker A)
+
+`DiscoveryCouncilCandidateEntry` now declares the five fields the council has
+been writing and persisting all along:
+
+```
+upside_drivers[]  downside_drivers[]  resilience  key_financial_signal  strongest_dimension
+```
+
+They were produced by `_aggregate_chair`, persisted by `to_storage_dict`, and
+then **dropped by Pydantic** because the response model did not declare them —
+which is why the live European Luxury run rendered "Not established" on every
+economic dimension. `tests/test_v2_discovery_contract_and_jurisdiction.py`
+compares `CandidateNote` against the response model directly, so a new
+comparison field cannot silently fail to reach a reader again.
+
+### Discovery evidence pack — jurisdiction + current research
+
+Each candidate's `data_coverage` now carries `applicable_regulated_venue`,
+`sec_is_applicable_venue` and `regulated_disclosure_state`, resolved generically
+from the exchange/country registry (`applicable_regulated_venue` in
+`app/services/sources/jurisdiction_source_classes.py`). The run-level known gap
+"N candidate(s) are not SEC-eligible" is gone; a gap is now named after the
+venue that actually serves the issuer.
+
+Each candidate may also carry `research_signals` — bounded economic signals
+lifted from that company's CURRENT structured research report when one exists
+(`app/services/current_research_resolver.py`): period-labelled figures, the
+prior chair synthesis, company risks and research confidence. Resolution is
+company-scoped, gated on structured content, newest-first — and it does **not**
+consult `candidate.analysis_report_id`, which the discovery pipeline itself sets
+to a Phase-9 screening draft on every candidate it touches.

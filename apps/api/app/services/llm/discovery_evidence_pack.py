@@ -25,6 +25,9 @@ from app.services.llm.discovery_schemas import (
     RunContext,
     RunFact,
 )
+from app.services.sources.jurisdiction_source_classes import (
+    applicable_regulated_venue,
+)
 from app.services.sources.verified_issuer_sources import get_verified_issuer_source
 
 # Phase 32D2b — a candidate's issuer primary-source state is TRI-state, and
@@ -64,6 +67,19 @@ _DO_NOT_INFER = [
     "known_not_fetched as having no primary source: its investor-relations and "
     "annual-report locations are on record and simply were not fetched by this "
     "metadata-only pass.",
+    # Jurisdiction. SEC EDGAR is ONE venue, not the universal one.
+    "Do not treat the absence of SEC eligibility, an SEC CIK, an SEC mapping or "
+    "an SEC filing as a research gap for a candidate whose "
+    "sec_is_applicable_venue is false. Its regulated disclosures are published "
+    "at the venue named in applicable_regulated_venue. Judge its "
+    "regulated-disclosure coverage ONLY against that venue, and word any gap as "
+    "'no supported regulated filing was retrieved from the applicable venue' — "
+    "never as 'no SEC filing'.",
+    # Evidence confidence is not an economic view.
+    "Do not express a limitation of the EVIDENCE (sparse data, missing "
+    "fundamentals, no current research report) as a downside_driver. A "
+    "downside_driver is something that could pressure the BUSINESS. Evidence "
+    "limitations belong in evidence_gaps and in your confidence label.",
 ]
 
 
@@ -285,6 +301,44 @@ def issuer_primary_source_state(cand: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def regulated_venue_state(cand: dict[str, Any]) -> dict[str, Any]:
+    """Which regulated-disclosure venue APPLIES to this candidate, and its state.
+
+    Discovery used to hand the council a bare ``sec_eligible: false`` and
+    nothing else, and the council read that exactly as written: a live European
+    Luxury run concluded that Richemont, Pandora, Kering, Moncler and Swatch all
+    "lack SEC eligibility", treated that as an evidence gap for every one of
+    them, and fell back to price momentum to prioritise. SEC EDGAR does not
+    cover any of those issuers; its absence is not a gap in their disclosure
+    coverage.
+
+    The venue is resolved generically from the exchange/country registry every
+    other layer uses — no issuer name appears here — and the gap, when there is
+    one, names the venue that ACTUALLY applies.
+    """
+    venue = applicable_regulated_venue(
+        exchange=cand.get("exchange"), country=cand.get("country")
+    )
+    retrieved = 0
+    for key in ("filing_event_count", "press_release_event_count"):
+        value = cand.get(key)
+        if isinstance(value, int):
+            retrieved += value
+    state: dict[str, Any] = {
+        "applicable_regulated_venue": venue.venue_label,
+        "sec_is_applicable_venue": venue.sec_applicable,
+        "regulated_disclosures_retrieved": retrieved,
+    }
+    gap = venue.gap_statement(disclosures_retrieved=retrieved)
+    state["regulated_disclosure_state"] = "not_retrieved" if gap else "retrieved"
+    if not venue.sec_applicable:
+        state["sec_not_applicable_note"] = (
+            "SEC EDGAR does not cover this issuer's venue. Its ABSENCE is NOT a "
+            f"research gap; the applicable venue is {venue.venue_label}."
+        )
+    return state
+
+
 def _data_coverage(cand: dict[str, Any]) -> dict[str, Any]:
     dc = cand.get("data_coverage")
     dc = dc if isinstance(dc, dict) else {}
@@ -292,15 +346,33 @@ def _data_coverage(cand: dict[str, Any]) -> dict[str, Any]:
         {
             "profile_source": dc.get("profile_source"),
             "fundamentals_source": dc.get("fundamentals_source"),
+            # ``sec_eligible`` is kept because it is a real, sourced property of
+            # the ticker mapping — but it is now accompanied by the venue that
+            # actually applies, so the council cannot read "false" as "this
+            # issuer has no regulator".
             "sec_eligible": dc.get("sec_eligible"),
             "reason": _clip(dc.get("reason"), 160),
             "requires_human_research": dc.get("requires_human_research"),
             "source_quality": cand.get("source_quality"),
             "missing_info_count": cand.get("missing_info_count"),
             "blocking_gap_count": cand.get("blocking_gap_count"),
+            **regulated_venue_state(cand),
             **issuer_primary_source_state(cand),
         }
     )
+
+
+def _research_signals(cand: dict[str, Any]) -> dict[str, Any]:
+    """The candidate's CURRENT structured research, if this platform has any.
+
+    The service layer resolves it (company-scoped, structured-content-gated,
+    newest-first) and hands it in already bounded. An empty dict is the honest
+    answer for a company with no current research and is what makes the
+    council's economic dimensions read "not established" rather than borrowing
+    a gap count.
+    """
+    signals = cand.get("research_signals")
+    return signals if isinstance(signals, dict) else {}
 
 
 def _catalyst_summary(cand: dict[str, Any]) -> dict[str, Any]:
@@ -340,6 +412,7 @@ def _candidate_evidence(index: int, cand: dict[str, Any]) -> CandidateEvidence:
         score_breakdown=_score_breakdown(cand),
         data_coverage=_data_coverage(cand),
         catalyst_summary=_catalyst_summary(cand),
+        research_signals=_research_signals(cand),
         safety_valid=cand.get("safety_valid"),
         human_review_required=bool(cand.get("human_review_required", True)),
         is_public=bool(cand.get("is_public", False)),
@@ -355,15 +428,39 @@ def _known_gaps(candidates: list[CandidateEvidence]) -> list[str]:
         gaps.append(
             f"{len(sparse)} candidate(s) have sparse data (missing_info_count >= 3)."
         )
-    non_sec = [
+    # A candidate whose APPLICABLE venue produced nothing is a real gap. A
+    # candidate that SEC EDGAR simply does not cover is not — and stating it as
+    # one is what made a whole European council run read as an evidence audit.
+    no_regulated = [
         c
         for c in candidates
-        if c.data_coverage.get("sec_eligible") is False
+        if c.data_coverage.get("regulated_disclosure_state") == "not_retrieved"
     ]
-    if non_sec:
+    if no_regulated:
+        venues = sorted(
+            {
+                str(c.data_coverage.get("applicable_regulated_venue"))
+                for c in no_regulated
+                if c.data_coverage.get("applicable_regulated_venue")
+            }
+        )
+        venue_note = f" (venues: {', '.join(venues)})" if venues else ""
         gaps.append(
-            f"{len(non_sec)} candidate(s) are not SEC-eligible; fundamentals may be "
-            "not_sourced and require human research."
+            f"{len(no_regulated)} candidate(s) had no regulated filing retrieved "
+            f"from the venue that applies to them{venue_note}. This is a gap in "
+            "what THIS pass retrieved, not in the issuer's disclosure regime."
+        )
+    non_sec_venue = [
+        c
+        for c in candidates
+        if c.data_coverage.get("sec_is_applicable_venue") is False
+    ]
+    if non_sec_venue:
+        gaps.append(
+            f"{len(non_sec_venue)} candidate(s) are NOT covered by SEC EDGAR "
+            "because their regulated venue is elsewhere. Absence of an SEC CIK, "
+            "SEC eligibility or an SEC filing is NOT a research gap for them and "
+            "MUST NOT be counted against them."
         )
     # Phase 32D2b — state the tri-state explicitly, because the council
     # otherwise reports "no IR sources identified" for issuers whose IR and
@@ -392,6 +489,19 @@ def _known_gaps(candidates: list[CandidateEvidence]) -> list[str]:
         gaps.append(
             f"{len(unknown_issuer)} candidate(s) have NO verified issuer "
             "primary-source location on record (genuinely unknown)."
+        )
+    # How much of this cohort the council can actually reason about
+    # economically. Stated as a property of the COHORT, so a candidate without
+    # current research is not individually re-listed as deficient.
+    with_research = [c for c in candidates if c.research_signals]
+    if candidates:
+        gaps.append(
+            f"{len(with_research)} of {len(candidates)} candidate(s) have a "
+            "CURRENT structured research report on this platform; their "
+            "research_signals carry period-labelled figures and this "
+            "platform's prior council conclusions. For the remaining "
+            "candidate(s) the economic dimensions are NOT ESTABLISHED — say "
+            "so rather than substituting an evidence-completeness figure."
         )
     unsafe = [c for c in candidates if c.safety_valid is False]
     if unsafe:

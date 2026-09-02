@@ -43,7 +43,10 @@ from app.schemas.market_discovery import (
     ReportLinkSummary,
     ThesisDiscoveryRunCreate,
 )
-from app.services import safety_terms
+from app.services import research_job, safety_terms
+from app.services.company_research_service import execute_company_research
+from app.services.company_service import get_company_by_ticker
+from app.services.current_research_resolver import research_signals_for_company
 from app.services.discovery_filters import (
     canonical_country,
     canonical_region,
@@ -74,7 +77,6 @@ from app.services.market_universe_builder import (
     build_universe,
 )
 from app.services.sector_taxonomy import get_supported_sector_aliases, resolve_sector_classification
-from app.workflows.company_analysis import run_company_analysis
 
 logger = logging.getLogger(__name__)
 
@@ -1288,24 +1290,26 @@ async def run_candidate_analysis(
     """
     Run the full analysis for a candidate and link the FINAL report.
 
-    Phase 28A.1 — the single-company "Run Full Analysis" flow now routes through
-    the Phase 28A final-report generator so the candidate links to a real final
-    report (LLM analysis council when ``LLM_COUNCIL_ENABLED`` and a provider
-    resolve; honest ``llm_used=False`` otherwise) — NEVER a legacy "Phase 9"
-    deterministic Analysis Council draft. The deterministic workflow still runs
-    first to produce the raw research artefact (retained as
-    ``legacy_draft_report_id``); its output state feeds the final report.
+    THE PIPELINE ITSELF LIVES ELSEWHERE. ``company_research_service.
+    execute_company_research`` is the single implementation of "research this
+    company end to end" — the deterministic workflow, then the Phase 28A
+    final-report generator with its LLM council — and ``/research/company``
+    runs exactly the same code through exactly the same async job lifecycle.
+    Before this corrective the front door had its own synchronous copy of the
+    two steps, which is how it came to blow the gateway ceiling while this path
+    did not.
 
-    Both the workflow runner and the final-report generator are injectable for
-    tests. If final-report generation fails the candidate falls back to linking
-    the deterministic draft and a warning is surfaced — the run never fails
-    purely because of the routing step.
+    What is left here is what is genuinely candidate-specific: resolving the
+    candidate's company, building the discovery lineage that records where the
+    candidate came from, and linking the resulting report back to the candidate
+    row.
+
+    Both runners stay injectable for tests, and are passed straight through.
     """
     candidate = await get_candidate(db, candidate_id)
     if candidate is None:
         raise ValueError(f"Discovery candidate {candidate_id} not found")
 
-    runner = run_analysis or run_company_analysis
     provider = candidate.raw_signal_json.get("provider_name") if candidate.raw_signal_json else None
     provider = provider or settings.discovery_default_provider
 
@@ -1323,103 +1327,69 @@ async def run_candidate_analysis(
         company_name=candidate.legal_name or candidate.company_name,
     )
 
-    final_state = await runner(
-        db,
-        company_id=str(company.id),
-        provider_name=provider,
-    )
-
-    legacy_draft_id = final_state.get("draft_report_id")
-    agent_run_id = final_state.get("agent_run_id")
-    status = final_state.get("status", "completed")
-
-    warnings: list[str] = []
-    report_summary: ReportLinkSummary | None = None
-    linked_report_id: uuid.UUID | None = None
-
-    company_record = {
-        "id": str(company.id),
-        "name": company.name,
-        "ticker": company.ticker,
-        "exchange": company.exchange,
-        "country": getattr(company, "country", None),
-        "sector": getattr(company, "sector", None),
-        "industry": getattr(company, "industry", None),
-    }
+    # Phase 32A Slice 6B (C2) — the real discovery-run lineage. Built as an
+    # additive plain dict off this (real, ORM) DiscoveryCandidate and its parent
+    # DiscoveryRun, so "No screening candidate is linked" no longer hides a real
+    # discovery-run origin. Never inferred/fabricated — only fields that already
+    # exist on the candidate/run.
+    discovery_lineage: dict[str, Any] | None = None
     try:
-        gen = generate_final_report or _default_generate_final_report
-        source_report, citations, sources = await _load_final_report_inputs(
-            db, legacy_draft_id
-        )
-        # NOTE: the final-report generator's ``candidate`` arg is a
-        # ScreeningCandidate (it reads ``candidate.name`` / discovery-rationale
-        # fields). This flow has a DiscoveryCandidate — a different model — so
-        # passing it would AttributeError and silently degrade every run to the
-        # legacy draft. Identity + research data already come from
-        # ``company_record`` (built from the Company) and the workflow state's
-        # ``company_snapshot``, so we pass ``candidate=None``.
-        #
-        # Phase 32A Slice 6B (C2) — the real discovery-run lineage is NOT lost
-        # though: build an additive, plain-dict lineage block straight off this
-        # (real, ORM) DiscoveryCandidate + its parent DiscoveryRun, threaded
-        # through separately so "No screening candidate is linked" no longer
-        # hides a real discovery-run origin. Never inferred/fabricated — only
-        # fields that already exist on the candidate/run.
-        discovery_lineage: dict[str, Any] | None = None
-        try:
-            discovery_run = await get_run(db, candidate.discovery_run_id)
-            discovery_lineage = {
-                "discovery_run_id": str(candidate.discovery_run_id),
-                "discovery_candidate_id": str(candidate.id),
-                "ticker": candidate.ticker,
-                "exchange": candidate.exchange,
-                "rank": candidate.rank,
-                "candidate_score": candidate.candidate_score,
-                "candidate_score_grade": candidate.candidate_score_grade,
-                "score_explanation": candidate.score_explanation,
-                "thesis_relevance_score": candidate.thesis_relevance_score,
-                "thesis_match_json": candidate.thesis_match_json,
-                "thesis_text": discovery_run.thesis_text if discovery_run else None,
-            }
-        except Exception as exc:  # noqa: BLE001 - lineage is best-effort, never fatal
-            logger.warning(
-                "discovery_lineage_build_failed candidate=%s error=%s",
-                str(candidate_id),
-                type(exc).__name__,
-            )
-            discovery_lineage = None
-
-        final_resp = await gen(
-            db,
-            state=final_state,
-            company_record=company_record,
-            candidate=None,
-            source_report=source_report,
-            citations=citations,
-            sources=sources,
-            discovery_lineage=discovery_lineage,
-        )
-        linked_report_id = final_resp.report_id
-        report_summary = _summary_from_final_response(final_resp)
-    except Exception as exc:  # noqa: BLE001 - never fail the whole run on routing
+        discovery_run = await get_run(db, candidate.discovery_run_id)
+        discovery_lineage = {
+            "discovery_run_id": str(candidate.discovery_run_id),
+            "discovery_candidate_id": str(candidate.id),
+            "ticker": candidate.ticker,
+            "exchange": candidate.exchange,
+            "rank": candidate.rank,
+            "candidate_score": candidate.candidate_score,
+            "candidate_score_grade": candidate.candidate_score_grade,
+            "score_explanation": candidate.score_explanation,
+            "thesis_relevance_score": candidate.thesis_relevance_score,
+            "thesis_match_json": candidate.thesis_match_json,
+            "thesis_text": discovery_run.thesis_text if discovery_run else None,
+        }
+    except Exception as exc:  # noqa: BLE001 - lineage is best-effort, never fatal
         logger.warning(
-            "final_report_routing_failed candidate=%s error=%s",
+            "discovery_lineage_build_failed candidate=%s error=%s",
             str(candidate_id),
             type(exc).__name__,
         )
-        warnings.append("final_report_generation_failed")
-        if legacy_draft_id:
-            linked_report_id = uuid.UUID(legacy_draft_id)
-            report_summary = ReportLinkSummary(
-                report_id=linked_report_id,
-                report_kind="legacy",
-                llm_used=False,
-            )
+        discovery_lineage = None
+
+    result = await execute_company_research(
+        db,
+        company,
+        provider_name=provider,
+        discovery_lineage=discovery_lineage,
+        run_analysis=run_analysis,
+        generate_final_report=generate_final_report,
+    )
+
+    linked_report_id = result.get("analysis_report_id")
+    agent_run_id = result.get("agent_run_id")
+    legacy_draft_id = result.get("legacy_draft_report_id")
+    warnings = list(result.get("warnings") or [])
+
+    final_resp = result.get("final_report_response")
+    if final_resp is not None:
+        report_summary: ReportLinkSummary | None = _summary_from_final_response(
+            final_resp
+        )
+    elif linked_report_id is not None:
+        # The final-report step failed and the run fell back to the
+        # deterministic draft. Label it for what it is.
+        report_summary = ReportLinkSummary(
+            report_id=linked_report_id,
+            report_kind="legacy",
+            llm_used=False,
+        )
+    else:
+        report_summary = None
 
     if linked_report_id:
         candidate.analysis_report_id = linked_report_id
     if agent_run_id:
-        candidate.agent_run_id = uuid.UUID(agent_run_id)
+        candidate.agent_run_id = agent_run_id
     candidate.updated_at = datetime.now(timezone.utc)
     await db.commit()
     await db.refresh(candidate)
@@ -1427,14 +1397,12 @@ async def run_candidate_analysis(
     return {
         "candidate_id": candidate.id,
         "ticker": candidate.ticker,
-        "status": status,
+        "status": result.get("status", "completed"),
         "analysis_report_id": linked_report_id,
-        "agent_run_id": uuid.UUID(agent_run_id) if agent_run_id else None,
+        "agent_run_id": agent_run_id,
         "provider_name": provider,
         "report": report_summary,
-        "legacy_draft_report_id": (
-            uuid.UUID(legacy_draft_id) if legacy_draft_id else None
-        ),
+        "legacy_draft_report_id": legacy_draft_id,
         "warnings": warnings,
     }
 
@@ -1463,45 +1431,24 @@ ANALYSIS_JOB_STORAGE_KEY = "analysis_job"
 
 # A job in one of these states is in flight — a second click must NEVER start a
 # duplicate council run.
-_ANALYSIS_IN_FLIGHT = {"pending", "running"}
+#
+# The lifecycle RULES now live in ``app.services.research_job``: the same states,
+# the same abandonment threshold and the same derived ``interrupted`` semantics
+# serve BOTH async research entry points (this candidate CTA and
+# ``/research/company``). They are aliased rather than re-declared so the two
+# cannot drift apart on the question of whether a job is still alive.
+_ANALYSIS_IN_FLIGHT = research_job.IN_FLIGHT
 
 # A job in one of these states produced a linked report.
-_ANALYSIS_HAS_RESULT = {"completed", "completed_with_warnings"}
-
-# Fixed allowance (seconds) for everything in a full-analysis job that is NOT
-# the council or primary-document ingestion: data fetching, snapshot build,
-# report assembly/persistence, commits. Part of the derived stale threshold.
-_ANALYSIS_JOB_OVERHEAD_SECONDS = 300.0
-
-# Safety margin (minutes) on top of the derived worst-case job duration before
-# a ``running`` envelope may be treated as abandoned.
-_ANALYSIS_STALE_MARGIN_MINUTES = 10
-
+_ANALYSIS_HAS_RESULT = research_job.HAS_RESULT
 
 def analysis_job_stale_after_minutes(cfg=None) -> int:
-    """Effective abandoned-job threshold (minutes), coherent BY CONSTRUCTION.
+    """Effective abandoned-job threshold (minutes) — see ``research_job``.
 
-    Phase 32A TPM slice: the council wall budget was raised for the async era
-    (150s -> 600s) and paced attempts can wait for TPM headroom, so a fixed
-    literal here could mark a legitimately long-running job stale mid-council.
-    The threshold is therefore ``max(configured base, derived worst case)``
-    where the worst case = council wall budget + one full pacing wait (an
-    in-flight attempt can wait past the council deadline) + primary-document
-    ingestion budget + fixed orchestration overhead + margin. Raising any
-    council budget automatically raises this threshold with it. A job stuck in
-    ``running`` longer than this is treated as abandoned (FastAPI
-    BackgroundTasks are process-local and not durable — an app restart mid-run
-    leaves the envelope in ``running`` forever otherwise).
+    Delegates to the shared lifecycle module so a council-budget change moves
+    this threshold and the company-research one together, by construction.
     """
-    cfg = cfg or settings
-    worst_case_seconds = (
-        float(cfg.llm_council_total_budget_seconds)
-        + float(cfg.llm_council_pacing_max_wait_seconds)
-        + float(cfg.primary_document_ingestion_budget_seconds)
-        + _ANALYSIS_JOB_OVERHEAD_SECONDS
-    )
-    derived_minutes = int(worst_case_seconds // 60) + 1 + _ANALYSIS_STALE_MARGIN_MINUTES
-    return max(int(cfg.analysis_job_stale_after_minutes), derived_minutes)
+    return research_job.stale_after_minutes(cfg)
 
 
 def _new_analysis_job_envelope(
@@ -1550,38 +1497,15 @@ def _store_analysis_job_envelope(
 #: Private-use readiness PR-F — a job whose worker died. DERIVED at read time
 #: from ``started_at`` + the stale threshold; never a stored status, so it can
 #: never disagree with the timestamps it is computed from.
-ANALYSIS_STATUS_INTERRUPTED = "interrupted"
+ANALYSIS_STATUS_INTERRUPTED = research_job.STATUS_INTERRUPTED
 
 
 def describe_analysis_job(envelope: dict[str, Any] | None) -> dict[str, Any]:
     """The envelope a HUMAN should see, with abandonment made explicit.
 
-    Private-use readiness PR-F. A long-running analysis runs in a process-local
-    background task, so an app restart mid-run leaves the stored envelope on
-    ``running`` forever. The state was always recoverable — a fresh POST past
-    the stale threshold restarts it — but nothing SAID so: the status endpoint
-    reported ``running`` indefinitely, and a researcher watching it had no way
-    to tell a job that is working from one that died an hour ago.
-
-    This does not invent a new stored state (that would be a second source of
-    truth about the same job). It derives ``interrupted`` at read time from the
-    same ``started_at`` and threshold the restart decision already uses, so the
-    two can never disagree, and marks it ``recoverable`` so the caller knows
-    re-running is safe rather than duplicative.
+    Delegates to the shared lifecycle module — see ``research_job.describe``.
     """
-    if not envelope:
-        return {}
-    out = dict(envelope)
-    if out.get("status") in _ANALYSIS_IN_FLIGHT and _analysis_job_is_stale(out):
-        out["status"] = ANALYSIS_STATUS_INTERRUPTED
-        out["recoverable"] = True
-        out["interrupted_reason"] = (
-            "No progress within the expected worst-case duration "
-            f"({analysis_job_stale_after_minutes()} min). The worker that owned "
-            "this job is gone — most likely an app restart. Nothing was lost: "
-            "re-running is safe and will not duplicate a completed report."
-        )
-    return out
+    return research_job.describe(envelope)
 
 
 async def sweep_interrupted_analysis_jobs(
@@ -1657,20 +1581,7 @@ def get_analysis_job_envelope(
 
 def _analysis_job_is_stale(envelope: dict[str, Any]) -> bool:
     """True when a ``running`` job has clearly been abandoned by a dead worker."""
-    if envelope.get("status") != "running":
-        return False
-    started = envelope.get("started_at")
-    if not isinstance(started, str) or not started:
-        # No timestamp to reason about — treat as in flight, never as stale.
-        return False
-    try:
-        started_dt = _aware(datetime.fromisoformat(started))
-    except ValueError:
-        return False
-    if started_dt is None:
-        return False
-    age = datetime.now(timezone.utc) - started_dt
-    return age > timedelta(minutes=analysis_job_stale_after_minutes())
+    return research_job.is_stale(envelope)
 
 
 async def start_candidate_analysis(
@@ -1972,8 +1883,17 @@ def _run_to_evidence_dict(run: DiscoveryRun) -> dict[str, Any]:
     }
 
 
-def _candidate_to_evidence_dict(c: DiscoveryCandidate) -> dict[str, Any]:
-    """Adapt a candidate row into the bounded dict the pack builder reads."""
+def _candidate_to_evidence_dict(
+    c: DiscoveryCandidate,
+    research_signals: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Adapt a candidate row into the bounded dict the pack builder reads.
+
+    ``research_signals`` is this company's CURRENT structured research, already
+    resolved and bounded by ``current_research_resolver``. It is passed in
+    rather than looked up here so this stays a pure row adapter, and it
+    defaults to empty so every existing caller and test is unchanged.
+    """
     raw = c.raw_signal_json if isinstance(c.raw_signal_json, dict) else {}
     data_coverage = raw.get("data_coverage") if isinstance(raw, dict) else {}
     return {
@@ -2009,7 +1929,43 @@ def _candidate_to_evidence_dict(c: DiscoveryCandidate) -> dict[str, Any]:
         "human_review_required": c.human_review_required,
         "is_public": c.is_public,
         "warnings": list(c.warnings_json or []),
+        "research_signals": dict(research_signals or {}),
     }
+
+
+async def resolve_candidate_research_signals(
+    db: AsyncSession, candidates: list[DiscoveryCandidate]
+) -> dict[uuid.UUID, dict[str, Any]]:
+    """Each candidate's CURRENT structured research, keyed by candidate id.
+
+    Read-only and bounded: one company lookup by (ticker, exchange) and one
+    company-scoped report query per candidate. Nothing is created, nothing is
+    fetched from the network, and NO analysis is run — the council is shown
+    research that already exists or nothing at all.
+
+    A candidate whose company is not in the universe yet, or whose company has
+    no structured research, maps to an empty dict. That is the honest answer
+    and it is what makes the economic dimensions read "not established".
+    """
+    out: dict[uuid.UUID, dict[str, Any]] = {}
+    for candidate in candidates:
+        try:
+            company = await get_company_by_ticker(
+                db, candidate.ticker, candidate.exchange
+            )
+            signals = await research_signals_for_company(
+                db, company.id if company else None
+            )
+        except Exception as exc:  # noqa: BLE001 - enrichment is never fatal
+            logger.warning(
+                "candidate_research_signals_failed candidate=%s error=%s",
+                str(candidate.id),
+                type(exc).__name__,
+            )
+            continue
+        if signals.available:
+            out[candidate.id] = signals.to_dict()
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -2185,7 +2141,16 @@ async def _compute_council_result(
         raise ValueError("Discovery run has no candidates to review.")
 
     run_dict = _run_to_evidence_dict(run)
-    candidate_dicts = [_candidate_to_evidence_dict(c) for c in candidates]
+    # Give the council the research this platform ALREADY has. Without it the
+    # council can only compare data packages: a live European Luxury run
+    # concluded "all candidates lack sourced fundamentals … prioritize mainly
+    # using momentum" while complete structured research for two of those
+    # candidates sat in this same database.
+    signals_by_candidate = await resolve_candidate_research_signals(db, candidates)
+    candidate_dicts = [
+        _candidate_to_evidence_dict(c, signals_by_candidate.get(c.id))
+        for c in candidates
+    ]
 
     result = await maybe_run_discovery_council(
         run=run_dict,

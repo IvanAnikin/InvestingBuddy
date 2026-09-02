@@ -4,11 +4,12 @@
 // runtime before matched routes render. It is the first line of defense that
 // makes the admin surface inaccessible to unauthenticated users:
 //
-//   /admin/:path*            → page routes: redirect unauthenticated users to
+//   /admin, /admin/:path*    → page routes: redirect unauthenticated users to
 //                              /login (preserving callbackUrl); redirect
 //                              authenticated-but-not-allowlisted users to
 //                              /unauthorized.
-//   /research/:path*         → the user-facing research workspace. Same gate,
+//   /research, /research/:path*
+//                            → the user-facing research workspace. Same gate,
 //                              same reasons: these routes execute research and
 //                              render private reports. They are Server
 //                              Components that fetch the backend DIRECTLY with
@@ -17,6 +18,27 @@
 //   /api/admin/proxy/:path*  → API proxy: 401 unauthenticated, 403 not allowed.
 //                              (The route handler re-checks independently as
 //                              defense-in-depth and attaches identity headers.)
+//
+// THE SECTION ROOTS ARE LISTED EXPLICITLY.
+// ---------------------------------------
+// A live deployment check reported /research answering 200 to an anonymous
+// request while /research/company, /research/discover and /research/reports
+// all redirected to /login. That matters: /research renders "Recent research",
+// which is company names, tickers and report timestamps out of this private
+// workspace.
+//
+// That asymmetry does NOT reproduce here. Measured against Next 16.2.9 in both
+// `next dev` and a production `next build && next start`, `/research/:path*`
+// on its own DOES gate `/research` — an anonymous request answers 307 to
+// /login either way. So the pattern is not a proven cause and this comment
+// does not claim it was.
+//
+// The roots are named literally regardless. Whether the section front door is
+// gated should not rest on how a path-pattern modifier treats a zero-segment
+// match: that is a property of a dependency, it is invisible in the file that
+// decides the security boundary, and it is the kind of thing an upgrade
+// changes without anyone reading this line again. Naming them costs nothing
+// and makes the boundary state what it means.
 //
 // Everything else — /, /login, /unauthorized, /api/auth/*, /api/version, and
 // all static/_next assets — is intentionally NOT matched and stays public. The
@@ -66,5 +88,12 @@ export async function proxy(request: NextRequest): Promise<NextResponse> {
 }
 
 export const config = {
-  matcher: ["/admin/:path*", "/research/:path*", "/api/admin/proxy/:path*"],
+  matcher: [
+    // The section ROOTS, named literally — see the note above.
+    "/admin",
+    "/research",
+    "/admin/:path*",
+    "/research/:path*",
+    "/api/admin/proxy/:path*",
+  ],
 };

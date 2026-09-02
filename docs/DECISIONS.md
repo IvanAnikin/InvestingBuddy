@@ -3075,3 +3075,185 @@ looks like a bug until the reason is read.
 but the part-year data limits full-year trend assessment" is kept as a value
 driver: its main clause is about the business. Over-suppressing a hedged but
 real finding would be the worse failure.
+
+---
+
+## 44. The product front door submits a job; only the state is durable, and we say so
+
+**Date:** 2026-09-02
+**Status:** Accepted
+**Context:** POST-V2 live corrective (`fix/v2-live-acceptance-blockers`)
+
+### Context
+
+`/research/company` ran the pipeline inside the browser's HTTP request. On live
+data that is ~154s of primary-document ingestion plus ~145–190s of council,
+against an Azure App Service gateway ceiling of ~230s. Measured live: HTTP 502
+at ~206s, HTTP 504 at ~240s, transaction rolled back. A user selected Pandora,
+waited five minutes, and got an error with nothing kept. The product's primary
+entry point was unusable, and the fault was structural rather than a matter of
+tuning.
+
+The discovery-candidate CTA had already solved exactly this and its fix was
+already live-verified. What blocked reuse was that the executor and the job
+lifecycle lived inside `market_discovery_service`, keyed on a
+`DiscoveryCandidate`.
+
+### Decision
+
+**Reuse the existing mechanism rather than build a second one.** Commit a job
+envelope, return 202, drive the work from a background task with its own DB
+session, poll a plain GET. No queue broker was introduced: this deployment has
+none, Service Bus is a later phase, and adding one would be a second job
+architecture rather than a fix for the blocker in front of us.
+
+**Unify what is genuinely one thing, and only that.**
+`company_research_service.execute_company_research` is the single implementation
+of "research this company end to end"; the discovery-candidate path calls it
+too, passing its lineage. `research_job.py` is the single job lifecycle —
+states, abandonment threshold, derived `interrupted`. What stays separate is the
+durable STORE: the candidate keeps its `raw_signal_json` envelope and its
+live-verified poller, the company job uses `AgentRun` + `AgentStep`. Two entry
+points with different natural keys and different pollers do not need one table
+to be one workflow.
+
+**Say precisely what survives what.** Job STATE is durable — committed before
+any expensive work, recoverable by id or by company, unaffected by the browser.
+Job EXECUTION is process-local, so an app-process recycle mid-run stops the
+work.
+
+**Stages are the graph's own node names.** `NODE_TO_STAGE` maps them onto reader
+words; a node absent from the map does not move the stage. No percentage is
+produced, because the graph cannot know how long a node will take.
+
+### Consequences
+
+**Positive, measured on the live local stack with the real provider.** Submit
+0.162s (PNDORA) and 0.160s (CFR) against a target of under five seconds. Both
+runs completed server-side (48.0s and 55.4s), council 8/8, reports persisted,
+identity exact. A second submit while a run is in flight returns the first job
+and starts nothing. A refresh reattaches by URL; a lost URL recovers by company.
+
+**Negative / accepted — the honest limit.** A recycle mid-run loses the work in
+flight. It is not hidden: the job reads as `interrupted` with `recoverable:
+true`, derived at read time from the same threshold the restart decision uses,
+a startup sweep logs what was lost without rewriting the dead worker's last
+envelope, and the UI offers a retry. Everything the ingestion and workflow
+stages already persisted stays persisted. Making execution survive a recycle
+needs a broker and a worker service, and that is a phase, not a line.
+
+**Negative / accepted.** Selecting a company adopts an IN-FLIGHT job only. A
+run that finished last month is not this session's work, and showing it beside
+"Research complete" would read as something the reader had just done. Past runs
+are in the research library.
+
+---
+
+## 45. Scope is part of the canonical key, so the numeric guard got stricter
+
+**Date:** 2026-09-02
+**Status:** Accepted
+**Context:** POST-V2 live corrective
+
+### Context
+
+The council-prose numeric guard built its canonical set from GROUP figures alone
+and tested every sentence against it. On a segment reporter that is not a
+conservative simplification, it is a category error: Richemont's Specialist
+Watchmakers operating profit of EUR 107m was held up against the GROUP operating
+profit of ~EUR 4.5bn, found to disagree, and withheld. **32 statements were
+suppressed in one live CFR report**, including every sentence that made the
+segment picture legible — by a guard whose stated purpose is to stop a report
+contradicting itself.
+
+### Decision
+
+A metric is not one number. It is one number per (period, scope). The index is
+keyed that way, every legitimate scope is in it, and a claim is adjudicated
+against the scope it is actually about:
+
+* the sentence names Group → compared against Group, only Group;
+* the sentence names a segment THIS REPORT REPORTS → compared against that
+  segment;
+* the sentence names no scope → compared against every scope the report holds
+  for that metric, because guessing which one it meant is the substitution that
+  caused the defect;
+* the scope has no canonical value for that metric → not adjudicated at all.
+
+Scope keys mirror `fact_scope.py` exactly, so a fact persisted as Group cannot
+be read here as a segment. Segment names come from the report's own scoped
+facts, so a capitalised phrase is never mistaken for a business area. A stated
+currency that no candidate figure shares makes the claim unadjudicable — this
+layer holds no exchange rate and must not invent one.
+
+### Consequences
+
+**Positive.** The guard is MORE precise, not weaker. "Group operating profit was
+EUR 107m" is now a contradiction that gets CAUGHT, and it could not be caught
+before, because 107 was in the comparison set for the group key. Every
+previously-fixed false positive stays fixed (H1 as a period, bare years,
+trailing commas, percent-beside-amount, historical series).
+
+**Negative / accepted.** An unscoped claim is cleared by matching ANY scope.
+That is deliberate: for a guard that SUPPRESSES content, the correct failure
+mode is a missed contradiction rather than an invented one. A sentence that
+genuinely means Group but does not say so, quoting a segment's number, passes.
+
+**Negative / accepted.** Council agent SUMMARIES are still not reconciled — the
+guard covers findings, implications and the chair's lists. Widening it to
+summaries would risk replacing a whole agent's summary with a conflict notice,
+which is a different and larger trade.
+
+---
+
+## 46. The two cases are the council's argument, not the deterministic layer's
+
+**Date:** 2026-09-02
+**Status:** Accepted
+**Context:** POST-V2 live corrective
+
+### Context
+
+The clean report rendered `bull_case` and `bear_case` verbatim from the
+deterministic Phase-9 layer. Those slots are written for an engineer: on live
+PNDORA / CFR / MRNA reports their points named source tiers
+(`T1_primary_filing`, `T6_model_estimate`), provider states
+(`free_real_not_sourced`), machine field paths (`identity.isin`) and
+blocking-gap counts. A reader opening "Bear case" was told, as the argument
+against a business, that an ISIN had not been sourced.
+
+Meanwhile the council HAD argued both cases — in `implications`, in the chair's
+strongest evidence each way, in resilience/fragility, in what would strengthen
+or weaken it, and in the red team's own economic challenges. None of it reached
+those two sections.
+
+### Decision
+
+Assemble the cases from the structured council output, deterministically. No
+model is called because a report was opened, nothing is summarised, and every
+line is something the council already wrote. Each line passes the same signal
+rule the rest of the reader-facing view uses, so an evidence statement cannot
+appear as an investment argument.
+
+Implementation vocabulary is TRANSLATED, not deleted. Deleting loses the
+sentence's meaning; rewriting the stored value would make the clean view and the
+technical view disagree about what the pipeline said. `humaniseTechnical` maps
+tier codes, provider states and machine field paths to human words at render
+time only.
+
+A report whose council predates the structured fields falls back to the
+deterministic narrative — routed through the same rule and translated — and the
+footnote says which layer the argument came from.
+
+### Consequences
+
+**Positive.** Bull and bear now carry the council's economic reasoning, and no
+tier code, provider state, field path or blocking-gap phrase reaches either case
+or the company-risk section on any fixture or live report checked.
+
+**Negative / accepted.** On a report that has BOTH a council case and
+deterministic prose, the deterministic prose no longer appears in the clean
+view. Its analytical points are not shown there at all. That is the requirement,
+the record entries still route to research confidence, and the unedited original
+stays on the technical report page — but it is a real reduction in what the
+clean view shows for such a report, not merely a re-filing.

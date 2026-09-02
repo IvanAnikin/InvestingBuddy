@@ -100,8 +100,13 @@ test.describe("Analyze a company", () => {
     await expect(page.getByTestId("start-research")).toBeEnabled();
     await page.getByTestId("start-research").click();
 
+    // The run is ASYNCHRONOUS. The submit creates a durable job and returns —
+    // it does not hold the request open for the pipeline, which is what blew
+    // the gateway ceiling live. So the first thing a reader sees is progress.
+    await expect(page.getByTestId("research-progress")).toBeVisible();
+
     const result = page.getByTestId("research-result");
-    await expect(result).toBeVisible();
+    await expect(result).toBeVisible({ timeout: 60_000 });
     // The run answers about the company that was selected.
     await expect(result).toContainText("Pandora");
 

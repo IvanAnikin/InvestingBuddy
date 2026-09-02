@@ -678,6 +678,64 @@ WorkflowRunResponse (agent_run_id, draft_report_id, status, summary,
 All errors are caught, logged to `agent_runs.error_message`, and returned as HTTP 422.
 `require_schema_valid=true` in the request body forces `status=failed` when the schema draft is invalid.
 
+### Async Company Research Job (POST-V2 live corrective)
+
+The pattern above is what `/admin/analysis` uses, and it is right for an
+engineering tool. It is **wrong for the product front door**, and running it
+live proved so: `/research/company` chained the workflow endpoint and the
+final-report endpoint inside the browser's request, which on real data is ~154s
+of primary-document ingestion plus ~145–190s of council against an Azure
+gateway ceiling of ~230s. The measured outcomes were HTTP 502 at ~206s and HTTP
+504 at ~240s, with the transaction rolled back.
+
+`/research/company` now submits a JOB:
+
+```
+POST /api/v1/company-research/jobs
+    ↓
+company_research_service.start_company_research()
+    → AgentRun(workflow_name="company_research_job")
+    + AgentStep(agent_name="company_research_job", output_json=envelope)
+    → COMMIT                                   ← the job exists before any work
+    ↓
+202 Accepted  (measured 0.162s on the live local stack)
+    ↓  BackgroundTasks, own DB session, primitive job id only
+company_research_service.process_company_research_by_id()
+    ↓
+execute_company_research(db, company, ...)     ← THE one implementation
+    ├─ run_company_analysis(..., on_node=…)    ← stages, from the graph's nodes
+    └─ FinalReportGeneratorService.generate_from_workflow_state()
+    ↓
+envelope: completed | completed_with_warnings | failed
+    ↓
+GET /api/v1/company-research/jobs/{job_id}     ← the UI polls this
+GET /api/v1/company-research/jobs?company_id=  ← a refresh recovers by company
+```
+
+**One workflow, two entry points.** `execute_company_research` is the single
+implementation of "research this company end to end";
+`market_discovery_service.run_candidate_analysis` calls it too, passing its
+discovery lineage. `app/services/research_job.py` holds the single job
+lifecycle — the states, the abandonment threshold, and the derived
+`interrupted` semantics — shared by both. What remains separate is only the
+durable STORE (the candidate keeps its `raw_signal_json` envelope and its
+live-verified poller; the company job uses `AgentRun`/`AgentStep`), because the
+two entry points have different natural keys.
+
+**What survives what.** Job STATE is durable: committed before any expensive
+work, recoverable by id or by company, unaffected by the browser. Job
+EXECUTION is process-local — there is no queue broker in this deployment — so
+an app-process recycle mid-run stops the work. That is reported rather than
+hidden: the job reads as `interrupted` with `recoverable: true`, derived at read
+time from the same threshold the restart decision uses, and a startup sweep logs
+what was lost without rewriting the dead worker's last envelope.
+
+**Stages are the graph's own nodes.** `research_job.NODE_TO_STAGE` maps
+company-analysis node names onto reader-facing stages. A node absent from that
+map does not move the stage, so adding a node to the graph cannot silently claim
+progress. No percentage is produced: the graph cannot know how long a node will
+take.
+
 ---
 
 ## Canonical Evidence Inventory (product readiness, 2026-08-22)
