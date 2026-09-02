@@ -18,6 +18,7 @@ Safety properties:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import socket
 import time
@@ -239,7 +240,8 @@ async def live_document_extractor(
     if not fetched.ok or fetched.content is None or fetched.document_type is None:
         return bundle
 
-    extraction = extract_document_text(
+    extraction = await _parse_off_loop(
+        extract_document_text,
         fetched.content,
         document_type=fetched.document_type,
         source_url=bundle.source_url,
@@ -295,8 +297,7 @@ async def _try_ocr(
     if ocr_budget is not None and not ocr_budget.can_start_document():
         extraction.failure_code = FAILURE_OCR_BUDGET_EXHAUSTED
         extraction.source_gaps.append(
-            "OCR budget for this report was exhausted; document remains "
-            "scanned/metadata-only."
+            "OCR budget for this report was exhausted; document remains scanned/metadata-only."
         )
         return
 
@@ -411,6 +412,42 @@ async def _try_ocr(
     extraction.extraction_method = METHOD_OCR
 
 
+# --------------------------------------------------------------------------- #
+# Blocking-parse offload
+# --------------------------------------------------------------------------- #
+
+
+# Document parsing (pypdf / pdfplumber / the table validator) is PURE-PYTHON and
+# CPU-BOUND, and it used to be called directly from these async functions — which
+# meant it ran ON the event loop. A single slow document then starved uvicorn's
+# heartbeat and gunicorn killed the whole worker with
+# ``[CRITICAL] WORKER TIMEOUT`` → ``SIGKILL``, taking EVERY in-flight research run
+# with it and 502-ing every concurrent request (observed six times in ten days on
+# ib-stg-api; one document alone measured 186s against a 120s worker timeout).
+#
+# Running the parse in a worker thread keeps the loop free, so the heartbeat is
+# always made, ``/health`` keeps answering and the worker is never killed.
+#
+# Two honest limits, so nobody expects more from this than it gives:
+#   * pypdf/pdfplumber are pure Python, so the GIL means the thread still
+#     consumes the core. This removes the CRASH and the API freeze; it does not
+#     make extraction cheaper. Reducing the work itself is the reuse/negative-
+#     cache path in ``extracted_document_service``.
+#   * A Python thread cannot be cancelled, so this is deliberately NOT wrapped in
+#     ``asyncio.wait_for``: a timeout would return control while the thread kept
+#     burning CPU unseen, and would let the caller start a SECOND parse on top of
+#     the abandoned one. The aggregate ingestion budget still bounds how many
+#     documents are STARTED (``company_evidence._remaining_budget``), which is the
+#     same cooperative guarantee as before — now without the crash.
+async def _parse_off_loop(func: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
+    """Run one CPU-bound, pure-sync parse in a worker thread.
+
+    Every callee is a pure function of its arguments — no DB session, no shared
+    mutable module state, no ``lru_cache`` — so it is safe off the loop thread.
+    """
+    return await asyncio.to_thread(func, *args, **kwargs)
+
+
 async def _artifact_from_fetch(
     fetched: DocumentFetchResult,
     *,
@@ -471,7 +508,8 @@ async def _artifact_from_fetch(
         return artifact
 
     extract_started = time.perf_counter()
-    extraction = extract_primary_document(
+    extraction = await _parse_off_loop(
+        extract_primary_document,
         fetched.content,
         document_type=fetched.document_type,
         cfg=cfg,
@@ -513,7 +551,8 @@ async def _artifact_from_fetch(
     # Only a fully-extracted document is validated into structured facts; a
     # scanned / empty document stays metadata_only with no fabricated fact.
     if extraction.status == STATUS_EXTRACTED:
-        artifact.validated_facts = validate_extracted_facts(
+        artifact.validated_facts = await _parse_off_loop(
+            validate_extracted_facts,
             extraction,
             issuer_context=issuer_context or IssuerContext(),
             cfg=cfg,
@@ -639,16 +678,14 @@ _PREFLIGHT_GAP_TEXT: dict[str, str] = {
         "values disagree; the filing body was not fetched."
     ),
     FAILURE_MALFORMED_ACCESSION: (
-        "SEC filing accession number is malformed; the filing body was not "
-        "fetched."
+        "SEC filing accession number is malformed; the filing body was not fetched."
     ),
     FAILURE_INVALID_SEC_URL: (
         "SEC filing document location could not be safely constructed; the "
         "filing body was not fetched."
     ),
     FAILURE_NO_PRIMARY_FILING_DOCUMENT: (
-        "SEC filing index carried no selectable primary document; the filing "
-        "body was not fetched."
+        "SEC filing index carried no selectable primary document; the filing body was not fetched."
     ),
     FAILURE_PREFLIGHT_BUDGET_EXHAUSTED: (
         "Primary-document ingestion budget exhausted "
@@ -782,18 +819,14 @@ async def live_sec_primary_document_extractor(
     ]
     exhausted = False
     for doc in documents:
-        if exhausted or (
-            budget_seconds is not None and (clock() - started) >= budget_seconds
-        ):
+        if exhausted or (budget_seconds is not None and (clock() - started) >= budget_seconds):
             exhausted = True
             artifacts.append(_sec_budget_artifact(doc))
             continue
 
         fetch_started = time.perf_counter()
         try:
-            fetched = await fetch_filing_body(
-                doc, cfg=cfg, resolver=resolver, limiter=limiter
-            )
+            fetched = await fetch_filing_body(doc, cfg=cfg, resolver=resolver, limiter=limiter)
         except Exception:  # noqa: BLE001 - the fetcher should not raise; belt-and-braces
             fetched = None
         fetch_ms = int((time.perf_counter() - fetch_started) * 1000)

@@ -444,6 +444,45 @@ a deliberate reliability trade-off, not an oversight:
 scaling the plan to **B2 / S1 or higher**, where the extra memory headroom exists.
 The startup command is intentionally pinned to `--workers 1` for the current stack.
 
+### Document parsing must never run on the event loop
+
+With **one** worker, anything that blocks the event loop blocks the entire API —
+and if it blocks long enough, gunicorn kills the process.
+
+`ib-stg-api` starts with `--timeout 120`. For an async `UvicornWorker` that is a
+**heartbeat** timeout, not a request timeout: the worker must keep getting
+scheduled to report liveness. Primary-document parsing (`pypdf`, `pdfplumber`,
+the table validator) is pure-Python and CPU-bound, so calling it directly from an
+`async def` starved that heartbeat. Gunicorn then logged
+`[CRITICAL] WORKER TIMEOUT` and `SIGKILL`ed the only worker — destroying every
+in-flight research run and returning **502** for every concurrent request.
+
+This happened **six times between 2026-08-24 and 2026-09-02** (outages of 15–44s
+each). It is not a rare edge case: `primary_document_ingestion_budget_seconds`
+defaults to **180**, which is larger than the **120s** worker timeout, so a single
+slow document was *permitted* to outlive the worker. One measured ingestion took
+186s.
+
+`live_fetchers._parse_off_loop` now runs every such parse in a worker thread via
+`asyncio.to_thread`, keeping the loop free so the heartbeat is always made.
+
+Two limits worth knowing:
+
+- **The GIL still applies.** These parsers are pure Python, so the thread keeps
+  consuming the core. This removes the *crash* and the API freeze; it does not
+  make extraction cheaper. Reducing the work itself is the reuse/negative-cache
+  path in `extracted_document_service`.
+- **A Python thread cannot be cancelled.** The offload is deliberately *not*
+  wrapped in `asyncio.wait_for` — a timeout would hand back control while the
+  thread kept burning CPU invisibly, and would let a second parse start on top of
+  the abandoned one. The aggregate ingestion budget still bounds how many
+  documents are *started*.
+
+**When adding any new CPU-bound work to a request or background-task path, route
+it through `_parse_off_loop` (or `asyncio.to_thread`).** A direct call is a
+latent worker kill. `tests/test_ingestion_event_loop_not_blocked.py` asserts the
+parse runs off the loop thread and that the loop stays schedulable throughout.
+
 ### Async discovery runs on the single B1 worker (Phase 25.1)
 
 A `free_real` market-discovery run executes the full company-analysis workflow
