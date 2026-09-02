@@ -43,6 +43,22 @@ const LIVE_DOWNSIDE_DRIVERS = [
   "No price or trend data available",
 ];
 
+/**
+ * Verbatim from the LIVE US-biotech council run of 2026-09-02 — the shapes the
+ * European run did not produce. Each is a bare noun phrase with no verb for
+ * the epistemic rule to catch, and each rendered under "Could pressure value".
+ */
+const LIVE_US_BIOTECH_DRIVERS = [
+  "Multiple blocking research gaps",
+  "Blocking gaps limit research confidence",
+  "Blocking gaps reduce confidence",
+  "Missing primary source IR and news coverage",
+  "No verified issuer IR source",
+  "No press release or news catalyst coverage",
+  "No verified issuer IR or news sources",
+  "Limited catalyst events and news coverage",
+];
+
 /** Statements about the BUSINESS, which must NOT be routed away. */
 const ECONOMIC_DRIVERS = [
   "Watch division operating margin fell to 3.4%, leaving almost no cushion",
@@ -241,5 +257,31 @@ test.describe("the Key Risks footnote", () => {
         "Business risk is concentrated in channel mix and discretionary demand.",
       ),
     ).toBe(false);
+  });
+});
+
+test.describe("the US-biotech council's shapes route too", () => {
+  test("every evidence-shaped driver that run wrote is caught", () => {
+    for (const statement of LIVE_US_BIOTECH_DRIVERS) {
+      expect(
+        isEvidenceStatement(statement),
+        `not routed: ${statement}`,
+      ).toBe(true);
+    }
+  });
+
+  test("a business gap is not a research gap", () => {
+    // "gap" is a real business word. The rule requires the gap to be OF the
+    // research, so these stay economic.
+    for (const statement of [
+      "A widening gap between reported and adjusted margin",
+      "The valuation gap to peers narrowed through the period",
+      "A funding gap opens in FY2027 when the notes mature",
+    ]) {
+      expect(
+        isEvidenceStatement(statement),
+        `wrongly routed: ${statement}`,
+      ).toBe(false);
+    }
   });
 });

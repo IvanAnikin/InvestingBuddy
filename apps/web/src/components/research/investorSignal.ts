@@ -54,10 +54,6 @@ const ABSENCE = new RegExp(
     "\\b(no|not|nothing|never)\\b",
     "\\black(s|ing)?\\b",
     "\\babsence\\b",
-    // "Data gaps prevent risk assessment" — the live discovery council's most
-    // common shape. A gap is an absence; the EVIDENCE_SUBJECT test below is
-    // what keeps "margin gap widened" out.
-    "\\bgaps?\\b",
     "\\bwithout\\b",
     "\\bmissing\\b",
     "\\bunavailable\\b",
@@ -193,6 +189,17 @@ const EVIDENCE_SUBJECT_PHRASE = new RegExp(
     // Reporting inconsistency is a finding about the RECORD, not the company.
     "(discrepanc|inconsisten)\\w*\\s+(between|in)\\s+.{0,40}(figures|revenue|data|reporting|scope)",
     "(scope|reporting) inconsistenc",
+    // A GAP, when it is a gap in the RESEARCH, whatever grammar surrounds it.
+    // The live US-biotech council wrote "Multiple blocking research gaps" as a
+    // bare noun phrase with no verb for the epistemic rule to catch, and it
+    // rendered under "Could pressure value" for four candidates.
+    //
+    // Naming the gap's SUBJECT is what makes this safe. "gap" alone is an
+    // ordinary business word — "a widening gap between reported and adjusted
+    // margin", "a funding gap opens in FY2027" — and treating every gap as an
+    // evidence gap routed those away as well.
+    "\\b(blocking|research|evidence|coverage|data)\\s+gaps?\\b",
+    "\\bgaps?\\s+in\\s+(the\\s+)?(research|evidence|data|coverage|record)\\b",
   ].join("|"),
   "i",
 );
