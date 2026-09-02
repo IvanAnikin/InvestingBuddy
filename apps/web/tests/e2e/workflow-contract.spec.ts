@@ -19,8 +19,14 @@ const CFR_ID = "00000000-0000-0000-0000-0000000000b4";
 const PERIODS_REPORT_ID = "00000000-0000-0000-0000-0000000000a3";
 const DRAFT_REPORT_ID = "00000000-0000-0000-0000-0000000000e9";
 
+// The ADMIN console still runs the pipeline synchronously — it is an
+// engineering tool and that is what it is for.
 const ANALYSIS_ROUTE =
   "**/api/admin/proxy/api/v1/workflows/company-analysis/run";
+// The PRODUCT front door submits a JOB. It used to call the two synchronous
+// endpoints above in sequence, which is how it came to exceed the ~230s Azure
+// gateway ceiling and answer 502/504 after minutes of real work.
+const RESEARCH_JOB_ROUTE = "**/api/admin/proxy/api/v1/company-research/jobs";
 const FINAL_REPORT_ROUTE = "**/api/admin/proxy/api/v1/final-reports/from-report/**";
 const THESIS_ROUTE = "**/api/admin/proxy/api/v1/market-discovery/thesis-runs";
 
@@ -75,6 +81,14 @@ const ANALYSIS_CONTRACT_KEYS = [
   "require_schema_valid",
 ];
 
+/**
+ * The job-submission contract. The SAME identity and settings fields as above —
+ * the change is where they are sent and what comes back, not what is asked
+ * for. That matters: an async rewrite is exactly the kind of change that
+ * silently drops a field on the way through.
+ */
+const JOB_CONTRACT_KEYS = ANALYSIS_CONTRACT_KEYS;
+
 /** Pick a company in the research console's combobox. */
 async function selectCompany(
   page: import("@playwright/test").Page,
@@ -95,20 +109,20 @@ test.describe("Contract — company analysis request", () => {
   test("Case 1: the selected company travels by id, with its canonical ticker and exchange", async ({
     page,
   }) => {
-    const { bodies, urls } = await capture(page, ANALYSIS_ROUTE);
+    const { bodies, urls } = await capture(page, RESEARCH_JOB_ROUTE);
 
     await page.goto("/research/company");
     await selectCompany(page, "PNDORA");
     await page.getByTestId("start-research").click();
-    await expect(page.getByTestId("research-result")).toBeVisible();
+    await expect(page.getByTestId("research-progress")).toBeVisible();
 
     expect(bodies).toHaveLength(1);
     const body = bodies[0];
 
     // Identity: the exact record, not a re-derivation from display text.
+    // ``company_id`` is the canonical one; the backend resolves it ONCE and
+    // carries it on the job from there.
     expect(body.company_id).toBe(PNDORA_ID);
-    expect(body.ticker).toBe("PNDORA");
-    expect(body.exchange).toBe("CO");
 
     // Provider: the real free-real-data stack the UI offers by default.
     expect(body.provider_name).toBe("free_real");
@@ -118,23 +132,41 @@ test.describe("Contract — company analysis request", () => {
     expect(body.use_llm).toBe(false);
     expect(body.require_schema_valid).toBe(false);
 
-    // Endpoint.
-    expect(urls[0]).toContain(
-      "/api/admin/proxy/api/v1/workflows/company-analysis/run",
-    );
+    // Endpoint: the ASYNC job, not the synchronous workflow.
+    expect(urls[0]).toContain("/api/admin/proxy/api/v1/company-research/jobs");
+  });
+
+  test("the front door never calls the synchronous pipeline endpoints", async ({
+    page,
+  }) => {
+    // The regression this whole corrective exists to prevent. Either of these
+    // being called from /research/company puts a five-minute pipeline back
+    // inside a browser request, and the gateway kills it at ~230s.
+    const sync = await capture(page, ANALYSIS_ROUTE);
+    const finalReport = await capture(page, FINAL_REPORT_ROUTE);
+
+    await page.goto("/research/company");
+    await selectCompany(page, "PNDORA");
+    await page.getByTestId("start-research").click();
+    await expect(page.getByTestId("open-research-report")).toBeVisible({
+      timeout: 60_000,
+    });
+
+    expect(sync.urls).toHaveLength(0);
+    expect(finalReport.urls).toHaveLength(0);
   });
 
   test("Case 1b: enabling LLM sections sets use_llm and names its backend", async ({
     page,
   }) => {
-    const { bodies } = await capture(page, ANALYSIS_ROUTE);
+    const { bodies } = await capture(page, RESEARCH_JOB_ROUTE);
 
     await page.goto("/research/company");
     await selectCompany(page, "PNDORA");
     await page.getByText("Advanced options").click();
     await page.getByTestId("use-llm-sections").check();
     await page.getByTestId("start-research").click();
-    await expect(page.getByTestId("research-result")).toBeVisible();
+    await expect(page.getByTestId("research-progress")).toBeVisible();
 
     expect(bodies[0].use_llm).toBe(true);
     expect(bodies[0].llm_provider).toBe("azure_openai");
@@ -143,24 +175,28 @@ test.describe("Contract — company analysis request", () => {
   test("Case 2: a second issuer carries its own identity, with nothing of the first", async ({
     page,
   }) => {
-    const { bodies } = await capture(page, ANALYSIS_ROUTE);
+    const { bodies } = await capture(page, RESEARCH_JOB_ROUTE);
 
     await page.goto("/research/company");
     await selectCompany(page, "Richemont");
     await page.getByTestId("start-research").click();
-    await expect(page.getByTestId("research-result")).toBeVisible();
+    await expect(page.getByTestId("research-progress")).toBeVisible();
 
     expect(bodies[0].company_id).toBe(CFR_ID);
-    expect(bodies[0].ticker).toBe("CFR");
-    expect(bodies[0].exchange).toBe("SW");
     expect(bodies[0].company_id).not.toBe(PNDORA_ID);
     expect(JSON.stringify(bodies[0])).not.toContain("PNDORA");
+
+    // ...and what comes BACK is about the company that was asked for. Identity
+    // is echoed from the job, not re-derived from a label.
+    const progress = page.getByTestId("research-progress");
+    await expect(progress).toContainText("CFR");
+    await expect(progress).not.toContainText("PNDORA");
   });
 
   test("Case 3: provider=mock appears ONLY when the offline provider is chosen", async ({
     page,
   }) => {
-    const { bodies } = await capture(page, ANALYSIS_ROUTE);
+    const { bodies } = await capture(page, RESEARCH_JOB_ROUTE);
 
     await page.goto("/research/company");
     await selectCompany(page, "PNDORA");
@@ -173,33 +209,29 @@ test.describe("Contract — company analysis request", () => {
       "fabricates placeholder data",
     );
     await page.getByTestId("start-research").click();
-    await expect(page.getByTestId("research-result")).toBeVisible();
+    await expect(page.getByTestId("research-progress")).toBeVisible();
 
     expect(bodies[0].provider_name).toBe("mock");
   });
 
-  test("the run continues into the final-report step and links to THAT report", async ({
+  test("the reader is sent to the STRUCTURED report the job produced", async ({
     page,
   }) => {
-    const { urls } = await capture(page, FINAL_REPORT_ROUTE);
-
     await page.goto("/research/company");
     await selectCompany(page, "PNDORA");
     await page.getByTestId("start-research").click();
 
     const cta = page.getByTestId("open-research-report");
-    await expect(cta).toBeVisible();
+    await expect(cta).toBeVisible({ timeout: 60_000 });
 
-    // The second step is the admin console's own endpoint, called on the DRAFT
-    // the workflow produced...
-    expect(urls).toHaveLength(1);
-    expect(urls[0]).toContain(`/final-reports/from-report/${DRAFT_REPORT_ID}`);
-    // ...and the reader is sent to the STRUCTURED report it returned, never to
-    // the draft, which has no structured content to render.
+    // The report id comes from the JOB — the one artefact that knows which
+    // report THIS run produced. Never the newest report, never the draft the
+    // workflow wrote (which has no structured content to render).
     await expect(cta).toHaveAttribute(
       "href",
       `/research/reports/${PERIODS_REPORT_ID}`,
     );
+    expect(PERIODS_REPORT_ID).not.toBe(DRAFT_REPORT_ID);
   });
 });
 
@@ -241,15 +273,17 @@ test.describe("Contract — company analysis parity with /admin/analysis", () =>
   test("the research console fills the same contract, and adds the company id", async ({
     page,
   }) => {
-    const { bodies } = await capture(page, ANALYSIS_ROUTE);
+    const { bodies } = await capture(page, RESEARCH_JOB_ROUTE);
 
     await page.goto("/research/company");
     await selectCompany(page, "PNDORA");
     await page.getByTestId("start-research").click();
-    await expect(page.getByTestId("research-result")).toBeVisible();
+    await expect(page.getByTestId("research-progress")).toBeVisible();
 
+    // The job submission carries the SAME field vocabulary the synchronous
+    // contract does. The async rewrite changed the transport, not the ask.
     for (const key of Object.keys(bodies[0])) {
-      expect(ANALYSIS_CONTRACT_KEYS).toContain(key);
+      expect(JOB_CONTRACT_KEYS).toContain(key);
     }
     // The one difference is deliberate and is a STRENGTHENING: the research
     // console resolved a Company record, so it pins identity by id. The admin
@@ -463,10 +497,22 @@ test.describe("Contract — discovery parity with /admin/discovery", () => {
 // ---------------------------------------------------------------------------
 
 test.describe("Contract — honest failure", () => {
-  test("a failed analysis shows the failure, and no fixture result", async ({
+  test("a submit that is refused shows the refusal, and no fixture result", async ({
     page,
   }) => {
-    await page.route(ANALYSIS_ROUTE, (route) =>
+    // The premise: this company has NO prior run. Stated explicitly, because
+    // selecting a company asks the backend whether one is already in flight —
+    // and the fixture's job store is shared across the tests in this file.
+    await page.route(
+      "**/api/admin/proxy/api/v1/company-research/jobs?**",
+      (route) =>
+        route.fulfill({
+          status: 404,
+          contentType: "application/json",
+          body: JSON.stringify({ detail: "No job for this company." }),
+        }),
+    );
+    await page.route(RESEARCH_JOB_ROUTE, (route) =>
       route.fulfill({
         status: 500,
         contentType: "application/json",
@@ -482,22 +528,46 @@ test.describe("Contract — honest failure", () => {
     await expect(error).toBeVisible();
     await expect(error).toContainText("provider timeout");
 
-    // Nothing that could read as a completed run.
-    await expect(page.getByTestId("research-result")).toHaveCount(0);
+    // Nothing that could read as a completed run — and no job to poll, because
+    // none was created.
+    await expect(page.getByTestId("research-progress")).toHaveCount(0);
     await expect(page.getByTestId("open-research-report")).toHaveCount(0);
     await expect(page.locator("body")).not.toContainText(
       "InvestingBuddy Test Company",
     );
   });
 
-  test("a failed report step reports a finished evidence run and an unfinished report", async ({
+  test("a failed JOB reports the failure honestly and offers a retry", async ({
     page,
   }) => {
-    await page.route(FINAL_REPORT_ROUTE, (route) =>
+    // The submit succeeds — the RUN is what fails. This is the case the
+    // synchronous flow could not represent at all: it had no artefact to
+    // report a failure against once the request had already timed out.
+    await page.route("**/api/admin/proxy/api/v1/company-research/jobs/*", (route) =>
       route.fulfill({
-        status: 422,
+        status: 200,
         contentType: "application/json",
-        body: JSON.stringify({ detail: "Scorecard not available for this report" }),
+        body: JSON.stringify({
+          job_id: "00000000-0000-0000-0000-00000000ff01",
+          status: "failed",
+          stage: "failed",
+          stage_label: "Failed",
+          stages: [],
+          company: {
+            id: PNDORA_ID,
+            ticker: "PNDORA",
+            exchange: "CO",
+            name: "Pandora A/S",
+          },
+          provider_name: "free_real",
+          error: "internal_error",
+          analysis_report_id: null,
+          legacy_draft_report_id: DRAFT_REPORT_ID,
+          warnings: [],
+          message: "Research failed (internal_error).",
+          human_review_required: true,
+          disclaimer: "INTERNAL USE ONLY. NOT INVESTMENT ADVICE.",
+        }),
       }),
     );
 
@@ -505,15 +575,18 @@ test.describe("Contract — honest failure", () => {
     await selectCompany(page, "PNDORA");
     await page.getByTestId("start-research").click();
 
-    const stepError = page.getByTestId("report-step-error");
-    await expect(stepError).toBeVisible();
-    await expect(stepError).toContainText("Scorecard not available");
+    const result = page.getByTestId("research-result");
+    await expect(result).toBeVisible({ timeout: 30_000 });
+    await expect(result).toContainText("Research did not complete");
+    await expect(result).toContainText("internal_error");
 
-    // The evidence run DID succeed, and says so...
-    await expect(page.getByTestId("research-result")).toContainText(
-      "Evidence run complete",
-    );
-    // ...but there is no finished report to open.
+    // A failure is recoverable, and says so.
+    await expect(page.getByTestId("retry-research")).toBeVisible();
+    // Whatever the run DID collect stays reachable...
+    await expect(
+      result.locator(`a[href="/admin/reports/${DRAFT_REPORT_ID}"]`),
+    ).toBeVisible();
+    // ...but nothing is offered as a finished report.
     await expect(page.getByTestId("open-research-report")).toHaveCount(0);
   });
 

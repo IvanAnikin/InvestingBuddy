@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { Suspense } from "react";
 import CompanyResearchForm from "./CompanyResearchForm";
 
 export const dynamic = "force-dynamic";
@@ -61,8 +62,19 @@ export default function AnalyzeCompanyPage() {
             through the research council.
           </p>
 
+          {/* The form reads the run id out of the URL so a refresh reattaches
+              to the same research run. `useSearchParams` suspends, so it needs
+              a boundary even on a dynamic route. */}
           <div className="mt-8">
-            <CompanyResearchForm />
+            <Suspense
+              fallback={
+                <p className="text-sm text-[color:var(--ib-ink-3)]">
+                  Loading the research form…
+                </p>
+              }
+            >
+              <CompanyResearchForm />
+            </Suspense>
           </div>
         </div>
 

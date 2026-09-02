@@ -4,7 +4,9 @@ import Link from "next/link";
 import Surface from "@/components/product/Surface";
 import {
   candidateConcerns,
+  candidateResearchLimitations,
   candidateStrengths,
+  NOT_ESTABLISHED,
   READINESS_TONE,
   READINESS_WORD,
   researchReadiness,
@@ -44,6 +46,14 @@ import type { DiscoveryCandidate } from "@/types/api";
 const CTA_BASE =
   "rounded-lg border border-[color:var(--ib-line-strong)] px-3 py-1.5 text-sm text-[color:var(--ib-ink)] transition-colors hover:bg-[color:var(--ib-surface-raised)] disabled:cursor-not-allowed disabled:opacity-50";
 
+/**
+ * One directional list.
+ *
+ * An empty list says "Not established" rather than disappearing. That is the
+ * honest answer and it is the point of the whole section: the previous version
+ * filled an empty downside list with a screening label, so a reader was told
+ * that sparse evidence was a reason the business might be worth less.
+ */
 function Points({
   title,
   points,
@@ -55,26 +65,31 @@ function Points({
   tone: string;
   testId: string;
 }) {
-  if (points.length === 0) return null;
   return (
     <div data-testid={testId}>
       <p className={`text-xs font-medium uppercase tracking-[0.14em] ${tone}`}>
         {title}
       </p>
-      <ul className="mt-1.5 space-y-1">
-        {points.map((point, i) => (
-          <li
-            key={i}
-            className="flex gap-2.5 text-sm leading-relaxed text-[color:var(--ib-ink-2)]"
-          >
-            <span
-              aria-hidden="true"
-              className="mt-2.5 h-px w-3 shrink-0 bg-[color:var(--ib-line-strong)]"
-            />
-            <span className="ib-breakable">{point}</span>
-          </li>
-        ))}
-      </ul>
+      {points.length === 0 ? (
+        <p className="mt-1.5 text-sm text-[color:var(--ib-ink-3)]">
+          {NOT_ESTABLISHED}
+        </p>
+      ) : (
+        <ul className="mt-1.5 space-y-1">
+          {points.map((point, i) => (
+            <li
+              key={i}
+              className="flex gap-2.5 text-sm leading-relaxed text-[color:var(--ib-ink-2)]"
+            >
+              <span
+                aria-hidden="true"
+                className="mt-2.5 h-px w-3 shrink-0 bg-[color:var(--ib-line-strong)]"
+              />
+              <span className="ib-breakable">{point}</span>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
@@ -115,6 +130,7 @@ export default function CandidateCard({
   const placement = councilPlacementFor(council, c);
   const strengths = candidateStrengths(c, placement);
   const concerns = candidateConcerns(c, placement);
+  const limitations = candidateResearchLimitations(c, placement);
   const readiness = researchReadiness(c);
   const state = candidateResearchState(link);
   const openReportId =
@@ -198,22 +214,20 @@ export default function CandidateCard({
         </p>
       )}
 
-      {(strengths.length > 0 || concerns.length > 0) && (
-        <div className="mt-4 grid gap-4 sm:grid-cols-2">
-          <Points
-            title="Could drive value higher"
-            points={strengths}
-            tone="text-emerald-300/80"
-            testId="candidate-strengths"
-          />
-          <Points
-            title="Could pressure value"
-            points={concerns}
-            tone="text-amber-300/80"
-            testId="candidate-concerns"
-          />
-        </div>
-      )}
+      <div className="mt-4 grid gap-4 sm:grid-cols-2">
+        <Points
+          title="Could drive value higher"
+          points={strengths}
+          tone="text-emerald-300/80"
+          testId="candidate-strengths"
+        />
+        <Points
+          title="Could pressure value"
+          points={concerns}
+          tone="text-amber-300/80"
+          testId="candidate-concerns"
+        />
+      </div>
 
       {(placement?.resilience || placement?.keyFinancialSignal) && (
         <dl
@@ -274,6 +288,18 @@ export default function CandidateCard({
             Research limitations
           </summary>
           <div className="mt-2 max-w-prose space-y-1.5 leading-relaxed">
+            {/* The screen's own limitation labels. They live HERE, not under
+                "Could pressure value" — sparse evidence limits what can be
+                concluded about the business, it is not a fact about it. */}
+            {limitations.length > 0 && (
+              <ul className="space-y-1" data-testid="candidate-research-limitations">
+                {limitations.map((limitation, i) => (
+                  <li key={i} className="ib-breakable">
+                    {limitation}
+                  </li>
+                ))}
+              </ul>
+            )}
             <p>
               {c.missing_info_count ?? 0} field(s) the screen could not source
               {(c.blocking_gap_count ?? 0) > 0

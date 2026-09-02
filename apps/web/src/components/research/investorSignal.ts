@@ -54,6 +54,10 @@ const ABSENCE = new RegExp(
     "\\b(no|not|nothing|never)\\b",
     "\\black(s|ing)?\\b",
     "\\babsence\\b",
+    // "Data gaps prevent risk assessment" — the live discovery council's most
+    // common shape. A gap is an absence; the EVIDENCE_SUBJECT test below is
+    // what keeps "margin gap widened" out.
+    "\\bgaps?\\b",
     "\\bwithout\\b",
     "\\bmissing\\b",
     "\\bunavailable\\b",
@@ -117,10 +121,16 @@ const EVIDENCE_SUBJECT = new RegExp(
  */
 const EPISTEMIC_CONSEQUENCE = new RegExp(
   [
-    "(limit|restrict|prevent|impede|hamper|reduce|constrain)\\w*\\s+" +
-      "(the\\s+|any\\s+|full\\s+|our\\s+)?" +
+    // Up to three words may sit between the verb and the epistemic noun. The
+    // live discovery council writes "data gaps prevent risk assessment",
+    // "limits near-term visibility" and "obscure risk profile" — the noun is
+    // still what is being limited, and requiring it to be adjacent let every
+    // one of those through as an economic downside.
+    "(limit|restrict|prevent|impede|hamper|reduce|constrain|obscure)\\w*\\s+" +
+      "(?:[\\w-]+\\s+){0,3}" +
       "(ability|assessment|evaluation|analysis|confidence|understanding|" +
-      "visibility|insight|comparability|interpretation|conclusion)",
+      "visibility|insight|insights|comparability|interpretation|conclusion|" +
+      "profile)",
     "cannot be (assessed|established|verified|determined|evaluated|analy[sz]ed|" +
       "compared|quantified)",
     "create(s)? uncertainty",

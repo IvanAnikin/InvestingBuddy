@@ -191,3 +191,79 @@ def classify_source_classes(
         warnings=kept_warnings,
         reclassified=True,
     )
+
+
+# ---------------------------------------------------------------------------
+# The APPLICABLE regulated venue, for any surface that must not treat "no SEC"
+# as a gap
+# ---------------------------------------------------------------------------
+#
+# ``classify_source_classes`` above fixes the REPORT's source-class inventory.
+# The discovery council had the same defect one layer earlier: its evidence
+# pack handed every candidate a bare ``sec_eligible: false`` and a run-level
+# known gap reading "N candidate(s) are not SEC-eligible", so a council looking
+# at Richemont, Pandora, Kering, Moncler and Swatch concluded that none of them
+# had regulated filings and prioritised on price momentum instead.
+#
+# SEC EDGAR is one venue among several. For an issuer it does not cover, its
+# absence is not a research gap — the question is whether the issuer's OWN
+# venue produced anything. This helper answers that in one place, generically,
+# from the same exchange/country registry every other layer uses. There is no
+# issuer name anywhere in it.
+
+
+@dataclass(frozen=True)
+class ApplicableVenue:
+    """Which regulated-disclosure venue actually applies to one issuer."""
+
+    #: True when SEC EDGAR is this issuer's applicable venue.
+    sec_applicable: bool
+    #: Display name of the applicable venue, or None when none resolved.
+    venue_name: str | None
+    #: The venue as the council should NAME it in prose.
+    venue_label: str
+    #: True when the platform could not resolve any venue for this issuer.
+    venue_unresolved: bool
+
+    def gap_statement(self, *, disclosures_retrieved: int) -> str | None:
+        """The honest regulated-disclosure gap for this issuer, or None.
+
+        A gap exists when the APPLICABLE venue returned nothing — never
+        because a venue that does not cover this issuer returned nothing.
+        """
+        if disclosures_retrieved > 0:
+            return None
+        if self.venue_unresolved:
+            return (
+                "No regulated-disclosure venue is resolved for this issuer, so "
+                "no regulated filing could be retrieved for it."
+            )
+        return (
+            f"No supported regulated filing was retrieved from the applicable "
+            f"venue ({self.venue_label}) for this issuer."
+        )
+
+
+def applicable_regulated_venue(
+    *, exchange: str | None, country: str | None = None
+) -> ApplicableVenue:
+    """Resolve the regulated-disclosure venue that applies to one issuer.
+
+    Pure and deterministic. An issuer with NO resolvable exchange keeps the
+    legacy ticker-only default (SEC-applicable) rather than having its venue
+    guessed — the same fail-closed rule ``classify_source_classes`` uses.
+    """
+    if is_sec_eligible(exchange):
+        return ApplicableVenue(
+            sec_applicable=True,
+            venue_name="SEC EDGAR",
+            venue_label="SEC EDGAR",
+            venue_unresolved=False,
+        )
+    venue = regulator_venue_display_name(exchange, country)
+    return ApplicableVenue(
+        sec_applicable=False,
+        venue_name=venue,
+        venue_label=venue or "the issuer's own regulated-disclosure venue",
+        venue_unresolved=venue is None,
+    )

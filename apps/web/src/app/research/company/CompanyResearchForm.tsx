@@ -1,23 +1,25 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import PrimaryCTA from "@/components/product/PrimaryCTA";
 import Surface from "@/components/product/Surface";
 import {
   createCompany,
   fetchCompanies,
-  generateFinalReportFromReport,
-  runAnalysis,
+  getCompanyResearchJob,
+  getLatestCompanyResearchJob,
+  isNotFound,
+  startCompanyResearchJob,
 } from "@/lib/api";
 import {
   DATA_PROVIDERS,
   LLM_SECTION_PROVIDERS,
   PROVIDER_FREE_REAL,
-  buildCompanyAnalysisRequest,
   isOfflineProvider,
 } from "@/lib/workflows";
-import type { Company, WorkflowRunResponse } from "@/types/api";
+import type { Company, CompanyResearchJob } from "@/types/api";
 
 // The research universe is the set of companies the backend can analyse: the
 // workflow resolves a company by id or by (ticker, exchange) and fails closed
@@ -26,32 +28,31 @@ import type { Company, WorkflowRunResponse } from "@/types/api";
 // in it yet — registers it inline through the same endpoint the admin uses.
 const UNIVERSE_PAGE_SIZE = 200;
 
-// The clean flow runs the SAME two backend steps the admin console runs, in the
-// same order: the company-analysis workflow, then the final-report generator.
-// The admin console makes them two button presses on two pages; here they are
-// one action — but they are the same two endpoints, and the reader is told
-// which one is in flight.
-type RunPhase = "analysis" | "report";
+// SUBMIT, THEN POLL.
+//
+// This form used to run the pipeline inside two long-lived HTTP requests: the
+// company-analysis workflow, then the final-report generator. On live data
+// that is ~154s of document ingestion plus ~145-190s of council, against an
+// Azure gateway ceiling of ~230s — so the reader waited five minutes and got a
+// 502 or a 504, and the transaction rolled back. Keeping the tab open was
+// load-bearing, and it was not enough.
+//
+// Now the submit creates a durable job and returns in well under a second. The
+// run continues on the server whatever the browser does; this polls it. The
+// job id goes in the URL, so a refresh reattaches to the same run rather than
+// starting a second one, and the id is recoverable from the backend by company
+// even if the URL is lost.
+const POLL_INTERVAL_MS = 3000;
 
-const PHASE_STAGES: Record<RunPhase, string[]> = {
-  analysis: [
-    "Resolving company identity",
-    "Locating the issuer's primary documents",
-    "Extracting period-labelled financial facts",
-    "Retrieving regulated disclosures",
-    "Assembling and citing the evidence",
-  ],
-  report: [
-    "Reconciling the evidence into one research state",
-    "Running the research council, if enabled on this server",
-    "Assembling the structured research report",
-  ],
-};
-
-const PHASE_LABEL: Record<RunPhase, string> = {
-  analysis: "Collecting and extracting evidence",
-  report: "Assembling the research report",
-};
+/** Statuses where the job is still working and polling should continue. */
+const IN_FLIGHT = new Set(["pending", "running"]);
+/** Statuses where nothing more will happen without a human. */
+const TERMINAL = new Set([
+  "completed",
+  "completed_with_warnings",
+  "failed",
+  "interrupted",
+]);
 
 const inputCls =
   "w-full rounded-lg border border-[color:var(--ib-line)] bg-[color:var(--ib-surface)] px-3.5 py-2.5 text-sm text-[color:var(--ib-ink)] placeholder:text-[color:var(--ib-ink-3)] focus:border-[color:var(--ib-line-strong)] focus:outline-none";
@@ -60,8 +61,16 @@ function normalise(value: string): string {
   return value.trim().toLowerCase();
 }
 
+function elapsedLabel(seconds: number): string {
+  return `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, "0")}s`;
+}
+
 export default function CompanyResearchForm() {
   const listboxId = useId();
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const jobFromUrl = searchParams.get("job");
 
   const [universe, setUniverse] = useState<Company[]>([]);
   const [universeError, setUniverseError] = useState<string | null>(null);
@@ -88,18 +97,15 @@ export default function CompanyResearchForm() {
   const [llmSectionProvider, setLlmSectionProvider] = useState("azure_openai");
   const [requireSchemaValid, setRequireSchemaValid] = useState(false);
 
-  const [phase, setPhase] = useState<RunPhase | null>(null);
+  const [job, setJob] = useState<CompanyResearchJob | null>(null);
+  const [submitting, setSubmitting] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [error, setError] = useState<string | null>(null);
-  const [result, setResult] = useState<WorkflowRunResponse | null>(null);
-  // The id of the STRUCTURED report the clean view renders. Null until the
-  // final-report step succeeds — the draft the workflow writes is not one.
-  const [finalReportId, setFinalReportId] = useState<string | null>(null);
-  const [reportError, setReportError] = useState<string | null>(null);
-
-  const running = phase !== null;
 
   const wrapperRef = useRef<HTMLDivElement | null>(null);
+
+  const running = job !== null && IN_FLIGHT.has(job.status);
+  const busy = submitting || running;
 
   useEffect(() => {
     let cancelled = false;
@@ -123,17 +129,61 @@ export default function CompanyResearchForm() {
     };
   }, []);
 
-  // A running analysis is a long, synchronous request. Showing the elapsed time
-  // is the honest alternative to a spinner that implies it is nearly done.
+  // Reattach to a run named in the URL. This is the refresh path: the reader
+  // reloads the page mid-run and lands back on the same job, at whatever stage
+  // it has reached, without starting a second one.
   useEffect(() => {
-    if (!running) return;
-    const started = Date.now();
-    const id = window.setInterval(
-      () => setElapsed(Math.floor((Date.now() - started) / 1000)),
-      1000,
-    );
+    if (!jobFromUrl || job?.job_id === jobFromUrl) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const recovered = await getCompanyResearchJob(jobFromUrl);
+        if (!cancelled) setJob(recovered);
+      } catch (e) {
+        if (!cancelled && !isNotFound(e)) {
+          setError(
+            e instanceof Error ? e.message : "Could not read the research run.",
+          );
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [jobFromUrl, job?.job_id]);
+
+  // Poll while the job is working. Polling stops the moment it reaches a
+  // terminal state — a completed report is not a thing to keep asking about.
+  useEffect(() => {
+    if (!job || !IN_FLIGHT.has(job.status)) return;
+    let cancelled = false;
+    const id = window.setInterval(async () => {
+      try {
+        const next = await getCompanyResearchJob(job.job_id);
+        if (!cancelled) setJob(next);
+      } catch {
+        // A single failed poll is not a failed run. The job is on the server;
+        // the next tick asks again.
+      }
+    }, POLL_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [job]);
+
+  // Elapsed time, counted from the job's OWN start timestamp rather than from
+  // when this component mounted — otherwise a refresh would restart the clock
+  // and understate how long the run has been going.
+  useEffect(() => {
+    if (!running || !job?.started_at) return;
+    const started = new Date(job.started_at).getTime();
+    const tick = () =>
+      setElapsed(Math.max(0, Math.floor((Date.now() - started) / 1000)));
+    tick();
+    const id = window.setInterval(tick, 1000);
     return () => window.clearInterval(id);
-  }, [running]);
+  }, [running, job?.started_at]);
 
   // Clicking outside the combobox closes its list.
   useEffect(() => {
@@ -160,12 +210,43 @@ export default function CompanyResearchForm() {
 
   const noMatch = query.trim().length > 0 && matches.length === 0 && !selected;
 
-  function pick(company: Company) {
-    setSelected(company);
-    setQuery(`${company.name} · ${company.ticker}`);
-    setOpenList(false);
-    setShowRegister(false);
-  }
+  const rememberJob = useCallback(
+    (next: CompanyResearchJob) => {
+      setJob(next);
+      // The URL is the durable client-side handle. `replace` rather than
+      // `push`: reattaching to a run is not a navigation the back button
+      // should undo.
+      router.replace(`${pathname}?job=${next.job_id}`, { scroll: false });
+    },
+    [pathname, router],
+  );
+
+  const pick = useCallback(
+    async (company: Company) => {
+      setSelected(company);
+      setQuery(`${company.name} · ${company.ticker}`);
+      setOpenList(false);
+      setShowRegister(false);
+      setJob(null);
+      if (jobFromUrl) return;
+      // If a run for this company is ALREADY IN FLIGHT, attach to it rather
+      // than inviting a second one — the backend is the source of truth for
+      // that, not this tab, and the run may have been started somewhere else
+      // entirely.
+      //
+      // Only an in-flight job. A run that finished last month is not this
+      // session's work and showing it here would read as "research complete"
+      // for something the reader has not just done; it belongs in the research
+      // library, which is where it is.
+      try {
+        const existing = await getLatestCompanyResearchJob(company.id);
+        if (IN_FLIGHT.has(existing.status)) rememberJob(existing);
+      } catch {
+        // 404 is the normal answer for a company never researched.
+      }
+    },
+    [jobFromUrl, rememberJob],
+  );
 
   async function handleRegister(event: React.FormEvent) {
     event.preventDefault();
@@ -178,7 +259,7 @@ export default function CompanyResearchForm() {
         exchange: newExchange.trim().toUpperCase(),
       });
       setUniverse((prev) => [company, ...prev]);
-      pick(company);
+      await pick(company);
       setNewName("");
       setNewTicker("");
       setNewExchange("");
@@ -191,63 +272,37 @@ export default function CompanyResearchForm() {
     }
   }
 
-  async function handleSubmit(event: React.FormEvent) {
-    event.preventDefault();
-    if (!selected) return;
-
-    setElapsed(0);
+  async function submit(company: Company) {
     setError(null);
-    setReportError(null);
-    setResult(null);
-    setFinalReportId(null);
-
-    // The request is built by the SAME helper the admin console uses, from the
-    // selected Company record — never re-derived from what the input displays.
-    const request = buildCompanyAnalysisRequest({
-      company: selected,
-      providerName: provider,
-      useLlmSections,
-      llmProvider: llmSectionProvider,
-      requireSchemaValid,
-    });
-
-    setPhase("analysis");
-    let run: WorkflowRunResponse;
+    setElapsed(0);
+    setSubmitting(true);
     try {
-      run = await runAnalysis(request);
-      setResult(run);
+      // Identity is sent as the canonical company_id from the selected record —
+      // never re-derived from what the input happens to display.
+      const started = await startCompanyResearchJob({
+        company_id: company.id,
+        provider_name: provider,
+        use_llm: useLlmSections,
+        llm_provider: useLlmSections ? llmSectionProvider : null,
+        require_schema_valid: requireSchemaValid,
+      });
+      rememberJob(started);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "The research run failed.");
-      setPhase(null);
-      return;
-    }
-
-    // The workflow writes a DETERMINISTIC DRAFT. The structured report — the
-    // one the research view renders, and the one the council contributes to —
-    // is produced by the final-report generator, exactly as the admin console
-    // does it from the draft's own page. Skipping this step would leave the
-    // reader on a draft with no structured content.
-    if (!run.draft_report_id) {
-      setPhase(null);
-      return;
-    }
-
-    setPhase("report");
-    try {
-      const finalReport = await generateFinalReportFromReport(run.draft_report_id);
-      setFinalReportId(finalReport.report_id);
-    } catch (e) {
-      // The evidence run DID succeed. Say exactly that, and point at what
-      // exists — never present a half-finished run as a finished report.
-      setReportError(
-        e instanceof Error
-          ? e.message
-          : "The research report could not be assembled.",
-      );
+      setError(e instanceof Error ? e.message : "The research run could not start.");
     } finally {
-      setPhase(null);
+      setSubmitting(false);
     }
   }
+
+  async function handleSubmit(event: React.FormEvent) {
+    event.preventDefault();
+    if (!selected || busy) return;
+    await submit(selected);
+  }
+
+  const reportId = job?.analysis_report_id ?? null;
+  const failed = job?.status === "failed";
+  const interrupted = job?.status === "interrupted";
 
   return (
     <div className="space-y-6">
@@ -272,7 +327,7 @@ export default function CompanyResearchForm() {
               className={inputCls}
               placeholder="e.g. Pandora, PNDORA, Richemont"
               value={query}
-              disabled={running}
+              disabled={busy}
               onChange={(e) => {
                 setQuery(e.target.value);
                 setSelected(null);
@@ -283,7 +338,7 @@ export default function CompanyResearchForm() {
                 if (e.key === "Escape") setOpenList(false);
                 if (e.key === "Enter" && openList && matches.length === 1) {
                   e.preventDefault();
-                  pick(matches[0]);
+                  void pick(matches[0]);
                 }
               }}
             />
@@ -299,7 +354,7 @@ export default function CompanyResearchForm() {
                   <li key={company.id} role="option" aria-selected={selected?.id === company.id}>
                     <button
                       type="button"
-                      onClick={() => pick(company)}
+                      onClick={() => void pick(company)}
                       className="flex w-full items-baseline gap-2 px-3.5 py-2 text-left text-sm text-[color:var(--ib-ink-2)] hover:bg-[color:var(--ib-surface-raised)] hover:text-[color:var(--ib-ink)]"
                     >
                       <span className="truncate">{company.name}</span>
@@ -523,10 +578,10 @@ export default function CompanyResearchForm() {
             <button
               type="submit"
               data-testid="start-research"
-              disabled={!selected || running}
+              disabled={!selected || busy}
               className="rounded-lg bg-[color:var(--ib-ink)] px-4 py-2.5 text-sm font-medium text-[#060913] transition-colors hover:bg-white disabled:cursor-not-allowed disabled:opacity-40"
             >
-              {running ? "Researching…" : "Start research"}
+              {submitting ? "Starting…" : running ? "Researching…" : "Start research"}
             </button>
             {!selected && (
               <p className="text-xs text-[color:var(--ib-ink-3)]">
@@ -537,95 +592,110 @@ export default function CompanyResearchForm() {
         </form>
       </Surface>
 
-      {/* In-flight */}
-      {running && (
+      {/* In flight */}
+      {running && job && (
         <Surface className="p-6" testId="research-progress">
           <div className="flex flex-wrap items-baseline justify-between gap-2">
             <p className="text-sm font-medium text-[color:var(--ib-ink)]">
-              {phase ? PHASE_LABEL[phase] : "Research in progress"}
-              <span className="ml-2 text-xs font-normal text-[color:var(--ib-ink-3)]">
-                step {phase === "report" ? "2" : "1"} of 2
-              </span>
+              {job.stage_label}
+              {job.company?.ticker ? (
+                <span className="ml-2 font-mono text-xs font-normal text-[color:var(--ib-ink-3)]">
+                  {job.company.ticker}
+                </span>
+              ) : null}
             </p>
             <p
               className="font-mono text-xs text-[color:var(--ib-ink-3)]"
               aria-live="polite"
+              data-testid="research-elapsed"
             >
-              {Math.floor(elapsed / 60)}m {String(elapsed % 60).padStart(2, "0")}s
-              elapsed
+              {elapsedLabel(elapsed)} elapsed
             </p>
           </div>
           <p className="mt-2 max-w-2xl text-sm leading-relaxed text-[color:var(--ib-ink-2)]">
-            The full pipeline runs in one pass and typically takes several
-            minutes — most of it is spent fetching and reading the issuer&apos;s
-            own documents. Leave this page open; the run continues on the server
-            either way and the report will appear in your research library.
+            The run is on the server. You can close this page, refresh it, or
+            come back later — it keeps going either way, and the report will be
+            in your research library when it is done.
           </p>
-          <ol className="mt-4 grid gap-x-8 gap-y-1.5 sm:grid-cols-2">
-            {(phase ? PHASE_STAGES[phase] : []).map((stage: string) => (
-              <li
-                key={stage}
-                className="flex gap-2.5 text-sm text-[color:var(--ib-ink-3)]"
-              >
-                <span
-                  aria-hidden="true"
-                  className="mt-2 h-px w-3 shrink-0 bg-[color:var(--ib-line-strong)]"
-                />
-                {stage}
-              </li>
-            ))}
+          <ol className="mt-4 grid gap-x-8 gap-y-1.5 sm:grid-cols-2" data-testid="research-stages">
+            {job.stages
+              .filter((stage) => stage.key !== "completed")
+              .map((stage) => (
+                <li
+                  key={stage.key}
+                  aria-current={stage.current ? "step" : undefined}
+                  className={`flex gap-2.5 text-sm ${
+                    stage.current
+                      ? "text-[color:var(--ib-ink)]"
+                      : stage.complete
+                        ? "text-[color:var(--ib-ink-2)]"
+                        : "text-[color:var(--ib-ink-3)]"
+                  }`}
+                >
+                  <span
+                    aria-hidden="true"
+                    className={`mt-2 h-px w-3 shrink-0 ${
+                      stage.complete || stage.current
+                        ? "bg-[color:var(--ib-ink-2)]"
+                        : "bg-[color:var(--ib-line-strong)]"
+                    }`}
+                  />
+                  {stage.label}
+                </li>
+              ))}
           </ol>
+          <p className="mt-4 border-t border-[color:var(--ib-line)] pt-3 text-xs text-[color:var(--ib-ink-3)]">
+            Run reference{" "}
+            <span className="font-mono">{job.job_id}</span>. This page is
+            bookmarkable — reopening it reattaches to this run.
+          </p>
         </Surface>
       )}
 
-      {/* Error */}
+      {/* The submit itself failed — no job exists. */}
       {error && (
         <Surface className="border-rose-400/25 p-6" testId="research-error">
           <p className="text-sm font-medium text-rose-200">
-            The research run did not complete
+            The research run could not be started
           </p>
           <p className="mt-2 text-sm leading-relaxed text-[color:var(--ib-ink-2)]">
             {error}
           </p>
-          <p className="mt-3 text-xs text-[color:var(--ib-ink-3)]">
-            Nothing partial has been presented as a finished report. If the run
-            reached the council before failing, a draft may still appear in the{" "}
-            <Link
-              href="/research/reports"
-              className="underline underline-offset-4"
-            >
-              research library
-            </Link>
-            .
-          </p>
         </Surface>
       )}
 
-      {/* Result */}
-      {result && (
-        <Surface className="p-6 sm:p-7" testId="research-result">
+      {/* The job reached a terminal state. */}
+      {job && TERMINAL.has(job.status) && (
+        <Surface
+          className={`p-6 sm:p-7 ${failed || interrupted ? "border-amber-400/25" : ""}`}
+          testId="research-result"
+        >
           <p className="text-xs font-medium uppercase tracking-[0.14em] text-[color:var(--ib-ink-3)]">
-            {finalReportId ? "Research complete" : "Evidence run complete"}
+            {failed
+              ? "Research did not complete"
+              : interrupted
+                ? "Research was interrupted"
+                : "Research complete"}
           </p>
           <h2 className="mt-2 text-xl font-semibold tracking-tight text-[color:var(--ib-ink)]">
-            {result.company_name ?? selected?.name}
-            {result.ticker ? (
+            {job.company?.name ?? job.company?.ticker ?? "Research run"}
+            {job.company?.ticker ? (
               <span className="ml-2 font-mono text-sm font-normal text-[color:var(--ib-ink-3)]">
-                {result.ticker}
+                {job.company.ticker} · {job.company.exchange}
               </span>
             ) : null}
           </h2>
           <p className="mt-3 max-w-2xl text-sm leading-relaxed text-[color:var(--ib-ink-2)]">
-            {result.summary}
+            {job.message}
           </p>
 
           <dl className="mt-5 grid gap-x-8 gap-y-3 border-t border-[color:var(--ib-line)] pt-5 sm:grid-cols-3">
             <div>
               <dt className="text-xs text-[color:var(--ib-ink-3)]">Data provider</dt>
               <dd className="text-sm text-[color:var(--ib-ink)]">
-                {result.provider_name ?? "—"}
+                {job.provider_name}
               </dd>
-              {result.provider_name && isOfflineProvider(result.provider_name) && (
+              {isOfflineProvider(job.provider_name) && (
                 <dd className="mt-1 text-xs font-medium text-amber-300">
                   Placeholder data — not real research.
                 </dd>
@@ -633,10 +703,10 @@ export default function CompanyResearchForm() {
             </div>
             <div>
               <dt className="text-xs text-[color:var(--ib-ink-3)]">
-                LLM research sections
+                Research council
               </dt>
               <dd className="text-sm text-[color:var(--ib-ink)]">
-                {result.llm_used ? "Drafted" : "Not used"}
+                {job.report?.llm_used ? "Ran" : "Did not run"}
               </dd>
             </div>
             <div>
@@ -644,73 +714,76 @@ export default function CompanyResearchForm() {
                 Report structure
               </dt>
               <dd className="text-sm text-[color:var(--ib-ink)]">
-                {result.schema_valid ? "Complete" : "Incomplete"}
+                {job.report?.schema_valid === true
+                  ? "Complete"
+                  : job.report?.schema_valid === false
+                    ? "Incomplete"
+                    : "—"}
               </dd>
             </div>
           </dl>
 
-          {(result.research_team_warnings.length > 0 ||
-            result.analysis_council_warnings.length > 0) && (
+          {(job.warnings?.length ?? 0) > 0 && (
             <div className="mt-5 rounded-lg border border-amber-400/25 p-4">
               <p className="text-sm font-medium text-amber-200">
-                The run recorded {result.research_team_warnings.length +
-                  result.analysis_council_warnings.length}{" "}
-                warning(s)
+                The run recorded {job.warnings?.length} warning(s)
               </p>
               <ul className="mt-2 space-y-1 text-xs leading-relaxed text-[color:var(--ib-ink-2)]">
-                {[
-                  ...result.research_team_warnings,
-                  ...result.analysis_council_warnings,
-                ]
-                  .slice(0, 6)
-                  .map((w, i) => (
-                    <li key={i}>{w}</li>
-                  ))}
+                {(job.warnings ?? []).slice(0, 6).map((w, i) => (
+                  <li key={i}>{w}</li>
+                ))}
               </ul>
             </div>
           )}
 
-          {/* The report step failed after a successful evidence run. Report
-              exactly that: the evidence exists, the structured report does
-              not, and the draft is reachable. Never a finished-looking link
-              to something that was not finished. */}
-          {reportError && (
-            <div
-              className="mt-5 rounded-lg border border-amber-400/25 p-4"
-              data-testid="report-step-error"
-            >
-              <p className="text-sm font-medium text-amber-200">
-                The evidence run finished, but the research report could not be
-                assembled
+          {(failed || interrupted) && (
+            <div className="mt-5 space-y-3" data-testid="research-retry">
+              <p className="text-sm leading-relaxed text-[color:var(--ib-ink-2)]">
+                {interrupted
+                  ? job.interrupted_reason
+                  : "Nothing partial has been presented as a finished report. Anything the run collected before it failed is still recorded."}
               </p>
-              <p className="mt-2 text-xs leading-relaxed text-[color:var(--ib-ink-2)]">
-                {reportError}
-              </p>
-              {result.draft_report_id && (
-                <p className="mt-2 text-xs text-[color:var(--ib-ink-3)]">
-                  The evidence draft this run produced is at{" "}
+              <div className="flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  data-testid="retry-research"
+                  disabled={busy || !job.company}
+                  onClick={() => {
+                    const company =
+                      universe.find((c) => c.id === job.company?.id) ?? selected;
+                    if (company) void submit(company);
+                  }}
+                  className="rounded-lg border border-[color:var(--ib-line-strong)] px-3 py-1.5 text-sm text-[color:var(--ib-ink)] hover:bg-[color:var(--ib-surface-raised)] disabled:opacity-50"
+                >
+                  Retry research
+                </button>
+                {job.legacy_draft_report_id && (
                   <Link
-                    href={`/admin/reports/${result.draft_report_id}`}
-                    className="underline underline-offset-4"
+                    href={`/admin/reports/${job.legacy_draft_report_id}`}
+                    className="text-sm text-[color:var(--ib-ink-3)] underline underline-offset-4 hover:text-[color:var(--ib-ink-2)]"
                   >
-                    the technical report page
+                    Technical details
                   </Link>
-                  , where it can be assembled again.
+                )}
+              </div>
+              {job.error && (
+                <p className="font-mono text-xs text-[color:var(--ib-ink-3)]">
+                  {job.error}
                 </p>
               )}
             </div>
           )}
 
-          {finalReportId && (
+          {reportId && !failed && (
             <div className="mt-6 flex flex-wrap items-center gap-3">
               <PrimaryCTA
-                href={`/research/reports/${finalReportId}`}
+                href={`/research/reports/${reportId}`}
                 testId="open-research-report"
               >
                 Open the research report
               </PrimaryCTA>
               <Link
-                href={`/admin/reports/${finalReportId}`}
+                href={`/admin/reports/${reportId}`}
                 className="text-sm text-[color:var(--ib-ink-3)] underline underline-offset-4 hover:text-[color:var(--ib-ink-2)]"
               >
                 View technical report

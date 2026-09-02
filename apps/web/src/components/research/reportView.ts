@@ -295,9 +295,21 @@ export interface TrendPoint {
 
 export interface TrendSeriesView {
   metric: string;
+  /** The scope as the document wrote it ("Group", "Specialist Watchmakers"). */
   scope: string | null;
+  /**
+   * The backend's DECIDABLE scope semantic: "group" | "segment" | null.
+   *
+   * Written from the typed `FactScope` (migration 018), so a consumer never has
+   * to re-derive "is this the consolidated figure?" by string-matching a
+   * heading. Null means the document gave no scope signal — which is a real
+   * answer, and deliberately not the same as Group.
+   */
+  scopeType: string | null;
   periodType: string | null;
   unit: string | null;
+  /** The series' own currency, when the extractor recorded one. */
+  currency: string | null;
   comparable: boolean;
   comparabilityReasons: string[];
   missingPeriods: string[];
@@ -338,8 +350,10 @@ function buildTrends(content: ReportContent | null): {
     series.push({
       metric: str(s["metric"]) ?? "metric",
       scope: str(s["scope"]),
+      scopeType: str(s["scope_type"]),
       periodType: str(s["period_type"]),
       unit: str(s["unit"]),
+      currency: str(s["currency"]),
       comparable: s["comparability"] === "comparable",
       comparabilityReasons: (Array.isArray(s["comparability_reasons"])
         ? s["comparability_reasons"]

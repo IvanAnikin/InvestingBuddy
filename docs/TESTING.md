@@ -267,3 +267,46 @@ a NoOp seam this slice). On a local Python 3.14 venv, install with
 App Service Python 3.12 runtime resolves the pure-Python wheels directly. Fetch /
 parse tests never touch real network or real Azure services (fixtures + injected
 resolvers only).
+
+---
+
+## POST-V2 Live Corrective Tests
+
+Four defects that only running the product on real data exposed. Each has tests
+that would have caught it, and each test file states the live observation it
+pins rather than describing the code.
+
+### Backend
+
+| File | Pins |
+|---|---|
+| `tests/test_v2_async_company_research.py` | The front door does not run research inside the HTTP request: the submit is bounded work, the job row is committed before any expensive work, stages come from the graph's own nodes, a reload recovers the job by company, the worker uses its OWN session, success links the EXACT report, failure persists a terminal state, a double submit never starts a second run, identity is carried exactly, and the `astream` progress path returns the SAME final state as `ainvoke` (asserted directly — stage progress must not have been bought with a different research run). |
+| `tests/test_v2_discovery_contract_and_jurisdiction.py` | The council's economic fields survive LLM → chair aggregation → storage → API response → serialization, in every bucket; a review written before the fields existed still reads; `CandidateNote` is compared against the response model directly so a new field cannot silently fail to reach a reader. Jurisdiction: SEC applies to a US issuer and to no one else, a gap is named after the venue that serves the issuer, US behaviour is unchanged, and no issuer name appears in EXECUTABLE code (comments may name the issuers whose live run exposed the defect — the scan strips comments and docstrings with `ast`). |
+| `tests/test_v2_current_research_resolution.py` | Current research is the newest STRUCTURED report for THAT company; a legacy screening draft is never it, a version stamp without structured content is never it, a newer draft does not supersede real research, and resolution is company-scoped. What the signals carry: period-labelled figures with their scope, the prior chair synthesis, company risks — and an ABSENT key rather than an empty one, so the council cannot read `""` as a finding. |
+
+### Frontend
+
+Playwright is the only TS test runner in this repo, so the pure derivation
+modules are exercised through it directly (imported, not driven through a page).
+That keeps one runner and one CI step; a page can only hold one fixture at a
+time, and the interesting numeric cases are combinations of metric × period ×
+scope × currency.
+
+| File | Pins |
+|---|---|
+| `tests/e2e/v2-numeric-guard.spec.ts` | The scope-aware canonical index. The CFR regression in full: Specialist Watchmakers EUR 107m and 3.4%, Jewellery Maisons EUR 5,037m and Group EUR 4,500m all ACCEPTED; Group EUR 107m and a segment margin assigned to the Group both REJECTED. Plus annual/current conflict, a historical series claim, ambiguous scope resolved without substituting Group, a foreign currency left unadjudicated — and every previously-fixed false positive (H1, bare years, trailing commas, percent-beside-amount). |
+| `tests/e2e/v2-discovery-signal-routing.spec.ts` | "Sparse data" is a research limitation, not an economic downside. The twelve `downside_drivers` strings are copied VERBATIM from a real local council run over six European luxury names — every one of them is an evidence statement, and every one must route away from "Could pressure value" while genuine economic drivers stay. |
+| `tests/e2e/v2-live-corrective.spec.ts` | End to end through the real renderer: the async submit returns a running job, stages are named with no percentage, the run id is in the URL and survives a refresh, the finished run opens the exact report, a second submit joins the first; segment claims survive and mis-scoped ones are withheld; the cases are the council's and carry no implementation vocabulary; a legacy report renders translated while the technical page keeps the raw record; and the whole anonymous auth contract including `/research`. |
+| `tests/e2e/workflow-contract.spec.ts` | Rewritten for the async contract. The field vocabulary is unchanged — an async rewrite is exactly the kind of change that silently drops a field — plus a new assertion that the front door **never** calls the synchronous pipeline endpoints, which is the regression the whole corrective exists to prevent. |
+
+### Fixtures added to the mock backend
+
+* A **segment-reporting issuer** (`…a5`) with Group, Jewellery Maisons and
+  Specialist Watchmakers series. Every previous report fixture reported at
+  Group scope only, which is why no local test could have caught the live CFR
+  suppression.
+* A **legacy technical-prose report** (`…a6`) whose bull/bear are written in
+  source tiers, provider states and machine field paths — the shape the clean
+  view used to render verbatim.
+* **Async company-research job endpoints**, advancing one stage per poll so the
+  submit → poll → open path is deterministic and takes seconds, not minutes.

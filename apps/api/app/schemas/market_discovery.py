@@ -583,6 +583,19 @@ class DiscoveryCouncilCandidateEntry(BaseModel):
 
     Internal research-workflow reference only — never a public recommendation,
     price target, fair value, or upside/downside.
+
+    The five ECONOMIC fields below are what the council actually says about the
+    BUSINESS. ``_aggregate_chair`` has written them into every bucket entry
+    since the comparison fields were added, and ``to_storage_dict`` persists
+    them — but this response model did not declare them, so Pydantic dropped
+    them on the way out and every reader downstream saw nothing. The live
+    European Luxury run surfaced as "Not established" on every economic
+    dimension for that reason alone, and the only comparison left standing was
+    the evidence-gap count.
+
+    They are declared here so the persisted shape and the API shape are the
+    same shape. Defaults keep a review produced before the fields existed
+    readable: an empty list / null means "not assessed", never an error.
     """
 
     candidate_ref: str | None = None
@@ -591,6 +604,15 @@ class DiscoveryCouncilCandidateEntry(BaseModel):
     exchange: str | None = None
     rationale: str | None = None
     confidence: str | None = None
+    # What could make this business more valuable, and what could pressure it.
+    upside_drivers: list[str] = Field(default_factory=list)
+    downside_drivers: list[str] = Field(default_factory=list)
+    # What limits the downside, and the single number the council thought
+    # mattered most.
+    resilience: str | None = None
+    key_financial_signal: str | None = None
+    # Which of the council's comparison dimensions this candidate stands out on.
+    strongest_dimension: str | None = None
 
 
 class DiscoveryCouncilReviewResponse(BaseModel):

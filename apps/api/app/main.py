@@ -8,6 +8,7 @@ from app.api.v1.admin_reports import router as admin_reports_router
 from app.api.v1.backtesting import router as backtesting_router
 from app.api.v1.citations import router as citations_router
 from app.api.v1.companies import router as companies_router
+from app.api.v1.company_research import router as company_research_router
 from app.api.v1.discovery import router as discovery_router
 from app.api.v1.field_review import router as field_review_router
 from app.api.v1.final_reports import router as final_reports_router
@@ -54,12 +55,18 @@ async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
     """
     try:
         from app.db.session import async_session_factory
+        from app.services.company_research_service import (
+            sweep_interrupted_company_jobs,
+        )
         from app.services.market_discovery_service import (
             sweep_interrupted_analysis_jobs,
         )
 
         async with async_session_factory() as session:
             interrupted = await sweep_interrupted_analysis_jobs(session)
+            # The same sweep for the generic company-research jobs the product
+            # front door creates — same reasoning, different durable store.
+            company_jobs = await sweep_interrupted_company_jobs(session)
         for job in interrupted:
             log_event(
                 logging.getLogger(__name__),
@@ -69,11 +76,20 @@ async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
                 previous_status=job.get("status"),
                 started_at=job.get("started_at"),
             )
-        if interrupted:
+        for job in company_jobs:
+            log_event(
+                logging.getLogger(__name__),
+                "company_research_job_interrupted_by_restart",
+                job_id=job.get("job_id"),
+                ticker=job.get("ticker"),
+                previous_status=job.get("status"),
+                started_at=job.get("started_at"),
+            )
+        if interrupted or company_jobs:
             log_event(
                 logging.getLogger(__name__),
                 "analysis_job_interruption_sweep_completed",
-                interrupted_count=len(interrupted),
+                interrupted_count=len(interrupted) + len(company_jobs),
             )
     except Exception as exc:  # noqa: BLE001 - never block startup on a diagnostic
         logging.getLogger(__name__).warning(
@@ -109,6 +125,9 @@ if settings.request_logging_enabled:
 
 app.include_router(health_router)
 app.include_router(companies_router, prefix="/api/v1")
+# The product's async front door: /research/company submits a job here and
+# polls it, instead of holding one HTTP request open for the whole run.
+app.include_router(company_research_router, prefix="/api/v1")
 app.include_router(workflows_router, prefix="/api/v1")
 app.include_router(sources_router, prefix="/api/v1")
 app.include_router(citations_router, prefix="/api/v1")

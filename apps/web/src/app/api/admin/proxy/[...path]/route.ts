@@ -38,6 +38,10 @@ const BACKEND_BASIC_AUTH = process.env.BACKEND_BASIC_AUTH ?? "";
 const ALLOWED_PREFIXES = [
   "/health",
   "/api/v1/companies",
+  // The product front door's async research jobs. A SEPARATE router from
+  // /api/v1/companies above, and not covered by it — segment matching is
+  // exact, so "companies" does not allow "company-research".
+  "/api/v1/company-research",
   "/api/v1/reports",
   "/api/v1/workflows",
   "/api/v1/admin/reports",

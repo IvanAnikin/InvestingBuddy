@@ -18,6 +18,7 @@ import {
   type CouncilPriorityEntry,
   type DiscoveryCouncilView,
 } from "@/components/research/discoveryCouncilView";
+import { isEvidenceStatement } from "@/components/research/investorSignal";
 
 /** The screening labels that describe why a candidate looks interesting. */
 const STRENGTH_LABELS: Record<string, string> = {
@@ -26,9 +27,17 @@ const STRENGTH_LABELS: Record<string, string> = {
   fundamentals_available: "Fundamentals sourced",
 };
 
-/** The screening labels that describe a limit on what could be screened. */
-const CONCERN_LABELS: Record<string, string> = {
-  data_sparse: "Sparse data for this issuer",
+/**
+ * Screening labels that describe a limit on what could be SCREENED.
+ *
+ * These are not economic. "Sparse data for this issuer" says something about
+ * this platform's coverage, not about the company's prospects, and the live
+ * discovery page rendered it under "Could pressure value" — telling a reader
+ * that thin evidence is a reason the business might be worth less. They are
+ * reported as research limitations instead, which is what they are.
+ */
+const RESEARCH_LIMITATION_LABELS: Record<string, string> = {
+  data_sparse: "Sparse evidence for this issuer",
   research_incomplete: "Screening evidence incomplete",
 };
 
@@ -85,11 +94,13 @@ export function candidateStrengths(
   c: DiscoveryCandidate,
   placement: CouncilPriorityEntry | null,
 ): string[] {
-  const out: string[] = [...(placement?.upsideDrivers ?? [])];
+  const out: string[] = economicOnly(placement?.upsideDrivers ?? []);
 
   if (out.length === 0) {
     for (const s of placement?.supporting ?? []) {
-      if (s.rationale) out.push(`${discoveryAgentLabel(s.agent)}: ${s.rationale}`);
+      if (s.rationale && !isEvidenceStatement(s.rationale)) {
+        out.push(`${discoveryAgentLabel(s.agent)}: ${s.rationale}`);
+      }
     }
   }
   if (out.length === 0) {
@@ -102,27 +113,99 @@ export function candidateStrengths(
   return out.slice(0, 3);
 }
 
-/** What could pressure it. Same ordering rule, same exclusion of gap counts. */
+/**
+ * Keep only what is about the BUSINESS.
+ *
+ * The same rule the reader-facing report uses, applied to the discovery
+ * council's own driver lists. It is needed here for the same reason: on an
+ * evidence-starved cohort the council writes "data gaps prevent risk
+ * assessment" and "no price data limits momentum insights" into
+ * `downside_drivers`, and rendering those under "Could pressure value" tells a
+ * reader that this platform's coverage is a reason the company might be worth
+ * less. Measured against a real local council run over six European luxury
+ * names: every one of its twelve downside drivers was one of these.
+ */
+function economicOnly(points: string[]): string[] {
+  return points.filter((point) => point.trim() && !isEvidenceStatement(point));
+}
+
+/**
+ * The council's drivers that turned out to be about the EVIDENCE.
+ *
+ * Nothing is discarded — they are reported under research limitations, where
+ * they describe what they actually describe.
+ */
+export function councilEvidenceNotes(
+  placement: CouncilPriorityEntry | null,
+): string[] {
+  const out: string[] = [];
+  for (const point of [
+    ...(placement?.upsideDrivers ?? []),
+    ...(placement?.downsideDrivers ?? []),
+  ]) {
+    if (point.trim() && isEvidenceStatement(point)) out.push(point);
+  }
+  return out;
+}
+
+/**
+ * What could pressure the BUSINESS.
+ *
+ * The council's own `downside_drivers` first, then — only if it said nothing —
+ * the reasons other agents placed the candidate in a lower band. A screening
+ * label never appears here, and neither does a gap count: an evidence
+ * limitation is not a reason a company might become less valuable, and
+ * presenting it as one is a category error the reader has no way to see
+ * through. When the council established no downside, this is EMPTY, and the
+ * card says "Not established" rather than borrowing something.
+ */
 export function candidateConcerns(
   c: DiscoveryCandidate,
   placement: CouncilPriorityEntry | null,
 ): string[] {
-  const out: string[] = [...(placement?.downsideDrivers ?? [])];
+  void c;
+  const out: string[] = economicOnly(placement?.downsideDrivers ?? []);
 
   if (out.length === 0) {
     for (const x of placement?.concerns ?? []) {
-      if (x.rationale) out.push(`${discoveryAgentLabel(x.agent)}: ${x.rationale}`);
-    }
-  }
-  if (out.length === 0) {
-    for (const label of c.labels_json ?? []) {
-      if (STANDING_LABELS.has(label)) continue;
-      const word = CONCERN_LABELS[label];
-      if (word) out.push(word);
+      if (x.rationale && !isEvidenceStatement(x.rationale)) {
+        out.push(`${discoveryAgentLabel(x.agent)}: ${x.rationale}`);
+      }
     }
   }
   return out.slice(0, 2);
 }
+
+/**
+ * What limited the SCREENING, in the screen's own words.
+ *
+ * Reported under research limitations, beside the evidence-confidence line —
+ * never as an economic driver in either direction.
+ */
+export function candidateResearchLimitations(
+  c: DiscoveryCandidate,
+  placement: CouncilPriorityEntry | null = null,
+): string[] {
+  const out: string[] = [];
+  for (const label of c.labels_json ?? []) {
+    if (STANDING_LABELS.has(label)) continue;
+    const word = RESEARCH_LIMITATION_LABELS[label];
+    if (word) out.push(word);
+  }
+  // Anything the council wrote as a "driver" that turned out to be about the
+  // evidence lands here too, in its own words.
+  out.push(...councilEvidenceNotes(placement));
+  return out;
+}
+
+/**
+ * The value a dimension shows when the COUNCIL established nothing.
+ *
+ * "Not established" is a real answer and the honest one. Substituting evidence
+ * completeness for it — showing a gap count where a growth signal belongs — is
+ * what made the comparison a comparison of data packages.
+ */
+export const NOT_ESTABLISHED = "Not established";
 
 /**
  * A comparison DIMENSION is only offered when at least one candidate actually
@@ -141,15 +224,6 @@ export interface ComparisonDimension {
 function score(value: number | null | undefined): string {
   return typeof value === "number" ? value.toFixed(1) : "—";
 }
-
-/**
- * A dimension has no value unless the COUNCIL established one.
- *
- * "Not established" is a real answer and the honest one. Substituting evidence
- * completeness for it — showing a gap count where a growth signal belongs —
- * is what made the comparison a comparison of data packages.
- */
-const NOT_ESTABLISHED = "Not established";
 
 /**
  * The council's own words for a candidate on one dimension.

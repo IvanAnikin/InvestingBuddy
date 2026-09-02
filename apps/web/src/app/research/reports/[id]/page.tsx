@@ -24,6 +24,7 @@ import {
   readCouncilMetadata,
 } from "@/components/research/reportView";
 import {
+  buildInvestmentCases,
   buildInvestorReportView,
   buildResearchConfidence,
   findAgent,
@@ -86,6 +87,32 @@ async function getResearchLink(report: Report): Promise<ResearchLinkState> {
   }
 }
 
+/**
+ * Where a case came from, said plainly.
+ *
+ * A reader is entitled to know whether the argument in front of them is the
+ * council's or the deterministic layer's — they are not the same kind of
+ * claim, and a report that presents the second as the first is overstating
+ * what was actually reasoned about.
+ */
+function caseFootnote(
+  basis: "council" | "legacy" | "none",
+  statedConfidence: string | null,
+): string | undefined {
+  const confidence = statedConfidence
+    ? `Stated confidence: ${statedConfidence}.`
+    : null;
+  if (basis === "legacy") {
+    return [
+      "Assembled from the deterministic research layer — this report predates the council's structured case fields. The unedited original is on the technical report page.",
+      confidence,
+    ]
+      .filter(Boolean)
+      .join(" ");
+  }
+  return confidence ?? undefined;
+}
+
 export default async function ResearchReportPage({
   params,
 }: {
@@ -110,6 +137,17 @@ export default async function ResearchReportPage({
     view.snapshot,
     view.trends.series,
   );
+  // The two cases, argued by the COUNCIL rather than lifted verbatim from the
+  // deterministic layer. Built from the RECONCILED reading, so a numeric claim
+  // the guard withheld cannot reappear here. A report whose council predates
+  // the structured fields falls back to the deterministic narrative — routed
+  // and translated, never raw.
+  const cases = buildInvestmentCases(
+    investor.reading,
+    investor.agents,
+    view.bull,
+    view.bear,
+  );
   const confidence = buildResearchConfidence(
     investor.risks,
     view.missing.total,
@@ -117,8 +155,8 @@ export default async function ResearchReportPage({
     // Record-completeness entries lifted out of the bear case and the chair's
     // open-question list. They are reported here, where they describe what
     // they actually describe, rather than as investment arguments.
-    [...investor.recordGaps, ...view.narrativeRecordGaps],
-    investor.routedLimitations,
+    [...investor.recordGaps, ...view.narrativeRecordGaps, ...cases.recordGaps],
+    [...investor.routedLimitations, ...cases.routedLimitations],
   );
   const isFinal = Boolean(report.final_report_version);
 
@@ -286,26 +324,18 @@ export default async function ResearchReportPage({
               <NarrativeSection
                 title="Bull case"
                 accent="positive"
-                groups={view.bull}
+                groups={cases.bull.groups}
                 testId="bull-case"
                 emptyMessage="No bull-case argument was produced from the evidence available."
-                footnote={
-                  view.bullConfidence
-                    ? `Stated confidence: ${view.bullConfidence}.`
-                    : undefined
-                }
+                footnote={caseFootnote(cases.bull.basis, view.bullConfidence)}
               />
               <NarrativeSection
                 title="Bear case"
                 accent="negative"
-                groups={view.bear}
+                groups={cases.bear.groups}
                 testId="bear-case"
                 emptyMessage="No bear-case argument was produced from the evidence available."
-                footnote={
-                  view.bearConfidence
-                    ? `Stated confidence: ${view.bearConfidence}.`
-                    : undefined
-                }
+                footnote={caseFootnote(cases.bear.basis, view.bearConfidence)}
               />
             </div>
           )}

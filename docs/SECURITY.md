@@ -338,6 +338,34 @@ route family to the existing proxy matcher and reused the same GitHub OAuth,
 the same session cookie and the same allowlist. The only surface it made
 public is the presentational landing page at `/`, which was already public.
 
+**The section ROOTS are named literally in the proxy matcher** (`/admin`,
+`/research`, alongside `/admin/:path*` and `/research/:path*`). A live
+deployment check reported `/research` answering 200 anonymously while every
+`/research/**` route redirected to `/login`, and `/research` renders "Recent
+research" — company names, tickers and report timestamps out of this private
+workspace.
+
+That asymmetry does **not** reproduce locally: measured against Next 16.2.9 in
+both `next dev` and a production `next build && next start`, `/research/:path*`
+alone gates `/research` (307 to `/login` either way). So the pattern is not a
+proven cause and the fix is not presented as one. The roots are named anyway,
+because whether the front door of a private workspace is gated should not rest
+on how a path-pattern modifier treats a zero-segment match — a property of a
+dependency, invisible in the file that decides the boundary. `apps/web/tests/
+e2e/v2-live-corrective.spec.ts` pins the whole contract:
+
+| Route | Anonymous |
+|---|---|
+| `/` | 200 (presentational; renders no research) |
+| `/research` | 307 → `/login?callbackUrl=/research` |
+| `/research/company`, `/research/discover`, `/research/reports` | 307 → `/login` |
+| `/admin`, `/admin/**` | 307 → `/login` |
+| `/api/admin/proxy/**` | 401 (403 when authenticated but not allowlisted) |
+
+The async company-research endpoints are reached only through the same
+server-side admin proxy as every other backend call — the browser never holds a
+backend credential.
+
 Security review should be triggered before:
 - Changing the authentication/authorization model or session handling
 - Adding any new admin endpoints or proxy path prefixes

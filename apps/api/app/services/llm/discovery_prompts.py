@@ -105,11 +105,60 @@ COMPARISON_CONTRACT = (
     "candidate B has 12' tells a reader nothing about which business is worth "
     "researching — say what each one IS and what could make it more or less "
     "valuable, then let evidence confidence qualify that.\n"
+    "USE THE RESEARCH THAT ALREADY EXISTS. A candidate carrying a "
+    "research_signals block has a CURRENT structured research report on this "
+    "platform: period-labelled figures (annual_figures, "
+    "current_period_figures), the periods they belong to, this platform's own "
+    "prior chair synthesis (fundamental_setup, strongest_positive_evidence, "
+    "strongest_negative_evidence, resilience_factors, fragility_factors), its "
+    "company risks and its research confidence. Ground your economic "
+    "comparison in those. Do not re-derive them, do not annualise a "
+    "part-year figure, and do not mix an annual period with a current one. A "
+    "candidate with NO research_signals is simply not established on those "
+    "dimensions — say so; do not fill the gap with a score or a count.\n"
     "You may use directional language about business value: could support or "
     "pressure future equity value, strengthens or weakens the earnings "
     "outlook, improves or erodes downside resilience. You may NOT produce "
     "BUY/SELL/HOLD/WATCH, a price target, a fair value, or a return "
     "projection, and internal_action remains a research-workflow state."
+)
+
+# SEC EDGAR is ONE venue. Treating it as the universal regulator is what made a
+# live European Luxury council conclude that every candidate "lacks SEC
+# eligibility", count that against all of them, and prioritise on momentum. The
+# evidence pack now names each candidate's APPLICABLE venue; this tells the
+# agents to judge against it.
+JURISDICTION_CONTRACT = (
+    "JURISDICTION:\n"
+    "Every candidate carries data_coverage.applicable_regulated_venue (the "
+    "regulated-disclosure venue that actually serves that issuer) and "
+    "data_coverage.sec_is_applicable_venue.\n"
+    "- When sec_is_applicable_venue is false, SEC EDGAR does NOT cover that "
+    "issuer. The absence of SEC eligibility, an SEC CIK, an SEC mapping or an "
+    "SEC filing is NOT a research gap for it, must NOT be listed as an "
+    "evidence_gap, and must NOT reduce its priority.\n"
+    "- Judge regulated-disclosure coverage ONLY against the applicable venue, "
+    "and word a genuine gap as 'no supported regulated filing was retrieved "
+    "from the applicable venue (<venue>)'.\n"
+    "- A candidate whose applicable venue DID return disclosures has "
+    "regulated-disclosure coverage, whatever its SEC status."
+)
+
+# Evidence confidence and the economic view are different answers to different
+# questions, and the live run collapsed them: "sparse data for this issuer"
+# arrived under "could pressure value".
+ECONOMIC_VS_EVIDENCE_CONTRACT = (
+    "ECONOMIC VIEW vs EVIDENCE CONFIDENCE:\n"
+    "- upside_drivers / downside_drivers / resilience / key_financial_signal "
+    "describe the BUSINESS. Sparse data, missing fundamentals, a missing "
+    "current research report, weak source tiers and gap counts are NOT any of "
+    "them and must never appear there.\n"
+    "- Evidence limitations belong in evidence_gaps and in your confidence "
+    "label. They qualify how much weight your economic view can carry; they "
+    "are not the view.\n"
+    "- When you cannot establish an economic dimension from the evidence, say "
+    "nothing about it. An empty field reads as 'not established', which is "
+    "honest. Substituting an evidence observation for it is not."
 )
 
 OUTPUT_DISCIPLINE = (
@@ -134,6 +183,8 @@ def _base_header(agent_name: str, role: str) -> str:
         f"{INJECTION_GUARD}\n\n"
         f"{SAFETY_RULES}\n\n"
         f"{COMPARISON_CONTRACT}\n\n"
+        f"{ECONOMIC_VS_EVIDENCE_CONTRACT}\n\n"
+        f"{JURISDICTION_CONTRACT}\n\n"
         f"{JSON_CONTRACT}\n\n"
         f"{OUTPUT_DISCIPLINE}"
     )
@@ -165,10 +216,13 @@ _ROLE_INSTRUCTIONS: dict[str, tuple[str, str]] = {
     AGENT_NOVELTY_COVERAGE: (
         "Novelty / Coverage-Gap Analyst",
         "Assess whether candidates appear underresearched using ONLY available "
-        "proxies: non-US exchange, sparse/provider-only data, missing SEC "
-        "coverage, source gaps, curated niche universe, low evidence count, "
-        "language/jurisdiction barriers. Do NOT fabricate sell-side analyst "
-        "counts or English-news volume; if a proxy is unavailable, say so.",
+        "proxies: sparse/provider-only data, source gaps, curated niche "
+        "universe, low evidence count, language/jurisdiction barriers, and "
+        "whether the APPLICABLE regulated venue returned anything. A non-US "
+        "listing is a coverage proxy, never a defect; absence of SEC coverage "
+        "for an issuer SEC EDGAR does not serve is neither. Do NOT fabricate "
+        "sell-side analyst counts or English-news volume; if a proxy is "
+        "unavailable, say so.",
     ),
     AGENT_DIVERSITY_ANTI_CONVERGENCE: (
         "Diversity / Anti-Convergence Analyst",
@@ -186,10 +240,14 @@ _ROLE_INSTRUCTIONS: dict[str, tuple[str, str]] = {
     ),
     AGENT_RISK_GATEKEEPER: (
         "Risk Gatekeeper",
-        "Flag risks that should gate deeper work: sparse evidence, non-US "
+        "Flag risks that should gate deeper work: sparse evidence, "
         "not_sourced fundamentals, liquidity/governance unknowns, weak source "
-        "tiers, wrong-company collision risk, and stale-data risk. Frame each as "
-        "a cited run_note or candidate_note; never as a recommendation.",
+        "tiers, wrong-company collision risk, and stale-data risk. These are "
+        "EVIDENCE risks — put them in evidence_gaps and let them lower "
+        "confidence; do not write them as downside_drivers. An issuer being "
+        "listed outside the US is not itself a risk, and neither is its "
+        "absence from a venue that does not serve it. Frame each as a cited "
+        "run_note or candidate_note; never as a recommendation.",
     ),
     AGENT_RUN_RED_TEAM: (
         "Run Red Team",
