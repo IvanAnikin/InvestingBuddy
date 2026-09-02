@@ -21,7 +21,11 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from app.core.config import DEPLOYED_GUNICORN_WORKER_TIMEOUT_SECONDS, Settings
+from app.core.config import (
+    DEPLOYED_GUNICORN_WORKER_TIMEOUT_SECONDS,
+    DEPLOYED_GUNICORN_WORKERS,
+    Settings,
+)
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _BICEP = _REPO_ROOT / "infra" / "azure" / "modules" / "appservice.bicep"
@@ -81,7 +85,9 @@ def test_bicep_pins_a_single_worker_on_b1():
     assert match
     workers = re.search(r"--workers (\d+)", match.group(1))
     assert workers, "no --workers in the bicep startup command"
-    assert workers.group(1) == "1", (
-        f"bicep pins --workers {workers.group(1)} on the B1 plan; "
-        "docs/DEPLOYMENT.md requires 1 until the plan is scaled to B2/S1+."
+    assert int(workers.group(1)) == DEPLOYED_GUNICORN_WORKERS, (
+        f"bicep pins --workers {workers.group(1)} but "
+        f"DEPLOYED_GUNICORN_WORKERS is {DEPLOYED_GUNICORN_WORKERS}. On B1, "
+        "docs/DEPLOYMENT.md requires 1 until the plan is scaled to B2/S1+ — and "
+        "research_job.is_orphaned changes behaviour when this is not 1."
     )
