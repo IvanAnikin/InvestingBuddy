@@ -806,10 +806,33 @@ export function buildRiskGroups(
     return out;
   };
 
+  // The section's own summary line. On live reports it is a RESEARCH-STATE
+  // sentence, not a risk one:
+  //
+  //   "Risk assessment for PNDORA (PNDORA), sector not sourced, Denmark. Total
+  //    risk flags: 19 (3 marked UNKNOWN due to missing data). Data quality:
+  //    identity/price T6_model_estimate, financial statement facts
+  //    T1_primary_filing. Assessment is incomplete …"
+  //
+  // That was the last route by which a source-tier code reached the
+  // company-risk section on all three live reports. It goes through the same
+  // rule as every point above it: an evidence statement is reported under
+  // research confidence, and anything that survives is translated for display.
+  const rawSummary = fieldText(section?.["risk_summary_text"]);
+  let summary: string | null = null;
+  if (rawSummary) {
+    const signal = classifySignal(rawSummary, {
+      agent: "risk_governance",
+      slot: "company_risk",
+    });
+    if (signal === "company_risk") summary = humaniseTechnical(rawSummary);
+    else routedLimitations.push(rawSummary);
+  }
+
   return {
     company: collect(COMPANY_RISK_FIELDS, true),
     researchLimitations: collect(RESEARCH_LIMITATION_FIELDS, false),
-    summary: fieldText(section?.["risk_summary_text"]),
+    summary,
     routedLimitations,
   };
 }
