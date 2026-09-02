@@ -792,7 +792,11 @@ export function buildRiskGroups(
             agent: "risk_governance",
             slot: "company_risk",
           });
-          if (signal === "company_risk") kept.push(point);
+          // A genuine company risk may still be WRITTEN in implementation
+          // vocabulary. It is translated for display, exactly as the two case
+          // sections translate theirs; the stored value is untouched and the
+          // raw record stays on the technical page.
+          if (signal === "company_risk") kept.push(humaniseTechnical(point));
           else routedLimitations.push(point);
         }
         points = kept;

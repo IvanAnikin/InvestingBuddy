@@ -54,6 +54,32 @@ const ECONOMIC_DRIVERS = [
   "Net cash funds buybacks",
 ];
 
+/**
+ * Verbatim from the `risk_analysis` company-risk slots of the LIVE PNDORA, CFR
+ * and MRNA reports generated on 2026-09-02 by the deployed corrective.
+ *
+ * Twenty-two of the twenty-four items across those three issuers are
+ * statements about the RESEARCH, not about the business — and "Research
+ * incomplete: 30 blocking gaps in the research package…" was the FIRST thing
+ * the Key Risks section offered a reader for all three.
+ */
+const LIVE_COMPANY_RISK_SLOT = [
+  "Research incomplete: 30 blocking gaps in the research package. Business model, competitive position, and management quality have not been assessed.",
+  "Financial data is partial: 5 statement categories (ebit, free cash flow, net income, revenue, total assets) are sourced (T1_primary_filing, issuer_primary_document); 13 valuation inputs remain missing.",
+  "Currency risk: reporting currency is 'not sourced'. FX exposure to investment base currency is unknown at this phase.",
+  "Price volatility risk: price data available (249 data points from eodhd_price_only, T5_api_aggregator). Volatility, beta, and correlation to broader market indices not yet computed",
+  "Market depth risk: Exchange is CO. Liquidity and bid-ask spread data not sourced.",
+  "UNKNOWN: LEI (Legal Entity Identifier) not sourced — regulatory standing and compliance status cannot be verified via GLEIF.",
+  "UNKNOWN: ISIN not sourced — exchange listing and regulatory compliance status cannot be confirmed.",
+  "UNKNOWN: Regulatory environment in Denmark not yet assessed. Sector-specific regulatory risks require T2/T3 research.",
+];
+
+/** The only two GENUINE company risks in those same slots, both from MRNA. */
+const LIVE_REAL_COMPANY_RISKS = [
+  "Clinical development risk — pipeline assets may fail trials.",
+  "Reimbursement and pricing pressure from payers.",
+];
+
 function candidate(labels: string[]): DiscoveryCandidate {
   return {
     id: "c1",
@@ -152,5 +178,40 @@ test.describe("evidence statements are not economic drivers", () => {
       "Positive price momentum",
       "Fundamentals sourced",
     ]);
+  });
+});
+
+test.describe("Key Risks carries company risk only", () => {
+  test("every research-state item the live reports wrote is routed away", () => {
+    for (const statement of LIVE_COMPANY_RISK_SLOT) {
+      expect(
+        isEvidenceStatement(statement),
+        `not routed: ${statement.slice(0, 90)}`,
+      ).toBe(true);
+    }
+  });
+
+  test("the two genuine company risks are NOT routed away", () => {
+    for (const statement of LIVE_REAL_COMPANY_RISKS) {
+      expect(
+        isEvidenceStatement(statement),
+        `wrongly routed: ${statement}`,
+      ).toBe(false);
+    }
+  });
+
+  test("ordinary business findings that merely say 'not' stay company risks", () => {
+    // The verb list is epistemic on purpose. These are about the business.
+    for (const statement of [
+      "Margin has not yet recovered to its pre-pandemic level.",
+      "The dividend was not raised this year.",
+      "Owned retail carries fixed occupancy cost that does not fall with revenue.",
+      "Net debt has not been reduced since the acquisition closed.",
+    ]) {
+      expect(
+        isEvidenceStatement(statement),
+        `wrongly routed: ${statement}`,
+      ).toBe(false);
+    }
   });
 });
