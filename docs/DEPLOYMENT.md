@@ -520,6 +520,34 @@ it through `_parse_off_loop` (or `asyncio.to_thread`).** A direct call is a
 latent worker kill. `tests/test_ingestion_event_loop_not_blocked.py` asserts the
 parse runs off the loop thread and that the loop stays schedulable throughout.
 
+### A killed job is reported dead immediately, not after 45 minutes
+
+Job *execution* is process-local: the work runs in the API process that accepted
+it, so a worker restart stops it. Detecting that used to rely on elapsed time
+alone — a `running` job past its derived worst case, currently **45 minutes**.
+A run killed two minutes in therefore kept reporting `running` for the rest of
+the hour, which is how a dead job came to look like a slow one.
+
+With `--workers 1` there is a faster certainty: if a job's `started_at` precedes
+this process's boot time, the process that was running it no longer exists.
+`research_job.is_orphaned` uses that, so an interrupted run is visible as soon as
+the API is back (~20s) instead of 45 minutes later.
+
+Notes:
+
+- The rule **disables itself at 2+ workers** (`DEPLOYED_GUNICORN_WORKERS`), where
+  the premise fails — gunicorn respawns workers individually, so a fresh worker's
+  boot time says nothing about a peer's in-flight jobs. It falls back to elapsed
+  time there.
+- It also covers `pending` jobs, which the elapsed-time rule never considered at
+  all; such a job previously blocked resubmission indefinitely.
+- Status stays **derived, never stored** — consistent with the rest of
+  `research_job`. The dead worker's last write is left exactly as it was, so the
+  audit trail of what it was doing survives.
+- Both rules live in the single `is_stale` predicate because it drives *both*
+  what the reader is shown and whether a resubmit may start a fresh run. Splitting
+  them would let the UI say "re-running is safe" while submit refused to start one.
+
 ### Async discovery runs on the single B1 worker (Phase 25.1)
 
 A `free_real` market-discovery run executes the full company-analysis workflow

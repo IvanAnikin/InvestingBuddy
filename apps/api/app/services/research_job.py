@@ -50,7 +50,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from app.core.config import settings
+from app.core.config import DEPLOYED_GUNICORN_WORKERS, settings
 
 # ---------------------------------------------------------------------------
 # States
@@ -208,26 +208,90 @@ def _aware(dt: datetime | None) -> datetime | None:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
-def is_stale(envelope: dict[str, Any], *, cfg: Any | None = None) -> bool:
-    """True when a ``running`` job has clearly been abandoned by a dead worker."""
-    if envelope.get("status") != STATUS_RUNNING:
-        return False
+#: When THIS process booted. A job whose ``started_at`` precedes this cannot be
+#: running in this process — see :func:`is_orphaned`.
+PROCESS_BOOT_AT = datetime.now(timezone.utc)
+
+
+def _started_at_of(envelope: dict[str, Any]) -> datetime | None:
+    """The envelope's ``started_at`` as an aware datetime, or None if unusable."""
     started = envelope.get("started_at")
     if not isinstance(started, str) or not started:
-        # No timestamp to reason about — treat as in flight, never as stale.
-        return False
+        return None
     try:
-        started_dt = _aware(datetime.fromisoformat(started))
+        return _aware(datetime.fromisoformat(started))
     except ValueError:
+        return None
+
+
+def is_orphaned(envelope: dict[str, Any], *, cfg: Any | None = None) -> bool:
+    """True when the process that owned this job is provably gone.
+
+    The execution of a job is process-local (see the module docstring). With
+    exactly ONE gunicorn worker that gives a certainty the elapsed-time
+    heuristic cannot: if a job started before this process booted, the process
+    that was running it no longer exists, so the job is dead NOW — not
+    "possibly dead in another 43 minutes".
+
+    That distinction is the whole point. A worker killed two minutes into a run
+    used to keep reporting ``running`` for the full 45-minute worst case, which
+    is how a dead job came to look like a slow one.
+
+    Disables itself automatically at 2+ workers, where the premise fails: a peer
+    worker may still be running the job, and gunicorn respawns workers
+    individually, so a fresh worker's boot time says nothing about its peers'
+    jobs. Falling back to the elapsed-time threshold is correct there.
+    """
+    if envelope.get("status") not in IN_FLIGHT:
         return False
+    if DEPLOYED_GUNICORN_WORKERS != 1:
+        return False
+    started_dt = _started_at_of(envelope)
+    if started_dt is None:
+        # No timestamp to reason about — treat as in flight, never as abandoned.
+        return False
+    return started_dt < PROCESS_BOOT_AT
+
+
+def is_stale(envelope: dict[str, Any], *, cfg: Any | None = None) -> bool:
+    """True when a job has clearly been abandoned by a dead worker.
+
+    Two independent ways to know, because they answer the question at different
+    speeds and neither subsumes the other:
+
+    * :func:`is_orphaned` — the owning process is provably gone (immediate).
+    * elapsed time — a ``running`` job past its derived worst-case duration.
+
+    Deliberately ONE predicate rather than two. This drives both what a reader
+    is shown AND whether a resubmit is allowed to start a fresh run, so a split
+    would let the UI say "re-running is safe" while the submit endpoint refused
+    to start one — a job contradicting its own state.
+    """
+    if is_orphaned(envelope, cfg=cfg):
+        return True
+    if envelope.get("status") != STATUS_RUNNING:
+        return False
+    started_dt = _started_at_of(envelope)
     if started_dt is None:
         return False
     age = datetime.now(timezone.utc) - started_dt
     return age > timedelta(minutes=stale_after_minutes(cfg))
 
 
-def interrupted_reason(cfg: Any | None = None) -> str:
-    """The explanation attached to an ``interrupted`` job. Never a stack trace."""
+def interrupted_reason(cfg: Any | None = None, envelope: dict[str, Any] | None = None) -> str:
+    """The explanation attached to an ``interrupted`` job. Never a stack trace.
+
+    Names the ACTUAL reason: an orphaned job is known dead because the process
+    restarted, which is a different (and more certain) statement than "no
+    progress within the worst case". Telling a reader the run timed out when it
+    was actually killed by a restart would be a small lie about their run.
+    """
+    if envelope is not None and is_orphaned(envelope, cfg=cfg):
+        return (
+            "The API process restarted while this job was running, so the run "
+            "stopped. Nothing already saved was lost, and re-running is safe — "
+            "it will not duplicate a completed report."
+        )
     return (
         "No progress within the expected worst-case duration "
         f"({stale_after_minutes(cfg)} min). The worker that owned this job is "
@@ -236,9 +300,7 @@ def interrupted_reason(cfg: Any | None = None) -> str:
     )
 
 
-def describe(
-    envelope: dict[str, Any] | None, *, cfg: Any | None = None
-) -> dict[str, Any]:
+def describe(envelope: dict[str, Any] | None, *, cfg: Any | None = None) -> dict[str, Any]:
     """The envelope a HUMAN should see, with abandonment made explicit.
 
     Does not mutate the stored envelope: the dead worker's last write stays
@@ -250,9 +312,13 @@ def describe(
         return {}
     out = dict(envelope)
     if out.get("status") in IN_FLIGHT and is_stale(out, cfg=cfg):
+        # Resolve the REASON before overwriting the status: both abandonment
+        # rules key off an in-flight status, so asking afterwards would always
+        # fall through to the elapsed-time wording.
+        reason = interrupted_reason(cfg, out)
         out["status"] = STATUS_INTERRUPTED
         out["recoverable"] = True
-        out["interrupted_reason"] = interrupted_reason(cfg)
+        out["interrupted_reason"] = reason
     return out
 
 

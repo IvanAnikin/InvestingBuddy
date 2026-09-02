@@ -19,6 +19,21 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 #: ``tests/test_worker_timeout_invariant.py`` enforces the budget relationship.
 DEPLOYED_GUNICORN_WORKER_TIMEOUT_SECONDS = 300
 
+#: The ``--workers`` of the DEPLOYED gunicorn startup command.
+#:
+#: Like the timeout above, a declared fact about the deployment rather than a
+#: runtime setting. It is 1 on the B1 plan and ``docs/DEPLOYMENT.md`` forbids
+#: raising it before scaling to B2/S1+ (the agent stack is import-heavy and B1
+#: has ~1.75 GB, already observed at 93-95% with one worker).
+#:
+#: ``research_job`` reads this to decide whether a job that started BEFORE this
+#: process booted can safely be called abandoned: with exactly one worker a
+#: restart kills every in-flight job, so the answer is knowable immediately
+#: instead of after a 45-minute worst-case timer. With 2+ workers it is NOT
+#: knowable that way — a peer worker may still be running that job — so the
+#: shortcut disables itself automatically when this is raised.
+DEPLOYED_GUNICORN_WORKERS = 1
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
