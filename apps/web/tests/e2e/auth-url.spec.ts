@@ -159,4 +159,61 @@ test.describe("toSafeInternalPath", () => {
   test("an explicit fallback still wins over the home default", () => {
     expect(toSafeInternalPath("/login", "/admin")).toBe("/admin");
   });
+
+  // ── Post-login destinations that must never be honoured ──────────────────
+  // A sign-in that lands back on an auth endpoint is how a consumed callback
+  // URL becomes reachable again, and how a redirect loop starts. These are the
+  // shapes the stale-callback corrective has to keep out of the destination.
+
+  test("4. refuses to send a completed sign-in back to an auth endpoint", () => {
+    process.env.AUTH_URL = PUBLIC;
+    expect(toSafeInternalPath("/api/auth/callback/github")).toBe("/");
+    expect(
+      toSafeInternalPath(
+        "/api/auth/callback/github?code=fake-code&state=fake-state",
+      ),
+    ).toBe("/");
+    expect(toSafeInternalPath("/api/auth/github")).toBe("/");
+    expect(toSafeInternalPath("/api/auth/signout")).toBe("/");
+    expect(toSafeInternalPath("/api/auth/dev-login")).toBe("/");
+    expect(
+      toSafeInternalPath(`${PUBLIC}/api/auth/callback/github?code=fake-code`),
+    ).toBe("/");
+  });
+
+  test("5. refuses a login error URL as a destination (no recursion)", () => {
+    expect(toSafeInternalPath("/login?error=oauth_callback_expired")).toBe("/");
+    expect(toSafeInternalPath("/login?callbackUrl=/login")).toBe("/");
+  });
+
+  test("3. refuses non-http destination schemes", () => {
+    expect(toSafeInternalPath("javascript:alert(1)")).toBe("/");
+    expect(toSafeInternalPath("data:text/html,<script></script>")).toBe("/");
+    expect(toSafeInternalPath("//evil.example")).toBe("/");
+    expect(toSafeInternalPath("\\\\evil.example")).toBe("/");
+    expect(toSafeInternalPath("/\\evil.example/admin")).toBe("/");
+  });
+
+  test("3. refuses a userinfo-prefixed lookalike origin", () => {
+    process.env.AUTH_URL = PUBLIC;
+    // Parses as host `evil.example`, not as the public host.
+    expect(
+      toSafeInternalPath("https://ib-stg-web.azurewebsites.net@evil.example/admin"),
+    ).toBe("/");
+  });
+
+  test("2. accepts every private route the Proxy actually gates", () => {
+    process.env.AUTH_URL = PUBLIC;
+    for (const path of [
+      "/admin",
+      "/admin/discovery",
+      "/admin/reports/00000000-0000-0000-0000-000000000099",
+      "/research",
+      "/research/company",
+      "/research/discover",
+      "/research/reports",
+    ]) {
+      expect(toSafeInternalPath(path)).toBe(path);
+    }
+  });
 });

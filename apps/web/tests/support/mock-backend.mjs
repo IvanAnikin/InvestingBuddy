@@ -7,8 +7,12 @@
 // deterministic, offline data. It never contacts staging or any live provider.
 
 import { createServer } from "node:http";
+import { randomUUID } from "node:crypto";
 
 const PORT = Number(process.env.PORT ?? 8799);
+
+/** URL prefix under which the offline GitHub OAuth stand-in is served. */
+const MOCK_GITHUB_PREFIX = "/__mock_github__";
 
 // Rich markdown used to exercise the rendered markdown preview: heading, list,
 // blockquote (disclaimer), bold text, table and inline code.
@@ -2667,9 +2671,123 @@ function send(res, status, body) {
   res.end(JSON.stringify(body));
 }
 
+// ── Offline GitHub OAuth stand-in ──────────────────────────────────────────
+//
+// The sign-in corrective is about what happens when ONE authorization code
+// reaches our callback more than once, so the tests have to be run against a
+// provider that enforces the real rule: a code works exactly once and every
+// later exchange is rejected with `bad_verification_code`. That is what this
+// implements. Without it a test could only assert against a mock of our own
+// behaviour, which is not evidence of anything.
+//
+// Reached only when AUTH_TEST_MODE=true AND AUTH_GITHUB_TEST_BASE_URL points
+// here (see src/lib/auth/github-endpoints.ts). No real GitHub credential,
+// token or code exists anywhere in this file — every value below is an obvious
+// fake.
+const GITHUB_ACCOUNTS = {
+  "test-admin@example.com": { login: "test-admin", name: "Test Admin" },
+  "outsider@example.com": { login: "outsider", name: "Outsider" },
+};
+
+/** Codes handed out by the authorize step and not yet exchanged. */
+const githubUnusedCodes = new Map(); // code -> email
+/** Codes already exchanged — kept so a replay is rejected, as GitHub does. */
+const githubSpentCodes = new Set();
+/** Access tokens minted by a successful exchange. */
+const githubTokens = new Map(); // token -> email
+
+function readJsonBody(req) {
+  return new Promise((resolve) => {
+    let raw = "";
+    req.on("data", (chunk) => (raw += chunk));
+    req.on("end", () => {
+      try {
+        resolve(JSON.parse(raw || "{}"));
+      } catch {
+        resolve({});
+      }
+    });
+  });
+}
+
+function handleMockGithub(req, res, url, path) {
+  // Authorize: stands in for the user approving the app. Mints a one-time code
+  // and bounces straight back to the caller's redirect_uri, state intact.
+  if (path === "/login/oauth/authorize") {
+    const email = url.searchParams.get("ib_test_email") ?? "test-admin@example.com";
+    const redirectUri = url.searchParams.get("redirect_uri") ?? "";
+    const state = url.searchParams.get("state") ?? "";
+    const code = `fake-authorization-code-${randomUUID()}`;
+    githubUnusedCodes.set(code, email);
+    const back = new URL(redirectUri);
+    back.searchParams.set("code", code);
+    back.searchParams.set("state", state);
+    res.writeHead(302, { Location: back.toString(), "Cache-Control": "no-store" });
+    res.end();
+    return true;
+  }
+
+  // Token exchange: single-use, exactly like the real endpoint. Note the 200 —
+  // GitHub reports OAuth failures with an `error` slug in a 200 body.
+  if (path === "/login/oauth/access_token") {
+    readJsonBody(req).then((body) => {
+      const code = String(body.code ?? "");
+      if (githubUnusedCodes.has(code)) {
+        const email = githubUnusedCodes.get(code);
+        githubUnusedCodes.delete(code);
+        githubSpentCodes.add(code);
+        const token = `fake-access-token-${randomUUID()}`;
+        githubTokens.set(token, email);
+        return send(res, 200, { access_token: token, token_type: "bearer" });
+      }
+      // GitHub answers a spent code and an unknown code with the same slug.
+      return send(res, 200, {
+        error: "bad_verification_code",
+        error_description: "The code passed is incorrect or expired.",
+      });
+    });
+    return true;
+  }
+
+  if (path === "/user" || path === "/user/emails") {
+    const auth = req.headers.authorization ?? "";
+    const email = githubTokens.get(auth.replace(/^Bearer /, ""));
+    if (!email) {
+      send(res, 401, { message: "Bad credentials" });
+    } else if (path === "/user") {
+      const account = GITHUB_ACCOUNTS[email] ?? { login: email, name: email };
+      // `email` deliberately null so the /user/emails fallback is exercised.
+      send(res, 200, { login: account.login, name: account.name, email: null });
+    } else {
+      send(res, 200, [{ email, primary: true, verified: true }]);
+    }
+    return true;
+  }
+
+  // Test-only introspection: how many times each code was exchanged. Lets a
+  // spec assert that our server never spent one code twice.
+  if (path === "/__spent_codes") {
+    send(res, 200, { spent: githubSpentCodes.size });
+    return true;
+  }
+
+  return false;
+}
+
 const server = createServer((req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
   const path = url.pathname;
+
+  if (path.startsWith(MOCK_GITHUB_PREFIX)) {
+    const handled = handleMockGithub(
+      req,
+      res,
+      url,
+      path.slice(MOCK_GITHUB_PREFIX.length) || "/",
+    );
+    if (handled) return;
+    return send(res, 404, { message: "Not Found (mock github)" });
+  }
 
   if (path === "/health") {
     return send(res, 200, {

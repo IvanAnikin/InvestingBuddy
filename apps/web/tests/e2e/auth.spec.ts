@@ -167,7 +167,9 @@ test.describe("Post-sign-in destination", () => {
       form: { email: ADMIN_EMAIL },
       maxRedirects: 0,
     });
-    expect(res.status()).toBe(307);
+    // 303, not 307: this is a form POST, and 307 preserves the method — it
+    // told the browser to re-POST to the destination.
+    expect(res.status()).toBe(303);
     const loc = res.headers()["location"] ?? "";
     expect(new URL(loc, "http://localhost").pathname).toBe("/");
   });
@@ -264,7 +266,9 @@ test.describe("Phase 23 hotfix — canonical redirect origin (never 0.0.0.0)", (
     const res = await page.request.post("/api/auth/signout", {
       maxRedirects: 0,
     });
-    expect(res.status()).toBe(307);
+    // 303: sign-out is a form POST and must not be replayed as one against
+    // /login (see lib/auth/response.ts).
+    expect(res.status()).toBe(303);
     const loc = res.headers()["location"] ?? "";
     expect(loc).not.toContain("0.0.0.0");
     expect(new URL(loc, "http://localhost").pathname).toBe("/login");
@@ -277,7 +281,7 @@ test.describe("Phase 23 hotfix — canonical redirect origin (never 0.0.0.0)", (
       form: { email: ADMIN_EMAIL, callbackUrl: "/admin/discovery" },
       maxRedirects: 0,
     });
-    expect(res.status()).toBe(307);
+    expect(res.status()).toBe(303);
     const loc = res.headers()["location"] ?? "";
     expect(loc).not.toContain("0.0.0.0");
     expect(new URL(loc, "http://localhost").pathname).toBe("/admin/discovery");

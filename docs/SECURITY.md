@@ -89,8 +89,64 @@ Clerk for the MVP admin surface.
   network-level restrictions. See `docs/DEPLOYMENT.md` → *APP_ENV semantics*.
 - **Local/CI auth:** `AUTH_TEST_MODE=true` enables a deterministic credential
   sign-in (`/api/auth/dev-login`) so Playwright/local dev never need real OAuth.
-  It is hard-gated (returns 404 otherwise) and **must stay unset in
-  staging/production**.
+  It is hard-gated (returns 404 otherwise, on GET as well as POST) and **must
+  stay unset in staging/production**. The same flag is the only thing that lets
+  `AUTH_GITHUB_TEST_BASE_URL` redirect the token exchange to a local stand-in,
+  so no environment variable alone can point a real deployment's client secret
+  at another host.
+
+#### Replay safety of the OAuth callback — 2026-09-02
+
+The callback may legitimately be reached more than once with the same
+authorization code: a browser can discard the winning response before
+committing it (observed live, with a Safe Browsing interstitial cancelling the
+navigation), a user can reload or navigate back, and a link scanner can fetch
+the URL. GitHub codes are single-use, so the second exchange is always rejected.
+
+The route therefore records the outcome of each exchange in a bounded,
+process-local registry (`src/lib/auth/oauth-transactions.ts`; TTL 600s matching
+the state cookie, 200-entry cap, no database and no migration) and **never
+re-exchanges a code it has already spent**. Exactly one request owns each code;
+every later arrival is answered from the recorded outcome.
+
+The security property that makes this sound: a replay is answered *with a
+session* only when the caller also presents the matching `ib_oauth_state`
+cookie. That is the same proof of ownership the first exchange required, held
+only by the browser that started the flow — an httpOnly, `secure`, `sameSite=lax`
+cookie. State validation itself is unchanged and still fails closed: wrong,
+missing, expired and foreign-flow states are all rejected with no session
+issued, and land on a clean `/login` URL carrying no `code` or `state`.
+
+Supporting response discipline on `/api/auth/*`:
+
+- **303 See Other** on every auth redirect (was 307). 307 preserves the request
+  method, which on the sign-out form POST told the browser to re-POST to
+  `/login`; on the callback it advertised a code-bearing URL as repeatable.
+- **`Cache-Control: no-store`** so no browser, proxy or CDN retains a response
+  derived from a one-time code.
+- **`Referrer-Policy: no-referrer`**, because the callback URL *is* the
+  sensitive material. The site-wide default is `strict-origin-when-cross-origin`.
+- The callback returns **no HTML under its own URL** — validate, exchange,
+  redirect. A bare `HEAD` (scanners, previewers) is answered 204 without
+  touching a transaction.
+- **`Strict-Transport-Security: max-age=63072000`** site-wide. `azurewebsites.net`
+  is not HSTS-preloaded and the platform's http→https 301 forwards the query
+  string intact, so without it a single plaintext navigation to a callback URL
+  would put the code on the wire. `includeSubDomains` and `preload` are omitted
+  deliberately: the host sits under a suffix shared with every other App Service
+  site.
+- **Post-login destinations** are restricted to `/`, `/admin*` and `/research*`
+  by one shared sanitizer (`toSafeInternalPath`). Foreign origins,
+  protocol-relative and backslash forms, non-http schemes, `/login?error=…` and
+  **the auth endpoints themselves** are all replaced by the fallback, so a
+  completed sign-in can never be sent back to a consumed callback URL.
+
+**Secret discipline is unchanged:** authorization codes, access tokens, the
+client secret, session tokens and user emails are never logged. A code appears
+only as `code_fp`, a truncated, non-reversible SHA-256. Azure App Service's own
+platform HTTP logs (`httpLogs.fileSystem`) do record full request URLs including
+`?code=`; that is a platform behaviour, not an application one, and the codes in
+question are single-use and already spent by the time they are written.
 
 Future: Microsoft Entra ID can be added alongside GitHub via the same OAuth
 pattern; public-user auth (Version 2) remains a later phase.

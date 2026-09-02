@@ -15,17 +15,19 @@ import {
 } from "@/lib/auth/session";
 import { getBaseUrl, safeCallbackPath } from "@/lib/auth/url";
 import { authLog, newFlowId, requestContext } from "@/lib/auth/log";
+import { authRedirect, withAuthHeaders } from "@/lib/auth/response";
+import { githubEndpoints } from "@/lib/auth/github-endpoints";
 
 export const dynamic = "force-dynamic";
-
-const GITHUB_AUTHORIZE_URL = "https://github.com/login/oauth/authorize";
 
 export function GET(request: NextRequest): NextResponse {
   const clientId = process.env.AUTH_GITHUB_ID ?? "";
   if (!clientId || !(process.env.AUTH_GITHUB_SECRET ?? "")) {
-    return NextResponse.json(
-      { error: "GitHub OAuth is not configured on this deployment" },
-      { status: 500 },
+    return withAuthHeaders(
+      NextResponse.json(
+        { error: "GitHub OAuth is not configured on this deployment" },
+        { status: 500 },
+      ),
     );
   }
 
@@ -40,7 +42,7 @@ export function GET(request: NextRequest): NextResponse {
   const baseUrl = getBaseUrl(request);
   const redirectUri = `${baseUrl}/api/auth/callback/github`;
 
-  const authorize = new URL(GITHUB_AUTHORIZE_URL);
+  const authorize = new URL(githubEndpoints().authorize);
   authorize.searchParams.set("client_id", clientId);
   authorize.searchParams.set("redirect_uri", redirectUri);
   authorize.searchParams.set("scope", "read:user user:email");
@@ -56,7 +58,9 @@ export function GET(request: NextRequest): NextResponse {
     ...requestContext(request),
   });
 
-  const res = NextResponse.redirect(authorize);
+  // 303: starting a sign-in is a fresh GET of GitHub's authorize page, and the
+  // redirect must never be replayed as anything else.
+  const res = authRedirect(authorize);
   res.cookies.set(
     OAUTH_STATE_COOKIE,
     JSON.stringify({ state, callbackUrl, flow, startedAt }),
