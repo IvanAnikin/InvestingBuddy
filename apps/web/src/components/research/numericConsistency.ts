@@ -284,6 +284,14 @@ interface ProseNumber {
   index: number;
   /** True when the sentence wrote it as a percentage. */
   isPercent: boolean;
+  /**
+   * True when the sentence wrote it as a MULTIPLE — "net debt ~2.6x equity",
+   * "3 times earnings". A multiple is a relationship between two levels, not a
+   * level, so it can never be the value of the metric beside it. Reading
+   * "2.6x" as a net-debt level made the guard call a correct live PNDORA
+   * sentence a contradiction of DKK 13,719m.
+   */
+  isMultiple: boolean;
   /** The currency the sentence attached to it, when it attached one. */
   currency: string | null;
 }
@@ -377,7 +385,7 @@ function proseNumbers(sentence: string): ProseNumber[] {
   // it. A currency is only ever used to DISQUALIFY a comparison, never to
   // create one, so failing to spot one costs nothing.
   const re =
-    /(?:(chf|eur|usd|gbp|dkk|sek|nok|jpy|[€$£])\s*)?(?<![A-Za-z0-9.])(-?\d(?:[\d,\s]*\d)?(?:\.\d+)?)\s*(%|percent|bn\b|billion|m\b|million|k\b|thousand)?/gi;
+    /(?:(chf|eur|usd|gbp|dkk|sek|nok|jpy|[€$£])\s*)?(?<![A-Za-z0-9.])(-?\d(?:[\d,\s]*\d)?(?:\.\d+)?)\s*(%|percent|bn\b|billion|m\b|million|k\b|thousand|x\b|times\b)?/gi;
   let match: RegExpExecArray | null;
   while ((match = re.exec(sentence)) !== null) {
     const written = match[2];
@@ -411,6 +419,7 @@ function proseNumbers(sentence: string): ProseNumber[] {
       // the metric name is measured from the number.
       index: match.index + (match[0].length - written.length - (match[3] ?? "").length),
       isPercent: unit === "%" || unit === "percent",
+      isMultiple: unit === "x" || unit === "times",
       currency: currencyCode(match[1]),
     });
   }
@@ -558,25 +567,56 @@ export function checkSentence(
   // suppressed correct segment analysis.
   const sentenceScopes = scopesIn(text, index);
 
-  let checkedAny: string | null = null;
-  let checkedScope: string | null = null;
-  for (const [metric, words] of named) {
-    const all = canonical.get(metric) ?? [];
-    if (all.length === 0) continue;
-
-    let figures = all;
+  /** The canonical figures a named metric is adjudicated against here. */
+  const figuresFor = (metric: string): CanonicalFigure[] => {
+    let figures = canonical.get(metric) ?? [];
     if (sentenceScopes.size > 0) {
       figures = figures.filter(
         (f) => f.scopeKey !== null && sentenceScopes.has(f.scopeKey),
       );
     }
-    // When the sentence names periods, only the ones we hold are checkable.
     if (sentencePeriods.size > 0) {
       figures = figures.filter((f) => {
         const key = periodKey(f.period);
         return key !== null && sentencePeriods.has(key);
       });
     }
+    return figures;
+  };
+
+  // A NUMBER BELONGS TO ONE METRIC.
+  //
+  // Analytical prose names several metrics and states one figure:
+  //
+  //   "Total assets of DKK 29.603 billion relative to revenue and equity
+  //    suggest a capital-intensive business…"
+  //
+  // 29.603bn is the total-assets figure and it is correct. But "revenue" sits
+  // within the proximity window, so the guard also tested 29.603 as a revenue
+  // claim, found it did not match DKK 32,549m, and withheld a correct
+  // sentence — one of the two false positives left on the live PNDORA report.
+  //
+  // A number that is some OTHER named metric's figure is therefore not
+  // evidence against this one. The exclusion is deliberately per-METRIC and
+  // scope-filtered: a number matching a DIFFERENT SCOPE of the SAME metric is
+  // precisely the mis-scoping this guard exists to catch, so it excuses
+  // nothing.
+  const explainedByAnotherMetric = (n: ProseNumber, metric: string): boolean =>
+    named.some(
+      ([other]) =>
+        other !== metric &&
+        figuresFor(other).some((f) => !currencyBlocks(n, f) && agrees(n, f)),
+    );
+
+  let checkedAny: string | null = null;
+  let checkedScope: string | null = null;
+  for (const [metric, words] of named) {
+    const all = canonical.get(metric) ?? [];
+    if (all.length === 0) continue;
+
+    // Scope- and period-filtered. When the sentence names periods, only the
+    // ones we hold are checkable.
+    const figures = figuresFor(metric);
     if (figures.length === 0) continue;
 
     // Every position this metric is named at.
@@ -594,6 +634,9 @@ export function checkSentence(
       if (!positions.some((pos) => Math.abs(n.index - pos) <= PROXIMITY_CHARS)) {
         return false;
       }
+      // A MULTIPLE is a relationship between two levels, never a level.
+      // "net debt ~2.6x equity" says nothing about what net debt IS.
+      if (n.isMultiple) return false;
       // The written form has to match the canonical form.
       //
       // A percentage beside an AMOUNT metric is a change or a ratio, not a
@@ -624,9 +667,18 @@ export function checkSentence(
     const agreed = comparable.some((n) =>
       figures.some((f) => !currencyBlocks(n, f) && agrees(n, f)),
     );
-    if (!agreed) {
-      return { verdict: "conflicting", metric, scope: checkedScope };
-    }
+    if (agreed) continue;
+
+    // Nothing matched. Before calling it a contradiction, check whether this
+    // metric has a number of its own at all: if every nearby number is
+    // another named metric's figure, this sentence makes no numeric claim
+    // ABOUT this metric.
+    const unexplained = comparable.filter(
+      (n) => !explainedByAnotherMetric(n, metric),
+    );
+    if (unexplained.length === 0) continue;
+
+    return { verdict: "conflicting", metric, scope: checkedScope };
   }
 
   return {
