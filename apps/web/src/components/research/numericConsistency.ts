@@ -206,7 +206,8 @@ export function buildCanonicalIndex(
       key: dp.key,
       value: dp.numericValue,
       scale: dp.scale ?? null,
-      unit: dp.unit ?? null,
+      // One canonical spelling for "this is a percentage" — see PERCENT_UNITS.
+      unit: isPercentUnit(dp.unit) ? "%" : (dp.unit ?? null),
       period: dp.period,
       scopeKey: scopeKeyOf(dp.scope) ?? GROUP_SCOPE_KEY,
       scopeName: normaliseScopeLabel(dp.scope),
@@ -227,7 +228,7 @@ export function buildCanonicalIndex(
         : unitText.includes("thousand")
           ? "thousand"
           : null;
-    const isPercent = unitText.trim() === "%" || unitText.includes("percent");
+    const isPercent = isPercentUnit(unitText) || unitText.includes("percent");
     // `scope_type` is the backend's decidable answer; the free-text label is
     // the fallback for a series written before the typed columns existed.
     const scopeKey =
@@ -311,6 +312,33 @@ const CURRENCY_TOKENS: Record<string, string> = {
   "nok": "NOK",
   "jpy": "JPY",
 };
+
+/**
+ * Unit spellings that all mean "this value IS a percentage".
+ *
+ * The extractor does not write one spelling. A reconstructed trend series
+ * carries `"%"`; the financial snapshot carries `"percent"`; an amount slot
+ * carries `"currency_amount"`. Comparing against the literal `"%"` therefore
+ * missed the snapshot's percentages, and the consequence was not a missed
+ * check — it was a WRONG one: with the canonical margin classified as an
+ * amount, the guard looked for a non-percent number near "operating margin",
+ * found the €4.5bn operating profit in the same sentence, and called
+ *
+ *     "Group operating profit was €4.5 billion with an operating margin of 20.0% in 2026."
+ *
+ * a contradiction of a canonical margin of exactly 20. Nine correct Group
+ * statements were withheld that way on the live CFR report — every agent that
+ * stated the group result, plus the chair.
+ *
+ * The spellings are normalised once, at index-build time, so "canonical" means
+ * one form and every reader of the index sees it.
+ */
+const PERCENT_UNITS = new Set(["%", "percent", "percentage", "pct"]);
+
+function isPercentUnit(unit: string | null | undefined): boolean {
+  if (!unit) return false;
+  return PERCENT_UNITS.has(unit.trim().toLowerCase());
+}
 
 /** Normalise a currency as written to its ISO code, or null. */
 function currencyCode(raw: string | null | undefined): string | null {

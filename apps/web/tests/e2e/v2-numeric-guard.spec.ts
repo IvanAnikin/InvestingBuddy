@@ -321,6 +321,99 @@ test.describe("period and ambiguity", () => {
 });
 
 // ---------------------------------------------------------------------------
+// The unit vocabulary is not one word
+// ---------------------------------------------------------------------------
+
+test.describe("a percentage is a percentage however the extractor spells it", () => {
+  /**
+   * Verbatim from the LIVE Richemont report generated on 2026-09-02: the
+   * reconstructed trend series spells the unit `"%"`, the financial snapshot
+   * spells it `"percent"`, and an amount slot carries `"currency_amount"`.
+   *
+   * Comparing against the literal `"%"` did not merely miss a check — it made
+   * a WRONG one. With the canonical group margin classified as an amount, the
+   * guard looked for a non-percent number near "operating margin", found the
+   * €4.5bn operating profit in the same sentence, and called
+   *
+   *   "Group operating profit was €4.5 billion with an operating margin of
+   *    20.0% in 2026."
+   *
+   * a contradiction of a canonical margin of exactly 20. NINE correct Group
+   * statements were withheld that way on that one report — every agent that
+   * stated the group result, and the chair.
+   */
+  const index = buildCanonicalIndex(
+    snapshot([
+      dp({
+        key: "revenue",
+        numericValue: 22.4,
+        scale: "billion",
+        unit: "currency_amount",
+        period: "2026",
+      }),
+      dp({
+        key: "operating_profit",
+        numericValue: 4.5,
+        scale: "billion",
+        unit: "currency_amount",
+        period: "2026",
+      }),
+      dp({
+        key: "operating_margin",
+        numericValue: 20,
+        scale: null,
+        unit: "percent",
+        currency: null,
+        period: "2026",
+      }),
+    ]),
+    [
+      series({
+        metric: "operating_margin",
+        scope: "Specialist Watchmakers",
+        scopeType: "segment",
+        unit: "%",
+        currency: null,
+        points: [
+          { period: "FY2025", value: 5.3 },
+          { period: "FY2026", value: 3.4 },
+        ],
+      }),
+    ],
+  );
+
+  test("a snapshot margin spelled 'percent' is canonicalised to a percentage", () => {
+    const margins = index.figures.get("operating_margin") ?? [];
+    expect(margins.every((f) => f.unit === "%")).toBe(true);
+  });
+
+  test("the live sentence nine agents wrote is ACCEPTED", () => {
+    const { verdict } = checkSentence(
+      "Group operating profit was €4.5 billion with an operating margin of 20.0% in 2026.",
+      index,
+    );
+    expect(verdict).toBe("consistent");
+  });
+
+  test("...and a wrong group margin is still REJECTED", () => {
+    const { verdict } = checkSentence(
+      "Group operating profit was €4.5 billion with an operating margin of 31.9% in 2026.",
+      index,
+    );
+    expect(verdict).toBe("conflicting");
+  });
+
+  test("the segment margin is untouched by the group's spelling", () => {
+    expect(
+      checkSentence(
+        "The Specialist Watchmakers operating margin was 3.4% in FY2026.",
+        index,
+      ).verdict,
+    ).toBe("consistent");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 27. The existing fixes must survive
 // ---------------------------------------------------------------------------
 
