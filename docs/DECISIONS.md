@@ -3267,6 +3267,19 @@ footnote says which layer the argument came from.
 tier code, provider state, field path or blocking-gap phrase reaches either case
 or the company-risk section on any fixture or live report checked.
 
+**Positive, and only visible on live data.** Auditing the three freshly
+generated live reports (PNDORA, CFR, MRNA) showed the two case sections clean —
+and **Key Risks still full of research state**. Twenty-two of the twenty-four
+items in those reports' company-risk slots were statements about the research,
+and "Research incomplete: 30 blocking gaps in the research package… have not
+been assessed" was the FIRST thing the section offered a reader for all three
+issuers. The wording rule now covers the shape those share: a consequence
+landing on the RESEARCH — "have not been assessed", "not yet computed",
+"requires T2/T3 research". The verb list is epistemic on purpose, so "margin
+has not yet recovered" stays a business finding. The two genuine company risks
+in that live set, both Moderna's, are untouched. Key Risks also translates
+implementation vocabulary now, as the two case sections already did.
+
 **Negative / accepted.** On a report that has BOTH a council case and
 deterministic prose, the deterministic prose no longer appears in the clean
 view. Its analytical points are not shown there at all. That is the requirement,

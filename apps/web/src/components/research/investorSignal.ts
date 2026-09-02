@@ -133,6 +133,25 @@ const EPISTEMIC_CONSEQUENCE = new RegExp(
       "profile)",
     "cannot be (assessed|established|verified|determined|evaluated|analy[sz]ed|" +
       "compared|quantified)",
+    // "...have not been assessed", "not yet computed", "not yet assessed".
+    //
+    // The consequence lands on the RESEARCH, not on the business. Every
+    // company-risk slot on the live PNDORA, CFR and MRNA reports opened with
+    // one of these — "Research incomplete: 30 blocking gaps in the research
+    // package. Business model, competitive position, and management quality
+    // have not been assessed." was the FIRST thing the Key Risks section
+    // offered a reader for all three issuers.
+    //
+    // The verb list is deliberately epistemic. "Margin has not yet recovered"
+    // is a business finding and does not match; "margin has not been assessed"
+    // is a statement about this platform's coverage and does.
+    "\\bnot\\s+(yet\\s+)?(been\\s+)?(assessed|researched|evaluated|analy[sz]ed|" +
+      "computed|verified|determined|established|quantified|reviewed|sourced)\\b",
+    "\\bresearch (is )?incomplete\\b",
+    // "Sector-specific regulatory risks require T2/T3 research." — a research
+    // TASK, written into a risk slot.
+    "\\brequires?\\s+T\\d",
+    "\\brequires?\\s+(further|additional|more)\\s+research\\b",
     "create(s)? uncertainty",
     "impedes comparability",
     "limits? confidence",
