@@ -131,11 +131,23 @@ STAGE_LABELS: dict[str, str] = {
 #: reader-facing stage they serve. A node absent from this map does not move
 #: the stage, which is why adding a node to the graph cannot silently make the
 #: UI claim progress it has no basis for.
+#:
+#: CORRECTED (V3.0 Slice 3.1). The original map put eleven nodes into
+#: ``evidence_validation``, including the five deterministic analysis-council
+#: agents and the two that write and log the draft. It also pointed
+#: ``build_company_snapshot`` at ``primary_document_ingestion``, which is where
+#: it was most wrong: no issuer document is read anywhere in this graph. Deep
+#: primary-document ingestion happens inside ``llm.council.maybe_run_council``,
+#: which runs AFTER the graph, in the final-report generator — so the stage
+#: naming the longest, most conspicuous part of a run was attached to a node
+#: that had already finished by the time it started. See PHASE_TO_STAGE below.
 NODE_TO_STAGE: dict[str, str] = {
     "load_company": STAGE_COMPANY_IDENTITY,
     "fetch_provider_data": STAGE_SOURCE_DISCOVERY,
     "create_source_records": STAGE_SOURCE_DISCOVERY,
-    "build_company_snapshot": STAGE_DOCUMENT_INGESTION,
+    # Assembles the profile/price/fundamentals snapshot from data ALREADY
+    # fetched. Structured financial data, not a document read.
+    "build_company_snapshot": STAGE_FINANCIAL_EXTRACTION,
     "financial_data_agent": STAGE_FINANCIAL_EXTRACTION,
     "source_quality_agent": STAGE_EVIDENCE_VALIDATION,
     "generate_research_sections": STAGE_EVIDENCE_VALIDATION,
@@ -143,21 +155,62 @@ NODE_TO_STAGE: dict[str, str] = {
     "validate_report_schema": STAGE_EVIDENCE_VALIDATION,
     "research_completeness_agent": STAGE_EVIDENCE_VALIDATION,
     "citation_validator_v2": STAGE_EVIDENCE_VALIDATION,
-    "bull_case_agent": STAGE_EVIDENCE_VALIDATION,
-    "bear_case_agent": STAGE_EVIDENCE_VALIDATION,
-    "risk_agent": STAGE_EVIDENCE_VALIDATION,
-    "valuation_guard_agent": STAGE_EVIDENCE_VALIDATION,
-    "investment_committee_chair": STAGE_EVIDENCE_VALIDATION,
-    "catalyst_discovery_agent": STAGE_EVIDENCE_VALIDATION,
-    "score_research_attractiveness": STAGE_EVIDENCE_VALIDATION,
-    "save_draft_report": STAGE_EVIDENCE_VALIDATION,
-    "log_agent_steps": STAGE_EVIDENCE_VALIDATION,
+    # The deterministic analysis council. These agents form and challenge a
+    # view; they do not validate citations.
+    "bull_case_agent": STAGE_COUNCIL_ANALYSIS,
+    "bear_case_agent": STAGE_COUNCIL_ANALYSIS,
+    "risk_agent": STAGE_COUNCIL_ANALYSIS,
+    "valuation_guard_agent": STAGE_COUNCIL_ANALYSIS,
+    "investment_committee_chair": STAGE_COUNCIL_ANALYSIS,
+    "catalyst_discovery_agent": STAGE_COUNCIL_ANALYSIS,
+    "score_research_attractiveness": STAGE_COUNCIL_ANALYSIS,
+    # Writing and recording the draft.
+    "save_draft_report": STAGE_REPORT_ASSEMBLY,
+    "log_agent_steps": STAGE_REPORT_ASSEMBLY,
+}
+
+
+# ---------------------------------------------------------------------------
+# Post-graph phases
+# ---------------------------------------------------------------------------
+#
+# The graph is not the whole run, and it is not even most of it. After it
+# finishes, the final-report generator ingests the issuer's primary documents
+# (~154s measured live) and runs the LLM council (~145-190s) — between them the
+# large majority of a 261-451s run, during which the graph reports nothing at all
+# because it is no longer executing.
+#
+# Before this map existed the reader was shown the LAST graph node's stage for
+# that whole period, and the two stages that were actually running were stamped
+# "completed" retroactively at the end. So the UI said "Validating and citing the
+# evidence" for three minutes of council work, then claimed the council had
+# completed at a moment it had in fact just finished. Naming the stage in flight
+# is the entire value of a stage display; naming the wrong one is worse than
+# naming none.
+#
+# These names are the PRODUCER'S, exactly as the node names are the graph's. The
+# council and the generator emit a phase; this module decides what a reader is
+# told it means. That boundary is why the council does not import a UI string.
+
+PHASE_EVIDENCE_INGESTION = "evidence_ingestion"
+PHASE_COUNCIL_AGENTS = "council_agents"
+PHASE_REPORT_ASSEMBLY = "report_assembly"
+
+PHASE_TO_STAGE: dict[str, str] = {
+    PHASE_EVIDENCE_INGESTION: STAGE_DOCUMENT_INGESTION,
+    PHASE_COUNCIL_AGENTS: STAGE_COUNCIL_ANALYSIS,
+    PHASE_REPORT_ASSEMBLY: STAGE_REPORT_ASSEMBLY,
 }
 
 
 def stage_for_node(node_name: str) -> str | None:
     """The reader-facing stage one graph node belongs to, or None."""
     return NODE_TO_STAGE.get(node_name)
+
+
+def stage_for_phase(phase_name: str) -> str | None:
+    """The reader-facing stage one post-graph phase belongs to, or None."""
+    return PHASE_TO_STAGE.get(phase_name)
 
 
 def stage_label(stage: str | None) -> str:

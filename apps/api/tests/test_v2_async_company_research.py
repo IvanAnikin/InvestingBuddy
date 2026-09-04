@@ -144,10 +144,25 @@ def _workflow_runner(
     return run
 
 
-def _report_generator(report_id: uuid.UUID, *, fail: bool = False):
+def _report_generator(
+    report_id: uuid.UUID, *, fail: bool = False, phases: list[str] | None = None
+):
+    """A stand-in for the final-report generator.
+
+    ``phases`` makes it report progress the way the real one does. The real
+    generator is where primary-document ingestion and the LLM council actually
+    happen — ~154s and ~145-190s on live data — and it reports each as it starts
+    (``research_job.PHASE_TO_STAGE``). A fake that stayed silent would let the
+    stage assertions below pass without the reporting that produces them.
+    """
+
     async def gen(db, **kwargs: Any):
         if fail:
             raise RuntimeError("assembly failed")
+        on_phase = kwargs.get("on_phase")
+        if on_phase is not None:
+            for phase in phases or []:
+                await on_phase(phase)
         return _FakeFinalReport(report_id)
 
     return gen
@@ -238,7 +253,18 @@ async def test_stages_progress_through_the_workflows_own_nodes(
                 "citation_validator_v2",
             ],
         ),
-        generate_final_report=_report_generator(report_id),
+        # Document ingestion, the council and report assembly all happen INSIDE
+        # the generator, not in the graph — which is what the corrected stage
+        # map (V3.0 Slice 3.1) says. The fake reports them the way the real one
+        # does, so this test exercises the reporting rather than the stamping.
+        generate_final_report=_report_generator(
+            report_id,
+            phases=[
+                research_job.PHASE_EVIDENCE_INGESTION,
+                research_job.PHASE_COUNCIL_AGENTS,
+                research_job.PHASE_REPORT_ASSEMBLY,
+            ],
+        ),
     )
 
     async with factory() as other:

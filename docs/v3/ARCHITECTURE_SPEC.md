@@ -78,7 +78,7 @@ The prompt's §50 lists candidates from an earlier audit. Verified status today:
 | Synchronous PDF parsing on the API event loop | **RESOLVED.** PR #188 moved blocking extraction off the loop (`live_fetchers.py:448` `asyncio.to_thread`) and raised the deployed gunicorn `--timeout` 120 → 300 (`config.py:20`), enforced by `tests/test_worker_timeout_invariant.py`. |
 | Process-local jobs | **ADDRESSED for `/company-research/jobs`** (V3.0 Slices 1-3, `develop/v3` only, flag off by default): durable record + leased worker + reclaim. The other five `BackgroundTasks` call sites are unchanged. |
 | Frontend-only numeric guard | **OPEN — V3.0 Slice 3.** The guard is real and works, but canonical reconciliation belongs server-side; the frontend copy should be defence in depth. |
-| Inaccurate research-stage mapping | **PARTIALLY RESOLVED.** `research_job.stage_for_node:158` and `stage_label:163` give a real node→stage map; V3 extends it to worker-reported stages. |
+| Inaccurate research-stage mapping | **RESOLVED** (V3.0 Slice 3.1, `develop/v3` only). The map itself was wrong — 11 of 20 nodes were `evidence_validation`, and `primary_document_ingestion` pointed at a node that finishes before any document is read. Ingestion and the council run *after* the graph and now report themselves while they run (`PHASE_TO_STAGE`); the retroactive stamping is gone. |
 | OAuth stale-callback / `code_already_used` | **RESOLVED.** PR #187 shipped a bounded replay registry and 307→303. |
 | Orphaned-job detection latency | **RESOLVED.** `is_orphaned:227` reads a job whose process is gone as dead immediately rather than after 45 minutes. |
 
