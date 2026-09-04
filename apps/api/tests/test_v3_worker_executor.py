@@ -844,6 +844,111 @@ class TestLiveness:
         assert await store.claim_next(owner="B", now=_now() + timedelta(minutes=5))
 
 
+
+class TestAbandonedJobRetirement:
+    """A job whose worker keeps being killed must eventually stop being retried.
+
+    ``fail`` is the only writer of ``dead_letter`` and a killed worker never
+    calls it, so the reclaim path is the only place this can be noticed. It is
+    noticed there rather than by a reaper process because there is no reaper
+    process to run — and the only moment anyone looks at a lapsed lease is when
+    a worker is looking for work.
+    """
+
+    async def _kill_the_owner(self, store, *, times: int) -> None:
+        """Claim and abandon ``times`` times, never reporting a failure."""
+        now = _now()
+        for _ in range(times):
+            claimed = await store.claim_next(owner="doomed", now=now, lease_seconds=1)
+            assert claimed is not None
+            now = now + timedelta(minutes=5)
+
+    async def test_a_repeatedly_killed_job_is_dead_lettered_not_reclaimed(
+        self, store, factory
+    ):
+        view, _ = await store.enqueue(
+            job_type=JOB_TYPE, idempotency_key="k", max_attempts=3
+        )
+        await self._kill_the_owner(store, times=3)
+
+        row = await _row(factory, view.id)
+        assert row.attempt == 3
+        assert row.status == contract.STATUS_RUNNING
+
+        # The fourth look retires it instead of handing it to a fourth victim.
+        assert await store.claim_next(owner="w4", now=_now() + timedelta(hours=1)) is None
+        row = await _row(factory, view.id)
+        assert row.status == contract.STATUS_DEAD_LETTER
+        assert row.lease_owner is None
+        assert "stopped reporting" in row.dead_letter_reason
+
+    async def test_attempts_never_climb_past_the_bound(self, store, factory):
+        view, _ = await store.enqueue(
+            job_type=JOB_TYPE, idempotency_key="k", max_attempts=2
+        )
+        await self._kill_the_owner(store, times=2)
+        for _ in range(5):
+            await store.claim_next(owner="w", now=_now() + timedelta(hours=1))
+        row = await _row(factory, view.id)
+        assert row.attempt == 2
+        assert row.status == contract.STATUS_DEAD_LETTER
+
+    async def test_retiring_one_job_does_not_stop_the_worker_finding_another(
+        self, store, factory
+    ):
+        """The retirement happens mid-scan, so the next candidate is still taken."""
+        doomed, _ = await store.enqueue(
+            job_type=JOB_TYPE, idempotency_key="doomed", max_attempts=1
+        )
+        await store.claim_next(owner="doomed-worker", now=_now(), lease_seconds=1)
+        healthy, _ = await store.enqueue(job_type=JOB_TYPE, idempotency_key="healthy")
+
+        claimed = await store.claim_next(owner="w2", now=_now() + timedelta(hours=1))
+        assert claimed is not None
+        assert claimed.id == healthy.id
+        assert (await _row(factory, doomed.id)).status == contract.STATUS_DEAD_LETTER
+
+    async def test_a_job_with_attempts_left_is_still_reclaimed(self, store, factory):
+        """The bound must not break the recovery it sits inside."""
+        view, _ = await store.enqueue(
+            job_type=JOB_TYPE, idempotency_key="k", max_attempts=3
+        )
+        await self._kill_the_owner(store, times=1)
+        reclaimed = await store.claim_next(owner="w2", now=_now() + timedelta(hours=1))
+        assert reclaimed is not None
+        assert reclaimed.attempt == 2
+        assert (await _row(factory, view.id)).status == contract.STATUS_RUNNING
+
+    async def test_only_one_worker_retires_a_contended_abandoned_job(self, store):
+        await store.enqueue(job_type=JOB_TYPE, idempotency_key="k", max_attempts=1)
+        await store.claim_next(owner="doomed", now=_now(), lease_seconds=1)
+        later = _now() + timedelta(hours=1)
+        results = await asyncio.gather(
+            *[store.claim_next(owner=f"w{i}", now=later) for i in range(6)]
+        )
+        assert all(r is None for r in results)
+
+    async def test_the_worker_loop_reports_a_dead_lettered_job_as_handled(
+        self, store, factory
+    ):
+        """A retired job is not work, so the loop must not spin on it."""
+
+        async def handler(ctx: JobContext) -> JobOutcome:
+            raise AssertionError("must never be entered")
+
+        # The worker uses the real clock, so the lease has to have lapsed in real
+        # time: create and claim the job an hour ago rather than sleeping.
+        past = _now() - timedelta(hours=1)
+        view, _ = await store.enqueue(
+            job_type=JOB_TYPE, idempotency_key="k", max_attempts=1, now=past
+        )
+        await store.claim_next(owner="doomed", now=past, lease_seconds=1)
+        w = _worker(store, _registry(JOB_TYPE, handler))
+        # Nothing claimable -> no work done, and the job is retired on the way.
+        assert await w.run_once() is False
+        assert (await _row(factory, view.id)).status == contract.STATUS_DEAD_LETTER
+
+
 class TestFailureClassification:
     async def test_the_council_taxonomy_is_reused_not_reinvented(self):
         from app.services.llm.client import (

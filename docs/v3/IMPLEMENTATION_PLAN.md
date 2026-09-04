@@ -60,6 +60,7 @@ Branch naming: `feature/v3-<phase>-<slice>-<short-name>`.
 |---|---|---|---|---|
 | 0.1 | [`feature/v3-0-1-durable-job-contract`](slices/V3.0-1-durable-job-contract.md) | Durable job record + pure state machine (idempotency, lease, attempts, dead-letter, cancellation). No entry point changes. | **Yes** (019) | `IMPLEMENTED` |
 | 0.2 | [`feature/v3-0-2-worker-executor`](slices/V3.0-2-worker-executor.md) | Broker-agnostic worker loop: claim → heartbeat → execute → complete/retry. PostgreSQL-polling mode first, no cloud dependency. | No | `IMPLEMENTED` |
+| 0.2.1 | [`feature/v3-0-2-1-bound-reclaim-attempts`](slices/V3.0-2.1-bound-reclaim-attempts.md) | **Corrective.** A killed worker never calls `fail()`, so a job that kills its worker was reclaimed forever. Bound the reclaim and dead-letter it. | No | `IMPLEMENTED` |
 | 0.3 | `feature/v3-0-3-company-research-on-durable-jobs` | Route `/company-research/jobs` through the durable contract behind `V3_DURABLE_JOBS_ENABLED`. V2 path untouched when off. | No | `NOT STARTED` |
 | 0.4 | `feature/v3-0-4-server-side-numeric-verification` | Move canonical numeric reconciliation server-side; frontend guard stays as defence in depth. | No | `NOT STARTED` |
 | 0.5 | `feature/v3-0-5-run-consumption-telemetry` | Vendor-neutral consumption units + `ResearchBudget` enforcement points. | Yes | `NOT STARTED` |
@@ -220,3 +221,4 @@ approval.
 | 2026-09-04 | V3 documentation baseline | `feature/v3-docs-architecture-baseline` | `4ce2336` |
 | 2026-09-04 | V3.0 Slice 1 — durable job contract | `feature/v3-0-1-durable-job-contract` | `61d7243` |
 | 2026-09-04 | V3.0 Slice 2 — worker executor | `feature/v3-0-2-worker-executor` | `473fa97` |
+| 2026-09-04 | V3.0 Slice 2.1 — bound reclaim attempts (corrective) | `feature/v3-0-2-1-bound-reclaim-attempts` | _pending_ |
