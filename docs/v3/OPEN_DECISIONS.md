@@ -230,6 +230,15 @@ Format per entry: **status** · **options** · **recommendation** · **blocking?
   resolved.
 - **Evidence needed:** none — this is a preference about CI minutes.
 - **Owner:** user.
+- **Status 2026-09-04:** still OPEN and **deliberately not resolved by the agent**
+  — the workflow files are unchanged, because they also live on `main` and the
+  decision is the user's. What was done instead is
+  [`scripts/v3-gates.sh`](../../scripts/v3-gates.sh): the exact commands both
+  workflows run, in one command, so "it passed locally" means what CI would have
+  meant. `mypy` is compared against a recorded baseline
+  (`scripts/mypy-baseline.txt`, currently 71) rather than failed on a non-zero
+  count — a gate that is red on every run trains a reader to ignore it. Every
+  V3.0 slice ran through it and recorded the output in its slice document.
 
 ## 18. Fate of `docs/DATA_SOURCE_INVENTORY.md` / `.xlsx`
 
