@@ -3307,3 +3307,210 @@ view. Its analytical points are not shown there at all. That is the requirement,
 the record entries still route to research confidence, and the unedited original
 stays on the technical report page — but it is a real reduction in what the
 clean view shows for such a report, not merely a re-filing.
+
+---
+
+## ADR-043: V2 Is Frozen as a Tag and a Branch Before V3 Development Begins
+
+**Date:** 2026-09-04
+**Status:** Accepted
+
+### Context
+
+V3 is a research-engine and data-platform evolution, not a bug-fix campaign. It
+adds a durable worker topology, a persistent corpus, an entity master, external
+research providers and a new schema surface. Any one of those could destabilise
+the system for weeks.
+
+Meanwhile `main` is not a development branch. It is the currently approved,
+deployed, private-use production version, live at `ib-stg-rg`. The user relies on
+it. There is exactly one environment.
+
+The failure mode to avoid is the ordinary one: V3 lands incrementally on `main`,
+each step individually defensible, and at some point there is no commit that is
+both recent and known-good to fall back to.
+
+### Decision
+
+The commit on `main` immediately before V3 work begins — `4b60e07` — is the **V2
+baseline**, and it is pinned in two independent ways:
+
+1. An **annotated, immutable tag** `v2-final-pre-v3-2026-09-04`, whose message
+   records the SHA, the date, the Alembic head (018) and the extraction pipeline
+   version (15).
+2. A **branch** `release/v2-current` at the same SHA, so V2 can receive emergency
+   maintenance without touching the V3 line.
+
+V3 development happens on `develop/v3`, created from the same SHA. Implementation
+happens on `feature/v3-*` branches that merge **only** into `develop/v3`.
+
+`main` receives no V3 commits, and V3 is not deployed, until the user explicitly
+approves promotion.
+
+### Consequences
+
+- Rollback is `git checkout release/v2-current`. There is no reconstruction step.
+- Two refs must both be wrong for the baseline to be lost; a tag can be deleted,
+  a branch can be force-moved, but not accidentally in the same operation.
+- The deploy workflows trigger on `push: branches: [main]` only, so pushing the
+  V3 branch cannot deploy — this was verified before the first push rather than
+  assumed.
+- V2 and V3 can diverge, so a V2 hotfix must be deliberately forward-ported. That
+  cost is accepted; it is much smaller than the cost of an unrecoverable `main`.
+
+---
+
+## ADR-044: External Research Output Enters as a Lead, Never as Evidence
+
+**Date:** 2026-09-04
+**Status:** Accepted
+
+### Context
+
+V3 uses external research and search providers — a managed Deep Research product,
+a cheap bulk researcher, a neural search index. These systems return confident
+prose containing claims, figures and citations. Some of the citations do not
+resolve. Some resolve to pages that do not contain the claim. Some figures are
+right for the wrong period or the wrong reporting scope.
+
+The platform's entire value is that a number in a report can be traced to a
+document. Accepting provider output as evidence would end that in one step, and
+it would end it *invisibly*, because the output is well-formed and cites sources.
+
+### Decision
+
+A provider result is a `ResearchProviderResult` and nothing in it is evidence.
+Every claim and source candidate is persisted as a `ResearchLead`, attributed to
+the provider and model that produced it, and must pass through an explicit
+promotion path:
+
+```
+lead → InvestingBuddy independently fetches the cited source (or verifies against
+       a trusted structured API) → Canonical Source → EvidenceFragment →
+       Canonical Fact / ResearchFinding
+```
+
+A lead whose URL is unreachable, or whose claim is absent from the fetched
+document, or whose period or scope does not match, is **retained as a rejected
+lead with its rejection reason**. It is never silently dropped and never quietly
+promoted.
+
+Separately, the **transport never determines the source tier**. Exa delivering a
+Reuters article yields Reuters-tier content; SEC EDGAR delivering a filing yields
+primary-filing-tier content. `transport` and `content_origin` are distinct fields.
+
+### Consequences
+
+- `verification_survival_rate` becomes measurable per provider, which is what
+  makes the benchmark meaningful and `cost_per_verified_finding` computable.
+- Rejected leads are training data for provider selection, consistent with the
+  existing rule that rejected companies and failed analyses are kept.
+- A provider that cannot produce traceable sources is structurally limited to
+  suggesting where to look — which is still useful, and is presented as exactly
+  that.
+- Verification costs retrieval budget. This is accepted: unverified research has
+  negative value because it consumes the budget that would have found the answer.
+
+---
+
+## ADR-045: Search, Model and Research Providers Are Three Separate Interfaces
+
+**Date:** 2026-09-04
+**Status:** Accepted
+
+### Context
+
+The obvious way to add web research is to pick a vendor whose model can search —
+one API key, one integration. It is also the way to end up unable to change
+either the model or the search index without changing the other, because the two
+arrived welded together.
+
+These capabilities genuinely change independently. Search quality is about index
+coverage and freshness. Model quality is about reasoning. Managed Deep Research
+is a different product with a different cost model again (per-run, not
+per-token). Pricing moves independently too: at InvestingBuddy's measured call
+shape, DeepSeek is 1.4× cheaper than `gpt-5.6-luna` off-peak and 30% *more*
+expensive at peak — a conclusion that inverts within a single vendor over the
+course of a day.
+
+### Decision
+
+Four independent interfaces, owned by InvestingBuddy:
+
+- `ModelProvider` — one prompt in, one structured completion out. Extends the
+  existing `LLMClient` (`app/services/llm/client.py`).
+- `SearchProvider` — query in, ranked URLs out. Never bound to a model vendor.
+- `ResearchProvider` — managed multi-step investigation, returns
+  `ResearchProviderResult`.
+- `BrowserProvider` — renders JS-gated pages, last resort only.
+
+Domain modules name a **routing slot** (`chair_model`, `cheap_research_model`,
+`red_team_model`, …), never a model. The research domain imports provider
+*interfaces*, never provider *SDKs*. If swapping a search vendor requires editing
+anything under the research domain, the abstraction has failed.
+
+Fake providers remain first-class and stay the only clients the unit suite uses.
+
+### Consequences
+
+- Four interfaces to maintain instead of one integration.
+- Vendor swaps cost one adapter.
+- Providers can be benchmarked against each other on identical tasks, which is
+  the only honest way to choose one.
+- The Red Team slot can deliberately use a different vendor from the analyst
+  slots — a model challenging its own family's output shares its blind spots.
+- Consumer AI subscriptions are excluded as production architecture: production
+  uses supported APIs under their terms. Consumer products may be used manually
+  for developer benchmarking only.
+
+---
+
+## ADR-046: The Durable Job Contract Keeps V2's Status Vocabulary
+
+**Date:** 2026-09-04
+**Status:** Accepted
+
+### Context
+
+V2 job *state* is durable — committed to PostgreSQL before expensive work starts.
+V2 job *execution* is not: it runs in the API process via FastAPI
+`BackgroundTasks` at six call sites, so an App Service recycle kills every
+in-flight run. `research_job.py` is honest about this in its own module docstring.
+
+V3.0 makes execution durable with a leased worker. The temptation when building a
+new job system is to design a new status vocabulary — `queued`, `claimed`,
+`succeeded`, `dead_letter` — because those words describe a queue accurately.
+
+But `research_job.py` already owns a status vocabulary that the web app polls,
+that the admin console renders, and that a body of tests asserts. It also owns a
+subtle and correct decision: `interrupted` is **derived at read time, never
+stored**, because a stored status would need a writer that is running, which is
+exactly what is absent in the situation it describes.
+
+### Decision
+
+The V3 durable job record keeps V2's status vocabulary verbatim: `pending`,
+`running`, `completed`, `completed_with_warnings`, `failed`, plus derived
+`interrupted`. `research_job.py` remains the single source of truth for status
+constants, in-flight/terminal classification and staleness derivation.
+
+V3 adds only the columns durability actually requires: `idempotency_key`,
+`attempt` / `max_attempts`, `lease_owner` / `lease_expires_at`, `available_at`,
+`last_heartbeat_at`, `cancel_requested`, and a dead-letter terminal state with a
+reason.
+
+The queue broker is a **delivery hint**, not the source of truth. The job store
+is authoritative, so a PostgreSQL-polling worker is a valid production mode and
+V3.0 is testable with no cloud dependency.
+
+### Consequences
+
+- The polling API contract does not fork. The web app needs no change to work
+  against durable jobs.
+- Existing job tests keep their meaning.
+- Dead-letter is genuinely new and needs its own vocabulary entry — it is added
+  as a terminal state alongside `failed`, not by overloading `failed`.
+- Reusing a vocabulary designed before leasing existed means some names are less
+  queue-idiomatic than they would be greenfield. That is accepted: a shared
+  vocabulary the whole system already speaks is worth more than precise naming in
+  one new module.

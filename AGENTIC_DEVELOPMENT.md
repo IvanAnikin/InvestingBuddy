@@ -10,6 +10,28 @@ For a detailed agentic setup reference see `Implementation_docs/AGENTIC_DEVELOPM
 
 ---
 
+## Active Development Line — V3 (opened 2026-09-04)
+
+V3 development runs on `develop/v3` and is **unapproved and undeployed**. `main`
+remains the currently approved version.
+
+Working rules for V3:
+
+- One PR-sized slice per `feature/v3-<phase>-<slice>-<name>` branch.
+- Slices merge into `develop/v3` only — never into `main`.
+- Never implement a substantial slice directly on `develop/v3`.
+- Every slice runs the real gates (`ruff check .`, `pytest tests/ -v` from
+  `apps/api`; `npm run typecheck|lint|build` from `apps/web`) and records the
+  exact commands and results. CI does **not** run automatically on
+  `develop/v3` PRs — the workflows are filtered to `main`.
+- Migrations are created on the V3 branch but **never applied to the live
+  environment** before deployment approval.
+
+Read [`docs/v3/README.md`](docs/v3/README.md) first, then the slice register in
+[`docs/v3/IMPLEMENTATION_PLAN.md`](docs/v3/IMPLEMENTATION_PLAN.md).
+
+---
+
 ## Development Philosophy
 
 - The orchestrator understands the full system but delegates narrow tasks to specialist skills.

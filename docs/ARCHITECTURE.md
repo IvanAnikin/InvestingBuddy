@@ -1,5 +1,23 @@
 # Architecture
 
+> ## ⚠ V3 DEVELOPMENT LINE OPEN — 2026-09-04
+>
+> This document describes the **V2 system, which is what `main` deploys and what
+> is currently approved.** It stays authoritative for that.
+>
+> V3 is under development on `develop/v3` and is **unapproved and undeployed**.
+> Its target architecture lives in **[`docs/v3/`](v3/README.md)** — start with
+> [`docs/v3/ARCHITECTURE_SPEC.md`](v3/ARCHITECTURE_SPEC.md).
+>
+> | Ref | Meaning |
+> |---|---|
+> | `main` | Current approved version. No V3 commits. |
+> | `v2-final-pre-v3-2026-09-04` | Immutable tag on the V2 baseline `4b60e07`. |
+> | `release/v2-current` | V2 preservation / maintenance branch. |
+> | `develop/v3` | V3 integration branch. Unapproved. |
+>
+> Nothing in `docs/v3/` describes deployed behaviour unless it is marked `CURRENT`.
+
 ## Status: Private-Use Production Readiness — **CLOSED, LIVE-VALIDATED ON STAGING** (API `d66842c`; migration `018`, Alembic head `017 → 018`; extraction `pipeline_version` `11 → 13`; PRs #149-#160). Ten PRs: six phases plus four correctives that live acceptance found and unit tests did not. Fact scope is persisted and part of fact identity; multi-year facts become bounded comparable series; the canonical snapshot is derived from the parser's own vocabulary (7 → 15 fields); interim evidence sits beside annual evidence in its own labelled slots and is never annualised; regulated disclosures are retrieved live from Nasdaq Nordic and the CONSOB-authorised Italian storage and deduplicated across channels without losing provenance; the thirteen contradiction classes are assertable; and an abandoned analysis job reports `interrupted` + `recoverable` instead of `running` forever. Live: 5 issuers / 4 countries / 4 venues, every council 8/8 with a real chair, **0 serious consistency findings**. See `docs/PRIVATE_USE_PRODUCTION_READINESS.md` and ADR-031..ADR-036. Production is not provisioned and is untouched.
 
 <details>
