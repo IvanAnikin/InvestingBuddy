@@ -36,8 +36,14 @@ npx playwright test          # frontend-e2e.yml — workflow_dispatch only, neve
 
 `api-ci.yml` and `web-ci.yml` trigger only on `main` (`push`/`pull_request`) with
 `apps/**` path filters. **A PR into `develop/v3` gets no automatic checks.** Until
-this is resolved ([OPEN DECISION #17](OPEN_DECISIONS.md#17-ci-coverage-for-the-v3-branch)),
-every slice runs the gates locally and records the exact commands and their output.
+this is resolved ([OPEN DECISION #17](OPEN_DECISIONS.md#17-ci-coverage-for-the-v3-branch),
+user-owned), every slice runs the gates locally and records the exact commands
+and their output.
+
+`scripts/v3-gates.sh` runs all of them in one command — the same commands the
+workflows run, so a local pass means what a CI pass would have meant. It does
+**not** resolve #17: the workflow files are untouched, because they also live on
+`main` and adding a branch to them is the user's call.
 
 > **Run changed tests in isolation as well as in the full suite.** A green full
 > suite has already hidden an order-dependent failure that CI then caught. `pytest
