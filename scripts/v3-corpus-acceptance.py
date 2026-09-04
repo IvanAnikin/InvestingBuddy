@@ -91,6 +91,14 @@ def _parse_args() -> argparse.Namespace:
         help="A SCRATCH database. Defaults to a throwaway SQLite file. "
         "Never point this at the dev or a deployed database.",
     )
+    parser.add_argument(
+        "--deep-pages",
+        type=int,
+        default=0,
+        help="Also run a DEEP reprocess with this PDF page cap, from the retained "
+        "bytes. 0 skips it. This is the step that closes the live path's 40-page "
+        "window, and it is why the raw bytes are kept.",
+    )
     parser.add_argument("--keep", action="store_true", help="Keep the scratch directory.")
     return parser.parse_args()
 
@@ -174,6 +182,10 @@ async def main() -> int:
         persist_parsed_document,
     )
     from app.services.corpus.policy import ACCESS_PUBLIC_ISSUER
+    from app.services.corpus.reprocessing import (
+        OUTCOME_REPROCESSED,
+        reprocess_version,
+    )
     from app.services.corpus.retrieval import resolve_evidence, search_corpus
     from app.services.corpus.search.backends.memory import InMemorySearchBackend
     from app.services.corpus.search.types import SearchMode
@@ -370,6 +382,7 @@ async def main() -> int:
                     print(f"    {hit.reference.citation_label()}")
                     print(f"      {hit.text[:110]!r}")
 
+            recorded = ""
             top = await search_corpus(
                 session,
                 backend=backend,
@@ -390,6 +403,66 @@ async def main() -> int:
                     f"page_text={'yes' if context and context.page_text else 'no'} "
                     f"grid={'yes' if context and context.table_rows else 'n/a'}"
                 )
+
+            if args.deep_pages > 0:
+                print("\n=== 6b. DEEP reprocess from the retained bytes ===")
+                deep_cfg = cfg.model_copy(
+                    update={
+                        "v3_corpus_reprocess_max_pdf_pages": int(args.deep_pages),
+                        "v3_corpus_reprocess_timeout_seconds": 900,
+                    }
+                )
+                started = time.perf_counter()
+                outcome = await reprocess_version(
+                    session,
+                    research_document_version_id=version.id,
+                    cfg=deep_cfg,
+                    store=store,
+                    backend=backend,
+                )
+                await session.commit()
+                print(
+                    f"  reprocess  {time.perf_counter() - started:6.1f}s "
+                    f"outcome={outcome.outcome} profile={outcome.extraction_profile}"
+                )
+                if outcome.outcome == OUTCOME_REPROCESSED:
+                    print(
+                        f"  pages      {derivation.pages_persisted} -> "
+                        f"{outcome.pages_persisted} of {derivation.page_count}"
+                    )
+                    print(
+                        f"  chunks     {len(chunk_rows)} -> {outcome.chunks_written}; "
+                        f"reindexed {outcome.chunks_indexed}"
+                    )
+                    print(
+                        f"  superseded {outcome.superseded_derivation_id} "
+                        "(kept, not deleted)"
+                    )
+                    still_there = await resolve_evidence(
+                        session, evidence_id=recorded, cfg=cfg
+                    )
+                    print(
+                        "  the citation recorded BEFORE reprocessing still "
+                        f"resolves: {still_there is not None}"
+                    )
+                    print("  the same queries, over the whole document now:")
+                    for probe in (
+                        "cash flow from operations",
+                        "gross margin",
+                        "segment information",
+                    ):
+                        deep_hits = await search_corpus(
+                            session,
+                            backend=backend,
+                            cfg=cfg,
+                            query=probe,
+                            company_ids=[company_id],
+                            mode=SearchMode.LEXICAL,
+                            top_k=1,
+                        )
+                        for hit in deep_hits:
+                            print(f"    {probe!r} -> {hit.reference.citation_label()}")
+                            print(f"      {hit.text[:100]!r}")
 
             print("\n=== 7. re-retrieve and re-parse from the retained bytes ===")
             recovered = await load_artifact_bytes(
