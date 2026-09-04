@@ -64,7 +64,7 @@ Branch naming: `feature/v3-<phase>-<slice>-<short-name>`.
 | 0.3 | [`feature/v3-0-3-company-research-on-durable-jobs`](slices/V3.0-3-company-research-on-durable-jobs.md) | Route `/company-research/jobs` through the durable contract behind `V3_DURABLE_JOBS_ENABLED`. V2 path untouched when off. | No | `IMPLEMENTED` |
 | 0.3.1 | [`feature/v3-0-3-1-research-stage-accuracy`](slices/V3.0-3.1-research-stage-accuracy.md) | **Corrective.** The stage map named the wrong stages, and the two longest phases (ingestion, council) run after the graph and reported nothing. Report the phase in flight. | No | `IMPLEMENTED` |
 | 0.4 | [`feature/v3-0-4-server-side-numeric-verification`](slices/V3.0-4-server-side-numeric-verification.md) | Move canonical numeric reconciliation server-side; frontend guard stays as defence in depth. | No | `IMPLEMENTED` |
-| 0.5 | `feature/v3-0-5-run-consumption-telemetry` | Vendor-neutral consumption units + `ResearchBudget` enforcement points. | Yes | `NOT STARTED` |
+| 0.5 | [`feature/v3-0-5-run-consumption-telemetry`](slices/V3.0-5-run-consumption-telemetry.md) | Vendor-neutral consumption units + `ResearchBudget` enforcement points. | **Yes** (020) | `IMPLEMENTED` |
 | 0.6 | `feature/v3-0-6-service-bus-adapter` | Optional Service Bus delivery in front of the same job store. | No | `NOT STARTED` |
 
 ### V3.1 — Research Corpus
@@ -226,3 +226,4 @@ approval.
 | 2026-09-04 | V3.0 Slice 3 — company research on durable jobs | `feature/v3-0-3-company-research-on-durable-jobs` | `04d2df1` |
 | 2026-09-04 | V3.0 Slice 3.1 — research-stage accuracy (corrective) | `feature/v3-0-3-1-research-stage-accuracy` | `e9b6e9c` |
 | 2026-09-04 | V3.0 Slice 4 — server-side numeric verification | `feature/v3-0-4-server-side-numeric-verification` | `31b9fa2` |
+| 2026-09-04 | V3.0 Slice 5 — run consumption telemetry | `feature/v3-0-5-run-consumption-telemetry` | _pending_ |

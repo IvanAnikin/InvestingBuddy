@@ -950,6 +950,39 @@ class Settings(BaseSettings):
     # How long an idle worker waits before polling for work again.
     v3_job_poll_interval_seconds: float = 2.0
 
+    # ── V3.0: run consumption telemetry and budgets ─────────────────────────
+    # Persist one ``research_run_consumption`` row per research run. OFF by
+    # default and paired with migration 020: turn it on only where 020 has been
+    # applied. Recording is what UNBLOCKS the budget numbers below — OPEN
+    # DECISION #14 asks for them to be derived from measured live runs rather
+    # than guessed, and nothing measures them today.
+    v3_run_consumption_enabled: bool = False
+
+    # Per-run budget ceilings. 0 means UNBOUNDED, and every one of them defaults
+    # to 0 deliberately: the real numbers are OPEN DECISIONS #13 and #14, both
+    # USER-owned, and inventing a ceiling here would be answering a question that
+    # was asked of somebody else — with the failure mode that a guessed ceiling
+    # silently truncates a legitimate research run.
+    v3_run_max_model_calls: int = 0
+    v3_run_max_model_tokens: int = 0
+    v3_run_max_web_searches: int = 0
+    v3_run_max_documents: int = 0
+    v3_run_max_browser_minutes: float = 0.0
+    v3_run_max_wall_seconds: float = 0.0
+    v3_run_max_external_cost_usd: float = 0.0
+
+    # Unit prices, in USD. Cost is DERIVED from vendor-neutral units so a price
+    # change is a config change and historical runs stay comparable. All 0 by
+    # default, which yields a cost of NULL — "we do not know what this cost",
+    # never "this cost nothing".
+    v3_price_per_million_input_tokens: float = 0.0
+    v3_price_per_million_output_tokens: float = 0.0
+    v3_price_per_thousand_web_searches: float = 0.0
+    v3_price_per_thousand_url_fetches: float = 0.0
+    v3_price_per_provider_research_run: float = 0.0
+    v3_price_per_thousand_index_queries: float = 0.0
+    v3_price_per_browser_minute: float = 0.0
+
     # ── Real OCR: Azure Document Intelligence (Phase 32A Slice 5B.2) ─────────
     # Only ever consulted when ``primary_document_ocr_enabled`` (Slice 5,
     # default False) is also True. With the endpoint left empty (the default),

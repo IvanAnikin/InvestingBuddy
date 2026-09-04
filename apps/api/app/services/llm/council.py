@@ -31,7 +31,7 @@ from typing import TYPE_CHECKING, Any
 from app.core.config import Settings
 from app.core.config import settings as default_settings
 from app.core.structured_logging import log_event
-from app.services import research_job
+from app.services import consumption, research_job
 from app.services.llm import prompts, retry_engine
 from app.services.llm.citation_checker import check_and_sanitize
 from app.services.llm.client import (
@@ -1478,6 +1478,12 @@ async def run_council(
         agents_failed=result.agents_failed,
         committee_label=result.committee_label,
     )
+    # V3.0 Slice 5 — carry the run's consumption on the result rather than
+    # leaving it in the pacer's tracker, which is destroyed when this returns.
+    # The counts already existed and were logged per attempt; nothing aggregated
+    # them to a run, so "what did this run cost" could only be answered by
+    # grepping logs, and only while the logs were retained.
+    result.consumption = consumption.from_usage_tracker(tracker).to_dict()
     return result
 
 
@@ -1889,6 +1895,17 @@ async def maybe_run_council(
         # ONLY when both gate flags are on ⇒ dark-by-default byte-identical.
         if primary_document_artifacts:
             result.primary_document_artifacts = primary_document_artifacts
+        # Deep ingestion happens HERE, not inside ``run_council``, so the
+        # document count is added at this level. Counted from the extracted
+        # documents rather than from the candidates considered: a document that
+        # was fetched and failed to parse still cost the fetch.
+        result.consumption = (
+            consumption.ConsumptionUnits.from_dict(result.consumption)
+            + consumption.ConsumptionUnits(
+                documents_downloaded=len(result.primary_documents or []),
+                instrumented=frozenset({"documents_downloaded"}),
+            )
+        ).to_dict()
         return result
     except Exception as exc:  # noqa: BLE001 - never let the council crash a report
         log_event(
