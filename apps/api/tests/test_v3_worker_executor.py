@@ -196,8 +196,9 @@ class TestEnqueue:
         )
         assert created is False
         assert joined.id == first.id
-        # And it reads as interrupted to a human, without being mutated.
-        assert contract.derive_status(joined, long_after) == contract.STATUS_INTERRUPTED
+        # It has attempts left, so a worker will reclaim it: the reader is told
+        # it is queued, not that their run stopped and it is on them to retry.
+        assert contract.derive_status(joined, long_after) == contract.STATUS_PENDING
 
     async def test_base_key_is_recoverable_from_a_stored_key(self):
         assert base_key("company_research:abc#7") == "company_research:abc"
@@ -402,10 +403,12 @@ class TestOutcomes:
 
     async def test_interrupted_is_never_stored(self, store, factory):
         """Vocabulary integrity. ``interrupted`` is a read-time derivation only."""
-        await store.enqueue(job_type=JOB_TYPE, idempotency_key="k")
+        await store.enqueue(job_type=JOB_TYPE, idempotency_key="k", max_attempts=1)
         claimed = await store.claim_next(owner="w1", now=_now(), lease_seconds=1)
         long_after = _now() + timedelta(hours=1)
 
+        # Attempts exhausted, so nothing will reclaim it and ``interrupted`` is
+        # the true reading.
         envelope = await store.describe(claimed.id, now=long_after)
         assert envelope["status"] == contract.STATUS_INTERRUPTED
         assert envelope["recoverable"] is True
@@ -600,11 +603,13 @@ class TestWorkerLoop:
         with pytest.raises(asyncio.CancelledError):
             await task
 
-        # The row is exactly as A left it, and reads as interrupted to a human.
+        # The row is exactly as A left it. It has attempts remaining, so the
+        # reader is told it is queued for another worker — which is what happens
+        # next — rather than that their run stopped.
         long_after = _now() + timedelta(minutes=10)
         assert (await store.describe(view.id, now=long_after))[
             "status"
-        ] == contract.STATUS_INTERRUPTED
+        ] == contract.STATUS_PENDING
 
         reclaimed = await store.claim_next(owner="B", now=long_after)
         assert reclaimed is not None

@@ -38,6 +38,7 @@ from app.schemas.company_research import (
 )
 from app.services import company_research_service as svc
 from app.services import research_job
+from app.services.jobs import company_research_job as durable
 
 router = APIRouter(prefix="/company-research", tags=["company-research"])
 
@@ -59,6 +60,13 @@ _STATUS_MESSAGES = {
         "likely an app restart). Nothing already collected was lost; "
         "re-running is safe."
     ),
+    # V3 durable path only. Both are terminal states that could not exist before
+    # durability, because nothing retried and nothing could be cancelled.
+    durable.contract.STATUS_DEAD_LETTER: (
+        "Research stopped after every attempt failed. Nothing already collected "
+        "was lost, and re-running is safe — see 'dead_letter_reason'."
+    ),
+    durable.contract.STATUS_CANCELLED: "Research was cancelled before it finished.",
 }
 
 
@@ -83,6 +91,23 @@ def _message(envelope: dict) -> str:
         f"Research complete for {label}.{note} Internal draft only — human "
         "review required."
     )
+
+
+async def _read_job(db: AsyncSession, job_id: uuid.UUID) -> dict | None:
+    """One job's envelope, from whichever store owns it.
+
+    The durable store is tried first, then the V2 lookup. Both are single UUID
+    reads, and the fallback is what keeps every job created before the flag was
+    turned on resolvable — the compatibility guarantee the migration plan makes.
+    A durable job id is a ``research_jobs.id``; a V2 job id is an ``AgentRun.id``;
+    the two id spaces never collide because they are independent UUIDs.
+    """
+    if durable.durable_enabled():
+        envelope = await durable.get_envelope(job_id)
+        if envelope is not None:
+            return envelope
+    v2 = await svc.get_job_envelope(db, job_id)
+    return research_job.describe(v2) if v2 is not None else None
 
 
 @router.post(
@@ -126,21 +151,36 @@ async def start_company_research_job(
             ),
         )
 
-    envelope, scheduled = await svc.start_company_research(
-        db,
-        company,
-        provider_name=payload.provider_name,
-        use_llm=payload.use_llm,
-        llm_provider=payload.llm_provider,
-        require_schema_valid=payload.require_schema_valid,
-    )
-    if scheduled:
-        # Run the (already-committed pending) job in the background using its
-        # OWN DB session — never the request-scoped one, which is closed once
-        # this response is sent. Only the primitive job id is handed over.
-        background_tasks.add_task(
-            svc.process_company_research_task, str(envelope["job_id"])
+    if durable.durable_enabled():
+        # V3: commit a durable job row and let a leased worker claim it. The
+        # work is no longer tied to THIS process, so an App Service recycle
+        # suspends the run instead of destroying it.
+        envelope, scheduled = await durable.submit(
+            company,
+            provider_name=payload.provider_name,
+            use_llm=payload.use_llm,
+            llm_provider=payload.llm_provider,
+            require_schema_valid=payload.require_schema_valid,
         )
+    else:
+        envelope, scheduled = await svc.start_company_research(
+            db,
+            company,
+            provider_name=payload.provider_name,
+            use_llm=payload.use_llm,
+            llm_provider=payload.llm_provider,
+            require_schema_valid=payload.require_schema_valid,
+        )
+    if scheduled:
+        if not durable.durable_enabled():
+            # V2: run the (already-committed pending) job in a background task
+            # using its OWN DB session — never the request-scoped one, which is
+            # closed once this response is sent. Only the primitive job id is
+            # handed over. On the durable path there is nothing to schedule: a
+            # worker claims the committed row.
+            background_tasks.add_task(
+                svc.process_company_research_task, str(envelope["job_id"])
+            )
         message = (
             "Research started. It runs on the server — you can leave this page. "
             "Internal draft only; human review required."
@@ -170,13 +210,12 @@ async def get_company_research_job(
     job_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
 ) -> CompanyResearchJobResponse:
-    envelope = await svc.get_job_envelope(db, job_id)
+    envelope = await _read_job(db, job_id)
     if envelope is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"No company-research job {job_id} exists.",
         )
-    envelope = research_job.describe(envelope)
     return CompanyResearchJobResponse.from_envelope(
         envelope, message=_message(envelope)
     )
@@ -200,13 +239,17 @@ async def latest_company_research_job(
     ),
     db: AsyncSession = Depends(get_db),
 ) -> CompanyResearchJobResponse:
-    envelope = await svc.latest_job_for_company(db, company_id)
+    envelope = None
+    if durable.durable_enabled():
+        envelope = await durable.latest_envelope_for_company(company_id)
+    if envelope is None:
+        v2 = await svc.latest_job_for_company(db, company_id)
+        envelope = research_job.describe(v2) if v2 is not None else None
     if envelope is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="No company-research job has been run for this company.",
         )
-    envelope = research_job.describe(envelope)
     return CompanyResearchJobResponse.from_envelope(
         envelope, message=_message(envelope)
     )

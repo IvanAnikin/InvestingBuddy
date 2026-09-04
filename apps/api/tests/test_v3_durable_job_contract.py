@@ -341,10 +341,26 @@ class TestDerivedStatus:
         claimed = jc.claim(_job(), owner="w", now=T0)
         assert jc.derive_status(claimed, T0 + timedelta(seconds=10)) == "running"
 
-    def test_a_lapsed_lease_reads_as_interrupted(self):
-        """The owner stopped saying it was alive. That IS the evidence."""
-        claimed = jc.claim(_job(), owner="w", now=T0)
+    def test_a_lapsed_lease_with_attempts_left_reads_as_pending(self):
+        """The owner stopped saying it was alive — and another worker is coming.
+
+        V2 had nothing that reclaimed, so every lapsed lease meant "nobody is
+        coming, act". That is no longer true. Calling this ``interrupted`` would
+        tell a reader their run had stopped and that re-running was up to them,
+        moments before it resumed on its own — and because the UI treats
+        ``interrupted`` as terminal it would also stop polling a job that was
+        about to produce a report.
+        """
+        claimed = jc.claim(_job(max_attempts=3), owner="w", now=T0)
         after = T0 + timedelta(seconds=jc.DEFAULT_LEASE_SECONDS + 1)
+        assert claimed.attempt < claimed.max_attempts
+        assert jc.derive_status(claimed, after) == research_job.STATUS_PENDING
+
+    def test_a_lapsed_lease_with_no_attempts_left_reads_as_interrupted(self):
+        """Nobody is coming: ``is_claimable`` refuses it and the scan retires it."""
+        claimed = jc.claim(_job(attempt=2, max_attempts=3), owner="w", now=T0)
+        after = T0 + timedelta(seconds=jc.DEFAULT_LEASE_SECONDS + 1)
+        assert jc.attempts_exhausted(claimed)
         assert jc.derive_status(claimed, after) == research_job.STATUS_INTERRUPTED
 
     def test_deriving_interrupted_does_not_mutate_the_job(self):
@@ -361,12 +377,23 @@ class TestDerivedStatus:
         assert jc.derive_status(done, T0 + timedelta(days=365)) == "completed"
 
     def test_interrupted_envelope_says_re_running_is_safe(self):
-        claimed = jc.claim(_job(), owner="w", now=T0)
+        claimed = jc.claim(_job(attempt=2, max_attempts=3), owner="w", now=T0)
         after = T0 + timedelta(seconds=jc.DEFAULT_LEASE_SECONDS + 1)
         out = jc.describe(claimed, after)
         assert out["status"] == "interrupted"
         assert out["recoverable"] is True
         assert "re-running is safe" in out["interrupted_reason"]
+
+    def test_a_job_awaiting_reclaim_is_not_told_to_re_run(self):
+        """The reader must not be handed a decision the system is about to make."""
+        claimed = jc.claim(_job(max_attempts=3), owner="w", now=T0)
+        after = T0 + timedelta(seconds=jc.DEFAULT_LEASE_SECONDS + 1)
+        out = jc.describe(claimed, after)
+        assert out["status"] == research_job.STATUS_PENDING
+        assert "interrupted_reason" not in out
+        assert "recoverable" not in out
+        # The dead worker's last reported stage still stands.
+        assert out["attempt"] == 1
 
     def test_dead_letter_envelope_carries_its_reason(self):
         job = _job(status="running", attempt=3, max_attempts=3)
