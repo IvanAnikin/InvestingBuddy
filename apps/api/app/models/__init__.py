@@ -6,6 +6,7 @@ from app.models.extracted_document import ExtractedDocument, ExtractedFact
 from app.models.field_review import FieldReviewCandidateSummary, FieldReviewRun
 from app.models.report import Report
 from app.models.research_artifact import ResearchArtifact
+from app.models.research_chunk import ResearchDocumentChunk
 from app.models.research_derivation import (
     ResearchDocumentDerivation,
     ResearchDocumentPage,
@@ -32,6 +33,7 @@ __all__ = [
     "Report",
     "ResearchArtifact",
     "ResearchDocument",
+    "ResearchDocumentChunk",
     "ResearchDocumentDerivation",
     "ResearchDocumentPage",
     "ResearchDocumentSection",
