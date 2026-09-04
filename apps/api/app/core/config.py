@@ -1055,6 +1055,26 @@ class Settings(BaseSettings):
     # short is not worth citing on its own.
     v3_corpus_chunk_min_chars: int = 300
 
+    # ── V3.1: reprocessing (the "deep" extraction profile) ──────────────────
+    # How many PDF pages a REPROCESSING run may open, from the retained raw bytes
+    # and off the live request path. 0 — the default — means no deep profile is
+    # configured and reprocessing runs under the same caps as the live path.
+    #
+    # This is deliberately separate from ``primary_document_max_pdf_pages`` (40)
+    # rather than a raise of it. That setting is bounded by the deployed gunicorn
+    # worker timeout, and the two drifted apart once and cost six live outages;
+    # raising it would put every request back under that risk. A reprocessing run
+    # has no request waiting on it and no worker heartbeat at stake, so it can read
+    # the whole document — which is the entire reason the raw bytes are retained.
+    #
+    # The pages a parse was allowed to open are part of what the parse IS, so a
+    # deep run is a SEPARATE derivation (``extraction_profile``) rather than an
+    # overwrite of the live one.
+    v3_corpus_reprocess_max_pdf_pages: int = 0
+    # Wall-clock budget for one deep extraction. Generous on purpose: nothing is
+    # waiting. Never consulted on the live path.
+    v3_corpus_reprocess_timeout_seconds: int = 600
+
     # ── Real OCR: Azure Document Intelligence (Phase 32A Slice 5B.2) ─────────
     # Only ever consulted when ``primary_document_ocr_enabled`` (Slice 5,
     # default False) is also True. With the endpoint left empty (the default),

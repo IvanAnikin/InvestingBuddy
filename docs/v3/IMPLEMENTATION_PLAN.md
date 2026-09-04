@@ -77,7 +77,7 @@ Branch naming: `feature/v3-<phase>-<slice>-<short-name>`.
 | 1.4 | [`feature/v3-1-4-search-interface`](slices/V3.1-4-search-interface.md) | `SearchBackend` protocol + `CorpusQuery`/`CorpusHit` + rank fusion + in-memory backend. **Stopped at the backend-selection gate** — [OPEN DECISION #1](OPEN_DECISIONS.md#1-azure-ai-search-vs-postgresql--pgvector). | No | `IMPLEMENTED` |
 | 1.5 | [`feature/v3-1-5-document-aware-chunking`](slices/V3.1-5-document-aware-chunking.md) | Document-aware chunking with stable chunk identity + denormalized entity/period/scope filter keys. | **Yes** (024) | `IMPLEMENTED` |
 | 1.6 | [`feature/v3-1-6-corpus-retrieval-service`](slices/V3.1-6-corpus-retrieval-service.md) | Typed `search_corpus(...)` + `resolve_evidence(...)`; every hit carries citation-complete lineage, and no backend query syntax reaches a caller. | No | `IMPLEMENTED` |
-| 1.7 | `feature/v3-1-7-reprocessing-lifecycle` | Deterministic re-extraction under a new parser version; prior derivations retained and auditable. | No | `NOT STARTED` |
+| 1.7 | [`feature/v3-1-7-reprocessing-lifecycle`](slices/V3.1-7-reprocessing-lifecycle.md) | Deterministic re-extraction under a new parser version or a larger budget, from the retained bytes; prior derivations retained and auditable. | **Yes** (025) | `IMPLEMENTED` |
 
 The register above splits the original six-slice plan into seven. Slice 1.2 was
 carrying both the logical document *and* every parsed sub-entity; separating them
@@ -242,6 +242,7 @@ approval.
 | 2026-09-04 | V3.1 Slice 1.4 — search backend abstraction | `feature/v3-1-4-search-interface` | `001948a` |
 | 2026-09-04 | V3.1 Slice 1.5 — document-aware chunking | `feature/v3-1-5-document-aware-chunking` | `1e2e781` |
 | 2026-09-04 | V3.1 Slice 1.6 — corpus retrieval service | `feature/v3-1-6-corpus-retrieval-service` | `d867f70` |
+| 2026-09-04 | V3.1 Slice 1.7 — reprocessing lifecycle | `feature/v3-1-7-reprocessing-lifecycle` | _pending_ |
 
 ---
 

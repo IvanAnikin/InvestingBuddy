@@ -165,6 +165,25 @@ class TestChunkIdentity:
         assert identity.startswith("c:")
         assert len(identity) <= 80
 
+    def test_a_different_extraction_profile_is_a_different_chunk(self) -> None:
+        # Found by a real 169-page annual report: a DEEP reprocess re-reads the
+        # same leading pages, so without the profile in the key its first chunks
+        # share an ordinal and an offset range with the live parse's and hash to
+        # the same id — two derivations, one chunk id, UNIQUE violation.
+        from app.models.research_derivation import PROFILE_DEEP, PROFILE_LIVE
+
+        base = dict(
+            research_document_version_id=VERSION_ID,
+            pipeline_version=CURRENT_EXTRACTION_PIPELINE_VERSION,
+            kind=CHUNK_KIND_PROSE,
+            ordinal=0,
+            char_start=0,
+            char_end=1139,
+        )
+        assert chunk_identity(extraction_profile=PROFILE_LIVE, **base) != chunk_identity(  # type: ignore[arg-type]
+            extraction_profile=PROFILE_DEEP, **base  # type: ignore[arg-type]
+        )
+
     def test_two_documents_never_share_a_chunk_id(self) -> None:
         a = chunk_identity(
             research_document_version_id=uuid.uuid4(),
@@ -584,6 +603,47 @@ class TestPersistence:
         _, _, _, rows, _ = await self._persist(session, access_class="licensed_private")
         assert rows
         assert all(row.indexable is False for row in rows)
+
+    async def test_two_derivations_of_one_version_can_both_hold_chunks(
+        self, session
+    ) -> None:  # noqa: ANN001
+        # The regression a real document found: a deep reprocess re-reads the same
+        # leading pages, so its first chunks would collide with the live parse's
+        # unless the extraction profile is part of the identity.
+        from app.models.research_derivation import PROFILE_DEEP
+
+        cfg = Settings(v3_corpus_enabled=True)
+        _, version, live_derivation, live_rows, _ = await self._persist(session)
+        parsed = build_parsed_document(
+            _extraction(
+                blocks=[
+                    ExtractedBlock(page_number=1, section="Group results", text=_para("G", 20)),
+                    ExtractedBlock(
+                        page_number=2, section="Segment information", text=_para("S", 20)
+                    ),
+                    ExtractedBlock(page_number=3, section="Notes", text=_para("N", 20)),
+                ]
+            ),
+            extraction_profile=PROFILE_DEEP,
+        )
+        deep_derivation = await persist_parsed_document(
+            session, version_id=version.id, parsed=parsed, cfg=cfg
+        )
+        assert deep_derivation is not None and parsed is not None
+        deep_rows = await persist_chunks(
+            session,
+            version=version,
+            derivation=deep_derivation,
+            parsed=parsed,
+            cfg=cfg,
+        )
+        assert deep_rows
+        assert live_derivation.id != deep_derivation.id
+        live_ids = {r.chunk_id for r in live_rows}
+        deep_ids = {r.chunk_id for r in deep_rows}
+        assert live_ids.isdisjoint(deep_ids)
+        stored = (await session.execute(select(ResearchDocumentChunk))).scalars().all()
+        assert len(stored) == len(live_rows) + len(deep_rows)
 
     async def test_dropping_one_derivations_chunks_leaves_another_alone(
         self, session

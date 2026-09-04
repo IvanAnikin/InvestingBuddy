@@ -38,13 +38,21 @@ CHUNK IDENTITY
 ==============
 Stable, derived, and never assigned by an index:
 
-    sha256(version_id | pipeline_version | kind | ordinal | char_start | char_end | table_location)
+    sha256(version_id | pipeline_version | profile | kind | ordinal | offsets | table_location)
 
-Re-running the same parser over the same document version reproduces the same ids
-exactly, so reindexing puts the same span back in the same slot and an existing
-citation keeps resolving. Re-parsing under a NEW pipeline version deliberately
-produces new ids — it is a different reading of the document — and the old
-derivation and its chunks are retained, so the old citation still resolves too.
+Re-running the same parser over the same document version, under the same budget,
+reproduces the same ids exactly — so reindexing puts the same span back in the
+same slot and an existing citation keeps resolving. Re-parsing under a NEW
+pipeline version, or under a different EXTRACTION PROFILE, deliberately produces
+new ids: both are different readings of the document, and the old derivation and
+its chunks are retained so the old citation still resolves too.
+
+``extraction_profile`` earns its place in the key the hard way. Without it, a deep
+reprocess of a real 169-page annual report collided on its first chunk: the deep
+parse re-reads the same first pages, so its leading chunks have the same ordinal
+and the same offsets as the live parse's and hashed to the same id. Two
+derivations, one chunk id, and a UNIQUE violation that took a real document to
+produce.
 """
 
 from __future__ import annotations
@@ -56,6 +64,7 @@ from datetime import date
 from typing import TYPE_CHECKING
 
 from app.models.research_chunk import CHUNK_KIND_PROSE, CHUNK_KIND_TABLE
+from app.models.research_derivation import PROFILE_LIVE
 
 if TYPE_CHECKING:
 
@@ -105,17 +114,24 @@ def chunk_identity(
     char_start: int,
     char_end: int,
     table_location: str | None = None,
+    extraction_profile: str = PROFILE_LIVE,
 ) -> str:
     """The stable chunk id. Pure, and deliberately not a row id.
 
     A row id would be assigned by whichever database wrote it, so rebuilding the
     corpus would invalidate every citation. This is a function of the document's
     own coordinates, so it survives a rebuild.
+
+    ``extraction_profile`` is part of the key because a deep re-read of the same
+    document re-reads the same leading pages: without it, the deep derivation's
+    first chunks share an ordinal and an offset range with the live one's and hash
+    to the same id.
     """
     raw = "|".join(
         [
             str(research_document_version_id),
             str(int(pipeline_version)),
+            extraction_profile or PROFILE_LIVE,
             kind,
             str(int(ordinal)),
             str(int(char_start)),
@@ -207,6 +223,7 @@ def build_chunks(
                     chunk_id=chunk_identity(
                         research_document_version_id=research_document_version_id,
                         pipeline_version=parsed.pipeline_version,
+                        extraction_profile=parsed.extraction_profile,
                         kind=CHUNK_KIND_PROSE,
                         ordinal=ordinal,
                         char_start=start,
@@ -237,6 +254,7 @@ def build_chunks(
                 chunk_id=chunk_identity(
                     research_document_version_id=research_document_version_id,
                     pipeline_version=parsed.pipeline_version,
+                    extraction_profile=parsed.extraction_profile,
                     kind=CHUNK_KIND_TABLE,
                     ordinal=ordinal,
                     char_start=0,

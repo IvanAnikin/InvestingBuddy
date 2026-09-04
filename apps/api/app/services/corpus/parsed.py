@@ -60,6 +60,7 @@ from sqlalchemy import select
 from app.models.research_derivation import (
     DERIVATION_COMPLETE,
     DERIVATION_PARTIAL,
+    PROFILE_LIVE,
     ResearchDocumentDerivation,
     ResearchDocumentPage,
     ResearchDocumentSection,
@@ -143,6 +144,8 @@ class ParsedDocument:
     pipeline_version: int
     extraction_method: str
     paginated: bool
+    #: Which budget produced this parse. Part of the derivation's identity.
+    extraction_profile: str = PROFILE_LIVE
     pages: list[ParsedPage] = field(default_factory=list)
     sections: list[ParsedSection] = field(default_factory=list)
     tables: list[ParsedTable] = field(default_factory=list)
@@ -183,7 +186,7 @@ def _clip(value: str | None, limit: int) -> str | None:
 
 
 def build_parsed_document(
-    extraction: Any, *, max_pages: int = 0
+    extraction: Any, *, max_pages: int = 0, extraction_profile: str = PROFILE_LIVE
 ) -> ParsedDocument | None:
     """Build the parsed structure from one extraction. Pure; never raises.
 
@@ -212,6 +215,7 @@ def build_parsed_document(
         pipeline_version=CURRENT_EXTRACTION_PIPELINE_VERSION,
         extraction_method=method,
         paginated=paginated,
+        extraction_profile=extraction_profile,
         page_count=getattr(extraction, "page_count", None),
         truncated=bool(getattr(extraction, "truncated", False)),
         language=_clip(getattr(extraction, "language", None), _LANGUAGE_MAX),
@@ -431,6 +435,8 @@ async def persist_parsed_document(
             .where(
                 ResearchDocumentDerivation.research_document_version_id == version_id,
                 ResearchDocumentDerivation.pipeline_version == parsed.pipeline_version,
+                ResearchDocumentDerivation.extraction_profile
+                == parsed.extraction_profile,
             )
             .limit(1)
         )
@@ -444,6 +450,7 @@ async def persist_parsed_document(
         research_document_version_id=version_id,
         pipeline_version=parsed.pipeline_version,
         extraction_method=parsed.extraction_method,
+        extraction_profile=parsed.extraction_profile,
         status=parsed.status,
         is_active=False,
         pages_persisted=len(parsed.pages),
@@ -519,13 +526,29 @@ async def persist_parsed_document(
     return derivation
 
 
+def _precedence(derivation: ResearchDocumentDerivation) -> "tuple[int, int]":
+    """What makes one derivation a better reading of a document than another.
+
+    ``(pipeline_version, pages_persisted)``, in that order, and the order is the
+    argument:
+
+    * a NEWER PARSER always wins, because the version is bumped exactly when the
+      meaning of already-extracted text changed — a derivation under version 13
+      contains readings this codebase has since decided were wrong;
+    * at the same parser, MORE OF THE DOCUMENT wins. A deep reprocessing run that
+      opened 169 pages is a better reading than the live run that opened 40, and
+      a smaller re-run must never be able to take over from a larger one.
+    """
+    return (int(derivation.pipeline_version), int(derivation.pages_persisted or 0))
+
+
 async def _activate_if_newer(
     session: "Any",
     *,
     derivation: ResearchDocumentDerivation,
     result: DerivationResult,
 ) -> None:
-    """Promote ``derivation`` when its parser is newer than the incumbent's.
+    """Promote ``derivation`` when it is a better reading than the incumbent.
 
     The demotion is flushed BEFORE the promotion: the partial unique index means
     two active derivations cannot coexist for even one statement, and SQLAlchemy
@@ -544,8 +567,9 @@ async def _activate_if_newer(
     ).scalar_one_or_none()
 
     if current is not None:
-        if current.pipeline_version >= derivation.pipeline_version:
-            # Reprocessing under a stale parser must not roll the corpus back.
+        if _precedence(current) >= _precedence(derivation):
+            # Reprocessing under a stale parser, or one that read LESS of the
+            # document, must not roll the corpus back.
             return
         current.is_active = False
         current.superseded_at = derivation.created_at

@@ -52,6 +52,16 @@ DERIVATION_COMPLETE = "complete"
 DERIVATION_PARTIAL = "partial"
 DERIVATION_FAILED = "failed"
 
+#: How much of the document a parse was ALLOWED to read. The pages a parse could
+#: open are part of what the parse is, so two runs of the same parser under
+#: different budgets are two derivations rather than one.
+#:
+#: ``live`` is the request path, bounded by the gunicorn worker timeout — a bound
+#: that drifted once and cost six outages. ``deep`` is a reprocessing run from the
+#: retained bytes, off the request path, where nothing is waiting.
+PROFILE_LIVE = "live"
+PROFILE_DEEP = "deep"
+
 
 class ResearchDocumentDerivation(Base):
     """One parse of one document version, under one pipeline version."""
@@ -76,6 +86,13 @@ class ResearchDocumentDerivation(Base):
     pipeline_version: Mapped[int] = mapped_column(sa.Integer, nullable=False)
     #: ``native_pdf`` | ``html`` | ``ocr`` — the existing extraction vocabulary.
     extraction_method: Mapped[str] = mapped_column(sa.String(50), nullable=False)
+    #: ``live`` | ``deep`` — which budget this parse ran under. Part of the
+    #: derivation's identity, because re-running the same parser with a larger page
+    #: cap produces a genuinely different and better reading of the document, and
+    #: without this column the second run would find the first and skip.
+    extraction_profile: Mapped[str] = mapped_column(
+        sa.String(30), nullable=False, default=PROFILE_LIVE, server_default=PROFILE_LIVE
+    )
     #: ``complete`` | ``partial`` | ``failed``. See the module note on why
     #: ``partial`` is the honest common case for a long annual report.
     status: Mapped[str] = mapped_column(sa.String(20), nullable=False)
@@ -125,6 +142,7 @@ class ResearchDocumentDerivation(Base):
             "ix_research_document_derivations_version_pipeline",
             "research_document_version_id",
             "pipeline_version",
+            "extraction_profile",
             unique=True,
         ),
         sa.Index(
@@ -138,8 +156,8 @@ class ResearchDocumentDerivation(Base):
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return (
-            f"<ResearchDocumentDerivation v{self.pipeline_version} "
-            f"{self.status} active={self.is_active}>"
+            f"<ResearchDocumentDerivation v{self.pipeline_version}/"
+            f"{self.extraction_profile} {self.status} active={self.is_active}>"
         )
 
 
@@ -318,6 +336,8 @@ __all__ = [
     "DERIVATION_COMPLETE",
     "DERIVATION_FAILED",
     "DERIVATION_PARTIAL",
+    "PROFILE_DEEP",
+    "PROFILE_LIVE",
     "ResearchDocumentDerivation",
     "ResearchDocumentPage",
     "ResearchDocumentSection",
