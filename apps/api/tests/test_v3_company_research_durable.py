@@ -60,6 +60,26 @@ def _compile_jsonb_as_json_on_sqlite(element, compiler, **kw):  # noqa: ANN001
     return "JSON"
 
 
+def _sqlite_wal(engine):
+    """Let a reader and a writer coexist, and fail fast instead of waiting.
+
+    The durable path writes from two tasks at once (a heartbeat renewing the
+    lease while the handler persists its work). SQLite serialises writers, so
+    with the default rollback journal the heartbeat blocks every read as well —
+    on a 10ms heartbeat that is constant contention, and the suite spent minutes
+    inside SQLite's busy handler. WAL removes the reader/writer conflict, which
+    is the shape PostgreSQL has in production anyway.
+    """
+    from sqlalchemy import event
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def _pragmas(dbapi_connection, _record):  # noqa: ANN001
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA synchronous=OFF")
+        cursor.close()
+
+
 @pytest.fixture
 async def engine(tmp_path):
     """A FILE-backed SQLite database, deliberately not ``:memory:``.
@@ -79,6 +99,7 @@ async def engine(tmp_path):
         f"sqlite+aiosqlite:///{tmp_path}/v3jobs.db",
         connect_args={"check_same_thread": False, "timeout": 30},
     )
+    _sqlite_wal(eng)
     async with eng.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     yield eng
@@ -194,7 +215,7 @@ async def _run_the_job(store, factory, *, report_id, **kw):
         handlers=reg,
         owner="test-worker",
         lease_seconds=120,
-        heartbeat_seconds=0.01,
+        heartbeat_seconds=0.2,
         poll_interval_seconds=0.01,
     )
     return await worker.run_once()

@@ -36,7 +36,6 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.ext.compiler import compiles
-from sqlalchemy.pool import StaticPool
 
 from app.db.base import Base
 from app.models import agent_run as _agent_run  # noqa: F401
@@ -70,13 +69,41 @@ def _compile_jsonb_as_json_on_sqlite(element, compiler, **kw):  # noqa: ANN001
 JOB_TYPE = "test_research"
 
 
+def _sqlite_wal(engine):
+    """Let a reader and a writer coexist, and fail fast instead of waiting.
+
+    The durable path writes from two tasks at once (a heartbeat renewing the
+    lease while the handler persists its work). SQLite serialises writers, so
+    with the default rollback journal the heartbeat blocks every read as well —
+    on a 10ms heartbeat that is constant contention, and the suite spent minutes
+    inside SQLite's busy handler. WAL removes the reader/writer conflict, which
+    is the shape PostgreSQL has in production anyway.
+    """
+    from sqlalchemy import event
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def _pragmas(dbapi_connection, _record):  # noqa: ANN001
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA synchronous=OFF")
+        cursor.close()
+
+
 @pytest.fixture
-async def engine():
+async def engine(tmp_path):
+    # FILE-backed, deliberately not ``:memory:``. The worker heartbeats from one
+    # task while the handler works in another, so two sessions are genuinely
+    # concurrent — and in-memory SQLite with ``StaticPool`` shares ONE connection
+    # across every session. When that connection is invalidated the pool opens a
+    # fresh one, which for ``:memory:`` is an empty database ("no such table").
+    # That is a harness artifact, not a defect in the code: PostgreSQL gives
+    # every session its own connection. ``timeout`` lets a writer wait for
+    # SQLite's single write lock rather than failing immediately.
     eng = create_async_engine(
-        "sqlite+aiosqlite:///:memory:",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
+        f"sqlite+aiosqlite:///{tmp_path}/v3jobs.db",
+        connect_args={"check_same_thread": False, "timeout": 30},
     )
+    _sqlite_wal(eng)
     async with eng.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     yield eng
@@ -470,7 +497,7 @@ def _worker(store, reg, *, owner="w1", **kw) -> ResearchWorker:
         handlers=reg,
         owner=owner,
         lease_seconds=kw.pop("lease_seconds", 120),
-        heartbeat_seconds=kw.pop("heartbeat_seconds", 0.01),
+        heartbeat_seconds=kw.pop("heartbeat_seconds", 0.05),
         poll_interval_seconds=kw.pop("poll_interval_seconds", 0.01),
         **kw,
     )
