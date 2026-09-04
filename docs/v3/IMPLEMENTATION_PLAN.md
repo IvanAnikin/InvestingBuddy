@@ -9,7 +9,7 @@
 
 | Phase | Goal | Status |
 |---|---|---|
-| **V3.0** | Execution and correctness foundation | `IN PROGRESS` |
+| **V3.0** | Execution and correctness foundation | `IMPLEMENTED` — not `VALIDATED`: no live-issuer run has been performed, because V3 is not deployed. See [the phase gate](#9-v30-phase-gate). |
 | **V3.1** | Research Corpus | `NOT STARTED` |
 | **V3.2** | Entity Master and global universe | `NOT STARTED` |
 | **V3.3** | Research tools and calculation engine | `NOT STARTED` |
@@ -65,7 +65,7 @@ Branch naming: `feature/v3-<phase>-<slice>-<short-name>`.
 | 0.3.1 | [`feature/v3-0-3-1-research-stage-accuracy`](slices/V3.0-3.1-research-stage-accuracy.md) | **Corrective.** The stage map named the wrong stages, and the two longest phases (ingestion, council) run after the graph and reported nothing. Report the phase in flight. | No | `IMPLEMENTED` |
 | 0.4 | [`feature/v3-0-4-server-side-numeric-verification`](slices/V3.0-4-server-side-numeric-verification.md) | Move canonical numeric reconciliation server-side; frontend guard stays as defence in depth. | No | `IMPLEMENTED` |
 | 0.5 | [`feature/v3-0-5-run-consumption-telemetry`](slices/V3.0-5-run-consumption-telemetry.md) | Vendor-neutral consumption units + `ResearchBudget` enforcement points. | **Yes** (020) | `IMPLEMENTED` |
-| 0.6 | `feature/v3-0-6-service-bus-adapter` | Optional Service Bus delivery in front of the same job store. | No | `NOT STARTED` |
+| 0.6 | `feature/v3-0-6-service-bus-adapter` | Optional Service Bus delivery in front of the same job store. | No | `BLOCKED` — [OPEN DECISION #2](OPEN_DECISIONS.md#2-service-bus-worker-topology), user-owned (cost). Not a V3.0 prerequisite: the recommendation is explicitly "(c) PostgreSQL polling first", which 0.2/0.3 implement. |
 
 ### V3.1 — Research Corpus
 
@@ -227,3 +227,51 @@ approval.
 | 2026-09-04 | V3.0 Slice 3.1 — research-stage accuracy (corrective) | `feature/v3-0-3-1-research-stage-accuracy` | `e9b6e9c` |
 | 2026-09-04 | V3.0 Slice 4 — server-side numeric verification | `feature/v3-0-4-server-side-numeric-verification` | `31b9fa2` |
 | 2026-09-04 | V3.0 Slice 5 — run consumption telemetry | `feature/v3-0-5-run-consumption-telemetry` | `ab3fda4` |
+
+---
+
+## 9. V3.0 phase gate
+
+**Status: `IMPLEMENTED`, not `VALIDATED`.** Every slice that could be built
+without a user decision is built, tested and merged. What separates this from
+`VALIDATED` is live data, and that is unavailable by construction: V3 is not
+deployed and its migrations must not reach the live environment.
+
+### What the phase set out to prove (§3 of the acceptance strategy)
+
+| Demonstration | Status |
+|---|---|
+| A job survives worker restart | ✅ `test_a_job_survives_a_worker_restart` — worker A killed mid-run, worker B reclaims (attempt 2) and completes |
+| A duplicate submit joins rather than duplicates | ✅ `test_only_one_row_exists_after_a_duplicate_submit`, `test_concurrent_submits_produce_one_job` |
+| An expired lease is reclaimed exactly once | ✅ `test_an_expired_lease_is_reclaimed_exactly_once` — 6 concurrent reclaims, 1 winner, against a real database |
+| Attempts are bounded and dead-letter is reachable | ✅ `test_attempts_are_bounded_and_dead_letter_is_reachable`, and Slice 2.1 closed the hole where a *killed* worker never reached `fail()` at all |
+| Cancellation is honoured at a task boundary | ✅ `test_cancellation_is_honoured_at_a_task_boundary` — step 1 completes, step 2 never starts |
+| No status vocabulary drift from `research_job.py` | ✅ `TestVocabulary`; `interrupted` is still derived and never stored |
+
+### What is deliberately NOT done
+
+| Item | Why |
+|---|---|
+| Slice 0.6 — Service Bus adapter | [OPEN DECISION #2](OPEN_DECISIONS.md#2-service-bus-worker-topology), **user-owned** (whether a second App Service is affordable). Its own recommendation is "(c) PostgreSQL polling first", which 0.2/0.3 implement — so this is not a V3.0 prerequisite. |
+| `develop/v3` in the CI workflows | [OPEN DECISION #17](OPEN_DECISIONS.md#17-ci-coverage-for-the-v3-branch), **user-owned**, and the files also live on `main`. `scripts/v3-gates.sh` removes the manual cost without taking the decision. |
+| Budget ceilings and prices | [OPEN DECISIONS #13/#14](OPEN_DECISIONS.md#13-model-cost-thresholds), **user-owned**. #14 wants them derived from the measurements Slice 5 produces; guessing a default would answer a question asked of somebody else. |
+| Live-issuer acceptance | V3 is not deployed and migration 020 has not been applied anywhere. This is the single largest gap and the reason the phase is not `VALIDATED`. |
+| The other five `BackgroundTasks` call sites | Field review and market discovery still run process-local. One entry point at a time; `/company-research/jobs` is the product's front door. |
+
+### Migrations created, not deployed
+
+| Migration | Table | Applied where |
+|---|---|---|
+| 019 | `research_jobs` | Scratch PostgreSQL only. **Not** in any deployed environment. |
+| 020 | `research_run_consumption` | Scratch PostgreSQL only (`ib_v3_migcheck_020`, created and dropped). **Not** in any deployed environment. The local dev database was re-checked afterwards and is still at **018**. |
+
+### Recommended V3.1 starting slice
+
+**1.1 — `feature/v3-1-1-raw-artifact-store`.** It is the only V3.1 slice with no
+open decision in front of it: [#1](OPEN_DECISIONS.md#1-azure-ai-search-vs-postgresql--pgvector)
+blocks 1.4 and [#12](OPEN_DECISIONS.md#12-raw-page-and-document-retention) shapes
+1.1's *retention*, not its existence — the recommendation there ((b), bytes with
+a TTL, text indefinitely) only sets the TTL value. Content-hash-addressed blob
+storage plus wiring `ExtractedDocument.blob_path` as a real retrieval path is
+also the prerequisite that makes re-extraction possible when a parser improves,
+which the repository's own history says happens repeatedly.
