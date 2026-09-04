@@ -415,6 +415,15 @@ class JobStore:
             for row in rows:
                 row_id = row.id
                 view = to_view(row)
+                if contract.is_abandoned(view, now):
+                    # Nobody else will ever write this job's outcome: its owner
+                    # was killed rather than failing, so ``fail`` was never
+                    # reached, and it has no attempts left. Retiring it here —
+                    # on the claim path — is deliberate: there is no reaper
+                    # process to run, and the only moment anyone looks at a
+                    # lapsed lease is when a worker is looking for work.
+                    await self._retire_abandoned(session, row_id, view, now)
+                    continue
                 if not contract.is_claimable(view, now):
                     continue
                 claimed = contract.claim(
@@ -446,6 +455,44 @@ class JobStore:
                     )
                     return claimed
             return None
+
+    async def _retire_abandoned(
+        self,
+        session: AsyncSession,
+        row_id: uuid.UUID,
+        view: JobView,
+        now: datetime,
+    ) -> None:
+        """Dead-letter a job whose owner died with no attempts left.
+
+        Guarded on ``attempt`` like a claim, so two workers scanning at once
+        cannot both write it — and so a job that was somehow reclaimed between
+        the read and the write is left alone.
+        """
+        outcome = contract.abandon(view, now=now)
+        after = outcome.job
+        won = await self._compare_and_set(
+            session,
+            job_id=row_id,
+            predicate=[
+                ResearchJob.status == contract.STATUS_RUNNING,
+                ResearchJob.attempt == view.attempt,
+            ],
+            values={
+                "status": after.status,
+                "dead_letter_reason": after.dead_letter_reason,
+                "finished_at": after.finished_at,
+                "lease_owner": None,
+                "lease_expires_at": None,
+                "updated_at": now,
+            },
+        )
+        if won:
+            logger.warning(
+                "v3_job_dead_lettered job_id=%s attempt=%s reason=abandoned",
+                row_id,
+                view.attempt,
+            )
 
     # -- ownership-guarded writes ----------------------------------------
 

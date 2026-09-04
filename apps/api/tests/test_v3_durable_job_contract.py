@@ -456,3 +456,90 @@ class TestOrmShape:
         from app.models.research_job import ResearchJob
 
         assert "interrupted" not in ResearchJob.__table__.columns
+
+
+# ===========================================================================
+# V3.0 Slice 2.1 — the bound on reclaim
+# ===========================================================================
+
+
+class TestAbandonment:
+    """A killed worker reports nothing, so ``fail`` is never reached.
+
+    Slice 1 counted a lost attempt on every reclaim and said in its own
+    docstring that this was to stop "a job that reliably kills its worker" being
+    "retried forever". The counter was added; the bound on it was not. A job
+    whose worker was ``SIGKILL``ed — an OOM on a large PDF, an App Service
+    recycle — was therefore reclaimed indefinitely, ``attempt`` climbing past
+    ``max_attempts``, never reaching ``dead_letter``, because the only writer of
+    ``dead_letter`` is ``fail`` and nothing was alive to call it.
+    """
+
+    def _dead_owner(self, *, attempt: int, max_attempts: int = 3) -> jc.JobView:
+        return _job(
+            status=jc.STATUS_RUNNING,
+            attempt=attempt,
+            max_attempts=max_attempts,
+            lease_owner="killed-worker",
+            lease_expires_at=T0 - timedelta(minutes=5),
+        )
+
+    def test_a_lapsed_lease_with_attempts_left_is_still_reclaimable(self):
+        assert jc.is_claimable(self._dead_owner(attempt=1), T0)
+        assert jc.is_claimable(self._dead_owner(attempt=2), T0)
+
+    def test_a_lapsed_lease_with_no_attempts_left_is_not_reclaimable(self):
+        assert not jc.is_claimable(self._dead_owner(attempt=3), T0)
+
+    def test_attempts_cannot_climb_past_the_bound_by_reclaim(self):
+        exhausted = self._dead_owner(attempt=3)
+        with pytest.raises(jc.IllegalTransition):
+            jc.claim(exhausted, owner="w4", now=T0)
+
+    def test_abandonment_needs_all_three_conditions(self):
+        # A live lease is not abandonment, however many attempts are spent.
+        live = _job(
+            status=jc.STATUS_RUNNING,
+            attempt=3,
+            max_attempts=3,
+            lease_owner="w",
+            lease_expires_at=T0 + timedelta(minutes=5),
+        )
+        assert not jc.is_abandoned(live, T0)
+        # Attempts left is not abandonment, however long the lease has lapsed.
+        assert not jc.is_abandoned(self._dead_owner(attempt=2), T0)
+        # A pending job is not abandonment — nobody ever owned it.
+        assert not jc.is_abandoned(_job(attempt=3, max_attempts=3), T0)
+        assert jc.is_abandoned(self._dead_owner(attempt=3), T0)
+
+    def test_abandon_dead_letters_with_a_reason_that_names_the_cause(self):
+        out = jc.abandon(self._dead_owner(attempt=3), now=T0)
+        assert out.job.status == jc.STATUS_DEAD_LETTER
+        assert out.will_retry is False
+        assert out.retry_at is None
+        assert out.job.lease_owner is None
+        assert out.job.lease_expires_at is None
+        # Distinct from ``fail``'s wording: nobody caught an error here, which
+        # is itself the diagnosis rather than a missing detail.
+        assert "stopped reporting" in out.job.dead_letter_reason
+        assert "no error was ever reported" in out.job.dead_letter_reason
+
+    def test_abandon_refuses_a_job_that_is_not_abandoned(self):
+        with pytest.raises(jc.IllegalTransition):
+            jc.abandon(self._dead_owner(attempt=1), now=T0)
+
+    def test_a_pending_job_with_spent_attempts_is_still_claimable(self):
+        """An operator reset is a legitimate thing to do.
+
+        ``fail`` dead-letters rather than scheduling a retry once attempts run
+        out, so this state cannot arise from the contract — only from a
+        deliberate hand. Refusing it would block the recovery, not a bug.
+        """
+        assert jc.is_claimable(_job(attempt=9, max_attempts=3), T0)
+
+    def test_attempts_exhausted_is_the_same_bound_fail_uses(self):
+        job = self._dead_owner(attempt=3)
+        assert jc.attempts_exhausted(job)
+        # ``fail`` on the same numbers also dead-letters rather than retrying.
+        out = jc.fail(job, now=T0, transient=True, error_class="LLMServerError")
+        assert out.job.status == jc.STATUS_DEAD_LETTER

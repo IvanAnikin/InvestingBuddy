@@ -255,27 +255,63 @@ class JobView:
 # ---------------------------------------------------------------------------
 
 
+def attempts_exhausted(job: JobView) -> bool:
+    """True when this job has already had every attempt it is entitled to."""
+    return job.attempt >= job.max_attempts
+
+
+def is_abandoned(job: JobView, now: datetime) -> bool:
+    """True when a ``running`` job's owner is gone AND it has no attempts left.
+
+    This is the case nothing else can see. A failure that a worker *observes* is
+    reported through :func:`fail`, which dead-letters once attempts run out. But
+    a worker that is killed — OOM, ``SIGKILL``, an App Service recycle — reports
+    nothing at all, so a job that reliably kills whichever worker takes it never
+    reaches :func:`fail` and therefore never reaches ``dead_letter``.
+
+    Without this predicate such a job is reclaimed forever, one dead worker at a
+    time, with ``attempt`` climbing past ``max_attempts`` and nothing ever
+    stopping it. That is the exact shape of an outage that keeps restarting
+    itself, which is the thing counting a lost attempt was supposed to prevent —
+    the counter existed, the bound on it did not.
+    """
+    return (
+        job.status == STATUS_RUNNING
+        and is_lease_expired(job.lease_expires_at, now)
+        and attempts_exhausted(job)
+    )
+
+
 def is_claimable(job: JobView, now: datetime) -> bool:
     """True when a worker may take this job.
 
-    Three independent reasons a job is NOT claimable, and each matters:
+    Four independent reasons a job is NOT claimable, and each matters:
 
     * it is terminal — there is nothing left to do;
     * it is not yet due (``available_at`` in the future) — this is how retry
       backoff is expressed, so ignoring it would turn a backoff into a hot loop;
-    * it is ``running`` under a live lease — someone else owns it.
+    * it is ``running`` under a live lease — someone else owns it;
+    * it is abandoned with no attempts left (:func:`is_abandoned`) — handing it
+      to a fifth worker to be killed by is not recovery.
 
     A cancel request does not block a claim. The claim is what lets a worker
     observe the request and move the job to ``cancelled`` at a task boundary; a
     pending job nobody may claim would sit in ``pending`` forever wearing a
     cancellation nobody acted on.
+
+    The attempt bound is applied ONLY to the reclaim branch. A ``pending`` job
+    with exhausted attempts cannot arise from this contract — :func:`fail`
+    dead-letters instead of scheduling one — so refusing it here would only ever
+    block a deliberate operator reset, which is a legitimate thing to do.
     """
     if is_terminal(job.status):
         return False
     if job.available_at is not None and _aware(job.available_at) > _aware(now):
         return False
     if job.status == STATUS_RUNNING:
-        return is_lease_expired(job.lease_expires_at, now)
+        return is_lease_expired(job.lease_expires_at, now) and not attempts_exhausted(
+            job
+        )
     return job.status == STATUS_PENDING
 
 
@@ -450,6 +486,41 @@ def fail(
         will_retry=True,
         retry_at=retry_at,
         reason=f"transient error; attempt {job.attempt}/{job.max_attempts}",
+    )
+
+
+def abandon(job: JobView, *, now: datetime) -> FailureOutcome:
+    """Dead-letter a job whose owner died with no attempts left.
+
+    Separate from :func:`fail` because the two say different things and an
+    operator needs the difference: ``fail`` reports an error somebody *caught*,
+    while this reports that nobody was left to catch anything. Collapsing them
+    would label a series of killed workers as "last error: unknown", which reads
+    as a missing detail rather than as the diagnosis it actually is.
+    """
+    if not is_abandoned(job, now):
+        raise IllegalTransition(
+            f"job {job.id} is not abandoned (status={job.status!r}, "
+            f"attempt={job.attempt}/{job.max_attempts})"
+        )
+    assert_transition(job.status, STATUS_DEAD_LETTER)
+    reason = (
+        f"the worker owning this job stopped reporting on all "
+        f"{job.max_attempts} attempts; no error was ever reported, which is "
+        f"what a killed worker looks like"
+    )
+    return FailureOutcome(
+        job=replace(
+            job,
+            status=STATUS_DEAD_LETTER,
+            finished_at=_aware(now),
+            lease_owner=None,
+            lease_expires_at=None,
+            dead_letter_reason=reason,
+        ),
+        will_retry=False,
+        retry_at=None,
+        reason=reason,
     )
 
 
