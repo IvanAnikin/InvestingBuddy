@@ -901,13 +901,21 @@ export interface RunCandidateAnalysisResponse {
 //
 // `status` is a WORKFLOW lifecycle state and `stage` is which part of the
 // pipeline is running. Neither is ever an investment action.
+//
+// `dead_letter` and `cancelled` exist only on the V3 durable path (server flag
+// `V3_DURABLE_JOBS_ENABLED`, off by default). They are NOT folded into `failed`:
+// a dead-lettered run hit transient errors on every attempt and may well succeed
+// later, a failed one hit a permanent error and will not, and collapsing them
+// would erase the distinction that decides whether re-running is worth it.
 export type CompanyResearchJobStatus =
   | "pending"
   | "running"
   | "interrupted"
   | "completed"
   | "completed_with_warnings"
-  | "failed";
+  | "failed"
+  | "dead_letter"
+  | "cancelled";
 
 export interface CompanyResearchStage {
   key: string;
@@ -948,6 +956,11 @@ export interface CompanyResearchJob {
   /** Set on an `interrupted` job: its worker is gone and re-running is safe. */
   recoverable?: boolean | null;
   interrupted_reason?: string | null;
+  /** Set on a `dead_letter` job: why every attempt was given up on. */
+  dead_letter_reason?: string | null;
+  /** Which attempt is in flight, out of how many. Null on the V2 path. */
+  attempt?: number | null;
+  max_attempts?: number | null;
   /** The STRUCTURED final report. Null until the assembly step succeeds. */
   analysis_report_id?: string | null;
   agent_run_id?: string | null;

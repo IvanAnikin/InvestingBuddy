@@ -205,6 +205,16 @@ def register_handler(job_type: str) -> Callable[[JobHandler], JobHandler]:
 # ---------------------------------------------------------------------------
 
 
+#: An exception may declare its own retryability by setting this attribute.
+#:
+#: This is how a domain error says "retrying me is worth it" without the worker
+#: growing an import of the domain, and without the domain having to subclass a
+#: transport exception it has nothing to do with. A declaration always wins over
+#: the inference below, because the code that raised the error knows more about
+#: it than a type check does.
+TRANSIENT_ATTR = "job_transient"
+
+
 def is_transient_failure(exc: BaseException) -> bool:
     """Whether ``exc`` is worth another attempt.
 
@@ -218,6 +228,9 @@ def is_transient_failure(exc: BaseException) -> bool:
 
     if isinstance(exc, (JobCancelled, LeaseLostError)):
         return False
+    declared = getattr(exc, TRANSIENT_ATTR, None)
+    if isinstance(declared, bool):
+        return declared
     if isinstance(exc, Exception) and is_transient_llm_error(exc):
         return True
     if isinstance(exc, (asyncio.TimeoutError, TimeoutError, ConnectionError)):

@@ -92,6 +92,10 @@ _GENERATION_SEP = "#"
 #: window exists only so a pathological history cannot turn this into a scan.
 _GENERATION_SCAN = 25
 
+#: How many times ``enqueue`` will re-read and retry after losing the race for a
+#: generation. Two, because the second read sees whatever the winner committed.
+_ENQUEUE_ATTEMPTS = 2
+
 #: How many claimable candidates one ``claim_next`` call will try before giving
 #: up. Each attempt is one guarded UPDATE, and losing every one of them means
 #: other workers took them all — in which case there is nothing to do anyway.
@@ -139,6 +143,10 @@ def to_view(row: ResearchJob) -> JobView:
         error_class=row.error_class,
         error_message=row.error_message,
         dead_letter_reason=row.dead_letter_reason,
+        company_id=str(row.company_id) if row.company_id else None,
+        agent_run_id=str(row.agent_run_id) if row.agent_run_id else None,
+        result_type=row.result_type,
+        result_ref=str(row.result_ref) if row.result_ref else None,
     )
 
 
@@ -238,6 +246,47 @@ class JobStore:
             payload = row.payload_json
             return dict(payload) if isinstance(payload, dict) else {}
 
+    async def get_with_payload(
+        self, job_id: uuid.UUID | str
+    ) -> tuple[JobView, dict[str, Any]] | None:
+        """The view and its payload in ONE round trip.
+
+        Polling reads both on every request, and a poll that costs two queries
+        instead of one is two queries every two seconds for the length of a
+        research run.
+        """
+        async with self.session_factory() as session:
+            row = await self._load(session, job_id)
+            if row is None:
+                return None
+            payload = row.payload_json
+            return to_view(row), dict(payload) if isinstance(payload, dict) else {}
+
+    async def latest_for_company(
+        self, company_id: uuid.UUID, *, job_type: str | None = None
+    ) -> tuple[JobView, dict[str, Any]] | None:
+        """The most recent job for ONE company. Never a global-latest lookup.
+
+        Indexed on ``company_id`` (019), unlike the V2 answer to this question,
+        which scans the 200 newest job envelopes and matches in Python because
+        ``AgentStep.input_json`` is a portable JSON column with no usable
+        predicate.
+        """
+        async with self.session_factory() as session:
+            stmt = (
+                sa.select(ResearchJob)
+                .where(ResearchJob.company_id == company_id)
+                .order_by(ResearchJob.created_at.desc())
+                .limit(1)
+            )
+            if job_type is not None:
+                stmt = stmt.where(ResearchJob.job_type == job_type)
+            row = (await session.execute(stmt)).scalar_one_or_none()
+            if row is None:
+                return None
+            payload = row.payload_json
+            return to_view(row), dict(payload) if isinstance(payload, dict) else {}
+
     async def describe(
         self, job_id: uuid.UUID | str, *, now: datetime | None = None
     ) -> dict[str, Any] | None:
@@ -297,42 +346,54 @@ class JobStore:
         now = _aware(now) or _utcnow()
         base = base_key(idempotency_key)
 
+        # Read-then-insert is a race by construction, so the unique constraint is
+        # the arbiter and this loop is how the loser recovers. Re-reading rather
+        # than re-selecting the exact key it collided on handles both shapes of
+        # collision: another submit took the SAME generation (join it), or it
+        # took that generation and already finished (start the next one). One
+        # retry is enough — a second collision means a third submitter, whose row
+        # is an equally correct answer to this request.
+        for _ in range(_ENQUEUE_ATTEMPTS):
+            async with self.session_factory() as session:
+                latest = await self._latest_generation(session, base)
+                if latest is not None and not contract.is_terminal(latest.status):
+                    return to_view(latest), False
+                generation = (
+                    _generation_of(latest.idempotency_key) + 1
+                    if latest is not None
+                    else 1
+                )
+                row = ResearchJob(
+                    job_type=job_type,
+                    idempotency_key=_generation_key(base, generation),
+                    status=contract.STATUS_PENDING,
+                    payload_json=dict(payload or {}),
+                    company_id=company_id,
+                    agent_run_id=agent_run_id,
+                    attempt=0,
+                    max_attempts=int(max_attempts or self.max_attempts),
+                    available_at=_aware(available_at) or now,
+                    stage=None,
+                    created_at=now,
+                    updated_at=now,
+                )
+                session.add(row)
+                try:
+                    await session.commit()
+                except IntegrityError:
+                    await session.rollback()
+                    continue
+                await session.refresh(row)
+                return to_view(row), True
+
+        # Every attempt collided, so somebody else definitively owns this key.
+        # Returning their job is correct: the caller asked for this company to be
+        # researched and it is being researched.
         async with self.session_factory() as session:
             latest = await self._latest_generation(session, base)
-            if latest is not None and not contract.is_terminal(latest.status):
-                return to_view(latest), False
-            generation = (
-                _generation_of(latest.idempotency_key) + 1 if latest is not None else 1
-            )
-            row = ResearchJob(
-                job_type=job_type,
-                idempotency_key=_generation_key(base, generation),
-                status=contract.STATUS_PENDING,
-                payload_json=dict(payload or {}),
-                company_id=company_id,
-                agent_run_id=agent_run_id,
-                attempt=0,
-                max_attempts=int(max_attempts or self.max_attempts),
-                available_at=_aware(available_at) or now,
-                stage=None,
-                created_at=now,
-                updated_at=now,
-            )
-            session.add(row)
-            try:
-                await session.commit()
-            except IntegrityError:
-                # Another submit won the race for this generation. Its row is the
-                # answer to our request too — joining it is the whole point.
-                await session.rollback()
-                existing = await self._by_key(
-                    session, _generation_key(base, generation)
-                )
-                if existing is None:  # pragma: no cover - defensive
-                    raise
-                return to_view(existing), False
-            await session.refresh(row)
-            return to_view(row), True
+            if latest is None:  # pragma: no cover - only reachable if the row vanished
+                raise RuntimeError(f"could not enqueue or join a job for {base!r}")
+            return to_view(latest), False
 
     async def _latest_generation(
         self, session: AsyncSession, base: str

@@ -936,6 +936,19 @@ class Settings(BaseSettings):
     # attempt-and-retry; a permanent error fails immediately with attempts left,
     # because retrying it would spend budget reproducing the same result.
     v3_job_max_attempts: int = 3
+    # Run the durable worker INSIDE the API process. Only consulted when
+    # ``v3_durable_jobs_enabled`` is also on.
+    #
+    # True is the honest default for the current single-App-Service deployment:
+    # a separate worker App Service is OPEN DECISION #2 and costs money nobody
+    # has approved. An in-process worker is still a real improvement over
+    # ``BackgroundTasks`` — the job row survives a recycle and the NEXT process
+    # reclaims it automatically, which is the whole point — but it does NOT move
+    # CPU-heavy extraction off the API process. Setting this False and running
+    # ``python -m app.services.jobs.worker`` elsewhere does, with no code change.
+    v3_job_worker_in_process: bool = True
+    # How long an idle worker waits before polling for work again.
+    v3_job_poll_interval_seconds: float = 2.0
 
     # ── Real OCR: Azure Document Intelligence (Phase 32A Slice 5B.2) ─────────
     # Only ever consulted when ``primary_document_ocr_enabled`` (Slice 5,

@@ -80,6 +80,31 @@ JOB_WORKFLOW_VERSION = "1.0.0"
 JOB_AGENT_NAME = "company_research_job"
 JOB_STEP_NAME = "job_envelope"
 
+class CompanyResearchFailed(Exception):
+    """A research run that cannot succeed by being attempted again.
+
+    Raised only on the V3 durable path, where the worker classifies failures.
+    Deliberately NOT a subclass of any transient type: "the company does not
+    exist" and "the pipeline produced no report" do not become true by retrying,
+    and spending a research budget to rediscover that is the thing bounded
+    attempts exist to prevent.
+    """
+
+    #: Read by ``jobs.worker.is_transient_failure``. Stated rather than inferred.
+    job_transient = False
+
+
+class JobRecordMissing(Exception):
+    """The envelope a durable job points at is not visible yet.
+
+    Transient by nature rather than by taxonomy: submission commits the job row
+    and the envelope in that order, so a worker that claims within that window
+    sees the row and not yet the envelope. One backoff resolves it.
+    """
+
+    job_transient = True
+
+
 #: How many recent job steps to scan when answering "the latest job for this
 #: company". ``AgentStep.input_json`` is a portable ``sa.JSON`` column, and a
 #: JSON-path predicate would render differently on PostgreSQL and on the
@@ -450,6 +475,39 @@ async def start_company_research(
         )
         return existing, False
 
+    envelope = await create_job_record(
+        db,
+        company,
+        provider_name=provider_name,
+        use_llm=use_llm,
+        llm_provider=llm_provider,
+        require_schema_valid=require_schema_valid,
+    )
+    return envelope, True
+
+
+async def create_job_record(
+    db: AsyncSession,
+    company: Company,
+    *,
+    provider_name: str | None = None,
+    use_llm: bool = False,
+    llm_provider: str | None = None,
+    require_schema_valid: bool = False,
+) -> dict[str, Any]:
+    """Create and COMMIT the ``AgentRun`` + ``AgentStep`` envelope for one job.
+
+    Split out of :func:`start_company_research` so the V3 durable worker can
+    create the same record when it begins executing, rather than a second,
+    parallel notion of "a research job ran" existing beside this one. The
+    envelope shape, the workflow name and the step name are all unchanged, which
+    is what keeps every existing reader — the polling API, the admin console and
+    the audit trail — working identically on both paths.
+
+    Performs NO duplicate check: the caller owns that decision, because the two
+    paths answer it differently (V2 scans recent envelopes, V3 uses the job
+    store's unique idempotency key).
+    """
     provider = provider_name or settings.discovery_default_provider
     run = AgentRun(
         workflow_name=JOB_WORKFLOW_NAME,
@@ -499,7 +557,7 @@ async def start_company_research(
         job_id=run.id,
         status=research_job.STATUS_PENDING,
     )
-    return envelope, True
+    return envelope
 
 
 def _report_summary_dict(final_report_response: Any) -> dict[str, Any] | None:
@@ -524,14 +582,32 @@ async def process_company_research_by_id(
     session_factory: async_sessionmaker[AsyncSession] | None = None,
     run_analysis: AnalysisRunner | None = None,
     generate_final_report: FinalReportRunner | None = None,
-) -> None:
-    """Background worker: run ONE company-research job in a FRESH session.
+    progress: Callable[[str], Awaitable[None]] | None = None,
+    raise_on_error: bool = False,
+) -> dict[str, Any] | None:
+    """Run ONE company-research job in a FRESH session. Returns its envelope.
 
     Must NOT reuse the request-scoped session — the 202 has already been sent
-    and that session is closed. Every failure path persists a terminal
-    envelope, so a job can never stick in ``running`` because of an error we
-    saw. Only ids, statuses, stages and durations are logged — never prompts,
-    completions, evidence excerpts or credentials.
+    and that session is closed. Only ids, statuses, stages and durations are
+    logged — never prompts, completions, evidence excerpts or credentials.
+
+    ``progress`` is called with each reader-facing stage as it is entered. The
+    V2 path leaves it None; the V3 durable path passes the worker's checkpoint,
+    which renews the lease and observes a cancellation at the same boundary. A
+    handler that reported no progress would lose its lease mid-run, so this is
+    load-bearing on that path rather than decorative.
+
+    ``raise_on_error`` inverts who owns a failure.
+
+      * **False (V2, the default).** Every failure path persists a TERMINAL
+        ``failed`` envelope, because on that path nothing else is going to: the
+        background task is the last thing that knows.
+      * **True (V3).** The exception propagates and the durable contract decides
+        whether it is transient (retry), permanent (fail) or a cancellation. The
+        envelope is deliberately NOT stamped ``failed`` here, because a retry is
+        very possibly about to succeed and a job whose envelope says ``failed``
+        while its job row says ``pending`` is a job contradicting its own state.
+        The reader-facing status on that path comes from the job row.
     """
     factory = session_factory or async_session_factory
     start = time.perf_counter()
@@ -542,7 +618,9 @@ async def process_company_research_by_id(
                 logger.warning(
                     "Company research: job %s not found for background run.", job_id
                 )
-                return
+                if raise_on_error:
+                    raise JobRecordMissing(str(job_id))
+                return None
             run = await session.get(AgentRun, job_id)
             envelope = dict(step.output_json or {})
             request = dict(step.input_json or {})
@@ -551,6 +629,10 @@ async def process_company_research_by_id(
                 session, company_id=uuid.UUID(str(request.get("company_id")))
             )
             if company is None:
+                if raise_on_error:
+                    # Permanent by construction: the company will not appear by
+                    # being asked for again.
+                    raise CompanyResearchFailed("company_not_found")
                 envelope.update(
                     status=research_job.STATUS_FAILED,
                     stage=research_job.STAGE_FAILED,
@@ -558,7 +640,7 @@ async def process_company_research_by_id(
                     error="company_not_found",
                 )
                 await _write_envelope(session, step, envelope, run=run)
-                return
+                return envelope
 
             envelope["status"] = research_job.STATUS_RUNNING
             envelope["stage"] = research_job.STAGE_COMPANY_IDENTITY
@@ -587,6 +669,12 @@ async def process_company_research_by_id(
                     envelope.get("stages_completed"), stage
                 )
                 await _write_envelope(session, step, envelope, run=run)
+                if progress is not None:
+                    # The durable worker's task boundary: renews the lease and
+                    # raises if a cancellation was requested. Deliberately AFTER
+                    # the envelope write, so a job cancelled here still records
+                    # the stage it actually reached.
+                    await progress(stage)
 
             try:
                 result = await execute_company_research(
@@ -604,6 +692,12 @@ async def process_company_research_by_id(
                     generate_final_report=generate_final_report,
                 )
             except Exception as exc:  # noqa: BLE001 - persist, never swallow silently
+                if raise_on_error:
+                    # The durable contract owns this decision. Re-raise BEFORE
+                    # stamping the envelope terminal: a retry may well succeed,
+                    # and a ``failed`` envelope beside a ``pending`` job row is a
+                    # job contradicting its own state.
+                    raise
                 logger.exception(
                     "Company research job %s failed during execution: %s", job_id, exc
                 )
@@ -625,10 +719,14 @@ async def process_company_research_by_id(
                     exception_type=type(exc).__name__,
                     duration_ms=int((time.perf_counter() - start) * 1000),
                 )
-                return
+                return envelope
 
             warnings = list(result.get("warnings") or [])
             report_id = result.get("analysis_report_id")
+            if report_id is None and raise_on_error:
+                # A run that produced nothing is a failure the contract should
+                # classify, not an envelope this function stamps.
+                raise CompanyResearchFailed("no_report_produced")
             if report_id is None:
                 status = research_job.STATUS_FAILED
                 stage = research_job.STAGE_FAILED
@@ -683,9 +781,13 @@ async def process_company_research_by_id(
                 warning_count=len(warnings),
                 duration_ms=int((time.perf_counter() - start) * 1000),
             )
+            return envelope
     except Exception as exc:  # noqa: BLE001 — must not crash the worker
+        if raise_on_error:
+            raise
         logger.exception("Company research job %s crashed: %s", job_id, exc)
         await _mark_failed_fresh(factory, job_id, reason="internal_error")
+    return None
 
 
 async def _mark_failed_fresh(

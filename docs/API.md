@@ -3128,6 +3128,55 @@ page, closed the tab or came back later finds the run they started — the job i
 is not only in the browser. Strictly company-scoped; never a global-latest
 lookup. `404` when that company has never been researched.
 
+### Durable execution (V3.0, `V3_DURABLE_JOBS_ENABLED`, default **off**)
+
+> **UNAPPROVED AND UNDEPLOYED.** This path exists only on `develop/v3`. With the
+> flag off — which is the deployed configuration — every endpoint above behaves
+> exactly as documented, byte for byte, and nothing writes to `research_jobs`.
+
+With the flag on, the same three endpoints are backed by the durable job
+contract instead of a process-local `BackgroundTask`. The request and response
+**shapes do not change**; a reader gains three optional fields and two further
+terminal statuses.
+
+| | V2 (flag off) | V3 (flag on) |
+|---|---|---|
+| Job record | `AgentRun` + `AgentStep` envelope | `research_jobs` row (lifecycle) + the same `AgentRun`/`AgentStep` (content) |
+| `job_id` | the `AgentRun.id` | the `research_jobs.id` |
+| Execution | FastAPI `BackgroundTasks`, this process | a leased worker; survives an App Service recycle |
+| Duplicate submit | in-flight scan over recent envelopes | `uq_research_jobs_idempotency_key`, enforced by the database |
+| Recovery from a lost worker | a human re-runs | automatic reclaim, bounded by `max_attempts` |
+| Recovery by company | scan of the 200 newest envelopes | indexed lookup on `research_jobs.company_id` |
+
+**Existing job ids keep resolving.** The reads try the durable store first and
+fall back to the V2 lookup, so a run started before the flag was turned on is
+still found by its id and by its company.
+
+**New optional response fields** (null on the V2 path):
+
+| Field | Meaning |
+|---|---|
+| `attempt` / `max_attempts` | Which attempt is in flight, out of how many. |
+| `dead_letter_reason` | Why every attempt was given up on. |
+
+**Two further terminal statuses**, which could not exist before durability
+because nothing retried and nothing could be cancelled:
+
+| Status | Meaning | Re-run worth it? |
+|---|---|---|
+| `dead_letter` | Every attempt failed transiently, or the worker was killed on every attempt. | Yes — `recoverable: true`. |
+| `cancelled` | Stopped at a task boundary after a cancellation request. | Caller's choice. |
+
+They are reported as themselves rather than folded into `failed`. A
+dead-lettered run hit transient errors and may well succeed later; a `failed`
+one hit a permanent error and will not. That is exactly the distinction that
+decides whether re-running is worth the research budget, and collapsing them
+would erase it.
+
+`interrupted` also becomes more precise. A lapsed lease with attempts remaining
+reads as `pending`, because a worker will reclaim it and the reader need do
+nothing; `interrupted` is reserved for the case where **nothing is coming**.
+
 ### Discovery-council response — economic fields (Blocker A)
 
 `DiscoveryCouncilCandidateEntry` now declares the five fields the council has

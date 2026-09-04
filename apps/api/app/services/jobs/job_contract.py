@@ -249,6 +249,14 @@ class JobView:
     error_message: str | None = None
     dead_letter_reason: str | None = None
 
+    #: Lineage, carried so a reader can be answered from one snapshot. No RULE
+    #: in this module reasons over these — they are here because the alternative
+    #: is a second round trip for every poll, not because the contract needs them.
+    company_id: str | None = None
+    agent_run_id: str | None = None
+    result_type: str | None = None
+    result_ref: str | None = None
+
 
 # ---------------------------------------------------------------------------
 # Claiming
@@ -532,14 +540,30 @@ def abandon(job: JobView, *, now: datetime) -> FailureOutcome:
 def derive_status(job: JobView, now: datetime) -> str:
     """The status a HUMAN should see. Never written back.
 
-    A ``running`` job whose lease has lapsed reads as ``interrupted``: the owner
-    stopped saying it was alive. Unlike V2's elapsed-time rule this needs no
-    worst-case duration estimate and holds at any worker count — but like V2's,
-    it stays derived, because a stored ``interrupted`` would need a writer that is
-    running, which is exactly what is missing.
+    A ``running`` job whose lease has lapsed has lost its owner — but that alone
+    does not tell a reader what to do, and the two cases call for opposite
+    things:
+
+    * **attempts remain** — another worker will reclaim it and finish it, and the
+      reader needs to do nothing except keep waiting. It reads as ``pending``,
+      because that is exactly what it is: queued, awaiting a worker. Calling it
+      ``interrupted`` here would tell someone their run had stopped and that
+      re-running was up to them, moments before it resumed on its own — and the
+      UI treats ``interrupted`` as terminal, so it would also stop polling a job
+      that was about to produce a report.
+
+    * **attempts exhausted** — nothing will pick it up (``is_claimable`` refuses
+      it and the next claim scan retires it to ``dead_letter``). Nobody is
+      coming, so ``interrupted`` is the true word and the reader does have to
+      act.
+
+    V2 could not make this distinction because V2 had nothing that reclaimed;
+    every lapsed job was the second case. The rule is unchanged for that case and
+    the derivation is still exactly that — derived, never stored, because a
+    stored status needs a writer that is running.
     """
     if job.status == STATUS_RUNNING and is_lease_expired(job.lease_expires_at, now):
-        return STATUS_INTERRUPTED
+        return STATUS_INTERRUPTED if attempts_exhausted(job) else STATUS_PENDING
     return job.status
 
 
