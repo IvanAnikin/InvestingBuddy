@@ -7030,5 +7030,6 @@ class FinalReportGeneratorService:
             committee_label=council_result.committee_label,
             committee_label_basis=council_result.chair_synthesis_basis,
             chair_error_type=council_result.chair_error_type,
+            consumption=dict(getattr(council_result, "consumption", {}) or {}),
             human_review_checklist=checklist_items,
         )

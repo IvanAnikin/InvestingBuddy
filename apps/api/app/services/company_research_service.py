@@ -62,7 +62,7 @@ from app.db.session import async_session_factory
 from app.models.agent_run import AgentRun, AgentStep
 from app.models.company import Company
 from app.models.report import Report
-from app.services import research_job
+from app.services import consumption, research_job
 from app.services.company_service import get_company_by_ticker
 from app.workflows.company_analysis import run_company_analysis
 
@@ -234,6 +234,8 @@ async def execute_company_research(
     warnings: list[str] = []
     report_summary: Any = None
     linked_report_id: uuid.UUID | None = None
+    council_units = consumption.EMPTY_CONSUMPTION
+    started_at = time.perf_counter()
 
     try:
         gen = generate_final_report or _default_generate_final_report
@@ -261,6 +263,7 @@ async def execute_company_research(
         )
         linked_report_id = final_resp.report_id
         report_summary = final_resp
+        council_units = consumption.council_consumption(final_resp)
     except Exception as exc:  # noqa: BLE001 - never fail the whole run on routing
         logger.warning(
             "final_report_routing_failed company=%s error=%s",
@@ -270,6 +273,14 @@ async def execute_company_research(
         warnings.append("final_report_generation_failed")
         if legacy_draft_id:
             linked_report_id = uuid.UUID(legacy_draft_id)
+
+    # Wall time is the one unit this layer is the right place to measure: it
+    # spans the workflow AND the final-report step, which no inner component
+    # sees the whole of.
+    units = council_units + consumption.ConsumptionUnits(
+        elapsed_seconds=round(time.perf_counter() - started_at, 3),
+        instrumented=consumption.RUN_INSTRUMENTED,
+    )
 
     return {
         "company_id": company.id,
@@ -285,6 +296,7 @@ async def execute_company_research(
             uuid.UUID(legacy_draft_id) if legacy_draft_id else None
         ),
         "warnings": warnings,
+        "consumption": units,
     }
 
 
@@ -804,6 +816,13 @@ async def process_company_research_by_id(
                 error=error,
             )
             await _write_envelope(session, step, envelope, run=run)
+            await _record_consumption(
+                session,
+                result,
+                company_id=company.id,
+                agent_run_id=job_id,
+                outcome=status,
+            )
             log_event(
                 logger,
                 "company_research_job_completed",
@@ -820,6 +839,38 @@ async def process_company_research_by_id(
         logger.exception("Company research job %s crashed: %s", job_id, exc)
         await _mark_failed_fresh(factory, job_id, reason="internal_error")
     return None
+
+
+async def _record_consumption(
+    session: AsyncSession,
+    result: dict[str, Any] | None,
+    *,
+    company_id: uuid.UUID | None,
+    agent_run_id: uuid.UUID | None,
+    outcome: str | None,
+) -> None:
+    """Persist what this run consumed. Never fails the run.
+
+    Recorded for a FAILED run too when the executor got far enough to measure
+    anything: a run that failed after ingesting eleven documents and running six
+    council agents spent a real budget, and averaging only the successes would
+    produce the one number nobody needs.
+    """
+    from app.services import consumption_recorder
+
+    units = (result or {}).get("consumption")
+    if not isinstance(units, consumption.ConsumptionUnits):
+        return
+    report_id = (result or {}).get("analysis_report_id")
+    await consumption_recorder.record_run(
+        session,
+        run_type=consumption_recorder.RUN_TYPE_COMPANY_RESEARCH,
+        units=units,
+        company_id=company_id,
+        agent_run_id=agent_run_id,
+        report_id=report_id if isinstance(report_id, uuid.UUID) else None,
+        outcome=outcome,
+    )
 
 
 async def _mark_failed_fresh(
