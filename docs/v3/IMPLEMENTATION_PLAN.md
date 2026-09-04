@@ -73,7 +73,7 @@ Branch naming: `feature/v3-<phase>-<slice>-<short-name>`.
 |---|---|---|---|---|
 | 1.1 | [`feature/v3-1-1-raw-artifact-store`](slices/V3.1-1-raw-artifact-store.md) | Content-addressed raw-byte retention behind an `ArtifactStore` interface; `blob_path` becomes a real retrieval path. | **Yes** (021) | `IMPLEMENTED` |
 | 1.2 | [`feature/v3-1-2-research-corpus-schema`](slices/V3.1-2-research-corpus-schema.md) | `ResearchDocument` / `ResearchDocumentVersion` + the migration path from `ExtractedDocument`. | **Yes** (022) | `IMPLEMENTED` |
-| 1.3 | `feature/v3-1-3-full-text-persistence` | Full parsed text, pages, sections and tables — not only 20 bounded excerpts. Backfill from existing rows. | **Yes** (023) | `NOT STARTED` |
+| 1.3 | [`feature/v3-1-3-full-text-persistence`](slices/V3.1-3-full-text-persistence.md) | Full parsed text, pages, sections and tables — not only 20 bounded excerpts, under a versioned derivation. | **Yes** (023) | `IMPLEMENTED` |
 | 1.4 | `feature/v3-1-4-search-interface` | `SearchBackend` protocol + `CorpusQuery`/`CorpusHit` + in-memory backend. **Stops at the backend-selection gate** — [OPEN DECISION #1](OPEN_DECISIONS.md#1-azure-ai-search-vs-postgresql--pgvector). | No | `NOT STARTED` |
 | 1.5 | `feature/v3-1-5-document-aware-chunking` | Document-aware chunking with stable chunk identity + denormalized entity/period/scope filter keys. | **Yes** (024) | `NOT STARTED` |
 | 1.6 | `feature/v3-1-6-corpus-retrieval-service` | Typed `search_corpus(...)` service; every hit carries citation-complete lineage. No backend query syntax reaches an agent. | No | `NOT STARTED` |
@@ -238,6 +238,7 @@ approval.
 | 2026-09-04 | V3.0 Slice 5 — run consumption telemetry | `feature/v3-0-5-run-consumption-telemetry` | `ab3fda4` |
 | 2026-09-04 | V3.1 Slice 1.1 — raw artifact store | `feature/v3-1-1-raw-artifact-store` | `f427cac` |
 | 2026-09-04 | V3.1 Slice 1.2 — corpus document model | `feature/v3-1-2-research-corpus-schema` | `74ead56` |
+| 2026-09-04 | V3.1 Slice 1.3 — full parsed representation | `feature/v3-1-3-full-text-persistence` | _pending_ |
 
 ---
 

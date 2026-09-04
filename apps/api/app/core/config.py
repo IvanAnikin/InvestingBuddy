@@ -1028,6 +1028,17 @@ class Settings(BaseSettings):
     # Nothing schedules the sweep; expiry never happens on its own.
     v3_artifact_retention_days: int = 0
 
+    # Per-block character cap when the corpus captures a document's full parsed
+    # text. A page of an annual report is a few thousand characters; this bounds a
+    # BUG (a parser that returns a whole document as one block), not a policy.
+    v3_corpus_max_page_chars: int = 120_000
+    # Hard ceiling on pages persisted for one derivation. 0 means "every page the
+    # extractor actually opened", which is already bounded upstream by
+    # ``primary_document_max_pdf_pages`` (40) plus the targeted supplemental pass
+    # (12). Raising THAT cap is what a deferred reprocessing run does (Slice 1.7),
+    # from the retained raw bytes and off the live request path.
+    v3_corpus_max_pages_persisted: int = 0
+
     # ── Real OCR: Azure Document Intelligence (Phase 32A Slice 5B.2) ─────────
     # Only ever consulted when ``primary_document_ocr_enabled`` (Slice 5,
     # default False) is also True. With the endpoint left empty (the default),

@@ -50,6 +50,7 @@ from app.services.corpus.identity import (
     document_key_for,
     normalize_document_type,
 )
+from app.services.corpus.parsed import build_parsed_document, persist_parsed_document
 from app.services.corpus.policy import ACCESS_PUBLIC_ISSUER, normalize_access_class
 from app.services.sources.document_period import DocumentPeriod, document_period_of
 from app.services.sources.redaction import canonicalize_source_url
@@ -426,9 +427,23 @@ async def ingest_extracted_document(
         research_artifact_id=artifact_row_id,
         extracted_document_id=document.id,
     )
-    return await upsert_document_version(
+    version = await upsert_document_version(
         session, payload, cfg=cfg, now=now, result=result
     )
+    if version is None:
+        return None
+
+    # V3.1 Slice 1.3 — persist what the parser made of it: the full text of every
+    # page it opened, the heading structure, and the tables AS GRIDS. Empty unless
+    # the extraction captured blocks, which it only does with the corpus on.
+    parsed = build_parsed_document(
+        extraction,
+        max_pages=int(getattr(cfg, "v3_corpus_max_pages_persisted", 0) or 0),
+    )
+    await persist_parsed_document(
+        session, version_id=version.id, parsed=parsed, cfg=cfg, now=now
+    )
+    return version
 
 
 async def _artifact_id_for(session: "Any", content_hash: str | None) -> uuid.UUID | None:
