@@ -42,10 +42,14 @@ WHAT IT PROVES
 2. a long document parses to pages, sections and tables — not 20 excerpts;
 3. offsets are exact: the full text reconstructs and every page slices out of it;
 4. a table survives as a GRID with its column→period map;
-5. the bytes are retrievable again by content hash alone, and re-parsing them
+5. the document is chunked into retrieval units that never straddle a section,
+   indexed, and searchable — and a hit comes back citable, scoped and dated;
+6. a recorded evidence id resolves months later to the exact span, its page, and
+   the grid when it came from a table;
+7. the bytes are retrievable again by content hash alone, and re-parsing them
    reproduces the same structure — which is the property that makes Slice 1.7's
    reprocessing possible without a re-fetch;
-6. every honest bound is reported: how many of the document's pages were read,
+8. every honest bound is reported: how many of the document's pages were read,
    and whether the parse was complete or partial.
 """
 
@@ -162,6 +166,7 @@ async def main() -> int:
         store_raw_artifact,
     )
     from app.services.corpus.documents import DocumentVersionInput, upsert_document_version
+    from app.services.corpus.indexing import index_version, persist_chunks
     from app.services.corpus.parsed import (
         DerivationResult,
         build_parsed_document,
@@ -169,6 +174,9 @@ async def main() -> int:
         persist_parsed_document,
     )
     from app.services.corpus.policy import ACCESS_PUBLIC_ISSUER
+    from app.services.corpus.retrieval import resolve_evidence, search_corpus
+    from app.services.corpus.search.backends.memory import InMemorySearchBackend
+    from app.services.corpus.search.types import SearchMode
     from app.services.sources.document_period import document_period_of
     from app.services.sources.primary_document_extractor import extract_primary_document
     from app.services.sources.taxonomy import T1_PRIMARY_FILING
@@ -238,6 +246,7 @@ async def main() -> int:
             period = document_period_of(
                 title=args.title, url=canonical_url, extraction=extraction
             )
+            version_company_id = uuid.uuid4()
             version = await upsert_document_version(
                 session,
                 DocumentVersionInput(
@@ -245,7 +254,7 @@ async def main() -> int:
                     canonical_url=canonical_url,
                     transport="company_ir",
                     source_tier=T1_PRIMARY_FILING,
-                    company_id=uuid.uuid4(),
+                    company_id=version_company_id,
                     document_type="annual_report",
                     title=args.title,
                     media_type=media_type,
@@ -314,7 +323,75 @@ async def main() -> int:
                 for row in table.rows[:2]:
                     print(f"      {row}")
 
-            print("\n=== 6. re-retrieve and re-parse from the retained bytes ===")
+            print("\n=== 6. chunk, index, and search ===")
+            chunk_rows = await persist_chunks(
+                session,
+                version=version,
+                derivation=derivation,
+                parsed=parsed,
+                cfg=cfg,
+            )
+            await session.commit()
+            prose = [c for c in chunk_rows if c.kind == "prose"]
+            tables_chunked = [c for c in chunk_rows if c.kind == "table"]
+            sizes = sorted(len(c.text) for c in prose) or [0]
+            print(
+                f"  chunks     {len(chunk_rows)} ({len(prose)} prose, "
+                f"{len(tables_chunked)} table); prose chars "
+                f"min={sizes[0]} median={sizes[len(sizes) // 2]} max={sizes[-1]}"
+            )
+            print(
+                f"  identity   {len({c.chunk_id for c in chunk_rows})} unique ids "
+                f"of {len(chunk_rows)} chunks"
+            )
+
+            backend = InMemorySearchBackend()
+            indexed = await index_version(
+                session,
+                research_document_version_id=version.id,
+                backend=backend,
+                cfg=cfg,
+            )
+            print(f"  indexed    {indexed.indexed} chunks")
+
+            company_id = version_company_id
+            for probe in ("revenue", "gross margin", "cash flow from operations"):
+                results = await search_corpus(
+                    session,
+                    backend=backend,
+                    cfg=cfg,
+                    query=probe,
+                    company_ids=[company_id],
+                    mode=SearchMode.LEXICAL,
+                    top_k=3,
+                )
+                print(f"  query {probe!r} -> {len(results)} hit(s)")
+                for hit in results[:2]:
+                    print(f"    {hit.reference.citation_label()}")
+                    print(f"      {hit.text[:110]!r}")
+
+            top = await search_corpus(
+                session,
+                backend=backend,
+                cfg=cfg,
+                query="revenue",
+                company_ids=[company_id],
+                mode=SearchMode.LEXICAL,
+                top_k=1,
+            )
+            if top:
+                recorded = top[0].reference.evidence_id
+                context = await resolve_evidence(
+                    session, evidence_id=recorded, cfg=cfg
+                )
+                print(f"  evidence id {recorded}")
+                print(
+                    f"  resolves back: {context is not None} "
+                    f"page_text={'yes' if context and context.page_text else 'no'} "
+                    f"grid={'yes' if context and context.table_rows else 'n/a'}"
+                )
+
+            print("\n=== 7. re-retrieve and re-parse from the retained bytes ===")
             recovered = await load_artifact_bytes(
                 session, content_hash=stored.content_hash, cfg=cfg, store=store
             )

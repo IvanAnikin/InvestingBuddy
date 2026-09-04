@@ -266,7 +266,12 @@ V3 changes three things:
 
 1. **Stable identity.** Facts get a durable id referenced by findings,
    calculations and citations across runs — replacing run-local `E1`/`E2`
-   positional handles.
+   positional handles. **(`IMPLEMENTED IN V3` for *evidence* —
+   [Slice 1.6](slices/V3.1-6-corpus-retrieval-service.md): `ev:<chunk_id>`,
+   derived from the document's own coordinates, resolves back to the exact span,
+   its page and — for a table — the grid. Existing reports keep their `E1`/`E2`
+   handles, which continue to resolve. Facts themselves get their durable id in
+   V3.2/V3.3.)**
 2. **Entity, not company.** The owning key becomes `LegalEntity` + `ReportingScope`.
 3. **Provenance to the chunk.** A fact points at a `DocumentChunk`/`DocumentTable`,
    so "show me where this number came from" renders the surrounding page.
