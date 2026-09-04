@@ -43,6 +43,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.extracted_document import ExtractedDocument, ExtractedFact
 from app.services.corpus.artifacts.service import record_artifact
+from app.services.corpus.documents import CorpusIngestResult, ingest_extracted_document
 from app.services.sources.extraction_pipeline_version import (
     CURRENT_EXTRACTION_PIPELINE_VERSION,
     EXTRACTION_TEXT_LAYER_MIN_VERSION,
@@ -93,6 +94,11 @@ class PersistResult:
     facts_created: int = 0
     facts_deduped: int = 0
     skipped: int = 0
+    # V3.1 Slice 1.2 — what the CORPUS recorded beside the V2 rows. Always zero
+    # with ``V3_CORPUS_ENABLED`` off, which is the default.
+    corpus_documents_created: int = 0
+    corpus_versions_created: int = 0
+    corpus_versions_reused: int = 0
 
 
 def _norm_label(label: str | None) -> str:
@@ -233,6 +239,21 @@ async def persist_primary_document_artifacts(
         # change that must be flushed even when nothing else about this
         # artifact changed (e.g. every fact already matched and deduped).
         wrote_row = wrote_row or restamped
+
+        # V3.1 Slice 1.2 — record the corpus document/version BESIDE the V2 rows.
+        #
+        # Beside, not instead: ``ExtractedDocument`` keeps being written exactly as
+        # before and the corpus version points back at it, so nothing has to be
+        # migrated en masse for the corpus to start being useful and every existing
+        # read path is untouched. A no-op with ``V3_CORPUS_ENABLED`` off.
+        corpus = CorpusIngestResult()
+        await ingest_extracted_document(
+            session, artifact=artifact, document=document, cfg=cfg, result=corpus
+        )
+        result.corpus_documents_created += corpus.documents_created
+        result.corpus_versions_created += corpus.versions_created
+        result.corpus_versions_reused += corpus.versions_reused
+        wrote_row = wrote_row or bool(corpus.versions_created or corpus.documents_created)
 
         wrote_fact = await _persist_validated_facts(
             session, artifact=artifact, document=document, reused=reused, result=result
