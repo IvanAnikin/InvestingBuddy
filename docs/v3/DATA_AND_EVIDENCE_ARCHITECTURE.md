@@ -43,6 +43,9 @@ What it is not is a corpus:
   `primary_document_max_supplemental_pdf_pages` (**12**) outline-driven look-beyond
   pass are never read at all.
 - `blob_path` exists and is nullable, but nothing retrieves from it.
+  **(`IMPLEMENTED IN V3` — [Slice 1.1](slices/V3.1-1-raw-artifact-store.md): raw
+  bytes are now retained content-addressed behind an `ArtifactStore` interface and
+  `blob_path` carries the retrieval key. Off by default behind `V3_CORPUS_ENABLED`.)**
 - There is no page, section, chunk or table entity, and no search index.
 
 So a 169-page annual report is fetched, ~20 excerpts survive, and the document is
@@ -77,6 +80,13 @@ stored is `rights_policy` on the version (see
 A document that may not be retained keeps its lineage and loses its bytes — the
 citation still resolves to the canonical URL.
 
+`IMPLEMENTED IN V3` (Slice 1.1) as `app.services.corpus.policy.ArtifactPolicy` and
+the `research_artifacts` policy columns: the six permissions of governance §6 are
+columns rather than a JSON blob because they are *queried* as filters, `derived`
+inherits the most restrictive input, and an unrecognised access class denies. A
+`storage_key` of NULL beside a `storage_backend` of `'none'` is the durable shape
+of "lineage kept, bytes not retained".
+
 ### 2.3 Search
 
 Retrieval must support lexical **and** semantic **and** the filters, together:
@@ -91,7 +101,12 @@ Retrieval must support lexical **and** semantic **and** the filters, together:
 > chunk therefore carries denormalized period and scope keys, and the search
 > interface takes them as first-class arguments, not as post-filters.
 
-The backend is behind an InvestingBuddy-owned interface:
+The **raw-artifact** backend already is (`IMPLEMENTED IN V3`, Slice 1.1):
+`ArtifactStore` with in-memory, filesystem and Azure Blob implementations, an
+injected client factory so the SDK import is lazy, and a test that parses every
+corpus module to assert none of them imports a vendor SDK.
+
+The **search** backend is behind the same kind of InvestingBuddy-owned interface:
 
 ```python
 class SearchBackend(Protocol):

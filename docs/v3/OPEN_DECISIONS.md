@@ -167,10 +167,21 @@ Format per entry: **status** · **options** · **recommendation** · **blocking?
   parser improves — which has already happened repeatedly (pipeline version is at
   15). Text-only would have made several past correctives impossible without
   re-fetching documents that may no longer be online. TTL bounds the storage bill.
-- **Blocking?** Blocks V3.1.1.
+- **Blocking?** Shapes V3.1.1's *retention*, not its existence. **No longer
+  blocking:** Slice 1.1 shipped the primitive rather than the answer.
 - **Evidence needed:** Blob storage cost at expected corpus size; licence
   constraints per source class.
 - **Owner:** user (cost) + agent.
+- **Status 2026-09-04:** still OPEN and **deliberately not resolved by the agent.**
+  [Slice 1.1](slices/V3.1-1-raw-artifact-store.md) implements the configurable
+  primitive: `V3_ARTIFACT_RETENTION_DAYS` defaults to **0**, which stamps
+  `retention_expires_at` as NULL and reads as "no TTL configured" — never as
+  "keep forever as a policy". An explicit, callable `expire_artifacts(...)` sweep
+  exists, defaults to `dry_run=True`, and **nothing schedules it**; a test asserts
+  no other module in the codebase even calls it. Applying option (b) later is
+  therefore a settings change, not a migration. Option (c) is also representable
+  without code changes: `V3_ARTIFACT_STORE_BACKEND=none` records lineage and stores
+  no bytes at all, which is the default.
 
 ## 13. Model cost thresholds
 

@@ -983,6 +983,51 @@ class Settings(BaseSettings):
     v3_price_per_thousand_index_queries: float = 0.0
     v3_price_per_browser_minute: float = 0.0
 
+    # ── V3.1: Research Corpus ───────────────────────────────────────────────
+    # Master switch for the whole corpus: raw-artifact retention, the document/
+    # version records, the parsed representation and corpus search. OFF by
+    # default, and with it off nothing in ``app.services.corpus`` issues a query,
+    # writes a row or stores a byte — the V2 ingestion path is byte-for-byte
+    # unchanged.
+    v3_corpus_enabled: bool = False
+
+    # Which artifact store backs raw-byte retention:
+    #   "none"       — record lineage, store no bytes. The safe default.
+    #   "memory"     — in-process; tests only, never durable.
+    #   "local"      — filesystem under ``v3_artifact_store_local_root``.
+    #   "azure_blob" — the ``investingbuddy-documents`` container that
+    #                  ``infra/azure/modules/storage.bicep`` has provisioned
+    #                  (and left empty) since it was written.
+    # Defaulting to "none" means turning the corpus on does not by itself start
+    # writing bytes anywhere: retention is a second, deliberate decision.
+    v3_artifact_store_backend: str = "none"
+    # Root directory for the "local" backend. Required when that backend is
+    # selected; a relative path is resolved against the process working directory.
+    v3_artifact_store_local_root: str = ""
+    # Blob account URL (https://<account>.blob.core.windows.net) and container for
+    # the "azure_blob" backend. A CONNECTION STRING is deliberately not accepted
+    # anywhere: a connection string is a key, and this repository has already had
+    # one incident where a too-broad query briefly exposed a real one. Credentials
+    # come from managed identity (``DefaultAzureCredential``).
+    v3_artifact_store_account_url: str = ""
+    v3_artifact_store_container: str = "investingbuddy-documents"
+    # Hard ceiling on one stored artifact. The fetch layer already caps a document
+    # far below this (``primary_document_max_download_bytes`` is 8 MB); this exists
+    # so an upstream BUG cannot push an unbounded blob into storage.
+    v3_artifact_max_bytes: int = 32_000_000
+
+    # Days after which a stored artifact's raw BYTES become eligible for deletion.
+    # 0 — the default — means NO TTL is recorded, which reads as "no retention
+    # policy is configured" and never as "keep forever".
+    #
+    # OPEN DECISION #12 (raw page and document retention) is USER-owned and still
+    # open: bytes indefinitely, bytes with a TTL, or text only. Encoding a default
+    # number here would answer it. What ships instead is the primitive — the
+    # column, the policy value and an explicit, callable sweep — so the decision
+    # can be applied later by changing this setting rather than by a migration.
+    # Nothing schedules the sweep; expiry never happens on its own.
+    v3_artifact_retention_days: int = 0
+
     # ── Real OCR: Azure Document Intelligence (Phase 32A Slice 5B.2) ─────────
     # Only ever consulted when ``primary_document_ocr_enabled`` (Slice 5,
     # default False) is also True. With the endpoint left empty (the default),
