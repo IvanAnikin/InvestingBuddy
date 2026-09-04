@@ -5,6 +5,7 @@ from app.models.document_ingestion_attempt import DocumentIngestionAttempt
 from app.models.extracted_document import ExtractedDocument, ExtractedFact
 from app.models.field_review import FieldReviewCandidateSummary, FieldReviewRun
 from app.models.report import Report
+from app.models.research_job import ResearchJob
 from app.models.scorecard import Scorecard
 from app.models.source import Citation, Source
 
@@ -21,6 +22,7 @@ __all__ = [
     "FieldReviewCandidateSummary",
     "FieldReviewRun",
     "Report",
+    "ResearchJob",
     "Scorecard",
     "Source",
 ]

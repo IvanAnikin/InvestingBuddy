@@ -912,6 +912,31 @@ class Settings(BaseSettings):
     # this is deliberately more conservative than the published ceiling.
     sec_request_min_interval_ms: int = 120
 
+    # ── V3.0: durable job execution ─────────────────────────────────────────
+    # Master switch for the V3 durable job path (durable record + leased worker
+    # instead of a process-local FastAPI BackgroundTask). OFF by default: with it
+    # off nothing reads or writes ``research_jobs`` and every entry point keeps
+    # the V2 behaviour byte-for-byte.
+    #
+    # Slice 1 ships the contract and the table only — nothing consults this flag
+    # yet. It exists now so the migration and the flag land together and the
+    # later slices are pure wiring.
+    v3_durable_jobs_enabled: bool = False
+    # How long a worker's claim on a job lasts before another worker may reclaim
+    # it. Must exceed ``v3_job_heartbeat_seconds`` by enough that a working
+    # worker always renews in time, and must stay well under
+    # ``research_job.stale_after_minutes`` — the lease is the FASTER of the two
+    # abandonment detectors, and a lease longer than the elapsed-time rule would
+    # make it pointless.
+    v3_job_lease_seconds: int = 120
+    # How often a running worker renews its lease. One third of the lease, so two
+    # consecutive missed heartbeats still leave room for a third to land.
+    v3_job_heartbeat_seconds: int = 40
+    # Attempts before a job is dead-lettered. Only TRANSIENT failures consume an
+    # attempt-and-retry; a permanent error fails immediately with attempts left,
+    # because retrying it would spend budget reproducing the same result.
+    v3_job_max_attempts: int = 3
+
     # ── Real OCR: Azure Document Intelligence (Phase 32A Slice 5B.2) ─────────
     # Only ever consulted when ``primary_document_ocr_enabled`` (Slice 5,
     # default False) is also True. With the endpoint left empty (the default),
