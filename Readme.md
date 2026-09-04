@@ -4,6 +4,12 @@ AI-powered multi-agent investment research platform focused on discovering, anal
 
 ---
 
+> **V3 development line opened 2026-09-04.** This README describes V2 — the
+> version `main` deploys and the one currently approved. V3 is under development
+> on `develop/v3` and is unapproved and undeployed; its documentation is in
+> [`docs/v3/`](docs/v3/README.md). The V2 baseline is preserved at tag
+> `v2-final-pre-v3-2026-09-04` and branch `release/v2-current`.
+
 ## What It Is
 
 InvestingBuddy uses a council-of-agents approach to generate evidence-based investment research. Specialized agents research, debate, validate and publish investment opportunities — every claim backed by citations, every recommendation reviewed by a human before publication.
@@ -207,3 +213,4 @@ Copy `.env.example` to `.env` and fill in values as needed.
 - [Roadmap](docs/ROADMAP.md)
 - [Security](docs/SECURITY.md)
 - [Testing](docs/TESTING.md)
+- [`docs/v3/`](docs/v3/README.md) — **V3 target architecture, provider strategy and implementation plan** (in development, unapproved)
