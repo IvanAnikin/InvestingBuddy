@@ -440,9 +440,22 @@ async def ingest_extracted_document(
         extraction,
         max_pages=int(getattr(cfg, "v3_corpus_max_pages_persisted", 0) or 0),
     )
-    await persist_parsed_document(
+    derivation = await persist_parsed_document(
         session, version_id=version.id, parsed=parsed, cfg=cfg, now=now
     )
+
+    # V3.1 Slice 1.5 — build the retrieval units. Chunks are corpus DATA, stored
+    # beside the pages they came from, and they exist whether or not a search
+    # backend has ever been configured: that is what makes the backend decision
+    # (OPEN DECISION #1) cheap to defer and cheap to change, because switching
+    # backends reindexes from rows that are already there rather than re-parsing
+    # every document.
+    if derivation is not None and parsed is not None:
+        from app.services.corpus.indexing import persist_chunks
+
+        await persist_chunks(
+            session, version=version, derivation=derivation, parsed=parsed, cfg=cfg
+        )
     return version
 
 

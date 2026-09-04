@@ -1039,6 +1039,22 @@ class Settings(BaseSettings):
     # from the retained raw bytes and off the live request path.
     v3_corpus_max_pages_persisted: int = 0
 
+    # Chunking, in CHARACTERS rather than tokens: a character count is exact and
+    # model-independent, where every token estimate is a different vendor's guess.
+    #
+    # The chunker is structural first — it never crosses a section boundary,
+    # prefers to break at a page boundary and then at a paragraph boundary — so
+    # these are the sizes it aims for, not a fixed window it imposes. There is
+    # deliberately no overlap setting: overlap is the patch for fixed-width
+    # splitting cutting through meaning, and a chunker that breaks at paragraph
+    # boundaries does not need it. Two chunks sharing a sentence would produce two
+    # hits for one piece of evidence and a citation that could name either.
+    v3_corpus_chunk_target_chars: int = 1_200
+    v3_corpus_chunk_max_chars: int = 2_000
+    # Below this, a page boundary is not yet worth taking as a break: a chunk that
+    # short is not worth citing on its own.
+    v3_corpus_chunk_min_chars: int = 300
+
     # ── Real OCR: Azure Document Intelligence (Phase 32A Slice 5B.2) ─────────
     # Only ever consulted when ``primary_document_ocr_enabled`` (Slice 5,
     # default False) is also True. With the endpoint left empty (the default),
