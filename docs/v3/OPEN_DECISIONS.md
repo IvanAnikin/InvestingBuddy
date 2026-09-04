@@ -22,10 +22,25 @@ Format per entry: **status** · **options** · **recommendation** · **blocking?
   transaction as the data they filter. Revisit if hybrid ranking quality proves
   inadequate on the real-issuer set. Either way the `SearchBackend` interface
   means the choice costs one adapter, not a rewrite.
-- **Blocking?** Blocks V3.1.4.
+- **Blocking?** Blocks the production backend only. **V3.1.4 shipped without
+  taking it:** the interface, the fusion, the query rules and a complete in-memory
+  reference backend are done, and slices 1.5-1.6 are written against them.
 - **Evidence needed:** retrieval quality on real PNDORA/CFR/ASML documents;
   operational cost of an additional Azure service on the current plan.
 - **Owner:** user (cost) + agent (implementation).
+- **Status 2026-09-04:** still OPEN and **deliberately not resolved by the agent.**
+  The slice register originally paired 1.4 with "a PostgreSQL lexical
+  implementation"; that was **not** built, because both options in this decision
+  cover the lexical layer and a `tsvector` backend would be choosing (b) in
+  everything but name — same datastore, same operational model, same "one less
+  service" argument the decision turns on.
+  [Slice 1.4](slices/V3.1-4-search-interface.md) ships the abstraction instead,
+  and `test_the_production_backend_decision_is_not_taken_here` asserts the
+  backends directory still contains only the in-memory reference — so adding an
+  adapter fails a test and forces the decision to be taken deliberately.
+  What the in-memory backend proves is that the contract is *sufficient*; it
+  proves nothing about quality or scale, and a corpus of thousands of annual
+  reports is not served from a Python dict.
 
 ## 2. Service Bus worker topology
 

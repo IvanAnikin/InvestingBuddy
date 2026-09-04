@@ -138,11 +138,20 @@ class SearchBackend(Protocol):
     async def delete(self, *, document_version_id: UUID) -> None: ...
 ```
 
+`IMPLEMENTED IN V3` (Slice 1.4), as `CorpusQuery` / `CorpusFilters` /
+`CorpusHit` / `SearchBackend` plus backend-neutral reciprocal rank fusion and a
+complete in-memory reference backend. Two of this section's rules are now
+executable rather than aspirational: a caller may request `LEXICAL` or `HYBRID`
+and asking for semantic-only raises, and a query must either name the companies it
+may return or say `allow_cross_entity=True` out loud.
+
 Azure AI Search vs PostgreSQL + `pgvector` is an `OPEN DECISION`
-([#1](OPEN_DECISIONS.md#1-azure-ai-search-vs-postgresql--pgvector)). No business
-logic may import either SDK. The deciding factor is expected to be operational
-(one less service to run, one less bill) versus retrieval quality at corpus
-scale, and the benchmark will answer it.
+([#1](OPEN_DECISIONS.md#1-azure-ai-search-vs-postgresql--pgvector)) and Slice 1.4
+**stopped at it**: no production backend was written, because both options cover
+the lexical layer and shipping a `tsvector` adapter would choose (b) in everything
+but name. No business logic may import either SDK. The deciding factor is expected
+to be operational (one less service to run, one less bill) versus retrieval
+quality at corpus scale, and the benchmark will answer it.
 
 ---
 
