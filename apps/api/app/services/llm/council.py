@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING, Any
 from app.core.config import Settings
 from app.core.config import settings as default_settings
 from app.core.structured_logging import log_event
+from app.services import research_job
 from app.services.llm import prompts, retry_engine
 from app.services.llm.citation_checker import check_and_sanitize
 from app.services.llm.client import (
@@ -1480,6 +1481,26 @@ async def run_council(
     return result
 
 
+async def _report_phase(
+    on_phase: "Callable[[str], Awaitable[None]] | None", phase: str
+) -> None:
+    """Report one pipeline phase, and never fail the council doing it.
+
+    The phase name is this module's own — ``research_job`` maps it to whatever a
+    reader is shown — which is why nothing here imports a UI string.
+
+    Swallowing is deliberate. Progress reporting is a convenience; the research
+    is the product. A callback that raises (a closed session, a lapsed lease)
+    must not throw away the minutes of ingestion that just completed.
+    """
+    if on_phase is None:
+        return
+    try:
+        await on_phase(phase)
+    except Exception:  # noqa: BLE001 - progress must never fail the council
+        _logger.debug("council_phase_report_failed phase=%s", phase, exc_info=True)
+
+
 async def maybe_run_council(
     *,
     report_content: dict[str, Any],
@@ -1493,6 +1514,7 @@ async def maybe_run_council(
     client: LLMClient | None = None,
     reuse_lookup: "dict[str, ReusedDocument] | None" = None,
     logger: logging.Logger | None = None,
+    on_phase: "Callable[[str], Awaitable[None]] | None" = None,
 ) -> CouncilResult:
     """Resolve a client, build the evidence pack, and run the council.
 
@@ -1594,6 +1616,9 @@ async def maybe_run_council(
                         "ir_page_fetcher": live_ir_page_fetcher,
                         "document_extractor": live_document_extractor,
                     }
+                # The reader is about to wait ~154s on live data. Naming it here
+                # rather than after the fact is the whole point of a stage.
+                await _report_phase(on_phase, research_job.PHASE_EVIDENCE_INGESTION)
                 collected = await collect_company_source_evidence(
                     company=_company_context(company_snapshot, ticker, exchange),
                     filings=sec_filings_from_catalyst(catalyst_discovery),
@@ -1807,6 +1832,8 @@ async def maybe_run_council(
             evidence_item_count=pack.item_count,
             known_gap_count=len(pack.known_gaps),
         )
+        # Evidence is assembled; the agents start now (~145-190s on live data).
+        await _report_phase(on_phase, research_job.PHASE_COUNCIL_AGENTS)
         result = await run_council(
             pack,
             resolved,

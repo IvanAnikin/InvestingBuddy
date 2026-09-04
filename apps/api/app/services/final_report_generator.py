@@ -30,6 +30,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -64,7 +65,7 @@ from app.schemas.research_quality import (
     assess_source_quality,
     assess_thin_evidence,
 )
-from app.services import safety_terms
+from app.services import research_job, safety_terms
 from app.services.canonical_evidence import (
     FundamentalsEvidence,
     build_evidence_channels,
@@ -5622,6 +5623,28 @@ async def _save_final_report_draft(
 # ---------------------------------------------------------------------------
 
 
+#: Reports one post-graph pipeline phase. The name is the PRODUCER's — this
+#: module says what it is doing and ``research_job`` decides what a reader is
+#: told it means, exactly as the graph's node names are mapped rather than
+#: displayed. That is why nothing here imports a UI string.
+PhaseCallback = Callable[[str], Awaitable[None]]
+
+
+async def _report_phase(on_phase: "PhaseCallback | None", phase: str) -> None:
+    """Report a phase, and never let progress reporting break a research run.
+
+    A stage display is a convenience; the report is the product. A callback that
+    raises — a closed session, a lapsed lease — must not destroy minutes of
+    completed research work on its way out.
+    """
+    if on_phase is None:
+        return
+    try:
+        await on_phase(phase)
+    except Exception:  # noqa: BLE001 - progress must never fail the run
+        logger.debug("phase_report_failed phase=%s", phase, exc_info=True)
+
+
 class FinalReportGeneratorService:
     """
     Generates structured internal final report drafts.
@@ -5971,6 +5994,7 @@ class FinalReportGeneratorService:
         citations: list[Citation] | None = None,
         sources: list[Source] | None = None,
         discovery_lineage: dict[str, Any] | None = None,
+        on_phase: "PhaseCallback | None" = None,
     ) -> FinalReportResponse:
         """
         Generate a final report draft directly from an in-memory workflow state.
@@ -5996,6 +6020,7 @@ class FinalReportGeneratorService:
             sources=sources or [],
             state=state,
             discovery_lineage=discovery_lineage,
+            on_phase=on_phase,
         )
 
     async def validate_final_report(
@@ -6166,6 +6191,7 @@ class FinalReportGeneratorService:
         state: dict[str, Any],
         discovery_lineage: dict[str, Any] | None = None,
         lineage: ResolvedReportLineage | None = None,
+        on_phase: "PhaseCallback | None" = None,
     ) -> FinalReportResponse:
         company_snapshot = state.get("company_snapshot")
         financial_data_summary = state.get("financial_data_summary")
@@ -6291,7 +6317,13 @@ class FinalReportGeneratorService:
                     ),
                 )
 
+        # This call is the majority of a real run: primary-document ingestion
+        # (~154s measured live) plus the council itself (~145-190s), against a
+        # 261-451s whole-run envelope. It reports its own phases so the reader is
+        # told what is happening while it happens, instead of being shown the
+        # last graph node's stage for five minutes.
         council_result: CouncilResult = await maybe_run_council(
+            on_phase=on_phase,
             report_content=report_content,
             company_snapshot=company_snapshot,
             catalyst_discovery=catalyst_discovery,
@@ -6303,6 +6335,11 @@ class FinalReportGeneratorService:
         )
         if council_result.llm_used:
             report_content["llm_council_analysis"] = council_result.to_report_dict()
+
+        # Everything from here to the persisted draft is assembly: reconciliation,
+        # the memo, validation and the write. Reported unconditionally, because it
+        # always happens — unlike the council, which may legitimately not run.
+        await _report_phase(on_phase, research_job.PHASE_REPORT_ASSEMBLY)
 
         # Phase 32D2d — surface HOW this draft's inputs were obtained whenever
         # that is not the ordinary path. Additive (not a required section), so

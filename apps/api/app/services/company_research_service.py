@@ -184,6 +184,7 @@ async def execute_company_research(
     require_schema_valid: bool = False,
     discovery_lineage: dict[str, Any] | None = None,
     on_node: Callable[[str], Awaitable[None]] | None = None,
+    on_stage: Callable[[str], Awaitable[None]] | None = None,
     run_analysis: AnalysisRunner | None = None,
     generate_final_report: FinalReportRunner | None = None,
 ) -> dict[str, Any]:
@@ -203,6 +204,18 @@ async def execute_company_research(
     Both runners are injectable so tests never touch the network.
     """
     runner = run_analysis or run_company_analysis
+
+    async def _on_phase(phase: str) -> None:
+        """Turn a producer's phase name into the stage a reader is shown.
+
+        The mapping lives in ``research_job``, so the council and the report
+        generator name what they are doing without knowing what the UI calls it —
+        the same separation the graph's node names already have.
+        """
+        stage = research_job.stage_for_phase(phase)
+        if stage is not None and on_stage is not None:
+            await on_stage(stage)
+
     kwargs: dict[str, Any] = {
         "company_id": str(company.id),
         "provider_name": provider_name,
@@ -227,6 +240,12 @@ async def execute_company_research(
         source_report, citations, sources = await _load_final_report_inputs(
             db, legacy_draft_id
         )
+        gen_kwargs: dict[str, Any] = {}
+        if on_stage is not None:
+            # Added conditionally, matching how ``on_node`` is passed above: a
+            # caller that wants no progress must not force every injected fake
+            # in the test suite to grow a parameter it never uses.
+            gen_kwargs["on_phase"] = _on_phase
         final_resp = await gen(
             db,
             state=final_state,
@@ -238,6 +257,7 @@ async def execute_company_research(
             citations=citations,
             sources=sources,
             discovery_lineage=discovery_lineage,
+            **gen_kwargs,
         )
         linked_report_id = final_resp.report_id
         report_summary = final_resp
@@ -660,9 +680,14 @@ async def process_company_research_by_id(
             # them onto reader-facing stages and persists a change only when
             # the stage actually moves, so a five-minute run writes a handful
             # of rows rather than one per node.
-            async def on_node(node_name: str) -> None:
-                stage = research_job.stage_for_node(node_name)
-                if stage is None or stage == envelope.get("stage"):
+            async def advance(stage: str) -> None:
+                """Move the reader-facing stage, once, when it actually changes.
+
+                One function for both sources of progress — the graph's nodes and
+                the post-graph phases — so the two can never disagree about what
+                a stage transition does.
+                """
+                if not stage or stage == envelope.get("stage"):
                     return
                 envelope["stage"] = stage
                 envelope["stages_completed"] = _with_stage(
@@ -676,6 +701,11 @@ async def process_company_research_by_id(
                     # the stage it actually reached.
                     await progress(stage)
 
+            async def on_node(node_name: str) -> None:
+                stage = research_job.stage_for_node(node_name)
+                if stage is not None:
+                    await advance(stage)
+
             try:
                 result = await execute_company_research(
                     session,
@@ -688,6 +718,7 @@ async def process_company_research_by_id(
                     llm_provider=request.get("llm_provider"),
                     require_schema_valid=bool(request.get("require_schema_valid")),
                     on_node=on_node,
+                    on_stage=advance,
                     run_analysis=run_analysis,
                     generate_final_report=generate_final_report,
                 )
@@ -740,17 +771,18 @@ async def process_company_research_by_id(
                 stage = research_job.STAGE_COMPLETED
                 error = None
 
-            # The council and the report assembly both happen inside the
-            # final-report generator, which is not a graph node and so reports
-            # no progress of its own. Recording them here on completion is a
-            # statement about what RAN, not a claim about when.
-            stages = envelope.get("stages_completed")
-            for extra in (
-                research_job.STAGE_COUNCIL_ANALYSIS,
-                research_job.STAGE_REPORT_ASSEMBLY,
-                stage,
-            ):
-                stages = _with_stage(stages, extra)
+            # The council and the report assembly used to be stamped here, on
+            # completion, because the final-report generator reported nothing —
+            # so a reader watched the last graph node's stage for the five
+            # minutes those two actually took, and was then told they had
+            # completed at a moment they had only just finished. They now report
+            # themselves WHILE they run (``research_job.PHASE_TO_STAGE``), so
+            # only the terminal stage is recorded here.
+            #
+            # A consequence, and the honest one: a run where the council did not
+            # execute — it is off, or no provider resolved — no longer claims it
+            # did. That stage simply never completes, which is true.
+            stages = _with_stage(envelope.get("stages_completed"), stage)
 
             envelope.update(
                 status=status,
