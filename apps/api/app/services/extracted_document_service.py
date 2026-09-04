@@ -42,6 +42,7 @@ from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.extracted_document import ExtractedDocument, ExtractedFact
+from app.services.corpus.artifacts.service import record_artifact
 from app.services.sources.extraction_pipeline_version import (
     CURRENT_EXTRACTION_PIPELINE_VERSION,
     EXTRACTION_TEXT_LAYER_MIN_VERSION,
@@ -221,6 +222,7 @@ async def persist_primary_document_artifacts(
             content_hash=content_hash,
             company_id=company_id,
             agent_run_id=agent_run_id,
+            cfg=cfg,
         )
         if reused:
             result.documents_reused += 1
@@ -250,6 +252,7 @@ async def _get_or_create_document(
     content_hash: str,
     company_id: uuid.UUID | None,
     agent_run_id: uuid.UUID | None,
+    cfg: "Settings",
 ) -> tuple[ExtractedDocument, bool, bool]:
     """Return ``(document, reused, restamped)``.
 
@@ -259,6 +262,18 @@ async def _get_or_create_document(
     new row was created (it is already stamped current) or when the existing
     row already matched.
     """
+    # V3.1 Slice 1.1 — record the RAW artifact lineage for this document.
+    #
+    # ``artifact.raw_artifact`` is populated by the fetch layer only when
+    # ``V3_CORPUS_ENABLED`` is on; ``record_artifact`` re-checks the flag and is a
+    # no-op otherwise, so with the corpus off this issues no query and writes no
+    # row. ``storage_key`` is ``None`` whenever the bytes were deliberately or
+    # unavoidably not retained — the lineage row still exists, because a citation
+    # must keep resolving after the bytes are gone.
+    stored_artifact = getattr(artifact, "raw_artifact", None)
+    await record_artifact(session, stored_artifact, cfg=cfg)
+    blob_path = stored_artifact.storage_key if stored_artifact is not None else None
+
     existing = (
         await session.execute(
             select(ExtractedDocument)
@@ -267,6 +282,13 @@ async def _get_or_create_document(
         )
     ).scalar_one_or_none()
     if existing is not None:
+        # Backfill only. ``blob_path`` has been NULL on every row ever written
+        # (migration 013 created it as an unused hook), so filling it in is a pure
+        # upgrade; overwriting a key that is already there would not be, because
+        # the key is derived from THIS document's content hash and a different one
+        # would mean the row's identity had changed underneath us.
+        if blob_path and not existing.blob_path:
+            existing.blob_path = blob_path
         # Pre-merge review finding (Problem B follow-up) — this write path is
         # ONLY ever reached with an artifact whose ``status == 'extracted'``
         # (the caller already skips anything else), meaning it was JUST
@@ -369,7 +391,9 @@ async def _get_or_create_document(
         pipeline_version=CURRENT_EXTRACTION_PIPELINE_VERSION,
         company_id=company_id,
         agent_run_id=agent_run_id,
-        blob_path=None,
+        # V3.1 Slice 1.1 — a REAL retrieval path at last. NULL still means exactly
+        # what it has always meant: no raw bytes are held for this document.
+        blob_path=blob_path,
     )
     session.add(document)
     return document, False, False

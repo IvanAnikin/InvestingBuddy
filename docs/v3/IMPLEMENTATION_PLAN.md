@@ -10,7 +10,7 @@
 | Phase | Goal | Status |
 |---|---|---|
 | **V3.0** | Execution and correctness foundation | `IMPLEMENTED` — not `VALIDATED`: no live-issuer run has been performed, because V3 is not deployed. See [the phase gate](#9-v30-phase-gate). |
-| **V3.1** | Research Corpus | `NOT STARTED` |
+| **V3.1** | Research Corpus | `IN PROGRESS` |
 | **V3.2** | Entity Master and global universe | `NOT STARTED` |
 | **V3.3** | Research tools and calculation engine | `NOT STARTED` |
 | **V3.4** | Multi-provider runtime and source expansion | `NOT STARTED` |
@@ -69,14 +69,23 @@ Branch naming: `feature/v3-<phase>-<slice>-<short-name>`.
 
 ### V3.1 — Research Corpus
 
-| Slice | Branch | Objective | Migration |
-|---|---|---|---|
-| 1.1 | `feature/v3-1-1-raw-artifact-store` | Persist raw bytes to Blob with content-hash addressing; wire `blob_path` as a real retrieval path. | Yes |
-| 1.2 | `feature/v3-1-2-research-corpus-schema` | `ResearchDocument` / `Version` / `Page` / `Section` / `Chunk` / `Table`. | Yes |
-| 1.3 | `feature/v3-1-3-full-text-persistence` | Persist full parsed text, not only 20 bounded excerpts. Backfill path for existing `ExtractedDocument` rows. | No |
-| 1.4 | `feature/v3-1-4-search-interface` | `SearchBackend` protocol + PostgreSQL lexical implementation. No vendor SDK in domain code. | Yes |
-| 1.5 | `feature/v3-1-5-hybrid-search` | Embeddings + hybrid ranking, with mandatory entity/period/scope filters. | Yes |
-| 1.6 | `feature/v3-1-6-citation-preserving-retrieval` | Retrieval results carry full lineage; stable evidence identifiers replace run-local `E1`/`E2`. | Yes |
+| Slice | Branch | Objective | Migration | Status |
+|---|---|---|---|---|
+| 1.1 | [`feature/v3-1-1-raw-artifact-store`](slices/V3.1-1-raw-artifact-store.md) | Content-addressed raw-byte retention behind an `ArtifactStore` interface; `blob_path` becomes a real retrieval path. | **Yes** (021) | `IMPLEMENTED` |
+| 1.2 | `feature/v3-1-2-research-corpus-schema` | `ResearchDocument` / `ResearchDocumentVersion` / `ResearchDocumentDerivation` + the migration path from `ExtractedDocument`. | **Yes** (022) | `NOT STARTED` |
+| 1.3 | `feature/v3-1-3-full-text-persistence` | Full parsed text, pages, sections and tables — not only 20 bounded excerpts. Backfill from existing rows. | **Yes** (023) | `NOT STARTED` |
+| 1.4 | `feature/v3-1-4-search-interface` | `SearchBackend` protocol + `CorpusQuery`/`CorpusHit` + in-memory backend. **Stops at the backend-selection gate** — [OPEN DECISION #1](OPEN_DECISIONS.md#1-azure-ai-search-vs-postgresql--pgvector). | No | `NOT STARTED` |
+| 1.5 | `feature/v3-1-5-document-aware-chunking` | Document-aware chunking with stable chunk identity + denormalized entity/period/scope filter keys. | **Yes** (024) | `NOT STARTED` |
+| 1.6 | `feature/v3-1-6-corpus-retrieval-service` | Typed `search_corpus(...)` service; every hit carries citation-complete lineage. No backend query syntax reaches an agent. | No | `NOT STARTED` |
+| 1.7 | `feature/v3-1-7-reprocessing-lifecycle` | Deterministic re-extraction under a new parser version; prior derivations retained and auditable. | No | `NOT STARTED` |
+
+The register above splits the original six-slice plan into seven. Slice 1.2 was
+carrying both the logical document *and* every parsed sub-entity; separating them
+(1.2 documents/versions, 1.3 pages/sections/tables, 1.5 chunks) keeps each one to
+a single migration and a checkable acceptance criterion, which is the rule §4
+states. Slice 1.7 is new and explicit: re-extraction was previously implied by
+"persist raw bytes" and never given its own gate, and it is the entire reason the
+bytes are retained.
 
 ### V3.2 — Entity Master and universe
 
@@ -227,6 +236,7 @@ approval.
 | 2026-09-04 | V3.0 Slice 3.1 — research-stage accuracy (corrective) | `feature/v3-0-3-1-research-stage-accuracy` | `e9b6e9c` |
 | 2026-09-04 | V3.0 Slice 4 — server-side numeric verification | `feature/v3-0-4-server-side-numeric-verification` | `31b9fa2` |
 | 2026-09-04 | V3.0 Slice 5 — run consumption telemetry | `feature/v3-0-5-run-consumption-telemetry` | `ab3fda4` |
+| 2026-09-04 | V3.1 Slice 1.1 — raw artifact store | `feature/v3-1-1-raw-artifact-store` | _pending_ |
 
 ---
 
