@@ -543,6 +543,11 @@ async def _artifact_from_fetch(
         document_type=fetched.document_type,
         cfg=cfg,
         original_language=original_language,
+        # V3.1 Slice 1.3 — keep the full heading-tagged text of every page this
+        # pass opens, instead of discarding all but the ~20 ranked excerpts. The
+        # block list already exists in memory when the ranking runs, so this costs
+        # a copy rather than a second parse. Off with the corpus off.
+        capture_blocks=bool(getattr(cfg, "v3_corpus_enabled", False)),
     )
     artifact.extraction_ms = int((time.perf_counter() - extract_started) * 1000)
     artifact.extraction = extraction

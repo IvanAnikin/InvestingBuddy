@@ -34,3 +34,35 @@ The count is **scope-dependent**: `mypy app` and a broader scope including
 manufactures a regression that is not there.
 
 Current baseline: **71** errors in 10 files (`mypy app`, on `develop/v3`).
+
+---
+
+## `v3-corpus-acceptance.py`
+
+Pushes **one real financial document** through the V3 corpus, locally and
+opt-in. It exists because V3.0 is `IMPLEMENTED` and not `VALIDATED` for one
+reason — nothing had run a real, long financial document through the durable
+path, since V3 is not deployed and its migrations must not reach the live
+environment.
+
+Fixtures are not a substitute. Every issuer in the regression set exposed a
+defect that only live data found, and this was no exception: running a real
+169-page annual report through the parsed-representation builder is what revealed
+that raw headings were being labelled business segments.
+
+```bash
+# from a document you already have
+./apps/api/.venv/bin/python scripts/v3-corpus-acceptance.py \
+    --pdf ~/Downloads/annual-report-2025.pdf --title "Annual Report 2025"
+
+# fetching a real issuer document through the repository's guarded fetcher
+./apps/api/.venv/bin/python scripts/v3-corpus-acceptance.py --allow-network \
+    --url "https://pandora.a.bigcontent.io/v1/static/Annual%20Report%202025" \
+    --allowed-domain pandora.a.bigcontent.io --title "Annual Report 2025"
+```
+
+It creates its own temporary SQLite file and artifact directory, touches no
+existing database, deploys nothing, is not imported by the application, and is
+**not** run by `v3-gates.sh`. It makes no network call unless you pass both
+`--url` and `--allow-network`, and even then the fetch goes through the
+repository's allowlisted, DNS-pinned document fetcher rather than a bare request.

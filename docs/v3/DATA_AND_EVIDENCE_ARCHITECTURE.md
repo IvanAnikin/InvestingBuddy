@@ -52,6 +52,15 @@ So a 169-page annual report is fetched, ~20 excerpts survive, and the document i
 functionally gone. Every later question about it triggers a re-fetch and re-parse
 under a fresh timeout — or, more often, is simply answered "not available".
 
+`IMPLEMENTED IN V3` (Slice 1.3), and measured on that exact document: the real
+Pandora Annual Report 2025 now persists **40 of its 169 pages and 108,000
+characters**, against the 19,232 characters twenty bounded excerpts would have
+kept. It is `status = partial` and says so — the live extraction path reads 40
+pages plus a targeted 12-page supplemental pass, and a corpus that could not
+distinguish "we never read that page" from "that page does not say it" would be
+worse than the excerpt model it replaces. Raising that bound is a reprocessing
+run from the retained bytes, off the live path (Slice 1.7).
+
 ### 2.2 Target model
 
 ```
@@ -65,10 +74,10 @@ LegalEntity ──< ResearchDocument ──< ResearchDocumentVersion ──< Doc
 |---|---|
 | `ResearchDocument` | The *logical* document: "Pandora Annual Report 2025". Stable across re-fetches and format changes. **(`IMPLEMENTED IN V3` — [Slice 1.2](slices/V3.1-2-research-corpus-schema.md).)** |
 | `ResearchDocumentVersion` | One retrieved artifact: content hash, canonical URL, retrieval timestamp, mime type, byte size, blob pointer, extraction version, language, rights/access policy. Immutable. **(`IMPLEMENTED IN V3` — Slice 1.2. "Exactly one current version" is a partial unique index, not a convention.)** |
-| `DocumentPage` | Page number, extracted text, char offsets, extraction method, confidence. |
-| `DocumentSection` | Heading path (e.g. `Financial statements > Segment information`), page span. Reuses the font-size heading-stack logic that already fixed CFR's segment scoping. |
+| `DocumentPage` | Page number, extracted text, char offsets, extraction method, confidence. **(`IMPLEMENTED IN V3` — [Slice 1.3](slices/V3.1-3-full-text-persistence.md), under a versioned `ResearchDocumentDerivation` so improving a parser never rewrites the record of what was retrieved.)** |
+| `DocumentSection` | Heading path (e.g. `Financial statements > Segment information`), page span. Reuses the font-size heading-stack logic that already fixed CFR's segment scoping. **(`IMPLEMENTED IN V3` — Slice 1.3, with the typed scope triple.)** |
 | `DocumentChunk` | The retrieval unit: text, offsets into page/section, token count, embedding reference, and denormalized filter keys (entity, period, scope, source tier, doc type, date). |
-| `DocumentTable` | Structured grid + the geometric reconstruction metadata `financial_table_reconstructor.py` already produces. Tables are not chunks — a borderless five-year summary must survive as a grid. |
+| `DocumentTable` | Structured grid + the geometric reconstruction metadata `financial_table_reconstructor.py` already produces. Tables are not chunks — a borderless five-year summary must survive as a grid. **(`IMPLEMENTED IN V3` — Slice 1.3. Verified on the real Pandora Annual Report 2025: the five-year summary came back as a grid with `['2025','2024','2023','2022','2021']`.)** |
 
 **Version, not overwrite.** A restated annual report is a new
 `ResearchDocumentVersion` of the same `ResearchDocument`. Old citations keep
