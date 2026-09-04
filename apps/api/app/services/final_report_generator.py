@@ -65,7 +65,7 @@ from app.schemas.research_quality import (
     assess_source_quality,
     assess_thin_evidence,
 )
-from app.services import research_job, safety_terms
+from app.services import numeric_verification, research_job, safety_terms
 from app.services.canonical_evidence import (
     FundamentalsEvidence,
     build_evidence_channels,
@@ -6779,6 +6779,24 @@ class FinalReportGeneratorService:
             report_content["research_memo"] = _build_research_memo(
                 report_content, council_result, source_tier=source_tier
             )
+
+        # V3.0 Slice 4 — reconcile every council statement against THIS report's
+        # own canonical figures, and record the verdict in the report.
+        #
+        # Placed here because the canonical figures and the council prose are
+        # both final by now, and BEFORE validation so the record is part of what
+        # the safety gate scans. It edits nothing: a contradicted statement keeps
+        # the text the council wrote, because a suppressed statement that has
+        # been overwritten in the record cannot be reviewed afterwards
+        # (CLAUDE.md rule 8). The presentation withholds it; the record keeps it.
+        #
+        # The browser guard stays as defence in depth. It is the only protection
+        # the 1,057 existing reports will ever have — report content is
+        # persisted, so none of them can gain this section — and on new reports
+        # the two are a genuine second opinion over the same figures.
+        report_content[numeric_verification.SECTION_KEY] = (
+            numeric_verification.verify_report_content(report_content)
+        )
 
         # Phase 26: safety-scan the admin draft AND validate a schema-completed
         # version (honest not_sourced stand-ins fill genuinely-absent fields, so

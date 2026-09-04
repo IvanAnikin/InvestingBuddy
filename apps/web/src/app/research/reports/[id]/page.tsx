@@ -31,6 +31,7 @@ import {
   metricDirections,
   reconcileCouncilNumbers,
 } from "@/components/research/reportSections";
+import { readServerVerification } from "@/components/research/numericConsistency";
 import {
   buildResearchLinkState,
   NO_RESEARCH_LINK,
@@ -132,10 +133,19 @@ export default async function ResearchReportPage({
   // Council prose and the canonical figures are two representations of the
   // same facts. Where they disagree the sentence is withheld and said to
   // conflict — never silently resolved in favour of one of them.
+  // The server's verdict is canonical (V3.0 Slice 4): it is computed at report
+  // assembly from the typed facts and persisted into the record an admin
+  // approves. The browser guard below it stays as defence in depth — every
+  // report generated before this existed has no server section, and report
+  // content is persisted, so those can never gain one.
+  const serverNumeric = readServerVerification(
+    report.content_markdown as Record<string, unknown> | null,
+  );
   const investor = reconcileCouncilNumbers(
     buildInvestorReportView(report.content_markdown, council),
     view.snapshot,
     view.trends.series,
+    serverNumeric,
   );
   // The two cases, argued by the COUNCIL rather than lifted verbatim from the
   // deterministic layer. Built from the RECONCILED reading, so a numeric claim

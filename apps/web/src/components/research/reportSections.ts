@@ -42,9 +42,12 @@ import {
 } from "./investorSignal";
 import {
   CONFLICT_NOTICE,
+  EMPTY_SERVER_VERIFICATION,
   buildCanonicalIndex,
   checkSentence,
+  normaliseStatement,
   type CanonicalIndex,
+  type ServerNumericVerification,
 } from "./numericConsistency";
 import {
   asRecord,
@@ -934,12 +937,27 @@ export function reconcileNumbers<T>(
   read: (item: T) => string,
   replace: (item: T, notice: string) => T,
   canonical: CanonicalIndex,
+  server: ServerNumericVerification = EMPTY_SERVER_VERIFICATION,
+  /** The text a reader is shown, when it differs from the adjudicated text. */
+  readStatement?: (item: T) => string,
 ): { items: T[]; conflicts: number } {
-  if (canonical.figures.size === 0) return { items, conflicts: 0 };
+  const hasServer = server.present && server.conflicts.size > 0;
+  if (canonical.figures.size === 0 && !hasServer) return { items, conflicts: 0 };
   let conflicts = 0;
   const out = items.map((item) => {
-    const { verdict } = checkSentence(read(item), canonical);
-    if (verdict !== "conflicting") return item;
+    // The UNION of the two verdicts, never the intersection. The server's is
+    // canonical and is part of the persisted record; this one is the only
+    // protection an existing report will ever have, because report content is
+    // persisted and none of the 1,057 already-stored reports can gain the
+    // server section. The purpose is not to show a contradiction, so either
+    // saying so is enough.
+    const shown = (readStatement ?? read)(item);
+    const flaggedByServer =
+      hasServer && server.conflicts.has(normaliseStatement(shown));
+    const flaggedHere =
+      canonical.figures.size > 0 &&
+      checkSentence(read(item), canonical).verdict === "conflicting";
+    if (!flaggedByServer && !flaggedHere) return item;
     conflicts += 1;
     return replace(item, CONFLICT_NOTICE);
   });
@@ -951,12 +969,15 @@ export function reconcileCouncilNumbers(
   view: InvestorReportView,
   snapshot: FinancialSnapshotView,
   trends: TrendSeriesView[] = [],
+  server: ServerNumericVerification = EMPTY_SERVER_VERIFICATION,
 ): InvestorReportView & { numericConflicts: number } {
   // Every period AND every scope the report holds — headline slots and the
   // multi-year series, Group and segment alike. A segment claim is adjudicated
   // against that segment, never against the consolidated total.
   const canonical = buildCanonicalIndex(snapshot, trends);
-  if (canonical.figures.size === 0) return { ...view, numericConflicts: 0 };
+  if (canonical.figures.size === 0 && server.conflicts.size === 0) {
+    return { ...view, numericConflicts: 0 };
+  }
 
   let conflicts = 0;
 
@@ -966,12 +987,18 @@ export function reconcileCouncilNumbers(
       (f) => f.claim,
       (f, notice) => ({ ...f, claim: notice }),
       canonical,
+      server,
     );
     const implications = reconcileNumbers(
       agent.implications,
+      // Adjudicated on statement + mechanism (the number often sits in one and
+      // the metric name in the other), matched against the server on the
+      // statement alone — which is the field that gets withheld.
       (i) => `${i.statement} ${i.mechanism ?? ""}`,
       (i, notice) => ({ ...i, statement: notice, mechanism: null }),
       canonical,
+      server,
+      (i) => i.statement,
     );
     conflicts += findings.conflicts + implications.conflicts;
     return {
@@ -987,6 +1014,8 @@ export function reconcileCouncilNumbers(
       (p) => `${p.statement} ${p.mechanism ?? ""}`,
       (p, notice) => ({ ...p, statement: notice, mechanism: null }),
       canonical,
+      server,
+      (p) => p.statement,
     );
   const higher = points(view.reading.couldDriveHigher);
   const pressure = points(view.reading.couldPressure);
@@ -1011,6 +1040,7 @@ export function reconcileCouncilNumbers(
       (t) => t,
       (_t, notice) => notice,
       canonical,
+      server,
     );
   const chairPositive = sentences(view.reading.chairPositive);
   const chairNegative = sentences(view.reading.chairNegative);
