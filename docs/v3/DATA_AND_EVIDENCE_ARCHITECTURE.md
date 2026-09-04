@@ -63,8 +63,8 @@ LegalEntity ──< ResearchDocument ──< ResearchDocumentVersion ──< Doc
 
 | Entity | Purpose |
 |---|---|
-| `ResearchDocument` | The *logical* document: "Pandora Annual Report 2025". Stable across re-fetches and format changes. |
-| `ResearchDocumentVersion` | One retrieved artifact: content hash, canonical URL, retrieval timestamp, mime type, byte size, blob pointer, extraction version, language, rights/access policy. Immutable. |
+| `ResearchDocument` | The *logical* document: "Pandora Annual Report 2025". Stable across re-fetches and format changes. **(`IMPLEMENTED IN V3` — [Slice 1.2](slices/V3.1-2-research-corpus-schema.md).)** |
+| `ResearchDocumentVersion` | One retrieved artifact: content hash, canonical URL, retrieval timestamp, mime type, byte size, blob pointer, extraction version, language, rights/access policy. Immutable. **(`IMPLEMENTED IN V3` — Slice 1.2. "Exactly one current version" is a partial unique index, not a convention.)** |
 | `DocumentPage` | Page number, extracted text, char offsets, extraction method, confidence. |
 | `DocumentSection` | Heading path (e.g. `Financial statements > Segment information`), page span. Reuses the font-size heading-stack logic that already fixed CFR's segment scoping. |
 | `DocumentChunk` | The retrieval unit: text, offsets into page/section, token count, embedding reference, and denormalized filter keys (entity, period, scope, source tier, doc type, date). |
@@ -73,6 +73,20 @@ LegalEntity ──< ResearchDocument ──< ResearchDocumentVersion ──< Doc
 **Version, not overwrite.** A restated annual report is a new
 `ResearchDocumentVersion` of the same `ResearchDocument`. Old citations keep
 resolving; the restatement is visible as a delta rather than as silent mutation.
+
+`IMPLEMENTED IN V3` (Slice 1.2). Two retrievals are the same document only when
+the documents themselves say so — same company, same declared kind, same declared
+period; everything else falls back to a hash of the canonical URL and stays
+separate. The two failure directions are not symmetric: splitting produces a
+duplicate citation, merging attributes one report's pages to another report's
+identity, so the fallback deliberately over-splits.
+
+One consequence is worth naming. `document_period` refuses a bare year on purpose,
+so an annual report — the document class where versioning matters most — would
+otherwise never get a declared identity. `corpus.identity.annual_period_from`
+reads a year **only** where it sits beside the document's own name for itself
+("Annual Report 2025"), refuses when two candidate years disagree, and is
+corpus-only: it never reaches a fact's period, and a test enforces that.
 
 **Retention is a policy field, not a code branch.** Whether raw bytes may be
 stored is `rights_policy` on the version (see
