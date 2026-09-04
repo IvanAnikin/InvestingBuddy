@@ -225,4 +225,4 @@ approval.
 | 2026-09-04 | V3.0 Slice 2.1 — bound reclaim attempts (corrective) | `feature/v3-0-2-1-bound-reclaim-attempts` | `c9e3d8d` |
 | 2026-09-04 | V3.0 Slice 3 — company research on durable jobs | `feature/v3-0-3-company-research-on-durable-jobs` | `04d2df1` |
 | 2026-09-04 | V3.0 Slice 3.1 — research-stage accuracy (corrective) | `feature/v3-0-3-1-research-stage-accuracy` | `e9b6e9c` |
-| 2026-09-04 | V3.0 Slice 4 — server-side numeric verification | `feature/v3-0-4-server-side-numeric-verification` | _pending_ |
+| 2026-09-04 | V3.0 Slice 4 — server-side numeric verification | `feature/v3-0-4-server-side-numeric-verification` | `31b9fa2` |
