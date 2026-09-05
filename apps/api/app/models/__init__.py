@@ -25,6 +25,7 @@ from app.models.research_derivation import (
 )
 from app.models.research_document import ResearchDocument, ResearchDocumentVersion
 from app.models.research_job import ResearchJob
+from app.models.research_tool_call import ResearchToolCall
 from app.models.scorecard import Scorecard
 from app.models.source import Citation, Source
 
@@ -56,6 +57,7 @@ __all__ = [
     "ResearchDocumentTable",
     "ResearchDocumentVersion",
     "ResearchJob",
+    "ResearchToolCall",
     "Scorecard",
     "Security",
     "SecurityListing",

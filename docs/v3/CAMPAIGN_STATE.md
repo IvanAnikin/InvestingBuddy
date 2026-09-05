@@ -35,11 +35,11 @@ enabling a V3 flag in production, deleting V2 compatibility or either V2 ref.
 | Item | Value |
 |---|---|
 | `develop/v3` HEAD | `35bd550` — 47 commits ahead of `origin/develop/v3` (`fd82d3d`), unpushed |
-| Alembic head in source | **028** (`028_add_entity_relationships`) |
-| Alembic head in the deployed database | **018** — and V3 migrations 019-028 have reached **no** deployed environment |
+| Alembic head in source | **029** (`029_add_research_tool_calls`) |
+| Alembic head in the deployed database | **018** — and V3 migrations 019-029 have reached **no** deployed environment |
 | Alembic head in the local dev database | **018** (unchanged by V3 work; scratch databases only) |
 | Current phase | **V3.3 — Research tools and calculation engine** |
-| Current slice | 3.1 — `feature/v3-3-1-agent-tool-contracts` (next) |
+| Current slice | 3.2 — `feature/v3-3-2-fact-and-series-tools` (next) |
 | Deployed | **Nothing.** `main` at `4b60e07` is the deployed product. |
 
 Working tree at campaign start also held two untracked files —
@@ -54,7 +54,7 @@ the user's call, and the campaign leaves them untracked and untouched.
 | V3.0 | Execution and correctness foundation | `IMPLEMENTED` |
 | V3.1 | Research Corpus | `IMPLEMENTED` |
 | V3.2 | Entity Master and global universe | `IMPLEMENTED` — all six slices merged; [phase gate](IMPLEMENTATION_PLAN.md#11-v32-phase-gate) |
-| V3.3 | Research tools and calculation engine | `IN PROGRESS` |
+| V3.3 | Research tools and calculation engine | `IN PROGRESS` — 3.1 merged; 3.2-3.4 open |
 | V3.4 | Multi-provider runtime and source expansion | `NOT STARTED` |
 | V3.5 | Research Ledger and Director | `NOT STARTED` |
 | V3.6 | Industry playbooks | `NOT STARTED` |
@@ -94,6 +94,7 @@ is recorded explicitly rather than being allowed to pass as production validatio
 | 2026-09-05 | V3.2.4 relationships, scopes, segments | `feature/v3-2-4-entity-relationships` | `ad1a796` |
 | 2026-09-05 | V3.2.5 universe generation | `feature/v3-2-5-universe-generation` | `df75ce6` |
 | 2026-09-05 | V3.2 phase gate | `feature/v3-2-phase-gate-report` | `4f0cb0a` |
+| 2026-09-05 | V3.3.1 agent tool contracts | `feature/v3-3-1-agent-tool-contracts` | *(see progress log)* |
 
 ## Corrective slices
 
@@ -124,6 +125,7 @@ database is re-checked afterwards to confirm it is still at 018.
 | 026 | `legal_entities`, `securities`, `security_listings`, `entity_identifiers`, `entity_aliases` | scratch (`ib_v3_migcheck_026`, dropped). Upgraded, downgraded, re-upgraded; ORM/DDL drift check clean; **every uniqueness and CHECK guarantee exercised with real conflicting INSERTs in PostgreSQL 16**, not only through the ORM. | **No** |
 | 027 | `companies.legal_entity_id` (nullable, `SET NULL`) + index | scratch (`ib_v3_migcheck_027`, dropped). A column-by-column diff of `companies` shows **exactly one added column**; `confdeltype='n'` and a real entity DELETE left the company row in place, unlinked; downgrade restored the column list identically. | **No** |
 | 028 | `entity_relationships`, `reporting_scopes`, `business_segments` + `securities.underlying_security_id` / `receipt_ratio` | scratch (`ib_v3_migcheck_028`, dropped). Exactly **two** columns added to `securities`, `companies` **identical**; **eleven** guarantees exercised with real conflicting statements in PostgreSQL; drift check clean across all nine tables including CHECK constraints. | **No** |
+| 029 | `research_tool_calls` | scratch (`ib_v3_migcheck_029`, dropped). 41 → 42 tables and back; every CHECK exercised with a real statement; deleting the company an audit row refers to left **3 rows surviving, 0 still linked** — the audit record outlives what it describes. | **No** |
 
 Additive-only through V3.2 (§2.1 of the migration plan): tables, **nullable**
 columns and indexes only. That is what makes `release/v2-current` code able to run
@@ -174,10 +176,10 @@ belong to the agent, with an ADR when material.
 
 Recorded so a later run can be compared against a number rather than a memory.
 
-| Gate | At campaign start (`35bd550`) | At the V3.2 gate |
+| Gate | At campaign start (`35bd550`) | After V3.3.1 |
 |---|---|---|
 | `ruff check .` | All checks passed | All checks passed |
-| `pytest tests/ -q` | 4949 passed, 12 skipped | **5174 passed**, 12 skipped |
+| `pytest tests/ -q` | 4949 passed, 12 skipped | **5226 passed**, 12 skipped |
 | `mypy app` | 71 errors in 10 files | 71 errors in 10 files (baseline; one regression to 72 was caught by the gate in 2.3 and fixed) |
 
 ## Provider benchmarks
@@ -258,25 +260,27 @@ Carried forward, all still true:
 
 ## Next executable action
 
-Start **V3.3 slice 3.1** on `feature/v3-3-1-agent-tool-contracts`: the typed
-read-only tool interface, the registry, per-role budgets and `ResearchToolCall`
-persistence.
+Start **V3.3 slice 3.2** on `feature/v3-3-2-fact-and-series-tools`:
+`get_financial_facts`, `get_financial_series` and `get_segment_facts` on the machinery
+3.1 landed. No migration — `extracted_facts` already exists with the typed scope
+columns migration 018 added.
 
-It is the binding constraint on every later phase — the Research Director (V3.5) plans
-work that tools execute, and a Director planning work no agent can perform is a
-planning demo.
+The machinery is done, so 3.2 is entirely about **what a fact tool is allowed to
+return**, and the traps are all recorded:
 
-Three things beneath it are available now and should be **used rather than
-re-established**:
+- A fact carries a period, a scope, a unit, a currency and a scale, and a tool that
+  returns a number without all five is handing an agent something it cannot cite. The
+  `FactScope` triple and `ReportingPeriod` are the vocabularies; do not invent a
+  second shape.
+- **Annual ≠ interim, and Group ≠ segment.** A series tool is the first place where
+  mixing them silently is easy: `get_financial_series` must refuse a request that would
+  span period types, rather than returning a series that looks continuous.
+- `extracted_facts.is_active` (017) and the scope columns (018) exist because stale and
+  mis-scoped rows were live defects. A tool that ignores `is_active` will resurrect a
+  superseded figure.
+- Fact counts must **name their population** (`fact_count_scopes.py`). The rule is not
+  to make the numbers agree; it is to say which population each number counts.
 
-- `lookup_entity` is `entities.resolution.resolve`, and the tool must return the
-  **state**. A tool that hands an agent an `ambiguous` result as if it were resolved
-  undoes the whole of V3.2.
-- `search_company_corpus` is `corpus.retrieval.search_corpus`, whose period and scope
-  filters are already mandatory and whose semantic-only queries are already refused.
-- `ResearchToolCall` should record consumption in the units V3.0.5 already defined,
-  not a second vocabulary for the same counters.
-
-The security boundary is the slice's real content: a closed, typed, read-only tool
-list, per-role budgets enforced **before** spending, and no raw SQL, shell, filesystem
-or unrestricted HTTP for any agent. Fetched content is data, never instructions.
+The regression case to keep in front of it is CFR: Specialist Watchmakers figures must
+never come back from a Group query, and the €107m figure is the one that needed a
+font-size PDF heading stack to scope correctly at all.
