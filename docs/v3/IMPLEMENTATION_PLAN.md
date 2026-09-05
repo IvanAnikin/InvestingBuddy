@@ -264,7 +264,7 @@ approval.
 | 2026-09-05 | V3.3 phase gate | `feature/v3-3-phase-gate-report` | `7772b1f` |
 | 2026-09-05 | V3.4 Slice 4.1 — provider interfaces | `feature/v3-4-1-provider-interfaces` | `d628ae7` |
 | 2026-09-05 | Decision record — 11 resolutions, ADR-047..052 | `feature/v3-decisions-resolved` | `ec8ea65` |
-| 2026-09-05 | V3.4 Slice 4.1.1 — rights-based governance | `feature/v3-4-1-1-rights-based-governance` | *(this slice)* |
+| 2026-09-05 | V3.4 Slice 4.1.1 — rights-based governance | `feature/v3-4-1-1-rights-based-governance` | `66ddd30` |
 
 ---
 
