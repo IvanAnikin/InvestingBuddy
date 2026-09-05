@@ -1112,6 +1112,32 @@ class Settings(BaseSettings):
     # be exercised in tests and validated before any live path reaches it.
     v3_agent_tools_enabled: bool = False
 
+    # ── V3.4: Provider runtime ──────────────────────────────────────────────
+    # Master switch for the multi-provider runtime. OFF by default; with it off no
+    # provider is consulted and the platform behaves exactly as it does today.
+    v3_provider_runtime_enabled: bool = False
+
+    # Model ROUTING SLOTS. Domain logic names a slot, never a model — `gpt-5.6-sol`
+    # will not be the strongest synthesis model for long, and a codebase with its
+    # name in a council prompt has hard-coded a vendor's release schedule.
+    #
+    # Every slot defaults to EMPTY, which means "unassigned" and degrades to the
+    # deterministic path. Which model fills each is OPEN DECISION #5, user-owned,
+    # and its own recommendation notes that absolute cost is small (~$0.19/report
+    # for a cheap-analyst/strong-Chair split) so the decision is about rate-limit
+    # headroom rather than the bill. Guessing a default would answer a question
+    # asked of somebody else.
+    v3_model_slot_classification_model: str = ""
+    v3_model_slot_cheap_research_model: str = ""
+    v3_model_slot_document_reasoning_model: str = ""
+    v3_model_slot_research_director_model: str = ""
+    # Prefer a DIFFERENT vendor here: a model challenging its own family's output
+    # shares its blind spots, which is most of what a Red Team is for (#7).
+    v3_model_slot_red_team_model: str = ""
+    v3_model_slot_chair_model: str = ""
+    v3_model_slot_deep_research_provider: str = ""
+    v3_model_slot_translation_model: str = ""
+
     # ── Real OCR: Azure Document Intelligence (Phase 32A Slice 5B.2) ─────────
     # Only ever consulted when ``primary_document_ocr_enabled`` (Slice 5,
     # default False) is also True. With the endpoint left empty (the default),
