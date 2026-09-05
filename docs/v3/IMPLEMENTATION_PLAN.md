@@ -247,7 +247,7 @@ approval.
 | 2026-09-05 | Corrective — untrack the data-source inventory (OPEN DECISION #18) | `fix/v3-untrack-data-source-inventory` | `2810aef` |
 | 2026-09-05 | Campaign state — durable campaign memory | `feature/v3-campaign-state` | `a7e0776` |
 | 2026-09-05 | V3.2 Slice 2.1 — entity master | `feature/v3-2-1-entity-master` | `01f0f13` |
-| 2026-09-05 | V3.2 Slice 2.2 — company backfill | `feature/v3-2-2-company-backfill` | *(this slice)* |
+| 2026-09-05 | V3.2 Slice 2.2 — company backfill | `feature/v3-2-2-company-backfill` | `4e0a90d` |
 
 ---
 

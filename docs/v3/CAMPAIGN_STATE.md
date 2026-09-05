@@ -88,7 +88,7 @@ is recorded explicitly rather than being allowed to pass as production validatio
 | 2026-09-05 | V3.1 phase gate | `feature/v3-1-phase-gate-report` | `a7a0a53` |
 | 2026-09-05 | Campaign state | `feature/v3-campaign-state` | `a7e0776` |
 | 2026-09-05 | V3.2.1 entity master | `feature/v3-2-1-entity-master` | `01f0f13` |
-| 2026-09-05 | V3.2.2 company backfill | `feature/v3-2-2-company-backfill` | *(see progress log)* |
+| 2026-09-05 | V3.2.2 company backfill | `feature/v3-2-2-company-backfill` | `4e0a90d` |
 
 ## Corrective slices
 
