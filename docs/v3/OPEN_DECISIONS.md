@@ -1,12 +1,54 @@
 # InvestingBuddy V3 — Open Decisions Register
 
-**Last reviewed:** 2026-09-04. Baseline `4b60e07`.
+**Last reviewed:** 2026-09-05. Baseline `4b60e07`.
 
 Every unresolved V3 decision. A decision leaves this register by becoming an ADR
 in `docs/DECISIONS.md`.
 
 Format per entry: **status** · **options** · **recommendation** · **blocking?** ·
 **evidence needed** · **owner**.
+
+---
+
+## Resolution round, 2026-09-05 — the user resolved eleven decisions at once
+
+The governing constraint, stated by the user and now the frame for every provider
+question in V3:
+
+> **V3 must require no new paid SaaS subscriptions or commercial data
+> subscriptions.**
+
+Three paid capabilities are approved and already available: **Claude Code CLI**
+(development and orchestration only), the **existing Azure OpenAI infrastructure**,
+and **DeepSeek API usage** on pay-as-you-go. Everything else on the candidate list —
+Exa, Perplexity, Gemini API, Anthropic API for production, Quartr, Fiscal.ai,
+Browserbase, Apify, Parallel, AlphaSense — is **not purchased and not required**, and
+the V3 Release Candidate must not depend on any of them.
+
+Their abstractions stay. That is the point of having had them: each becomes a small
+adapter behind a finished interface if it is ever approved, and none of them blocks
+anything now.
+
+| # | Was | Now |
+|---|---|---|
+| [1](#1-azure-ai-search-vs-postgresql--pgvector) | open (cost) | **RESOLVED → PostgreSQL + pgvector** ([ADR-047](../DECISIONS.md)) |
+| [2](#2-service-bus-worker-topology) | open (cost) | **RESOLVED → PostgreSQL polling; no broker required** |
+| [3](#3-exa-vs-perplexity-search) | open (spend) | **RESOLVED → both DEFERRED; DeepSeek `web_search` is the primary external search path** ([ADR-048](../DECISIONS.md)) |
+| [4](#4-deepseek-data-governance-policy) | open (legal/comfort) | **RESOLVED → approved; rights metadata governs, not geography** ([ADR-049](../DECISIONS.md)) |
+| [5](#5-openai-model-routing) | open | **RESOLVED → existing Azure OpenAI only, as the strong-model fallback** ([ADR-050](../DECISIONS.md)) |
+| [6](#6-gemini-deep-research-role) | open | **RESOLVED → DEFERRED / NOT ACTIVATED** |
+| [7](#7-claude-red-team-role) | open | **RESOLVED → Claude is not a production provider** |
+| [8](#8-transcript-provider) | open (spend) | **RESOLVED → free/public issuer sources only; missing means missing** ([ADR-051](../DECISIONS.md)) |
+| [9](#9-quartr-vs-fiscalai) | open | **RESOLVED → neither** |
+| [11](#11-private-data-external-model-policy) | open (judgement) | **RESOLVED → per-document rights metadata decides; fail closed when unknown** ([ADR-049](../DECISIONS.md)) |
+| [13](#13-model-cost-thresholds) / [14](#14-research-mode-budgets) | open (budget) | **RESOLVED → bounded technical defaults per research mode; no business budget now** ([ADR-052](../DECISIONS.md)) |
+| [16](#16-future-valuation-scope) | open | **RESOLVED → factual context and deterministic multiples only** |
+
+Four remain open, and **none blocks any remaining work**:
+[10](#10-openfigi-usage-and-licensing) (OpenFIGI — FIGI stays representable, not
+obtainable), [12](#12-raw-page-and-document-retention) (retention TTL — the primitive
+ships unconfigured), [15](#15-monitoring-cadence) (V3.9 scheduling),
+[17](#17-ci-coverage-for-the-v3-branch) and [18](#18-fate-of-docsdata_source_inventorymd--xlsx).
 
 ---
 
@@ -41,6 +83,18 @@ Format per entry: **status** · **options** · **recommendation** · **blocking?
   What the in-memory backend proves is that the contract is *sufficient*; it
   proves nothing about quality or scale, and a corpus of thousands of annual
   reports is not served from a Python dict.
+- **RESOLVED 2026-09-05 → (b) PostgreSQL + `pgvector`.** [ADR-047](../DECISIONS.md).
+  The user's reasoning, recorded verbatim in substance: PostgreSQL already exists in
+  the architecture, Azure PostgreSQL supports `pgvector`, it avoids another paid
+  managed service, it keeps canonical corpus metadata and retrieval close together,
+  and it is lower operational complexity at the current scale. The `SearchBackend`
+  abstraction preserves a later move to Azure AI Search if scale or quality demands
+  it, so this is reversible for the price of one adapter.
+  **Azure AI Search is not provisioned.** Hybrid remains lexical + vector + the
+  platform's own rank fusion + metadata filters, exactly as the interface already
+  expresses it. If enabling the `pgvector` extension would modify the deployed
+  database, the migration is written and scratch-validated and **not applied** —
+  the campaign's standing restriction is unchanged.
 
 ## 2. Service Bus worker topology
 
@@ -55,6 +109,13 @@ Format per entry: **status** · **options** · **recommendation** · **blocking?
 - **Evidence needed:** B1 plan headroom (~1.75 GB, already 93-95% with one
   worker); whether a separate worker App Service is affordable.
 - **Owner:** user (cost) + agent.
+- **RESOLVED 2026-09-05 → (c), and no broker is required for the Release
+  Candidate.** The PostgreSQL-backed durable worker from V3.0 continues unless
+  testing proves it fundamentally insufficient, which it has not. The broker
+  abstraction stays as a later scale-out option. **Azure Service Bus is not
+  provisioned**, and slice 0.6 is `DEFERRED` rather than `BLOCKED` — there is nothing
+  left to decide. The Release Candidate must be capable of running without a new
+  broker service, and it is.
 
 ## 3. Exa vs Perplexity Search
 
@@ -69,6 +130,19 @@ Format per entry: **status** · **options** · **recommendation** · **blocking?
 - **Blocking?** Blocks V3.4.2 defaults, not the interface.
 - **Evidence needed:** benchmark §7 of the provider strategy on MRNA/CFR/ASML.
 - **Owner:** agent (benchmark) → user (spend approval).
+- **RESOLVED 2026-09-05 → neither. Both DEFERRED.** [ADR-048](../DECISIONS.md).
+  **DeepSeek's server-side `web_search` is the primary external general-web research
+  and search path** for initial V3, so neither subscription is purchased and neither
+  is required. The `SearchProvider` interface and its fake (slice 4.1) stay, and an
+  Exa or Perplexity adapter remains a small future slice if either is ever approved.
+  **No credentials are required and V3.4 is not blocked.**
+  The acquisition hierarchy is now explicit and ordered:
+  existing corpus → official structured API → official regulator/issuer source →
+  the current safe direct fetcher → **DeepSeek web search** → source URL retrieval
+  *through InvestingBuddy* → verification.
+  A DeepSeek search result or model claim is a `ResearchLead` until the platform has
+  retrieved and verified the underlying source. **A search snippet is never canonical
+  evidence.**
 
 ## 4. DeepSeek data-governance policy
 
@@ -84,6 +158,20 @@ Format per entry: **status** · **options** · **recommendation** · **blocking?
 - **Evidence needed:** official data-handling, jurisdiction and retention terms;
   benchmark quality results.
 - **Owner:** user (legal/comfort) + agent (benchmark).
+- **RESOLVED 2026-09-05 → approved, and the rule is about rights rather than
+  geography.** [ADR-049](../DECISIONS.md). DeepSeek is the **primary external
+  research/model provider** on pay-as-you-go usage, and China location/storage is
+  explicitly **not** a blocker for this project.
+  DeepSeek may process `public_official`, `public_issuer`, `public_web`,
+  InvestingBuddy-derived research context, **and user-private content when that
+  document's own policy metadata allows third-party model processing.**
+  It must never receive API keys, passwords, credentials, secrets, authentication
+  tokens, private system configuration, a document whose licence or rights metadata
+  forbids external-model processing, or anything marked
+  `external_model_allowed=false`.
+  So: **data rights and explicit source policy govern DeepSeek use, not provider
+  geography** — and the previous blanket `user_private → DENY` rule is retired in
+  favour of the per-document one. **Fail closed when the policy is unknown.**
 
 ## 5. OpenAI model routing
 
@@ -99,6 +187,16 @@ Format per entry: **status** · **options** · **recommendation** · **blocking?
 - **Blocking?** No — slots are configuration.
 - **Evidence needed:** Azure TPM quota per deployment; benchmark quality.
 - **Owner:** agent, with user cost sign-off.
+- **RESOLVED 2026-09-05 → the existing Azure OpenAI infrastructure only, as the
+  strong-model fallback.** [ADR-050](../DECISIONS.md). **No new OpenAI commercial
+  account is created.** The routing policy is explicit:
+  `cheap/bulk research → DeepSeek`, `difficult final reasoning → Azure OpenAI`.
+  Azure OpenAI's intended V3 role is stronger synthesis when needed, difficult
+  Research Director cases, complex evidence contradictions, Red Team where
+  appropriate, the Chair and final Council synthesis, and any task where a benchmark
+  shows it materially outperforms the cheaper route. **Not every research subtask
+  goes to the expensive model.** Routing stays configurable, and the slots remain
+  the only thing domain logic names.
 
 ## 6. Gemini Deep Research role
 
@@ -112,6 +210,10 @@ Format per entry: **status** · **options** · **recommendation** · **blocking?
 - **Evidence needed:** Deep Research API availability and terms; whether cited
   sources are traceable enough to verify.
 - **Owner:** agent → user.
+- **RESOLVED 2026-09-05 → `OPTIONAL / DEFERRED / NOT ACTIVATED`.** Not required for
+  the V3 Release Candidate. The `ResearchProvider` abstraction stays; no credentials
+  are required and nothing is purchased. **DeepSeek provides the initial autonomous
+  web-research capability**, and V3.5-V3.9 are not blocked on Gemini.
 
 ## 7. Claude Red Team role
 
@@ -124,6 +226,16 @@ Format per entry: **status** · **options** · **recommendation** · **blocking?
 - **Blocking?** No.
 - **Evidence needed:** benchmark on challenge quality.
 - **Owner:** agent → user.
+- **RESOLVED 2026-09-05 → Claude is not a production provider.** Claude Code CLI is
+  authorised for campaign orchestration, coding, review, development-time research,
+  testing and implementation agents — and **must not become an InvestingBuddy runtime
+  dependency**. No Anthropic API production integration is required for V3, and the
+  consumer product must not be automated from the application.
+  `ClaudeResearchProvider` may remain a future adapter and a fake.
+  A consequence worth stating: the Red Team's vendor-diversity argument is **not
+  currently being had**. With DeepSeek and Azure OpenAI as the two available vendors,
+  the Red Team can at least be a *different vendor from the Chair*, and
+  `ModelRouter.shares_vendor_with` is what reports whether it is.
 
 ## 8. Transcript provider
 
@@ -136,6 +248,15 @@ Format per entry: **status** · **options** · **recommendation** · **blocking?
   vendor coverage for European issuers specifically, which is where the current
   pipeline is thinnest.
 - **Owner:** user (spend) + agent.
+- **RESOLVED 2026-09-05 → (a) direct issuer and public sources only.**
+  [ADR-051](../DECISIONS.md). **No paid Quartr or Fiscal.ai subscription.** The
+  canonical transcript/IR-event architecture is implemented anyway, and acquisition
+  uses free, legally accessible public sources: issuer IR sites, issuer-published
+  transcripts, earnings releases, presentations, capital-markets-day materials,
+  regulatory filings and public event documents.
+  When a transcript is not publicly available: **missing means missing.** It is not
+  fabricated, and a paywalled source is not scraped. Vendor adapters remain future
+  optional integrations.
 
 ## 9. Quartr vs Fiscal.ai
 
@@ -146,6 +267,8 @@ Format per entry: **status** · **options** · **recommendation** · **blocking?
 - **Blocking?** No.
 - **Evidence needed:** pricing, API terms, European coverage, redistribution rights.
 - **Owner:** user.
+- **RESOLVED 2026-09-05 → neither.** No commercial transcript subscription is part of
+  V3. See [#8](#8-transcript-provider).
 
 ## 10. OpenFIGI usage and licensing
 
@@ -172,6 +295,16 @@ Format per entry: **status** · **options** · **recommendation** · **blocking?
 - **Blocking?** Blocks private-research ingestion enablement.
 - **Evidence needed:** user's comfort threshold; per-provider terms.
 - **Owner:** **user** — this is a judgement call, not a technical one.
+- **RESOLVED 2026-09-05 → (d), per document *and* per provider, decided by the
+  document's own rights metadata.** [ADR-049](../DECISIONS.md). Private research
+  ingestion is now first-class rather than gated.
+  Every document's default policy must explicitly represent: **external model
+  permitted (yes/no)**, **permitted providers when constrained**, **retention**,
+  **indexing**, **quoting** and **deletion**.
+  A user-owned document explicitly allowed for external models **may** be used by
+  DeepSeek. A licensed third-party report follows its own rights metadata.
+  **Rights are never inferred from the fact that a file was uploaded**, and an
+  unknown policy fails closed.
 
 ## 12. Raw page and document retention
 
@@ -210,6 +343,15 @@ Format per entry: **status** · **options** · **recommendation** · **blocking?
 - **Blocking?** Blocks V3.0.5 defaults.
 - **Evidence needed:** the user's actual monthly budget.
 - **Owner:** **user**.
+- **RESOLVED 2026-09-05 → bounded technical defaults now; no business budget
+  chosen.** [ADR-052](../DECISIONS.md). Sensible configurable maxima exist for
+  research rounds, web searches, tool calls, documents, tokens, wall time and
+  DeepSeek calls, per research mode.
+  Two things are explicit in the user's instruction and both are recorded here
+  because they pull in opposite directions: **the absence of a monthly business
+  budget is not unlimited execution**, and **V3 is not blocked on pricing or
+  business-plan decisions**. User-facing quotas and pricing stay deferred until
+  after the Release Candidate.
 
 ## 14. Research-mode budgets
 
@@ -222,6 +364,14 @@ Format per entry: **status** · **options** · **recommendation** · **blocking?
 - **Blocking?** Blocks V3.0.5 defaults.
 - **Evidence needed:** measured consumption from the first instrumented runs.
 - **Owner:** agent → user.
+- **RESOLVED 2026-09-05 → technical presets, not price tiers.**
+  [ADR-052](../DECISIONS.md). QUICK / STANDARD / DEEP / MAX are **research-depth
+  presets** with no subscription price attached:
+  QUICK is mostly native sources and the corpus with minimal DeepSeek research;
+  STANDARD adds bounded DeepSeek investigation plus Azure OpenAI synthesis where
+  justified; DEEP widens the DeepSeek rounds and source retrieval with stronger final
+  synthesis; MAX takes the highest bounded limits and is **still finite**.
+  No external managed Deep Research subscription is required for any of them.
 
 ## 15. Monitoring cadence
 
@@ -242,6 +392,14 @@ Format per entry: **status** · **options** · **recommendation** · **blocking?
   regulated-advice risk the platform deliberately avoids.
 - **Blocking?** No.
 - **Owner:** **user**.
+
+## 17. CI coverage for the V3 branch
+- **RESOLVED 2026-09-05 → (b), factual valuation *context* only, and the existing
+  safety boundary is preserved unchanged:** no automatic BUY/SELL/HOLD, no price
+  targets, no projected returns, no unsupported fair value. Only factual valuation
+  context and deterministic multiples where already valid and allowed. A dedicated
+  valuation phase can be approved separately later. **Considered resolved for this
+  V3 release, and V3 is not blocked on valuation methodology.**
 
 ## 17. CI coverage for the V3 branch
 

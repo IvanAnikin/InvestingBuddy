@@ -7,6 +7,103 @@ here carries its verification date. Re-verify before acting on a cost decision.
 
 ---
 
+## 0. RESOLVED 2026-09-05 — what V3 actually depends on
+
+The governing constraint, decided by the user:
+
+> **V3 must require no new paid SaaS subscriptions or commercial data
+> subscriptions.**
+
+Everything below §1 remains accurate as *research into the market*, and most of it is
+now a record of options that were evaluated and not taken. **This section is what V3
+depends on.** Where the two disagree, this section wins.
+
+### Approved and available
+
+| Capability | Role | Notes |
+|---|---|---|
+| **Claude Code CLI** | Development and orchestration **only** | ADR-047..052 were decided through it. It is **not** an InvestingBuddy runtime dependency and must not become one. |
+| **Existing Azure OpenAI** | The **strong-model fallback** | Already in this repository, already carrying the council. No new OpenAI commercial account. |
+| **DeepSeek API** (pay-as-you-go) | The **primary external research/model provider** | Model calls *and* server-side `web_search`. |
+
+### Not purchased, not required, not blocking
+
+Exa · Perplexity · Gemini API / Deep Research · Anthropic API for production ·
+Quartr · Fiscal.ai · Browserbase · Apify · Parallel · AlphaSense · any other
+commercial research or data subscription.
+
+Their abstractions remain in the architecture as future optional integrations. **The
+V3 Release Candidate must not depend on any of them, and their absence blocks
+nothing.**
+
+### The routing policy
+
+```
+cheap / bulk research      → DeepSeek
+difficult final reasoning  → Azure OpenAI
+```
+
+DeepSeek carries web research, server-side search, source discovery, research planning
+where appropriate, first-pass specialist investigation, document reasoning, industry
+and competitor research, evidence-gap follow-up, structured extraction where
+appropriate, and cheap high-volume analyst work.
+
+Azure OpenAI carries stronger synthesis when needed, difficult Research Director
+cases, complex evidence contradictions, Red Team where appropriate, and the Chair and
+final Council synthesis. **Not every research subtask goes to the expensive model.**
+
+### The acquisition hierarchy
+
+```
+existing InvestingBuddy corpus
+→ official structured API              (SEC, GLEIF, FRED, Eurostat, ClinicalTrials.gov, …)
+→ official regulator / issuer source
+→ current safe direct fetcher
+→ DeepSeek web search                  ← the FIFTH resort, not the first
+→ source URL retrieval THROUGH InvestingBuddy
+→ verification
+```
+
+The order carries the argument. External search is reached only after everything the
+platform already holds or can reach authoritatively — which is also the cheapest
+ordering, so cost and quality agree here instead of trading off.
+
+**A DeepSeek search result or model claim is a `ResearchLead` until InvestingBuddy has
+retrieved and verified the underlying source. A search snippet is never canonical
+evidence.**
+
+### Corpus retrieval, embeddings, queue, crawling
+
+- **Retrieval:** PostgreSQL full-text + `pgvector`, fused by the platform's own rank
+  fusion, with metadata filters in the same query (ADR-047). **Azure AI Search is not
+  provisioned**; the `SearchBackend` interface keeps it available later.
+- **Embeddings:** prefer an existing Azure OpenAI embedding deployment **if one is
+  already configured**. If none exists, the `EmbeddingProvider` abstraction is retained,
+  the `pgvector` path is developed and tested against deterministic embeddings, **no
+  new paid resource is provisioned**, and semantic indexing stays feature-gated.
+  **Lexical search works independently and is never gated on embeddings.**
+- **Queue:** the PostgreSQL-backed durable worker from V3.0 continues. **Azure Service
+  Bus is not provisioned** and the Release Candidate must run without a new broker.
+- **Crawling:** the existing safe fetcher, generically enhanced for issuer IR
+  traversal, bounded same-domain traversal, sitemap and structured metadata where safe,
+  and PDF/HTML/presentation/press-release retrieval — under strict host validation,
+  SSRF protection, redirect validation, depth and page limits, byte and time budgets
+  and deduplication. **No paid crawling provider.** A JS-only site the safe path cannot
+  reach is recorded as **partially inaccessible**, and alternative public sources are
+  used; browser escalation stays future work.
+- **Transcripts:** free public issuer sources only, and **missing means missing**
+  (ADR-051).
+
+### Benchmark scope, honestly stated
+
+The harness stays and `cost_per_verified_finding` remains the metric. What can be
+benchmarked is the **DeepSeek path**, the **existing Azure OpenAI path** and the
+**native InvestingBuddy retrieval path**. Exa, Perplexity, Gemini and Anthropic are
+recorded as **not benchmarked — no credentials, by decision**, and **no cross-provider
+result is estimated, extrapolated or fabricated** to fill the gap.
+
+---
+
 ## 1. Why provider abstraction exists
 
 1. **Capabilities change monthly.** A capability that justifies a vendor today is
