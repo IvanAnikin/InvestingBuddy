@@ -78,6 +78,7 @@ from app.services.sources.document_period import (
 )
 from app.services.sources.financial_period import PERIOD_TYPE_ANNUAL, ReportingPeriod
 from app.services.sources.taxonomy import T1_PRIMARY_FILING
+from tests.helpers.source_scan import modules_using
 
 T0 = datetime(2026, 3, 1, tzinfo=timezone.utc)
 
@@ -682,11 +683,17 @@ class TestBackfill:
     def test_nothing_calls_the_backfill_automatically(self) -> None:
         # A backfill that starts itself on the first request after a deploy is how
         # a migration turns into an outage. It stays operator-invoked.
-        callers = [
-            str(p)
-            for p in Path("app").rglob("*.py")
-            if p.name != "documents.py" and "backfill_from_extracted_documents" in p.read_text()
-        ]
+        #
+        # The scan looks for the name in EXECUTABLE position rather than anywhere in
+        # the file. A substring grep also fires on the docstrings that explain why
+        # this rule exists — V3.2's own backfill cites this one as its precedent —
+        # and a test that fails when somebody documents the rule it enforces is a
+        # test that gets deleted. See ``tests.helpers.source_scan``.
+        callers = modules_using(
+            "backfill_from_extracted_documents",
+            root=Path("app"),
+            exclude=("corpus/documents.py",),
+        )
         assert callers == [], callers
 
 

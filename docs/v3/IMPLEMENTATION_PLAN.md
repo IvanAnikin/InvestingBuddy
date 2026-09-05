@@ -11,7 +11,7 @@
 |---|---|---|
 | **V3.0** | Execution and correctness foundation | `IMPLEMENTED` — not `VALIDATED`: no live-issuer run has been performed, because V3 is not deployed. See [the phase gate](#9-v30-phase-gate). |
 | **V3.1** | Research Corpus | `IMPLEMENTED` — and, unlike V3.0, with a **real-document acceptance run** behind it. Not `VALIDATED`: the run is local and the corpus is not deployed. See [the phase gate](#10-v31-phase-gate). |
-| **V3.2** | Entity Master and global universe | `IN PROGRESS` — slice 2.1 merged. |
+| **V3.2** | Entity Master and global universe | `IN PROGRESS` — slices 2.1-2.2 merged. |
 | **V3.3** | Research tools and calculation engine | `NOT STARTED` |
 | **V3.4** | Multi-provider runtime and source expansion | `NOT STARTED` |
 | **V3.5** | Research Ledger and Director | `NOT STARTED` |
@@ -92,7 +92,7 @@ bytes are retained.
 | Slice | Branch | Objective | Migration | Status |
 |---|---|---|---|---|
 | 2.1 | [`feature/v3-2-1-entity-master`](slices/V3.2-1-entity-master.md) | `LegalEntity` / `Security` / `SecurityListing` / `EntityIdentifier` / `EntityAlias`, with identifiers **validated on write** and the uniqueness guarantees enforced by partial unique indexes. `companies` untouched. | **Yes** (026) | `IMPLEMENTED` |
-| 2.2 | `feature/v3-2-2-company-backfill` | Backfill every `companies` row; `companies.legal_entity_id` FK. Zero broken reports. | Yes | `NOT STARTED` |
+| 2.2 | [`feature/v3-2-2-company-backfill`](slices/V3.2-2-company-backfill.md) | `companies.legal_entity_id` (nullable, `SET NULL`) + a resumable, idempotent, operator-invoked backfill + the `(ticker, exchange)` compatibility adapter that reports **which** identity model answered. | **Yes** (027) | `IMPLEMENTED` |
 | 2.3 | `feature/v3-2-3-entity-resolution` | Resolution with explicit ambiguity — never a silent merge. Identifier *sources* (GLEIF, SEC) live here, because a fetch path belongs with the slice that can record what a lookup returned and what it did not. | No | `NOT STARTED` |
 | 2.4 | `feature/v3-2-4-entity-relationships` | `EntityRelationship`, `ReportingScope`, `BusinessSegment`. | Yes | `NOT STARTED` |
 | 2.5 | `feature/v3-2-5-universe-generation` | Universe from identifier sources; curated registry demoted to one source behind a flag. | No | `NOT STARTED` |
@@ -247,6 +247,7 @@ approval.
 | 2026-09-05 | Corrective — untrack the data-source inventory (OPEN DECISION #18) | `fix/v3-untrack-data-source-inventory` | `2810aef` |
 | 2026-09-05 | Campaign state — durable campaign memory | `feature/v3-campaign-state` | `a7e0776` |
 | 2026-09-05 | V3.2 Slice 2.1 — entity master | `feature/v3-2-1-entity-master` | `01f0f13` |
+| 2026-09-05 | V3.2 Slice 2.2 — company backfill | `feature/v3-2-2-company-backfill` | *(this slice)* |
 
 ---
 

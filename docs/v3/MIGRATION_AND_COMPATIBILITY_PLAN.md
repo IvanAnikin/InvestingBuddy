@@ -1,7 +1,7 @@
 # InvestingBuddy V3 — Migration and Compatibility Plan
 
 **Status:** V3 TARGET. Baseline `4b60e07`, Alembic head on `main` **018**.
-Head on `develop/v3` is **025** — created there, applied to scratch databases
+Head on `develop/v3` is **027** — created there, applied to scratch databases
 only, and reaching no deployed environment.
 
 The governing constraint: **`main` is the currently approved, deployed product,
@@ -83,7 +83,7 @@ longer to backfill than the lock timeout allowed.
 | Guarantee | How |
 |---|---|
 | **Existing reports remain readable.** | `reports` is not restructured. V3 adds references *to* reports, never inside them. The legacy read path stays: 126 of the newest 200 reports are legacy-shaped and must keep rendering. |
-| **Existing company IDs remain resolvable.** | `companies.id` remains the FK target for `reports.company_id`, `extracted_documents.company_id` and the rest. The entity master hangs *beside* `companies` via a nullable `legal_entity_id`, it does not replace the table. |
+| **Existing company IDs remain resolvable.** | `companies.id` remains the FK target for `reports.company_id`, `extracted_documents.company_id` and the rest. The entity master hangs *beside* `companies` via a nullable `legal_entity_id`, it does not replace the table. **`IMPLEMENTED IN V3` (Slice 2.2):** migration 027 adds exactly one nullable column with `ON DELETE SET NULL`, verified by a column-by-column diff of `companies` before and after, and by deleting a linked entity and confirming the company row survived unlinked. |
 | **Existing citations remain valid.** | `citations` and `sources` are untouched in V3.0-V3.2. Stable evidence identifiers (V3.1.6) are added alongside run-local `E1`/`E2` handles; the old handles keep resolving for old reports. |
 | **Current auth is unchanged.** | No auth work in V3 unless separately approved. `APP_ENV=staging` remains load-bearing (it is the only gate on API Basic Auth) and must not be relabelled. |
 | **Current deployment is unchanged.** | No infra changes reach `main`. A V3 worker app is provisioned only at deployment-approval time. |
@@ -98,7 +98,7 @@ forward rather than migrating callers en masse:
 
 | Old | New | Adapter |
 |---|---|---|
-| `(ticker, exchange)` | `LegalEntity` + `SecurityListing` | `resolve_entity(ticker, exchange) -> LegalEntity` — falls back to the `companies` row when no entity exists yet. |
+| `(ticker, exchange)` | `LegalEntity` + `SecurityListing` | **`IMPLEMENTED IN V3` (Slices 2.1-2.2).** `app.services.entities.compatibility.resolve_entity(...)` returns an `EntityResolution` that names **which** identity model answered — `entity_master` or `companies_fallback` — rather than a bare value, so a caller that must not attach a CIK or a financial fact to a ticker-string identity can check `has_entity_identity`. Removal: when every `companies` row is linked and slice 2.3's resolver supersedes it. |
 | `ExtractedDocument` + `excerpts_json` | `ResearchDocumentVersion` + derivation/pages/sections/tables/chunks | **`IMPLEMENTED IN V3` (Slices 1.2-1.5).** The V2 writer is unchanged and the corpus record is written *beside* it, with `research_document_versions.extracted_document_id` pointing back — so nothing is migrated en masse and a corpus read for a document not yet re-ingested falls back to that row's `excerpts_json`. `backfill_from_extracted_documents` handles historical rows: resumable, idempotent, company-scopable, and **called by nothing** — a backfill that starts itself on the first request after a deploy is how a migration becomes an outage. Removal of the excerpt path: not before V3.3 consumes the corpus in a validated live run. |
 | Run-local `E1`/`E2` | Stable evidence ids | **`IMPLEMENTED IN V3` (Slice 1.6)** for corpus evidence: `ev:<chunk_id>`, derived from the document's own coordinates so it survives a reindex and a reprocess. **Existing reports are untouched and their `E1`/`E2` handles keep resolving.** Removal of the run-local handles: not before every report that uses them has been regenerated, which is not planned. |
 | `research_job` envelope in `AgentRun`/`AgentStep` | `research_jobs` row | The V3 job store exposes the same status vocabulary, so the polling API contract does not change. |
