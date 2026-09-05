@@ -14,9 +14,10 @@ describes deployed behaviour unless a section explicitly says `CURRENT`.
 | `feature/v3-*` | PR-sized V3 implementation slices. Merge target is `develop/v3` only. |
 
 **Where the work stands (2026-09-05).** `develop/v3` carries **V3.0** (durable
-execution), **V3.1** (the Research Corpus) and **V3.2** (the entity master and
-universe), all three `IMPLEMENTED` and none `VALIDATED` — nothing is deployed and
-migrations 019-028 have reached no deployed environment. V3.1 has a **real-document
+execution), **V3.1** (the Research Corpus), **V3.2** (the entity master and universe)
+and **V3.3** (agent tools and the calculation engine), all four `IMPLEMENTED` and none
+`VALIDATED` — nothing is deployed and migrations 019-030 have reached no deployed
+environment. V3.1 has a **real-document
 acceptance run** behind it (`scripts/v3-corpus-acceptance.py`, on a real 169-page
 Pandora annual report); V3.2 has **every schema guarantee exercised against real
 PostgreSQL 16 with real conflicting statements**, which is what makes "the database

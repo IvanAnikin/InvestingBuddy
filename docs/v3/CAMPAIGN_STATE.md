@@ -9,7 +9,7 @@ the code, not inferred from a plan. When it disagrees with a phase-gate section 
 record of a gate and this file is the current state; re-verify before trusting
 either.
 
-**Last verified:** 2026-09-05, at the V3.2 phase gate, by direct `git` inspection and a full local gate run.
+**Last verified:** 2026-09-05, at the V3.3 phase gate, by direct `git` inspection and a full local gate run.
 
 ---
 
@@ -38,8 +38,8 @@ enabling a V3 flag in production, deleting V2 compatibility or either V2 ref.
 | Alembic head in source | **030** (`030_add_calculation_records`) |
 | Alembic head in the deployed database | **018** — and V3 migrations 019-030 have reached **no** deployed environment |
 | Alembic head in the local dev database | **018** (unchanged by V3 work; scratch databases only) |
-| Current phase | **V3.3 — Research tools and calculation engine** |
-| Current slice | 3.4 — `feature/v3-3-4-corpus-search-tool` (next) |
+| Current phase | **V3.4 — Multi-provider runtime and source expansion** |
+| Current slice | 4.1 — `feature/v3-4-1-provider-interfaces` (next) |
 | Deployed | **Nothing.** `main` at `4b60e07` is the deployed product. |
 
 Working tree at campaign start also held two untracked files —
@@ -54,8 +54,8 @@ the user's call, and the campaign leaves them untracked and untouched.
 | V3.0 | Execution and correctness foundation | `IMPLEMENTED` |
 | V3.1 | Research Corpus | `IMPLEMENTED` |
 | V3.2 | Entity Master and global universe | `IMPLEMENTED` — all six slices merged; [phase gate](IMPLEMENTATION_PLAN.md#11-v32-phase-gate) |
-| V3.3 | Research tools and calculation engine | `IN PROGRESS` — 3.1-3.3 merged; 3.4 open |
-| V3.4 | Multi-provider runtime and source expansion | `NOT STARTED` |
+| V3.3 | Research tools and calculation engine | `IMPLEMENTED` — all four slices merged; [phase gate](IMPLEMENTATION_PLAN.md#12-v33-phase-gate) |
+| V3.4 | Multi-provider runtime and source expansion | `IN PROGRESS` |
 | V3.5 | Research Ledger and Director | `NOT STARTED` |
 | V3.6 | Industry playbooks | `NOT STARTED` |
 | V3.7 | Council V2 and Red Team | `NOT STARTED` |
@@ -97,6 +97,8 @@ is recorded explicitly rather than being allowed to pass as production validatio
 | 2026-09-05 | V3.3.1 agent tool contracts | `feature/v3-3-1-agent-tool-contracts` | `b4f31ef` |
 | 2026-09-05 | V3.3.2 fact and series tools | `feature/v3-3-2-fact-and-series-tools` | `1a86871` |
 | 2026-09-05 | V3.3.3 calculation engine | `feature/v3-3-3-calculation-engine` | `bc0cd15` |
+| 2026-09-05 | V3.3.4 corpus search tools | `feature/v3-3-4-corpus-search-tool` | `42b8336` |
+| 2026-09-05 | V3.3 phase gate | `feature/v3-3-phase-gate-report` | *(see progress log)* |
 
 ## Corrective slices
 
@@ -179,10 +181,10 @@ belong to the agent, with an ADR when material.
 
 Recorded so a later run can be compared against a number rather than a memory.
 
-| Gate | At campaign start (`35bd550`) | After V3.3.3 |
+| Gate | At campaign start (`35bd550`) | At the V3.3 gate |
 |---|---|---|
 | `ruff check .` | All checks passed | All checks passed |
-| `pytest tests/ -q` | 4949 passed, 12 skipped | **5312 passed**, 12 skipped |
+| `pytest tests/ -q` | 4949 passed, 12 skipped | **5339 passed**, 12 skipped |
 | `mypy app` | 71 errors in 10 files | 71 errors in 10 files (baseline; one regression to 72 was caught by the gate in 2.3 and fixed) |
 
 ## Provider benchmarks
@@ -231,6 +233,10 @@ Carried forward, all still true:
   listing → security → entity. It does **not** retire the old path — `companies`
   and `sec_issuer_registry` are untouched until slice 2.2 links them and a
   validated replacement exists.
+- **A declared measurement must be produced.** Declaring a consumption unit
+  instrumented and then not reporting it is *worse* than not declaring it, because the
+  stored zero **asserts** the thing did not happen. V3.3.4 shipped exactly that, in the
+  same codebase as the helper written to prevent it.
 - **A row limit must bound the population the caller asked for.** V3.3.2 shipped a
   filter in Python after a `LIMIT` in SQL, which would have returned **zero** segment
   facts for a company with more Group facts than the limit. Whenever a filter and a
@@ -271,30 +277,30 @@ Carried forward, all still true:
 
 ## Next executable action
 
-Start **V3.3 slice 3.4** on `feature/v3-3-4-corpus-search-tool`: `search_company_corpus`
-and `search_private_research` on the 3.1 machinery. No migration.
+Start **V3.4 slice 4.1** on `feature/v3-4-1-provider-interfaces`: `ModelProvider`,
+`SearchProvider`, `ResearchProvider` and `BrowserProvider`, the routing slots, and a fake
+for each. No migration.
 
-`corpus.retrieval.search_corpus` already does the hard part and already refuses the
-dangerous requests — a semantic-only query raises `VectorOnlyRetrievalError`, and a
-query that neither names its companies nor declares itself cross-entity raises
-`UnscopedRetrievalError`. The tool's job is to expose that **without widening it**: no
-parameter may accept a backend query expression, a filter dict or an option bag, which
-is the property slice 1.6 was built around.
+It is the only V3.4 work completable without a user decision — every other slice in the
+phase is an adapter behind one of these interfaces, and three are blocked on user-owned
+spend or governance
+([#3](OPEN_DECISIONS.md#3-exa-vs-perplexity-search),
+[#4](OPEN_DECISIONS.md#4-deepseek-data-governance-policy),
+[#8](OPEN_DECISIONS.md#8-transcript-provider)).
 
-Two things are the slice's real content:
+Three things are settled and must be **used rather than re-established**:
 
-- **`search_private_research` must fail closed.**
-  [OPEN DECISION #11](OPEN_DECISIONS.md#11-private-data-external-model-policy) is
-  user-owned and the default is **deny**, so the tool must exist, must be registered,
-  and must refuse until a per-document *and* per-provider policy says otherwise. Note
-  that 3.1 already forces it to declare access classes — `NON_PUBLIC_READING_TOOL_NAMES`
-  makes a spec with none a registration error.
-- **A corpus hit carries fetched document text**, so the result must set
-  `contains_untrusted_content=True`. 3.1 makes the spec's declaration a floor a payload
-  cannot lower, which is what stops a page's "ignore previous instructions" reaching a
-  prompt unfenced.
+- A provider's output is a **`ResearchLead`**, never evidence. `entities.claims` is
+  already a working instance of that gate — including the *withheld* case a
+  partial-match source needs — and its rejection-reason vocabulary is the model to
+  follow.
+- Consumption is `consumption.UNIT_NAMES`, and a unit a provider does not measure must
+  be **absent, not zero**. This is the lesson V3.3.4 learned the hard way.
+- `EXTERNAL_TOOL_NAMES` already names the tools that reach outside the platform, so the
+  rule that private content must never travel through one can be written against the
+  set.
 
-A search backend must be **injected**, not chosen here:
-[OPEN DECISION #1](OPEN_DECISIONS.md#1-azure-ai-search-vs-postgresql--pgvector) is still
-the user's, and `test_the_production_backend_decision_is_not_taken_here` fails if an
-adapter appears.
+Model names must not be hardcoded into business logic: the slots are
+`classification_model`, `cheap_research_model`, `document_reasoning_model`,
+`research_director_model`, `red_team_model`, `chair_model`, `deep_research_provider`, and
+which model fills each is configuration and [#5](OPEN_DECISIONS.md#5-openai-model-routing).
