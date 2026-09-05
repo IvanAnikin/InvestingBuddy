@@ -1102,6 +1102,16 @@ class Settings(BaseSettings):
     # it is an outage.
     v3_universe_providers_enabled: bool = False
 
+    # ── V3.3: Agent tools ───────────────────────────────────────────────────
+    # Master switch for the agent tool surface. OFF by default, and with it off
+    # ``ToolSession.call`` refuses every tool with reason ``disabled`` — recorded,
+    # not silent, because "the tooling was off" is a real explanation for a thin
+    # run and a missing row is not.
+    #
+    # Nothing is wired to an agent in slice 3.1: the flag exists so the surface can
+    # be exercised in tests and validated before any live path reaches it.
+    v3_agent_tools_enabled: bool = False
+
     # ── Real OCR: Azure Document Intelligence (Phase 32A Slice 5B.2) ─────────
     # Only ever consulted when ``primary_document_ocr_enabled`` (Slice 5,
     # default False) is also True. With the endpoint left empty (the default),
