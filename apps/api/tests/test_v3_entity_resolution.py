@@ -903,8 +903,9 @@ class TestIdentifierSourceContract:
                 ]
             },
         )
-        claims = await source.lookup(IdentifierQuery(ticker="pndora"))
-        assert [c.scheme for c in claims] == [SCHEME_LEI]
+        result = await source.lookup(IdentifierQuery(ticker="pndora"))
+        assert [c.scheme for c in result.claims] == [SCHEME_LEI]
+        assert result.source_id == "fixture"
 
     async def test_claims_from_a_source_still_go_through_the_gate(
         self, session
@@ -927,12 +928,12 @@ class TestIdentifierSourceContract:
                 ]
             },
         )
-        claims = await source.lookup(IdentifierQuery(ticker="BA", exchange="LSE"))
+        result = await source.lookup(IdentifierQuery(ticker="BA", exchange="LSE"))
         outcomes = [
             await verify_identifier_claim(
                 session, claim=claim, cfg=cfg, legal_entity_id=bae.id
             )
-            for claim in claims
+            for claim in result.claims
         ]
         await session.commit()
         assert [o.rejection_reason for o in outcomes] == [
