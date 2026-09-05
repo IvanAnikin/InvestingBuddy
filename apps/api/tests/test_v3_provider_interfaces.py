@@ -727,18 +727,31 @@ class TestNoLiveAdapterExists:
                     offenders.append(f"{path.name}: {name}")
         assert offenders == [], f"vendor imports in the provider package: {offenders}"
 
-    def test_no_live_adapter_module_exists_yet(self) -> None:
-        # Fails the moment somebody adds one, which forces #3/#4/#6/#7 to be taken
-        # deliberately rather than by a commit. The interfaces plus fakes are the only
-        # V3.4 work completable without a user decision.
+    def test_no_module_here_talks_to_a_network(self) -> None:
+        """The invariant the file list was standing in for.
+
+        Slice 4.1 pinned the package's filenames, meaning "no live adapter". That was a
+        proxy, and 4.3 showed it was the wrong one: the DeepSeek adapters landed in
+        ``app/integrations/deepseek/`` and this assertion never noticed, while 4.4's
+        verification gate — which is domain logic, not an adapter — broke it. The rule
+        worth enforcing is the one §3.1 of the architecture spec states: **the research
+        domain imports provider interfaces, never provider SDKs**, and nothing in this
+        package opens a socket. A vendor call reaches the domain only through an
+        injected seam.
+        """
         package = Path(contracts_module.__file__).parent
-        assert sorted(p.name for p in package.glob("*.py")) == [
-            "__init__.py",
-            "contracts.py",
-            "fakes.py",
-            "governance.py",
-            "routing.py",
-        ]
+        forbidden_calls = {"urlopen", "urlretrieve", "socket", "connect"}
+        offenders: list[str] = []
+        for path in sorted(package.glob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                    if node.func.attr in forbidden_calls:
+                        offenders.append(f"{path.name}: {node.func.attr}")
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                    if node.func.id in forbidden_calls:
+                        offenders.append(f"{path.name}: {node.func.id}")
+        assert offenders == [], f"network calls in the provider package: {offenders}"
 
     def test_the_package_declares_no_endpoint_host(self) -> None:
         package = Path(contracts_module.__file__).parent
