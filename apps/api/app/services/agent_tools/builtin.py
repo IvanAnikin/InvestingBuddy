@@ -144,10 +144,12 @@ LOOKUP_ENTITY_SPEC = ToolSpec(
 
 def register_builtins(registry: "ToolRegistry") -> "ToolRegistry":
     """Register every builtin tool."""
+    from app.services.agent_tools.calculations import register_calculation_tools
     from app.services.agent_tools.facts import register_fact_tools
 
     registry.register(LOOKUP_ENTITY_SPEC)
     register_fact_tools(registry)
+    register_calculation_tools(registry)
     return registry
 
 

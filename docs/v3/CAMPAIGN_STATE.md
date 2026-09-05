@@ -35,11 +35,11 @@ enabling a V3 flag in production, deleting V2 compatibility or either V2 ref.
 | Item | Value |
 |---|---|
 | `develop/v3` HEAD | `35bd550` — 47 commits ahead of `origin/develop/v3` (`fd82d3d`), unpushed |
-| Alembic head in source | **029** (`029_add_research_tool_calls`) |
-| Alembic head in the deployed database | **018** — and V3 migrations 019-029 have reached **no** deployed environment |
+| Alembic head in source | **030** (`030_add_calculation_records`) |
+| Alembic head in the deployed database | **018** — and V3 migrations 019-030 have reached **no** deployed environment |
 | Alembic head in the local dev database | **018** (unchanged by V3 work; scratch databases only) |
 | Current phase | **V3.3 — Research tools and calculation engine** |
-| Current slice | 3.3 — `feature/v3-3-3-calculation-engine` (next) |
+| Current slice | 3.4 — `feature/v3-3-4-corpus-search-tool` (next) |
 | Deployed | **Nothing.** `main` at `4b60e07` is the deployed product. |
 
 Working tree at campaign start also held two untracked files —
@@ -54,7 +54,7 @@ the user's call, and the campaign leaves them untracked and untouched.
 | V3.0 | Execution and correctness foundation | `IMPLEMENTED` |
 | V3.1 | Research Corpus | `IMPLEMENTED` |
 | V3.2 | Entity Master and global universe | `IMPLEMENTED` — all six slices merged; [phase gate](IMPLEMENTATION_PLAN.md#11-v32-phase-gate) |
-| V3.3 | Research tools and calculation engine | `IN PROGRESS` — 3.1-3.2 merged; 3.3-3.4 open |
+| V3.3 | Research tools and calculation engine | `IN PROGRESS` — 3.1-3.3 merged; 3.4 open |
 | V3.4 | Multi-provider runtime and source expansion | `NOT STARTED` |
 | V3.5 | Research Ledger and Director | `NOT STARTED` |
 | V3.6 | Industry playbooks | `NOT STARTED` |
@@ -96,6 +96,7 @@ is recorded explicitly rather than being allowed to pass as production validatio
 | 2026-09-05 | V3.2 phase gate | `feature/v3-2-phase-gate-report` | `4f0cb0a` |
 | 2026-09-05 | V3.3.1 agent tool contracts | `feature/v3-3-1-agent-tool-contracts` | `b4f31ef` |
 | 2026-09-05 | V3.3.2 fact and series tools | `feature/v3-3-2-fact-and-series-tools` | `1a86871` |
+| 2026-09-05 | V3.3.3 calculation engine | `feature/v3-3-3-calculation-engine` | *(see progress log)* |
 
 ## Corrective slices
 
@@ -127,6 +128,7 @@ database is re-checked afterwards to confirm it is still at 018.
 | 027 | `companies.legal_entity_id` (nullable, `SET NULL`) + index | scratch (`ib_v3_migcheck_027`, dropped). A column-by-column diff of `companies` shows **exactly one added column**; `confdeltype='n'` and a real entity DELETE left the company row in place, unlinked; downgrade restored the column list identically. | **No** |
 | 028 | `entity_relationships`, `reporting_scopes`, `business_segments` + `securities.underlying_security_id` / `receipt_ratio` | scratch (`ib_v3_migcheck_028`, dropped). Exactly **two** columns added to `securities`, `companies` **identical**; **eleven** guarantees exercised with real conflicting statements in PostgreSQL; drift check clean across all nine tables including CHECK constraints. | **No** |
 | 029 | `research_tool_calls` | scratch (`ib_v3_migcheck_029`, dropped). 41 → 42 tables and back; every CHECK exercised with a real statement; deleting the company an audit row refers to left **3 rows surviving, 0 still linked** — the audit record outlives what it describes. | **No** |
+| 030 | `calculation_records` | scratch (`ib_v3_migcheck_030`, dropped). Eight statements exercised, including that **a refused row cannot carry a value** — a number beside a refusal is exactly what a reader takes at face value. Drift check clean. | **No** |
 
 Additive-only through V3.2 (§2.1 of the migration plan): tables, **nullable**
 columns and indexes only. That is what makes `release/v2-current` code able to run
@@ -177,10 +179,10 @@ belong to the agent, with an ADR when material.
 
 Recorded so a later run can be compared against a number rather than a memory.
 
-| Gate | At campaign start (`35bd550`) | After V3.3.2 |
+| Gate | At campaign start (`35bd550`) | After V3.3.3 |
 |---|---|---|
 | `ruff check .` | All checks passed | All checks passed |
-| `pytest tests/ -q` | 4949 passed, 12 skipped | **5259 passed**, 12 skipped |
+| `pytest tests/ -q` | 4949 passed, 12 skipped | **5312 passed**, 12 skipped |
 | `mypy app` | 71 errors in 10 files | 71 errors in 10 files (baseline; one regression to 72 was caught by the gate in 2.3 and fixed) |
 
 ## Provider benchmarks
@@ -200,7 +202,11 @@ Carried forward, all still true:
   `settings.llm_provider != "azure_openai"` and the local `.env` sets exactly
   that, so its 8 tests make **live Azure OpenAI calls** against the deployment's
   TPM quota. A failure in that file is a network or quota event until the file has
-  been re-run on its own.
+  been re-run on its own. **It has now happened twice in this campaign** — once in
+  V3.1 (7 of 8) and once in V3.3.3 (6 of 8) — and on both occasions the file passed
+  8/8 in isolation within 25 seconds and the full suite was green again immediately
+  afterwards on the same commit. The protocol works; follow it before concluding
+  anything about the change under test.
 - **A green full suite has hidden an order-dependent failure that CI caught.** Run
   changed tests in isolation as well as in the full suite.
 - **`mypy` counts are scope-dependent.** `mypy app` = 71; a broader scope
@@ -265,24 +271,30 @@ Carried forward, all still true:
 
 ## Next executable action
 
-Start **V3.3 slice 3.3** on `feature/v3-3-3-calculation-engine`: declarative
-calculation definitions, typed inputs, **incompatibility refusals**, and persisted
-calculation records. Migration expected.
+Start **V3.3 slice 3.4** on `feature/v3-3-4-corpus-search-tool`: `search_company_corpus`
+and `search_private_research` on the 3.1 machinery. No migration.
 
-The acceptance strategy's demonstration for V3.3 is the one that matters here: *a
-calculation with incompatible periods or scopes is **refused**, not computed.* Two
-primitives already decide that and must not be re-implemented:
+`corpus.retrieval.search_corpus` already does the hard part and already refuses the
+dangerous requests — a semantic-only query raises `VectorOnlyRetrievalError`, and a
+query that neither names its companies nor declares itself cross-entity raises
+`UnscopedRetrievalError`. The tool's job is to expose that **without widening it**: no
+parameter may accept a backend query expression, a filter dict or an option bag, which
+is the property slice 1.6 was built around.
 
-- `ReportingPeriod.comparable_with` — fail-closed, refuses cross-type comparison, and
-  refuses an unknown period against anything including another unknown.
-- `FactScope` / `scope_key` — Group is not segment and unknown is not Group.
+Two things are the slice's real content:
 
-A calculation record must carry its definition, formula, inputs (by fact id), periods,
-scopes, units, currency, version, result and validation, so the arithmetic is
-reproducible and a wrong input is attributable. `underlying_shares_per_unit` (2.4) is
-already the model for a refusal: a depositary receipt with no ratio makes per-share
-arithmetic stop rather than assume 1:1.
+- **`search_private_research` must fail closed.**
+  [OPEN DECISION #11](OPEN_DECISIONS.md#11-private-data-external-model-policy) is
+  user-owned and the default is **deny**, so the tool must exist, must be registered,
+  and must refuse until a per-document *and* per-provider policy says otherwise. Note
+  that 3.1 already forces it to declare access classes — `NON_PUBLIC_READING_TOOL_NAMES`
+  makes a spec with none a registration error.
+- **A corpus hit carries fetched document text**, so the result must set
+  `contains_untrusted_content=True`. 3.1 makes the spec's declaration a floor a payload
+  cannot lower, which is what stops a page's "ignore previous instructions" reaching a
+  prompt unfenced.
 
-The deterministic-arithmetic rule from the campaign brief applies directly — deterministic
-code for deterministic arithmetic, never a model. And a refused calculation is a
-**result**, recorded with its reason, not an exception a caller swallows.
+A search backend must be **injected**, not chosen here:
+[OPEN DECISION #1](OPEN_DECISIONS.md#1-azure-ai-search-vs-postgresql--pgvector) is still
+the user's, and `test_the_production_backend_decision_is_not_taken_here` fails if an
+adapter appears.

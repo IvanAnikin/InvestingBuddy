@@ -12,7 +12,7 @@
 | **V3.0** | Execution and correctness foundation | `IMPLEMENTED` — not `VALIDATED`: no live-issuer run has been performed, because V3 is not deployed. See [the phase gate](#9-v30-phase-gate). |
 | **V3.1** | Research Corpus | `IMPLEMENTED` — and, unlike V3.0, with a **real-document acceptance run** behind it. Not `VALIDATED`: the run is local and the corpus is not deployed. See [the phase gate](#10-v31-phase-gate). |
 | **V3.2** | Entity Master and global universe | `IMPLEMENTED` — all slices merged. See [the phase gate](#11-v32-phase-gate). |
-| **V3.3** | Research tools and calculation engine | `IN PROGRESS` — slices 3.1-3.2 merged. |
+| **V3.3** | Research tools and calculation engine | `IN PROGRESS` — slices 3.1-3.3 merged. |
 | **V3.4** | Multi-provider runtime and source expansion | `NOT STARTED` |
 | **V3.5** | Research Ledger and Director | `NOT STARTED` |
 | **V3.6** | Industry playbooks | `NOT STARTED` |
@@ -104,7 +104,7 @@ bytes are retained.
 |---|---|---|---|---|
 | 3.1 | [`feature/v3-3-1-agent-tool-contracts`](slices/V3.3-1-agent-tool-contracts.md) | Closed typed read-only tool vocabulary + registry that refuses a write + per-role permission and budgets checked **before** spending + `ResearchToolCall` persistence of every attempt including refusals. `lookup_entity` as the reference tool, returning the **state**. | **Yes** (029) | `IMPLEMENTED` |
 | 3.2 | [`feature/v3-3-2-fact-and-series-tools`](slices/V3.3-2-fact-and-series-tools.md) | `get_financial_facts` / `_series` / `get_segment_facts`, with `scope` and `period_type` **required**, conflicts returned rather than resolved, and every result naming its population. | No | `IMPLEMENTED` |
-| 3.3 | `feature/v3-3-3-calculation-engine` | Declarative definitions, typed inputs, incompatibility refusals, persisted records. | Yes | `NOT STARTED` |
+| 3.3 | [`feature/v3-3-3-calculation-engine`](slices/V3.3-3-calculation-engine.md) | Ten versioned declarative definitions, `Quantity` inputs, **six** incompatibility refusals, and a persisted record of every attempt — with a CHECK that a refused row cannot carry a value. | **Yes** (030) | `IMPLEMENTED` |
 | 3.4 | `feature/v3-3-4-corpus-search-tool` | `search_company_corpus` / `search_private_research`. | No | `NOT STARTED` |
 
 ### V3.4 — Multi-provider runtime and sources
@@ -256,6 +256,7 @@ approval.
 | 2026-09-05 | V3.2 phase gate | `feature/v3-2-phase-gate-report` | `4f0cb0a` |
 | 2026-09-05 | V3.3 Slice 3.1 — agent tool contracts | `feature/v3-3-1-agent-tool-contracts` | `b4f31ef` |
 | 2026-09-05 | V3.3 Slice 3.2 — fact and series tools | `feature/v3-3-2-fact-and-series-tools` | `1a86871` |
+| 2026-09-05 | V3.3 Slice 3.3 — calculation engine | `feature/v3-3-3-calculation-engine` | *(this slice)* |
 
 ---
 
