@@ -258,6 +258,7 @@ approval.
 | 2026-09-05 | V3.3 Slice 3.2 — fact and series tools | `feature/v3-3-2-fact-and-series-tools` | `1a86871` |
 | 2026-09-05 | V3.3 Slice 3.3 — calculation engine | `feature/v3-3-3-calculation-engine` | `bc0cd15` |
 | 2026-09-05 | V3.3 Slice 3.4 — corpus search tools | `feature/v3-3-4-corpus-search-tool` | `42b8336` |
+| 2026-09-05 | V3.3 phase gate | `feature/v3-3-phase-gate-report` | `7772b1f` |
 
 ---
 
