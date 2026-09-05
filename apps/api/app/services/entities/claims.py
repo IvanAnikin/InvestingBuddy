@@ -140,16 +140,92 @@ class IdentifierQuery:
     known_identifiers: dict[str, str] = field(default_factory=dict)
 
 
+# ── Withheld findings (V3.2 Slice 2.3.1) ─────────────────────────────────── #
+
+#: Several records matched the name and nothing separates them. The single most
+#: important one: GLEIF's name filter is a PARTIAL match, so "Pandora" returns every
+#: legal name containing it, and emitting them all as claims would let the gate
+#: accept whichever LEI happens to be unheld — a silent misattribution of an entire
+#: filing history. Emitting none instead would leave the caller unable to tell
+#: "no such entity" from "several, and I refused to choose".
+WITHHELD_AMBIGUOUS_NAME_MATCH = "ambiguous_name_match"
+#: One record matched, but only by containing the query, not by equalling it.
+WITHHELD_PARTIAL_NAME_MATCH = "partial_name_match"
+#: The registry has no record for this query.
+WITHHELD_NOT_FOUND = "not_found"
+#: The source cannot answer this shape of question at all — GLEIF has no ticker
+#: index, so guessing a name from a ticker is how ``BA`` becomes Boeing.
+WITHHELD_NOT_SUPPORTED = "not_supported"
+#: SEC's ticker index does not cover this venue.
+WITHHELD_VENUE_NOT_SEC_ELIGIBLE = "venue_not_sec_eligible"
+#: The source failed — network, timeout, malformed payload. Recorded, never
+#: silently turned into "no result", because those are different answers.
+WITHHELD_SOURCE_ERROR = "source_error"
+
+WITHHELD_REASONS: frozenset[str] = frozenset(
+    {
+        WITHHELD_AMBIGUOUS_NAME_MATCH,
+        WITHHELD_PARTIAL_NAME_MATCH,
+        WITHHELD_NOT_FOUND,
+        WITHHELD_NOT_SUPPORTED,
+        WITHHELD_VENUE_NOT_SEC_ELIGIBLE,
+        WITHHELD_SOURCE_ERROR,
+    }
+)
+
+
+@dataclass(frozen=True)
+class WithheldFinding:
+    """Something a source found but declined to assert, and why.
+
+    Withheld is not the same as absent. "Six companies contain this name" is real
+    information about the world, and a source that returns an empty list for it has
+    thrown that information away.
+    """
+
+    scheme: str
+    reason: str
+    detail: str
+    #: What was seen, for a human — candidate names, a status code. Never a claim.
+    candidates: tuple[str, ...] = ()
+
+
+@dataclass
+class SourceLookupResult:
+    """What one source produced for one query.
+
+    Claims AND withheld findings, because a source's most useful answer is often
+    "I found several and none of them is safe to assert". See ``WithheldFinding``
+    and ``docs/v3/slices/V3.2-3.1-identifier-sources.md`` for why the protocol
+    returns this rather than a bare list.
+    """
+
+    source_id: str
+    claims: list[IdentifierClaim] = field(default_factory=list)
+    withheld: list[WithheldFinding] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+
+    @property
+    def is_empty(self) -> bool:
+        return not self.claims and not self.withheld
+
+
 @runtime_checkable
 class IdentifierSource(Protocol):
-    """A place identifiers come from. Live adapters are slice 2.3.1."""
+    """A place identifiers come from.
+
+    ``lookup`` returns a ``SourceLookupResult`` rather than a list of claims. The
+    reason is recorded in the slice document: a registry whose name search is a
+    partial match must be able to say "several matched and I refused to choose",
+    and neither a full list nor an empty one can express that safely.
+    """
 
     source_id: str
     schemes: frozenset[str]
 
     async def lookup(
         self, query: IdentifierQuery
-    ) -> list[IdentifierClaim]: ...  # pragma: no cover - protocol
+    ) -> SourceLookupResult: ...  # pragma: no cover - protocol
 
 
 @dataclass
@@ -165,14 +241,27 @@ class StaticIdentifierSource:
     schemes: frozenset[str]
     claims_by_ticker: dict[str, list[IdentifierClaim]] = field(default_factory=dict)
     claims_by_name: dict[str, list[IdentifierClaim]] = field(default_factory=dict)
+    withheld_by_ticker: dict[str, list[WithheldFinding]] = field(default_factory=dict)
+    #: Set to raise on lookup, so a caller's containment of a failing source is
+    #: testable without a network.
+    raises: Exception | None = None
 
-    async def lookup(self, query: IdentifierQuery) -> list[IdentifierClaim]:
+    async def lookup(self, query: IdentifierQuery) -> SourceLookupResult:
+        if self.raises is not None:
+            raise self.raises
         found: list[IdentifierClaim] = []
         if query.ticker:
             found.extend(self.claims_by_ticker.get(query.ticker.strip().upper(), []))
         if query.legal_name:
             found.extend(self.claims_by_name.get(query.legal_name.strip().lower(), []))
-        return [c for c in found if c.scheme in self.schemes]
+        held: list[WithheldFinding] = []
+        if query.ticker:
+            held.extend(self.withheld_by_ticker.get(query.ticker.strip().upper(), []))
+        return SourceLookupResult(
+            source_id=self.source_id,
+            claims=[c for c in found if c.scheme in self.schemes],
+            withheld=held,
+        )
 
 
 async def verify_identifier_claim(
@@ -377,6 +466,15 @@ __all__ = [
     "IdentifierClaim",
     "IdentifierQuery",
     "IdentifierSource",
+    "SourceLookupResult",
     "StaticIdentifierSource",
+    "WITHHELD_AMBIGUOUS_NAME_MATCH",
+    "WITHHELD_NOT_FOUND",
+    "WITHHELD_NOT_SUPPORTED",
+    "WITHHELD_PARTIAL_NAME_MATCH",
+    "WITHHELD_REASONS",
+    "WITHHELD_SOURCE_ERROR",
+    "WITHHELD_VENUE_NOT_SEC_ELIGIBLE",
+    "WithheldFinding",
     "verify_identifier_claim",
 ]

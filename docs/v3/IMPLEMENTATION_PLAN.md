@@ -11,7 +11,7 @@
 |---|---|---|
 | **V3.0** | Execution and correctness foundation | `IMPLEMENTED` — not `VALIDATED`: no live-issuer run has been performed, because V3 is not deployed. See [the phase gate](#9-v30-phase-gate). |
 | **V3.1** | Research Corpus | `IMPLEMENTED` — and, unlike V3.0, with a **real-document acceptance run** behind it. Not `VALIDATED`: the run is local and the corpus is not deployed. See [the phase gate](#10-v31-phase-gate). |
-| **V3.2** | Entity Master and global universe | `IN PROGRESS` — slices 2.1-2.3 merged. |
+| **V3.2** | Entity Master and global universe | `IN PROGRESS` — slices 2.1-2.3.1 merged. |
 | **V3.3** | Research tools and calculation engine | `NOT STARTED` |
 | **V3.4** | Multi-provider runtime and source expansion | `NOT STARTED` |
 | **V3.5** | Research Ledger and Director | `NOT STARTED` |
@@ -94,7 +94,7 @@ bytes are retained.
 | 2.1 | [`feature/v3-2-1-entity-master`](slices/V3.2-1-entity-master.md) | `LegalEntity` / `Security` / `SecurityListing` / `EntityIdentifier` / `EntityAlias`, with identifiers **validated on write** and the uniqueness guarantees enforced by partial unique indexes. `companies` untouched. | **Yes** (026) | `IMPLEMENTED` |
 | 2.2 | [`feature/v3-2-2-company-backfill`](slices/V3.2-2-company-backfill.md) | `companies.legal_entity_id` (nullable, `SET NULL`) + a resumable, idempotent, operator-invoked backfill + the `(ticker, exchange)` compatibility adapter that reports **which** identity model answered. | **Yes** (027) | `IMPLEMENTED` |
 | 2.3 | [`feature/v3-2-3-entity-resolution`](slices/V3.2-3-entity-resolution.md) | Resolution with an explicit **state** — `resolved` / `ambiguous` / `conflicting` / `unresolved` — plus the identifier-claim verification gate with recorded rejection reasons. Weak (name) evidence never resolves. | No | `IMPLEMENTED` |
-| 2.3.1 | `feature/v3-2-3-1-identifier-sources` | Live GLEIF and SEC adapters behind `IdentifierSource`. Opt-in, budget-capped, never called by the unit suite. | No | `NOT STARTED` |
+| 2.3.1 | [`feature/v3-2-3-1-identifier-sources`](slices/V3.2-3.1-identifier-sources.md) | Live GLEIF and SEC adapters behind `IdentifierSource`, injected providers, and `promote_entity_identity`. **Amends the protocol** so a source can *withhold* — GLEIF's name filter is a partial match. | No | `IMPLEMENTED` |
 | 2.4 | `feature/v3-2-4-entity-relationships` | `EntityRelationship`, `ReportingScope`, `BusinessSegment`. | Yes | `NOT STARTED` |
 | 2.5 | `feature/v3-2-5-universe-generation` | Universe from identifier sources; curated registry demoted to one source behind a flag. | No | `NOT STARTED` |
 
@@ -250,6 +250,7 @@ approval.
 | 2026-09-05 | V3.2 Slice 2.1 — entity master | `feature/v3-2-1-entity-master` | `01f0f13` |
 | 2026-09-05 | V3.2 Slice 2.2 — company backfill | `feature/v3-2-2-company-backfill` | `4e0a90d` |
 | 2026-09-05 | V3.2 Slice 2.3 — entity resolution | `feature/v3-2-3-entity-resolution` | `f3286ad` |
+| 2026-09-05 | V3.2 Slice 2.3.1 — identifier sources | `feature/v3-2-3-1-identifier-sources` | *(this slice)* |
 
 ---
 

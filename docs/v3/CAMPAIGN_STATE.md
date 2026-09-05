@@ -39,7 +39,7 @@ enabling a V3 flag in production, deleting V2 compatibility or either V2 ref.
 | Alembic head in the deployed database | **018** — and V3 migrations 019-027 have reached **no** deployed environment |
 | Alembic head in the local dev database | **018** (unchanged by V3 work; scratch databases only) |
 | Current phase | **V3.2 — Entity Master and global universe** |
-| Current slice | 2.3.1 — `feature/v3-2-3-1-identifier-sources` (next) |
+| Current slice | 2.4 — `feature/v3-2-4-entity-relationships` (next) |
 | Deployed | **Nothing.** `main` at `4b60e07` is the deployed product. |
 
 Working tree at campaign start also held two untracked files —
@@ -53,7 +53,7 @@ the user's call, and the campaign leaves them untracked and untouched.
 |---|---|---|
 | V3.0 | Execution and correctness foundation | `IMPLEMENTED` |
 | V3.1 | Research Corpus | `IMPLEMENTED` |
-| V3.2 | Entity Master and global universe | `IN PROGRESS` — 2.1-2.3 merged; 2.3.1, 2.4-2.5 open |
+| V3.2 | Entity Master and global universe | `IN PROGRESS` — 2.1-2.3.1 merged; 2.4-2.5 open |
 | V3.3 | Research tools and calculation engine | `NOT STARTED` |
 | V3.4 | Multi-provider runtime and source expansion | `NOT STARTED` |
 | V3.5 | Research Ledger and Director | `NOT STARTED` |
@@ -90,6 +90,7 @@ is recorded explicitly rather than being allowed to pass as production validatio
 | 2026-09-05 | V3.2.1 entity master | `feature/v3-2-1-entity-master` | `01f0f13` |
 | 2026-09-05 | V3.2.2 company backfill | `feature/v3-2-2-company-backfill` | `4e0a90d` |
 | 2026-09-05 | V3.2.3 entity resolution | `feature/v3-2-3-entity-resolution` | `f3286ad` |
+| 2026-09-05 | V3.2.3.1 identifier sources | `feature/v3-2-3-1-identifier-sources` | *(see progress log)* |
 
 ## Corrective slices
 
@@ -157,16 +158,22 @@ by accident.
 Reversible, no commercial or security commitment, resolvable by evidence — these
 belong to the agent, with an ADR when material.
 
-*(none currently open — entries are added when a slice raises one)*
+### Resolved
+
+| Decision | Slice | Evidence |
+|---|---|---|
+| `IdentifierSource.lookup` returns `SourceLookupResult`, not `list[IdentifierClaim]` | 2.3.1 | GLEIF's `filter[entity.legalName]` is a **partial match**, so a source must be able to say "several matched and I refused to choose". A full list lets the gate accept whichever LEI is unheld — a silent misattribution of a filing history — and an empty list collapses "none" into "several". Amends an interface merged one slice earlier; blast radius was `StaticIdentifierSource` and the 2.3 tests, both moved with it. |
+
+*(no others currently open — entries are added when a slice raises one)*
 
 ## Gate baseline
 
 Recorded so a later run can be compared against a number rather than a memory.
 
-| Gate | At campaign start (`35bd550`) | After V3.2.3 |
+| Gate | At campaign start (`35bd550`) | After V3.2.3.1 |
 |---|---|---|
 | `ruff check .` | All checks passed | All checks passed |
-| `pytest tests/ -q` | 4949 passed, 12 skipped | **5083 passed**, 12 skipped |
+| `pytest tests/ -q` | 4949 passed, 12 skipped | **5108 passed**, 12 skipped |
 | `mypy app` | 71 errors in 10 files | 71 errors in 10 files (baseline; one regression to 72 was caught by the gate in 2.3 and fixed) |
 
 ## Provider benchmarks
@@ -241,18 +248,18 @@ Carried forward, all still true:
 
 ## Next executable action
 
-Start **V3.2 slice 2.3.1** on `feature/v3-2-3-1-identifier-sources`: live GLEIF and
-SEC adapters behind the `IdentifierSource` protocol 2.3 defined.
+Start **V3.2 slice 2.4** on `feature/v3-2-4-entity-relationships`:
+`EntityRelationship`, `ReportingScope` and `BusinessSegment`, with migration 028.
 
-2.3 shipped the contract, a `StaticIdentifierSource` reference implementation and
-the verification gate; it deliberately shipped **no live adapter**, because a
-network path brings rate limits, failure modes and opt-in test gating that belong in
-their own slice. `app/integrations/providers/gleif_provider.py` already exists with
-a **pure** `_parse_gleif_record`, so the adapter is a mapping from that parser's
-output to `IdentifierClaim` rather than a new client.
+Relationships are typed, sourced, effective-dated and confidence-scored —
+`parent_of`, `subsidiary_of`, `adr_of`, `predecessor_of`. The reason this matters
+beyond tidiness: consolidated versus subsidiary reporting is currently
+unrepresentable, so the platform cannot reason about whether a filing covers the
+group or a subsidiary.
 
-Constraints already fixed beneath it: every claim goes through
-`verify_identifier_claim`, so a source is never trusted more than a caller; a CIK
-claimed for a listing on a non-SEC-eligible venue is refused whatever produced it;
-and the "no network import in `app/services/entities/`" test means the adapter lives
-in `app/integrations/` and is *injected*, not imported into the package.
+`ReportingScope` and `BusinessSegment` give persistent identity to the scope
+vocabulary `fact_scope.py` already enforces in memory, so a segment can be tracked
+across periods and renamings. The regression case to keep in front of this work is
+CFR: **Specialist Watchmakers figures must never become Group**, and the €107m
+figure needed a font-size PDF heading stack to scope correctly. A segment table that
+cannot express "this segment was renamed in FY2024" will silently split a series.
