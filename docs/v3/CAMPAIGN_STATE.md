@@ -39,7 +39,7 @@ enabling a V3 flag in production, deleting V2 compatibility or either V2 ref.
 | Alembic head in the deployed database | **018** — and V3 migrations 019-027 have reached **no** deployed environment |
 | Alembic head in the local dev database | **018** (unchanged by V3 work; scratch databases only) |
 | Current phase | **V3.2 — Entity Master and global universe** |
-| Current slice | 2.3 — `feature/v3-2-3-entity-resolution` (next) |
+| Current slice | 2.3.1 — `feature/v3-2-3-1-identifier-sources` (next) |
 | Deployed | **Nothing.** `main` at `4b60e07` is the deployed product. |
 
 Working tree at campaign start also held two untracked files —
@@ -53,7 +53,7 @@ the user's call, and the campaign leaves them untracked and untouched.
 |---|---|---|
 | V3.0 | Execution and correctness foundation | `IMPLEMENTED` |
 | V3.1 | Research Corpus | `IMPLEMENTED` |
-| V3.2 | Entity Master and global universe | `IN PROGRESS` — 2.1-2.2 merged; 2.3-2.5 open |
+| V3.2 | Entity Master and global universe | `IN PROGRESS` — 2.1-2.3 merged; 2.3.1, 2.4-2.5 open |
 | V3.3 | Research tools and calculation engine | `NOT STARTED` |
 | V3.4 | Multi-provider runtime and source expansion | `NOT STARTED` |
 | V3.5 | Research Ledger and Director | `NOT STARTED` |
@@ -89,6 +89,7 @@ is recorded explicitly rather than being allowed to pass as production validatio
 | 2026-09-05 | Campaign state | `feature/v3-campaign-state` | `a7e0776` |
 | 2026-09-05 | V3.2.1 entity master | `feature/v3-2-1-entity-master` | `01f0f13` |
 | 2026-09-05 | V3.2.2 company backfill | `feature/v3-2-2-company-backfill` | `4e0a90d` |
+| 2026-09-05 | V3.2.3 entity resolution | `feature/v3-2-3-entity-resolution` | *(see progress log)* |
 
 ## Corrective slices
 
@@ -162,11 +163,11 @@ belong to the agent, with an ADR when material.
 
 Recorded so a later run can be compared against a number rather than a memory.
 
-| Gate | At campaign start (`35bd550`) | After V3.2.2 |
+| Gate | At campaign start (`35bd550`) | After V3.2.3 |
 |---|---|---|
 | `ruff check .` | All checks passed | All checks passed |
-| `pytest tests/ -q` | 4949 passed, 12 skipped | **5045 passed**, 12 skipped |
-| `mypy app` | 71 errors in 10 files | 71 errors in 10 files (baseline, unchanged) |
+| `pytest tests/ -q` | 4949 passed, 12 skipped | **5083 passed**, 12 skipped |
+| `mypy app` | 71 errors in 10 files | 71 errors in 10 files (baseline; one regression to 72 was caught by the gate in 2.3 and fixed) |
 
 ## Provider benchmarks
 
@@ -210,6 +211,15 @@ Carried forward, all still true:
   listing → security → entity. It does **not** retire the old path — `companies`
   and `sec_issuer_registry` are untouched until slice 2.2 links them and a
   validated replacement exists.
+- **`is_sec_eligible(None)` returns `True` by design** — for V2's legacy
+  ticker-only flow, where no exchange was supplied and treating that as ineligible
+  would regress every `AAPL`/`MSFT` lookup to "not sourced". That default is
+  **wrong for a listing row**, where `exchange_code` NULL means the platform holds a
+  listing whose venue it cannot name; inheriting it made the CIK verification rule
+  fail *open* on its weakest input. Fixed in 2.3 by `_listing_is_sec_eligible`. The
+  general lesson: **a shared helper's default can be right at one call site and
+  wrong at another**, and "we reused the existing function" is not "we applied the
+  existing rule".
 - **`security_listings.quote_currency` is the quote unit, not a reporting
   currency.** LSE quotes in pence. Joining it against an issuer's reporting
   currency mislabels a London price as 100x its real value. The column is named
@@ -231,18 +241,18 @@ Carried forward, all still true:
 
 ## Next executable action
 
-Start **V3.2 slice 2.3** on `feature/v3-2-3-entity-resolution`: resolution with
-explicit ambiguity, and the first identifier *sources*.
+Start **V3.2 slice 2.3.1** on `feature/v3-2-3-1-identifier-sources`: live GLEIF and
+SEC adapters behind the `IdentifierSource` protocol 2.3 defined.
 
-Slices 2.1-2.2 deliberately left every entity keyed `listing:<venue>:<ticker>` —
-the weakest identity — because a `companies` row carries no LEI and no CIK. 2.3 is
-where a real source is consulted (GLEIF for LEI, SEC for CIK on SEC-eligible venues
-only), where an entity is **promoted** to a stronger identity, and where two
-candidates that cannot be separated become an `entity_ambiguous` gap rather than a
-merge.
+2.3 shipped the contract, a `StaticIdentifierSource` reference implementation and
+the verification gate; it deliberately shipped **no live adapter**, because a
+network path brings rate limits, failure modes and opt-in test gating that belong in
+their own slice. `app/integrations/providers/gleif_provider.py` already exists with
+a **pure** `_parse_gleif_record`, so the adapter is a mapping from that parser's
+output to `IdentifierClaim` rather than a new client.
 
-Three constraints are already fixed by the slices beneath it and must not be
-relaxed: `entity_key` is never rewritten, so promotion adds identifiers rather than
-renumbering; a CIK is never derived from a bare ticker on a non-SEC-eligible venue,
-which is the Boeing bug; and the four resolution states already exist in
-`entities.vocabulary`, with only `resolved` in the actionable set.
+Constraints already fixed beneath it: every claim goes through
+`verify_identifier_claim`, so a source is never trusted more than a caller; a CIK
+claimed for a listing on a non-SEC-eligible venue is refused whatever produced it;
+and the "no network import in `app/services/entities/`" test means the adapter lives
+in `app/integrations/` and is *injected*, not imported into the package.
