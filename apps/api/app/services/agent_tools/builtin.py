@@ -1,15 +1,13 @@
 """The builtin tools — V3.3 Slice 3.1.
 
-One tool, on purpose. ``lookup_entity`` is here because it is the tool that most needs
-its contract established before anything else is written against the machinery, and
-because it needs no new capability: ``entities.resolution.resolve`` already exists and
-already returns a state.
+``lookup_entity`` is here because it is the tool whose contract most needed
+establishing before anything else was written against the machinery, and because it
+needed no new capability: ``entities.resolution.resolve`` already returns a state.
 
-The fact and series tools are slice 3.2, the calculation engine 3.3, corpus search 3.4,
-and ``search_web`` / ``fetch_public_source`` wait for the provider runtime in V3.4.
-Shipping the machinery with one real tool rather than a fake follows what V3.1.4 did
-with its in-memory reference backend: the contract is proven sufficient by something
-real, and nothing is claimed to work that has no implementation behind it.
+The fact and series tools live in ``facts`` (slice 3.2) and are registered from here so
+there is one place that answers "what can an agent reach". The calculation engine is
+3.3, corpus search 3.4, and ``search_web`` / ``fetch_public_source`` wait for the
+provider runtime in V3.4.
 
 ``lookup_entity`` RETURNS THE STATE, NOT A BEST MATCH
 ====================================================
@@ -145,8 +143,11 @@ LOOKUP_ENTITY_SPEC = ToolSpec(
 
 
 def register_builtins(registry: "ToolRegistry") -> "ToolRegistry":
-    """Register every builtin tool. One, for now, and deliberately so."""
+    """Register every builtin tool."""
+    from app.services.agent_tools.facts import register_fact_tools
+
     registry.register(LOOKUP_ENTITY_SPEC)
+    register_fact_tools(registry)
     return registry
 
 

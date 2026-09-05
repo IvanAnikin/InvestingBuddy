@@ -130,6 +130,12 @@ class ToolSession:
         why refusals are not raised.
         """
         args = dict(arguments or {})
+        # What the agent ASKED FOR, kept before validation normalises it. Recording the
+        # normalised form instead would lose a real signal — "this agent requested
+        # 10,000 rows" is behaviour worth seeing — and would gain nothing, because
+        # validation is deterministic, so the raw arguments reproduce the call exactly.
+        # What was actually APPLIED travels in the tool's own `population` block.
+        as_asked = dict(args)
         started = time.perf_counter()
 
         if len(self.calls) >= self.max_recorded_calls:
@@ -153,7 +159,7 @@ class ToolSession:
         if not self.enabled:
             return await self._record(
                 tool_name,
-                args,
+                as_asked,
                 self._refusal(tool_name, REFUSED_DISABLED),
                 started,
                 task_ref,
@@ -166,7 +172,7 @@ class ToolSession:
             # the prompt that produced it.
             return await self._record(
                 tool_name,
-                args,
+                as_asked,
                 self._refusal(tool_name, REFUSED_UNKNOWN_TOOL),
                 started,
                 task_ref,
@@ -175,7 +181,7 @@ class ToolSession:
         if not self.policy.permits(spec.name):
             return await self._record(
                 spec.name,
-                args,
+                as_asked,
                 self._refusal(spec.name, REFUSED_TOOL_NOT_PERMITTED),
                 started,
                 task_ref,
@@ -184,7 +190,7 @@ class ToolSession:
         if not self._access_classes_permitted(spec):
             return await self._record(
                 spec.name,
-                args,
+                as_asked,
                 self._refusal(
                     spec.name,
                     "access_class_not_permitted",
@@ -202,7 +208,7 @@ class ToolSession:
         if cap and self.spend.iterations >= cap:
             return await self._record(
                 spec.name,
-                args,
+                as_asked,
                 self._refusal(
                     spec.name, REFUSED_ITERATION_LIMIT, limit_hit="max_iterations"
                 ),
@@ -216,7 +222,7 @@ class ToolSession:
             except ValueError as exc:
                 return await self._record(
                     spec.name,
-                    args,
+                    as_asked,
                     self._refusal(
                         spec.name, REFUSED_INVALID_ARGUMENTS, detail=str(exc)
                     ),
@@ -229,7 +235,7 @@ class ToolSession:
         if limit is not None:
             return await self._record(
                 spec.name,
-                args,
+                as_asked,
                 self._refusal(spec.name, REFUSED_BUDGET_EXCEEDED, limit_hit=limit),
                 started,
                 task_ref,
@@ -258,12 +264,12 @@ class ToolSession:
                 summary=f"{spec.name} raised {type(exc).__name__}",
                 instrumented_units=spec.instrumented_units,
             )
-            return await self._record(spec.name, args, result, started, task_ref)
+            return await self._record(spec.name, as_asked, result, started, task_ref)
 
         self.spend.charge(spec.cost)
         self.spend.iterations += 1
         result = _result_from_payload(spec, self.policy.role, payload)
-        return await self._record(spec.name, args, result, started, task_ref)
+        return await self._record(spec.name, as_asked, result, started, task_ref)
 
     # ── internals ────────────────────────────────────────────────────────── #
 

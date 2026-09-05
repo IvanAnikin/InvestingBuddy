@@ -58,7 +58,7 @@ from app.services.agent_tools.contracts import (
     REFUSED_ITERATION_LIMIT,
     REFUSED_TOOL_NOT_PERMITTED,
     REFUSED_UNKNOWN_TOOL,
-    TOOL_GET_FINANCIAL_FACTS,
+    TOOL_GET_COMPANY_PROFILE,
     TOOL_LOOKUP_ENTITY,
     TOOL_NAMES,
     TOOL_SEARCH_PRIVATE_RESEARCH,
@@ -98,6 +98,15 @@ from app.services.entities.master import (
 from app.services.entities.vocabulary import LISTING_ACTIVE
 
 LEI_A = "529900AAAAAAAAAA01" + lei_check_digits("529900AAAAAAAAAA01")
+
+#: A vocabulary name with no builtin behind it, used as the stand-in tool throughout.
+#:
+#: Deliberately not a name that IS a builtin: two of these tests register a fixture
+#: spec into `default_registry()`, and the registry refuses a silent overwrite — so
+#: reusing a builtin's name would make this file fail whenever the builtin set grows.
+#: `test_the_fixture_tool_is_not_a_builtin` fires when it eventually does, which tells
+#: whoever adds it to pick another name here.
+FIXTURE_TOOL = TOOL_GET_COMPANY_PROFILE
 
 
 def _cfg(**overrides: object) -> Settings:
@@ -150,7 +159,7 @@ class Spy:
 
 
 def _spec(
-    name: str = TOOL_GET_FINANCIAL_FACTS,
+    name: str = FIXTURE_TOOL,
     *,
     handler: Any = None,
     cost: ToolCost | None = None,
@@ -186,6 +195,14 @@ class TestClosedVocabulary:
         for name in ("run_sql", "execute", "write_fact", "shell", ""):
             with pytest.raises(ValueError, match="not a recognised tool"):
                 require_tool_name(name)
+
+    def test_the_fixture_tool_is_not_a_builtin(self) -> None:
+        # Two tests below register a fixture spec into `default_registry()`, which
+        # refuses a silent overwrite. When FIXTURE_TOOL gains a real implementation,
+        # this fails and whoever added it picks another stand-in.
+        assert FIXTURE_TOOL not in default_registry(), (
+            f"{FIXTURE_TOOL} now has a builtin; choose another FIXTURE_TOOL"
+        )
 
     def test_no_tool_in_the_vocabulary_suggests_a_write_or_an_escape_hatch(self) -> None:
         # A closed list is only a boundary if nothing in it is a hole.
@@ -225,8 +242,8 @@ class TestClosedVocabulary:
         # a permission surface is the worst place for that.
         first = default_registry()
         first.register(_spec())
-        assert TOOL_GET_FINANCIAL_FACTS in first
-        assert TOOL_GET_FINANCIAL_FACTS not in default_registry()
+        assert FIXTURE_TOOL in first
+        assert FIXTURE_TOOL not in default_registry()
 
     def test_a_spec_cannot_claim_a_unit_that_is_not_a_consumption_unit(self) -> None:
         with pytest.raises(ValueError, match="not a consumption unit"):
@@ -342,11 +359,11 @@ class TestFailClosedPaths:
         )
         ts = _session(
             session,
-            policy=policy_for(ROLE_RISK_ANALYST, tools={TOOL_GET_FINANCIAL_FACTS}),
+            policy=policy_for(ROLE_RISK_ANALYST, tools={FIXTURE_TOOL}),
             registry=registry,
             cfg=cfg,
         )
-        result = await ts.call(TOOL_GET_FINANCIAL_FACTS)
+        result = await ts.call(FIXTURE_TOOL)
         assert result.contains_untrusted_content is True
 
     async def test_a_malformed_consumption_report_does_not_break_the_audit_write(
@@ -364,11 +381,11 @@ class TestFailClosedPaths:
         )
         ts = _session(
             session,
-            policy=policy_for(ROLE_RISK_ANALYST, tools={TOOL_GET_FINANCIAL_FACTS}),
+            policy=policy_for(ROLE_RISK_ANALYST, tools={FIXTURE_TOOL}),
             registry=registry,
             cfg=cfg,
         )
-        result = await ts.call(TOOL_GET_FINANCIAL_FACTS)
+        result = await ts.call(FIXTURE_TOOL)
         await session.commit()
         assert result.ok is True
         row = (await session.execute(select(ResearchToolCall))).scalar_one()
@@ -440,7 +457,7 @@ class TestPermission:
             registry=registry,
             cfg=cfg,
         )
-        result = await ts.call(TOOL_GET_FINANCIAL_FACTS, {"x": 1})
+        result = await ts.call(FIXTURE_TOOL, {"x": 1})
         await session.commit()
 
         assert result.refused is True
@@ -455,15 +472,15 @@ class TestPermission:
         cfg = _cfg()
         ts = _session(
             session,
-            policy=policy_for(ROLE_RISK_ANALYST, tools={TOOL_GET_FINANCIAL_FACTS}),
+            policy=policy_for(ROLE_RISK_ANALYST, tools={FIXTURE_TOOL}),
             registry=ToolRegistry(),
             cfg=cfg,
         )
-        result = await ts.call(TOOL_GET_FINANCIAL_FACTS)
+        result = await ts.call(FIXTURE_TOOL)
         await session.commit()
         assert result.refusal_reason == REFUSED_UNKNOWN_TOOL
         row = (await session.execute(select(ResearchToolCall))).scalar_one()
-        assert row.tool_name == TOOL_GET_FINANCIAL_FACTS
+        assert row.tool_name == FIXTURE_TOOL
         assert row.outcome == OUTCOME_REFUSED
 
     async def test_an_access_class_a_role_may_not_read_is_refused(
@@ -479,13 +496,13 @@ class TestPermission:
             session,
             policy=policy_for(
                 ROLE_RISK_ANALYST,
-                tools={TOOL_GET_FINANCIAL_FACTS},
+                tools={FIXTURE_TOOL},
                 access_classes={"public_issuer"},
             ),
             registry=registry,
             cfg=cfg,
         )
-        result = await ts.call(TOOL_GET_FINANCIAL_FACTS)
+        result = await ts.call(FIXTURE_TOOL)
         await session.commit()
         assert result.refusal_reason == "access_class_not_permitted"
         assert spy.invoked is False
@@ -498,11 +515,11 @@ class TestPermission:
         registry.register(_spec(access_classes=()))
         ts = _session(
             session,
-            policy=policy_for(ROLE_RISK_ANALYST, tools={TOOL_GET_FINANCIAL_FACTS}),
+            policy=policy_for(ROLE_RISK_ANALYST, tools={FIXTURE_TOOL}),
             registry=registry,
             cfg=cfg,
         )
-        result = await ts.call(TOOL_GET_FINANCIAL_FACTS)
+        result = await ts.call(FIXTURE_TOOL)
         await session.commit()
         assert result.ok is True
 
@@ -537,13 +554,13 @@ class TestBudgetsAreCheckedBeforeSpending:
             session,
             policy=policy_for(
                 ROLE_RISK_ANALYST,
-                tools={TOOL_GET_FINANCIAL_FACTS},
+                tools={FIXTURE_TOOL},
                 budget=ToolBudget(max_searches=1),
             ),
             registry=registry,
             cfg=cfg,
         )
-        result = await ts.call(TOOL_GET_FINANCIAL_FACTS)
+        result = await ts.call(FIXTURE_TOOL)
         await session.commit()
 
         assert result.refusal_reason == REFUSED_BUDGET_EXCEEDED
@@ -560,14 +577,14 @@ class TestBudgetsAreCheckedBeforeSpending:
             session,
             policy=policy_for(
                 ROLE_RISK_ANALYST,
-                tools={TOOL_GET_FINANCIAL_FACTS},
+                tools={FIXTURE_TOOL},
                 budget=ToolBudget(max_calls=1),
             ),
             registry=registry,
             cfg=cfg,
         )
-        first = await ts.call(TOOL_GET_FINANCIAL_FACTS)
-        second = await ts.call(TOOL_GET_FINANCIAL_FACTS)
+        first = await ts.call(FIXTURE_TOOL)
+        second = await ts.call(FIXTURE_TOOL)
         await session.commit()
         assert first.ok and second.refused
         assert second.limit_hit == "max_calls"
@@ -582,13 +599,13 @@ class TestBudgetsAreCheckedBeforeSpending:
             session,
             policy=policy_for(
                 ROLE_RISK_ANALYST,
-                tools={TOOL_GET_FINANCIAL_FACTS},
+                tools={FIXTURE_TOOL},
                 budget=ToolBudget(max_iterations=2),
             ),
             registry=registry,
             cfg=cfg,
         )
-        outcomes = [await ts.call(TOOL_GET_FINANCIAL_FACTS) for _ in range(3)]
+        outcomes = [await ts.call(FIXTURE_TOOL) for _ in range(3)]
         await session.commit()
         assert [o.outcome for o in outcomes] == [
             OUTCOME_OK,
@@ -606,7 +623,7 @@ class TestBudgetsAreCheckedBeforeSpending:
             session,
             policy=policy_for(
                 ROLE_RISK_ANALYST,
-                tools={TOOL_GET_FINANCIAL_FACTS},
+                tools={FIXTURE_TOOL},
                 budget=ToolBudget(max_searches=1),
             ),
             registry=registry,
@@ -616,15 +633,15 @@ class TestBudgetsAreCheckedBeforeSpending:
             session,
             policy=policy_for(
                 ROLE_LEAD_FINANCIAL_ANALYST,
-                tools={TOOL_GET_FINANCIAL_FACTS},
+                tools={FIXTURE_TOOL},
                 budget=ToolBudget(max_searches=1),
             ),
             registry=registry,
             cfg=cfg,
         )
-        assert (await exhausted.call(TOOL_GET_FINANCIAL_FACTS)).ok
-        assert (await exhausted.call(TOOL_GET_FINANCIAL_FACTS)).refused
-        assert (await other.call(TOOL_GET_FINANCIAL_FACTS)).ok, (
+        assert (await exhausted.call(FIXTURE_TOOL)).ok
+        assert (await exhausted.call(FIXTURE_TOOL)).refused
+        assert (await other.call(FIXTURE_TOOL)).ok, (
             "one role exhausting its budget must not bind another"
         )
         await session.commit()
@@ -644,12 +661,12 @@ class TestEveryAttemptIsRecorded:
         registry.register(_spec(instrumented_units=("model_calls",)))
         ts = _session(
             session,
-            policy=policy_for(ROLE_RISK_ANALYST, tools={TOOL_GET_FINANCIAL_FACTS}),
+            policy=policy_for(ROLE_RISK_ANALYST, tools={FIXTURE_TOOL}),
             registry=registry,
             cfg=cfg,
         )
         result = await ts.call(
-            TOOL_GET_FINANCIAL_FACTS, {"metric": "revenue", "period": "2025"},
+            FIXTURE_TOOL, {"metric": "revenue", "period": "2025"},
             task_ref="q1",
         )
         await session.commit()
@@ -673,11 +690,11 @@ class TestEveryAttemptIsRecorded:
         registry.register(_spec(instrumented_units=()))
         ts = _session(
             session,
-            policy=policy_for(ROLE_RISK_ANALYST, tools={TOOL_GET_FINANCIAL_FACTS}),
+            policy=policy_for(ROLE_RISK_ANALYST, tools={FIXTURE_TOOL}),
             registry=registry,
             cfg=cfg,
         )
-        await ts.call(TOOL_GET_FINANCIAL_FACTS)
+        await ts.call(FIXTURE_TOOL)
         await session.commit()
         row = (await session.execute(select(ResearchToolCall))).scalar_one()
         assert row.instrumented_units_json is None
@@ -710,11 +727,11 @@ class TestEveryAttemptIsRecorded:
         registry.register(_spec(handler=Spy(raises=RuntimeError(secret))))
         ts = _session(
             session,
-            policy=policy_for(ROLE_RISK_ANALYST, tools={TOOL_GET_FINANCIAL_FACTS}),
+            policy=policy_for(ROLE_RISK_ANALYST, tools={FIXTURE_TOOL}),
             registry=registry,
             cfg=cfg,
         )
-        result = await ts.call(TOOL_GET_FINANCIAL_FACTS)
+        result = await ts.call(FIXTURE_TOOL)
         await session.commit()
 
         assert result.outcome == OUTCOME_ERROR
@@ -733,12 +750,12 @@ class TestEveryAttemptIsRecorded:
             session,
             policy=policy_for(
                 ROLE_RISK_ANALYST,
-                tools={TOOL_GET_FINANCIAL_FACTS, TOOL_LOOKUP_ENTITY},
+                tools={FIXTURE_TOOL, TOOL_LOOKUP_ENTITY},
             ),
             registry=registry,
             cfg=cfg,
         )
-        failed = await ts.call(TOOL_GET_FINANCIAL_FACTS)
+        failed = await ts.call(FIXTURE_TOOL)
         after = await ts.call(TOOL_LOOKUP_ENTITY, {"ticker": "NOPE"})
         await session.commit()
         assert failed.outcome == OUTCOME_ERROR
@@ -758,11 +775,11 @@ class TestEveryAttemptIsRecorded:
         registry.register(_spec(handler=Spy(payload="revenue grew strongly")))
         ts = _session(
             session,
-            policy=policy_for(ROLE_RISK_ANALYST, tools={TOOL_GET_FINANCIAL_FACTS}),
+            policy=policy_for(ROLE_RISK_ANALYST, tools={FIXTURE_TOOL}),
             registry=registry,
             cfg=cfg,
         )
-        result = await ts.call(TOOL_GET_FINANCIAL_FACTS)
+        result = await ts.call(FIXTURE_TOOL)
         await session.commit()
         assert result.outcome == OUTCOME_ERROR
         assert result.error_type == "InvalidToolPayload"
@@ -775,13 +792,13 @@ class TestEveryAttemptIsRecorded:
         registry.register(_spec())
         ts = _session(
             session,
-            policy=policy_for(ROLE_RISK_ANALYST, tools={TOOL_GET_FINANCIAL_FACTS}),
+            policy=policy_for(ROLE_RISK_ANALYST, tools={FIXTURE_TOOL}),
             registry=registry,
             cfg=cfg,
         )
         ident = uuid.uuid4()
         await ts.call(
-            TOOL_GET_FINANCIAL_FACTS,
+            FIXTURE_TOOL,
             {"entity": ident, "tickers": ["A", "B"], "n": 3, "flag": True},
         )
         await session.commit()
@@ -1029,11 +1046,11 @@ class TestDisabledByDefault:
         registry.register(_spec(handler=spy))
         ts = _session(
             session,
-            policy=policy_for(ROLE_RISK_ANALYST, tools={TOOL_GET_FINANCIAL_FACTS}),
+            policy=policy_for(ROLE_RISK_ANALYST, tools={FIXTURE_TOOL}),
             registry=registry,
             cfg=off,
         )
-        result = await ts.call(TOOL_GET_FINANCIAL_FACTS)
+        result = await ts.call(FIXTURE_TOOL)
         await session.commit()
         assert result.refusal_reason == REFUSED_DISABLED
         assert spy.invoked is False
@@ -1050,14 +1067,14 @@ class TestDisabledByDefault:
             session,
             policy=policy_for(
                 ROLE_RISK_ANALYST,
-                tools={TOOL_GET_FINANCIAL_FACTS},
+                tools={FIXTURE_TOOL},
                 budget=ToolBudget(max_searches=1),
             ),
             registry=registry,
             cfg=cfg,
         )
-        await ts.call(TOOL_GET_FINANCIAL_FACTS)
-        await ts.call(TOOL_GET_FINANCIAL_FACTS)
+        await ts.call(FIXTURE_TOOL)
+        await ts.call(FIXTURE_TOOL)
         await session.commit()
         report = ts.to_dict()
         assert report["role"] == ROLE_RISK_ANALYST
