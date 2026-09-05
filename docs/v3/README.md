@@ -61,6 +61,7 @@ Only explicit user acceptance can move the overall release to `APPROVED FOR MAIN
 | [ACCEPTANCE_AND_TEST_STRATEGY.md](ACCEPTANCE_AND_TEST_STRATEGY.md) | Test gates, real-issuer regression set, external-API test safety. |
 | [SECURITY_DATA_GOVERNANCE_AND_LICENSING.md](SECURITY_DATA_GOVERNANCE_AND_LICENSING.md) | Data classes, what may be sent to which provider, and the threat model additions. |
 | [OPEN_DECISIONS.md](OPEN_DECISIONS.md) | Every unresolved decision, with owner and blocking status. |
+| [CAMPAIGN_STATE.md](CAMPAIGN_STATE.md) | **Durable campaign memory — read this first.** Verified Git/migration/phase state, merged slices, correctives, open decisions by owner, and the next executable action. |
 
 ## The one-sentence definition
 
