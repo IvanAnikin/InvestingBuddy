@@ -243,6 +243,8 @@ approval.
 | 2026-09-04 | V3.1 Slice 1.5 — document-aware chunking | `feature/v3-1-5-document-aware-chunking` | `1e2e781` |
 | 2026-09-04 | V3.1 Slice 1.6 — corpus retrieval service | `feature/v3-1-6-corpus-retrieval-service` | `d867f70` |
 | 2026-09-05 | V3.1 Slice 1.7 — reprocessing lifecycle | `feature/v3-1-7-reprocessing-lifecycle` | `fd039bc` |
+| 2026-09-05 | V3.1 phase gate | `feature/v3-1-phase-gate-report` | `a7a0a53` |
+| 2026-09-05 | Corrective — untrack the data-source inventory (OPEN DECISION #18) | `fix/v3-untrack-data-source-inventory` | `2810aef` |
 
 ---
 
