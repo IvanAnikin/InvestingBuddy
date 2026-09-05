@@ -55,7 +55,7 @@ the user's call, and the campaign leaves them untracked and untouched.
 | V3.1 | Research Corpus | `IMPLEMENTED` |
 | V3.2 | Entity Master and global universe | `IMPLEMENTED` — all six slices merged; [phase gate](IMPLEMENTATION_PLAN.md#11-v32-phase-gate) |
 | V3.3 | Research tools and calculation engine | `IMPLEMENTED` — all four slices merged; [phase gate](IMPLEMENTATION_PLAN.md#12-v33-phase-gate) |
-| V3.4 | Multi-provider runtime and source expansion | `IN PROGRESS` — 4.1 merged; **4.2/4.3/4.6/4.8 `BLOCKED`** on user-owned decisions; 4.4/4.5/4.7 open |
+| V3.4 | Multi-provider runtime and source expansion | `IN PROGRESS` — 4.1/4.1.1/4.3 merged; 4.2/4.6 `DEFERRED` by decision; 4.4/4.5/4.7/4.8/4.9/4.10 open. **Nothing `BLOCKED`.** |
 | V3.5 | Research Ledger and Director | `NOT STARTED` |
 | V3.6 | Industry playbooks | `NOT STARTED` |
 | V3.7 | Council V2 and Red Team | `NOT STARTED` |
@@ -100,6 +100,9 @@ is recorded explicitly rather than being allowed to pass as production validatio
 | 2026-09-05 | V3.3.4 corpus search tools | `feature/v3-3-4-corpus-search-tool` | `42b8336` |
 | 2026-09-05 | V3.3 phase gate | `feature/v3-3-phase-gate-report` | `7772b1f` |
 | 2026-09-05 | V3.4.1 provider interfaces | `feature/v3-4-1-provider-interfaces` | `d628ae7` |
+| 2026-09-05 | Decision record — ADR-047..052 | `feature/v3-decisions-resolved` | `ec8ea65` |
+| 2026-09-05 | V3.4.1.1 rights-based governance | `feature/v3-4-1-1-rights-based-governance` | `66ddd30` |
+| 2026-09-05 | V3.4.3 DeepSeek providers | `feature/v3-4-3-deepseek-providers` | *(see progress log)* |
 
 ## Corrective slices
 
@@ -197,10 +200,10 @@ belong to the agent, with an ADR when material.
 
 Recorded so a later run can be compared against a number rather than a memory.
 
-| Gate | At campaign start (`35bd550`) | After V3.4.1 |
+| Gate | At campaign start (`35bd550`) | After V3.4.3 |
 |---|---|---|
 | `ruff check .` | All checks passed | All checks passed |
-| `pytest tests/ -q` | 4949 passed, 12 skipped | **5386 passed**, 12 skipped |
+| `pytest tests/ -q` | 4949 passed, 12 skipped | **5430 passed**, 12 skipped |
 | `mypy app` | 71 errors in 10 files | 71 errors in 10 files (baseline; one regression to 72 was caught by the gate in 2.3 and fixed) |
 
 ## Provider benchmarks
@@ -252,6 +255,13 @@ Carried forward, all still true:
   truncated by a bound never applied to it. A pre-existing V2 inconsistency; the
   corpus under-claims completeness as a result, which is the safe direction. Its
   own slice, not yet scheduled.
+- **DeepSeek's server-side web-search wire contract is NOT verified** against the live
+  API (slice 4.3). It is modelled as an OpenAI-compatible tool call; the mapping lives in
+  `HttpDeepSeekTransport.search` and `parse_search_payload`, the tool name is
+  configuration, `V3_DEEPSEEK_SEARCH_ENABLED` defaults **off**, and the parser returns no
+  candidates with a warning naming what it saw rather than guessing. Confirming it is one
+  request body, one parser and the opt-in live contract test. **Nothing else in the
+  DeepSeek path depends on it.**
 - **`(ticker, exchange)` has already resolved to the wrong issuer live** — `BA` +
   LSE returned Boeing's CIK for BAE Systems. Fixed by special-casing, not by
   identity. **Slice 2.1 makes it structurally impossible** for anything reading the

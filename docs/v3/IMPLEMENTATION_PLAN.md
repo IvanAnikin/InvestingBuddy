@@ -114,7 +114,7 @@ bytes are retained.
 | 4.1 | [`feature/v3-4-1-provider-interfaces`](slices/V3.4-1-provider-interfaces.md) | The four interfaces, the canonical result contract, the **deny-by-default** per-provider governance matrix, eight routing slots that degrade with a named reason, and a fake for each. No live adapter. | `IMPLEMENTED` |
 | 4.1.1 | [`feature/v3-4-1-1-rights-based-governance`](slices/V3.4-1.1-rights-based-governance.md) | **Implements [ADR-049](../DECISIONS.md).** Two gates — provider × class, and the document's own rights — plus a categorical credential exclusion no policy can override. | `IMPLEMENTED` |
 | 4.2 | `feature/v3-4-2-exa-search-provider` | Exa adapter behind `SearchProvider`. | `DEFERRED` — [ADR-048](../DECISIONS.md): DeepSeek `web_search` is the primary path. Interface and fake retained. |
-| 4.3 | `feature/v3-4-3-deepseek-providers` | DeepSeek as the **primary** provider: `ModelProvider`, `SearchProvider` (`web_search`) and `ResearchProvider`. | `NOT STARTED` — unblocked by [ADR-049](../DECISIONS.md) |
+| 4.3 | [`feature/v3-4-3-deepseek-providers`](slices/V3.4-3-deepseek-providers.md) | DeepSeek as the **primary** provider: model, search and research adapters, all degrading honestly. ⚠ The server-side search **wire contract is unverified** against the live API; the parser tolerates an unknown shape and the flag defaults off. | `IMPLEMENTED` |
 | 4.4 | `feature/v3-4-4-research-lead-promotion` | `ResearchLead` persistence + verification gate + rejection reasons.| `NOT STARTED` |
 | 4.5 | `feature/v3-4-5-provider-benchmark-harness` | Repeatable scored benchmark; `cost_per_verified_finding`.| `NOT STARTED` |
 | 4.6 | `feature/v3-4-6-gemini-deep-research` | Managed Deep Research as a contractor producing leads only. | `DEFERRED` — `OPTIONAL / NOT ACTIVATED`; DeepSeek provides the initial autonomous web research. |
@@ -265,6 +265,7 @@ approval.
 | 2026-09-05 | V3.4 Slice 4.1 — provider interfaces | `feature/v3-4-1-provider-interfaces` | `d628ae7` |
 | 2026-09-05 | Decision record — 11 resolutions, ADR-047..052 | `feature/v3-decisions-resolved` | `ec8ea65` |
 | 2026-09-05 | V3.4 Slice 4.1.1 — rights-based governance | `feature/v3-4-1-1-rights-based-governance` | `66ddd30` |
+| 2026-09-05 | V3.4 Slice 4.3 — DeepSeek providers | `feature/v3-4-3-deepseek-providers` | *(this slice)* |
 
 ---
 
