@@ -88,8 +88,11 @@ class ArtifactPolicy:
     stored: bool
     #: May its text enter a search index?
     indexed: bool
-    #: May its text go to ANY external model? Per-provider consent is a separate
-    #: question and is deliberately not answered here (V3.4, OPEN DECISION #11).
+    #: May its text go to an external model at all? The **first** of two gates.
+    #: OPEN DECISION #11 was resolved 2026-09-05 (ADR-049): the document's own rights
+    #: decide, and geography does not. This stays fail-closed for every non-public
+    #: class, so a private document is unusable by a model until somebody widens it
+    #: explicitly — rights are never inferred from the fact that a file was uploaded.
     sent_to_external_model: bool
     #: ``full`` | ``bounded`` | ``none``.
     quoted: str
@@ -97,6 +100,19 @@ class ArtifactPolicy:
     retained_long_term: bool
     #: ``None`` means no TTL is configured (OPEN DECISION #12), never "expired".
     retention_expires_at: datetime | None = None
+    #: The **second** gate: which providers specifically. ``None`` means "any provider
+    #: ``sent_to_external_model`` already allows"; a frozenset constrains to exactly
+    #: those. ADR-049 requires both dimensions — "external models are allowed" and
+    #: "*this* provider, under these terms, is allowed" are different questions, and a
+    #: single boolean is the coarse control that leaks one document.
+    #:
+    #: An EMPTY frozenset is meaningful and distinct from ``None``: it means the
+    #: document was considered and no provider was permitted.
+    permitted_providers: frozenset[str] | None = None
+    #: Why a non-public document was widened, and on whose authority. Required by
+    #: :func:`allow_external_model`, because a grant nobody can audit is a grant
+    #: nobody reviewed.
+    external_model_rationale: str | None = None
 
     def __post_init__(self) -> None:
         if self.quoted not in (QUOTE_FULL, QUOTE_BOUNDED, QUOTE_NONE):
@@ -113,6 +129,36 @@ class ArtifactPolicy:
         deleted by a sweep that may never run.
         """
         return self.stored and self.retained_long_term
+
+    def permits_provider(self, provider_id: str | None) -> bool:
+        """Whether THIS document may go to THIS provider. Both gates, in order.
+
+        Deliberately not "either gate": a document that may reach some external model
+        is not thereby a document that may reach every one of them.
+        """
+        if not self.sent_to_external_model:
+            return False
+        if self.permitted_providers is None:
+            return True
+        return (provider_id or "") in self.permitted_providers
+
+    def refuse_provider_reason(self, provider_id: str | None) -> str | None:
+        """``None`` when permitted, else which of the two gates closed and why."""
+        if not self.sent_to_external_model:
+            return (
+                f"this {self.access_class} document is not permitted to reach an "
+                "external model at all; rights are not inferred from the fact that a "
+                "file exists"
+            )
+        if self.permitted_providers is not None and (
+            (provider_id or "") not in self.permitted_providers
+        ):
+            allowed = sorted(self.permitted_providers) or ["(none)"]
+            return (
+                f"this document names its permitted providers as {allowed} and "
+                f"{provider_id!r} is not among them"
+            )
+        return None
 
     def is_expired(self, now: datetime) -> bool:
         """True only when a TTL was configured AND it has passed."""
@@ -139,6 +185,52 @@ def normalize_access_class(raw: str | None) -> str:
     if value in ACCESS_CLASSES:
         return value
     return ACCESS_LICENSED_PRIVATE
+
+
+def allow_external_model(
+    policy: ArtifactPolicy,
+    *,
+    rationale: str,
+    providers: "frozenset[str] | set[str] | tuple[str, ...] | None" = None,
+) -> ArtifactPolicy:
+    """Widen a document so an external model may read it. Requires a rationale.
+
+    The only supported way to make a non-public document usable by a provider, and it
+    is deliberately awkward: a rationale is mandatory, so every widened document
+    carries the reason it was widened and the reason is auditable later. ADR-049 states
+    the rule this enforces — **rights are never inferred from the fact that a file was
+    uploaded.**
+
+    ``providers=None`` leaves the document open to any provider the coarse governance
+    matrix already permits. Naming providers narrows it further, which is what a
+    licence saying "may be processed by X" translates into.
+    """
+    if not (rationale or "").strip():
+        raise ValueError(
+            "widening a document for external models requires a rationale. A grant "
+            "nobody can audit is a grant nobody reviewed."
+        )
+    allowed = None if providers is None else frozenset(providers)
+    return replace(
+        policy,
+        sent_to_external_model=True,
+        permitted_providers=allowed,
+        external_model_rationale=rationale.strip(),
+    )
+
+
+def forbid_external_model(policy: ArtifactPolicy, *, rationale: str = "") -> ArtifactPolicy:
+    """Close a document to every external model. Never requires a justification.
+
+    Narrowing is always allowed and always safe, so unlike :func:`allow_external_model`
+    this takes an optional rationale. The asymmetry is the point.
+    """
+    return replace(
+        policy,
+        sent_to_external_model=False,
+        permitted_providers=frozenset(),
+        external_model_rationale=(rationale.strip() or policy.external_model_rationale),
+    )
 
 
 def default_policy_for(
@@ -246,6 +338,8 @@ def _expiry_from_days(retention_days: int, *, now: datetime | None = None) -> da
 
 
 __all__ = [
+    "allow_external_model",
+    "forbid_external_model",
     "ACCESS_CLASSES",
     "ACCESS_DERIVED",
     "ACCESS_LICENSED_PRIVATE",

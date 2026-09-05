@@ -13,7 +13,7 @@
 | **V3.1** | Research Corpus | `IMPLEMENTED` — and, unlike V3.0, with a **real-document acceptance run** behind it. Not `VALIDATED`: the run is local and the corpus is not deployed. See [the phase gate](#10-v31-phase-gate). |
 | **V3.2** | Entity Master and global universe | `IMPLEMENTED` — all slices merged. See [the phase gate](#11-v32-phase-gate). |
 | **V3.3** | Research tools and calculation engine | `IMPLEMENTED` — all four slices merged. See [the phase gate](#12-v33-phase-gate). |
-| **V3.4** | Multi-provider runtime and source expansion | `IN PROGRESS` — slice 4.1 merged; 4.2/4.3/4.6/4.8 `BLOCKED` on user-owned decisions. |
+| **V3.4** | Multi-provider runtime and source expansion | `IN PROGRESS` — 4.1/4.1.1 merged. **Nothing is `BLOCKED` any more:** the 2026-09-05 resolution round deferred 4.2/4.6 and unblocked 4.3/4.8. |
 | **V3.5** | Research Ledger and Director | `NOT STARTED` |
 | **V3.6** | Industry playbooks | `NOT STARTED` |
 | **V3.7** | Council V2 and Red Team | `NOT STARTED` |
@@ -112,13 +112,16 @@ bytes are retained.
 | Slice | Branch | Objective | Status |
 |---|---|---|---|
 | 4.1 | [`feature/v3-4-1-provider-interfaces`](slices/V3.4-1-provider-interfaces.md) | The four interfaces, the canonical result contract, the **deny-by-default** per-provider governance matrix, eight routing slots that degrade with a named reason, and a fake for each. No live adapter. | `IMPLEMENTED` |
-| 4.2 | `feature/v3-4-2-exa-search-provider` | Exa adapter behind `SearchProvider`. Opt-in, budget-capped.| `BLOCKED` — [#3](OPEN_DECISIONS.md#3-exa-vs-perplexity-search), user-owned (spend) |
-| 4.3 | `feature/v3-4-3-deepseek-model-provider` | DeepSeek adapter behind `ModelProvider`, governance-gated to public content.| `BLOCKED` — [#4](OPEN_DECISIONS.md#4-deepseek-data-governance-policy), user-owned (governance) |
+| 4.1.1 | [`feature/v3-4-1-1-rights-based-governance`](slices/V3.4-1.1-rights-based-governance.md) | **Implements [ADR-049](../DECISIONS.md).** Two gates — provider × class, and the document's own rights — plus a categorical credential exclusion no policy can override. | `IMPLEMENTED` |
+| 4.2 | `feature/v3-4-2-exa-search-provider` | Exa adapter behind `SearchProvider`. | `DEFERRED` — [ADR-048](../DECISIONS.md): DeepSeek `web_search` is the primary path. Interface and fake retained. |
+| 4.3 | `feature/v3-4-3-deepseek-providers` | DeepSeek as the **primary** provider: `ModelProvider`, `SearchProvider` (`web_search`) and `ResearchProvider`. | `NOT STARTED` — unblocked by [ADR-049](../DECISIONS.md) |
 | 4.4 | `feature/v3-4-4-research-lead-promotion` | `ResearchLead` persistence + verification gate + rejection reasons.| `NOT STARTED` |
 | 4.5 | `feature/v3-4-5-provider-benchmark-harness` | Repeatable scored benchmark; `cost_per_verified_finding`.| `NOT STARTED` |
-| 4.6 | `feature/v3-4-6-gemini-deep-research` | Managed Deep Research as a contractor producing leads only.| `BLOCKED` — [#6](OPEN_DECISIONS.md#6-gemini-deep-research-role), user-owned |
+| 4.6 | `feature/v3-4-6-gemini-deep-research` | Managed Deep Research as a contractor producing leads only. | `DEFERRED` — `OPTIONAL / NOT ACTIVATED`; DeepSeek provides the initial autonomous web research. |
 | 4.7 | `feature/v3-4-7-macro-observation-store` | `DatasetDefinition` / `SeriesDefinition` / `Observation` + first live macro source.| `NOT STARTED` |
-| 4.8 | `feature/v3-4-8-transcript-provider` | Transcript abstraction + first implementation.| `BLOCKED` — [#8](OPEN_DECISIONS.md#8-transcript-provider), user-owned (spend) |
+| 4.8 | `feature/v3-4-8-transcript-provider` | Canonical transcript/IR-event model + **free public issuer** acquisition. | `NOT STARTED` — unblocked by [ADR-051](../DECISIONS.md) |
+| 4.9 | `feature/v3-4-9-pgvector-search-backend` | The production `SearchBackend`: PostgreSQL full-text + `pgvector`, per [ADR-047](../DECISIONS.md). | `NOT STARTED` |
+| 4.10 | `feature/v3-4-10-issuer-site-traversal` | Bounded same-domain issuer IR traversal on the existing safe fetcher. No paid crawler. | `NOT STARTED` |
 
 ### V3.5-V3.9
 
@@ -260,6 +263,8 @@ approval.
 | 2026-09-05 | V3.3 Slice 3.4 — corpus search tools | `feature/v3-3-4-corpus-search-tool` | `42b8336` |
 | 2026-09-05 | V3.3 phase gate | `feature/v3-3-phase-gate-report` | `7772b1f` |
 | 2026-09-05 | V3.4 Slice 4.1 — provider interfaces | `feature/v3-4-1-provider-interfaces` | `d628ae7` |
+| 2026-09-05 | Decision record — 11 resolutions, ADR-047..052 | `feature/v3-decisions-resolved` | `ec8ea65` |
+| 2026-09-05 | V3.4 Slice 4.1.1 — rights-based governance | `feature/v3-4-1-1-rights-based-governance` | *(this slice)* |
 
 ---
 
