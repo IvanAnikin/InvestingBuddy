@@ -3514,3 +3514,269 @@ V3.0 is testable with no cloud dependency.
   queue-idiomatic than they would be greenfield. That is accepted: a shared
   vocabulary the whole system already speaks is worth more than precise naming in
   one new module.
+
+---
+
+## ADR-047: Corpus Retrieval Is PostgreSQL Full-Text Plus pgvector, Not Azure AI Search
+
+**Date:** 2026-09-05 · **Status:** Accepted · **Decided by:** user
+**Supersedes:** the open state of [V3 OPEN DECISION #1](v3/OPEN_DECISIONS.md#1-azure-ai-search-vs-postgresql--pgvector)
+
+### Context
+
+V3.1 built the corpus behind a `SearchBackend` interface and deliberately stopped at
+the backend-selection gate, shipping only an in-memory reference implementation. The
+choice was between a managed hybrid search service and doing lexical and vector
+retrieval inside the database that already holds the corpus.
+
+The deciding constraint turned out not to be retrieval quality. It is that **V3 must
+require no new paid SaaS subscriptions**, which removes a managed search service from
+consideration regardless of how good it is.
+
+### Decision
+
+Corpus retrieval is **PostgreSQL full-text search plus `pgvector` semantic
+similarity**, fused by InvestingBuddy's own rank fusion, with metadata filters in the
+same query.
+
+PostgreSQL already exists in the architecture, Azure Database for PostgreSQL supports
+`pgvector`, and keeping retrieval in the same datastore as the canonical corpus
+metadata means entity, period and scope filters apply in the same transaction as the
+data they filter — which is the property that makes a scope filter trustworthy rather
+than eventually consistent.
+
+**Azure AI Search is not provisioned.** The `SearchBackend` interface is unchanged, so
+adding it later costs one adapter rather than a rewrite.
+
+### Consequences
+
+- The lexical leg works with no extension at all. `pgvector` is required only for the
+  semantic leg, and hybrid retrieval degrades to lexical when it is absent — which is
+  a worse answer and never a wrong one, exactly as V3.1 established.
+- Ranking quality is now InvestingBuddy's problem rather than a vendor's. That is
+  accepted: the fusion is already the platform's own, and the alternative was a vendor
+  ranking nobody could tune against the real-issuer set either.
+- **Enabling the extension is a schema-affecting operation.** The migration is written
+  and scratch-validated and **not applied to the deployed database** during this
+  campaign, per the standing restriction.
+- `test_the_production_backend_decision_is_not_taken_here` has served its purpose and
+  is replaced by tests that pin the chosen backend's behaviour. Deleting a guard once
+  the decision it guarded has been taken is the point of having written it.
+
+---
+
+## ADR-048: DeepSeek Web Search Is the Primary External Search Path; Exa and Perplexity Are Deferred
+
+**Date:** 2026-09-05 · **Status:** Accepted · **Decided by:** user
+**Supersedes:** the open state of [V3 OPEN DECISION #3](v3/OPEN_DECISIONS.md#3-exa-vs-perplexity-search)
+
+### Context
+
+The provider strategy planned to benchmark Exa against Perplexity and default to
+whichever won on `cost_per_verified_finding`. Both require a paid subscription or
+credits, and V3 must require neither.
+
+DeepSeek is approved on pay-as-you-go and offers server-side `web_search`, which
+covers the same need: find candidate sources on the open web for a research question.
+
+### Decision
+
+**DeepSeek `web_search` is the primary external general-web research and search path**
+for initial V3. Exa and Perplexity are **deferred** — interfaces and fakes retained,
+no adapters built, no credentials required, nothing blocked.
+
+The acquisition hierarchy is ordered and explicit:
+
+```
+existing InvestingBuddy corpus
+→ official structured API
+→ official regulator/issuer source
+→ current safe direct fetcher
+→ DeepSeek web search
+→ source URL retrieval THROUGH InvestingBuddy
+→ verification
+```
+
+The order matters more than the membership. External search is the **fifth** resort,
+after everything the platform already holds or can reach authoritatively — which is
+also the cheapest ordering, so the cost constraint and the quality constraint agree
+here rather than trading off.
+
+### Consequences
+
+- A search result is a `SourceCandidate` and a model claim is a `ResearchLead`. Neither
+  is evidence until InvestingBuddy has fetched the underlying source itself and the
+  claim has survived verification. **A search snippet is never canonical evidence**,
+  and the snippet field is labelled untrusted precisely so that a prompt builder
+  cannot forget it.
+- The platform depends on one external search vendor rather than two candidates. The
+  `SearchProvider` interface is what keeps that reversible, and it is now carrying real
+  weight rather than being speculative.
+- `cost_per_verified_finding` remains the benchmark metric, but the comparison is now
+  DeepSeek against the native path rather than Exa against Perplexity. A cross-vendor
+  search comparison is recorded as **not performed** rather than estimated.
+
+---
+
+## ADR-049: DeepSeek Access Is Governed by Document Rights, Not by Provider Geography
+
+**Date:** 2026-09-05 · **Status:** Accepted · **Decided by:** user
+**Supersedes:** the open states of [#4](v3/OPEN_DECISIONS.md#4-deepseek-data-governance-policy) and [#11](v3/OPEN_DECISIONS.md#11-private-data-external-model-policy)
+
+### Context
+
+V3.4.1 shipped a per-provider governance matrix that denied by default and recorded
+DeepSeek as public-only, on the authority of #4 being open. The blanket rule it
+encoded — `user_private → DENY` for every external provider — was a placeholder for a
+decision nobody had taken, not a considered policy.
+
+Two questions were tangled together: *where does this provider run* and *what is this
+document's licence*. Only the second is answerable per document, and only the second
+is what actually constrains use.
+
+### Decision
+
+**China location and storage are not a blocker for this project.** DeepSeek is approved
+to process `public_official`, `public_issuer`, `public_web`, InvestingBuddy-derived
+research context, **and user-private content when that document's own policy metadata
+allows third-party model processing.**
+
+DeepSeek must never receive: API keys, passwords, credentials, secrets, authentication
+tokens, private system configuration, a document whose licence or rights metadata
+forbids external-model processing, or anything marked `external_model_allowed=false`.
+
+**Data rights and explicit source policy govern provider use. Provider geography does
+not.** An unknown policy **fails closed**.
+
+### Consequences
+
+- The governance check moves from *provider × access class* to *provider × access class
+  × document policy*. The coarse check remains as the outer bound — a provider with no
+  recorded policy still receives nothing — and the document's own permissions are
+  consulted inside it. Both are needed: the coarse one catches an unevaluated provider,
+  the fine one catches a document nobody was allowed to send.
+- `ArtifactPolicy` already carries six per-document permissions including
+  `sent_to_external_model` and a per-provider allowlist, built in V3.1.1 for exactly
+  this. That work is now load-bearing rather than anticipatory.
+- **Rights are never inferred from the fact that a file was uploaded.** A private
+  document with no explicit permission is unusable by an external model, which is the
+  fail-closed direction and is the same rule the platform applies to an unstated
+  financial period.
+- A secret is not an access class and never becomes one. Credentials are excluded
+  categorically rather than by policy, because a policy is something somebody can edit.
+
+---
+
+## ADR-050: The Existing Azure OpenAI Deployment Is the Strong-Model Fallback, and the Only OpenAI-Family Dependency
+
+**Date:** 2026-09-05 · **Status:** Accepted · **Decided by:** user
+**Supersedes:** the open state of [V3 OPEN DECISION #5](v3/OPEN_DECISIONS.md#5-openai-model-routing)
+
+### Context
+
+The routing question was which model fills which slot. Two constraints answer most of
+it: no new commercial accounts, and the Azure OpenAI infrastructure in this repository
+is already approved and already carries the council.
+
+### Decision
+
+**Cheap and bulk research goes to DeepSeek. Difficult final reasoning goes to Azure
+OpenAI.** No new OpenAI commercial account is created; the existing Azure deployment is
+the only OpenAI-family dependency.
+
+Azure OpenAI's V3 role is stronger synthesis when needed, difficult Research Director
+cases, complex evidence contradictions, Red Team where appropriate, the Chair and final
+Council synthesis, and any task a benchmark shows it materially wins.
+
+**Not every research subtask goes to the expensive model**, and routing stays
+configurable.
+
+### Consequences
+
+- Domain logic continues to name a **slot**, never a model. The eight slots and their
+  degradation behaviour are unchanged; what changes is that assignments now have
+  defaults worth setting rather than being empty pending a decision.
+- The two-vendor split is also a resilience property, not only a cost one: a DeepSeek
+  outage degrades bulk research and leaves synthesis working, and the reverse leaves
+  research working with a deterministic chair fallback — which V3.0 already built.
+- Red Team vendor diversity is achievable *between* these two, and no further. That is
+  a real limitation and is recorded rather than glossed: a Red Team drawn from the same
+  vendor as the Chair shares its blind spots, and `shares_vendor_with` reports whether
+  it currently does.
+
+---
+
+## ADR-051: Transcripts and IR Events Come From Free Public Issuer Sources, and Missing Means Missing
+
+**Date:** 2026-09-05 · **Status:** Accepted · **Decided by:** user
+**Supersedes:** the open states of [#8](v3/OPEN_DECISIONS.md#8-transcript-provider) and [#9](v3/OPEN_DECISIONS.md#9-quartr-vs-fiscalai)
+
+### Context
+
+Management language over time is one of the most valuable research inputs V3 planned
+to add, and the two obvious vendors are paid subscriptions. The recommendation had been
+"direct issuer first, vendor as fallback for coverage".
+
+### Decision
+
+**No paid transcript subscription.** The canonical transcript and IR-event architecture
+is implemented anyway, and acquisition uses free, legally accessible public sources:
+issuer IR sites, issuer-published transcripts, earnings releases, presentations,
+capital-markets-day materials, regulatory filings and public event documents.
+
+When a transcript is not publicly available, **missing means missing**. It is not
+fabricated, and a paywalled source is not scraped.
+
+### Consequences
+
+- Coverage will be uneven, and worst exactly where the existing pipeline is already
+  thinnest: European issuers who publish a presentation but not a transcript. The
+  architecture must therefore represent *the event happened and no transcript is
+  available* as a first-class state, distinct from *no event*.
+- That distinction is what makes the gap actionable. "We have no transcript for CFR's
+  FY2025 call" is a research gap a human can close by other means; an absent row is
+  indistinguishable from a company that held no call.
+- Implementing the canonical model without a vendor is deliberate. It means a future
+  subscription is an adapter rather than a schema change, and it means the free path
+  is the *default* rather than the fallback — which is the ordering that survives the
+  subscription never being bought.
+
+---
+
+## ADR-052: Research Budgets Are Bounded Technical Defaults, and Research Modes Are Depth Presets
+
+**Date:** 2026-09-05 · **Status:** Accepted · **Decided by:** user
+**Supersedes:** the open states of [#13](v3/OPEN_DECISIONS.md#13-model-cost-thresholds) and [#14](v3/OPEN_DECISIONS.md#14-research-mode-budgets)
+
+### Context
+
+`consumption.ResearchBudget` and `ToolBudget` shipped with every limit defaulting to
+unbounded, because the numbers were user-owned and #14 wanted them derived from
+measurement rather than guessed. That was right at the time and is now the wrong
+default: an unbounded budget on a system that can now issue web searches and call an
+external model in a loop is a runaway waiting for an occasion.
+
+### Decision
+
+**Bounded technical defaults now; no business budget chosen.** Configurable maxima
+exist for research rounds, web searches, tool calls, documents, tokens, wall time and
+DeepSeek calls, and they vary by research mode.
+
+QUICK / STANDARD / DEEP / MAX are **research-depth presets**, not price tiers. No
+subscription price is attached to any of them. MAX takes the highest bounded limits
+and is **still finite**.
+
+### Consequences
+
+- Two instructions pull in opposite directions and both are honoured deliberately:
+  **the absence of a monthly business budget is not unlimited execution**, and **V3 is
+  not blocked on pricing decisions**. The resolution is that the *technical* ceilings
+  become real numbers and the *monetary* ceiling stays unset — a run can be stopped by
+  a round limit, a search limit or a wall clock, and cannot be stopped by a dollar
+  figure nobody has chosen.
+- A cost of unknown is still never reported as zero. Money remains derived from a price
+  book, so setting prices later re-prices history rather than rewriting it.
+- The numbers chosen now are estimates against measured anchors (a full company run is
+  261-451s, ingestion ~154s, a council ~145-190s) and are expected to be tightened
+  once real DeepSeek runs are measured. A default that is wrong but finite is
+  recoverable; an unbounded default is not.

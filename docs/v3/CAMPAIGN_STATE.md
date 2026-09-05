@@ -140,31 +140,45 @@ real rather than theoretical.
 
 ## Open user decisions
 
-Owned by the user, and **not** to be resolved by an agent. The campaign continues
-around each one and marks the dependent work `BLOCKED` rather than guessing.
+**Eleven were resolved by the user on 2026-09-05** — see
+[OPEN_DECISIONS.md](OPEN_DECISIONS.md#resolution-round-2026-09-05--the-user-resolved-eleven-decisions-at-once)
+and ADR-047 through ADR-052. The governing constraint is now:
 
-| # | Decision | Blocks | Why it is the user's |
-|---|---|---|---|
-| [1](OPEN_DECISIONS.md#1-azure-ai-search-vs-postgresql--pgvector) | Production corpus search backend | The production backend only — the interface, fusion and in-memory reference backend are done | Cost of an additional Azure service |
-| [2](OPEN_DECISIONS.md#2-service-bus-worker-topology) | Service Bus worker topology | V3.0.6 only; PostgreSQL polling is a valid production mode at this volume | Whether a second App Service is affordable |
-| [3](OPEN_DECISIONS.md#3-exa-vs-perplexity-search) | Exa vs Perplexity | **Slice 4.2 is `BLOCKED`.** The `SearchProvider` interface and its fake are done (4.1). | Provider spend |
-| [4](OPEN_DECISIONS.md#4-deepseek-data-governance-policy) | DeepSeek data governance | **Slice 4.3 is `BLOCKED`.** DeepSeek is already recorded in the governance matrix as **public-only** on the authority of this decision. | Legal / comfort |
-| [5](OPEN_DECISIONS.md#5-openai-model-routing), [6](OPEN_DECISIONS.md#6-gemini-deep-research-role), [7](OPEN_DECISIONS.md#7-claude-red-team-role) | Which model fills which slot; Gemini Deep Research; Claude Red Team | Slot *assignments* (all eight default to empty and degrade); slices 4.6 is `BLOCKED` | Spend, and vendor terms |
-| [8](OPEN_DECISIONS.md#8-transcript-provider), [9](OPEN_DECISIONS.md#9-quartr-vs-fiscalai) | Transcript provider / vendor | **Slice 4.8 is `BLOCKED`** | Commercial contract |
-| [10](OPEN_DECISIONS.md#10-openfigi-usage-and-licensing) | OpenFIGI usage | Instrument-level FIGI mapping in V3.2 only | Licensing terms |
-| [11](OPEN_DECISIONS.md#11-private-data-external-model-policy) | Private data to external models | Private-research *enablement* | A judgement call, not a technical one |
-| [12](OPEN_DECISIONS.md#12-raw-page-and-document-retention) | Retention TTL | Nothing — the primitive ships unconfigured | Storage cost |
-| [13](OPEN_DECISIONS.md#13-model-cost-thresholds), [14](OPEN_DECISIONS.md#14-research-mode-budgets) | Monetary budgets and mode budgets | Monetary *defaults*; technical ceilings exist regardless | The user's actual budget |
-| [15](OPEN_DECISIONS.md#15-monitoring-cadence) | Monitoring cadence | V3.9 scheduling | Preference |
-| [16](OPEN_DECISIONS.md#16-future-valuation-scope) | Valuation / fair-value scope | Out of initial V3 | Regulated-advice risk |
-| [17](OPEN_DECISIONS.md#17-ci-coverage-for-the-v3-branch) | CI on `develop/v3` | Nothing — `scripts/v3-gates.sh` removes the manual cost | Touches a file that also lives on `main` |
-| [18](OPEN_DECISIONS.md#18-fate-of-docsdata_source_inventorymd--xlsx) | Data-source inventory files | Nothing | Where the user wants them |
+> **V3 must require no new paid SaaS subscriptions or commercial data subscriptions.**
 
-**Never label an unknown cost as zero.** `V3_ARTIFACT_RETENTION_DAYS = 0` means
-"no TTL configured", the price settings default to `0.0` meaning "unpriced", and
-the run ceilings default to `0` meaning "unbounded by policy, still bounded by the
-technical limits". A default that reads as a business answer is a decision taken
-by accident.
+Approved and available: **Claude Code CLI** (development/orchestration only), the
+**existing Azure OpenAI** infrastructure, and **DeepSeek** on pay-as-you-go.
+Not purchased and not required: Exa, Perplexity, Gemini API, Anthropic API for
+production, Quartr, Fiscal.ai, Browserbase, Apify, Parallel, AlphaSense.
+
+| # | Resolution |
+|---|---|
+| 1 | **PostgreSQL + `pgvector`**, not Azure AI Search (ADR-047) |
+| 2 | **PostgreSQL polling**; no broker required for the RC |
+| 3 | Exa/Perplexity **DEFERRED**; **DeepSeek `web_search`** is the primary external search path (ADR-048) |
+| 4 | DeepSeek **approved**; **rights metadata governs, not geography** (ADR-049) |
+| 5 | **Existing Azure OpenAI only**, as the strong-model fallback (ADR-050) |
+| 6 | Gemini Deep Research **DEFERRED / NOT ACTIVATED** |
+| 7 | Claude is **not a production provider** |
+| 8, 9 | **Free public issuer sources only**; missing means missing (ADR-051) |
+| 11 | **Per-document rights metadata decides**; fail closed when unknown (ADR-049) |
+| 13, 14 | **Bounded technical defaults per research mode**; no business budget now (ADR-052) |
+| 16 | **Factual valuation context and deterministic multiples only** |
+
+### Still open, and none of them blocks anything
+
+| # | Decision | Why it does not block |
+|---|---|---|
+| [10](OPEN_DECISIONS.md#10-openfigi-usage-and-licensing) | OpenFIGI usage | FIGI is *representable* and not *obtainable*; no source populates one and a test fails if a client appears. ISIN covers the regression set. |
+| [12](OPEN_DECISIONS.md#12-raw-page-and-document-retention) | Retention TTL | `V3_ARTIFACT_RETENTION_DAYS` defaults to 0 = "no TTL configured", the sweep is dry-run and scheduled by nothing. Per-document retention is now represented in policy (#11's resolution), so setting a value is configuration. |
+| [15](OPEN_DECISIONS.md#15-monitoring-cadence) | Monitoring cadence | V3.9 ships the mechanism feature-gated with nothing scheduling it. |
+| [17](OPEN_DECISIONS.md#17-ci-coverage-for-the-v3-branch) | CI on `develop/v3` | `scripts/v3-gates.sh` removes the manual cost; the workflow files also live on `main`. |
+| [18](OPEN_DECISIONS.md#18-fate-of-docsdata_source_inventorymd--xlsx) | Data-source inventory files | Left untracked and untouched. |
+
+**Never label an unknown cost as zero.** Still true, and now more load-bearing: the
+price settings default to `0.0` meaning *unpriced*, and a benchmark that reported an
+unpriced provider as free would make it look like the cheapest one. The **technical**
+ceilings are now real numbers (ADR-052); the **monetary** ceiling stays unset.
 
 ## Open technical decisions
 
@@ -191,11 +205,21 @@ Recorded so a later run can be compared against a number rather than a memory.
 
 ## Provider benchmarks
 
-*(none yet — V3.4.5 builds the harness; no provider default may be set without one)*
+The harness is slice 4.5 and `cost_per_verified_finding` remains the primary metric —
+never price alone. What the decisions of 2026-09-05 change is the *scope* of any
+comparison, and that scope is stated here so no later reader mistakes an absence for a
+result.
 
-The primary metric is **cost per verified useful finding**, never price alone. A
-provider claim is not a finding until InvestingBuddy has independently retrieved
-its cited source and the claim has survived verification.
+| Path | Benchmarkable | Why |
+|---|---|---|
+| Native InvestingBuddy retrieval | **Yes** | No credential, no spend. |
+| Existing Azure OpenAI | **Yes** | Already configured in this repository. |
+| DeepSeek research/search | **Yes, if credentials are provided** | Approved on pay-as-you-go. |
+| Exa, Perplexity, Gemini, Anthropic | **No — by decision** | Not purchased, no credentials. |
+
+**No cross-provider result is estimated, extrapolated or fabricated** to fill the gap.
+An unavailable provider is recorded as unavailable, with the reason, which is the same
+discipline the consumption module applies to an uninstrumented unit: absent is not zero.
 
 ## Known defects and risks
 
@@ -270,12 +294,17 @@ Carried forward, all still true:
 
 | Item | Why deferred | Where it goes |
 |---|---|---|
-| Slice 0.6 Service Bus adapter | [OPEN DECISION #2](OPEN_DECISIONS.md#2-service-bus-worker-topology) | After the topology decision |
+| Slice 0.6 Service Bus adapter | ADR-047 round: no broker required for the RC. Now `DEFERRED`, not `BLOCKED` — nothing is left to decide. | A later scale-out option |
+| Exa / Perplexity adapters (4.2) | ADR-048: DeepSeek `web_search` is the primary path. Interface and fake retained. | A small future slice if either is approved |
+| Gemini Deep Research (4.6) | `OPTIONAL / DEFERRED / NOT ACTIVATED`. | Future optional integration |
+| Anthropic production adapter | Claude is not a production provider. Adapter and fake may remain. | Future optional integration |
+| Quartr / Fiscal.ai adapters | ADR-051: free public issuer sources only. | Future optional integration |
+| Browserbase / Apify | No paid crawler. A JS-only site is recorded **partially inaccessible**. | Browser escalation is future work |
 | Reconciling the two byte caps | Pre-existing V2 inconsistency, safe direction | Its own slice |
-| Wiring reprocessing onto the durable worker | Adding a job type is a slice of its own; reprocessing is operator-invoked and a test keeps it so | Post-V3.3 |
+| Wiring reprocessing onto the durable worker | Adding a job type is a slice of its own | Post-V3.3 |
 | The other five `BackgroundTasks` call sites | One entry point at a time | Reviewed in the release-candidate pass |
-| Removing `excerpts_json` | Not before V3.3 consumes the corpus in a validated run | Post-validation |
-| Embeddings and an embedding provider | Provider decision in V3.4; hybrid degrades to its lexical leg, which is a worse answer and never a wrong one | V3.4 |
+| Removing `excerpts_json` | Not before the corpus is consumed in a validated run | Post-validation |
+| A dedicated valuation phase | ADR-052 round: factual context and deterministic multiples only for this release | Separate approval |
 
 ## Next executable action
 
