@@ -93,6 +93,10 @@ class ToolContext:
     legal_entity_id: uuid.UUID | None = None
     role: str = ""
     task_ref: str | None = None
+    #: The corpus search backend, when one is configured. Injected rather than chosen:
+    #: OPEN DECISION #1 (Azure AI Search vs PostgreSQL + pgvector) is the user's, and a
+    #: tool that picked one would take it by accident.
+    search_backend: Any = None
 
 
 @dataclass
@@ -106,6 +110,8 @@ class ToolSession:
     research_job_id: uuid.UUID | None = None
     company_id: uuid.UUID | None = None
     legal_entity_id: uuid.UUID | None = None
+    #: Handed to every tool via the context. See ``ToolContext.search_backend``.
+    search_backend: Any = None
     spend: ToolSpend = field(default_factory=ToolSpend)
     #: The safety ceiling. See ``MAX_RECORDED_CALLS_PER_SESSION``.
     max_recorded_calls: int = MAX_RECORDED_CALLS_PER_SESSION
@@ -248,6 +254,7 @@ class ToolSession:
             legal_entity_id=self.legal_entity_id,
             role=self.policy.role,
             task_ref=task_ref,
+            search_backend=self.search_backend,
         )
         try:
             payload = await spec.handler(context, args)
