@@ -252,7 +252,7 @@ approval.
 | 2026-09-05 | V3.2 Slice 2.3 — entity resolution | `feature/v3-2-3-entity-resolution` | `f3286ad` |
 | 2026-09-05 | V3.2 Slice 2.3.1 — identifier sources | `feature/v3-2-3-1-identifier-sources` | `d34c65f` |
 | 2026-09-05 | V3.2 Slice 2.4 — relationships, scopes, segments | `feature/v3-2-4-entity-relationships` | `ad1a796` |
-| 2026-09-05 | V3.2 Slice 2.5 — universe generation | `feature/v3-2-5-universe-generation` | *(this slice)* |
+| 2026-09-05 | V3.2 Slice 2.5 — universe generation | `feature/v3-2-5-universe-generation` | `df75ce6` |
 
 ---
 
@@ -410,3 +410,174 @@ issuer live. A corpus that cannot say which legal entity a document belongs to
 will happily return one issuer's annual report under another's ticker, and the
 scope filters that make retrieval safe are worth much less without entity identity
 underneath them.
+
+---
+
+## 11. V3.2 phase gate
+
+**Status: `IMPLEMENTED`, not `VALIDATED`.** All six slices are built, tested and
+merged. Like V3.0 and unlike V3.1, what separates it from `VALIDATED` is live data:
+migrations 026-028 have reached no deployed environment, and no live research run has
+resolved an entity. Unlike V3.0, this phase has something stronger than fixtures
+behind its central claims — **every schema guarantee was exercised against real
+PostgreSQL 16 with real conflicting statements**, not through the ORM.
+
+### What the phase set out to prove (§3 of the acceptance strategy)
+
+> *Two listings resolve to one `LegalEntity`; an ambiguous match raises a gap instead
+> of merging; every existing `companies` row backfills; every existing report still
+> renders.*
+
+| Demonstration | Status |
+|---|---|
+| Two listings resolve to one `LegalEntity` | ✅ `test_two_listings_of_one_security_resolve_to_one_entity`, and at universe scale `test_two_listings_of_one_resolved_entity_become_one_member`. Cross-listing from either venue returns one entity. |
+| An ambiguous match raises a state instead of merging | ✅ `resolve(...)` returns `ambiguous` for a name-only match **even with exactly one candidate**, and `conflicting` when a LEI and a ticker disagree. `NON_ACTIONABLE_RESOLUTION_STATES` makes "do not act on this" a membership test. At backfill scale, two `companies` rows deriving one entity key with different names leave the second **unlinked**. |
+| Every existing `companies` row backfills | ✅ `backfill_entities_from_companies` — resumable, idempotent, bounded, **called by nothing**. Every row gets an entity, a security and a listing; a second run changes nothing. |
+| Every existing report still renders | ✅ `test_a_report_still_resolves_through_company_id_after_the_backfill`; 027 adds **one nullable column** to `companies` and nothing else, verified by a column-by-column diff before and after. |
+| *(added)* The `BA`+LSE failure is structurally impossible | ✅ Two live issuers cannot share a ticker on one venue — refused by `ix_security_listings_current_venue_ticker` in PostgreSQL. A CIK is an identifier **of a legal entity**, and a CIK claimed for a non-SEC-eligible venue is refused by the verification gate whatever produced it. |
+
+### The nine things a review pass caught that the build pass did not
+
+Recorded because the pattern is more useful than the individual fixes: every one is a
+place where working, green code was **quietly wrong about a unit, a direction or a
+default**.
+
+| # | Slice | Defect |
+|---|---|---|
+| 1 | 2.1 | The listing currency defaulted from the venue's *reporting* currency. LSE quotes in pence, so every London price would have been mislabelled by **100x**. Now `quote_currency`, from `price_quote_currency_for_exchange`. |
+| 2 | 2.1 | `upsert_security` overwrote `security_type`, so a caller relying on the default would silently downgrade an `adr` to an ordinary share. |
+| 3 | 2.1 | `delisted` was accepted on an open window — a row resolving as *current* while reading as delisted. |
+| 4 | 2.1 | A comment claimed the opposite of the code beneath it. |
+| 5 | 2.2 | The backfill looked up entities by the **derived key only**, so an entity already known under a stronger `lei:` key was missed, a duplicate was created, and `upsert_listing` then raised — aborting the batch and leaving a stray entity. |
+| 6 | 2.2 | The same lookup could **re-open a listing somebody had deliberately closed**. |
+| 7 | 2.3 | **`is_sec_eligible(None)` returns `True` by design** — correct for V2's ticker-only flow, and a **fail-open** here, where `exchange_code` NULL means a listing whose venue cannot be named. Inherited unchanged, an unnamed venue would have read as SEC-eligible and a derived CIK accepted: the Boeing bug, through the one gate built to stop it. |
+| 8 | 2.4 | **`receipt_ratio`'s direction was underspecified and the test contradicted the docstring.** A bare "ratio" of 4 could mean four receipts per share or four shares per receipt; a reader who guesses wrong is out by **16x**. |
+| 9 | 2.5 | The universe cap was checked **before** the merge, so a full universe threw away free information and reported an exclusion for a company that was present. |
+
+Two general lessons, both now in the campaign state:
+
+- **A shared helper's default can be right at one call site and wrong at another.**
+  "We reused the existing function" is not "we applied the existing rule" (#7).
+- **An ambiguous unit is worse than a missing one**, because a missing one makes the
+  arithmetic refuse (#1, #8).
+
+A third recurred three times and now has a tool: a **substring scan for a name fires
+on the docstring explaining the rule it enforces**, and a test that fails when
+somebody documents its own purpose gets deleted. `tests/helpers/source_scan.py`
+checks identifiers in executable position instead, and it also *tightened* V3.1's
+`test_nothing_calls_the_backfill_automatically` rather than weakening it.
+
+### One architecture amendment, with its evidence
+
+`IdentifierSource.lookup` returns `SourceLookupResult` rather than
+`list[IdentifierClaim]` — an interface changed one slice after it merged.
+
+GLEIF's `filter[entity.legalName]` is a **partial match**: searching "Pandora"
+returns every LEI record whose legal name contains it. A source that can only return
+a list has two options and both are wrong. Return every candidate, and
+`verify_identifier_claim` accepts the first LEI that happens to be unheld — the gate
+detects a LEI *already held by another subject* and cannot detect one belonging to a
+company nobody has ingested, so that is a silent misattribution of an entire filing
+history. Return nothing, and the caller cannot tell "no such entity" from "several,
+and I refused to choose".
+
+So a lookup returns claims **and** withheld findings with reasons. Withheld is not
+absent: "six companies contain this name" is real information, and an empty list
+throws it away. Blast radius was `StaticIdentifierSource` and the 2.3 tests, both
+moved with it.
+
+### What is deliberately NOT done
+
+| Item | Why |
+|---|---|
+| OpenFIGI | [OPEN DECISION #10](OPEN_DECISIONS.md#10-openfigi-usage-and-licensing), **user-owned**. FIGI is *representable* and not *obtainable*: the scheme validates structurally, its check digit is honestly **not** validated because the variant could not be confirmed against a published vector, and `test_no_openfigi_client_exists_yet` fails if a client appears. |
+| CUSIP | Licensed data from CUSIP Global Services. Adding the scheme is a governance decision, and ISIN covers the same need for every issuer in the regression set. |
+| ISIN sourcing | Needs an issuer document rather than a registry. The scheme and its Luhn check are done; nothing populates it. |
+| Merging two existing entities | Needs a provenance-preserving merge record, and merging is the single most dangerous operation in this schema. Not in V3.2. |
+| Fuzzy or phonetic name matching | An approximate name match is a weaker version of evidence that is already too weak to act on. Adding a similarity threshold only moves the arbitrary decision into a number. |
+| Enforcing `companies.legal_entity_id` NOT NULL | Step 3 of the three-step pattern, and it must not happen: NULL is a **permanent** state for a row the backfill refused to link. |
+| Wiring the universe composer into the discovery endpoint | A behaviour change on a live path. The flag exists so it can be validated first. |
+| Populating relationships from a source | Needs a filing-structure parser. The schema, the canonical direction and the refusals are done. |
+| Live-issuer acceptance | V3 is not deployed and 026-028 have reached nothing. The same gap V3.0 and V3.1 have. |
+
+### Migrations created, not deployed
+
+| Migration | Tables / change | Applied where |
+|---|---|---|
+| 026 | `legal_entities`, `securities`, `security_listings`, `entity_identifiers`, `entity_aliases` | Scratch PostgreSQL only (`ib_v3_migcheck_026`, dropped). |
+| 027 | `companies.legal_entity_id` (nullable, `SET NULL`) + index | Scratch only (`ib_v3_migcheck_027`, dropped). |
+| 028 | `entity_relationships`, `reporting_scopes`, `business_segments`, + `securities.underlying_security_id` / `receipt_ratio` | Scratch only (`ib_v3_migcheck_028`, dropped). |
+
+Each was applied, rolled back and re-applied against real PostgreSQL 16 on a
+throwaway database that was then dropped. **The local dev database was re-checked
+after each and is still at 018, with none of the new tables and no
+`legal_entity_id` column.** An ORM-versus-DDL drift check across all nine entity and
+company tables — columns, nullability, indexes, unique constraints, FKs and CHECK
+constraints — reported `DRIFT: none`.
+
+Additive-only throughout, per §2.1 of the migration plan: three migrations, eight new
+tables, **three** nullable columns, nothing altered. `companies` was diffed
+column-by-column before and after 027 and 028 and is otherwise byte-identical, which
+is what makes "`release/v2-current` runs unchanged against a migrated database" a
+checked property rather than a claim.
+
+### Guarantees exercised against real PostgreSQL, not through the ORM
+
+Twenty statements, because "the database enforces it" is otherwise a claim about
+SQLAlchemy:
+
+| Attempt | Result |
+|---|---|
+| `BA` on `XLON` **and** `XNYS` | allowed — the point |
+| `BA` twice on `XLON` for a different issuer | refused, `ix_security_listings_current_venue_ticker` |
+| reusing `BA` on `XLON` after the window closed | allowed |
+| the same LEI on a second legal entity | refused, `ix_entity_identifiers_current_value` |
+| an identifier with no subject / both subjects | refused, `ck_entity_identifiers_exactly_one_subject` |
+| `confidence = 1.5` | refused, `ck_entity_identifiers_confidence_range` |
+| a second primary security for one entity | refused, `ix_securities_one_primary` |
+| deleting a legal entity | securities, listings and identifiers cascade; **`companies` untouched** |
+| deleting a linked entity | the company survives with `legal_entity_id` NULL (`confdeltype='n'`) |
+| a duplicate live `(subject, object, type)` | refused, `ix_entity_relationships_current` |
+| a self-relationship | refused, `ck_entity_relationships_no_self_reference` |
+| Group **and** a segment scope on one entity | both allowed — the CFR shape |
+| the same `scope_key` twice for one entity | refused, `ix_reporting_scopes_entity_key` |
+| a predecessor scope with **no** `rename_source` | refused, `ck_reporting_scopes_rename_needs_a_source` |
+| two periods of one scope / the same period twice | allowed / refused |
+| `receipt_ratio = 0` | refused, `ck_securities_receipt_ratio_positive` |
+| deleting an underlying security | the receipt survives, `underlying_security_id` NULL |
+
+### Gate results at the end of the phase
+
+```
+ruff check .          All checks passed!
+pytest tests/ -q      5174 passed, 12 skipped   (4949 at the start of V3.2, +225)
+mypy app              Found 71 errors in 10 files   (baseline, unchanged)
+```
+
+One `mypy` regression occurred during the phase — 71 → 72, in slice 2.3 — and the
+gate caught it. Fixing it surfaced review finding #7 above, which is the strongest
+argument in this phase for keeping a gate that is normally green: the type error was
+trivial and the fail-open it was sitting next to was not.
+
+No web gate: V3.2 changes no frontend file.
+
+### Recommended V3.3 starting slice
+
+**3.1 — `feature/v3-3-1-agent-tool-contracts`.** It is the only V3.3 slice with
+nothing in front of it, and it is the binding constraint on every later phase: the
+Research Director (V3.5) plans work that tools execute, and a Director planning work
+no agent can perform is a planning demo.
+
+Three things beneath it are now available and should be used rather than
+re-established. `lookup_entity` is `entities.resolution.resolve` and must return the
+**state**, not a best match — a tool that hands an agent an `ambiguous` result as if
+it were resolved undoes the whole of V3.2. `search_company_corpus` is
+`corpus.retrieval.search_corpus`, whose period and scope filters are already
+mandatory. And `ResearchToolCall` persistence should record consumption in the units
+V3.0.5 already defined, rather than inventing a second vocabulary for the same
+counters.
+
+The security boundary is the slice's real content: a closed, typed, read-only tool
+list, per-role budgets enforced **before** spending, and no raw SQL, shell,
+filesystem or unrestricted HTTP for any agent. Fetched content is data, never
+instructions.
