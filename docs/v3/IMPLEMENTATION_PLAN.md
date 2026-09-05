@@ -257,7 +257,7 @@ approval.
 | 2026-09-05 | V3.3 Slice 3.1 — agent tool contracts | `feature/v3-3-1-agent-tool-contracts` | `b4f31ef` |
 | 2026-09-05 | V3.3 Slice 3.2 — fact and series tools | `feature/v3-3-2-fact-and-series-tools` | `1a86871` |
 | 2026-09-05 | V3.3 Slice 3.3 — calculation engine | `feature/v3-3-3-calculation-engine` | `bc0cd15` |
-| 2026-09-05 | V3.3 Slice 3.4 — corpus search tools | `feature/v3-3-4-corpus-search-tool` | *(this slice)* |
+| 2026-09-05 | V3.3 Slice 3.4 — corpus search tools | `feature/v3-3-4-corpus-search-tool` | `42b8336` |
 
 ---
 
@@ -586,3 +586,153 @@ The security boundary is the slice's real content: a closed, typed, read-only to
 list, per-role budgets enforced **before** spending, and no raw SQL, shell,
 filesystem or unrestricted HTTP for any agent. Fetched content is data, never
 instructions.
+
+---
+
+## 12. V3.3 phase gate
+
+**Status: `IMPLEMENTED`, not `VALIDATED`.** All four slices are built, tested and merged.
+Migrations 029 and 030 have reached no deployed environment, and **no agent is wired to
+the tool surface** — which is deliberate, not an omission: connecting one is a behaviour
+change on a live path and the flag exists so the surface can be validated first.
+
+### What the phase set out to prove (§3 of the acceptance strategy)
+
+> *An agent cannot reach any tool outside its declared list; a calculation with
+> incompatible periods or scopes is **refused**, not computed; every tool call is
+> persisted with consumption units.*
+
+| Demonstration | Status |
+|---|---|
+| An agent cannot reach any tool outside its declared list | ✅ An empty tool list permits **nothing** — the inverse default is how a permission system acquires a hole nobody notices. An undeclared tool is refused with `tool_not_permitted` and **the underlying callable is never invoked**, asserted on a spy. The vocabulary is closed at 19 names; an unknown name cannot be registered; a spec that is not side-effect-free cannot be registered at all. |
+| A calculation with incompatible periods or scopes is refused, not computed | ✅ Sixteen refusal reasons, six checks, and every one exercised: an unknown period (comparable with nothing, not even another unknown), a period mismatch, a cross-type CAGR, a backwards span, an unknown scope (**unknown is not Group**), a scope mismatch, a currency mismatch (refused rather than converted), a scale pair with no safe reading, a zero denominator and a non-positive growth base. **A refused row cannot carry a value**, enforced by the database. |
+| Every tool call is persisted with consumption units | ✅ Every *attempt* — ok, refused and error — writes a row, with the arguments **as asked**, the outcome, the latency, and the units the tool actually measured. A unit the tool does not measure is stored as **absent, not zero**. |
+| *(added)* A budget stops a call **before** it spends | ✅ Asserted by the callable never being invoked, not by a counter afterwards — a counter is satisfied by a spend that happened and was then noticed. |
+| *(added)* Fetched content is data, never instructions | ✅ A corpus hit is labelled `contains_untrusted_content` and the spec's declaration is a **floor a payload cannot lower**. Nothing is sanitised: a sanitiser is a filter an attacker iterates against. |
+
+### Seven tools, and why exactly these
+
+| Tool | Slice | Notable property |
+|---|---|---|
+| `lookup_entity` | 3.1 | Returns the resolution **state**; the payload has **no `entity` key at all** unless it is actionable. |
+| `get_financial_facts` | 3.2 | `scope` required, no default. A Group request never returns an unknown-scope row. |
+| `get_financial_series` | 3.2 | `period_type` required. Two values for one period are a **conflict**, returned, never resolved. |
+| `get_segment_facts` | 3.2 | Groups on `scope_key`, folding casing while keeping the as-printed names a citation quotes. |
+| `get_calculated_metrics` | 3.3 | Binds facts to definitions and **never chooses** between two differing candidates. |
+| `search_company_corpus` | 3.4 | Lexical or hybrid only; scoped or explicitly cross-entity; hits citation-complete and labelled untrusted. |
+| `search_private_research` | 3.4 | **Fails closed** on [#11](OPEN_DECISIONS.md#11-private-data-external-model-policy), and exists anyway — a missing tool is indistinguishable from one that found nothing. |
+
+Twelve of the nineteen vocabulary names have no implementation yet, and each is waiting
+on something real: peers, macro and industry series on V3.4's sources; transcripts and IR
+events on [#8](OPEN_DECISIONS.md#8-transcript-provider); `search_web` and
+`fetch_public_source` on the provider runtime; previous research and open gaps on the
+Research Ledger (V3.5).
+
+### The five defects a review pass caught that the build pass did not
+
+Continuing the pattern V3.2's gate recorded: every one was working, green code that was
+**quietly wrong about a default, a bound or a measurement**.
+
+| # | Slice | Defect |
+|---|---|---|
+| 1 | 3.1 | A payload could **un-fence text from the open web** — the handler's `contains_untrusted_content` overrode the spec's instead of being floored by it. |
+| 2 | 3.1 | A spec could **understate what it touches**: `search_web` claiming no untrusted content, or `search_private_research` declaring no access classes, which *skips* the governance check entirely. Both now refused at registration. |
+| 3 | 3.1 | A **refusal storm could not terminate**. A refusal correctly costs no iteration, so a role with a bad policy could call a forbidden tool forever. |
+| 4 | 3.2 | **The row limit was applied before the scope filter.** A company with 200 Group facts and 5 segment facts, queried for segments with `limit=100`, returned **zero** segment facts. |
+| 5 | 3.4 | **A fabricated zero, written by the author of the helper that exists to prevent it.** The spec declared `search_index_queries` instrumented and the handler reported nothing, so a search that issued a query stored `search_index_queries: 0`. |
+
+Two general lessons, added to the campaign state:
+
+- **A row limit must bound the population the caller asked for.** When a filter and a
+  bound are in different layers, the bound wins and the filter is decorative (#4).
+- **A declared measurement must be produced.** Declaring a unit instrumented and not
+  reporting it is worse than not declaring it, because the stored zero *asserts* the
+  thing did not happen (#5).
+
+Three findings also came from **tests rather than from reading**, which is the argument
+for writing them first: the audit row was storing normalised rather than as-asked
+arguments; two identical known scales were being converted to base units, turning `-4100`
+into `-4100000000`; and two slice-3.1 fixtures collided with tool names that became real
+builtins, which now has a `FIXTURE_TOOL` guard that fires before the collision can
+recur.
+
+### What is deliberately NOT done
+
+| Item | Why |
+|---|---|
+| Wiring any agent to the tool surface | A behaviour change on a live path. The flag exists so the surface is validated first, and V3.5's Director is the intended first caller. |
+| `search_web` / `fetch_public_source` | Need the provider runtime (V3.4) and a spend decision. The vocabulary reserves the names and `EXTERNAL_TOOL_NAMES` already lets a governance rule be written against them. |
+| A production search backend | [#1](OPEN_DECISIONS.md#1-azure-ai-search-vs-postgresql--pgvector), **user-owned**. The backend is injected and this phase names none. |
+| Private-research ingestion or reading | [#11](OPEN_DECISIONS.md#11-private-data-external-model-policy), **user-owned**, default deny. |
+| Sector KPIs, dilution, incremental margin | Sector KPIs belong with the playbooks that require them (V3.6); the other two need share counts and two periods of two metrics. |
+| Monetary budget ceilings | [#13](OPEN_DECISIONS.md#13-model-cost-thresholds)/[#14](OPEN_DECISIONS.md#14-research-mode-budgets), **user-owned**. `ToolBudget` defaults to unbounded, and the one non-zero default is a *safety* ceiling on recorded calls, which is not a business decision. |
+| Live-issuer acceptance | V3 is not deployed. The same gap V3.0-V3.2 have. |
+
+### Migrations created, not deployed
+
+| Migration | Table | Applied where |
+|---|---|---|
+| 029 | `research_tool_calls` | Scratch PostgreSQL only (`ib_v3_migcheck_029`, dropped). |
+| 030 | `calculation_records` | Scratch only (`ib_v3_migcheck_030`, dropped). |
+
+Both applied, rolled back and re-applied against real PostgreSQL 16 on throwaway
+databases that were then dropped. ORM-versus-DDL drift check including CHECK constraints:
+`DRIFT: none`. **The local dev database was re-checked after each and is still at 018.**
+
+Fourteen statements were run directly against PostgreSQL rather than through the ORM. The
+two that matter most:
+
+- **A refusal with no reason is unstorable** — in both tables. A refusal nothing can
+  aggregate on answers no question, and the whole justification for storing refusals is
+  that `tool_not_permitted` per role is a report on the *Director's planning* and
+  `scope_unknown` per metric is a report on the *extraction layer*.
+- **A refused calculation cannot carry a value.** A number sitting beside a refusal is
+  exactly what a reader takes at face value, so the schema makes that row impossible
+  rather than trusting every writer and every future migration to leave the column
+  alone.
+
+Also verified: deleting the company an audit row refers to leaves the row surviving and
+unlinked, in both tables. An audit record that a deletion could remove is not an audit
+record.
+
+### Gate results at the end of the phase
+
+```
+ruff check .          All checks passed!
+pytest tests/ -q      5339 passed, 12 skipped   (5174 at the start of V3.3, +165)
+mypy app              Found 71 errors in 10 files   (baseline, unchanged)
+```
+
+Two `mypy` regressions occurred during the phase (71 → 72 in an earlier draft, 71 → 73 in
+3.3) and the gate caught both; both were real type errors.
+
+**One gate run was not green.** Six failures, all in
+`test_phase7_azure_openai_real.py` — the file that makes **live Azure OpenAI calls** on a
+developer machine. It passed **8/8 in isolation 19 seconds later** and the full suite was
+green again immediately on the same commit. That is the **second** occurrence in this
+campaign (V3.1 saw 7 of 8), and on both occasions the documented protocol — a failure
+there is a network or quota event until the file has been re-run on its own — was
+correct. It is worth stating plainly: this file has produced two false regressions and
+zero true ones.
+
+No web gate: V3.3 changes no frontend file.
+
+### Recommended V3.4 starting slice
+
+**4.1 — `feature/v3-4-1-provider-interfaces`.** Every other V3.4 slice is an adapter
+behind an interface that does not exist yet, and three of them
+([#3](OPEN_DECISIONS.md#3-exa-vs-perplexity-search),
+[#4](OPEN_DECISIONS.md#4-deepseek-data-governance-policy),
+[#8](OPEN_DECISIONS.md#8-transcript-provider)) are blocked on user-owned spend or
+governance decisions — so the interfaces plus fakes are the only V3.4 work that can be
+completed without one.
+
+Three things beneath it are settled and must be used rather than re-established. A
+provider's output is a **`ResearchLead`**, never evidence: the promotion path is
+`ResearchLead → source candidate → InvestingBuddy fetch → canonical source → evidence →
+fact`, and `entities.claims` is already a working instance of exactly that gate,
+including the *withheld* case a partial-match source needs. Consumption units are
+`consumption.UNIT_NAMES` and a unit a provider does not measure must be **absent, not
+zero**. And `EXTERNAL_TOOL_NAMES` already names the tools that reach outside the
+platform, so the governance rule that private content must never travel through one of
+them can be written against the set rather than against a list somebody keeps in sync.
