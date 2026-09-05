@@ -9,7 +9,7 @@ the code, not inferred from a plan. When it disagrees with a phase-gate section 
 record of a gate and this file is the current state; re-verify before trusting
 either.
 
-**Last verified:** 2026-09-05, after V3.2 slice 2.1, by direct `git` inspection and a full local gate run.
+**Last verified:** 2026-09-05, at the V3.2 phase gate, by direct `git` inspection and a full local gate run.
 
 ---
 
@@ -38,8 +38,8 @@ enabling a V3 flag in production, deleting V2 compatibility or either V2 ref.
 | Alembic head in source | **028** (`028_add_entity_relationships`) |
 | Alembic head in the deployed database | **018** — and V3 migrations 019-028 have reached **no** deployed environment |
 | Alembic head in the local dev database | **018** (unchanged by V3 work; scratch databases only) |
-| Current phase | **V3.2 — Entity Master and global universe** |
-| Current slice | 2.5 — `feature/v3-2-5-universe-generation` (next) |
+| Current phase | **V3.3 — Research tools and calculation engine** |
+| Current slice | 3.1 — `feature/v3-3-1-agent-tool-contracts` (next) |
 | Deployed | **Nothing.** `main` at `4b60e07` is the deployed product. |
 
 Working tree at campaign start also held two untracked files —
@@ -53,8 +53,8 @@ the user's call, and the campaign leaves them untracked and untouched.
 |---|---|---|
 | V3.0 | Execution and correctness foundation | `IMPLEMENTED` |
 | V3.1 | Research Corpus | `IMPLEMENTED` |
-| V3.2 | Entity Master and global universe | `IN PROGRESS` — 2.1-2.4 merged; 2.5 open |
-| V3.3 | Research tools and calculation engine | `NOT STARTED` |
+| V3.2 | Entity Master and global universe | `IMPLEMENTED` — all six slices merged; [phase gate](IMPLEMENTATION_PLAN.md#11-v32-phase-gate) |
+| V3.3 | Research tools and calculation engine | `IN PROGRESS` |
 | V3.4 | Multi-provider runtime and source expansion | `NOT STARTED` |
 | V3.5 | Research Ledger and Director | `NOT STARTED` |
 | V3.6 | Industry playbooks | `NOT STARTED` |
@@ -92,6 +92,8 @@ is recorded explicitly rather than being allowed to pass as production validatio
 | 2026-09-05 | V3.2.3 entity resolution | `feature/v3-2-3-entity-resolution` | `f3286ad` |
 | 2026-09-05 | V3.2.3.1 identifier sources | `feature/v3-2-3-1-identifier-sources` | `d34c65f` |
 | 2026-09-05 | V3.2.4 relationships, scopes, segments | `feature/v3-2-4-entity-relationships` | `ad1a796` |
+| 2026-09-05 | V3.2.5 universe generation | `feature/v3-2-5-universe-generation` | `df75ce6` |
+| 2026-09-05 | V3.2 phase gate | `feature/v3-2-phase-gate-report` | *(see progress log)* |
 
 ## Corrective slices
 
@@ -172,10 +174,10 @@ belong to the agent, with an ADR when material.
 
 Recorded so a later run can be compared against a number rather than a memory.
 
-| Gate | At campaign start (`35bd550`) | After V3.2.4 |
+| Gate | At campaign start (`35bd550`) | At the V3.2 gate |
 |---|---|---|
 | `ruff check .` | All checks passed | All checks passed |
-| `pytest tests/ -q` | 4949 passed, 12 skipped | **5144 passed**, 12 skipped |
+| `pytest tests/ -q` | 4949 passed, 12 skipped | **5174 passed**, 12 skipped |
 | `mypy app` | 71 errors in 10 files | 71 errors in 10 files (baseline; one regression to 72 was caught by the gate in 2.3 and fixed) |
 
 ## Provider benchmarks
@@ -220,6 +222,12 @@ Carried forward, all still true:
   listing → security → entity. It does **not** retire the old path — `companies`
   and `sec_issuer_registry` are untouched until slice 2.2 links them and a
   validated replacement exists.
+- **An ambiguous unit is worse than a missing one.** A missing unit makes the
+  arithmetic refuse; an ambiguous one lets it run and be wrong. Two V3.2 review
+  findings were exactly this — a listing currency that would have mislabelled every
+  London price by 100x, and a `receipt_ratio` whose direction was underspecified and
+  could have been read 16x out. Name the direction in the identifier, not in a
+  comment.
 - **`is_sec_eligible(None)` returns `True` by design** — for V2's legacy
   ticker-only flow, where no exchange was supplied and treating that as ineligible
   would regress every `AAPL`/`MSFT` lookup to "not sourced". That default is
@@ -250,18 +258,25 @@ Carried forward, all still true:
 
 ## Next executable action
 
-Start **V3.2 slice 2.5** on `feature/v3-2-5-universe-generation`: a provider-neutral
-`UniverseProvider`, with the curated `market_universe_builder` registry demoted to
-**one source among several** behind a flag rather than being the universe.
+Start **V3.3 slice 3.1** on `feature/v3-3-1-agent-tool-contracts`: the typed
+read-only tool interface, the registry, per-role budgets and `ResearchToolCall`
+persistence.
 
-The discovery funnel the architecture asks for is: *universe generation → cheap
-deterministic filter → semantic/theme relevance → bounded enrichment → Discovery
-Council*. The constraint that shapes it is that a full company analysis must never
-run over thousands of companies — a single live run is 261-451s, so the funnel has to
-cut the population **before** anything expensive touches it.
+It is the binding constraint on every later phase — the Research Director (V3.5) plans
+work that tools execute, and a Director planning work no agent can perform is a
+planning demo.
 
-Two things already beneath it must be used rather than re-invented: a universe member
-is identified by a `SecurityListing`, not by a ticker string, and a candidate the
-resolver reports as `ambiguous` or `conflicting` must not silently enter the universe
-as if it were one company. `market_universe_builder.py` carries an `E501` per-file
-ignore because its curated table is deliberately wide — keep that.
+Three things beneath it are available now and should be **used rather than
+re-established**:
+
+- `lookup_entity` is `entities.resolution.resolve`, and the tool must return the
+  **state**. A tool that hands an agent an `ambiguous` result as if it were resolved
+  undoes the whole of V3.2.
+- `search_company_corpus` is `corpus.retrieval.search_corpus`, whose period and scope
+  filters are already mandatory and whose semantic-only queries are already refused.
+- `ResearchToolCall` should record consumption in the units V3.0.5 already defined,
+  not a second vocabulary for the same counters.
+
+The security boundary is the slice's real content: a closed, typed, read-only tool
+list, per-role budgets enforced **before** spending, and no raw SQL, shell, filesystem
+or unrestricted HTTP for any agent. Fetched content is data, never instructions.

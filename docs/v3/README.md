@@ -14,14 +14,22 @@ describes deployed behaviour unless a section explicitly says `CURRENT`.
 | `feature/v3-*` | PR-sized V3 implementation slices. Merge target is `develop/v3` only. |
 
 **Where the work stands (2026-09-05).** `develop/v3` carries **V3.0** (durable
-execution) and **V3.1** (the Research Corpus), both `IMPLEMENTED` and neither
-`VALIDATED` — nothing is deployed and migrations 019-025 have reached no deployed
-environment. V3.1 is the first phase with a **real-document acceptance run**
-behind it: `scripts/v3-corpus-acceptance.py` on a real 169-page Pandora annual
-report. Two open decisions were reached and deliberately **not** taken —
+execution), **V3.1** (the Research Corpus) and **V3.2** (the entity master and
+universe), all three `IMPLEMENTED` and none `VALIDATED` — nothing is deployed and
+migrations 019-028 have reached no deployed environment. V3.1 has a **real-document
+acceptance run** behind it (`scripts/v3-corpus-acceptance.py`, on a real 169-page
+Pandora annual report); V3.2 has **every schema guarantee exercised against real
+PostgreSQL 16 with real conflicting statements**, which is what makes "the database
+enforces it" a check rather than a claim about SQLAlchemy.
+
+Three open decisions were reached and deliberately **not** taken —
 [#1](OPEN_DECISIONS.md#1-azure-ai-search-vs-postgresql--pgvector) (the production
-search backend) and [#12](OPEN_DECISIONS.md#12-raw-page-and-document-retention)
-(retention TTL) — with tests that fail if either is answered by accident.
+search backend), [#12](OPEN_DECISIONS.md#12-raw-page-and-document-retention)
+(retention TTL) and [#10](OPEN_DECISIONS.md#10-openfigi-usage-and-licensing)
+(OpenFIGI) — each with a test that fails if it is answered by accident.
+
+**Read [CAMPAIGN_STATE.md](CAMPAIGN_STATE.md) first.** It carries the verified Git and
+migration state, the gate baseline, and the next executable action.
 
 ```
                          main  ── deployed, approved
