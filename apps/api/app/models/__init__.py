@@ -1,4 +1,5 @@
 from app.models.agent_run import AgentRun, AgentStep
+from app.models.calculation import CalculationRecord
 from app.models.company import Company
 from app.models.discovery import DiscoveryCandidate, DiscoveryRun
 from app.models.document_ingestion_attempt import DocumentIngestionAttempt
@@ -33,6 +34,7 @@ __all__ = [
     "AgentRun",
     "AgentStep",
     "BusinessSegment",
+    "CalculationRecord",
     "Citation",
     "Company",
     "DiscoveryCandidate",
