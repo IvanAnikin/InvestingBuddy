@@ -91,7 +91,7 @@ is recorded explicitly rather than being allowed to pass as production validatio
 | 2026-09-05 | V3.2.2 company backfill | `feature/v3-2-2-company-backfill` | `4e0a90d` |
 | 2026-09-05 | V3.2.3 entity resolution | `feature/v3-2-3-entity-resolution` | `f3286ad` |
 | 2026-09-05 | V3.2.3.1 identifier sources | `feature/v3-2-3-1-identifier-sources` | `d34c65f` |
-| 2026-09-05 | V3.2.4 relationships, scopes, segments | `feature/v3-2-4-entity-relationships` | *(see progress log)* |
+| 2026-09-05 | V3.2.4 relationships, scopes, segments | `feature/v3-2-4-entity-relationships` | `ad1a796` |
 
 ## Corrective slices
 
