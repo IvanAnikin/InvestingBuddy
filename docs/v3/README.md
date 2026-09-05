@@ -13,6 +13,16 @@ describes deployed behaviour unless a section explicitly says `CURRENT`.
 | `develop/v3` | V3 integration branch. Unapproved, undeployed. |
 | `feature/v3-*` | PR-sized V3 implementation slices. Merge target is `develop/v3` only. |
 
+**Where the work stands (2026-09-05).** `develop/v3` carries **V3.0** (durable
+execution) and **V3.1** (the Research Corpus), both `IMPLEMENTED` and neither
+`VALIDATED` — nothing is deployed and migrations 019-025 have reached no deployed
+environment. V3.1 is the first phase with a **real-document acceptance run**
+behind it: `scripts/v3-corpus-acceptance.py` on a real 169-page Pandora annual
+report. Two open decisions were reached and deliberately **not** taken —
+[#1](OPEN_DECISIONS.md#1-azure-ai-search-vs-postgresql--pgvector) (the production
+search backend) and [#12](OPEN_DECISIONS.md#12-raw-page-and-document-retention)
+(retention TTL) — with tests that fail if either is answered by accident.
+
 ```
                          main  ── deployed, approved
                           |

@@ -40,6 +40,14 @@ this is resolved ([OPEN DECISION #17](OPEN_DECISIONS.md#17-ci-coverage-for-the-v
 user-owned), every slice runs the gates locally and records the exact commands
 and their output.
 
+`scripts/v3-corpus-acceptance.py` (V3.1) pushes **one real financial document**
+through the whole corpus locally — its own temporary database and artifact
+directory, no deployment, nothing existing touched, not in CI, and no network call
+unless asked twice (`--url` *and* `--allow-network`, through the repository's own
+guarded fetcher). It exists because fixtures are not a substitute: it found two
+defects in V3.1 that the unit suite could not have — raw headings being labelled
+business segments, and a chunk-id collision between a live and a deep parse.
+
 `scripts/v3-gates.sh` runs all of them in one command — the same commands the
 workflows run, so a local pass means what a CI pass would have meant. It does
 **not** resolve #17: the workflow files are untouched, because they also live on
@@ -48,6 +56,20 @@ workflows run, so a local pass means what a CI pass would have meant. It does
 > **Run changed tests in isolation as well as in the full suite.** A green full
 > suite has already hidden an order-dependent failure that CI then caught. `pytest
 > tests/test_x.py -v` on its own is a separate, cheap signal.
+
+> **`pytest tests/` is NOT offline on a developer machine.** `test_phase7_azure_openai_real.py`
+> is `skipif`-guarded on `settings.llm_provider != "azure_openai"`, so it is silent
+> in CI — and a local `.env` that sets `LLM_PROVIDER=azure_openai` with a real key
+> turns its 8 tests into **live Azure OpenAI calls**, subject to the deployment's
+> TPM quota. During V3.1 they failed 7-of-8 on one full-suite run and passed in
+> isolation 25 seconds later, and passed on every other run of the same commit.
+> A failure in that file is a network or quota event until proven otherwise:
+> re-run the file on its own before concluding anything about the change under
+> test.
+
+**Live-network test files** (fail closed to "environment", not "regression"):
+`test_phase7_azure_openai_real.py`, plus anything marked `integration`
+(`ENABLE_INTEGRATION_TESTS=true`, never in CI).
 
 ---
 
@@ -68,7 +90,7 @@ workflows run, so a local pass means what a CI pass would have meant. It does
 | Phase | Must demonstrate |
 |---|---|
 | V3.0 | A job survives worker restart; a duplicate submit joins rather than duplicates; an expired lease is reclaimed exactly once; attempts are bounded and dead-letter is reachable; cancellation is honoured at a task boundary; no status vocabulary drift from `research_job.py`. |
-| V3.1 | A real annual report ingests to pages/sections/chunks; a query months later returns the right page with citable lineage; period and scope filters actually constrain results; `DocumentTable` survives a borderless five-year summary. |
+| V3.1 | A real annual report ingests to pages/sections/chunks; a query months later returns the right page with citable lineage; period and scope filters actually constrain results; `DocumentTable` survives a borderless five-year summary. **✅ All four demonstrated — see [the V3.1 phase gate](IMPLEMENTATION_PLAN.md#10-v31-phase-gate). On a real 25.9 MB, 169-page Pandora Annual Report 2025: 169/169 pages and 471,780 characters retained against 19,232 as excerpts; `"cash flow from operations"` returns page 138 with a full citation label; a semantically perfect wrong-period match is excluded; the borderless five-year summary came back as a grid with its `['2025','2024','2023','2022','2021']` header intact.** |
 | V3.2 | Two listings resolve to one `LegalEntity`; an ambiguous match raises a gap instead of merging; every existing `companies` row backfills; every existing report still renders. |
 | V3.3 | An agent cannot reach any tool outside its declared list; a calculation with incompatible periods or scopes is **refused**, not computed; every tool call is persisted with consumption units. |
 | V3.4 | A provider claim without a resolvable source stays a `ResearchLead`; a rejected lead keeps its rejection reason; the benchmark produces `cost_per_verified_finding`; private content is never in a provider payload. |

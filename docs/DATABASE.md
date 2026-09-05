@@ -801,6 +801,60 @@ ORM models: `FieldReviewRun`, `FieldReviewCandidateSummary` in
 
 ---
 
+### Research Corpus (V3.1) — `develop/v3` ONLY, NOT DEPLOYED
+
+**Migrations 021-025. None applied to any deployed environment; the local dev
+database is at 018.** Nothing writes to any of these tables unless
+`V3_CORPUS_ENABLED` is on, which is off by default — and even then
+`V3_ARTIFACT_STORE_BACKEND` defaults to `none`, so enabling the corpus does not by
+itself store a byte anywhere.
+
+```
+research_artifacts                     raw bytes, content-addressed        (021)
+   └─< research_document_versions      one RETRIEVAL                       (022)
+research_documents                     the LOGICAL document                (022)
+   └─< research_document_versions
+          └─< research_document_derivations   one PARSE (version + budget) (023/025)
+                 ├─< research_document_pages        full page text         (023)
+                 ├─< research_document_sections     heading path + scope   (023)
+                 ├─< research_document_tables       the GRID               (023)
+                 └─< research_document_chunks       the retrieval unit     (024)
+```
+
+The five layers are separate because they answer different questions and change
+at different rates:
+
+| Layer | Identity | Changes when |
+|---|---|---|
+| `research_artifacts` | SHA-256 of the raw bytes | Never. Bytes are immutable; only the storage key and the retention state move. |
+| `research_documents` | `(company_id, document_key)` — `annual_report:2025`, or `url:<digest>` when the document declares nothing | A new logical document is seen. |
+| `research_document_versions` | `(document, content_hash)` | The document is re-published or restated. Immutable once written; exactly one is `is_current`. |
+| `research_document_derivations` | `(version, pipeline_version, extraction_profile)` | A parser improves, or a larger budget re-reads the document. Exactly one is `is_active`; superseded ones are **kept**. |
+| `research_document_chunks` | a derived `chunk_id`, stable across reindexing | Only with a new derivation. |
+
+Three properties are worth knowing before querying any of it:
+
+1. **A NULL is a statement.** `storage_key` NULL means the bytes are not
+   retained (policy, or a retention sweep) — `storage_backend` says `'none'` so it
+   is never ambiguous. `period_key` NULL means the document stated no period, never
+   a bare year. `published_at` NULL means no publication date was printed, and it
+   is never filled from `retrieved_at`. `page_count` is never backfilled from
+   `pages_persisted`, so "we read 40 of 169" cannot become a claim of completeness.
+2. **Nothing is deleted.** A superseded derivation keeps its pages, sections,
+   tables and chunks, so an evidence id recorded before a reprocess still resolves
+   (CLAUDE.md rule 15). Only the search *index* is reconciled to the active
+   derivation.
+3. **The V2 path is untouched.** `extracted_documents` keeps being written exactly
+   as before; `research_document_versions.extracted_document_id` points back at it,
+   so a corpus read for a document not yet re-ingested falls back to that row's
+   bounded `excerpts_json`.
+
+ORM models: `apps/api/app/models/research_artifact.py`,
+`research_document.py`, `research_derivation.py`, `research_chunk.py`.
+Services: `apps/api/app/services/corpus/`.
+
+---
+
 ## Planned Tables (Phase 4+)
 
 These tables are designed in the tech spec but not yet migrated:

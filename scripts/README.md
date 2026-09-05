@@ -35,6 +35,14 @@ manufactures a regression that is not there.
 
 Current baseline: **71** errors in 10 files (`mypy app`, on `develop/v3`).
 
+### The pytest gate is not offline locally
+
+`test_phase7_azure_openai_real.py` is skipped in CI, and a local `.env` with
+`LLM_PROVIDER=azure_openai` and a real key turns its 8 tests into **live Azure
+OpenAI calls**. They failed 7-of-8 on one V3.1 gate run and passed in isolation
+25 seconds later. Treat a failure there as a network or quota event until the
+file has been re-run on its own.
+
 ---
 
 ## `v3-corpus-acceptance.py`
