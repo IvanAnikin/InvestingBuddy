@@ -96,7 +96,7 @@ is recorded explicitly rather than being allowed to pass as production validatio
 | 2026-09-05 | V3.2 phase gate | `feature/v3-2-phase-gate-report` | `4f0cb0a` |
 | 2026-09-05 | V3.3.1 agent tool contracts | `feature/v3-3-1-agent-tool-contracts` | `b4f31ef` |
 | 2026-09-05 | V3.3.2 fact and series tools | `feature/v3-3-2-fact-and-series-tools` | `1a86871` |
-| 2026-09-05 | V3.3.3 calculation engine | `feature/v3-3-3-calculation-engine` | *(see progress log)* |
+| 2026-09-05 | V3.3.3 calculation engine | `feature/v3-3-3-calculation-engine` | `bc0cd15` |
 
 ## Corrective slices
 
