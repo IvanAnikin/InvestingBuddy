@@ -857,7 +857,7 @@ Services: `apps/api/app/services/corpus/`.
 
 ### Entity Master (V3.2) — `develop/v3` ONLY, NOT DEPLOYED
 
-**Migration 026. Not applied to any deployed environment; the local dev database
+**Migrations 026-027. Not applied to any deployed environment; the local dev database
 is at 018.** Nothing writes to any of these tables unless
 `V3_ENTITY_MASTER_ENABLED` is on, which is off by default. **`companies` is not
 touched by this migration** — no column added, no constraint changed, no FK
@@ -920,7 +920,28 @@ Four properties are worth knowing before querying any of it:
    which weighs them beside identifiers; nothing resolves an entity from a name
    alone.
 
-ORM models: `apps/api/app/models/legal_entity.py`.
+**Migration 027 links the two identity models**: `companies.legal_entity_id`, a
+**nullable** FK with `ON DELETE SET NULL`. That direction is lineage, not
+composition — deleting a legal entity must never delete the `companies` row a
+thousand reports point at — which is the opposite of every FK *inside* the entity
+master, deliberately. `companies` is otherwise unchanged: `UNIQUE (ticker,
+exchange)` remains and exactly one nullable column was added, so
+`release/v2-current` code runs against it unmodified.
+
+`legal_entity_id` NULL is a permanent, meaningful state and not only a
+transitional one. `backfill_entities_from_companies` refuses to link a row when two
+`companies` rows derive one entity key with **different names** — NYSE and NASDAQ
+collapse onto one venue key, so that is reachable — because picking one would be
+the silent merge the entity master exists to prevent. The compatibility adapter
+(`app/services/entities/compatibility.py`) falls back to the `companies` row and
+**reports which of the two answered**, so a caller that must not attach a CIK or a
+financial fact to a ticker-string identity can tell.
+
+The backfill is resumable, idempotent, bounded, and **called by nothing** — a
+backfill that starts itself on the first request after a deploy is how a migration
+becomes an outage.
+
+ORM models: `apps/api/app/models/legal_entity.py`, `company.py`.
 Services: `apps/api/app/services/entities/`.
 
 ---

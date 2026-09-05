@@ -35,11 +35,11 @@ enabling a V3 flag in production, deleting V2 compatibility or either V2 ref.
 | Item | Value |
 |---|---|
 | `develop/v3` HEAD | `35bd550` — 47 commits ahead of `origin/develop/v3` (`fd82d3d`), unpushed |
-| Alembic head in source | **026** (`026_add_entity_master`) |
-| Alembic head in the deployed database | **018** — and V3 migrations 019-026 have reached **no** deployed environment |
+| Alembic head in source | **027** (`027_add_company_legal_entity_id`) |
+| Alembic head in the deployed database | **018** — and V3 migrations 019-027 have reached **no** deployed environment |
 | Alembic head in the local dev database | **018** (unchanged by V3 work; scratch databases only) |
 | Current phase | **V3.2 — Entity Master and global universe** |
-| Current slice | 2.2 — `feature/v3-2-2-company-backfill` (next) |
+| Current slice | 2.3 — `feature/v3-2-3-entity-resolution` (next) |
 | Deployed | **Nothing.** `main` at `4b60e07` is the deployed product. |
 
 Working tree at campaign start also held two untracked files —
@@ -53,7 +53,7 @@ the user's call, and the campaign leaves them untracked and untouched.
 |---|---|---|
 | V3.0 | Execution and correctness foundation | `IMPLEMENTED` |
 | V3.1 | Research Corpus | `IMPLEMENTED` |
-| V3.2 | Entity Master and global universe | `IN PROGRESS` — 2.1 merged; 2.2-2.5 open |
+| V3.2 | Entity Master and global universe | `IN PROGRESS` — 2.1-2.2 merged; 2.3-2.5 open |
 | V3.3 | Research tools and calculation engine | `NOT STARTED` |
 | V3.4 | Multi-provider runtime and source expansion | `NOT STARTED` |
 | V3.5 | Research Ledger and Director | `NOT STARTED` |
@@ -88,6 +88,7 @@ is recorded explicitly rather than being allowed to pass as production validatio
 | 2026-09-05 | V3.1 phase gate | `feature/v3-1-phase-gate-report` | `a7a0a53` |
 | 2026-09-05 | Campaign state | `feature/v3-campaign-state` | `a7e0776` |
 | 2026-09-05 | V3.2.1 entity master | `feature/v3-2-1-entity-master` | `01f0f13` |
+| 2026-09-05 | V3.2.2 company backfill | `feature/v3-2-2-company-backfill` | *(see progress log)* |
 
 ## Corrective slices
 
@@ -116,6 +117,7 @@ database is re-checked afterwards to confirm it is still at 018.
 | 024 | `research_document_chunks` | scratch (`ib_v3_migcheck_024`, dropped) | **No** |
 | 025 | `research_document_derivations.extraction_profile` | scratch (`ib_v3_migcheck_025`, dropped) | **No** |
 | 026 | `legal_entities`, `securities`, `security_listings`, `entity_identifiers`, `entity_aliases` | scratch (`ib_v3_migcheck_026`, dropped). Upgraded, downgraded, re-upgraded; ORM/DDL drift check clean; **every uniqueness and CHECK guarantee exercised with real conflicting INSERTs in PostgreSQL 16**, not only through the ORM. | **No** |
+| 027 | `companies.legal_entity_id` (nullable, `SET NULL`) + index | scratch (`ib_v3_migcheck_027`, dropped). A column-by-column diff of `companies` shows **exactly one added column**; `confdeltype='n'` and a real entity DELETE left the company row in place, unlinked; downgrade restored the column list identically. | **No** |
 
 Additive-only through V3.2 (§2.1 of the migration plan): tables, **nullable**
 columns and indexes only. That is what makes `release/v2-current` code able to run
@@ -160,10 +162,10 @@ belong to the agent, with an ADR when material.
 
 Recorded so a later run can be compared against a number rather than a memory.
 
-| Gate | At campaign start (`35bd550`) | After V3.2.1 |
+| Gate | At campaign start (`35bd550`) | After V3.2.2 |
 |---|---|---|
 | `ruff check .` | All checks passed | All checks passed |
-| `pytest tests/ -q` | 4949 passed, 12 skipped | **5018 passed**, 12 skipped |
+| `pytest tests/ -q` | 4949 passed, 12 skipped | **5045 passed**, 12 skipped |
 | `mypy app` | 71 errors in 10 files | 71 errors in 10 files (baseline, unchanged) |
 
 ## Provider benchmarks
@@ -229,17 +231,18 @@ Carried forward, all still true:
 
 ## Next executable action
 
-Start **V3.2 slice 2.2** on `feature/v3-2-2-company-backfill`: `companies.legal_entity_id`
-as a nullable FK plus a resumable, idempotent backfill that gives every existing
-`companies` row a `LegalEntity` + `Security` + `SecurityListing` derived from its
-`(ticker, exchange, name, country, currency)`.
+Start **V3.2 slice 2.3** on `feature/v3-2-3-entity-resolution`: resolution with
+explicit ambiguity, and the first identifier *sources*.
 
-Two things must hold and both need a test rather than an assurance: **every
-existing report still renders** (126 of the newest 200 are legacy-shaped), and the
-backfill is **called by nothing** — a backfill that starts itself on the first
-request after a deploy is how a migration becomes an outage, which is the rule
-slice 1.2's `backfill_from_extracted_documents` already follows.
+Slices 2.1-2.2 deliberately left every entity keyed `listing:<venue>:<ticker>` —
+the weakest identity — because a `companies` row carries no LEI and no CIK. 2.3 is
+where a real source is consulted (GLEIF for LEI, SEC for CIK on SEC-eligible venues
+only), where an entity is **promoted** to a stronger identity, and where two
+candidates that cannot be separated become an `entity_ambiguous` gap rather than a
+merge.
 
-The backfill will produce `listing:`-keyed entities for most rows, because a
-`companies` row carries no LEI or CIK. That is the intended shape: it over-splits,
-and slice 2.3 promotes and merges with evidence.
+Three constraints are already fixed by the slices beneath it and must not be
+relaxed: `entity_key` is never rewritten, so promotion adds identifiers rather than
+renumbering; a CIK is never derived from a bare ticker on a non-SEC-eligible venue,
+which is the Boeing bug; and the four resolution states already exist in
+`entities.vocabulary`, with only `resolved` in the actionable set.
