@@ -39,6 +39,9 @@ from app.services.corpus.policy import (
     ACCESS_PUBLIC_OFFICIAL,
     ACCESS_PUBLIC_WEB,
     ACCESS_USER_PRIVATE,
+    allow_external_model,
+    default_policy_for,
+    forbid_external_model,
 )
 from app.services.providers import contracts as contracts_module
 from app.services.providers.contracts import (
@@ -68,11 +71,12 @@ from app.services.providers.fakes import (
     FakeSearchProvider,
 )
 from app.services.providers.governance import (
-    NEVER_EXTERNAL_BY_DEFAULT,
     PUBLIC_ONLY,
+    CredentialInPayloadError,
     ProviderGovernance,
     ProviderNotPermittedError,
     ProviderPolicy,
+    assert_no_credentials,
     default_governance,
 )
 from app.services.providers.routing import (
@@ -238,7 +242,16 @@ class TestCostIsNeverFabricated:
 # --------------------------------------------------------------------------- #
 
 
-class TestGovernanceDeniesByDefault:
+class TestGovernanceHasTwoGates:
+    """ADR-049 replaced a blanket geography rule with two gates.
+
+    These assertions CHANGED with the decision rather than because a guard was
+    weakened, and the net effect is stricter in the dimension that matters: there are
+    now two gates where there was one, plus a categorical credential exclusion that no
+    policy can override. What became more permissive — private classes are grantable —
+    is the user's decision, and it is still gated per document.
+    """
+
     def test_an_unrecorded_provider_may_receive_nothing(self) -> None:
         governance = ProviderGovernance()
         assert governance.permits("mystery", ACCESS_PUBLIC_WEB) is False
@@ -246,40 +259,34 @@ class TestGovernanceDeniesByDefault:
         assert "no data-governance policy is recorded" in (reason or "")
         assert "not a permissive one" in (reason or "")
 
-    def test_a_private_class_cannot_be_granted_to_an_external_provider(self) -> None:
-        # OPEN DECISION #11 is user-owned and its default is deny. A policy cannot be
-        # created by editing an allowlist.
-        for access_class in (ACCESS_LICENSED_PRIVATE, ACCESS_USER_PRIVATE):
-            with pytest.raises(ValueError, match="OPEN DECISION #11"):
-                ProviderPolicy(
-                    provider_id="some_vendor",
-                    allowed_access_classes=frozenset({access_class}),
-                    authority="somebody said it was fine",
-                    is_external=True,
-                )
-        assert NEVER_EXTERNAL_BY_DEFAULT == {ACCESS_LICENSED_PRIVATE, ACCESS_USER_PRIVATE}
+    def test_a_private_grant_requires_an_authority_citing_the_decision(self) -> None:
+        # Granting a private class says the provider has been EVALUATED for that kind of
+        # material. It sends nothing on its own — the document's rights are gate two.
+        with pytest.raises(ValueError, match="names ADR-049"):
+            ProviderPolicy(
+                provider_id="some_vendor",
+                allowed_access_classes=frozenset({ACCESS_USER_PRIVATE}),
+                authority="somebody said it was fine",
+                is_external=True,
+            )
+        cited = ProviderPolicy(
+            provider_id="some_vendor",
+            allowed_access_classes=frozenset({ACCESS_USER_PRIVATE}),
+            authority="ADR-049: evaluated 2026-09-05",
+            is_external=True,
+        )
+        assert cited.permits(ACCESS_USER_PRIVATE) is True
 
-    def test_a_private_grant_must_name_the_decision_even_for_an_internal_provider(
-        self,
-    ) -> None:
+    def test_an_internal_provider_gets_no_exemption_from_that(self) -> None:
         # "It runs in our tenancy" is a statement about WHERE it runs, not an answer to
         # whether private material may be sent to it.
-        with pytest.raises(ValueError, match="names OPEN DECISION #11"):
+        with pytest.raises(ValueError, match="names ADR-049"):
             ProviderPolicy(
-                provider_id="in_house_model",
-                allowed_access_classes=frozenset({ACCESS_USER_PRIVATE}),
+                provider_id="in_house",
+                allowed_access_classes=frozenset({ACCESS_LICENSED_PRIVATE}),
                 authority="it runs in our own tenancy",
                 is_external=False,
             )
-        # Naming the decision is permitted for an internal provider — the decision is
-        # still the user's, but at least the grant is auditable against it.
-        allowed = ProviderPolicy(
-            provider_id="in_house_model",
-            allowed_access_classes=frozenset({ACCESS_USER_PRIVATE}),
-            authority="OPEN DECISION #11 resolved 2026-XX-XX: in-tenancy only",
-            is_external=False,
-        )
-        assert allowed.permits(ACCESS_USER_PRIVATE) is True
 
     def test_a_grant_with_no_recorded_authority_is_refused(self) -> None:
         with pytest.raises(ValueError, match="record the authority"):
@@ -297,55 +304,48 @@ class TestGovernanceDeniesByDefault:
                 authority="a",
             )
 
-    def test_the_default_matrix_grants_no_external_provider_a_private_class(
-        self,
-    ) -> None:
-        governance = default_governance()
-        for policy in governance.policies.values():
-            if policy.is_external:
-                assert not (
-                    set(policy.allowed_access_classes) & NEVER_EXTERNAL_BY_DEFAULT
-                ), policy.provider_id
-
     def test_every_default_policy_cites_the_decision_that_constrains_it(self) -> None:
         for policy in default_governance().policies.values():
             assert policy.authority, policy.provider_id
 
-    def test_deepseek_is_public_only_while_number_four_is_open(self) -> None:
-        # Cheap does not override governance — and the strategy document notes the price
-        # case is weaker than assumed anyway: 30% MORE expensive at peak, and runs are
-        # user-triggered so off-peak cannot be chosen.
+    def test_deepseek_is_evaluated_for_private_classes_and_cites_adr_049(self) -> None:
+        # The rule is now about RIGHTS, not geography. China location/storage is
+        # explicitly not a blocker for this project.
         governance = default_governance()
-        assert governance.permits("deepseek", ACCESS_PUBLIC_WEB) is True
-        assert governance.permits("deepseek", ACCESS_LICENSED_PRIVATE) is False
-        assert governance.permits("deepseek", ACCESS_USER_PRIVATE) is False
-        assert "#4" in (governance.policy_for("deepseek").authority or "")
-
-    def test_the_incumbent_may_see_derived_content_and_is_not_external(self) -> None:
-        governance = default_governance()
-        policy = governance.policy_for("azure_openai")
-        assert policy.is_external is False
+        policy = governance.policy_for("deepseek")
+        assert policy.permits(ACCESS_PUBLIC_WEB) is True
         assert policy.permits(ACCESS_DERIVED) is True
-        assert policy.permits(ACCESS_PUBLIC_OFFICIAL) is True
-        # Not external is a statement about where it runs, not a licence to widen it.
-        assert policy.permits(ACCESS_USER_PRIVATE) is False
+        assert policy.permits(ACCESS_USER_PRIVATE) is True
+        assert "ADR-049" in (policy.authority or "")
+        assert "geography" in (policy.authority or "")
+
+    def test_the_deferred_providers_stay_in_the_register_and_stay_public_only(
+        self,
+    ) -> None:
+        # Kept so the register is a complete statement rather than a list of whatever
+        # happens to be switched on.
+        governance = default_governance()
+        for provider_id in ("exa", "perplexity", "gemini", "claude", "openai"):
+            policy = governance.policy_for(provider_id)
+            assert policy.allowed_access_classes == PUBLIC_ONLY, provider_id
+            assert policy.permits(ACCESS_USER_PRIVATE) is False, provider_id
+            assert "DEFERRED" in (policy.authority or "") or "NOT USED" in (
+                policy.authority or ""
+            ) or "not a production provider" in (policy.authority or ""), provider_id
 
     def test_assert_permitted_raises_a_permanent_error(self) -> None:
         governance = default_governance()
         with pytest.raises(ProviderNotPermittedError) as caught:
-            governance.assert_permitted("deepseek", ACCESS_USER_PRIVATE)
+            governance.assert_permitted("gemini", ACCESS_USER_PRIVATE)
         assert caught.value.job_transient is False, (
             "a governance refusal will refuse again; retrying is not the answer"
         )
-        assert caught.value.provider_id == "deepseek"
+        assert caught.value.provider_id == "gemini"
 
     def test_a_payload_can_be_split_so_the_public_half_still_travels(self) -> None:
-        # The practical value of a per-class policy: send the public half of an evidence
-        # pack to a cheap provider and keep the rest local — and be able to SAY what was
-        # withheld rather than silently sending less.
         governance = default_governance()
         permitted, refused = governance.filter_permitted(
-            "deepseek",
+            "gemini",
             [
                 ("a public filing extract", ACCESS_PUBLIC_OFFICIAL),
                 ("an issuer presentation", ACCESS_PUBLIC_ISSUER),
@@ -355,6 +355,130 @@ class TestGovernanceDeniesByDefault:
         )
         assert len(permitted) == 2
         assert [c for _, c in refused] == [ACCESS_LICENSED_PRIVATE, ACCESS_USER_PRIVATE]
+
+
+class TestTheDocumentGate:
+    """Gate two: the document's own rights, which default to closed."""
+
+    def test_a_private_document_defaults_to_unreadable_by_any_model(self) -> None:
+        # Rights are never inferred from the fact that a file was uploaded.
+        governance = default_governance()
+        for access_class in (ACCESS_USER_PRIVATE, ACCESS_LICENSED_PRIVATE):
+            policy = default_policy_for(access_class)
+            assert policy.sent_to_external_model is False
+            assert governance.permits_document("deepseek", policy) is False
+            reason = governance.refuse_document_reason("deepseek", policy)
+            assert "not inferred from the fact that a file exists" in (reason or "")
+
+    def test_an_explicitly_widened_document_may_reach_deepseek(self) -> None:
+        governance = default_governance()
+        widened = allow_external_model(
+            default_policy_for(ACCESS_USER_PRIVATE),
+            rationale="user consented to external model processing 2026-09-05",
+        )
+        assert governance.permits_document("deepseek", widened) is True
+        assert widened.external_model_rationale
+
+    def test_widening_requires_a_rationale(self) -> None:
+        with pytest.raises(ValueError, match="requires a rationale"):
+            allow_external_model(default_policy_for(ACCESS_USER_PRIVATE), rationale="  ")
+
+    def test_a_document_may_name_the_only_providers_it_permits(self) -> None:
+        # What a licence saying "may be processed by X" translates into.
+        governance = default_governance()
+        narrowed = allow_external_model(
+            default_policy_for(ACCESS_LICENSED_PRIVATE),
+            rationale="licence permits Azure processing only",
+            providers={"azure_openai"},
+        )
+        assert governance.permits_document("azure_openai", narrowed) is True
+        assert governance.permits_document("deepseek", narrowed) is False
+        reason = governance.refuse_document_reason("deepseek", narrowed)
+        assert "names its permitted providers" in (reason or "")
+
+    def test_both_gates_are_required_not_either(self) -> None:
+        # A document that may reach SOME external model is not thereby a document that
+        # may reach every one of them.
+        governance = default_governance()
+        widened = allow_external_model(
+            default_policy_for(ACCESS_USER_PRIVATE), rationale="user consented"
+        )
+        # Gate two open, gate one closed: gemini is not evaluated for private classes.
+        assert governance.permits_document("gemini", widened) is False
+        # And the coarse reason is reported, because it is the more fundamental one.
+        assert "may receive" in (
+            governance.refuse_document_reason("gemini", widened) or ""
+        )
+
+    def test_a_policy_that_cannot_answer_is_not_a_permissive_one(self) -> None:
+        class Opaque:
+            access_class = ACCESS_PUBLIC_WEB
+
+        governance = default_governance()
+        assert governance.permits_document("deepseek", Opaque()) is False
+        assert "cannot state whether" in (
+            governance.refuse_document_reason("deepseek", Opaque()) or ""
+        )
+
+    def test_forbidding_never_needs_a_justification(self) -> None:
+        # Narrowing is always safe, so the asymmetry with widening is deliberate.
+        closed = forbid_external_model(
+            allow_external_model(
+                default_policy_for(ACCESS_USER_PRIVATE), rationale="was allowed"
+            )
+        )
+        assert closed.sent_to_external_model is False
+        assert closed.permitted_providers == frozenset()
+
+    def test_a_split_reports_why_each_document_was_withheld(self) -> None:
+        # The difference between an honest partial payload and a silently smaller one.
+        governance = default_governance()
+        public = default_policy_for(ACCESS_PUBLIC_OFFICIAL)
+        private = default_policy_for(ACCESS_USER_PRIVATE)
+        permitted, refused = governance.filter_permitted_documents(
+            "deepseek", [("a filing", public), ("a private memo", private)]
+        )
+        assert permitted == ["a filing"]
+        assert len(refused) == 1
+        payload, reason = refused[0]
+        assert payload == "a private memo"
+        assert reason, "a refusal without its reason is a count, not an explanation"
+
+
+class TestCredentialsAreExcludedCategorically:
+    """A secret is not an access class and never becomes one."""
+
+    def test_a_payload_carrying_a_credential_is_refused(self) -> None:
+        for payload in (
+            "here is my api_key=sk-abc123",
+            "Authorization: Bearer eyJhbGciOi",
+            "PASSWORD=hunter2",
+            "-----BEGIN RSA PRIVATE KEY-----",
+            "AccountKey=abc123;EndpointSuffix=core.windows.net",
+        ):
+            with pytest.raises(CredentialInPayloadError):
+                assert_no_credentials(payload)
+
+    def test_ordinary_research_text_passes(self) -> None:
+        assert_no_credentials(
+            "Group revenue was DKK 32,549 million, up six per cent on 2024."
+        )
+        assert_no_credentials(None)
+
+    def test_the_refusal_cannot_be_overridden_by_a_policy(self) -> None:
+        # A policy is something somebody can edit. The one thing that must not be
+        # widenable by an allowlist change is a credential.
+        with pytest.raises(CredentialInPayloadError) as caught:
+            assert_no_credentials("client_secret=abc")
+        assert "cannot be overridden" in str(caught.value)
+        assert caught.value.job_transient is False
+
+    def test_no_access_class_represents_a_credential(self) -> None:
+        from app.services.corpus.policy import ACCESS_CLASSES
+
+        for name in ACCESS_CLASSES:
+            for token in ("secret", "credential", "key", "token", "password"):
+                assert token not in name
 
 
 # --------------------------------------------------------------------------- #
@@ -429,10 +553,12 @@ class TestDegradationNamesItsReason:
     def test_governance_is_checked_during_resolution_not_by_the_caller(self) -> None:
         # A router that hands back a provider and leaves the check to the caller has
         # made the check optional, and an optional check is one somebody forgets.
+        # A DEFERRED provider is the refused case now: DeepSeek is evaluated for the
+        # private classes (ADR-049) and Gemini is not.
         registry = ProviderRegistry()
-        registry.register(FakeModelProvider(provider_id="deepseek"))
+        registry.register(FakeModelProvider(provider_id="gemini"))
         router = ModelRouter(registry=registry, governance=default_governance())
-        router.assign(SLOT_CHEAP_RESEARCH := "cheap_research_model", "deepseek")
+        router.assign(SLOT_CHEAP_RESEARCH := "cheap_research_model", "gemini")
 
         public = router.resolve(SLOT_CHEAP_RESEARCH, access_class=ACCESS_PUBLIC_WEB)
         assert public.resolved is True

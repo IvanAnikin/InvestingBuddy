@@ -3,26 +3,39 @@
 The rule that has to hold before any adapter is written: **a provider is allowed to see
 a class of content, or it is not, and the default is not.**
 
-WHY THIS IS PER PROVIDER AND PER CLASS, NOT A FLAG
-==================================================
-`OPEN DECISION #11 <../../../../docs/v3/OPEN_DECISIONS.md>`_ is user-owned and its
-recommendation is explicit that **both** dimensions are required: "external models are
-allowed" and "this provider, in this jurisdiction, under these retention terms, is
-allowed" are different questions. A single per-run flag is exactly the coarse control
-that leaks one document.
+TWO GATES, AND BOTH MUST OPEN
+=============================
+`#11 and #4 were resolved 2026-09-05 <../../../../docs/v3/OPEN_DECISIONS.md>`_
+(ADR-049), and the resolution is explicit that **both** dimensions are required:
 
-So this is a matrix, it defaults to deny, and it is enforced at the point a payload is
-assembled rather than by a convention in a docstring.
+1. **The coarse gate — provider × access class.** Recorded here. It answers "has anybody
+   evaluated this provider for this kind of material at all", and it denies by default.
+2. **The fine gate — the document's own rights.** Recorded on
+   ``corpus.policy.ArtifactPolicy`` as ``sent_to_external_model`` plus
+   ``permitted_providers``. It answers "does *this* document's licence permit *this*
+   provider".
 
-DEEPSEEK IS THE WORKED EXAMPLE, AND IT IS RESTRICTED
-====================================================
-`OPEN DECISION #4 <../../../../docs/v3/OPEN_DECISIONS.md>`_ is open and provisionally
-restricts DeepSeek to public content until its data-handling, jurisdiction and retention
-terms are read and recorded. Note what the strategy document establishes alongside that:
-the *price* case is weaker than assumed — at InvestingBuddy's call shape DeepSeek is
-1.4x cheaper off-peak and **30% more expensive at peak**, and runs are user-triggered so
-off-peak cannot be chosen. **Cheap does not override governance**, and here it does not
-even buy much.
+A document that may reach some external model is not thereby a document that may reach
+every one of them, so ``permits_document`` requires both. Checking only the coarse gate
+would send a licensed report to a provider its licence names nobody for; checking only
+the fine gate would send material to a provider nobody evaluated.
+
+GEOGRAPHY IS NOT THE RULE; RIGHTS ARE
+=====================================
+ADR-049 settled the question the previous version of this module got wrong. DeepSeek's
+China location and storage are **not** a blocker for this project, and the blanket
+``user_private → DENY`` rule that stood here was a placeholder for a decision nobody had
+taken rather than a considered policy. What constrains use is the document's licence and
+its explicit policy — so DeepSeek may process public content, derived research context,
+and user-private content **when that document says so**.
+
+A SECRET IS NOT AN ACCESS CLASS, AND NEVER BECOMES ONE
+======================================================
+API keys, passwords, credentials, tokens and private system configuration are excluded
+**categorically**, not by policy — because a policy is something somebody can edit, and
+the one thing that must not be widenable by an allowlist change is a credential. There is
+no access class that represents them and ``assert_no_credentials`` refuses them
+regardless of what any policy says.
 
 WHAT "UNKNOWN PROVIDER" MEANS
 ============================
@@ -34,7 +47,7 @@ time it receives something it should not have.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from app.services.corpus.policy import (
     ACCESS_CLASSES,
@@ -56,13 +69,25 @@ DENY_ALL: frozenset[str] = frozenset()
 #: The public classes. The most any provider may have until a decision is recorded.
 PUBLIC_ONLY: frozenset[str] = frozenset(PUBLIC_ACCESS_CLASSES)
 
-#: Classes that may never travel to an external provider under the current default.
-#: `#11 <../../../../docs/v3/OPEN_DECISIONS.md>`_ is user-owned and the default is deny,
-#: so an allowlist entry naming one of these is refused rather than honoured — an
-#: accidental configuration change must not be able to authorise it.
-NEVER_EXTERNAL_BY_DEFAULT: frozenset[str] = frozenset(
+#: The classes whose grant requires an authority citing ADR-049. Granting one says only
+#: that the provider has been *evaluated* for that kind of material; the document's own
+#: rights are the second gate and default to closed.
+PRIVATE_ACCESS_CLASSES: frozenset[str] = frozenset(
     {ACCESS_LICENSED_PRIVATE, ACCESS_USER_PRIVATE}
 )
+
+#: Retained under its old name for readers of the pre-ADR-049 code and tests: it is the
+#: same set, and what changed is that a grant is now possible with a cited authority
+#: rather than impossible.
+NEVER_EXTERNAL_BY_DEFAULT: frozenset[str] = PRIVATE_ACCESS_CLASSES
+
+#: Substrings that count as citing the decision. Deliberately narrow — "the user said it
+#: was fine" is not an authority.
+_DECISION_CITATIONS: tuple[str, ...] = ("ADR-049", "#11")
+
+
+def _names_the_decision(authority: str | None) -> bool:
+    return any(token in (authority or "") for token in _DECISION_CITATIONS)
 
 
 @dataclass(frozen=True)
@@ -85,24 +110,22 @@ class ProviderPolicy:
                 f"{self.provider_id}: {sorted(unknown)} are not recognised access "
                 "classes. An unrecognised class is never treated as public."
             )
-        if self.is_external:
-            forbidden = set(self.allowed_access_classes) & NEVER_EXTERNAL_BY_DEFAULT
-            if forbidden:
-                raise ValueError(
-                    f"{self.provider_id}: {sorted(forbidden)} may not be granted to an "
-                    "external provider. OPEN DECISION #11 is user-owned and its default "
-                    "is deny; a per-document AND per-provider policy has to exist first, "
-                    "and it cannot be created by editing an allowlist."
-                )
-        private = set(self.allowed_access_classes) & NEVER_EXTERNAL_BY_DEFAULT
-        if private and "#11" not in (self.authority or ""):
+        private = set(self.allowed_access_classes) & PRIVATE_ACCESS_CLASSES
+        if private and not _names_the_decision(self.authority):
             # Applies to an internal provider too. "It runs in our tenancy" is a
             # statement about where it runs, not an answer to whether private material
-            # may be sent to it — and #11 is the decision that answers that.
+            # may be sent to it. ADR-049 is the decision that answers that, and a grant
+            # of a private class has to cite it — which is what keeps this auditable
+            # after the resolution rather than merely permitted by it.
+            #
+            # Note what this does NOT do: granting a private class here does not send
+            # anything. It only says the provider has been evaluated for that KIND of
+            # material. The document's own rights are the second gate and they default
+            # to closed.
             raise ValueError(
                 f"{self.provider_id}: granting {sorted(private)} requires an authority "
-                "that names OPEN DECISION #11, which is the decision that governs "
-                "private content reaching a model at all. Where the provider runs is a "
+                "that names ADR-049 or OPEN DECISION #11 — the decision that governs "
+                "private content reaching a model. Where the provider runs is a "
                 "different question from whether it may see this."
             )
         if self.allowed_access_classes and not (self.authority or "").strip():
@@ -166,6 +189,62 @@ class ProviderGovernance:
             f"{access_class!r}"
         )
 
+    def permits_document(self, provider_id: str, policy: Any) -> bool:
+        """Whether this provider may receive this **document**. Both gates.
+
+        ``policy`` is a ``corpus.policy.ArtifactPolicy``; it is duck-typed so this module
+        keeps no import of the corpus.
+        """
+        return self.refuse_document_reason(provider_id, policy) is None
+
+    def refuse_document_reason(self, provider_id: str, policy: Any) -> str | None:
+        """``None`` when permitted, else which gate closed and why.
+
+        The coarse gate is checked **first** on purpose. "Nobody has evaluated this
+        provider for licensed material" is a more fundamental answer than "this
+        particular licence does not name it", and reporting the deeper one is more useful
+        to whoever has to fix it.
+        """
+        access_class = getattr(policy, "access_class", None)
+        coarse = self.refuse_reason(provider_id, access_class)
+        if coarse is not None:
+            return coarse
+        fine = getattr(policy, "refuse_provider_reason", None)
+        if fine is None:
+            # A policy object that cannot answer the question is not a permissive one.
+            return (
+                f"the supplied policy for {access_class!r} cannot state whether "
+                f"{provider_id!r} may read it, so it may not"
+            )
+        return fine(provider_id)
+
+    def assert_document_permitted(self, provider_id: str, policy: Any) -> None:
+        reason = self.refuse_document_reason(provider_id, policy)
+        if reason is not None:
+            raise ProviderNotPermittedError(
+                provider_id, getattr(policy, "access_class", None), reason
+            )
+
+    def filter_permitted_documents(
+        self, provider_id: str, documents: list[tuple[str, Any]]
+    ) -> tuple[list[str], list[tuple[str, str]]]:
+        """Split ``(payload, policy)`` pairs into permitted payloads and refusals.
+
+        Returns ``(permitted, [(payload, reason), …])``. The refused half comes back with
+        **its reason** rather than only a count, so a run can say *what* it withheld and
+        *why* — which is the difference between an honest partial payload and a silently
+        smaller one.
+        """
+        permitted: list[str] = []
+        refused: list[tuple[str, str]] = []
+        for payload, policy in documents:
+            reason = self.refuse_document_reason(provider_id, policy)
+            if reason is None:
+                permitted.append(payload)
+            else:
+                refused.append((payload, reason))
+        return permitted, refused
+
     def assert_permitted(self, provider_id: str, access_class: str | None) -> None:
         """Raise ``ProviderNotPermittedError`` unless the class is allowed."""
         reason = self.refuse_reason(provider_id, access_class)
@@ -191,6 +270,63 @@ class ProviderGovernance:
             else:
                 refused.append((payload, access_class))
         return permitted, refused
+
+
+#: Fragments that mean a payload is carrying a credential. Matched case-insensitively
+#: against the payload's own text, and deliberately broad: a false positive costs a
+#: refusal a human can override by removing the secret, and a false negative costs a key.
+_CREDENTIAL_MARKERS: tuple[str, ...] = (
+    "api_key",
+    "api-key",
+    "apikey",
+    "secret_key",
+    "client_secret",
+    "password",
+    "passwd",
+    "authorization: bearer",
+    "bearer ey",
+    "private_key",
+    "-----begin",
+    "connectionstring",
+    "connection_string",
+    "accountkey=",
+    "sas_token",
+    "access_token",
+    "refresh_token",
+    "aws_secret",
+)
+
+
+class CredentialInPayloadError(PermissionError):
+    """A payload bound for a provider appears to carry a credential.
+
+    Raised **regardless of any policy**, because a secret is not an access class and
+    never becomes one. A policy is something somebody can edit; the one thing that must
+    not be widenable by an allowlist change is a credential.
+    """
+
+    job_transient = False
+
+    def __init__(self, marker: str) -> None:
+        super().__init__(
+            f"payload appears to contain a credential ({marker!r}) and will not be sent "
+            "to any provider. This is not a policy decision and cannot be overridden by "
+            "one — see ADR-049."
+        )
+        self.marker = marker
+
+
+def assert_no_credentials(payload: str | None) -> None:
+    """Refuse a payload that looks like it carries a secret. Categorical.
+
+    Not a substitute for not putting credentials in a payload; a backstop, in the same
+    spirit as ``assert_registry_safe`` and the ``RedactingFilter`` that exists because
+    root-level INFO logging once leaked an EODHD ``api_token``.
+    """
+    text = (payload or "").casefold()
+    for marker in _CREDENTIAL_MARKERS:
+        if marker in text:
+            raise CredentialInPayloadError(marker)
 
 
 class ProviderNotPermittedError(PermissionError):
@@ -228,30 +364,76 @@ def default_governance(cfg: "Settings | None" = None) -> ProviderGovernance:
                     ACCESS_PUBLIC_ISSUER,
                     ACCESS_PUBLIC_WEB,
                     ACCESS_DERIVED,
+                    ACCESS_USER_PRIVATE,
+                    ACCESS_LICENSED_PRIVATE,
                 }
             ),
             authority=(
-                "incumbent provider under the existing deployment; runs inside the "
-                "platform's own Azure tenancy"
+                "ADR-050 (resolves OPEN DECISION #5, 2026-09-05): the existing Azure "
+                "deployment is the strong-model fallback and the only OpenAI-family "
+                "dependency. Private classes per ADR-049 — evaluated, and still gated "
+                "by each document's own rights."
             ),
             is_external=False,
-            note="OPEN DECISION #5 governs which model fills which slot, not access.",
+            note=(
+                "Runs inside the platform's own Azure tenancy, which is a statement "
+                "about WHERE it runs and not a licence to widen what it may see."
+            ),
         )
     )
+    # DeepSeek is the PRIMARY external research provider (ADR-048/049). It is evaluated
+    # for every class including the private ones — which grants nothing on its own: the
+    # document's own rights are the second gate and default to closed.
+    governance.register(
+        ProviderPolicy(
+            provider_id="deepseek",
+            allowed_access_classes=frozenset(
+                {
+                    ACCESS_PUBLIC_OFFICIAL,
+                    ACCESS_PUBLIC_ISSUER,
+                    ACCESS_PUBLIC_WEB,
+                    ACCESS_DERIVED,
+                    ACCESS_USER_PRIVATE,
+                    ACCESS_LICENSED_PRIVATE,
+                }
+            ),
+            authority=(
+                "ADR-049 (resolves OPEN DECISION #4 and #11, 2026-09-05): approved as "
+                "the primary external research provider; China location/storage is not "
+                "a blocker, and document rights govern rather than provider geography"
+            ),
+            is_external=True,
+            note=(
+                "Evaluated for private classes. Whether any PARTICULAR private document "
+                "may be sent is decided by that document's own rights, which default to "
+                "closed and require an auditable rationale to widen."
+            ),
+        )
+    )
+    # Deferred and not activated, each for a recorded reason. Kept in the matrix so the
+    # register is a complete statement rather than a list of whatever happens to be on.
     for provider_id, decision in (
-        ("deepseek", "#4 (data governance, user-owned) — provisionally public-only"),
-        ("openai", "#5 (model routing) — public-only until a policy is recorded"),
-        ("gemini", "#6 (deep research role) — public-only until a policy is recorded"),
-        ("claude", "#7 (red team role) — public-only until a policy is recorded"),
-        ("exa", "#3 (search provider) — a search index only ever sees a query"),
-        ("perplexity", "#3 (search provider) — a search index only ever sees a query"),
+        (
+            "openai",
+            "ADR-050 — NOT USED: no new OpenAI commercial account; the existing Azure "
+            "deployment is the only OpenAI-family dependency",
+        ),
+        ("gemini", "ADR-048 round — DEFERRED / NOT ACTIVATED (#6)"),
+        (
+            "claude",
+            "ADR-050 round — Claude is not a production provider (#7); Claude Code is a "
+            "development tool and must not become a runtime dependency",
+        ),
+        ("exa", "ADR-048 — DEFERRED; DeepSeek web_search is the primary search path"),
+        ("perplexity", "ADR-048 — DEFERRED; DeepSeek web_search is the primary path"),
     ):
         governance.register(
             ProviderPolicy(
                 provider_id=provider_id,
                 allowed_access_classes=PUBLIC_ONLY,
-                authority=f"OPEN DECISION {decision}",
+                authority=decision,
                 is_external=True,
+                note="Deferred: no credentials, no adapter, nothing depends on it.",
             )
         )
     return governance
@@ -259,6 +441,9 @@ def default_governance(cfg: "Settings | None" = None) -> ProviderGovernance:
 
 __all__ = [
     "DENY_ALL",
+    "PRIVATE_ACCESS_CLASSES",
+    "CredentialInPayloadError",
+    "assert_no_credentials",
     "NEVER_EXTERNAL_BY_DEFAULT",
     "PUBLIC_ONLY",
     "ProviderGovernance",
