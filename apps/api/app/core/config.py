@@ -1138,6 +1138,21 @@ class Settings(BaseSettings):
     v3_model_slot_deep_research_provider: str = ""
     v3_model_slot_translation_model: str = ""
 
+    # ── DeepSeek: the PRIMARY external research provider (ADR-048/049) ───────
+    # Approved on pay-as-you-go usage. NEVER hardcode a key; load from Azure Key
+    # Vault in a deployed environment.
+    deepseek_api_key: str = ""
+    deepseek_model: str = "deepseek-chat"
+    deepseek_base_url: str = "https://api.deepseek.com"
+    # Configurable precisely because the exact server-side search contract is NOT
+    # verified against the live API in this campaign. See
+    # ``app.integrations.deepseek.transport`` before enabling.
+    deepseek_search_tool_name: str = "web_search"
+    # Server-side web search. OFF by default for the reason above: the parser
+    # tolerates an unknown payload shape and returns nothing with a warning, but
+    # nothing should call an unverified endpoint by accident.
+    v3_deepseek_search_enabled: bool = False
+
     # ── Real OCR: Azure Document Intelligence (Phase 32A Slice 5B.2) ─────────
     # Only ever consulted when ``primary_document_ocr_enabled`` (Slice 5,
     # default False) is also True. With the endpoint left empty (the default),
