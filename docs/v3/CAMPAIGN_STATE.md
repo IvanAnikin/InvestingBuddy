@@ -9,7 +9,7 @@ the code, not inferred from a plan. When it disagrees with a phase-gate section 
 record of a gate and this file is the current state; re-verify before trusting
 either.
 
-**Last verified:** 2026-09-05, by direct `git` inspection and a full local gate run.
+**Last verified:** 2026-09-05, after V3.2 slice 2.1, by direct `git` inspection and a full local gate run.
 
 ---
 
@@ -35,11 +35,11 @@ enabling a V3 flag in production, deleting V2 compatibility or either V2 ref.
 | Item | Value |
 |---|---|
 | `develop/v3` HEAD | `35bd550` — 47 commits ahead of `origin/develop/v3` (`fd82d3d`), unpushed |
-| Alembic head in source | **025** (`025_add_derivation_extraction_profile`) |
-| Alembic head in the deployed database | **018** — and V3 migrations 019-025 have reached **no** deployed environment |
+| Alembic head in source | **026** (`026_add_entity_master`) |
+| Alembic head in the deployed database | **018** — and V3 migrations 019-026 have reached **no** deployed environment |
 | Alembic head in the local dev database | **018** (unchanged by V3 work; scratch databases only) |
 | Current phase | **V3.2 — Entity Master and global universe** |
-| Current slice | 2.1 — `feature/v3-2-1-entity-master` |
+| Current slice | 2.2 — `feature/v3-2-2-company-backfill` (next) |
 | Deployed | **Nothing.** `main` at `4b60e07` is the deployed product. |
 
 Working tree at campaign start also held two untracked files —
@@ -53,7 +53,7 @@ the user's call, and the campaign leaves them untracked and untouched.
 |---|---|---|
 | V3.0 | Execution and correctness foundation | `IMPLEMENTED` |
 | V3.1 | Research Corpus | `IMPLEMENTED` |
-| V3.2 | Entity Master and global universe | `IN PROGRESS` |
+| V3.2 | Entity Master and global universe | `IN PROGRESS` — 2.1 merged; 2.2-2.5 open |
 | V3.3 | Research tools and calculation engine | `NOT STARTED` |
 | V3.4 | Multi-provider runtime and source expansion | `NOT STARTED` |
 | V3.5 | Research Ledger and Director | `NOT STARTED` |
@@ -86,6 +86,8 @@ is recorded explicitly rather than being allowed to pass as production validatio
 | 2026-09-04 | V3.1.6 corpus retrieval service | `feature/v3-1-6-corpus-retrieval-service` | `d867f70` |
 | 2026-09-05 | V3.1.7 reprocessing lifecycle | `feature/v3-1-7-reprocessing-lifecycle` | `fd039bc` |
 | 2026-09-05 | V3.1 phase gate | `feature/v3-1-phase-gate-report` | `a7a0a53` |
+| 2026-09-05 | Campaign state | `feature/v3-campaign-state` | `a7e0776` |
+| 2026-09-05 | V3.2.1 entity master | `feature/v3-2-1-entity-master` | *(see progress log)* |
 
 ## Corrective slices
 
@@ -113,6 +115,7 @@ database is re-checked afterwards to confirm it is still at 018.
 | 023 | `research_document_derivations` / `_pages` / `_sections` / `_tables` | scratch (`ib_v3_migcheck_023`, dropped) | **No** |
 | 024 | `research_document_chunks` | scratch (`ib_v3_migcheck_024`, dropped) | **No** |
 | 025 | `research_document_derivations.extraction_profile` | scratch (`ib_v3_migcheck_025`, dropped) | **No** |
+| 026 | `legal_entities`, `securities`, `security_listings`, `entity_identifiers`, `entity_aliases` | scratch (`ib_v3_migcheck_026`, dropped). Upgraded, downgraded, re-upgraded; ORM/DDL drift check clean; **every uniqueness and CHECK guarantee exercised with real conflicting INSERTs in PostgreSQL 16**, not only through the ORM. | **No** |
 
 Additive-only through V3.2 (§2.1 of the migration plan): tables, **nullable**
 columns and indexes only. That is what makes `release/v2-current` code able to run
@@ -153,6 +156,16 @@ belong to the agent, with an ADR when material.
 
 *(none currently open — entries are added when a slice raises one)*
 
+## Gate baseline
+
+Recorded so a later run can be compared against a number rather than a memory.
+
+| Gate | At campaign start (`35bd550`) | After V3.2.1 |
+|---|---|---|
+| `ruff check .` | All checks passed | All checks passed |
+| `pytest tests/ -q` | 4949 passed, 12 skipped | **5018 passed**, 12 skipped |
+| `mypy app` | 71 errors in 10 files | 71 errors in 10 files (baseline, unchanged) |
+
 ## Provider benchmarks
 
 *(none yet — V3.4.5 builds the harness; no provider default may be set without one)*
@@ -190,7 +203,16 @@ Carried forward, all still true:
   own slice, not yet scheduled.
 - **`(ticker, exchange)` has already resolved to the wrong issuer live** — `BA` +
   LSE returned Boeing's CIK for BAE Systems. Fixed by special-casing, not by
-  identity. This is the defect V3.2 exists to make structurally impossible.
+  identity. **Slice 2.1 makes it structurally impossible** for anything reading the
+  entity master: a CIK is an identifier of a legal entity, reached only through
+  listing → security → entity. It does **not** retire the old path — `companies`
+  and `sec_issuer_registry` are untouched until slice 2.2 links them and a
+  validated replacement exists.
+- **`security_listings.quote_currency` is the quote unit, not a reporting
+  currency.** LSE quotes in pence. Joining it against an issuer's reporting
+  currency mislabels a London price as 100x its real value. The column is named
+  for the distinction; a review pass caught the first implementation defaulting it
+  from `ExchangeInfo.currency`.
 - **B1 App Service headroom**: ~1.75 GB, one worker, and five concurrent analyses
   exceed the 45-minute stale threshold. Run live batches of two.
 
@@ -207,9 +229,17 @@ Carried forward, all still true:
 
 ## Next executable action
 
-Start **V3.2 slice 2.1** on `feature/v3-2-1-entity-master`: the `LegalEntity` /
-`Security` / `SecurityListing` / `EntityIdentifier` tables and the resolution
-vocabulary, additive-only, behind `V3_ENTITY_MASTER_ENABLED`, with `companies`
-untouched. It is the only V3.2 slice with no open decision in front of it —
-[#10](OPEN_DECISIONS.md#10-openfigi-usage-and-licensing) touches instrument
-identifiers rather than legal-entity identity, and GLEIF is already a live source.
+Start **V3.2 slice 2.2** on `feature/v3-2-2-company-backfill`: `companies.legal_entity_id`
+as a nullable FK plus a resumable, idempotent backfill that gives every existing
+`companies` row a `LegalEntity` + `Security` + `SecurityListing` derived from its
+`(ticker, exchange, name, country, currency)`.
+
+Two things must hold and both need a test rather than an assurance: **every
+existing report still renders** (126 of the newest 200 are legacy-shaped), and the
+backfill is **called by nothing** — a backfill that starts itself on the first
+request after a deploy is how a migration becomes an outage, which is the rule
+slice 1.2's `backfill_from_extracted_documents` already follows.
+
+The backfill will produce `listing:`-keyed entities for most rows, because a
+`companies` row carries no LEI or CIK. That is the intended shape: it over-splits,
+and slice 2.3 promotes and merges with evidence.

@@ -855,6 +855,76 @@ Services: `apps/api/app/services/corpus/`.
 
 ---
 
+### Entity Master (V3.2) — `develop/v3` ONLY, NOT DEPLOYED
+
+**Migration 026. Not applied to any deployed environment; the local dev database
+is at 018.** Nothing writes to any of these tables unless
+`V3_ENTITY_MASTER_ENABLED` is on, which is off by default. **`companies` is not
+touched by this migration** — no column added, no constraint changed, no FK
+pointed at it. The link between the two identity models is
+`companies.legal_entity_id` and it arrives in slice 2.2, with the backfill, in one
+place.
+
+```
+legal_entities                     the issuer as a LEGAL PERSON        (026)
+   +-< securities                  one INSTRUMENT it issued            (026)
+   |      +-< security_listings    one VENUE listing                   (026)
+   |      +-< entity_identifiers   isin, figi                          (026)
+   +-< entity_identifiers          lei, cik, company_register          (026)
+   +-< entity_aliases              former names, trade names           (026)
+```
+
+Why this exists, in this repository's own incident history: `companies` is keyed
+`UNIQUE (ticker, exchange)`, and looking a bare ticker up in SEC's
+`company_tickers.json` returned **Boeing's** CIK for BAE Systems, Moelis for LVMH
+and Estee Lauder for EssilorLuxottica. After 026 a CIK is an identifier *of a legal
+entity*, reachable only through listing -> security -> entity, and it is never
+derived from a ticker string.
+
+| Table | Identity | Changes when |
+|---|---|---|
+| `legal_entities` | `entity_key` — `lei:...`, `cik:...`, `register:DK:...`, or `listing:XCSE:PNDORA` | A new issuer is seen. The key is **never rewritten**; a stronger identifier arriving later does not renumber the entity, because that would be an implicit merge. |
+| `securities` | `(legal_entity_id, security_key)` | A new instrument — a share class, an ADR. |
+| `security_listings` | `(venue_key, ticker)` **while the window is open** | A listing starts, changes symbol or is delisted. A ticker change **closes one window and opens another**; it is never an `UPDATE` to `ticker`, which would rewrite history. |
+| `entity_identifiers` | `(scheme, value_normalized, scope_key)` **while the window is open** | An identifier is established, superseded or re-verified. |
+| `entity_aliases` | `(legal_entity_id, alias_type, normalized_alias)` | A rename or a trade name is recorded. |
+
+Four properties are worth knowing before querying any of it:
+
+1. **Four uniqueness guarantees are enforced by the DATABASE, not by a writer.**
+   `ix_security_listings_current_venue_ticker` makes two live issuers sharing a
+   ticker on one venue impossible; `ix_entity_identifiers_current_value` makes two
+   subjects currently holding one LEI/CIK/ISIN impossible;
+   `ix_securities_one_primary` and `ix_security_listings_one_primary` make "at most
+   one primary" a constraint. All four are **partial** unique indexes, and both
+   `venue_key` and `scope_key` are `NOT NULL` precisely because PostgreSQL treats
+   NULLs as distinct in a unique index — a nullable discriminator would have
+   silently permitted the collisions the indexes exist to prevent.
+2. **Identifiers are validated on write, not stored on trust.** A LEI failing its
+   ISO 7064 MOD 97-10 checksum and an ISIN failing its Luhn check digit are
+   **refused**, never recorded at a low confidence. `checksum_verified` is a column
+   rather than an assumption: it is `true` only for LEI and ISIN. A CIK has no
+   check digit, and a FIGI's is deliberately not validated —
+   [OPEN DECISION #10](v3/OPEN_DECISIONS.md#10-openfigi-usage-and-licensing) is the
+   user's and no source populates one. CUSIP is **not** a recognised scheme: it is
+   licensed data, so adding it is a governance decision.
+3. **`security_listings.quote_currency` is the price-QUOTE unit**, from
+   `price_quote_currency_for_exchange` — LSE main-market equities are quoted in
+   pence (`GBX`). It is deliberately not called `currency`, because joining it
+   against an issuer's *reporting* currency mislabels every London price as 100x
+   its real pound value.
+4. **Names are never identity.** There is no unique index on `legal_name`: two
+   entities may legally share a name in different jurisdictions, and a unique name
+   would force exactly the merge this schema exists to prevent. `normalized_name`
+   and `entity_aliases` are candidate-generation inputs for slice 2.3's resolver,
+   which weighs them beside identifiers; nothing resolves an entity from a name
+   alone.
+
+ORM models: `apps/api/app/models/legal_entity.py`.
+Services: `apps/api/app/services/entities/`.
+
+---
+
 ## Planned Tables (Phase 4+)
 
 These tables are designed in the tech spec but not yet migrated:

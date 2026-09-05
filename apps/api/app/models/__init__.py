@@ -4,6 +4,13 @@ from app.models.discovery import DiscoveryCandidate, DiscoveryRun
 from app.models.document_ingestion_attempt import DocumentIngestionAttempt
 from app.models.extracted_document import ExtractedDocument, ExtractedFact
 from app.models.field_review import FieldReviewCandidateSummary, FieldReviewRun
+from app.models.legal_entity import (
+    EntityAlias,
+    EntityIdentifier,
+    LegalEntity,
+    Security,
+    SecurityListing,
+)
 from app.models.report import Report
 from app.models.research_artifact import ResearchArtifact
 from app.models.research_chunk import ResearchDocumentChunk
@@ -26,10 +33,13 @@ __all__ = [
     "DiscoveryCandidate",
     "DiscoveryRun",
     "DocumentIngestionAttempt",
+    "EntityAlias",
+    "EntityIdentifier",
     "ExtractedDocument",
     "ExtractedFact",
     "FieldReviewCandidateSummary",
     "FieldReviewRun",
+    "LegalEntity",
     "Report",
     "ResearchArtifact",
     "ResearchDocument",
@@ -41,5 +51,7 @@ __all__ = [
     "ResearchDocumentVersion",
     "ResearchJob",
     "Scorecard",
+    "Security",
+    "SecurityListing",
     "Source",
 ]

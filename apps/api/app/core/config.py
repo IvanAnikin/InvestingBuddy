@@ -1075,6 +1075,19 @@ class Settings(BaseSettings):
     # waiting. Never consulted on the live path.
     v3_corpus_reprocess_timeout_seconds: int = 600
 
+    # ── V3.2: Entity master ─────────────────────────────────────────────────
+    # Master switch for legal-entity / security / listing identity. OFF by
+    # default, and with it off every writer and reader in
+    # ``app.services.entities.master`` returns None (or an empty list) WITHOUT
+    # issuing a query — the same contract ``v3_corpus_enabled`` has. ``companies``
+    # is untouched by this phase either way, so the V2 identity path is
+    # byte-for-byte unchanged.
+    #
+    # Deprecation plan: removed once slice 2.2's backfill is validated and
+    # ``companies.legal_entity_id`` is populated for every row. A flag exists to
+    # make a migration safe, not to become a permanent configuration.
+    v3_entity_master_enabled: bool = False
+
     # ── Real OCR: Azure Document Intelligence (Phase 32A Slice 5B.2) ─────────
     # Only ever consulted when ``primary_document_ocr_enabled`` (Slice 5,
     # default False) is also True. With the endpoint left empty (the default),
