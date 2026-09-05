@@ -183,17 +183,51 @@ LegalEntity ──< Security ──< SecurityListing
 
 | Concept | Notes |
 |---|---|
-| `LegalEntity` | The issuer as a legal person. Carries LEI, CIK, jurisdiction, former names with effective dates. |
-| `Security` | An instrument issued by the entity (ordinary shares, ADR). Carries ISIN, FIGI. |
-| `SecurityListing` | A venue listing: MIC, ticker, currency, effective dates. **This is where `(ticker, exchange)` finally belongs.** |
-| `Identifier` | `(scheme, value, entity_or_security_id, confidence, source, effective_from/to)`. Never a bare string on the parent row. |
-| `EntityRelationship` | Typed, sourced, effective-dated, confidence-scored. |
-| `ReportingScope` / `BusinessSegment` | The scope vocabulary that `fact_scope.py` already enforces in memory, given persistent identity so a segment can be tracked across periods and renamings. |
+| `LegalEntity` | The issuer as a legal person. Jurisdiction, legal form, status, former names with effective dates. Identifiers hang off it rather than living on it. **(`IMPLEMENTED IN V3` — [Slice 2.1](slices/V3.2-1-entity-master.md).)** |
+| `Security` | An instrument issued by the entity (ordinary shares, ADR). **(`IMPLEMENTED IN V3` — Slice 2.1. `adr`/`gdr` are named types rather than folded into `ordinary_share`, because a depositary receipt represents underlying shares at a ratio and per-share arithmetic must be able to refuse.)** |
+| `SecurityListing` | A venue listing: MIC, ticker, quote currency, effective dates. **This is where `(ticker, exchange)` finally belongs.** **(`IMPLEMENTED IN V3` — Slice 2.1.)** |
+| `Identifier` | `(scheme, value, entity_or_security_id, confidence, source, effective_from/to)`. Never a bare string on the parent row. **(`IMPLEMENTED IN V3` — Slice 2.1, as `entity_identifiers`, with checksums verified on write rather than trusted.)** |
+| `EntityRelationship` | Typed, sourced, effective-dated, confidence-scored. Slice 2.4. |
+| `ReportingScope` / `BusinessSegment` | The scope vocabulary that `fact_scope.py` already enforces in memory, given persistent identity so a segment can be tracked across periods and renamings. Slice 2.4. |
+
+`IMPLEMENTED IN V3` (Slice 2.1) for the first four. Three things about it are
+worth stating here because they are what make the model safe rather than merely
+present:
+
+**Identity is a key, and the key over-splits on purpose.** `entity_key` is derived
+from the strongest identifier available at creation — `lei:` then `cik:` then
+`register:` then, last, `listing:<venue>:<ticker>` — and it is never rewritten
+when a stronger one arrives, because rewriting it would be an implicit merge. Only
+the last of those can be reused by a different issuer, which is exactly why it is
+the last resort.
+
+**Identifiers are validated, not trusted.** A LEI failing ISO 7064 MOD 97-10 or an
+ISIN failing its Luhn check digit is *refused*, never stored at a low confidence:
+"recorded with confidence 0.3" does not stop the next reader from joining on it.
+`checksum_verified` is a column, so a reader can tell a checked LEI from an
+unchecked CIK. CUSIP is deliberately absent — it is licensed data, and adding the
+scheme is a governance decision rather than a vocabulary edit.
+
+**The three guarantees are indexes, not conventions.** Two live issuers cannot
+share a ticker on one venue; two subjects cannot currently hold one LEI, CIK or
+ISIN; an identifier attached to neither subject or to both is a CHECK violation.
+All of them were exercised against real PostgreSQL 16, not only through the ORM.
+And both discriminator columns are `NOT NULL` on purpose: PostgreSQL treats NULLs
+as distinct in a unique index, so a nullable jurisdiction or venue would have
+silently permitted the collision the index exists to prevent.
 
 **Never silently merge.** Two candidate entities that cannot be resolved with
 evidence stay separate and raise an `entity_ambiguous` gap. Merging on a name
 match is how a research platform quietly attributes one company's numbers to
 another.
+
+`IMPLEMENTED IN V3` (Slice 2.1) as a structural property rather than a rule to
+remember: there is **no unique index on `legal_name`** and **no resolve-by-name
+function**, and a test fails if one appears. Two entities may legally share a name
+in different jurisdictions, so a unique name would force the merge this model
+exists to prevent. `entity_aliases` stores former and trade names as *evidence*
+for the resolver in slice 2.3 to weigh beside identifiers — a name match is an
+input to a decision, never the decision.
 
 ### 3.3 Migration from `companies`
 
@@ -202,6 +236,11 @@ another.
 country, currency)`, and `companies.legal_entity_id` becomes a nullable FK. Every
 existing report, citation and `company_id` reference keeps resolving. Details in
 [MIGRATION_AND_COMPATIBILITY_PLAN.md](MIGRATION_AND_COMPATIBILITY_PLAN.md).
+
+**Slice 2.1 touches `companies` not at all** — migration 026 adds five tables and
+alters nothing, and no FK in it points at `companies`. The link and the backfill
+land together in slice 2.2, so there is never a period in which two tables
+disagree about which entity a company is.
 
 ---
 
