@@ -39,7 +39,7 @@ enabling a V3 flag in production, deleting V2 compatibility or either V2 ref.
 | Alembic head in the deployed database | **018** — and V3 migrations 019-030 have reached **no** deployed environment |
 | Alembic head in the local dev database | **018** (unchanged by V3 work; scratch databases only) |
 | Current phase | **V3.4 — Multi-provider runtime and source expansion** |
-| Current slice | 4.1 — `feature/v3-4-1-provider-interfaces` (next) |
+| Current slice | 4.4 — `feature/v3-4-4-research-lead-promotion` (next) |
 | Deployed | **Nothing.** `main` at `4b60e07` is the deployed product. |
 
 Working tree at campaign start also held two untracked files —
@@ -55,7 +55,7 @@ the user's call, and the campaign leaves them untracked and untouched.
 | V3.1 | Research Corpus | `IMPLEMENTED` |
 | V3.2 | Entity Master and global universe | `IMPLEMENTED` — all six slices merged; [phase gate](IMPLEMENTATION_PLAN.md#11-v32-phase-gate) |
 | V3.3 | Research tools and calculation engine | `IMPLEMENTED` — all four slices merged; [phase gate](IMPLEMENTATION_PLAN.md#12-v33-phase-gate) |
-| V3.4 | Multi-provider runtime and source expansion | `IN PROGRESS` |
+| V3.4 | Multi-provider runtime and source expansion | `IN PROGRESS` — 4.1 merged; **4.2/4.3/4.6/4.8 `BLOCKED`** on user-owned decisions; 4.4/4.5/4.7 open |
 | V3.5 | Research Ledger and Director | `NOT STARTED` |
 | V3.6 | Industry playbooks | `NOT STARTED` |
 | V3.7 | Council V2 and Red Team | `NOT STARTED` |
@@ -99,6 +99,7 @@ is recorded explicitly rather than being allowed to pass as production validatio
 | 2026-09-05 | V3.3.3 calculation engine | `feature/v3-3-3-calculation-engine` | `bc0cd15` |
 | 2026-09-05 | V3.3.4 corpus search tools | `feature/v3-3-4-corpus-search-tool` | `42b8336` |
 | 2026-09-05 | V3.3 phase gate | `feature/v3-3-phase-gate-report` | `7772b1f` |
+| 2026-09-05 | V3.4.1 provider interfaces | `feature/v3-4-1-provider-interfaces` | *(see progress log)* |
 
 ## Corrective slices
 
@@ -146,9 +147,10 @@ around each one and marks the dependent work `BLOCKED` rather than guessing.
 |---|---|---|---|
 | [1](OPEN_DECISIONS.md#1-azure-ai-search-vs-postgresql--pgvector) | Production corpus search backend | The production backend only — the interface, fusion and in-memory reference backend are done | Cost of an additional Azure service |
 | [2](OPEN_DECISIONS.md#2-service-bus-worker-topology) | Service Bus worker topology | V3.0.6 only; PostgreSQL polling is a valid production mode at this volume | Whether a second App Service is affordable |
-| [3](OPEN_DECISIONS.md#3-exa-vs-perplexity-search) | Exa vs Perplexity | V3.4.2 *defaults*, not the interface | Provider spend |
-| [4](OPEN_DECISIONS.md#4-deepseek-data-governance-policy) | DeepSeek data governance | V3.4.3 *enablement*, not the adapter | Legal / comfort |
-| [8](OPEN_DECISIONS.md#8-transcript-provider), [9](OPEN_DECISIONS.md#9-quartr-vs-fiscalai) | Transcript provider / vendor | V3.4.8 live coverage | Commercial contract |
+| [3](OPEN_DECISIONS.md#3-exa-vs-perplexity-search) | Exa vs Perplexity | **Slice 4.2 is `BLOCKED`.** The `SearchProvider` interface and its fake are done (4.1). | Provider spend |
+| [4](OPEN_DECISIONS.md#4-deepseek-data-governance-policy) | DeepSeek data governance | **Slice 4.3 is `BLOCKED`.** DeepSeek is already recorded in the governance matrix as **public-only** on the authority of this decision. | Legal / comfort |
+| [5](OPEN_DECISIONS.md#5-openai-model-routing), [6](OPEN_DECISIONS.md#6-gemini-deep-research-role), [7](OPEN_DECISIONS.md#7-claude-red-team-role) | Which model fills which slot; Gemini Deep Research; Claude Red Team | Slot *assignments* (all eight default to empty and degrade); slices 4.6 is `BLOCKED` | Spend, and vendor terms |
+| [8](OPEN_DECISIONS.md#8-transcript-provider), [9](OPEN_DECISIONS.md#9-quartr-vs-fiscalai) | Transcript provider / vendor | **Slice 4.8 is `BLOCKED`** | Commercial contract |
 | [10](OPEN_DECISIONS.md#10-openfigi-usage-and-licensing) | OpenFIGI usage | Instrument-level FIGI mapping in V3.2 only | Licensing terms |
 | [11](OPEN_DECISIONS.md#11-private-data-external-model-policy) | Private data to external models | Private-research *enablement* | A judgement call, not a technical one |
 | [12](OPEN_DECISIONS.md#12-raw-page-and-document-retention) | Retention TTL | Nothing — the primitive ships unconfigured | Storage cost |
@@ -181,10 +183,10 @@ belong to the agent, with an ADR when material.
 
 Recorded so a later run can be compared against a number rather than a memory.
 
-| Gate | At campaign start (`35bd550`) | At the V3.3 gate |
+| Gate | At campaign start (`35bd550`) | After V3.4.1 |
 |---|---|---|
 | `ruff check .` | All checks passed | All checks passed |
-| `pytest tests/ -q` | 4949 passed, 12 skipped | **5339 passed**, 12 skipped |
+| `pytest tests/ -q` | 4949 passed, 12 skipped | **5386 passed**, 12 skipped |
 | `mypy app` | 71 errors in 10 files | 71 errors in 10 files (baseline; one regression to 72 was caught by the gate in 2.3 and fixed) |
 
 ## Provider benchmarks
@@ -277,30 +279,25 @@ Carried forward, all still true:
 
 ## Next executable action
 
-Start **V3.4 slice 4.1** on `feature/v3-4-1-provider-interfaces`: `ModelProvider`,
-`SearchProvider`, `ResearchProvider` and `BrowserProvider`, the routing slots, and a fake
-for each. No migration.
+Start **V3.4 slice 4.4** on `feature/v3-4-4-research-lead-promotion`: persist
+`ResearchLead`, and build the verification gate that promotes one to evidence or rejects
+it with a reason. Migration expected.
 
-It is the only V3.4 work completable without a user decision — every other slice in the
-phase is an adapter behind one of these interfaces, and three are blocked on user-owned
-spend or governance
-([#3](OPEN_DECISIONS.md#3-exa-vs-perplexity-search),
-[#4](OPEN_DECISIONS.md#4-deepseek-data-governance-policy),
-[#8](OPEN_DECISIONS.md#8-transcript-provider)).
+**Four of the eight V3.4 slices are `BLOCKED` on user-owned decisions** — 4.2 (#3, search
+spend), 4.3 (#4, DeepSeek governance), 4.6 (#6, Gemini Deep Research), 4.8 (#8, transcript
+vendor). 4.1 shipped their interfaces and fakes, so each becomes a small adapter once its
+decision is taken. The campaign continues with the three that are not blocked: **4.4**,
+then **4.5** (the benchmark harness) and **4.7** (the macro observation store).
 
-Three things are settled and must be **used rather than re-established**:
+4.4 has a working model to follow rather than a design to invent. `entities.claims`
+already implements this exact gate for identifiers: a claim, a closed rejection
+vocabulary, a *withheld* case for a source that found several and refused to choose, and
+a rule that a rejected claim is **kept with its reason** because that is what makes
+per-source accuracy measurable. 4.1's `ResearchLead` already carries the eight rejection
+reasons and the `is_verifiable` distinction.
 
-- A provider's output is a **`ResearchLead`**, never evidence. `entities.claims` is
-  already a working instance of that gate — including the *withheld* case a
-  partial-match source needs — and its rejection-reason vocabulary is the model to
-  follow.
-- Consumption is `consumption.UNIT_NAMES`, and a unit a provider does not measure must
-  be **absent, not zero**. This is the lesson V3.3.4 learned the hard way.
-- `EXTERNAL_TOOL_NAMES` already names the tools that reach outside the platform, so the
-  rule that private content must never travel through one can be written against the
-  set.
-
-Model names must not be hardcoded into business logic: the slots are
-`classification_model`, `cheap_research_model`, `document_reasoning_model`,
-`research_director_model`, `red_team_model`, `chair_model`, `deep_research_provider`, and
-which model fills each is configuration and [#5](OPEN_DECISIONS.md#5-openai-model-routing).
+The one thing 4.4 must not do is verify a claim against the provider's own words. The
+promotion path is `lead → source candidate → **InvestingBuddy's own fetch** → canonical
+source → evidence → fact`, and the fetch has to be the platform's guarded fetcher
+producing bytes with a hash. A "verification" that re-reads the provider's snippet has
+verified nothing.

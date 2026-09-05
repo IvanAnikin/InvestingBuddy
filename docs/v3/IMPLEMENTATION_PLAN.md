@@ -13,7 +13,7 @@
 | **V3.1** | Research Corpus | `IMPLEMENTED` — and, unlike V3.0, with a **real-document acceptance run** behind it. Not `VALIDATED`: the run is local and the corpus is not deployed. See [the phase gate](#10-v31-phase-gate). |
 | **V3.2** | Entity Master and global universe | `IMPLEMENTED` — all slices merged. See [the phase gate](#11-v32-phase-gate). |
 | **V3.3** | Research tools and calculation engine | `IMPLEMENTED` — all four slices merged. See [the phase gate](#12-v33-phase-gate). |
-| **V3.4** | Multi-provider runtime and source expansion | `NOT STARTED` |
+| **V3.4** | Multi-provider runtime and source expansion | `IN PROGRESS` — slice 4.1 merged; 4.2/4.3/4.6/4.8 `BLOCKED` on user-owned decisions. |
 | **V3.5** | Research Ledger and Director | `NOT STARTED` |
 | **V3.6** | Industry playbooks | `NOT STARTED` |
 | **V3.7** | Council V2 and Red Team | `NOT STARTED` |
@@ -109,16 +109,16 @@ bytes are retained.
 
 ### V3.4 — Multi-provider runtime and sources
 
-| Slice | Branch | Objective |
-|---|---|---|
-| 4.1 | `feature/v3-4-1-provider-interfaces` | `ModelProvider` / `SearchProvider` / `ResearchProvider` / `BrowserProvider` + routing slots + fakes. |
-| 4.2 | `feature/v3-4-2-exa-search-provider` | Exa adapter behind `SearchProvider`. Opt-in, budget-capped. |
-| 4.3 | `feature/v3-4-3-deepseek-model-provider` | DeepSeek adapter behind `ModelProvider`, governance-gated to public content. |
-| 4.4 | `feature/v3-4-4-research-lead-promotion` | `ResearchLead` persistence + verification gate + rejection reasons. |
-| 4.5 | `feature/v3-4-5-provider-benchmark-harness` | Repeatable scored benchmark; `cost_per_verified_finding`. |
-| 4.6 | `feature/v3-4-6-gemini-deep-research` | Managed Deep Research as a contractor producing leads only. |
-| 4.7 | `feature/v3-4-7-macro-observation-store` | `DatasetDefinition` / `SeriesDefinition` / `Observation` + first live macro source. |
-| 4.8 | `feature/v3-4-8-transcript-provider` | Transcript abstraction + first implementation. |
+| Slice | Branch | Objective | Status |
+|---|---|---|---|
+| 4.1 | [`feature/v3-4-1-provider-interfaces`](slices/V3.4-1-provider-interfaces.md) | The four interfaces, the canonical result contract, the **deny-by-default** per-provider governance matrix, eight routing slots that degrade with a named reason, and a fake for each. No live adapter. | `IMPLEMENTED` |
+| 4.2 | `feature/v3-4-2-exa-search-provider` | Exa adapter behind `SearchProvider`. Opt-in, budget-capped.| `BLOCKED` — [#3](OPEN_DECISIONS.md#3-exa-vs-perplexity-search), user-owned (spend) |
+| 4.3 | `feature/v3-4-3-deepseek-model-provider` | DeepSeek adapter behind `ModelProvider`, governance-gated to public content.| `BLOCKED` — [#4](OPEN_DECISIONS.md#4-deepseek-data-governance-policy), user-owned (governance) |
+| 4.4 | `feature/v3-4-4-research-lead-promotion` | `ResearchLead` persistence + verification gate + rejection reasons.| `NOT STARTED` |
+| 4.5 | `feature/v3-4-5-provider-benchmark-harness` | Repeatable scored benchmark; `cost_per_verified_finding`.| `NOT STARTED` |
+| 4.6 | `feature/v3-4-6-gemini-deep-research` | Managed Deep Research as a contractor producing leads only.| `BLOCKED` — [#6](OPEN_DECISIONS.md#6-gemini-deep-research-role), user-owned |
+| 4.7 | `feature/v3-4-7-macro-observation-store` | `DatasetDefinition` / `SeriesDefinition` / `Observation` + first live macro source.| `NOT STARTED` |
+| 4.8 | `feature/v3-4-8-transcript-provider` | Transcript abstraction + first implementation.| `BLOCKED` — [#8](OPEN_DECISIONS.md#8-transcript-provider), user-owned (spend) |
 
 ### V3.5-V3.9
 
@@ -259,6 +259,7 @@ approval.
 | 2026-09-05 | V3.3 Slice 3.3 — calculation engine | `feature/v3-3-3-calculation-engine` | `bc0cd15` |
 | 2026-09-05 | V3.3 Slice 3.4 — corpus search tools | `feature/v3-3-4-corpus-search-tool` | `42b8336` |
 | 2026-09-05 | V3.3 phase gate | `feature/v3-3-phase-gate-report` | `7772b1f` |
+| 2026-09-05 | V3.4 Slice 4.1 — provider interfaces | `feature/v3-4-1-provider-interfaces` | *(this slice)* |
 
 ---
 
