@@ -1088,6 +1088,20 @@ class Settings(BaseSettings):
     # make a migration safe, not to become a permanent configuration.
     v3_entity_master_enabled: bool = False
 
+    # Provider-neutral universe generation (V3.2 Slice 2.5). OFF by default, and
+    # with it off ``build_universe`` in ``market_universe_builder`` is the universe
+    # exactly as it is today — the V2 discovery path is byte-for-byte unchanged.
+    #
+    # With it on, the curated theme registry becomes ONE source among several rather
+    # than the definition of the universe, candidates are de-duplicated by LISTING
+    # identity instead of by ticker string, and every member records which provider
+    # supplied it.
+    #
+    # ``HARD_MAX_UNIVERSE_SIZE`` (50) remains the absolute ceiling either way. A
+    # research run is 261-451s, so an uncontrolled universe is not a slow feature,
+    # it is an outage.
+    v3_universe_providers_enabled: bool = False
+
     # ── Real OCR: Azure Document Intelligence (Phase 32A Slice 5B.2) ─────────
     # Only ever consulted when ``primary_document_ocr_enabled`` (Slice 5,
     # default False) is also True. With the endpoint left empty (the default),
