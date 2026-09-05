@@ -102,7 +102,7 @@ is recorded explicitly rather than being allowed to pass as production validatio
 | 2026-09-05 | V3.4.1 provider interfaces | `feature/v3-4-1-provider-interfaces` | `d628ae7` |
 | 2026-09-05 | Decision record — ADR-047..052 | `feature/v3-decisions-resolved` | `ec8ea65` |
 | 2026-09-05 | V3.4.1.1 rights-based governance | `feature/v3-4-1-1-rights-based-governance` | `66ddd30` |
-| 2026-09-05 | V3.4.3 DeepSeek providers | `feature/v3-4-3-deepseek-providers` | *(see progress log)* |
+| 2026-09-05 | V3.4.3 DeepSeek providers | `feature/v3-4-3-deepseek-providers` | `07c7032` |
 
 ## Corrective slices
 
