@@ -255,7 +255,7 @@ approval.
 | 2026-09-05 | V3.2 Slice 2.5 — universe generation | `feature/v3-2-5-universe-generation` | `df75ce6` |
 | 2026-09-05 | V3.2 phase gate | `feature/v3-2-phase-gate-report` | `4f0cb0a` |
 | 2026-09-05 | V3.3 Slice 3.1 — agent tool contracts | `feature/v3-3-1-agent-tool-contracts` | `b4f31ef` |
-| 2026-09-05 | V3.3 Slice 3.2 — fact and series tools | `feature/v3-3-2-fact-and-series-tools` | *(this slice)* |
+| 2026-09-05 | V3.3 Slice 3.2 — fact and series tools | `feature/v3-3-2-fact-and-series-tools` | `1a86871` |
 
 ---
 
