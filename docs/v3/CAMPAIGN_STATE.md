@@ -35,11 +35,11 @@ enabling a V3 flag in production, deleting V2 compatibility or either V2 ref.
 | Item | Value |
 |---|---|
 | `develop/v3` HEAD | `35bd550` — 47 commits ahead of `origin/develop/v3` (`fd82d3d`), unpushed |
-| Alembic head in source | **027** (`027_add_company_legal_entity_id`) |
-| Alembic head in the deployed database | **018** — and V3 migrations 019-027 have reached **no** deployed environment |
+| Alembic head in source | **028** (`028_add_entity_relationships`) |
+| Alembic head in the deployed database | **018** — and V3 migrations 019-028 have reached **no** deployed environment |
 | Alembic head in the local dev database | **018** (unchanged by V3 work; scratch databases only) |
 | Current phase | **V3.2 — Entity Master and global universe** |
-| Current slice | 2.4 — `feature/v3-2-4-entity-relationships` (next) |
+| Current slice | 2.5 — `feature/v3-2-5-universe-generation` (next) |
 | Deployed | **Nothing.** `main` at `4b60e07` is the deployed product. |
 
 Working tree at campaign start also held two untracked files —
@@ -53,7 +53,7 @@ the user's call, and the campaign leaves them untracked and untouched.
 |---|---|---|
 | V3.0 | Execution and correctness foundation | `IMPLEMENTED` |
 | V3.1 | Research Corpus | `IMPLEMENTED` |
-| V3.2 | Entity Master and global universe | `IN PROGRESS` — 2.1-2.3.1 merged; 2.4-2.5 open |
+| V3.2 | Entity Master and global universe | `IN PROGRESS` — 2.1-2.4 merged; 2.5 open |
 | V3.3 | Research tools and calculation engine | `NOT STARTED` |
 | V3.4 | Multi-provider runtime and source expansion | `NOT STARTED` |
 | V3.5 | Research Ledger and Director | `NOT STARTED` |
@@ -91,6 +91,7 @@ is recorded explicitly rather than being allowed to pass as production validatio
 | 2026-09-05 | V3.2.2 company backfill | `feature/v3-2-2-company-backfill` | `4e0a90d` |
 | 2026-09-05 | V3.2.3 entity resolution | `feature/v3-2-3-entity-resolution` | `f3286ad` |
 | 2026-09-05 | V3.2.3.1 identifier sources | `feature/v3-2-3-1-identifier-sources` | `d34c65f` |
+| 2026-09-05 | V3.2.4 relationships, scopes, segments | `feature/v3-2-4-entity-relationships` | *(see progress log)* |
 
 ## Corrective slices
 
@@ -120,6 +121,7 @@ database is re-checked afterwards to confirm it is still at 018.
 | 025 | `research_document_derivations.extraction_profile` | scratch (`ib_v3_migcheck_025`, dropped) | **No** |
 | 026 | `legal_entities`, `securities`, `security_listings`, `entity_identifiers`, `entity_aliases` | scratch (`ib_v3_migcheck_026`, dropped). Upgraded, downgraded, re-upgraded; ORM/DDL drift check clean; **every uniqueness and CHECK guarantee exercised with real conflicting INSERTs in PostgreSQL 16**, not only through the ORM. | **No** |
 | 027 | `companies.legal_entity_id` (nullable, `SET NULL`) + index | scratch (`ib_v3_migcheck_027`, dropped). A column-by-column diff of `companies` shows **exactly one added column**; `confdeltype='n'` and a real entity DELETE left the company row in place, unlinked; downgrade restored the column list identically. | **No** |
+| 028 | `entity_relationships`, `reporting_scopes`, `business_segments` + `securities.underlying_security_id` / `receipt_ratio` | scratch (`ib_v3_migcheck_028`, dropped). Exactly **two** columns added to `securities`, `companies` **identical**; **eleven** guarantees exercised with real conflicting statements in PostgreSQL; drift check clean across all nine tables including CHECK constraints. | **No** |
 
 Additive-only through V3.2 (§2.1 of the migration plan): tables, **nullable**
 columns and indexes only. That is what makes `release/v2-current` code able to run
@@ -170,10 +172,10 @@ belong to the agent, with an ADR when material.
 
 Recorded so a later run can be compared against a number rather than a memory.
 
-| Gate | At campaign start (`35bd550`) | After V3.2.3.1 |
+| Gate | At campaign start (`35bd550`) | After V3.2.4 |
 |---|---|---|
 | `ruff check .` | All checks passed | All checks passed |
-| `pytest tests/ -q` | 4949 passed, 12 skipped | **5108 passed**, 12 skipped |
+| `pytest tests/ -q` | 4949 passed, 12 skipped | **5144 passed**, 12 skipped |
 | `mypy app` | 71 errors in 10 files | 71 errors in 10 files (baseline; one regression to 72 was caught by the gate in 2.3 and fixed) |
 
 ## Provider benchmarks
@@ -248,18 +250,18 @@ Carried forward, all still true:
 
 ## Next executable action
 
-Start **V3.2 slice 2.4** on `feature/v3-2-4-entity-relationships`:
-`EntityRelationship`, `ReportingScope` and `BusinessSegment`, with migration 028.
+Start **V3.2 slice 2.5** on `feature/v3-2-5-universe-generation`: a provider-neutral
+`UniverseProvider`, with the curated `market_universe_builder` registry demoted to
+**one source among several** behind a flag rather than being the universe.
 
-Relationships are typed, sourced, effective-dated and confidence-scored —
-`parent_of`, `subsidiary_of`, `adr_of`, `predecessor_of`. The reason this matters
-beyond tidiness: consolidated versus subsidiary reporting is currently
-unrepresentable, so the platform cannot reason about whether a filing covers the
-group or a subsidiary.
+The discovery funnel the architecture asks for is: *universe generation → cheap
+deterministic filter → semantic/theme relevance → bounded enrichment → Discovery
+Council*. The constraint that shapes it is that a full company analysis must never
+run over thousands of companies — a single live run is 261-451s, so the funnel has to
+cut the population **before** anything expensive touches it.
 
-`ReportingScope` and `BusinessSegment` give persistent identity to the scope
-vocabulary `fact_scope.py` already enforces in memory, so a segment can be tracked
-across periods and renamings. The regression case to keep in front of this work is
-CFR: **Specialist Watchmakers figures must never become Group**, and the €107m
-figure needed a font-size PDF heading stack to scope correctly. A segment table that
-cannot express "this segment was renamed in FY2024" will silently split a series.
+Two things already beneath it must be used rather than re-invented: a universe member
+is identified by a `SecurityListing`, not by a ticker string, and a candidate the
+resolver reports as `ambiguous` or `conflicting` must not silently enter the universe
+as if it were one company. `market_universe_builder.py` carries an `E501` per-file
+ignore because its curated table is deliberately wide — keep that.
