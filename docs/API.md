@@ -3209,3 +3209,17 @@ prior chair synthesis, company risks and research confidence. Resolution is
 company-scoped, gated on structured content, newest-first — and it does **not**
 consult `candidate.analysis_report_id`, which the discovery pipeline itself sets
 to a Phase-9 screening draft on every candidate it touches.
+
+---
+
+## V3.1 Research Corpus — no API surface (`develop/v3` only)
+
+The corpus added **no HTTP endpoints**. It is an internal research capability:
+`app.services.corpus.retrieval.search_corpus(...)` and `resolve_evidence(...)`
+are called from inside the research pipeline, and the agent-facing wrapper around
+them (`search_company_corpus`) belongs to V3.3's tool contracts.
+
+That is deliberate. A corpus search endpoint would need its own auth, its own
+rate limiting and its own answer to "which entity may this caller see", and none
+of those questions has an owner yet. Nothing about the corpus is reachable from
+the public API, and `V3_CORPUS_ENABLED` is off by default in any case.

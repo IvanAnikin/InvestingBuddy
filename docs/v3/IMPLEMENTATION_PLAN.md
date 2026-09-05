@@ -10,7 +10,7 @@
 | Phase | Goal | Status |
 |---|---|---|
 | **V3.0** | Execution and correctness foundation | `IMPLEMENTED` — not `VALIDATED`: no live-issuer run has been performed, because V3 is not deployed. See [the phase gate](#9-v30-phase-gate). |
-| **V3.1** | Research Corpus | `IN PROGRESS` |
+| **V3.1** | Research Corpus | `IMPLEMENTED` — and, unlike V3.0, with a **real-document acceptance run** behind it. Not `VALIDATED`: the run is local and the corpus is not deployed. See [the phase gate](#10-v31-phase-gate). |
 | **V3.2** | Entity Master and global universe | `NOT STARTED` |
 | **V3.3** | Research tools and calculation engine | `NOT STARTED` |
 | **V3.4** | Multi-provider runtime and source expansion | `NOT STARTED` |
@@ -242,7 +242,7 @@ approval.
 | 2026-09-04 | V3.1 Slice 1.4 — search backend abstraction | `feature/v3-1-4-search-interface` | `001948a` |
 | 2026-09-04 | V3.1 Slice 1.5 — document-aware chunking | `feature/v3-1-5-document-aware-chunking` | `1e2e781` |
 | 2026-09-04 | V3.1 Slice 1.6 — corpus retrieval service | `feature/v3-1-6-corpus-retrieval-service` | `d867f70` |
-| 2026-09-04 | V3.1 Slice 1.7 — reprocessing lifecycle | `feature/v3-1-7-reprocessing-lifecycle` | _pending_ |
+| 2026-09-05 | V3.1 Slice 1.7 — reprocessing lifecycle | `feature/v3-1-7-reprocessing-lifecycle` | `fd039bc` |
 
 ---
 
@@ -291,3 +291,112 @@ a TTL, text indefinitely) only sets the TTL value. Content-hash-addressed blob
 storage plus wiring `ExtractedDocument.blob_path` as a real retrieval path is
 also the prerequisite that makes re-extraction possible when a parser improves,
 which the repository's own history says happens repeatedly.
+
+---
+
+## 10. V3.1 phase gate
+
+**Status: `IMPLEMENTED`, not `VALIDATED`.** All seven slices are built, tested and
+merged into `develop/v3`. Unlike V3.0, this phase has a **real-document acceptance
+run** behind it — a genuine 25.9 MB, 169-page Pandora Annual Report 2025, fetched
+through the repository's own guarded fetcher and pushed through the whole corpus.
+What separates it from `VALIDATED` is that the run is *local*: the corpus is not
+deployed, its migrations have reached no deployed environment, and no live
+research run has consumed it.
+
+### What the phase set out to prove (§3 of the acceptance strategy)
+
+> *A real annual report ingests to pages/sections/chunks; a query months later
+> returns the right page with citable lineage; period and scope filters actually
+> constrain results; `DocumentTable` survives a borderless five-year summary.*
+
+| Demonstration | Status |
+|---|---|
+| A real annual report ingests to pages/sections/chunks | ✅ On the real PNDORA document: **169 of 169 pages, 471,780 characters, 72 sections, 177 tables, 602 chunks** after a deep reprocess (40 pages / 108,000 chars / 113 chunks on the live path). Against **19,232 characters** the V2 excerpt model would have kept — **24.5×**. |
+| A query months later returns the right page with citable lineage | ✅ `test_a_query_months_later_returns_the_right_page`; and on the real document, `"cash flow from operations"` → **p. 138** and `"segment information"` → **p. 110, "NOTE 2.1 SEGMENT AND REVENUE INFORMATION"**, each with a full citation label. |
+| A recorded evidence id still resolves after a reindex and a reprocess | ✅ `test_an_id_survives_a_reindex`; and the real run reports *"the citation recorded BEFORE reprocessing still resolves: True"*. |
+| Period and scope filters actually constrain results | ✅ `test_group_and_fy2025_together_are_expressible` narrows five chunks to one; `test_the_semantic_leg_is_still_filtered` shows a semantically perfect wrong-period match excluded; a semantic-only query is refused outright. |
+| `DocumentTable` survives a borderless five-year summary | ✅ On the real document: `p14:m0` came back as a **grid** with `['2025','2024','2023','2022','2021']` and `['Revenue','32,549','31,680','28,136','26,463','23,394']`. 46 of 177 tables carry a column→period map after the deep parse. |
+| Raw bytes make re-extraction possible without a re-fetch | ✅ Bytes recovered **by content hash alone**, re-parse identical in pages, sections and text; the deep reprocess made no network call. |
+
+### What is deliberately NOT done
+
+| Item | Why |
+|---|---|
+| The production search backend | [OPEN DECISION #1](OPEN_DECISIONS.md#1-azure-ai-search-vs-postgresql--pgvector), **user-owned** on cost. Both options cover the lexical layer, so a `tsvector` adapter would choose (b) in everything but name. Slice 1.4 ships the interface, the fusion and a complete in-memory reference backend; `test_the_production_backend_decision_is_not_taken_here` fails if anybody adds an adapter. |
+| A retention TTL | [OPEN DECISION #12](OPEN_DECISIONS.md#12-raw-page-and-document-retention), **user-owned**. `V3_ARTIFACT_RETENTION_DAYS` defaults to 0 — "no TTL configured", never "keep forever" — and the sweep is explicit, dry-run by default, and scheduled by nothing. |
+| Embeddings and an embedding provider | `CorpusChunk.embedding` is the slot; who fills it is a provider decision in V3.4. Hybrid search works today and degrades to its lexical leg, which is a worse answer and never a wrong one. |
+| Reconciling the two byte caps | `extract_pdf` flags `truncated` against `primary_document_max_download_bytes` (8 MB) while the fetch layer caps at `source_document_extraction_max_bytes` (35 MB), so a 25.9 MB document is flagged truncated by a bound never applied to it. A **pre-existing V2 inconsistency**; the corpus under-claims completeness as a result, which is the safe direction. Its own slice. |
+| Wiring reprocessing onto the durable worker | V3.0's job store would host it, but adding a job type is a slice of its own. Reprocessing is operator-invoked, and a test keeps it that way. |
+| Legal-entity linkage | The corpus links to `companies` exactly as every other table does. V3.2's backfill gives `companies` its entity link in one place rather than this schema acquiring a second one. |
+| Live-issuer acceptance against a deployed environment | V3 is not deployed and migrations 021-025 have reached nothing. This is the same gap V3.0 has, and the reason the phase is not `VALIDATED`. |
+
+### Defects that only a real document found
+
+Both were invisible to fixtures, and both are the pattern the acceptance strategy
+predicts:
+
+1. **Raw headings were being labelled business segments.** Section scope came from
+   `fact_scope.parse_scope` applied to the heading, whose fail-closed rule —
+   *anything non-empty that is not Group vocabulary is a named segment* — is right
+   for a string the extractor has already vetted and wrong for a heading off a
+   cover page. The real report produced `segment / "CONTENTS"`,
+   `segment / "BIG"`, `segment / "PICTURE"`, and, in the other direction,
+   `segment / "Group results"` — a consolidated section filed under a segment
+   scope. Fixed in Slice 1.3 by routing through the extractor's own heading-scope
+   vetting; both directions are now pinned by test.
+2. **A deep reprocess collided on chunk ids.** A deep parse re-reads the same
+   leading pages, so its first chunks shared an ordinal and an offset range with
+   the live parse's and hashed to the same id. Fixed in Slice 1.7 by making the
+   extraction profile part of the chunk identity — which is also the semantically
+   correct answer.
+
+### Migrations created, not deployed
+
+| Migration | Tables | Applied where |
+|---|---|---|
+| 021 | `research_artifacts` | Scratch PostgreSQL only (`ib_v3_migcheck_021`, created and dropped). |
+| 022 | `research_documents`, `research_document_versions` | Scratch only (`ib_v3_migcheck_022`). |
+| 023 | `research_document_derivations` / `_pages` / `_sections` / `_tables` | Scratch only (`ib_v3_migcheck_023`). |
+| 024 | `research_document_chunks` | Scratch only (`ib_v3_migcheck_024`). |
+| 025 | `research_document_derivations.extraction_profile` | Scratch only (`ib_v3_migcheck_025`). |
+
+Every one was applied, rolled back and re-applied against real PostgreSQL 16 on a
+throwaway database that was then dropped. **The local dev database was re-checked
+after each and is still at 018.** No V3 migration has reached any deployed
+environment.
+
+### Gate results at the end of the phase
+
+```
+ruff check .          All checks passed!
+pytest tests/ -q      4949 passed, 12 skipped   (4647 at the start of V3.1, +302)
+mypy app              Found 71 errors in 10 files   (baseline, unchanged)
+npm run typecheck     PASS      (no frontend change in V3.1)
+npm run lint          PASS
+npm run build         PASS
+```
+
+**One gate run in the phase was not green, and it is worth recording why.** A
+`scripts/v3-gates.sh` run reported `7 failed, 4942 passed`, all seven in
+`test_phase7_azure_openai_real.py`. That file is `skipif`-guarded on
+`settings.llm_provider != "azure_openai"` — silent in CI — and the local `.env`
+enables it, so its 8 tests make **live Azure OpenAI calls** against the deployment's
+TPM quota. It passed 8/8 in isolation 25 seconds later and the full suite was green
+again immediately afterwards, on the same commit. V3.1 touches nothing in its
+import graph. The lesson is recorded in the acceptance strategy: on a developer
+machine `pytest tests/` is not offline, and a failure in that file is a network or
+quota event until the file has been re-run on its own.
+
+### Recommended V3.2 starting slice
+
+**2.1 — `feature/v3-2-1-entity-master`.** It is the only V3.2 slice with no open
+decision in front of it ([#10](OPEN_DECISIONS.md#10-openfigi-usage-and-licensing)
+touches instrument identifiers, not legal-entity identity, and GLEIF is already a
+live source), and it is now the binding constraint on the corpus rather than a
+parallel concern: every corpus document hangs off `companies.id`, which is keyed
+`UNIQUE (ticker, exchange)` and has already resolved `BA` + LSE to the wrong
+issuer live. A corpus that cannot say which legal entity a document belongs to
+will happily return one issuer's annual report under another's ticker, and the
+scope filters that make retrieval safe are worth much less without entity identity
+underneath them.

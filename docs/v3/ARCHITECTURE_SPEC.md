@@ -176,9 +176,16 @@ apps/api/app/
 │   │   ├── job_store.py      # PostgreSQL persistence + leasing
 │   │   └── worker.py         # broker-agnostic executor loop
 │   ├── corpus/               # V3.1 documents, versions, pages, chunks, tables
-│   │   ├── models/           # domain types (not ORM)
-│   │   ├── ingest.py
-│   │   └── search/           # SearchBackend interface + adapters
+│   │   ├── policy.py         # governance data classes + permissions
+│   │   ├── identity.py       # what makes two retrievals ONE document
+│   │   ├── artifacts/        # ArtifactStore interface + memory/local/azure
+│   │   ├── documents.py      # document + version persistence, V2 bridge, backfill
+│   │   ├── parsed.py         # derivations, pages, sections, tables
+│   │   ├── chunking.py       # document-aware retrieval units
+│   │   ├── indexing.py       # chunk persistence + index population
+│   │   ├── retrieval.py      # search_corpus / resolve_evidence
+│   │   ├── reprocessing.py   # parser-version + budget lifecycle
+│   │   └── search/           # SearchBackend interface + fusion + backends
 │   ├── entities/             # V3.2 legal entity, security, listing, identifier
 │   ├── tools/                # V3.3 typed read-only agent tools
 │   ├── calc/                 # V3.3 deterministic calculation engine
@@ -242,21 +249,32 @@ first slices use, which keeps V3.0 testable with zero cloud dependencies.
 
 ---
 
-## 5. Research Corpus (V3.1)
+## 5. Research Corpus (V3.1) — `IMPLEMENTED IN V3`
 
 See [DATA_AND_EVIDENCE_ARCHITECTURE.md](DATA_AND_EVIDENCE_ARCHITECTURE.md#2-research-corpus)
-for the full model. Architecturally:
+for the full model and [the phase gate](IMPLEMENTATION_PLAN.md#10-v31-phase-gate)
+for what was demonstrated. Architecturally:
 
-- Raw artifacts go to Blob Storage (already provisioned; `ExtractedDocument.blob_path`
-  exists but is unused as a retrieval path).
-- Parsed text is persisted **in full**, page- and section-addressed, not just the
-  20 bounded excerpts V2 keeps.
+- Raw artifacts are content-addressed behind an InvestingBuddy-owned
+  `ArtifactStore` (in-memory / filesystem / Azure Blob), and
+  `ExtractedDocument.blob_path` — NULL on every row ever written since migration
+  013 — is a real retrieval path.
+- Parsed text is persisted **in full**, page- and section-addressed, under a
+  *derivation* stamped with the parser version and the budget it ran under. On a
+  real 169-page annual report that is 471,780 characters against the 19,232 twenty
+  bounded excerpts would have kept.
 - Retrieval is **hybrid** (lexical + semantic) and always filterable by entity,
   period, scope, source tier, document type and date. Vector-only retrieval is
-  forbidden: a semantic match that cannot be filtered to "Group, FY2025" is not
-  usable evidence in this domain.
+  forbidden — and now unrequestable: a caller may ask for `LEXICAL` or `HYBRID`,
+  and semantic-only raises.
 - Every retrieved chunk carries enough lineage to render a citation without a
-  second lookup.
+  second lookup, and a recorded `ev:<chunk_id>` resolves back to the exact span
+  after a reindex and after a reprocess.
+- **The production search backend is not chosen.** OPEN DECISION #1 is user-owned;
+  the interface, the rank fusion and a complete in-memory reference backend ship,
+  and a test fails if an adapter is added.
+- Chunks are database rows, not only index entries, so switching backends means
+  reindexing from rows already present rather than re-fetching the corpus.
 
 ---
 

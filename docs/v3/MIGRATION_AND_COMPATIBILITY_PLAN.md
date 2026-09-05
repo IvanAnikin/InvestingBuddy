@@ -1,6 +1,8 @@
 # InvestingBuddy V3 — Migration and Compatibility Plan
 
-**Status:** V3 TARGET. Baseline `4b60e07`, Alembic head **018**.
+**Status:** V3 TARGET. Baseline `4b60e07`, Alembic head on `main` **018**.
+Head on `develop/v3` is **025** — created there, applied to scratch databases
+only, and reaching no deployed environment.
 
 The governing constraint: **`main` is the currently approved, deployed product,
 and it must keep working exactly as it does today throughout V3 development.**
@@ -97,8 +99,8 @@ forward rather than migrating callers en masse:
 | Old | New | Adapter |
 |---|---|---|
 | `(ticker, exchange)` | `LegalEntity` + `SecurityListing` | `resolve_entity(ticker, exchange) -> LegalEntity` — falls back to the `companies` row when no entity exists yet. |
-| `ExtractedDocument` + `excerpts_json` | `ResearchDocumentVersion` + pages/chunks | Corpus reads fall back to `excerpts_json` for documents not yet re-ingested. |
-| Run-local `E1`/`E2` | Stable evidence ids | Citation rendering accepts both; new runs emit stable ids. |
+| `ExtractedDocument` + `excerpts_json` | `ResearchDocumentVersion` + derivation/pages/sections/tables/chunks | **`IMPLEMENTED IN V3` (Slices 1.2-1.5).** The V2 writer is unchanged and the corpus record is written *beside* it, with `research_document_versions.extracted_document_id` pointing back — so nothing is migrated en masse and a corpus read for a document not yet re-ingested falls back to that row's `excerpts_json`. `backfill_from_extracted_documents` handles historical rows: resumable, idempotent, company-scopable, and **called by nothing** — a backfill that starts itself on the first request after a deploy is how a migration becomes an outage. Removal of the excerpt path: not before V3.3 consumes the corpus in a validated live run. |
+| Run-local `E1`/`E2` | Stable evidence ids | **`IMPLEMENTED IN V3` (Slice 1.6)** for corpus evidence: `ev:<chunk_id>`, derived from the document's own coordinates so it survives a reindex and a reprocess. **Existing reports are untouched and their `E1`/`E2` handles keep resolving.** Removal of the run-local handles: not before every report that uses them has been regenerated, which is not planned. |
 | `research_job` envelope in `AgentRun`/`AgentStep` | `research_jobs` row | The V3 job store exposes the same status vocabulary, so the polling API contract does not change. |
 
 **Adapters are temporary and dated.** Each one records the slice that will remove
@@ -129,9 +131,11 @@ replacement exists **and has been live-verified**:
 
 hard-coded discovery universe · process-local `BackgroundTasks` for multi-minute
 jobs · frozen evidence-pack-only council · industry-agnostic methodology ·
-reference-only macro sources · absence of corpus search · frontend-only numeric
-reconciliation · run-local positional evidence identity · fresh-run-from-zero
-behaviour.
+reference-only macro sources · ~~absence of corpus search~~ (V3.1: the corpus and
+its retrieval service exist; the excerpt path stays until V3.3 consumes the corpus
+in a validated live run) · frontend-only numeric reconciliation · run-local
+positional evidence identity (V3.1 adds stable ids **alongside**; the old handles
+are not removed) · fresh-run-from-zero behaviour.
 
 The repository's own history is the argument for this rule: several correctives
 were needed precisely because a replacement was assumed to work before it was
