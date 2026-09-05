@@ -13,7 +13,7 @@
 | **V3.1** | Research Corpus | `IMPLEMENTED` — and, unlike V3.0, with a **real-document acceptance run** behind it. Not `VALIDATED`: the run is local and the corpus is not deployed. See [the phase gate](#10-v31-phase-gate). |
 | **V3.2** | Entity Master and global universe | `IMPLEMENTED` — all slices merged. See [the phase gate](#11-v32-phase-gate). |
 | **V3.3** | Research tools and calculation engine | `IMPLEMENTED` — all four slices merged. See [the phase gate](#12-v33-phase-gate). |
-| **V3.4** | Multi-provider runtime and source expansion | `IN PROGRESS` — 4.1/4.1.1 merged. **Nothing is `BLOCKED` any more:** the 2026-09-05 resolution round deferred 4.2/4.6 and unblocked 4.3/4.8. |
+| **V3.4** | Multi-provider runtime and source expansion | `IN PROGRESS` — 4.1/4.1.1/4.3/4.4 merged. **Nothing is `BLOCKED`:** the 2026-09-05 resolution round deferred 4.2/4.6 and unblocked 4.3/4.8. |
 | **V3.5** | Research Ledger and Director | `NOT STARTED` |
 | **V3.6** | Industry playbooks | `NOT STARTED` |
 | **V3.7** | Council V2 and Red Team | `NOT STARTED` |
@@ -115,7 +115,7 @@ bytes are retained.
 | 4.1.1 | [`feature/v3-4-1-1-rights-based-governance`](slices/V3.4-1.1-rights-based-governance.md) | **Implements [ADR-049](../DECISIONS.md).** Two gates — provider × class, and the document's own rights — plus a categorical credential exclusion no policy can override. | `IMPLEMENTED` |
 | 4.2 | `feature/v3-4-2-exa-search-provider` | Exa adapter behind `SearchProvider`. | `DEFERRED` — [ADR-048](../DECISIONS.md): DeepSeek `web_search` is the primary path. Interface and fake retained. |
 | 4.3 | [`feature/v3-4-3-deepseek-providers`](slices/V3.4-3-deepseek-providers.md) | DeepSeek as the **primary** provider: model, search and research adapters, all degrading honestly. ⚠ The server-side search **wire contract is unverified** against the live API; the parser tolerates an unknown shape and the flag defaults off. | `IMPLEMENTED` |
-| 4.4 | `feature/v3-4-4-research-lead-promotion` | `ResearchLead` persistence + verification gate + rejection reasons.| `NOT STARTED` |
+| 4.4 | [`feature/v3-4-4-research-lead-promotion`](slices/V3.4-4-research-lead-promotion.md) | `ResearchLead` persistence (031) + a **deterministic** verification gate that reads only bytes the platform fetched itself. Five CHECK constraints; a claim absent from a document only *partly* read stays **undecided**, never rejected. | `IMPLEMENTED` |
 | 4.5 | `feature/v3-4-5-provider-benchmark-harness` | Repeatable scored benchmark; `cost_per_verified_finding`.| `NOT STARTED` |
 | 4.6 | `feature/v3-4-6-gemini-deep-research` | Managed Deep Research as a contractor producing leads only. | `DEFERRED` — `OPTIONAL / NOT ACTIVATED`; DeepSeek provides the initial autonomous web research. |
 | 4.7 | `feature/v3-4-7-macro-observation-store` | `DatasetDefinition` / `SeriesDefinition` / `Observation` + first live macro source.| `NOT STARTED` |
@@ -266,6 +266,7 @@ approval.
 | 2026-09-05 | Decision record — 11 resolutions, ADR-047..052 | `feature/v3-decisions-resolved` | `ec8ea65` |
 | 2026-09-05 | V3.4 Slice 4.1.1 — rights-based governance | `feature/v3-4-1-1-rights-based-governance` | `66ddd30` |
 | 2026-09-05 | V3.4 Slice 4.3 — DeepSeek providers | `feature/v3-4-3-deepseek-providers` | `07c7032` |
+| 2026-09-05 | V3.4 Slice 4.4 — research lead promotion | `feature/v3-4-4-research-lead-promotion` | _pending_ |
 
 ---
 
