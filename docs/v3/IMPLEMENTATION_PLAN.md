@@ -253,6 +253,7 @@ approval.
 | 2026-09-05 | V3.2 Slice 2.3.1 — identifier sources | `feature/v3-2-3-1-identifier-sources` | `d34c65f` |
 | 2026-09-05 | V3.2 Slice 2.4 — relationships, scopes, segments | `feature/v3-2-4-entity-relationships` | `ad1a796` |
 | 2026-09-05 | V3.2 Slice 2.5 — universe generation | `feature/v3-2-5-universe-generation` | `df75ce6` |
+| 2026-09-05 | V3.2 phase gate | `feature/v3-2-phase-gate-report` | `4f0cb0a` |
 
 ---
 
