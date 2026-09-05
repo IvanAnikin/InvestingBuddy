@@ -5,9 +5,12 @@ from app.models.document_ingestion_attempt import DocumentIngestionAttempt
 from app.models.extracted_document import ExtractedDocument, ExtractedFact
 from app.models.field_review import FieldReviewCandidateSummary, FieldReviewRun
 from app.models.legal_entity import (
+    BusinessSegment,
     EntityAlias,
     EntityIdentifier,
+    EntityRelationship,
     LegalEntity,
+    ReportingScope,
     Security,
     SecurityListing,
 )
@@ -28,6 +31,7 @@ from app.models.source import Citation, Source
 __all__ = [
     "AgentRun",
     "AgentStep",
+    "BusinessSegment",
     "Citation",
     "Company",
     "DiscoveryCandidate",
@@ -35,12 +39,14 @@ __all__ = [
     "DocumentIngestionAttempt",
     "EntityAlias",
     "EntityIdentifier",
+    "EntityRelationship",
     "ExtractedDocument",
     "ExtractedFact",
     "FieldReviewCandidateSummary",
     "FieldReviewRun",
     "LegalEntity",
     "Report",
+    "ReportingScope",
     "ResearchArtifact",
     "ResearchDocument",
     "ResearchDocumentChunk",

@@ -151,6 +151,28 @@ class Security(Base):
     is_primary: Mapped[bool] = mapped_column(
         sa.Boolean(), nullable=False, default=False, server_default=sa.false()
     )
+    #: The instrument a depositary receipt represents (V3.2 Slice 2.4). The ADR ↔
+    #: ordinary link belongs between INSTRUMENTS, not entities: a receipt represents
+    #: underlying *shares* at a ratio. ``SET NULL`` rather than CASCADE — losing the
+    #: underlying record must not delete the receipt that referenced it.
+    underlying_security_id: Mapped[uuid.UUID | None] = mapped_column(
+        sa.Uuid(as_uuid=True),
+        sa.ForeignKey(
+            "securities.id",
+            ondelete="SET NULL",
+            name="fk_securities_underlying_security_id_securities",
+        ),
+        nullable=True,
+    )
+    #: **Underlying shares represented by ONE receipt.** The direction is stated
+    #: because a bare "ratio" of 4 could mean four receipts per share or four shares
+    #: per receipt, and a reader who guesses wrong is out by 16x. ``4`` is a receipt
+    #: over four shares; ``0.25`` is four receipts to the share.
+    #:
+    #: NULL means **not established**, never 1 — that substitution is why per-share
+    #: arithmetic must be able to refuse. See
+    #: ``app.services.entities.scopes.underlying_shares_per_unit``.
+    receipt_ratio: Mapped[float | None] = mapped_column(sa.Numeric(20, 6))
     source: Mapped[str | None] = mapped_column(sa.String(100))
     created_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True), default=_utcnow, server_default=sa.func.now()
@@ -172,6 +194,12 @@ class Security(Base):
             unique=True,
             postgresql_where=sa.text("is_primary"),
             sqlite_where=sa.text("is_primary"),
+        ),
+        # A ratio of zero or less is not a ratio. NULL stays allowed and means
+        # "not established".
+        sa.CheckConstraint(
+            "receipt_ratio IS NULL OR receipt_ratio > 0",
+            name="ck_securities_receipt_ratio_positive",
         ),
     )
 
@@ -423,4 +451,248 @@ class EntityAlias(Base):
             unique=True,
         ),
         sa.Index("ix_entity_aliases_normalized_alias", "normalized_alias"),
+    )
+
+
+class EntityRelationship(Base):
+    """One typed, sourced, effective-dated link between two legal entities.
+
+    ONE CANONICAL DIRECTION
+    =======================
+    ``parent_of`` and ``subsidiary_of`` are inverses, and a schema that stores both
+    can hold two rows that contradict each other with no rule for which wins. So the
+    vocabulary declares one canonical direction per pair and the writer normalises to
+    it: asserting ``subsidiary_of(A, B)`` stores ``parent_of(B, A)``. The inverse is a
+    query, never a row — see ``app.services.entities.relationships``.
+
+    WHY IT MATTERS BEYOND TIDINESS
+    ==============================
+    Consolidated versus subsidiary reporting is currently unrepresentable, so the
+    platform cannot reason about whether a filing covers the group or a part of it.
+    That is a correctness question about every number in a subsidiary's accounts.
+    """
+
+    __tablename__ = "entity_relationships"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        sa.Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    #: CASCADE both sides: this is composition of the identity graph, and a
+    #: relationship missing one of its ends is uninterpretable rather than degraded.
+    subject_entity_id: Mapped[uuid.UUID] = mapped_column(
+        sa.Uuid(as_uuid=True),
+        sa.ForeignKey(
+            "legal_entities.id",
+            ondelete="CASCADE",
+            name="fk_entity_relationships_subject_legal_entities",
+        ),
+        nullable=False,
+    )
+    object_entity_id: Mapped[uuid.UUID] = mapped_column(
+        sa.Uuid(as_uuid=True),
+        sa.ForeignKey(
+            "legal_entities.id",
+            ondelete="CASCADE",
+            name="fk_entity_relationships_object_legal_entities",
+        ),
+        nullable=False,
+    )
+    #: A member of ``CANONICAL_RELATIONSHIP_TYPES`` only. An alias a caller asserted
+    #: is resolved before the write.
+    relationship_type: Mapped[str] = mapped_column(sa.String(40), nullable=False)
+    source: Mapped[str] = mapped_column(sa.String(100), nullable=False)
+    source_url: Mapped[str | None] = mapped_column(sa.String(2000))
+    #: 0.0-1.0. A relationship read off an org chart in a filing is not a
+    #: relationship inferred from a shared address, and the difference must survive.
+    confidence: Mapped[float] = mapped_column(
+        sa.Float(), nullable=False, default=1.0, server_default=sa.text("1.0")
+    )
+    #: ``effective_to IS NULL`` means still current — the same convention listings
+    #: and identifiers use, and the partial unique index is built on it.
+    effective_from: Mapped[date | None] = mapped_column(sa.Date())
+    effective_to: Mapped[date | None] = mapped_column(sa.Date())
+    note: Mapped[str | None] = mapped_column(sa.String(500))
+    created_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True), default=_utcnow, server_default=sa.func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True),
+        default=_utcnow,
+        server_default=sa.func.now(),
+        onupdate=_utcnow,
+    )
+
+    __table_args__ = (
+        sa.Index(
+            "ix_entity_relationships_current",
+            "subject_entity_id",
+            "object_entity_id",
+            "relationship_type",
+            unique=True,
+            postgresql_where=sa.text("effective_to IS NULL"),
+            sqlite_where=sa.text("effective_to IS NULL"),
+        ),
+        sa.Index("ix_entity_relationships_subject", "subject_entity_id"),
+        sa.Index("ix_entity_relationships_object", "object_entity_id"),
+        # An entity is not its own parent, and a schema that can hold that can hold
+        # a cycle nothing detects.
+        sa.CheckConstraint(
+            "subject_entity_id <> object_entity_id",
+            name="ck_entity_relationships_no_self_reference",
+        ),
+        sa.CheckConstraint(
+            "confidence >= 0.0 AND confidence <= 1.0",
+            name="ck_entity_relationships_confidence_range",
+        ),
+    )
+
+
+class ReportingScope(Base):
+    """The durable identity of a scope a figure can be reported at.
+
+    ``scope_key`` is **exactly** ``fact_scope.FactScope.scope_key`` — ``'group'`` or
+    ``'segment:<casefolded name>'`` — so the persisted identity and the in-memory
+    semantics cannot drift. ``region`` and ``division`` extend it with the levels the
+    architecture document names.
+
+    IT OVER-SPLITS, AND THAT IS THE DESIGN
+    ======================================
+    ``scope_key`` derives from the name, so a renamed segment produces a **new**
+    scope: "Watches" is not "Specialist Watchmakers" and the series splits, visibly,
+    as two rows. Linking them is an explicit sourced assertion via
+    ``predecessor_scope_id``, which may only be set together with a ``rename_source``.
+    Split by default, link on evidence — the same asymmetry ``entity_key`` uses.
+    Merging two scopes silently would join one segment's figures onto another's
+    history, which for CFR means Specialist Watchmakers figures becoming Group.
+    """
+
+    __tablename__ = "reporting_scopes"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        sa.Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(
+        sa.Uuid(as_uuid=True),
+        sa.ForeignKey(
+            "legal_entities.id",
+            ondelete="CASCADE",
+            name="fk_reporting_scopes_legal_entity_id_legal_entities",
+        ),
+        nullable=False,
+    )
+    #: ``group`` | ``segment`` | ``region`` | ``division``.
+    scope_type: Mapped[str] = mapped_column(sa.String(20), nullable=False)
+    #: The label as first seen. NULL for ``group``, which has no name of its own.
+    scope_name: Mapped[str | None] = mapped_column(sa.String(200))
+    #: ``fact_scope.FactScope.scope_key``, byte-for-byte. The join key for every
+    #: fact, chunk and calculation that carries a scope.
+    scope_key: Mapped[str] = mapped_column(sa.String(220), nullable=False)
+    #: The scope this one replaced. Settable ONLY with ``rename_source`` — a rename
+    #: is an assertion about the world and needs a source like any other.
+    predecessor_scope_id: Mapped[uuid.UUID | None] = mapped_column(
+        sa.Uuid(as_uuid=True),
+        sa.ForeignKey(
+            "reporting_scopes.id",
+            ondelete="SET NULL",
+            name="fk_reporting_scopes_predecessor_reporting_scopes",
+        ),
+        nullable=True,
+    )
+    rename_source: Mapped[str | None] = mapped_column(sa.String(200))
+    source: Mapped[str | None] = mapped_column(sa.String(100))
+    first_seen_period: Mapped[str | None] = mapped_column(sa.String(20))
+    last_seen_period: Mapped[str | None] = mapped_column(sa.String(20))
+    created_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True), default=_utcnow, server_default=sa.func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True),
+        default=_utcnow,
+        server_default=sa.func.now(),
+        onupdate=_utcnow,
+    )
+
+    __table_args__ = (
+        sa.Index(
+            "ix_reporting_scopes_entity_key",
+            "legal_entity_id",
+            "scope_key",
+            unique=True,
+        ),
+        sa.Index("ix_reporting_scopes_scope_key", "scope_key"),
+        # A predecessor without a source is an unsourced merge of two series.
+        sa.CheckConstraint(
+            "predecessor_scope_id IS NULL OR rename_source IS NOT NULL",
+            name="ck_reporting_scopes_rename_needs_a_source",
+        ),
+        sa.CheckConstraint(
+            "predecessor_scope_id IS NULL OR predecessor_scope_id <> id",
+            name="ck_reporting_scopes_no_self_predecessor",
+        ),
+    )
+
+
+class BusinessSegment(Base):
+    """One period's *disclosure* of a reporting scope, with the name as printed.
+
+    A ``ReportingScope`` is the durable identity; this is what a specific report
+    called it in a specific period. The separation is what makes a renaming visible
+    rather than lossy — two rows, different ``reported_name``, different
+    ``period_key``, and once a source says so, one scope lineage behind them.
+    """
+
+    __tablename__ = "business_segments"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        sa.Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    reporting_scope_id: Mapped[uuid.UUID] = mapped_column(
+        sa.Uuid(as_uuid=True),
+        sa.ForeignKey(
+            "reporting_scopes.id",
+            ondelete="CASCADE",
+            name="fk_business_segments_reporting_scope_id_reporting_scopes",
+        ),
+        nullable=False,
+    )
+    #: Denormalized so "every segment this issuer disclosed" is one index scan.
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(
+        sa.Uuid(as_uuid=True),
+        sa.ForeignKey(
+            "legal_entities.id",
+            ondelete="CASCADE",
+            name="fk_business_segments_legal_entity_id_legal_entities",
+        ),
+        nullable=False,
+    )
+    #: Verbatim, as the report printed it. Never normalised away — the exact wording
+    #: is what a citation has to be able to quote.
+    reported_name: Mapped[str] = mapped_column(sa.String(200), nullable=False)
+    normalized_name: Mapped[str] = mapped_column(sa.String(200), nullable=False)
+    #: ``ReportingPeriod.key`` form. NOT NULL: a disclosure with no period cannot be
+    #: placed in a series, and "which period was this segment reported for" is the
+    #: only question this table exists to answer.
+    period_key: Mapped[str] = mapped_column(sa.String(20), nullable=False)
+    period_type: Mapped[str | None] = mapped_column(sa.String(20))
+    source: Mapped[str | None] = mapped_column(sa.String(100))
+    source_url: Mapped[str | None] = mapped_column(sa.String(2000))
+    created_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True), default=_utcnow, server_default=sa.func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True),
+        default=_utcnow,
+        server_default=sa.func.now(),
+        onupdate=_utcnow,
+    )
+
+    __table_args__ = (
+        sa.Index(
+            "ix_business_segments_scope_period",
+            "reporting_scope_id",
+            "period_key",
+            unique=True,
+        ),
+        sa.Index("ix_business_segments_entity_period", "legal_entity_id", "period_key"),
+        sa.Index("ix_business_segments_normalized_name", "normalized_name"),
     )

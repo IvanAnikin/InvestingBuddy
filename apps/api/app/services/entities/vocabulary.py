@@ -22,6 +22,8 @@ to disagree. Nothing in slice 2.1 resolves anything — see
 
 from __future__ import annotations
 
+from app.services.sources.fact_scope import SCOPE_TYPE_GROUP, SCOPE_TYPE_SEGMENT
+
 # ── Security types ───────────────────────────────────────────────────────── #
 
 SECURITY_ORDINARY_SHARE = "ordinary_share"
@@ -161,3 +163,91 @@ def require_resolution_state(value: str | None) -> str:
 def is_depositary_receipt(security_type: str | None) -> bool:
     """True when per-share arithmetic must not be applied without a ratio."""
     return (security_type or "").strip().lower() in DEPOSITARY_RECEIPT_TYPES
+
+
+# ── Relationship types (V3.2 Slice 2.4) ──────────────────────────────────── #
+
+#: ``subject`` is the parent of ``object``.
+REL_PARENT_OF = "parent_of"
+#: ``subject`` was renamed/reorganised INTO ``object`` — subject came first.
+REL_PREDECESSOR_OF = "predecessor_of"
+#: ``subject`` and ``object`` are partners in a joint venture. Symmetric.
+REL_JOINT_VENTURE_WITH = "joint_venture_with"
+#: ``subject`` issues depositary receipts over ``object``'s shares. Used only for the
+#: rare cross-entity depositary arrangement; the ordinary ADR case is an
+#: instrument-level link (``securities.underlying_security_id``), because a
+#: depositary receipt represents underlying SHARES at a ratio, not a company.
+REL_DEPOSITARY_FOR = "depositary_for"
+
+#: The relationship types actually stored. Every other direction is a QUERY.
+#:
+#: ``parent_of`` and ``subsidiary_of`` are inverses, and storing both invites two
+#: rows that contradict each other with no rule for which wins. So the vocabulary
+#: declares one canonical direction per pair and the writer normalises to it.
+CANONICAL_RELATIONSHIP_TYPES: frozenset[str] = frozenset(
+    {
+        REL_PARENT_OF,
+        REL_PREDECESSOR_OF,
+        REL_JOINT_VENTURE_WITH,
+        REL_DEPOSITARY_FOR,
+    }
+)
+
+#: Types a caller may assert, mapped to ``(canonical_type, swap_subject_object)``.
+#: Asserting ``subsidiary_of(A, B)`` stores ``parent_of(B, A)``.
+RELATIONSHIP_ALIASES: dict[str, tuple[str, bool]] = {
+    REL_PARENT_OF: (REL_PARENT_OF, False),
+    "subsidiary_of": (REL_PARENT_OF, True),
+    REL_PREDECESSOR_OF: (REL_PREDECESSOR_OF, False),
+    "successor_of": (REL_PREDECESSOR_OF, True),
+    REL_JOINT_VENTURE_WITH: (REL_JOINT_VENTURE_WITH, False),
+    REL_DEPOSITARY_FOR: (REL_DEPOSITARY_FOR, False),
+    "depositary_receipt_of": (REL_DEPOSITARY_FOR, True),
+}
+
+#: Types where the direction carries no meaning, so a query must look both ways.
+SYMMETRIC_RELATIONSHIP_TYPES: frozenset[str] = frozenset({REL_JOINT_VENTURE_WITH})
+
+#: How to describe the reverse of a stored row to a human.
+RELATIONSHIP_INVERSE_LABEL: dict[str, str] = {
+    REL_PARENT_OF: "subsidiary_of",
+    REL_PREDECESSOR_OF: "successor_of",
+    REL_JOINT_VENTURE_WITH: REL_JOINT_VENTURE_WITH,
+    REL_DEPOSITARY_FOR: "depositary_receipt_of",
+}
+
+
+# ── Reporting scope types (V3.2 Slice 2.4) ───────────────────────────────── #
+#
+# ``group`` and ``segment`` are ``fact_scope``'s own two types and are imported from
+# there rather than redefined, so the two vocabularies cannot drift. ``region`` and
+# ``division`` are the additional levels the architecture document names, which a
+# segment table alone cannot express.
+
+SCOPE_REGION = "region"
+SCOPE_DIVISION = "division"
+
+#: Every scope type a ``reporting_scopes`` row may carry.
+REPORTING_SCOPE_TYPES: frozenset[str] = frozenset(
+    {SCOPE_TYPE_GROUP, SCOPE_TYPE_SEGMENT, SCOPE_REGION, SCOPE_DIVISION}
+)
+
+
+def require_relationship_type(value: str | None) -> tuple[str, bool]:
+    """Resolve an asserted type to ``(canonical_type, swap)``, or raise."""
+    key = (value or "").strip().lower()
+    resolved = RELATIONSHIP_ALIASES.get(key)
+    if resolved is None:
+        raise ValueError(
+            f"{value!r} is not a recognised relationship type. Recognised: "
+            f"{', '.join(sorted(RELATIONSHIP_ALIASES))}."
+        )
+    return resolved
+
+
+def require_reporting_scope_type(value: str | None) -> str:
+    return _require(value, REPORTING_SCOPE_TYPES, "reporting scope type")
+
+
+def is_symmetric_relationship(canonical_type: str | None) -> bool:
+    return (canonical_type or "").strip().lower() in SYMMETRIC_RELATIONSHIP_TYPES
