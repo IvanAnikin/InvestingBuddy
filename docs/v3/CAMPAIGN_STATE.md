@@ -39,7 +39,7 @@ enabling a V3 flag in production, deleting V2 compatibility or either V2 ref.
 | Alembic head in the deployed database | **018** — and V3 migrations 019-029 have reached **no** deployed environment |
 | Alembic head in the local dev database | **018** (unchanged by V3 work; scratch databases only) |
 | Current phase | **V3.3 — Research tools and calculation engine** |
-| Current slice | 3.2 — `feature/v3-3-2-fact-and-series-tools` (next) |
+| Current slice | 3.3 — `feature/v3-3-3-calculation-engine` (next) |
 | Deployed | **Nothing.** `main` at `4b60e07` is the deployed product. |
 
 Working tree at campaign start also held two untracked files —
@@ -54,7 +54,7 @@ the user's call, and the campaign leaves them untracked and untouched.
 | V3.0 | Execution and correctness foundation | `IMPLEMENTED` |
 | V3.1 | Research Corpus | `IMPLEMENTED` |
 | V3.2 | Entity Master and global universe | `IMPLEMENTED` — all six slices merged; [phase gate](IMPLEMENTATION_PLAN.md#11-v32-phase-gate) |
-| V3.3 | Research tools and calculation engine | `IN PROGRESS` — 3.1 merged; 3.2-3.4 open |
+| V3.3 | Research tools and calculation engine | `IN PROGRESS` — 3.1-3.2 merged; 3.3-3.4 open |
 | V3.4 | Multi-provider runtime and source expansion | `NOT STARTED` |
 | V3.5 | Research Ledger and Director | `NOT STARTED` |
 | V3.6 | Industry playbooks | `NOT STARTED` |
@@ -95,6 +95,7 @@ is recorded explicitly rather than being allowed to pass as production validatio
 | 2026-09-05 | V3.2.5 universe generation | `feature/v3-2-5-universe-generation` | `df75ce6` |
 | 2026-09-05 | V3.2 phase gate | `feature/v3-2-phase-gate-report` | `4f0cb0a` |
 | 2026-09-05 | V3.3.1 agent tool contracts | `feature/v3-3-1-agent-tool-contracts` | `b4f31ef` |
+| 2026-09-05 | V3.3.2 fact and series tools | `feature/v3-3-2-fact-and-series-tools` | *(see progress log)* |
 
 ## Corrective slices
 
@@ -176,10 +177,10 @@ belong to the agent, with an ADR when material.
 
 Recorded so a later run can be compared against a number rather than a memory.
 
-| Gate | At campaign start (`35bd550`) | After V3.3.1 |
+| Gate | At campaign start (`35bd550`) | After V3.3.2 |
 |---|---|---|
 | `ruff check .` | All checks passed | All checks passed |
-| `pytest tests/ -q` | 4949 passed, 12 skipped | **5226 passed**, 12 skipped |
+| `pytest tests/ -q` | 4949 passed, 12 skipped | **5259 passed**, 12 skipped |
 | `mypy app` | 71 errors in 10 files | 71 errors in 10 files (baseline; one regression to 72 was caught by the gate in 2.3 and fixed) |
 
 ## Provider benchmarks
@@ -224,6 +225,10 @@ Carried forward, all still true:
   listing → security → entity. It does **not** retire the old path — `companies`
   and `sec_issuer_registry` are untouched until slice 2.2 links them and a
   validated replacement exists.
+- **A row limit must bound the population the caller asked for.** V3.3.2 shipped a
+  filter in Python after a `LIMIT` in SQL, which would have returned **zero** segment
+  facts for a company with more Group facts than the limit. Whenever a filter and a
+  bound are in different layers, the bound wins and the filter is decorative.
 - **An ambiguous unit is worse than a missing one.** A missing unit makes the
   arithmetic refuse; an ambiguous one lets it run and be wrong. Two V3.2 review
   findings were exactly this — a listing currency that would have mislabelled every
@@ -260,27 +265,24 @@ Carried forward, all still true:
 
 ## Next executable action
 
-Start **V3.3 slice 3.2** on `feature/v3-3-2-fact-and-series-tools`:
-`get_financial_facts`, `get_financial_series` and `get_segment_facts` on the machinery
-3.1 landed. No migration — `extracted_facts` already exists with the typed scope
-columns migration 018 added.
+Start **V3.3 slice 3.3** on `feature/v3-3-3-calculation-engine`: declarative
+calculation definitions, typed inputs, **incompatibility refusals**, and persisted
+calculation records. Migration expected.
 
-The machinery is done, so 3.2 is entirely about **what a fact tool is allowed to
-return**, and the traps are all recorded:
+The acceptance strategy's demonstration for V3.3 is the one that matters here: *a
+calculation with incompatible periods or scopes is **refused**, not computed.* Two
+primitives already decide that and must not be re-implemented:
 
-- A fact carries a period, a scope, a unit, a currency and a scale, and a tool that
-  returns a number without all five is handing an agent something it cannot cite. The
-  `FactScope` triple and `ReportingPeriod` are the vocabularies; do not invent a
-  second shape.
-- **Annual ≠ interim, and Group ≠ segment.** A series tool is the first place where
-  mixing them silently is easy: `get_financial_series` must refuse a request that would
-  span period types, rather than returning a series that looks continuous.
-- `extracted_facts.is_active` (017) and the scope columns (018) exist because stale and
-  mis-scoped rows were live defects. A tool that ignores `is_active` will resurrect a
-  superseded figure.
-- Fact counts must **name their population** (`fact_count_scopes.py`). The rule is not
-  to make the numbers agree; it is to say which population each number counts.
+- `ReportingPeriod.comparable_with` — fail-closed, refuses cross-type comparison, and
+  refuses an unknown period against anything including another unknown.
+- `FactScope` / `scope_key` — Group is not segment and unknown is not Group.
 
-The regression case to keep in front of it is CFR: Specialist Watchmakers figures must
-never come back from a Group query, and the €107m figure is the one that needed a
-font-size PDF heading stack to scope correctly at all.
+A calculation record must carry its definition, formula, inputs (by fact id), periods,
+scopes, units, currency, version, result and validation, so the arithmetic is
+reproducible and a wrong input is attributable. `underlying_shares_per_unit` (2.4) is
+already the model for a refusal: a depositary receipt with no ratio makes per-share
+arithmetic stop rather than assume 1:1.
+
+The deterministic-arithmetic rule from the campaign brief applies directly — deterministic
+code for deterministic arithmetic, never a model. And a refused calculation is a
+**result**, recorded with its reason, not an exception a caller swallows.
