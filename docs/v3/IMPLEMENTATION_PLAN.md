@@ -116,7 +116,7 @@ bytes are retained.
 | 4.2 | `feature/v3-4-2-exa-search-provider` | Exa adapter behind `SearchProvider`. | `DEFERRED` — [ADR-048](../DECISIONS.md): DeepSeek `web_search` is the primary path. Interface and fake retained. |
 | 4.3 | [`feature/v3-4-3-deepseek-providers`](slices/V3.4-3-deepseek-providers.md) | DeepSeek as the **primary** provider: model, search and research adapters, all degrading honestly. ⚠ The server-side search **wire contract is unverified** against the live API; the parser tolerates an unknown shape and the flag defaults off. | `IMPLEMENTED` |
 | 4.4 | [`feature/v3-4-4-research-lead-promotion`](slices/V3.4-4-research-lead-promotion.md) | `ResearchLead` persistence (031) + a **deterministic** verification gate that reads only bytes the platform fetched itself. Five CHECK constraints; a claim absent from a document only *partly* read stays **undecided**, never rejected. | `IMPLEMENTED` |
-| 4.5 | `feature/v3-4-5-provider-benchmark-harness` | Repeatable scored benchmark; `cost_per_verified_finding`.| `NOT STARTED` |
+| 4.5 | [`feature/v3-4-5-provider-benchmark-harness`](slices/V3.4-5-provider-benchmark-harness.md) | Repeatable scored benchmark on `cost_per_verified_finding`, with a real verification gate as the denominator. Refuses to price the unpriced, to rank a rate over nothing, or to produce any number for a provider that did not run. | `IMPLEMENTED` |
 | 4.6 | `feature/v3-4-6-gemini-deep-research` | Managed Deep Research as a contractor producing leads only. | `DEFERRED` — `OPTIONAL / NOT ACTIVATED`; DeepSeek provides the initial autonomous web research. |
 | 4.7 | `feature/v3-4-7-macro-observation-store` | `DatasetDefinition` / `SeriesDefinition` / `Observation` + first live macro source.| `NOT STARTED` |
 | 4.8 | `feature/v3-4-8-transcript-provider` | Canonical transcript/IR-event model + **free public issuer** acquisition. | `NOT STARTED` — unblocked by [ADR-051](../DECISIONS.md) |
@@ -271,6 +271,7 @@ approval.
 | 2026-09-05 | V3.4 Slice 4.3 — DeepSeek providers | `feature/v3-4-3-deepseek-providers` | `07c7032` |
 | 2026-09-05 | V3.4 Slice 4.4 — research lead promotion | `feature/v3-4-4-research-lead-promotion` | `5cd3910` |
 | 2026-09-06 | V3.4 Slice 4.9 — PostgreSQL search backend | `feature/v3-4-9-pgvector-search-backend` | `08cb013` |
+| 2026-09-06 | V3.4 Slice 4.5 — provider benchmark harness | `feature/v3-4-5-provider-benchmark-harness` | _pending_ |
 | 2026-09-06 | V3.4 Slice 4.11 — research-mode budgets (corrective) | `feature/v3-4-11-research-mode-budgets` | `3f8013b` |
 
 ---
