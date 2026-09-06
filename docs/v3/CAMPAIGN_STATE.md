@@ -121,6 +121,7 @@ is recorded explicitly rather than being allowed to pass as production validatio
 | 2026-09-06 | V3.8.1 research memory | `feature/v3-8-1-research-memory` | `4c873aa` |
 | 2026-09-06 | V3.8.2 research delta | `feature/v3-8-2-research-delta` | `d306c4c` |
 | 2026-09-06 | V3.9.1 monitoring | `feature/v3-9-1-monitoring` | `800f92d` |
+| 2026-09-06 | **V3 release candidate report** | `feature/v3-release-candidate-report` | `96bcd1d` |
 
 ## Corrective slices
 
