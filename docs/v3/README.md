@@ -13,24 +13,25 @@ describes deployed behaviour unless a section explicitly says `CURRENT`.
 | `develop/v3` | V3 integration branch. Unapproved, undeployed. |
 | `feature/v3-*` | PR-sized V3 implementation slices. Merge target is `develop/v3` only. |
 
-**Where the work stands (2026-09-05).** `develop/v3` carries **V3.0** (durable
-execution), **V3.1** (the Research Corpus), **V3.2** (the entity master and universe)
-and **V3.3** (agent tools and the calculation engine), all four `IMPLEMENTED` and none
-`VALIDATED` — nothing is deployed and migrations 019-030 have reached no deployed
-environment. V3.1 has a **real-document
-acceptance run** behind it (`scripts/v3-corpus-acceptance.py`, on a real 169-page
-Pandora annual report); V3.2 has **every schema guarantee exercised against real
-PostgreSQL 16 with real conflicting statements**, which is what makes "the database
-enforces it" a check rather than a claim about SQLAlchemy.
+**Where the work stands (2026-09-06).** `develop/v3` carries **all nine phases**,
+V3.0 through V3.9, every one `IMPLEMENTED` and none `VALIDATED` — nothing is deployed and
+migrations 019-038 have reached no deployed environment.
 
-Three open decisions were reached and deliberately **not** taken —
-[#1](OPEN_DECISIONS.md#1-azure-ai-search-vs-postgresql--pgvector) (the production
-search backend), [#12](OPEN_DECISIONS.md#12-raw-page-and-document-retention)
-(retention TTL) and [#10](OPEN_DECISIONS.md#10-openfigi-usage-and-licensing)
-(OpenFIGI) — each with a test that fails if it is answered by accident.
+**Start with [V3_RELEASE_CANDIDATE_REPORT.md](V3_RELEASE_CANDIDATE_REPORT.md).** It records
+what was built, what was proved, and — in §7, which is the section that matters — what was
+**not**. The short version: this is a complete set of contracts whose *behaviour* is
+unmeasured, because no investigator implementation exists, no live provider call has been
+made, and nothing is wired to the product's front door.
+
+What was proved without a deployment: the whole 20-migration chain applies and **reverses**
+against real PostgreSQL 16 with the downgraded schema byte-identical to V2's; **zero** V2
+columns were removed or renamed and exactly **one** nullable column was added to an
+existing V2 table; ORM/DDL drift across all 38 V3 tables is none; and the corpus still
+takes the real 169-page Pandora Annual Report from 40 pages to 169 with the pre-reprocess
+citation still resolving.
 
 **Read [CAMPAIGN_STATE.md](CAMPAIGN_STATE.md) first.** It carries the verified Git and
-migration state, the gate baseline, and the next executable action.
+migration state, the gate baseline, and the campaign's own account of itself.
 
 ```
                          main  ── deployed, approved
@@ -70,7 +71,8 @@ Only explicit user acceptance can move the overall release to `APPROVED FOR MAIN
 | [ACCEPTANCE_AND_TEST_STRATEGY.md](ACCEPTANCE_AND_TEST_STRATEGY.md) | Test gates, real-issuer regression set, external-API test safety. |
 | [SECURITY_DATA_GOVERNANCE_AND_LICENSING.md](SECURITY_DATA_GOVERNANCE_AND_LICENSING.md) | Data classes, what may be sent to which provider, and the threat model additions. |
 | [OPEN_DECISIONS.md](OPEN_DECISIONS.md) | Every unresolved decision, with owner and blocking status. |
-| [CAMPAIGN_STATE.md](CAMPAIGN_STATE.md) | **Durable campaign memory — read this first.** Verified Git/migration/phase state, merged slices, correctives, open decisions by owner, and the next executable action. |
+| [V3_RELEASE_CANDIDATE_REPORT.md](V3_RELEASE_CANDIDATE_REPORT.md) | **The release candidate — read this first.** What was built, what was proved, and §7: what was *not*. |
+| [CAMPAIGN_STATE.md](CAMPAIGN_STATE.md) | **Durable campaign memory.** Verified Git/migration/phase state, merged slices, correctives, open decisions by owner, and the next executable action. |
 
 ## The one-sentence definition
 
