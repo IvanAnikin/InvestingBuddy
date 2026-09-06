@@ -74,8 +74,7 @@ BASELINE_QUESTIONS: tuple[tuple[str, str, frozenset[str]], ...] = (
     ),
     (
         "profitability",
-        "What are the reported margins, and what do the deterministic calculations "
-        "make of them?",
+        "What are the reported margins, and what do the deterministic calculations make of them?",
         frozenset({"get_calculated_metrics"}),
     ),
     (
@@ -104,14 +103,11 @@ class PlaybookLike(Protocol):
     playbook_id: str
     version: int
 
-    def mandatory_questions(self) -> "Sequence[PlannedQuestion]":
-        ...  # pragma: no cover - protocol
+    def mandatory_questions(self) -> "Sequence[PlannedQuestion]": ...  # pragma: no cover - protocol
 
-    def specialist_roles(self) -> "Sequence[str]":
-        ...  # pragma: no cover - protocol
+    def specialist_roles(self) -> "Sequence[str]": ...  # pragma: no cover - protocol
 
-    def completion_rules(self) -> "Sequence[str]":
-        ...  # pragma: no cover - protocol
+    def completion_rules(self) -> "Sequence[str]": ...  # pragma: no cover - protocol
 
 
 @runtime_checkable
@@ -124,8 +120,7 @@ class PlanRefiner(Protocol):
 
     async def refine(
         self, *, subject: str, questions: "Sequence[PlannedQuestion]", max_new: int
-    ) -> "tuple[Sequence[str], Sequence[PlannedQuestion]]":
-        ...  # pragma: no cover - protocol
+    ) -> "tuple[Sequence[str], Sequence[PlannedQuestion]]": ...  # pragma: no cover - protocol
 
 
 @dataclass(frozen=True)
@@ -143,6 +138,13 @@ class PlannedQuestion:
     #: convening, so a model able to set one could stop every run.
     blocking: bool = False
     required_evidence_classes: tuple[str, ...] = ()
+    #: The deterministic calculations an answer needs, straight from the playbook.
+    #: This is the ONLY source of metric names for ``get_calculated_metrics``: the
+    #: tool's vocabulary is closed and a model choosing from it would be a model
+    #: choosing a filter. Dropping this on the way through the planner is what made
+    #: every calculated-metrics call fail ``invalid_arguments``, which in turn made
+    #: the luxury playbook's blocking question permanently unanswerable.
+    required_calculations: tuple[str, ...] = ()
 
 
 @dataclass
@@ -186,8 +188,7 @@ class ResearchPlan:
             "task_count": len(self.tasks),
             "blocking_question_count": len(self.blocking_questions),
             "unassignable": [
-                {"question_key": key, "reason": reason}
-                for key, reason in self.unassignable
+                {"question_key": key, "reason": reason} for key, reason in self.unassignable
             ],
             "dropped_for_capacity": list(self.dropped_for_capacity),
             "playbook_versions": dict(self.playbook_versions),
@@ -275,9 +276,8 @@ async def plan_research(
                     required_tools=frozenset(question.required_tools),
                     priority=question.priority,
                     blocking=question.blocking,
-                    required_evidence_classes=tuple(
-                        question.required_evidence_classes
-                    ),
+                    required_evidence_classes=tuple(question.required_evidence_classes),
+                    required_calculations=tuple(question.required_calculations),
                 ),
             )
 
@@ -353,10 +353,7 @@ async def plan_research(
             plan.unassignable.append(
                 (
                     question.key,
-                    (
-                        "no role holds "
-                        f"{sorted(question.required_tools) or 'the required tools'}"
-                    ),
+                    (f"no role holds {sorted(question.required_tools) or 'the required tools'}"),
                 )
             )
             continue
@@ -396,9 +393,7 @@ def _least_loaded(
     return min(
         candidates,
         key=lambda role: (
-            len(assignments[role.role_id].question_keys)
-            if role.role_id in assignments
-            else 0,
+            len(assignments[role.role_id].question_keys) if role.role_id in assignments else 0,
             role.role_id,
         ),
     )
@@ -454,9 +449,7 @@ async def _refine(
     return seen, True
 
 
-async def persist_plan(
-    session: Any, run: Any, plan: ResearchPlan
-) -> dict[str, int]:
+async def persist_plan(session: Any, run: Any, plan: ResearchPlan) -> dict[str, int]:
     """Write the plan into the ledger, including what it could not assign.
 
     An unassignable question becomes a ``tool_unavailable`` gap rather than vanishing.
@@ -499,9 +492,7 @@ async def persist_plan(
                 "about it in this run would be unsupported."
             ),
             closable=False,
-            blocks_council=any(
-                q.blocking for q in plan.questions if q.key == key
-            ),
+            blocks_council=any(q.blocking for q in plan.questions if q.key == key),
         )
         counts["gaps"] += 1
     for key in plan.dropped_for_capacity:
@@ -511,9 +502,7 @@ async def persist_plan(
             gap_type=ledger.GAP_BUDGET_EXHAUSTED,
             description=f"Question {key!r} was dropped: the plan reached its cap.",
             question_key=key,
-            why_it_matters=(
-                "The run is narrower than its methodology asks for, and says so."
-            ),
+            why_it_matters=("The run is narrower than its methodology asks for, and says so."),
             closable=True,
         )
         counts["gaps"] += 1

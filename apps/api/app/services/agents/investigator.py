@@ -52,6 +52,7 @@ from app.services.agent_tools.contracts import (
     TOOL_LOOKUP_ENTITY,
     TOOL_SEARCH_COMPANY_CORPUS,
 )
+from app.services.calculations.definitions import DEFINITIONS as _CALCULATION_DEFINITIONS
 from app.services.director.loop import FindingDraft, GapDraft, TaskOutcome
 from app.services.director.planner import PlannedQuestion
 from app.services.director.roles import role_for
@@ -98,6 +99,11 @@ def _corpus_arguments(question: PlannedQuestion, company_id: uuid.UUID) -> dict[
     }
 
 
+#: The closed calculation vocabulary, so a playbook naming something the engine does
+#: not implement is dropped rather than sent and refused.
+CALCULATION_NAMES: frozenset[str] = frozenset(_CALCULATION_DEFINITIONS)
+
+
 def _tool_arguments(
     tool: str,
     question: PlannedQuestion,
@@ -132,7 +138,14 @@ def _tool_arguments(
     if tool == TOOL_GET_FINANCIAL_SERIES:
         return None  # needs a label; a question does not reliably name one
     if tool == TOOL_GET_CALCULATED_METRICS:
-        return {"company_id": subject}
+        # The tool's metric vocabulary is CLOSED, and the playbook question already
+        # names which of them it needs. Sending no metric at all — which is what this
+        # did before V3.11 — is refused as invalid_arguments every single time, so the
+        # calculation leg of every playbook question silently never ran.
+        metrics = [m for m in question.required_calculations if m in CALCULATION_NAMES]
+        if not metrics:
+            return None
+        return {"company_id": subject, "metrics": metrics}
     if tool == TOOL_GET_RECENT_FILINGS:
         # A regulator is asked about an ISSUER, so this takes a ticker too.
         if not ticker:
@@ -147,12 +160,55 @@ def _tool_arguments(
     return None
 
 
-def _harvest(tool: str, payload: dict[str, Any] | None, untrusted: bool) -> list[_Evidence]:
-    """Pull citable items out of a tool payload.
+#: Keys under which a tool may nest the actual citable records. ``get_segment_facts``
+#: groups by scope and ``get_financial_series`` groups by label, so the top-level item is
+#: a GROUP and the ids live one level down. Harvesting only the top level discarded every
+#: real segment fact and made the luxury playbook's blocking question permanently
+#: unanswerable while the tool itself reported success.
+_NESTED_RECORD_KEYS: tuple[str, ...] = ("facts", "points", "metrics", "records", "values")
 
-    Only ids the platform itself minted are harvested: ``ev:`` evidence ids from the
-    corpus, fact ids, calculation record ids. Nothing here invents an id, and nothing
-    reads one out of free text.
+
+def _citation_of(item: dict[str, Any]) -> str | None:
+    """The platform-minted id for one record, or ``None``.
+
+    Only ids the platform itself minted: ``ev:`` evidence ids from the corpus, fact ids,
+    calculation record ids. Nothing here invents an id or reads one out of free text.
+    """
+    for key in ("evidence_id", "fact_id", "calculation_id", "id"):
+        value = item.get(key)
+        if value:
+            return str(value)
+    return None
+
+
+def _evidence_of(tool: str, item: dict[str, Any], untrusted: bool) -> _Evidence | None:
+    citation = _citation_of(item)
+    if not citation:
+        return None
+    text = json.dumps(
+        {k: v for k, v in item.items() if k not in {"payload", "raw"}},
+        default=str,
+    )
+    return _Evidence(
+        citation_id=citation,
+        kind=tool,
+        text=text[:1500],
+        untrusted=untrusted,
+        # Carried from the tool's own typed result, never read out of prose.
+        period_key=_clean(item.get("period_key")),
+        scope_key=_clean(item.get("scope_key")),
+    )
+
+
+def _harvest(tool: str, payload: dict[str, Any] | None, untrusted: bool) -> list[_Evidence]:
+    """Pull citable items out of a tool payload, including grouped ones.
+
+    A tool may return records directly, or grouped under a key that describes the
+    grouping — by scope, by label, by period. When the top-level item carries no id of
+    its own it is a GROUP, and the citable records are one level down. Each nested record
+    keeps ITS OWN period and scope: a segment group's facts are not interchangeable, and
+    inheriting the group's identity instead of the record's would be the mixing the
+    invariants forbid.
     """
     if not payload:
         return []
@@ -160,30 +216,22 @@ def _harvest(tool: str, payload: dict[str, Any] | None, untrusted: bool) -> list
     for item in (payload.get("items") or [])[:MAX_ITEMS_PER_TOOL]:
         if not isinstance(item, dict):
             continue
-        citation = (
-            item.get("evidence_id")
-            or item.get("fact_id")
-            or item.get("calculation_id")
-            or item.get("id")
-        )
-        if not citation:
+        direct = _evidence_of(tool, item, untrusted)
+        if direct is not None:
+            out.append(direct)
             continue
-        text = json.dumps(
-            {k: v for k, v in item.items() if k not in {"payload", "raw"}},
-            default=str,
-        )
-        out.append(
-            _Evidence(
-                citation_id=str(citation),
-                kind=tool,
-                text=text[:1500],
-                untrusted=untrusted,
-                # Carried from the tool's own typed result, never read out of prose.
-                period_key=_clean(item.get("period_key")),
-                scope_key=_clean(item.get("scope_key")),
-            )
-        )
-    return out
+        for key in _NESTED_RECORD_KEYS:
+            nested = item.get(key)
+            if not isinstance(nested, list):
+                continue
+            for record in nested:
+                if not isinstance(record, dict):
+                    continue
+                found = _evidence_of(tool, record, untrusted)
+                if found is not None:
+                    out.append(found)
+            break
+    return out[:MAX_ITEMS_PER_TOOL]
 
 
 def _clean(value: Any) -> str | None:
@@ -207,14 +255,10 @@ def _inherited(
     """
     by_id = {item.citation_id: item for item in evidence}
     periods: set[str] = {
-        key
-        for c in cited
-        if c in by_id and (key := by_id[c].period_key) is not None
+        key for c in cited if c in by_id and (key := by_id[c].period_key) is not None
     }
     scopes: set[str] = {
-        key
-        for c in cited
-        if c in by_id and (key := by_id[c].scope_key) is not None
+        key for c in cited if c in by_id and (key := by_id[c].scope_key) is not None
     }
     conflicts: list[str] = []
     if len(periods) > 1:
@@ -329,22 +373,18 @@ class LLMInvestigator:
                 outcome.gaps.append(
                     GapDraft(
                         gap_type=ledger.GAP_EVIDENCE_UNAVAILABLE,
-                        description=(
-                            f"No citable evidence was retrieved for {question.key!r}."
-                        ),
+                        description=(f"No citable evidence was retrieved for {question.key!r}."),
                         question_key=question.key,
                         why_it_matters=(
                             "The question was planned and the tools returned nothing to "
                             "cite, so any statement about it would be unsupported."
                         ),
-                        sources_tried=tuple(sorted({e.kind for e in evidence})) or
-                        tuple(sorted(role.tools)),
+                        sources_tried=tuple(sorted({e.kind for e in evidence}))
+                        or tuple(sorted(role.tools)),
                     )
                 )
                 continue
-            findings, gaps, answered = await self._write_up(
-                role_id, question, evidence
-            )
+            findings, gaps, answered = await self._write_up(role_id, question, evidence)
             outcome.findings.extend(findings)
             outcome.gaps.extend(gaps)
             if answered:
@@ -375,15 +415,11 @@ class LLMInvestigator:
             )
             if arguments is None:
                 continue
-            result = await self.session.call(
-                tool, arguments, task_ref=f"{role_id}:{question.key}"
-            )
+            result = await self.session.call(tool, arguments, task_ref=f"{role_id}:{question.key}")
             used += 1
             if not result.ok:
                 continue
-            evidence.extend(
-                _harvest(tool, result.payload, result.contains_untrusted_content)
-            )
+            evidence.extend(_harvest(tool, result.payload, result.contains_untrusted_content))
         return evidence, used
 
     async def _write_up(
@@ -474,9 +510,7 @@ class LLMInvestigator:
             confidence = raw.get("confidence")
             try:
                 confidence = (
-                    max(0.0, min(1.0, float(confidence)))
-                    if confidence is not None
-                    else None
+                    max(0.0, min(1.0, float(confidence))) if confidence is not None else None
                 )
             except (TypeError, ValueError):
                 confidence = None
@@ -528,9 +562,7 @@ class LLMInvestigator:
                         gap_type=ledger.GAP_EVIDENCE_UNAVAILABLE,
                         description=description[:1000],
                         question_key=question.key,
-                        why_it_matters=(
-                            str(raw.get("why_it_matters") or "").strip() or None
-                        ),
+                        why_it_matters=(str(raw.get("why_it_matters") or "").strip() or None),
                     )
                 )
         return findings, gaps, bool(findings)

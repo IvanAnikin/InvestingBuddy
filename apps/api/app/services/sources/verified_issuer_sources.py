@@ -39,7 +39,7 @@ from urllib.parse import urlsplit
 from app.services.sources.redaction import url_has_secret
 
 # Confidence in an entry's URLs.
-CONFIDENCE_VERIFIED_LIVE = "verified_live"        # a URL was fetched & confirmed
+CONFIDENCE_VERIFIED_LIVE = "verified_live"  # a URL was fetched & confirmed
 CONFIDENCE_VERIFIED_REFERENCE = "verified_reference"  # known-stable reference URL
 
 
@@ -108,19 +108,30 @@ def registrable_host_allowed(host: str | None, allowed_domains: tuple[str, ...])
 
     ``news.example.com`` is allowed by ``example.com``; ``evil-example.com`` and
     ``example.com.attacker.net`` are not. Empty / missing hosts are rejected.
+
+    ``www.`` is stripped from BOTH sides. Stripping it from only the host — which is
+    what this did until V3.11 — makes any allowlist entry written as
+    ``www.example.com`` match nothing at all, because the host has already become
+    ``example.com`` by the time it is compared. That failed closed, so it was never a
+    security hole; it was a correctness one, and it blocked a real issuer document
+    whose registry entry carried the prefix.
     """
     if not host:
         return False
-    h = host.strip().lower()
-    if h.startswith("www."):
-        h = h[4:]
+    h = _without_www(host)
     for dom in allowed_domains:
-        d = dom.strip().lower()
+        d = _without_www(dom)
         if not d:
             continue
         if h == d or h.endswith("." + d):
             return True
     return False
+
+
+def _without_www(value: str | None) -> str:
+    """Lower-cased, trimmed, with one leading ``www.`` removed."""
+    text = (value or "").strip().lower().rstrip(".")
+    return text[4:] if text.startswith("www.") else text
 
 
 def host_of(url: str | None) -> str | None:
@@ -274,8 +285,7 @@ _ISSUERS: tuple[VerifiedIssuerSource, ...] = (
         investor_relations_url="https://pandoragroup.com/investor",
         annual_reports_url="https://pandoragroup.com/investor/reports-and-presentations",
         press_releases_url=(
-            "https://pandoragroup.com/investor/announcements-and-events/"
-            "company-announcements"
+            "https://pandoragroup.com/investor/announcements-and-events/company-announcements"
         ),
         source_confidence=CONFIDENCE_VERIFIED_LIVE,
         last_verified_note=(
