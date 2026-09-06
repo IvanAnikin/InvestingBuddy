@@ -62,7 +62,7 @@ the user's call, and the campaign leaves them untracked and untouched.
 | V3.8 | Research Memory and Delta | `IMPLEMENTED` — 8.1/8.2 merged |
 | V3.9 | Monitoring | `IMPLEMENTED` — 9.1 merged, feature-gated, **nothing schedules it** |
 | V3.10 | End-to-end integration and real-issuer acceptance | `IMPLEMENTED` — 10.1-10.4 merged + 2 correctives |
-| V3.11 | Production hardening and final product acceptance | `IMPLEMENTED` — 11.1-11.5 merged + 1 corrective; all four V3.10 blockers closed; **11.1 live contract stays `BLOCKED ON CREDENTIAL`, but DeepSeek is no longer release-critical** |
+| V3.11 | Production hardening and final product acceptance | `IMPLEMENTED` — 11.1-11.5 merged + 1 corrective; all four V3.10 blockers closed; **11.1 live contract VERIFIED 2026-09-06 (14/14) — and DeepSeek is still not release-critical** |
 
 `IMPLEMENTED` = code, tests and local contract complete. `VALIDATED` = realistic
 end-to-end validation performed. **No V3 phase can reach `VALIDATED` in the sense
@@ -143,7 +143,8 @@ rewrite of history. Five exist, and each one is a defect a real run found:
 | 2026-09-05 | Untrack the data-source inventory | `fix/v3-untrack-data-source-inventory` | `2810aef` | Files committed that are [OPEN DECISION #18](OPEN_DECISIONS.md#18-fate-of-docsdata_source_inventorymd--xlsx) and the user's to place. |
 | 2026-09-06 | `get_recent_filings`, because a real run could not finish without it | `fix/v3-10-3-1-recent-filings-tool` | `62f8c75` | Biotech's blocking question required a tool **nothing implemented**, so a biotech run could never convene its Council. Merged with the three integration defects the first MRNA run exposed: a `research_runs` id passed into a column FK'd to `research_jobs` — **every tool call failed to persist and killed the transaction**; `lookup_entity` called with a `company_id` when it takes a ticker; and the delta silently never computed because the prior run was re-queried after this run had opened. |
 | 2026-09-06 | A finding inherits the period and scope of its evidence | `fix/v3-10-4-1-finding-period-scope` | `2c1cc27` |
-| 2026-09-06 | Citations are checked to actually resolve | `fix/v3-11-5-citation-resolution-check` | `9b41bc0` | "Citations resolve" was on the acceptance gate and had never been measured — the harness checked that a finding HAS citations, not that they lead anywhere. | **Findings were exempt from period and scope integrity.** Real findings said "FY2026 projected" over FY2025 actuals with `period_key=None`. Now inherited on agreement or nothing; disagreement discards the finding and opens a `conflicting_sources` gap — which then fired on live SEC data. |
+| 2026-09-06 | Citations are checked to actually resolve | `fix/v3-11-5-citation-resolution-check` | `9b41bc0` |
+| 2026-09-06 | **The DeepSeek contract, verified** | `fix/v3-11-1-1-deepseek-live-contract` | `f037f1b` | A real key made 7 of 8 live questions fail. Found: the adapter's repr **printed the key into pytest output**; `response_format` sent unconditionally so every completion 400'd; tool `parameters` needed a JSON Schema; **no server-side web search exists at all**; a credential silently re-routed Investigator work off Azure OpenAI; and seven tests asserted a property of the developer's machine. | "Citations resolve" was on the acceptance gate and had never been measured — the harness checked that a finding HAS citations, not that they lead anywhere. | **Findings were exempt from period and scope integrity.** Real findings said "FY2026 projected" over FY2025 actuals with `period_key=None`. Now inherited on agreement or nothing; disagreement discards the finding and opens a `conflicting_sources` gap — which then fired on live SEC data. |
 
 ## Migrations
 
@@ -249,7 +250,7 @@ Recorded so a later run can be compared against a number rather than a memory.
 | Gate | At campaign start (`35bd550`) | At the release candidate | After V3.11 |
 |---|---|---|---|
 | `ruff check .` | All checks passed | All checks passed | All checks passed |
-| `pytest tests/ -q` | 4949 passed, 12 skipped | 5870 passed, 12 skipped | **6063 passed**, 23 skipped (+1114) |
+| `pytest tests/ -q` | 4949 passed, 12 skipped | 5870 passed, 12 skipped | **6055 passed**, 25 skipped |
 | `mypy app` | 71 errors in 10 files | 71 (baseline, unchanged) | 71 (baseline, unchanged) |
 | web typecheck / lint / build | not run | **all passed** | **all passed** (re-run in V3.11.5) |
 
@@ -380,10 +381,12 @@ MAIN PROMOTION REVIEW`**.
 
 All four V3.10 blockers are closed:
 
-1. **DeepSeek** — still `BLOCKED ON CREDENTIAL` (none is reachable; Key Vault is unreadable
-   by a Contributor-only identity), but **no longer release-critical**: three real
-   playbook-gated Councils convened with no key, no flag and no call, and the research path
-   does not import the adapter at all.
+1. **DeepSeek** — the live contract is now **VERIFIED** (14/14, 2026-09-06) and DeepSeek is
+   **still not release-critical**. The verification found four defects, including a key
+   leak through a dataclass `repr` and the discovery that **DeepSeek has no server-side web
+   search** — the capability it was designated the primary research runtime for.
+   ⚠️ **The key used for validation must be rotated**; it reached terminal output before
+   the redaction fix landed.
 2. **Playbooks** — CFR, MRNA and ASML all convene. Three of the four causes were the
    platform's, not the world's.
 3. **Scope** — 1.7% → 8.1% coverage on the real Richemont report with a **0.0%**
