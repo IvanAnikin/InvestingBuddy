@@ -5,6 +5,7 @@ from app.models.discovery import DiscoveryCandidate, DiscoveryRun
 from app.models.document_ingestion_attempt import DocumentIngestionAttempt
 from app.models.extracted_document import ExtractedDocument, ExtractedFact
 from app.models.field_review import FieldReviewCandidateSummary, FieldReviewRun
+from app.models.ir_event import IrEvent, IrEventMaterial
 from app.models.legal_entity import (
     BusinessSegment,
     EntityAlias,
@@ -50,6 +51,8 @@ __all__ = [
     "FieldReviewCandidateSummary",
     "FieldReviewRun",
     "LegalEntity",
+    "IrEvent",
+    "IrEventMaterial",
     "MacroDataset",
     "MacroObservation",
     "MacroSeries",
