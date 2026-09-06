@@ -628,6 +628,71 @@ def _report(index: int, outcome, elapsed: float) -> None:  # noqa: ANN001
         print(f"    gap      [{gap.get('gap_type')}] {str(gap.get('description'))[:110]}")
 
 
+async def _unresolved_citations(session, findings) -> list[str]:  # noqa: ANN001
+    """Citation ids that point at no row.
+
+    Two id spaces, both minted by the platform: corpus evidence ids are ``ev:`` followed
+    by a chunk id (which itself begins ``c:``), and everything else is an extracted-fact
+    or calculation row id.
+    """
+    from sqlalchemy import select
+
+    from app.models.extracted_document import ExtractedFact
+    from app.models.research_chunk import ResearchDocumentChunk
+
+    cited: set[str] = set()
+    for finding in findings:
+        cited.update(finding.evidence_ids_json or [])
+    if not cited:
+        return []
+
+    chunk_ids = {c[3:] for c in cited if c.startswith("ev:")}
+    other = {c for c in cited if not c.startswith("ev:")}
+
+    found_chunks: set[str] = set()
+    if chunk_ids:
+        found_chunks = set(
+            (
+                await session.execute(
+                    select(ResearchDocumentChunk.chunk_id).where(
+                        ResearchDocumentChunk.chunk_id.in_(chunk_ids)
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    found_facts: set[str] = set()
+    if other:
+        import uuid as _uuid
+
+        as_uuid = []
+        for value in other:
+            try:
+                as_uuid.append(_uuid.UUID(value))
+            except (ValueError, AttributeError):
+                continue
+        if as_uuid:
+            found_facts = {
+                str(row)
+                for row in (
+                    await session.execute(
+                        select(ExtractedFact.id).where(ExtractedFact.id.in_(as_uuid))
+                    )
+                )
+                .scalars()
+                .all()
+            }
+
+    failures = []
+    for missing in sorted(chunk_ids - found_chunks):
+        failures.append(f"citation 'ev:{missing}' resolves to no corpus chunk")
+    for missing in sorted(other - found_facts):
+        failures.append(f"citation {missing!r} resolves to no fact or calculation")
+    return failures
+
+
 async def _invariants(session, outcome, company) -> list[str]:  # noqa: ANN001
     """The checks a correctness failure would trip. Not "is the report good"."""
     from sqlalchemy import select
@@ -671,6 +736,12 @@ async def _invariants(session, outcome, company) -> list[str]:  # noqa: ANN001
     for finding in outcome.findings or []:
         if not finding.get("evidence_ids") and not finding.get("calculation_ids"):
             failures.append("a council finding carries no citation")
+
+    # Every citation must RESOLVE. A finding carrying an id that points at nothing is
+    # indistinguishable, to a reader, from one that is properly sourced — and this was
+    # unchecked until V3.11.5, so "citations resolve" was an assumption rather than a
+    # measurement.
+    failures.extend(await _unresolved_citations(session, rows))
 
     if outcome.error:
         failures.append(f"the pipeline recorded an error: {outcome.error}")
