@@ -1055,6 +1055,27 @@ class Settings(BaseSettings):
     # short is not worth citing on its own.
     v3_corpus_chunk_min_chars: int = 300
 
+    # ── V3.4 Slice 4.9: the production search backend (ADR-047 / ADR-053) ───
+    # "memory" | "postgres". Default "memory" so nothing reroutes by upgrade —
+    # switching a running system's retrieval is a behaviour change on a live path
+    # and gets the same treatment as every other V3 flag. An unknown name RAISES;
+    # falling back would look like a working search that forgets everything.
+    v3_search_backend: str = "memory"
+    # The semantic leg. OFF, and it is not merely unconfigured: `pgvector` is not
+    # installed on the PostgreSQL this project runs, so without it the semantic
+    # leg is a bounded RERANK of the lexical candidates rather than a
+    # nearest-neighbour search (ADR-053). The lexical leg is independent of this
+    # and is the production path.
+    v3_corpus_semantic_search_enabled: bool = False
+    # How many filtered rows the semantic leg may score without a vector index. A
+    # bound on a Python loop, not a quality knob.
+    v3_corpus_semantic_candidate_limit: int = 500
+    # Which model produced the stored embeddings. EMPTY means none is configured,
+    # and an embedding may not be stored without it: two models' vectors share a
+    # dimension and nothing else, so comparing across them returns a number that
+    # means nothing and raises nothing.
+    v3_corpus_embedding_model: str = ""
+
     # ── V3.1: reprocessing (the "deep" extraction profile) ──────────────────
     # How many PDF pages a REPROCESSING run may open, from the retained raw bytes
     # and off the live request path. 0 — the default — means no deep profile is

@@ -35,6 +35,7 @@ import uuid
 from datetime import date, datetime, timezone
 
 import sqlalchemy as sa
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -134,6 +135,24 @@ class ResearchDocumentChunk(Base):
     indexable: Mapped[bool] = mapped_column(
         sa.Boolean, nullable=False, default=True, server_default=sa.true()
     )
+    # -- V3.4 Slice 4.9: the index state, separate from the row's existence -- #
+    #: When this chunk last entered the search index. NULL means **not indexed**,
+    #: which is a different thing from not existing: a superseded derivation's
+    #: chunks stay citable so old evidence ids keep resolving, and stop being
+    #: retrievable so a stale reading of a document never reaches a researcher.
+    #: De-indexing is therefore an UPDATE, never a DELETE (CLAUDE.md rule 15).
+    indexed_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True))
+    #: The embedding as a JSON array of floats. Portable on purpose — ``pgvector``
+    #: is not installed on the PostgreSQL this project runs (ADR-053), and a
+    #: ``vector`` column would make the schema unbuildable rather than the feature
+    #: unavailable. Enabling the extension later populates a typed column FROM
+    #: this one: an additive migration over data already held, not a re-embedding.
+    embedding_json: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    #: Which model produced it. An embedding whose model is unknown cannot be
+    #: compared with any other — two models' vectors share a dimension and nothing
+    #: else — so the schema refuses to hold one without it.
+    embedding_model: Mapped[str | None] = mapped_column(sa.String(80))
+    embedding_dim: Mapped[int | None] = mapped_column(sa.Integer)
     created_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True), default=_utcnow, server_default=sa.func.now()
     )
@@ -152,6 +171,36 @@ class ResearchDocumentChunk(Base):
         # The shape of nearly every corpus query: this company, this period.
         sa.Index("ix_research_document_chunks_company_period", "company_id", "period_key"),
         sa.Index("ix_research_document_chunks_scope_key", "scope_key"),
+        # The index-state read path: "everything currently indexed for this
+        # company", which is what a search's own filter reduces to.
+        sa.Index(
+            "ix_research_document_chunks_indexed_at", "indexed_at", "company_id"
+        ),
+        # The lexical leg (V3.4 Slice 4.9). A GIN index over an EXPRESSION, not a
+        # column: a stored `tsvector` column would be a `TSVECTOR` in the ORM, and the
+        # sqlite database every unit test builds cannot express one. `ddl_if` keeps the
+        # definition here — so ORM and migration agree and a drift check can say so —
+        # while emitting it only on PostgreSQL.
+        #
+        # `'simple'` rather than `'english'`: in a financial corpus the exact token
+        # usually deserves to win, and `FY2025`, `PNDORA` and `mRNA-1273` survive it
+        # intact (ADR-053). A stemmed leg would be an ADDITIONAL index, never a
+        # replacement.
+        sa.Index(
+            "ix_research_document_chunks_fts",
+            sa.text("to_tsvector('simple', text)"),
+            postgresql_using="gin",
+        ).ddl_if(dialect="postgresql"),
+        # An embedding nobody can attribute cannot be compared with another, and a
+        # dimension of zero is not a vector. Both are storable mistakes without
+        # this, and both would surface as silently wrong similarity rather than as
+        # an error.
+        sa.CheckConstraint(
+            "embedding_json IS NULL OR "
+            "(embedding_model IS NOT NULL AND embedding_dim IS NOT NULL "
+            "AND embedding_dim > 0)",
+            name="ck_research_document_chunks_embedding_is_attributed",
+        ),
     )
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
