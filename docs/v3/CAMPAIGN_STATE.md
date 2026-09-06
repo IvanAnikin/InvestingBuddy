@@ -9,7 +9,7 @@ the code, not inferred from a plan. When it disagrees with a phase-gate section 
 record of a gate and this file is the current state; re-verify before trusting
 either.
 
-**Last verified:** 2026-09-05, at the V3.3 phase gate, by direct `git` inspection and a full local gate run.
+**Last verified:** 2026-09-06, after V3.4 slice 4.9, by direct `git` inspection and a full local gate run.
 
 ---
 
@@ -34,12 +34,12 @@ enabling a V3 flag in production, deleting V2 compatibility or either V2 ref.
 
 | Item | Value |
 |---|---|
-| `develop/v3` HEAD | `35bd550` — 47 commits ahead of `origin/develop/v3` (`fd82d3d`), unpushed |
-| Alembic head in source | **030** (`030_add_calculation_records`) |
-| Alembic head in the deployed database | **018** — and V3 migrations 019-030 have reached **no** deployed environment |
+| `develop/v3` HEAD | `db00a7b` — ahead of `origin/develop/v3` (`fd82d3d`), unpushed |
+| Alembic head in source | **032** (`032_add_corpus_search_index`) |
+| Alembic head in the deployed database | **018** — and V3 migrations 019-032 have reached **no** deployed environment |
 | Alembic head in the local dev database | **018** (unchanged by V3 work; scratch databases only) |
 | Current phase | **V3.4 — Multi-provider runtime and source expansion** |
-| Current slice | 4.4 — `feature/v3-4-4-research-lead-promotion` (next) |
+| Current slice | 4.5 — `feature/v3-4-5-provider-benchmark-harness` (next) |
 | Deployed | **Nothing.** `main` at `4b60e07` is the deployed product. |
 
 Working tree at campaign start also held two untracked files —
@@ -55,7 +55,7 @@ the user's call, and the campaign leaves them untracked and untouched.
 | V3.1 | Research Corpus | `IMPLEMENTED` |
 | V3.2 | Entity Master and global universe | `IMPLEMENTED` — all six slices merged; [phase gate](IMPLEMENTATION_PLAN.md#11-v32-phase-gate) |
 | V3.3 | Research tools and calculation engine | `IMPLEMENTED` — all four slices merged; [phase gate](IMPLEMENTATION_PLAN.md#12-v33-phase-gate) |
-| V3.4 | Multi-provider runtime and source expansion | `IN PROGRESS` — 4.1/4.1.1/4.3 merged; 4.2/4.6 `DEFERRED` by decision; 4.4/4.5/4.7/4.8/4.9/4.10 open. **Nothing `BLOCKED`.** |
+| V3.4 | Multi-provider runtime and source expansion | `IN PROGRESS` — 4.1/4.1.1/4.3/**4.4**/**4.9** merged; 4.2/4.6 `DEFERRED` by decision; 4.5/4.7/4.8/4.10 open. **Nothing `BLOCKED`.** |
 | V3.5 | Research Ledger and Director | `NOT STARTED` |
 | V3.6 | Industry playbooks | `NOT STARTED` |
 | V3.7 | Council V2 and Red Team | `NOT STARTED` |
@@ -103,6 +103,8 @@ is recorded explicitly rather than being allowed to pass as production validatio
 | 2026-09-05 | Decision record — ADR-047..052 | `feature/v3-decisions-resolved` | `ec8ea65` |
 | 2026-09-05 | V3.4.1.1 rights-based governance | `feature/v3-4-1-1-rights-based-governance` | `66ddd30` |
 | 2026-09-05 | V3.4.3 DeepSeek providers | `feature/v3-4-3-deepseek-providers` | `07c7032` |
+| 2026-09-05 | V3.4.4 research lead promotion | `feature/v3-4-4-research-lead-promotion` | `5cd3910` |
+| 2026-09-06 | V3.4.9 PostgreSQL search backend | `feature/v3-4-9-pgvector-search-backend` | `08cb013` |
 
 ## Corrective slices
 
@@ -135,6 +137,8 @@ database is re-checked afterwards to confirm it is still at 018.
 | 028 | `entity_relationships`, `reporting_scopes`, `business_segments` + `securities.underlying_security_id` / `receipt_ratio` | scratch (`ib_v3_migcheck_028`, dropped). Exactly **two** columns added to `securities`, `companies` **identical**; **eleven** guarantees exercised with real conflicting statements in PostgreSQL; drift check clean across all nine tables including CHECK constraints. | **No** |
 | 029 | `research_tool_calls` | scratch (`ib_v3_migcheck_029`, dropped). 41 → 42 tables and back; every CHECK exercised with a real statement; deleting the company an audit row refers to left **3 rows surviving, 0 still linked** — the audit record outlives what it describes. | **No** |
 | 030 | `calculation_records` | scratch (`ib_v3_migcheck_030`, dropped). Eight statements exercised, including that **a refused row cannot carry a value** — a number beside a refusal is exactly what a reader takes at face value. Drift check clean. | **No** |
+| 031 | `research_leads` | scratch (`ib_v3_migcheck_031`/`_031b`, dropped). All **five** CHECKs fired on real conflicting statements, including the one that matters — **a `verified` row with no hash of bytes we fetched is unstorable**. Deleting the company a lead refers to left **4 rows surviving, 0 still linked**. Drift: none. | **No** |
+| 032 | `research_document_chunks`: `indexed_at`, `embedding_json`, `embedding_model`, `embedding_dim` + a GIN index over `to_tsvector('simple', text)` | scratch (`ib_v3_migcheck_032`/`_032b`, dropped). The CHECK exercised in **both** failing directions (no model, dimension zero); `EXPLAIN` confirms the planner uses the GIN index; de-indexing left **3 chunks present, 0 indexed**. Drift: none. | **No** |
 
 Additive-only through V3.2 (§2.1 of the migration plan): tables, **nullable**
 columns and indexes only. That is what makes `release/v2-current` code able to run
@@ -200,11 +204,11 @@ belong to the agent, with an ADR when material.
 
 Recorded so a later run can be compared against a number rather than a memory.
 
-| Gate | At campaign start (`35bd550`) | After V3.4.3 |
-|---|---|---|
-| `ruff check .` | All checks passed | All checks passed |
-| `pytest tests/ -q` | 4949 passed, 12 skipped | **5430 passed**, 12 skipped |
-| `mypy app` | 71 errors in 10 files | 71 errors in 10 files (baseline; one regression to 72 was caught by the gate in 2.3 and fixed) |
+| Gate | At campaign start (`35bd550`) | After V3.4.3 | After V3.4.9 |
+|---|---|---|---|
+| `ruff check .` | All checks passed | All checks passed | All checks passed |
+| `pytest tests/ -q` | 4949 passed, 12 skipped | 5430 passed, 12 skipped | **5514 passed**, 12 skipped |
+| `mypy app` | 71 errors in 10 files | 71 | 71 (baseline; regressions to 72 were caught by the gate in 2.3 and in 4.9 and both fixed) |
 
 ## Provider benchmarks
 
@@ -318,25 +322,17 @@ Carried forward, all still true:
 
 ## Next executable action
 
-Start **V3.4 slice 4.4** on `feature/v3-4-4-research-lead-promotion`: persist
-`ResearchLead`, and build the verification gate that promotes one to evidence or rejects
-it with a reason. Migration expected.
+Start **V3.4 slice 4.5** on `feature/v3-4-5-provider-benchmark-harness`, then 4.7 (macro
+observation store), 4.8 (free public transcripts and IR events), 4.10 (bounded issuer-site
+traversal), then the V3.4 phase gate.
 
-**Four of the eight V3.4 slices are `BLOCKED` on user-owned decisions** — 4.2 (#3, search
-spend), 4.3 (#4, DeepSeek governance), 4.6 (#6, Gemini Deep Research), 4.8 (#8, transcript
-vendor). 4.1 shipped their interfaces and fakes, so each becomes a small adapter once its
-decision is taken. The campaign continues with the three that are not blocked: **4.4**,
-then **4.5** (the benchmark harness) and **4.7** (the macro observation store).
+The benchmark's primary metric is `cost_per_verified_finding`, and 4.4 has now made the
+denominator real: `verification_survival_rate` is computed from `research_leads` by a
+database aggregate, and a provider with nothing decided has an **unknown** rate rather
+than 0.0 — reporting zero would rank it below one that tried. The same rule governs
+price: `CostEstimate.amount_usd = None` means **unpriced, never free**, and an unpriced
+provider must never come out cheapest.
 
-4.4 has a working model to follow rather than a design to invent. `entities.claims`
-already implements this exact gate for identifiers: a claim, a closed rejection
-vocabulary, a *withheld* case for a source that found several and refused to choose, and
-a rule that a rejected claim is **kept with its reason** because that is what makes
-per-source accuracy measurable. 4.1's `ResearchLead` already carries the eight rejection
-reasons and the `is_verifiable` distinction.
-
-The one thing 4.4 must not do is verify a claim against the provider's own words. The
-promotion path is `lead → source candidate → **InvestingBuddy's own fetch** → canonical
-source → evidence → fact`, and the fetch has to be the platform's guarded fetcher
-producing bytes with a hash. A "verification" that re-reads the provider's snippet has
-verified nothing.
+What 4.5 must not do is estimate a provider it cannot run. Exa, Perplexity, Gemini and
+Anthropic have no credentials **by decision**, and the honest output is a row saying
+*unavailable, and why* — not an extrapolation from a price list.
