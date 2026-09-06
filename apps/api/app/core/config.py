@@ -991,6 +991,17 @@ class Settings(BaseSettings):
     # approved. With the flag off, a detection pass observes nothing and says so.
     v3_monitoring_enabled: bool = False
 
+    # ── V3.10: the V3 research pipeline at the real front door ──────────────
+    # OFF by default. With it off the company-research entry point behaves
+    # byte-for-byte as it does on `main`. With it on, the V3 pipeline runs
+    # ALONGSIDE the existing assembly and its research state is attached to the
+    # produced report under `source_summary_json["v3_research"]` — the report's
+    # own narrative is still assembled by the existing generator, so every
+    # section, the safety gate, the numeric verification and the frontend are
+    # untouched. A V3 failure must never cost a report the V2 path would have
+    # produced, and it cannot: the pipeline never raises.
+    v3_pipeline_enabled: bool = False
+
     v3_run_max_model_calls: int = 0
     v3_run_max_model_tokens: int = 0
     v3_run_max_web_searches: int = 0
