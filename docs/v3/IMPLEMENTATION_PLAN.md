@@ -935,3 +935,25 @@ rather than re-established:
   campaign now do exactly that, and `ResearchGap` is the one where it matters most:
   V2 already produces excellent honest gaps, and V3's change is that a gap becomes an
   actionable work item rather than a caveat printed in the report.
+
+## 14. V3.10 — end-to-end integration and real-issuer acceptance
+
+Added after the release candidate, on user instruction, to prove the architecture works as
+**one complete product workflow** against real issuers rather than as a set of contracts.
+
+| Slice | What it delivers | State |
+|---|---|---|
+| 10.1 | Opt-in DeepSeek live contract test; per-raise retry transience in the transport | **`BLOCKED ON CREDENTIAL`** — implementation complete, no key exists |
+| 10.2 | Real `Investigator` / `RedTeam` / `Responder` / `Chair` behind the existing protocols, with configurable per-slot routing | `IMPLEMENTED` |
+| 10.3 | `run_v3_research` wired to the company-research front door behind `V3_RESEARCH_ENABLED` (off) | `IMPLEMENTED` |
+| 10.4 | Real-issuer acceptance harness; MRNA, CFR and ASML runs; cost measurement; report-compatibility tests | `IMPLEMENTED` |
+
+Two correctives, both forced by real runs: `62f8c75` (four integration defects, including
+tool calls that silently never persisted) and `2c1cc27` (**findings were exempt from period
+and scope integrity**).
+
+The phase's own verdict is [§10 and §11 of the release candidate
+report](V3_RELEASE_CANDIDATE_REPORT.md#10-v310-product-acceptance): **`NOT READY`**, against
+four named blockers. The single most useful artefact it produced is
+`scripts/v3-issuer-acceptance.py`, because it turns "we believe this is correct" into "here
+is what broke" — six times so far.

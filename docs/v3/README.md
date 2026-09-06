@@ -13,15 +13,19 @@ describes deployed behaviour unless a section explicitly says `CURRENT`.
 | `develop/v3` | V3 integration branch. Unapproved, undeployed. |
 | `feature/v3-*` | PR-sized V3 implementation slices. Merge target is `develop/v3` only. |
 
-**Where the work stands (2026-09-06).** `develop/v3` carries **all nine phases**,
-V3.0 through V3.9, every one `IMPLEMENTED` and none `VALIDATED` — nothing is deployed and
+**Where the work stands (2026-09-06).** `develop/v3` carries **all ten phases**,
+V3.0 through V3.10, every one `IMPLEMENTED` and none `VALIDATED` — nothing is deployed and
 migrations 019-038 have reached no deployed environment.
 
+V3.10 ran real issuers — **MRNA, CFR and ASML** — through the whole chain and found six
+defects fixtures had missed, the most serious being that **model-written findings were
+exempt from period and scope integrity**. The phase's recommendation is **`NOT READY`**
+against four named blockers, in [§11 of the release candidate
+report](V3_RELEASE_CANDIDATE_REPORT.md#11-recommendation). The decision is the user's.
+
 **Start with [V3_RELEASE_CANDIDATE_REPORT.md](V3_RELEASE_CANDIDATE_REPORT.md).** It records
-what was built, what was proved, and — in §7, which is the section that matters — what was
-**not**. The short version: this is a complete set of contracts whose *behaviour* is
-unmeasured, because no investigator implementation exists, no live provider call has been
-made, and nothing is wired to the product's front door.
+what was built, what was proved, and — in §7 and §10.5, the sections that matter — what was
+**not**. §10 is the V3.10 product acceptance; §11 is the recommendation.
 
 What was proved without a deployment: the whole 20-migration chain applies and **reverses**
 against real PostgreSQL 16 with the downgraded schema byte-identical to V2's; **zero** V2
