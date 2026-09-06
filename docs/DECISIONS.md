@@ -3780,3 +3780,65 @@ and is **still finite**.
   261-451s, ingestion ~154s, a council ~145-190s) and are expected to be tightened
   once real DeepSeek runs are measured. A default that is wrong but finite is
   recoverable; an unbounded default is not.
+
+---
+
+## ADR-053: The Semantic Leg Ships Portable and Feature-Gated, Because `pgvector` Is Not Installed
+
+**Date:** 2026-09-06 · **Status:** Accepted · **Decided by:** agent (technical, reversible)
+**Amends:** [ADR-047](#adr-047-corpus-retrieval-is-postgresql-full-text-plus-pgvector-not-azure-ai-search)
+
+### Context
+
+ADR-047 chose PostgreSQL full-text plus `pgvector` for corpus retrieval, on the basis
+that PostgreSQL already exists in the architecture and Azure Database for PostgreSQL
+supports the extension. Slice 4.9 went to implement it and checked rather than assumed:
+
+```
+SELECT count(*) FROM pg_available_extensions WHERE name = 'vector';   -- 0
+```
+
+The `postgres:16-alpine` image this repository's `docker-compose.yml` runs does not ship
+`pgvector`, so it cannot be installed, let alone enabled. On Azure Database for PostgreSQL
+Flexible Server the extension is available but must be added to the
+`azure.extensions` server parameter — **a change to the deployed server**, which this
+campaign is not authorised to make and which would in any case have no effect until V3
+is approved and deployed.
+
+There is also no embedding provider. Every approved model account (Azure OpenAI,
+DeepSeek) could produce embeddings, but nothing in this repository does, and turning one
+on is a spend decision on a path nothing yet consumes.
+
+### Decision
+
+**The lexical leg is the production path and requires no extension.** It is a GIN
+expression index over `to_tsvector('simple', text)` with every metadata filter applied in
+the same SQL statement, which is the property ADR-047 actually wanted: an entity, period
+and scope filter that applies in the same transaction as the data it filters.
+
+**The semantic leg ships portable and OFF.** Embeddings are stored as JSONB alongside the
+model name and dimension; similarity is computed by InvestingBuddy's own cosine over a
+**bounded candidate pool**, not by a vector index. `V3_CORPUS_SEMANTIC_SEARCH_ENABLED`
+defaults to `false` and the only embedding provider is deterministic and fake.
+
+`pgvector` remains the intended production shape. Enabling it is a follow-on migration
+that adds a `vector` column populated **from the JSONB already held** plus an IVFFlat
+index — an additive change to data the platform already has, not a re-embedding and not a
+rewrite.
+
+### Consequences
+
+- **Hybrid retrieval without a vector index is a semantic rerank of a bounded candidate
+  pool, not an exhaustive nearest-neighbour search, and the backend says so.**
+  `PostgresSearchBackend.semantic_is_exhaustive` is `False` and `capabilities` omits
+  `SearchMode.SEMANTIC`. Reporting it as a full semantic search would be the kind of
+  claim that survives until somebody measures recall.
+- Lexical retrieval is independently usable and is what every V3 path uses today. ADR-047
+  already required that hybrid degrade to lexical when the extension is absent; this
+  makes "absent" the current state rather than a hypothetical.
+- `'simple'` rather than `'english'` is the text-search configuration, for the reason
+  `fusion.py` already gives: in a financial corpus the exact token usually deserves to
+  win. `FY2025`, `PNDORA` and `mRNA-1273` survive `'simple'` intact, and a stemmed leg is
+  an additional expression index rather than a replacement.
+- No production embedding infrastructure is provisioned, and no new subscription is
+  required — which is the constraint the whole 2026-09-05 resolution round turned on.

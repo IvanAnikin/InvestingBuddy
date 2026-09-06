@@ -542,13 +542,19 @@ class TestNoVendorCoupling:
                     offenders.append(str(path))
         assert offenders == [], offenders
 
-    def test_the_production_backend_decision_is_not_taken_here(self) -> None:
-        # OPEN DECISION #1 is user-owned on cost. Shipping either adapter would
-        # answer it. This test is what keeps the deferral honest rather than
-        # aspirational.
+    def test_the_backend_decision_is_taken_and_is_the_one_recorded(self) -> None:
+        """This guard has done its job and is now the other half of it.
+
+        It used to assert that ``backends == {"memory"}``, keeping OPEN DECISION #1
+        honestly deferred rather than answered by a commit. The user took the decision
+        on 2026-09-05 (ADR-047) and slice 4.9 implemented it, so the assertion turns
+        around: the backends present must be exactly the ones the decision names, and
+        an Azure AI Search adapter appearing would still fail — because that was the
+        option the decision REJECTED, and rejecting it costs nothing to keep enforcing.
+        """
         backends = {
             p.stem
             for p in Path("app/services/corpus/search/backends").glob("*.py")
             if p.stem != "__init__"
         }
-        assert backends == {"memory"}, backends
+        assert backends == {"memory", "postgres"}, backends

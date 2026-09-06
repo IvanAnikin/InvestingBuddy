@@ -13,7 +13,7 @@
 | **V3.1** | Research Corpus | `IMPLEMENTED` — and, unlike V3.0, with a **real-document acceptance run** behind it. Not `VALIDATED`: the run is local and the corpus is not deployed. See [the phase gate](#10-v31-phase-gate). |
 | **V3.2** | Entity Master and global universe | `IMPLEMENTED` — all slices merged. See [the phase gate](#11-v32-phase-gate). |
 | **V3.3** | Research tools and calculation engine | `IMPLEMENTED` — all four slices merged. See [the phase gate](#12-v33-phase-gate). |
-| **V3.4** | Multi-provider runtime and source expansion | `IN PROGRESS` — 4.1/4.1.1/4.3/4.4 merged. **Nothing is `BLOCKED`:** the 2026-09-05 resolution round deferred 4.2/4.6 and unblocked 4.3/4.8. |
+| **V3.4** | Multi-provider runtime and source expansion | `IN PROGRESS` — 4.1/4.1.1/4.3/4.4/4.9 merged. **Nothing is `BLOCKED`:** the 2026-09-05 resolution round deferred 4.2/4.6 and unblocked 4.3/4.8. |
 | **V3.5** | Research Ledger and Director | `NOT STARTED` |
 | **V3.6** | Industry playbooks | `NOT STARTED` |
 | **V3.7** | Council V2 and Red Team | `NOT STARTED` |
@@ -120,7 +120,7 @@ bytes are retained.
 | 4.6 | `feature/v3-4-6-gemini-deep-research` | Managed Deep Research as a contractor producing leads only. | `DEFERRED` — `OPTIONAL / NOT ACTIVATED`; DeepSeek provides the initial autonomous web research. |
 | 4.7 | `feature/v3-4-7-macro-observation-store` | `DatasetDefinition` / `SeriesDefinition` / `Observation` + first live macro source.| `NOT STARTED` |
 | 4.8 | `feature/v3-4-8-transcript-provider` | Canonical transcript/IR-event model + **free public issuer** acquisition. | `NOT STARTED` — unblocked by [ADR-051](../DECISIONS.md) |
-| 4.9 | `feature/v3-4-9-pgvector-search-backend` | The production `SearchBackend`: PostgreSQL full-text + `pgvector`, per [ADR-047](../DECISIONS.md). | `NOT STARTED` |
+| 4.9 | [`feature/v3-4-9-pgvector-search-backend`](slices/V3.4-9-postgres-search-backend.md) | The production `SearchBackend`: PostgreSQL full-text (GIN over `to_tsvector`), every filter inside the statement, de-indexing as an UPDATE. `pgvector` is **not installable here** — [ADR-053](../DECISIONS.md) amends 047: the semantic leg ships portable and OFF. | `IMPLEMENTED` |
 | 4.10 | `feature/v3-4-10-issuer-site-traversal` | Bounded same-domain issuer IR traversal on the existing safe fetcher. No paid crawler. | `NOT STARTED` |
 
 ### V3.5-V3.9
@@ -183,8 +183,9 @@ Following the repository's existing `<area>_<name>_enabled` convention
 ```
 V3_DURABLE_JOBS_ENABLED         V3_RESEARCH_PROVIDER_ENABLED
 V3_CORPUS_ENABLED               V3_RESEARCH_DIRECTOR_ENABLED
-V3_SEARCH_ENABLED               V3_COUNCIL_V2_ENABLED
+V3_SEARCH_BACKEND               V3_COUNCIL_V2_ENABLED
 V3_ENTITY_MASTER_ENABLED        V3_RESEARCH_MEMORY_ENABLED
+V3_CORPUS_SEMANTIC_SEARCH_ENABLED
 ```
 
 All default **off**. Each flag's deprecation plan is recorded when it is created:
@@ -267,6 +268,7 @@ approval.
 | 2026-09-05 | V3.4 Slice 4.1.1 — rights-based governance | `feature/v3-4-1-1-rights-based-governance` | `66ddd30` |
 | 2026-09-05 | V3.4 Slice 4.3 — DeepSeek providers | `feature/v3-4-3-deepseek-providers` | `07c7032` |
 | 2026-09-05 | V3.4 Slice 4.4 — research lead promotion | `feature/v3-4-4-research-lead-promotion` | `5cd3910` |
+| 2026-09-06 | V3.4 Slice 4.9 — PostgreSQL search backend | `feature/v3-4-9-pgvector-search-backend` | _pending_ |
 
 ---
 

@@ -145,13 +145,32 @@ executable rather than aspirational: a caller may request `LEXICAL` or `HYBRID`
 and asking for semantic-only raises, and a query must either name the companies it
 may return or say `allow_cross_entity=True` out loud.
 
-Azure AI Search vs PostgreSQL + `pgvector` is an `OPEN DECISION`
-([#1](OPEN_DECISIONS.md#1-azure-ai-search-vs-postgresql--pgvector)) and Slice 1.4
-**stopped at it**: no production backend was written, because both options cover
-the lexical layer and shipping a `tsvector` adapter would choose (b) in everything
-but name. No business logic may import either SDK. The deciding factor is expected
-to be operational (one less service to run, one less bill) versus retrieval
-quality at corpus scale, and the benchmark will answer it.
+Azure AI Search vs PostgreSQL + `pgvector` was `OPEN DECISION`
+[#1](OPEN_DECISIONS.md#1-azure-ai-search-vs-postgresql--pgvector) and Slice 1.4
+deliberately **stopped at it**. The user decided on 2026-09-05
+([ADR-047](../DECISIONS.md)): **PostgreSQL**, because V3 must require no new paid SaaS
+subscription. `IMPLEMENTED IN V3` (Slice 4.9) as `PostgresSearchBackend`.
+
+Two things about the implementation are worth stating here rather than leaving in the
+slice, because both are limitations a later reader would otherwise discover by
+measuring:
+
+**The lexical leg is the production path and needs no extension** — a GIN index over
+`to_tsvector('simple', text)`, with every metadata filter in the same statement as the
+`ORDER BY` and the `LIMIT`. That is the property §2.3 actually demands: a filter applied
+after ranking returns the top matches of the wrong set.
+
+**`pgvector` is not installed** on the PostgreSQL this project runs — verified, not
+assumed. So the semantic leg is a *bounded rerank of the lexical candidates*, not a
+nearest-neighbour search; it is off by default; `semantic_is_exhaustive` is `False`; and
+the only embedding provider is deterministic and fake.
+[ADR-053](../DECISIONS.md) records the amendment and the path back: enabling the
+extension adds a typed column populated from the JSONB already held.
+
+**De-indexing is an UPDATE, never a DELETE.** For this backend the chunk rows *are* the
+corpus, so removing a superseded derivation from the index clears `indexed_at` and leaves
+every span citable — old evidence ids keep resolving, and a stale reading of a document
+stops reaching a researcher.
 
 ---
 
