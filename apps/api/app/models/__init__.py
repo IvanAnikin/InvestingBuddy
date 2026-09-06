@@ -28,6 +28,7 @@ from app.models.legal_entity import (
     SecurityListing,
 )
 from app.models.macro import MacroDataset, MacroObservation, MacroSeries
+from app.models.monitoring import MonitoringSignal, Watchlist, WatchlistEntry
 from app.models.report import Report
 from app.models.research_artifact import ResearchArtifact
 from app.models.research_chunk import ResearchDocumentChunk
@@ -67,6 +68,7 @@ __all__ = [
     "MacroDataset",
     "MacroObservation",
     "MacroSeries",
+    "MonitoringSignal",
     "Report",
     "ReportingScope",
     "ResearchArtifact",
@@ -93,4 +95,6 @@ __all__ = [
     "Security",
     "SecurityListing",
     "Source",
+    "Watchlist",
+    "WatchlistEntry",
 ]
