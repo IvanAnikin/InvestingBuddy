@@ -58,8 +58,7 @@ def _v2_shaped_report() -> Report:
         [
             "# INTERNAL ADMIN DRAFT — FINAL REPORT",
             "",
-            "NOT INVESTMENT ADVICE. NOT A PUBLIC TRADING RECOMMENDATION. "
-            "Human review required.",
+            "NOT INVESTMENT ADVICE. NOT A PUBLIC TRADING RECOMMENDATION. Human review required.",
             "",
             "---",
             "",
@@ -270,6 +269,68 @@ class TestCostMeasurement:
             _Challenges(),
         )
         assert result["model"]["model_calls"] == 4
+
+    def test_configured_prices_produce_a_real_estimate(self) -> None:
+        """V3.11: prices are configuration, so a run CAN be priced. 22,224 input and
+        3,525 output tokens at 0.40/1.60 per million is the real CFR measurement."""
+        from app.core.config import Settings
+        from app.services.pipeline.v3_pipeline import _consumption
+
+        result = _consumption(
+            _routing(
+                chair=_Client(usage=_Usage(calls=9, prompt_tokens=22224, completion_tokens=3525))
+            ),
+            _Loop(tool_calls=11),
+            _Summary(findings_total=10),
+            _Verdict(),
+            _Challenges(),
+            Settings(
+                v3_price_usd_per_million_input_tokens=0.40,
+                v3_price_usd_per_million_output_tokens=1.60,
+                v3_price_source="list price, not an invoice",
+            ),
+        )
+        assert result["estimated_cost_usd"] == pytest.approx(0.01453, abs=1e-5)
+        assert result["cost_per_company_research_run"] == pytest.approx(0.01453, abs=1e-5)
+        assert result["cost_per_verified_useful_finding"] == pytest.approx(0.001453, abs=1e-6)
+        assert result["cost_is_unknown_because"] is None
+
+    def test_the_price_source_travels_with_the_estimate(self) -> None:
+        """An estimate whose provenance is lost is indistinguishable from a guess."""
+        from app.core.config import Settings
+        from app.services.pipeline.v3_pipeline import _consumption
+
+        result = _consumption(
+            _routing(chair=_Client(usage=_Usage(calls=1, prompt_tokens=1_000_000))),
+            _Loop(),
+            _Summary(findings_total=1),
+            _Verdict(),
+            _Challenges(),
+            Settings(
+                v3_price_usd_per_million_input_tokens=0.40,
+                v3_price_source="Azure OpenAI gpt-4.1-mini list price 2026-09-06",
+            ),
+        )
+        assert "2026-09-06" in result["price_source"]
+        assert result["cost_basis"] == "estimated_from_configured_prices"
+
+    def test_a_half_priced_book_still_reports_what_it_could_not_price(self) -> None:
+        """An estimate missing its dominant term is worse than no estimate, so the
+        unpriced units are named rather than silently treated as zero."""
+        from app.core.config import Settings
+        from app.services.pipeline.v3_pipeline import _consumption
+
+        result = _consumption(
+            _routing(
+                chair=_Client(usage=_Usage(calls=1, prompt_tokens=1000, completion_tokens=9999))
+            ),
+            _Loop(),
+            _Summary(findings_total=1),
+            _Verdict(),
+            _Challenges(),
+            Settings(v3_price_usd_per_million_input_tokens=0.40),
+        )
+        assert result["unpriced_units"]
 
     def test_a_slot_with_no_client_contributes_nothing(self) -> None:
         from app.services.pipeline.v3_pipeline import _consumption

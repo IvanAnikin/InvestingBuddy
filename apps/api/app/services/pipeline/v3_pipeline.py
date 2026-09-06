@@ -122,9 +122,7 @@ class V3ResearchOutcome:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "research_run_id": (
-                str(self.research_run_id) if self.research_run_id else None
-            ),
+            "research_run_id": (str(self.research_run_id) if self.research_run_id else None),
             "mode": self.mode,
             "playbook_versions": dict(self.playbook_versions),
             "routing": dict(self.routing),
@@ -326,16 +324,14 @@ async def _run(
         session, run, council, red_team=red, responder=responder
     )
     outcome.challenges = challenge_result.to_dict()
-    outcome.challenges["discarded_unknown_targets"] = len(
-        red.discarded_unknown_targets
-    )
+    outcome.challenges["discarded_unknown_targets"] = len(red.discarded_unknown_targets)
 
     # 8. Chair. Re-assembled first, because the Red Team may have withdrawn a finding
     #    and the Chair must not see one that was retired.
     council = await council_inputs.assemble(session, run)
-    verdict: ChairVerdict = await LLMChair(
-        client=model_routing.client_for(SLOT_CHAIR)
-    ).deliberate(council)
+    verdict: ChairVerdict = await LLMChair(client=model_routing.client_for(SLOT_CHAIR)).deliberate(
+        council
+    )
     outcome.chair = verdict.to_dict()
     if verdict.deterministic_fallback:
         outcome.degraded.append("the chair fell back to the deterministic verdict")
@@ -362,7 +358,7 @@ async def _run(
 
     summary = await ledger.summarise(session, run)
     outcome.consumption = _consumption(
-        model_routing, loop_result, summary, verdict, challenge_result
+        model_routing, loop_result, summary, verdict, challenge_result, cfg
     )
     await session.flush()
 
@@ -373,6 +369,7 @@ def _consumption(
     summary: Any,
     verdict: ChairVerdict,
     challenge_result: Any,
+    cfg: Any = None,
 ) -> dict[str, Any]:
     """What the run actually consumed, and what it produced that was worth consuming it.
 
@@ -406,9 +403,7 @@ def _consumption(
             model_calls=int(getattr(popped, "calls", 0) or 0),
             model_input_tokens=int(getattr(popped, "prompt_tokens", 0) or 0),
             model_output_tokens=int(getattr(popped, "completion_tokens", 0) or 0),
-            instrumented=frozenset(
-                {"model_calls", "model_input_tokens", "model_output_tokens"}
-            ),
+            instrumented=frozenset({"model_calls", "model_input_tokens", "model_output_tokens"}),
         )
         bucket = by_vendor.setdefault(
             slot.vendor or "unknown", {"calls": 0, "input": 0, "output": 0}
@@ -417,10 +412,14 @@ def _consumption(
         bucket["input"] += int(getattr(popped, "prompt_tokens", 0) or 0)
         bucket["output"] += int(getattr(popped, "completion_tokens", 0) or 0)
 
-    # Prices are configuration and none is recorded, so this is `None` — unpriced, never
-    # free. An unpriced provider reported as costless is how a benchmark picks the wrong
-    # one.
-    cost = derive_cost(units, PriceBook())
+    # Prices are CONFIGURATION. With none supplied this stays `None` — unpriced, never
+    # free, because an unpriced provider reported as costless is how a benchmark picks
+    # the wrong one.
+    prices = PriceBook(
+        usd_per_million_input_tokens=getattr(cfg, "v3_price_usd_per_million_input_tokens", None),
+        usd_per_million_output_tokens=getattr(cfg, "v3_price_usd_per_million_output_tokens", None),
+    )
+    cost = derive_cost(units, prices)
     useful = max(
         0,
         summary.findings_total - int((challenge_result.withdrawn_findings or 0)),
@@ -440,9 +439,12 @@ def _consumption(
         "estimated_cost_usd": cost.estimated_usd,
         "unpriced_units": list(cost.unpriced_units),
         "cost_per_verified_useful_finding": (
-            (cost.estimated_usd / useful)
-            if (cost.estimated_usd is not None and useful)
-            else None
+            (cost.estimated_usd / useful) if (cost.estimated_usd is not None and useful) else None
+        ),
+        "cost_per_company_research_run": cost.estimated_usd,
+        "price_source": getattr(cfg, "v3_price_source", "") or None,
+        "cost_basis": (
+            "estimated_from_configured_prices" if cost.estimated_usd is not None else None
         ),
         "cost_is_unknown_because": (
             "no price is recorded for any provider; a cost of unknown is never zero"
