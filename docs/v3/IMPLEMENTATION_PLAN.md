@@ -272,7 +272,7 @@ approval.
 | 2026-09-05 | V3.4 Slice 4.3 — DeepSeek providers | `feature/v3-4-3-deepseek-providers` | `07c7032` |
 | 2026-09-05 | V3.4 Slice 4.4 — research lead promotion | `feature/v3-4-4-research-lead-promotion` | `5cd3910` |
 | 2026-09-06 | V3.4 Slice 4.9 — PostgreSQL search backend | `feature/v3-4-9-pgvector-search-backend` | `08cb013` |
-| 2026-09-06 | V3.4 Slice 4.8 — transcripts and IR events | `feature/v3-4-8-transcript-provider` | _pending_ |
+| 2026-09-06 | V3.4 Slice 4.8 — transcripts and IR events | `feature/v3-4-8-transcript-provider` | `e481da6` |
 | 2026-09-06 | V3.4 Slice 4.7 — macro observation store | `feature/v3-4-7-macro-observation-store` | `5b5045e` |
 | 2026-09-06 | V3.4 Slice 4.5 — provider benchmark harness | `feature/v3-4-5-provider-benchmark-harness` | `8d20747` |
 | 2026-09-06 | V3.4 Slice 4.11 — research-mode budgets (corrective) | `feature/v3-4-11-research-mode-budgets` | `3f8013b` |
