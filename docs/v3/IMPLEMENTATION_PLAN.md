@@ -281,7 +281,7 @@ approval.
 | 2026-09-06 | V3.6 Slice 6.2 — five industry playbooks | `feature/v3-6-2-industry-playbooks` | `2408ca6` |
 | 2026-09-06 | V3.7 Slice 7.1 — Council V2 inputs | `feature/v3-7-1-council-v2-inputs` | `ce8c856` |
 | 2026-09-06 | V3.7 Slice 7.2 — Red Team challenge round | `feature/v3-7-2-red-team-challenge-round` | `80010ae` |
-| 2026-09-06 | V3.8 Slice 8.1 — research memory | `feature/v3-8-1-research-memory` | _pending_ |
+| 2026-09-06 | V3.8 Slice 8.1 — research memory | `feature/v3-8-1-research-memory` | `4c873aa` |
 | 2026-09-06 | V3.4 Slice 4.10 — bounded issuer-site traversal | `feature/v3-4-10-issuer-site-traversal` | `ac970fb` |
 | 2026-09-06 | V3.4 Slice 4.8 — transcripts and IR events | `feature/v3-4-8-transcript-provider` | `e481da6` |
 | 2026-09-06 | V3.4 Slice 4.7 — macro observation store | `feature/v3-4-7-macro-observation-store` | `5b5045e` |
