@@ -14,7 +14,7 @@
 | **V3.2** | Entity Master and global universe | `IMPLEMENTED` — all slices merged. See [the phase gate](#11-v32-phase-gate). |
 | **V3.3** | Research tools and calculation engine | `IMPLEMENTED` — all four slices merged. See [the phase gate](#12-v33-phase-gate). |
 | **V3.4** | Multi-provider runtime and source expansion | `IMPLEMENTED` — eight slices merged; 4.2/4.6 `DEFERRED` by user decision. See [the phase gate](#13-v34-phase-gate). |
-| **V3.5** | Research Ledger and Director | `NOT STARTED` |
+| **V3.5** | Research Ledger and Director | `IN PROGRESS` — 5.1 merged. |
 | **V3.6** | Industry playbooks | `NOT STARTED` |
 | **V3.7** | Council V2 and Red Team | `NOT STARTED` |
 | **V3.8** | Research Memory and Delta | `NOT STARTED` |
@@ -128,7 +128,7 @@ bytes are retained.
 
 | Slice | Branch | Objective |
 |---|---|---|
-| 5.1 | `feature/v3-5-1-research-ledger-schema` | Run / task / question / finding / hypothesis / gap / disagreement. |
+| 5.1 | [`feature/v3-5-1-research-ledger-schema`](slices/V3.5-1-research-ledger-schema.md) | Seven tables, and one CHECK that makes an unsupported finding unstorable. `IMPLEMENTED` (035). |
 | 5.2 | `feature/v3-5-2-research-director` | Bounded planning; playbook + prior research aware. |
 | 5.3 | `feature/v3-5-3-bounded-investigation-loop` | Gap review → follow-up tasks, with every hard limit enforced and reported. |
 | 6.1-6.5 | `feature/v3-6-<n>-playbook-<industry>` | Playbook schema, then luxury, biotech, semiconductors, banks, industrial/defense. |
@@ -273,6 +273,7 @@ approval.
 | 2026-09-05 | V3.4 Slice 4.3 — DeepSeek providers | `feature/v3-4-3-deepseek-providers` | `07c7032` |
 | 2026-09-05 | V3.4 Slice 4.4 — research lead promotion | `feature/v3-4-4-research-lead-promotion` | `5cd3910` |
 | 2026-09-06 | V3.4 Slice 4.9 — PostgreSQL search backend | `feature/v3-4-9-pgvector-search-backend` | `08cb013` |
+| 2026-09-06 | V3.5 Slice 5.1 — research ledger schema | `feature/v3-5-1-research-ledger-schema` | _pending_ |
 | 2026-09-06 | V3.4 Slice 4.10 — bounded issuer-site traversal | `feature/v3-4-10-issuer-site-traversal` | `ac970fb` |
 | 2026-09-06 | V3.4 Slice 4.8 — transcripts and IR events | `feature/v3-4-8-transcript-provider` | `e481da6` |
 | 2026-09-06 | V3.4 Slice 4.7 — macro observation store | `feature/v3-4-7-macro-observation-store` | `5b5045e` |
