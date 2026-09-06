@@ -557,7 +557,31 @@ was provisioned.**
 V3.10 ended `NOT READY` against four named blockers. This section reports what each one
 turned out to be, and what closing it required.
 
-### 11.1 Blocker 1 — DeepSeek — `BLOCKED ON CREDENTIAL`, and now optional
+### 11.1 Blocker 1 — DeepSeek — **contract now VERIFIED**, and still optional
+
+> **Updated after the section below was written.** A key was supplied on 2026-09-06 and
+> the live contract test ran. **7 of its 8 live questions failed.** The adapter has been
+> reconciled against measured behaviour and 14/14 now pass. Full detail:
+> [V3.11-1-1-deepseek-live-contract-verified.md](slices/V3.11-1-1-deepseek-live-contract-verified.md).
+>
+> **The headline: DeepSeek has no server-side web search.** `tools[0].type` accepts only
+> `"function"`; the model self-reports no live browsing and a June 2024 cutoff. DeepSeek
+> was designated the primary external research runtime *precisely* because it was believed
+> to offer server-side search returning URLs and citations. That premise was wrong, so
+> `search()` now refuses rather than dressing recollection as retrieval.
+>
+> Three further defects the key exposed: the adapter's `repr` **printed the live key into
+> pytest output** (fixed; **the key used for validation must be rotated**); a credential in
+> `.env` **silently re-routed Investigator work off Azure OpenAI** with every flag still
+> off (now gated by `v3_deepseek_model_enabled`, default off); and **seven tests were
+> asserting a property of the developer's machine** rather than the code, passing only
+> while no key existed anywhere.
+>
+> None of this changes the recommendation. It **strengthens** the decision to treat
+> DeepSeek as optional: the capability it was chosen for does not exist, and the three real
+> playbook-gated Councils convened without it.
+
+#### As originally written (no credential reachable)
 
 **No DeepSeek credential is reachable from this environment.** Searched secret-safely —
 presence and length only, never a value: shell environment, four env files, Azure app
@@ -701,7 +725,7 @@ OpenAI ran.
 | ResearchDelta | ✅ supersession on real data: `changed_facts=13, invalidated_findings=6` |
 | Monitoring (local, unscheduled) | ✅ 20 tests |
 | **Citations resolve** | ✅ 9/9 — **and this was previously unchecked** |
-| DeepSeek live contract | ⛔ `BLOCKED ON CREDENTIAL` |
+| DeepSeek live contract | ✅ **VERIFIED 2026-09-06** — 14/14; found 4 defects incl. a key leak and a false capability premise |
 
 **Supersession** — the one V3.10 could only unit-test — is now demonstrated on real data:
 consecutive MRNA runs produced `changed_facts: 13` and `invalidated_findings: 6`, so the
@@ -749,7 +773,7 @@ Against the acceptance gate, point by point:
 
 | Criterion | Evidence |
 |---|---|
-| DeepSeek verified **or** removed as release-critical | ✅ **removed** — 3 real Councils, 17 tests, adapter unimported by the research path |
+| DeepSeek verified **or** removed as release-critical | ✅ **both** — contract now verified live (14/14), *and* removed as release-critical: 3 real Councils, 21 tests, adapter unimported by the research path |
 | Scope resolution materially functional, fail-closed preserved | ✅ 1.7% → 8.1%, **0.0%** false-positive Group |
 | MRNA, CFR, ASML exercise the playbook-gated path | ✅ all three |
 | At least one playbook-gated real Council completes | ✅ **three** |

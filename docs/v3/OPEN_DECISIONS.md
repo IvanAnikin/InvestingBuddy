@@ -444,17 +444,25 @@ ships unconfigured), [15](#15-monitoring-cadence) (V3.9 scheduling),
 Two decisions above are affected by what V3.11 measured, and neither is reopened here —
 this records where they stand.
 
-**#4 DeepSeek data-governance policy.** Unchanged as a policy. Operationally, DeepSeek has
-now been **removed as a release-critical dependency** (see
-[V3_RELEASE_CANDIDATE_REPORT.md §11.1](V3_RELEASE_CANDIDATE_REPORT.md#111-blocker-1--deepseek--blocked-on-credential-and-now-optional)):
-no credential is reachable from this environment, the live contract has never run, the flag
-is off, and the research path does not import the adapter. The private-document rule — *a
-document may reach an external model only when its explicit rights/policy permits it, and
-unknown policy fails closed* — remains in force and is untested against a live call.
+**#4 DeepSeek data-governance policy.** Unchanged as a policy. The private-document rule —
+*a document may reach an external model only when its explicit rights/policy permits it,
+and unknown policy fails closed* — remains in force and is **still untested against a live
+call**, because no document has been sent to DeepSeek.
+
+**#3 Exa vs Perplexity Search — materially changed by V3.11.1.1.** The live contract proved
+**DeepSeek has no server-side web search**: `tools[0].type` accepts only `"function"`, and
+the model has no live browsing (June 2024 cutoff). DeepSeek was chosen as the primary
+external research runtime *for* that capability, so the general-web leg is now genuinely
+unstaffed. Today it is covered by the safe fetcher and bounded issuer traversal, which
+retrieve documents that exist. Whether that is sufficient, or whether a real search
+provider is worth a subscription, is **your decision** — the constraint "no new paid
+subscriptions" still stands and nothing was purchased.
 
 **New, for the user.** Two items surfaced by V3.11 that are decisions rather than defects:
 
 | # | Decision | Why it is yours |
 |---|---|---|
 | 19 | Should V2's HTML extraction get V3.11's container-block fix? | V2's excerpt path also gets **zero text** from modern Inline-XBRL SEC filings. Fixing it would change **deployed report content**, so V3.11 left V2 byte-identical. |
-| 20 | Enabling DeepSeek later | The `ResearchLead` → Evidence promotion path has **never run with a real external provider**, because DeepSeek is the only producer of leads. It is dormant and unit-tested. Turning DeepSeek on is therefore the moment that path first carries traffic, and it needs **its own acceptance slice**, not a flag flip. |
+| 20 | Enabling DeepSeek's model leg | `v3_deepseek_model_enabled` (default off) routes Investigator and follow-up work to DeepSeek. The completion contract is **verified**, but no acceptance run has used it, so the cost figures and the three Councils in the report would no longer describe what runs. Needs its own acceptance slice. |
+| 21 | **Rotate the validation key** | The key supplied on 2026-09-06 reached terminal output through a dataclass `repr` before that was fixed. It should be rotated. Nothing was committed — the real key appears in no tracked file — but it was rendered in a failure trace. |
+| 22 | The `ResearchLead` path has no producer | It exists to verify claims from an external search provider. DeepSeek **cannot search**, so it produces no leads to promote. The path stays dormant until decision #3 is settled — it is not a defect, it is an unstaffed role. |
