@@ -13,7 +13,7 @@
 | **V3.1** | Research Corpus | `IMPLEMENTED` — and, unlike V3.0, with a **real-document acceptance run** behind it. Not `VALIDATED`: the run is local and the corpus is not deployed. See [the phase gate](#10-v31-phase-gate). |
 | **V3.2** | Entity Master and global universe | `IMPLEMENTED` — all slices merged. See [the phase gate](#11-v32-phase-gate). |
 | **V3.3** | Research tools and calculation engine | `IMPLEMENTED` — all four slices merged. See [the phase gate](#12-v33-phase-gate). |
-| **V3.4** | Multi-provider runtime and source expansion | `IN PROGRESS` — 4.1/4.1.1/4.3/4.4/4.9 merged. **Nothing is `BLOCKED`:** the 2026-09-05 resolution round deferred 4.2/4.6 and unblocked 4.3/4.8. |
+| **V3.4** | Multi-provider runtime and source expansion | `IMPLEMENTED` — eight slices merged; 4.2/4.6 `DEFERRED` by user decision. See [the phase gate](#13-v34-phase-gate). |
 | **V3.5** | Research Ledger and Director | `NOT STARTED` |
 | **V3.6** | Industry playbooks | `NOT STARTED` |
 | **V3.7** | Council V2 and Red Team | `NOT STARTED` |
@@ -756,3 +756,166 @@ including the *withheld* case a partial-match source needs. Consumption units ar
 zero**. And `EXTERNAL_TOOL_NAMES` already names the tools that reach outside the
 platform, so the governance rule that private content must never travel through one of
 them can be written against the set rather than against a list somebody keeps in sync.
+
+---
+
+## 13. V3.4 phase gate
+
+**Status: `IMPLEMENTED`, not `VALIDATED`.** Eight slices built, tested and merged; two
+`DEFERRED` by user decision rather than left undone. Migrations 031-034 have reached no
+deployed environment, and **no live provider call has been made** — which is deliberate,
+not an omission: no credential is configured here and a benchmark that estimated a
+provider it could not run would have invented its most important column.
+
+### What the phase set out to prove (§3 of the acceptance strategy)
+
+> *A provider claim without a resolvable source stays a `ResearchLead`; a rejected lead
+> keeps its rejection reason; the benchmark produces `cost_per_verified_finding`; private
+> content is never in a provider payload.*
+
+| Demonstration | Status |
+|---|---|
+| A provider claim without a resolvable source stays a `ResearchLead` | ✅ A claim citing no URL is **`unverifiable`**, a status of its own and not a rejection reason — it is not *wrong*, nobody can check it — and nothing is spent finding that out. A `verified` row is unstorable without the SHA-256 of bytes InvestingBuddy fetched **itself**, enforced by a database CHECK; a claim present in the provider's snippet and absent from the fetched document is rejected. |
+| A rejected lead keeps its rejection reason | ✅ From a closed vocabulary of eight, in Python **and** in SQL. A rejection with no reason is unstorable; so is a reason beside a verified row. The hash of what was read is kept on the rejection too, because "we read this document and it does not say that" is what makes a refusal checkable. |
+| The benchmark produces `cost_per_verified_finding` | ✅ From a real verification gate, and it produces **`None`** whenever cost or verified count is unknown. An unpriced provider with 100 verified findings loses to a priced one with a single verified finding; no winner is declared when none is measurable; a provider that could not run has **no score at all**. |
+| Private content is never in a provider payload | ✅ Two gates, both required (4.1.1/ADR-049): provider × access class, and the document's own rights. Credentials are excluded **categorically** — not by a policy, because a policy is something somebody can edit. |
+| *(added)* A macro reading is reproducible as of a past date | ✅ A revision is a new row; `as_of` returns the July figure in August while `latest` returns October's. A partial unique index makes two current readings of one period impossible. |
+| *(added)* "No transcript" is a finding, not an absence | ✅ `not_published` is a stored row and a research gap; an absent row is "nobody looked" and is a task. Enforced with CHECKs that also refuse a corpus document hanging off an absence. |
+| *(added)* Retrieval survives a process restart | ✅ `PostgresSearchBackend`: a GIN index over `to_tsvector`, every filter in the same statement as the `ORDER BY` and `LIMIT`, and 13 tests against **real PostgreSQL 16**. |
+
+### The eight slices, and the one line that matters about each
+
+| Slice | The thing it makes structurally impossible |
+|---|---|
+| 4.1 | A provider's output entering the record as evidence. |
+| 4.1.1 | A document reaching a provider that either the provider's policy or the *document's* rights forbid. |
+| 4.3 | A DeepSeek failure taking a run with it, or an unverified wire contract being guessed at. |
+| 4.4 | A `verified` lead with no hash of bytes the platform fetched itself. |
+| 4.5 | An unpriced provider being reported as the cheapest, or a number existing for a provider that did not run. |
+| 4.7 | A revised macro figure silently re-basing a report that cited the earlier one. |
+| 4.8 | "The issuer published no transcript" being indistinguishable from "we never looked". |
+| 4.9 | A period or scope filter being applied *after* the ranking. |
+| 4.10 | An unbounded walk of somebody else's site, or a walk that stopped and did not say so. |
+| 4.11 | An unbounded research budget on a system that can now search the web in a loop. |
+
+### The defects a review pass caught that the build pass did not
+
+The pattern V3.2 and V3.3 recorded, continuing: every one was working, green code that
+was **quietly wrong about a default, a bound or a measurement**.
+
+| # | Slice | Defect |
+|---|---|---|
+| 1 | 4.4 | `parse_number` scraped digits and read **`"Q1 2026"` as `12026`** — a number no document contains, handed to a comparison that would then have "found" it. The parse is now anchored, and a genuinely ambiguous token like `1,234` yields **both** readings rather than a choice. |
+| 2 | 4.4 | Verification read the **evidence-excerpt** extractor, which drops any HTML block under 40 characters. A press release whose relevant sentence is short would have verified as `claim_not_in_source`. |
+| 3 | 4.4 | A claim absent from a document the platform only **partly read** was being rejected. The V2 reader stops at 40 PDF pages; blaming a provider for page 100 moves `verification_survival_rate` in the direction that *looks* like diligence, which is the hardest kind of wrong to notice. Now `pending`. |
+| 4 | 4.4 | The content hash was kept only on success, leaving every rejection unauditable. |
+| 5 | 4.9 | `to_tsvector(varchar, text)` **does not exist** — the configuration has to be a SQL literal, not a bind parameter. Which is also what makes the query expression byte-identical to the indexed one, and therefore the difference between a bitmap index scan and a sequential scan of the corpus. |
+| 6 | 4.9 | The FTS index existed in the migration and not in the ORM, so a drift check reported it. `Index(...).ddl_if(dialect="postgresql")` puts it where a drift check can see it. |
+| 7 | 4.11 | **ADR-052 was accepted and never implemented.** Every budget still defaulted to unbounded while the campaign record asserted the ceilings were real numbers — a divergence running in the dangerous direction, since the record claimed a safety property the system did not have. |
+
+Three `mypy` regressions (71 → 72) occurred during the phase and the gate caught all
+three; each was a real type error.
+
+### Two guards turned around rather than deleted
+
+Both had done their job, and both would have failed on legitimate work:
+
+- **`test_no_live_adapter_module_exists_yet`** (4.1) pinned the provider package's
+  *filenames* as a proxy for "no live adapter". 4.3 showed the proxy was wrong — the
+  DeepSeek adapters landed in `app/integrations/` and it never noticed — while 4.4's
+  domain logic broke it. Replaced with the invariant it stood for: **no module in the
+  provider package opens a socket.**
+- **`test_the_production_backend_decision_is_not_taken_here`** (1.4) kept OPEN DECISION #1
+  honestly deferred. The user took it, so the assertion inverted: the backends present
+  must be exactly the ones ADR-047 names, and an Azure AI Search adapter appearing still
+  fails — that was the option the decision *rejected*, and enforcing a rejection costs
+  nothing.
+
+### One architecture amendment, with its evidence
+
+[ADR-053](../DECISIONS.md) amends ADR-047. `pgvector` is **not installable** on the
+PostgreSQL this project runs — checked, not assumed:
+
+```
+SELECT count(*) FROM pg_available_extensions WHERE name='vector';   -- 0
+```
+
+On Azure it is a server-parameter change to a **deployed** server, which this campaign
+must not make. So the lexical leg is the production path and needs no extension, and the
+semantic leg ships portable, feature-gated and honest about being a **bounded rerank**
+rather than a nearest-neighbour search: `semantic_is_exhaustive` is `False`,
+`SearchMode.SEMANTIC` is absent from `capabilities`, and the only embedding provider
+declares `is_fake`.
+
+### What is deliberately NOT done
+
+| Item | Why |
+|---|---|
+| Slices 4.2 (Exa) and 4.6 (Gemini Deep Research) | `DEFERRED` by ADR-048 and the resolution round. Interfaces and fakes retained; each is one small adapter if a decision changes. |
+| Any live provider call | No credential is configured. The benchmark's honest output in that state is every provider `not_approved` or `not_configured`, no cost and no winner — and it printed exactly that. |
+| **DeepSeek's server-side `web_search` wire contract** | Still **unverified** against the live API. The mapping is isolated, the tool name is configuration, `V3_DEEPSEEK_SEARCH_ENABLED` defaults **off**, and the parser returns no candidates with a warning naming what it saw. Confirming it is one request body, one parser and one opt-in contract test. |
+| Wiring 4.10's traversal to 4.8's IR-event discovery | One small slice once both are accepted. This phase built the destination and the path separately, which is the ordering that keeps each testable. |
+| Routing anything to the PostgreSQL search backend | `V3_SEARCH_BACKEND` defaults to `memory`. Switching a running system's retrieval is a behaviour change and gets its own gate. |
+| A production embedding provider | A spend decision on a path nothing yet consumes. |
+| Live-issuer acceptance | V3 is not deployed. The same gap V3.0-V3.3 have. |
+
+### Migrations created, not deployed
+
+| Migration | Tables / change | Applied where |
+|---|---|---|
+| 031 | `research_leads` | Scratch only (`ib_v3_migcheck_031`/`_031b`, dropped). |
+| 032 | `research_document_chunks`: `indexed_at`, `embedding_json`, `embedding_model`, `embedding_dim` + a GIN index over `to_tsvector('simple', text)` | Scratch only (`_032`/`_032b`, dropped). |
+| 033 | `macro_datasets`, `macro_series`, `macro_observations` | Scratch only (`_033`, dropped). |
+| 034 | `ir_events`, `ir_event_materials` | Scratch only (`_034`, dropped). |
+
+All four applied, rolled back and re-applied against **real PostgreSQL 16** on throwaway
+databases that were then dropped. ORM-versus-DDL drift including CHECK constraints and
+indexes: `DRIFT: none` on every table. **The local dev database was re-checked after each
+and is still at 018.**
+
+Thirty-two statements were run directly against PostgreSQL rather than through the ORM.
+The four that matter most:
+
+- **A `verified` lead with no hash of bytes we fetched is unstorable.** A verification
+  performed against a provider's own snippet has verified nothing, and the schema makes
+  the row that would record it impossible rather than trusting every future writer.
+- **Two *current* readings of one macro period are unstorable**, while two *vintages* of
+  it are both storable. That pair is the whole reason a past report stays reproducible.
+- **`not_published` is storable and `available`-with-no-location is not.** The first is
+  the finding ADR-051 needs to be liveable; the second is a claim nothing can act on.
+- **An embedding with no model, or of dimension zero, is unstorable.** Two models'
+  vectors share a dimension and nothing else, so an unattributed one produces a
+  plausible number rather than an error.
+
+### Gate results at the end of the phase
+
+```
+ruff check .          All checks passed!
+pytest tests/ -q      5635 passed, 12 skipped   (5430 at the start of V3.4, +205)
+mypy app              Found 71 errors in 10 files   (baseline, unchanged)
+```
+
+Thirteen of the new tests run against **real PostgreSQL 16** on a scratch schema created
+and dropped per run, skipping with a named reason when none is reachable. A backend whose
+only successful path is a unit test is the failure this repository already recorded once,
+in Phase 32A slice 5A.
+
+No web gate: V3.4 changes no frontend file.
+
+### Recommended V3.5 starting slice
+
+**5.1 — `feature/v3-5-1-research-ledger-schema`.** Everything else in V3.5 writes to it:
+the Director produces questions and tasks, the loop produces findings and gaps, and
+neither has anywhere to put them. Three things beneath it are settled and must be used
+rather than re-established:
+
+- **A finding without `evidence_ids` or `calculation_ids` is not a finding.** The schema
+  enforces it; there is no "trust me" state. `research_leads` (4.4) and
+  `calculation_records` (3.3) are the two id spaces it points into.
+- **The bounded loop's limits already exist.** `research_mode.ModeLimits` carries
+  `max_rounds`, `max_tasks` and `max_tool_calls`, all finite (4.11). The loop enforces
+  them; it does not invent them.
+- **A refusal vocabulary is closed, and a refusal is stored.** Four tables in this
+  campaign now do exactly that, and `ResearchGap` is the one where it matters most:
+  V2 already produces excellent honest gaps, and V3's change is that a gap becomes an
+  actionable work item rather than a caveat printed in the report.
