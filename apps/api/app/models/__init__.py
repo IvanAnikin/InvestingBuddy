@@ -2,6 +2,7 @@ from app.models.agent_run import AgentRun, AgentStep
 from app.models.calculation import CalculationRecord
 from app.models.challenge import ResearchChallenge
 from app.models.company import Company
+from app.models.delta import ResearchDelta
 from app.models.discovery import DiscoveryCandidate, DiscoveryRun
 from app.models.document_ingestion_attempt import DocumentIngestionAttempt
 from app.models.extracted_document import ExtractedDocument, ExtractedFact
@@ -77,6 +78,7 @@ __all__ = [
     "ResearchDocumentTable",
     "ResearchDocumentVersion",
     "ResearchChallenge",
+    "ResearchDelta",
     "ResearchDisagreement",
     "ResearchFinding",
     "ResearchGap",
