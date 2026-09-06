@@ -104,12 +104,19 @@ class TestTheAdaptersFitTheInterfaces:
         # `None` rather than an exception, matching get_llm_client: an unconfigured
         # provider is a degradation the caller handles, not a crash. That is what makes
         # the whole DeepSeek path optional in practice as well as in principle.
-        assert transport_from_settings(Settings()) is None
+        #
+        # The absence is stated EXPLICITLY. A bare `Settings()` reads the developer's
+        # .env, so this asserted a property of the machine and passed only while no key
+        # existed anywhere.
+        assert transport_from_settings(Settings(deepseek_api_key="")) is None
         assert transport_from_settings(Settings(deepseek_api_key="k")) is not None or True
 
     def test_configuration_defaults_are_safe(self) -> None:
+        # Read from the FIELD DEFAULTS, not from a constructed object. Comparing a live
+        # key against "" makes pytest print the key into the failure diff, which is how
+        # a credential reaches CI logs.
+        assert Settings.model_fields["deepseek_api_key"].default == ""
         settings = Settings()
-        assert settings.deepseek_api_key == ""
         assert settings.deepseek_base_url == DEFAULT_BASE_URL
         # Server-side search is OFF by default because its wire contract is unverified.
         assert settings.v3_deepseek_search_enabled is False

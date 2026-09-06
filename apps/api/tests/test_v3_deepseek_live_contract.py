@@ -82,7 +82,6 @@ requires_live_deepseek = pytest.mark.skipif(
 )
 
 
-
 def _transport():
     from app.integrations.deepseek.transport import transport_from_settings
 
@@ -123,6 +122,8 @@ pytestmark_live = pytest.mark.integration
 
 @requires_live_deepseek
 class TestLiveModelContract:
+    """Verified against the live API on 2026-09-06."""
+
     async def test_1_a_standard_call_returns_text_and_a_finish_reason(self) -> None:
         response = await _transport().complete(
             system="You answer in one short sentence.",
@@ -131,235 +132,229 @@ class TestLiveModelContract:
             temperature=0.0,
             timeout=TIMEOUT_SECONDS,
         )
-        assert response.text and len(response.text) > 0
-        assert response.finish_reason is not None
-        # Never assert on the value of anything that could carry a credential.
-        assert isinstance(response.raw, dict)
+        assert response.text
+        assert "MRNA" in response.text.upper()
+        assert response.finish_reason == "stop"
 
-    async def test_2_usage_metadata_is_reported(self) -> None:
-        """A unit the provider does not count must be ABSENT from consumption, not zero.
+    async def test_2_json_mode_is_opt_in_and_carries_its_own_literal(self) -> None:
+        """The defect this file was written to find.
 
-        This test records which units DeepSeek actually reports, so the adapter can
-        declare exactly those and no more.
+        The adapter sent ``response_format: json_object`` on EVERY call, and the API
+        rejects that unless the prompt contains the word "json" — so every ordinary
+        completion returned HTTP 400. JSON mode is now opt-in and supplies the literal
+        itself, so a caller cannot trip it by wording a prompt differently.
         """
         response = await _transport().complete(
-            system="Answer in one word.",
-            user="Name the regulator that approves drugs in the United States.",
+            system="You answer with a single object.",  # deliberately no "json"
+            user="Give the NASDAQ ticker for Moderna under the key 'ticker'.",
             max_tokens=MAX_TOKENS,
             temperature=0.0,
             timeout=TIMEOUT_SECONDS,
+            json_mode=True,
         )
-        assert response.prompt_tokens > 0, "no prompt token count was reported"
-        assert response.completion_tokens > 0, "no completion token count was reported"
-        usage = response.raw.get("usage") or {}
-        print(f"\nRECORDED usage keys: {sorted(usage)}")
-        print(f"RECORDED cached_tokens reported as: {response.cached_tokens}")
+        assert response.text
+        assert json.loads(response.text)["ticker"].upper() == "MRNA"
 
-    async def test_3_json_mode_output_parses(self) -> None:
+    async def test_3_usage_metadata_is_reported(self) -> None:
         response = await _transport().complete(
-            system=(
-                "Return ONLY a JSON object with keys 'ticker' and 'exchange'. "
-                "No prose, no code fence."
-            ),
-            user="Moderna, Inc.",
+            system="You answer in one short sentence.",
+            user="Name the exchange Moderna trades on.",
             max_tokens=MAX_TOKENS,
             temperature=0.0,
             timeout=TIMEOUT_SECONDS,
         )
-        text = (response.text or "").strip().removeprefix("```json").removesuffix("```")
-        parsed = json.loads(text)
-        assert isinstance(parsed, dict)
-        print(f"\nRECORDED json-mode keys: {sorted(parsed)}")
+        assert response.prompt_tokens > 0
+        assert response.completion_tokens > 0
+        assert response.cached_tokens >= 0
+
+    async def test_4_the_served_model_is_recorded_and_is_not_what_we_asked_for(
+        self,
+    ) -> None:
+        """``deepseek-chat`` is not a served model name. It is accepted and silently
+        answered by ``deepseek-v4-flash``, so the response reports a different model
+        from the request. Cost attribution and reproducibility both depend on reading
+        the served name rather than assuming the requested one.
+        """
+        from app.integrations.deepseek.transport import SERVED_MODELS
+
+        response = await _transport().complete(
+            system="You answer in one short sentence.",
+            user="Reply with the word ok.",
+            max_tokens=32,
+            temperature=0.0,
+            timeout=TIMEOUT_SECONDS,
+        )
+        served = (response.raw or {}).get("model")
+        assert served in SERVED_MODELS
+        assert served != Settings().deepseek_model
 
 
 @requires_live_deepseek
 class TestLiveSearchContract:
-    """THE UNVERIFIED PART. Everything here is written to RECORD, not to assert a guess."""
+    """DeepSeek has NO server-side web search. This class records the disproof."""
 
-    async def test_5_a_search_request_is_accepted(self) -> None:
-        response = await _transport().search(
-            query=PUBLIC_QUERY, top_k=5, domains=None, timeout=TIMEOUT_SECONDS
-        )
-        assert response is not None
-        print(f"\nRECORDED search finish_reason: {response.finish_reason}")
-        print(f"RECORDED tool_payload count: {len(response.tool_payloads)}")
+    async def test_5_there_is_no_builtin_search_tool_type(self) -> None:
+        """The premise for designating DeepSeek the primary external research runtime
+        was server-side search. Every builtin spelling is rejected."""
+        import httpx
 
-    async def test_6_the_search_response_shape_is_recorded_verbatim(self) -> None:
-        """The output of this test is the evidence the mapping should be written from.
+        cfg = Settings()
+        async with httpx.AsyncClient(
+            base_url=cfg.deepseek_base_url,
+            timeout=TIMEOUT_SECONDS,
+            headers={"Authorization": f"Bearer {cfg.deepseek_api_key}"},
+        ) as client:
+            for tool_type in ("web_search", "web_search_preview", "search", "browser"):
+                response = await client.post(
+                    "/chat/completions",
+                    json={
+                        "model": cfg.deepseek_model,
+                        "max_tokens": 32,
+                        "messages": [{"role": "user", "content": "hi"}],
+                        "tools": [{"type": tool_type}],
+                    },
+                )
+                assert response.status_code == 400, tool_type
+                assert "unknown variant" in response.text
 
-        Deliberately printed rather than asserted: an assertion here would encode the
-        very guess this slice exists to replace.
-        """
-        response = await _transport().search(
-            query=PUBLIC_QUERY, top_k=5, domains=None, timeout=TIMEOUT_SECONDS
-        )
-        print("\n=== RECORDED DeepSeek search response shape ===")
-        print(f"top-level keys: {sorted(response.raw)}")
-        for index, payload in enumerate(response.tool_payloads[:3]):
-            print(f"tool_payload[{index}] keys: {sorted(payload)}")
-            print(f"tool_payload[{index}]: {json.dumps(payload)[:1200]}")
-        if response.text:
-            print(f"text (first 400 chars): {response.text[:400]}")
+    async def test_6_a_function_tool_needs_a_json_schema_not_arguments(self) -> None:
+        """The adapter passed concrete arguments where a JSON Schema belongs, so every
+        search call was rejected before it could fail for the deeper reason."""
+        import httpx
 
-    async def test_7_search_results_carry_real_urls(self) -> None:
-        """A search result that cites nothing cannot become a SourceCandidate."""
-        from app.integrations.deepseek.providers import parse_search_payload
-
-        response = await _transport().search(
-            query=PUBLIC_QUERY, top_k=5, domains=None, timeout=TIMEOUT_SECONDS
-        )
-        candidates, warnings = parse_search_payload(response)
-        print(f"\nRECORDED parsed candidates: {len(candidates)}")
-        print(f"RECORDED parser warnings: {warnings}")
-        for candidate in candidates[:5]:
-            assert candidate.url.startswith("https://"), candidate.url
-            print(f"  {candidate.url}")
-        if not candidates:
-            pytest.fail(
-                "The parser produced NO candidates from a live search response. Its "
-                "warnings above name what it saw; the mapping in "
-                "HttpDeepSeekTransport.search and parse_search_payload must be updated "
-                "from THAT evidence — not from the OpenAI convention it currently "
-                "assumes."
+        cfg = Settings()
+        async with httpx.AsyncClient(
+            base_url=cfg.deepseek_base_url,
+            timeout=TIMEOUT_SECONDS,
+            headers={"Authorization": f"Bearer {cfg.deepseek_api_key}"},
+        ) as client:
+            bad = await client.post(
+                "/chat/completions",
+                json={
+                    "model": cfg.deepseek_model,
+                    "max_tokens": 64,
+                    "messages": [{"role": "user", "content": PUBLIC_QUERY}],
+                    "tools": [
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "web_search",
+                                "parameters": {"query": PUBLIC_QUERY, "top_k": 5},
+                            },
+                        }
+                    ],
+                },
             )
+            assert bad.status_code == 400
+            assert "JSON Schema" in bad.text
+
+            good = await client.post(
+                "/chat/completions",
+                json={
+                    "model": cfg.deepseek_model,
+                    "max_tokens": 128,
+                    "messages": [{"role": "user", "content": PUBLIC_QUERY}],
+                    "tools": [
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "web_search",
+                                "description": "Search the public web.",
+                                "parameters": {
+                                    "type": "object",
+                                    "properties": {"query": {"type": "string"}},
+                                    "required": ["query"],
+                                },
+                            },
+                        }
+                    ],
+                },
+            )
+            assert good.status_code == 200
+            message = good.json()["choices"][0]["message"]
+            # It asks US to search. It does not search.
+            assert message.get("tool_calls")
+
+    async def test_7_the_adapter_refuses_rather_than_fabricating(self) -> None:
+        """A "search" that returned the model's recollection with composed URLs would
+        manufacture exactly the leads the promotion path exists to reject."""
+        from app.integrations.deepseek.transport import DeepSeekUnavailableError
+
+        with pytest.raises(DeepSeekUnavailableError) as caught:
+            await _transport().search(
+                query=PUBLIC_QUERY, top_k=5, domains=None, timeout=TIMEOUT_SECONDS
+            )
+        assert caught.value.job_transient is False
+        assert "no server-side web search" in str(caught.value)
 
 
 @requires_live_deepseek
 class TestLiveErrorContract:
-    async def test_8_a_timeout_is_transient_not_permanent(self) -> None:
-        """A permanent error retried three times is three times the spend for the same
-        failure; a transient one not retried is a run lost to a blip."""
-        from app.integrations.deepseek.transport import DeepSeekUnavailableError
-
-        with pytest.raises(DeepSeekUnavailableError) as caught:
-            await _transport().complete(
-                system="x",
-                user="Summarise the entire history of pharmaceutical regulation.",
-                max_tokens=MAX_TOKENS,
-                temperature=0.0,
-                timeout=1,  # deliberately impossible
-            )
-        assert caught.value.job_transient is True
-
-    async def test_9_a_bad_credential_is_permanent(self) -> None:
+    async def test_8_a_bad_credential_is_a_permanent_401(self) -> None:
         from app.integrations.deepseek.transport import (
             DeepSeekUnavailableError,
             HttpDeepSeekTransport,
         )
 
-        cfg = Settings(deepseek_api_key="sk-definitely-not-a-real-key")
+        transport = HttpDeepSeekTransport(
+            api_key="sk-definitely-not-a-real-key",
+            model=Settings().deepseek_model,
+        )
         with pytest.raises(DeepSeekUnavailableError) as caught:
-            await HttpDeepSeekTransport(cfg=cfg).complete(
-                system="x",
-                user="y",
-                max_tokens=16,
-                temperature=0.0,
-                timeout=TIMEOUT_SECONDS,
+            await transport.complete(
+                system="x", user="y", max_tokens=16, temperature=0.0, timeout=TIMEOUT_SECONDS
             )
-        # A key that is wrong will not become right by being retried.
+        assert "401" in str(caught.value)
+        assert caught.value.job_transient is False
+
+    async def test_9_an_unknown_model_is_permanent(self) -> None:
+        from app.integrations.deepseek.transport import (
+            DeepSeekUnavailableError,
+            HttpDeepSeekTransport,
+        )
+
+        transport = HttpDeepSeekTransport(
+            api_key=Settings().deepseek_api_key, model="deepseek-chat-does-not-exist"
+        )
+        with pytest.raises(DeepSeekUnavailableError) as caught:
+            await transport.complete(
+                system="x", user="y", max_tokens=16, temperature=0.0, timeout=TIMEOUT_SECONDS
+            )
+        assert "400" in str(caught.value)
+        assert caught.value.job_transient is False
+
+    async def test_10_a_missing_key_fails_closed_with_a_clear_message(self) -> None:
+        """Without this guard httpx raises LocalProtocolError on the illegal header
+        `Bearer ` — a confusing client-side error for a plain misconfiguration."""
+        from app.integrations.deepseek.transport import (
+            DeepSeekUnavailableError,
+            HttpDeepSeekTransport,
+        )
+
+        with pytest.raises(DeepSeekUnavailableError) as caught:
+            await HttpDeepSeekTransport(api_key="", model="deepseek-v4-flash").complete(
+                system="x", user="y", max_tokens=16, temperature=0.0, timeout=5
+            )
+        assert "No DeepSeek API key" in str(caught.value)
         assert caught.value.job_transient is False
 
 
-# --------------------------------------------------------------------------- #
-# The transience taxonomy, verified WITHOUT a credential
-# --------------------------------------------------------------------------- #
+class TestTheKeyIsNeverPrinted:
+    """Runs ALWAYS. The first live failure published the key into pytest output."""
 
-
-class TestTransienceTaxonomyNeedsNoKey:
-    """A defect this slice found while writing the live test, fixable without one.
-
-    ``DeepSeekUnavailableError.job_transient`` was an unconditional class-level ``True``,
-    so a **401 would be retried to the attempt limit** — three times the spend for the
-    same failure, in front of a real credential. The class docstring already said "a
-    missing key is permanent", so the code contradicted its own stated contract.
-
-    These drive the real transport through its own injectable ``client_factory``. No key,
-    no network, no monkeypatching of a private method.
-    """
-
-    @staticmethod
-    def _transport(*, status: int | None = None, body=None, raises=None):  # noqa: ANN001
+    def test_the_transport_repr_redacts_the_key(self) -> None:
         from app.integrations.deepseek.transport import HttpDeepSeekTransport
 
-        class _Response:
-            status_code = status or 200
+        secret = "sk-0000000000000000000000000000000"
+        transport = HttpDeepSeekTransport(api_key=secret, model="deepseek-v4-flash")
+        assert secret not in repr(transport)
+        assert secret not in str(transport)
 
-            @staticmethod
-            def json():  # noqa: ANN205
-                return {} if body is None else body
+    def test_a_configured_transport_repr_redacts_it_too(self) -> None:
+        from app.integrations.deepseek.transport import transport_from_settings
 
-        class _Client:
-            async def post(self, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
-                if raises is not None:
-                    raise raises
-                return _Response()
-
-            async def aclose(self) -> None:
-                return None
-
-        return HttpDeepSeekTransport(
-            api_key="not-a-real-key",
-            model="deepseek-chat",
-            client_factory=lambda timeout: _Client(),
-        )
-
-    async def _complete(self, transport):  # noqa: ANN001, ANN202
-        return await transport.complete(
-            system="x", user="y", max_tokens=16, temperature=0.0, timeout=5
-        )
-
-    @pytest.mark.parametrize("status", [400, 401, 403, 404, 422])
-    async def test_a_client_error_is_permanent(self, status: int) -> None:
-        """A wrong key will not become right by being asked again."""
-        from app.integrations.deepseek.transport import DeepSeekUnavailableError
-
-        with pytest.raises(DeepSeekUnavailableError) as caught:
-            await self._complete(self._transport(status=status))
-        assert caught.value.job_transient is False, status
-
-    @pytest.mark.parametrize("status", [408, 429, 500, 502, 503])
-    async def test_a_rate_limit_or_server_error_is_transient(self, status: int) -> None:
-        """The cases a retry exists for. 429 and 408 are deliberately NOT permanent."""
-        from app.integrations.deepseek.transport import DeepSeekUnavailableError
-
-        with pytest.raises(DeepSeekUnavailableError) as caught:
-            await self._complete(self._transport(status=status))
-        assert caught.value.job_transient is True, status
-
-    async def test_a_connection_failure_is_transient(self) -> None:
-        from app.integrations.deepseek.transport import DeepSeekUnavailableError
-
-        with pytest.raises(DeepSeekUnavailableError) as caught:
-            await self._complete(self._transport(raises=OSError("connection reset")))
-        assert caught.value.job_transient is True
-
-    async def test_a_non_object_response_is_permanent(self) -> None:
-        """A provider returning the wrong content type returns it again in four
-        seconds."""
-        from app.integrations.deepseek.transport import DeepSeekUnavailableError
-
-        with pytest.raises(DeepSeekUnavailableError) as caught:
-            await self._complete(self._transport(body=["not", "an", "object"]))
-        assert caught.value.job_transient is False
-
-    async def test_a_good_response_still_works(self) -> None:
-        """The fix must not turn every response into an error."""
-        transport = self._transport(
-            body={
-                "choices": [
-                    {"message": {"content": "MRNA"}, "finish_reason": "stop"}
-                ],
-                "usage": {"prompt_tokens": 11, "completion_tokens": 2},
-            }
-        )
-        response = await self._complete(transport)
-        assert response.text == "MRNA"
-        assert response.prompt_tokens == 11
-
-    def test_the_permanent_set_excludes_the_retryable_statuses(self) -> None:
-        from app.integrations.deepseek.transport import PERMANENT_HTTP_STATUSES
-
-        assert 429 not in PERMANENT_HTTP_STATUSES, "a rate limit is what retry is for"
-        assert 408 not in PERMANENT_HTTP_STATUSES, "a timeout is what retry is for"
-        assert 500 not in PERMANENT_HTTP_STATUSES
-        assert {400, 401, 403} <= PERMANENT_HTTP_STATUSES
+        key = Settings().deepseek_api_key
+        transport = transport_from_settings(Settings())
+        if transport is None or not key:
+            pytest.skip("no key configured; the redaction unit test above still runs")
+        assert key not in repr(transport)

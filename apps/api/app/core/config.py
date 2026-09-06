@@ -492,6 +492,15 @@ class Settings(BaseSettings):
     # fails to parse and gets misclassified as "scanned, no text layer" rather
     # than "download was cut off". 35 MB comfortably covers real annual-report
     # PDF sizes while staying explicitly bounded (not unbounded).
+    # ── V3.11.1.1: routing DeepSeek needs consent, not just a credential ───── #
+    # A key in `.env` must NOT silently move the research path to another vendor.
+    # Before this flag existed, adding one re-routed Investigator and follow-up work to
+    # DeepSeek with no other change — while every acceptance measurement in the release
+    # candidate report was taken on Azure OpenAI. `V3_DEEPSEEK_SEARCH_ENABLED` is about
+    # the search leg (which the live contract proved does not exist); this is about the
+    # model leg. Both default off.
+    v3_deepseek_model_enabled: bool = False
+
     # ── V3.11: model prices, as CONFIGURATION ─────────────────────────────── #
     # Unset by default. An unpriced run reports a cost of None, never 0.0: "we do not
     # know what this cost" and "this cost nothing" are different statements and only
