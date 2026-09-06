@@ -688,3 +688,185 @@ class TestLiveAgents:
         assert red.discarded_unknown_targets == []
         known = {f.finding_id for f in findings}
         assert all(c.finding_id in known for c in challenges)
+
+
+# --------------------------------------------------------------------------- #
+# Period and scope inheritance — the V3.10 corrective
+# --------------------------------------------------------------------------- #
+
+
+def _fact_result(*facts: dict[str, Any]) -> _ToolResult:
+    return _ToolResult(ok=True, payload={"items": list(facts)})
+
+
+class TestFindingsInheritPeriodAndScope:
+    """The material defect the first real MRNA acceptance run exposed.
+
+    Every finding came back with ``period_key=None`` while citing facts that carried
+    one. The period existed only in the model's prose, where no invariant can reach it —
+    so a finding saying "FY2026" while citing FY2025 evidence was unfalsifiable by the
+    platform whose entire purpose is period and scope integrity.
+    """
+
+    async def test_a_finding_inherits_the_period_of_its_evidence(self) -> None:
+        session = _Session(
+            results={
+                "get_financial_facts": _fact_result(
+                    {
+                        "fact_id": "f1",
+                        "period_key": "2025",
+                        "scope_key": "group",
+                        "label": "revenue",
+                    }
+                )
+            }
+        )
+        client = _Client(
+            payload={
+                "findings": [
+                    {"statement": "Revenue was 1,943m.", "evidence_ids": ["f1"]}
+                ]
+            }
+        )
+        outcome = await LLMInvestigator(
+            session=session, company_id=COMPANY, client=client
+        ).investigate(
+            role_id="financial_analyst",
+            questions=[_question(required_tools=frozenset({"get_financial_facts"}))],
+            round_index=0,
+            remaining_tool_calls=10,
+        )
+        assert outcome.findings[0].period_key == "2025"
+        assert outcome.findings[0].scope_key == "group"
+
+    async def test_evidence_disagreeing_on_period_produces_a_conflict_not_a_finding(
+        self,
+    ) -> None:
+        """Fail closed on conflicts. A finding spanning two periods with one of them
+        stamped on it is the mixing the invariants exist to forbid."""
+        session = _Session(
+            results={
+                "get_financial_facts": _fact_result(
+                    {"fact_id": "f1", "period_key": "2025", "scope_key": "group"},
+                    {"fact_id": "f2", "period_key": "2022", "scope_key": "group"},
+                )
+            }
+        )
+        client = _Client(
+            payload={
+                "findings": [
+                    {
+                        "statement": "Revenue fell sharply.",
+                        "evidence_ids": ["f1", "f2"],
+                    }
+                ]
+            }
+        )
+        outcome = await LLMInvestigator(
+            session=session, company_id=COMPANY, client=client
+        ).investigate(
+            role_id="financial_analyst",
+            questions=[_question(required_tools=frozenset({"get_financial_facts"}))],
+            round_index=0,
+            remaining_tool_calls=10,
+        )
+        assert outcome.findings == []
+        assert any(
+            g.gap_type == ledger.GAP_CONFLICTING_SOURCES and "periods" in g.description
+            for g in outcome.gaps
+        )
+
+    async def test_evidence_disagreeing_on_scope_produces_a_conflict(self) -> None:
+        """The CFR failure mode: a Group figure and a segment figure cannot support one
+        statement about "the" scope."""
+        session = _Session(
+            results={
+                "get_financial_facts": _fact_result(
+                    {"fact_id": "f1", "period_key": "2025", "scope_key": "group"},
+                    {
+                        "fact_id": "f2",
+                        "period_key": "2025",
+                        "scope_key": "segment:watchmakers",
+                    },
+                )
+            }
+        )
+        client = _Client(
+            payload={
+                "findings": [
+                    {"statement": "Sales were strong.", "evidence_ids": ["f1", "f2"]}
+                ]
+            }
+        )
+        outcome = await LLMInvestigator(
+            session=session, company_id=COMPANY, client=client
+        ).investigate(
+            role_id="financial_analyst",
+            questions=[_question(required_tools=frozenset({"get_financial_facts"}))],
+            round_index=0,
+            remaining_tool_calls=10,
+        )
+        assert outcome.findings == []
+        assert any("scopes" in g.description for g in outcome.gaps)
+
+    async def test_evidence_with_no_period_leaves_the_finding_unknown(self) -> None:
+        """Unknown stays unknown. Evidence with no period contributes nothing rather
+        than voting for "no period"."""
+        session = _Session(results={"search_company_corpus": _corpus_result("ev:a")})
+        client = _Client(
+            payload={"findings": [{"statement": "x", "evidence_ids": ["ev:a"]}]}
+        )
+        outcome = await LLMInvestigator(
+            session=session, company_id=COMPANY, client=client
+        ).investigate(
+            role_id="financial_analyst",
+            questions=[_question()],
+            round_index=0,
+            remaining_tool_calls=10,
+        )
+        assert outcome.findings[0].period_key is None
+
+    async def test_one_dated_and_one_undated_item_still_inherits(self) -> None:
+        session = _Session(
+            results={
+                "get_financial_facts": _fact_result(
+                    {"fact_id": "f1", "period_key": "2025", "scope_key": "group"},
+                    {"fact_id": "f2", "period_key": None, "scope_key": None},
+                )
+            }
+        )
+        client = _Client(
+            payload={"findings": [{"statement": "x", "evidence_ids": ["f1", "f2"]}]}
+        )
+        outcome = await LLMInvestigator(
+            session=session, company_id=COMPANY, client=client
+        ).investigate(
+            role_id="financial_analyst",
+            questions=[_question(required_tools=frozenset({"get_financial_facts"}))],
+            round_index=0,
+            remaining_tool_calls=10,
+        )
+        assert outcome.findings[0].period_key == "2025"
+
+    async def test_the_prompt_states_each_items_period_and_scope(self) -> None:
+        """So the model uses the evidence's period rather than inventing one."""
+        session = _Session(
+            results={
+                "get_financial_facts": _fact_result(
+                    {"fact_id": "f1", "period_key": "2025", "scope_key": "group"}
+                )
+            }
+        )
+        client = _Client(payload={"findings": []})
+        await LLMInvestigator(
+            session=session, company_id=COMPANY, client=client
+        ).investigate(
+            role_id="financial_analyst",
+            questions=[_question(required_tools=frozenset({"get_financial_facts"}))],
+            round_index=0,
+            remaining_tool_calls=10,
+        )
+        system, user = client.prompts[0]
+        assert "period=2025" in user
+        assert "scope=group" in user
+        assert "never combine evidence from different periods" in system
