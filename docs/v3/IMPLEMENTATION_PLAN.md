@@ -23,6 +23,10 @@
 Phase labels: `NOT STARTED` → `IN PROGRESS` → `IMPLEMENTED` → `VALIDATED` → `APPROVED`.
 Only explicit user acceptance moves the release to `APPROVED FOR MAIN`.
 
+**All nine phases are `IMPLEMENTED` and the branch is a release candidate.** See
+[V3_RELEASE_CANDIDATE_REPORT.md](V3_RELEASE_CANDIDATE_REPORT.md), whose §7 records what is
+**not** proved — which is the section that should decide acceptance.
+
 ---
 
 ## 2. Dependency order, and why it is this order

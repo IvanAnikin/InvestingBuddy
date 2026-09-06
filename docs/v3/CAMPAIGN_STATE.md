@@ -9,7 +9,7 @@ the code, not inferred from a plan. When it disagrees with a phase-gate section 
 record of a gate and this file is the current state; re-verify before trusting
 either.
 
-**Last verified:** 2026-09-06, after V3.4 slice 4.9, by direct `git` inspection and a full local gate run.
+**Last verified:** 2026-09-06, at the **V3 Release Candidate**, by direct `git` inspection, a full local gate run (API and web), a full migration chain up-and-down against real PostgreSQL 16, and a live real-document corpus acceptance run.
 
 ---
 
@@ -34,12 +34,12 @@ enabling a V3 flag in production, deleting V2 compatibility or either V2 ref.
 
 | Item | Value |
 |---|---|
-| `develop/v3` HEAD | `db00a7b` — ahead of `origin/develop/v3` (`fd82d3d`), unpushed |
-| Alembic head in source | **032** (`032_add_corpus_search_index`) |
-| Alembic head in the deployed database | **018** — and V3 migrations 019-032 have reached **no** deployed environment |
+| `develop/v3` HEAD | **154 commits ahead of `main`**, ahead of `origin/develop/v3` (`fd82d3d`), unpushed |
+| Alembic head in source | **038** (`038_add_monitoring`) |
+| Alembic head in the deployed database | **018** — and V3 migrations 019-038 have reached **no** deployed environment |
 | Alembic head in the local dev database | **018** (unchanged by V3 work; scratch databases only) |
-| Current phase | **V3.4 — Multi-provider runtime and source expansion** |
-| Current slice | 4.5 — `feature/v3-4-5-provider-benchmark-harness` (next) |
+| Current phase | **Release candidate.** V3.0-V3.9 all `IMPLEMENTED`; see [V3_RELEASE_CANDIDATE_REPORT.md](V3_RELEASE_CANDIDATE_REPORT.md) |
+| Current slice | none — awaiting user acceptance |
 | Deployed | **Nothing.** `main` at `4b60e07` is the deployed product. |
 
 Working tree at campaign start also held two untracked files —
@@ -55,12 +55,12 @@ the user's call, and the campaign leaves them untracked and untouched.
 | V3.1 | Research Corpus | `IMPLEMENTED` |
 | V3.2 | Entity Master and global universe | `IMPLEMENTED` — all six slices merged; [phase gate](IMPLEMENTATION_PLAN.md#11-v32-phase-gate) |
 | V3.3 | Research tools and calculation engine | `IMPLEMENTED` — all four slices merged; [phase gate](IMPLEMENTATION_PLAN.md#12-v33-phase-gate) |
-| V3.4 | Multi-provider runtime and source expansion | `IN PROGRESS` — 4.1/4.1.1/4.3/**4.4**/**4.9** merged; 4.2/4.6 `DEFERRED` by decision; 4.5/4.7/4.8/4.10 open. **Nothing `BLOCKED`.** |
-| V3.5 | Research Ledger and Director | `NOT STARTED` |
-| V3.6 | Industry playbooks | `NOT STARTED` |
-| V3.7 | Council V2 and Red Team | `NOT STARTED` |
-| V3.8 | Research Memory and Delta | `NOT STARTED` |
-| V3.9 | Monitoring | `NOT STARTED` |
+| V3.4 | Multi-provider runtime and source expansion | `IMPLEMENTED` — eight slices merged; 4.2/4.6 `DEFERRED` by user decision; [phase gate](IMPLEMENTATION_PLAN.md#13-v34-phase-gate) |
+| V3.5 | Research Ledger, Director and bounded loop | `IMPLEMENTED` — 5.1/5.2/5.3 merged |
+| V3.6 | Industry playbooks | `IMPLEMENTED` — 6.1/6.2 merged; five materially different playbooks |
+| V3.7 | Council V2 and Red Team | `IMPLEMENTED` — 7.1/7.2 merged |
+| V3.8 | Research Memory and Delta | `IMPLEMENTED` — 8.1/8.2 merged |
+| V3.9 | Monitoring | `IMPLEMENTED` — 9.1 merged, feature-gated, **nothing schedules it** |
 
 `IMPLEMENTED` = code, tests and local contract complete. `VALIDATED` = realistic
 end-to-end validation performed. **No V3 phase can reach `VALIDATED` in the sense
@@ -105,6 +105,22 @@ is recorded explicitly rather than being allowed to pass as production validatio
 | 2026-09-05 | V3.4.3 DeepSeek providers | `feature/v3-4-3-deepseek-providers` | `07c7032` |
 | 2026-09-05 | V3.4.4 research lead promotion | `feature/v3-4-4-research-lead-promotion` | `5cd3910` |
 | 2026-09-06 | V3.4.9 PostgreSQL search backend | `feature/v3-4-9-pgvector-search-backend` | `08cb013` |
+| 2026-09-06 | V3.4.11 research-mode budgets (corrective) | `feature/v3-4-11-research-mode-budgets` | `3f8013b` |
+| 2026-09-06 | V3.4.5 provider benchmark harness | `feature/v3-4-5-provider-benchmark-harness` | `8d20747` |
+| 2026-09-06 | V3.4.7 macro observation store | `feature/v3-4-7-macro-observation-store` | `5b5045e` |
+| 2026-09-06 | V3.4.8 transcripts and IR events | `feature/v3-4-8-transcript-provider` | `e481da6` |
+| 2026-09-06 | V3.4.10 bounded issuer-site traversal | `feature/v3-4-10-issuer-site-traversal` | `ac970fb` |
+| 2026-09-06 | V3.4 phase gate | `feature/v3-4-phase-gate-report` | `1348425` |
+| 2026-09-06 | V3.5.1 research ledger schema | `feature/v3-5-1-research-ledger-schema` | `ed02be7` |
+| 2026-09-06 | V3.5.2 research director | `feature/v3-5-2-research-director` | `ad2cd2b` |
+| 2026-09-06 | V3.5.3 bounded investigation loop | `feature/v3-5-3-bounded-investigation-loop` | `6b50bb7` |
+| 2026-09-06 | V3.6.1 playbook schema | `feature/v3-6-1-playbook-schema` | `e070a70` |
+| 2026-09-06 | V3.6.2 five industry playbooks | `feature/v3-6-2-industry-playbooks` | `2408ca6` |
+| 2026-09-06 | V3.7.1 Council V2 inputs | `feature/v3-7-1-council-v2-inputs` | `ce8c856` |
+| 2026-09-06 | V3.7.2 Red Team challenge round | `feature/v3-7-2-red-team-challenge-round` | `80010ae` |
+| 2026-09-06 | V3.8.1 research memory | `feature/v3-8-1-research-memory` | `4c873aa` |
+| 2026-09-06 | V3.8.2 research delta | `feature/v3-8-2-research-delta` | `d306c4c` |
+| 2026-09-06 | V3.9.1 monitoring | `feature/v3-9-1-monitoring` | `800f92d` |
 
 ## Corrective slices
 
@@ -139,6 +155,20 @@ database is re-checked afterwards to confirm it is still at 018.
 | 030 | `calculation_records` | scratch (`ib_v3_migcheck_030`, dropped). Eight statements exercised, including that **a refused row cannot carry a value** — a number beside a refusal is exactly what a reader takes at face value. Drift check clean. | **No** |
 | 031 | `research_leads` | scratch (`ib_v3_migcheck_031`/`_031b`, dropped). All **five** CHECKs fired on real conflicting statements, including the one that matters — **a `verified` row with no hash of bytes we fetched is unstorable**. Deleting the company a lead refers to left **4 rows surviving, 0 still linked**. Drift: none. | **No** |
 | 032 | `research_document_chunks`: `indexed_at`, `embedding_json`, `embedding_model`, `embedding_dim` + a GIN index over `to_tsvector('simple', text)` | scratch (`ib_v3_migcheck_032`/`_032b`, dropped). The CHECK exercised in **both** failing directions (no model, dimension zero); `EXPLAIN` confirms the planner uses the GIN index; de-indexing left **3 chunks present, 0 indexed**. Drift: none. | **No** |
+
+| 033 | `macro_datasets`, `macro_series`, `macro_observations` | scratch (`_033`, dropped). Two *vintages* of one period both storable; two *current* readings refused by a partial unique index; a NULL value storable because a published absence is information. | **No** |
+| 034 | `ir_events`, `ir_event_materials` | scratch (`_034`, dropped). `not_published` **is** storable and `available`-with-no-location is not; an `announced` event cannot claim an occurrence time. | **No** |
+| 035 | The seven ledger tables | scratch (`_035`, dropped). Twelve statements; **a finding with no support is unstorable**; an unresolved disagreement is storable and an unexplained resolved one is not. | **No** |
+| 036 | `research_challenges` | scratch (`_036`, dropped). **A second round is unstorable**; "resolved" with no response, and with a response but no evidence, both unstorable. | **No** |
+| 037 | `research_deltas` | scratch (`_037`, dropped). An unchanged thesis beside an invalidated finding is unstorable; **the delta outlives the runs it compares** — 3 surviving, 0 still linked. | **No** |
+| 038 | `watchlists`, `watchlist_entries`, `monitoring_signals` | scratch (`_038`, dropped). One **open** signal per key, enforced by a partial unique index; acknowledging lets the key be raised again. | **No** |
+
+**The whole chain was then run end to end for the release candidate**: a fresh database
+upgraded 018 → 038 (20 migrations, 23 → 61 tables), downgraded 038 → 018 (20 downgrades,
+back to 23 tables), and the resulting schema compared against the pre-V3 one as a sorted
+`table.column` fingerprint: **identical**. V2 columns removed or renamed: **0**. Columns
+added to existing V2 tables: **1** (`companies.legal_entity_id`, nullable). ORM/DDL drift
+across all 38 V3 tables: **none**.
 
 Additive-only through V3.2 (§2.1 of the migration plan): tables, **nullable**
 columns and indexes only. That is what makes `release/v2-current` code able to run
@@ -204,11 +234,15 @@ belong to the agent, with an ADR when material.
 
 Recorded so a later run can be compared against a number rather than a memory.
 
-| Gate | At campaign start (`35bd550`) | After V3.4.3 | After V3.4.9 |
-|---|---|---|---|
-| `ruff check .` | All checks passed | All checks passed | All checks passed |
-| `pytest tests/ -q` | 4949 passed, 12 skipped | 5430 passed, 12 skipped | **5514 passed**, 12 skipped |
-| `mypy app` | 71 errors in 10 files | 71 | 71 (baseline; regressions to 72 were caught by the gate in 2.3 and in 4.9 and both fixed) |
+| Gate | At campaign start (`35bd550`) | At the release candidate |
+|---|---|---|
+| `ruff check .` | All checks passed | All checks passed |
+| `pytest tests/ -q` | 4949 passed, 12 skipped | **5870 passed**, 12 skipped (+921) |
+| `mypy app` | 71 errors in 10 files | 71 (baseline, unchanged) |
+| web typecheck / lint / build | not run | **all passed** |
+
+`mypy` regressed to 72 on **six** occasions during the campaign. The gate caught every one
+and each was a real type error.
 
 ## Provider benchmarks
 
@@ -322,17 +356,17 @@ Carried forward, all still true:
 
 ## Next executable action
 
-Start **V3.4 slice 4.5** on `feature/v3-4-5-provider-benchmark-harness`, then 4.7 (macro
-observation store), 4.8 (free public transcripts and IR events), 4.10 (bounded issuer-site
-traversal), then the V3.4 phase gate.
+**None. The campaign is complete and awaiting user acceptance.**
 
-The benchmark's primary metric is `cost_per_verified_finding`, and 4.4 has now made the
-denominator real: `verification_survival_rate` is computed from `research_leads` by a
-database aggregate, and a provider with nothing decided has an **unknown** rate rather
-than 0.0 — reporting zero would rank it below one that tried. The same rule governs
-price: `CostEstimate.amount_usd = None` means **unpriced, never free**, and an unpriced
-provider must never come out cheapest.
+Read [V3_RELEASE_CANDIDATE_REPORT.md](V3_RELEASE_CANDIDATE_REPORT.md) — in particular §7,
+which is the list of things that are **not** proved. The short version: this is a complete
+set of contracts whose *behaviour* is unmeasured, because no investigator implementation
+exists, no live provider call has been made, and nothing is wired to the product's front
+door.
 
-What 4.5 must not do is estimate a provider it cannot run. Exa, Perplexity, Gemini and
-Anthropic have no credentials **by decision**, and the honest output is a row saying
-*unavailable, and why* — not an extrapolation from a price list.
+If acceptance is given, §9 of that report lists the next four steps in the order that keeps
+each one recoverable. The first is CI on `develop/v3` (OPEN DECISION #17); the last is
+wiring one entry point, with its own slice and its own live acceptance.
+
+Nothing in this campaign authorises a merge to `main`, a deployment, or a migration against
+the live database, and none was performed.
