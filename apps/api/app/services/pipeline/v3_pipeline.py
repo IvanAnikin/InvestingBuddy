@@ -361,14 +361,96 @@ async def _run(
             outcome.delta = delta.to_dict()
 
     summary = await ledger.summarise(session, run)
-    outcome.consumption = {
+    outcome.consumption = _consumption(
+        model_routing, loop_result, summary, verdict, challenge_result
+    )
+    await session.flush()
+
+
+def _consumption(
+    model_routing: ModelRouting,
+    loop_result: LoopResult,
+    summary: Any,
+    verdict: ChairVerdict,
+    challenge_result: Any,
+) -> dict[str, Any]:
+    """What the run actually consumed, and what it produced that was worth consuming it.
+
+    ``cost_per_verified_useful_finding`` is the metric the acceptance phase asks for, and
+    it is ``None`` whenever either term is unknown — never zero. Two different unknowns
+    are kept apart in the payload rather than collapsed: an **unpriced** run and a run
+    that produced **nothing** are different failures, and only one of them is about the
+    provider.
+
+    A "useful" finding is one that survived to the Council and was not withdrawn by the
+    Red Team. Counting every statement the model emitted would make a run that produced
+    forty retracted claims look productive.
+    """
+    from app.services.consumption import ConsumptionUnits, PriceBook, derive_cost
+
+    units = ConsumptionUnits(
+        instrumented=frozenset({"model_calls", "model_input_tokens", "model_output_tokens"})
+    )
+    by_vendor: dict[str, dict[str, int]] = {}
+    seen: set[int] = set()
+    for slot in model_routing.slots.values():
+        client = slot.client
+        if client is None or id(client) in seen:
+            continue
+        seen.add(id(client))
+        usage = getattr(client, "consume_usage", None)
+        popped = usage() if callable(usage) else None
+        if popped is None:
+            continue
+        units = units + ConsumptionUnits(
+            model_calls=int(getattr(popped, "calls", 0) or 0),
+            model_input_tokens=int(getattr(popped, "prompt_tokens", 0) or 0),
+            model_output_tokens=int(getattr(popped, "completion_tokens", 0) or 0),
+            instrumented=frozenset(
+                {"model_calls", "model_input_tokens", "model_output_tokens"}
+            ),
+        )
+        bucket = by_vendor.setdefault(
+            slot.vendor or "unknown", {"calls": 0, "input": 0, "output": 0}
+        )
+        bucket["calls"] += int(getattr(popped, "calls", 0) or 0)
+        bucket["input"] += int(getattr(popped, "prompt_tokens", 0) or 0)
+        bucket["output"] += int(getattr(popped, "completion_tokens", 0) or 0)
+
+    # Prices are configuration and none is recorded, so this is `None` — unpriced, never
+    # free. An unpriced provider reported as costless is how a benchmark picks the wrong
+    # one.
+    cost = derive_cost(units, PriceBook())
+    useful = max(
+        0,
+        summary.findings_total - int((challenge_result.withdrawn_findings or 0)),
+    )
+    return {
         "tool_calls": loop_result.tool_calls,
         "tasks_run": loop_result.tasks_run,
         "rounds": len(loop_result.rounds),
-        "findings": summary.findings_total,
+        "documents_fetched": 0,
+        "elapsed_seconds": round(loop_result.elapsed_seconds, 3),
+        "findings_total": summary.findings_total,
+        "findings_withdrawn_by_red_team": challenge_result.withdrawn_findings,
+        "verified_useful_findings": useful,
         "gaps_open": summary.gaps_open,
+        "model": units.to_dict(),
+        "model_by_vendor": by_vendor,
+        "estimated_cost_usd": cost.estimated_usd,
+        "unpriced_units": list(cost.unpriced_units),
+        "cost_per_verified_useful_finding": (
+            (cost.estimated_usd / useful)
+            if (cost.estimated_usd is not None and useful)
+            else None
+        ),
+        "cost_is_unknown_because": (
+            "no price is recorded for any provider; a cost of unknown is never zero"
+            if cost.estimated_usd is None
+            else None
+        ),
+        "chair_used_a_model": not verdict.deterministic_fallback,
     }
-    await session.flush()
 
 
 def attach_to_report(report: Any, outcome: V3ResearchOutcome) -> Any:
