@@ -766,6 +766,19 @@ async def process_company_research_by_id(
 
             warnings = list(result.get("warnings") or [])
             report_id = result.get("analysis_report_id")
+
+            # V3.10 Slice 10.3 — the V3 pipeline, behind a flag, AFTER the report
+            # exists. Deliberately after: the V3 contribution is additive research
+            # state attached to a report the V2 path already produced, so a V3
+            # failure cannot cost a report — and with the flag off nothing here
+            # runs at all.
+            v3_outcome = await _run_v3_pipeline(
+                session, company=company, report_id=report_id
+            )
+            if v3_outcome is not None:
+                warnings.extend(
+                    f"v3: {reason}" for reason in v3_outcome.degraded[:5]
+                )
             if report_id is None and raise_on_error:
                 # A run that produced nothing is a failure the contract should
                 # classify, not an envelope this function stamps.
@@ -839,6 +852,47 @@ async def process_company_research_by_id(
         logger.exception("Company research job %s crashed: %s", job_id, exc)
         await _mark_failed_fresh(factory, job_id, reason="internal_error")
     return None
+
+
+async def _run_v3_pipeline(
+    session: AsyncSession, *, company: Company, report_id: Any
+) -> Any:
+    """Run the V3 pipeline and attach its state to the report. Never raises.
+
+    Returns ``None`` when the flag is off or no report was produced — there is nothing
+    to attach research state to, and a V3 run whose findings hang off no report is a run
+    nobody can reach.
+    """
+    if not getattr(settings, "v3_pipeline_enabled", False):
+        return None
+    if report_id is None:
+        return None
+    try:
+        from app.services.pipeline.v3_pipeline import (
+            attach_to_report,
+            run_v3_research,
+        )
+
+        outcome = await run_v3_research(session, company, cfg=settings)
+        report = await session.get(Report, report_id)
+        if report is not None:
+            attach_to_report(report, outcome)
+            await session.flush()
+        log_event(
+            logger,
+            "v3_pipeline_completed",
+            company_id=company.id,
+            research_run_id=(
+                str(outcome.research_run_id) if outcome.research_run_id else None
+            ),
+            findings=len(outcome.findings),
+            degraded=len(outcome.degraded),
+            duration_ms=int(outcome.elapsed_seconds * 1000),
+        )
+        return outcome
+    except Exception as exc:  # noqa: BLE001 - additive work never costs the report
+        logger.exception("V3 pipeline failed for company %s: %s", company.id, exc)
+        return None
 
 
 async def _record_consumption(
