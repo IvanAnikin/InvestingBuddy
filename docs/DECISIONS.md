@@ -3842,3 +3842,48 @@ rewrite.
   an additional expression index rather than a replacement.
 - No production embedding infrastructure is provisioned, and no new subscription is
   required — which is the constraint the whole 2026-09-05 resolution round turned on.
+
+---
+
+## ADR-054: Applicable Playbooks' Completion Rules Are Unioned, Not Intersected
+
+**Date:** 2026-09-06 · **Status:** Accepted · **Decided by:** agent (technical, reversible)
+**Clarifies:** [INDUSTRY_PLAYBOOK_ARCHITECTURE.md §6](v3/INDUSTRY_PLAYBOOK_ARCHITECTURE.md)
+
+### Context
+
+Multiple playbooks may apply to one company — a conglomerate is legitimately both
+industrial and financial. §6 specifies the combination:
+
+> Questions union; `completion_rules` intersect (the strictest wins), because the
+> alternative is a conglomerate that is easier to declare complete than either of its
+> parts.
+
+The two halves of that sentence point in opposite directions. Intersecting the rule
+**sets** keeps only the rules both playbooks share — which produces *fewer* rules, and
+therefore a conglomerate that is **easier** to declare complete than either of its parts.
+That is exactly the outcome the sentence's own justification says to avoid.
+
+### Decision
+
+**Every completion rule of every applicable playbook must hold.** `PlaybookSelection.completion_rules`
+returns the de-duplicated **union** of the rules, and the loop requires all of them.
+
+The intent — "the strictest wins" — governs over the stated operation. What is being
+intersected is the set of *states that count as complete*: requiring more rules intersects
+the satisfying states, and that intersection is produced by unioning the rules.
+
+Questions are unioned as written, which was never ambiguous.
+
+### Consequences
+
+- A conglomerate is **harder** to declare complete than either of its parts, which is what
+  §6 asked for and what makes multi-playbook coverage safe to enable.
+- The failure direction is a run that keeps investigating and eventually stops on a budget
+  limit, naming it. That is recoverable and visible. The alternative — a run declared
+  complete because two playbooks happened to share no rules — is neither.
+- A playbook may only declare a rule the loop can evaluate
+  (`EVALUABLE_COMPLETION_RULES`), enforced in the constructor. The loop already treats an
+  unrecognised rule as *not satisfied*, so an unevaluable rule would make every run of that
+  playbook exhaust its budget — and the symptom would look like a coverage problem rather
+  than a configuration error.

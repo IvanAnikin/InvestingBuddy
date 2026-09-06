@@ -15,7 +15,7 @@
 | **V3.3** | Research tools and calculation engine | `IMPLEMENTED` — all four slices merged. See [the phase gate](#12-v33-phase-gate). |
 | **V3.4** | Multi-provider runtime and source expansion | `IMPLEMENTED` — eight slices merged; 4.2/4.6 `DEFERRED` by user decision. See [the phase gate](#13-v34-phase-gate). |
 | **V3.5** | Research Ledger and Director | `IMPLEMENTED` — all three slices merged. |
-| **V3.6** | Industry playbooks | `NOT STARTED` |
+| **V3.6** | Industry playbooks | `IN PROGRESS` — 6.1 merged. |
 | **V3.7** | Council V2 and Red Team | `NOT STARTED` |
 | **V3.8** | Research Memory and Delta | `NOT STARTED` |
 | **V3.9** | Monitoring | `NOT STARTED` |
@@ -131,7 +131,8 @@ bytes are retained.
 | 5.1 | [`feature/v3-5-1-research-ledger-schema`](slices/V3.5-1-research-ledger-schema.md) | Seven tables, and one CHECK that makes an unsupported finding unstorable. `IMPLEMENTED` (035). |
 | 5.2 | [`feature/v3-5-2-research-director`](slices/V3.5-2-research-director.md) | Roles **as data**, bounded planning, and a question no role can answer becoming a gap rather than an assignment. `IMPLEMENTED`, no migration. |
 | 5.3 | [`feature/v3-5-3-bounded-investigation-loop`](slices/V3.5-3-bounded-investigation-loop.md) | Gap review → follow-up tasks. Four limits checked **before** the spend, a closed stop vocabulary with no "other", and completion that is not "did the agents finish". `IMPLEMENTED`, no migration. |
-| 6.1-6.5 | `feature/v3-6-<n>-playbook-<industry>` | Playbook schema, then luxury, biotech, semiconductors, banks, industrial/defense. |
+| 6.1 | [`feature/v3-6-1-playbook-schema`](slices/V3.6-1-playbook-schema.md) | Typed versioned playbooks whose declarations **refuse** to name anything that does not exist, plus selection that returns every applicable playbook or none with a reason. [ADR-054](../DECISIONS.md) resolves the union/intersect ambiguity. `IMPLEMENTED`, no migration. |
+| 6.2 | `feature/v3-6-2-industry-playbooks` | The five playbooks: luxury, biotech, semiconductors, banks/financials, industrial/defense. |
 | 7.1 | `feature/v3-7-1-council-v2-inputs` | Council consumes the ledger; findings carry stable evidence ids. |
 | 7.2 | `feature/v3-7-2-red-team-challenge-round` | One bounded challenge/response round; unresolved disagreements persist to the Chair. |
 | 8.1 | `feature/v3-8-1-research-memory` | Prior research state, retrievable by entity. |
@@ -276,6 +277,7 @@ approval.
 | 2026-09-06 | V3.5 Slice 5.1 — research ledger schema | `feature/v3-5-1-research-ledger-schema` | `ed02be7` |
 | 2026-09-06 | V3.5 Slice 5.2 — research director | `feature/v3-5-2-research-director` | `ad2cd2b` |
 | 2026-09-06 | V3.5 Slice 5.3 — bounded investigation loop | `feature/v3-5-3-bounded-investigation-loop` | `6b50bb7` |
+| 2026-09-06 | V3.6 Slice 6.1 — playbook schema | `feature/v3-6-1-playbook-schema` | _pending_ |
 | 2026-09-06 | V3.4 Slice 4.10 — bounded issuer-site traversal | `feature/v3-4-10-issuer-site-traversal` | `ac970fb` |
 | 2026-09-06 | V3.4 Slice 4.8 — transcripts and IR events | `feature/v3-4-8-transcript-provider` | `e481da6` |
 | 2026-09-06 | V3.4 Slice 4.7 — macro observation store | `feature/v3-4-7-macro-observation-store` | `5b5045e` |
