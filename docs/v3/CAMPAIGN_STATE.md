@@ -38,7 +38,7 @@ enabling a V3 flag in production, deleting V2 compatibility or either V2 ref.
 | Alembic head in source | **038** (`038_add_monitoring`) |
 | Alembic head in the deployed database | **018** — and V3 migrations 019-038 have reached **no** deployed environment |
 | Alembic head in the local dev database | **018** (unchanged by V3 work; scratch databases only) |
-| Current phase | **Release candidate, V3.10 product acceptance complete.** V3.0-V3.10 all `IMPLEMENTED`; the recommendation is **`NOT READY`** with four named blockers — see [V3_RELEASE_CANDIDATE_REPORT.md §11](V3_RELEASE_CANDIDATE_REPORT.md#11-recommendation) |
+| Current phase | **V3.11 production hardening complete.** V3.0-V3.11 all `IMPLEMENTED`; all four V3.10 blockers closed; the recommendation is **`READY FOR USER ACCEPTANCE / MAIN PROMOTION REVIEW`** — see [V3_RELEASE_CANDIDATE_REPORT.md §12](V3_RELEASE_CANDIDATE_REPORT.md#12-recommendation) |
 | Current slice | none — awaiting user acceptance |
 | Deployed | **Nothing.** `main` at `4b60e07` is the deployed product. |
 
@@ -61,7 +61,8 @@ the user's call, and the campaign leaves them untracked and untouched.
 | V3.7 | Council V2 and Red Team | `IMPLEMENTED` — 7.1/7.2 merged |
 | V3.8 | Research Memory and Delta | `IMPLEMENTED` — 8.1/8.2 merged |
 | V3.9 | Monitoring | `IMPLEMENTED` — 9.1 merged, feature-gated, **nothing schedules it** |
-| V3.10 | End-to-end integration and real-issuer acceptance | `IMPLEMENTED` — 10.1-10.4 merged + 2 correctives; **10.1 `BLOCKED ON CREDENTIAL`** (no DeepSeek key) |
+| V3.10 | End-to-end integration and real-issuer acceptance | `IMPLEMENTED` — 10.1-10.4 merged + 2 correctives |
+| V3.11 | Production hardening and final product acceptance | `IMPLEMENTED` — 11.1-11.5 merged + 1 corrective; all four V3.10 blockers closed; **11.1 live contract stays `BLOCKED ON CREDENTIAL`, but DeepSeek is no longer release-critical** |
 
 `IMPLEMENTED` = code, tests and local contract complete. `VALIDATED` = realistic
 end-to-end validation performed. **No V3 phase can reach `VALIDATED` in the sense
@@ -127,6 +128,8 @@ is recorded explicitly rather than being allowed to pass as production validatio
 | 2026-09-06 | V3.10.2 real agent adapters + routing | `feature/v3-10-2-real-model-adapters` | `9e9e26d` |
 | 2026-09-06 | V3.10.3 the V3 pipeline at the front door, behind a flag | `feature/v3-10-3-v3-pipeline` | `bd8b530` |
 | 2026-09-06 | **V3.10.4 real-issuer acceptance** | `feature/v3-10-4-issuer-acceptance` | `86e499c` |
+| 2026-09-06 | **V3.11.2 real-document scope resolution** | `feature/v3-11-2-scope-resolution` | `b63bd2c` |
+| 2026-09-06 | **V3.11.1 / 11.3 / 11.4 playbook completion, DeepSeek optional, real cost** | `feature/v3-11-3-playbook-completion` | `e1b2a44` |
 
 ## Corrective slices
 
@@ -139,7 +142,8 @@ rewrite of history. Five exist, and each one is a defect a real run found:
 | 2026-09-04 | V3.0.3.1 research-stage accuracy | `feature/v3-0-3-1-research-stage-accuracy` | `e9b6e9c` | The stage map named the wrong stages and the two longest phases reported nothing. |
 | 2026-09-05 | Untrack the data-source inventory | `fix/v3-untrack-data-source-inventory` | `2810aef` | Files committed that are [OPEN DECISION #18](OPEN_DECISIONS.md#18-fate-of-docsdata_source_inventorymd--xlsx) and the user's to place. |
 | 2026-09-06 | `get_recent_filings`, because a real run could not finish without it | `fix/v3-10-3-1-recent-filings-tool` | `62f8c75` | Biotech's blocking question required a tool **nothing implemented**, so a biotech run could never convene its Council. Merged with the three integration defects the first MRNA run exposed: a `research_runs` id passed into a column FK'd to `research_jobs` — **every tool call failed to persist and killed the transaction**; `lookup_entity` called with a `company_id` when it takes a ticker; and the delta silently never computed because the prior run was re-queried after this run had opened. |
-| 2026-09-06 | A finding inherits the period and scope of its evidence | `fix/v3-10-4-1-finding-period-scope` | `2c1cc27` | **Findings were exempt from period and scope integrity.** Real findings said "FY2026 projected" over FY2025 actuals with `period_key=None`. Now inherited on agreement or nothing; disagreement discards the finding and opens a `conflicting_sources` gap — which then fired on live SEC data. |
+| 2026-09-06 | A finding inherits the period and scope of its evidence | `fix/v3-10-4-1-finding-period-scope` | `2c1cc27` |
+| 2026-09-06 | Citations are checked to actually resolve | `fix/v3-11-5-citation-resolution-check` | `9b41bc0` | "Citations resolve" was on the acceptance gate and had never been measured — the harness checked that a finding HAS citations, not that they lead anywhere. | **Findings were exempt from period and scope integrity.** Real findings said "FY2026 projected" over FY2025 actuals with `period_key=None`. Now inherited on agreement or nothing; disagreement discards the finding and opens a `conflicting_sources` gap — which then fired on live SEC data. |
 
 ## Migrations
 
@@ -242,12 +246,12 @@ belong to the agent, with an ADR when material.
 
 Recorded so a later run can be compared against a number rather than a memory.
 
-| Gate | At campaign start (`35bd550`) | At the release candidate | After V3.10 |
+| Gate | At campaign start (`35bd550`) | At the release candidate | After V3.11 |
 |---|---|---|---|
 | `ruff check .` | All checks passed | All checks passed | All checks passed |
-| `pytest tests/ -q` | 4949 passed, 12 skipped | 5870 passed, 12 skipped | **5971 passed**, 23 skipped (+1022) |
+| `pytest tests/ -q` | 4949 passed, 12 skipped | 5870 passed, 12 skipped | **6063 passed**, 23 skipped (+1114) |
 | `mypy app` | 71 errors in 10 files | 71 (baseline, unchanged) | 71 (baseline, unchanged) |
-| web typecheck / lint / build | not run | **all passed** | not re-run — the frontend was not modified in V3.10 |
+| web typecheck / lint / build | not run | **all passed** | **all passed** (re-run in V3.11.5) |
 
 The 11 additional skips are the V3.10 live-provider tests, which are opt-in and skip
 without a `DEEPSEEK_API_KEY`. **A skip is not a pass**, and §10.1 of the release candidate
@@ -370,27 +374,31 @@ Carried forward, all still true:
 
 **None. The campaign is complete and awaiting user acceptance.**
 
-Read [V3_RELEASE_CANDIDATE_REPORT.md](V3_RELEASE_CANDIDATE_REPORT.md) — §10 is the V3.10
-product acceptance and §11 is the recommendation, which is **`NOT READY`** against four
-named blockers:
+Read [V3_RELEASE_CANDIDATE_REPORT.md](V3_RELEASE_CANDIDATE_REPORT.md) — §11 is the V3.11
+production hardening and §12 is the recommendation, which is **`READY FOR USER ACCEPTANCE /
+MAIN PROMOTION REVIEW`**.
 
-1. **The primary external research runtime has never been called.** No DeepSeek key exists;
-   the wire contract is documentation-derived. Implementation complete, live validation
-   blocked. Bounded work: one key, one opt-in test run, reconcile the adapter.
-2. **No playbook-gated Council has convened on real data.** All three real-issuer playbook
-   runs refused correctly on a blocking question; the convened runs used the no-playbook
-   path. The five playbooks are proved to *refuse* and unproved to *complete*.
-3. **Scope labelling over real documents is effectively absent.** 170 of 173 chunks from a
-   real annual report carry `scope_key = NULL`. Group/segment integrity holds **by absence,
-   not by correct labelling**.
-4. **The cost basis is unmeasured.** `cost_per_verified_useful_finding` is `None` — no price
-   book, one vendor. The plumbing works and produced real token counts.
+All four V3.10 blockers are closed:
 
-Explicitly **not** blockers, per the phase brief: ADR-053 / no pgvector, unscheduled V3.9
-monitoring, and nothing being deployed.
+1. **DeepSeek** — still `BLOCKED ON CREDENTIAL` (none is reachable; Key Vault is unreadable
+   by a Contributor-only identity), but **no longer release-critical**: three real
+   playbook-gated Councils convened with no key, no flag and no call, and the research path
+   does not import the adapter at all.
+2. **Playbooks** — CFR, MRNA and ASML all convene. Three of the four causes were the
+   platform's, not the world's.
+3. **Scope** — 1.7% → 8.1% coverage on the real Richemont report with a **0.0%**
+   false-positive Group rate; the €107m Specialist Watchmakers figure resolves to its
+   segment.
+4. **Cost** — `$0.01453` per research run, `$0.001453` per verified useful finding, priced
+   from configuration with its provenance recorded.
 
-If the user accepts anyway, §9 of that report lists the recoverable next steps, beginning
-with CI on `develop/v3` (OPEN DECISION #17).
+**The one thing still not proved** is in §11.6: the `ResearchLead` → Evidence promotion path
+has never run with a real external provider, because the only producer of leads is
+DeepSeek. It is dormant and unit-tested. **Enabling DeepSeek later must be its own
+acceptance slice.**
+
+If acceptance is given, §9 lists the recoverable next steps, beginning with CI on
+`develop/v3` (OPEN DECISION #17).
 
 Nothing in this campaign authorises a merge to `main`, a deployment, or a migration against
 the live database, and none was performed. The protected V2 refs are untouched at

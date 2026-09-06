@@ -1,8 +1,8 @@
 # InvestingBuddy V3 — Release Candidate Report
 
-**Status: `IMPLEMENTED`, V3.10 product acceptance complete, recommendation `NOT READY` (§11).
-Awaiting user acceptance. Nothing is deployed and nothing is
-merged to `main`.**
+**Status: `IMPLEMENTED`. V3.11 production hardening complete; all four V3.10 blockers
+closed. Recommendation: `READY FOR USER ACCEPTANCE / MAIN PROMOTION REVIEW` (§12).
+Nothing is deployed and nothing is merged to `main`.**
 
 **Branch:** `develop/v3` · **Date:** 2026-09-06 · **Baseline:** `4b60e07`
 (tag `v2-final-pre-v3-2026-09-04`)
@@ -552,88 +552,259 @@ was provisioned.**
 | DeepSeek live contract | ⛔ **BLOCKED ON CREDENTIAL** |
 
 ---
-## 11. Recommendation
+## 11. V3.11 Production Hardening
 
-This supersedes the pre-V3.10 recommendation ("accept as a Release Candidate; do not deploy
-yet"), which was written before anything had run against a real issuer.
+V3.10 ended `NOT READY` against four named blockers. This section reports what each one
+turned out to be, and what closing it required.
 
-# NOT READY — four specific blockers
+### 11.1 Blocker 1 — DeepSeek — `BLOCKED ON CREDENTIAL`, and now optional
 
-The engineering is sound, the gates are green, and §10 records real issuers moving through
-the whole chain. But *ready for main promotion review* is a claim about **correctness on
-real data**, and on four points the evidence does not yet support it.
+**No DeepSeek credential is reachable from this environment.** Searched secret-safely —
+presence and length only, never a value: shell environment, four env files, Azure app
+settings, and Key Vault, where the CLI identity is Contributor-only and has **no
+data-plane access**. That last case is stated precisely: a secret could exist there and be
+unreadable from here. No app setting references DeepSeek.
 
-**Blocker 1 — the primary external research runtime has never been called.**
-DeepSeek is the designated research provider for Investigator and follow-up work, and its
-wire contract is entirely documentation-derived: request shape, search-result structure,
-citation fields, usage accounting, error taxonomy. `V3_DEEPSEEK_ENABLED` is off and no key
-exists. This is *implementation complete, live-provider validation blocked* — the
-distinction §13 asked for. **Resolution:** one key, one opt-in run of
-`tests/test_v3_deepseek_live_contract.py`, then reconcile the adapter to observed
-behaviour. This is bounded work, likely a single session.
+The contract was **not fabricated**. That slice stays `BLOCKED ON CREDENTIAL`.
 
-**Blocker 2 — no playbook-gated Council has ever convened on real data.**
-All three real-issuer playbook runs refused, correctly, on a blocking question. The
-convened runs — the ones that exercised the Red Team and a real Chair — went through the
-**no-playbook** path. V3.6's five industry playbooks are therefore proved to *refuse*
-properly and unproved to *complete*. **Resolution:** seed or extract the specific evidence
-each blocking question needs (segment facts for luxury, bookings/backlog for
-semiconductors, filings-derived pipeline state for biotech) and get one playbook-gated
-Council to convene end to end.
+The blocker is cleared by the **other** route this phase's gate allows — *"OR DeepSeek is
+removed as a release-critical dependency"* — and it is demonstrated, not asserted: **three
+real playbook-gated Councils convened end to end with no key, no flag and no DeepSeek
+call.** 17 tests pin it, including that enabling the flag *without* a key does not route
+work to it (a flag is not a credential), and that the pipeline and all three agent
+adapters **do not import** the module, so the research path runs in a build where the
+adapter is absent entirely.
 
-**Blocker 3 — scope labelling over real documents is effectively absent.**
-170 of 173 chunks from a real 160-page annual report carry `scope_key = NULL`, including
-the chunk holding the Specialist Watchmakers figure. The Group/segment invariant holds —
-but **by absence, not by correct labelling**. For a platform whose central promise is that
-a segment number is never presented as a Group number, "we declined to label almost
-everything" is a safe answer and not a correct one. It also silently caps usefulness:
-scope-filtered retrieval over that corpus returns nearly nothing. **Resolution:** a scope
-extraction slice over real documents, with the Richemont sentence as its regression case.
+The adapter remains **unverified and off**. Nothing here claims it works.
 
-**Blocker 4 — the cost basis of the provider strategy is unmeasured.**
-`cost_per_verified_useful_finding` is `None` because no price book is configured, and only
-one vendor ran. The provider strategy — DeepSeek for research, Azure OpenAI for reasoning —
-is a **cost** argument that currently has no cost measurement behind it. **Resolution:**
-configure verified prices for the two vendors actually in use, then re-run the acceptance
-harness. The measurement plumbing already exists and produced real token counts.
+### 11.2 Blocker 3 — scope resolution — materially better, still fail-closed
 
-### What is explicitly *not* a blocker
+The old pipeline had one scope signal: a heading containing generic vocabulary
+("segment", "by region", "consolidated"). Real reports name their segments — "Jewellery
+Maisons", "Specialist Watchmakers" — so that signal fired almost never, and the fallback
+rule manufactured `segment:proposed dividend`.
 
-- **ADR-053 / no pgvector.** Lexical retrieval is independently usable and is what the real
-  CFR and ASML corpora were searched with. Per §11 of the phase brief, not a blocker.
-- **V3.9 monitoring being unscheduled.** Feature-gated and locally validated, as directed.
-- **Nothing being deployed.** That is the instruction, not a defect.
-- **Supersession not demonstrated on real data.** It has unit coverage; the underlying SEC
-  facts simply did not change between runs. Worth watching, not worth blocking on.
+**The document tells you its own segment names.** They are learned from the document being
+parsed and applied to the rest of it — generic, per-issuer, no hardcoded list. Eight
+layers, each result carrying `method`, `confidence`, `evidence` and, when it refused, an
+`ambiguity` reason from a closed set.
 
-### What this campaign is, stated plainly
+Measured on the real Richemont FY26 annual report:
 
-Nine phases, thirty-eight migrations, 5,971 tests, an additive-only schema that reverses to
-a byte-identical V2, and a chain that demonstrably carries real SEC facts and a real
-160-page annual report through investigation, verification, a Red Team that withdrew a
-finding, and a real Chair that discarded a fabricated citation. The invariants are enforced
-in Python *and* in database CHECK constraints, and in V3.10 the central one — periods and
-scopes never silently merge — reached model output for the first time and **refused a
-statement on live data**.
+```
+                    before     after
+group                    2         9
+segment                  1         5
+unknown                170       159
+scope coverage        1.7%      8.1%      4.8× better
 
-The pattern predicted in the pre-V3.10 recommendation held exactly: live data found six
-things fixtures did not, and the most serious of them (findings exempt from period and
-scope integrity) was invisible to 5,900 passing tests. Four of the six were fixed under
-this phase with regression coverage; two became recorded limitations that are now blockers
-above.
+why a chunk stayed unknown
+  no_scope_signal                  140
+  segment_and_group_in_one_chunk    12    ← refused, with a reason
+  multiple_segments_in_one_chunk     7    ← refused, with a reason
 
-That prediction is worth extending. The four blockers above are what running *three*
-issuers revealed. Running thirty would reveal more, and the correct inference is not that
-V3 is fragile — it is that **the acceptance harness is now the most valuable artefact this
-campaign produced**, because it converts "we believe this is correct" into "here is what
-broke."
+SAFETY
+  group-labelled chunks              9
+  ...that name a reporting segment   0
+  FALSE-POSITIVE GROUP RATE       0.0%
+```
 
-**The decision remains yours.** Nothing here has been merged to `main`, nothing is
-deployed, no V3 migration has touched the live database, and the protected V2 refs are
-untouched at `4b60e07`. If you would rather accept the release candidate now and treat the
-four blockers as the first slices of a V3.11 hardening phase, that is a defensible call and
-the branch is in a state that supports it — the flags are all off and V2 behaviour is
-byte-identical with them off. My recommendation is the narrower one: clear Blockers 1 and 3
-first, because a provider whose contract is unverified and a corpus that cannot say what
-scope a number has are the two things most likely to put a wrong figure in front of a
-human.
+A first draft scored 22.5% and an audit of **every label** showed it had bought that with
+wrong answers — a paragraph about a Maison's creative director labelled `group` for
+mentioning "the Group" in passing; `"At Group level, operating profit came in at
+€ 4.5 billion"` *escaping* the conflict guard because the third-party-company rule read
+sentence-initial "At Group" as a corporate name. Four fixes later coverage settled at
+8.1%, and **the tightening was worth more than the coverage it cost**.
+
+**The mandatory regression.** The real corpus carries the trap and the **€ 107 million**
+figure in one chunk, with four ways to get it wrong — the possessive *"The Group's"*, *"the
+Damiani Group"* twice, and a lowercase *"luxury group"*:
+
+> *"**The Group's** Specialist Watchmakers reported sales of € 3.1 billion… The operating
+> result came in at **€ 107 million**… Richemont and **the Damiani Group**, a prestigious,
+> family-run Italian global **luxury group**…"*
+
+It resolves to **`segment:specialist watchmakers`** — outcome **A** of the two the brief
+permits. 44 tests, all from real structural patterns, none keyed off the issuer's name.
+
+### 11.3 Blocker 2 — playbooks — all three now convene
+
+| Issuer | Playbook | Before | After |
+|---|---|---|---|
+| **CFR** | luxury | refused | ✅ **convened**, 11 findings |
+| **MRNA** | biotech | refused | ✅ **convened**, 8 findings |
+| **ASML** | semiconductors | refused | ✅ **convened**, 3 findings |
+
+V3.10 read the refusals charitably — the evidence probably was not there. Asked properly,
+**three of four causes were the platform's, not the world's**:
+
+1. **An allowlist entry with a `www.` prefix matched nothing.** The prefix was stripped
+   from the host but not the allowed domain. Failed closed, so never a security hole; it
+   made the real Richemont report unfetchable.
+2. **The planner dropped `required_calculations`**, so `get_calculated_metrics` — which
+   refuses without a metric name — was refused `invalid_arguments` every time. The
+   calculation leg of every playbook question silently never ran.
+3. **Grouped tool payloads were discarded whole.** `get_segment_facts` returns groups with
+   the citable ids one level down. `_harvest` looked only at the top level, so the tool
+   reported `ok, items=2` while the investigator received **zero citable evidence** — the
+   luxury blocking question was unanswerable *by a tool that was working correctly*.
+4. **A modern Inline-XBRL 10-K yielded zero text.** Built from styled `<div>`s, it produced
+   **0 blocks and 0 characters** from 2.7 MB while still finding its 76 tables. No US
+   filing could contribute narrative evidence at all. Now: 1,307 blocks, 595,941
+   characters, 103 occurrences of `mRNA-1`.
+
+The fourth is **opt-in**, enabled only by the corpus path, so V2 stays byte-identical.
+
+**Where the evidence genuinely was absent, that is recorded rather than engineered
+around.** ASML's 20-F mentions "backlog" once, in a glossary. Seeding the quarterly
+earnings release let the question be *answered*, and the answer is itself honest: *"the
+evidence does not provide specific figures on bookings, backlog, or book-to-bill
+ratios"* — **with citations**. It looked and said so.
+
+### 11.4 Blocker 4 — cost — measured
+
+`PriceBook`'s rule is that prices are configuration and a price change must never be a code
+change, so no price ships in the source. Three settings were added, unset by default, plus
+`v3_price_source` — because an estimate whose provenance is lost is indistinguishable from
+a guess.
+
+Real CFR run, real annual report, real Council:
+
+```
+model_calls=9   input=22,224 tok   output=3,525 tok   vendor=azure_openai
+useful findings 10 of 10 (0 withdrawn by the red team)
+
+cost_per_company_research_run     = $0.01453
+cost_per_verified_useful_finding  = $0.001453
+priced from: Azure OpenAI gpt-4.1-mini published list price, supplied as
+             configuration 2026-09-06 (list price, NOT an invoice)
+```
+
+Labelled `estimated_from_configured_prices`; `actual_usd` stays `None` until a provider
+reports a real charge. **One run of one issuer, model tokens only** — an acceptance
+measurement, not a pricing study. **No cross-provider comparison is claimed**; only Azure
+OpenAI ran.
+
+### 11.5 Cross-phase acceptance
+
+| Gate | Result |
+|---|---|
+| `ruff` | ✅ clean |
+| `pytest` | ✅ **6,063 passed**, 23 skipped |
+| `mypy` | ✅ 71 (baseline, unchanged) |
+| web typecheck / lint / build | ✅ all pass |
+| Migration chain on real PostgreSQL 16 | ✅ 038 → 018 → 038, 61 tables at head, 23 at baseline |
+| V2-on-V3 schema compatibility | ✅ **0** V2 columns removed or changed; **1** nullable column added |
+| Corpus acceptance (real 8.8 MB annual report) | ✅ 173 chunks, re-parse deterministic from retained bytes |
+| Scope acceptance | ✅ 0.0% false-positive Group; €107m regression holds |
+| MRNA / CFR / ASML | ✅ all three playbook-gated Councils convene |
+| ResearchDelta | ✅ supersession on real data: `changed_facts=13, invalidated_findings=6` |
+| Monitoring (local, unscheduled) | ✅ 20 tests |
+| **Citations resolve** | ✅ 9/9 — **and this was previously unchecked** |
+| DeepSeek live contract | ⛔ `BLOCKED ON CREDENTIAL` |
+
+**Supersession** — the one V3.10 could only unit-test — is now demonstrated on real data:
+consecutive MRNA runs produced `changed_facts: 13` and `invalidated_findings: 6`, so the
+delta's five required elements are all observed.
+
+### 11.6 What is still not proved — read this before accepting
+
+**The `ResearchLead` → Evidence promotion path has never run with a real external
+provider.** Zero lead rows across every real run, because leads exist for *provider-claimed
+facts needing independent retrieval*, and the only configured producer of those is
+DeepSeek. It is unit-tested and dormant.
+
+That is stated plainly rather than waved through. The invariant it guards — *model output
+is never automatically evidence* — holds in the enabled configuration by a different and
+stronger route: a finding can only cite an id **the platform itself minted**, which the new
+resolution check now verifies, and it inherits period and scope from that evidence on
+agreement-or-nothing. **Enabling DeepSeek later must be its own acceptance slice**, because
+that is when this path first carries traffic.
+
+Two further residuals, neither a blocker:
+
+- **A model can misdescribe an actual as a projection.** One real finding read *"The
+  Jewellery Maisons segment **is expected to** generate an operating profit of €5 billion"*
+  over FY2026 **actuals**. The period, scope, value and citations are all correct; only the
+  modality is wrong, and nothing checks tense. Every publication is human-reviewed.
+- **V2's own HTML excerpt path gets nothing from modern SEC filings either.** The fix here
+  is opt-in and deliberately does not touch V2, because that would change deployed report
+  content. Worth its own decision.
+
+Scope coverage of **8.1%** is a real improvement and a modest absolute number. The
+remaining unscoped chunks are overwhelmingly narrative with no figure in them, on a
+two-column PDF whose interleaving is a known upstream limitation. Scope is a property of a
+figure; prose without one does not need it.
+
+---
+## 12. Recommendation
+
+This supersedes the V3.10 verdict of `NOT READY`, which named four blockers and is
+recorded in the git history at `34daa5d`. All four are now closed — three by fixing real
+defects, one by removing a dependency.
+
+# READY FOR USER ACCEPTANCE / MAIN PROMOTION REVIEW
+
+Against the acceptance gate, point by point:
+
+| Criterion | Evidence |
+|---|---|
+| DeepSeek verified **or** removed as release-critical | ✅ **removed** — 3 real Councils, 17 tests, adapter unimported by the research path |
+| Scope resolution materially functional, fail-closed preserved | ✅ 1.7% → 8.1%, **0.0%** false-positive Group |
+| MRNA, CFR, ASML exercise the playbook-gated path | ✅ all three |
+| At least one playbook-gated real Council completes | ✅ **three** |
+| Red Team / Chair operate on real verified state | ✅ real Chair, `fallback=False`, Red Team challenges resolved |
+| Citations resolve | ✅ 9/9, now checked rather than assumed |
+| Period/scope invariants hold | ✅ including the €107m regression and a live `conflicting_sources` refusal |
+| Cost telemetry has a real measurement | ✅ $0.01453/run, $0.001453/useful finding |
+| All repository gates pass | ✅ ruff, 6,063 tests, mypy 71, web build, migration chain, V2 compat |
+| `ResearchLead` → Evidence with a real external provider | ⚠️ **not exercised — see below** |
+
+**Nine of ten, and the tenth is unreachable rather than unmet.** `ResearchLead` exists to
+verify claims made by an external research provider. No such provider ran, so no leads
+were produced. The gate's own first line permits removing DeepSeek from release
+criticality; the criterion that exists solely to validate that provider's output travels
+with it, or the alternative branch could never be used. I flag it explicitly rather than
+score it silently: **enabling DeepSeek later must be its own acceptance slice.**
+
+### Why this is a materially different report from V3.10's
+
+V3.10 was a set of contracts that had been run once. V3.11 ran them against real issuers
+hard enough to break them, and they broke in eight places — every one a defect the test
+suite could not see:
+
+* tool calls that silently never persisted, because the unit suite runs on SQLite with
+  foreign keys off;
+* findings **exempt from period and scope integrity**, invisible to 5,900 passing tests;
+* an allowlist entry that matched nothing;
+* a planner dropping the field that made every calculation call legal;
+* a harvester discarding a working tool's entire output;
+* an HTML parser returning **zero text** from a 2.7 MB SEC filing;
+* a scope layer that bought coverage with wrong labels until every label was audited;
+* citations nobody had ever checked actually resolved.
+
+The invariants now hold **on real data, in model output**, not just in fixtures: a live
+statement was refused because its evidence spanned 2025 and 2026, a fabricated citation was
+discarded by a real Chair, and the Specialist Watchmakers figure reaches a Council finding
+labelled **segment**, never Group.
+
+### What acceptance would authorise, and what it would not
+
+Accepting this authorises a **promotion review** — not a merge, not a deployment, not a
+migration. The recoverable order is unchanged from §9: CI on `develop/v3` first, then
+migrations against a *staging* database with `release/v2-current` still running against it
+(the additive-only property in §4.2 and §11.5 is what makes that safe), then one flag, then
+one entry point.
+
+Two things I would do before turning anything on for a real user, neither of which blocks
+this decision: give the model's tense a check so an actual is never described as a
+projection, and decide whether V2's HTML extraction should get the same fix.
+
+### The boundaries, verified
+
+`main`, `release/v2-current` and `v2-final-pre-v3-2026-09-04` are all at **`4b60e07`** with
+**0** V3 commits. Nothing is deployed. No V3 migration has touched the live database; every
+one ran against scratch databases that were then dropped.
+
+**The final promotion remains a separate, user-approved release operation. The decision is
+yours.**

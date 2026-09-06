@@ -13,15 +13,20 @@ describes deployed behaviour unless a section explicitly says `CURRENT`.
 | `develop/v3` | V3 integration branch. Unapproved, undeployed. |
 | `feature/v3-*` | PR-sized V3 implementation slices. Merge target is `develop/v3` only. |
 
-**Where the work stands (2026-09-06).** `develop/v3` carries **all ten phases**,
-V3.0 through V3.10, every one `IMPLEMENTED` and none `VALIDATED` — nothing is deployed and
-migrations 019-038 have reached no deployed environment.
+**Where the work stands (2026-09-06).** `develop/v3` carries **all eleven phases**,
+V3.0 through V3.11, every one `IMPLEMENTED` — nothing is deployed and migrations 019-038
+have reached no deployed environment.
 
-V3.10 ran real issuers — **MRNA, CFR and ASML** — through the whole chain and found six
-defects fixtures had missed, the most serious being that **model-written findings were
-exempt from period and scope integrity**. The phase's recommendation is **`NOT READY`**
-against four named blockers, in [§11 of the release candidate
-report](V3_RELEASE_CANDIDATE_REPORT.md#11-recommendation). The decision is the user's.
+V3.10 ran real issuers — **MRNA, CFR and ASML** — through the whole chain and ended
+`NOT READY` against four blockers. **V3.11 closed all four.** All three issuers now
+complete a **playbook-gated** Council on real public data; real-document scope coverage
+went from 1.7% to 8.1% with a **0.0% false-positive Group rate**; a research run costs a
+measured **$0.01453**; and DeepSeek — still uncallable, no credential is reachable — is no
+longer a release-critical dependency.
+
+The recommendation is **`READY FOR USER ACCEPTANCE / MAIN PROMOTION REVIEW`**, in
+[§12 of the release candidate report](V3_RELEASE_CANDIDATE_REPORT.md#12-recommendation).
+Read **§11.6** first: it names the one thing still unproved. The decision is the user's.
 
 **Start with [V3_RELEASE_CANDIDATE_REPORT.md](V3_RELEASE_CANDIDATE_REPORT.md).** It records
 what was built, what was proved, and — in §7 and §10.5, the sections that matter — what was

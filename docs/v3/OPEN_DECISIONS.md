@@ -436,3 +436,25 @@ ships unconfigured), [15](#15-monitoring-cadence) (V3.9 scheduling),
   they belong on the branch that describes it.
 - **Blocking?** No.
 - **Owner:** **user**.
+
+---
+
+## V3.11 status of the provider decisions
+
+Two decisions above are affected by what V3.11 measured, and neither is reopened here —
+this records where they stand.
+
+**#4 DeepSeek data-governance policy.** Unchanged as a policy. Operationally, DeepSeek has
+now been **removed as a release-critical dependency** (see
+[V3_RELEASE_CANDIDATE_REPORT.md §11.1](V3_RELEASE_CANDIDATE_REPORT.md#111-blocker-1--deepseek--blocked-on-credential-and-now-optional)):
+no credential is reachable from this environment, the live contract has never run, the flag
+is off, and the research path does not import the adapter. The private-document rule — *a
+document may reach an external model only when its explicit rights/policy permits it, and
+unknown policy fails closed* — remains in force and is untested against a live call.
+
+**New, for the user.** Two items surfaced by V3.11 that are decisions rather than defects:
+
+| # | Decision | Why it is yours |
+|---|---|---|
+| 19 | Should V2's HTML extraction get V3.11's container-block fix? | V2's excerpt path also gets **zero text** from modern Inline-XBRL SEC filings. Fixing it would change **deployed report content**, so V3.11 left V2 byte-identical. |
+| 20 | Enabling DeepSeek later | The `ResearchLead` → Evidence promotion path has **never run with a real external provider**, because DeepSeek is the only producer of leads. It is dormant and unit-tested. Turning DeepSeek on is therefore the moment that path first carries traffic, and it needs **its own acceptance slice**, not a flag flip. |
