@@ -977,6 +977,13 @@ class Settings(BaseSettings):
     # credential, CC BY 4.0. No subscription is required or implied.
     v3_macro_sources_enabled: bool = False
 
+    # ── V3.4 Slice 4.10: bounded issuer-site traversal ──────────────────────
+    # OFF by default. A bounded walk of ONE issuer's own site on the existing
+    # guarded fetcher — not a crawler, not a spider, and never a browser. A
+    # JS-gated IR page is recorded as partially inaccessible, which is a research
+    # gap somebody can act on, rather than worked around with a paid service.
+    v3_issuer_traversal_enabled: bool = False
+
     v3_run_max_model_calls: int = 0
     v3_run_max_model_tokens: int = 0
     v3_run_max_web_searches: int = 0

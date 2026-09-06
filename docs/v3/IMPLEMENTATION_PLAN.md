@@ -121,7 +121,7 @@ bytes are retained.
 | 4.7 | [`feature/v3-4-7-macro-observation-store`](slices/V3.4-7-macro-observation-store.md) | Dataset / series / observation with **vintages** — a revision is a new row and `as_of` makes a past report reproducible. First live source: the World Bank Indicators API (free, no credential, CC BY 4.0). `get_macro_series` implemented, the first of V3.3's twelve reserved tool names to be filled. | `IMPLEMENTED` |
 | 4.8 | [`feature/v3-4-8-transcript-provider`](slices/V3.4-8-transcripts-and-ir-events.md) | Canonical IR-event and transcript model where **the absence is a first-class state**: `not_published` is a stored research gap and an absent row is "nobody looked". `get_ir_events` and `get_transcripts` implemented. Acquisition needs 4.10's traversal. | `IMPLEMENTED` |
 | 4.9 | [`feature/v3-4-9-pgvector-search-backend`](slices/V3.4-9-postgres-search-backend.md) | The production `SearchBackend`: PostgreSQL full-text (GIN over `to_tsvector`), every filter inside the statement, de-indexing as an UPDATE. `pgvector` is **not installable here** — [ADR-053](../DECISIONS.md) amends 047: the semantic leg ships portable and OFF. | `IMPLEMENTED` |
-| 4.10 | `feature/v3-4-10-issuer-site-traversal` | Bounded same-domain issuer IR traversal on the existing safe fetcher. No paid crawler. | `NOT STARTED` |
+| 4.10 | [`feature/v3-4-10-issuer-site-traversal`](slices/V3.4-10-issuer-site-traversal.md) | Bounded same-domain walk on the existing guarded fetcher. Four finite bounds and `stopped_by` always populated; `robots.txt` obeyed by **not requesting**; a JS-gated page recorded as partially inaccessible. No paid crawler. | `IMPLEMENTED` |
 | 4.11 | [`feature/v3-4-11-research-mode-budgets`](slices/V3.4-11-research-mode-budgets.md) | **Corrective.** [ADR-052](../DECISIONS.md) was accepted and never implemented: every ceiling still defaulted to unbounded while the campaign record said they were real numbers. QUICK/STANDARD/DEEP/MAX now carry finite limits; configuration narrows and never widens; the monetary ceiling stays unset. | `IMPLEMENTED` |
 
 ### V3.5-V3.9
@@ -189,6 +189,7 @@ V3_ENTITY_MASTER_ENABLED        V3_RESEARCH_MEMORY_ENABLED
 V3_CORPUS_SEMANTIC_SEARCH_ENABLED
 V3_RESEARCH_MODE_DEFAULT
 V3_MACRO_SOURCES_ENABLED
+V3_ISSUER_TRAVERSAL_ENABLED
 ```
 
 All default **off**. Each flag's deprecation plan is recorded when it is created:
@@ -272,6 +273,7 @@ approval.
 | 2026-09-05 | V3.4 Slice 4.3 — DeepSeek providers | `feature/v3-4-3-deepseek-providers` | `07c7032` |
 | 2026-09-05 | V3.4 Slice 4.4 — research lead promotion | `feature/v3-4-4-research-lead-promotion` | `5cd3910` |
 | 2026-09-06 | V3.4 Slice 4.9 — PostgreSQL search backend | `feature/v3-4-9-pgvector-search-backend` | `08cb013` |
+| 2026-09-06 | V3.4 Slice 4.10 — bounded issuer-site traversal | `feature/v3-4-10-issuer-site-traversal` | _pending_ |
 | 2026-09-06 | V3.4 Slice 4.8 — transcripts and IR events | `feature/v3-4-8-transcript-provider` | `e481da6` |
 | 2026-09-06 | V3.4 Slice 4.7 — macro observation store | `feature/v3-4-7-macro-observation-store` | `5b5045e` |
 | 2026-09-06 | V3.4 Slice 4.5 — provider benchmark harness | `feature/v3-4-5-provider-benchmark-harness` | `8d20747` |
