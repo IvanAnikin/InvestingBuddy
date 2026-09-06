@@ -53,17 +53,33 @@ DEFAULT_BASE_URL = "https://api.deepseek.com"
 DEFAULT_SEARCH_TOOL_NAME = "web_search"
 
 
-class DeepSeekUnavailableError(RuntimeError):
-    """DeepSeek cannot be reached or is not configured.
+#: HTTP statuses a retry cannot fix. A wrong key will not become right by being asked
+#: again, and a malformed request will not become well-formed — so retrying either is
+#: three times the spend for the same failure. 408 and 429 are deliberately ABSENT:
+#: a timeout and a rate limit are exactly the cases a retry exists for.
+PERMANENT_HTTP_STATUSES: frozenset[int] = frozenset({400, 401, 403, 404, 405, 422})
 
-    Transient by default so the worker may retry: a missing key is permanent but a
-    connection failure is not, and the caller distinguishes them by *why* it was raised
-    rather than by the type. Where the distinction matters — an unconfigured provider —
-    the factory returns ``None`` instead of raising at all, exactly as
-    ``get_llm_client`` does.
+
+class DeepSeekUnavailableError(RuntimeError):
+    """DeepSeek cannot be reached, is not configured, or refused the request.
+
+    ``job_transient`` decides whether the durable worker may retry, and it is set **per
+    raise** rather than per class. The class attribute is the default for a connection
+    failure — the case a retry exists for — and an authentication or request error
+    overrides it to ``False``.
+
+    This was a defect until V3.10.1: the attribute was an unconditional class-level
+    ``True``, so a 401 was retried to the attempt limit. That contradicted this docstring,
+    which already said "a missing key is permanent", and it is the shape of bug that only
+    costs money once it is in front of a real credential.
     """
 
+    #: Default: a connection failure, which a retry may well fix.
     job_transient = True
+
+    def __init__(self, *args: Any, transient: bool = True) -> None:
+        super().__init__(*args)
+        self.job_transient = transient
 
 
 @dataclass
@@ -216,7 +232,8 @@ class HttpDeepSeekTransport:
                 # The status code, never the body: a provider error body can echo the
                 # prompt, and this message reaches logs.
                 raise DeepSeekUnavailableError(
-                    f"DeepSeek returned HTTP {response.status_code}."
+                    f"DeepSeek returned HTTP {response.status_code}.",
+                    transient=response.status_code not in PERMANENT_HTTP_STATUSES,
                 )
             body = response.json()
         except DeepSeekUnavailableError:
@@ -230,7 +247,11 @@ class HttpDeepSeekTransport:
             if closer is not None:
                 await closer()
         if not isinstance(body, dict):
-            raise DeepSeekUnavailableError("DeepSeek returned a non-object response.")
+            # Not transient: a provider returning the wrong content type is returning it
+            # again in four seconds.
+            raise DeepSeekUnavailableError(
+                "DeepSeek returned a non-object response.", transient=False
+            )
         return body
 
     @staticmethod
