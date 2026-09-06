@@ -984,6 +984,13 @@ class Settings(BaseSettings):
     # gap somebody can act on, rather than worked around with a paid service.
     v3_issuer_traversal_enabled: bool = False
 
+    # ── V3.9: monitoring, watchlists and change detection ───────────────────
+    # OFF by default, and NOTHING SCHEDULES IT. How often to check is OPEN
+    # DECISION #15, user-owned and unresolved: guessing a cadence would answer a
+    # question asked of somebody else and start spending on a path nobody
+    # approved. With the flag off, a detection pass observes nothing and says so.
+    v3_monitoring_enabled: bool = False
+
     v3_run_max_model_calls: int = 0
     v3_run_max_model_tokens: int = 0
     v3_run_max_web_searches: int = 0
