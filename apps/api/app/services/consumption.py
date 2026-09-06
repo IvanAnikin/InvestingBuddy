@@ -305,10 +305,16 @@ UNBOUNDED = 0
 class ResearchBudget:
     """What one run may spend before it must stop.
 
-    Every bound defaults to :data:`UNBOUNDED`. The real numbers are OPEN
-    DECISIONS #13 and #14, both user-owned, and #14 wants them derived from the
-    measurements this module produces rather than guessed. The enforcement point
-    exists now so that setting a number later is configuration, not code.
+    Every bound defaults to :data:`UNBOUNDED` **at this layer**, and that is no longer
+    where the numbers live. ADR-052 resolved OPEN DECISIONS #13/#14 with bounded
+    technical defaults per research mode, and ``app.services.research_mode.budget_for``
+    builds the budget a run actually gets — finite in every dimension except
+    ``max_external_cost_usd``, which stays unset because money is derived from a price
+    book nobody has filled in.
+
+    This class keeps permissive defaults on purpose: it is the *enforcement mechanism*,
+    and a mechanism that refused to represent "no limit on this dimension" could not
+    express the one limit the decision deliberately left open.
     """
 
     max_model_calls: int = UNBOUNDED
