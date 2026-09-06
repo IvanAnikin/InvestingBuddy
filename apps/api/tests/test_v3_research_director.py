@@ -172,8 +172,11 @@ class TestPlanning:
         assert plan.questions[0].key == "cash_runway"
         assert plan.playbook_versions == {"luxury": 1}
 
-    async def test_a_question_no_role_can_answer_becomes_unassignable(self) -> None:
-        """The mechanism. Not assigned anyway, and not answered badly."""
+    async def test_a_question_needing_an_unimplemented_tool_is_unassignable(
+        self,
+    ) -> None:
+        """`search_web` is in the vocabulary and has no handler. Refused at PLAN time,
+        where it is a coverage fact, rather than mid-run where it is a mystery."""
         playbook = _Playbook(
             questions=[
                 PlannedQuestion(
@@ -185,10 +188,33 @@ class TestPlanning:
             ]
         )
         plan = await plan_research(subject="CFR", playbooks=[playbook])
-        assert ("web_scan", "no role holds ['search_web']") in plan.unassignable
+        assert ("web_scan", "no implementation for ['search_web']") in plan.unassignable
         assert "web_scan" not in {
             key for task in plan.tasks for key in task.question_keys
         }
+
+    async def test_a_question_no_role_holds_is_unassignable_too(self) -> None:
+        """Implemented, and declared by nobody. A different reason, and both matter:
+        the first is a platform gap, this is a staffing one."""
+        from app.services.director import planner
+
+        playbook = _Playbook(
+            questions=[
+                PlannedQuestion(
+                    key="private_read",
+                    text="What do the private notes say?",
+                    origin=ledger.ORIGIN_PLAYBOOK,
+                    required_tools=frozenset({"search_private_research"}),
+                )
+            ]
+        )
+        assert "search_private_research" in planner.implemented_tools()
+        assert not roles_that_can_answer({"search_private_research"})
+        plan = await plan_research(subject="CFR", playbooks=[playbook])
+        assert (
+            "private_read",
+            "no role holds ['search_private_research']",
+        ) in plan.unassignable
 
     async def test_a_specialist_the_playbook_asks_for_is_instantiated(self) -> None:
         playbook = _Playbook(

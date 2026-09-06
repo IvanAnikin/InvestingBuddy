@@ -200,6 +200,33 @@ class ResearchPlan:
         }
 
 
+def implemented_tools() -> frozenset[str]:
+    """Tool names that actually have a handler, not merely a place in the vocabulary.
+
+    ``TOOL_NAMES`` is the *vocabulary* — nineteen names, twelve of which V3.3 reserved
+    for capabilities that did not exist yet. A ``RoleSpec`` is checked against the
+    vocabulary, which is right: a role is a declaration, and declaring an intent to use
+    ``get_recent_filings`` is not a lie.
+
+    But the Director must not assign a question to a role on the strength of a tool
+    nothing implements. That failure surfaces as a mysterious tool refusal in the middle
+    of a run rather than as an unassignable question at plan time — and a mid-run refusal
+    looks like a coverage problem where a plan-time one is a coverage *fact*.
+
+    Found by V3.6's playbooks: biotech's blocking ``pipeline_state`` needs
+    ``get_recent_filings``, which two roles declare and nothing implements.
+    """
+    try:
+        from app.services.agent_tools.builtin import register_builtins
+        from app.services.agent_tools.registry import ToolRegistry
+
+        return frozenset(register_builtins(ToolRegistry()).names())
+    except Exception:  # noqa: BLE001 - a planner must not fail on introspection
+        from app.services.agent_tools.contracts import TOOL_NAMES
+
+        return frozenset(TOOL_NAMES)
+
+
 def _baseline_questions() -> list[PlannedQuestion]:
     return [
         PlannedQuestion(
@@ -300,7 +327,19 @@ async def plan_research(
             wanted_roles.append(role_id)
 
     assignments: dict[str, PlannedTask] = {}
+    available = implemented_tools()
     for question in plan.questions:
+        missing = set(question.required_tools) - available
+        if missing:
+            # A role DECLARES this tool and nothing implements it. Refused at plan time,
+            # where it is a coverage fact, rather than mid-run where it is a mystery.
+            plan.unassignable.append(
+                (
+                    question.key,
+                    f"no implementation for {sorted(missing)}",
+                )
+            )
+            continue
         candidates = [
             role
             for role in roles_that_can_answer(question.required_tools)
