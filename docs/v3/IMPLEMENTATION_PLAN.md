@@ -17,7 +17,7 @@
 | **V3.5** | Research Ledger and Director | `IMPLEMENTED` — all three slices merged. |
 | **V3.6** | Industry playbooks | `IMPLEMENTED` — 6.1/6.2 merged. |
 | **V3.7** | Council V2 and Red Team | `IMPLEMENTED` — 7.1/7.2 merged. |
-| **V3.8** | Research Memory and Delta | `NOT STARTED` |
+| **V3.8** | Research Memory and Delta | `IN PROGRESS` — 8.1 merged. |
 | **V3.9** | Monitoring | `NOT STARTED` |
 
 Phase labels: `NOT STARTED` → `IN PROGRESS` → `IMPLEMENTED` → `VALIDATED` → `APPROVED`.
@@ -135,7 +135,7 @@ bytes are retained.
 | 6.2 | [`feature/v3-6-2-industry-playbooks`](slices/V3.6-2-industry-playbooks.md) | The five playbooks, and the demonstration that they are materially different. Exposed and fixed a Director defect: a role may declare a tool nothing implements. `IMPLEMENTED`, no migration. |
 | 7.1 | [`feature/v3-7-1-council-v2-inputs`](slices/V3.7-1-council-v2-inputs.md) | The Council reasons over the ledger, cites `finding_id`s that resolve, and **can be refused**. The safety vocabulary is unchanged and a test says so. `IMPLEMENTED`, no migration. |
 | 7.2 | [`feature/v3-7-2-red-team-challenge-round`](slices/V3.7-2-red-team-challenge-round.md) | A challenge targets a `finding_id`; a response must carry evidence; **exactly one round, enforced by the database**; unresolved reaches the Chair intact. `IMPLEMENTED` (036). |
-| 8.1 | `feature/v3-8-1-research-memory` | Prior research state, retrievable by entity. |
+| 8.1 | [`feature/v3-8-1-research-memory`](slices/V3.8-1-research-memory.md) | Prior research, **labelled as memory** and read from the ledger rather than copied into a snapshot table. Open closable gaps carry forward as the next run's questions. `IMPLEMENTED`, no migration. |
 | 8.2 | `feature/v3-8-2-research-delta` | What changed; which prior conclusions to revisit. |
 | 9.1 | `feature/v3-9-1-monitoring` | Watchlists, new filings, event triggers, scheduled refresh, change alerts. |
 
@@ -281,6 +281,7 @@ approval.
 | 2026-09-06 | V3.6 Slice 6.2 — five industry playbooks | `feature/v3-6-2-industry-playbooks` | `2408ca6` |
 | 2026-09-06 | V3.7 Slice 7.1 — Council V2 inputs | `feature/v3-7-1-council-v2-inputs` | `ce8c856` |
 | 2026-09-06 | V3.7 Slice 7.2 — Red Team challenge round | `feature/v3-7-2-red-team-challenge-round` | `80010ae` |
+| 2026-09-06 | V3.8 Slice 8.1 — research memory | `feature/v3-8-1-research-memory` | _pending_ |
 | 2026-09-06 | V3.4 Slice 4.10 — bounded issuer-site traversal | `feature/v3-4-10-issuer-site-traversal` | `ac970fb` |
 | 2026-09-06 | V3.4 Slice 4.8 — transcripts and IR events | `feature/v3-4-8-transcript-provider` | `e481da6` |
 | 2026-09-06 | V3.4 Slice 4.7 — macro observation store | `feature/v3-4-7-macro-observation-store` | `5b5045e` |
