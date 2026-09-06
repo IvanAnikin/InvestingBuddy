@@ -970,6 +970,13 @@ class Settings(BaseSettings):
     # never the deepest one.
     v3_research_mode_default: str = "standard"
 
+    # ── V3.4 Slice 4.7: macro observation sources ───────────────────────────
+    # OFF by default. With it off no macro source makes a network call and a
+    # fetch returns `not_configured` — an honest state, never an empty series.
+    # The first live source is the World Bank Indicators API: free, public, no
+    # credential, CC BY 4.0. No subscription is required or implied.
+    v3_macro_sources_enabled: bool = False
+
     v3_run_max_model_calls: int = 0
     v3_run_max_model_tokens: int = 0
     v3_run_max_web_searches: int = 0
