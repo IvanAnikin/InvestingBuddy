@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import re
 import json
 import os
 import sys
@@ -74,6 +75,20 @@ async def main() -> int:
         help="Permit the guarded fetcher and live macro sources. Off by default.",
     )
     parser.add_argument("--runs", type=int, default=1, help="Run N times, for a delta.")
+    parser.add_argument(
+        "--seed-corpus-url",
+        default=None,
+        help=(
+            "Ingest ONE real issuer document into the scratch corpus before running, "
+            "through the repository's own guarded fetcher. Requires --allow-network."
+        ),
+    )
+    parser.add_argument(
+        "--seed-corpus-domain",
+        action="append",
+        default=[],
+        help="Host the fetcher may talk to. Repeatable. Required with a corpus URL.",
+    )
     parser.add_argument(
         "--seed-sec",
         action="store_true",
@@ -142,6 +157,14 @@ async def main() -> int:
         await session.flush()
         backend = get_search_backend(cfg, session=session)
 
+        if args.seed_corpus_url:
+            if not args.allow_network:
+                print("\n--seed-corpus-url needs --allow-network. Nothing was fetched.")
+            else:
+                chunks = await _seed_corpus(session, company, cfg, args)
+                print(f"\nseeded {chunks} corpus chunk(s) from a REAL issuer document")
+                await session.commit()
+
         if args.seed_sec:
             if not args.allow_network:
                 print("\n--seed-sec needs --allow-network. Nothing was fetched.")
@@ -178,6 +201,111 @@ async def main() -> int:
         return 1
     print("  all invariant checks passed")
     return 0
+
+
+async def _seed_corpus(session, company, cfg, args) -> int:  # noqa: ANN001
+    """Ingest one real issuer document into the scratch corpus.
+
+    The same path the corpus acceptance script uses and the same path a live run would:
+    the repository's own guarded, allowlisted, DNS-pinned fetcher, then the real
+    extractor, then document / version / derivation / chunk persistence, then the index.
+
+    This is what makes `search_company_corpus` return REAL evidence ids — and therefore
+    what makes the model's findings citable, the Council convenable and the Red Team and
+    Chair reachable on real data.
+    """
+    from app.services.corpus.documents import (
+        DocumentVersionInput,
+        upsert_document_version,
+    )
+    from app.services.corpus.indexing import index_version, persist_chunks
+    from app.services.corpus.parsed import (
+        DerivationResult,
+        build_parsed_document,
+        persist_parsed_document,
+    )
+    from app.services.corpus.search.factory import get_search_backend
+    from app.services.sources.document_fetcher import safe_fetch_document
+    from app.services.sources.primary_document_extractor import (
+        extract_primary_document,
+    )
+    from app.services.sources.taxonomy import T1_PRIMARY_FILING
+
+    domains = tuple(args.seed_corpus_domain) or (
+        args.seed_corpus_url.split("/")[2],
+    )
+    print(f"  fetching {args.seed_corpus_url[:90]}")
+    fetched = await safe_fetch_document(
+        args.seed_corpus_url, allowed_domains=domains, cfg=cfg, resolve_ip=True
+    )
+    if not fetched.ok or not fetched.content:
+        print(f"  fetch failed: blocked={fetched.blocked} error={fetched.error}")
+        return 0
+    raw = fetched.content
+    print(f"  fetched {len(raw):,} bytes  type={fetched.document_type}")
+
+    extraction = extract_primary_document(
+        raw, document_type=fetched.document_type or "pdf", cfg=cfg, capture_blocks=True
+    )
+    print(
+        f"  extracted status={extraction.status} pages={extraction.page_count} "
+        f"blocks={len(extraction.blocks)} tables={len(extraction.tables)}"
+    )
+    if not extraction.blocks and not extraction.tables:
+        print("  nothing extractable; the corpus was not seeded")
+        return 0
+
+    # No artifact store here: retaining raw bytes is the corpus acceptance script's
+    # concern and this run is about the RESEARCH path. The lineage still resolves —
+    # `research_artifact_id` NULL is the documented shape of "lineage kept, bytes not
+    # retained", not a missing field.
+    version = await upsert_document_version(
+        session,
+        DocumentVersionInput(
+            content_hash=extraction.content_hash,
+            canonical_url=fetched.final_url or args.seed_corpus_url,
+            transport="company_ir",
+            source_tier=T1_PRIMARY_FILING,
+            company_id=company.id,
+            document_type="annual_report",
+            title=f"{company.name} annual report",
+            media_type=fetched.content_type,
+            byte_size=len(raw),
+            language=extraction.language,
+            extraction_status=extraction.status,
+        ),
+        cfg=cfg,
+    )
+    if version is None:
+        print("  the corpus is disabled; nothing was persisted")
+        return 0
+    parsed = build_parsed_document(extraction)
+    derivation = await persist_parsed_document(
+        session,
+        version_id=version.id,
+        parsed=parsed,
+        cfg=cfg,
+        result=DerivationResult(),
+    )
+    if derivation is None or parsed is None:
+        print("  nothing was parsed; the corpus was not seeded")
+        return 0
+    chunk_rows = await persist_chunks(
+        session, version=version, derivation=derivation, parsed=parsed, cfg=cfg
+    )
+    await session.flush()
+    backend = get_search_backend(cfg, session=session)
+    indexed = await index_version(
+        session,
+        research_document_version_id=version.id,
+        backend=backend,
+        cfg=cfg,
+    )
+    print(
+        f"  persisted  pages={derivation.pages_persisted} chunks={len(chunk_rows)} "
+        f"indexed={indexed.indexed}"
+    )
+    return len(chunk_rows)
 
 
 async def _seed_sec_facts(session, company, cfg) -> int:  # noqa: ANN001
@@ -255,8 +383,22 @@ async def _seed_sec_facts(session, company, cfg) -> int:  # noqa: ANN001
         label = str(point.get("field_name") or "").split(".", 1)[-1]
         if not label:
             continue
-        as_of = str(point.get("as_of") or "")
-        period = as_of[:4] if len(as_of) >= 4 and as_of[:4].isdigit() else ""
+        # `as_of` is the PERIOD END for a directly-reported concept and the FILING DATE
+        # for a derived one — the live MRNA response carries `as_of 2026-02-20` on
+        # FY2025 derivations. Taking the year from it blindly stamped those facts
+        # "2026", the model faithfully reported them as FY2026 "projected" figures, and
+        # the whole run carried a period error nothing could catch. The provider states
+        # the real period in its own note ("annual data, FY2025 FY"), so that is read
+        # first and `as_of` is only the fallback.
+        note = str(point.get("note") or "")
+        period = ""
+        match = re.search(r"\bFY(\d{4})\b", note)
+        if match:
+            period = match.group(1)
+        else:
+            as_of = str(point.get("as_of") or "")
+            if len(as_of) >= 4 and as_of[:4].isdigit():
+                period = as_of[:4]
         periods[period or "unstated"] = periods.get(period or "unstated", 0) + 1
         unit = point.get("unit")
         session.add(
