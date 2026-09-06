@@ -278,7 +278,7 @@ approval.
 | 2026-09-06 | V3.5 Slice 5.2 — research director | `feature/v3-5-2-research-director` | `ad2cd2b` |
 | 2026-09-06 | V3.5 Slice 5.3 — bounded investigation loop | `feature/v3-5-3-bounded-investigation-loop` | `6b50bb7` |
 | 2026-09-06 | V3.6 Slice 6.1 — playbook schema | `feature/v3-6-1-playbook-schema` | `e070a70` |
-| 2026-09-06 | V3.6 Slice 6.2 — five industry playbooks | `feature/v3-6-2-industry-playbooks` | _pending_ |
+| 2026-09-06 | V3.6 Slice 6.2 — five industry playbooks | `feature/v3-6-2-industry-playbooks` | `2408ca6` |
 | 2026-09-06 | V3.4 Slice 4.10 — bounded issuer-site traversal | `feature/v3-4-10-issuer-site-traversal` | `ac970fb` |
 | 2026-09-06 | V3.4 Slice 4.8 — transcripts and IR events | `feature/v3-4-8-transcript-provider` | `e481da6` |
 | 2026-09-06 | V3.4 Slice 4.7 — macro observation store | `feature/v3-4-7-macro-observation-store` | `5b5045e` |
