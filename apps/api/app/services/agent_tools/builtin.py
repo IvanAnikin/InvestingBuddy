@@ -147,11 +147,13 @@ def register_builtins(registry: "ToolRegistry") -> "ToolRegistry":
     from app.services.agent_tools.calculations import register_calculation_tools
     from app.services.agent_tools.corpus_search import register_corpus_tools
     from app.services.agent_tools.facts import register_fact_tools
+    from app.services.agent_tools.macro import register_macro_tools
 
     registry.register(LOOKUP_ENTITY_SPEC)
     register_fact_tools(registry)
     register_calculation_tools(registry)
     register_corpus_tools(registry)
+    register_macro_tools(registry)
     return registry
 
 

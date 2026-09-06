@@ -15,6 +15,7 @@ from app.models.legal_entity import (
     Security,
     SecurityListing,
 )
+from app.models.macro import MacroDataset, MacroObservation, MacroSeries
 from app.models.report import Report
 from app.models.research_artifact import ResearchArtifact
 from app.models.research_chunk import ResearchDocumentChunk
@@ -49,6 +50,9 @@ __all__ = [
     "FieldReviewCandidateSummary",
     "FieldReviewRun",
     "LegalEntity",
+    "MacroDataset",
+    "MacroObservation",
+    "MacroSeries",
     "Report",
     "ReportingScope",
     "ResearchArtifact",
