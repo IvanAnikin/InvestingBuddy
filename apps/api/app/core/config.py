@@ -963,6 +963,13 @@ class Settings(BaseSettings):
     # USER-owned, and inventing a ceiling here would be answering a question that
     # was asked of somebody else — with the failure mode that a guessed ceiling
     # silently truncates a legitimate research run.
+    # ── V3.4 Slice 4.11: research-depth presets (ADR-052) ───────────────────
+    # "quick" | "standard" | "deep" | "max". Depth presets, NOT price tiers: no
+    # subscription price is attached to any of them, and MAX takes the highest
+    # bounded limits and is still FINITE. An unrecognised name runs STANDARD —
+    # never the deepest one.
+    v3_research_mode_default: str = "standard"
+
     v3_run_max_model_calls: int = 0
     v3_run_max_model_tokens: int = 0
     v3_run_max_web_searches: int = 0
@@ -970,6 +977,11 @@ class Settings(BaseSettings):
     v3_run_max_browser_minutes: float = 0.0
     v3_run_max_wall_seconds: float = 0.0
     v3_run_max_external_cost_usd: float = 0.0
+    # ^ These are the OPERATOR'S hard caps, not the run's budget. 0 means "no
+    # opinion"; a non-zero value NARROWS whatever the research mode proposes and
+    # can never widen it. `max_external_cost_usd` is the one ceiling no mode sets,
+    # because money is derived from a price book nobody has filled in and a limit
+    # in a unit the platform cannot measure would stop nothing (ADR-052).
 
     # Unit prices, in USD. Cost is DERIVED from vendor-neutral units so a price
     # change is a config change and historical runs stay comparable. All 0 by

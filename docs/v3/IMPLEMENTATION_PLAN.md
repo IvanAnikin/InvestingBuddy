@@ -122,6 +122,7 @@ bytes are retained.
 | 4.8 | `feature/v3-4-8-transcript-provider` | Canonical transcript/IR-event model + **free public issuer** acquisition. | `NOT STARTED` — unblocked by [ADR-051](../DECISIONS.md) |
 | 4.9 | [`feature/v3-4-9-pgvector-search-backend`](slices/V3.4-9-postgres-search-backend.md) | The production `SearchBackend`: PostgreSQL full-text (GIN over `to_tsvector`), every filter inside the statement, de-indexing as an UPDATE. `pgvector` is **not installable here** — [ADR-053](../DECISIONS.md) amends 047: the semantic leg ships portable and OFF. | `IMPLEMENTED` |
 | 4.10 | `feature/v3-4-10-issuer-site-traversal` | Bounded same-domain issuer IR traversal on the existing safe fetcher. No paid crawler. | `NOT STARTED` |
+| 4.11 | [`feature/v3-4-11-research-mode-budgets`](slices/V3.4-11-research-mode-budgets.md) | **Corrective.** [ADR-052](../DECISIONS.md) was accepted and never implemented: every ceiling still defaulted to unbounded while the campaign record said they were real numbers. QUICK/STANDARD/DEEP/MAX now carry finite limits; configuration narrows and never widens; the monetary ceiling stays unset. | `IMPLEMENTED` |
 
 ### V3.5-V3.9
 
@@ -186,6 +187,7 @@ V3_CORPUS_ENABLED               V3_RESEARCH_DIRECTOR_ENABLED
 V3_SEARCH_BACKEND               V3_COUNCIL_V2_ENABLED
 V3_ENTITY_MASTER_ENABLED        V3_RESEARCH_MEMORY_ENABLED
 V3_CORPUS_SEMANTIC_SEARCH_ENABLED
+V3_RESEARCH_MODE_DEFAULT
 ```
 
 All default **off**. Each flag's deprecation plan is recorded when it is created:
@@ -269,6 +271,7 @@ approval.
 | 2026-09-05 | V3.4 Slice 4.3 — DeepSeek providers | `feature/v3-4-3-deepseek-providers` | `07c7032` |
 | 2026-09-05 | V3.4 Slice 4.4 — research lead promotion | `feature/v3-4-4-research-lead-promotion` | `5cd3910` |
 | 2026-09-06 | V3.4 Slice 4.9 — PostgreSQL search backend | `feature/v3-4-9-pgvector-search-backend` | `08cb013` |
+| 2026-09-06 | V3.4 Slice 4.11 — research-mode budgets (corrective) | `feature/v3-4-11-research-mode-budgets` | _pending_ |
 
 ---
 
