@@ -35,15 +35,35 @@ from app.services.agents.routing import (
 SLOTS = (SLOT_INVESTIGATOR, SLOT_FOLLOW_UP, SLOT_RED_TEAM, SLOT_CHAIR)
 
 
+def _no_deepseek() -> Settings:
+    """Settings with DeepSeek explicitly absent.
+
+    A bare ``Settings()`` reads the developer's ``.env``, so tests written against it
+    assert a property of the MACHINE, not of the code. These originally passed only
+    because no key existed anywhere; the moment a real one was configured, five of them
+    failed. Every DeepSeek-absence test now states the absence explicitly.
+    """
+    return Settings(
+        deepseek_api_key="",
+        v3_deepseek_model_enabled=False,
+        v3_deepseek_search_enabled=False,
+    )
+
+
 class TestItIsOffByDefault:
-    def test_no_key_is_configured(self) -> None:
-        assert Settings().deepseek_api_key == ""
+    """Defaults are read from the field definitions, never from the ambient env."""
 
-    def test_the_search_feature_is_off(self) -> None:
-        assert Settings().v3_deepseek_search_enabled is False
+    def test_no_key_ships_in_the_defaults(self) -> None:
+        assert Settings.model_fields["deepseek_api_key"].default == ""
 
-    def test_a_default_settings_object_names_no_deepseek_slot(self) -> None:
-        routing = resolve_routing(Settings())
+    def test_the_search_feature_defaults_off(self) -> None:
+        assert Settings.model_fields["v3_deepseek_search_enabled"].default is False
+
+    def test_the_model_leg_defaults_off(self) -> None:
+        assert Settings.model_fields["v3_deepseek_model_enabled"].default is False
+
+    def test_an_absent_deepseek_names_no_deepseek_slot(self) -> None:
+        routing = resolve_routing(_no_deepseek())
         assert all(slot.vendor != "deepseek" for slot in routing.slots.values())
 
 
@@ -53,22 +73,41 @@ class TestEverySlotStillResolves:
 
     @pytest.mark.parametrize("slot_name", SLOTS)
     def test_the_slot_has_a_vendor(self, slot_name) -> None:
-        routing = resolve_routing(Settings())
-        assert routing.slots[slot_name].vendor
+        assert resolve_routing(_no_deepseek()).slots[slot_name].vendor
 
     @pytest.mark.parametrize("slot_name", SLOTS)
     def test_the_slot_falls_back_to_what_is_configured(self, slot_name) -> None:
-        assert resolve_routing(Settings()).slots[slot_name].vendor == "azure_openai"
+        assert resolve_routing(_no_deepseek()).slots[slot_name].vendor == "azure_openai"
 
-    def test_enabling_the_flag_without_a_key_does_not_select_it(self) -> None:
-        """A flag is not a credential. Turning the feature on with no key must not route
-        work to a provider that cannot answer."""
-        routing = resolve_routing(Settings(v3_deepseek_search_enabled=True))
+    def test_a_flag_is_not_a_credential(self) -> None:
+        """Enabling the feature with no key must not route work to a provider that
+        cannot answer."""
+        enabled_but_keyless = Settings(deepseek_api_key="", v3_deepseek_model_enabled=True)
+        routing = resolve_routing(enabled_but_keyless)
+        assert all(slot.vendor != "deepseek" for slot in routing.slots.values())
+        assert all(routing.slots[s].vendor for s in SLOTS)
+
+    def test_a_credential_is_not_consent(self) -> None:
+        """The converse, and the defect a real key exposed: a key appearing in the
+        environment silently moved Investigator and follow-up research off Azure
+        OpenAI — the vendor every V3.11 acceptance measurement was taken on."""
+        credentialed_but_off = Settings(
+            deepseek_api_key="sk-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            v3_deepseek_model_enabled=False,
+        )
+        routing = resolve_routing(credentialed_but_off)
         assert all(slot.vendor != "deepseek" for slot in routing.slots.values())
 
-    def test_enabling_the_flag_without_a_key_still_resolves_every_slot(self) -> None:
-        routing = resolve_routing(Settings(v3_deepseek_search_enabled=True))
-        assert all(routing.slots[s].vendor for s in SLOTS)
+    def test_both_together_do_route_to_it(self) -> None:
+        """The flag must actually work, or it is a permanent off switch pretending to
+        be a choice."""
+        both = Settings(
+            deepseek_api_key="sk-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            v3_deepseek_model_enabled=True,
+        )
+        routing = resolve_routing(both)
+        assert routing.slots[SLOT_INVESTIGATOR].vendor == "deepseek"
+        assert routing.slots[SLOT_CHAIR].vendor == "azure_openai"
 
 
 class TestTheSharedVendorIsReported:
@@ -76,7 +115,7 @@ class TestTheSharedVendorIsReported:
         """A Red Team run by the same vendor as the Chair is a weaker check than one run
         by a different vendor. With DeepSeek absent that is the configuration, and a
         reader must be able to see which they got rather than infer it."""
-        assert resolve_routing(Settings()).shares_vendor_with_chair is True
+        assert resolve_routing(_no_deepseek()).shares_vendor_with_chair is True
 
 
 class TestNothingRequiresIt:
@@ -107,3 +146,50 @@ class TestNothingRequiresIt:
         source = Path("tests/test_v3_deepseek_live_contract.py").read_text()
         assert "skip" in source.lower()
         assert "DEEPSEEK_API_KEY" in source
+
+
+class TestNoTestMayPrintTheKey:
+    """Two real leaks happened during V3.11.1.1, both through pytest output.
+
+    The first was the transport's dataclass ``repr``. The second was a test asserting
+    ``settings.deepseek_api_key == ""``, which makes pytest print the live value into
+    the failure diff. Both are the same mistake: letting a credential reach a comparison
+    or a formatter that a failure will render.
+    """
+
+    def test_no_test_asserts_on_the_key_value(self) -> None:
+        """Assert on the FIELD DEFAULT, never on a constructed object's key.
+
+        Checked by AST, not by text search: a grep matches this very docstring, which is
+        exactly how the V3.9 "no scheduler" test once failed on the word "cron" inside
+        its own prose.
+        """
+        from pathlib import Path
+
+        hits: list[str] = []
+        for path in Path("tests").glob("test_v3_deepseek*.py"):
+            for node in ast.walk(ast.parse(path.read_text())):
+                if not isinstance(node, ast.Compare):
+                    continue
+                for operand in [node.left, *node.comparators]:
+                    # `Settings.model_fields[...].default` is the safe form: its value is
+                    # a Subscript, never a bare attribute on a constructed object.
+                    if (
+                        isinstance(operand, ast.Attribute)
+                        and operand.attr == "deepseek_api_key"
+                        and not isinstance(operand.value, ast.Subscript)
+                    ):
+                        hits.append(f"{path}:{operand.lineno}")
+        assert not hits, "these compare a live key value, so a failure prints it: " + ", ".join(
+            hits
+        )
+
+    def test_the_transport_field_is_marked_non_repr(self) -> None:
+        """Structural, not behavioural: the guarantee must survive someone adding a
+        field or switching the decorator."""
+        import dataclasses
+
+        from app.integrations.deepseek.transport import HttpDeepSeekTransport
+
+        field = next(f for f in dataclasses.fields(HttpDeepSeekTransport) if f.name == "api_key")
+        assert field.repr is False

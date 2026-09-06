@@ -48,6 +48,15 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 #: call site.
 DEFAULT_BASE_URL = "https://api.deepseek.com"
 
+#: The models `GET /models` actually served on 2026-09-06. `deepseek-chat` — the name
+#: this adapter shipped with, taken from documentation — is NOT among them. It is
+#: accepted and silently served as `deepseek-v4-flash`, so the response's `model` field
+#: differs from the request's. Recorded because cost attribution and reproducibility both
+#: depend on knowing which model actually ran.
+SERVED_MODELS: frozenset[str] = frozenset(
+    {"deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"}
+)
+
 #: The tool name used for server-side web search. Configurable precisely because the
 #: exact contract is unverified — see the module docstring.
 DEFAULT_SEARCH_TOOL_NAME = "web_search"
@@ -114,8 +123,7 @@ class DeepSeekTransport(Protocol):
         max_tokens: int,
         temperature: float,
         timeout: int,
-    ) -> DeepSeekResponse:
-        ...  # pragma: no cover - protocol
+    ) -> DeepSeekResponse: ...  # pragma: no cover - protocol
 
     async def search(
         self,
@@ -124,8 +132,7 @@ class DeepSeekTransport(Protocol):
         top_k: int,
         domains: Sequence[str] | None,
         timeout: int,
-    ) -> DeepSeekResponse:
-        ...  # pragma: no cover - protocol
+    ) -> DeepSeekResponse: ...  # pragma: no cover - protocol
 
 
 @dataclass
@@ -189,6 +196,19 @@ class FakeDeepSeekTransport:
         )
 
 
+#: The API requires the word "json" to appear in the prompt whenever
+#: ``response_format: json_object`` is set. Verified live 2026-09-06.
+_JSON_LITERAL = "json"
+
+
+def _json_hinted(system: str) -> str:
+    """``system`` guaranteed to contain the literal the API demands."""
+    if _JSON_LITERAL in (system or "").lower():
+        return system
+    suffix = "Respond with a single valid json object."
+    return f"{system}\n{suffix}" if system else suffix
+
+
 @dataclass
 class HttpDeepSeekTransport:
     """The real transport. **Never constructed by the unit suite.**
@@ -198,8 +218,13 @@ class HttpDeepSeekTransport:
     that is unverified against the live API is a handful of lines rather than a layer.
     """
 
-    api_key: str
-    model: str
+    #: ``repr=False`` is load-bearing. A dataclass repr prints every field, and this
+    #: object appears in pytest failure output, exception chains and any log line that
+    #: formats it — so the default repr published the live API key the first time the
+    #: contract test failed. Redaction belongs on the type, not on each call site that
+    #: might format it.
+    api_key: str = field(repr=False)
+    model: str = ""
     base_url: str = DEFAULT_BASE_URL
     search_tool_name: str = DEFAULT_SEARCH_TOOL_NAME
     #: Injected so the SDK import stays lazy and a test can supply a stub without a
@@ -209,6 +234,10 @@ class HttpDeepSeekTransport:
     def _client(self, timeout: int) -> Any:  # pragma: no cover - needs a real key
         if self.client_factory is not None:
             return self.client_factory(timeout=timeout)
+        if not self.api_key:
+            # Otherwise httpx raises LocalProtocolError on the illegal header
+            # `Bearer ` — a confusing client-side failure for a plain misconfiguration.
+            raise DeepSeekUnavailableError("No DeepSeek API key is configured.", transient=False)
         try:
             import httpx  # noqa: PLC0415
         except ImportError as exc:  # pragma: no cover
@@ -281,22 +310,32 @@ class HttpDeepSeekTransport:
         max_tokens: int,
         temperature: float,
         timeout: int,
+        json_mode: bool = False,
     ) -> DeepSeekResponse:  # pragma: no cover - needs a real key
-        return self._reduce(
-            await self._post(
-                {
-                    "model": self.model,
-                    "messages": [
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": user},
-                    ],
-                    "max_tokens": max_tokens,
-                    "temperature": temperature,
-                    "response_format": {"type": "json_object"},
-                },
-                timeout,
-            )
-        )
+        """One chat completion.
+
+        ``json_mode`` is OPT-IN. This adapter previously sent
+        ``response_format: json_object`` on **every** call, which the live API rejects:
+
+            HTTP 400 — "Prompt must contain the word 'json' in some form to use
+            'response_format' of type 'json_object'."
+
+        So every ordinary completion failed. When JSON is genuinely wanted the literal
+        the API demands is guaranteed here rather than left to each caller's prompt
+        wording, because a caller who omits it gets a 400 instead of prose.
+        """
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": _json_hinted(system) if json_mode else system},
+                {"role": "user", "content": user},
+            ],
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+        if json_mode:
+            payload["response_format"] = {"type": "json_object"}
+        return self._reduce(await self._post(payload, timeout))
 
     async def search(
         self,
@@ -305,39 +344,35 @@ class HttpDeepSeekTransport:
         top_k: int,
         domains: Sequence[str] | None,
         timeout: int,
-    ) -> DeepSeekResponse:  # pragma: no cover - needs a real key
-        # THE UNVERIFIED PART. A tool declaration on a chat-completions call is the
-        # OpenAI-compatible convention; whether DeepSeek's server-side search is
-        # requested exactly this way is not confirmed in this campaign, which is why the
-        # tool name is configurable and the parser tolerates an unknown shape.
-        arguments: dict[str, Any] = {"query": query, "top_k": top_k}
-        if domains:
-            arguments["domains"] = list(domains)
-        return self._reduce(
-            await self._post(
-                {
-                    "model": self.model,
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": (
-                                "Find authoritative primary sources for: " + query
-                            ),
-                        }
-                    ],
-                    "tools": [
-                        {
-                            "type": "function",
-                            "function": {
-                                "name": self.search_tool_name,
-                                "parameters": arguments,
-                            },
-                        }
-                    ],
-                    "tool_choice": "auto",
-                },
-                timeout,
-            )
+    ) -> DeepSeekResponse:
+        """**DeepSeek has no server-side web search.** Verified live, 2026-09-06.
+
+        This adapter shipped assuming it did — that was the premise for designating
+        DeepSeek the primary external research runtime. The live API disproves it:
+
+        * ``tools[0].type`` accepts **only** ``"function"``. Every builtin spelling —
+          ``web_search``, ``web_search_preview``, ``search``, ``browser``,
+          ``retrieval`` — is rejected with *"unknown variant"*.
+        * A ``function`` tool named ``web_search`` merely makes the model **ask the
+          caller** to run a search and hand back results. It cannot retrieve anything
+          itself.
+        * Asked directly, the model reports no live browsing and a **June 2024**
+          knowledge cutoff.
+
+        So a "search" here could only return the model's *recollection* dressed as
+        retrieval, with URLs it composed from memory. That is precisely the failure the
+        ``ResearchLead`` promotion path exists to catch — and generating such leads on
+        purpose, at cost, to have them rejected downstream is worse than not searching.
+
+        Refusing is the honest implementation. The caller gets a clear, permanent error
+        instead of plausible fabrications; the general-web leg belongs to the safe
+        fetcher and bounded issuer traversal, which retrieve documents that exist.
+        """
+        raise DeepSeekUnavailableError(
+            "DeepSeek exposes no server-side web search: 'function' is the only "
+            "accepted tool type and the model has no live browsing. Use the safe "
+            "fetcher or issuer traversal for general-web retrieval.",
+            transient=False,
         )
 
 

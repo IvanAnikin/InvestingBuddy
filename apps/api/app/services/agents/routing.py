@@ -95,9 +95,18 @@ def _azure_client(cfg: "Settings") -> Any:
 
 
 def _deepseek_client(cfg: "Settings") -> Any:
+    """A DeepSeek model client, or ``None`` unless it is BOTH enabled and credentialed.
+
+    The flag is checked first and deliberately: a credential appearing in the
+    environment is not a decision to route research through that vendor. V3.11's whole
+    acceptance — three Councils, the cost measurement — was taken on Azure OpenAI, and a
+    key dropped into ``.env`` silently moved the Investigator off it.
+    """
     from app.integrations.deepseek.providers import DeepSeekModelProvider
     from app.integrations.deepseek.transport import transport_from_settings
 
+    if not getattr(cfg, "v3_deepseek_model_enabled", False):
+        return None
     transport = transport_from_settings(cfg)
     if transport is None:
         return None
