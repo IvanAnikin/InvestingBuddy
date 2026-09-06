@@ -773,7 +773,10 @@ async def process_company_research_by_id(
             # failure cannot cost a report — and with the flag off nothing here
             # runs at all.
             v3_outcome = await _run_v3_pipeline(
-                session, company=company, report_id=report_id
+                session,
+                company=company,
+                report_id=report_id,
+                research_job_id=job_id,
             )
             if v3_outcome is not None:
                 warnings.extend(
@@ -855,7 +858,11 @@ async def process_company_research_by_id(
 
 
 async def _run_v3_pipeline(
-    session: AsyncSession, *, company: Company, report_id: Any
+    session: AsyncSession,
+    *,
+    company: Company,
+    report_id: Any,
+    research_job_id: uuid.UUID | None = None,
 ) -> Any:
     """Run the V3 pipeline and attach its state to the report. Never raises.
 
@@ -873,7 +880,9 @@ async def _run_v3_pipeline(
             run_v3_research,
         )
 
-        outcome = await run_v3_research(session, company, cfg=settings)
+        outcome = await run_v3_research(
+            session, company, cfg=settings, research_job_id=research_job_id
+        )
         report = await session.get(Report, report_id)
         if report is not None:
             attach_to_report(report, outcome)

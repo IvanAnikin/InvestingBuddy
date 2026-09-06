@@ -46,6 +46,7 @@ from app.services.agent_tools.contracts import (
     TOOL_GET_FINANCIAL_SERIES,
     TOOL_GET_IR_EVENTS,
     TOOL_GET_MACRO_SERIES,
+    TOOL_GET_RECENT_FILINGS,
     TOOL_GET_SEGMENT_FACTS,
     TOOL_GET_TRANSCRIPTS,
     TOOL_LOOKUP_ENTITY,
@@ -90,7 +91,12 @@ def _corpus_arguments(question: PlannedQuestion, company_id: uuid.UUID) -> dict[
 
 
 def _tool_arguments(
-    tool: str, question: PlannedQuestion, company_id: uuid.UUID
+    tool: str,
+    question: PlannedQuestion,
+    company_id: uuid.UUID,
+    *,
+    ticker: str | None = None,
+    exchange: str | None = None,
 ) -> dict[str, Any] | None:
     """Deterministic arguments per tool. **The model chooses no arguments.**
 
@@ -102,7 +108,12 @@ def _tool_arguments(
     if tool == TOOL_SEARCH_COMPANY_CORPUS:
         return _corpus_arguments(question, company_id)
     if tool == TOOL_LOOKUP_ENTITY:
-        return {"company_id": subject}
+        # It resolves an ISSUER, so it takes a ticker — not the company row's id, which
+        # is the answer rather than the question. The first real pipeline run refused
+        # every identity lookup for exactly this reason.
+        if not ticker:
+            return None
+        return {"ticker": ticker, "exchange": exchange}
     if tool == TOOL_GET_FINANCIAL_FACTS:
         # `scope` is required and has no default, deliberately (V3.3.2). Group is the
         # right ASK for a general question; a segment question names its own scope.
@@ -114,6 +125,11 @@ def _tool_arguments(
         return None  # needs a label; a question does not reliably name one
     if tool == TOOL_GET_CALCULATED_METRICS:
         return {"company_id": subject}
+    if tool == TOOL_GET_RECENT_FILINGS:
+        # A regulator is asked about an ISSUER, so this takes a ticker too.
+        if not ticker:
+            return None
+        return {"ticker": ticker, "exchange": exchange, "limit": 12}
     if tool == TOOL_GET_IR_EVENTS:
         return {"company_id": subject}
     if tool == TOOL_GET_TRANSCRIPTS:
@@ -210,6 +226,10 @@ class LLMInvestigator:
 
     session: Any
     company_id: uuid.UUID
+    #: The issuer's own identifiers, for the tools that resolve an issuer rather than
+    #: read a row. Absent means those tools are skipped rather than called wrongly.
+    ticker: str | None = None
+    exchange: str | None = None
     client: Any = None
     max_tokens: int = 1200
     timeout: int = 60
@@ -282,7 +302,13 @@ class LLMInvestigator:
         for tool in wanted[:MAX_CALLS_PER_QUESTION]:
             if used >= budget:
                 break
-            arguments = _tool_arguments(tool, question, self.company_id)
+            arguments = _tool_arguments(
+                tool,
+                question,
+                self.company_id,
+                ticker=self.ticker,
+                exchange=self.exchange,
+            )
             if arguments is None:
                 continue
             result = await self.session.call(

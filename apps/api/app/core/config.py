@@ -1002,6 +1002,11 @@ class Settings(BaseSettings):
     # produced, and it cannot: the pipeline never raises.
     v3_pipeline_enabled: bool = False
 
+    # The first agent tool that reaches OUTSIDE the platform (`get_recent_filings`).
+    # Gated separately from the tool surface itself, and OFF by default: with it off
+    # the tool returns an honest empty result naming this flag, never a silent zero.
+    v3_filings_tool_enabled: bool = False
+
     v3_run_max_model_calls: int = 0
     v3_run_max_model_tokens: int = 0
     v3_run_max_web_searches: int = 0
