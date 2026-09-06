@@ -157,6 +157,7 @@ async def run_v3_research(
     mode: str | None = None,
     search_backend: Any = None,
     routing: ModelRouting | None = None,
+    research_job_id: uuid.UUID | None = None,
     now: Any = None,
 ) -> V3ResearchOutcome:
     """Run the V3 pipeline for one company. **Never raises.**
@@ -172,8 +173,16 @@ async def run_v3_research(
     started = clock()
     outcome = V3ResearchOutcome()
     try:
-        await _run(session, company, cfg=cfg, outcome=outcome,
-                   mode=mode, search_backend=search_backend, routing=routing)
+        await _run(
+            session,
+            company,
+            cfg=cfg,
+            outcome=outcome,
+            mode=mode,
+            search_backend=search_backend,
+            routing=routing,
+            research_job_id=research_job_id,
+        )
     except Exception as exc:  # noqa: BLE001 - additive work must not fail the report
         outcome.error = type(exc).__name__
         outcome.degraded.append(f"the V3 pipeline raised {type(exc).__name__}")
@@ -190,6 +199,7 @@ async def _run(
     mode: str | None,
     search_backend: Any,
     routing: ModelRouting | None,
+    research_job_id: uuid.UUID | None = None,
 ) -> None:
     resolved_mode = parse_mode(mode or getattr(cfg, "v3_research_mode_default", None))
     limits = limits_for(resolved_mode)
@@ -263,7 +273,12 @@ async def _run(
                 policy=policy_for(role_id, tools=tools),
                 cfg=cfg,
                 db=session,
-                research_job_id=run.id,
+                # The DURABLE JOB id, or None. Deliberately not `run.id`: that is a
+                # `research_runs` id and this column's foreign key points at
+                # `research_jobs`. The first real pipeline run found exactly that —
+                # every tool call failed to persist and took the transaction with it,
+                # because the unit suite runs on sqlite with foreign keys off.
+                research_job_id=research_job_id,
                 company_id=company.id,
                 legal_entity_id=getattr(company, "legal_entity_id", None),
                 search_backend=search_backend,
@@ -271,6 +286,8 @@ async def _run(
             worker = LLMInvestigator(
                 session=tool_session,
                 company_id=company.id,
+                ticker=getattr(company, "ticker", None),
+                exchange=getattr(company, "exchange", None),
                 client=investigator_client,
             )
             result = await worker.investigate(

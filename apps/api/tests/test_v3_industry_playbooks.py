@@ -56,6 +56,21 @@ async def session():  # noqa: ANN201
     await engine.dispose()
 
 
+def _playbook_with(question):  # noqa: ANN001, ANN201
+    """A minimal playbook carrying one question, for testing a RULE rather than a
+    playbook's current contents."""
+    from app.services.playbooks.schema import AppliesTo, Playbook
+
+    return Playbook(
+        playbook_id="test_rule",
+        version=1,
+        display_name="Rule under test",
+        applies_to=AppliesTo(sectors=("Health Care",)),
+        questions=(question,),
+        risk_framework=("execution",),
+    )
+
+
 class _Adapter:
     """The `PlaybookLike` shape the Director consumes."""
 
@@ -253,17 +268,42 @@ class TestThroughTheDirector:
     ) -> None:
         """The second half of the acceptance criterion, end to end through the ledger.
 
-        Biotech's `pipeline_state` needs `get_recent_filings`, which is one of the tool
-        names V3.3 reserved and has no implementation — so no role declares it, no role
-        can be assigned, and the Council does not convene.
+        This asserted the RULE through an incidental symptom until V3.10: biotech's
+        `pipeline_state` needed `get_recent_filings`, which nothing implemented. The
+        first real MRNA acceptance run showed that made the whole biotech playbook
+        unrunnable, a corrective implemented the tool, and the symptom went away.
+
+        The rule did not. So the demonstration now uses a question that is *genuinely*
+        unanswerable — `search_web` is still one of V3.3's reserved names with no
+        implementation — which tests what the criterion is about rather than which tool
+        happened to be missing on the day.
         """
+        from app.services.playbooks.schema import PlaybookQuestion
+
+        unanswerable = _playbook_with(
+            PlaybookQuestion(
+                key="open_web_scan",
+                text="What is the open web saying about this issuer?",
+                required_tools=frozenset({"search_web"}),
+                blocking=True,
+            )
+        )
         run = await ledger.open_run(session, mode="standard")
-        plan = await plan_research(subject="MRNA", playbooks=[_Adapter(BIOTECH)])
-        assert any(key == "pipeline_state" for key, _ in plan.unassignable)
+        plan = await plan_research(subject="MRNA", playbooks=[_Adapter(unanswerable)])
+        assert any(key == "open_web_scan" for key, _ in plan.unassignable)
         await persist_plan(session, run, plan)
         await session.commit()
         summary = await ledger.summarise(session, run)
         assert summary.council_may_convene is False
+
+    async def test_biotechs_blocking_questions_are_assignable_after_the_corrective(
+        self, session
+    ) -> None:
+        """The regression guard for the corrective the first real run forced."""
+        plan = await plan_research(subject="MRNA", playbooks=[_Adapter(BIOTECH)])
+        unassignable = {key for key, _ in plan.unassignable}
+        assert "pipeline_state" not in unassignable
+        assert "regulatory_posture" not in unassignable
 
     async def test_an_answerable_blocking_question_does_not_stop_it(
         self, session
