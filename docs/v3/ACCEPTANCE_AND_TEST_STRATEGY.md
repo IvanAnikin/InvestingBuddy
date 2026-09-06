@@ -185,3 +185,64 @@ V3 reaches `VALIDATED` only when:
 
 Then a Release Candidate Report is prepared and **the user decides**. Nothing in
 this document authorises a merge to `main` or a deployment.
+
+---
+
+## 8. V3.11 acceptance harnesses — what actually runs against real issuers
+
+Three scripts, none in CI, each self-contained and each exiting non-zero on a real failure.
+They exist because **every issuer in the regression set has exposed a defect that only live
+data found**, and after V3.11 that record is unbroken across eleven phases.
+
+### `scripts/v3-issuer-acceptance.py`
+
+One issuer, its own scratch database migrated to head, seeded with **real public data**
+(SEC XBRL, and real issuer/regulator documents through the repository's own guarded,
+allowlisted, DNS-pinned fetcher), then `run_v3_research` — the same function the front door
+calls.
+
+```
+python scripts/v3-issuer-acceptance.py --ticker CFR --exchange SIX \
+  --sector "Consumer Discretionary" --industry "Luxury Goods" \
+  --database-url postgresql+psycopg://… --allow-network \
+  --seed-corpus-url https://…/annual-report.pdf --seed-corpus-domain richemont.com \
+  --price-in 0.40 --price-out 1.60 --price-source "list price, not an invoice" --runs 2
+```
+
+`--seed-corpus-url` is repeatable: a blocking question is often answered by a **different
+document** from the one carrying the financials, which is what ASML's `cycle_position`
+demonstrated.
+
+**Invariant checks (exit non-zero):** a chair label outside the five; a forbidden term in
+the synthesis; a finding with no evidence and no calculation; a segment-scoped finding
+whose statement says Group; a council finding with no citation; **a citation that resolves
+to no row**; a recorded pipeline error.
+
+### `scripts/v3-scope-acceptance.py`
+
+Rebuilds the parse from what the corpus already persisted and re-resolves every chunk, so
+scope changes can be measured without re-fetching a 9 MB document.
+
+Reports coverage, attribution method, why each unknown stayed unknown, and the metric that
+governs release safety: **the false-positive Group rate**. A run that raises coverage while
+promoting one segment figure to Group is a **regression**, and the script exits non-zero on
+exactly that.
+
+Expectation grammar: `segment:x` (exactly), `segment:x?` (**that scope or unknown, never
+anything else** — the standard the acceptance brief sets for evidence whose chunk may
+legitimately carry more than one scope), and `!group`.
+
+### `scripts/v3-corpus-acceptance.py`
+
+One real document end to end through the corpus, including re-retrieval from retained bytes
+and a determinism check on re-parse.
+
+## 9. The rule these harnesses encode
+
+> **The goal is never to minimise `unknown`.**
+
+A wrong Group label is far worse than an absent one. Every acceptance metric here is
+paired with the safety metric that constrains it, and a coverage improvement bought with
+wrong answers is reported as the regression it is — which is exactly what happened during
+V3.11.2, where an audit of every label sent coverage back from 22.5% to 8.1% and made the
+number trustworthy.

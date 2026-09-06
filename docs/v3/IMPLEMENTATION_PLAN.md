@@ -957,3 +957,26 @@ report](V3_RELEASE_CANDIDATE_REPORT.md#10-v310-product-acceptance): **`NOT READY
 four named blockers. The single most useful artefact it produced is
 `scripts/v3-issuer-acceptance.py`, because it turns "we believe this is correct" into "here
 is what broke" — six times so far.
+
+## 15. V3.11 — production hardening and final product acceptance
+
+Narrow by instruction: **clear the four blockers V3.10 named, using real-provider and
+real-issuer evidence, without adding unrelated architecture.**
+
+| Slice | What it delivers | State |
+|---|---|---|
+| 11.1 | DeepSeek removed as a release-critical dependency; live contract still unrun | `IMPLEMENTED` — live contract **`BLOCKED ON CREDENTIAL`** |
+| 11.2 | Layered, generic scope resolution learned from the document itself | `IMPLEMENTED` |
+| 11.3 | Real playbook completion for CFR, MRNA and ASML | `IMPLEMENTED` |
+| 11.4 | Real cost measurement from configured prices, with provenance | `IMPLEMENTED` |
+| 11.5 | Cross-phase acceptance | `IMPLEMENTED` — one corrective (`9b41bc0`) |
+
+Eight defects, every one invisible to the test suite before a real issuer ran: an allowlist
+entry that matched nothing, a planner dropping the field that made a tool call legal, a
+harvester discarding a working tool's whole output, an HTML parser returning zero text from
+a 2.7 MB SEC filing, a scope layer buying coverage with wrong labels, and citations nobody
+had checked resolved.
+
+Verdict: [§11 and §12 of the release candidate
+report](V3_RELEASE_CANDIDATE_REPORT.md#11-v311-production-hardening) — **`READY FOR USER
+ACCEPTANCE / MAIN PROMOTION REVIEW`**, with §11.6 naming what is still not proved.
