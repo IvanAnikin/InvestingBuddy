@@ -61,13 +61,19 @@ import hashlib
 import uuid
 from dataclasses import dataclass
 from datetime import date
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict
 
 from app.models.research_chunk import CHUNK_KIND_PROSE, CHUNK_KIND_TABLE
 from app.models.research_derivation import PROFILE_LIVE
+from app.services.corpus.scope_resolution import (
+    ScopeResolution,
+    SegmentVocabulary,
+    learn_segment_vocabulary,
+    resolve_scope,
+)
+from app.services.sources.fact_scope import scope_from_columns
 
 if TYPE_CHECKING:
-
     from app.core.config import Settings
     from app.services.corpus.parsed import ParsedDocument, ParsedSection, ParsedTable
 
@@ -101,6 +107,13 @@ class BuiltChunk:
     scope_type: str | None = None
     scope_name: str | None = None
     scope_key: str | None = None
+    #: How the scope above was decided, and why it is absent when it is. Not persisted
+    #: on the chunk row — it is diagnostic output for acceptance runs and review, and
+    #: keeping it off the row avoids a migration for a value derivable from the parse.
+    scope_method: str | None = None
+    scope_confidence: float | None = None
+    scope_evidence: str | None = None
+    scope_ambiguity: str | None = None
     #: Index into ``ParsedDocument.tables`` for a table chunk; ``None`` for prose.
     table_index: int | None = None
 
@@ -211,9 +224,14 @@ def build_chunks(
     chunks: list[BuiltChunk] = []
     ordinal = 0
 
+    # The document's OWN reporting segments, learned before any chunk is scoped, so a
+    # heading reading "Specialist Watchmakers" can be recognised as a segment of this
+    # issuer without any issuer-specific rule. See ``scope_resolution``.
+    vocabulary = _document_vocabulary(parsed, full)
+
     for section in parsed.sections:
-        for start, end in _split_section(
-            parsed, section, full, target=target, hard_max=hard_max, minimum=minimum
+        for span_index, (start, end) in enumerate(
+            _split_section(parsed, section, full, target=target, hard_max=hard_max, minimum=minimum)
         ):
             text = full[start:end].strip()
             if not text:
@@ -237,9 +255,17 @@ def build_chunks(
                     page_start=_page_at(parsed, start),
                     page_end=_page_at(parsed, max(start, end - 1)),
                     section_path=_clip(section.heading_path, _SECTION_PATH_MAX),
-                    scope_type=section.scope_type,
-                    scope_name=section.scope_name,
-                    scope_key=section.scope_key,
+                    **_scope_fields(
+                        resolve_scope(
+                            text=text,
+                            heading_scope=scope_from_columns(
+                                section.scope_type, section.scope_name, section.scope_key
+                            ),
+                            section_path=section.heading_path,
+                            heading_adjacent=span_index == 0,
+                            vocabulary=vocabulary,
+                        )
+                    ),
                 )
             )
             ordinal += 1
@@ -271,15 +297,64 @@ def build_chunks(
                 page_start=table.page_number,
                 page_end=table.page_number,
                 table_location=location,
-                scope_type=table.scope_type,
-                scope_name=table.scope_name,
-                scope_key=table.scope_key,
+                **_scope_fields(
+                    resolve_scope(
+                        text=text,
+                        explicit=scope_from_columns(
+                            table.scope_type, table.scope_name, table.scope_key
+                        ),
+                        table_caption=table.table_location,
+                        table_rows=table.rows,
+                        vocabulary=vocabulary,
+                    )
+                ),
                 table_index=table.table_index,
             )
         )
         ordinal += 1
 
     return chunks
+
+
+class _ScopeFields(TypedDict):
+    """Exactly the ``BuiltChunk`` fields a resolution fills, so ``**`` stays typed."""
+
+    scope_type: str | None
+    scope_name: str | None
+    scope_key: str | None
+    scope_method: str | None
+    scope_confidence: float | None
+    scope_evidence: str | None
+    scope_ambiguity: str | None
+
+
+def _scope_fields(resolution: "ScopeResolution") -> _ScopeFields:
+    """The chunk fields carrying a resolution and its provenance."""
+    return {
+        "scope_type": resolution.scope.scope_type,
+        "scope_name": resolution.scope.scope_name,
+        "scope_key": resolution.scope.scope_key,
+        "scope_method": resolution.method,
+        "scope_confidence": resolution.confidence,
+        "scope_evidence": resolution.evidence,
+        "scope_ambiguity": resolution.ambiguity,
+    }
+
+
+def _document_vocabulary(parsed: "ParsedDocument", full: str) -> SegmentVocabulary:
+    """Learn this document's reporting segments from the document itself.
+
+    Sections contribute their own text, so a "sales by business area" chart on a
+    highlights page is a source; tables contribute their row labels when their caption
+    says they are a segment disclosure. Nothing here knows any issuer's names.
+    """
+    section_texts: list[tuple[str | None, str]] = []
+    for section in parsed.sections:
+        body = full[section.char_start : section.char_end]
+        if body.strip():
+            section_texts.append((section.heading_path, body))
+    table_rows = [(t.table_location, t.rows) for t in parsed.tables]
+    return learn_segment_vocabulary(section_texts=section_texts, table_rows=table_rows)
 
 
 def _split_section(
