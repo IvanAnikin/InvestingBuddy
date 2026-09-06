@@ -155,6 +155,16 @@ _HTML_BOILERPLATE_MARKERS = (
 )
 _HTML_HEADING_TAGS = frozenset({"h1", "h2", "h3", "h4", "h5", "h6"})
 _HTML_BLOCK_TAGS = frozenset({"p", "li", "caption", "blockquote", "dd", "dt"})
+#: Generic container tags that modern filing agents use INSTEAD of ``<p>``. A current
+#: SEC Inline-XBRL 10-K is built almost entirely from styled ``<div>``s, so parsing only
+#: the tags above yields ZERO text blocks from a 2.7 MB filing while still finding its
+#: tables — which is exactly what V3.11 measured on Moderna's FY2025 10-K.
+#:
+#: Opt-in, because turning it on changes which excerpts the V2 path ranks and V2 is the
+#: deployed, approved product. The corpus path enables it; V2 is byte-identical without
+#: it. Nesting is safe: ``handle_starttag`` flushes the open block before starting a new
+#: one, so a container div emits nothing and only the LEAF div carries the text.
+_HTML_CONTAINER_BLOCK_TAGS = frozenset({"div", "section", "article"})
 
 
 # --------------------------------------------------------------------------- #
@@ -1838,8 +1848,14 @@ class _DocumentHtmlParser(HTMLParser):
     headings (as section context), paragraphs / list items, and tables.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, include_container_blocks: bool = False) -> None:
         super().__init__(convert_charrefs=True)
+        #: See ``_HTML_CONTAINER_BLOCK_TAGS``.
+        self._block_tags = (
+            _HTML_BLOCK_TAGS | _HTML_CONTAINER_BLOCK_TAGS
+            if include_container_blocks
+            else _HTML_BLOCK_TAGS
+        )
         self.title: str | None = None
         # (page=None, section, ancestor, text) — ``ancestor`` (Phase 32A
         # corrective, Problem C) is the heading immediately enclosing
@@ -1901,7 +1917,7 @@ class _DocumentHtmlParser(HTMLParser):
             return
         if tag == "title":
             self._in_title = True
-        elif tag in _HTML_HEADING_TAGS or tag in _HTML_BLOCK_TAGS:
+        elif tag in _HTML_HEADING_TAGS or tag in self._block_tags:
             self._flush_block()
             self._cur_block_tag = tag
             self._cur_block_is_heading = tag in _HTML_HEADING_TAGS
@@ -2074,7 +2090,7 @@ def extract_html(
         result.source_gaps.append("HTML could not be decoded; not extracted.")
         return result
 
-    parser = _DocumentHtmlParser()
+    parser = _DocumentHtmlParser(include_container_blocks=capture_blocks)
     try:
         parser.feed(html)
         parser.close()

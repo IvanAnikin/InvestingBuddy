@@ -492,6 +492,19 @@ class Settings(BaseSettings):
     # fails to parse and gets misclassified as "scanned, no text layer" rather
     # than "download was cut off". 35 MB comfortably covers real annual-report
     # PDF sizes while staying explicitly bounded (not unbounded).
+    # ── V3.11: model prices, as CONFIGURATION ─────────────────────────────── #
+    # Unset by default. An unpriced run reports a cost of None, never 0.0: "we do not
+    # know what this cost" and "this cost nothing" are different statements and only
+    # one of them is true. A price change must never be a code change, so nothing here
+    # ships with a number baked in — the operator supplies the price they are actually
+    # billed, and `v3_price_source` records where it came from so the estimate is
+    # auditable rather than merely plausible.
+    v3_price_usd_per_million_input_tokens: float | None = None
+    v3_price_usd_per_million_output_tokens: float | None = None
+    #: Free-text provenance, e.g. "Azure OpenAI gpt-4.1-mini list price, retrieved
+    #: 2026-09-06". Carried into the run's consumption record beside the estimate.
+    v3_price_source: str = ""
+
     source_document_extraction_max_bytes: int = 35_000_000
     # Per-document fetch timeout budget (seconds).
     source_document_extraction_timeout_seconds: int = 15
@@ -504,9 +517,7 @@ class Settings(BaseSettings):
     source_document_extraction_max_chars_per_excerpt: int = 1200
     # Content types the document fetcher will accept. Anything else is rejected
     # with an honest gap (no partial download).
-    source_document_extraction_allowed_content_types: str = (
-        "application/pdf,text/html,text/plain"
-    )
+    source_document_extraction_allowed_content_types: str = "application/pdf,text/html,text/plain"
 
     # ── LLM council evidence budget (Phase 29B.2) ──────────────────────────
     # A deterministic budgeter compresses the evidence pack before it reaches the

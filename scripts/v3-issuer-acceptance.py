@@ -44,12 +44,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import re
 import json
 import os
+import re
 import sys
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1] / "apps" / "api"
@@ -77,10 +78,13 @@ async def main() -> int:
     parser.add_argument("--runs", type=int, default=1, help="Run N times, for a delta.")
     parser.add_argument(
         "--seed-corpus-url",
-        default=None,
+        action="append",
+        default=[],
         help=(
-            "Ingest ONE real issuer document into the scratch corpus before running, "
-            "through the repository's own guarded fetcher. Requires --allow-network."
+            "Ingest a real issuer document into the scratch corpus before running, "
+            "through the repository's own guarded fetcher. Repeatable: a blocking "
+            "question is often answered by a different document from the one carrying "
+            "the financials. Requires --allow-network."
         ),
     )
     parser.add_argument(
@@ -96,6 +100,27 @@ async def main() -> int:
             "Seed the scratch database with REAL SEC company facts for this ticker "
             "before running. Public data, no credential. Requires --allow-network."
         ),
+    )
+    parser.add_argument(
+        "--price-in",
+        type=float,
+        default=None,
+        metavar="USD_PER_M",
+        help="Price per million INPUT tokens. Unset means unpriced, which reports a "
+        "cost of None rather than zero.",
+    )
+    parser.add_argument(
+        "--price-out",
+        type=float,
+        default=None,
+        metavar="USD_PER_M",
+        help="Price per million OUTPUT tokens.",
+    )
+    parser.add_argument(
+        "--price-source",
+        default="",
+        help="Where the prices came from. Recorded beside the estimate so it is "
+        "auditable rather than merely plausible.",
     )
     parser.add_argument("--json", type=Path, default=None)
     args = parser.parse_args()
@@ -121,6 +146,15 @@ async def main() -> int:
         v3_issuer_traversal_enabled=bool(args.allow_network),
         v3_filings_tool_enabled=bool(args.allow_network),
         v3_research_mode_default=args.mode,
+        # The two gates a real company-research run has on. Without them the fact
+        # writer returns an empty result WITHOUT querying — which is why V3.10's
+        # acceptance saw an empty ``extracted_facts`` and concluded the luxury
+        # playbook's blocking question was unanswerable.
+        primary_document_ingestion_enabled=True,
+        report_citation_persistence_enabled=True,
+        v3_price_usd_per_million_input_tokens=args.price_in,
+        v3_price_usd_per_million_output_tokens=args.price_out,
+        v3_price_source=args.price_source,
     )
 
     engine = create_async_engine(scratch)
@@ -161,7 +195,9 @@ async def main() -> int:
             if not args.allow_network:
                 print("\n--seed-corpus-url needs --allow-network. Nothing was fetched.")
             else:
-                chunks = await _seed_corpus(session, company, cfg, args)
+                chunks = 0
+                for seed_url in args.seed_corpus_url:
+                    chunks += await _seed_corpus(session, company, cfg, args, seed_url)
                 print(f"\nseeded {chunks} corpus chunk(s) from a REAL issuer document")
                 await session.commit()
 
@@ -203,7 +239,7 @@ async def main() -> int:
     return 0
 
 
-async def _seed_corpus(session, company, cfg, args) -> int:  # noqa: ANN001
+async def _seed_corpus(session, company, cfg, args, seed_url) -> int:  # noqa: ANN001
     """Ingest one real issuer document into the scratch corpus.
 
     The same path the corpus acceptance script uses and the same path a live run would:
@@ -231,12 +267,10 @@ async def _seed_corpus(session, company, cfg, args) -> int:  # noqa: ANN001
     )
     from app.services.sources.taxonomy import T1_PRIMARY_FILING
 
-    domains = tuple(args.seed_corpus_domain) or (
-        args.seed_corpus_url.split("/")[2],
-    )
-    print(f"  fetching {args.seed_corpus_url[:90]}")
+    domains = tuple(args.seed_corpus_domain) or (seed_url.split("/")[2],)
+    print(f"  fetching {seed_url[:90]}")
     fetched = await safe_fetch_document(
-        args.seed_corpus_url, allowed_domains=domains, cfg=cfg, resolve_ip=True
+        seed_url, allowed_domains=domains, cfg=cfg, resolve_ip=True
     )
     if not fetched.ok or not fetched.content:
         print(f"  fetch failed: blocked={fetched.blocked} error={fetched.error}")
@@ -263,7 +297,7 @@ async def _seed_corpus(session, company, cfg, args) -> int:  # noqa: ANN001
         session,
         DocumentVersionInput(
             content_hash=extraction.content_hash,
-            canonical_url=fetched.final_url or args.seed_corpus_url,
+            canonical_url=fetched.final_url or seed_url,
             transport="company_ir",
             source_tier=T1_PRIMARY_FILING,
             company_id=company.id,
@@ -305,7 +339,75 @@ async def _seed_corpus(session, company, cfg, args) -> int:  # noqa: ANN001
         f"  persisted  pages={derivation.pages_persisted} chunks={len(chunk_rows)} "
         f"indexed={indexed.indexed}"
     )
+    await _seed_issuer_facts(session, company, cfg, extraction, fetched, seed_url)
     return len(chunk_rows)
+
+
+async def _seed_issuer_facts(session, company, cfg, extraction, fetched, seed_url) -> int:  # noqa: ANN001
+    """Validate the SAME extraction into structured facts, as production does.
+
+    V3.10's acceptance seeded the corpus but never ran fact validation, so
+    ``extracted_facts`` was EMPTY and ``get_segment_facts`` had nothing to return —
+    which made the luxury playbook's blocking question unanswerable and the Council
+    unconvenable. That was a gap in the MEASUREMENT, not in the product: a real
+    company-research run persists these facts through
+    ``persist_primary_document_artifacts`` before V3 ever starts.
+
+    The bytes are already fetched, so this re-uses that extraction rather than pulling a
+    9 MB annual report twice.
+    """
+    from app.services.extracted_document_service import (
+        persist_primary_document_artifacts,
+    )
+    from app.services.sources.connectors.company_ir import PrimaryDocumentArtifact
+    from app.services.sources.document_period import detect_document_period
+    from app.services.sources.extracted_fact_validator import (
+        IssuerContext,
+        validate_extracted_facts,
+    )
+
+    issuer = IssuerContext(company_name=company.name, ticker=company.ticker)
+    headings = [b.section for b in extraction.blocks if b.section][:200]
+    period = detect_document_period(
+        title=f"{company.name} annual report",
+        url=seed_url,
+        headings=headings,
+        text=" ".join(b.text for b in extraction.blocks[:80]),
+    )
+    validated = await asyncio.to_thread(
+        validate_extracted_facts,
+        extraction,
+        issuer_context=issuer,
+        cfg=cfg,
+        document_period=period,
+    )
+    scoped = sum(1 for f in validated if getattr(f, "scope", None))
+    print(f"  validated  facts={len(validated)} with-scope={scoped}")
+    if not validated:
+        return 0
+
+    artifact = PrimaryDocumentArtifact(
+        source_url=fetched.final_url or seed_url,
+        document_type=fetched.document_type,
+        title=f"{company.name} annual report",
+        retrieved_at=datetime.now(timezone.utc),
+        status="extracted",
+    )
+    artifact.extraction = extraction
+    artifact.validated_facts = validated
+    result = await persist_primary_document_artifacts(
+        session,
+        artifacts=[artifact],
+        company_id=company.id,
+        agent_run_id=None,
+        cfg=cfg,
+    )
+    await session.flush()
+    print(
+        f"  persisted  facts={result.facts_created} deduped={result.facts_deduped} "
+        f"documents={result.documents_created}"
+    )
+    return result.facts_created
 
 
 async def _seed_sec_facts(session, company, cfg) -> int:  # noqa: ANN001
@@ -498,10 +600,14 @@ def _report(index: int, outcome, elapsed: float) -> None:  # noqa: ANN001
         f"{c.get('findings_total')} "
         f"({c.get('findings_withdrawn_by_red_team')} withdrawn by the red team)"
     )
+    per_finding = c.get("cost_per_verified_useful_finding")
     print(
-        f"  cost              estimated_usd={c.get('estimated_cost_usd')} "
-        f"per_useful_finding={c.get('cost_per_verified_useful_finding')}"
+        f"  cost              run_usd={c.get('cost_per_company_research_run')} "
+        f"per_useful_finding="
+        + (f"{per_finding:.6f}" if isinstance(per_finding, float) else str(per_finding))
     )
+    if c.get("price_source"):
+        print(f"                    priced from: {c['price_source']}")
     if c.get("cost_is_unknown_because"):
         print(f"                    {c['cost_is_unknown_because']}")
     if c.get("model_by_vendor"):
