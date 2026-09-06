@@ -284,7 +284,7 @@ approval.
 | 2026-09-06 | V3.7 Slice 7.2 — Red Team challenge round | `feature/v3-7-2-red-team-challenge-round` | `80010ae` |
 | 2026-09-06 | V3.8 Slice 8.1 — research memory | `feature/v3-8-1-research-memory` | `4c873aa` |
 | 2026-09-06 | V3.8 Slice 8.2 — research delta | `feature/v3-8-2-research-delta` | `d306c4c` |
-| 2026-09-06 | V3.9 Slice 9.1 — monitoring | `feature/v3-9-1-monitoring` | _pending_ |
+| 2026-09-06 | V3.9 Slice 9.1 — monitoring | `feature/v3-9-1-monitoring` | `800f92d` |
 | 2026-09-06 | V3.4 Slice 4.10 — bounded issuer-site traversal | `feature/v3-4-10-issuer-site-traversal` | `ac970fb` |
 | 2026-09-06 | V3.4 Slice 4.8 — transcripts and IR events | `feature/v3-4-8-transcript-provider` | `e481da6` |
 | 2026-09-06 | V3.4 Slice 4.7 — macro observation store | `feature/v3-4-7-macro-observation-store` | `5b5045e` |
