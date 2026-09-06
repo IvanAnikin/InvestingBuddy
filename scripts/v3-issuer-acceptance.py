@@ -486,7 +486,26 @@ def _report(index: int, outcome, elapsed: float) -> None:  # noqa: ANN001
             f"  delta             unchanged_thesis="
             f"{outcome.delta.get('unchanged_core_thesis')} {counts}"
         )
-    print(f"  consumption       {outcome.consumption}")
+    c = outcome.consumption or {}
+    model = c.get("model") or {}
+    print(
+        f"  consumption       tool_calls={c.get('tool_calls')} "
+        f"model_calls={model.get('model_calls')} "
+        f"in={model.get('model_input_tokens')} out={model.get('model_output_tokens')}"
+    )
+    print(
+        f"  useful findings   {c.get('verified_useful_findings')} of "
+        f"{c.get('findings_total')} "
+        f"({c.get('findings_withdrawn_by_red_team')} withdrawn by the red team)"
+    )
+    print(
+        f"  cost              estimated_usd={c.get('estimated_cost_usd')} "
+        f"per_useful_finding={c.get('cost_per_verified_useful_finding')}"
+    )
+    if c.get("cost_is_unknown_because"):
+        print(f"                    {c['cost_is_unknown_because']}")
+    if c.get("model_by_vendor"):
+        print(f"  by vendor         {c['model_by_vendor']}")
     if outcome.degraded:
         print("  DEGRADED:")
         for reason in outcome.degraded:
