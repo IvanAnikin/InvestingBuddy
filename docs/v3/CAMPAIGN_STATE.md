@@ -9,7 +9,7 @@ the code, not inferred from a plan. When it disagrees with a phase-gate section 
 record of a gate and this file is the current state; re-verify before trusting
 either.
 
-**Last verified:** 2026-09-07, after V3.12, by direct `git`
+**Last verified:** 2026-09-07, after V3.12 merged at **`a2f0f4f`**, by direct `git`
 inspection, a full local gate run (API and web), a full migration chain up-and-down
 against real PostgreSQL 16, a live real-document corpus acceptance run, a **live DeepSeek
 `/responses` contract run (16/16)**, and an independent code review plus an independent
@@ -43,7 +43,7 @@ enabling a V3 flag in production, deleting V2 compatibility or either V2 ref.
 
 | Item | Value |
 |---|---|
-| `develop/v3` HEAD | **`c7b2f3f`** (V3.11.1.2 merged 2026-09-07), ahead of `origin/develop/v3` (`fd82d3d`), unpushed |
+| `develop/v3` HEAD | **`a2f0f4f`** (V3.12 merged 2026-09-07), ahead of `origin/develop/v3` (`fd82d3d`), unpushed |
 | Alembic head in source | **038** (`038_add_monitoring`) |
 | Alembic head in the deployed database | **018** — and V3 migrations 019-038 have reached **no** deployed environment |
 | Alembic head in the local dev database | **018** (unchanged by V3 work; scratch databases only) |
@@ -161,7 +161,7 @@ rewrite of history. Five exist, and each one is a defect a real run found:
 | 2026-09-06 | **The DeepSeek contract, verified** *(its web-search finding was later REVERSED — see the next row)* | `fix/v3-11-1-1-deepseek-live-contract` | `f037f1b` | A real key made 7 of 8 live questions fail. Found: the adapter's repr **printed the key into pytest output**; `response_format` sent unconditionally so every completion 400'd; tool `parameters` needed a JSON Schema; ~~no server-side web search exists at all~~ **(WRONG — it does, on `/responses`)**; a credential silently re-routed Investigator work off Azure OpenAI; and seven tests asserted a property of the developer's machine. | "Citations resolve" was on the acceptance gate and had never been measured — the harness checked that a finding HAS citations, not that they lead anywhere. | **Findings were exempt from period and scope integrity.** Real findings said "FY2026 projected" over FY2025 actuals with `period_key=None`. Now inherited on agreement or nothing; disagreement discards the finding and opens a `conflicting_sources` gap — which then fired on live SEC data. |
 | 2026-09-07 | **DeepSeek's web search exists; it was on the other endpoint** | `fix/v3-11-1-2-deepseek-responses-web-search` | `c7b2f3f` | V3.11.1.1 probed only `/chat/completions` and reported that DeepSeek has no server-side web search. It has one, on **`POST /responses`** — verified live 16/16. **An absence measured on one endpoint is not an absence.** `search()` now really searches; candidates come only from pages the provider actually opened (there are **no structured citations**), and because `max_tool_calls` and `filters.allowed_domains` are accepted-and-ignored, spend and domain limits are enforced client-side. Also closed a **second credential-leak path**: any `repr` of `Settings` printed every API key, so all five are now `Field(repr=False)`. |
 
-| 2026-09-07 | **V3.12 external research integration** | `feature/v3-12-external-research-integration` | *(this slice)* | The last unstaffed role. `search_web` and `fetch_public_source` — reserved in the vocabulary since V3.3 — are implemented, gated on the external flag, and chained by the Investigator: search returns CLAIMS with no citable id, and only InvestingBuddy's own fetch through `verify_lead` may mint one. Live: **5 of the last 6** MRNA runs promoted `ev:x:` evidence into findings (the six non-promotions all correct refusals); 8 negative cases minted 1. Fixed two **pre-existing** gate defects a real document exposed — a fabricated value matching under a relative tolerance, and a period conflict that was *skipped* rather than failed — plus four wiring defects only the pipeline found. |
+| 2026-09-07 | **V3.12 external research integration** | `feature/v3-12-external-research-integration` | `a2f0f4f` | The last unstaffed role. `search_web` and `fetch_public_source` — reserved in the vocabulary since V3.3 — are implemented, gated on the external flag, and chained by the Investigator: search returns CLAIMS with no citable id, and only InvestingBuddy's own fetch through `verify_lead` may mint one. Live: **5 of the last 6** MRNA runs promoted `ev:x:` evidence into findings (the six non-promotions all correct refusals); 8 negative cases minted 1. Fixed two **pre-existing** gate defects a real document exposed — a fabricated value matching under a relative tolerance, and a period conflict that was *skipped* rather than failed — plus four wiring defects only the pipeline found. |
 
 ## Migrations
 
