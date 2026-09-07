@@ -943,7 +943,7 @@ Added after the release candidate, on user instruction, to prove the architectur
 
 | Slice | What it delivers | State |
 |---|---|---|
-| 10.1 | Opt-in DeepSeek live contract test; per-raise retry transience in the transport | **`BLOCKED ON CREDENTIAL`** — implementation complete, no key exists |
+| 10.1 | Opt-in DeepSeek live contract test; per-raise retry transience in the transport | `IMPLEMENTED` — was `BLOCKED ON CREDENTIAL`; a key arrived 2026-09-06 and the contract is now **VERIFIED live 16/16** across both endpoints (V3.11.1.1 + V3.11.1.2) |
 | 10.2 | Real `Investigator` / `RedTeam` / `Responder` / `Chair` behind the existing protocols, with configurable per-slot routing | `IMPLEMENTED` |
 | 10.3 | `run_v3_research` wired to the company-research front door behind `V3_RESEARCH_ENABLED` (off) | `IMPLEMENTED` |
 | 10.4 | Real-issuer acceptance harness; MRNA, CFR and ASML runs; cost measurement; report-compatibility tests | `IMPLEMENTED` |
@@ -965,7 +965,7 @@ real-issuer evidence, without adding unrelated architecture.**
 
 | Slice | What it delivers | State |
 |---|---|---|
-| 11.1 | DeepSeek removed as a release-critical dependency; live contract still unrun | `IMPLEMENTED` — live contract **`BLOCKED ON CREDENTIAL`** |
+| 11.1 | DeepSeek removed as a release-critical dependency; live contract now run | `IMPLEMENTED` — live contract **VERIFIED 16/16**. 11.1.1 verified the model leg and wrongly concluded there is no web search; **11.1.2 reversed that** — it lives on `POST /responses`. DeepSeek stays optional and flag-gated off |
 | 11.2 | Layered, generic scope resolution learned from the document itself | `IMPLEMENTED` |
 | 11.3 | Real playbook completion for CFR, MRNA and ASML | `IMPLEMENTED` |
 | 11.4 | Real cost measurement from configured prices, with provenance | `IMPLEMENTED` |

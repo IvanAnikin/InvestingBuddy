@@ -443,12 +443,16 @@ MAIN PROMOTION REVIEW`**.
 
 All four V3.10 blockers are closed:
 
-1. **DeepSeek** — the live contract is now **VERIFIED** (14/14, 2026-09-06) and DeepSeek is
-   **still not release-critical**. The verification found four defects, including a key
-   leak through a dataclass `repr` and the discovery that **DeepSeek has no server-side web
-   search** — the capability it was designated the primary research runtime for.
-   ⚠️ **The key used for validation must be rotated**; it reached terminal output before
-   the redaction fix landed.
+1. **DeepSeek** — the live contract is **VERIFIED across both endpoints** (16/16; model leg
+   2026-09-06, search leg 2026-09-07) and DeepSeek is **still not release-critical**.
+   Meeting the API found six real defects. It also produced one **wrong conclusion**, worth
+   recording because the campaign shipped it for a day: V3.11.1.1 probed only
+   `/chat/completions`, found no builtin tools, and reported that DeepSeek has no
+   server-side web search. It has one, on `POST /responses` — V3.11.1.2 measured it.
+   **An absence measured on one endpoint is not an absence** ([ADR-055](../DECISIONS.md)).
+   Consequence: ADR-048 stands and **no search provider needs buying**.
+   ⚠️ **The key used for validation must be rotated** — it reached terminal output through
+   two distinct paths before both were closed at the type.
 2. **Playbooks** — CFR, MRNA and ASML all convene. Three of the four causes were the
    platform's, not the world's.
 3. **Scope** — 1.7% → 8.1% coverage on the real Richemont report with a **0.0%**

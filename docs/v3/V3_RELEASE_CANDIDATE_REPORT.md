@@ -331,7 +331,12 @@ research tools and real model implementations?**
 Partly. What follows separates *implementation complete* from *live-provider validated*,
 because for one provider those are not the same thing.
 
-### 10.1 The DeepSeek live contract — BLOCKED ON CREDENTIAL
+### 10.1 The DeepSeek live contract — BLOCKED ON CREDENTIAL *(superseded — see §11.1)*
+
+> This section is the V3.10 record, kept as written. A key arrived on 2026-09-06 and the
+> contract is now **VERIFIED live 16/16 across both endpoints**. Read
+> [§11.1](#111-blocker-1--deepseek--both-legs-verified-and-still-optional) for the
+> current state.
 
 **No DeepSeek API key was available.** Per the phase brief, the contract was **not
 fabricated**. This exact slice is `BLOCKED ON CREDENTIAL`, and every other part of V3.10
@@ -733,7 +738,7 @@ OpenAI ran.
 | Gate | Result |
 |---|---|
 | `ruff` | ✅ clean |
-| `pytest` | ✅ **6,063 passed**, 23 skipped |
+| `pytest` | ✅ **6,078 passed**, 39 skipped — the split moves with `ENABLE_INTEGRATION_TESTS`; see [CAMPAIGN_STATE.md](CAMPAIGN_STATE.md#gate-baseline) for the reconciliation on *collected* counts, which are environment-independent |
 | `mypy` | ✅ 71 (baseline, unchanged) |
 | web typecheck / lint / build | ✅ all pass |
 | Migration chain on real PostgreSQL 16 | ✅ 038 → 018 → 038, 61 tables at head, 23 at baseline |
@@ -744,7 +749,8 @@ OpenAI ran.
 | ResearchDelta | ✅ supersession on real data: `changed_facts=13, invalidated_findings=6` |
 | Monitoring (local, unscheduled) | ✅ 20 tests |
 | **Citations resolve** | ✅ 9/9 — **and this was previously unchecked** |
-| DeepSeek live contract | ✅ **VERIFIED 2026-09-06** — 14/14; found 4 defects incl. a key leak and a false capability premise |
+| DeepSeek live contract | ✅ **VERIFIED 16/16 across both endpoints** — model leg 2026-09-06, search leg 2026-09-07. Six defects found by meeting the API, including two credential-leak paths and, in V3.11.1.1, a *wrong* conclusion that V3.11.1.2 reversed |
+| DeepSeek slice reviewed independently | ✅ code review + security review; 4 blocking + 1 HIGH found and fixed, then re-run green |
 
 **Supersession** — the one V3.10 could only unit-test — is now demonstrated on real data:
 consecutive MRNA runs produced `changed_facts: 13` and `invalidated_findings: 6`, so the
@@ -805,7 +811,7 @@ Against the acceptance gate, point by point:
 |---|---|
 | DeepSeek verified **or** removed as release-critical | ✅ **both** — contract verified live **16/16 across both endpoints** (model leg 2026-09-06, search leg 2026-09-07), *and* removed as release-critical: 3 real Councils, 23 tests, adapter unimported by the research path |
 | Scope resolution materially functional, fail-closed preserved | ✅ 1.7% → 8.1%, **0.0%** false-positive Group |
-| MRNA, CFR, ASML exercise the playbook-gated path | ✅ all three |
+| MRNA, CFR, ASML exercise the playbook-gated path | ✅ all three — and unaffected by V3.11.1.2: those Councils ran on Azure OpenAI with both DeepSeek flags off, which is still the default |
 | At least one playbook-gated real Council completes | ✅ **three** |
 | Red Team / Chair operate on real verified state | ✅ real Chair, `fallback=False`, Red Team challenges resolved |
 | Citations resolve | ✅ 9/9, now checked rather than assumed |
