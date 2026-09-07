@@ -70,7 +70,7 @@ class ToolRegistry:
         return len(self._specs)
 
 
-def default_registry() -> ToolRegistry:
+def default_registry(cfg: object | None = None) -> ToolRegistry:
     """A registry holding every builtin tool.
 
     Built fresh on each call rather than shared as module state: a process-wide
@@ -80,7 +80,11 @@ def default_registry() -> ToolRegistry:
     from app.services.agent_tools.builtin import register_builtins
 
     registry = ToolRegistry()
-    register_builtins(registry)
+    # `cfg` is threaded because one registration is CONDITIONAL (V3.12's external tools).
+    # Without it this function falls back to the process-global settings — which on a
+    # developer machine means the `.env`, and "a test that reads the machine" is a bug
+    # this campaign has already paid for twice.
+    register_builtins(registry, cfg=cfg)
     return registry
 
 

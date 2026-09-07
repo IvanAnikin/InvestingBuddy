@@ -230,6 +230,16 @@ class DeepSeekTransport(Protocol):
         timeout: int,
     ) -> DeepSeekResponse: ...  # pragma: no cover - protocol
 
+    async def investigate_with_search(
+        self,
+        *,
+        system: str,
+        question: str,
+        domains: Sequence[str] | None,
+        max_output_tokens: int,
+        timeout: int,
+    ) -> DeepSeekResponse: ...  # pragma: no cover - protocol
+
 
 @dataclass
 class FakeDeepSeekTransport:
@@ -257,9 +267,13 @@ class FakeDeepSeekTransport:
     #: The prose a search response ends with. Separate from ``completion_text`` because
     #: the two endpoints return different things and one fake serves both.
     search_text: str | None = None
+    #: The JSON an investigation answers with. Separate from ``completion_text`` because
+    #: the two paths return different things and one fake serves both.
+    investigation_text: str | None = None
     raises: Exception | None = None
     completions: list[tuple[str, str]] = field(default_factory=list)
     searches: list[str] = field(default_factory=list)
+    investigations: list[str] = field(default_factory=list)
 
     async def complete(
         self,
@@ -279,6 +293,35 @@ class FakeDeepSeekTransport:
             completion_tokens=self.completion_tokens,
             cached_tokens=self.cached_tokens,
             finish_reason=self.finish_reason,
+            raw={"fake": True},
+        )
+
+    async def investigate_with_search(
+        self,
+        *,
+        system: str,
+        question: str,
+        domains: Sequence[str] | None,
+        max_output_tokens: int,
+        timeout: int,
+    ) -> DeepSeekResponse:
+        """One call that searches AND answers, which is what the live endpoint does."""
+        self.investigations.append(question)
+        if self.raises is not None:
+            raise self.raises
+        return DeepSeekResponse(
+            # The investigation's answer is JSON; the search's is prose. One fake, two
+            # scripted texts, so a test cannot accidentally assert one against the other.
+            text=self.investigation_text
+            if self.investigation_text is not None
+            else self.completion_text,
+            tool_payloads=list(self.tool_payloads),
+            prompt_tokens=self.prompt_tokens,
+            completion_tokens=self.completion_tokens,
+            cached_tokens=self.cached_tokens,
+            finish_reason=self.finish_reason,
+            tools_echo=list(self.tools_echo),
+            served_model=self.model,
             raw={"fake": True},
         )
 
@@ -573,25 +616,9 @@ class HttpDeepSeekTransport:
         two layers honours that.
         """
         wanted = self.search_tool_name or DEFAULT_SEARCH_TOOL_NAME
-        instructions = self.SEARCH_INSTRUCTIONS
-        if domains:
-            # A preference, and named as one. The API drops `filters.allowed_domains`
-            # silently, so the only real enforcement is client-side; saying so here
-            # keeps the request honest about which of the two is load-bearing.
-            # Bounded and character-restricted before it reaches the prompt. `domains`
-            # is operator-supplied today; the day a domain list is derived from model or
-            # user output, unsanitised interpolation here is a prompt-injection surface.
-            safe = sorted(
-                {
-                    d
-                    for d in (str(x).strip().lower() for x in domains)
-                    if d and len(d) <= 253 and _DOMAIN_SAFE_RE.fullmatch(d)
-                }
-            )[:_MAX_PROMPTED_DOMAINS]
-            if safe:
-                instructions = (
-                    f"{instructions} Prefer pages on these domains: {', '.join(safe)}."
-                )
+        # A preference, and named as one. The API drops `filters.allowed_domains`
+        # silently, so the only real enforcement is client-side.
+        instructions = self._search_instructions(self.SEARCH_INSTRUCTIONS, domains)
         payload: dict[str, Any] = {
             "model": self.model,
             "instructions": instructions,
@@ -601,6 +628,71 @@ class HttpDeepSeekTransport:
             # explicit form says which tool, which matters the day a second one exists.
             "tool_choice": {"type": wanted},
             "max_output_tokens": max(256, int(self.search_max_output_tokens)),
+        }
+        return self._reduce_responses(await self._post(payload, timeout, RESPONSES_PATH))
+
+    def _search_instructions(
+        self, base: str, domains: "Sequence[str] | None"
+    ) -> str:
+        """``base`` plus a domain *preference*, validated before it reaches the prompt.
+
+        Shared by :meth:`search` and :meth:`investigate_with_search` so there is one
+        place that decides how caller-supplied text enters an instruction, rather than
+        two that drift.
+        """
+        if not domains:
+            return base
+        safe = sorted(
+            {
+                d
+                for d in (str(x).strip().lower() for x in domains)
+                if d and len(d) <= 253 and _DOMAIN_SAFE_RE.fullmatch(d)
+            }
+        )[:_MAX_PROMPTED_DOMAINS]
+        if not safe:
+            return base
+        return f"{base} Prefer pages on these domains: {', '.join(safe)}."
+
+    async def investigate_with_search(
+        self,
+        *,
+        system: str,
+        question: str,
+        domains: "Sequence[str] | None" = None,
+        max_output_tokens: int = 4000,
+        timeout: int = 180,
+    ) -> DeepSeekResponse:  # pragma: no cover - needs a real key
+        """One ``/responses`` call that searches the web **and** returns structured JSON.
+
+        This is what closes V3's last integration gap. ``complete()`` runs on
+        ``/chat/completions``, which has no builtin tools at all, so an investigation
+        through it could only ever return the model's *recollection* — which is exactly
+        what the release candidate meant by "``investigate()`` runs without retrieval".
+
+        Both halves are measured, and both matter:
+
+        * The builtin ``web_search`` tool is accepted here and really retrieves.
+        * ``text.format: json_object`` works **alongside** it, so one call yields both
+          the retrieval trace and parseable claims. The endpoint demands the literal
+          "json" appear in the input when that format is set — the same rule
+          ``/chat/completions`` has — so :func:`_json_hinted` supplies it rather than
+          leaving a caller's prompt wording to trip a 400.
+
+        ``tool_choice`` is NOT forced here, unlike :meth:`search`. An investigation whose
+        answer is already known to the model should be allowed to say so without a
+        compulsory search, and the caller can tell the difference: a response with no
+        ``web_search_call`` items produces leads citing nothing in the trace, which the
+        provider above **counts** — it does not drop them, because the trace lists pages
+        the model *opened* and a provider may legitimately cite a URL it saw in a search
+        result (ADR-056 §4). The verdict belongs to InvestingBuddy's own fetch.
+        """
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "instructions": self._search_instructions(_json_hinted(system), domains),
+            "input": question,
+            "tools": [{"type": self.search_tool_name or DEFAULT_SEARCH_TOOL_NAME}],
+            "text": {"format": {"type": "json_object"}},
+            "max_output_tokens": max(512, int(max_output_tokens)),
         }
         return self._reduce_responses(await self._post(payload, timeout, RESPONSES_PATH))
 

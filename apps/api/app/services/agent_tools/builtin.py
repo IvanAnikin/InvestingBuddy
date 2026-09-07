@@ -6,8 +6,12 @@ needed no new capability: ``entities.resolution.resolve`` already returns a stat
 
 The fact and series tools live in ``facts`` (slice 3.2) and are registered from here so
 there is one place that answers "what can an agent reach". The calculation engine is
-3.3, corpus search 3.4, and ``search_web`` / ``fetch_public_source`` wait for the
-provider runtime in V3.4.
+3.3, corpus search 3.4, and ``search_web`` / ``fetch_public_source`` arrived in **V3.12**
+— they waited for a provider runtime that could actually retrieve, which V3.11.1.2
+established. They are the only tools here registered **conditionally**: absent the
+``V3_DEEPSEEK_SEARCH_ENABLED`` flag they are not in the registry at all, so
+``implemented_tools()`` reports them missing and the Director marks a question needing
+one unassignable at plan time rather than discovering a refusal mid-run.
 
 ``lookup_entity`` RETURNS THE STATE, NOT A BEST MATCH
 ====================================================
@@ -142,10 +146,11 @@ LOOKUP_ENTITY_SPEC = ToolSpec(
 )
 
 
-def register_builtins(registry: "ToolRegistry") -> "ToolRegistry":
+def register_builtins(registry: "ToolRegistry", *, cfg: Any = None) -> "ToolRegistry":
     """Register every builtin tool."""
     from app.services.agent_tools.calculations import register_calculation_tools
     from app.services.agent_tools.corpus_search import register_corpus_tools
+    from app.services.agent_tools.external import register_external_tools
     from app.services.agent_tools.facts import register_fact_tools
     from app.services.agent_tools.filings import register_filing_tools
     from app.services.agent_tools.ir_events import register_ir_event_tools
@@ -158,6 +163,8 @@ def register_builtins(registry: "ToolRegistry") -> "ToolRegistry":
     register_macro_tools(registry)
     register_ir_event_tools(registry)
     register_filing_tools(registry)
+    # Conditional, and last: the only tools whose presence is a spending decision.
+    register_external_tools(registry, cfg=cfg)
     return registry
 
 

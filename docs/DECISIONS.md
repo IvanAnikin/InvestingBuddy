@@ -3990,3 +3990,76 @@ test asserts the default provider never reaches the transport.
 - The refusal V3.11.1.1 added was the right decision *on the evidence it had*. What was
   wrong was the scope of the evidence, and the live contract test now pins both halves —
   that `/chat/completions` has no builtin tools, and that `/responses` does.
+
+---
+
+## ADR-056: External Research Enters Through Two Tools, and Only Our Own Fetch May Mint Evidence
+
+**Date:** 2026-09-07 · **Status:** Accepted · **Decided by:** agent, under a user brief
+**Implements:** [ADR-044](#adr-044-external-research-output-enters-as-a-lead-never-as-evidence) and [ADR-048](#adr-048-deepseek-web-search-is-the-primary-external-search-path-exa-and-perplexity-are-deferred)
+**Closes:** the V3.11 release-candidate caveat in §11.6
+
+### Context
+
+ADR-044 established that external research output enters as a `ResearchLead` and never as
+evidence. ADR-048 made DeepSeek the external search path. V3.11.1.2 verified that DeepSeek
+really retrieves. And still nothing used it: `investigate()` ran on `/chat/completions`,
+which has no tools, so the only producer of leads produced URLs the model had *recalled*.
+The V3.11 release candidate said so plainly — zero lead rows across every real run.
+
+The two tool names this needs, `search_web` and `fetch_public_source`, had been in the
+closed vocabulary since V3.3 with a comment saying they were waiting for a provider
+runtime.
+
+### Decision
+
+**1. Two tools, not one, because they answer to different authorities.** `search_web`
+reaches a vendor and everything it returns is a claim. `fetch_public_source` reaches the
+open web *through InvestingBuddy's own fetcher* and puts one claim through `verify_lead`.
+
+**2. Only `fetch_public_source` may mint an evidence id, and only for `LEAD_VERIFIED`.**
+That status cannot be constructed without a content hash, so "verified" cannot exist
+without bytes the platform fetched. `search_web`'s payload carries none of the four keys
+the Investigator reads as citations, so a model *cannot* cite a search result — the
+guarantee is the absence of a field, not a rule somebody remembers.
+
+**3. The Investigator chains the two deterministically.** An LLM choosing which URL to
+fetch is an LLM choosing what the platform reads, and the rest of the Investigator already
+refuses to let a model choose tool arguments.
+
+**4. The retrieval trace annotates; it does not gate.** A live run proved the alternative
+wrong: the provider found the right SEC exhibit through a *search result*, whose URLs the
+contract never exposes, and a guard that dropped claims citing unopened pages discarded
+the only good lead of the run. `opened_urls` is a subset of what the provider legitimately
+saw. The gate stays where it belongs — our own fetch.
+
+**5. The tools are registered conditionally, and that is the whole feature flag.** With
+`V3_DEEPSEEK_SEARCH_ENABLED` off they are absent from the registry, so
+`implemented_tools()` excludes them, the external question is never planned and the role
+is never seated. A question needing an absent tool is unassignable *at plan time* — a
+coverage fact a reader can see, rather than a refusal mid-run.
+
+**6. One role reaches outside the platform, and it is not `always_present`.**
+`external_research_analyst` is the only role holding the external tools, so
+`reaches_outside_the_platform` remains a checkable property of the policy table rather
+than a claim.
+
+### Consequences
+
+- **The `ResearchLead` → Evidence path is staffed**, demonstrated on real data: a real
+  question, a real DeepSeek search, a real SEC exhibit, our own fetch, and findings in the
+  ledger citing `ev:x:…` ids derived from the hash of bytes we retrieved.
+- **Promotion is provider-dependent and that is now measured**, not assumed: across
+  sixteen live runs, ten promoted evidence and six promoted none — five of the last six
+  on the shipped prompt — because the URL
+  the provider chose was unreachable, unreadable, or a filing index page carrying no
+  figures. Every non-promotion is the system working, and roughly a coin-flip per run is
+  the honest rate to plan against.
+- **Two pre-existing defects in the verification gate were found by pointing it at a real
+  adversarial claim** — a fabricated value that matched under a relative tolerance, and a
+  period conflict that was skipped rather than failed. Both are fixed generically, in
+  `leads.py`, for every provider and not only this one.
+- **Scope remains unchecked on this path.** External evidence carries `scope_key = None`
+  and says so. That is a real limitation and it is recorded rather than closed.
+- `cost_per_verified_useful_finding` is now computable for a real path, and is reported as
+  `None` until an operator supplies a price. An unknown cost is never labelled zero.

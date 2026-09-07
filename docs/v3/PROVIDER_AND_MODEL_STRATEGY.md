@@ -26,6 +26,28 @@ depends on.** Where the two disagree, this section wins.
 | **Existing Azure OpenAI** | The **strong-model fallback** | Already in this repository, already carrying the council. No new OpenAI commercial account. |
 | **DeepSeek API** (pay-as-you-go) | The **primary external research/model provider** | Model calls on `POST /chat/completions`; server-side `web_search` on `POST /responses`. **Both legs verified live** (2026-09-06 / 2026-09-07, 16/16) — see [ADR-055](../DECISIONS.md#adr-055) and [the slice](slices/V3.11-1-2-deepseek-responses-web-search.md). Served models: `deepseek-v4-flash` (default), `deepseek-v4-pro`, `deepseek-v4-flash-vision-exp`; the documented name `deepseek-chat` is **not served** and is silently substituted. |
 
+### How external research actually reaches the record (V3.12)
+
+Two tools, and the split between them is the whole promotion rule:
+
+| Tool | Reaches | Returns | May mint evidence |
+|---|---|---|---|
+| `search_web` | the **vendor** | claims + the URLs it opened | **No.** Its payload carries none of the four keys the Investigator reads as a citation, so a model cannot cite a search result |
+| `fetch_public_source` | the open web **through InvestingBuddy's own fetcher** | one `verify_lead` outcome | **Only** on `verified` — a status that cannot be constructed without the hash of bytes we fetched |
+
+Registered only behind `V3_DEEPSEEK_SEARCH_ENABLED`. With it off they are absent from the
+registry, so the Director marks a question needing one unassignable at plan time and the
+external role is never seated.
+
+Measured live on MRNA: **5 of the last 6 runs promoted external evidence into ledger
+findings** (10 of 16 across two prompt phases).
+The six that did not were correct refusals — the provider cited a host that 403s us, a
+document with no extractable text, or a filing *index* page carrying no figures.
+Promotion is therefore **provider-dependent, at roughly a coin-flip per run**, and the
+practical consequence is in the prompt: it asks for the primary source *and* for the
+document rather than a listing, because an unfetchable or figure-free citation is a fetch
+spent to reject.
+
 ### What DeepSeek's search does NOT give, and what the platform does about it
 
 Measured, not assumed — and load-bearing, because each gap is a place where trusting the

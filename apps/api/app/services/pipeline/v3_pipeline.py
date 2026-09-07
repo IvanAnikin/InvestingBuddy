@@ -48,6 +48,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.services.agent_tools.builtin import register_builtins
+from app.services.agent_tools.contracts import ToolBudget
 from app.services.agent_tools.policy import policy_for
 from app.services.agent_tools.registry import ToolRegistry
 from app.services.agent_tools.session import ToolSession
@@ -243,11 +244,14 @@ async def _run(
         mode=resolved_mode,
         playbooks=playbooks,
         prior_open_gaps=carry_forward,
+        cfg=cfg,
     )
     await persist_plan(session, run, plan)
 
     # 5. Investigate, with real tools and a real model where one resolved.
-    registry = register_builtins(ToolRegistry())
+    # `cfg=` matters: the external tools are the one CONDITIONAL registration, so a
+    # registry built without it can never contain them however the run was configured.
+    registry = register_builtins(ToolRegistry(), cfg=cfg)
     investigator_client = model_routing.client_for(SLOT_INVESTIGATOR)
 
     class _RoleRoutedInvestigator:
@@ -266,9 +270,29 @@ async def _run(
 
             role = role_for(role_id)
             tools = role.tools if role is not None else frozenset()
+            # A role's declared source classes must reach its policy, or the governance
+            # check refuses every tool that reads anything but platform-internal data.
+            # V3.12 found this by running it: `search_web` reads `public_web`, the
+            # external role declares `public_web`, and the policy was built with an
+            # empty set — so the very first external call was refused
+            # `access_class_not_permitted`. The check was right; the wiring was not.
+            classes = role.source_classes if role is not None else ()
+            # A role's declared `tool_budget` was persisted to the plan and enforced by
+            # nothing: it is keyed by TOOL NAME while `ToolBudget` bounds tool CLASSES,
+            # so the two shapes never met. What maps unambiguously is the total — the
+            # sum of a role's declared per-tool caps is a real ceiling on its calls, and
+            # an enforced approximate bound is worth more than an exact decorative one.
+            # Per-tool caps remain unenforced; `MAX_CALLS_PER_QUESTION` and the run's
+            # `max_tool_calls` are the bounds that actually bite today.
+            declared = sum((role.tool_budget or {}).values()) if role is not None else 0
             tool_session = ToolSession(
                 registry=registry,
-                policy=policy_for(role_id, tools=tools),
+                policy=policy_for(
+                    role_id,
+                    tools=tools,
+                    access_classes=classes,
+                    budget=ToolBudget(max_calls=declared) if declared else None,
+                ),
                 cfg=cfg,
                 db=session,
                 # The DURABLE JOB id, or None. Deliberately not `run.id`: that is a

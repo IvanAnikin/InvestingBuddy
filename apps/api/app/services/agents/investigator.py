@@ -41,6 +41,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.services.agent_tools.contracts import (
+    EXTERNAL_TOOL_NAMES,
+    TOOL_FETCH_PUBLIC_SOURCE,
     TOOL_GET_CALCULATED_METRICS,
     TOOL_GET_FINANCIAL_FACTS,
     TOOL_GET_FINANCIAL_SERIES,
@@ -51,6 +53,7 @@ from app.services.agent_tools.contracts import (
     TOOL_GET_TRANSCRIPTS,
     TOOL_LOOKUP_ENTITY,
     TOOL_SEARCH_COMPANY_CORPUS,
+    TOOL_SEARCH_WEB,
 )
 from app.services.calculations.definitions import DEFINITIONS as _CALCULATION_DEFINITIONS
 from app.services.director.loop import FindingDraft, GapDraft, TaskOutcome
@@ -61,6 +64,11 @@ from app.services.ledger import store as ledger
 #: How many tool calls one question may make. The role's own budget and the run's
 #: `max_tool_calls` bound it further; this stops one question consuming a whole task.
 MAX_CALLS_PER_QUESTION = 3
+
+#: How many external claims one ``search_web`` result may be verified against. Each one
+#: is a real fetch of a real page, so this is a spend ceiling as much as a time one —
+#: and it is InvestingBuddy's, because the provider's own is inert (V3.11.1.2).
+MAX_EXTERNAL_VERIFICATIONS = 3
 
 #: How much tool payload reaches the prompt. A model handed the whole corpus is a model
 #: paying for the whole corpus.
@@ -157,6 +165,28 @@ def _tool_arguments(
         return {"company_id": subject}
     if tool == TOOL_GET_MACRO_SERIES:
         return None  # needs a dataset and series key the question does not carry
+    if tool == TOOL_SEARCH_WEB:
+        # The question NAMES THE ISSUER. Every other tool here is entity-scoped by an
+        # id the platform owns; this one crosses to a vendor that has no idea what "the
+        # issuer" refers to. The first live pipeline run sent the question verbatim —
+        # "What has the issuer reported most recently?" — and got a fast, useless answer
+        # about nobody, which is exactly what that question deserves.
+        if not ticker:
+            return None
+        subject_name = " ".join(
+            part for part in (ticker, f"({exchange})" if exchange else None) if part
+        )
+        return {
+            "query": f"{subject_name}: {question.text}",
+            # Passed as context rather than folded into the query, so the provider can
+            # tell the subject from the question.
+            "context": f"The issuer is {subject_name}.",
+        }
+    if tool == TOOL_FETCH_PUBLIC_SOURCE:
+        # Never called speculatively: it needs a URL and a claim, and both come from a
+        # `search_web` result via `_verify_external_leads`. Returning None here is what
+        # stops `_gather` calling it with nothing to verify.
+        return None
     return None
 
 
@@ -400,7 +430,13 @@ class LLMInvestigator:
         """Run the role's tools for one question. Never raises."""
         wanted = [t for t in sorted(question.required_tools) if role.can_use(t)]
         if not wanted:
-            wanted = [t for t in sorted(role.tools)]
+            # The fallback for a question that declares no tools — a carry-forward gap,
+            # typically. It must NEVER reach outside the platform: a question nobody
+            # asked to be searched must not become a vendor bill, and an external tool
+            # here is spend chosen by a default rather than by a plan. The planner also
+            # refuses to seat an external role on such a question; this is the second
+            # lock, because the two failures that would follow are silent and billed.
+            wanted = [t for t in sorted(role.tools) if t not in EXTERNAL_TOOL_NAMES]
         evidence: list[_Evidence] = []
         used = 0
         for tool in wanted[:MAX_CALLS_PER_QUESTION]:
@@ -420,6 +456,87 @@ class LLMInvestigator:
             if not result.ok:
                 continue
             evidence.extend(_harvest(tool, result.payload, result.contains_untrusted_content))
+
+            # THE EXTERNAL CHAIN — V3.12, and the reason this method is not symmetric.
+            #
+            # `search_web` returns CLAIMS and mints no citable id, by construction. On
+            # its own it therefore contributes nothing an agent may cite, which is the
+            # correct behaviour and also useless. What makes it useful is putting each
+            # claim through InvestingBuddy's own retrieval, and that second step is what
+            # produces evidence. It is chained here, deterministically, rather than left
+            # to the model — the same rule the rest of this file follows: an LLM
+            # choosing which URL to fetch is an LLM choosing what the platform reads.
+            if tool == TOOL_SEARCH_WEB and role.can_use(TOOL_FETCH_PUBLIC_SOURCE):
+                verified, spent = await self._verify_external_leads(
+                    role_id, question, result.payload, budget - used
+                )
+                evidence.extend(verified)
+                used += spent
+        return evidence, used
+
+    async def _verify_external_leads(
+        self,
+        role_id: str,
+        question: PlannedQuestion,
+        payload: "dict[str, Any]",
+        budget: int,
+    ) -> tuple[list[_Evidence], int]:
+        """Put a search's claims through the platform's own fetch. Never raises.
+
+        Every citable item the external path can produce is minted here, and only for a
+        claim ``verify_lead`` confirmed against bytes InvestingBuddy fetched itself. A
+        rejected claim contributes **no evidence and no id** — it is recorded by
+        ``persist_lead`` inside the tool, where it belongs as provider quality data.
+
+        The order is deliberate: leads carrying a value first. A numeric claim is the one
+        ``verify_lead`` can actually confirm — it looks for the number in the document —
+        whereas a prose claim can only be checked as a substring, which real pages rarely
+        satisfy. Spending the fetch budget on the checkable ones first is the difference
+        between a path that promotes evidence and one that spends and rejects.
+        """
+        leads = payload.get("leads") if isinstance(payload, dict) else None
+        if not isinstance(leads, list) or budget <= 0:
+            return [], 0
+
+        candidates = [
+            lead
+            for lead in leads
+            if isinstance(lead, dict)
+            and str(lead.get("claimed_source_url") or "").strip()
+            and str(lead.get("claim") or "").strip()
+        ]
+        candidates.sort(key=lambda lead: not str(lead.get("claimed_value") or "").strip())
+
+        evidence: list[_Evidence] = []
+        used = 0
+        for lead in candidates[: min(MAX_EXTERNAL_VERIFICATIONS, budget)]:
+            arguments = {
+                "url": lead["claimed_source_url"],
+                "claim": lead["claim"],
+                "claimed_value": lead.get("claimed_value"),
+                "claimed_period": lead.get("claimed_period"),
+                "claimed_scope": lead.get("claimed_scope"),
+                "claimed_publisher": lead.get("claimed_publisher"),
+                "provider": str(payload.get("provider") or "external"),
+            }
+            result = await self.session.call(
+                TOOL_FETCH_PUBLIC_SOURCE,
+                arguments,
+                task_ref=f"{role_id}:{question.key}",
+            )
+            used += 1
+            if not result.ok:
+                continue
+            # `_harvest` mints nothing: it reads the `evidence_id` the TOOL returned,
+            # which the tool sets only on a verified outcome. An unverified fetch simply
+            # carries no id and so yields no evidence here.
+            evidence.extend(
+                _harvest(
+                    TOOL_FETCH_PUBLIC_SOURCE,
+                    result.payload,
+                    result.contains_untrusted_content,
+                )
+            )
         return evidence, used
 
     async def _write_up(

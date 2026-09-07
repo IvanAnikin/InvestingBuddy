@@ -27,6 +27,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from app.services.agent_tools.contracts import (
+    EXTERNAL_TOOL_NAMES,
+    TOOL_FETCH_PUBLIC_SOURCE,
     TOOL_GET_CALCULATED_METRICS,
     TOOL_GET_COMPANY_PROFILE,
     TOOL_GET_FINANCIAL_FACTS,
@@ -44,6 +46,7 @@ from app.services.agent_tools.contracts import (
     TOOL_LOOKUP_ENTITY,
     TOOL_NAMES,
     TOOL_SEARCH_COMPANY_CORPUS,
+    TOOL_SEARCH_WEB,
 )
 
 #: What a role does when a question needs evidence it cannot obtain.
@@ -232,6 +235,35 @@ VALUATION_CONTEXT_ANALYST = RoleSpec(
     ),
 )
 
+EXTERNAL_RESEARCH_ANALYST = RoleSpec(
+    role_id="external_research_analyst",
+    display_name="External Research Analyst",
+    focus=(
+        "Questions the platform's own holdings cannot answer: recent developments, "
+        "post-filing events, and figures no document in the corpus contains. Reaches "
+        "the open web through the external provider and **must** put every claim "
+        "through InvestingBuddy's own retrieval before it counts."
+    ),
+    tools=frozenset(
+        {
+            TOOL_SEARCH_WEB,
+            TOOL_FETCH_PUBLIC_SOURCE,
+            # Deliberately included: an external claim about a company is worth little
+            # until it can be set beside what the corpus already holds, and a role that
+            # can only see the web will report the web's emphasis as the issuer's.
+            TOOL_SEARCH_COMPANY_CORPUS,
+        }
+    ),
+    tool_budget={"search_web": 2, "fetch_public_source": 6},
+    #: NOT always present. The only role in this table that reaches outside the
+    #: platform, so its presence is a spending decision the Director makes when the
+    #: external tools are implemented — which is to say, when the flag is on. With the
+    #: flag off the tools are unregistered, `implemented_tools()` excludes them, and any
+    #: question routed here is unassignable at plan time with a reason a reader can see.
+    always_present=False,
+    source_classes=("public_web",),
+)
+
 PRIOR_RESEARCH_ANALYST = RoleSpec(
     role_id="prior_research_analyst",
     display_name="Prior Research Analyst",
@@ -251,6 +283,7 @@ ROLES: dict[str, RoleSpec] = {
         EVENT_ANALYST,
         MACRO_ANALYST,
         VALUATION_CONTEXT_ANALYST,
+        EXTERNAL_RESEARCH_ANALYST,
         PRIOR_RESEARCH_ANALYST,
     )
 }
@@ -264,6 +297,20 @@ def role_for(role_id: str) -> RoleSpec | None:
     return ROLES.get(role_id)
 
 
+def external_research_roles() -> tuple[str, ...]:
+    """Roles that reach outside the platform.
+
+    Named as a function rather than a constant so the check is against the declarations
+    themselves: a role that acquires an external tool in a later edit joins this set
+    without anyone remembering to update a list.
+    """
+    return tuple(
+        role_id
+        for role_id, role in ROLES.items()
+        if role.tools & EXTERNAL_TOOL_NAMES
+    )
+
+
 def roles_that_can_answer(required_tools: "frozenset[str] | set[str]") -> list[RoleSpec]:
     """Every role holding all the tools a question needs, in declaration order.
 
@@ -275,10 +322,12 @@ def roles_that_can_answer(required_tools: "frozenset[str] | set[str]") -> list[R
 
 __all__ = [
     "ALWAYS_PRESENT",
+    "EXTERNAL_RESEARCH_ANALYST",
     "ON_EXHAUSTED_RETURN_PARTIAL",
     "ON_MISSING_RAISE_GAP",
     "ROLES",
     "RoleSpec",
+    "external_research_roles",
     "role_for",
     "roles_that_can_answer",
 ]

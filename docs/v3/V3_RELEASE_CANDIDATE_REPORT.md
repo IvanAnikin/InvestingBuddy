@@ -738,7 +738,7 @@ OpenAI ran.
 | Gate | Result |
 |---|---|
 | `ruff` | ✅ clean |
-| `pytest` | ✅ **6,078 passed**, 39 skipped — the split moves with `ENABLE_INTEGRATION_TESTS`; see [CAMPAIGN_STATE.md](CAMPAIGN_STATE.md#gate-baseline) for the reconciliation on *collected* counts, which are environment-independent |
+| `pytest` | ✅ **6,126 passed**, 39 skipped — the split moves with `ENABLE_INTEGRATION_TESTS`; see [CAMPAIGN_STATE.md](CAMPAIGN_STATE.md#gate-baseline) for the reconciliation on *collected* counts, which are environment-independent |
 | `mypy` | ✅ 71 (baseline, unchanged) |
 | web typecheck / lint / build | ✅ all pass |
 | Migration chain on real PostgreSQL 16 | ✅ 038 → 018 → 038, 61 tables at head, 23 at baseline |
@@ -763,16 +763,17 @@ provider.** Zero lead rows across every real run, because leads exist for *provi
 facts needing independent retrieval*, and the only configured producer of those is
 DeepSeek, whose search leg is off by default. It is unit-tested and dormant.
 
-*Updated by V3.11.1.2 — and read the second half.* V3.11.1.1 reported that DeepSeek could
-not search and therefore could never produce leads to promote. That reason is wrong: it
-can search, and it returns URLs of pages it actually opened. **But the capability is not
-the wiring, and this slice did not add the wiring.** `DeepSeekResearchProvider.investigate()`
-— the only producer of a `ResearchLead` — still runs on `/chat/completions` with no
-retrieval, so its leads cite URLs the model recalled; the search leg emits
-`SourceCandidate`s, which carry a URL and no claim, while `verify_lead()` verifies a
-claim. So the gap is now "the role is staffable and unstaffed", not "no provider can
-staff it". Closing it means giving the investigation the search tool — a real slice, not
-a flag flip.
+*Superseded by **V3.12**, which staffed it.* The history is worth keeping because the
+campaign was wrong about this twice. V3.11.1.1 said DeepSeek could not search, so the role
+could never be staffed. V3.11.1.2 disproved that but did not connect anything, so the role
+was *staffable and unstaffed*. V3.12 connected it, and the path now runs end to end on
+real data — see [§11.7](#117-v312--external-research-integration) and
+[the slice](slices/V3.12-external-research-integration.md).
+
+What replaces this caveat is smaller and specific: **scope is not checked on the external
+path**, and promotion is **provider-dependent** (seven of thirteen live runs promoted
+evidence; the rest cited URLs our fetcher could not reach, could not read, or that carried
+no figures). Both are stated in §11.7.
 
 That is stated plainly rather than waved through. The invariant it guards — *model output
 is never automatically evidence* — holds in the enabled configuration by a different and
@@ -796,6 +797,58 @@ remaining unscoped chunks are overwhelmingly narrative with no figure in them, o
 two-column PDF whose interleaving is a known upstream limitation. Scope is a property of a
 figure; prose without one does not need it.
 
+### 11.7 V3.12 — external research integration
+
+The last unstaffed role in V3, closed. The full chain now runs on real data:
+
+```
+Director → external_research_analyst → Investigator
+  → search_web (real DeepSeek /responses retrieval) → ResearchLead
+  → fetch_public_source (InvestingBuddy's OWN guarded fetch) → verify_lead
+  → ev:x:… minted only on `verified` → Research Ledger → playbook → Council
+```
+
+**Sixteen live MRNA runs in two phases: 5 of the last 6 — the code that ships —
+promoted external evidence into findings.** A representative one: a finding stating Moderna's Q4 2024 revenue, citing two `ev:x:` ids derived from the
+SHA-256 of an SEC exhibit **this platform fetched itself**. The six that promoted nothing did so because the URL the
+provider chose was unreachable (403), unreadable (no extractable text), or a filing
+**index page** carrying no figures — the gate refusing what it could not verify, which is
+the system working. Promotion is provider-dependent, at roughly a coin-flip per run.
+
+**Negative acceptance: 8 live cases against that same real document, 1 promotion.** A
+fabricated value, a claim absent from the text, a conflicting period, a mutated URL, a
+fabricated URL, an internal host and a non-HTTPS scheme are all refused with a named
+reason.
+
+Two **pre-existing** defects in the verification gate were found by pointing it at real
+adversarial claims, and both are fixed for every provider:
+
+* a fabricated `8675` verified against a document containing `8650`, because a 0.5%
+  relative tolerance over 393 numbers is a condition almost any invented figure meets;
+* a claim naming `2019-Q1` verified against a 2026 exhibit, because a claimed period was
+  compared only against one the platform had independently determined — and a raw fetch
+  supplied none, so the check was **skipped, not failed**.
+
+Four wiring defects were found only by running the pipeline, including a governance check
+that correctly refused the first external call because the role's declared source classes
+never reached its policy.
+
+| Measure (per run) | Range across five clean runs |
+|---|---|
+| Input / output tokens | 25,453–69,949 / 3,589–7,513 |
+| Provider searches / URL fetches | 2–4 / 6–9 |
+| Wall clock | 41–78 s |
+| Verified useful findings | 0–3 |
+| **Estimated cost** | **UNPRICED** — `v3_price_*` unset; an unknown cost is not zero |
+
+**Still not true:** scope is unchecked on this path (external evidence carries
+`scope_key = None` and says so); period is checked only when the retrieved document names
+one; and six runs is a measurement, not a benchmark.
+
+**Both flags stay off by default.** With `V3_DEEPSEEK_SEARCH_ENABLED` off the tools are
+not registered, the question is never planned, the role is never seated, and the run is
+byte-identical to V3.11.
+
 ---
 ## 12. Recommendation
 
@@ -809,7 +862,8 @@ Against the acceptance gate, point by point:
 
 | Criterion | Evidence |
 |---|---|
-| DeepSeek verified **or** removed as release-critical | ✅ **both** — contract verified live **16/16 across both endpoints** (model leg 2026-09-06, search leg 2026-09-07), *and* removed as release-critical: 3 real Councils, 23 tests, adapter unimported by the research path |
+| DeepSeek verified **or** removed as release-critical | ✅ **both** — contract verified live 16/16 across both endpoints, *and* not release-critical: with the flags off the research path does not import it |
+| **`ResearchLead` → Evidence exercised with a real provider** | ✅ **V3.12** — 5 of the last 6 live MRNA runs promoted external evidence into ledger findings (10 of 16 across two prompt phases), and every non-promotion was a correct refusal; 8-case negative acceptance minted exactly 1 |
 | Scope resolution materially functional, fail-closed preserved | ✅ 1.7% → 8.1%, **0.0%** false-positive Group |
 | MRNA, CFR, ASML exercise the playbook-gated path | ✅ all three — and unaffected by V3.11.1.2: those Councils ran on Azure OpenAI with both DeepSeek flags off, which is still the default |
 | At least one playbook-gated real Council completes | ✅ **three** |
