@@ -35,18 +35,64 @@ from app.services.agents.routing import (
 SLOTS = (SLOT_INVESTIGATOR, SLOT_FOLLOW_UP, SLOT_RED_TEAM, SLOT_CHAIR)
 
 
+#: A placeholder Azure OpenAI configuration. Not a credential — `_azure_client` only
+#: checks that a key and an endpoint are non-empty before constructing its client, and
+#: nothing in these tests makes a call.
+_AZURE = {
+    "azure_openai_api_key": "test-key-not-a-credential",
+    "azure_openai_endpoint": "https://example-not-a-real-endpoint.invalid",
+    "azure_openai_deployment_name": "test-deployment",
+}
+
+
+@pytest.fixture
+def buildable_vendors(monkeypatch):  # noqa: ANN001, ANN201
+    """Make both vendors CONSTRUCTIBLE, so a routing test tests routing.
+
+    `resolve_routing` asks each vendor's builder for a client and takes the first that
+    returns one. `_azure_client` needs `langchain-openai`, which lives in the `llm`
+    extra — and CI installs only `[dev]`. So on CI every builder returned None, every
+    slot resolved to `vendor=None`, and eleven tests that passed locally failed.
+
+    They were asserting a property of the INSTALLED ENVIRONMENT, which is the same
+    mistake as asserting a property of the developer's `.env` — the third time this
+    campaign has met it. Patching the builders keeps the assertions on what these tests
+    are actually about: which vendor is PREFERRED for a slot, and what it falls back to.
+    Whether an SDK is importable is a different question, and it has its own test.
+    """
+    import app.services.agents.routing as routing
+
+    def _fake_azure(cfg):  # noqa: ANN001, ANN202
+        return object() if (cfg.azure_openai_api_key and cfg.azure_openai_endpoint) else None
+
+    def _fake_deepseek(cfg):  # noqa: ANN001, ANN202
+        if not getattr(cfg, "v3_deepseek_model_enabled", False):
+            return None
+        return object() if cfg.deepseek_api_key else None
+
+    monkeypatch.setitem(routing._BUILDERS, routing.VENDOR_AZURE_OPENAI, _fake_azure)
+    monkeypatch.setitem(routing._BUILDERS, routing.VENDOR_DEEPSEEK, _fake_deepseek)
+
+
 def _no_deepseek() -> Settings:
-    """Settings with DeepSeek explicitly absent.
+    """Settings with DeepSeek explicitly absent **and Azure OpenAI explicitly present**.
 
     A bare ``Settings()`` reads the developer's ``.env``, so tests written against it
     assert a property of the MACHINE, not of the code. These originally passed only
     because no key existed anywhere; the moment a real one was configured, five of them
-    failed. Every DeepSeek-absence test now states the absence explicitly.
+    failed.
+
+    The fix then stated DeepSeek's ABSENCE explicitly and left Azure OpenAI's PRESENCE
+    implicit — which is the same bug wearing the other hat, and CI found it: on a runner
+    with no Azure credential every slot resolved to ``vendor=None`` and eleven tests that
+    passed locally failed. A test about fallback has to state **both** ends of the
+    fallback, or it is still asking the machine.
     """
     return Settings(
         deepseek_api_key="",
         v3_deepseek_model_enabled=False,
         v3_deepseek_search_enabled=False,
+        **_AZURE,
     )
 
 
@@ -62,7 +108,7 @@ class TestItIsOffByDefault:
     def test_the_model_leg_defaults_off(self) -> None:
         assert Settings.model_fields["v3_deepseek_model_enabled"].default is False
 
-    def test_an_absent_deepseek_names_no_deepseek_slot(self) -> None:
+    def test_an_absent_deepseek_names_no_deepseek_slot(self, buildable_vendors) -> None:
         routing = resolve_routing(_no_deepseek())
         assert all(slot.vendor != "deepseek" for slot in routing.slots.values())
 
@@ -72,46 +118,140 @@ class TestEverySlotStillResolves:
     preferred vendor is unconfigured — a research run that stops before it starts."""
 
     @pytest.mark.parametrize("slot_name", SLOTS)
-    def test_the_slot_has_a_vendor(self, slot_name) -> None:
+    def test_the_slot_has_a_vendor(self, slot_name, buildable_vendors) -> None:
         assert resolve_routing(_no_deepseek()).slots[slot_name].vendor
 
     @pytest.mark.parametrize("slot_name", SLOTS)
-    def test_the_slot_falls_back_to_what_is_configured(self, slot_name) -> None:
+    def test_the_slot_falls_back_to_what_is_configured(self, slot_name, buildable_vendors) -> None:
         assert resolve_routing(_no_deepseek()).slots[slot_name].vendor == "azure_openai"
 
-    def test_a_flag_is_not_a_credential(self) -> None:
+    def test_a_flag_is_not_a_credential(self, buildable_vendors) -> None:
         """Enabling the feature with no key must not route work to a provider that
         cannot answer."""
-        enabled_but_keyless = Settings(deepseek_api_key="", v3_deepseek_model_enabled=True)
+        enabled_but_keyless = Settings(
+            deepseek_api_key="", v3_deepseek_model_enabled=True, **_AZURE
+        )
         routing = resolve_routing(enabled_but_keyless)
         assert all(slot.vendor != "deepseek" for slot in routing.slots.values())
         assert all(routing.slots[s].vendor for s in SLOTS)
 
-    def test_a_credential_is_not_consent(self) -> None:
+    def test_a_credential_is_not_consent(self, buildable_vendors) -> None:
         """The converse, and the defect a real key exposed: a key appearing in the
         environment silently moved Investigator and follow-up research off Azure
         OpenAI — the vendor every V3.11 acceptance measurement was taken on."""
         credentialed_but_off = Settings(
             deepseek_api_key="sk-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             v3_deepseek_model_enabled=False,
+            **_AZURE,
         )
         routing = resolve_routing(credentialed_but_off)
         assert all(slot.vendor != "deepseek" for slot in routing.slots.values())
 
-    def test_both_together_do_route_to_it(self) -> None:
+    def test_both_together_do_route_to_it(self, buildable_vendors) -> None:
         """The flag must actually work, or it is a permanent off switch pretending to
         be a choice."""
         both = Settings(
             deepseek_api_key="sk-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             v3_deepseek_model_enabled=True,
+            **_AZURE,
         )
         routing = resolve_routing(both)
         assert routing.slots[SLOT_INVESTIGATOR].vendor == "deepseek"
         assert routing.slots[SLOT_CHAIR].vendor == "azure_openai"
 
 
+class TestAMissingOptionalSdkDegradesHonestly:
+    """The contract CI exposed, and the regression coverage for it.
+
+    `langchain-openai` lives in the `llm` extra; CI installs only `[dev]`, and the
+    pyproject comment says so in as many words. So on a CI runner `_azure_client`
+    cannot construct a client even with an endpoint and a key configured.
+
+    That behaviour is CORRECT — a missing optional dependency is "vendor unavailable",
+    and `_azure_client` returns None rather than raising, which keeps the caller's
+    deterministic path. What was wrong was eleven tests that asserted a vendor *does*
+    resolve, which is only true where the SDK happens to be installed. They were
+    asserting a property of the INSTALLED ENVIRONMENT — the same mistake as asserting a
+    property of the developer's `.env`, which this campaign has now met three times.
+
+    These tests pin the contract itself, so it is checked rather than assumed, and they
+    pass with or without the package.
+    """
+
+    def test_an_unimportable_sdk_is_unavailable_not_an_exception(
+        self, monkeypatch
+    ) -> None:
+        import app.services.agents.routing as routing
+
+        def _boom(*_a, **_kw):  # noqa: ANN002, ANN003, ANN202
+            raise ModuleNotFoundError("No module named 'langchain_openai'")
+
+        monkeypatch.setattr(
+            "app.services.llm.azure_openai_client.AzureOpenAILLMClient", _boom
+        )
+        cfg = Settings(**_AZURE, deepseek_api_key="")
+        assert routing._azure_client(cfg) is None, (
+            "a missing optional dependency must read as 'vendor unavailable', never as "
+            "a crash — the caller keeps its deterministic path"
+        )
+
+    def test_a_slot_with_no_constructible_vendor_says_why(self, monkeypatch) -> None:
+        """And the run is not lost: the slot carries a reason a reader can act on."""
+        import app.services.agents.routing as routing
+
+        monkeypatch.setitem(
+            routing._BUILDERS, routing.VENDOR_AZURE_OPENAI, lambda _cfg: None
+        )
+        monkeypatch.setitem(
+            routing._BUILDERS, routing.VENDOR_DEEPSEEK, lambda _cfg: None
+        )
+        resolved = resolve_routing(Settings(**_AZURE)).slots[SLOT_CHAIR]
+        assert resolved.vendor is None
+        assert resolved.client is None
+        assert "no configured vendor" in resolved.reason
+
+    def test_the_routing_tests_do_not_depend_on_the_optional_sdk(self) -> None:
+        """Structural, so the next person cannot reintroduce the assumption quietly.
+
+        Every test in this file that asserts a vendor RESOLVES must take the
+        `buildable_vendors` fixture. Without it the assertion is about whether
+        `langchain-openai` is installed, which is not what any of them are named for.
+        """
+        import ast
+        from pathlib import Path as _Path
+
+        tree = ast.parse(_Path(__file__).read_text())
+        offenders: list[str] = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef):
+                continue
+            # A real CALL to `resolve_routing`, found in the syntax tree — not a text
+            # match, which this very function would satisfy from its own docstring.
+            # The campaign has already lost time to a grep matching its own prose.
+            calls_routing = any(
+                isinstance(c, ast.Call)
+                and getattr(c.func, "id", getattr(c.func, "attr", None))
+                == "resolve_routing"
+                for c in ast.walk(node)
+            )
+            reads_vendor = any(
+                isinstance(a, ast.Attribute)
+                and a.attr in ("vendor", "vendor_for", "shares_vendor_with_chair")
+                for a in ast.walk(node)
+            )
+            if not (calls_routing and reads_vendor):
+                continue
+            args = {a.arg for a in node.args.args}
+            if "buildable_vendors" not in args and "monkeypatch" not in args:
+                offenders.append(node.name)
+        assert not offenders, (
+            "these assert on a resolved vendor without making the vendors "
+            f"constructible, so they test the installed environment: {offenders}"
+        )
+
+
 class TestTheSharedVendorIsReported:
-    def test_it_says_so_when_the_red_team_shares_the_chairs_vendor(self) -> None:
+    def test_it_says_so_when_the_red_team_shares_the_chairs_vendor(self, buildable_vendors) -> None:
         """A Red Team run by the same vendor as the Chair is a weaker check than one run
         by a different vendor. With DeepSeek absent that is the configuration, and a
         reader must be able to see which they got rather than infer it."""

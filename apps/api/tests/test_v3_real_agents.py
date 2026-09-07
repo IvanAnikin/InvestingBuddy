@@ -118,6 +118,30 @@ def _finding_ref(**overrides) -> FindingRef:
 # --------------------------------------------------------------------------- #
 
 
+@pytest.fixture
+def buildable_vendors(monkeypatch):  # noqa: ANN001, ANN201
+    """Make both vendors constructible, so a routing test tests routing.
+
+    `_azure_client` needs `langchain-openai`, which lives in the `llm` extra while CI
+    installs only `[dev]`. Without this, every builder returns None on CI, every slot
+    resolves to `vendor=None`, and a test about FALLBACK ORDER fails for a reason that
+    has nothing to do with fallback order. See the identical fixture in
+    `test_v3_deepseek_not_release_critical.py`.
+    """
+    import app.services.agents.routing as routing
+
+    def _fake_azure(cfg):  # noqa: ANN001, ANN202
+        return object() if (cfg.azure_openai_api_key and cfg.azure_openai_endpoint) else None
+
+    def _fake_deepseek(cfg):  # noqa: ANN001, ANN202
+        if not getattr(cfg, "v3_deepseek_model_enabled", False):
+            return None
+        return object() if cfg.deepseek_api_key else None
+
+    monkeypatch.setitem(routing._BUILDERS, routing.VENDOR_AZURE_OPENAI, _fake_azure)
+    monkeypatch.setitem(routing._BUILDERS, routing.VENDOR_DEEPSEEK, _fake_deepseek)
+
+
 class TestRouting:
     def test_a_slot_with_nothing_configured_resolves_to_nothing_with_a_reason(
         self,
@@ -136,7 +160,9 @@ class TestRouting:
         assert DEFAULT_PREFERENCES[SLOT_CHAIR] == (VENDOR_AZURE_OPENAI,)
         assert DEFAULT_PREFERENCES[SLOT_RED_TEAM][0] == VENDOR_AZURE_OPENAI
 
-    def test_the_investigator_falls_back_when_deepseek_is_absent(self) -> None:
+    def test_the_investigator_falls_back_when_deepseek_is_absent(
+        self, buildable_vendors
+    ) -> None:
         """No DeepSeek key must not block the research path."""
         routing = resolve_routing(
             Settings(
@@ -148,7 +174,7 @@ class TestRouting:
         )
         assert routing.vendor_for(SLOT_INVESTIGATOR) == VENDOR_AZURE_OPENAI
 
-    def test_a_shared_vendor_is_reported_not_hidden(self) -> None:
+    def test_a_shared_vendor_is_reported_not_hidden(self, buildable_vendors) -> None:
         """A Red Team drawn from the Chair's vendor shares its blind spots, and a reader
         who assumed diversity that is not there would over-weight the challenge."""
         routing = resolve_routing(
