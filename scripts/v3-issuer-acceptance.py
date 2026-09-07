@@ -122,6 +122,17 @@ async def main() -> int:
         help="Where the prices came from. Recorded beside the estimate so it is "
         "auditable rather than merely plausible.",
     )
+    parser.add_argument(
+        "--external-research",
+        action="store_true",
+        help=(
+            "V3.12. Enable the EXTERNAL research path for this run: the Investigator "
+            "may call search_web and fetch_public_source, so a real provider searches "
+            "the web and every claim it returns is re-fetched and verified by "
+            "InvestingBuddy before anything may cite it. Requires --allow-network and a "
+            "configured provider credential. Costs real money."
+        ),
+    )
     parser.add_argument("--json", type=Path, default=None)
     args = parser.parse_args()
 
@@ -152,6 +163,9 @@ async def main() -> int:
         # playbook's blocking question was unanswerable.
         primary_document_ingestion_enabled=True,
         report_citation_persistence_enabled=True,
+        # V3.12. Off unless asked for: the external path spends at a vendor, and a
+        # credential in the environment is not a decision to spend it.
+        v3_deepseek_search_enabled=bool(args.external_research),
         v3_price_usd_per_million_input_tokens=args.price_in,
         v3_price_usd_per_million_output_tokens=args.price_out,
         v3_price_source=args.price_source,
@@ -166,6 +180,23 @@ async def main() -> int:
     print(f"=== V3 issuer acceptance: {args.ticker}:{args.exchange} ===")
     print(f"scratch database: …/{scratch.rsplit('/', 1)[-1]}")
     print(f"mode: {args.mode}   network: {'ALLOWED' if args.allow_network else 'off'}")
+    if args.external_research:
+        from app.services.agent_tools.builtin import register_builtins
+        from app.services.agent_tools.registry import ToolRegistry
+        from app.services.agents.routing import research_provider_for
+
+        provider = research_provider_for(cfg)
+        tools = sorted(
+            set(register_builtins(ToolRegistry(), cfg=cfg).names())
+            & {"search_web", "fetch_public_source"}
+        )
+        print(f"external research: ON  provider={type(provider).__name__ if provider else None}")
+        print(f"external tools registered: {tools}")
+        if provider is None:
+            print(
+                "  !! no provider resolved — the flag is on and no credential is "
+                "configured, so the external path will degrade to nothing."
+            )
 
     from app.services.agents.routing import resolve_routing
 
@@ -221,11 +252,41 @@ async def main() -> int:
 
         failures = await _invariants(session, outcomes[-1], company)
 
+        external = None
+        if args.external_research:
+            external = await _external_provenance(session)
+            print("\n=== EXTERNAL RESEARCH PROVENANCE (V3.12) ===")
+            print(json.dumps(external, indent=2, default=str))
+            # The brief's gate, stated as a check rather than as a paragraph: calling
+            # search proves nothing, and neither does a verified lead nobody used.
+            if external["leads_discovered"] == 0:
+                failures.append(
+                    "external research produced NO leads at all — the path ran and "
+                    "discovered nothing to verify"
+                )
+            if external["evidence_promoted"] == 0:
+                failures.append(
+                    "no external lead survived InvestingBuddy's own retrieval and "
+                    "verification, so no external evidence was promoted"
+                )
+            if not external["findings_citing_external_evidence"]:
+                failures.append(
+                    "external evidence was promoted but NO downstream finding cites "
+                    "it — proving search ran is not proving the path is staffed"
+                )
+
     await engine.dispose()
 
     if args.json:
         args.json.write_text(
-            json.dumps([o.to_dict() for o in outcomes], indent=2, default=str)
+            json.dumps(
+                {
+                    "runs": [o.to_dict() for o in outcomes],
+                    "external_research": external,
+                },
+                indent=2,
+                default=str,
+            )
         )
         print(f"\nwrote {args.json}")
 
@@ -628,6 +689,104 @@ def _report(index: int, outcome, elapsed: float) -> None:  # noqa: ANN001
         print(f"    gap      [{gap.get('gap_type')}] {str(gap.get('description'))[:110]}")
 
 
+async def _external_provenance(session) -> dict:  # noqa: ANN001
+    """What the EXTERNAL path actually did, at the granularity the V3.12 brief asks for.
+
+    Deliberately not "was search_web called". The brief's point is that calling a search
+    proves nothing: what has to be shown is a lead **discovered**, a source **fetched by
+    InvestingBuddy**, a verification **passed or failed**, evidence **promoted**, and
+    that promoted evidence **used downstream**. Each of those is a different row in a
+    different table, and this reads all of them.
+    """
+    from sqlalchemy import select
+
+    from app.models.ledger import ResearchFinding
+    from app.models.research_lead import ResearchLeadRecord
+    from app.models.research_tool_call import ResearchToolCall
+    from app.services.agent_tools.external import EXTERNAL_EVIDENCE_PREFIX
+
+    leads = (await session.execute(select(ResearchLeadRecord))).scalars().all()
+    calls = (
+        (
+            await session.execute(
+                select(ResearchToolCall).where(
+                    ResearchToolCall.tool_name.in_(
+                        ["search_web", "fetch_public_source"]
+                    )
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    findings = (await session.execute(select(ResearchFinding))).scalars().all()
+
+    promoted = sorted(
+        {
+            lead.fetched_content_hash
+            for lead in leads
+            if lead.status == "verified" and lead.fetched_content_hash
+        }
+    )
+    external_cited = [
+        f
+        for f in findings
+        if any(
+            str(e).startswith(EXTERNAL_EVIDENCE_PREFIX)
+            for e in (f.evidence_ids_json or [])
+        )
+    ]
+    by_status: dict[str, int] = {}
+    by_reason: dict[str, int] = {}
+    for lead in leads:
+        by_status[lead.status] = by_status.get(lead.status, 0) + 1
+        if lead.rejection_reason:
+            by_reason[lead.rejection_reason] = by_reason.get(lead.rejection_reason, 0) + 1
+    return {
+        "tool_calls": {
+            name: sum(1 for c in calls if c.tool_name == name)
+            for name in ("search_web", "fetch_public_source")
+        },
+        "tool_outcomes": {
+            outcome: sum(1 for c in calls if c.outcome == outcome)
+            for outcome in sorted({c.outcome for c in calls})
+        },
+        "leads_discovered": len(leads),
+        "leads_by_status": by_status,
+        "leads_rejected_by_reason": by_reason,
+        # `fetch_attempted` lives on the OUTCOME, not on the row. A fetch happened iff
+        # we hold the bytes' hash, or the refusal names something only a fetch can find
+        # out. A policy refusal decided before the network is not a fetch.
+        "sources_fetched": sum(
+            1
+            for lead in leads
+            if lead.fetched_content_hash
+            or lead.rejection_reason
+            in (
+                "url_unreachable",
+                "claim_not_in_source",
+                "value_mismatch",
+                "period_mismatch",
+                "scope_mismatch",
+            )
+        ),
+        "verifications_passed": by_status.get("verified", 0),
+        "verifications_failed": by_status.get("rejected", 0),
+        "evidence_promoted": len(promoted),
+        "findings_citing_external_evidence": [
+            {
+                "finding_id": str(f.id),
+                "statement": (f.statement or "")[:160],
+                "evidence_ids": list(f.evidence_ids_json or []),
+                "period_key": f.period_key,
+                "scope_key": f.scope_key,
+                "verification_status": f.verification_status,
+            }
+            for f in external_cited
+        ],
+    }
+
+
 async def _unresolved_citations(session, findings) -> list[str]:  # noqa: ANN001
     """Citation ids that point at no row.
 
@@ -646,8 +805,41 @@ async def _unresolved_citations(session, findings) -> list[str]:  # noqa: ANN001
     if not cited:
         return []
 
-    chunk_ids = {c[3:] for c in cited if c.startswith("ev:")}
+    # `ev:x:` is EXTERNAL evidence (V3.12) — a URL InvestingBuddy fetched and verified,
+    # deliberately not a corpus chunk. Looking one up in `research_document_chunks` finds
+    # nothing and reports a fabricated citation, so this harness failed on exactly the
+    # outcome V3.12 exists to produce. It resolves against the lead record instead.
+    external_ids = {c for c in cited if c.startswith(EXTERNAL_EVIDENCE_PREFIX)}
+    chunk_ids = {
+        c[3:]
+        for c in cited
+        if c.startswith("ev:") and not c.startswith(EXTERNAL_EVIDENCE_PREFIX)
+    }
     other = {c for c in cited if not c.startswith("ev:")}
+
+    unresolved_external: set[str] = set()
+    if external_ids:
+        from app.models.research_lead import ResearchLeadRecord
+        from app.services.agent_tools.external import external_evidence_id
+
+        rows = (
+            (
+                await session.execute(
+                    select(
+                        ResearchLeadRecord.fetched_content_hash,
+                        ResearchLeadRecord.fetched_url,
+                        ResearchLeadRecord.claimed_source_url,
+                    ).where(ResearchLeadRecord.status == "verified")
+                )
+            )
+            .all()
+        )
+        mintable = {
+            external_evidence_id(h, url or claimed)
+            for h, url, claimed in rows
+            if h
+        }
+        unresolved_external = external_ids - mintable
 
     found_chunks: set[str] = set()
     if chunk_ids:
@@ -690,6 +882,11 @@ async def _unresolved_citations(session, findings) -> list[str]:  # noqa: ANN001
         failures.append(f"citation 'ev:{missing}' resolves to no corpus chunk")
     for missing in sorted(other - found_facts):
         failures.append(f"citation {missing!r} resolves to no fact or calculation")
+    for missing in sorted(unresolved_external):
+        failures.append(
+            f"citation {missing!r} resolves to no verified lead — an external evidence "
+            "id must be derivable from the hash of bytes InvestingBuddy fetched"
+        )
     return failures
 
 

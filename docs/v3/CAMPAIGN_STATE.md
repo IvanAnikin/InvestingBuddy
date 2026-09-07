@@ -9,7 +9,7 @@ the code, not inferred from a plan. When it disagrees with a phase-gate section 
 record of a gate and this file is the current state; re-verify before trusting
 either.
 
-**Last verified:** 2026-09-07, after V3.11.1.2 merged at **`c7b2f3f`**, by direct `git`
+**Last verified:** 2026-09-07, after V3.12, by direct `git`
 inspection, a full local gate run (API and web), a full migration chain up-and-down
 against real PostgreSQL 16, a live real-document corpus acceptance run, a **live DeepSeek
 `/responses` contract run (16/16)**, and an independent code review plus an independent
@@ -75,6 +75,7 @@ observation rather than an explanation; decision #18 remains the user's.
 | V3.8 | Research Memory and Delta | `IMPLEMENTED` — 8.1/8.2 merged |
 | V3.9 | Monitoring | `IMPLEMENTED` — 9.1 merged, feature-gated, **nothing schedules it** |
 | V3.10 | End-to-end integration and real-issuer acceptance | `IMPLEMENTED` — 10.1-10.4 merged + 2 correctives |
+| V3.12 | External research integration and final acceptance | `IMPLEMENTED` — the `ResearchLead` → Evidence path is **staffed and demonstrated on real data**: **5 of the last 6** live MRNA runs promoted external evidence into ledger findings — every non-promotion a correct refusal — and an 8-case live negative acceptance minted exactly 1. Found and fixed **two pre-existing verification-gate defects** and four wiring defects. Both flags still default off |
 | V3.11 | Production hardening and final product acceptance | `IMPLEMENTED` — 11.1-11.5 merged + 2 correctives; all four V3.10 blockers closed; live contract VERIFIED **16/16** on 2026-09-07 across **both** DeepSeek endpoints. **11.1.2 reversed 11.1.1's central finding: server-side web search DOES exist, on `/responses`.** DeepSeek is still not release-critical |
 
 `IMPLEMENTED` = code, tests and local contract complete. `VALIDATED` = realistic
@@ -159,6 +160,8 @@ rewrite of history. Five exist, and each one is a defect a real run found:
 | 2026-09-06 | Citations are checked to actually resolve | `fix/v3-11-5-citation-resolution-check` | `9b41bc0` |
 | 2026-09-06 | **The DeepSeek contract, verified** *(its web-search finding was later REVERSED — see the next row)* | `fix/v3-11-1-1-deepseek-live-contract` | `f037f1b` | A real key made 7 of 8 live questions fail. Found: the adapter's repr **printed the key into pytest output**; `response_format` sent unconditionally so every completion 400'd; tool `parameters` needed a JSON Schema; ~~no server-side web search exists at all~~ **(WRONG — it does, on `/responses`)**; a credential silently re-routed Investigator work off Azure OpenAI; and seven tests asserted a property of the developer's machine. | "Citations resolve" was on the acceptance gate and had never been measured — the harness checked that a finding HAS citations, not that they lead anywhere. | **Findings were exempt from period and scope integrity.** Real findings said "FY2026 projected" over FY2025 actuals with `period_key=None`. Now inherited on agreement or nothing; disagreement discards the finding and opens a `conflicting_sources` gap — which then fired on live SEC data. |
 | 2026-09-07 | **DeepSeek's web search exists; it was on the other endpoint** | `fix/v3-11-1-2-deepseek-responses-web-search` | `c7b2f3f` | V3.11.1.1 probed only `/chat/completions` and reported that DeepSeek has no server-side web search. It has one, on **`POST /responses`** — verified live 16/16. **An absence measured on one endpoint is not an absence.** `search()` now really searches; candidates come only from pages the provider actually opened (there are **no structured citations**), and because `max_tool_calls` and `filters.allowed_domains` are accepted-and-ignored, spend and domain limits are enforced client-side. Also closed a **second credential-leak path**: any `repr` of `Settings` printed every API key, so all five are now `Field(repr=False)`. |
+
+| 2026-09-07 | **V3.12 external research integration** | `feature/v3-12-external-research-integration` | *(this slice)* | The last unstaffed role. `search_web` and `fetch_public_source` — reserved in the vocabulary since V3.3 — are implemented, gated on the external flag, and chained by the Investigator: search returns CLAIMS with no citable id, and only InvestingBuddy's own fetch through `verify_lead` may mint one. Live: **5 of the last 6** MRNA runs promoted `ev:x:` evidence into findings (the six non-promotions all correct refusals); 8 negative cases minted 1. Fixed two **pre-existing** gate defects a real document exposed — a fabricated value matching under a relative tolerance, and a period conflict that was *skipped* rather than failed — plus four wiring defects only the pipeline found. |
 
 ## Migrations
 
@@ -264,7 +267,7 @@ Recorded so a later run can be compared against a number rather than a memory.
 | Gate | At campaign start (`35bd550`) | At the release candidate | After V3.11 | After V3.11.1.2 |
 |---|---|---|---|---|
 | `ruff check .` | All checks passed | All checks passed | All checks passed | All checks passed |
-| `pytest tests/ -q` | 4949 passed, 12 skipped | 5870 passed, 12 skipped | **6055 passed**, 25 skipped (`ENABLE_INTEGRATION_TESTS=true`) | **6078 passed**, 39 skipped (flag unset) |
+| `pytest tests/ -q` | 4949 passed, 12 skipped | 5870 passed, 12 skipped | **6055 passed**, 25 skipped (`ENABLE_INTEGRATION_TESTS=true`) | **6126 passed**, 39 skipped (flag unset; 6078 before V3.12) |
 | `mypy app` | 71 errors in 10 files | 71 (baseline, unchanged) | 71 (baseline, unchanged) | 71 (baseline, unchanged) |
 | web typecheck / lint / build | not run | **all passed** | **all passed** (re-run in V3.11.5) | typecheck + lint re-run, **passed** (web untouched) |
 
@@ -367,6 +370,22 @@ Carried forward, all still true:
   `database_url` (the DB password) and `staging_basic_auth`; and the behavioural test
   itself must not put the rendered object in an `assert`, or its own failure prints what
   it guards. **The validation key still needs rotating.**
+- **A relative tolerance is not a search condition.** A claimed value was verified
+  against a real SEC exhibit because `8675` fell within 0.5% of the document's `8650` —
+  and that document holds **393 numbers**, so the window was wide enough for almost any
+  invented figure. Verification now also requires the found number to round to the claim
+  **at the precision the claim states**. The general lesson: a tolerance calibrated for
+  *rounding* becomes a false-positive machine when it is used to *search* a large
+  document.
+- **A check that is skipped reads exactly like a check that passed.** `verify_lead`
+  compared a claimed period only against one the platform had independently determined;
+  a raw public fetch supplied none, so a claim naming `2019-Q1` sailed through against a
+  2026 filing. `periods_in()` now reads what a document says about itself, and an empty
+  result means *unchecked*, never "no periods".
+- **A feature flag read from process-global settings cannot gate a run.**
+  `implemented_tools()` ignored the `cfg` the pipeline threads through every other layer,
+  so a run's own configuration could not decide its own tool surface. Same class as the
+  V3.11.1.2 flag-with-no-consumer defect, one level up.
 - **A test that guards a leak can BE the leak.** V3.11.1.2's security pass found
   `assert key not in repr(transport)` reading a live key — in a test that runs always,
   and that only ever fails on the day the redaction it guards has regressed. pytest

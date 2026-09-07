@@ -32,9 +32,22 @@ measured it. **An absence measured on one endpoint is not an absence**
 ([ADR-055](../DECISIONS.md#adr-055)). Consequence for the plan: **no search provider needs
 buying**, and Exa, Perplexity and Gemini stay deferred and unpurchased.
 
+**V3.12 closed the last gap.** The release candidate's §11.6 named one thing still
+unproved — the `ResearchLead` → Evidence path had never run with a real external
+provider. It has now: the Investigator calls a real DeepSeek web search, every claim it
+returns is re-fetched and verified by InvestingBuddy itself, and findings in the ledger
+cite `ev:x:` ids derived from the hash of bytes this platform retrieved. Five of the last six live
+MRNA runs promoted evidence — every non-promotion a correct refusal — and an 8-case
+negative acceptance minted exactly one. See
+[§11.7](V3_RELEASE_CANDIDATE_REPORT.md#117-v312--external-research-integration),
+[the slice](slices/V3.12-external-research-integration.md) and
+[ADR-056](../DECISIONS.md#adr-056).
+
 The recommendation is **`READY FOR USER ACCEPTANCE / MAIN PROMOTION REVIEW`**, in
 [§12 of the release candidate report](V3_RELEASE_CANDIDATE_REPORT.md#12-recommendation).
-Read **§11.6** first: it names the one thing still unproved. The decision is the user's.
+Read **§11.7's closing paragraph** first: it names what is still not true — scope is
+unchecked on the external path, and promotion is provider-dependent. The decision is the
+user's.
 
 **Start with [V3_RELEASE_CANDIDATE_REPORT.md](V3_RELEASE_CANDIDATE_REPORT.md).** It records
 what was built, what was proved, and — in §7 and §10.5, the sections that matter — what was

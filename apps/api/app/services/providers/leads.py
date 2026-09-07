@@ -281,6 +281,150 @@ def values_match(claimed: float, found: float) -> bool:
     return abs(claimed - found) / scale <= VALUE_RELATIVE_TOLERANCE
 
 
+#: Written ordinals, defined before the patterns that close over them.
+_ORDINALS: dict[str, int] = {"first": 1, "second": 2, "third": 3, "fourth": 4}
+
+#: Period phrases as documents actually write them. Conservative on purpose: each one
+#: is rewritten into the canonical string ``parse_period`` already understands, so this
+#: finds *candidates* and the existing parser decides readings. A looser scan would read
+#: "10-Q" or a page number as a year.
+_PERIOD_PHRASE_PATTERNS: tuple[tuple[Any, Any], ...] = (
+    (
+        re.compile(
+            r"\b(?:first|second|third|fourth)\s+quarter\s+(?:of\s+)?((?:19|20)\d{2})\b",
+            re.IGNORECASE,
+        ),
+        lambda m: f"Q{_ORDINALS[m.group(0).split()[0].lower()]} {m.group(1)}",
+    ),
+    (
+        re.compile(r"\bQ([1-4])[\s-]?((?:19|20)\d{2})\b", re.IGNORECASE),
+        lambda m: f"Q{m.group(1)} {m.group(2)}",
+    ),
+    (
+        re.compile(
+            r"\bthree\s+months\s+ended\s+\w+\s+\d{1,2},?\s+((?:19|20)\d{2})\b",
+            re.IGNORECASE,
+        ),
+        # A quarter whose number the phrase does not state. Recorded as the YEAR, which
+        # is what the phrase actually establishes; claiming a quarter here would invent
+        # precision the document did not print.
+        lambda m: m.group(1),
+    ),
+    (
+        re.compile(
+            r"\b(?:six|6)\s+months\s+ended\s+\w+\s+\d{1,2},?\s+((?:19|20)\d{2})\b",
+            re.IGNORECASE,
+        ),
+        lambda m: f"H1 {m.group(1)}",
+    ),
+    (
+        re.compile(r"\bH([12])[\s-]?((?:19|20)\d{2})\b"),
+        lambda m: f"H{m.group(1)} {m.group(2)}",
+    ),
+    (
+        re.compile(
+            r"\b(?:fiscal\s+year|full\s+year|year\s+ended\s+\w+\s+\d{1,2},?)\s*"
+            r"((?:19|20)\d{2})\b",
+            re.IGNORECASE,
+        ),
+        lambda m: m.group(1),
+    ),
+    (
+        re.compile(r"\bFY[\s-]?((?:19|20)\d{2})\b", re.IGNORECASE),
+        lambda m: m.group(1),
+    ),
+)
+
+#: How much of a document the period scan reads. The reporting period of a filing is
+#: stated in its heading and its first table, not on page 90.
+PERIOD_SCAN_MAX_CHARS = 20_000
+
+
+def periods_in(
+    text: str, *, limit: int = PERIOD_SCAN_MAX_CHARS
+) -> "set[tuple[str, str]]":
+    """Canonical period keys a document states about itself.
+
+    The symmetric partner of :func:`numbers_in`, and added for the same reason: V3.12's
+    live negative acceptance found that a claim naming **2019-Q1** verified against a
+    2026 SEC exhibit, because ``verify_lead`` compares a claimed period only against one
+    the platform independently determined — and a raw public fetch supplied none, so the
+    comparison was skipped entirely rather than failed.
+
+    A document naming several periods yields several keys, which is correct: a results
+    release states the current period and its comparatives, and a claim about any of
+    them is about a period the document really covers. What the set is for is the
+    opposite case — a claim naming a period the document never mentions.
+
+    Returns ``(period_type, key)`` pairs, because the TYPE is what makes a comparison
+    valid. A results release says "three months ended June 30, 2026" — a phrase that
+    establishes the *year* and not the quarter — so the scan yields ``("annual",
+    "2026")``. Comparing a claimed ``2026-Q2`` against that key alone refuses a correct
+    claim, which is exactly what the first version of this function did to a real 10-Q.
+
+    An empty set means **unchecked**, not "no periods". The caller must not read absence
+    as a refutation.
+    """
+    haystack = (text or "")[:limit]
+    found: set[tuple[str, str]] = set()
+    for pattern, render in _PERIOD_PHRASE_PATTERNS:
+        for match in pattern.finditer(haystack):
+            try:
+                period = parse_period(render(match))
+            except Exception:  # noqa: BLE001 - a phrase that will not parse is not one
+                continue
+            if not period.is_unknown and period.key and period.period_type:
+                found.add((period.period_type, period.key))
+    return found
+
+
+def _decimals_of(value: float) -> int:
+    """Decimal places in the shortest exact repr of ``value``. ``145.0`` -> 0."""
+    text = repr(float(value))
+    if "e" in text or "E" in text:
+        return 0
+    whole, _, frac = text.partition(".")
+    return 0 if frac in ("", "0") else len(frac)
+
+
+def precision_window(candidate: float) -> float:
+    """Half the last significant digit of a written number — its rounding interval.
+
+    ``145`` is satisfied by anything that rounds to 145, so its window is 0.5.
+    ``145.25`` claims two decimals, so its window is 0.005. The window comes from **how
+    precisely the number was written**, which is the only honest reading of what it
+    asserts.
+    """
+    return 0.5 * (10.0 ** -_decimals_of(candidate))
+
+
+def value_supported(claimed_text: str | None, found: float) -> bool:
+    """True when ``found`` rounds to the claim **at the precision the claim states**.
+
+    Strictly narrower than :func:`values_match`, and an intersection with it rather than
+    a replacement — so it can only ever reject what the old rule accepted, never promote
+    something it refused.
+
+    V3.12 added it because the live negative acceptance **verified a fabricated value**.
+    A relative tolerance of 0.5% is right for rounding and wrong as a search condition:
+    the SEC exhibit under test holds 393 numbers, so a claim of ``8675`` matched the
+    document's ``8650`` and passed. Against a document with hundreds of figures, "some
+    number within half a percent" is a condition almost any invented value satisfies.
+    Precision fixes that without touching legitimate rounding — ``145`` still matches a
+    document's ``144.7``, and no longer matches its ``150``.
+
+    Ambiguous claims keep both readings, as everywhere else in this module: ``1,234`` is
+    1234 under US grouping and 1.234 under European, the string does not say which, and
+    each reading carries its own precision.
+    """
+    for claimed in parse_number_candidates(claimed_text):
+        if values_match(claimed, found) and abs(claimed - found) <= precision_window(
+            claimed
+        ):
+            return True
+    return False
+
+
 def _digest(*parts: str | None) -> str:
     payload = "␟".join((p or "") for p in parts)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
@@ -580,6 +724,63 @@ async def verify_lead(
     #    document — never against anything the provider said about it.
     period_verified = False
     scope_verified = False
+
+    # When the caller could not determine the document's period independently, derive
+    # the set of periods the document states ABOUT ITSELF and use that. Only ever used
+    # as a fallback: an explicitly supplied `source_period` is the platform's own
+    # determination and outranks a text scan.
+    if source_period is None and lead.claimed_period:
+        claimed_period = parse_period(lead.claimed_period)
+        if not claimed_period.is_unknown:
+            # SAME TYPE ONLY. A document that names the year "2026" has said nothing
+            # about which quarter, so it cannot refute a claim about 2026-Q2 — and the
+            # first version of this check did exactly that to a correct claim against a
+            # real 10-Q. Comparing across granularities is not a comparison.
+            same_type = {
+                key
+                for period_type, key in periods_in(text)
+                if period_type == claimed_period.period_type
+            }
+            if same_type:
+                if claimed_period.key in same_type:
+                    period_verified = True
+                elif complete_read:
+                    return LeadVerificationOutcome(
+                        lead=lead,
+                        status=LEAD_REJECTED,
+                        rejection_reason=REJECTED_PERIOD_MISMATCH,
+                        detail=_clip(
+                            f"Claim states {lead.claimed_period!r}; the document "
+                            f"InvestingBuddy retrieved names "
+                            f"{sorted(same_type)} for that period type and not that.",
+                            DETAIL_MAX,
+                        ),
+                        content_hash=content_hash,
+                        fetched_url=fetched_url,
+                        fetch_attempted=True,
+                        consumption=consumption,
+                    )
+                else:
+                    # Only part of the document was read, so its silence proves nothing.
+                    # `_absent` exists for exactly this distinction and the first version
+                    # of this check ignored it — returning a hard refutation from a
+                    # 20,000-character window of a document that may run to millions.
+                    return LeadVerificationOutcome(
+                        lead=lead,
+                        status=LEAD_PENDING,
+                        detail=_clip(
+                            f"Claim states {lead.claimed_period!r} and the part of the "
+                            "document InvestingBuddy could read names only "
+                            f"{sorted(same_type)}. A partial read cannot refute a "
+                            "period.",
+                            DETAIL_MAX,
+                        ),
+                        content_hash=content_hash,
+                        fetched_url=fetched_url,
+                        fetch_attempted=True,
+                        consumption=consumption,
+                    )
+
     if source_period is not None and lead.claimed_period:
         claimed = parse_period(lead.claimed_period)
         actual = parse_period(source_period)
@@ -648,9 +849,19 @@ async def verify_lead(
                 consumption=consumption,
             )
         in_source = numbers_in(text)
+        # Precision-aware, not merely proportional. See `value_supported`: the live
+        # V3.12 negative acceptance verified a FABRICATED figure against a real SEC
+        # exhibit because a 0.5% window over 393 numbers is a condition almost any
+        # invented value satisfies.
+        #
+        # The claim is parsed ONCE, outside the loop. `numbers_in` is bounded at 200,000
+        # numbers and this runs on the event loop — re-parsing the claim per candidate
+        # measured 16x slower, which is the shape of the defect that once had gunicorn
+        # killing workers mid-run.
+        windows = [(claimed, precision_window(claimed)) for claimed in claimed_numbers]
         found = any(
-            values_match(claimed, candidate)
-            for claimed in claimed_numbers
+            values_match(claimed, candidate) and abs(claimed - candidate) <= window
+            for claimed, window in windows
             for candidate in in_source
         )
         if not found:
@@ -907,9 +1118,16 @@ async def persist_lead(
     company_id: uuid.UUID | None = None,
     legal_entity_id: uuid.UUID | None = None,
     subject: str | None = None,
+    promoted_evidence_id: str | None = None,
     now: datetime | None = None,
 ) -> Any:
-    """Write one lead and its outcome. Rejections are written, not dropped."""
+    """Write one lead and its outcome. Rejections are written, not dropped.
+
+    ``promoted_evidence_id`` is the id a caller minted from this outcome. The column has
+    existed since 031 and nothing wrote it, so an auditor holding a citation had no way
+    back to the URL, the hash, or the claim it came from — which is most of what an
+    audit trail is for.
+    """
     from app.models.research_lead import ResearchLeadRecord
 
     stamp = now or datetime.now(timezone.utc)
@@ -933,6 +1151,7 @@ async def persist_lead(
         claimed_currency=_clip(lead.claimed_currency, CURRENCY_MAX),
         claimed_period=_clip(lead.claimed_period, PERIOD_MAX),
         claimed_scope=_clip(lead.claimed_scope, SCOPE_MAX),
+        promoted_evidence_id=_clip(promoted_evidence_id, 120),
         status=outcome.status,
         rejection_reason=outcome.rejection_reason,
         rejection_detail=_clip(outcome.detail, DETAIL_MAX),
@@ -1048,8 +1267,11 @@ __all__ = [
     "numbers_in",
     "parse_number",
     "parse_number_candidates",
+    "periods_in",
     "persist_lead",
     "slot_key_for",
+    "precision_window",
+    "value_supported",
     "values_match",
     "verification_survival_rate",
     "verify_lead",

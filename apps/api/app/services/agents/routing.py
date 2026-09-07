@@ -188,16 +188,48 @@ def resolve_routing(
     return ModelRouting(slots=slots)
 
 
+
+def research_provider_for(cfg: "Settings") -> Any:
+    """The external research provider, or ``None`` unless enabled AND credentialed.
+
+    V3.12. The same two-key rule the model leg has had since V3.11.1.1, applied to the
+    research leg: the flag is checked **first**, because a credential appearing in the
+    environment is not a decision to send research questions to a vendor. Both directions
+    hold, and both are tested:
+
+    ============ ========= ==========================
+    Credential   Flag      Returns a provider
+    ============ ========= ==========================
+    yes          no        **no** — a credential is not consent
+    no           yes       **no** — a flag is not a credential
+    yes          yes       yes
+    ============ ========= ==========================
+
+    ``v3_deepseek_search_enabled`` is the flag, because what this provider does that the
+    model leg does not is *reach the open web*. Spending on retrieval is the decision
+    being consented to.
+    """
+    from app.integrations.deepseek.providers import DeepSeekResearchProvider
+    from app.integrations.deepseek.transport import transport_from_settings
+
+    if not getattr(cfg, "v3_deepseek_search_enabled", False):
+        return None
+    transport = transport_from_settings(cfg)
+    if transport is None:
+        return None
+    return DeepSeekResearchProvider(transport=transport, search_enabled=True)
+
 __all__ = [
     "DEFAULT_PREFERENCES",
-    "SLOTS",
+    "ModelRouting",
+    "research_provider_for",
+    "resolve_routing",
+    "ResolvedSlot",
     "SLOT_CHAIR",
     "SLOT_FOLLOW_UP",
     "SLOT_INVESTIGATOR",
     "SLOT_RED_TEAM",
+    "SLOTS",
     "VENDOR_AZURE_OPENAI",
     "VENDOR_DEEPSEEK",
-    "ModelRouting",
-    "ResolvedSlot",
-    "resolve_routing",
 ]

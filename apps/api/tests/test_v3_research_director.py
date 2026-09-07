@@ -134,8 +134,26 @@ class TestRoles:
         assert [r.role_id for r in roles_that_can_answer({"get_transcripts"})] == [
             "management_analyst"
         ]
-        # search_web has no implementation, so no role declares it.
-        assert roles_that_can_answer({"search_web"}) == []
+        # V3.12: exactly one role declares the external tools, and it is the only role
+        # in the table that reaches outside the platform. Before V3.12 this asserted
+        # that NO role declared `search_web` — which was the gap, not the design.
+        assert [r.role_id for r in roles_that_can_answer({"search_web"})] == [
+            "external_research_analyst"
+        ]
+
+    def test_only_one_role_reaches_outside_the_platform(self) -> None:
+        from app.services.director.roles import external_research_roles
+
+        assert external_research_roles() == ("external_research_analyst",)
+
+    def test_the_external_role_is_not_seated_by_default(self) -> None:
+        """Its presence is a spending decision, so it is not `always_present`.
+
+        The planner seats it only when its tools are actually implemented, and those
+        register only behind the external feature flag.
+        """
+        assert "external_research_analyst" not in ALWAYS_PRESENT
+        assert ROLES["external_research_analyst"].always_present is False
 
     def test_the_valuation_role_says_what_it_does_not_do(self) -> None:
         assert "price target" in ROLES["valuation_context_analyst"].focus

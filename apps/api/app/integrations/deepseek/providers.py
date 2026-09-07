@@ -130,6 +130,19 @@ RETRIEVAL_ACTIONS: frozenset[str] = frozenset({"open_page", "find_in_page"})
 QUERY_ACTION = "search"
 RESEARCH_UNITS: tuple[str, ...] = ("provider_research_runs", "model_calls")
 
+#: A retrieval-backed investigation measures everything a search does, because it *is*
+#: a search plus an answer in one call. Reporting only the two above would make the
+#: platform's most expensive provider call look like its cheapest.
+RESEARCH_UNITS_RETRIEVAL: tuple[str, ...] = (
+    "provider_research_runs",
+    "model_calls",
+    "web_search_calls",
+    "url_fetch_calls",
+    "model_input_tokens",
+    "model_output_tokens",
+    "cached_tokens",
+)
+
 #: A bound on candidates parsed from one response, so a pathological payload cannot
 #: become an unbounded list an agent pays for in tokens.
 MAX_CANDIDATES = 25
@@ -787,36 +800,119 @@ INVESTIGATION_SYSTEM_PROMPT = (
     "- Period and scope matter: say which period a figure is for, and whether it is the "
     "consolidated group or a named segment. If you do not know, use null.\n"
     "- You are not deciding anything. Every claim will be independently retrieved and "
-    "verified before it is used."
+    "verified before it is used.\n"
+    "- PREFER THE PRIMARY SOURCE. Cite the issuer's own investor-relations page or the "
+    "regulator's filing (for US issuers, sec.gov) rather than a news aggregator or a "
+    "press-release syndicator. The platform re-fetches every URL you give it through "
+    "its own restricted fetcher, and aggregators commonly refuse that fetch — so a "
+    "syndicated copy of a release is a claim that will be discarded unverified even "
+    "when it is perfectly true.\n"
+    "- CITE THE DOCUMENT, NOT A LISTING. The URL must be the page whose text actually "
+    "contains the figure — an exhibit, a press release, a filing document. A filing "
+    "INDEX page, a 'quarterly results' hub or any other list of links contains no "
+    "figures, so the platform fetches it, fails to find the number, and discards a "
+    "claim that was true. If you opened a listing to find the document, cite the "
+    "document you found."
+)
+
+#: Appended for a RETRIEVAL-BACKED investigation, and load-bearing rather than advisory.
+#:
+#: Searching and answering share one output budget on ``/responses``, and reasoning
+#: tokens count against it. Without this, a live run opened **twenty-seven pages, wrote
+#: no answer at all**, and returned zero leads while every search call had succeeded —
+#: the whole call wasted, and expensively: 119k input tokens. With it the same question
+#: answered from seven calls and **36k** input tokens.
+#:
+#: It is a prompt because it has to be: ``max_tool_calls`` is accepted by this API and
+#: ignored (V3.11.1.2), so there is no request parameter that bounds retrieval. A limit
+#: the model chooses to honour is weaker than one the API enforces, which is exactly why
+#: the platform also detects the failure rather than trusting the instruction.
+RETRIEVAL_BUDGET_PROMPT = (
+    "\nRETRIEVAL BUDGET — a hard requirement, not a preference:\n"
+    "- Run AT MOST 3 searches and open AT MOST 4 pages in total.\n"
+    "- Then STOP retrieving and write the json answer immediately.\n"
+    "- Searching and answering share ONE output budget. If you spend it retrieving you "
+    "produce nothing at all and the entire call is wasted. An answer from three pages "
+    "is worth more than no answer from twenty."
 )
 
 
 @dataclass
 class DeepSeekResearchProvider:
-    """A first-pass specialist investigation that produces **leads**, never findings."""
+    """A first-pass specialist investigation that produces **leads**, never findings.
+
+    ``search_enabled`` decides whether the investigation **retrieves**, and it is the
+    difference V3.12 exists to make. With it off the investigation runs on
+    ``/chat/completions``, where there are no builtin tools, so every claim it returns
+    cites a URL the model *recalled* — which is what the V3.11 release candidate meant
+    by "``investigate()`` runs without retrieval", and why the promotion path had no
+    real producer.
+
+    With it on the investigation runs on ``/responses`` with the builtin web search, so
+    the claims arrive alongside a record of where the model actually went.
+
+    That record **annotates and does not gate.** An earlier draft of this slice dropped
+    any claim citing a URL absent from the trace, on the theory that an unopened page is
+    a recalled one. A live MRNA run disproved it: the provider found the right SEC
+    exhibit through a *search result* — whose URLs the contract never exposes to us —
+    cited it correctly, and the guard discarded the only good lead of the run. The trace
+    lists pages the model **opened**, which is a subset of the pages it legitimately
+    saw, so treating absence from it as fabrication pre-judges with the weaker
+    instrument. ``leads_citing_unopened_pages`` is kept as a provider-quality signal and
+    the real gate stays where it belongs: InvestingBuddy fetches the URL itself.
+
+    It still produces leads and never findings. Retrieval by the *vendor* is not
+    retrieval by InvestingBuddy: every URL here still has to survive the platform's own
+    fetch and ``verify_lead`` before anything may cite it.
+    """
 
     transport: DeepSeekTransport
     provider_id: str = PROVIDER_ID
     system_prompt: str = INVESTIGATION_SYSTEM_PROMPT
+    #: Off by default, matching every other DeepSeek switch: a capability that works is
+    #: not a decision to spend on it.
+    search_enabled: bool = False
+    #: Bigger than the plain search default, and it has to be. `output_tokens` on this
+    #: endpoint **includes reasoning tokens**, and an investigation that opens a dozen
+    #: pages reasons at length before it writes anything — a live run spent 4,766 output
+    #: tokens against a 4,000 ceiling, was cut off mid-JSON, and produced ZERO leads
+    #: while every search call had succeeded. A truncated answer here does not degrade
+    #: the result, it erases it.
+    max_output_tokens: int = 12_000
 
     @property
     def model(self) -> str:
         return getattr(self.transport, "model", "")
 
     async def investigate(
-        self, *, question: str, context: str | None = None, max_seconds: int = 300
+        self,
+        *,
+        question: str,
+        context: str | None = None,
+        max_seconds: int = 300,
+        domains: Sequence[str] | None = None,
     ) -> ResearchProviderResult:
         task_id = str(uuid.uuid4())
         started = datetime.now(timezone.utc)
         user = question if not context else f"{question}\n\nContext:\n{context}"
+        timeout = min(max(10, int(max_seconds)), 300)
         try:
-            response = await self.transport.complete(
-                system=self.system_prompt,
-                user=user,
-                max_tokens=3000,
-                temperature=0.2,
-                timeout=min(max(10, int(max_seconds)), 300),
-            )
+            if self.search_enabled:
+                response = await self.transport.investigate_with_search(
+                    system=self.system_prompt + RETRIEVAL_BUDGET_PROMPT,
+                    question=user,
+                    domains=domains,
+                    max_output_tokens=self.max_output_tokens,
+                    timeout=timeout,
+                )
+            else:
+                response = await self.transport.complete(
+                    system=self.system_prompt,
+                    user=user,
+                    max_tokens=3000,
+                    temperature=0.2,
+                    timeout=timeout,
+                )
         except DeepSeekUnavailableError as exc:
             # `failed` with a warning, never a partial answer presented as complete.
             return ResearchProviderResult(
@@ -833,7 +929,52 @@ class DeepSeekResearchProvider:
             )
 
         leads, warnings = parse_leads(response, model=self.model, task_id=task_id)
-        truncated = (response.finish_reason or "").lower() in {"length", "max_tokens"}
+
+        # The failure mode this path actually has, named rather than left to look like
+        # an empty web. The provider can spend its whole output budget retrieving and
+        # never write the answer — a live run did exactly that over 27 page opens — and
+        # the result is indistinguishable from "found nothing" unless it is detected:
+        # tool calls happened, and no message came back.
+        exhausted_retrieving = bool(response.tool_payloads) and not (response.text or "").strip()
+        if exhausted_retrieving:
+            warnings.append(
+                "DeepSeek spent its entire output budget retrieving and never wrote an "
+                "answer: it made "
+                f"{len(response.tool_payloads)} tool call(s) and returned no message. "
+                "No claim was produced — this is a budget exhaustion, NOT a finding "
+                "that the web holds nothing."
+            )
+
+        # The retrieval trace, and the guard it makes possible.
+        trace = SearchTrace()
+        dropped_unopened = 0
+        if self.search_enabled:
+            _candidates, trace_warnings, trace = parse_search_payload(
+                response,
+                expected_tool=getattr(self.transport, "search_tool_name", "")
+                or DEFAULT_SEARCH_TOOL_NAME,
+            )
+            warnings.extend(trace_warnings)
+            retrieved = {_comparable(u) for u in trace.opened_urls}
+            for lead in leads:
+                url = canonical_search_url(lead.claimed_source_url)
+                if url and _comparable(url) not in retrieved:
+                    dropped_unopened += 1
+            if dropped_unopened:
+                warnings.append(
+                    f"{dropped_unopened} claim(s) cite a URL that appears nowhere in "
+                    "the retrieval trace. They are KEPT and will be verified like any "
+                    "other: the trace shows pages the provider OPENED, and a provider "
+                    "may legitimately cite a URL it saw in a search result without "
+                    "opening it. The count is a provider-quality signal, not a verdict"
+                )
+
+        truncated = (response.finish_reason or "").lower() in {
+            "length",
+            "max_tokens",
+            "max_output_tokens",
+            "incomplete",
+        } or exhausted_retrieving
         if truncated:
             warnings.append(
                 "DeepSeek stopped at its token limit, so the investigation is PARTIAL "
@@ -865,14 +1006,30 @@ class DeepSeekResearchProvider:
             consumption=ConsumptionUnits(
                 provider_research_runs=1,
                 model_calls=1,
+                web_search_calls=trace.query_call_count,
+                url_fetch_calls=trace.retrieval_call_count,
+                model_input_tokens=response.prompt_tokens,
+                model_output_tokens=response.completion_tokens,
+                cached_tokens=response.cached_tokens,
             ),
-            instrumented_units=RESEARCH_UNITS,
+            instrumented_units=RESEARCH_UNITS_RETRIEVAL
+            if self.search_enabled
+            else RESEARCH_UNITS,
             cost=CostEstimate(basis="unknown"),
             warnings=warnings,
             raw_provider_metadata={
                 "finish_reason": response.finish_reason,
                 "prompt_tokens": response.prompt_tokens,
                 "completion_tokens": response.completion_tokens,
+                "cached_tokens": response.cached_tokens,
+                "served_model": response.served_model,
+                "retrieval_backed": self.search_enabled,
+                "trace": trace.to_dict(),
+                "leads_citing_unopened_pages": dropped_unopened,
+                "exhausted_budget_retrieving": exhausted_retrieving,
+                # A short excerpt only. It is untrusted third-party prose and the
+                # structured claims above are what the platform actually acts on.
+                "answer_excerpt": (response.text or "")[:600] or None,
             },
         )
 
@@ -919,6 +1076,7 @@ __all__ = [
     "parse_search_payload",
     "PROVIDER_ID",
     "RESEARCH_UNITS",
+    "RESEARCH_UNITS_RETRIEVAL",
     "SEARCH_UNITS",
     "SearchTrace",
     "UnavailableBrowserProvider",

@@ -45,9 +45,11 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
+from app.services.agent_tools.contracts import EXTERNAL_TOOL_NAMES
 from app.services.director.roles import (
     ALWAYS_PRESENT,
     RoleSpec,
+    external_research_roles,
     role_for,
     roles_that_can_answer,
 )
@@ -87,6 +89,27 @@ BASELINE_QUESTIONS: tuple[tuple[str, str, frozenset[str]], ...] = (
         "recent_disclosure",
         "What has the issuer disclosed most recently, and for which period?",
         frozenset({"search_company_corpus"}),
+    ),
+)
+
+#: Asked only when the external tools are implemented — V3.12. Kept out of
+#: ``BASELINE_QUESTIONS`` deliberately: with the external path off, a question requiring
+#: ``search_web`` would be planned and then immediately marked unassignable in every
+#: single run, which turns a configuration choice into permanent noise in the plan.
+#:
+#: It asks the one thing the platform's own holdings are worst at: what the issuer has
+#: reported *since* whatever the corpus happens to contain. The wording is deliberately
+#: concrete — an earlier draft asked for "what is NOT already in this platform's
+#: holdings", and a live run showed why that fails: the provider cannot evaluate what
+#: this platform holds, so it searched for 80 seconds and answered nothing. A question
+#: only the asker can interpret is not a question.
+EXTERNAL_QUESTIONS: tuple[tuple[str, str, frozenset[str]], ...] = (
+    (
+        "recent_external_developments",
+        "What were the headline figures of this issuer's most recently reported period, "
+        "and which primary source states them? Give the figure, the period it covers, "
+        "and the issuer's own or the regulator's page.",
+        frozenset({"search_web", "fetch_public_source"}),
     ),
 )
 
@@ -201,7 +224,7 @@ class ResearchPlan:
         }
 
 
-def implemented_tools() -> frozenset[str]:
+def implemented_tools(cfg: "Any | None" = None) -> frozenset[str]:
     """Tool names that actually have a handler, not merely a place in the vocabulary.
 
     ``TOOL_NAMES`` is the *vocabulary* — nineteen names, twelve of which V3.3 reserved
@@ -216,12 +239,18 @@ def implemented_tools() -> frozenset[str]:
 
     Found by V3.6's playbooks: biotech's blocking ``pipeline_state`` needs
     ``get_recent_filings``, which two roles declare and nothing implements.
+
+    Takes ``cfg`` because one registration is CONDITIONAL: the external tools exist only
+    behind their feature flag (V3.12). Reading the process-global settings here instead
+    would mean a run's own configuration could not decide its own tool surface — the
+    pipeline threads ``cfg`` through every layer precisely so that a run is explicit
+    about what it is allowed to do, and this function silently opted out of that.
     """
     try:
         from app.services.agent_tools.builtin import register_builtins
         from app.services.agent_tools.registry import ToolRegistry
 
-        return frozenset(register_builtins(ToolRegistry()).names())
+        return frozenset(register_builtins(ToolRegistry(), cfg=cfg).names())
     except Exception:  # noqa: BLE001 - a planner must not fail on introspection
         from app.services.agent_tools.contracts import TOOL_NAMES
 
@@ -241,6 +270,21 @@ def _baseline_questions() -> list[PlannedQuestion]:
     ]
 
 
+def _external_questions(available: "frozenset[str]") -> list[PlannedQuestion]:
+    """The external question, when and only when something implements its tools."""
+    return [
+        PlannedQuestion(
+            key=key,
+            text=text,
+            origin=ledger.ORIGIN_DIRECTOR,
+            required_tools=tools,
+            priority=3,
+        )
+        for key, text, tools in EXTERNAL_QUESTIONS
+        if tools <= available
+    ]
+
+
 async def plan_research(
     *,
     subject: str,
@@ -249,6 +293,7 @@ async def plan_research(
     prior_open_gaps: "Sequence[tuple[str, str]]" = (),
     refiner: PlanRefiner | None = None,
     extra_roles: "Sequence[str]" = (),
+    cfg: "Any | None" = None,
 ) -> ResearchPlan:
     """Build a bounded plan. Never raises on a model failure.
 
@@ -299,6 +344,13 @@ async def plan_research(
     for question in _baseline_questions():
         questions.setdefault(question.key, question)
 
+    # 3b. The external question, only when something implements its tools — which is to
+    #     say only when the external feature flag is on. Same single condition the role
+    #     seating uses below, and for the same reason: one switch, not two that can
+    #     disagree about whether the platform is allowed to reach the open web.
+    for question in _external_questions(implemented_tools(cfg)):
+        questions.setdefault(question.key, question)
+
     ordered = sorted(
         questions.values(),
         # Blocking first, then priority, then a stable key order. A blocking question
@@ -327,7 +379,20 @@ async def plan_research(
             wanted_roles.append(role_id)
 
     assignments: dict[str, PlannedTask] = {}
-    available = implemented_tools()
+    available = implemented_tools(cfg)
+
+    # V3.12. A role that reaches outside the platform joins the run when — and only
+    # when — its tools are actually implemented, which is to say when the external
+    # feature flag is on: `register_external_tools` is the one conditional registration
+    # in the builtin set. Deriving presence from the tool surface rather than reading
+    # the flag again means there is ONE condition, and a role cannot be seated with
+    # nothing to call.
+    for role_id in external_research_roles():
+        role = role_for(role_id)
+        if role is None or role_id in wanted_roles:
+            continue
+        if role.tools & EXTERNAL_TOOL_NAMES <= available:
+            wanted_roles.append(role_id)
     for question in plan.questions:
         missing = set(question.required_tools) - available
         if missing:
@@ -340,15 +405,39 @@ async def plan_research(
                 )
             )
             continue
+        # V3.12. A role that reaches OUTSIDE the platform may answer only a question
+        # that actually needs to. Two live defects came from omitting this:
+        #
+        #  * the external role also holds `search_company_corpus`, so it competed for
+        #    corpus questions and — winning the `_least_loaded` tie on role id — took
+        #    `recent_disclosure` away from `business_analyst`, sending a question the
+        #    corpus can answer to a paid vendor. Turning a flag on must not re-route
+        #    work that has nothing to do with it.
+        #  * a carry-forward gap question has EMPTY `required_tools`, so every role can
+        #    "answer" it; assigned externally, the investigator's fallback runs the
+        #    role's whole tool list and issues a vendor search for a question nobody
+        #    asked to be searched. That is a bill arriving on the second run of a
+        #    company and on no other.
+        wants_external = bool(set(question.required_tools) & EXTERNAL_TOOL_NAMES)
+
+        def _eligible(role: "RoleSpec") -> bool:
+            return wants_external or not (role.tools & EXTERNAL_TOOL_NAMES)
+
         candidates = [
             role
             for role in roles_that_can_answer(question.required_tools)
-            if role.role_id in wanted_roles
+            if role.role_id in wanted_roles and _eligible(role)
         ]
         if not candidates and question.required_tools:
             # Widen once to any declared role before giving up — a specialist the
-            # playbook did not ask for is still a role the platform has.
-            candidates = roles_that_can_answer(question.required_tools)
+            # playbook did not ask for is still a role the platform has. The external
+            # restriction still applies: widening is about specialists, not about
+            # spending.
+            candidates = [
+                role
+                for role in roles_that_can_answer(question.required_tools)
+                if _eligible(role)
+            ]
         if not candidates:
             plan.unassignable.append(
                 (
