@@ -1,3 +1,4 @@
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 #: The ``--timeout`` of the DEPLOYED gunicorn startup command, mirrored here so
@@ -35,6 +36,26 @@ DEPLOYED_GUNICORN_WORKER_TIMEOUT_SECONDS = 300
 DEPLOYED_GUNICORN_WORKERS = 1
 
 
+#: Every setting that carries a credential, named explicitly rather than matched by a
+#: suffix. A `repr()` of a settings object renders each of these unless it is marked
+#: `repr=False`, and pytest renders that object into any failing assertion that mentions
+#: it — which is how a live key reached terminal output twice in this campaign. The
+#: guard test in `tests/test_v3_deepseek_not_release_critical.py` asserts this list and
+#: the actual field metadata agree, so adding a credential without `repr=False` fails
+#: the suite rather than a production log.
+CREDENTIAL_SETTING_FIELDS: frozenset[str] = frozenset(
+    {
+        "database_url",
+        "staging_basic_auth",
+        "eodhd_api_key",
+        "azure_openai_api_key",
+        "openai_api_key",
+        "deepseek_api_key",
+        "azure_document_intelligence_api_key",
+    }
+)
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
@@ -52,8 +73,17 @@ class Settings(BaseSettings):
     # silence per-request logging without touching code.
     request_logging_enabled: bool = True
 
-    database_url: str = (
-        "postgresql+psycopg://investingbuddy:investingbuddy@localhost:5432/investingbuddy"
+    # `repr=False`: this carries the database PASSWORD in every deployed environment.
+    # V3.11.1.2 marked the five `*_api_key` fields non-printing and asserted "every
+    # credential"; review caught that this one and `staging_basic_auth` were still
+    # printed by any `repr(Settings())`. A credential is a credential whatever the
+    # field is called — which is why the guard test matches on the FIELD LIST below,
+    # not on a name suffix.
+    database_url: str = Field(
+        default=(
+            "postgresql+psycopg://investingbuddy:investingbuddy@localhost:5432/investingbuddy"
+        ),
+        repr=False,
     )
 
     # ── Financial Data Provider (Phase 4) ──────────────────────────────────
@@ -63,7 +93,7 @@ class Settings(BaseSettings):
 
     # EODHD credentials — required only when financial_data_provider="eodhd".
     # Never hardcode. Load from Azure Key Vault in production.
-    eodhd_api_key: str = ""
+    eodhd_api_key: str = Field(default="", repr=False)
     eodhd_base_url: str = "https://eodhd.com/api"
 
     # ── Integration Tests (Phase 5) ─────────────────────────────────────────
@@ -75,7 +105,9 @@ class Settings(BaseSettings):
     # When APP_ENV=staging, set this to "username:password" to enable HTTP
     # Basic Auth on all routes (except /health). Leave empty to disable.
     # Store value in Key Vault as 'staging-basic-auth' — never hardcode.
-    staging_basic_auth: str = ""
+    # `repr=False`: literally "username:password", and load-bearing for API access
+    # control on `ib-stg-api`.
+    staging_basic_auth: str = Field(default="", repr=False)
 
     # ── LLM Provider (Phase 7) ──────────────────────────────────────────────
     # Which LLM client to use: "mock" | "azure_openai"
@@ -85,7 +117,7 @@ class Settings(BaseSettings):
     # Azure OpenAI credentials — required only when llm_provider="azure_openai".
     # Never hardcode. Load from Azure Key Vault in staging/production.
     azure_openai_endpoint: str = ""
-    azure_openai_api_key: str = ""
+    azure_openai_api_key: str = Field(default="", repr=False)
     azure_openai_api_version: str = "2024-08-01-preview"
     azure_openai_deployment_name: str = ""
 
@@ -129,7 +161,7 @@ class Settings(BaseSettings):
     llm_council_version: str = "v1"
     # OpenAI-compatible fallback key — required only when llm_provider_council="openai".
     # Never hardcode. Never logged. Never exposed in /health.
-    openai_api_key: str = ""
+    openai_api_key: str = Field(default="", repr=False)
 
     # ── LLM Discovery Council (Phase 28B) ───────────────────────────────────
     # A real, controlled, run-LEVEL LLM council that reviews the whole candidate
@@ -497,8 +529,10 @@ class Settings(BaseSettings):
     # Before this flag existed, adding one re-routed Investigator and follow-up work to
     # DeepSeek with no other change — while every acceptance measurement in the release
     # candidate report was taken on Azure OpenAI. `V3_DEEPSEEK_SEARCH_ENABLED` is about
-    # the search leg (which the live contract proved does not exist); this is about the
-    # model leg. Both default off.
+    # the search leg — which DOES exist, on `POST /responses` (V3.11.1.2 corrected
+    # V3.11.1.1's finding that it did not) — and this is about the model leg. Both
+    # default off, and both are enforced in code: routing for the model leg,
+    # `DeepSeekSearchProvider.search` for the search leg.
     v3_deepseek_model_enabled: bool = False
 
     # ── V3.11: model prices, as CONFIGURATION ─────────────────────────────── #
@@ -1231,16 +1265,26 @@ class Settings(BaseSettings):
     # ── DeepSeek: the PRIMARY external research provider (ADR-048/049) ───────
     # Approved on pay-as-you-go usage. NEVER hardcode a key; load from Azure Key
     # Vault in a deployed environment.
-    deepseek_api_key: str = ""
-    deepseek_model: str = "deepseek-chat"
+    deepseek_api_key: str = Field(default="", repr=False)
+    # A SERVED model name, verified against `GET /models` on 2026-09-06. The previous
+    # default, `deepseek-chat`, came from documentation and is not served: both
+    # endpoints accept it with a 200 and silently answer as `deepseek-v4-flash`, so
+    # every cost attribution and every benchmark naming it was recording a model that
+    # never ran. Served: deepseek-v4-flash, deepseek-v4-pro, deepseek-v4-flash-vision-exp.
+    deepseek_model: str = "deepseek-v4-flash"
     deepseek_base_url: str = "https://api.deepseek.com"
-    # Configurable precisely because the exact server-side search contract is NOT
-    # verified against the live API in this campaign. See
-    # ``app.integrations.deepseek.transport`` before enabling.
+    # The builtin web-search tool on POST /responses, verified live 2026-09-06.
+    # Still configurable — a vendor may rename a builtin — but no longer a guess.
     deepseek_search_tool_name: str = "web_search"
-    # Server-side web search. OFF by default for the reason above: the parser
-    # tolerates an unknown payload shape and returns nothing with a warning, but
-    # nothing should call an unverified endpoint by accident.
+    # The output-token ceiling for ONE search request. It bounds what the model WRITES:
+    # pages it opens come back as INPUT tokens, which no request parameter bounds, and
+    # that is where most of an observed ~41k-token request went. `max_tool_calls` is
+    # accepted and ignored (sending 1 still made two calls), so the timeout is the only
+    # other control the API honours. See `app.integrations.deepseek.transport`.
+    deepseek_search_max_output_tokens: int = 4000
+    # Server-side web search. Verified to EXIST as of V3.11.1.2 — and still OFF by
+    # default, because a verified capability is not the same as a decision to spend on
+    # it. A credential is not consent; neither is a working endpoint.
     v3_deepseek_search_enabled: bool = False
 
     # ── Real OCR: Azure Document Intelligence (Phase 32A Slice 5B.2) ─────────
@@ -1252,7 +1296,7 @@ class Settings(BaseSettings):
     # staging/production; managed identity (``DefaultAzureCredential``) is
     # preferred over the API key when both are unset/set respectively.
     azure_document_intelligence_endpoint: str = ""
-    azure_document_intelligence_api_key: str = ""
+    azure_document_intelligence_api_key: str = Field(default="", repr=False)
     # Hard cap for ONE OCR call (submit + poll), carved OUT OF — never added on
     # top of — ``primary_document_total_timeout_seconds`` (45s).
     primary_document_ocr_timeout_seconds: int = 20

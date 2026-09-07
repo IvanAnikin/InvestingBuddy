@@ -13,7 +13,7 @@ describes deployed behaviour unless a section explicitly says `CURRENT`.
 | `develop/v3` | V3 integration branch. Unapproved, undeployed. |
 | `feature/v3-*` | PR-sized V3 implementation slices. Merge target is `develop/v3` only. |
 
-**Where the work stands (2026-09-06).** `develop/v3` carries **all eleven phases**,
+**Where the work stands (2026-09-07).** `develop/v3` carries **all eleven phases**,
 V3.0 through V3.11, every one `IMPLEMENTED` — nothing is deployed and migrations 019-038
 have reached no deployed environment.
 
@@ -21,8 +21,16 @@ V3.10 ran real issuers — **MRNA, CFR and ASML** — through the whole chain an
 `NOT READY` against four blockers. **V3.11 closed all four.** All three issuers now
 complete a **playbook-gated** Council on real public data; real-document scope coverage
 went from 1.7% to 8.1% with a **0.0% false-positive Group rate**; a research run costs a
-measured **$0.01453**; and DeepSeek — still uncallable, no credential is reachable — is no
-longer a release-critical dependency.
+measured **$0.01453**; and DeepSeek is verified live across **both** its endpoints
+(**16/16**) while remaining optional and flag-gated off.
+
+The DeepSeek story is worth reading in order, because the campaign got it wrong once and
+the error generalises: V3.11.1.1 probed `POST /chat/completions`, found no builtin tools,
+and reported that DeepSeek **has no server-side web search**. It has one — on
+`POST /responses` — and [V3.11.1.2](slices/V3.11-1-2-deepseek-responses-web-search.md)
+measured it. **An absence measured on one endpoint is not an absence**
+([ADR-055](../DECISIONS.md#adr-055)). Consequence for the plan: **no search provider needs
+buying**, and Exa, Perplexity and Gemini stay deferred and unpurchased.
 
 The recommendation is **`READY FOR USER ACCEPTANCE / MAIN PROMOTION REVIEW`**, in
 [§12 of the release candidate report](V3_RELEASE_CANDIDATE_REPORT.md#12-recommendation).

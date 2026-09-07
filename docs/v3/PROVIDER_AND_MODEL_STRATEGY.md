@@ -24,7 +24,23 @@ depends on.** Where the two disagree, this section wins.
 |---|---|---|
 | **Claude Code CLI** | Development and orchestration **only** | ADR-047..052 were decided through it. It is **not** an InvestingBuddy runtime dependency and must not become one. |
 | **Existing Azure OpenAI** | The **strong-model fallback** | Already in this repository, already carrying the council. No new OpenAI commercial account. |
-| **DeepSeek API** (pay-as-you-go) | The **primary external research/model provider** | Model calls *and* server-side `web_search`. |
+| **DeepSeek API** (pay-as-you-go) | The **primary external research/model provider** | Model calls on `POST /chat/completions`; server-side `web_search` on `POST /responses`. **Both legs verified live** (2026-09-06 / 2026-09-07, 16/16) — see [ADR-055](../DECISIONS.md#adr-055) and [the slice](slices/V3.11-1-2-deepseek-responses-web-search.md). Served models: `deepseek-v4-flash` (default), `deepseek-v4-pro`, `deepseek-v4-flash-vision-exp`; the documented name `deepseek-chat` is **not served** and is silently substituted. |
+
+### What DeepSeek's search does NOT give, and what the platform does about it
+
+Measured, not assumed — and load-bearing, because each gap is a place where trusting the
+vendor would produce a silent failure:
+
+| Absent | Consequence enforced in the adapter |
+|---|---|
+| **Structured citations.** `annotations` was empty in every live run; `include: ["web_search_call.action.sources"]` is accepted and inert | A candidate is a page the provider **actually opened** (`open_page` / `find_in_page`). A URL cited only in the answer's prose is recorded as `cited_but_never_opened` — a fabrication signal — and never promoted |
+| **An enforced `max_tool_calls`.** Echoed back as `null`; sending `1` still made two calls, and one request made **eight** (~41k tokens) | Spend is bounded by `max_output_tokens` and the timeout, which the API *does* honour, and the billed call count is reported per search |
+| **An enforced `filters.allowed_domains`.** Dropped from the echo; off-domain pages opened anyway | The domain restriction is applied client-side, and the telemetry states `domain_filter_enforced_by: investingbuddy_client_side` so no reader infers a vendor guarantee |
+| **Strict request validation.** An unknown tool type returns **200** and is silently dropped | Execution is proven from the `tools` echo *and* the presence of `web_search_call` items — never from the status code |
+
+None of this changes what a search result *is*: a `SourceCandidate` is a URL
+InvestingBuddy has not fetched. Only bytes retrieved through the platform's own guarded
+fetcher can be cited.
 
 ### Not purchased, not required, not blocking
 

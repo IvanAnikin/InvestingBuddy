@@ -3887,3 +3887,106 @@ Questions are unioned as written, which was never ambiguous.
   unrecognised rule as *not satisfied*, so an unevaluable rule would make every run of that
   playbook exhaust its budget — and the symptom would look like a coverage problem rather
   than a configuration error.
+
+---
+
+## ADR-055: DeepSeek's Web Search Is Real, Lives on `/responses`, and Every Bound That Matters Is Enforced by InvestingBuddy
+
+**Date:** 2026-09-07 · **Status:** Accepted · **Decided by:** agent, from a live measurement
+**Amends:** [ADR-048](#adr-048-deepseek-web-search-is-the-primary-external-search-path-exa-and-perplexity-are-deferred)
+**Corrects:** the conclusion recorded in slice V3.11.1.1
+
+### Context
+
+ADR-048 made DeepSeek's server-side `web_search` the primary external general-web path,
+on the strength of vendor documentation. When a real key arrived, V3.11.1.1 probed the
+API and reported that **no server-side web search exists**: every builtin tool spelling
+returned `400 unknown variant ... expected 'function'`, and the model itself said it had
+no live browsing and a June 2024 cutoff. The adapter's `search()` was changed to refuse,
+and the campaign recorded that the premise for choosing DeepSeek had been wrong.
+
+That probe only ever asked `POST /chat/completions`.
+
+DeepSeek serves a second, OpenAI-compatible API — `POST /responses` — and the builtin
+web-search tool lives there. Measured live on 2026-09-07 with the same key: the tool is
+accepted, echoed, and really searches. It issues queries, opens pages, reads them with
+`find_in_page`, and returns the URLs it opened. The capability ADR-048 was chosen for
+exists.
+
+**The generalisable error is not about DeepSeek: an absence measured on one endpoint was
+reported as an absence in the product.**
+
+### Decision
+
+**1. `search()` uses `POST /responses`; `complete()` stays on `/chat/completions`.** Two
+endpoints with different capabilities and different strictness, so two request shapes.
+Forcing one abstraction over them would hide exactly the distinction that caused the
+error.
+
+**2. A 200 is not a capability, and the `tools` echo is the proof.** Unlike
+`/chat/completions`, `/responses` silently drops what it does not understand and still
+returns 200 — an unknown tool type, an unknown `include` value, an unknown field inside a
+known tool. So the adapter verifies that the tool it asked for is echoed back **and** that
+`web_search_call` items are present. Without that check, "the tool never ran" is
+indistinguishable from "the web has nothing", and only one of those is a claim about the
+world.
+
+**3. Candidates come from the retrieval trace and from nowhere else.** The contract
+provides **no structured citations** — `annotations` was empty in every measured run, and
+`include: ["web_search_call.action.sources"]` is accepted and inert. What it does provide
+is a trace: the queries issued, the pages opened, the opens that failed. A page the
+provider opened is a page it read, so those URLs become `SourceCandidate`s. A URL that
+appears only in the answer's prose is **counted and not promoted** — recorded as
+`cited_but_never_opened`, which is a fabrication signal that only exists because the trace
+exists.
+
+**4. Every bound that matters is enforced client-side, because the vendor's are inert.**
+Measured: `max_tool_calls` is echoed back as `null` and a request sending `1` still made
+two search calls (one observed request made **eight**, spending ~41k tokens);
+`filters.allowed_domains` is dropped from the echo entirely and off-domain pages were
+opened anyway. So InvestingBuddy owns the domain restriction, the candidate ceiling, the
+de-duplication, the URL canonicalisation and the SSRF host check, and the telemetry
+records `domain_filter_enforced_by: investingbuddy_client_side` so no later reader infers
+a guarantee the provider does not give. The only bounds the API honours —
+`max_output_tokens` and the timeout — are both set.
+
+**5. The canonical model is a *served* name.** `deepseek-chat`, taken from documentation,
+is not served: both endpoints accept it with a 200 and answer as `deepseek-v4-flash`. A
+default that is silently substituted makes every cost attribution wrong and every
+benchmark unreproducible, without anything ever failing. The default is now
+`deepseek-v4-flash`, and a test asserts the configured model is in `SERVED_MODELS`.
+
+**6. Both flags stay off, and both are enforced in code.** `V3_DEEPSEEK_SEARCH_ENABLED`
+and `V3_DEEPSEEK_MODEL_ENABLED` default to `false`. A verified capability is not a
+decision to spend on it, exactly as a credential is not consent to route research to a
+vendor.
+
+This needed doing, not just saying. Until this ADR, `search()` raised unconditionally and
+**that refusal — not the flag — was the thing keeping spend off**; review of the first
+draft found `V3_DEEPSEEK_SEARCH_ENABLED` had no consumer in application code at all while
+three documents claimed it held the line. The gate now lives in
+`DeepSeekSearchProvider.search()`, alongside the model leg's in `resolve_routing`, and a
+test asserts the default provider never reaches the transport.
+
+### Consequences
+
+- **ADR-048 stands, and no search provider needs buying.** Exa, Perplexity and Gemini stay
+  deferred and unpurchased. [OPEN DECISION #3](v3/OPEN_DECISIONS.md) resolves toward
+  DeepSeek server-side web search on measured evidence rather than on documentation.
+- **`ResearchLead` → Evidence becomes *staffable*, and is still not staffed.** The reason
+  V3.11.1.1 gave for it being permanently unstaffable — DeepSeek cannot retrieve — is
+  gone. The wiring is not there, and this ADR does not add it:
+  `DeepSeekResearchProvider.investigate()` still runs on `/chat/completions` with no
+  retrieval, so its leads cite URLs the model recalled; `DeepSeekSearchProvider` emits
+  `SourceCandidate`s, which carry a URL and no claim, and `verify_lead()` verifies a
+  claim. Giving `investigate()` the `/responses` search tool would close it and is a
+  separate slice. Nothing about the promotion rule changes either way: only bytes fetched
+  through the platform's own guarded fetcher can be cited.
+- **The search leg now reports tokens.** `/responses` bills a search like a completion, so
+  `SEARCH_UNITS` gained the three token units. Reporting only `web_search_calls` made the
+  platform's most expensive single call look like its cheapest.
+- **A provider that ignores our restrictions is visible rather than silent.**
+  `off_domain_urls` and `cited_but_never_opened` are per-run numbers somebody can watch.
+- The refusal V3.11.1.1 added was the right decision *on the evidence it had*. What was
+  wrong was the scope of the evidence, and the live contract test now pins both halves —
+  that `/chat/completions` has no builtin tools, and that `/responses` does.

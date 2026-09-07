@@ -319,6 +319,19 @@ class SearchResponse:
     instrumented_units: tuple[str, ...] = ()
     cost: CostEstimate = field(default_factory=CostEstimate)
     warnings: list[str] = field(default_factory=list)
+    #: Mirrors ``ModelResponse``. A search has an output ceiling and can be cut off at
+    #: it, and a truncated candidate list that reads as exhaustive is a silent claim
+    #: that the web holds nothing more.
+    finish_reason: str | None = None
+    truncated: bool = False
+    #: What the provider did, as opposed to what it returned — the same reason
+    #: ``ResearchProviderResult`` keeps its own. Added in V3.11.1.2, when DeepSeek's
+    #: live contract turned out to expose a *retrieval trace* (which pages it opened,
+    #: which opens failed, which queries it ran) and no structured citations at all.
+    #: A provider that ignores a domain restriction we asked for is recorded here
+    #: rather than in prose, because "it went off-domain" is a number somebody should
+    #: be able to watch over time.
+    raw_provider_metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
     def contains_untrusted_content(self) -> bool:

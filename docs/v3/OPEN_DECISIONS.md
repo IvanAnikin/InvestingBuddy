@@ -449,14 +449,33 @@ this records where they stand.
 and unknown policy fails closed* — remains in force and is **still untested against a live
 call**, because no document has been sent to DeepSeek.
 
-**#3 Exa vs Perplexity Search — materially changed by V3.11.1.1.** The live contract proved
-**DeepSeek has no server-side web search**: `tools[0].type` accepts only `"function"`, and
-the model has no live browsing (June 2024 cutoff). DeepSeek was chosen as the primary
-external research runtime *for* that capability, so the general-web leg is now genuinely
-unstaffed. Today it is covered by the safe fetcher and bounded issuer traversal, which
-retrieve documents that exist. Whether that is sufficient, or whether a real search
-provider is worth a subscription, is **your decision** — the constraint "no new paid
-subscriptions" still stands and nothing was purchased.
+**#3 Exa vs Perplexity Search — RESOLVED, and V3.11.1.1's reversal is itself reversed.**
+
+V3.11.1.1 reported that DeepSeek has no server-side web search and that the general-web
+leg was therefore unstaffed. **That was wrong, and the error was one of scope**: the probe
+only ever asked `POST /chat/completions`, which serves no builtin tools at all. DeepSeek's
+builtin `web_search` lives on `POST /responses`, and V3.11.1.2 measured it live — it
+issues queries, opens pages, reads them and reports the URLs it opened.
+
+So ADR-048 stands as originally decided, now on measured evidence rather than on vendor
+documentation: **DeepSeek's server-side `web_search` is the primary external general-web
+search path.** Exa, Perplexity and Gemini remain deferred, unpurchased and not required.
+**Nothing needs buying.** See [ADR-055](../DECISIONS.md#adr-055) and
+[the slice](slices/V3.11-1-2-deepseek-responses-web-search.md).
+
+Two properties of that contract are carried into the platform rather than assumed away:
+it returns **no structured citations** (so a candidate is a page the provider actually
+opened, and a URL cited only in prose is counted as a fabrication signal, never promoted),
+and its **`max_tool_calls` and `filters.allowed_domains` are accepted and ignored** (so
+spend and domain restrictions are enforced by InvestingBuddy and the telemetry says which
+side enforced them).
+
+The search leg stays behind `V3_DEEPSEEK_SEARCH_ENABLED=false`, which — after review
+caught that the flag had no consumer in code — is now genuinely enforced in
+`DeepSeekSearchProvider.search()`: with it off, the transport is never called and nothing
+is spent. A verified capability is not a decision to spend on it; enabling it in an
+acceptance run remains **your call**, and it is decision #20's sibling rather than a
+defect.
 
 **New, for the user.** Two items surfaced by V3.11 that are decisions rather than defects:
 
@@ -464,5 +483,5 @@ subscriptions" still stands and nothing was purchased.
 |---|---|---|
 | 19 | Should V2's HTML extraction get V3.11's container-block fix? | V2's excerpt path also gets **zero text** from modern Inline-XBRL SEC filings. Fixing it would change **deployed report content**, so V3.11 left V2 byte-identical. |
 | 20 | Enabling DeepSeek's model leg | `v3_deepseek_model_enabled` (default off) routes Investigator and follow-up work to DeepSeek. The completion contract is **verified**, but no acceptance run has used it, so the cost figures and the three Councils in the report would no longer describe what runs. Needs its own acceptance slice. |
-| 21 | **Rotate the validation key** | The key supplied on 2026-09-06 reached terminal output through a dataclass `repr` before that was fixed. It should be rotated. Nothing was committed — the real key appears in no tracked file — but it was rendered in a failure trace. |
-| 22 | The `ResearchLead` path has no producer | It exists to verify claims from an external search provider. DeepSeek **cannot search**, so it produces no leads to promote. The path stays dormant until decision #3 is settled — it is not a defect, it is an unstaffed role. |
+| 21 | **Rotate the validation key** — now for **two** reasons | (a) V3.11.1.1: the key reached terminal output through a dataclass `repr` before that was fixed. (b) V3.11.1.2: a live test failed on an assertion about an *innocent* field and pytest rendered the whole `Settings` object into the diff, key included. Both leak paths are now closed at the type — a named `CREDENTIAL_SETTING_FIELDS` list, every member `Field(repr=False)`, with tests that the list is complete and has not drifted. Review caught the first attempt covering only `*_api_key`, leaving `database_url` (the DB password) and `staging_basic_auth` printing. Nothing was ever committed — the real key appears in no tracked file. **It should still be rotated.** |
+| 22 | The `ResearchLead` path has no producer — **still OPEN, but re-scoped by V3.11.1.2** | V3.11.1.1 said this could *never* be staffed by DeepSeek because it cannot search. That reason is gone: it can. But the capability is not the wiring, and an earlier draft of this row claimed the decision was closed — it is not. `DeepSeekResearchProvider.investigate()`, the only thing that emits a `ResearchLead`, still calls `/chat/completions` with **no retrieval**, so a lead's `claimed_source_url` remains a URL the model recalled. `DeepSeekSearchProvider` emits `SourceCandidate`s, which carry a URL and **no claim**, and `verify_lead()` verifies a *claim* against fetched bytes — so search output is not something the promotion path can consume today. What changed: the role is now **staffable**, and giving `investigate()` the `/responses` search tool is a real slice somebody can scope. What has not: nothing produces a grounded lead yet. |

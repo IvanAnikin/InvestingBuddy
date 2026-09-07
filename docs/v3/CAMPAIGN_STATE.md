@@ -9,7 +9,10 @@ the code, not inferred from a plan. When it disagrees with a phase-gate section 
 record of a gate and this file is the current state; re-verify before trusting
 either.
 
-**Last verified:** 2026-09-06, at the **V3 Release Candidate**, by direct `git` inspection, a full local gate run (API and web), a full migration chain up-and-down against real PostgreSQL 16, and a live real-document corpus acceptance run.
+**Last verified:** 2026-09-07, after V3.11.1.2, by direct `git` inspection, a full local
+gate run (API and web), a full migration chain up-and-down against real PostgreSQL 16, a
+live real-document corpus acceptance run, and a **live DeepSeek `/responses` contract run
+(16/16)**.
 
 ---
 
@@ -34,7 +37,7 @@ enabling a V3 flag in production, deleting V2 compatibility or either V2 ref.
 
 | Item | Value |
 |---|---|
-| `develop/v3` HEAD | **`86e499c`**, ahead of `origin/develop/v3` (`fd82d3d`), unpushed |
+| `develop/v3` HEAD | **`fb50ef9`** before this slice, ahead of `origin/develop/v3` (`fd82d3d`), unpushed |
 | Alembic head in source | **038** (`038_add_monitoring`) |
 | Alembic head in the deployed database | **018** — and V3 migrations 019-038 have reached **no** deployed environment |
 | Alembic head in the local dev database | **018** (unchanged by V3 work; scratch databases only) |
@@ -45,7 +48,11 @@ enabling a V3 flag in production, deleting V2 compatibility or either V2 ref.
 Working tree at campaign start also held two untracked files —
 `docs/DATA_SOURCE_INVENTORY.md` / `.xlsx`. They are
 [OPEN DECISION #18](OPEN_DECISIONS.md#18-fate-of-docsdata_source_inventorymd--xlsx),
-the user's call, and the campaign leaves them untracked and untouched.
+the user's call, and the campaign left them untracked and untouched.
+
+**As of 2026-09-07 neither file is present in the working tree.** No campaign commit
+removed them — they were never tracked, so nothing here could have. Recorded as an
+observation rather than an explanation; decision #18 remains the user's.
 
 ## Phase status
 
@@ -62,7 +69,7 @@ the user's call, and the campaign leaves them untracked and untouched.
 | V3.8 | Research Memory and Delta | `IMPLEMENTED` — 8.1/8.2 merged |
 | V3.9 | Monitoring | `IMPLEMENTED` — 9.1 merged, feature-gated, **nothing schedules it** |
 | V3.10 | End-to-end integration and real-issuer acceptance | `IMPLEMENTED` — 10.1-10.4 merged + 2 correctives |
-| V3.11 | Production hardening and final product acceptance | `IMPLEMENTED` — 11.1-11.5 merged + 1 corrective; all four V3.10 blockers closed; **11.1 live contract VERIFIED 2026-09-06 (14/14) — and DeepSeek is still not release-critical** |
+| V3.11 | Production hardening and final product acceptance | `IMPLEMENTED` — 11.1-11.5 merged + 2 correctives; all four V3.10 blockers closed; live contract VERIFIED **16/16** on 2026-09-07 across **both** DeepSeek endpoints. **11.1.2 reversed 11.1.1's central finding: server-side web search DOES exist, on `/responses`.** DeepSeek is still not release-critical |
 
 `IMPLEMENTED` = code, tests and local contract complete. `VALIDATED` = realistic
 end-to-end validation performed. **No V3 phase can reach `VALIDATED` in the sense
@@ -144,7 +151,8 @@ rewrite of history. Five exist, and each one is a defect a real run found:
 | 2026-09-06 | `get_recent_filings`, because a real run could not finish without it | `fix/v3-10-3-1-recent-filings-tool` | `62f8c75` | Biotech's blocking question required a tool **nothing implemented**, so a biotech run could never convene its Council. Merged with the three integration defects the first MRNA run exposed: a `research_runs` id passed into a column FK'd to `research_jobs` — **every tool call failed to persist and killed the transaction**; `lookup_entity` called with a `company_id` when it takes a ticker; and the delta silently never computed because the prior run was re-queried after this run had opened. |
 | 2026-09-06 | A finding inherits the period and scope of its evidence | `fix/v3-10-4-1-finding-period-scope` | `2c1cc27` |
 | 2026-09-06 | Citations are checked to actually resolve | `fix/v3-11-5-citation-resolution-check` | `9b41bc0` |
-| 2026-09-06 | **The DeepSeek contract, verified** | `fix/v3-11-1-1-deepseek-live-contract` | `f037f1b` | A real key made 7 of 8 live questions fail. Found: the adapter's repr **printed the key into pytest output**; `response_format` sent unconditionally so every completion 400'd; tool `parameters` needed a JSON Schema; **no server-side web search exists at all**; a credential silently re-routed Investigator work off Azure OpenAI; and seven tests asserted a property of the developer's machine. | "Citations resolve" was on the acceptance gate and had never been measured — the harness checked that a finding HAS citations, not that they lead anywhere. | **Findings were exempt from period and scope integrity.** Real findings said "FY2026 projected" over FY2025 actuals with `period_key=None`. Now inherited on agreement or nothing; disagreement discards the finding and opens a `conflicting_sources` gap — which then fired on live SEC data. |
+| 2026-09-06 | **The DeepSeek contract, verified** *(its web-search finding was later REVERSED — see the next row)* | `fix/v3-11-1-1-deepseek-live-contract` | `f037f1b` | A real key made 7 of 8 live questions fail. Found: the adapter's repr **printed the key into pytest output**; `response_format` sent unconditionally so every completion 400'd; tool `parameters` needed a JSON Schema; ~~no server-side web search exists at all~~ **(WRONG — it does, on `/responses`)**; a credential silently re-routed Investigator work off Azure OpenAI; and seven tests asserted a property of the developer's machine. | "Citations resolve" was on the acceptance gate and had never been measured — the harness checked that a finding HAS citations, not that they lead anywhere. | **Findings were exempt from period and scope integrity.** Real findings said "FY2026 projected" over FY2025 actuals with `period_key=None`. Now inherited on agreement or nothing; disagreement discards the finding and opens a `conflicting_sources` gap — which then fired on live SEC data. |
+| 2026-09-07 | **DeepSeek's web search exists; it was on the other endpoint** | `fix/v3-11-1-2-deepseek-responses-web-search` | *(this slice)* | V3.11.1.1 probed only `/chat/completions` and reported that DeepSeek has no server-side web search. It has one, on **`POST /responses`** — verified live 16/16. **An absence measured on one endpoint is not an absence.** `search()` now really searches; candidates come only from pages the provider actually opened (there are **no structured citations**), and because `max_tool_calls` and `filters.allowed_domains` are accepted-and-ignored, spend and domain limits are enforced client-side. Also closed a **second credential-leak path**: any `repr` of `Settings` printed every API key, so all five are now `Field(repr=False)`. |
 
 ## Migrations
 
@@ -247,16 +255,37 @@ belong to the agent, with an ADR when material.
 
 Recorded so a later run can be compared against a number rather than a memory.
 
-| Gate | At campaign start (`35bd550`) | At the release candidate | After V3.11 |
-|---|---|---|---|
-| `ruff check .` | All checks passed | All checks passed | All checks passed |
-| `pytest tests/ -q` | 4949 passed, 12 skipped | 5870 passed, 12 skipped | **6055 passed**, 25 skipped |
-| `mypy app` | 71 errors in 10 files | 71 (baseline, unchanged) | 71 (baseline, unchanged) |
-| web typecheck / lint / build | not run | **all passed** | **all passed** (re-run in V3.11.5) |
+| Gate | At campaign start (`35bd550`) | At the release candidate | After V3.11 | After V3.11.1.2 |
+|---|---|---|---|---|
+| `ruff check .` | All checks passed | All checks passed | All checks passed | All checks passed |
+| `pytest tests/ -q` | 4949 passed, 12 skipped | 5870 passed, 12 skipped | **6055 passed**, 25 skipped (`ENABLE_INTEGRATION_TESTS=true`) | **6078 passed**, 39 skipped (flag unset) |
+| `mypy app` | 71 errors in 10 files | 71 (baseline, unchanged) | 71 (baseline, unchanged) | 71 (baseline, unchanged) |
+| web typecheck / lint / build | not run | **all passed** | **all passed** (re-run in V3.11.5) | typecheck + lint re-run, **passed** (web untouched) |
 
 The 11 additional skips are the V3.10 live-provider tests, which are opt-in and skip
 without a `DEEPSEEK_API_KEY`. **A skip is not a pass**, and §10.1 of the release candidate
 report says so in those words.
+
+**The pass/skip split is environment-dependent, and V3.11.1.2 had to reconcile it before
+it could claim no regression.** The 6056/39 column differs from 6055/25 by +1 passed and
++14 skipped, which does *not* obviously mean "one test added". It decomposes exactly:
+
+| Cause | passed | skipped |
+|---|---|---|
+| `test_v3_deepseek_providers.py` 33 → **64** collected | +31 | — |
+| `test_v3_deepseek_not_release_critical.py` 21 → **25** collected | +4 | — |
+| `test_v3_deepseek_live_contract.py` 14 → **16**, the 2 new ones opt-in live | — | +2 |
+| `test_integration_live_providers.py` — all 12, gated on `ENABLE_INTEGRATION_TESTS`, which the V3.11 baseline run evidently had **set** and this one did not | **−12** | **+12** |
+| **Total** | **+23** | **+14** |
+
+So the recorded "6055 passed" included **12 tests making real network calls**. Compare
+these numbers only alongside the value of `ENABLE_INTEGRATION_TESTS`, or a future reader
+will read an environment difference as a regression — the same class of mistake as
+comparing `mypy` counts across scopes.
+
+The reconciliation that actually settles it is on **collected** counts, which are
+environment-independent: the suite went 6095 → 6117 (+22), and the three changed files
+went 83 → 105 (+22). Nothing else moved.
 
 `mypy` regressed to 72 on **six** occasions during the campaign. The gate caught every one
 and each was a real type error.
@@ -310,13 +339,40 @@ Carried forward, all still true:
   truncated by a bound never applied to it. A pre-existing V2 inconsistency; the
   corpus under-claims completeness as a result, which is the safe direction. Its
   own slice, not yet scheduled.
-- **DeepSeek's server-side web-search wire contract is NOT verified** against the live
-  API (slice 4.3). It is modelled as an OpenAI-compatible tool call; the mapping lives in
-  `HttpDeepSeekTransport.search` and `parse_search_payload`, the tool name is
-  configuration, `V3_DEEPSEEK_SEARCH_ENABLED` defaults **off**, and the parser returns no
-  candidates with a warning naming what it saw rather than guessing. Confirming it is one
-  request body, one parser and the opt-in live contract test. **Nothing else in the
-  DeepSeek path depends on it.**
+- **DeepSeek's server-side web-search contract is VERIFIED** (V3.11.1.2, live
+  2026-09-07) — and the way it was previously mis-measured is the lesson worth keeping:
+  V3.11.1.1 probed only `/chat/completions`, found no builtin tools, and reported that the
+  capability did not exist. It lives on `POST /responses`. **An absence measured on one
+  endpoint is not an absence.** What the contract does *not* provide is carried in the
+  code rather than assumed away: **no structured citations** (candidates come only from
+  pages the provider actually opened; a URL cited only in prose is counted as
+  `cited_but_never_opened` and never promoted) and **no enforced `max_tool_calls` or
+  `filters.allowed_domains`** (both accepted and ignored, so spend and domain limits are
+  enforced client-side and the telemetry records which side enforced them). One observed
+  request made **eight** search calls and spent ~41k tokens, which is why the only bounds
+  that work — `max_output_tokens` and the timeout — are both set.
+  `V3_DEEPSEEK_SEARCH_ENABLED` still defaults **off**.
+- **A `repr` of any settings object was a credential leak.** V3.11.1.1 fixed the
+  transport's dataclass `repr`; V3.11.1.2 found the same class of leak one level up, when
+  a live test failed on an assertion about an *innocent* field and pytest rendered the
+  whole `Settings` object — key included — into the diff. Closed at the type via a named
+  `CREDENTIAL_SETTING_FIELDS` list, every member `Field(repr=False)`. **Two lessons, both
+  from review of the first attempt:** matching credentials by name suffix missed
+  `database_url` (the DB password) and `staging_basic_auth`; and the behavioural test
+  itself must not put the rendered object in an `assert`, or its own failure prints what
+  it guards. **The validation key still needs rotating.**
+- **A test that guards a leak can BE the leak.** V3.11.1.2's security pass found
+  `assert key not in repr(transport)` reading a live key — in a test that runs always,
+  and that only ever fails on the day the redaction it guards has regressed. pytest
+  renders both operands plus an "is contained here" expansion, so it would have printed
+  the key three times. **Reduce the comparison to a bool before it reaches `assert`**;
+  the AST guard now follows local bindings and is scoped to `assert` statements, and is
+  proven in both directions. Same lesson as the `Settings` repr, one level further in.
+- **A feature flag with no consumer is not a gate.** `V3_DEEPSEEK_SEARCH_ENABLED` was
+  documented in three places as holding the search leg closed while nothing in
+  application code read it — the transport's unconditional refusal had been the real
+  brake, and V3.11.1.2 removed it by making search work. Enforced now in
+  `DeepSeekSearchProvider.search()`. **Before trusting a flag, grep for its consumer.**
 - **`(ticker, exchange)` has already resolved to the wrong issuer live** — `BA` +
   LSE returned Boeing's CIK for BAE Systems. Fixed by special-casing, not by
   identity. **Slice 2.1 makes it structurally impossible** for anything reading the

@@ -1,0 +1,184 @@
+{
+  "id": "29ec4ea1-c878-45d1-bd0b-babd87ea1f89",
+  "object": "response",
+  "created_at": 1788728144,
+  "status": "completed",
+  "background": false,
+  "completed_at": 1788728155,
+  "content_filters": null,
+  "error": null,
+  "frequency_penalty": 0.0,
+  "incomplete_details": null,
+  "instructions": null,
+  "max_output_tokens": 4000,
+  "max_tool_calls": null,
+  "model": "deepseek-v4-flash",
+  "moderation": null,
+  "output": [
+    {
+      "type": "reasoning",
+      "id": "81a33253-a72c-4c27-b151-8589ab88efa6",
+      "status": "completed",
+      "content": [
+        {
+          "type": "reasoning_text",
+          "text": "(elided: model reasoning, not part of the contract)"
+        }
+      ],
+      "summary": [],
+      "encrypted_content": "29ec4ea1-c878-45d1-bd0b-babd87ea1f89-0"
+    },
+    {
+      "type": "web_search_call",
+      "id": "call_00_QZXiBtvfIXdfdxeR6qxX0234",
+      "status": "completed",
+      "action": {
+        "type": "search",
+        "queries": [
+          "Moderna MRNA second quarter 2026 total revenue",
+          "Moderna Q2 2026 revenue results",
+          "Moderna 2026 Q2 earnings total revenue",
+          "ws_call_id=call_00_QZXiBtvfIXdfdxeR6qxX0234"
+        ]
+      }
+    },
+    {
+      "type": "reasoning",
+      "id": "3d1d3fa2-1a66-4978-b64b-53187b3974cb",
+      "status": "completed",
+      "content": [
+        {
+          "type": "reasoning_text",
+          "text": "(elided: model reasoning, not part of the contract)"
+        }
+      ],
+      "summary": [],
+      "encrypted_content": "29ec4ea1-c878-45d1-bd0b-babd87ea1f89-1"
+    },
+    {
+      "type": "web_search_call",
+      "id": "call_01_AHJZ1h4KaUFlPKUKb9wp7189",
+      "status": "completed",
+      "action": {
+        "type": "search",
+        "queries": [
+          "Moderna investor relations press release Q2 2026 second quarter 2026 results",
+          "site:investors.modernatx.com Q2 2026 revenue Moderna press release",
+          "ws_call_id=call_01_AHJZ1h4KaUFlPKUKb9wp7189"
+        ]
+      }
+    },
+    {
+      "type": "web_search_call",
+      "id": "call_02_FqGKXomjQP1xsxsZ3ZiG3061",
+      "status": "failed",
+      "action": {
+        "type": "open_page",
+        "url": "https://finance.yahoo.com/healthcare/articles/mrna-q2-earnings-meet-stock-180400939.html?.tsrc=rss#ws_call_id=call_02_FqGKXomjQP1xsxsZ3ZiG3061"
+      }
+    },
+    {
+      "type": "reasoning",
+      "id": "ca6cd985-d2ed-4649-807c-71494890df39",
+      "status": "completed",
+      "content": [
+        {
+          "type": "reasoning_text",
+          "text": "(elided: model reasoning, not part of the contract)"
+        }
+      ],
+      "summary": [],
+      "encrypted_content": "29ec4ea1-c878-45d1-bd0b-babd87ea1f89-2"
+    },
+    {
+      "type": "web_search_call",
+      "id": "call_03_rlqlIDtwRTT1ChG8ww3R3567",
+      "status": "completed",
+      "action": {
+        "type": "open_page",
+        "url": "https://www.nasdaq.com/press-release/moderna-reports-second-quarter-2026-financial-results-and-provides-business-updates#ws_call_id=call_03_rlqlIDtwRTT1ChG8ww3R3567"
+      }
+    },
+    {
+      "type": "web_search_call",
+      "id": "call_04_56ENT1OZCuFXQXeDp0zw2716",
+      "status": "completed",
+      "action": {
+        "type": "find_in_page",
+        "url": "https://investors.modernatx.com/quarterly-results#ws_call_id=call_04_56ENT1OZCuFXQXeDp0zw2716",
+        "pattern": "$145"
+      }
+    },
+    {
+      "type": "reasoning",
+      "id": "b61c98f3-d0f8-4a4b-b81f-0a95a893e625",
+      "status": "completed",
+      "content": [
+        {
+          "type": "reasoning_text",
+          "text": "(elided: model reasoning, not part of the contract)"
+        }
+      ],
+      "summary": [],
+      "encrypted_content": "29ec4ea1-c878-45d1-bd0b-babd87ea1f89-3"
+    },
+    {
+      "type": "message",
+      "id": "f1bfddf8-d0a5-467b-9e23-1fbef5d00bae",
+      "status": "completed",
+      "content": [
+        {
+          "type": "output_text",
+          "annotations": [],
+          "logprobs": [],
+          "text": "According to Moderna's second quarter 2026 financial results, the company reported total revenue of $145 million, up from $142 million in the same period of 2025. This figure is stated in the company's official press release, which you can find at: https://www.nasdaq.com/press-release/moderna-reports-second-quarter-2026-financial-results-and-provides-business-updates"
+        }
+      ],
+      "phase": "final_answer",
+      "role": "assistant"
+    }
+  ],
+  "parallel_tool_calls": true,
+  "presence_penalty": 0.0,
+  "previous_response_id": null,
+  "prompt_cache_key": null,
+  "prompt_cache_retention": null,
+  "reasoning": {
+    "effort": null,
+    "summary": null
+  },
+  "safety_identifier": null,
+  "service_tier": "default",
+  "store": false,
+  "temperature": 1.0,
+  "text": {
+    "format": {
+      "type": "text"
+    },
+    "verbosity": null
+  },
+  "tool_choice": "auto",
+  "tools": [
+    {
+      "type": "web_search",
+      "search_context_size": null,
+      "user_location": null
+    }
+  ],
+  "top_logprobs": 0,
+  "top_p": 1.0,
+  "truncation": "disabled",
+  "usage": {
+    "input_tokens": 15600,
+    "input_tokens_details": {
+      "cached_tokens": 8064
+    },
+    "output_tokens": 654,
+    "output_tokens_details": {
+      "reasoning_tokens": 212
+    },
+    "total_tokens": 16254
+  },
+  "user": null,
+  "metadata": {}
+}
