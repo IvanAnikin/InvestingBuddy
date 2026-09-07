@@ -9,10 +9,16 @@ the code, not inferred from a plan. When it disagrees with a phase-gate section 
 record of a gate and this file is the current state; re-verify before trusting
 either.
 
-**Last verified:** 2026-09-07, after V3.11.1.2, by direct `git` inspection, a full local
-gate run (API and web), a full migration chain up-and-down against real PostgreSQL 16, a
-live real-document corpus acceptance run, and a **live DeepSeek `/responses` contract run
-(16/16)**.
+**Last verified:** 2026-09-07, after V3.11.1.2 merged at **`c7b2f3f`**, by direct `git`
+inspection, a full local gate run (API and web), a full migration chain up-and-down
+against real PostgreSQL 16, a live real-document corpus acceptance run, a **live DeepSeek
+`/responses` contract run (16/16)**, and an independent code review plus an independent
+security review of the slice diff.
+
+Protected refs re-verified at that point: `main` = `release/v2-current` =
+`v2-final-pre-v3-2026-09-04^{commit}` = **`4b60e07`**, `git rev-list --count
+develop/v3..main` = **0**, and the deployed API still reports `commit_sha 4b60e07`
+(build 2026-09-02). Nothing was merged to `main`, deployed, or migrated.
 
 ---
 
@@ -37,7 +43,7 @@ enabling a V3 flag in production, deleting V2 compatibility or either V2 ref.
 
 | Item | Value |
 |---|---|
-| `develop/v3` HEAD | **`fb50ef9`** before this slice, ahead of `origin/develop/v3` (`fd82d3d`), unpushed |
+| `develop/v3` HEAD | **`c7b2f3f`** (V3.11.1.2 merged 2026-09-07), ahead of `origin/develop/v3` (`fd82d3d`), unpushed |
 | Alembic head in source | **038** (`038_add_monitoring`) |
 | Alembic head in the deployed database | **018** — and V3 migrations 019-038 have reached **no** deployed environment |
 | Alembic head in the local dev database | **018** (unchanged by V3 work; scratch databases only) |
@@ -152,7 +158,7 @@ rewrite of history. Five exist, and each one is a defect a real run found:
 | 2026-09-06 | A finding inherits the period and scope of its evidence | `fix/v3-10-4-1-finding-period-scope` | `2c1cc27` |
 | 2026-09-06 | Citations are checked to actually resolve | `fix/v3-11-5-citation-resolution-check` | `9b41bc0` |
 | 2026-09-06 | **The DeepSeek contract, verified** *(its web-search finding was later REVERSED — see the next row)* | `fix/v3-11-1-1-deepseek-live-contract` | `f037f1b` | A real key made 7 of 8 live questions fail. Found: the adapter's repr **printed the key into pytest output**; `response_format` sent unconditionally so every completion 400'd; tool `parameters` needed a JSON Schema; ~~no server-side web search exists at all~~ **(WRONG — it does, on `/responses`)**; a credential silently re-routed Investigator work off Azure OpenAI; and seven tests asserted a property of the developer's machine. | "Citations resolve" was on the acceptance gate and had never been measured — the harness checked that a finding HAS citations, not that they lead anywhere. | **Findings were exempt from period and scope integrity.** Real findings said "FY2026 projected" over FY2025 actuals with `period_key=None`. Now inherited on agreement or nothing; disagreement discards the finding and opens a `conflicting_sources` gap — which then fired on live SEC data. |
-| 2026-09-07 | **DeepSeek's web search exists; it was on the other endpoint** | `fix/v3-11-1-2-deepseek-responses-web-search` | *(this slice)* | V3.11.1.1 probed only `/chat/completions` and reported that DeepSeek has no server-side web search. It has one, on **`POST /responses`** — verified live 16/16. **An absence measured on one endpoint is not an absence.** `search()` now really searches; candidates come only from pages the provider actually opened (there are **no structured citations**), and because `max_tool_calls` and `filters.allowed_domains` are accepted-and-ignored, spend and domain limits are enforced client-side. Also closed a **second credential-leak path**: any `repr` of `Settings` printed every API key, so all five are now `Field(repr=False)`. |
+| 2026-09-07 | **DeepSeek's web search exists; it was on the other endpoint** | `fix/v3-11-1-2-deepseek-responses-web-search` | `c7b2f3f` | V3.11.1.1 probed only `/chat/completions` and reported that DeepSeek has no server-side web search. It has one, on **`POST /responses`** — verified live 16/16. **An absence measured on one endpoint is not an absence.** `search()` now really searches; candidates come only from pages the provider actually opened (there are **no structured citations**), and because `max_tool_calls` and `filters.allowed_domains` are accepted-and-ignored, spend and domain limits are enforced client-side. Also closed a **second credential-leak path**: any `repr` of `Settings` printed every API key, so all five are now `Field(repr=False)`. |
 
 ## Migrations
 
