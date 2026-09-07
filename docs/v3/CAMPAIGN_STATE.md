@@ -9,6 +9,14 @@ the code, not inferred from a plan. When it disagrees with a phase-gate section 
 record of a gate and this file is the current state; re-verify before trusting
 either.
 
+**Release readiness:** see
+[V3_RELEASE_AND_DARK_DEPLOYMENT_REPORT.md](V3_RELEASE_AND_DARK_DEPLOYMENT_REPORT.md) —
+**READY FOR MAIN MERGE + DARK DEPLOYMENT**, conditional on migrating the live database
+**before** deploying V3 code. Measured on real PostgreSQL 16.15: V3 code on an 018 schema
+**fails** (`companies.legal_entity_id` does not exist) while V2 code on a 038 schema is
+fine, so the briefed order (merge → deploy → migrate) would cause a product-wide outage
+and must be inverted.
+
 **Last verified:** 2026-09-07, after V3.12 merged at **`a2f0f4f`**, by direct `git`
 inspection, a full local gate run (API and web), a full migration chain up-and-down
 against real PostgreSQL 16, a live real-document corpus acceptance run, a **live DeepSeek
