@@ -168,20 +168,140 @@ class TestNoTestMayPrintTheKey:
 
         hits: list[str] = []
         for path in Path("tests").glob("test_v3_deepseek*.py"):
-            for node in ast.walk(ast.parse(path.read_text())):
-                if not isinstance(node, ast.Compare):
+            tree = ast.parse(path.read_text())
+
+            # Locals bound to a key attribute. The security review of V3.11.1.2 found the
+            # original guard blind to exactly this: `key = Settings().deepseek_api_key`
+            # followed by `assert key not in repr(...)` put an `ast.Name` in the compare,
+            # not an `ast.Attribute`, so the guard passed while the leak was open — in
+            # the one test that only ever fails when the redaction has regressed.
+            tainted: set[str] = set()
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Assign):
                     continue
-                for operand in [node.left, *node.comparators]:
-                    # `Settings.model_fields[...].default` is the safe form: its value is
-                    # a Subscript, never a bare attribute on a constructed object.
-                    if (
-                        isinstance(operand, ast.Attribute)
-                        and operand.attr == "deepseek_api_key"
-                        and not isinstance(operand.value, ast.Subscript)
-                    ):
-                        hits.append(f"{path}:{operand.lineno}")
-        assert not hits, "these compare a live key value, so a failure prints it: " + ", ".join(
-            hits
+                value = node.value
+                if (
+                    isinstance(value, ast.Attribute)
+                    and value.attr == "deepseek_api_key"
+                    and not isinstance(value.value, ast.Subscript)
+                ):
+                    tainted.update(
+                        t.id for t in node.targets if isinstance(t, ast.Name)
+                    )
+
+            # Scoped to `assert` statements, because that is exactly where the danger
+            # is: pytest's assertion rewriting renders the OPERANDS of a failing assert
+            # (and adds an "is contained here" expansion for `in`). The same comparison
+            # in a plain assignment — `leaked = key in repr(t)` — prints nothing, which
+            # is why reducing to a bool first is the fix rather than a dodge.
+            for assertion in [n for n in ast.walk(tree) if isinstance(n, ast.Assert)]:
+                for node in ast.walk(assertion):
+                    if not isinstance(node, ast.Compare):
+                        continue
+                    for operand in [node.left, *node.comparators]:
+                        # `Settings.model_fields[...].default` is the safe form: its
+                        # value is a Subscript, never an attribute on a live object.
+                        if (
+                            isinstance(operand, ast.Attribute)
+                            and operand.attr == "deepseek_api_key"
+                            and not isinstance(operand.value, ast.Subscript)
+                        ) or (isinstance(operand, ast.Name) and operand.id in tainted):
+                            hits.append(f"{path}:{operand.lineno}")
+        assert not hits, (
+            "these ASSERT on a live key value — directly or through a local bound to "
+            "one — so pytest renders it on failure: " + ", ".join(hits)
+        )
+
+    def test_every_credential_in_settings_is_non_printing(self) -> None:
+        """The leak the AST guard above could not have caught.
+
+        That guard forbids comparing a *key attribute*. But V3.11.1.2's own live run
+        failed an assertion on ``Settings().deepseek_model`` — a perfectly innocent
+        field — and pytest rendered the whole ``Settings`` object into the diff, key
+        included. Any assertion, log line or exception that formats a settings object
+        was a leak, and no rule about how to write assertions can cover all of them.
+
+        So the guarantee moved to the type, as it did for the transport in V3.11.1.1.
+        The predicate is the **named list** in ``config``, not a name suffix: review
+        found the first version matching only ``*_api_key``/``*_secret``, which passed
+        while ``database_url`` (the DB password) and ``staging_basic_auth`` (literally
+        ``user:pass``) still printed. A credential is a credential whatever it is called.
+        """
+        from app.core.config import CREDENTIAL_SETTING_FIELDS, Settings
+
+        printing = sorted(
+            name
+            for name in CREDENTIAL_SETTING_FIELDS
+            if Settings.model_fields[name].repr is not False
+        )
+        assert not printing, (
+            "these credential fields would be printed by any repr of Settings: "
+            + ", ".join(printing)
+        )
+
+    def test_the_credential_list_has_not_drifted_from_the_settings(self) -> None:
+        """A list nothing checks is a list that goes stale.
+
+        Catches both directions: a credential added to ``Settings`` and forgotten here,
+        and a name left here after the field was renamed away.
+        """
+        from app.core.config import CREDENTIAL_SETTING_FIELDS, Settings
+
+        missing = sorted(CREDENTIAL_SETTING_FIELDS - set(Settings.model_fields))
+        assert not missing, f"named but no longer a setting: {missing}"
+
+        suffix_matched = {
+            n for n in Settings.model_fields if n.endswith(("_api_key", "_secret"))
+        }
+        unlisted = sorted(suffix_matched - CREDENTIAL_SETTING_FIELDS)
+        assert not unlisted, (
+            "these look like credentials but are not in CREDENTIAL_SETTING_FIELDS, so "
+            f"nothing checks that they are non-printing: {unlisted}"
+        )
+
+    def test_a_configured_settings_repr_contains_no_credential(self) -> None:
+        """Behavioural companion, written so its OWN failure cannot leak.
+
+        The first version asserted ``planted not in repr(...)`` — and pytest's assertion
+        rewriting prints the operands, so a regression would have published the whole
+        rendered ``Settings`` (built from the developer's ``.env``) into the failure
+        output. The comparison is reduced to a boolean before it reaches ``assert``.
+        """
+        from app.core.config import CREDENTIAL_SETTING_FIELDS, Settings
+
+        planted = "planted-value-that-is-not-a-real-credential"
+        rendered = repr(Settings(**{n: planted for n in CREDENTIAL_SETTING_FIELDS}))
+        leaked = planted in rendered
+        assert leaked is False, (
+            "a credential value reached repr(Settings); the rendered text is "
+            "deliberately NOT included in this message"
+        )
+
+    def test_no_application_module_bypasses_the_search_gate(self) -> None:
+        """`enabled=True` is a TEST affordance, and must stay one.
+
+        The model leg's gate lives inside `_deepseek_client` and cannot be overridden.
+        The search leg's is a constructor kwarg, so it *can* be — which is fine for a
+        test that says so explicitly, and not fine anywhere under `app/`. Checked
+        structurally, at the same rigour as the credential guards in this file, because
+        "nothing constructs it today" is a fact with a short shelf life.
+        """
+        offenders: list[str] = []
+        for path in Path("app").rglob("*.py"):
+            for node in ast.walk(ast.parse(path.read_text())):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                name = getattr(func, "id", None) or getattr(func, "attr", None)
+                if name != "DeepSeekSearchProvider":
+                    continue
+                for kw in node.keywords:
+                    if kw.arg == "enabled":
+                        offenders.append(f"{path}:{node.lineno}")
+        assert not offenders, (
+            "application code must not pass `enabled=` to DeepSeekSearchProvider — that "
+            "bypasses V3_DEEPSEEK_SEARCH_ENABLED, which is the only thing standing "
+            f"between a research run and unapproved external spend: {offenders}"
         )
 
     def test_the_transport_field_is_marked_non_repr(self) -> None:

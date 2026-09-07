@@ -4,30 +4,80 @@ One narrow seam between the platform and DeepSeek's HTTP API, so everything abov
 testable without a network and everything vendor-specific is in one file a reviewer can
 read in full.
 
-WHAT IS VERIFIED HERE AND WHAT IS NOT — READ THIS BEFORE ENABLING
+TWO ENDPOINTS, TWO CONTRACTS — BOTH VERIFIED LIVE
+=================================================
+DeepSeek serves **two different APIs with different capabilities**, and conflating them
+is what produced this module's previous, wrong conclusion.
+
+Measured 2026-09-06 (the model leg) and 2026-09-07 (the search leg).
+
+``POST /chat/completions``
+    OpenAI-compatible chat. **Strict**: an unknown ``tools[].type`` is a hard 400
+    (*"unknown variant `web_search`, expected `function`"*). Used by :meth:`complete`.
+
+``POST /responses``
+    OpenAI-compatible Responses API. **Built-in server-side web search lives here and
+    only here.** ``tools: [{"type": "web_search"}]`` is accepted, and the model really
+    does search, open pages and read them. Used by :meth:`search`.
+
+V3.11.1.1 probed only ``/chat/completions``, got the 400 above for every builtin
+spelling, and concluded "DeepSeek has no server-side web search". The endpoint had no
+such tool; the provider does. The lesson is recorded rather than quietly fixed: **an
+absence measured on one endpoint is not an absence.**
+
+``/responses`` IS PERMISSIVE, SO A 200 IS NOT A CAPABILITY
+==========================================================
+Unlike ``/chat/completions``, this endpoint **silently drops what it does not
+understand** and still returns 200:
+
+* ``tools: [{"type": "browser"}]`` → 200, ``tools`` echo is ``[]``, zero searches run.
+* ``include: ["nonsense.value"]`` → 200.
+* An unknown field inside an accepted tool → 200, field absent from the echo.
+
+So the request being accepted proves nothing. Two things prove the search actually ran,
+and :meth:`search` checks both: the response's ``tools`` **echo** contains the tool, and
+the output carries ``web_search_call`` items. Anything else is reported as a warning
+rather than read as an empty web.
+
+WHAT THE SEARCH RESPONSE ACTUALLY CONTAINS, AND WHAT IT DOES NOT
 ================================================================
-DeepSeek's API is **OpenAI-compatible chat completions**, and that shape is used below
-without ceremony because it is the convention the platform already speaks
-(``azure_openai_client`` wraps the same shape).
+Measured over eight live runs:
 
-**The exact wire shape of DeepSeek's server-side web search is NOT verified against the
-live API in this campaign.** It is modelled as a tool declaration on a chat-completions
-call, which is the OpenAI-compatible convention, and the request/response mapping is
-confined to :meth:`HttpDeepSeekTransport.search` and
-:func:`app.integrations.deepseek.providers.parse_search_payload`.
+* ``output[]`` items are ``reasoning``, ``web_search_call`` and ``message``.
+* ``web_search_call.action.type`` is ``search`` (carrying ``queries[]`` and **no URLs**),
+  ``open_page`` (carrying ``url``) or ``find_in_page`` (``url`` + ``pattern``). Item
+  ``status`` is ``completed`` or ``failed`` — a failed open retrieved nothing.
+* Every ``action.url`` carries a ``#ws_call_id=...`` fragment the provider appends. It is
+  stripped here; leaving it on would make the same page look like a different URL to the
+  fetcher, the corpus and the de-duplicator.
+* **There are no structured citations.** ``message.content[].annotations`` was ``[]`` in
+  every run, and ``include: ["web_search_call.action.sources"]`` is accepted and inert —
+  no ``sources`` key ever appears. The retrieval trace is the only machine-readable
+  record of where the model went.
 
-That is stated plainly rather than glossed because the platform's rule about unverified
-claims applies to its own code as much as to a provider's: the FIGI check digit is not
-validated for the same reason, and a wrong parser that *looks* right is worse than an
-honest seam. Two consequences follow, and both are enforced:
+TWO REQUEST CONTROLS ARE ACCEPTED AND DO NOTHING
+================================================
+Recorded because trusting either would be a silent, billable failure:
 
-* ``V3_DEEPSEEK_SEARCH_ENABLED`` defaults **off**, so nothing calls it by accident.
-* The parser is written to **tolerate a shape it does not recognise** and return
-  ``[]`` with a warning rather than raise or invent candidates — an unrecognised payload
-  is "no candidates and a note saying why", never a guess.
+* ``max_tool_calls`` — echoed back as ``null``; a request sending ``1`` still made two
+  search calls. **It does not bound spend.** One observed request made **eight** search
+  calls and consumed ~41k tokens.
 
-Confirming the shape is a small change to one method and one parser, and the opt-in live
-contract test (``ENABLE_INTEGRATION_TESTS`` plus a real key) is what confirms it.
+WHAT IS, AND IS NOT, BOUNDED
+============================
+``max_output_tokens`` and the timeout are honoured, and both are set here. Neither
+bounds the larger half of the bill: **per-call input tokens are unbounded.** Every page
+the model opens is fed back to it as input, so the ~41k-token request above sat behind
+a 4,000-token *output* ceiling — over 90% of that spend was in a term no request
+parameter touches.
+
+Stated rather than glossed, because this module's own rule applies to its own
+documentation: a bound that is not enforced is worse than no bound, since it gets
+trusted. The effective ceiling on one search is the timeout; the ceiling on a *run*
+belongs to ``ResearchBudget``, above this layer.
+* ``filters.allowed_domains`` — dropped from the echo entirely, and off-domain pages were
+  opened anyway. Domain restriction is therefore enforced **client-side**, in the
+  provider, and is never described as a provider guarantee.
 
 NOTHING HERE LOGS A PROMPT, A COMPLETION, AN ENDPOINT OR A CREDENTIAL
 ====================================================================
@@ -37,6 +87,7 @@ logging once leaked an EODHD ``api_token`` in this repository.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
@@ -48,18 +99,49 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 #: call site.
 DEFAULT_BASE_URL = "https://api.deepseek.com"
 
+#: Chat completions. Strict about tool types; carries :meth:`complete`.
+CHAT_COMPLETIONS_PATH = "/chat/completions"
+
+#: The Responses API. Permissive, and the **only** endpoint that serves built-in
+#: server-side web search; carries :meth:`search`.
+RESPONSES_PATH = "/responses"
+
 #: The models `GET /models` actually served on 2026-09-06. `deepseek-chat` — the name
 #: this adapter shipped with, taken from documentation — is NOT among them. It is
-#: accepted and silently served as `deepseek-v4-flash`, so the response's `model` field
-#: differs from the request's. Recorded because cost attribution and reproducibility both
-#: depend on knowing which model actually ran.
+#: accepted on both endpoints and silently served as `deepseek-v4-flash`, so the
+#: response's `model` field differs from the request's. Recorded because cost
+#: attribution and reproducibility both depend on knowing which model actually ran.
 SERVED_MODELS: frozenset[str] = frozenset(
     {"deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"}
 )
 
-#: The tool name used for server-side web search. Configurable precisely because the
-#: exact contract is unverified — see the module docstring.
+#: The default model. A **served** name, not a documented one: an unserved name still
+#: returns 200 while a different model answers, which makes cost attribution wrong and
+#: a benchmark unreproducible without anything ever failing.
+DEFAULT_MODEL = "deepseek-v4-flash"
+
+#: The built-in web-search tool type, verified live on ``/responses``. Still
+#: configurable — a vendor may rename a builtin — but no longer a guess.
 DEFAULT_SEARCH_TOOL_NAME = "web_search"
+
+#: The output-token ceiling for one search request. It bounds what the model WRITES, not
+#: what it reads: pages it opens return as input tokens, which no request parameter
+#: bounds. ``max_tool_calls`` is accepted and ignored, so the timeout is the only other
+#: control the API honours.
+DEFAULT_SEARCH_MAX_OUTPUT_TOKENS = 4000
+
+#: The provider appends this to every URL it reports. Stripped so the same page is the
+#: same URL to the fetcher, the corpus and the de-duplicator.
+_WS_CALL_FRAGMENT = "#ws_call_id="
+
+#: A hostname, and nothing that could carry an instruction. The domain preference is
+#: interpolated into the model's own instructions, so it is validated rather than
+#: trusted — cheap now, and the difference between safe and not on the day a domain list
+#: is derived from model output.
+_DOMAIN_SAFE_RE = re.compile(r"[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?")
+
+#: A ceiling on how much caller-supplied text reaches the prompt.
+_MAX_PROMPTED_DOMAINS = 20
 
 
 #: HTTP statuses a retry cannot fix. A wrong key will not become right by being asked
@@ -101,11 +183,20 @@ class DeepSeekResponse:
     """
 
     text: str | None = None
+    #: On ``/chat/completions``: the message's ``tool_calls``. On ``/responses``: the
+    #: ``web_search_call`` items verbatim — the retrieval trace, which is the only
+    #: machine-readable record of where the model actually went.
     tool_payloads: list[dict[str, Any]] = field(default_factory=list)
     prompt_tokens: int = 0
     completion_tokens: int = 0
     cached_tokens: int = 0
     finish_reason: str | None = None
+    #: The ``tools`` array the API echoes back. Load-bearing on ``/responses``, which
+    #: accepts an unknown tool with a 200 and silently drops it: this is how a caller
+    #: distinguishes "the web had nothing" from "the tool never ran".
+    tools_echo: list[dict[str, Any]] = field(default_factory=list)
+    #: The model that actually answered, which is not always the one requested.
+    served_model: str | None = None
     raw: dict[str, Any] = field(default_factory=dict)
 
 
@@ -114,6 +205,11 @@ class DeepSeekTransport(Protocol):
     """The seam. Everything above this is testable without a network."""
 
     model: str
+    #: Declared because the provider reads it to check the ``tools`` echo against the
+    #: tool actually requested. It was reached for with ``getattr`` on a concrete class
+    #: while the Protocol did not declare it, so mypy could not check it and any other
+    #: implementation silently fell back to the default name.
+    search_tool_name: str
 
     async def complete(
         self,
@@ -144,13 +240,23 @@ class FakeDeepSeekTransport:
     for and the ones a healthy live API would never produce.
     """
 
-    model: str = "deepseek-chat"
+    model: str = DEFAULT_MODEL
+    search_tool_name: str = DEFAULT_SEARCH_TOOL_NAME
     completion_text: str | None = '{"ok": true}'
     tool_payloads: list[dict[str, Any]] = field(default_factory=list)
     prompt_tokens: int = 120
     completion_tokens: int = 60
     cached_tokens: int = 0
     finish_reason: str | None = "stop"
+    #: Defaults to the tool having been honoured, because that is the ordinary case. A
+    #: test that wants the silent-drop path sets this to ``[]`` — which is exactly what
+    #: the live API returns for a tool type it does not recognise.
+    tools_echo: list[dict[str, Any]] = field(
+        default_factory=lambda: [{"type": DEFAULT_SEARCH_TOOL_NAME}]
+    )
+    #: The prose a search response ends with. Separate from ``completion_text`` because
+    #: the two endpoints return different things and one fake serves both.
+    search_text: str | None = None
     raises: Exception | None = None
     completions: list[tuple[str, str]] = field(default_factory=list)
     searches: list[str] = field(default_factory=list)
@@ -188,10 +294,14 @@ class FakeDeepSeekTransport:
         if self.raises is not None:
             raise self.raises
         return DeepSeekResponse(
+            text=self.search_text,
             tool_payloads=list(self.tool_payloads),
             prompt_tokens=self.prompt_tokens,
             completion_tokens=self.completion_tokens,
+            cached_tokens=self.cached_tokens,
             finish_reason=self.finish_reason,
+            tools_echo=list(self.tools_echo),
+            served_model=self.model,
             raw={"fake": True},
         )
 
@@ -199,6 +309,24 @@ class FakeDeepSeekTransport:
 #: The API requires the word "json" to appear in the prompt whenever
 #: ``response_format: json_object`` is set. Verified live 2026-09-06.
 _JSON_LITERAL = "json"
+
+
+def canonical_search_url(url: str | None) -> str:
+    """A DeepSeek-reported URL reduced to the page it actually names.
+
+    The provider appends ``#ws_call_id=<id>`` to every URL it reports. That fragment
+    identifies *the tool call*, not the document, and leaving it attached would make one
+    page look like N different URLs to the fetcher, the corpus and the de-duplicator —
+    N cache misses, N stored copies, and a citation nobody can match to another run's.
+
+    Only the provider's own fragment is removed. Any other fragment is part of the URL
+    the model chose and is left alone.
+    """
+    text = str(url or "").strip()
+    if not text:
+        return ""
+    head, sep, _tail = text.partition(_WS_CALL_FRAGMENT)
+    return head if sep else text
 
 
 def _json_hinted(system: str) -> str:
@@ -227,6 +355,9 @@ class HttpDeepSeekTransport:
     model: str = ""
     base_url: str = DEFAULT_BASE_URL
     search_tool_name: str = DEFAULT_SEARCH_TOOL_NAME
+    #: One of the two bounds that actually work. ``max_tool_calls`` is accepted by the
+    #: API and ignored by it, so this and the timeout are what stop a runaway search.
+    search_max_output_tokens: int = DEFAULT_SEARCH_MAX_OUTPUT_TOKENS
     #: Injected so the SDK import stays lazy and a test can supply a stub without a
     #: network — the same pattern the corpus artifact store uses for its Azure client.
     client_factory: Any = None
@@ -252,11 +383,11 @@ class HttpDeepSeekTransport:
         )
 
     async def _post(
-        self, payload: dict[str, Any], timeout: int
+        self, payload: dict[str, Any], timeout: int, path: str = CHAT_COMPLETIONS_PATH
     ) -> dict[str, Any]:  # pragma: no cover - needs a real key
         client = self._client(timeout)
         try:
-            response = await client.post("/chat/completions", json=payload)
+            response = await client.post(path, json=payload)
             if response.status_code >= 400:
                 # The status code, never the body: a provider error body can echo the
                 # prompt, and this message reaches logs.
@@ -299,6 +430,66 @@ class HttpDeepSeekTransport:
             completion_tokens=int(usage.get("completion_tokens") or 0),
             cached_tokens=int(details.get("cached_tokens") or 0),
             finish_reason=(first.get("finish_reason") if isinstance(first, dict) else None),
+            served_model=(str(body.get("model")) if body.get("model") else None),
+            raw=body,
+        )
+
+    @staticmethod
+    def _reduce_responses(body: dict[str, Any]) -> DeepSeekResponse:  # pragma: no cover
+        """Reduce a ``/responses`` body. A different endpoint, a different shape.
+
+        Three things are pulled out and nothing is interpreted here:
+
+        * the ``web_search_call`` items, verbatim — the retrieval trace;
+        * the ``tools`` echo, which is the only way to know the tool was honoured;
+        * the final-answer prose and the usage block, whose field names differ from
+          chat completions (``input_tokens``/``output_tokens``, not ``prompt``/
+          ``completion``) — reading the wrong names would report every search as free.
+        """
+        output = body.get("output")
+        items = [i for i in output if isinstance(i, dict)] if isinstance(output, list) else []
+
+        texts: list[str] = []
+        for item in items:
+            if item.get("type") != "message":
+                continue
+            # Only the final answer. A `commentary` message is the model narrating its
+            # own progress ("Let me verify that"), and treating it as an answer would
+            # put process chatter into a research record.
+            if str(item.get("phase") or "final_answer") != "final_answer":
+                continue
+            for part in item.get("content") or []:
+                if isinstance(part, dict) and part.get("type") == "output_text":
+                    text = part.get("text")
+                    if text:
+                        texts.append(str(text))
+
+        # `output_tokens_details.reasoning_tokens` is reported and deliberately not read
+        # separately: it is a SUBSET of `output_tokens` (measured 212 of 654), so adding
+        # it would double-count. Recorded here because "we did not look" and "it is
+        # already included" are different statements about a cost figure.
+        usage = body.get("usage") or {}
+        in_details = usage.get("input_tokens_details") or {}
+        tools_echo = body.get("tools")
+        incomplete = body.get("incomplete_details") or {}
+
+        return DeepSeekResponse(
+            text="\n".join(texts) or None,
+            tool_payloads=[i for i in items if i.get("type") == "web_search_call"],
+            prompt_tokens=int(usage.get("input_tokens") or 0),
+            completion_tokens=int(usage.get("output_tokens") or 0),
+            cached_tokens=int(in_details.get("cached_tokens") or 0),
+            # `incomplete` plus a reason is the truncation signal on this endpoint;
+            # there is no `finish_reason` field.
+            finish_reason=(
+                str(incomplete.get("reason"))
+                if incomplete.get("reason")
+                else (str(body.get("status")) if body.get("status") else None)
+            ),
+            tools_echo=[t for t in tools_echo if isinstance(t, dict)]
+            if isinstance(tools_echo, list)
+            else [],
+            served_model=(str(body.get("model")) if body.get("model") else None),
             raw=body,
         )
 
@@ -337,6 +528,16 @@ class HttpDeepSeekTransport:
             payload["response_format"] = {"type": "json_object"}
         return self._reduce(await self._post(payload, timeout))
 
+    #: The instruction that goes with a search request. It tells the model to search
+    #: rather than recall — the distinction that matters, because this model's own
+    #: knowledge cutoff is June 2024 and an unretrieved answer would still read fluently.
+    SEARCH_INSTRUCTIONS = (
+        "Use web search to answer. Do not answer from memory. "
+        "Open the most authoritative pages you find, prefer the issuer's own "
+        "publications and official filings, and state the source URL for anything you "
+        "report. If the web does not tell you, say so instead of estimating."
+    )
+
     async def search(
         self,
         *,
@@ -344,36 +545,64 @@ class HttpDeepSeekTransport:
         top_k: int,
         domains: Sequence[str] | None,
         timeout: int,
-    ) -> DeepSeekResponse:
-        """**DeepSeek has no server-side web search.** Verified live, 2026-09-06.
+    ) -> DeepSeekResponse:  # pragma: no cover - needs a real key
+        """One server-side web search, on ``/responses``. Verified live 2026-09-07.
 
-        This adapter shipped assuming it did — that was the premise for designating
-        DeepSeek the primary external research runtime. The live API disproves it:
+        This method previously refused outright, on the strength of a probe that only
+        ever asked ``/chat/completions`` — which serves no builtin tools at all. The
+        capability exists; it lives on the other endpoint. See the module docstring.
 
-        * ``tools[0].type`` accepts **only** ``"function"``. Every builtin spelling —
-          ``web_search``, ``web_search_preview``, ``search``, ``browser``,
-          ``retrieval`` — is rejected with *"unknown variant"*.
-        * A ``function`` tool named ``web_search`` merely makes the model **ask the
-          caller** to run a search and hand back results. It cannot retrieve anything
-          itself.
-        * Asked directly, the model reports no live browsing and a **June 2024**
-          knowledge cutoff.
+        Two request controls that look like safety are **not** sent, because the live
+        API accepts and ignores them, and a bound that is not enforced is worse than no
+        bound — it gets trusted:
 
-        So a "search" here could only return the model's *recollection* dressed as
-        retrieval, with URLs it composed from memory. That is precisely the failure the
-        ``ResearchLead`` promotion path exists to catch — and generating such leads on
-        purpose, at cost, to have them rejected downstream is worse than not searching.
+        * ``max_tool_calls`` — sending ``1`` still produced two search calls.
+        * ``filters.allowed_domains`` — dropped from the echo; off-domain pages were
+          opened anyway. ``domains`` is therefore passed to the model as a *preference*
+          and enforced for real by the provider above, on the results.
 
-        Refusing is the honest implementation. The caller gets a clear, permanent error
-        instead of plausible fabrications; the general-web leg belongs to the safe
-        fetcher and bounded issuer traversal, which retrieve documents that exist.
+        What bounds this call is ``max_output_tokens`` and ``timeout``, both set here —
+        but only partly. **Input tokens are unbounded**: every page the model opens is
+        fed back to it as input, which is where most of an observed ~41k-token request
+        actually went. The timeout is the real ceiling on one call.
+
+        ``top_k`` has **no wire equivalent** — the builtin tool takes no result count —
+        so it is not sent, and the provider above applies it to the candidates instead.
+        It stays in the signature because it is part of the transport Protocol and
+        because a caller asking for five results should not have to know which of the
+        two layers honours that.
         """
-        raise DeepSeekUnavailableError(
-            "DeepSeek exposes no server-side web search: 'function' is the only "
-            "accepted tool type and the model has no live browsing. Use the safe "
-            "fetcher or issuer traversal for general-web retrieval.",
-            transient=False,
-        )
+        wanted = self.search_tool_name or DEFAULT_SEARCH_TOOL_NAME
+        instructions = self.SEARCH_INSTRUCTIONS
+        if domains:
+            # A preference, and named as one. The API drops `filters.allowed_domains`
+            # silently, so the only real enforcement is client-side; saying so here
+            # keeps the request honest about which of the two is load-bearing.
+            # Bounded and character-restricted before it reaches the prompt. `domains`
+            # is operator-supplied today; the day a domain list is derived from model or
+            # user output, unsanitised interpolation here is a prompt-injection surface.
+            safe = sorted(
+                {
+                    d
+                    for d in (str(x).strip().lower() for x in domains)
+                    if d and len(d) <= 253 and _DOMAIN_SAFE_RE.fullmatch(d)
+                }
+            )[:_MAX_PROMPTED_DOMAINS]
+            if safe:
+                instructions = (
+                    f"{instructions} Prefer pages on these domains: {', '.join(safe)}."
+                )
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "instructions": instructions,
+            "input": query,
+            "tools": [{"type": wanted}],
+            # Forced. Verified accepted as both {"type": <tool>} and "required"; the
+            # explicit form says which tool, which matters the day a second one exists.
+            "tool_choice": {"type": wanted},
+            "max_output_tokens": max(256, int(self.search_max_output_tokens)),
+        }
+        return self._reduce_responses(await self._post(payload, timeout, RESPONSES_PATH))
 
 
 def transport_from_settings(
@@ -398,16 +627,26 @@ def transport_from_settings(
         search_tool_name=str(
             getattr(cfg, "deepseek_search_tool_name", "") or DEFAULT_SEARCH_TOOL_NAME
         ),
+        search_max_output_tokens=int(
+            getattr(cfg, "deepseek_search_max_output_tokens", 0)
+            or DEFAULT_SEARCH_MAX_OUTPUT_TOKENS
+        ),
     )
 
 
 __all__ = [
+    "CHAT_COMPLETIONS_PATH",
     "DEFAULT_BASE_URL",
+    "DEFAULT_MODEL",
+    "DEFAULT_SEARCH_MAX_OUTPUT_TOKENS",
     "DEFAULT_SEARCH_TOOL_NAME",
+    "RESPONSES_PATH",
+    "SERVED_MODELS",
     "DeepSeekResponse",
     "DeepSeekTransport",
     "DeepSeekUnavailableError",
     "FakeDeepSeekTransport",
     "HttpDeepSeekTransport",
+    "canonical_search_url",
     "transport_from_settings",
 ]

@@ -549,7 +549,7 @@ was provisioned.**
 | Migrations apply and reverse on real PostgreSQL 16 | ✅ unchanged from §4.2 |
 | Real issuers run end to end | ✅ MRNA, CFR, ASML |
 | Every defect found became a corrective with regression coverage | ✅ six |
-| DeepSeek live contract | ⛔ **BLOCKED ON CREDENTIAL** |
+| DeepSeek live contract | ✅ **VERIFIED LIVE — 16/16**, both endpoints (2026-09-06 model leg, 2026-09-07 search leg) |
 
 ---
 ## 11. V3.11 Production Hardening
@@ -557,29 +557,47 @@ was provisioned.**
 V3.10 ended `NOT READY` against four named blockers. This section reports what each one
 turned out to be, and what closing it required.
 
-### 11.1 Blocker 1 — DeepSeek — **contract now VERIFIED**, and still optional
+### 11.1 Blocker 1 — DeepSeek — **both legs VERIFIED**, and still optional
 
-> **Updated after the section below was written.** A key was supplied on 2026-09-06 and
-> the live contract test ran. **7 of its 8 live questions failed.** The adapter has been
-> reconciled against measured behaviour and 14/14 now pass. Full detail:
-> [V3.11-1-1-deepseek-live-contract-verified.md](slices/V3.11-1-1-deepseek-live-contract-verified.md).
+> **Updated twice. Read the second update as the current state.**
 >
-> **The headline: DeepSeek has no server-side web search.** `tools[0].type` accepts only
-> `"function"`; the model self-reports no live browsing and a June 2024 cutoff. DeepSeek
-> was designated the primary external research runtime *precisely* because it was believed
-> to offer server-side search returning URLs and citations. That premise was wrong, so
-> `search()` now refuses rather than dressing recollection as retrieval.
+> **2026-09-06 (V3.11.1.1).** A key was supplied and the live contract test ran. **7 of
+> its 8 live questions failed.** Real defects found and fixed: the adapter's `repr`
+> **printed the live key into pytest output**; `response_format` was sent unconditionally
+> so every ordinary completion 400'd; a tool's `parameters` needed a JSON Schema; a
+> credential in `.env` **silently re-routed Investigator work off Azure OpenAI** with every
+> flag still off (now gated by `v3_deepseek_model_enabled`, default off); and **seven
+> tests were asserting a property of the developer's machine**. That slice also concluded
+> that DeepSeek has **no server-side web search**.
 >
-> Three further defects the key exposed: the adapter's `repr` **printed the live key into
-> pytest output** (fixed; **the key used for validation must be rotated**); a credential in
-> `.env` **silently re-routed Investigator work off Azure OpenAI** with every flag still
-> off (now gated by `v3_deepseek_model_enabled`, default off); and **seven tests were
-> asserting a property of the developer's machine** rather than the code, passing only
-> while no key existed anywhere.
+> **2026-09-07 (V3.11.1.2) — that last conclusion was wrong.** The probe had only asked
+> `POST /chat/completions`, which serves no builtin tools at all. DeepSeek's builtin
+> `web_search` lives on **`POST /responses`**, and it is real: it issues queries, opens
+> pages, reads them with `find_in_page`, and reports the URLs it opened. **16/16 live tests
+> now pass across both endpoints.** Full detail:
+> [V3.11-1-2-deepseek-responses-web-search.md](slices/V3.11-1-2-deepseek-responses-web-search.md)
+> and [ADR-055](../DECISIONS.md#adr-055).
 >
-> None of this changes the recommendation. It **strengthens** the decision to treat
-> DeepSeek as optional: the capability it was chosen for does not exist, and the three real
-> playbook-gated Councils convened without it.
+> **The lesson generalises past this vendor: an absence measured on one endpoint is not an
+> absence.** Two live tests now pin both halves of it.
+>
+> What the verified contract does *not* provide is carried in the code rather than
+> assumed away — **no structured citations** (a candidate is a page actually opened; a URL
+> cited only in prose is counted as `cited_but_never_opened` and never promoted) and **no
+> enforced `max_tool_calls` or `filters.allowed_domains`** (both accepted and ignored, so
+> spend and domain limits are enforced client-side, and the telemetry names which side
+> enforced them). One observed request made **eight** search calls for ~41k tokens.
+>
+> A second credential-leak path was found by this slice's own test run: a failure on an
+> assertion about an *innocent* settings field made pytest render the whole `Settings`
+> object, key included. Every credential field is now `Field(repr=False)`, pinned
+> structurally. **The validation key must still be rotated.**
+>
+> None of this changes the recommendation, and it does not make DeepSeek release-critical:
+> `V3_DEEPSEEK_SEARCH_ENABLED` and `V3_DEEPSEEK_MODEL_ENABLED` both stay **off**, and the
+> three real playbook-gated Councils convened without either. What it does change is that
+> **no search provider needs buying** — ADR-048 stands on measured evidence, and
+> `ResearchLead` → Evidence finally has a real producer.
 
 #### As originally written (no credential reachable)
 
@@ -599,7 +617,8 @@ work to it (a flag is not a credential), and that the pipeline and all three age
 adapters **do not import** the module, so the research path runs in a build where the
 adapter is absent entirely.
 
-The adapter remains **unverified and off**. Nothing here claims it works.
+*(That was the state before a key arrived. The adapter is now **verified and off** — see
+the update at the top of this section.)*
 
 ### 11.2 Blocker 3 — scope resolution — materially better, still fail-closed
 
@@ -736,7 +755,18 @@ delta's five required elements are all observed.
 **The `ResearchLead` → Evidence promotion path has never run with a real external
 provider.** Zero lead rows across every real run, because leads exist for *provider-claimed
 facts needing independent retrieval*, and the only configured producer of those is
-DeepSeek. It is unit-tested and dormant.
+DeepSeek, whose search leg is off by default. It is unit-tested and dormant.
+
+*Updated by V3.11.1.2 — and read the second half.* V3.11.1.1 reported that DeepSeek could
+not search and therefore could never produce leads to promote. That reason is wrong: it
+can search, and it returns URLs of pages it actually opened. **But the capability is not
+the wiring, and this slice did not add the wiring.** `DeepSeekResearchProvider.investigate()`
+— the only producer of a `ResearchLead` — still runs on `/chat/completions` with no
+retrieval, so its leads cite URLs the model recalled; the search leg emits
+`SourceCandidate`s, which carry a URL and no claim, while `verify_lead()` verifies a
+claim. So the gap is now "the role is staffable and unstaffed", not "no provider can
+staff it". Closing it means giving the investigation the search tool — a real slice, not
+a flag flip.
 
 That is stated plainly rather than waved through. The invariant it guards — *model output
 is never automatically evidence* — holds in the enabled configuration by a different and
@@ -773,7 +803,7 @@ Against the acceptance gate, point by point:
 
 | Criterion | Evidence |
 |---|---|
-| DeepSeek verified **or** removed as release-critical | ✅ **both** — contract now verified live (14/14), *and* removed as release-critical: 3 real Councils, 21 tests, adapter unimported by the research path |
+| DeepSeek verified **or** removed as release-critical | ✅ **both** — contract verified live **16/16 across both endpoints** (model leg 2026-09-06, search leg 2026-09-07), *and* removed as release-critical: 3 real Councils, 23 tests, adapter unimported by the research path |
 | Scope resolution materially functional, fail-closed preserved | ✅ 1.7% → 8.1%, **0.0%** false-positive Group |
 | MRNA, CFR, ASML exercise the playbook-gated path | ✅ all three |
 | At least one playbook-gated real Council completes | ✅ **three** |
