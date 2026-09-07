@@ -9,6 +9,43 @@ the code, not inferred from a plan. When it disagrees with a phase-gate section 
 record of a gate and this file is the current state; re-verify before trusting
 either.
 
+## DARK DEPLOYED — 2026-09-07
+
+**V3 is live on `main` and every V3 feature is off.**
+
+| Item | Value |
+|---|---|
+| `main` | **`5826f61`** (PR #189, merged 19:34Z) |
+| Deployed API | `5826f61`, build 34156081666, `/health` ok |
+| Live database | alembic **038**, 23 → 61 tables |
+| V3 app settings in production | **0** — every flag takes its code default, which is off |
+| DeepSeek settings in production | **0** — no credential present |
+| V3 API paths exposed | **none** (68 paths, unchanged) |
+| V3 activity in logs | **none** — no worker, no pipeline, no provider call |
+| `release/v2-current` / V2 tag | `4b60e07` / `7d9aa12` — untouched |
+
+**The ordering was load-bearing and it held.** The live database was migrated
+018 → 038 while V2 code was still serving, and V2 then passed a full smoke test on the
+migrated schema *before* any V3 code was deployed. The reverse order would have been a
+product-wide outage: V3's ORM declares `companies.legal_entity_id` and names it in every
+`SELECT`, and six API modules read `Company`.
+
+**Rollback is a redeploy, not a migration.** V2 ran on schema 038 in production for the
+whole deploy window and served correctly, so `release/v2-current` can be redeployed with
+no down-migration. A pre-migration `pg_dump` (18 MB, 185 TOC entries) and PITR with 7-day
+retention are the second and third routes.
+
+**CI's first run over the complete V3 change set failed**, and correctly: 13 tests were
+asserting that `langchain-openai` is installed, which it is not under CI's `[dev]`-only
+install. Fixed in V3.12.1 at the `_BUILDERS` seam with no test weakened, and pinned by a
+structural guard. Green on the second run: **6,119 passed, 49 skipped**.
+
+**Not activated, and gated:** `V3_PIPELINE_ENABLED` stays false. Broad reader-facing
+activation still waits on [OPEN DECISION #23](OPEN_DECISIONS.md) (deterministic
+forbidden-language backstop for V3 output) and on finite, *enforced* `ResearchBudget`
+limits — the run budgets currently default to unbounded and `ResearchBudget.check()` is
+not called anywhere in the V3 pipeline.
+
 **Release readiness:** see
 [V3_RELEASE_AND_DARK_DEPLOYMENT_REPORT.md](V3_RELEASE_AND_DARK_DEPLOYMENT_REPORT.md) —
 **READY FOR MAIN MERGE + DARK DEPLOYMENT**, conditional on migrating the live database
