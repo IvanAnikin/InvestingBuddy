@@ -19,6 +19,31 @@ Read these files before planning significant changes:
 
 ---
 
+## Branch Discipline — V3 Development Line (opened 2026-09-04)
+
+`main` is the **currently approved, deployed** version. V3 is a separate,
+unapproved development line.
+
+| Ref | Rule |
+|---|---|
+| `main` | Receives **no V3 commits**. Never merge V3 here without explicit user approval. |
+| `v2-final-pre-v3-2026-09-04` | Immutable annotated tag on the V2 baseline `4b60e07`. Never overwrite or delete. |
+| `release/v2-current` | V2 preservation / maintenance branch at the same SHA. Never delete. |
+| `develop/v3` | V3 integration branch. Every V3 slice merges here and nowhere else. |
+| `feature/v3-<phase>-<slice>-<name>` | One PR-sized V3 slice. Never implement a slice directly on `develop/v3`. |
+
+Also forbidden until the user explicitly approves V3:
+
+- deploying V3;
+- running V3 migrations against the live environment;
+- switching the deployed app to the V3 branch;
+- deleting V2 compatibility, the V2 branch, or the V2 tag.
+
+V3 architecture, provider strategy and the slice register live in
+[`docs/v3/`](docs/v3/README.md). Read `docs/v3/README.md` before any V3 work.
+
+---
+
 ## Orchestrator Role
 
 When acting as the orchestrator, follow `.claude/skills/orchestrator/SKILL.md`.

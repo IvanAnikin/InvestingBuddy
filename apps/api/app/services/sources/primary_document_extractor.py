@@ -155,6 +155,16 @@ _HTML_BOILERPLATE_MARKERS = (
 )
 _HTML_HEADING_TAGS = frozenset({"h1", "h2", "h3", "h4", "h5", "h6"})
 _HTML_BLOCK_TAGS = frozenset({"p", "li", "caption", "blockquote", "dd", "dt"})
+#: Generic container tags that modern filing agents use INSTEAD of ``<p>``. A current
+#: SEC Inline-XBRL 10-K is built almost entirely from styled ``<div>``s, so parsing only
+#: the tags above yields ZERO text blocks from a 2.7 MB filing while still finding its
+#: tables — which is exactly what V3.11 measured on Moderna's FY2025 10-K.
+#:
+#: Opt-in, because turning it on changes which excerpts the V2 path ranks and V2 is the
+#: deployed, approved product. The corpus path enables it; V2 is byte-identical without
+#: it. Nesting is safe: ``handle_starttag`` flushes the open block before starting a new
+#: one, so a container div emits nothing and only the LEAF div carries the text.
+_HTML_CONTAINER_BLOCK_TAGS = frozenset({"div", "section", "article"})
 
 
 # --------------------------------------------------------------------------- #
@@ -189,6 +199,28 @@ class ExtractedTable(BaseModel):
     # The period of each value column, in column order (reconstructed tables
     # only) — the same strings that appear in the grid's header row.
     column_periods: list[str] = Field(default_factory=list)
+
+
+class ExtractedBlock(BaseModel):
+    """One heading-tagged paragraph of a document, exactly as extracted.
+
+    V3.1 Slice 1.3. The extractor has always built this list internally
+    (``page_blocks``) and then thrown all but the top ~20 ranked excerpts away.
+    That is the whole reason a 169-page annual report becomes "not available"
+    the moment anybody asks it a second question.
+
+    Capturing the list costs nothing — it already exists in memory when the
+    ranking runs — so this is the full text of every page the extractor opened,
+    with the page number and the heading context the two-column reconstruction
+    and the font-size heading stack worked out. It is populated only when a
+    caller passes ``capture_blocks=True``; with it off the field stays empty and
+    every existing consumer sees byte-identical behaviour.
+    """
+
+    page_number: int | None = None
+    section: str | None = None
+    ancestor_heading: str | None = None
+    text: str = ""
 
 
 class PrimaryDocumentExcerpt(BaseModel):
@@ -229,6 +261,10 @@ class PrimaryDocumentExtraction(BaseModel):
     truncated: bool = False
     excerpts: list[PrimaryDocumentExcerpt] = Field(default_factory=list)
     tables: list[ExtractedTable] = Field(default_factory=list)
+    # V3.1 Slice 1.3 — the FULL heading-tagged text of every page the extractor
+    # opened, not just the ~20 ranked excerpts. Empty unless the caller asked for
+    # it with ``capture_blocks=True``, which keeps every V2 path unchanged.
+    blocks: list[ExtractedBlock] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     source_gaps: list[str] = Field(default_factory=list)
     # ONLY ``type(exc).__name__`` ever lands here — never bytes/text.
@@ -309,6 +345,11 @@ class PrimaryDocumentExtraction(BaseModel):
 # --------------------------------------------------------------------------- #
 # Small pure helpers
 # --------------------------------------------------------------------------- #
+
+
+def _corpus_max_page_chars(cfg: Settings) -> int:
+    """Per-block character cap for captured blocks. Defensive, not a policy."""
+    return max(200, int(getattr(cfg, "v3_corpus_max_page_chars", 120_000) or 120_000))
 
 
 def content_hash_of(raw: bytes) -> str:
@@ -394,6 +435,21 @@ def _infer_scope(heading: str | None, ancestor: str | None = None) -> str | None
             label = label[: _SCOPE_LABEL_MAX - 1].rstrip() + "…"
         return label
     return None
+
+
+def infer_heading_scope(heading: str | None, ancestor: str | None = None) -> str | None:
+    """Public alias for the heading→scope heuristic — V3.1 Slice 1.3.
+
+    The corpus needs the SAME decision the extractor already makes for a table's
+    scope, and it needs it for exactly the same reason: a heading is only a scope
+    signal when it uses scope vocabulary. A cover page reading "CONTENTS" or
+    "BIG PICTURE" is not a business segment, and a real Pandora annual report has
+    dozens of headings like that — running them straight through
+    ``fact_scope.parse_scope``, whose fail-closed rule is "anything non-empty is a
+    named segment", labelled every one of them a segment. That rule is right for a
+    string this function has already vetted and wrong for a raw heading.
+    """
+    return _infer_scope(heading, ancestor)
 
 
 # --------------------------------------------------------------------------- #
@@ -669,6 +725,31 @@ def _bound_table(raw_rows: Sequence[Sequence[object]]) -> list[list[str]]:
         if any(cells):  # drop fully-empty rows
             rows.append(cells)
     return rows
+
+
+def _capture_blocks(
+    result: PrimaryDocumentExtraction,
+    page_blocks: "list[tuple[int | None, str | None, str | None, str]]",
+    *,
+    max_block_chars: int,
+) -> None:
+    """Copy the extractor's own block list onto the result — V3.1 Slice 1.3.
+
+    Called only when a caller asked for it. The list already exists in memory
+    (the ranking below reads the same object), so this is a copy rather than any
+    additional parsing, and the per-block cap bounds a bug rather than expressing
+    a business rule: a page of an annual report is a few thousand characters.
+    """
+    limit = max(200, int(max_block_chars))
+    result.blocks = [
+        ExtractedBlock(
+            page_number=page_no,
+            section=section,
+            ancestor_heading=ancestor,
+            text=text[:limit],
+        )
+        for page_no, section, ancestor, text in page_blocks
+    ]
 
 
 def _rank_and_build_excerpts(
@@ -1359,6 +1440,7 @@ def extract_pdf(
     *,
     cfg: Settings | None = None,
     original_language: str | None = None,
+    capture_blocks: bool = False,
 ) -> PrimaryDocumentExtraction:
     """Extract bounded text excerpts + tables from a native-text PDF.
 
@@ -1722,6 +1804,8 @@ def extract_pdf(
         )
         return result
 
+    if capture_blocks:
+        _capture_blocks(result, page_blocks, max_block_chars=_corpus_max_page_chars(cfg))
     result.excerpts = _rank_and_build_excerpts(
         page_blocks,
         method=METHOD_NATIVE_PDF,
@@ -1764,8 +1848,14 @@ class _DocumentHtmlParser(HTMLParser):
     headings (as section context), paragraphs / list items, and tables.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, include_container_blocks: bool = False) -> None:
         super().__init__(convert_charrefs=True)
+        #: See ``_HTML_CONTAINER_BLOCK_TAGS``.
+        self._block_tags = (
+            _HTML_BLOCK_TAGS | _HTML_CONTAINER_BLOCK_TAGS
+            if include_container_blocks
+            else _HTML_BLOCK_TAGS
+        )
         self.title: str | None = None
         # (page=None, section, ancestor, text) — ``ancestor`` (Phase 32A
         # corrective, Problem C) is the heading immediately enclosing
@@ -1827,7 +1917,7 @@ class _DocumentHtmlParser(HTMLParser):
             return
         if tag == "title":
             self._in_title = True
-        elif tag in _HTML_HEADING_TAGS or tag in _HTML_BLOCK_TAGS:
+        elif tag in _HTML_HEADING_TAGS or tag in self._block_tags:
             self._flush_block()
             self._cur_block_tag = tag
             self._cur_block_is_heading = tag in _HTML_HEADING_TAGS
@@ -1963,6 +2053,7 @@ def extract_html(
     *,
     cfg: Settings | None = None,
     original_language: str | None = None,
+    capture_blocks: bool = False,
 ) -> PrimaryDocumentExtraction:
     """Extract bounded, boilerplate-stripped body excerpts + tables from HTML.
 
@@ -1999,7 +2090,7 @@ def extract_html(
         result.source_gaps.append("HTML could not be decoded; not extracted.")
         return result
 
-    parser = _DocumentHtmlParser()
+    parser = _DocumentHtmlParser(include_container_blocks=capture_blocks)
     try:
         parser.feed(html)
         parser.close()
@@ -2037,6 +2128,8 @@ def extract_html(
         page_blocks.append((page, section, ancestor, blk))
         total_chars += len(blk)
 
+    if capture_blocks:
+        _capture_blocks(result, page_blocks, max_block_chars=_corpus_max_page_chars(cfg))
     result.excerpts = _rank_and_build_excerpts(
         page_blocks,
         method=METHOD_HTML,
@@ -2069,6 +2162,7 @@ def extract_primary_document(
     document_type: str,
     cfg: Settings | None = None,
     original_language: str | None = None,
+    capture_blocks: bool = False,
 ) -> PrimaryDocumentExtraction:
     """Dispatch to ``extract_pdf`` / ``extract_html`` by ``document_type``.
 
@@ -2077,9 +2171,19 @@ def extract_primary_document(
     fabricated document.
     """
     if document_type == "pdf":
-        return extract_pdf(raw, cfg=cfg, original_language=original_language)
+        return extract_pdf(
+            raw,
+            cfg=cfg,
+            original_language=original_language,
+            capture_blocks=capture_blocks,
+        )
     if document_type in ("html", "text"):
-        return extract_html(raw, cfg=cfg, original_language=original_language)
+        return extract_html(
+            raw,
+            cfg=cfg,
+            original_language=original_language,
+            capture_blocks=capture_blocks,
+        )
     return PrimaryDocumentExtraction(
         content_hash=content_hash_of(raw),
         mime_type="application/octet-stream",
@@ -2106,7 +2210,9 @@ __all__ = [
     "PrimaryDocumentExtraction",
     "classify_statement_type",
     "scope_claim_signal",
+    "ExtractedBlock",
     "content_hash_of",
+    "infer_heading_scope",
     "extract_pdf",
     "extract_html",
     "extract_primary_document",

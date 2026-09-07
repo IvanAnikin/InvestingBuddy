@@ -46,12 +46,24 @@ const POLL_INTERVAL_MS = 3000;
 
 /** Statuses where the job is still working and polling should continue. */
 const IN_FLIGHT = new Set(["pending", "running"]);
-/** Statuses where nothing more will happen without a human. */
+/**
+ * Statuses where nothing more will happen without a human.
+ *
+ * `dead_letter` and `cancelled` only ever arrive from the V3 durable path. They
+ * are listed here rather than folded into `failed` at the API because the two
+ * mean different things to a reader: a dead-lettered run failed transiently on
+ * every attempt and is worth re-running, a failed one hit a permanent error and
+ * is not. Omitting them would leave a finished job with no outcome panel at all
+ * — polling stops on anything outside IN_FLIGHT, so the reader would be left
+ * looking at a spinner that had already given up.
+ */
 const TERMINAL = new Set([
   "completed",
   "completed_with_warnings",
   "failed",
   "interrupted",
+  "dead_letter",
+  "cancelled",
 ]);
 
 const inputCls =
@@ -302,7 +314,11 @@ export default function CompanyResearchForm() {
 
   const reportId = job?.analysis_report_id ?? null;
   const failed = job?.status === "failed";
-  const interrupted = job?.status === "interrupted";
+  const cancelled = job?.status === "cancelled";
+  // A run whose worker was lost, or whose every attempt was. Both are
+  // recoverable by re-running, and both read the same way to a human.
+  const interrupted =
+    job?.status === "interrupted" || job?.status === "dead_letter";
 
   return (
     <div className="space-y-6">
@@ -667,15 +683,19 @@ export default function CompanyResearchForm() {
       {/* The job reached a terminal state. */}
       {job && TERMINAL.has(job.status) && (
         <Surface
-          className={`p-6 sm:p-7 ${failed || interrupted ? "border-amber-400/25" : ""}`}
+          className={`p-6 sm:p-7 ${
+            failed || interrupted || cancelled ? "border-amber-400/25" : ""
+          }`}
           testId="research-result"
         >
           <p className="text-xs font-medium uppercase tracking-[0.14em] text-[color:var(--ib-ink-3)]">
             {failed
               ? "Research did not complete"
-              : interrupted
-                ? "Research was interrupted"
-                : "Research complete"}
+              : cancelled
+                ? "Research was cancelled"
+                : interrupted
+                  ? "Research was interrupted"
+                  : "Research complete"}
           </p>
           <h2 className="mt-2 text-xl font-semibold tracking-tight text-[color:var(--ib-ink)]">
             {job.company?.name ?? job.company?.ticker ?? "Research run"}

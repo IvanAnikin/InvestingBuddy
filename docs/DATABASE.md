@@ -60,6 +60,13 @@ alembic revision --autogenerate -m "short description"
 | 016 | `016_add_extracted_document_pipeline_version.py` | adds a single nullable `pipeline_version` INTEGER column to `extracted_documents` (Phase 32A corrective, Problem B — derived-fact cache versioning). Existing rows are left NULL (treated as legacy/stale, never assumed compatible with the current parser/validator). Reversible, additive, backfill-free. |
 | 017 | `017_add_extracted_fact_is_active.py` | adds a NOT NULL `is_active` BOOLEAN column (server default `true`) + index `ix_extracted_facts_document_active` to `extracted_facts` (Phase 32A corrective — active-vs-historical fact semantics, closing the MC table-loss regression where a partial revalidation had no honest way to supersede a document's prior fact set). Existing rows backfill to `true` (unchanged current behaviour). Reversible, additive. |
 | 018 | `018_add_extracted_fact_scope.py` | adds three nullable columns `scope_type` / `scope_name` / `scope_key` + index `ix_extracted_facts_document_scope` to `extracted_facts` (private-use readiness PR-A — PERSIST FACT SCOPE). `ValidatedFact.scope` existed only in memory: the writer dropped it and the cache-reuse rebuild defaulted it to `None`, so a reused document handed the report layer segment facts with no scope — and an absent scope is the pipeline's implicit "this is the Group figure" convention. **Backfill: none.** No pre-existing row carries a recoverable scope signal, so every one stays NULL — unknown remains unknown; guessing `group` would manufacture the exact false Group attribution the column prevents. Reversible, additive, non-destructive. |
+| 019 | `019_add_research_jobs.py` | **V3.0 Slice 1 — `develop/v3` ONLY. NOT APPLIED TO ANY DEPLOYED ENVIRONMENT.** Creates `research_jobs`: one row per long-running research job, committed before any expensive work starts and owned by exactly one worker at a time through a lease. Columns for idempotency (`idempotency_key`, UNIQUE — enforced by the DATABASE, because a read-then-write check in application code loses to a concurrent duplicate submit), leasing (`lease_owner` / `lease_expires_at` / `last_heartbeat_at`), retry (`attempt` / `max_attempts` / `available_at`), cooperative cancellation (`cancel_requested`) and dead-lettering (`dead_letter_reason`). **`interrupted` is deliberately NOT a column** — it is derived at read time from a lapsed lease, because a stored `interrupted` would need a writer that is running, which is exactly what is absent in the case it describes. Both FKs are `SET NULL`, never `CASCADE`. **Additive only:** creates one table and touches nothing existing, so `release/v2-current` code runs unchanged against a database with 019 applied. Reversible; `upgrade`/`downgrade`/`upgrade` verified against real PostgreSQL 16. |
+| 020 | `020_add_research_run_consumption.py` | **V3.0 Slice 5 — `develop/v3` ONLY. NOT APPLIED TO ANY DEPLOYED ENVIRONMENT.** Creates `research_run_consumption`: one row per research run recording what it consumed in **vendor-neutral units** (tokens, calls, documents, seconds) with cost **derived** from a configurable price book, so a vendor price change is a config change and historical runs stay comparable. Exists because two user-owned decisions depend on measurements nothing currently takes — OPEN DECISION #14 asks for the research-mode budgets to be "derived from measured live runs rather than guessing", and the provider benchmark's `cost_per_verified_finding` needs the numerator recorded per run. `estimated_cost_usd` is **nullable and NULL means "no price book configured", never "free"**; `consumption_json` names which units were actually instrumented, because a `web_search_calls: 0` on a path with no search provider would be asserting that no searches happened rather than that nothing counts them. Every FK is nullable and `SET NULL` — a run that failed before producing a report still consumed a budget, and dropping those rows would bias every average towards the runs that went well. Three indexes: `created_at` (what has research cost lately), `company_id` (per-issuer comparison on the SAME company), `run_type` (company research and a discovery run have different cost shapes). Nothing writes to it unless `V3_RUN_CONSUMPTION_ENABLED` is on (default **off**). **Additive only.** Reversible; `upgrade` → `downgrade 019` → `upgrade` verified against real PostgreSQL 16 on a SCRATCH database (`ib_v3_migcheck_020`, created and dropped; the dev database stayed at 018 throughout), with all four FKs confirmed `confdeltype = n` (SET NULL). |
+| 021 | `021_add_research_artifacts.py` | **V3.1 Slice 1.1 — `develop/v3` ONLY. NOT APPLIED TO ANY DEPLOYED ENVIRONMENT.** Creates `research_artifacts`: one row per distinct set of retrieved bytes, addressed by SHA-256 (`content_hash`, UNIQUE — deduplication enforced by the DATABASE, not by a check-then-insert two concurrent ingestions can both pass). It is what turns `extracted_documents.blob_path` — a column created by migration 013 that has been NULL on every row ever written — into a real retrieval path, which is the prerequisite for re-extracting a document when a parser improves (the extraction pipeline version is at **15**, and several past correctives could only be applied by re-fetching documents that may no longer be online). **`storage_key` is nullable and NULL means the BYTES ARE NOT RETAINED** — policy forbade them, or a retention sweep removed them; `storage_backend` is NOT NULL and carries `'none'` in that case, so "deliberately not retained" is always distinguishable from "code that forgot to record where". The lineage row is never deleted: a citation must keep resolving to its canonical URL after the bytes are gone. The six governance permissions (`policy_stored` / `policy_indexed` / `policy_external_model` / `policy_quoted` / `policy_retained_long_term`, plus `access_class`) are **columns rather than a JSON blob because they are queried** as filters at a later tool boundary. `retention_expires_at` is nullable and NULL means **"no TTL configured"**, never "expired" and never "keep forever" — OPEN DECISION #12 is user-owned and still open, so the column exists to let the decision be applied by configuration rather than by a migration. **No foreign keys, deliberately:** an artifact is bytes, and which company/run/report cites it is a property of the document built on top (Slice 1.2); a `company_id` here would make the same bytes serving two documents unrepresentable and would put research history one `ondelete` away from disappearing (CLAUDE.md rule 15). Two indexes: `content_hash` (UNIQUE, the identity) and `retention_expires_at` (the only scheduled question this table will be asked). Nothing writes to it unless `V3_CORPUS_ENABLED` is on (default **off**), and even then `V3_ARTIFACT_STORE_BACKEND` defaults to `none` so enabling the corpus does not by itself start writing bytes anywhere. **Additive only.** Reversible; `upgrade` → `downgrade 020` → `upgrade` verified against real PostgreSQL 16 on a SCRATCH database (`ib_v3_migcheck_021`, created and dropped; the dev database stayed at 018 throughout), and the UNIQUE constraint confirmed by a rejected duplicate insert. |
+| 022 | `022_add_research_documents.py` | **V3.1 Slice 1.2 — `develop/v3` ONLY. NOT APPLIED TO ANY DEPLOYED ENVIRONMENT.** Creates `research_documents` (the LOGICAL document — "Pandora Annual Report 2025") and `research_document_versions` (one RETRIEVAL of it). The distinction exists because a content hash identifies *bytes* and cannot say whether two retrievals are the same document: a restated annual report, a re-typeset PDF and the same report from a different CDN path are three hashes and one document. As one row the restatement silently overwrites the original and every citation into the old text stops meaning what it said; as versions the restatement is a visible delta and old citations keep resolving. **`ix_research_document_versions_one_current` is a UNIQUE PARTIAL index (`WHERE is_current`)** — "exactly one current version" is a database constraint, not a convention the writer is trusted to maintain, and it was verified by a rejected second insert against real PostgreSQL. Identity is `UNIQUE (company_id, document_key)`; `document_key` is `"<kind>:<period>"` when the document declares both and `"url:<sha256-prefix>"` otherwise — the fallback asserts only "the same address", because merging two documents attributes one issuer's pages to another whereas splitting merely duplicates. FKs, each chosen deliberately: `research_document_id` is **CASCADE** (composition — a version without its document is meaningless, following the `extracted_facts` precedent), and `company_id` / `research_artifact_id` / `extracted_document_id` are all **SET NULL** (lineage — CLAUDE.md rule 15), confirmed `confdeltype = c, n, n, n`. `extracted_document_id` is the **V2 compatibility bridge**: the V2 writer keeps writing `extracted_documents` unchanged and the corpus record is created beside it, so nothing is migrated en masse and a corpus read for a not-yet-reprocessed document falls back to that row's bounded `excerpts_json`. `period_key` / `period_type` NULL mean the document stated no period — never coerced to a bare year, which is where the `INTERIM_AS_ANNUAL` contradiction starts. `published_at` NULL means no publication date was printed and is **never** filled from `retrieved_at`. `content_origin` is separate from `transport` so a vendor can never set the tier of what it delivers. Nothing writes to either table unless `V3_CORPUS_ENABLED` is on (default **off**). **Additive only.** Reversible; `upgrade` → `downgrade 021` → `upgrade` verified against real PostgreSQL 16 on a SCRATCH database (`ib_v3_migcheck_022`, created and dropped; the dev database stayed at 018 throughout). |
+| 023 | `023_add_research_document_derivations.py` | **V3.1 Slice 1.3 — `develop/v3` ONLY. NOT APPLIED TO ANY DEPLOYED ENVIRONMENT.** Creates `research_document_derivations` + `research_document_pages` / `_sections` / `_tables`: the FULL parsed representation of a document version, replacing "20 bounded excerpts of ≤1,200 chars" as the only thing that survives a fetch. **The derivation layer exists because a version is immutable and a parse is not** — the extraction pipeline version is at 15 and versions 9-15 each changed how already-fetched text is read, so hanging pages off the version would mean improving a parser silently rewrites the record of what was retrieved. Each parse is one row stamped with its `pipeline_version`; exactly one is `is_active` (`ix_research_document_derivations_one_active`, UNIQUE PARTIAL, verified by a rejected insert on real PostgreSQL) and superseded ones are KEPT, never deleted (CLAUDE.md rule 15). **The full text is derived, not stored twice:** it is the ordered concatenation of pages joined by `\n`, and pages/sections carry `char_start`/`char_end` offsets into exactly that, so any span is locatable and half a megabyte is not duplicated. **`status='partial'` is the honest common answer** — the live path reads 40 pages plus a 12-page targeted supplemental pass, so a 169-page annual report stores `pages_persisted=40, page_count=169`; `page_count` is NEVER backfilled from `pages_persisted`, because a corpus that cannot distinguish "we never read that page" from "that page does not say it" would be worse than the excerpt model it replaces. Tables are stored as GRIDS (`rows_json`) with `column_periods` and `reconstructed`, because flattening a borderless five-year summary destroys the column→year map that is its entire value. Sections carry the same typed `(scope_type, scope_name, scope_key)` triple as `extracted_facts`, resolved through the extractor's own heading-scope vetting. All four FKs are **CASCADE** (composition), confirmed `confdeltype = c`. Nothing writes to these tables unless `V3_CORPUS_ENABLED` is on (default **off**), and the extractor's block capture is opt-in so the V2 extraction output is byte-identical either way. **Additive only.** Reversible; `upgrade` → `downgrade 022` → `upgrade` verified against real PostgreSQL 16 on a SCRATCH database (`ib_v3_migcheck_023`, created and dropped; the dev database stayed at 018 throughout). **Exercised on a real 169-page, 25.9 MB Pandora Annual Report 2025:** 40 pages / 108,000 chars persisted against 19,232 chars of excerpts, every page offset exact, and the borderless five-year summary recovered as a grid with `['2025','2024','2023','2022','2021']`. |
+| 024 | `024_add_research_document_chunks.py` | **V3.1 Slice 1.5 — `develop/v3` ONLY. NOT APPLIED TO ANY DEPLOYED ENVIRONMENT.** Creates `research_document_chunks`: the retrieval unit — what search returns and what a citation points at. Deliberately neither a page (a printing artifact) nor a section (which can run twenty pages of an annual report). **`chunk_id` is DERIVED, not assigned** — a hash of (version, pipeline version, kind, ordinal, offsets, table location) rather than a row id, because a row id belongs to whichever database wrote it and rebuilding the corpus would invalidate every citation; re-running the same parser reproduces the same ids exactly, and a NEW pipeline version deliberately produces new ones because it is a different reading of the document. Every filter key (`company_id`, `document_type`, `source_tier`, `access_class`, `period_key`, `period_type`, the scope triple, `language`, `published_at`) is **denormalized onto the row even though each is reachable by a join**, because filters must be applied INSIDE the search: a retrieval that takes the ten best matches and then discards the wrong-period ones returns the ten best matches from the wrong periods, and a join a search backend cannot perform is a filter that will not be applied. `research_document_table_id` makes a table chunk point AT the stored grid rather than replace it — the grid's column→year map is the whole reason the geometric reconstructor exists, so a hit resolves to the grid and never to the flattened text it was found by; `char_start`/`char_end` are 0 on a table chunk because a table has no span in the prose coordinate system. `indexable` is stamped at WRITE time from the version's access class, so a governance constraint travels with the data into every backend rather than depending on each read path to re-check it. FKs: `derivation_id` / `research_document_version_id` / `research_document_table_id` **CASCADE** (composition), `company_id` **SET NULL** (lineage), confirmed `confdeltype = c, c, c, n`. Nothing writes to it unless `V3_CORPUS_ENABLED` is on (default **off**). **Additive only.** Reversible; `upgrade` → `downgrade 023` → `upgrade` verified against real PostgreSQL 16 on a SCRATCH database (`ib_v3_migcheck_024`, created and dropped; the dev database stayed at 018 throughout). **Exercised on the real Pandora Annual Report 2025:** 113 chunks (103 prose, 10 table), 107,870 of 108,000 characters retained, sizes 76-1,998 with none over the bound, all ids unique and reproducible. |
+| 025 | `025_add_derivation_extraction_profile.py` | **V3.1 Slice 1.7 — `develop/v3` ONLY. NOT APPLIED TO ANY DEPLOYED ENVIRONMENT.** Adds `extraction_profile` (`live` \| `deep`) to `research_document_derivations` and widens the unique index to `(version_id, pipeline_version, extraction_profile)`. **Why a schema change was needed:** the derivation recorded which parser ran, not how much of the document that parser was ALLOWED to read — and on the live path the answer is 40 pages of 169. Without the column, re-running the same parser under a larger budget would find the existing derivation and skip, so a document would stay at a quarter of itself forever and the whole argument for retaining raw bytes would go unrealised. `extraction_pipeline_version`'s own note says a cap/budget change that lets the extractor reach content it never read makes a row genuinely INCOMPLETE rather than merely under-interpreted; this column is that statement made durable per row instead of requiring a global version bump every time a budget differs. `deep` is a SEPARATE setting rather than a raise of `primary_document_max_pdf_pages` — the live cap is bounded by the deployed gunicorn worker timeout, the two drifted apart once and cost six live outages, and a reprocessing run has no request waiting on it. **`NOT NULL` is safe here and is not the general rule:** the table does not exist in V2 at all (created by 023, on this branch, applied nowhere), so no `release/v2-current` code path can be affected, and the `'live'` server default populates any row that could exist. Reversible; `upgrade` → `downgrade 024` → `upgrade` verified against real PostgreSQL 16 on a SCRATCH database (`ib_v3_migcheck_025`, created and dropped; the dev database stayed at 018 throughout), with the index confirmed to widen and narrow correctly. **Exercised on the real Pandora Annual Report 2025:** a deep reprocess from the retained bytes took the corpus from 40 to **169 of 169 pages** and 113 to **602 chunks** in 27.8s with no re-fetch, the superseded derivation kept, and a citation recorded before the reprocess still resolving. |
 
 **Phase 32A Slice 6D adds migration `015` → head `015` — applied and
 schema-verified on staging 2026-08-10 (`alembic current` = `015`).** It is reversible,
@@ -791,6 +798,151 @@ a report generated for a *different* run of the same company.
 ORM models: `FieldReviewRun`, `FieldReviewCandidateSummary` in
 `apps/api/app/models/field_review.py`. Resolution + async job orchestration:
 `apps/api/app/services/field_review_service.py`.
+
+---
+
+### Research Corpus (V3.1) — `develop/v3` ONLY, NOT DEPLOYED
+
+**Migrations 021-025. None applied to any deployed environment; the local dev
+database is at 018.** Nothing writes to any of these tables unless
+`V3_CORPUS_ENABLED` is on, which is off by default — and even then
+`V3_ARTIFACT_STORE_BACKEND` defaults to `none`, so enabling the corpus does not by
+itself store a byte anywhere.
+
+```
+research_artifacts                     raw bytes, content-addressed        (021)
+   └─< research_document_versions      one RETRIEVAL                       (022)
+research_documents                     the LOGICAL document                (022)
+   └─< research_document_versions
+          └─< research_document_derivations   one PARSE (version + budget) (023/025)
+                 ├─< research_document_pages        full page text         (023)
+                 ├─< research_document_sections     heading path + scope   (023)
+                 ├─< research_document_tables       the GRID               (023)
+                 └─< research_document_chunks       the retrieval unit     (024)
+```
+
+The five layers are separate because they answer different questions and change
+at different rates:
+
+| Layer | Identity | Changes when |
+|---|---|---|
+| `research_artifacts` | SHA-256 of the raw bytes | Never. Bytes are immutable; only the storage key and the retention state move. |
+| `research_documents` | `(company_id, document_key)` — `annual_report:2025`, or `url:<digest>` when the document declares nothing | A new logical document is seen. |
+| `research_document_versions` | `(document, content_hash)` | The document is re-published or restated. Immutable once written; exactly one is `is_current`. |
+| `research_document_derivations` | `(version, pipeline_version, extraction_profile)` | A parser improves, or a larger budget re-reads the document. Exactly one is `is_active`; superseded ones are **kept**. |
+| `research_document_chunks` | a derived `chunk_id`, stable across reindexing | Only with a new derivation. |
+
+Three properties are worth knowing before querying any of it:
+
+1. **A NULL is a statement.** `storage_key` NULL means the bytes are not
+   retained (policy, or a retention sweep) — `storage_backend` says `'none'` so it
+   is never ambiguous. `period_key` NULL means the document stated no period, never
+   a bare year. `published_at` NULL means no publication date was printed, and it
+   is never filled from `retrieved_at`. `page_count` is never backfilled from
+   `pages_persisted`, so "we read 40 of 169" cannot become a claim of completeness.
+2. **Nothing is deleted.** A superseded derivation keeps its pages, sections,
+   tables and chunks, so an evidence id recorded before a reprocess still resolves
+   (CLAUDE.md rule 15). Only the search *index* is reconciled to the active
+   derivation.
+3. **The V2 path is untouched.** `extracted_documents` keeps being written exactly
+   as before; `research_document_versions.extracted_document_id` points back at it,
+   so a corpus read for a document not yet re-ingested falls back to that row's
+   bounded `excerpts_json`.
+
+ORM models: `apps/api/app/models/research_artifact.py`,
+`research_document.py`, `research_derivation.py`, `research_chunk.py`.
+Services: `apps/api/app/services/corpus/`.
+
+---
+
+### Entity Master (V3.2) — `develop/v3` ONLY, NOT DEPLOYED
+
+**Migrations 026-027. Not applied to any deployed environment; the local dev database
+is at 018.** Nothing writes to any of these tables unless
+`V3_ENTITY_MASTER_ENABLED` is on, which is off by default. **`companies` is not
+touched by this migration** — no column added, no constraint changed, no FK
+pointed at it. The link between the two identity models is
+`companies.legal_entity_id` and it arrives in slice 2.2, with the backfill, in one
+place.
+
+```
+legal_entities                     the issuer as a LEGAL PERSON        (026)
+   +-< securities                  one INSTRUMENT it issued            (026)
+   |      +-< security_listings    one VENUE listing                   (026)
+   |      +-< entity_identifiers   isin, figi                          (026)
+   +-< entity_identifiers          lei, cik, company_register          (026)
+   +-< entity_aliases              former names, trade names           (026)
+```
+
+Why this exists, in this repository's own incident history: `companies` is keyed
+`UNIQUE (ticker, exchange)`, and looking a bare ticker up in SEC's
+`company_tickers.json` returned **Boeing's** CIK for BAE Systems, Moelis for LVMH
+and Estee Lauder for EssilorLuxottica. After 026 a CIK is an identifier *of a legal
+entity*, reachable only through listing -> security -> entity, and it is never
+derived from a ticker string.
+
+| Table | Identity | Changes when |
+|---|---|---|
+| `legal_entities` | `entity_key` — `lei:...`, `cik:...`, `register:DK:...`, or `listing:XCSE:PNDORA` | A new issuer is seen. The key is **never rewritten**; a stronger identifier arriving later does not renumber the entity, because that would be an implicit merge. |
+| `securities` | `(legal_entity_id, security_key)` | A new instrument — a share class, an ADR. |
+| `security_listings` | `(venue_key, ticker)` **while the window is open** | A listing starts, changes symbol or is delisted. A ticker change **closes one window and opens another**; it is never an `UPDATE` to `ticker`, which would rewrite history. |
+| `entity_identifiers` | `(scheme, value_normalized, scope_key)` **while the window is open** | An identifier is established, superseded or re-verified. |
+| `entity_aliases` | `(legal_entity_id, alias_type, normalized_alias)` | A rename or a trade name is recorded. |
+
+Four properties are worth knowing before querying any of it:
+
+1. **Four uniqueness guarantees are enforced by the DATABASE, not by a writer.**
+   `ix_security_listings_current_venue_ticker` makes two live issuers sharing a
+   ticker on one venue impossible; `ix_entity_identifiers_current_value` makes two
+   subjects currently holding one LEI/CIK/ISIN impossible;
+   `ix_securities_one_primary` and `ix_security_listings_one_primary` make "at most
+   one primary" a constraint. All four are **partial** unique indexes, and both
+   `venue_key` and `scope_key` are `NOT NULL` precisely because PostgreSQL treats
+   NULLs as distinct in a unique index — a nullable discriminator would have
+   silently permitted the collisions the indexes exist to prevent.
+2. **Identifiers are validated on write, not stored on trust.** A LEI failing its
+   ISO 7064 MOD 97-10 checksum and an ISIN failing its Luhn check digit are
+   **refused**, never recorded at a low confidence. `checksum_verified` is a column
+   rather than an assumption: it is `true` only for LEI and ISIN. A CIK has no
+   check digit, and a FIGI's is deliberately not validated —
+   [OPEN DECISION #10](v3/OPEN_DECISIONS.md#10-openfigi-usage-and-licensing) is the
+   user's and no source populates one. CUSIP is **not** a recognised scheme: it is
+   licensed data, so adding it is a governance decision.
+3. **`security_listings.quote_currency` is the price-QUOTE unit**, from
+   `price_quote_currency_for_exchange` — LSE main-market equities are quoted in
+   pence (`GBX`). It is deliberately not called `currency`, because joining it
+   against an issuer's *reporting* currency mislabels every London price as 100x
+   its real pound value.
+4. **Names are never identity.** There is no unique index on `legal_name`: two
+   entities may legally share a name in different jurisdictions, and a unique name
+   would force exactly the merge this schema exists to prevent. `normalized_name`
+   and `entity_aliases` are candidate-generation inputs for slice 2.3's resolver,
+   which weighs them beside identifiers; nothing resolves an entity from a name
+   alone.
+
+**Migration 027 links the two identity models**: `companies.legal_entity_id`, a
+**nullable** FK with `ON DELETE SET NULL`. That direction is lineage, not
+composition — deleting a legal entity must never delete the `companies` row a
+thousand reports point at — which is the opposite of every FK *inside* the entity
+master, deliberately. `companies` is otherwise unchanged: `UNIQUE (ticker,
+exchange)` remains and exactly one nullable column was added, so
+`release/v2-current` code runs against it unmodified.
+
+`legal_entity_id` NULL is a permanent, meaningful state and not only a
+transitional one. `backfill_entities_from_companies` refuses to link a row when two
+`companies` rows derive one entity key with **different names** — NYSE and NASDAQ
+collapse onto one venue key, so that is reachable — because picking one would be
+the silent merge the entity master exists to prevent. The compatibility adapter
+(`app/services/entities/compatibility.py`) falls back to the `companies` row and
+**reports which of the two answered**, so a caller that must not attach a CIK or a
+financial fact to a ticker-string identity can tell.
+
+The backfill is resumable, idempotent, bounded, and **called by nothing** — a
+backfill that starts itself on the first request after a deploy is how a migration
+becomes an outage.
+
+ORM models: `apps/api/app/models/legal_entity.py`, `company.py`.
+Services: `apps/api/app/services/entities/`.
 
 ---
 

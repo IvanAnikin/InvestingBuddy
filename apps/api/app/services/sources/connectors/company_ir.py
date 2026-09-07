@@ -50,6 +50,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, Field
 
 from app.core.structured_logging import log_event
+from app.services.corpus.artifacts.store import StoredArtifact
 from app.services.sources.connector_base import (
     CompanyContext,
     ConnectorResult,
@@ -337,6 +338,16 @@ class PrimaryDocumentArtifact(BaseModel):
     # existing active set. Any other value means the revalidation was
     # COMPLETE and safe to persist as the new active set.
     revalidation_state: str | None = None
+    # V3.1 Slice 1.1 — where the RAW bytes of this document were retained, or an
+    # honest record of why they were not. Populated only when ``V3_CORPUS_ENABLED``
+    # is on; ``None`` everywhere else, which is the V2 behaviour unchanged.
+    #
+    # It carries a hash, a storage key and a policy — never the bytes themselves.
+    # That preserves this model's founding invariant (see the class docstring):
+    # what flows through the connector pipeline is bounded excerpts and facts, not
+    # document content. The persistence layer turns this into a
+    # ``research_artifacts`` row and into ``ExtractedDocument.blob_path``.
+    raw_artifact: StoredArtifact | None = None
 
 
 # A DEEP document extractor fetches ONE allowlisted annual-report document, runs

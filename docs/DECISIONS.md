@@ -3307,3 +3307,759 @@ view. Its analytical points are not shown there at all. That is the requirement,
 the record entries still route to research confidence, and the unedited original
 stays on the technical report page — but it is a real reduction in what the
 clean view shows for such a report, not merely a re-filing.
+
+---
+
+## ADR-043: V2 Is Frozen as a Tag and a Branch Before V3 Development Begins
+
+**Date:** 2026-09-04
+**Status:** Accepted
+
+### Context
+
+V3 is a research-engine and data-platform evolution, not a bug-fix campaign. It
+adds a durable worker topology, a persistent corpus, an entity master, external
+research providers and a new schema surface. Any one of those could destabilise
+the system for weeks.
+
+Meanwhile `main` is not a development branch. It is the currently approved,
+deployed, private-use production version, live at `ib-stg-rg`. The user relies on
+it. There is exactly one environment.
+
+The failure mode to avoid is the ordinary one: V3 lands incrementally on `main`,
+each step individually defensible, and at some point there is no commit that is
+both recent and known-good to fall back to.
+
+### Decision
+
+The commit on `main` immediately before V3 work begins — `4b60e07` — is the **V2
+baseline**, and it is pinned in two independent ways:
+
+1. An **annotated, immutable tag** `v2-final-pre-v3-2026-09-04`, whose message
+   records the SHA, the date, the Alembic head (018) and the extraction pipeline
+   version (15).
+2. A **branch** `release/v2-current` at the same SHA, so V2 can receive emergency
+   maintenance without touching the V3 line.
+
+V3 development happens on `develop/v3`, created from the same SHA. Implementation
+happens on `feature/v3-*` branches that merge **only** into `develop/v3`.
+
+`main` receives no V3 commits, and V3 is not deployed, until the user explicitly
+approves promotion.
+
+### Consequences
+
+- Rollback is `git checkout release/v2-current`. There is no reconstruction step.
+- Two refs must both be wrong for the baseline to be lost; a tag can be deleted,
+  a branch can be force-moved, but not accidentally in the same operation.
+- The deploy workflows trigger on `push: branches: [main]` only, so pushing the
+  V3 branch cannot deploy — this was verified before the first push rather than
+  assumed.
+- V2 and V3 can diverge, so a V2 hotfix must be deliberately forward-ported. That
+  cost is accepted; it is much smaller than the cost of an unrecoverable `main`.
+
+---
+
+## ADR-044: External Research Output Enters as a Lead, Never as Evidence
+
+**Date:** 2026-09-04
+**Status:** Accepted
+
+### Context
+
+V3 uses external research and search providers — a managed Deep Research product,
+a cheap bulk researcher, a neural search index. These systems return confident
+prose containing claims, figures and citations. Some of the citations do not
+resolve. Some resolve to pages that do not contain the claim. Some figures are
+right for the wrong period or the wrong reporting scope.
+
+The platform's entire value is that a number in a report can be traced to a
+document. Accepting provider output as evidence would end that in one step, and
+it would end it *invisibly*, because the output is well-formed and cites sources.
+
+### Decision
+
+A provider result is a `ResearchProviderResult` and nothing in it is evidence.
+Every claim and source candidate is persisted as a `ResearchLead`, attributed to
+the provider and model that produced it, and must pass through an explicit
+promotion path:
+
+```
+lead → InvestingBuddy independently fetches the cited source (or verifies against
+       a trusted structured API) → Canonical Source → EvidenceFragment →
+       Canonical Fact / ResearchFinding
+```
+
+A lead whose URL is unreachable, or whose claim is absent from the fetched
+document, or whose period or scope does not match, is **retained as a rejected
+lead with its rejection reason**. It is never silently dropped and never quietly
+promoted.
+
+Separately, the **transport never determines the source tier**. Exa delivering a
+Reuters article yields Reuters-tier content; SEC EDGAR delivering a filing yields
+primary-filing-tier content. `transport` and `content_origin` are distinct fields.
+
+### Consequences
+
+- `verification_survival_rate` becomes measurable per provider, which is what
+  makes the benchmark meaningful and `cost_per_verified_finding` computable.
+- Rejected leads are training data for provider selection, consistent with the
+  existing rule that rejected companies and failed analyses are kept.
+- A provider that cannot produce traceable sources is structurally limited to
+  suggesting where to look — which is still useful, and is presented as exactly
+  that.
+- Verification costs retrieval budget. This is accepted: unverified research has
+  negative value because it consumes the budget that would have found the answer.
+
+---
+
+## ADR-045: Search, Model and Research Providers Are Three Separate Interfaces
+
+**Date:** 2026-09-04
+**Status:** Accepted
+
+### Context
+
+The obvious way to add web research is to pick a vendor whose model can search —
+one API key, one integration. It is also the way to end up unable to change
+either the model or the search index without changing the other, because the two
+arrived welded together.
+
+These capabilities genuinely change independently. Search quality is about index
+coverage and freshness. Model quality is about reasoning. Managed Deep Research
+is a different product with a different cost model again (per-run, not
+per-token). Pricing moves independently too: at InvestingBuddy's measured call
+shape, DeepSeek is 1.4× cheaper than `gpt-5.6-luna` off-peak and 30% *more*
+expensive at peak — a conclusion that inverts within a single vendor over the
+course of a day.
+
+### Decision
+
+Four independent interfaces, owned by InvestingBuddy:
+
+- `ModelProvider` — one prompt in, one structured completion out. Extends the
+  existing `LLMClient` (`app/services/llm/client.py`).
+- `SearchProvider` — query in, ranked URLs out. Never bound to a model vendor.
+- `ResearchProvider` — managed multi-step investigation, returns
+  `ResearchProviderResult`.
+- `BrowserProvider` — renders JS-gated pages, last resort only.
+
+Domain modules name a **routing slot** (`chair_model`, `cheap_research_model`,
+`red_team_model`, …), never a model. The research domain imports provider
+*interfaces*, never provider *SDKs*. If swapping a search vendor requires editing
+anything under the research domain, the abstraction has failed.
+
+Fake providers remain first-class and stay the only clients the unit suite uses.
+
+### Consequences
+
+- Four interfaces to maintain instead of one integration.
+- Vendor swaps cost one adapter.
+- Providers can be benchmarked against each other on identical tasks, which is
+  the only honest way to choose one.
+- The Red Team slot can deliberately use a different vendor from the analyst
+  slots — a model challenging its own family's output shares its blind spots.
+- Consumer AI subscriptions are excluded as production architecture: production
+  uses supported APIs under their terms. Consumer products may be used manually
+  for developer benchmarking only.
+
+---
+
+## ADR-046: The Durable Job Contract Keeps V2's Status Vocabulary
+
+**Date:** 2026-09-04
+**Status:** Accepted
+
+### Context
+
+V2 job *state* is durable — committed to PostgreSQL before expensive work starts.
+V2 job *execution* is not: it runs in the API process via FastAPI
+`BackgroundTasks` at six call sites, so an App Service recycle kills every
+in-flight run. `research_job.py` is honest about this in its own module docstring.
+
+V3.0 makes execution durable with a leased worker. The temptation when building a
+new job system is to design a new status vocabulary — `queued`, `claimed`,
+`succeeded`, `dead_letter` — because those words describe a queue accurately.
+
+But `research_job.py` already owns a status vocabulary that the web app polls,
+that the admin console renders, and that a body of tests asserts. It also owns a
+subtle and correct decision: `interrupted` is **derived at read time, never
+stored**, because a stored status would need a writer that is running, which is
+exactly what is absent in the situation it describes.
+
+### Decision
+
+The V3 durable job record keeps V2's status vocabulary verbatim: `pending`,
+`running`, `completed`, `completed_with_warnings`, `failed`, plus derived
+`interrupted`. `research_job.py` remains the single source of truth for status
+constants, in-flight/terminal classification and staleness derivation.
+
+V3 adds only the columns durability actually requires: `idempotency_key`,
+`attempt` / `max_attempts`, `lease_owner` / `lease_expires_at`, `available_at`,
+`last_heartbeat_at`, `cancel_requested`, and a dead-letter terminal state with a
+reason.
+
+The queue broker is a **delivery hint**, not the source of truth. The job store
+is authoritative, so a PostgreSQL-polling worker is a valid production mode and
+V3.0 is testable with no cloud dependency.
+
+### Consequences
+
+- The polling API contract does not fork. The web app needs no change to work
+  against durable jobs.
+- Existing job tests keep their meaning.
+- Dead-letter is genuinely new and needs its own vocabulary entry — it is added
+  as a terminal state alongside `failed`, not by overloading `failed`.
+- Reusing a vocabulary designed before leasing existed means some names are less
+  queue-idiomatic than they would be greenfield. That is accepted: a shared
+  vocabulary the whole system already speaks is worth more than precise naming in
+  one new module.
+
+---
+
+## ADR-047: Corpus Retrieval Is PostgreSQL Full-Text Plus pgvector, Not Azure AI Search
+
+**Date:** 2026-09-05 · **Status:** Accepted · **Decided by:** user
+**Supersedes:** the open state of [V3 OPEN DECISION #1](v3/OPEN_DECISIONS.md#1-azure-ai-search-vs-postgresql--pgvector)
+
+### Context
+
+V3.1 built the corpus behind a `SearchBackend` interface and deliberately stopped at
+the backend-selection gate, shipping only an in-memory reference implementation. The
+choice was between a managed hybrid search service and doing lexical and vector
+retrieval inside the database that already holds the corpus.
+
+The deciding constraint turned out not to be retrieval quality. It is that **V3 must
+require no new paid SaaS subscriptions**, which removes a managed search service from
+consideration regardless of how good it is.
+
+### Decision
+
+Corpus retrieval is **PostgreSQL full-text search plus `pgvector` semantic
+similarity**, fused by InvestingBuddy's own rank fusion, with metadata filters in the
+same query.
+
+PostgreSQL already exists in the architecture, Azure Database for PostgreSQL supports
+`pgvector`, and keeping retrieval in the same datastore as the canonical corpus
+metadata means entity, period and scope filters apply in the same transaction as the
+data they filter — which is the property that makes a scope filter trustworthy rather
+than eventually consistent.
+
+**Azure AI Search is not provisioned.** The `SearchBackend` interface is unchanged, so
+adding it later costs one adapter rather than a rewrite.
+
+### Consequences
+
+- The lexical leg works with no extension at all. `pgvector` is required only for the
+  semantic leg, and hybrid retrieval degrades to lexical when it is absent — which is
+  a worse answer and never a wrong one, exactly as V3.1 established.
+- Ranking quality is now InvestingBuddy's problem rather than a vendor's. That is
+  accepted: the fusion is already the platform's own, and the alternative was a vendor
+  ranking nobody could tune against the real-issuer set either.
+- **Enabling the extension is a schema-affecting operation.** The migration is written
+  and scratch-validated and **not applied to the deployed database** during this
+  campaign, per the standing restriction.
+- `test_the_production_backend_decision_is_not_taken_here` has served its purpose and
+  is replaced by tests that pin the chosen backend's behaviour. Deleting a guard once
+  the decision it guarded has been taken is the point of having written it.
+
+---
+
+## ADR-048: DeepSeek Web Search Is the Primary External Search Path; Exa and Perplexity Are Deferred
+
+**Date:** 2026-09-05 · **Status:** Accepted · **Decided by:** user
+**Supersedes:** the open state of [V3 OPEN DECISION #3](v3/OPEN_DECISIONS.md#3-exa-vs-perplexity-search)
+
+### Context
+
+The provider strategy planned to benchmark Exa against Perplexity and default to
+whichever won on `cost_per_verified_finding`. Both require a paid subscription or
+credits, and V3 must require neither.
+
+DeepSeek is approved on pay-as-you-go and offers server-side `web_search`, which
+covers the same need: find candidate sources on the open web for a research question.
+
+### Decision
+
+**DeepSeek `web_search` is the primary external general-web research and search path**
+for initial V3. Exa and Perplexity are **deferred** — interfaces and fakes retained,
+no adapters built, no credentials required, nothing blocked.
+
+The acquisition hierarchy is ordered and explicit:
+
+```
+existing InvestingBuddy corpus
+→ official structured API
+→ official regulator/issuer source
+→ current safe direct fetcher
+→ DeepSeek web search
+→ source URL retrieval THROUGH InvestingBuddy
+→ verification
+```
+
+The order matters more than the membership. External search is the **fifth** resort,
+after everything the platform already holds or can reach authoritatively — which is
+also the cheapest ordering, so the cost constraint and the quality constraint agree
+here rather than trading off.
+
+### Consequences
+
+- A search result is a `SourceCandidate` and a model claim is a `ResearchLead`. Neither
+  is evidence until InvestingBuddy has fetched the underlying source itself and the
+  claim has survived verification. **A search snippet is never canonical evidence**,
+  and the snippet field is labelled untrusted precisely so that a prompt builder
+  cannot forget it.
+- The platform depends on one external search vendor rather than two candidates. The
+  `SearchProvider` interface is what keeps that reversible, and it is now carrying real
+  weight rather than being speculative.
+- `cost_per_verified_finding` remains the benchmark metric, but the comparison is now
+  DeepSeek against the native path rather than Exa against Perplexity. A cross-vendor
+  search comparison is recorded as **not performed** rather than estimated.
+
+---
+
+## ADR-049: DeepSeek Access Is Governed by Document Rights, Not by Provider Geography
+
+**Date:** 2026-09-05 · **Status:** Accepted · **Decided by:** user
+**Supersedes:** the open states of [#4](v3/OPEN_DECISIONS.md#4-deepseek-data-governance-policy) and [#11](v3/OPEN_DECISIONS.md#11-private-data-external-model-policy)
+
+### Context
+
+V3.4.1 shipped a per-provider governance matrix that denied by default and recorded
+DeepSeek as public-only, on the authority of #4 being open. The blanket rule it
+encoded — `user_private → DENY` for every external provider — was a placeholder for a
+decision nobody had taken, not a considered policy.
+
+Two questions were tangled together: *where does this provider run* and *what is this
+document's licence*. Only the second is answerable per document, and only the second
+is what actually constrains use.
+
+### Decision
+
+**China location and storage are not a blocker for this project.** DeepSeek is approved
+to process `public_official`, `public_issuer`, `public_web`, InvestingBuddy-derived
+research context, **and user-private content when that document's own policy metadata
+allows third-party model processing.**
+
+DeepSeek must never receive: API keys, passwords, credentials, secrets, authentication
+tokens, private system configuration, a document whose licence or rights metadata
+forbids external-model processing, or anything marked `external_model_allowed=false`.
+
+**Data rights and explicit source policy govern provider use. Provider geography does
+not.** An unknown policy **fails closed**.
+
+### Consequences
+
+- The governance check moves from *provider × access class* to *provider × access class
+  × document policy*. The coarse check remains as the outer bound — a provider with no
+  recorded policy still receives nothing — and the document's own permissions are
+  consulted inside it. Both are needed: the coarse one catches an unevaluated provider,
+  the fine one catches a document nobody was allowed to send.
+- `ArtifactPolicy` already carries six per-document permissions including
+  `sent_to_external_model` and a per-provider allowlist, built in V3.1.1 for exactly
+  this. That work is now load-bearing rather than anticipatory.
+- **Rights are never inferred from the fact that a file was uploaded.** A private
+  document with no explicit permission is unusable by an external model, which is the
+  fail-closed direction and is the same rule the platform applies to an unstated
+  financial period.
+- A secret is not an access class and never becomes one. Credentials are excluded
+  categorically rather than by policy, because a policy is something somebody can edit.
+
+---
+
+## ADR-050: The Existing Azure OpenAI Deployment Is the Strong-Model Fallback, and the Only OpenAI-Family Dependency
+
+**Date:** 2026-09-05 · **Status:** Accepted · **Decided by:** user
+**Supersedes:** the open state of [V3 OPEN DECISION #5](v3/OPEN_DECISIONS.md#5-openai-model-routing)
+
+### Context
+
+The routing question was which model fills which slot. Two constraints answer most of
+it: no new commercial accounts, and the Azure OpenAI infrastructure in this repository
+is already approved and already carries the council.
+
+### Decision
+
+**Cheap and bulk research goes to DeepSeek. Difficult final reasoning goes to Azure
+OpenAI.** No new OpenAI commercial account is created; the existing Azure deployment is
+the only OpenAI-family dependency.
+
+Azure OpenAI's V3 role is stronger synthesis when needed, difficult Research Director
+cases, complex evidence contradictions, Red Team where appropriate, the Chair and final
+Council synthesis, and any task a benchmark shows it materially wins.
+
+**Not every research subtask goes to the expensive model**, and routing stays
+configurable.
+
+### Consequences
+
+- Domain logic continues to name a **slot**, never a model. The eight slots and their
+  degradation behaviour are unchanged; what changes is that assignments now have
+  defaults worth setting rather than being empty pending a decision.
+- The two-vendor split is also a resilience property, not only a cost one: a DeepSeek
+  outage degrades bulk research and leaves synthesis working, and the reverse leaves
+  research working with a deterministic chair fallback — which V3.0 already built.
+- Red Team vendor diversity is achievable *between* these two, and no further. That is
+  a real limitation and is recorded rather than glossed: a Red Team drawn from the same
+  vendor as the Chair shares its blind spots, and `shares_vendor_with` reports whether
+  it currently does.
+
+---
+
+## ADR-051: Transcripts and IR Events Come From Free Public Issuer Sources, and Missing Means Missing
+
+**Date:** 2026-09-05 · **Status:** Accepted · **Decided by:** user
+**Supersedes:** the open states of [#8](v3/OPEN_DECISIONS.md#8-transcript-provider) and [#9](v3/OPEN_DECISIONS.md#9-quartr-vs-fiscalai)
+
+### Context
+
+Management language over time is one of the most valuable research inputs V3 planned
+to add, and the two obvious vendors are paid subscriptions. The recommendation had been
+"direct issuer first, vendor as fallback for coverage".
+
+### Decision
+
+**No paid transcript subscription.** The canonical transcript and IR-event architecture
+is implemented anyway, and acquisition uses free, legally accessible public sources:
+issuer IR sites, issuer-published transcripts, earnings releases, presentations,
+capital-markets-day materials, regulatory filings and public event documents.
+
+When a transcript is not publicly available, **missing means missing**. It is not
+fabricated, and a paywalled source is not scraped.
+
+### Consequences
+
+- Coverage will be uneven, and worst exactly where the existing pipeline is already
+  thinnest: European issuers who publish a presentation but not a transcript. The
+  architecture must therefore represent *the event happened and no transcript is
+  available* as a first-class state, distinct from *no event*.
+- That distinction is what makes the gap actionable. "We have no transcript for CFR's
+  FY2025 call" is a research gap a human can close by other means; an absent row is
+  indistinguishable from a company that held no call.
+- Implementing the canonical model without a vendor is deliberate. It means a future
+  subscription is an adapter rather than a schema change, and it means the free path
+  is the *default* rather than the fallback — which is the ordering that survives the
+  subscription never being bought.
+
+---
+
+## ADR-052: Research Budgets Are Bounded Technical Defaults, and Research Modes Are Depth Presets
+
+**Date:** 2026-09-05 · **Status:** Accepted · **Decided by:** user
+**Supersedes:** the open states of [#13](v3/OPEN_DECISIONS.md#13-model-cost-thresholds) and [#14](v3/OPEN_DECISIONS.md#14-research-mode-budgets)
+
+### Context
+
+`consumption.ResearchBudget` and `ToolBudget` shipped with every limit defaulting to
+unbounded, because the numbers were user-owned and #14 wanted them derived from
+measurement rather than guessed. That was right at the time and is now the wrong
+default: an unbounded budget on a system that can now issue web searches and call an
+external model in a loop is a runaway waiting for an occasion.
+
+### Decision
+
+**Bounded technical defaults now; no business budget chosen.** Configurable maxima
+exist for research rounds, web searches, tool calls, documents, tokens, wall time and
+DeepSeek calls, and they vary by research mode.
+
+QUICK / STANDARD / DEEP / MAX are **research-depth presets**, not price tiers. No
+subscription price is attached to any of them. MAX takes the highest bounded limits
+and is **still finite**.
+
+### Consequences
+
+- Two instructions pull in opposite directions and both are honoured deliberately:
+  **the absence of a monthly business budget is not unlimited execution**, and **V3 is
+  not blocked on pricing decisions**. The resolution is that the *technical* ceilings
+  become real numbers and the *monetary* ceiling stays unset — a run can be stopped by
+  a round limit, a search limit or a wall clock, and cannot be stopped by a dollar
+  figure nobody has chosen.
+- A cost of unknown is still never reported as zero. Money remains derived from a price
+  book, so setting prices later re-prices history rather than rewriting it.
+- The numbers chosen now are estimates against measured anchors (a full company run is
+  261-451s, ingestion ~154s, a council ~145-190s) and are expected to be tightened
+  once real DeepSeek runs are measured. A default that is wrong but finite is
+  recoverable; an unbounded default is not.
+
+---
+
+## ADR-053: The Semantic Leg Ships Portable and Feature-Gated, Because `pgvector` Is Not Installed
+
+**Date:** 2026-09-06 · **Status:** Accepted · **Decided by:** agent (technical, reversible)
+**Amends:** [ADR-047](#adr-047-corpus-retrieval-is-postgresql-full-text-plus-pgvector-not-azure-ai-search)
+
+### Context
+
+ADR-047 chose PostgreSQL full-text plus `pgvector` for corpus retrieval, on the basis
+that PostgreSQL already exists in the architecture and Azure Database for PostgreSQL
+supports the extension. Slice 4.9 went to implement it and checked rather than assumed:
+
+```
+SELECT count(*) FROM pg_available_extensions WHERE name = 'vector';   -- 0
+```
+
+The `postgres:16-alpine` image this repository's `docker-compose.yml` runs does not ship
+`pgvector`, so it cannot be installed, let alone enabled. On Azure Database for PostgreSQL
+Flexible Server the extension is available but must be added to the
+`azure.extensions` server parameter — **a change to the deployed server**, which this
+campaign is not authorised to make and which would in any case have no effect until V3
+is approved and deployed.
+
+There is also no embedding provider. Every approved model account (Azure OpenAI,
+DeepSeek) could produce embeddings, but nothing in this repository does, and turning one
+on is a spend decision on a path nothing yet consumes.
+
+### Decision
+
+**The lexical leg is the production path and requires no extension.** It is a GIN
+expression index over `to_tsvector('simple', text)` with every metadata filter applied in
+the same SQL statement, which is the property ADR-047 actually wanted: an entity, period
+and scope filter that applies in the same transaction as the data it filters.
+
+**The semantic leg ships portable and OFF.** Embeddings are stored as JSONB alongside the
+model name and dimension; similarity is computed by InvestingBuddy's own cosine over a
+**bounded candidate pool**, not by a vector index. `V3_CORPUS_SEMANTIC_SEARCH_ENABLED`
+defaults to `false` and the only embedding provider is deterministic and fake.
+
+`pgvector` remains the intended production shape. Enabling it is a follow-on migration
+that adds a `vector` column populated **from the JSONB already held** plus an IVFFlat
+index — an additive change to data the platform already has, not a re-embedding and not a
+rewrite.
+
+### Consequences
+
+- **Hybrid retrieval without a vector index is a semantic rerank of a bounded candidate
+  pool, not an exhaustive nearest-neighbour search, and the backend says so.**
+  `PostgresSearchBackend.semantic_is_exhaustive` is `False` and `capabilities` omits
+  `SearchMode.SEMANTIC`. Reporting it as a full semantic search would be the kind of
+  claim that survives until somebody measures recall.
+- Lexical retrieval is independently usable and is what every V3 path uses today. ADR-047
+  already required that hybrid degrade to lexical when the extension is absent; this
+  makes "absent" the current state rather than a hypothetical.
+- `'simple'` rather than `'english'` is the text-search configuration, for the reason
+  `fusion.py` already gives: in a financial corpus the exact token usually deserves to
+  win. `FY2025`, `PNDORA` and `mRNA-1273` survive `'simple'` intact, and a stemmed leg is
+  an additional expression index rather than a replacement.
+- No production embedding infrastructure is provisioned, and no new subscription is
+  required — which is the constraint the whole 2026-09-05 resolution round turned on.
+
+---
+
+## ADR-054: Applicable Playbooks' Completion Rules Are Unioned, Not Intersected
+
+**Date:** 2026-09-06 · **Status:** Accepted · **Decided by:** agent (technical, reversible)
+**Clarifies:** [INDUSTRY_PLAYBOOK_ARCHITECTURE.md §6](v3/INDUSTRY_PLAYBOOK_ARCHITECTURE.md)
+
+### Context
+
+Multiple playbooks may apply to one company — a conglomerate is legitimately both
+industrial and financial. §6 specifies the combination:
+
+> Questions union; `completion_rules` intersect (the strictest wins), because the
+> alternative is a conglomerate that is easier to declare complete than either of its
+> parts.
+
+The two halves of that sentence point in opposite directions. Intersecting the rule
+**sets** keeps only the rules both playbooks share — which produces *fewer* rules, and
+therefore a conglomerate that is **easier** to declare complete than either of its parts.
+That is exactly the outcome the sentence's own justification says to avoid.
+
+### Decision
+
+**Every completion rule of every applicable playbook must hold.** `PlaybookSelection.completion_rules`
+returns the de-duplicated **union** of the rules, and the loop requires all of them.
+
+The intent — "the strictest wins" — governs over the stated operation. What is being
+intersected is the set of *states that count as complete*: requiring more rules intersects
+the satisfying states, and that intersection is produced by unioning the rules.
+
+Questions are unioned as written, which was never ambiguous.
+
+### Consequences
+
+- A conglomerate is **harder** to declare complete than either of its parts, which is what
+  §6 asked for and what makes multi-playbook coverage safe to enable.
+- The failure direction is a run that keeps investigating and eventually stops on a budget
+  limit, naming it. That is recoverable and visible. The alternative — a run declared
+  complete because two playbooks happened to share no rules — is neither.
+- A playbook may only declare a rule the loop can evaluate
+  (`EVALUABLE_COMPLETION_RULES`), enforced in the constructor. The loop already treats an
+  unrecognised rule as *not satisfied*, so an unevaluable rule would make every run of that
+  playbook exhaust its budget — and the symptom would look like a coverage problem rather
+  than a configuration error.
+
+---
+
+## ADR-055: DeepSeek's Web Search Is Real, Lives on `/responses`, and Every Bound That Matters Is Enforced by InvestingBuddy
+
+**Date:** 2026-09-07 · **Status:** Accepted · **Decided by:** agent, from a live measurement
+**Amends:** [ADR-048](#adr-048-deepseek-web-search-is-the-primary-external-search-path-exa-and-perplexity-are-deferred)
+**Corrects:** the conclusion recorded in slice V3.11.1.1
+
+### Context
+
+ADR-048 made DeepSeek's server-side `web_search` the primary external general-web path,
+on the strength of vendor documentation. When a real key arrived, V3.11.1.1 probed the
+API and reported that **no server-side web search exists**: every builtin tool spelling
+returned `400 unknown variant ... expected 'function'`, and the model itself said it had
+no live browsing and a June 2024 cutoff. The adapter's `search()` was changed to refuse,
+and the campaign recorded that the premise for choosing DeepSeek had been wrong.
+
+That probe only ever asked `POST /chat/completions`.
+
+DeepSeek serves a second, OpenAI-compatible API — `POST /responses` — and the builtin
+web-search tool lives there. Measured live on 2026-09-07 with the same key: the tool is
+accepted, echoed, and really searches. It issues queries, opens pages, reads them with
+`find_in_page`, and returns the URLs it opened. The capability ADR-048 was chosen for
+exists.
+
+**The generalisable error is not about DeepSeek: an absence measured on one endpoint was
+reported as an absence in the product.**
+
+### Decision
+
+**1. `search()` uses `POST /responses`; `complete()` stays on `/chat/completions`.** Two
+endpoints with different capabilities and different strictness, so two request shapes.
+Forcing one abstraction over them would hide exactly the distinction that caused the
+error.
+
+**2. A 200 is not a capability, and the `tools` echo is the proof.** Unlike
+`/chat/completions`, `/responses` silently drops what it does not understand and still
+returns 200 — an unknown tool type, an unknown `include` value, an unknown field inside a
+known tool. So the adapter verifies that the tool it asked for is echoed back **and** that
+`web_search_call` items are present. Without that check, "the tool never ran" is
+indistinguishable from "the web has nothing", and only one of those is a claim about the
+world.
+
+**3. Candidates come from the retrieval trace and from nowhere else.** The contract
+provides **no structured citations** — `annotations` was empty in every measured run, and
+`include: ["web_search_call.action.sources"]` is accepted and inert. What it does provide
+is a trace: the queries issued, the pages opened, the opens that failed. A page the
+provider opened is a page it read, so those URLs become `SourceCandidate`s. A URL that
+appears only in the answer's prose is **counted and not promoted** — recorded as
+`cited_but_never_opened`, which is a fabrication signal that only exists because the trace
+exists.
+
+**4. Every bound that matters is enforced client-side, because the vendor's are inert.**
+Measured: `max_tool_calls` is echoed back as `null` and a request sending `1` still made
+two search calls (one observed request made **eight**, spending ~41k tokens);
+`filters.allowed_domains` is dropped from the echo entirely and off-domain pages were
+opened anyway. So InvestingBuddy owns the domain restriction, the candidate ceiling, the
+de-duplication, the URL canonicalisation and the SSRF host check, and the telemetry
+records `domain_filter_enforced_by: investingbuddy_client_side` so no later reader infers
+a guarantee the provider does not give. The only bounds the API honours —
+`max_output_tokens` and the timeout — are both set.
+
+**5. The canonical model is a *served* name.** `deepseek-chat`, taken from documentation,
+is not served: both endpoints accept it with a 200 and answer as `deepseek-v4-flash`. A
+default that is silently substituted makes every cost attribution wrong and every
+benchmark unreproducible, without anything ever failing. The default is now
+`deepseek-v4-flash`, and a test asserts the configured model is in `SERVED_MODELS`.
+
+**6. Both flags stay off, and both are enforced in code.** `V3_DEEPSEEK_SEARCH_ENABLED`
+and `V3_DEEPSEEK_MODEL_ENABLED` default to `false`. A verified capability is not a
+decision to spend on it, exactly as a credential is not consent to route research to a
+vendor.
+
+This needed doing, not just saying. Until this ADR, `search()` raised unconditionally and
+**that refusal — not the flag — was the thing keeping spend off**; review of the first
+draft found `V3_DEEPSEEK_SEARCH_ENABLED` had no consumer in application code at all while
+three documents claimed it held the line. The gate now lives in
+`DeepSeekSearchProvider.search()`, alongside the model leg's in `resolve_routing`, and a
+test asserts the default provider never reaches the transport.
+
+### Consequences
+
+- **ADR-048 stands, and no search provider needs buying.** Exa, Perplexity and Gemini stay
+  deferred and unpurchased. [OPEN DECISION #3](v3/OPEN_DECISIONS.md) resolves toward
+  DeepSeek server-side web search on measured evidence rather than on documentation.
+- **`ResearchLead` → Evidence becomes *staffable*, and is still not staffed.** The reason
+  V3.11.1.1 gave for it being permanently unstaffable — DeepSeek cannot retrieve — is
+  gone. The wiring is not there, and this ADR does not add it:
+  `DeepSeekResearchProvider.investigate()` still runs on `/chat/completions` with no
+  retrieval, so its leads cite URLs the model recalled; `DeepSeekSearchProvider` emits
+  `SourceCandidate`s, which carry a URL and no claim, and `verify_lead()` verifies a
+  claim. Giving `investigate()` the `/responses` search tool would close it and is a
+  separate slice. Nothing about the promotion rule changes either way: only bytes fetched
+  through the platform's own guarded fetcher can be cited.
+- **The search leg now reports tokens.** `/responses` bills a search like a completion, so
+  `SEARCH_UNITS` gained the three token units. Reporting only `web_search_calls` made the
+  platform's most expensive single call look like its cheapest.
+- **A provider that ignores our restrictions is visible rather than silent.**
+  `off_domain_urls` and `cited_but_never_opened` are per-run numbers somebody can watch.
+- The refusal V3.11.1.1 added was the right decision *on the evidence it had*. What was
+  wrong was the scope of the evidence, and the live contract test now pins both halves —
+  that `/chat/completions` has no builtin tools, and that `/responses` does.
+
+---
+
+## ADR-056: External Research Enters Through Two Tools, and Only Our Own Fetch May Mint Evidence
+
+**Date:** 2026-09-07 · **Status:** Accepted · **Decided by:** agent, under a user brief
+**Implements:** [ADR-044](#adr-044-external-research-output-enters-as-a-lead-never-as-evidence) and [ADR-048](#adr-048-deepseek-web-search-is-the-primary-external-search-path-exa-and-perplexity-are-deferred)
+**Closes:** the V3.11 release-candidate caveat in §11.6
+
+### Context
+
+ADR-044 established that external research output enters as a `ResearchLead` and never as
+evidence. ADR-048 made DeepSeek the external search path. V3.11.1.2 verified that DeepSeek
+really retrieves. And still nothing used it: `investigate()` ran on `/chat/completions`,
+which has no tools, so the only producer of leads produced URLs the model had *recalled*.
+The V3.11 release candidate said so plainly — zero lead rows across every real run.
+
+The two tool names this needs, `search_web` and `fetch_public_source`, had been in the
+closed vocabulary since V3.3 with a comment saying they were waiting for a provider
+runtime.
+
+### Decision
+
+**1. Two tools, not one, because they answer to different authorities.** `search_web`
+reaches a vendor and everything it returns is a claim. `fetch_public_source` reaches the
+open web *through InvestingBuddy's own fetcher* and puts one claim through `verify_lead`.
+
+**2. Only `fetch_public_source` may mint an evidence id, and only for `LEAD_VERIFIED`.**
+That status cannot be constructed without a content hash, so "verified" cannot exist
+without bytes the platform fetched. `search_web`'s payload carries none of the four keys
+the Investigator reads as citations, so a model *cannot* cite a search result — the
+guarantee is the absence of a field, not a rule somebody remembers.
+
+**3. The Investigator chains the two deterministically.** An LLM choosing which URL to
+fetch is an LLM choosing what the platform reads, and the rest of the Investigator already
+refuses to let a model choose tool arguments.
+
+**4. The retrieval trace annotates; it does not gate.** A live run proved the alternative
+wrong: the provider found the right SEC exhibit through a *search result*, whose URLs the
+contract never exposes, and a guard that dropped claims citing unopened pages discarded
+the only good lead of the run. `opened_urls` is a subset of what the provider legitimately
+saw. The gate stays where it belongs — our own fetch.
+
+**5. The tools are registered conditionally, and that is the whole feature flag.** With
+`V3_DEEPSEEK_SEARCH_ENABLED` off they are absent from the registry, so
+`implemented_tools()` excludes them, the external question is never planned and the role
+is never seated. A question needing an absent tool is unassignable *at plan time* — a
+coverage fact a reader can see, rather than a refusal mid-run.
+
+**6. One role reaches outside the platform, and it is not `always_present`.**
+`external_research_analyst` is the only role holding the external tools, so
+`reaches_outside_the_platform` remains a checkable property of the policy table rather
+than a claim.
+
+### Consequences
+
+- **The `ResearchLead` → Evidence path is staffed**, demonstrated on real data: a real
+  question, a real DeepSeek search, a real SEC exhibit, our own fetch, and findings in the
+  ledger citing `ev:x:…` ids derived from the hash of bytes we retrieved.
+- **Promotion is provider-dependent and that is now measured**, not assumed: across
+  sixteen live runs, ten promoted evidence and six promoted none — five of the last six
+  on the shipped prompt — because the URL
+  the provider chose was unreachable, unreadable, or a filing index page carrying no
+  figures. Every non-promotion is the system working, and roughly a coin-flip per run is
+  the honest rate to plan against.
+- **Two pre-existing defects in the verification gate were found by pointing it at a real
+  adversarial claim** — a fabricated value that matched under a relative tolerance, and a
+  period conflict that was skipped rather than failed. Both are fixed generically, in
+  `leads.py`, for every provider and not only this one.
+- **Scope remains unchecked on this path.** External evidence carries `scope_key = None`
+  and says so. That is a real limitation and it is recorded rather than closed.
+- `cost_per_verified_useful_finding` is now computable for a real path, and is reported as
+  `None` until an operator supplies a price. An unknown cost is never labelled zero.

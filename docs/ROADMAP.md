@@ -1,5 +1,16 @@
 # Roadmap
 
+> ## ⚠ V3 CAMPAIGN OPEN — 2026-09-04
+>
+> The V2 baseline is frozen at `4b60e07` (tag `v2-final-pre-v3-2026-09-04`,
+> branch `release/v2-current`). V3 development runs on `develop/v3` and is
+> **unapproved and undeployed**.
+>
+> The V3 phase plan (V3.0 durable execution → V3.9 monitoring) and its PR-sized
+> slice register live in
+> [`docs/v3/IMPLEMENTATION_PLAN.md`](v3/IMPLEMENTATION_PLAN.md). The phase
+> narrative below is the V2 history and remains accurate for `main`.
+
 > **STATUS AS OF 2026-08-23.** Phases 0-31 are complete. Phase 32A (evidence
 > chain, council reliability, TPM resilience) and Phases B (typed contracts)
 > and C (human-facing coherence) are merged and deployed to staging;

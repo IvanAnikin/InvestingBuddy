@@ -29,6 +29,9 @@ from typing import Any
 from app.core.config import Settings
 from app.core.config import settings as default_settings
 from app.core.structured_logging import log_event
+from app.services.corpus.artifacts.service import store_raw_artifact
+from app.services.corpus.artifacts.store import ArtifactStore
+from app.services.corpus.policy import ACCESS_PUBLIC_ISSUER, ACCESS_PUBLIC_OFFICIAL
 from app.services.sources.connector_base import CompanyContext, QueryContext
 from app.services.sources.connectors.company_ir import (
     PrimaryDocumentArtifact,
@@ -458,6 +461,8 @@ async def _artifact_from_fetch(
     fetch_ms: int,
     ocr_provider: OcrProvider | None = None,
     ocr_budget: OcrBudget | None = None,
+    access_class: str = ACCESS_PUBLIC_ISSUER,
+    artifact_store: ArtifactStore | None = None,
 ) -> PrimaryDocumentArtifact:
     """Extract + validate ONE already-fetched document into an artifact.
 
@@ -472,6 +477,12 @@ async def _artifact_from_fetch(
     ``ocr_provider``/``ocr_budget`` (Phase 32A Slice 5B.2) are the issuer-IR
     leg's OCR fallback — ``None`` for the SEC filing-body leg, which never
     triggers OCR (EDGAR filings are native HTML/text, not scanned images).
+
+    ``access_class`` (V3.1 Slice 1.1) is the governance data class of what was
+    fetched, and it is the CALLER's to state rather than something inferred here:
+    the issuer-IR leg retrieves ``public_issuer`` material and the SEC leg
+    retrieves ``public_official`` material, and a helper that guessed from a URL
+    would be one redirect away from mislabelling a document's permissions.
     """
     artifact = PrimaryDocumentArtifact(
         source_url=fetched.final_url or fetched.requested_url,
@@ -507,6 +518,24 @@ async def _artifact_from_fetch(
         )
         return artifact
 
+    # V3.1 Slice 1.1 — retain the RAW bytes before anything interprets them.
+    #
+    # Deliberately here, and deliberately before extraction: these are the bytes
+    # the content hash is taken over, and they are the only thing a future parser
+    # can be re-run against. Everything downstream is a derivation. With
+    # ``V3_CORPUS_ENABLED`` off this returns ``None`` without touching a store or
+    # issuing a query, so the V2 path is unchanged; it never raises, so a storage
+    # failure degrades to a lineage record with an honest ``failure_code`` rather
+    # than to a dead research run.
+    artifact.raw_artifact = await store_raw_artifact(
+        fetched.content,
+        media_type=(fetched.content_type or "").split(";")[0].strip().lower()
+        or "application/octet-stream",
+        access_class=access_class,
+        cfg=cfg,
+        store=artifact_store,
+    )
+
     extract_started = time.perf_counter()
     extraction = await _parse_off_loop(
         extract_primary_document,
@@ -514,6 +543,11 @@ async def _artifact_from_fetch(
         document_type=fetched.document_type,
         cfg=cfg,
         original_language=original_language,
+        # V3.1 Slice 1.3 — keep the full heading-tagged text of every page this
+        # pass opens, instead of discarding all but the ~20 ranked excerpts. The
+        # block list already exists in memory when the ranking runs, so this costs
+        # a copy rather than a second parse. Off with the corpus off.
+        capture_blocks=bool(getattr(cfg, "v3_corpus_enabled", False)),
     )
     artifact.extraction_ms = int((time.perf_counter() - extract_started) * 1000)
     artifact.extraction = extraction
@@ -854,6 +888,10 @@ async def live_sec_primary_document_extractor(
                     issuer_context=issuer_context,
                     cfg=cfg,
                     fetch_ms=fetch_ms,
+                    # An EDGAR filing is official-record material, not an issuer
+                    # publication — a distinction the governance permission table
+                    # cares about and a URL cannot be trusted to reveal.
+                    access_class=ACCESS_PUBLIC_OFFICIAL,
                 )
             except Exception:  # noqa: BLE001 - extraction never breaks a run
                 artifact = PrimaryDocumentArtifact(

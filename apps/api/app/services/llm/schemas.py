@@ -436,6 +436,13 @@ class CouncilResult(BaseModel):
     # primary_source_reference_count / primary_document_reference_count /
     # metadata_only_source_count / extracted_primary_document_count / source_gap_count.
     source_reference_counts: dict[str, int] = Field(default_factory=dict)
+    # V3.0 Slice 5 — vendor-neutral consumption for THIS council run. A dict
+    # rather than a typed field so the unit list can grow with each provider
+    # slice without a schema change here; ``consumption.ConsumptionUnits``
+    # owns the shape. Empty on a result produced before this existed, which
+    # ``consumption.council_consumption`` reads as "nothing measured" rather
+    # than as zeros.
+    consumption: dict[str, Any] = Field(default_factory=dict)
     # Phase 31 hotfix: bounded, de-duplicated honest connector source-gap messages
     # (e.g. "annual-report links not identified without live extraction"). No secrets.
     source_gaps: list[str] = Field(default_factory=list)

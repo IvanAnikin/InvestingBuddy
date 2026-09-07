@@ -690,3 +690,89 @@ export function checkSentence(
 
 export const CONFLICT_NOTICE =
   "Conflicting evidence — technical review required.";
+
+// ---------------------------------------------------------------------------
+// The server's verdict
+// ---------------------------------------------------------------------------
+
+/**
+ * Statements the BACKEND reconciled and found to contradict the report's own
+ * canonical figures.
+ *
+ * As of V3.0 Slice 4 this check is canonical on the server
+ * (`app/services/numeric_verification.py`) and its verdict is persisted into the
+ * report under `numeric_verification`. That is where it belongs: ADR-037 says
+ * the product layer presents the research state and never reconciles it, and a
+ * verdict that existed only in a browser tab was never part of the record an
+ * admin approved.
+ *
+ * This module stays as DEFENCE IN DEPTH, for two concrete reasons rather than
+ * as a general principle:
+ *
+ *  - **1,057 reports already exist and report content is persisted**, so none of
+ *    them will ever carry a server verdict. Deleting this would silently
+ *    un-protect the majority of the corpus.
+ *  - On a new report the two are a genuine second opinion over the same figures
+ *    by different code. A conflict from EITHER withholds — the union, never the
+ *    intersection, because the whole point is not to show a contradiction.
+ *
+ * Matching is on the statement text the reader is shown, normalised. The server
+ * adjudicates an implication's `statement` joined with its `mechanism` (the
+ * number often sits in one and the metric name in the other) but reports the
+ * `statement`, which is the field that gets withheld — so the presentation never
+ * has to know how the adjudicated text was composed.
+ */
+export interface ServerNumericVerification {
+  present: boolean;
+  engineVersion: number | null;
+  statementsExamined: number;
+  conflicting: number;
+  /** Normalised statement texts the server found conflicting. */
+  conflicts: Set<string>;
+}
+
+export const EMPTY_SERVER_VERIFICATION: ServerNumericVerification = {
+  present: false,
+  engineVersion: null,
+  statementsExamined: 0,
+  conflicting: 0,
+  conflicts: new Set(),
+};
+
+/** One spelling of a statement, so both sides compare the same thing. */
+export function normaliseStatement(text: string | null | undefined): string {
+  return (text ?? "").replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+export function readServerVerification(
+  content: Record<string, unknown> | null | undefined,
+): ServerNumericVerification {
+  const section = content?.["numeric_verification"];
+  if (!section || typeof section !== "object" || Array.isArray(section)) {
+    return EMPTY_SERVER_VERIFICATION;
+  }
+  const record = section as Record<string, unknown>;
+  const rows = Array.isArray(record["conflicts"]) ? record["conflicts"] : [];
+  const conflicts = new Set<string>();
+  for (const row of rows) {
+    if (!row || typeof row !== "object") continue;
+    const statement = (row as Record<string, unknown>)["statement"];
+    if (typeof statement === "string" && statement.trim()) {
+      conflicts.add(normaliseStatement(statement));
+    }
+  }
+  const num = (key: string): number => {
+    const v = record[key];
+    return typeof v === "number" && Number.isFinite(v) ? v : 0;
+  };
+  return {
+    present: true,
+    engineVersion:
+      typeof record["engine_version"] === "number"
+        ? (record["engine_version"] as number)
+        : null,
+    statementsExamined: num("statements_examined"),
+    conflicting: num("conflicting"),
+    conflicts,
+  };
+}

@@ -86,10 +86,17 @@ class CompanyResearchJobResponse(BaseModel):
     ``status`` is the job lifecycle (pending | running | interrupted |
     completed | completed_with_warnings | failed).
 
-    ``interrupted`` is DERIVED at read time, never stored: execution is
-    process-local, so an app restart mid-run would otherwise leave a job
-    reading ``running`` forever. ``recoverable`` says re-running is safe and
-    will not duplicate a completed report.
+    On the V3 durable path two further terminal states exist, because
+    durability introduced them: ``dead_letter`` (every attempt failed) and
+    ``cancelled``. They are reported as themselves rather than folded into
+    ``failed`` — a dead-lettered job hit transient errors and may well succeed
+    later, a failed one hit a permanent error and will not, and collapsing them
+    would erase exactly the distinction an operator needs.
+
+    ``interrupted`` is DERIVED at read time, never stored: a stored status would
+    need a writer that is running, which is precisely what is absent in the case
+    it describes. ``recoverable`` says re-running is safe and will not duplicate
+    a completed report.
     """
 
     job_id: uuid.UUID
@@ -105,6 +112,15 @@ class CompanyResearchJobResponse(BaseModel):
     error: str | None = None
     recoverable: bool | None = None
     interrupted_reason: str | None = None
+    #: V3 durable path only, and null on the V2 path. A ``dead_letter`` job
+    #: exhausted its attempts; the reason says how. Kept distinct from ``error``
+    #: because "every attempt failed" and "this failed permanently" call for
+    #: different human responses.
+    dead_letter_reason: str | None = None
+    #: Which attempt is in flight, out of how many. Null on the V2 path, where
+    #: there is exactly one attempt and no concept of a retry.
+    attempt: int | None = None
+    max_attempts: int | None = None
     #: The STRUCTURED final report this job produced. Null until it exists —
     #: the deterministic draft the workflow writes is not one.
     analysis_report_id: uuid.UUID | None = None
@@ -162,6 +178,9 @@ class CompanyResearchJobResponse(BaseModel):
             error=envelope.get("error"),
             recoverable=envelope.get("recoverable"),
             interrupted_reason=envelope.get("interrupted_reason"),
+            dead_letter_reason=envelope.get("dead_letter_reason"),
+            attempt=envelope.get("attempt"),
+            max_attempts=envelope.get("max_attempts"),
             analysis_report_id=_uid("analysis_report_id"),
             agent_run_id=_uid("agent_run_id"),
             legacy_draft_report_id=_uid("legacy_draft_report_id"),

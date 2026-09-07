@@ -1,3 +1,5 @@
+import asyncio
+import contextlib
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -31,6 +33,13 @@ from app.core.structured_logging import log_event
 # gunicorn on Azure App Service (the root logger is otherwise unconfigured and
 # drops INFO). No secrets are ever configured or logged here.
 configure_logging()
+
+#: How long a shutdown waits for the in-process worker to finish the job in hand.
+#: Deliberately short: a research run is minutes long and a deploy cannot wait it
+#: out, so past this the job is left exactly as it is. Its lease lapses and the
+#: next process reclaims it, which is recovery rather than loss.
+_WORKER_SHUTDOWN_GRACE_S = 5.0
+
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -96,7 +105,68 @@ async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
             "analysis_job_interruption_sweep_failed error_type=%s",
             type(exc).__name__,
         )
-    yield
+
+    worker = await _start_durable_worker()
+    try:
+        yield
+    finally:
+        await _stop_durable_worker(worker)
+
+
+async def _start_durable_worker() -> "tuple[asyncio.Task[None], asyncio.Event] | None":
+    """Start the V3 durable worker in this process, if it is configured to run.
+
+    Returns ``(task, stop_event)`` or None. Failure here never blocks startup:
+    with the flag off this does nothing at all, and with it on a worker that
+    could not start must not take the API down with it — the jobs it would have
+    claimed stay claimable by whatever starts next, which is the property the
+    lease exists to provide.
+
+    An in-process worker is NOT the end state. It makes execution survive a
+    recycle, which is the whole point of the phase, but it leaves CPU-heavy
+    extraction in the API process. Setting ``V3_JOB_WORKER_IN_PROCESS=false`` and
+    running ``python -m app.services.jobs.worker`` elsewhere moves it out with no
+    code change; whether that second process is affordable is OPEN DECISION #2.
+    """
+    if not (settings.v3_durable_jobs_enabled and settings.v3_job_worker_in_process):
+        return None
+    try:
+        from app.services.jobs.worker import run_worker
+
+        stop = asyncio.Event()
+        task = asyncio.create_task(run_worker(stop))
+        log_event(
+            logging.getLogger(__name__),
+            "v3_worker_in_process_started",
+            poll_interval_seconds=settings.v3_job_poll_interval_seconds,
+        )
+        return task, stop
+    except Exception as exc:  # noqa: BLE001 - never block startup
+        logging.getLogger(__name__).warning(
+            "v3_worker_in_process_start_failed error_type=%s", type(exc).__name__
+        )
+        return None
+
+
+async def _stop_durable_worker(
+    worker: "tuple[asyncio.Task[None], asyncio.Event] | None",
+) -> None:
+    """Ask the worker to finish the job in hand and exit.
+
+    Bounded: a shutdown cannot wait out a multi-minute research run, so the job
+    in flight is left exactly as it is once the grace period passes. Its lease
+    lapses and the next process reclaims it — which is recovery, not loss, and is
+    the reason a shutdown must never mark a job failed.
+    """
+    if worker is None:
+        return
+    task, stop = worker
+    stop.set()
+    with contextlib.suppress(asyncio.TimeoutError, asyncio.CancelledError):
+        await asyncio.wait_for(asyncio.shield(task), timeout=_WORKER_SHUTDOWN_GRACE_S)
+    if not task.done():
+        task.cancel()
+    log_event(logging.getLogger(__name__), "v3_worker_in_process_stopped")
 
 
 app = FastAPI(

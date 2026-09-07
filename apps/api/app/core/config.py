@@ -1,3 +1,4 @@
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 #: The ``--timeout`` of the DEPLOYED gunicorn startup command, mirrored here so
@@ -35,6 +36,26 @@ DEPLOYED_GUNICORN_WORKER_TIMEOUT_SECONDS = 300
 DEPLOYED_GUNICORN_WORKERS = 1
 
 
+#: Every setting that carries a credential, named explicitly rather than matched by a
+#: suffix. A `repr()` of a settings object renders each of these unless it is marked
+#: `repr=False`, and pytest renders that object into any failing assertion that mentions
+#: it — which is how a live key reached terminal output twice in this campaign. The
+#: guard test in `tests/test_v3_deepseek_not_release_critical.py` asserts this list and
+#: the actual field metadata agree, so adding a credential without `repr=False` fails
+#: the suite rather than a production log.
+CREDENTIAL_SETTING_FIELDS: frozenset[str] = frozenset(
+    {
+        "database_url",
+        "staging_basic_auth",
+        "eodhd_api_key",
+        "azure_openai_api_key",
+        "openai_api_key",
+        "deepseek_api_key",
+        "azure_document_intelligence_api_key",
+    }
+)
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
@@ -52,8 +73,17 @@ class Settings(BaseSettings):
     # silence per-request logging without touching code.
     request_logging_enabled: bool = True
 
-    database_url: str = (
-        "postgresql+psycopg://investingbuddy:investingbuddy@localhost:5432/investingbuddy"
+    # `repr=False`: this carries the database PASSWORD in every deployed environment.
+    # V3.11.1.2 marked the five `*_api_key` fields non-printing and asserted "every
+    # credential"; review caught that this one and `staging_basic_auth` were still
+    # printed by any `repr(Settings())`. A credential is a credential whatever the
+    # field is called — which is why the guard test matches on the FIELD LIST below,
+    # not on a name suffix.
+    database_url: str = Field(
+        default=(
+            "postgresql+psycopg://investingbuddy:investingbuddy@localhost:5432/investingbuddy"
+        ),
+        repr=False,
     )
 
     # ── Financial Data Provider (Phase 4) ──────────────────────────────────
@@ -63,7 +93,7 @@ class Settings(BaseSettings):
 
     # EODHD credentials — required only when financial_data_provider="eodhd".
     # Never hardcode. Load from Azure Key Vault in production.
-    eodhd_api_key: str = ""
+    eodhd_api_key: str = Field(default="", repr=False)
     eodhd_base_url: str = "https://eodhd.com/api"
 
     # ── Integration Tests (Phase 5) ─────────────────────────────────────────
@@ -75,7 +105,9 @@ class Settings(BaseSettings):
     # When APP_ENV=staging, set this to "username:password" to enable HTTP
     # Basic Auth on all routes (except /health). Leave empty to disable.
     # Store value in Key Vault as 'staging-basic-auth' — never hardcode.
-    staging_basic_auth: str = ""
+    # `repr=False`: literally "username:password", and load-bearing for API access
+    # control on `ib-stg-api`.
+    staging_basic_auth: str = Field(default="", repr=False)
 
     # ── LLM Provider (Phase 7) ──────────────────────────────────────────────
     # Which LLM client to use: "mock" | "azure_openai"
@@ -85,7 +117,7 @@ class Settings(BaseSettings):
     # Azure OpenAI credentials — required only when llm_provider="azure_openai".
     # Never hardcode. Load from Azure Key Vault in staging/production.
     azure_openai_endpoint: str = ""
-    azure_openai_api_key: str = ""
+    azure_openai_api_key: str = Field(default="", repr=False)
     azure_openai_api_version: str = "2024-08-01-preview"
     azure_openai_deployment_name: str = ""
 
@@ -129,7 +161,7 @@ class Settings(BaseSettings):
     llm_council_version: str = "v1"
     # OpenAI-compatible fallback key — required only when llm_provider_council="openai".
     # Never hardcode. Never logged. Never exposed in /health.
-    openai_api_key: str = ""
+    openai_api_key: str = Field(default="", repr=False)
 
     # ── LLM Discovery Council (Phase 28B) ───────────────────────────────────
     # A real, controlled, run-LEVEL LLM council that reviews the whole candidate
@@ -492,6 +524,30 @@ class Settings(BaseSettings):
     # fails to parse and gets misclassified as "scanned, no text layer" rather
     # than "download was cut off". 35 MB comfortably covers real annual-report
     # PDF sizes while staying explicitly bounded (not unbounded).
+    # ── V3.11.1.1: routing DeepSeek needs consent, not just a credential ───── #
+    # A key in `.env` must NOT silently move the research path to another vendor.
+    # Before this flag existed, adding one re-routed Investigator and follow-up work to
+    # DeepSeek with no other change — while every acceptance measurement in the release
+    # candidate report was taken on Azure OpenAI. `V3_DEEPSEEK_SEARCH_ENABLED` is about
+    # the search leg — which DOES exist, on `POST /responses` (V3.11.1.2 corrected
+    # V3.11.1.1's finding that it did not) — and this is about the model leg. Both
+    # default off, and both are enforced in code: routing for the model leg,
+    # `DeepSeekSearchProvider.search` for the search leg.
+    v3_deepseek_model_enabled: bool = False
+
+    # ── V3.11: model prices, as CONFIGURATION ─────────────────────────────── #
+    # Unset by default. An unpriced run reports a cost of None, never 0.0: "we do not
+    # know what this cost" and "this cost nothing" are different statements and only
+    # one of them is true. A price change must never be a code change, so nothing here
+    # ships with a number baked in — the operator supplies the price they are actually
+    # billed, and `v3_price_source` records where it came from so the estimate is
+    # auditable rather than merely plausible.
+    v3_price_usd_per_million_input_tokens: float | None = None
+    v3_price_usd_per_million_output_tokens: float | None = None
+    #: Free-text provenance, e.g. "Azure OpenAI gpt-4.1-mini list price, retrieved
+    #: 2026-09-06". Carried into the run's consumption record beside the estimate.
+    v3_price_source: str = ""
+
     source_document_extraction_max_bytes: int = 35_000_000
     # Per-document fetch timeout budget (seconds).
     source_document_extraction_timeout_seconds: int = 15
@@ -504,9 +560,7 @@ class Settings(BaseSettings):
     source_document_extraction_max_chars_per_excerpt: int = 1200
     # Content types the document fetcher will accept. Anything else is rejected
     # with an honest gap (no partial download).
-    source_document_extraction_allowed_content_types: str = (
-        "application/pdf,text/html,text/plain"
-    )
+    source_document_extraction_allowed_content_types: str = "application/pdf,text/html,text/plain"
 
     # ── LLM council evidence budget (Phase 29B.2) ──────────────────────────
     # A deterministic budgeter compresses the evidence pack before it reaches the
@@ -912,6 +966,327 @@ class Settings(BaseSettings):
     # this is deliberately more conservative than the published ceiling.
     sec_request_min_interval_ms: int = 120
 
+    # ── V3.0: durable job execution ─────────────────────────────────────────
+    # Master switch for the V3 durable job path (durable record + leased worker
+    # instead of a process-local FastAPI BackgroundTask). OFF by default: with it
+    # off nothing reads or writes ``research_jobs`` and every entry point keeps
+    # the V2 behaviour byte-for-byte.
+    #
+    # Slice 1 ships the contract and the table only — nothing consults this flag
+    # yet. It exists now so the migration and the flag land together and the
+    # later slices are pure wiring.
+    v3_durable_jobs_enabled: bool = False
+    # How long a worker's claim on a job lasts before another worker may reclaim
+    # it. Must exceed ``v3_job_heartbeat_seconds`` by enough that a working
+    # worker always renews in time, and must stay well under
+    # ``research_job.stale_after_minutes`` — the lease is the FASTER of the two
+    # abandonment detectors, and a lease longer than the elapsed-time rule would
+    # make it pointless.
+    v3_job_lease_seconds: int = 120
+    # How often a running worker renews its lease. One third of the lease, so two
+    # consecutive missed heartbeats still leave room for a third to land.
+    v3_job_heartbeat_seconds: int = 40
+    # Attempts before a job is dead-lettered. Only TRANSIENT failures consume an
+    # attempt-and-retry; a permanent error fails immediately with attempts left,
+    # because retrying it would spend budget reproducing the same result.
+    v3_job_max_attempts: int = 3
+    # Run the durable worker INSIDE the API process. Only consulted when
+    # ``v3_durable_jobs_enabled`` is also on.
+    #
+    # True is the honest default for the current single-App-Service deployment:
+    # a separate worker App Service is OPEN DECISION #2 and costs money nobody
+    # has approved. An in-process worker is still a real improvement over
+    # ``BackgroundTasks`` — the job row survives a recycle and the NEXT process
+    # reclaims it automatically, which is the whole point — but it does NOT move
+    # CPU-heavy extraction off the API process. Setting this False and running
+    # ``python -m app.services.jobs.worker`` elsewhere does, with no code change.
+    v3_job_worker_in_process: bool = True
+    # How long an idle worker waits before polling for work again.
+    v3_job_poll_interval_seconds: float = 2.0
+
+    # ── V3.0: run consumption telemetry and budgets ─────────────────────────
+    # Persist one ``research_run_consumption`` row per research run. OFF by
+    # default and paired with migration 020: turn it on only where 020 has been
+    # applied. Recording is what UNBLOCKS the budget numbers below — OPEN
+    # DECISION #14 asks for them to be derived from measured live runs rather
+    # than guessed, and nothing measures them today.
+    v3_run_consumption_enabled: bool = False
+
+    # Per-run budget ceilings. 0 means UNBOUNDED, and every one of them defaults
+    # to 0 deliberately: the real numbers are OPEN DECISIONS #13 and #14, both
+    # USER-owned, and inventing a ceiling here would be answering a question that
+    # was asked of somebody else — with the failure mode that a guessed ceiling
+    # silently truncates a legitimate research run.
+    # ── V3.4 Slice 4.11: research-depth presets (ADR-052) ───────────────────
+    # "quick" | "standard" | "deep" | "max". Depth presets, NOT price tiers: no
+    # subscription price is attached to any of them, and MAX takes the highest
+    # bounded limits and is still FINITE. An unrecognised name runs STANDARD —
+    # never the deepest one.
+    v3_research_mode_default: str = "standard"
+
+    # ── V3.4 Slice 4.7: macro observation sources ───────────────────────────
+    # OFF by default. With it off no macro source makes a network call and a
+    # fetch returns `not_configured` — an honest state, never an empty series.
+    # The first live source is the World Bank Indicators API: free, public, no
+    # credential, CC BY 4.0. No subscription is required or implied.
+    v3_macro_sources_enabled: bool = False
+
+    # ── V3.4 Slice 4.10: bounded issuer-site traversal ──────────────────────
+    # OFF by default. A bounded walk of ONE issuer's own site on the existing
+    # guarded fetcher — not a crawler, not a spider, and never a browser. A
+    # JS-gated IR page is recorded as partially inaccessible, which is a research
+    # gap somebody can act on, rather than worked around with a paid service.
+    v3_issuer_traversal_enabled: bool = False
+
+    # ── V3.9: monitoring, watchlists and change detection ───────────────────
+    # OFF by default, and NOTHING SCHEDULES IT. How often to check is OPEN
+    # DECISION #15, user-owned and unresolved: guessing a cadence would answer a
+    # question asked of somebody else and start spending on a path nobody
+    # approved. With the flag off, a detection pass observes nothing and says so.
+    v3_monitoring_enabled: bool = False
+
+    # ── V3.10: the V3 research pipeline at the real front door ──────────────
+    # OFF by default. With it off the company-research entry point behaves
+    # byte-for-byte as it does on `main`. With it on, the V3 pipeline runs
+    # ALONGSIDE the existing assembly and its research state is attached to the
+    # produced report under `source_summary_json["v3_research"]` — the report's
+    # own narrative is still assembled by the existing generator, so every
+    # section, the safety gate, the numeric verification and the frontend are
+    # untouched. A V3 failure must never cost a report the V2 path would have
+    # produced, and it cannot: the pipeline never raises.
+    v3_pipeline_enabled: bool = False
+
+    # The first agent tool that reaches OUTSIDE the platform (`get_recent_filings`).
+    # Gated separately from the tool surface itself, and OFF by default: with it off
+    # the tool returns an honest empty result naming this flag, never a silent zero.
+    v3_filings_tool_enabled: bool = False
+
+    v3_run_max_model_calls: int = 0
+    v3_run_max_model_tokens: int = 0
+    v3_run_max_web_searches: int = 0
+    v3_run_max_documents: int = 0
+    v3_run_max_browser_minutes: float = 0.0
+    v3_run_max_wall_seconds: float = 0.0
+    v3_run_max_external_cost_usd: float = 0.0
+    # ^ These are the OPERATOR'S hard caps, not the run's budget. 0 means "no
+    # opinion"; a non-zero value NARROWS whatever the research mode proposes and
+    # can never widen it. `max_external_cost_usd` is the one ceiling no mode sets,
+    # because money is derived from a price book nobody has filled in and a limit
+    # in a unit the platform cannot measure would stop nothing (ADR-052).
+
+    # Unit prices, in USD. Cost is DERIVED from vendor-neutral units so a price
+    # change is a config change and historical runs stay comparable. All 0 by
+    # default, which yields a cost of NULL — "we do not know what this cost",
+    # never "this cost nothing".
+    v3_price_per_million_input_tokens: float = 0.0
+    v3_price_per_million_output_tokens: float = 0.0
+    v3_price_per_thousand_web_searches: float = 0.0
+    v3_price_per_thousand_url_fetches: float = 0.0
+    v3_price_per_provider_research_run: float = 0.0
+    v3_price_per_thousand_index_queries: float = 0.0
+    v3_price_per_browser_minute: float = 0.0
+
+    # ── V3.1: Research Corpus ───────────────────────────────────────────────
+    # Master switch for the whole corpus: raw-artifact retention, the document/
+    # version records, the parsed representation and corpus search. OFF by
+    # default, and with it off nothing in ``app.services.corpus`` issues a query,
+    # writes a row or stores a byte — the V2 ingestion path is byte-for-byte
+    # unchanged.
+    v3_corpus_enabled: bool = False
+
+    # Which artifact store backs raw-byte retention:
+    #   "none"       — record lineage, store no bytes. The safe default.
+    #   "memory"     — in-process; tests only, never durable.
+    #   "local"      — filesystem under ``v3_artifact_store_local_root``.
+    #   "azure_blob" — the ``investingbuddy-documents`` container that
+    #                  ``infra/azure/modules/storage.bicep`` has provisioned
+    #                  (and left empty) since it was written.
+    # Defaulting to "none" means turning the corpus on does not by itself start
+    # writing bytes anywhere: retention is a second, deliberate decision.
+    v3_artifact_store_backend: str = "none"
+    # Root directory for the "local" backend. Required when that backend is
+    # selected; a relative path is resolved against the process working directory.
+    v3_artifact_store_local_root: str = ""
+    # Blob account URL (https://<account>.blob.core.windows.net) and container for
+    # the "azure_blob" backend. A CONNECTION STRING is deliberately not accepted
+    # anywhere: a connection string is a key, and this repository has already had
+    # one incident where a too-broad query briefly exposed a real one. Credentials
+    # come from managed identity (``DefaultAzureCredential``).
+    v3_artifact_store_account_url: str = ""
+    v3_artifact_store_container: str = "investingbuddy-documents"
+    # Hard ceiling on one stored artifact. The fetch layer already caps a document
+    # far below this (``primary_document_max_download_bytes`` is 8 MB); this exists
+    # so an upstream BUG cannot push an unbounded blob into storage.
+    v3_artifact_max_bytes: int = 32_000_000
+
+    # Days after which a stored artifact's raw BYTES become eligible for deletion.
+    # 0 — the default — means NO TTL is recorded, which reads as "no retention
+    # policy is configured" and never as "keep forever".
+    #
+    # OPEN DECISION #12 (raw page and document retention) is USER-owned and still
+    # open: bytes indefinitely, bytes with a TTL, or text only. Encoding a default
+    # number here would answer it. What ships instead is the primitive — the
+    # column, the policy value and an explicit, callable sweep — so the decision
+    # can be applied later by changing this setting rather than by a migration.
+    # Nothing schedules the sweep; expiry never happens on its own.
+    v3_artifact_retention_days: int = 0
+
+    # Per-block character cap when the corpus captures a document's full parsed
+    # text. A page of an annual report is a few thousand characters; this bounds a
+    # BUG (a parser that returns a whole document as one block), not a policy.
+    v3_corpus_max_page_chars: int = 120_000
+    # Hard ceiling on pages persisted for one derivation. 0 means "every page the
+    # extractor actually opened", which is already bounded upstream by
+    # ``primary_document_max_pdf_pages`` (40) plus the targeted supplemental pass
+    # (12). Raising THAT cap is what a deferred reprocessing run does (Slice 1.7),
+    # from the retained raw bytes and off the live request path.
+    v3_corpus_max_pages_persisted: int = 0
+
+    # Chunking, in CHARACTERS rather than tokens: a character count is exact and
+    # model-independent, where every token estimate is a different vendor's guess.
+    #
+    # The chunker is structural first — it never crosses a section boundary,
+    # prefers to break at a page boundary and then at a paragraph boundary — so
+    # these are the sizes it aims for, not a fixed window it imposes. There is
+    # deliberately no overlap setting: overlap is the patch for fixed-width
+    # splitting cutting through meaning, and a chunker that breaks at paragraph
+    # boundaries does not need it. Two chunks sharing a sentence would produce two
+    # hits for one piece of evidence and a citation that could name either.
+    v3_corpus_chunk_target_chars: int = 1_200
+    v3_corpus_chunk_max_chars: int = 2_000
+    # Below this, a page boundary is not yet worth taking as a break: a chunk that
+    # short is not worth citing on its own.
+    v3_corpus_chunk_min_chars: int = 300
+
+    # ── V3.4 Slice 4.9: the production search backend (ADR-047 / ADR-053) ───
+    # "memory" | "postgres". Default "memory" so nothing reroutes by upgrade —
+    # switching a running system's retrieval is a behaviour change on a live path
+    # and gets the same treatment as every other V3 flag. An unknown name RAISES;
+    # falling back would look like a working search that forgets everything.
+    v3_search_backend: str = "memory"
+    # The semantic leg. OFF, and it is not merely unconfigured: `pgvector` is not
+    # installed on the PostgreSQL this project runs, so without it the semantic
+    # leg is a bounded RERANK of the lexical candidates rather than a
+    # nearest-neighbour search (ADR-053). The lexical leg is independent of this
+    # and is the production path.
+    v3_corpus_semantic_search_enabled: bool = False
+    # How many filtered rows the semantic leg may score without a vector index. A
+    # bound on a Python loop, not a quality knob.
+    v3_corpus_semantic_candidate_limit: int = 500
+    # Which model produced the stored embeddings. EMPTY means none is configured,
+    # and an embedding may not be stored without it: two models' vectors share a
+    # dimension and nothing else, so comparing across them returns a number that
+    # means nothing and raises nothing.
+    v3_corpus_embedding_model: str = ""
+
+    # ── V3.1: reprocessing (the "deep" extraction profile) ──────────────────
+    # How many PDF pages a REPROCESSING run may open, from the retained raw bytes
+    # and off the live request path. 0 — the default — means no deep profile is
+    # configured and reprocessing runs under the same caps as the live path.
+    #
+    # This is deliberately separate from ``primary_document_max_pdf_pages`` (40)
+    # rather than a raise of it. That setting is bounded by the deployed gunicorn
+    # worker timeout, and the two drifted apart once and cost six live outages;
+    # raising it would put every request back under that risk. A reprocessing run
+    # has no request waiting on it and no worker heartbeat at stake, so it can read
+    # the whole document — which is the entire reason the raw bytes are retained.
+    #
+    # The pages a parse was allowed to open are part of what the parse IS, so a
+    # deep run is a SEPARATE derivation (``extraction_profile``) rather than an
+    # overwrite of the live one.
+    v3_corpus_reprocess_max_pdf_pages: int = 0
+    # Wall-clock budget for one deep extraction. Generous on purpose: nothing is
+    # waiting. Never consulted on the live path.
+    v3_corpus_reprocess_timeout_seconds: int = 600
+
+    # ── V3.2: Entity master ─────────────────────────────────────────────────
+    # Master switch for legal-entity / security / listing identity. OFF by
+    # default, and with it off every writer and reader in
+    # ``app.services.entities.master`` returns None (or an empty list) WITHOUT
+    # issuing a query — the same contract ``v3_corpus_enabled`` has. ``companies``
+    # is untouched by this phase either way, so the V2 identity path is
+    # byte-for-byte unchanged.
+    #
+    # Deprecation plan: removed once slice 2.2's backfill is validated and
+    # ``companies.legal_entity_id`` is populated for every row. A flag exists to
+    # make a migration safe, not to become a permanent configuration.
+    v3_entity_master_enabled: bool = False
+
+    # Provider-neutral universe generation (V3.2 Slice 2.5). OFF by default, and
+    # with it off ``build_universe`` in ``market_universe_builder`` is the universe
+    # exactly as it is today — the V2 discovery path is byte-for-byte unchanged.
+    #
+    # With it on, the curated theme registry becomes ONE source among several rather
+    # than the definition of the universe, candidates are de-duplicated by LISTING
+    # identity instead of by ticker string, and every member records which provider
+    # supplied it.
+    #
+    # ``HARD_MAX_UNIVERSE_SIZE`` (50) remains the absolute ceiling either way. A
+    # research run is 261-451s, so an uncontrolled universe is not a slow feature,
+    # it is an outage.
+    v3_universe_providers_enabled: bool = False
+
+    # ── V3.3: Agent tools ───────────────────────────────────────────────────
+    # Master switch for the agent tool surface. OFF by default, and with it off
+    # ``ToolSession.call`` refuses every tool with reason ``disabled`` — recorded,
+    # not silent, because "the tooling was off" is a real explanation for a thin
+    # run and a missing row is not.
+    #
+    # Nothing is wired to an agent in slice 3.1: the flag exists so the surface can
+    # be exercised in tests and validated before any live path reaches it.
+    v3_agent_tools_enabled: bool = False
+
+    # ── V3.4: Provider runtime ──────────────────────────────────────────────
+    # Master switch for the multi-provider runtime. OFF by default; with it off no
+    # provider is consulted and the platform behaves exactly as it does today.
+    v3_provider_runtime_enabled: bool = False
+
+    # Model ROUTING SLOTS. Domain logic names a slot, never a model — `gpt-5.6-sol`
+    # will not be the strongest synthesis model for long, and a codebase with its
+    # name in a council prompt has hard-coded a vendor's release schedule.
+    #
+    # Every slot defaults to EMPTY, which means "unassigned" and degrades to the
+    # deterministic path. Which model fills each is OPEN DECISION #5, user-owned,
+    # and its own recommendation notes that absolute cost is small (~$0.19/report
+    # for a cheap-analyst/strong-Chair split) so the decision is about rate-limit
+    # headroom rather than the bill. Guessing a default would answer a question
+    # asked of somebody else.
+    v3_model_slot_classification_model: str = ""
+    v3_model_slot_cheap_research_model: str = ""
+    v3_model_slot_document_reasoning_model: str = ""
+    v3_model_slot_research_director_model: str = ""
+    # Prefer a DIFFERENT vendor here: a model challenging its own family's output
+    # shares its blind spots, which is most of what a Red Team is for (#7).
+    v3_model_slot_red_team_model: str = ""
+    v3_model_slot_chair_model: str = ""
+    v3_model_slot_deep_research_provider: str = ""
+    v3_model_slot_translation_model: str = ""
+
+    # ── DeepSeek: the PRIMARY external research provider (ADR-048/049) ───────
+    # Approved on pay-as-you-go usage. NEVER hardcode a key; load from Azure Key
+    # Vault in a deployed environment.
+    deepseek_api_key: str = Field(default="", repr=False)
+    # A SERVED model name, verified against `GET /models` on 2026-09-06. The previous
+    # default, `deepseek-chat`, came from documentation and is not served: both
+    # endpoints accept it with a 200 and silently answer as `deepseek-v4-flash`, so
+    # every cost attribution and every benchmark naming it was recording a model that
+    # never ran. Served: deepseek-v4-flash, deepseek-v4-pro, deepseek-v4-flash-vision-exp.
+    deepseek_model: str = "deepseek-v4-flash"
+    deepseek_base_url: str = "https://api.deepseek.com"
+    # The builtin web-search tool on POST /responses, verified live 2026-09-06.
+    # Still configurable — a vendor may rename a builtin — but no longer a guess.
+    deepseek_search_tool_name: str = "web_search"
+    # The output-token ceiling for ONE search request. It bounds what the model WRITES:
+    # pages it opens come back as INPUT tokens, which no request parameter bounds, and
+    # that is where most of an observed ~41k-token request went. `max_tool_calls` is
+    # accepted and ignored (sending 1 still made two calls), so the timeout is the only
+    # other control the API honours. See `app.integrations.deepseek.transport`.
+    deepseek_search_max_output_tokens: int = 4000
+    # Server-side web search. Verified to EXIST as of V3.11.1.2 — and still OFF by
+    # default, because a verified capability is not the same as a decision to spend on
+    # it. A credential is not consent; neither is a working endpoint.
+    v3_deepseek_search_enabled: bool = False
+
     # ── Real OCR: Azure Document Intelligence (Phase 32A Slice 5B.2) ─────────
     # Only ever consulted when ``primary_document_ocr_enabled`` (Slice 5,
     # default False) is also True. With the endpoint left empty (the default),
@@ -921,7 +1296,7 @@ class Settings(BaseSettings):
     # staging/production; managed identity (``DefaultAzureCredential``) is
     # preferred over the API key when both are unset/set respectively.
     azure_document_intelligence_endpoint: str = ""
-    azure_document_intelligence_api_key: str = ""
+    azure_document_intelligence_api_key: str = Field(default="", repr=False)
     # Hard cap for ONE OCR call (submit + poll), carved OUT OF — never added on
     # top of — ``primary_document_total_timeout_seconds`` (45s).
     primary_document_ocr_timeout_seconds: int = 20

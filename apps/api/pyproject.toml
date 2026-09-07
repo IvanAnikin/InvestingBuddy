@@ -66,6 +66,14 @@ ocr = [
     "azure-ai-documentintelligence>=1.0,<2",
     "azure-identity>=1.19,<2",
 ]
+# V3.1 Slice 1.1: the Azure Blob raw-artifact store. RUNTIME ONLY, and only when
+# V3_ARTIFACT_STORE_BACKEND=azure_blob. Deliberately NOT in `dev`: the adapter
+# takes an injected client factory, so its tests use a fake client and the SDK is
+# never imported. CI therefore does not install this and does not need to.
+blob = [
+    "azure-storage-blob>=12.19,<13",
+    "azure-identity>=1.19,<2",
+]
 
 [build-system]
 requires = ["setuptools>=70"]

@@ -162,6 +162,11 @@ class FinalReportResponse(BaseModel):
     # — infrastructure failure exposed separately from the semantic label.
     chair_error_type: str | None = None
 
+    # V3.0 Slice 5 — what this run consumed, in vendor-neutral units. Empty when
+    # the council did not run, which is honest: no council means no model calls,
+    # and the record says which units were measured at all.
+    consumption: dict[str, Any] = Field(default_factory=dict)
+
     # human review checklist
     human_review_checklist: list[HumanReviewChecklistItem] = Field(
         default_factory=list
