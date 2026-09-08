@@ -177,22 +177,74 @@ async def run_v3_research(
     clock = now or time.monotonic
     started = clock()
     outcome = V3ResearchOutcome()
+
+    # `research_tool_calls.research_job_id` is a FOREIGN KEY to `research_jobs.id`, and
+    # the id reaching this function is an **AgentRun** id on BOTH entry points — the V2
+    # background task passes it directly, and the durable handler passes
+    # `content_run_id`, which `store.link_agent_run(ctx.job.id, agent_run_id=...)` names
+    # as the agent run rather than the job. Writing it violated the constraint on the
+    # first tool call, aborted the transaction, and took the V2 report down with it.
+    #
+    # Measured on real PostgreSQL at head 038, before this line existed: 0 tool calls
+    # persisted, 0 findings, and **the V2 report was never written**. The unit suite
+    # runs on SQLite with foreign keys OFF, which is why 6,100 green tests missed it.
+    research_job_id = await _resolve_research_job_id(session, research_job_id, outcome)
+
     try:
-        await _run(
-            session,
-            company,
-            cfg=cfg,
-            outcome=outcome,
-            mode=mode,
-            search_backend=search_backend,
-            routing=routing,
-            research_job_id=research_job_id,
-        )
+        # A SAVEPOINT, so a V3 error that PROPAGATES releases only V3's writes rather
+        # than leaving the shared transaction dirty. It is defence in depth and not the
+        # fix above: measured, a swallowed database error still aborts the outer
+        # transaction, because `except Exception` cannot un-abort one. The rule that
+        # actually protects the report is never writing a broken link in the first
+        # place.
+        async with session.begin_nested():
+            await _run(
+                session,
+                company,
+                cfg=cfg,
+                outcome=outcome,
+                mode=mode,
+                search_backend=search_backend,
+                routing=routing,
+                research_job_id=research_job_id,
+            )
     except Exception as exc:  # noqa: BLE001 - additive work must not fail the report
         outcome.error = type(exc).__name__
         outcome.degraded.append(f"the V3 pipeline raised {type(exc).__name__}")
     outcome.elapsed_seconds = clock() - started
     return outcome
+
+
+async def _resolve_research_job_id(
+    session: Any, research_job_id: uuid.UUID | None, outcome: V3ResearchOutcome
+) -> uuid.UUID | None:
+    """Return the id only if it really names a ``research_jobs`` row.
+
+    An id that does not is dropped rather than written: the column is a link, and a
+    broken link is worth less than no link — it costs the entire transaction, and with
+    it the report the V2 path had already produced.
+    """
+    if research_job_id is None:
+        return None
+    try:
+        from sqlalchemy import select
+
+        from app.models.research_job import ResearchJob
+
+        found = (
+            await session.execute(
+                select(ResearchJob.id).where(ResearchJob.id == research_job_id)
+            )
+        ).scalar_one_or_none()
+    except Exception:  # noqa: BLE001 - never fail a run over a link
+        return None
+    if found is None:
+        outcome.degraded.append(
+            "tool calls are not linked to a durable job row; the id supplied names no "
+            "research_jobs row"
+        )
+        return None
+    return research_job_id
 
 
 async def _run(
