@@ -485,4 +485,60 @@ defect.
 | 20 | Enabling DeepSeek's model leg | `v3_deepseek_model_enabled` (default off) routes Investigator and follow-up work to DeepSeek. The completion contract is **verified**, but no acceptance run has used it, so the cost figures and the three Councils in the report would no longer describe what runs. Needs its own acceptance slice. |
 | 21 | **Rotate the validation key** — now for **two** reasons | (a) V3.11.1.1: the key reached terminal output through a dataclass `repr` before that was fixed. (b) V3.11.1.2: a live test failed on an assertion about an *innocent* field and pytest rendered the whole `Settings` object into the diff, key included. Both leak paths are now closed at the type — a named `CREDENTIAL_SETTING_FIELDS` list, every member `Field(repr=False)`, with tests that the list is complete and has not drifted. Review caught the first attempt covering only `*_api_key`, leaving `database_url` (the DB password) and `staging_basic_auth` printing. Nothing was ever committed — the real key appears in no tracked file. **It should still be rotated.** |
 | 22 | ~~The `ResearchLead` path has no producer~~ **— CLOSED by V3.12, on real data**. It is wired and demonstrated: 5 of the last 6 live MRNA runs promoted external evidence into ledger findings — every non-promotion a correct refusal — and an 8-case negative acceptance minted exactly 1. What replaces it is narrower and recorded in the slice: **scope is unchecked on this path**, and promotion is provider-dependent. *(Historical note, kept because the campaign was wrong twice: V3.11.1.1 said the role could never be staffed; V3.11.1.2 said it was staffable and unstaffed.)* | — |
-| 23 | **V3 has no deterministic forbidden-language backstop** | V2's report generator scans its output with `safety_terms`; nothing under `services/director`, `services/agents` or `services/pipeline` does. V3.12 makes this matter: untrusted open-web prose now reaches the Investigator's prompt and thence its findings, and the only control is a model instruction. Not a regression — V3 is undeployed and not product-facing — but it should be a **required gate before any V3 output reaches a reader**. Surfaced by the V3.12 security review. |
+| 23 | ~~**V3 has no deterministic forbidden-language backstop**~~ **— DECIDED by the user 2026-09-08: accepted, not implemented.** | See the record below. |
+
+
+---
+
+## Decision #23 — resolved by the user, 2026-09-08
+
+**The decision.** The user has decided that a deterministic forbidden-language /
+recommendation-language backstop over V3 output is **not required** for V3 activation. It
+is not to be implemented now, and it is not to be raised again as a release blocker.
+
+**What that accepts, stated plainly.** The review that raised #23 said the backstop
+"should be a required gate before any V3 output reaches a reader", and noted the risk was
+theoretical only because V3 was undeployed. **V3.13 removes that qualifier**: the V3
+Research panel puts V3 findings, the Chair's synthesis and external lead claims in front
+of a reader on `/research/reports/[id]`.
+
+The mechanism is worth stating exactly, because "V3 has no gate" is not quite right:
+
+* V2's safety gate is `final_report_generator._validate_safety`, and it scans
+  `report_content` — the sections of `content_markdown`.
+* The V3 payload is attached to `source_summary_json["v3_research"]`, a different
+  column. The gate never reads it.
+* So V3 text reaches the reader without passing a deterministic scan, while every V2
+  section on the same page has passed one.
+
+**What still constrains V3 output**, so the accepted risk is described at its real size
+rather than its worst-case one:
+
+* The Chair's vocabulary is enforced after the fact — a label outside the closed set is
+  rejected, and `deterministic_verdict` cannot emit one at all.
+* A finding may only cite ids the tools returned, so open-web prose cannot enter the
+  ledger as evidence; it enters as a `ResearchLead`, and the panel labels an unverified
+  lead "Provider claim only".
+* The V2 report above the panel is unchanged and still gated.
+
+**What is genuinely unguarded**, enumerated against what the panel actually renders
+rather than from memory — the first draft of this list was short by two, and a risk
+record that understates its own surface is worse than none:
+
+| Surface | Origin |
+|---|---|
+| finding `statement` | model prose |
+| chair `synthesis` | model prose |
+| gap `description` and `why_it_matters` | model prose |
+| chair `open_questions` | model prose |
+| lead `claim` | **vendor prose, derived from open-web pages** |
+| council `refusal_detail`, lead `detail` | platform templates — bounded, listed for completeness |
+
+A recommendation phrased in any of the first five would reach the page. `mechanism` is
+parsed but not rendered, so the panel's surface is narrower than the parser's.
+
+**The cheapest future closure**, recorded so the decision can be revisited without
+re-deriving it: `safety_terms.scan_value(outcome.to_dict())` in `attach_to_report`,
+which is one call at a single choke point every V3 payload already passes through. It is
+not implemented, by decision.
+

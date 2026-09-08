@@ -1743,6 +1743,260 @@ function scopeCouncilAgent(name, claims, implications, summary) {
   };
 }
 
+// V3 research state, attached to a report exactly as the V3 pipeline attaches it:
+// additively, under `source_summary_json.v3_research`, beside the V2 council block the
+// report's own narrative is still assembled from.
+//
+// The payload below is shaped from the real `V3ResearchOutcome.to_dict()`, and it
+// deliberately carries the case the provenance rule exists for: THREE provider leads,
+// of which exactly ONE was retrieved by InvestingBuddy and survived verification. The
+// other two must never render as sources.
+const V3_REPORT_ID = "00000000-0000-0000-0000-0000000000e3";
+
+function mockV3Report(id) {
+  const base = mockCouncilReport(id);
+  base.title =
+    "LLM Council Analysis Draft — IBTEST — V3 Research Test Issuer [MOCK DATA]";
+  base.source_summary_json = {
+    ...base.source_summary_json,
+    v3_research: {
+      research_run_id: "3f1c9a6e-0000-4000-8000-000000000a1b",
+      mode: "standard",
+      playbook_versions: { biotech_clinical: 1 },
+      routing: {
+        slots: {
+          investigator: {
+            slot: "investigator",
+            vendor: "azure_openai",
+            reason: "configured",
+          },
+          chair: { slot: "chair", vendor: "azure_openai", reason: "configured" },
+        },
+        red_team_shares_vendor_with_chair: true,
+      },
+      loop: {
+        stopped_by: "all_questions_resolved",
+        stopped_by_a_limit: false,
+        is_complete_analysis: true,
+        rounds: 2,
+        tasks_run: 6,
+        tool_calls: 14,
+        findings: 4,
+        gaps_open: 1,
+        gaps_accepted: 0,
+        open_question_keys: ["pipeline_readouts_next_12m"],
+        blocking_open_question_keys: [],
+        council_may_convene: true,
+        elapsed_seconds: 61.2,
+        fabricated_citations_discarded: 1,
+      },
+      council: {
+        research_run_id: "3f1c9a6e-0000-4000-8000-000000000a1b",
+        convened: true,
+        refusal_reason: null,
+        refusal_detail: null,
+        finding_count: 4,
+        verified_finding_count: 3,
+        gap_count: 1,
+        disagreement_count: 1,
+        unresolved_disagreement_count: 0,
+        open_question_keys: ["pipeline_readouts_next_12m"],
+        playbook_versions: { biotech_clinical: 1 },
+        truncated: {},
+      },
+      challenges: {
+        challenges: 3,
+        resolved: 2,
+        partially_resolved: 0,
+        unresolved: 1,
+        withdrawn_findings: 1,
+        confidence_lowered: 1,
+        disagreements_created: 1,
+        skipped_unchallengeable: [],
+        discarded_unknown_targets: 0,
+      },
+      chair: {
+        label: "requires_more_evidence",
+        fundamental_setup: "mixed",
+        synthesis:
+          "Three findings survived challenge. The revenue trajectory is established from the issuer's own filing; the pipeline question remains open.",
+        key_points: [
+          {
+            text: "Product revenue declined year over year.",
+            finding_id: "aaaaaaaa-0000-4000-8000-000000000001",
+            evidence_ids: ["ev:x:abc1234567890abc"],
+          },
+        ],
+        open_questions: ["pipeline_readouts_next_12m"],
+        unresolved_disagreement_ids: [],
+        deterministic_fallback: false,
+        discarded_citations: [],
+      },
+      findings: [
+        {
+          finding_id: "aaaaaaaa-0000-4000-8000-000000000001",
+          statement: "Product revenue declined year over year in the latest quarter.",
+          mechanism: "Lower COVID-19 vaccine volumes.",
+          direction: "negative",
+          confidence: "high",
+          evidence_ids: ["ev:x:abc1234567890abc"],
+          calculation_ids: [],
+          period_key: "2026-Q2",
+          scope_key: "group",
+          originating_role: "external_research_analyst",
+          verification_status: "verified",
+        },
+        {
+          finding_id: "aaaaaaaa-0000-4000-8000-000000000002",
+          statement: "Cash and investments cover more than two years of operations.",
+          mechanism: null,
+          direction: "positive",
+          confidence: "medium",
+          evidence_ids: ["ev:doc:9f8e7d6c"],
+          calculation_ids: ["calc:runway:1"],
+          period_key: "2026-Q2",
+          scope_key: "group",
+          originating_role: "financial_analyst",
+          verification_status: "verified",
+        },
+      ],
+      gaps: [
+        {
+          gap_id: "bbbbbbbb-0000-4000-8000-000000000001",
+          gap_type: "no_source_found",
+          description: "No disclosed timeline for the next pipeline readout.",
+          why_it_matters:
+            "The near-term catalyst set cannot be assessed without it.",
+          status: "open",
+          closable: false,
+        },
+      ],
+      external_research: {
+        leads_discovered: 3,
+        leads_by_status: { verified: 1, rejected: 2 },
+        leads_rejected_by_reason: { value_mismatch: 1, source_not_permitted: 1 },
+        sources_retrieved_by_investingbuddy: 2,
+        evidence_promoted: 1,
+        note:
+          "Provider claims and what InvestingBuddy did with them. A lead is NOT evidence: only a row with an evidence_id was retrieved and verified against bytes this platform fetched itself.",
+        leads: [
+          {
+            provider: "deepseek",
+            model: "deepseek-v4-flash",
+            claim: "Total revenue was $145 million for the second quarter of 2026.",
+            url: "https://www.sec.gov/Archives/edgar/data/1682852/exhibit991.htm",
+            status: "verified",
+            rejection_reason: null,
+            detail: null,
+            claimed_value: "145",
+            claimed_period: "2026-Q2",
+            claimed_scope: null,
+            period_verified: true,
+            scope_verified: false,
+            host: "www.sec.gov",
+            fetched_url:
+              "https://www.sec.gov/Archives/edgar/data/1682852/exhibit991.htm",
+            content_hash: "a1b2c3d4e5f60718",
+            evidence_id: "ev:x:abc1234567890abc",
+            is_canonical_evidence: true,
+          },
+          {
+            claim: "The company reported $8,675 million in cash.",
+            status: "rejected",
+            rejection_reason: "value_mismatch",
+            detail:
+              "The retrieved document states 8,650; the claimed 8,675 does not appear.",
+            claimed_value: "8675",
+            claimed_period: "2026-Q2",
+            claimed_scope: null,
+            period_verified: true,
+            scope_verified: false,
+            host: "www.sec.gov",
+            fetched_url:
+              "https://www.sec.gov/Archives/edgar/data/1682852/10q.htm",
+            content_hash: "f0e1d2c3b4a59687",
+            evidence_id: null,
+            is_canonical_evidence: false,
+          },
+          {
+            claim: "An analyst note projects a return to growth in 2027.",
+            status: "rejected",
+            rejection_reason: "source_not_permitted",
+            detail: "The host is not an allowed source class.",
+            claimed_value: null,
+            claimed_period: "2027",
+            claimed_scope: null,
+            period_verified: null,
+            scope_verified: null,
+            host: "example-research-blog.com",
+            fetched_url: null,
+            content_hash: null,
+            evidence_id: null,
+            is_canonical_evidence: false,
+          },
+        ],
+      },
+      consumption: {
+        tool_calls: 14,
+        tasks_run: 6,
+        rounds: 2,
+        web_search_calls: 2,
+        url_fetch_calls: 5,
+        documents_fetched: 2,
+        provider_model_calls: 2,
+        provider_input_tokens: 27136,
+        provider_output_tokens: 3086,
+        provider_cached_tokens: 22656,
+        elapsed_seconds: 61.2,
+        findings_total: 4,
+        findings_withdrawn_by_red_team: 1,
+        verified_useful_findings: 3,
+        gaps_open: 1,
+        model: {
+          model_input_tokens: 41288,
+          model_output_tokens: 5120,
+          model_calls: 9,
+        },
+        model_by_vendor: {
+          azure_openai: { calls: 9, input: 41288, output: 5120 },
+        },
+        estimated_cost_usd: null,
+        unpriced_units: ["model_input_tokens", "model_output_tokens"],
+        cost_per_verified_useful_finding: null,
+        cost_is_unknown_because:
+          "No price list is configured, so this run is unpriced. Unpriced is never zero.",
+      },
+      delta: {
+        company_id: null,
+        from_run_id: "3f1c9a6e-0000-4000-8000-00000000aaaa",
+        to_run_id: "3f1c9a6e-0000-4000-8000-000000000a1b",
+        is_first_run: false,
+        unchanged_core_thesis: false,
+        new_evidence: [],
+        changed_facts: [],
+        resolved_questions: [],
+        new_gaps: [],
+        closed_gaps: [],
+        invalidated_findings: [],
+        counts: {
+          new_evidence: 2,
+          changed_facts: 1,
+          resolved_questions: 3,
+          new_gaps: 1,
+          closed_gaps: 2,
+          invalidated_findings: 0,
+        },
+      },
+      elapsed_seconds: 63.418,
+      degraded: [],
+      error: null,
+      note:
+        "V3 research state, recorded beside the report. The report's narrative is assembled by the existing generator; this is the ledger, the council's verdict and the Red Team's challenges, with citable ids.",
+    },
+  };
+  return base;
+}
+
 function mockScopeReport(id) {
   const base = mockReport(id);
   base.title =
@@ -2947,6 +3201,9 @@ const server = createServer((req, res) => {
     }
     if (rid === SCOPE_REPORT_ID) {
       return send(res, 200, mockScopeReport(rid));
+    }
+    if (rid === V3_REPORT_ID) {
+      return send(res, 200, mockV3Report(rid));
     }
     if (rid === LEGACY_TECH_REPORT_ID) {
       return send(res, 200, mockLegacyTechnicalReport(rid));

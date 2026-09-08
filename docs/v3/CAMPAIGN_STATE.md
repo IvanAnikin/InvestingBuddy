@@ -51,13 +51,18 @@ enabling a V3 flag in production, deleting V2 compatibility or either V2 ref.
 
 | Item | Value |
 |---|---|
-| `develop/v3` HEAD | **`a2f0f4f`** (V3.12 merged 2026-09-07), ahead of `origin/develop/v3` (`fd82d3d`), unpushed |
+| `main` HEAD | **`5826f61`** — V3 merged and **dark-deployed** 2026-09-08 |
+| `develop/v3` HEAD | **`3494a59`** (V3.12.1 CI corrective), merged to `main` |
 | Alembic head in source | **038** (`038_add_monitoring`) |
-| Alembic head in the deployed database | **018** — and V3 migrations 019-038 have reached **no** deployed environment |
-| Alembic head in the local dev database | **018** (unchanged by V3 work; scratch databases only) |
-| Current phase | **V3.11 production hardening complete.** V3.0-V3.11 all `IMPLEMENTED`; all four V3.10 blockers closed; the recommendation is **`READY FOR USER ACCEPTANCE / MAIN PROMOTION REVIEW`** — see [V3_RELEASE_CANDIDATE_REPORT.md §12](V3_RELEASE_CANDIDATE_REPORT.md#12-recommendation) |
-| Current slice | none — awaiting user acceptance |
-| Deployed | **Nothing.** `main` at `4b60e07` is the deployed product. |
+| Alembic head in the deployed database | **038** — migrated 2026-09-08 while V2 code was still deployed, per the verified ordering |
+| Current phase | **V3.13 — web observability and controlled activation.** Branch `feature/v3-web-observability` |
+| Current slice | [V3.13](slices/V3.13-web-observability-and-activation.md) |
+| Deployed | **V3 code is live and dark.** API `/health` returns `commit_sha=5826f61` (verified 2026-09-08). Every `V3_*` flag is **absent** from the App Service configuration, so all take their code default of off. |
+
+**Verified, not assumed, 2026-09-08:** `az webapp config appsettings list -g ib-stg-rg -n
+ib-stg-api --query "[].name"` returns **no** `V3_*` setting and **no** `DEEPSEEK_API_KEY`.
+The dark deployment is genuinely dark: the V3 code paths exist in the deployed image and
+none of them can execute.
 
 Working tree at campaign start also held two untracked files —
 `docs/DATA_SOURCE_INVENTORY.md` / `.xlsx`. They are
@@ -462,7 +467,15 @@ Carried forward, all still true:
 
 ## Next executable action
 
-**None. The campaign is complete and awaiting user acceptance.**
+**V3.13 — web observability, then controlled activation.** The user has authorised
+production V3 activation with two decisions recorded: OPEN DECISION #23 is accepted and
+not implemented, and budget enforcement is not built (telemetry stays on).
+
+The finding that made this slice necessary: with `V3_PIPELINE_ENABLED=true` and nothing
+else changed, **a reader would have seen nothing**. `attach_to_report` writes the entire
+V3 result to `source_summary_json["v3_research"]`; the frontend read that column for one
+key, `llm_council`, and never for `v3_research`. The payload persisted and was silently
+ignored. Observability ships and deploys *before* activation for that reason.
 
 Read [V3_RELEASE_CANDIDATE_REPORT.md](V3_RELEASE_CANDIDATE_REPORT.md) — §11 is the V3.11
 production hardening and §12 is the recommendation, which is **`READY FOR USER ACCEPTANCE /

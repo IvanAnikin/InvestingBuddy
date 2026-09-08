@@ -111,6 +111,11 @@ class V3ResearchOutcome:
     findings: list[dict[str, Any]] = field(default_factory=list)
     gaps: list[dict[str, Any]] = field(default_factory=list)
     consumption: dict[str, Any] = field(default_factory=dict)
+    #: What the EXTERNAL research path did, if it ran. Summarised from the
+    #: `research_leads` rows this run wrote — the provenance a reader needs in order to
+    #: tell a claim InvestingBuddy verified from one a vendor merely asserted. Empty
+    #: when no external tool was used.
+    external_research: dict[str, Any] = field(default_factory=dict)
     elapsed_seconds: float = 0.0
     #: Why the run produced less than a full one. Never empty on a degraded run: a
     #: pipeline that narrowed silently is one nobody can widen.
@@ -135,6 +140,7 @@ class V3ResearchOutcome:
             "findings": list(self.findings),
             "gaps": list(self.gaps),
             "consumption": dict(self.consumption),
+            "external_research": dict(self.external_research),
             "elapsed_seconds": round(self.elapsed_seconds, 3),
             "degraded": list(self.degraded),
             "error": self.error,
@@ -381,10 +387,133 @@ async def _run(
             outcome.delta = delta.to_dict()
 
     summary = await ledger.summarise(session, run)
+    tool_units = await _tool_call_consumption(session, run, company)
+    outcome.external_research = await _external_research(session, run, company)
     outcome.consumption = _consumption(
-        model_routing, loop_result, summary, verdict, challenge_result, cfg
+        model_routing, loop_result, summary, verdict, challenge_result, cfg, tool_units
     )
     await session.flush()
+
+
+async def _rows_for_this_run(session: Any, run: Any, company: Any, model: Any) -> list[Any]:
+    """Rows of ``model`` this run wrote, for the company under research.
+
+    Correlated by company plus the run's own start time. Neither `research_tool_calls`
+    nor `research_leads` carries a `research_runs` id — their job FK points at
+    `research_jobs`, which is a different id space and is null on a non-durable run —
+    so the window is what identifies them. Recorded plainly because it is an
+    approximation: two runs for one company started within the same instant would
+    overlap, which the front door does not permit today.
+    """
+    from sqlalchemy import select
+
+    started = getattr(run, "started_at", None)
+    stmt = select(model).where(model.company_id == company.id)
+    if started is not None:
+        stmt = stmt.where(model.created_at >= started)
+    try:
+        return list((await session.execute(stmt)).scalars().all())
+    except Exception:  # noqa: BLE001 - telemetry must never end a run
+        return []
+
+
+async def _tool_call_consumption(session: Any, run: Any, company: Any) -> dict[str, int]:
+    """Units the TOOLS spent, summed from the rows the session already wrote.
+
+    `documents_fetched` was hardcoded to 0 and web searches were not reported at all,
+    so the single most expensive thing a V3 run can do — reach a vendor and fetch pages
+    — was invisible in the run's own consumption record. The numbers existed the whole
+    time, one table away, in `research_tool_calls.consumption_json`.
+    """
+    from app.models.research_tool_call import ResearchToolCall
+
+    totals: dict[str, int] = {}
+    for row in await _rows_for_this_run(session, run, company, ResearchToolCall):
+        for unit, value in (row.consumption_json or {}).items():
+            if isinstance(value, int | float):
+                totals[unit] = totals.get(unit, 0) + int(value)
+    return totals
+
+
+async def _external_research(session: Any, run: Any, company: Any) -> dict[str, Any]:
+    """The external path's provenance: what was claimed, what we fetched, what survived.
+
+    Every lead is listed with its outcome, because a rejected lead is a research fact —
+    the count of them per provider is what `verification_survival_rate` is computed
+    from, and hiding them would present a vendor as more reliable than it is.
+
+    A lead appears here whatever its status. **Only a `verified` one carries an
+    evidence id**, and the payload says so per row rather than relying on the reader to
+    infer it, so nothing here can be mistaken for canonical Evidence.
+    """
+    from app.models.research_lead import ResearchLeadRecord
+
+    leads = await _rows_for_this_run(session, run, company, ResearchLeadRecord)
+    if not leads:
+        return {}
+
+    by_status: dict[str, int] = {}
+    by_reason: dict[str, int] = {}
+    for lead in leads:
+        by_status[lead.status] = by_status.get(lead.status, 0) + 1
+        if lead.rejection_reason:
+            by_reason[lead.rejection_reason] = by_reason.get(lead.rejection_reason, 0) + 1
+
+    def _host(url: str | None) -> str | None:
+        from urllib.parse import urlsplit
+
+        try:
+            return (urlsplit(url or "").hostname or "").lower() or None
+        except ValueError:
+            return None
+
+    return {
+        "leads_discovered": len(leads),
+        "leads_by_status": by_status,
+        "leads_rejected_by_reason": by_reason,
+        # Retrieved means WE HOLD THE BYTES, and the hash is the only proof of that.
+        #
+        # An earlier version also counted several rejection reasons, on the theory that
+        # a gate which compared a claim against a document must have read one. That is
+        # true of `value_mismatch` and its siblings — and they carry the hash anyway, so
+        # the clause bought nothing — but it also counted `url_unreachable`, which is
+        # set precisely when the fetch came back with nothing usable. So the one reason
+        # the clause actually changed was the one where no retrieval happened, and the
+        # panel reported it to a reader as "InvestingBuddy retrieved N sources itself".
+        "sources_retrieved_by_investingbuddy": sum(
+            1 for lead in leads if lead.fetched_content_hash
+        ),
+        "evidence_promoted": sum(1 for lead in leads if lead.promoted_evidence_id),
+        "leads": [
+            {
+                "provider": lead.provider,
+                "model": lead.model,
+                "claim": (lead.claim_text or "")[:400],
+                "url": lead.claimed_source_url,
+                "host": _host(lead.claimed_source_url),
+                "status": lead.status,
+                "rejection_reason": lead.rejection_reason,
+                "detail": (lead.rejection_detail or "")[:300] or None,
+                "claimed_value": lead.claimed_value,
+                "claimed_period": lead.claimed_period,
+                "claimed_scope": lead.claimed_scope,
+                "period_verified": bool(lead.period_verified),
+                "scope_verified": bool(lead.scope_verified),
+                "fetched_url": lead.fetched_url,
+                "content_hash": (lead.fetched_content_hash or "")[:16] or None,
+                # The load-bearing field. Present only on a verified lead, and only a
+                # lead with one contributed anything a finding may cite.
+                "evidence_id": lead.promoted_evidence_id,
+                "is_canonical_evidence": bool(lead.promoted_evidence_id),
+            }
+            for lead in leads[:40]
+        ],
+        "note": (
+            "Provider claims and what InvestingBuddy did with them. A lead is NOT "
+            "evidence: only a row with an evidence_id was retrieved and verified "
+            "against bytes this platform fetched itself."
+        ),
+    }
 
 
 def _consumption(
@@ -394,6 +523,7 @@ def _consumption(
     verdict: ChairVerdict,
     challenge_result: Any,
     cfg: Any = None,
+    tool_units: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     """What the run actually consumed, and what it produced that was worth consuming it.
 
@@ -452,7 +582,18 @@ def _consumption(
         "tool_calls": loop_result.tool_calls,
         "tasks_run": loop_result.tasks_run,
         "rounds": len(loop_result.rounds),
-        "documents_fetched": 0,
+        # Summed from the tool-call rows, not assumed. These were the run's most
+        # expensive units and the record reported none of them.
+        "web_search_calls": (tool_units or {}).get("web_search_calls", 0),
+        "url_fetch_calls": (tool_units or {}).get("url_fetch_calls", 0),
+        "documents_fetched": (tool_units or {}).get("documents_downloaded", 0),
+        # The provider legs' own token spend. The external research provider is NOT a
+        # routing slot, so its tokens never reached `model_by_vendor` — a search that
+        # spent 27k input tokens was recorded as costing nothing.
+        "provider_model_calls": (tool_units or {}).get("model_calls", 0),
+        "provider_input_tokens": (tool_units or {}).get("model_input_tokens", 0),
+        "provider_output_tokens": (tool_units or {}).get("model_output_tokens", 0),
+        "provider_cached_tokens": (tool_units or {}).get("cached_tokens", 0),
         "elapsed_seconds": round(loop_result.elapsed_seconds, 3),
         "findings_total": summary.findings_total,
         "findings_withdrawn_by_red_team": challenge_result.withdrawn_findings,

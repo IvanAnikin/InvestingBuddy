@@ -13,6 +13,7 @@ import RedTeam from "@/components/research/report/RedTeam";
 import ResilienceExposure from "@/components/research/report/ResilienceExposure";
 import ResearchConfidence from "@/components/research/report/ResearchConfidence";
 import ResearchCouncil from "@/components/research/report/ResearchCouncil";
+import V3ResearchPanel from "@/components/research/report/V3ResearchPanel";
 import NarrativeSection from "@/components/research/NarrativeSection";
 import ReportHeader from "@/components/research/ReportHeader";
 import ResearchStatusBadge, {
@@ -32,6 +33,7 @@ import {
   reconcileCouncilNumbers,
 } from "@/components/research/reportSections";
 import { readServerVerification } from "@/components/research/numericConsistency";
+import { readV3Research } from "@/components/research/v3Research";
 import {
   buildResearchLinkState,
   NO_RESEARCH_LINK,
@@ -129,6 +131,10 @@ export default async function ResearchReportPage({
   ]);
 
   const council = readCouncilMetadata(report.source_summary_json);
+  // The V3 research layer, when it ran. `null` for every report written before V3 and
+  // every report written with the pipeline flag off — which is what keeps the existing
+  // report rendering byte-for-byte unchanged.
+  const v3 = readV3Research(report.source_summary_json);
   const view = buildResearchReportView(report, council);
   // Council prose and the canonical figures are two representations of the
   // same facts. Where they disagree the sentence is withheld and said to
@@ -247,6 +253,10 @@ export default async function ResearchReportPage({
               title="Report content"
             />
           )}
+          {/* A V3 run attaches to the report regardless of whether the V2 generator
+              produced structured content, so it must be reachable from this branch
+              too — otherwise the research would exist and be unreadable. */}
+          <V3ResearchPanel v3={v3} />
         </>
       ) : (
         <>
@@ -383,6 +393,11 @@ export default async function ResearchReportPage({
           />
 
           <OpenQuestions questions={investor.openQuestions} />
+
+          {/* 8b. The V3 research layer, when it ran. Placed after the V2 council and
+                 before the confidence section because it IS research state, not a
+                 conclusion — the narrative above is still assembled by V2. */}
+          <V3ResearchPanel v3={v3} />
 
           {/* 9. How far the evidence goes. */}
           <ResearchConfidence
