@@ -344,15 +344,22 @@ async def _fetch_public_source(
 
     if session is not None:
         try:
-            await persist_lead(
-                session,
-                lead,
-                outcome,
-                company_id=context.company_id,
-                legal_entity_id=context.legal_entity_id,
-                subject=subject,
-                promoted_evidence_id=minted,
-            )
+            # A SAVEPOINT, because the bare `except` below is otherwise a trap: a
+            # database error here aborts the whole transaction, and swallowing the
+            # exception leaves the caller to discover it at commit — by which point the
+            # V2 report is lost too. That is not hypothetical; it is exactly how the
+            # `research_job_id` foreign key destroyed the report before V3.13.1. The
+            # savepoint means a failed record costs the record and nothing else.
+            async with session.begin_nested():
+                await persist_lead(
+                    session,
+                    lead,
+                    outcome,
+                    company_id=context.company_id,
+                    legal_entity_id=context.legal_entity_id,
+                    subject=subject,
+                    promoted_evidence_id=minted,
+                )
         except Exception:  # noqa: BLE001 - the decision stands even if the record fails
             pass
 

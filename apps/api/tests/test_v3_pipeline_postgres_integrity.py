@@ -246,3 +246,68 @@ class TestAV3FailureNeverCostsTheReport:
                 )
             ).scalar_one()
         assert linked > 0, "a valid job id must still be written to the link column"
+
+
+@requires_postgres
+class TestASwallowedRecordFailureCostsOnlyTheRecord:
+    """`_fetch_public_source` records a lead inside `try: ... except: pass`.
+
+    A bare except around a database write is a trap: PostgreSQL aborts the transaction
+    on the error, the exception is swallowed, and the caller discovers it at commit —
+    by which point the V2 report is gone too. That is not hypothetical, it is precisely
+    how `research_job_id` destroyed the report. The write is wrapped in a SAVEPOINT so a
+    failed record costs the record and nothing else.
+    """
+
+    async def test_a_failing_lead_insert_does_not_take_the_report_with_it(
+        self, pg
+    ) -> None:  # noqa: ANN001
+        from sqlalchemy import text
+
+        from app.models.report import Report
+
+        company_id, _ = await _company_and_agent_run(pg)
+        report_id = uuid.uuid4()
+
+        async with pg() as session:
+            session.add(
+                Report(
+                    id=report_id,
+                    company_id=company_id,
+                    title="report beside a failing lead insert",
+                    slug=f"v2-{uuid.uuid4().hex[:8]}",
+                    report_type="company_analysis",
+                    content_markdown='{"executive_summary": {"company_name": "x"}}',
+                    status="draft",
+                )
+            )
+            await session.flush()
+
+            # A lead row that CANNOT be inserted: its company_id names no company, so
+            # the foreign key rejects it — the same shape as the real defect.
+            try:
+                async with session.begin_nested():
+                    await session.execute(
+                        text(
+                            "INSERT INTO research_leads "
+                            "(id, company_id, provider, claim_text, status, created_at) "
+                            "VALUES (:i, :c, 'deepseek', 'x', 'rejected', now())"
+                        ),
+                        {"i": uuid.uuid4(), "c": uuid.uuid4()},
+                    )
+            except Exception:  # noqa: BLE001 - exactly what the caller does
+                pass
+
+            await session.commit()
+
+        async with pg() as session:
+            rows = (
+                await session.execute(
+                    text("SELECT count(*) FROM reports WHERE id = :i"), {"i": report_id}
+                )
+            ).scalar_one()
+
+        assert rows == 1, (
+            "the report was lost to a failed lead insert — the savepoint is what stops "
+            "a swallowed database error from poisoning the shared transaction"
+        )
