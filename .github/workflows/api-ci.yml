@@ -20,6 +20,26 @@ jobs:
       run:
         working-directory: apps/api
 
+    # The unit suite runs on SQLite with foreign keys OFF. That is not a detail: it is
+    # why a defect that would have ended every company research run with no report
+    # survived 6,100 green tests and reached the eve of a production activation.
+    # `research_tool_calls.research_job_id` is a FOREIGN KEY, the id written to it was
+    # from a different table, and only a database that enforces constraints can say so.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: ib_v3_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
       - uses: actions/checkout@v4
 
@@ -35,5 +55,14 @@ jobs:
       - name: Lint (ruff)
         run: ruff check .
 
+      - name: Migrate the integrity database to head
+        env:
+          DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/ib_v3_ci
+        run: alembic upgrade head
+
       - name: Run tests
+        env:
+          # Enables the PostgreSQL integrity tests, which SKIP without it. A guard that
+          # never runs is not a guard.
+          V3_TEST_POSTGRES_URL: postgresql+psycopg://postgres:postgres@localhost:5432/ib_v3_ci
         run: pytest tests/ -v
