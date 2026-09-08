@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import json
 import pathlib
+import re
 import sys
 import uuid
 from typing import Any
@@ -96,17 +97,37 @@ async def _generate() -> dict[str, Any]:
     return payload
 
 
+_UUID_RE = re.compile(
+    r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b", re.I
+)
+
+
+def _pin(value: Any, ids: dict[str, str]) -> Any:
+    """Replace every generated id and elapsed time with a stable stand-in.
+
+    Without this, regenerating rewrites forty random UUIDs and the diff says nothing.
+    The fixture exists to pin the SHAPE, so the diff has to show shape changes and
+    nothing else — otherwise the next person skims past a renamed key.
+
+    Ids are numbered in first-seen order, so a stable payload gives a stable file and
+    an id that MOVES still shows up.
+    """
+    if isinstance(value, dict):
+        return {k: _pin(v, ids) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_pin(v, ids) for v in value]
+    if isinstance(value, float):
+        # Every float in this payload is a duration.
+        return 0.0
+    if isinstance(value, str) and _UUID_RE.fullmatch(value):
+        if value not in ids:
+            ids[value] = f"00000000-0000-4000-8000-{len(ids) + 1:012d}"
+        return ids[value]
+    return value
+
+
 def main() -> int:
-    payload = asyncio.run(_generate())
-    # The run id and elapsed time are the only fields that differ between runs.
-    # Pinned so regenerating produces a clean diff of the SHAPE, which is the point.
-    payload["research_run_id"] = "00000000-0000-4000-8000-0000000000a1"
-    payload["elapsed_seconds"] = 0.0
-    for key in ("loop", "consumption"):
-        if isinstance(payload.get(key), dict) and "elapsed_seconds" in payload[key]:
-            payload[key]["elapsed_seconds"] = 0.0
-    if isinstance(payload.get("council"), dict):
-        payload["council"]["research_run_id"] = "00000000-0000-4000-8000-0000000000a1"
+    payload = _pin(asyncio.run(_generate()), {})
 
     FIXTURE.parent.mkdir(parents=True, exist_ok=True)
     FIXTURE.write_text(json.dumps(payload, indent=2, default=str, sort_keys=True) + "\n")

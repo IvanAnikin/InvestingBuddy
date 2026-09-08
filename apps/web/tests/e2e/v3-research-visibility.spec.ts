@@ -113,7 +113,7 @@ test.describe("reading the V3 payload", () => {
     // reader does not follow fails HERE rather than rendering as a blank field.
     const v3 = readV3Research({ v3_research: realPayload });
     expect(v3).not.toBeNull();
-    expect(v3!.runId).toBe("00000000-0000-4000-8000-0000000000a1");
+    expect(v3!.runId).toBe("00000000-0000-4000-8000-000000000001");
 
     // The run had no model configured, so it degraded — and said so. That is the
     // contract: a pipeline that narrowed silently is one nobody can widen.
