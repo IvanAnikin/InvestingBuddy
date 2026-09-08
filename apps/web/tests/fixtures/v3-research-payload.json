@@ -1,0 +1,334 @@
+{
+  "chair": {
+    "deterministic_fallback": true,
+    "discarded_citations": [],
+    "fundamental_setup": "insufficient_evidence",
+    "key_points": [],
+    "label": "insufficient_data",
+    "open_questions": [
+      "balance_sheet_risk",
+      "cash_runway",
+      "dilution",
+      "identity",
+      "pipeline_state",
+      "profitability",
+      "recent_disclosure",
+      "regulatory_posture",
+      "revenue_trajectory",
+      "rnd_intensity"
+    ],
+    "synthesis": "Deterministic synthesis: 0 finding(s), 0 verified, 16 open gap(s), 0 unresolved disagreement(s). No model was available, so this is the ledger's own state rather than an interpretation of it.",
+    "unresolved_disagreement_ids": []
+  },
+  "challenges": {
+    "challenges": 0,
+    "confidence_lowered": 0,
+    "disagreements_created": 0,
+    "discarded_unknown_targets": 0,
+    "partially_resolved": 0,
+    "resolved": 0,
+    "skipped_unchallengeable": [],
+    "unresolved": 0,
+    "withdrawn_findings": 0
+  },
+  "consumption": {
+    "chair_used_a_model": false,
+    "cost_basis": null,
+    "cost_is_unknown_because": "no price is recorded for any provider; a cost of unknown is never zero",
+    "cost_per_company_research_run": null,
+    "cost_per_verified_useful_finding": null,
+    "documents_fetched": 0,
+    "elapsed_seconds": 0.0,
+    "estimated_cost_usd": null,
+    "findings_total": 0,
+    "findings_withdrawn_by_red_team": 0,
+    "gaps_open": 16,
+    "model": {
+      "browser_minutes": 0.0,
+      "cached_tokens": 0,
+      "documents_downloaded": 0,
+      "elapsed_seconds": 0.0,
+      "instrumented": [
+        "model_calls",
+        "model_input_tokens",
+        "model_output_tokens"
+      ],
+      "model_calls": 0,
+      "model_input_tokens": 0,
+      "model_output_tokens": 0,
+      "not_instrumented": [
+        "browser_minutes",
+        "cached_tokens",
+        "documents_downloaded",
+        "elapsed_seconds",
+        "ocr_pages",
+        "pages_parsed",
+        "provider_research_runs",
+        "search_index_queries",
+        "url_fetch_calls",
+        "web_search_calls"
+      ],
+      "ocr_pages": 0,
+      "pages_parsed": 0,
+      "provider_research_runs": 0,
+      "search_index_queries": 0,
+      "tokens_estimated": false,
+      "url_fetch_calls": 0,
+      "web_search_calls": 0
+    },
+    "model_by_vendor": {},
+    "price_source": null,
+    "provider_cached_tokens": 0,
+    "provider_input_tokens": 0,
+    "provider_model_calls": 0,
+    "provider_output_tokens": 0,
+    "rounds": 2,
+    "tasks_run": 8,
+    "tool_calls": 20,
+    "unpriced_units": [
+      "browser_minutes",
+      "cached_tokens",
+      "documents_downloaded",
+      "elapsed_seconds",
+      "model_calls",
+      "model_input_tokens",
+      "model_output_tokens",
+      "ocr_pages",
+      "pages_parsed",
+      "provider_research_runs",
+      "search_index_queries",
+      "url_fetch_calls",
+      "web_search_calls"
+    ],
+    "url_fetch_calls": 0,
+    "verified_useful_findings": 0,
+    "web_search_calls": 0
+  },
+  "council": {
+    "convened": false,
+    "disagreement_count": 0,
+    "finding_count": 0,
+    "gap_count": 16,
+    "open_question_keys": [
+      "balance_sheet_risk",
+      "cash_runway",
+      "dilution",
+      "identity",
+      "pipeline_state",
+      "profitability",
+      "recent_disclosure",
+      "regulatory_posture",
+      "revenue_trajectory",
+      "rnd_intensity"
+    ],
+    "playbook_versions": {
+      "biotech": 1
+    },
+    "refusal_detail": "2 blocking question(s) are still open. The run reports insufficient evidence rather than analysing around the hole.",
+    "refusal_reason": "blocking_question_open",
+    "research_run_id": "00000000-0000-4000-8000-0000000000a1",
+    "truncated": {},
+    "unresolved_disagreement_count": 0,
+    "verified_finding_count": 0
+  },
+  "degraded": [
+    "no model provider resolved; investigations run tools and report gaps",
+    "the chair fell back to the deterministic verdict"
+  ],
+  "delta": null,
+  "elapsed_seconds": 0.0,
+  "error": null,
+  "external_research": {},
+  "findings": [],
+  "gaps": [
+    {
+      "closable": true,
+      "description": "No citable evidence was retrieved for 'identity'.",
+      "gap_id": "74a5c551-006a-4c57-b665-0fb772faddf6",
+      "gap_type": "evidence_unavailable",
+      "status": "open",
+      "why_it_matters": "The question was planned and the tools returned nothing to cite, so any statement about it would be unsupported."
+    },
+    {
+      "closable": true,
+      "description": "No citable evidence was retrieved for 'recent_disclosure'.",
+      "gap_id": "fd015738-e85e-45d1-9439-578eaa856c1c",
+      "gap_type": "evidence_unavailable",
+      "status": "open",
+      "why_it_matters": "The question was planned and the tools returned nothing to cite, so any statement about it would be unsupported."
+    },
+    {
+      "closable": true,
+      "description": "No citable evidence was retrieved for 'cash_runway'.",
+      "gap_id": "b60ab5fa-6a1a-44f6-a189-540d751ffbec",
+      "gap_type": "evidence_unavailable",
+      "status": "open",
+      "why_it_matters": "The question was planned and the tools returned nothing to cite, so any statement about it would be unsupported."
+    },
+    {
+      "closable": true,
+      "description": "No citable evidence was retrieved for 'dilution'.",
+      "gap_id": "97c53403-c626-42a8-92d7-420515dc3916",
+      "gap_type": "evidence_unavailable",
+      "status": "open",
+      "why_it_matters": "The question was planned and the tools returned nothing to cite, so any statement about it would be unsupported."
+    },
+    {
+      "closable": true,
+      "description": "No citable evidence was retrieved for 'pipeline_state'.",
+      "gap_id": "c47ec320-b087-4b6e-8f9c-9a150e4712c9",
+      "gap_type": "evidence_unavailable",
+      "status": "open",
+      "why_it_matters": "The question was planned and the tools returned nothing to cite, so any statement about it would be unsupported."
+    },
+    {
+      "closable": true,
+      "description": "No citable evidence was retrieved for 'regulatory_posture'.",
+      "gap_id": "fdd59e9e-c2d4-49e1-ab4e-f1a7018544ed",
+      "gap_type": "evidence_unavailable",
+      "status": "open",
+      "why_it_matters": "The question was planned and the tools returned nothing to cite, so any statement about it would be unsupported."
+    },
+    {
+      "closable": true,
+      "description": "No citable evidence was retrieved for 'balance_sheet_risk'.",
+      "gap_id": "80df07e7-1ba6-462c-9215-54aa5804df53",
+      "gap_type": "evidence_unavailable",
+      "status": "open",
+      "why_it_matters": "The question was planned and the tools returned nothing to cite, so any statement about it would be unsupported."
+    },
+    {
+      "closable": true,
+      "description": "No citable evidence was retrieved for 'revenue_trajectory'.",
+      "gap_id": "9855c8ed-436d-410f-94ca-a5a268e67bf1",
+      "gap_type": "evidence_unavailable",
+      "status": "open",
+      "why_it_matters": "The question was planned and the tools returned nothing to cite, so any statement about it would be unsupported."
+    },
+    {
+      "closable": true,
+      "description": "No citable evidence was retrieved for 'profitability'.",
+      "gap_id": "b4c83ddf-567c-45a7-a57f-f0049905aece",
+      "gap_type": "evidence_unavailable",
+      "status": "open",
+      "why_it_matters": "The question was planned and the tools returned nothing to cite, so any statement about it would be unsupported."
+    },
+    {
+      "closable": true,
+      "description": "No citable evidence was retrieved for 'rnd_intensity'.",
+      "gap_id": "c466fcde-654f-4154-9360-60f0a3c3bf3e",
+      "gap_type": "evidence_unavailable",
+      "status": "open",
+      "why_it_matters": "The question was planned and the tools returned nothing to cite, so any statement about it would be unsupported."
+    },
+    {
+      "closable": true,
+      "description": "No citable evidence was retrieved for 'recent_disclosure'.",
+      "gap_id": "cfada033-1792-490a-ad5d-e00d9a33b0d2",
+      "gap_type": "evidence_unavailable",
+      "status": "open",
+      "why_it_matters": "The question was planned and the tools returned nothing to cite, so any statement about it would be unsupported."
+    },
+    {
+      "closable": true,
+      "description": "No citable evidence was retrieved for 'identity'.",
+      "gap_id": "120792d9-e176-4931-bc0b-5e0f81f61d22",
+      "gap_type": "evidence_unavailable",
+      "status": "open",
+      "why_it_matters": "The question was planned and the tools returned nothing to cite, so any statement about it would be unsupported."
+    },
+    {
+      "closable": true,
+      "description": "No citable evidence was retrieved for 'dilution'.",
+      "gap_id": "b10540e9-67b2-4742-936b-0d33b3f3ca6b",
+      "gap_type": "evidence_unavailable",
+      "status": "open",
+      "why_it_matters": "The question was planned and the tools returned nothing to cite, so any statement about it would be unsupported."
+    },
+    {
+      "closable": true,
+      "description": "No citable evidence was retrieved for 'cash_runway'.",
+      "gap_id": "c4d3a5df-5099-4219-969a-13ab7b145342",
+      "gap_type": "evidence_unavailable",
+      "status": "open",
+      "why_it_matters": "The question was planned and the tools returned nothing to cite, so any statement about it would be unsupported."
+    },
+    {
+      "closable": true,
+      "description": "No citable evidence was retrieved for 'regulatory_posture'.",
+      "gap_id": "e401d7e7-69d5-4803-80e8-53e93c174107",
+      "gap_type": "evidence_unavailable",
+      "status": "open",
+      "why_it_matters": "The question was planned and the tools returned nothing to cite, so any statement about it would be unsupported."
+    },
+    {
+      "closable": true,
+      "description": "No citable evidence was retrieved for 'pipeline_state'.",
+      "gap_id": "c7486814-f25a-4559-98cc-f822337aea9d",
+      "gap_type": "evidence_unavailable",
+      "status": "open",
+      "why_it_matters": "The question was planned and the tools returned nothing to cite, so any statement about it would be unsupported."
+    }
+  ],
+  "loop": {
+    "blocking_open_question_keys": [
+      "cash_runway",
+      "pipeline_state"
+    ],
+    "council_may_convene": false,
+    "elapsed_seconds": 0.0,
+    "fabricated_citations_discarded": 0,
+    "findings": 0,
+    "gaps_accepted": 0,
+    "gaps_open": 16,
+    "is_complete_analysis": false,
+    "open_question_keys": [
+      "balance_sheet_risk",
+      "cash_runway",
+      "dilution",
+      "identity",
+      "pipeline_state",
+      "profitability",
+      "recent_disclosure",
+      "regulatory_posture",
+      "revenue_trajectory",
+      "rnd_intensity"
+    ],
+    "rounds": 2,
+    "stopped_by": "max_tasks",
+    "stopped_by_a_limit": true,
+    "tasks_run": 8,
+    "tool_calls": 20
+  },
+  "mode": "standard",
+  "note": "V3 research state, recorded beside the report. The report's narrative is assembled by the existing generator; this is the ledger, the council's verdict and the Red Team's challenges, with citable ids.",
+  "playbook_versions": {
+    "biotech": 1
+  },
+  "research_run_id": "00000000-0000-4000-8000-0000000000a1",
+  "routing": {
+    "red_team_shares_vendor_with_chair": false,
+    "slots": {
+      "chair": {
+        "reason": "no configured vendor for this slot (tried: ['azure_openai']); the caller keeps its deterministic path",
+        "slot": "chair",
+        "vendor": null
+      },
+      "follow_up": {
+        "reason": "no configured vendor for this slot (tried: ['deepseek', 'azure_openai']); the caller keeps its deterministic path",
+        "slot": "follow_up",
+        "vendor": null
+      },
+      "investigator": {
+        "reason": "no configured vendor for this slot (tried: ['deepseek', 'azure_openai']); the caller keeps its deterministic path",
+        "slot": "investigator",
+        "vendor": null
+      },
+      "red_team": {
+        "reason": "no configured vendor for this slot (tried: ['azure_openai', 'deepseek']); the caller keeps its deterministic path",
+        "slot": "red_team",
+        "vendor": null
+      }
+    }
+  }
+}
