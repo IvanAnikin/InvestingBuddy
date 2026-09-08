@@ -126,7 +126,7 @@
     },
     "refusal_detail": "2 blocking question(s) are still open. The run reports insufficient evidence rather than analysing around the hole.",
     "refusal_reason": "blocking_question_open",
-    "research_run_id": "00000000-0000-4000-8000-0000000000a1",
+    "research_run_id": "00000000-0000-4000-8000-000000000001",
     "truncated": {},
     "unresolved_disagreement_count": 0,
     "verified_finding_count": 0
@@ -144,7 +144,7 @@
     {
       "closable": true,
       "description": "No citable evidence was retrieved for 'identity'.",
-      "gap_id": "74a5c551-006a-4c57-b665-0fb772faddf6",
+      "gap_id": "00000000-0000-4000-8000-000000000002",
       "gap_type": "evidence_unavailable",
       "status": "open",
       "why_it_matters": "The question was planned and the tools returned nothing to cite, so any statement about it would be unsupported."
@@ -152,7 +152,7 @@
     {
       "closable": true,
       "description": "No citable evidence was retrieved for 'recent_disclosure'.",
-      "gap_id": "fd015738-e85e-45d1-9439-578eaa856c1c",
+      "gap_id": "00000000-0000-4000-8000-000000000003",
       "gap_type": "evidence_unavailable",
       "status": "open",
       "why_it_matters": "The question was planned and the tools returned nothing to cite, so any statement about it would be unsupported."
@@ -160,7 +160,7 @@
     {
       "closable": true,
       "description": "No citable evidence was retrieved for 'cash_runway'.",
-      "gap_id": "b60ab5fa-6a1a-44f6-a189-540d751ffbec",
+      "gap_id": "00000000-0000-4000-8000-000000000004",
       "gap_type": "evidence_unavailable",
       "status": "open",
       "why_it_matters": "The question was planned and the tools returned nothing to cite, so any statement about it would be unsupported."
@@ -168,7 +168,7 @@
     {
       "closable": true,
       "description": "No citable evidence was retrieved for 'dilution'.",
-      "gap_id": "97c53403-c626-42a8-92d7-420515dc3916",
+      "gap_id": "00000000-0000-4000-8000-000000000005",
       "gap_type": "evidence_unavailable",
       "status": "open",
       "why_it_matters": "The question was planned and the tools returned nothing to cite, so any statement about it would be unsupported."
@@ -176,7 +176,7 @@
     {
       "closable": true,
       "description": "No citable evidence was retrieved for 'pipeline_state'.",
-      "gap_id": "c47ec320-b087-4b6e-8f9c-9a150e4712c9",
+      "gap_id": "00000000-0000-4000-8000-000000000006",
       "gap_type": "evidence_unavailable",
       "status": "open",
       "why_it_matters": "The question was planned and the tools returned nothing to cite, so any statement about it would be unsupported."
@@ -184,7 +184,7 @@
     {
       "closable": true,
       "description": "No citable evidence was retrieved for 'regulatory_posture'.",
-      "gap_id": "fdd59e9e-c2d4-49e1-ab4e-f1a7018544ed",
+      "gap_id": "00000000-0000-4000-8000-000000000007",
       "gap_type": "evidence_unavailable",
       "status": "open",
       "why_it_matters": "The question was planned and the tools returned nothing to cite, so any statement about it would be unsupported."
@@ -192,7 +192,7 @@
     {
       "closable": true,
       "description": "No citable evidence was retrieved for 'balance_sheet_risk'.",
-      "gap_id": "80df07e7-1ba6-462c-9215-54aa5804df53",
+      "gap_id": "00000000-0000-4000-8000-000000000008",
       "gap_type": "evidence_unavailable",
       "status": "open",
       "why_it_matters": "The question was planned and the tools returned nothing to cite, so any statement about it would be unsupported."
@@ -200,7 +200,7 @@
     {
       "closable": true,
       "description": "No citable evidence was retrieved for 'revenue_trajectory'.",
-      "gap_id": "9855c8ed-436d-410f-94ca-a5a268e67bf1",
+      "gap_id": "00000000-0000-4000-8000-000000000009",
       "gap_type": "evidence_unavailable",
       "status": "open",
       "why_it_matters": "The question was planned and the tools returned nothing to cite, so any statement about it would be unsupported."
@@ -208,7 +208,7 @@
     {
       "closable": true,
       "description": "No citable evidence was retrieved for 'profitability'.",
-      "gap_id": "b4c83ddf-567c-45a7-a57f-f0049905aece",
+      "gap_id": "00000000-0000-4000-8000-000000000010",
       "gap_type": "evidence_unavailable",
       "status": "open",
       "why_it_matters": "The question was planned and the tools returned nothing to cite, so any statement about it would be unsupported."
@@ -216,7 +216,7 @@
     {
       "closable": true,
       "description": "No citable evidence was retrieved for 'rnd_intensity'.",
-      "gap_id": "c466fcde-654f-4154-9360-60f0a3c3bf3e",
+      "gap_id": "00000000-0000-4000-8000-000000000011",
       "gap_type": "evidence_unavailable",
       "status": "open",
       "why_it_matters": "The question was planned and the tools returned nothing to cite, so any statement about it would be unsupported."
@@ -224,7 +224,7 @@
     {
       "closable": true,
       "description": "No citable evidence was retrieved for 'recent_disclosure'.",
-      "gap_id": "cfada033-1792-490a-ad5d-e00d9a33b0d2",
+      "gap_id": "00000000-0000-4000-8000-000000000012",
       "gap_type": "evidence_unavailable",
       "status": "open",
       "why_it_matters": "The question was planned and the tools returned nothing to cite, so any statement about it would be unsupported."
@@ -232,7 +232,7 @@
     {
       "closable": true,
       "description": "No citable evidence was retrieved for 'identity'.",
-      "gap_id": "120792d9-e176-4931-bc0b-5e0f81f61d22",
+      "gap_id": "00000000-0000-4000-8000-000000000013",
       "gap_type": "evidence_unavailable",
       "status": "open",
       "why_it_matters": "The question was planned and the tools returned nothing to cite, so any statement about it would be unsupported."
@@ -240,7 +240,7 @@
     {
       "closable": true,
       "description": "No citable evidence was retrieved for 'dilution'.",
-      "gap_id": "b10540e9-67b2-4742-936b-0d33b3f3ca6b",
+      "gap_id": "00000000-0000-4000-8000-000000000014",
       "gap_type": "evidence_unavailable",
       "status": "open",
       "why_it_matters": "The question was planned and the tools returned nothing to cite, so any statement about it would be unsupported."
@@ -248,7 +248,7 @@
     {
       "closable": true,
       "description": "No citable evidence was retrieved for 'cash_runway'.",
-      "gap_id": "c4d3a5df-5099-4219-969a-13ab7b145342",
+      "gap_id": "00000000-0000-4000-8000-000000000015",
       "gap_type": "evidence_unavailable",
       "status": "open",
       "why_it_matters": "The question was planned and the tools returned nothing to cite, so any statement about it would be unsupported."
@@ -256,7 +256,7 @@
     {
       "closable": true,
       "description": "No citable evidence was retrieved for 'regulatory_posture'.",
-      "gap_id": "e401d7e7-69d5-4803-80e8-53e93c174107",
+      "gap_id": "00000000-0000-4000-8000-000000000016",
       "gap_type": "evidence_unavailable",
       "status": "open",
       "why_it_matters": "The question was planned and the tools returned nothing to cite, so any statement about it would be unsupported."
@@ -264,7 +264,7 @@
     {
       "closable": true,
       "description": "No citable evidence was retrieved for 'pipeline_state'.",
-      "gap_id": "c7486814-f25a-4559-98cc-f822337aea9d",
+      "gap_id": "00000000-0000-4000-8000-000000000017",
       "gap_type": "evidence_unavailable",
       "status": "open",
       "why_it_matters": "The question was planned and the tools returned nothing to cite, so any statement about it would be unsupported."
@@ -305,7 +305,7 @@
   "playbook_versions": {
     "biotech": 1
   },
-  "research_run_id": "00000000-0000-4000-8000-0000000000a1",
+  "research_run_id": "00000000-0000-4000-8000-000000000001",
   "routing": {
     "red_team_shares_vendor_with_chair": false,
     "slots": {

@@ -210,6 +210,28 @@ async def _run(
     limits = limits_for(resolved_mode)
     outcome.mode = resolved_mode.value
 
+    # The corpus search backend, built from configuration when the caller did not
+    # supply one — which is every production caller. `V3_SEARCH_BACKEND` had no
+    # consumer on this path: the factory existed, the parameter existed, the backend
+    # and its tests existed, and nothing joined them, so `search_company_corpus`
+    # answered `backend_configured: false` no matter what the setting said. That is
+    # the third flag in this campaign found without a consumer, and the reason the
+    # rule is now "a flag is not enabled until something reads it".
+    #
+    # Failure here degrades the SEARCH LEG, not the run: `run_v3_research` catches
+    # everything, so letting this raise would cost the findings, the council and the
+    # chair over a misconfigured retrieval setting.
+    if search_backend is None and getattr(cfg, "v3_corpus_enabled", False):
+        from app.services.corpus.search.factory import get_search_backend
+
+        try:
+            search_backend = get_search_backend(cfg, session=session)
+        except Exception as exc:  # noqa: BLE001 - a bad backend name must not end the run
+            outcome.degraded.append(
+                f"corpus search unavailable ({type(exc).__name__}); "
+                "the internal corpus was not searched"
+            )
+
     model_routing = routing or resolve_routing(cfg)
     outcome.routing = model_routing.to_dict()
     if not model_routing.any_resolved:
