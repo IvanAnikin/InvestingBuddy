@@ -56,7 +56,20 @@ enabling a V3 flag in production, deleting V2 compatibility or either V2 ref.
 | Alembic head in source | **038** (`038_add_monitoring`) |
 | Alembic head in the deployed database | **038** — migrated 2026-09-08 while V2 code was still deployed, per the verified ordering |
 | Current phase | **V3.13 — web observability and controlled activation.** Branch `feature/v3-web-observability` |
-| Current slice | [V3.13](slices/V3.13-web-observability-and-activation.md) |
+| Current slice | [V3.13](slices/V3.13-web-observability-and-activation.md) — web observability **merged and deployed**; activation pending |
+
+**The finding that mattered most in this campaign, recorded here because it changes how
+V3 must be tested from now on.** Preparing the activation settings, the V3 pipeline was
+run against **real PostgreSQL at head 038** rather than the SQLite the unit suite uses.
+`research_tool_calls.research_job_id` is a foreign key to `research_jobs.id`, and the id
+the pipeline receives is an **AgentRun** id on both entry points. The first tool call
+violated the constraint, PostgreSQL aborted the transaction, and the V2 report — written
+on the same session — was lost with it.
+
+**With `V3_PIPELINE_ENABLED=true`, every company research run would have produced no
+report at all.** 6,100 green tests could not see it: the unit suite runs on SQLite with
+foreign keys OFF. Fixed in V3.13.2, verified on real PostgreSQL, and backend CI now runs
+a `postgres:16` service so the integrity tests execute rather than skip.
 | Deployed | **V3 code is live and dark.** API `/health` returns `commit_sha=5826f61` (verified 2026-09-08). Every `V3_*` flag is **absent** from the App Service configuration, so all take their code default of off. |
 
 **Verified, not assumed, 2026-09-08:** `az webapp config appsettings list -g ib-stg-rg -n
@@ -281,6 +294,8 @@ Recorded so a later run can be compared against a number rather than a memory.
 |---|---|---|---|---|
 | `ruff check .` | All checks passed | All checks passed | All checks passed | All checks passed |
 | `pytest tests/ -q` | 4949 passed, 12 skipped | 5870 passed, 12 skipped | **6055 passed**, 25 skipped (`ENABLE_INTEGRATION_TESTS=true`) | **6126 passed**, 39 skipped (flag unset; 6078 before V3.12) |
+
+**V3.13 CI baseline (Python 3.12, `[dev]` extra, with the new `postgres:16` service): 6147 passed, 49 skipped** — +28 over 6119, matching the 15 observability, 8 search-wiring and 5 PostgreSQL-integrity tests added.
 | `mypy app` | 71 errors in 10 files | 71 (baseline, unchanged) | 71 (baseline, unchanged) | 71 (baseline, unchanged) |
 | web typecheck / lint / build | not run | **all passed** | **all passed** (re-run in V3.11.5) | typecheck + lint re-run, **passed** (web untouched) |
 
