@@ -471,21 +471,17 @@ async def _external_research(session: Any, run: Any, company: Any) -> dict[str, 
         "leads_discovered": len(leads),
         "leads_by_status": by_status,
         "leads_rejected_by_reason": by_reason,
-        # A fetch happened iff we hold the bytes' hash, or the refusal names something
-        # only a fetch could establish. A policy refusal decided before the network is
-        # not a retrieval.
+        # Retrieved means WE HOLD THE BYTES, and the hash is the only proof of that.
+        #
+        # An earlier version also counted several rejection reasons, on the theory that
+        # a gate which compared a claim against a document must have read one. That is
+        # true of `value_mismatch` and its siblings — and they carry the hash anyway, so
+        # the clause bought nothing — but it also counted `url_unreachable`, which is
+        # set precisely when the fetch came back with nothing usable. So the one reason
+        # the clause actually changed was the one where no retrieval happened, and the
+        # panel reported it to a reader as "InvestingBuddy retrieved N sources itself".
         "sources_retrieved_by_investingbuddy": sum(
-            1
-            for lead in leads
-            if lead.fetched_content_hash
-            or lead.rejection_reason
-            in (
-                "url_unreachable",
-                "claim_not_in_source",
-                "value_mismatch",
-                "period_mismatch",
-                "scope_mismatch",
-            )
+            1 for lead in leads if lead.fetched_content_hash
         ),
         "evidence_promoted": sum(1 for lead in leads if lead.promoted_evidence_id),
         "leads": [

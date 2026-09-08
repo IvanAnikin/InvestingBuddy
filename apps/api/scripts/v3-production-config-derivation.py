@@ -182,7 +182,9 @@ def _check_secret_safety() -> int:
     protection is that no application code calls it — asserted in the test suite, not
     here, because this script cannot see the whole app.
     """
-    secret = "sk-derivation-canary-value"
+    # Deliberately carries no vendor prefix. A canary that looks like a real key
+    # trains a secret scanner — and its reader — to ignore the real thing.
+    secret = "canary-value-for-the-leak-check-not-a-key"
     cfg = _settings(deepseek_api_key=secret, azure_openai_api_key=secret)
 
     printed_surfaces = {"repr(Settings)": repr(cfg), "derivation": str(derive(cfg))}

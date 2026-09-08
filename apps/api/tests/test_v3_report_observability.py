@@ -130,6 +130,45 @@ class TestTheExternalPathIsVisibleAfterTheRun:
         assert lead["is_canonical_evidence"] is False
         assert "NOT evidence" in out["note"]
 
+    async def test_an_unreachable_url_is_not_counted_as_a_retrieval(self) -> None:
+        """`url_unreachable` means the fetch came back with nothing usable. Counting it
+        told the reader "InvestingBuddy retrieved this source itself" about a source
+        nobody holds a byte of. Found by security review."""
+        out = await _external_research(
+            _Session(
+                [
+                    _lead(
+                        status="rejected",
+                        rejection_reason="url_unreachable",
+                        promoted_evidence_id=None,
+                        fetched_content_hash=None,
+                    )
+                ]
+            ),
+            _Row(started_at=None),
+            _Row(id=uuid.uuid4()),
+        )
+        assert out["sources_retrieved_by_investingbuddy"] == 0
+
+    async def test_a_gate_that_read_the_document_IS_counted(self) -> None:
+        """The other half of the rule. A value mismatch is a real retrieval: we fetched
+        the page, hashed it, and the claim failed against those bytes."""
+        out = await _external_research(
+            _Session(
+                [
+                    _lead(
+                        status="rejected",
+                        rejection_reason="value_mismatch",
+                        promoted_evidence_id=None,
+                        fetched_content_hash="c" * 64,
+                    )
+                ]
+            ),
+            _Row(started_at=None),
+            _Row(id=uuid.uuid4()),
+        )
+        assert out["sources_retrieved_by_investingbuddy"] == 1
+
     async def test_a_policy_refusal_is_not_counted_as_a_retrieval(self) -> None:
         """Refused before the network is not a fetch, and counting it as one would
         inflate the denominator of every cost-per-finding figure."""

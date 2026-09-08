@@ -521,9 +521,21 @@ rather than its worst-case one:
   lead "Provider claim only".
 * The V2 report above the panel is unchanged and still gated.
 
-**What is genuinely unguarded**: free-text `statement`, `mechanism` and `synthesis`
-fields, which are model prose, and lead `claim` text, which is vendor prose derived from
-open-web sources. A recommendation phrased in one of those would reach the page.
+**What is genuinely unguarded**, enumerated against what the panel actually renders
+rather than from memory — the first draft of this list was short by two, and a risk
+record that understates its own surface is worse than none:
+
+| Surface | Origin |
+|---|---|
+| finding `statement` | model prose |
+| chair `synthesis` | model prose |
+| gap `description` and `why_it_matters` | model prose |
+| chair `open_questions` | model prose |
+| lead `claim` | **vendor prose, derived from open-web pages** |
+| council `refusal_detail`, lead `detail` | platform templates — bounded, listed for completeness |
+
+A recommendation phrased in any of the first five would reach the page. `mechanism` is
+parsed but not rendered, so the panel's surface is narrower than the parser's.
 
 **The cheapest future closure**, recorded so the decision can be revisited without
 re-deriving it: `safety_terms.scan_value(outcome.to_dict())` in `attach_to_report`,
