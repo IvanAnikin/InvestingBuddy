@@ -113,3 +113,26 @@ class TestItDoesNotReintroduceWhatTheRulePrevents:
         question = next((q for q in plan.questions if q.key == "some_unknown_gap"), None)
         assert question is not None
         assert not question.required_tools
+
+
+class TestTheReAskedQuestionIsStillAQuestion:
+    async def test_the_canonical_text_is_restored_not_the_gap_description(self) -> None:
+        """Restoring the route without the question makes the platform pay a provider
+        to search for its own bookkeeping note. Found by review, after the first fix
+        restored `required_tools` alone and every test still passed."""
+        plan = await _plan(CARRY_FORWARD)
+        question = next(q for q in plan.questions if q.key == EXTERNAL)
+        assert "No citable evidence" not in question.text
+        assert "headline figures" in question.text
+
+    async def test_the_re_ask_is_still_visibly_a_re_ask(self) -> None:
+        """`origin` must stay ORIGIN_PRIOR_GAP — restoring the text must not disguise
+        the fact that this question is being asked again."""
+        plan = await _plan(CARRY_FORWARD)
+        question = next(q for q in plan.questions if q.key == EXTERNAL)
+        assert question.origin == "prior_gap"
+
+    async def test_the_canonical_priority_is_restored(self) -> None:
+        plan = await _plan(CARRY_FORWARD)
+        question = next(q for q in plan.questions if q.key == EXTERNAL)
+        assert question.priority == 3

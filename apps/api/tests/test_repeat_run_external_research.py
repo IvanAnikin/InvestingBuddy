@@ -100,6 +100,26 @@ class TestThreeConsecutiveRuns:
             assert not any(EXTERNAL in d for d in plan.degraded), (
                 f"run {run}: reported as degraded despite correct assignment"
             )
+            # THE ASSERTION THIS FILE ORIGINALLY LACKED.
+            #
+            # A gap's description is "No citable evidence was retrieved for 'x'.", and
+            # `RecalledGap.as_question()` hands that to the planner as the question
+            # TEXT — which the investigator then sends to a paid provider as
+            # `f"{subject}: {question.text}"`. Restoring `required_tools` alone seats
+            # the external role and makes it search, every repeat run for ever, for a
+            # sentence about this platform's own bookkeeping. The first version of this
+            # test asserted the tools and the role and passed while the query was
+            # nonsense. Found by review.
+            assert "No citable evidence" not in question.text, (
+                f"run {run}: the vendor would be asked {question.text!r}"
+            )
+            assert "headline figures" in question.text, (
+                f"run {run}: the canonical question text was not restored"
+            )
+            if run > 1:
+                assert question.origin == "prior_gap", (
+                    "re-asking must stay visible as a re-ask"
+                )
             # What the next run inherits: the question went unanswered, so it is a gap.
             carried = (
                 (EXTERNAL, f"No citable evidence was retrieved for '{EXTERNAL}'."),

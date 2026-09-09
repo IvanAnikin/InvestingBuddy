@@ -372,11 +372,33 @@ async def plan_research(
     # question unanswered as a gap — which is exactly how it reached production
     # unnoticed: the first MRNA run searched the web, and every run after it silently
     # did not. Found in production acceptance, by asking why a run took four seconds.
-    _definitions: dict[str, frozenset[str]] = {
-        key: tools for key, _text, tools in BASELINE_QUESTIONS
+    # The TEXT is restored with the tools, and restoring one without the other is worse
+    # than restoring neither.
+    #
+    # A gap's description is `"No citable evidence was retrieved for 'x'."`, and
+    # `RecalledGap.as_question()` hands that to the planner as the question TEXT. The
+    # investigator then builds its vendor query as `f"{subject}: {question.text}"`. So
+    # restoring only `required_tools` seats the external role and sends it to search a
+    # paid provider for a sentence about this platform's own bookkeeping — on every
+    # repeat run, for ever. This module's docstring already records that failure from an
+    # earlier draft: "a question only the asker can interpret is not a question".
+    #
+    # `origin` deliberately stays ORIGIN_PRIOR_GAP: "we are re-asking this" is true and
+    # is what the ledger should show.
+    _definitions: dict[str, tuple[str, frozenset[str], int]] = {
+        key: (text, tools, 2) for key, text, tools in BASELINE_QUESTIONS
     }
-    _definitions.update({key: tools for key, _text, tools in EXTERNAL_QUESTIONS})
-    for key, tools in _definitions.items():
+    _external_defs = {
+        key: (text, tools, 3) for key, text, tools in EXTERNAL_QUESTIONS
+    }
+    # Two structures must not disagree about which definition is canonical: `questions`
+    # gives BASELINE the win (its setdefault runs first), so `_definitions` must too.
+    assert not (_definitions.keys() & _external_defs.keys()), (
+        "a question key defined as both baseline and external would resolve "
+        "differently here than in `questions`"
+    )
+    _definitions.update(_external_defs)
+    for key, (text, tools, priority) in _definitions.items():
         existing = questions.get(key)
         if existing is None or existing.required_tools:
             continue
@@ -384,7 +406,9 @@ async def plan_research(
         # become unassignable because of a capability that is switched off.
         needed = frozenset(tools) & available_now
         if needed:
-            questions[key] = replace(existing, required_tools=needed)
+            questions[key] = replace(
+                existing, required_tools=needed, text=text, priority=priority
+            )
 
     ordered = sorted(
         questions.values(),
@@ -496,12 +520,13 @@ async def plan_research(
         # This is a REASON, not a refusal. Assigning it anyway is better than dropping
         # the question — the role can still answer from internal evidence — but the
         # reader is owed the reason the answer is thinner than it looks.
-        canonical_external = frozenset(
-            tools for _key, _text, tools in EXTERNAL_QUESTIONS if _key == question.key
+        canonical_tools = next(
+            (tools for key, _text, tools in EXTERNAL_QUESTIONS if key == question.key),
+            frozenset(),
         )
         needs_external = bool(
-            set(question.required_tools) & EXTERNAL_TOOL_NAMES
-        ) or bool(next(iter(canonical_external), frozenset()) & EXTERNAL_TOOL_NAMES)
+            (set(question.required_tools) | set(canonical_tools)) & EXTERNAL_TOOL_NAMES
+        )
         if needs_external and not (chosen.tools & EXTERNAL_TOOL_NAMES):
             plan.degraded.append(
                 f"{question.key} needs external research and was assigned to "
