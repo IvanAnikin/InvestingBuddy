@@ -150,6 +150,63 @@ _DIGIT_RUN_RE = re.compile(r"\d[\d .,\u00a0\u202f]*\d|\d")
 _EDGE_NOISE = "()$€£¥%\u00a0\u202f \t\r\n"
 
 
+#: Scale words as filings and press releases actually write them, mapped to the
+#: multiplier they denote. Ordered longest-first at use so ``bn`` cannot shadow ``b``.
+#:
+#: This exists because the parser had no concept of scale at all: it stripped a trailing
+#: alpha run of at most FOUR characters, so ``3.2bn`` survived and ``1.0 billion`` did
+#: not, and the strict pattern then rejected the whole string. The live V3 run refused
+#: five real SEC-sourced claims with "has no numeric reading at all" — including
+#: ``$1.0 billion`` and ``$(1.1) billion`` — which is not an acceptable answer from a
+#: financial verifier.
+_SCALE_WORDS: dict[str, float] = {
+    "trillion": 1e12,
+    "billion": 1e9,
+    "million": 1e6,
+    "thousand": 1e3,
+    "bn": 1e9,
+    "mn": 1e6,
+    "mm": 1e6,
+    "tn": 1e12,
+    "k": 1e3,
+    "m": 1e6,
+    "b": 1e9,
+}
+
+#: The scales a filing writes its tables in. A quantity stated in prose as
+#: "$1.0 billion" appears in the same document's table as "1,000" (millions) or
+#: "1,000,000" (thousands), and both are the SAME figure — so a claim is compared
+#: against every representation of itself, never against a different quantity. This is
+#: not looser matching: each representation must still be found EXACTLY, within the
+#: existing precision window.
+_REPORTING_SCALES: tuple[float, ...] = (1.0, 1e3, 1e6, 1e9)
+
+#: The lookbehind is load-bearing. Without it the trailing "K" of a currency code was
+#: read as the "thousand" scale: "1,234.5 DKK" became "1,234.5 DK" x1000, turning a
+#: Danish krone figure into a thousandfold overstatement. A scale word is only a scale
+#: word when a letter does not run into it.
+_SCALE_SUFFIX_RE = re.compile(
+    r"(?<![A-Za-z])\s*("
+    + "|".join(sorted(_SCALE_WORDS, key=len, reverse=True))
+    + r")\.?\s*$",
+    re.IGNORECASE,
+)
+
+
+def split_scale_suffix(value: str) -> tuple[str, float]:
+    """Split a trailing scale word off a claimed value.
+
+    Returns ``(remaining_text, multiplier)``; the multiplier is ``1.0`` when there is no
+    scale word. Only a TRAILING scale word counts — a word in the middle of a figure
+    changes what the figure is, the same rule the strict parse already applies to
+    currency codes.
+    """
+    match = _SCALE_SUFFIX_RE.search(value)
+    if not match:
+        return value, 1.0
+    return value[: match.start()], _SCALE_WORDS[match.group(1).lower()]
+
+
 def normalize_text(value: str | None) -> str:
     """Case-folded, whitespace-collapsed text for containment comparison.
 
@@ -187,13 +244,47 @@ def parse_number_candidates(value: str | None) -> list[float]:
     raw = (value or "").strip()
     if not raw:
         return []
-    negative = raw.startswith("(") and raw.rstrip().endswith(")")
     body = raw.replace("\u00a0", " ").replace("\u202f", " ").strip()
+
+    # Order matters, and getting it wrong loses the sign. Filings write a negative
+    # figure as "$(1.1) billion", "($1.1 billion)" and "-$1.1 billion", so the closing
+    # parenthesis may sit either side of the scale word and the glyph may sit either
+    # side of the sign. Peel in this order: outer parentheses, scale word, inner
+    # parentheses, sign, currency.
+    negative = False
+    if body.startswith("(") and body.endswith(")"):
+        negative = True
+        body = body[1:-1].strip()
+
+    # A trailing scale word ("1.0 billion", "3.2bn"), removed before the strict parse
+    # and re-applied afterwards. Without this the strict pattern rejected the whole
+    # string and the verifier reported "no numeric reading at all" for a figure any
+    # reader can see.
+    body, multiplier = split_scale_suffix(body)
+    body = body.strip()
+
+    if body.startswith("(") and body.endswith(")"):
+        negative = True
+        body = body[1:-1].strip()
+    # "$(1.1)" — the glyph outside the accounting parentheses.
+    glyphless = body.lstrip("$€£¥ ").strip()
+    if glyphless.startswith("(") and glyphless.endswith(")"):
+        negative = True
+        body = glyphless[1:-1].strip()
+
+    # An explicit sign, which may precede the currency glyph ("-$1.1").
+    explicit_negative = False
+    if body[:1] in "+-":
+        explicit_negative = body[0] == "-"
+        body = body[1:].strip()
+
     # Edge currency codes ("EUR 1,234", "1,234 DKK") and glyphs only. Never from the
     # middle: a character inside a number changes what the number is.
     body = re.sub(r"^[A-Za-z]{1,4}\s*", "", body)
     body = re.sub(r"\s*[A-Za-z]{1,4}$", "", body)
     body = body.strip(_EDGE_NOISE)
+    if explicit_negative:
+        body = "-" + body
     if not body:
         return []
     if not _STRICT_NUMBER_RE.match(body):
@@ -239,8 +330,29 @@ def parse_number_candidates(value: str | None) -> list[float]:
             readings = []
     out: list[float] = []
     for reading in readings:
-        if reading is not None and reading not in out:
-            out.append(reading)
+        if reading is None:
+            continue
+        if multiplier == 1.0:
+            if reading not in out:
+                out.append(reading)
+            continue
+        # A scaled claim is compared against every representation OF ITSELF that a
+        # filing might print: the prose form ("1.0 billion" -> 1.0), and the same
+        # quantity written in a table of units, thousands, millions or billions.
+        # Each still has to be found exactly — this recognises one quantity written
+        # several ways, it does not widen the tolerance around a different one.
+        magnitude = reading * multiplier
+        for scale in _REPORTING_SCALES:
+            candidate = magnitude / scale
+            # The prose reading is always kept ("1.0 billion" is written "1.0" in a
+            # billions table). Other scales are kept only where the figure would
+            # actually be printed at that scale — below one whole unit it would not be,
+            # and admitting it invites a spurious match on a small unrelated number.
+            if candidate != reading and abs(candidate) < 1.0:
+                continue
+            rounded = round(candidate, 6)
+            if rounded not in out:
+                out.append(rounded)
     return out
 
 
