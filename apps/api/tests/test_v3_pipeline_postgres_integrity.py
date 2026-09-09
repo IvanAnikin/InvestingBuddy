@@ -311,3 +311,83 @@ class TestASwallowedRecordFailureCostsOnlyTheRecord:
             "the report was lost to a failed lead insert — the savepoint is what stops "
             "a swallowed database error from poisoning the shared transaction"
         )
+
+
+@requires_postgres
+class TestClassificationOnRealPostgres:
+    """The classification write, on the engine it actually runs on.
+
+    SQLite with foreign keys off has hidden production-breaking defects twice in this
+    campaign. The classification path writes real columns inside a real transaction that
+    is also carrying a report, so both halves of that need checking here rather than on
+    an in-memory database that forgives more.
+    """
+
+    async def test_the_classification_is_written_and_read_back(self, pg, monkeypatch) -> None:  # noqa: ANN001
+        from app.models.company import Company
+        from app.services.classification import service as classification_service
+        from app.services.classification.service import ensure_company_classification
+
+        async def _sec(ticker: str, exchange: str | None):  # noqa: ANN202
+            return "2836", "Biological Products, (No Diagnostic Substances)", None
+
+        monkeypatch.setattr(classification_service, "_fetch_sec_classification", _sec)
+        company_id, _ = await _company_and_agent_run(pg)
+
+        async with pg() as session:
+            company = await session.get(Company, company_id)
+            # The probe row is seeded classified; clear it so this exercises the write
+            # rather than the reuse path.
+            company.sector = None
+            company.industry = None
+            await session.flush()
+            await ensure_company_classification(session, company)
+            await session.commit()
+
+        async with pg() as session:
+            stored = await session.get(Company, company_id)
+            assert stored.sector == "Healthcare"
+            assert stored.industry == "Biotechnology"
+            assert stored.industry_raw == "Biological Products, (No Diagnostic Substances)"
+            assert stored.sic_code == "2836"
+            assert stored.classification_tier == "T2_regulator_or_gov"
+            assert stored.classification_updated_at is not None
+
+    async def test_a_failed_classification_write_does_not_cost_the_run(self, pg, monkeypatch) -> None:  # noqa: ANN001
+        """A savepoint, not a bare try/except.
+
+        ``except Exception`` cannot un-abort a PostgreSQL transaction — that is what
+        destroyed a report earlier in this campaign. Here the classification write is
+        made to fail against a real connection, and the transaction must still be usable
+        afterwards.
+        """
+        from sqlalchemy import text
+
+        from app.models.company import Company
+        from app.services.classification import service as classification_service
+        from app.services.classification.service import ensure_company_classification
+
+        async def _sec(ticker: str, exchange: str | None):  # noqa: ANN202
+            # 200 characters — longer than `industry_raw` accepts, so the INSERT fails
+            # at the database rather than at a Python guard that could be wrong about
+            # what the database would have done.
+            return "2836", "X" * 400, None
+
+        monkeypatch.setattr(classification_service, "_fetch_sec_classification", _sec)
+        company_id, _ = await _company_and_agent_run(pg)
+
+        async with pg() as session:
+            company = await session.get(Company, company_id)
+            company.sector = None
+            company.industry = None
+            await session.flush()
+
+            result = await ensure_company_classification(session, company)
+            assert result.industry == "Biotechnology"
+
+            # THE ASSERTION THAT MATTERS: the transaction still works. Without the
+            # savepoint this raises `InFailedSqlTransaction` and every later write in
+            # the run — including the report — is lost.
+            alive = (await session.execute(text("SELECT 1"))).scalar_one()
+            assert alive == 1
+            await session.commit()

@@ -33,47 +33,20 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.integrations.financial_data_provider import CompanyProfileData, SourceTier
+from app.services.classification.resolver import resolve_classification
 
 # ---------------------------------------------------------------------------
-# SIC industry-text → broad sector inference (T6_model_estimate)
+# Classification
 # ---------------------------------------------------------------------------
-# The SEC submissions endpoint exposes a SIC classification (e.g. "ELECTRONIC
-# COMPUTERS") but no GICS sector. We map recognisable keywords in the SIC
-# description to a broad sector label. This is an inference, not a sourced fact,
-# so it is always tagged T6_model_estimate and only used when the DB carries no
-# sector of its own. Unknown descriptions leave sector missing (never guessed).
-_SIC_KEYWORD_TO_SECTOR: list[tuple[tuple[str, ...], str]] = [
-    (("computer", "software", "semiconductor", "electronic", "internet",
-      "data processing", "communications equipment", "instruments"), "Technology"),
-    (("pharmaceutical", "biological", "medicinal", "medical", "health",
-      "surgical", "diagnostic", "hospital"), "Healthcare"),
-    (("bank", "insurance", "financial", "credit", "securities", "investment",
-      "savings", "brokers"), "Financials"),
-    (("crude petroleum", "natural gas", "oil", "petroleum", "coal", "mining",
-      "drilling"), "Energy"),
-    (("gold", "metal", "mineral", "chemical", "steel", "copper", "aluminum",
-      "cement", "paper"), "Materials"),
-    (("retail", "store", "restaurant", "apparel", "consumer", "beverage",
-      "food", "tobacco", "leisure", "hotel", "media", "broadcast"), "Consumer"),
-    (("aircraft", "machinery", "industrial", "construction", "transportation",
-      "railroad", "trucking", "airline", "engineering", "aerospace"), "Industrials"),
-    (("electric", "gas services", "water supply", "utility", "utilities",
-      "power"), "Utilities"),
-    (("real estate", "reit", "land subdividers", "operators of"), "Real Estate"),
-    (("telephone", "telecommunications", "wireless"), "Communication Services"),
-]
-
-
-def _infer_sector_from_industry(industry_text: str | None) -> str | None:
-    """Infer a broad sector from a SIC industry description. None when unknown."""
-    if not industry_text:
-        return None
-    lowered = industry_text.lower()
-    for keywords, sector in _SIC_KEYWORD_TO_SECTOR:
-        if any(k in lowered for k in keywords):
-            return sector
-    return None
-
+# This module used to carry its own keyword table mapping SIC *description* text to a
+# private sector vocabulary ("Consumer", "Healthcare", ...). It was the platform's third
+# classification vocabulary, it matched prose rather than the regulator's code, and the
+# labels it emitted were not the ones anything downstream matched on — so a sector it got
+# right still selected no methodology.
+#
+# It now delegates to `app.services.classification.resolver`, which is the single place
+# that decides what industry a company is in. Nothing is classified twice, and what this
+# module reports is exactly what the playbook matcher acts on.
 
 def _names_match(name_a: str | None, name_b: str | None) -> bool:
     """
@@ -123,7 +96,14 @@ class ProfileEnrichment:
     isin: str | None = None
     sector: str | None = None
     sector_is_inferred: bool = False
+    #: The industry the source itself named — for a US filer, the SEC's SIC description.
+    #: Kept beside ``canonical_industry`` so a reader can check the translation against
+    #: the regulator instead of taking it on faith.
     industry: str | None = None
+    #: The same industry in the platform's canonical vocabulary — the one the playbooks
+    #: are matched in. ``None`` when no source classified the company.
+    canonical_industry: str | None = None
+    sic_code: str | None = None
     website: str | None = None
     ipo_date: str | None = None
 
@@ -144,6 +124,8 @@ class ProfileEnrichment:
             "sector": self.sector,
             "sector_is_inferred": self.sector_is_inferred,
             "industry": self.industry,
+            "canonical_industry": self.canonical_industry,
+            "sic_code": self.sic_code,
             "website": self.website,
             "ipo_date": self.ipo_date,
             "source_tiers": dict(self.source_tiers),
@@ -165,6 +147,8 @@ def enrich_company_profile(
     cik: str | None = None,
     db_sector: str | None = None,
     db_industry: str | None = None,
+    db_industry_raw: str | None = None,
+    sic_code: str | int | None = None,
     sec_profile: CompanyProfileData | None = None,
     gleif_profile: CompanyProfileData | None = None,
 ) -> ProfileEnrichment:
@@ -182,7 +166,6 @@ def enrich_company_profile(
     """
     T2 = SourceTier.T2_regulator_or_gov.value
     T5 = SourceTier.T5_api_aggregator.value
-    T6 = SourceTier.T6_model_estimate.value
 
     out = ProfileEnrichment(ticker=ticker.upper())
 
@@ -203,35 +186,50 @@ def enrich_company_profile(
     if out.cik:
         out.source_tiers["cik"] = T2
 
-    # ── Sector (DB value preferred, else inferred from SEC SIC) ───────────
-    if db_sector:
-        out.sector = db_sector
-        out.source_tiers["sector"] = T5
+    # ── Classification, resolved once by the canonical resolver ──────────
+    # Precedence lives in the resolver, not here: the regulator's SIC code outranks a
+    # stored aggregator value, which outranks a keyword reading of a description. This
+    # module's job is to report the answer with its provenance, not to have an opinion
+    # of its own about what a company does.
+    classification = resolve_classification(
+        sic_code=sic_code or (getattr(sec_profile, "sic_code", None) if sec_profile else None),
+        sic_description=(sec_profile.industry if sec_profile else None),
+        stored_sector=db_sector,
+        stored_industry=db_industry,
+        stored_industry_raw=db_industry_raw,
+    )
+    out.sic_code = classification.sic_code
+    out.sector = classification.sector
+    out.canonical_industry = classification.industry
+    out.sector_is_inferred = classification.is_inferred
+
+    if out.sector:
+        out.source_tiers["sector"] = classification.tier or T5
         out.resolved_missing_fields.append("profile.sector")
-    else:
-        industry_text = db_industry or (sec_profile.industry if sec_profile else None)
-        inferred = _infer_sector_from_industry(industry_text)
-        if inferred:
-            out.sector = inferred
-            out.sector_is_inferred = True
-            out.source_tiers["sector"] = T6
-            out.resolved_missing_fields.append("profile.sector")
+        if classification.is_inferred:
             out.warnings.append(
-                f"Sector '{inferred}' is inferred from the SEC SIC industry "
-                f"classification ('{industry_text}'), not a sourced fact "
+                f"Sector '{out.sector}' is INFERRED from the industry description "
+                f"('{classification.industry_raw}'), not a sourced fact "
                 "(T6_model_estimate). Confirm against a primary classification."
             )
-        else:
-            out.warnings.append(
-                "Sector could not be sourced or inferred from available free data "
-                "(no DB sector, no recognisable SEC SIC classification)."
-            )
+    else:
+        out.warnings.append(
+            "Sector could not be sourced or inferred from available free data "
+            "(no stored sector, no mappable SEC SIC classification)."
+        )
 
-    # ── Industry (SEC SIC description) ───────────────────────────────────
-    out.industry = db_industry or (sec_profile.industry if sec_profile else None)
+    # ── Industry — the source's own words, with the canonical label beside ─
+    out.industry = classification.industry_raw or db_industry
     if out.industry:
         out.source_tiers["industry"] = T5 if db_industry else T2
         out.resolved_missing_fields.append("profile.industry")
+    if out.canonical_industry and out.canonical_industry != out.industry:
+        out.warnings.append(
+            f"Industry '{out.industry}' maps to the canonical industry "
+            f"'{out.canonical_industry}' ({classification.source}). Both are shown: "
+            "the first is what the source said, the second is what the platform "
+            "matches methodology on."
+        )
 
     # ── Website (SEC submissions) ────────────────────────────────────────
     if sec_profile and sec_profile.website:

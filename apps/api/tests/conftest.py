@@ -56,6 +56,32 @@ def _pin_process_boot_at(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 # ---------------------------------------------------------------------------
+# No test reaches the SEC by accident
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _no_live_sec_classification(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make the classification layer's SEC lookup inert for every test by default.
+
+    ``ensure_company_classification`` asks the SEC for a company's SIC code when the row
+    has never been classified. That is correct in production and wrong in a unit suite:
+    it would put a live network request on the path of every test that runs the V3
+    pipeline, making the suite slow, offline-hostile, and — worst — green or red
+    depending on data.sec.gov rather than on the code under test.
+
+    Tests that mean to exercise the fetch patch it themselves; a ``monkeypatch.setattr``
+    in the test body simply wins over this one.
+    """
+    from app.services.classification import service
+
+    async def _inert(ticker: str, exchange: str | None):  # noqa: ANN202
+        return None, None, "SEC lookup disabled in tests"
+
+    monkeypatch.setattr(service, "_fetch_sec_classification", _inert)
+
+
+# ---------------------------------------------------------------------------
 # DB mock
 # ---------------------------------------------------------------------------
 

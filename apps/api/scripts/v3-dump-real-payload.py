@@ -46,6 +46,7 @@ import app.main  # noqa: E402, F401 - registers every table via the app's import
 from app.core.config import Settings  # noqa: E402
 from app.db.base import Base  # noqa: E402
 from app.models.company import Company  # noqa: E402
+from app.services.classification import service as classification_service  # noqa: E402
 from app.services.pipeline.v3_pipeline import run_v3_research  # noqa: E402
 
 #: Where the web's parser test reads it from.
@@ -70,15 +71,27 @@ async def _generate() -> dict[str, Any]:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     maker = async_sessionmaker(engine, expire_on_commit=False)
+
+    # The one external boundary this script pins, for the same reason it pins the model
+    # credentials to "": the fixture must be a property of the code, not of whether
+    # data.sec.gov answered today. The values are exactly what the submissions endpoint
+    # returns for Moderna's CIK 1682852 — everything downstream of here is the real
+    # resolver, the real supersede rule and the real persistence.
+    async def _sec_submissions_for_cik_1682852(ticker: str, exchange: str | None):
+        return "2836", "Biological Products, (No Diagnostic Substances)", None
+
+    classification_service._fetch_sec_classification = _sec_submissions_for_cik_1682852
+
     async with maker() as session:
+        # UNCLASSIFIED, which is what every company row in production actually looks
+        # like: 70 of 71 have no sector and none has an industry. Pre-filling them here
+        # would have made the fixture prove the one thing that was never in doubt.
         company = Company(
             id=uuid.UUID("00000000-0000-4000-8000-0000000000c1"),
             ticker="MRNA",
             exchange="NASDAQ",
             name="Moderna, Inc.",
             status="new",
-            sector="Health Care",
-            industry="Biotechnology",
         )
         session.add(company)
         await session.flush()

@@ -130,8 +130,8 @@ exchange        VARCHAR(20) NOT NULL
 name            VARCHAR(200) NOT NULL
 country         VARCHAR(100) NULLABLE
 region          VARCHAR(100) NULLABLE
-sector          VARCHAR(100) NULLABLE
-industry        VARCHAR(100) NULLABLE
+sector          VARCHAR(100) NULLABLE   -- CANONICAL (sector_taxonomy vocabulary)
+industry        VARCHAR(100) NULLABLE   -- CANONICAL (e.g. 'Biotechnology')
 market_cap      NUMERIC(20,2) NULLABLE
 currency        VARCHAR(10) NULLABLE
 website         VARCHAR(500) NULLABLE
@@ -140,9 +140,37 @@ status          VARCHAR(50) NOT NULL DEFAULT 'new'
 created_at      TIMESTAMP WITH TIME ZONE
 updated_at      TIMESTAMP WITH TIME ZONE
 
+-- V3.15, migration 039 — classification provenance. All nullable, no backfill.
+industry_raw              VARCHAR(200) NULLABLE  -- the source's own words
+sic_code                  VARCHAR(8)   NULLABLE  -- SEC SIC the industry came from
+classification_tier       VARCHAR(40)  NULLABLE  -- T2_regulator_or_gov / T5 / T6
+classification_updated_at TIMESTAMP WITH TIME ZONE NULLABLE
+
 UNIQUE: (ticker, exchange)
 INDEX: ticker, exchange, status
 ```
+
+**Classification (V3.15).** `sector` / `industry` hold the **canonical** classification —
+the vocabulary `app/services/sector_taxonomy.py` defines and the playbooks are matched
+in — and are written by exactly one function,
+`app.services.classification.service.ensure_company_classification`. One writer is what
+makes the provenance columns trustworthy.
+
+`industry_raw` keeps the classification source's own words beside the translation. For a
+US filer that is the SEC's SIC description: `industry = 'Biotechnology'` with
+`industry_raw = 'Biological Products, (No Diagnostic Substances)'` and `sic_code = '2836'`,
+so a reader can check the canonical label against the regulator instead of taking it on
+faith.
+
+`classification_tier` is the **supersede rule**. A write happens only when the new answer
+is at least as well-sourced as the stored one, so a `T6_model_estimate` inferred from a
+description can never overwrite a `T2_regulator_or_gov` classification — the failure that
+would otherwise happen silently the first time the SEC was briefly unreachable. Unknown
+never overwrites known.
+
+NULL across all four means **not yet classified**, never "classified as nothing". There is
+no backfill: a company is classified on its next research run, and `sic_code` is persisted
+so the SEC is asked once per company rather than once per run.
 
 Company status values: `new`, `researching`, `analyzed`, `watchlist`,
 `recommended_buy`, `recommended_sell`, `rejected`, `archived`

@@ -46,6 +46,7 @@ from app.services.agent_tools.contracts import TOOL_NAMES
 from app.services.calculations.definitions import DEFINITIONS
 from app.services.corpus.policy import ACCESS_CLASSES
 from app.services.director.roles import ROLES
+from app.services.sector_taxonomy import normalize_industry, normalize_sector
 
 #: Completion rules the Director's loop can actually evaluate. A rule outside this set
 #: never declares a run complete — `loop._rules_satisfied` treats an unrecognised rule as
@@ -132,10 +133,14 @@ class AppliesTo:
         applying none, which produces a generic analysis of a bank.
         """
         signals = set(signals or ())
-        if self.sectors and _fold(sector) in {_fold(s) for s in self.sectors}:
-            return True
-        if self.industries and _fold(industry) in {_fold(s) for s in self.industries}:
-            return True
+        if self.sectors:
+            declared = {_sector_key(s) for s in self.sectors} - {""}
+            if _sector_key(sector) in declared:
+                return True
+        if self.industries:
+            declared = {_industry_key(i) for i in self.industries} - {""}
+            if _industry_key(industry) in declared:
+                return True
         if self.business_model_signals and signals & set(self.business_model_signals):
             return True
         return False
@@ -143,6 +148,34 @@ class AppliesTo:
 
 def _fold(value: str | None) -> str:
     return (value or "").strip().casefold()
+
+
+def _sector_key(value: str | None) -> str:
+    """Compare sectors in the canonical vocabulary, falling back to the literal.
+
+    The playbooks were written in GICS names ("Health Care", "Information Technology")
+    and the platform's taxonomy is canonical ("Healthcare", "Technology"). Both sides go
+    through the same normaliser, so the two vocabularies stop being a silent mismatch —
+    which is what left a company the platform had correctly classified with no playbook
+    at all.
+
+    Falling back to the folded literal matters: a value the taxonomy does not know still
+    matches itself, so no declaration that worked before stops working now.
+    """
+    return _fold(normalize_sector(value) or value)
+
+
+def _industry_key(value: str | None) -> str:
+    """Compare industries in the canonical vocabulary, falling back to the literal.
+
+    ``normalize_industry`` never collapses an industry up into its sector, and that
+    restraint is load-bearing here. "Healthcare" is a sector; it normalises to no
+    industry and therefore matches no industry declaration. A company known only to be
+    in healthcare must not pick up the biotechnology methodology through this arm — if
+    it gets that playbook it is because the playbook declares the whole sector and says
+    so, not because normalisation quietly widened what its industry list meant.
+    """
+    return _fold(normalize_industry(value) or value)
 
 
 @dataclass(frozen=True)

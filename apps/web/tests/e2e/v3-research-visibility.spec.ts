@@ -135,6 +135,33 @@ test.describe("reading the V3 payload", () => {
     expect(v3!.consumption!.estimatedCostUsd).toBeNull();
     // No external tool ran, so there is no external block to render.
     expect(v3!.external).toBeNull();
+
+    // CLASSIFICATION — the field this fixture was regenerated for. The company row it
+    // ran against was unclassified, exactly as every production row is; the SEC's SIC
+    // code is what produced the industry, and the regulator's own wording is carried
+    // beside the canonical label so a reader can check the translation.
+    expect(v3!.classification).not.toBeNull();
+    expect(v3!.classification!.industry).toBe("Biotechnology");
+    expect(v3!.classification!.sector).toBe("Healthcare");
+    expect(v3!.classification!.industryRaw).toBe(
+      "Biological Products, (No Diagnostic Substances)",
+    );
+    expect(v3!.classification!.sicCode).toBe("2836");
+    expect(v3!.classification!.tier).toBe("T2_regulator_or_gov");
+    expect(v3!.classification!.isInferred).toBe(false);
+  });
+
+  test("a report written before classification existed still reads", () => {
+    // The reader must return null rather than an object full of nulls, so the panel
+    // renders nothing at all for every report already in the database.
+    const v3 = readV3Research({
+      v3_research: {
+        research_run_id: "3f1c9a6e-0000-4000-8000-000000000a1b",
+        degraded: [],
+      },
+    });
+    expect(v3).not.toBeNull();
+    expect(v3!.classification).toBeNull();
   });
 
   test("a partial payload does not throw", () => {

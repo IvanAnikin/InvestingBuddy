@@ -32,6 +32,19 @@
     "unresolved": 0,
     "withdrawn_findings": 0
   },
+  "classification": {
+    "industry": "Biotechnology",
+    "industry_raw": "Biological Products, (No Diagnostic Substances)",
+    "is_inferred": false,
+    "notes": [
+      "SEC SIC 2836 maps to canonical industry 'Biotechnology'."
+    ],
+    "sector": "Healthcare",
+    "sector_raw": null,
+    "sic_code": "2836",
+    "source": "sec_sic",
+    "tier": "T2_regulator_or_gov"
+  },
   "consumption": {
     "chair_used_a_model": false,
     "cost_basis": null,
