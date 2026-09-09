@@ -532,6 +532,84 @@ def _periods_in(sentence: str) -> set[str]:
     return out
 
 
+#: Words that turn coexisting figures into a COMPARATIVE claim. Two numbers printed
+#: side by side assert nothing; "fell from" asserts a direction, and a direction across
+#: incompatible spans is arithmetic nobody performed.
+#:
+#: Deliberately narrow. "Revenue was $145m in Q2 2026 and $1.9bn in FY2025" is two facts
+#: coexisting and stays untouched — the canonical rule allows same-frequency comparison
+#: OR explicitly labelled non-comparative coexistence, and this only refuses the first.
+_COMPARISON_WORDS: tuple[str, ...] = (
+    "compared to", "compared with", "versus", " vs ", " vs. ",
+    "decline", "declined", "declining", "decrease", "decreased",
+    "growth", "grew", "increase", "increased", "rose", "risen",
+    "fell", "fallen", "drop", "dropped", "down from", "up from",
+    "year-over-year", "year over year", "yoy",
+)
+#: "trend" is deliberately NOT in that list. It appears in "limiting trend analysis" —
+#: an honest statement about what the data does NOT support — and flagging that would
+#: withhold a gap rather than a claim. Every real violation in the live report also
+#: carried "decline" or "drop", so nothing is lost by leaving it out, and an audit that
+#: suppresses honest gaps is worse than one that misses a redundant hit.
+
+
+def is_comparative(sentence: str) -> bool:
+    """Whether a sentence asserts a direction of change rather than stating figures."""
+    text = (sentence or "").casefold()
+    return any(word in text for word in _COMPARISON_WORDS)
+
+
+def incompatible_periods(sentence: str) -> tuple[str, str] | None:
+    """The first pair of named periods that cannot be compared, or ``None``.
+
+    A quarter set against a full year is the ``INTERIM_AS_ANNUAL`` contradiction: the
+    two measure different-length spans, so no growth or decline follows from putting
+    them side by side.
+
+    **Frequency, deliberately, and not** ``ReportingPeriod.comparable_with``. That
+    method answers a stricter and different question — may these two periods sit on one
+    trend line — and so requires the same ordinal, refusing Q1 against Q2. Quarter-on-
+    quarter is a real comparison an analyst makes, and refusing it here would suppress
+    true statements. This campaign has made that mistake before: a numeric guard built
+    on the group figure alone withheld 32 correct segment sentences from one report.
+    The canonical rule is same-FREQUENCY comparison, and that is what is enforced.
+
+    Returns ``None`` when fewer than two periods are named, which is the common case
+    and must stay silent.
+    """
+    from app.services.sources.financial_period import parse_period
+
+    keys = sorted(_periods_in((sentence or "").casefold()))
+    if len(keys) < 2:
+        return None
+    for i, left in enumerate(keys):
+        for right in keys[i + 1 :]:
+            a, b = parse_period(left), parse_period(right)
+            if a.is_unknown or b.is_unknown:
+                continue
+            if a.period_type != b.period_type:
+                return (left, right)
+    return None
+
+
+def comparative_period_conflict(sentence: str) -> tuple[str, str] | None:
+    """A comparative claim spanning incompatible periods, or ``None``.
+
+    THE DEFECT THIS EXISTS FOR. A live report said "Q2 2026 revenue compared to FY2025
+    annual revenue indicates a continuing revenue decline trend", and repeated the
+    inference across the Red Team, the bear case and the chair. Moderna's Q2 2026
+    revenue was $145m against Q2 2025's $142m — a rise. The "decline" came entirely
+    from setting one quarter against a full year.
+
+    Note it takes NO numbers. The sentence above quotes none, so every numeric check
+    in this module skipped it — the claim was invalid on its periods alone, and that is
+    what is checked here.
+    """
+    if not is_comparative(sentence):
+        return None
+    return incompatible_periods(sentence)
+
+
 def scopes_in(sentence: str, index: CanonicalIndex) -> set[str]:
     """Which reporting entities a sentence is talking about.
 
@@ -577,7 +655,17 @@ def check_sentence(sentence: str, index: CanonicalIndex) -> SentenceVerdict:
     matching none of that scope's canonical values, is called conflicting.
     """
     text = (sentence or "").casefold()
-    if not text.strip() or not index.figures:
+    if not text.strip():
+        return UNCHECKED
+
+    # Checked BEFORE the numeric gates, and independently of them. A comparative claim
+    # across incompatible spans is invalid whether or not it quotes a figure, and the
+    # live sentence that motivated this quoted none — so every numeric check skipped it.
+    pair = comparative_period_conflict(text)
+    if pair is not None:
+        return SentenceVerdict(VERDICT_CONFLICTING, metric=None, scope=None)
+
+    if not index.figures:
         return UNCHECKED
 
     numbers = prose_numbers(text)
