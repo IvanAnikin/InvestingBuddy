@@ -117,7 +117,7 @@ export default function V3ResearchPanel({ v3 }: { v3: V3Research | null }) {
   // The property every existing report depends on: no V3 payload, no section.
   if (!v3) return null;
 
-  const { external, consumption, chair, council, challenges, delta } = v3;
+  const { external, consumption, chair, council, challenges, delta, classification } = v3;
 
   return (
     <Surface
@@ -173,6 +173,44 @@ export default function V3ResearchPanel({ v3 }: { v3: V3Research | null }) {
               </li>
             ))}
           </ul>
+        </div>
+      )}
+
+      {/* WHICH METHODOLOGY THIS RUN USED, AND WHY.
+          The playbook a run applies is decided by this classification, so a reader
+          judging whether the right questions were asked has to be able to see it —
+          and to check the translation. `Biotechnology` is the platform's label;
+          `Biological Products, (No Diagnostic Substances)` is the regulator's, and
+          both are shown so the second can be verified against the source. */}
+      {classification && (
+        <div className="mt-4" data-testid="v3-classification">
+          <p className="text-xs font-medium uppercase tracking-[0.14em] text-[color:var(--ib-ink-3)]">
+            Classification
+          </p>
+          <p className="ib-breakable mt-2 text-sm leading-relaxed text-[color:var(--ib-ink-2)]">
+            {classification.industry ?? classification.sector ?? "Not classified"}
+            {classification.sector && classification.industry && (
+              <span className="text-[color:var(--ib-ink-3)]">
+                {" "}
+                · {classification.sector}
+              </span>
+            )}
+            {classification.industryRaw &&
+              classification.industryRaw !== classification.industry && (
+                <span className="text-[color:var(--ib-ink-3)]">
+                  {" "}
+                  — source says &ldquo;{classification.industryRaw}&rdquo;
+                  {classification.sicCode && ` (SIC ${classification.sicCode})`}
+                </span>
+              )}
+          </p>
+          {classification.isInferred && (
+            <p className="mt-1.5 text-sm leading-relaxed text-amber-200/90">
+              This classification is the platform&rsquo;s own estimate
+              (T6_model_estimate), not a sourced fact. The methodology chosen from it
+              should be confirmed against a primary classification.
+            </p>
+          )}
         </div>
       )}
 

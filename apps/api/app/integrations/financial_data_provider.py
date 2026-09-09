@@ -121,6 +121,13 @@ class CompanyProfileData(BaseModel):
     fiscal_year_end: str | None = None
     sector: str | None = None
     industry: str | None = None
+    #: The regulator's own classification CODE, when the source publishes one (the SEC
+    #: submissions endpoint returns SIC on every request). It travelled this far as a
+    #: parsed dict key and was dropped here, so the only classification signal that
+    #: survived was the free-text description in ``industry`` — which matches no
+    #: canonical vocabulary. Carrying the code is what lets classification be a lookup
+    #: rather than a keyword guess.
+    sic_code: str | None = None
     description: str | None = None
     website: str | None = None
     isin: str | None = None

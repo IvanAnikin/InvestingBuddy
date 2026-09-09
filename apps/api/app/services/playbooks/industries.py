@@ -57,6 +57,18 @@ LUXURY = Playbook(
             "Textiles, Apparel & Luxury Goods",
             "Luxury Goods",
             "Apparel, Accessories & Luxury Goods",
+            # The canonical industries `sector_taxonomy` actually emits for this sector.
+            # Without them a watchmaker reached this playbook only through the SECTOR
+            # arm — which also catches every other Consumer Discretionary company — so
+            # the declaration was simultaneously too narrow where it mattered and too
+            # broad everywhere else. These are the platform's own luxury vocabulary
+            # (Phase 27.1B), not new claims about which companies are luxury.
+            "Watches & Jewelry",
+            "Jewelry",
+            "Leather Goods",
+            "Luxury Apparel",
+            "Premium Consumer Brands",
+            "Personal Goods",
         ),
         business_model_signals=("brand_led",),
     ),

@@ -129,6 +129,7 @@ from app.services import (
     source_service,
 )
 from app.services.catalyst_discovery_service import discover_catalysts
+from app.services.classification.service import ensure_company_classification
 from app.services.exchange_registry import is_sec_eligible
 from app.services.report_validation_service import validate_real_asset_report
 from app.services.sources.redaction import strip_url_secrets
@@ -341,6 +342,7 @@ async def _apply_phase19_4_enrichment(
             cik=getattr(company, "sec_cik", None) if company else None,
             db_sector=getattr(company, "sector", None) if company else None,
             db_industry=getattr(company, "industry", None) if company else None,
+            db_industry_raw=getattr(company, "industry_raw", None) if company else None,
             sec_profile=profile,
             gleif_profile=gleif_profile,
         )
@@ -991,6 +993,16 @@ def build_company_analysis_graph(
                 company=_run_holder.get("company"),
                 ticker=state.get("ticker") or "UNKNOWN",
             )
+            # Persist the classification the profile above already establishes.
+            # `enrich_company_profile` has always derived a sector here and always
+            # left it in the snapshot, where nothing that selects a methodology can
+            # reach it. This is the one line that lands it on the company row —
+            # reusing the SEC profile just fetched, so it costs no extra request.
+            company_row = _run_holder.get("company")
+            if company_row is not None:
+                await ensure_company_classification(
+                    db, company_row, sec_profile=profile
+                )
         _run_holder["market_metrics_summary"] = market_metrics_dict
 
         await agent_run_service.complete_agent_step(

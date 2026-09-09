@@ -161,6 +161,28 @@ export type V3Delta = {
   invalidatedFindings: number;
 };
 
+/**
+ * How the company was classified, and by whom.
+ *
+ * Both vocabularies are kept. `industryRaw` is what the source itself said — for a US
+ * filer, the SEC's own SIC description — and `industry` is the platform's canonical
+ * label, the one methodology is selected on. Showing only the second would ask the
+ * reader to take the translation on faith; showing both lets them check it.
+ */
+export type V3Classification = {
+  sector: string | null;
+  industry: string | null;
+  /** The classification source's own words, before normalisation. */
+  industryRaw: string | null;
+  sicCode: string | null;
+  /** Provenance tier: `T2_regulator_or_gov` for a SIC-derived classification. */
+  tier: string | null;
+  /** How the canonical industry was reached: `sec_sic`, `stored_industry`, … */
+  source: string | null;
+  /** True when the classification is the platform's own estimate, not a sourced fact. */
+  isInferred: boolean | null;
+};
+
 export type V3Research = {
   runId: string | null;
   mode: string | null;
@@ -187,6 +209,7 @@ export type V3Research = {
   external: V3ExternalResearch | null;
   consumption: V3Consumption | null;
   delta: V3Delta | null;
+  classification: V3Classification | null;
   routing: { slot: string; vendor: string | null; reason: string | null }[];
 };
 
@@ -418,6 +441,25 @@ function readDelta(v: unknown): V3Delta | null {
  * important thing on the page, and hiding it would leave the reader believing the
  * research simply had nothing to add.
  */
+function readClassification(raw: unknown): V3Classification | null {
+  if (!isRecord(raw)) return null;
+  const sector = str(raw.sector);
+  const industry = str(raw.industry);
+  const industryRaw = str(raw.industry_raw);
+  // A payload with nothing in it is absence, not an unclassified company: reports
+  // written before this field existed must render exactly as they did.
+  if (!sector && !industry && !industryRaw && !str(raw.sic_code)) return null;
+  return {
+    sector,
+    industry,
+    industryRaw,
+    sicCode: str(raw.sic_code),
+    tier: str(raw.tier),
+    source: str(raw.source),
+    isInferred: bool(raw.is_inferred),
+  };
+}
+
 export function readV3Research(sourceSummary: unknown): V3Research | null {
   if (!isRecord(sourceSummary)) return null;
   const raw = sourceSummary.v3_research;
@@ -457,6 +499,7 @@ export function readV3Research(sourceSummary: unknown): V3Research | null {
     external: readExternal(raw.external_research),
     consumption: readConsumption(raw.consumption),
     delta: readDelta(raw.delta),
+    classification: readClassification(raw.classification),
     routing: Object.entries(
       isRecord(raw.routing) && isRecord(raw.routing.slots) ? raw.routing.slots : {},
     ).map(([slot, raw2]) => {

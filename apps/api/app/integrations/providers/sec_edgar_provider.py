@@ -140,6 +140,11 @@ def _submissions_to_profile(parsed: dict, source_url: str) -> CompanyProfileData
         fiscal_year_end=fiscal_year_end,
         sector=None,
         industry=parsed.get("sic_description") or None,
+        # The code, not just its description. `_parse_edgar_submissions` has always
+        # read `sic`; until now nothing carried it past this constructor, so the
+        # deterministic code→industry mapping had no input and classification fell
+        # back to matching prose.
+        sic_code=str(parsed.get("sic") or "").strip() or None,
         description=". ".join(description_parts) if description_parts else None,
         website=parsed.get("website"),
         isin=None,

@@ -62,6 +62,7 @@ from app.services.agents.routing import (
     ModelRouting,
     resolve_routing,
 )
+from app.services.classification.service import ensure_company_classification
 from app.services.council_v2 import inputs as council_inputs
 from app.services.council_v2.red_team import run_challenge_round
 from app.services.director.loop import LoopResult, run_investigation
@@ -117,6 +118,11 @@ class V3ResearchOutcome:
     #: tell a claim InvestingBuddy verified from one a vendor merely asserted. Empty
     #: when no external tool was used.
     external_research: dict[str, Any] = field(default_factory=dict)
+    #: How this company was classified, and by whom. A run that got no playbook must be
+    #: separable into "the platform could not classify this company" and "the platform
+    #: classified it and no playbook covers that industry" — those need opposite fixes,
+    #: and `no playbook applied` alone tells a reader neither.
+    classification: dict[str, Any] = field(default_factory=dict)
     elapsed_seconds: float = 0.0
     #: Why the run produced less than a full one. Never empty on a degraded run: a
     #: pipeline that narrowed silently is one nobody can widen.
@@ -142,6 +148,7 @@ class V3ResearchOutcome:
             "gaps": list(self.gaps),
             "consumption": dict(self.consumption),
             "external_research": dict(self.external_research),
+            "classification": dict(self.classification),
             "elapsed_seconds": round(self.elapsed_seconds, 3),
             "degraded": list(self.degraded),
             "error": self.error,
@@ -297,14 +304,60 @@ async def _run(
     prior = await memory.recall(session, company_id=company.id)
     carry_forward = prior.carry_forward_questions if prior.exists else ()
 
-    # 2. Playbook selection. An unclassifiable company gets NONE and a recorded reason,
-    #    never the nearest-looking one.
+    # 2. Classification, then playbook selection.
+    #
+    # Reading `company.sector` straight off the row was the whole defect: the column is
+    # NULL for all but one of the companies in the database, so selection was answering
+    # a question nobody had ever given it the input for. `ensure_company_classification`
+    # is the single handoff — it reuses what is stored, asks the SEC only when the row
+    # has never been classified, and refuses to overwrite a stronger source with a
+    # weaker one.
+    #
+    # It never raises, and a company it cannot classify still gets NONE and a recorded
+    # reason, never the nearest-looking playbook.
+    classification = await ensure_company_classification(session, company)
+    outcome.classification = classification.to_dict()
     selection = select_playbooks(
-        sector=getattr(company, "sector", None),
-        industry=getattr(company, "industry", None),
+        sector=classification.matching_sector,
+        industry=classification.industry,
     )
     if selection.is_empty:
         outcome.degraded.append(f"no playbook applied: {selection.reason}")
+        # The reason above names what selection was GIVEN, and that is deliberately
+        # narrower than what the company was classified as. Saying so here is what makes
+        # an empty selection actionable, because the three ways to get one need three
+        # different fixes.
+        if not classification.is_known:
+            # Nothing classified this company, so no playbook *could* apply.
+            outcome.degraded.append(
+                "company is unclassified: "
+                + (classification.notes[-1] if classification.notes else "no sources")
+            )
+        elif classification.matching_sector is None and not classification.industry:
+            # Classified, but only as an estimate. A sector-only match is the broadest
+            # selection the platform makes; making it from a guess as well would apply a
+            # specialist methodology to a company no source actually classified.
+            outcome.degraded.append(
+                f"company was classified as sector {classification.sector!r}, but only "
+                "as a T6_model_estimate — an estimate does not select a specialist "
+                "methodology, so the generic one was used."
+            )
+        else:
+            # Classified from a real source, and no playbook covers that industry. This
+            # is a playbook-coverage gap, not a classification problem.
+            outcome.degraded.append(
+                f"company is classified ({classification.industry or classification.sector!r},"
+                f" {classification.tier}) and no playbook declares it — a coverage gap, "
+                "not a classification failure."
+            )
+    elif classification.is_inferred:
+        # A methodology chosen from the platform's own estimate is still a methodology
+        # chosen from a guess, and the reader is told so.
+        outcome.degraded.append(
+            f"playbook selected from an INFERRED classification "
+            f"(industry={classification.industry!r}, T6_model_estimate) — confirm "
+            "against a primary classification."
+        )
     playbooks = [_PlaybookAdapter(p) for p in selection.playbooks]
     outcome.playbook_versions = dict(selection.versions)
 
