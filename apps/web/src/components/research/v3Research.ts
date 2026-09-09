@@ -68,6 +68,11 @@ export type ExternalLead = {
   evidenceId: string | null;
   /** True only when this platform retrieved the source and the claim survived. */
   isEvidence: boolean;
+  /** Tier of the source actually retrieved. */
+  sourceTier: string | null;
+  /** True when a HIGHER-tier source established the same fact in this run, so this
+      one stands as corroboration rather than as the citation. */
+  corroboratingOnly: boolean;
 };
 
 export type V3ExternalResearch = {
@@ -87,8 +92,11 @@ export type V3Chair = {
   keyPoints: { text: string; findingId: string | null; evidenceIds: string[] }[];
   openQuestions: string[];
   unresolvedDisagreementIds: string[];
-  /** True when no model was reachable and the verdict is the ledger's own arithmetic. */
+  /** True when the verdict is the ledger's own arithmetic rather than a model's. */
   deterministicFallback: boolean;
+  /** WHY. "council_did_not_convene" and "no_chair_model_available" are opposite
+      statements about the deployment and must never be shown interchangeably. */
+  fallbackReason: string | null;
 };
 
 export type V3Council = {
@@ -266,6 +274,8 @@ function readLead(r: Record<string, unknown>): ExternalLead | null {
     // inferred from `status` — a lead could be marked verified by a future path that
     // did not mint evidence, and this flag must mean "InvestingBuddy holds the bytes".
     isEvidence: bool(r.is_canonical_evidence) ?? evidenceId !== null,
+    sourceTier: str(r.source_tier),
+    corroboratingOnly: bool(r.corroborating_only) ?? false,
   };
 }
 
@@ -306,6 +316,7 @@ function readChair(v: unknown): V3Chair | null {
     openQuestions: strings(v.open_questions),
     unresolvedDisagreementIds: strings(v.unresolved_disagreement_ids),
     deterministicFallback: bool(v.deterministic_fallback) ?? false,
+    fallbackReason: str(v.fallback_reason),
   };
 }
 

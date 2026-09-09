@@ -1887,8 +1887,35 @@ def _build_financial_snapshot(
             financial_fields=_PRIMARY_FINANCIAL_FACT_FIELDS,
         )
 
-        if canonical.source == "sec_edgar_xbrl":
+        # The SEC XBRL statements are rendered when they are the canonical channel,
+        # and ALSO when the issuer-document channel won without supplying a single
+        # ANNUAL fact.
+        #
+        # The priority rule (T1 issuer document > T2 SEC XBRL) is right about source
+        # quality and was being applied without regard to PERIOD. On the live MRNA run
+        # the issuer channel contributed exactly one fact — Q2 2026 revenue, an interim
+        # figure from a 10-Q — and that alone suppressed a complete, regulator-published
+        # FY2025 statement set. The report then showed no annual figures at all, said
+        # "Latest annual — Not reported", and the council read FY2025 numbers out of an
+        # evidence excerpt instead. An interim fact and an annual statement answer
+        # different questions; the section has separate slots for exactly that reason,
+        # and one must not displace the other.
+        _annual_from_filing = _high_confidence_facts_for(
+            primary_facts, _PRIMARY_FINANCIAL_FACT_FIELDS
+        )
+        _sec_supplies_the_annual_layer = (
+            "sec_edgar_xbrl" in canonical.channels and not _annual_from_filing
+        )
+        if canonical.source == "sec_edgar_xbrl" or _sec_supplies_the_annual_layer:
             fs = company_snapshot.get("fundamentals_summary") or {}
+            _sec_tier = canonical.source_tier if canonical.source == "sec_edgar_xbrl" else (
+                fs.get("source_tier") or "T2_regulator_or_gov"
+            )
+            _sec_period = canonical.period_label
+            if canonical.source != "sec_edgar_xbrl":
+                basis = fs.get("period_basis") or "annual"
+                fy = fs.get("fiscal_year")
+                _sec_period = f"{basis} FY{fy}" if fy else basis
 
             def _sec_dp(key: str, unit: str | None = None) -> dict:
                 val = fs.get(key)
@@ -1896,10 +1923,10 @@ def _build_financial_snapshot(
                     "value": val,
                     "unit": unit,
                     "provenance": "sourced_fact" if val is not None else "missing_data",
-                    "source_tier": canonical.source_tier,
+                    "source_tier": _sec_tier,
                     "source": "sec_edgar_xbrl",
-                    "period": canonical.period_label,
-                    "form_type": canonical.form_type,
+                    "period": _sec_period,
+                    "form_type": fs.get("form_type") or canonical.form_type,
                     "human_review_required": val is None,
                 }
 
@@ -2022,9 +2049,35 @@ def _build_financial_snapshot(
     # the invariant checker caught live between a canonical slot and a series.
     # Where a newer annual period exists below the bar, the datapoint says so
     # itself (``newer_period_available``).
+    # The SEC XBRL annual period counts too, when that channel supplied the annual
+    # statements this section is showing.
+    #
+    # The state is still derived from what the section SHOWS and never from the whole
+    # fact set — that rule stands, and it is why a below-the-bar fact cannot name a
+    # period here. What changed is that regulator-published annual statements ARE
+    # shown, so leaving them out made the metadata contradict the figures printed
+    # beside it: the live MRNA report said "Latest annual — Not reported" while
+    # carrying FY2025 revenue, operating income and net income.
+    _sec_annual_periods: list[Any] = []
+    _fs_for_state = (company_snapshot or {}).get("fundamentals_summary") or {}
+    if (
+        isinstance(_fs_for_state, dict)
+        and (_fs_for_state.get("period_basis") or "annual") == "annual"
+        and _fs_for_state.get("fiscal_year")
+        and any(
+            _fs_for_state.get(k) is not None
+            for k in ("revenue_usd_m", "operating_income_usd_m", "net_income_usd_m")
+        )
+        and section.get("revenue_usd_m") is not None
+    ):
+        _sec_annual_periods = periods_of(
+            [{"period": str(_fs_for_state.get("fiscal_year"))}]
+        )
+
     state = build_reporting_period_state(
         periods_of([fact for _field, fact in selected_annual])
         + periods_of([fact for _field, fact in current_period])
+        + _sec_annual_periods
     )
     section["reporting_periods"] = {
         **state.as_labels(),

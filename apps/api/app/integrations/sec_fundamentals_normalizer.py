@@ -195,7 +195,16 @@ def _select_metric(
         for e in entries:
             if e.get("val") is None:
                 continue
-            if e.get("form") in _ANNUAL_FORMS and e.get("fp", "FY") == "FY":
+            # An annual FORM spanning a full year IS an annual figure, whatever the
+            # `fp` tag says. Requiring `fp == "FY"` meant a 10-K entry tagged "Q4" was
+            # neither annual here nor quarterly (10-K is not a quarterly form), so it
+            # was dropped entirely — and the field then fell through to the legacy
+            # period-blind parser, which shipped a stale FY2022 figure with no warning.
+            # Found by review. `_is_full_year_period` is the honest test: it measures
+            # the period rather than trusting a tag filers set inconsistently.
+            if e.get("form") in _ANNUAL_FORMS and (
+                e.get("fp", "FY") == "FY" or _is_full_year_period(e)
+            ):
                 annual_candidates.append((concept, e))
             elif e.get("form") in _QUARTERLY_FORMS:
                 quarterly_candidates.append((concept, e))
@@ -332,6 +341,15 @@ class NormalizedSecFinancials:
 
     warnings: list[str] = field(default_factory=list)
 
+    #: Per-field period provenance: ``{field: {"fy", "end", "form", "concept"}}``.
+    #:
+    #: A single ``fiscal_year`` on this record is a HEADLINE, not a property of every
+    #: value in it. Metrics are selected per concept, so they can legitimately come
+    #: from different filings — and when they do, stamping one FY across all of them
+    #: is how a FY2022 revenue got reported as FY2025. Each fact carries its own
+    #: period here so a consumer can label it honestly.
+    field_periods: dict[str, dict[str, Any]] = field(default_factory=dict)
+
     # ---- serialization -------------------------------------------------- #
 
     _DOLLAR_FIELDS = (
@@ -430,12 +448,17 @@ class NormalizedSecFinancials:
         ) -> None:
             if value is None:
                 return
+            # The fact's OWN period end, falling back to the headline only when this
+            # field has no recorded period. `as_of` on a financial fact means the
+            # period it describes; using the filing date instead makes a FY2022 figure
+            # look current because the FILING is current.
+            own = (self.field_periods.get(field_name) or {}).get("end")
             dps.append(
                 FundamentalDataPoint(
                     field_name=f"sec_edgar.{field_name}",
                     value=value,
                     unit=unit,
-                    as_of=as_of,
+                    as_of=own or as_of,
                     currency=self.reporting_currency
                     if field_name in self._DOLLAR_FIELDS
                     else None,
@@ -447,11 +470,22 @@ class NormalizedSecFinancials:
                 )
             )
 
-        # Extended raw statement items (base 10 come from parse_company_facts).
-        for name in ("gross_profit", "operating_income", "capital_expenditures",
-                     "cash_and_equivalents"):
+        # Every raw statement item, including the ten the legacy `parse_company_facts`
+        # also produces. They are emitted HERE because only this path is period-aware:
+        # `parse_company_facts` takes the first alias concept that has any annual data,
+        # so a company that changed XBRL tags keeps reporting the stale tag's last year
+        # for ever. Moderna's `Revenues` tag stops at FY2022 ($19.263bn) while its
+        # current tag carries FY2025 ($1.944bn), and the FY2022 figure reached a live
+        # report labelled FY2025.
+        for name in ("revenue", "gross_profit", "operating_income", "net_income",
+                     "operating_cash_flow", "capital_expenditures",
+                     "cash_and_equivalents", "total_assets", "total_liabilities",
+                     "shareholders_equity", "short_term_debt", "long_term_debt"):
             _add(name, getattr(self, name), "USD_m",
-                 DataQuality.B_single_credible, period_note)
+                 DataQuality.B_single_credible, self._note_for(name, period_note))
+        for name in ("eps_basic", "eps_diluted"):
+            _add(name, getattr(self, name), "USD",
+                 DataQuality.B_single_credible, self._note_for(name, period_note))
 
         # Derived dollar aggregates.
         _add("free_cash_flow", self.free_cash_flow, "USD_m", DataQuality.C_inferred,
@@ -494,6 +528,18 @@ class NormalizedSecFinancials:
                  "SEC EDGAR filing metadata.")
 
         return dps
+
+    def _note_for(self, field_name: str, fallback: str) -> str:
+        """A note naming the period and concept THIS value came from."""
+        meta = self.field_periods.get(field_name)
+        if not meta:
+            return fallback
+        return (
+            f"FY{meta.get('fy')} {meta.get('fp') or ''} period ending "
+            f"{meta.get('end')} (form {meta.get('form') or '?'}, "
+            f"us-gaap concept {meta.get('concept')}). "
+            "Source tier T2_regulator_or_gov."
+        ).strip()
 
     def end_date_or_today(self) -> str:
         if self.filed_date:
@@ -582,11 +628,63 @@ def normalize_company_facts(
     result.long_term_debt = ltd.value
     result.shares_outstanding = shares.value
 
+    # Each metric's OWN period, kept so a consumer can label the fact honestly
+    # instead of inheriting a single headline fiscal year.
+    for name, metric in (
+        ("revenue", revenue),
+        ("gross_profit", gross_profit),
+        ("operating_income", operating_income),
+        ("net_income", net_income),
+        ("eps_basic", eps_basic),
+        ("eps_diluted", eps_diluted),
+        ("operating_cash_flow", ocf),
+        ("capital_expenditures", capex),
+        ("total_assets", total_assets),
+        ("total_liabilities", total_liabilities),
+        ("shareholders_equity", equity),
+        ("cash_and_equivalents", cash),
+        ("short_term_debt", std),
+        ("long_term_debt", ltd),
+        ("shares_outstanding", shares),
+    ):
+        if metric.value is None:
+            continue
+        result.field_periods[name] = {
+            "fy": metric.fy,
+            "fp": metric.fp,
+            "end": metric.end,
+            "form": metric.form,
+            "concept": metric.concept,
+            "period_type": metric.period_type,
+        }
+
     # ── Headline period (prefer revenue, then net income) ────────────────
     headline = next(
         (m for m in (revenue, net_income, ocf, total_assets) if m.value is not None),
         None,
     )
+    # A bundle whose facts span different fiscal years is legitimate — a company may
+    # simply not have filed every concept in its newest filing — but it must never be
+    # presented as one year's accounts. Said out loud so the caller can label it.
+    statement_years = {
+        meta["fy"]
+        for name, meta in result.field_periods.items()
+        if meta.get("fy") is not None
+        and name in ("revenue", "operating_income", "net_income", "total_assets")
+    }
+    if len(statement_years) > 1:
+        spread = ", ".join(
+            f"{n}=FY{m['fy']}"
+            for n, m in sorted(result.field_periods.items())
+            if m.get("fy") is not None
+        )
+        warnings.append(
+            "SEC EDGAR: statement facts span more than one fiscal year "
+            f"({sorted(statement_years)}) — {spread}. They are NOT one year's "
+            "accounts and must not be compared with each other or presented under a "
+            "single fiscal year."
+        )
+
     if headline is not None:
         result.fiscal_year = headline.fy
         result.fiscal_period = headline.fp

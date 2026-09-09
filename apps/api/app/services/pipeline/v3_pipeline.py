@@ -71,6 +71,7 @@ from app.services.memory import store as memory
 from app.services.memory.delta import compute_delta, persist_delta
 from app.services.playbooks import select as select_playbooks
 from app.services.research_mode import budget_for, limits_for, parse_mode
+from app.services.sources.taxonomy import tier_rank
 
 #: The key the V3 research state is attached under. Additive on a JSONB column the
 #: report API already returns and the frontend already tolerates unknown keys in.
@@ -438,7 +439,16 @@ async def _run(
     )
     outcome.chair = verdict.to_dict()
     if verdict.deterministic_fallback:
-        outcome.degraded.append("the chair fell back to the deterministic verdict")
+        # Named, because the two states mean opposite things about the deployment. The
+        # live MRNA run reported this as a model being unavailable while a chair model
+        # was routed and reachable — the council simply had no findings to synthesise.
+        outcome.degraded.append(
+            "the chair returned the deterministic verdict because the council did not "
+            "convene (no findings to synthesise)"
+            if verdict.fallback_reason == "council_did_not_convene"
+            else "the chair fell back to the deterministic verdict: no chair model was "
+            "available"
+        )
 
     # 9. What a reader can cite.
     outcome.findings = [f.to_dict() for f in council.findings[:60]]
@@ -509,6 +519,70 @@ async def _tool_call_consumption(session: Any, run: Any, company: Any) -> dict[s
     return totals
 
 
+#: Regulator hosts whose documents are primary filings. Deliberately short and
+#: suffix-matched: a list that tried to enumerate every issuer domain would be wrong
+#: for most companies, and guessing a tier is worse than declining to.
+_REGULATOR_HOST_SUFFIXES: tuple[str, ...] = ("sec.gov", "europa.eu", "fca.org.uk")
+
+
+def external_source_tier(url: str | None) -> str:
+    """The source tier of a retrieved external URL.
+
+    Three answers only, and the third is the honest default. A regulator host serves
+    primary filings; anything else the external path reaches is secondary until
+    something establishes otherwise. There is no attempt to recognise issuer domains
+    here — `verified_issuer_sources` owns that question for the paths that have an
+    issuer to check against, and inventing a second, weaker answer would let a
+    lookalike domain be read as the company's own.
+    """
+    from urllib.parse import urlsplit
+
+    try:
+        host = (urlsplit(url or "").hostname or "").lower()
+    except ValueError:
+        return "T5_api_aggregator"
+    if not host:
+        return "T5_api_aggregator"
+    if any(host == suffix or host.endswith("." + suffix) for suffix in _REGULATOR_HOST_SUFFIXES):
+        return "T1_primary_filing"
+    return "T5_api_aggregator"
+
+
+def _claim_identity(lead: Any) -> tuple[float, str, str, str] | None:
+    """What makes two leads the SAME fact, or ``None`` when that cannot be decided.
+
+    ``None`` is the important return. The first version keyed on
+    ``(claimed_value, claimed_period, claimed_scope)`` as raw strings, so every lead
+    with a blank value collapsed onto ``("", "", "")`` and all but one were stamped
+    "a higher-tier source established the same fact" about facts never established.
+    Scope is routinely blank on this path, which made that common rather than rare.
+    Found by review.
+
+    Three changes: the value is NORMALISED (so "$1,343 million" and "1343000000" are
+    one identity rather than two), the metric is part of the key (so two unrelated
+    figures that happen to be equal are not one fact), and a lead that cannot supply
+    both a value and a period is not ranked at all.
+    """
+    from app.services.providers.leads import parse_number_candidates
+
+    readings = parse_number_candidates(getattr(lead, "claimed_value", None))
+    period = str(getattr(lead, "claimed_period", "") or "").strip().lower()
+    if not readings or not period:
+        return None
+    metric = str(getattr(lead, "metric", "") or "").strip().lower()
+    if not metric:
+        # Derived from the claim's own words rather than invented: a lead with no
+        # metric field is identified by the largest reading plus its own text, which
+        # cannot collide with a different metric's claim.
+        metric = (str(getattr(lead, "claim_text", "") or "")[:60]).strip().lower()
+    return (
+        max(readings, key=abs),
+        period,
+        str(getattr(lead, "claimed_scope", "") or "").strip().lower(),
+        metric,
+    )
+
+
 async def _external_research(session: Any, run: Any, company: Any) -> dict[str, Any]:
     """The external path's provenance: what was claimed, what we fetched, what survived.
 
@@ -540,6 +614,32 @@ async def _external_research(session: Any, run: Any, company: Any) -> dict[str, 
             return (urlsplit(url or "").hostname or "").lower() or None
         except ValueError:
             return None
+
+    # Source hierarchy. Among the leads that VERIFIED, a primary regulator source
+    # outranks a secondary one for the same fact — same value, same period, same scope.
+    # The lower-tier source is kept and labelled corroboration rather than discarded:
+    # a second independent source agreeing is worth recording, and dropping it would
+    # lose information without improving the canonical choice.
+    #
+    # The provider's job here is DISCOVERY. It names URLs; it does not decide which
+    # source this platform stands behind. On the live MRNA run it named both an SEC
+    # exhibit and a news site, and whichever verified first became the evidence.
+    canonical_by_claim: dict[tuple[float, str, str, str], Any] = {}
+    for lead in leads:
+        if not lead.promoted_evidence_id:
+            continue
+        key = _claim_identity(lead)
+        if key is None:
+            # Not rankable, so not ranked. A lead that cannot say what it measured is
+            # left as its own citation rather than labelled corroboration for a fact
+            # nothing established.
+            continue
+        best = canonical_by_claim.get(key)
+        if best is None or tier_rank(external_source_tier(lead.fetched_url)) < tier_rank(
+            external_source_tier(best.fetched_url)
+        ):
+            canonical_by_claim[key] = lead
+    canonical_ids = {id(lead) for lead in canonical_by_claim.values()}
 
     return {
         "leads_discovered": len(leads),
@@ -579,6 +679,13 @@ async def _external_research(session: Any, run: Any, company: Any) -> dict[str, 
                 # lead with one contributed anything a finding may cite.
                 "evidence_id": lead.promoted_evidence_id,
                 "is_canonical_evidence": bool(lead.promoted_evidence_id),
+                # The tier of the source this platform actually retrieved.
+                "source_tier": external_source_tier(lead.fetched_url),
+                # True when a HIGHER-tier source established the same fact in this run,
+                # so this one stands as corroboration rather than as the citation.
+                "corroborating_only": bool(
+                    lead.promoted_evidence_id and id(lead) not in canonical_ids
+                ),
             }
             for lead in leads[:40]
         ],
@@ -643,6 +750,26 @@ def _consumption(
     # Prices are CONFIGURATION. With none supplied this stays `None` — unpriced, never
     # free, because an unpriced provider reported as costless is how a benchmark picks
     # the wrong one.
+    # The search leg's spend counts too.
+    #
+    # `units` accumulated only from routing slots, so `derive_cost` excluded the
+    # research provider's tokens entirely — and they were not listed as unpriced
+    # either, because they were not in the instrumented set. The commit that surfaced
+    # them quantified the problem as "a search that spent 27k input tokens was recorded
+    # as costing nothing", and then costed them at zero one field over. Found by review.
+    tool_model = tool_units or {}
+    if any(
+        tool_model.get(k) for k in ("model_calls", "model_input_tokens", "model_output_tokens")
+    ):
+        units = units + ConsumptionUnits(
+            model_calls=int(tool_model.get("model_calls", 0) or 0),
+            model_input_tokens=int(tool_model.get("model_input_tokens", 0) or 0),
+            model_output_tokens=int(tool_model.get("model_output_tokens", 0) or 0),
+            instrumented=frozenset(
+                {"model_calls", "model_input_tokens", "model_output_tokens"}
+            ),
+        )
+
     prices = PriceBook(
         usd_per_million_input_tokens=getattr(cfg, "v3_price_usd_per_million_input_tokens", None),
         usd_per_million_output_tokens=getattr(cfg, "v3_price_usd_per_million_output_tokens", None),

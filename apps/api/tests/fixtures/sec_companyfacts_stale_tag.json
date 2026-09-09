@@ -1,0 +1,231 @@
+{
+ "cik": 1682852,
+ "entityName": "Moderna, Inc.",
+ "facts": {
+  "us-gaap": {
+   "Revenues": {
+    "label": "Revenues",
+    "units": {
+     "USD": [
+      {
+       "start": "2021-01-01",
+       "end": "2021-12-31",
+       "val": 18471000000,
+       "accn": "0001682852-23-000011",
+       "fy": 2022,
+       "fp": "FY",
+       "form": "10-K",
+       "filed": "2023-02-24",
+       "frame": "CY2021"
+      },
+      {
+       "start": "2022-01-01",
+       "end": "2022-12-31",
+       "val": 19263000000,
+       "accn": "0001682852-23-000011",
+       "fy": 2022,
+       "fp": "FY",
+       "form": "10-K",
+       "filed": "2023-02-24",
+       "frame": "CY2022"
+      }
+     ]
+    }
+   },
+   "RevenueFromContractWithCustomerExcludingAssessedTax": {
+    "label": "Revenue from Contract with Customer, Excluding Assessed Tax",
+    "units": {
+     "USD": [
+      {
+       "start": "2024-01-01",
+       "end": "2024-12-31",
+       "val": 3236000000,
+       "accn": "0001682852-26-000033",
+       "fy": 2025,
+       "fp": "FY",
+       "form": "10-K",
+       "filed": "2026-02-20",
+       "frame": "CY2024"
+      },
+      {
+       "start": "2025-01-01",
+       "end": "2025-12-31",
+       "val": 1944000000,
+       "accn": "0001682852-26-000033",
+       "fy": 2025,
+       "fp": "FY",
+       "form": "10-K",
+       "filed": "2026-02-20",
+       "frame": "CY2025"
+      }
+     ]
+    }
+   },
+   "OperatingIncomeLoss": {
+    "label": "Operating Income (Loss)",
+    "units": {
+     "USD": [
+      {
+       "start": "2024-01-01",
+       "end": "2024-12-31",
+       "val": -3945000000,
+       "accn": "0001682852-26-000033",
+       "fy": 2025,
+       "fp": "FY",
+       "form": "10-K",
+       "filed": "2026-02-20",
+       "frame": "CY2024"
+      },
+      {
+       "start": "2025-01-01",
+       "end": "2025-12-31",
+       "val": -3074000000,
+       "accn": "0001682852-26-000033",
+       "fy": 2025,
+       "fp": "FY",
+       "form": "10-K",
+       "filed": "2026-02-20",
+       "frame": "CY2025"
+      }
+     ]
+    }
+   },
+   "NetIncomeLoss": {
+    "label": "Net Income (Loss) Attributable to Parent",
+    "units": {
+     "USD": [
+      {
+       "start": "2024-01-01",
+       "end": "2024-12-31",
+       "val": -3561000000,
+       "accn": "0001682852-26-000033",
+       "fy": 2025,
+       "fp": "FY",
+       "form": "10-K",
+       "filed": "2026-02-20",
+       "frame": "CY2024"
+      },
+      {
+       "start": "2025-01-01",
+       "end": "2025-12-31",
+       "val": -2822000000,
+       "accn": "0001682852-26-000033",
+       "fy": 2025,
+       "fp": "FY",
+       "form": "10-K",
+       "filed": "2026-02-20",
+       "frame": "CY2025"
+      }
+     ]
+    }
+   },
+   "Assets": {
+    "label": "Assets",
+    "units": {
+     "USD": [
+      {
+       "end": "2024-12-31",
+       "val": 14142000000,
+       "accn": "0001682852-26-000033",
+       "fy": 2025,
+       "fp": "FY",
+       "form": "10-K",
+       "filed": "2026-02-20",
+       "frame": "CY2024Q4I"
+      },
+      {
+       "end": "2025-12-31",
+       "val": 12338000000,
+       "accn": "0001682852-26-000033",
+       "fy": 2025,
+       "fp": "FY",
+       "form": "10-K",
+       "filed": "2026-02-20"
+      }
+     ]
+    }
+   },
+   "Liabilities": {
+    "label": "Liabilities",
+    "units": {
+     "USD": [
+      {
+       "end": "2024-12-31",
+       "val": 3241000000,
+       "accn": "0001682852-26-000033",
+       "fy": 2025,
+       "fp": "FY",
+       "form": "10-K",
+       "filed": "2026-02-20",
+       "frame": "CY2024Q4I"
+      },
+      {
+       "end": "2025-12-31",
+       "val": 3688000000,
+       "accn": "0001682852-26-000033",
+       "fy": 2025,
+       "fp": "FY",
+       "form": "10-K",
+       "filed": "2026-02-20"
+      }
+     ]
+    }
+   },
+   "StockholdersEquity": {
+    "label": "Stockholders' Equity Attributable to Parent",
+    "units": {
+     "USD": [
+      {
+       "end": "2024-12-31",
+       "val": 10901000000,
+       "accn": "0001682852-26-000033",
+       "fy": 2025,
+       "fp": "FY",
+       "form": "10-K",
+       "filed": "2026-02-20"
+      },
+      {
+       "end": "2025-12-31",
+       "val": 8650000000,
+       "accn": "0001682852-26-000033",
+       "fy": 2025,
+       "fp": "FY",
+       "form": "10-K",
+       "filed": "2026-02-20"
+      }
+     ]
+    }
+   },
+   "NetCashProvidedByUsedInOperatingActivities": {
+    "label": "Net Cash Provided by (Used in) Operating Activities",
+    "units": {
+     "USD": [
+      {
+       "start": "2024-01-01",
+       "end": "2024-12-31",
+       "val": -3004000000,
+       "accn": "0001682852-26-000033",
+       "fy": 2025,
+       "fp": "FY",
+       "form": "10-K",
+       "filed": "2026-02-20",
+       "frame": "CY2024"
+      },
+      {
+       "start": "2025-01-01",
+       "end": "2025-12-31",
+       "val": -1873000000,
+       "accn": "0001682852-26-000033",
+       "fy": 2025,
+       "fp": "FY",
+       "form": "10-K",
+       "filed": "2026-02-20",
+       "frame": "CY2025"
+      }
+     ]
+    }
+   }
+  },
+  "dei": {}
+ }
+}

@@ -236,6 +236,93 @@ def parse_company_facts(
     return datapoints, warnings
 
 
+#: Fields the period-aware normalizer is authoritative over. Kept beside the merge so
+#: a new concept added to `_CONCEPT_MAP` without a normalizer counterpart is visible.
+_NORMALIZER_COVERED_FIELDS: frozenset[str] = frozenset(
+    {
+        "revenue", "gross_profit", "operating_income", "net_income", "eps_basic",
+        "eps_diluted", "operating_cash_flow", "capital_expenditures",
+        "cash_and_equivalents", "total_assets", "total_liabilities",
+        "shareholders_equity", "short_term_debt", "long_term_debt",
+    }
+)
+
+
+def merge_fundamentals(
+    data: dict,
+    ticker: str,
+    cik: str,
+    base: list[FundamentalDataPoint],
+) -> tuple[list[FundamentalDataPoint], list[str]]:
+    """Combine the base parser with the period-aware normalizer. Normalizer WINS.
+
+    Module-level and pure so the shipped merge is the one under test. Replicating it
+    inside a test would let the two drift, and a test that agrees with a copy of the
+    code rather than the code is how the original defect survived.
+
+    The precedence used to run the other way — "existing field_names from
+    ``parse_company_facts`` win to preserve behavior" — and preserving that behaviour
+    meant preserving a defect. ``parse_company_facts`` takes the FIRST alias concept
+    with any annual data and never compares periods ACROSS aliases, so an issuer that
+    changed XBRL tags keeps reporting the stale tag's final year for ever.
+    ``_select_metric`` compares every alias by fiscal year and gets it right.
+
+    Measured on Moderna's real companyfacts: the stale ``Revenues`` tag ends at FY2022
+    with $19.263bn, while ``RevenueFromContractWithCustomerExcludingAssessedTax``
+    carries FY2025 with $1.944bn. The FY2022 figure won, inherited the bundle's FY2025
+    headline, and reached a live report as "FY2025 revenue was $19.263 billion" — a
+    tenfold overstatement that five council agents then reasoned from.
+    """
+    from app.integrations.sec_fundamentals_normalizer import normalize_company_facts
+
+    warnings: list[str] = []
+    normalized = normalize_company_facts(data, ticker, cik)
+    points = normalized.to_datapoints()
+    by_name = {dp.field_name: dp for dp in points}
+
+    superseded = sorted(
+        dp.field_name
+        for dp in base
+        if dp.field_name in by_name and dp.value != by_name[dp.field_name].value
+    )
+    if superseded:
+        # Recorded, never silent: a value changing between two readings of the same
+        # filing is exactly the kind of thing that has to be visible.
+        warnings.append(
+            "SEC EDGAR: period-aware selection superseded the legacy alias-order value "
+            f"for {', '.join(superseded)}."
+        )
+
+    # Defence in depth for the case above: a field the normalizer COVERS but did not
+    # resolve leaves the legacy period-blind value as the only candidate. It still
+    # ships — dropping a real figure would be worse — but never silently, because a
+    # value chosen by alias order rather than by period is exactly what put a FY2022
+    # revenue into a report labelled FY2025.
+    unresolved = sorted(
+        dp.field_name
+        for dp in base
+        if dp.field_name not in by_name
+        and dp.field_name.removeprefix("sec_edgar.") in _NORMALIZER_COVERED_FIELDS
+    )
+    if unresolved:
+        warnings.append(
+            "SEC EDGAR: the period-aware selector resolved nothing for "
+            f"{', '.join(unresolved)}; the value shipped for those fields was chosen "
+            "by alias order and its period is not verified."
+        )
+
+    merged = [dp for dp in base if dp.field_name not in by_name]
+    merged.extend(points)
+    seen = {dp.field_name for dp in merged}
+    for dp in base:
+        if dp.field_name not in seen:
+            merged.append(dp)
+            seen.add(dp.field_name)
+
+    warnings.extend(normalized.warnings)
+    return merged, warnings
+
+
 class SecEdgarFundamentalsProvider(SecEdgarProvider):
     """
     SEC EDGAR provider with XBRL fundamentals and ticker→CIK resolution.
@@ -388,18 +475,8 @@ class SecEdgarFundamentalsProvider(SecEdgarProvider):
 
         datapoints, warnings = parse_company_facts(data, ticker, cik)
 
-        # Phase 19.3: layer normalized fundamentals (derived margins, FCF, total
-        # debt, cash, gross/operating income, YoY growth) on top of the base 10.
-        # Existing field_names from parse_company_facts win to preserve behavior.
-        from app.integrations.sec_fundamentals_normalizer import normalize_company_facts
-
-        normalized = normalize_company_facts(data, ticker, cik)
-        existing_fields = {dp.field_name for dp in datapoints}
-        for dp in normalized.to_datapoints():
-            if dp.field_name not in existing_fields:
-                datapoints.append(dp)
-                existing_fields.add(dp.field_name)
-        warnings.extend(normalized.warnings)
+        datapoints, merge_warnings = merge_fundamentals(data, ticker, cik, datapoints)
+        warnings.extend(merge_warnings)
 
         warning_note = " | ".join(warnings) if warnings else None
         status_note = (

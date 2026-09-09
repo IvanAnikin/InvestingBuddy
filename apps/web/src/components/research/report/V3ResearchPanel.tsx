@@ -74,7 +74,11 @@ function LeadRow({ lead }: { lead: ExternalLead }) {
               : "rounded-sm bg-[color:var(--ib-line)] px-1.5 py-0.5 text-[11px] font-medium uppercase tracking-[0.1em] text-[color:var(--ib-ink-3)]"
           }
         >
-          {lead.isEvidence ? "Verified — evidence" : "Provider claim only"}
+          {lead.isEvidence
+            ? lead.corroboratingOnly
+              ? "Verified — corroboration"
+              : "Verified — evidence"
+            : "Provider claim only"}
         </span>
         {lead.host && (
           <span className="ib-breakable text-xs text-[color:var(--ib-ink-3)]">
@@ -95,6 +99,8 @@ function LeadRow({ lead }: { lead: ExternalLead }) {
         <p className="ib-breakable mt-1 text-xs text-[color:var(--ib-ink-3)]">
           {lead.evidenceId}
           {lead.contentHash && ` · content ${lead.contentHash}`}
+          {lead.corroboratingOnly &&
+            " · a primary source established this fact; kept as corroboration"}
         </p>
       ) : (
         <p className="ib-breakable mt-1 text-xs text-[color:var(--ib-ink-3)]">
@@ -337,8 +343,11 @@ export default function V3ResearchPanel({ v3 }: { v3: V3Research | null }) {
           )}
           {chair.deterministicFallback && (
             <p className="mt-2 max-w-3xl text-xs leading-relaxed text-amber-200/90">
-              No model was available for the chair, so this verdict is the ledger&apos;s
-              own arithmetic rather than an interpretation of it.
+              {chair.fallbackReason === "council_did_not_convene"
+                ? "The council did not convene, so there was nothing for the chair to synthesise. This verdict is the ledger's own arithmetic — not a model's, and not a sign that one was missing."
+                : chair.fallbackReason === "no_chair_model_available"
+                  ? "No chair model was available, so this verdict is the ledger's own arithmetic rather than an interpretation of it."
+                  : "This verdict is the ledger's own arithmetic rather than a model's."}
             </p>
           )}
           {chair.openQuestions.length > 0 && (
@@ -386,8 +395,16 @@ export default function V3ResearchPanel({ v3 }: { v3: V3Research | null }) {
           </summary>
           <dl className="mt-4 grid grid-cols-2 gap-5 sm:grid-cols-4">
             <Stat label="Web searches" value={n(consumption.webSearchCalls)} />
-            <Stat label="URL fetches" value={n(consumption.urlFetchCalls)} />
-            <Stat label="Documents" value={n(consumption.documentsFetched)} />
+            <Stat
+              label="URL retrievals"
+              value={n(consumption.urlFetchCalls)}
+              hint="pages this platform fetched itself"
+            />
+            <Stat
+              label="Corpus documents"
+              value={n(consumption.documentsFetched)}
+              hint="persisted to the corpus"
+            />
             <Stat
               label="Useful findings"
               value={n(consumption.verifiedUsefulFindings)}
@@ -399,28 +416,56 @@ export default function V3ResearchPanel({ v3 }: { v3: V3Research | null }) {
             />
           </dl>
           <dl className="mt-5 grid grid-cols-2 gap-5 sm:grid-cols-4">
+            {/* Two DIFFERENT spends, and the labels now say which. The routed models are
+                the investigator, chair and red team; the research provider is the
+                search leg, whose calls are recorded on the tool rows. They are separate
+                clients with separate transports, so nothing is counted twice. */}
             <Stat
-              label="Council tokens in"
+              label="Routed model tokens in"
               value={n(consumption.modelInputTokens)}
+              hint="investigator, chair, red team"
             />
             <Stat
-              label="Council tokens out"
+              label="Routed model tokens out"
               value={n(consumption.modelOutputTokens)}
             />
             <Stat
-              label="Provider tokens in"
+              label="Research provider tokens in"
               value={n(consumption.providerInputTokens)}
               hint={
                 consumption.providerCachedTokens
-                  ? `${consumption.providerCachedTokens} cached`
-                  : undefined
+                  ? `${consumption.providerCachedTokens} cached · the search leg`
+                  : "the search leg"
               }
             />
             <Stat
-              label="Provider tokens out"
+              label="Research provider tokens out"
               value={n(consumption.providerOutputTokens)}
             />
           </dl>
+
+          {consumption.byVendor.length > 0 && (
+            <div className="mt-5" data-testid="v3-vendor-attribution">
+              <p className="text-xs font-medium uppercase tracking-[0.14em] text-[color:var(--ib-ink-3)]">
+                By vendor
+              </p>
+              <ul className="mt-2 space-y-1">
+                {consumption.byVendor.map((v) => (
+                  <li
+                    key={v.vendor}
+                    className="text-sm leading-relaxed text-[color:var(--ib-ink-2)]"
+                  >
+                    {labelWords(v.vendor)} — {v.calls} call
+                    {v.calls === 1 ? "" : "s"}, {v.input} in, {v.output} out
+                  </li>
+                ))}
+              </ul>
+              <p className="mt-2 text-xs leading-relaxed text-[color:var(--ib-ink-3)]">
+                A vendor absent from this list made no routed call in this run. That is
+                not the same as spending nothing, and it is not reported as zero.
+              </p>
+            </div>
+          )}
           <p className="mt-4 max-w-3xl text-xs leading-relaxed text-[color:var(--ib-ink-3)]">
             {consumption.estimatedCostUsd === null
               ? (consumption.costUnknownBecause ??

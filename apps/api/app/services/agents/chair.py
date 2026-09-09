@@ -67,6 +67,12 @@ class ChairVerdict:
     #: forbids.
     unresolved_disagreement_ids: list[str] = field(default_factory=list)
     deterministic_fallback: bool = False
+    #: WHY the deterministic verdict was used. These are different states and a reader
+    #: must not be told the wrong one: "the council produced nothing to synthesise" is a
+    #: research outcome, "no chair model was reachable" is an infrastructure failure.
+    #: The live MRNA report degraded with the second message while a chair model was in
+    #: fact routed and available — the council simply had no findings.
+    fallback_reason: str | None = None
     #: Citations the model made that name nothing in this run.
     discarded_citations: list[str] = field(default_factory=list)
 
@@ -79,6 +85,7 @@ class ChairVerdict:
             "open_questions": list(self.open_questions),
             "unresolved_disagreement_ids": list(self.unresolved_disagreement_ids),
             "deterministic_fallback": self.deterministic_fallback,
+            "fallback_reason": self.fallback_reason,
             "discarded_citations": list(self.discarded_citations),
         }
 
@@ -142,6 +149,14 @@ class LLMChair:
         if self.client is None or not council_input.convened:
             verdict = deterministic_verdict(council_input)
             verdict.unresolved_disagreement_ids = unresolved_ids
+            # Which of the two it was. Checked in this order because a council that did
+            # not convene has nothing to synthesise even where a model is available, and
+            # that is the more informative statement about the RUN.
+            verdict.fallback_reason = (
+                "council_did_not_convene"
+                if not council_input.convened
+                else "no_chair_model_available"
+            )
             return verdict
 
         system = (

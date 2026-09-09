@@ -366,6 +366,8 @@ class TestTheLeadRowContractIsPinned:
             "content_hash",
             "evidence_id",
             "is_canonical_evidence",
+            "source_tier",
+            "corroborating_only",
         }
 
     async def test_the_exact_keys_the_block_itself_exposes(self) -> None:
@@ -381,3 +383,97 @@ class TestTheLeadRowContractIsPinned:
             "leads",
             "note",
         }
+
+
+class TestPrimarySourcesOutrankSecondaryOnes:
+    """The canonical rule: primary issuer/regulator evidence outranks verified
+    secondary evidence when both establish the SAME fact.
+
+    The live MRNA run promoted an InvestingNews claim for Q1 2026 revenue. The provider
+    had also named an SEC exhibit; whichever verified became the evidence, because the
+    external path treated the provider's URL choice as final. The provider's job is
+    DISCOVERY — it names candidates; it does not decide which source this platform
+    stands behind.
+    """
+
+    async def test_the_regulator_source_becomes_the_citation(self) -> None:
+        sec = _lead(
+            claimed_value="389",
+            fetched_url="https://www.sec.gov/Archives/edgar/x/ex991.htm",
+            promoted_evidence_id="ev:x:sec",
+        )
+        news = _lead(
+            claimed_value="389",
+            fetched_url="https://investingnews.com/moderna-q1-2026/",
+            promoted_evidence_id="ev:x:news",
+        )
+        out = await _external_research(
+            _Session([news, sec]), _Row(started_at=None), _Row(id=uuid.uuid4())
+        )
+        rows = {lead["evidence_id"]: lead for lead in out["leads"]}
+        assert rows["ev:x:sec"]["corroborating_only"] is False
+        assert rows["ev:x:news"]["corroborating_only"] is True, (
+            "the secondary source must be labelled corroboration, not the citation"
+        )
+
+    async def test_the_secondary_source_is_kept_not_discarded(self) -> None:
+        """A second independent source agreeing is worth recording. Dropping it loses
+        information without improving the canonical choice."""
+        out = await _external_research(
+            _Session(
+                [
+                    _lead(claimed_value="389", fetched_url="https://investingnews.com/a",
+                          promoted_evidence_id="ev:x:news"),
+                    _lead(claimed_value="389", fetched_url="https://www.sec.gov/x",
+                          promoted_evidence_id="ev:x:sec"),
+                ]
+            ),
+            _Row(started_at=None),
+            _Row(id=uuid.uuid4()),
+        )
+        assert out["evidence_promoted"] == 2
+        assert len(out["leads"]) == 2
+
+    async def test_a_secondary_source_alone_is_still_the_citation(self) -> None:
+        """"Do NOT reject useful secondary sources merely because a primary source
+        might exist." With no primary source retrieved, the secondary one stands."""
+        out = await _external_research(
+            _Session(
+                [
+                    _lead(claimed_value="389", fetched_url="https://investingnews.com/a",
+                          promoted_evidence_id="ev:x:news")
+                ]
+            ),
+            _Row(started_at=None),
+            _Row(id=uuid.uuid4()),
+        )
+        assert out["leads"][0]["corroborating_only"] is False
+
+    async def test_different_facts_are_not_ranked_against_each_other(self) -> None:
+        """Identity is value+period+scope. Two different figures are two facts, and
+        neither corroborates the other."""
+        out = await _external_research(
+            _Session(
+                [
+                    _lead(claimed_value="389", claimed_period="2026-Q1",
+                          fetched_url="https://investingnews.com/a",
+                          promoted_evidence_id="ev:x:a"),
+                    _lead(claimed_value="145", claimed_period="2026-Q2",
+                          fetched_url="https://www.sec.gov/x",
+                          promoted_evidence_id="ev:x:b"),
+                ]
+            ),
+            _Row(started_at=None),
+            _Row(id=uuid.uuid4()),
+        )
+        assert all(lead["corroborating_only"] is False for lead in out["leads"])
+
+    def test_tier_classification_declines_to_guess(self) -> None:
+        from app.services.pipeline.v3_pipeline import external_source_tier
+
+        assert external_source_tier("https://www.sec.gov/Archives/x") == "T1_primary_filing"
+        assert external_source_tier("https://data.sec.gov/api/x") == "T1_primary_filing"
+        assert external_source_tier("https://investingnews.com/x") == "T5_api_aggregator"
+        # A lookalike must not be read as the regulator.
+        assert external_source_tier("https://sec.gov.evil.com/x") == "T5_api_aggregator"
+        assert external_source_tier(None) == "T5_api_aggregator"

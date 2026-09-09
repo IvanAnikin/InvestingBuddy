@@ -2,6 +2,7 @@
   "chair": {
     "deterministic_fallback": true,
     "discarded_citations": [],
+    "fallback_reason": "council_did_not_convene",
     "fundamental_setup": "insufficient_evidence",
     "key_points": [],
     "label": "insufficient_data",
@@ -133,7 +134,7 @@
   },
   "degraded": [
     "no model provider resolved; investigations run tools and report gaps",
-    "the chair fell back to the deterministic verdict"
+    "the chair returned the deterministic verdict because the council did not convene (no findings to synthesise)"
   ],
   "delta": null,
   "elapsed_seconds": 0.0,

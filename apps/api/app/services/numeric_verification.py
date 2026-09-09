@@ -532,6 +532,137 @@ def _periods_in(sentence: str) -> set[str]:
     return out
 
 
+#: Words that turn coexisting figures into a COMPARATIVE claim. Two numbers printed
+#: side by side assert nothing; "fell from" asserts a direction, and a direction across
+#: incompatible spans is arithmetic nobody performed.
+#:
+#: Deliberately narrow. "Revenue was $145m in Q2 2026 and $1.9bn in FY2025" is two facts
+#: coexisting and stays untouched — the canonical rule allows same-frequency comparison
+#: OR explicitly labelled non-comparative coexistence, and this only refuses the first.
+#: Multi-word phrases, matched as substrings because they cannot occur inside a word.
+_COMPARISON_PHRASES: tuple[str, ...] = (
+    "compared to", "compared with", "versus", "vs", "vs.",
+    "down from", "up from", "year-over-year", "year over year", "yoy",
+)
+#: Single words, matched on WORD BOUNDARIES. Substring matching flagged "fellow" for
+#: "fell", "arose" for "rose" and "dropout" for "drop" — the last is ruinous for a
+#: biotech pipeline, where a trial dropout is ordinary prose. Found by review, after the
+#: author had already removed "trend" for one instance of the same class.
+_COMPARISON_TOKENS: frozenset[str] = frozenset(
+    {
+        "decline", "declined", "declines", "declining",
+        "decrease", "decreased", "decreases", "decreasing",
+        "grew", "increase", "increased", "increases", "increasing",
+        "rose", "risen", "fell", "fallen",
+        "drop", "dropped", "drops", "dropping",
+    }
+)
+#: "trend" is deliberately NOT in that list. It appears in "limiting trend analysis" —
+#: an honest statement about what the data does NOT support — and flagging that would
+#: withhold a gap rather than a claim. Every real violation in the live report also
+#: carried "decline" or "drop", so nothing is lost by leaving it out, and an audit that
+#: suppresses honest gaps is worse than one that misses a redundant hit.
+
+
+def is_comparative(sentence: str) -> bool:
+    """Whether a sentence asserts a direction of change rather than stating figures.
+
+    "growth" is deliberately absent: "withdrew FY2025 growth guidance" names a thing,
+    it does not assert a direction. The verbs do.
+    """
+    text = (sentence or "").casefold()
+    if any(phrase in text for phrase in _COMPARISON_PHRASES):
+        return True
+    return any(token in _COMPARISON_TOKENS for token in re.findall(r"[a-z-]+", text))
+
+
+def incompatible_periods(sentence: str) -> tuple[str, str] | None:
+    """The first pair of named periods that cannot be compared, or ``None``.
+
+    A quarter set against a full year is the ``INTERIM_AS_ANNUAL`` contradiction: the
+    two measure different-length spans, so no growth or decline follows from putting
+    them side by side.
+
+    **Frequency, deliberately, and not** ``ReportingPeriod.comparable_with``. That
+    method answers a stricter and different question — may these two periods sit on one
+    trend line — and so requires the same ordinal, refusing Q1 against Q2. Quarter-on-
+    quarter is a real comparison an analyst makes, and refusing it here would suppress
+    true statements. This campaign has made that mistake before: a numeric guard built
+    on the group figure alone withheld 32 correct segment sentences from one report.
+
+    This reports what the SENTENCE NAMES. Whether the sentence actually compares them
+    is :func:`comparative_period_conflict`'s question, because coexistence is allowed.
+    """
+    return _first_incompatible(sorted(_periods_in((sentence or "").casefold())))
+
+
+def _first_incompatible(keys: list[str]) -> tuple[str, str] | None:
+    """The first pair of period keys measuring different-length spans."""
+    from app.services.sources.financial_period import parse_period
+
+    for i, left in enumerate(keys):
+        for right in keys[i + 1 :]:
+            a, b = parse_period(left), parse_period(right)
+            if a.is_unknown or b.is_unknown:
+                continue
+            if a.period_type != b.period_type:
+                return (left, right)
+    return None
+
+
+def _clause_is_comparative(clause: str) -> bool:
+    """`is_comparative`, applied to one clause rather than the whole sentence."""
+    if any(phrase in clause for phrase in _COMPARISON_PHRASES):
+        return True
+    return any(token in _COMPARISON_TOKENS for token in re.findall(r"[a-z-]+", clause))
+
+
+def comparative_period_conflict(sentence: str) -> tuple[str, str] | None:
+    """A comparative claim spanning incompatible periods, or ``None``.
+
+    THE DEFECT THIS EXISTS FOR. A live report said "Q2 2026 revenue compared to FY2025
+    annual revenue indicates a continuing revenue decline trend", and repeated the
+    inference across the Red Team, the bear case and the chair. Moderna's Q2 2026
+    revenue was $145m against Q2 2025's $142m — a rise. The "decline" came entirely
+    from setting one quarter against a full year.
+
+    Note it takes NO numbers. The sentence above quotes none, so every numeric check
+    in this module skipped it — the claim was invalid on its periods alone, and that is
+    what is checked here.
+    """
+    if not is_comparative(sentence):
+        return None
+
+    text = (sentence or "").casefold()
+    if len(_periods_in(text)) < 2:
+        return None
+
+    # Only the periods ADJACENT TO the comparison are compared.
+    #
+    # Scanning every pair in the sentence flagged pairs the sentence never sets against
+    # each other: "Q2 2026 revenue rose to 145 from 142 in Q2 2025, and FY2026 guidance
+    # was reiterated" is a valid quarter-on-quarter comparison, and the whole-sentence
+    # scan refused it over the guidance clause. Found by review — and it is exactly the
+    # over-suppression this module's own docstring warns about.
+    clauses = re.split(r"[;,]| and | but | while ", text)
+    for index, clause in enumerate(clauses):
+        if not _clause_is_comparative(clause):
+            continue
+        local = sorted(_periods_in(clause))
+        if len(local) < 2:
+            # The comparison and the periods it compares can straddle a clause boundary
+            # — "revenue fell sharply, from FY2025 to Q2 2026". Widen to the neighbours,
+            # but ONLY here: a clause already naming two periods is self-contained, and
+            # widening it would drag in an unrelated period from elsewhere, which is the
+            # defect this fix exists to remove.
+            window = clauses[max(0, index - 1) : index + 2]
+            local = sorted({key for c in window for key in _periods_in(c)})
+        conflict = _first_incompatible(local)
+        if conflict is not None:
+            return conflict
+    return None
+
+
 def scopes_in(sentence: str, index: CanonicalIndex) -> set[str]:
     """Which reporting entities a sentence is talking about.
 
@@ -577,7 +708,17 @@ def check_sentence(sentence: str, index: CanonicalIndex) -> SentenceVerdict:
     matching none of that scope's canonical values, is called conflicting.
     """
     text = (sentence or "").casefold()
-    if not text.strip() or not index.figures:
+    if not text.strip():
+        return UNCHECKED
+
+    # Checked BEFORE the numeric gates, and independently of them. A comparative claim
+    # across incompatible spans is invalid whether or not it quotes a figure, and the
+    # live sentence that motivated this quoted none — so every numeric check skipped it.
+    pair = comparative_period_conflict(text)
+    if pair is not None:
+        return SentenceVerdict(VERDICT_CONFLICTING, metric=None, scope=None)
+
+    if not index.figures:
         return UNCHECKED
 
     numbers = prose_numbers(text)
