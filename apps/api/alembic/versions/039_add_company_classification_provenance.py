@@ -34,6 +34,7 @@ classified" rather than "classified as nothing". Downgrade drops only these four
 from collections.abc import Sequence
 
 import sqlalchemy as sa
+
 from alembic import op
 
 # revision identifiers
