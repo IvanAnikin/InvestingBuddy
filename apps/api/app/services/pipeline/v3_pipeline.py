@@ -624,7 +624,7 @@ async def _external_research(session: Any, run: Any, company: Any) -> dict[str, 
     # The provider's job here is DISCOVERY. It names URLs; it does not decide which
     # source this platform stands behind. On the live MRNA run it named both an SEC
     # exhibit and a news site, and whichever verified first became the evidence.
-    canonical_by_claim: dict[tuple[str, str, str], Any] = {}
+    canonical_by_claim: dict[tuple[float, str, str, str], Any] = {}
     for lead in leads:
         if not lead.promoted_evidence_id:
             continue
