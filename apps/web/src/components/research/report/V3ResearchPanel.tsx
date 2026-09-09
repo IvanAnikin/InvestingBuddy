@@ -74,7 +74,11 @@ function LeadRow({ lead }: { lead: ExternalLead }) {
               : "rounded-sm bg-[color:var(--ib-line)] px-1.5 py-0.5 text-[11px] font-medium uppercase tracking-[0.1em] text-[color:var(--ib-ink-3)]"
           }
         >
-          {lead.isEvidence ? "Verified — evidence" : "Provider claim only"}
+          {lead.isEvidence
+            ? lead.corroboratingOnly
+              ? "Verified — corroboration"
+              : "Verified — evidence"
+            : "Provider claim only"}
         </span>
         {lead.host && (
           <span className="ib-breakable text-xs text-[color:var(--ib-ink-3)]">
@@ -95,6 +99,8 @@ function LeadRow({ lead }: { lead: ExternalLead }) {
         <p className="ib-breakable mt-1 text-xs text-[color:var(--ib-ink-3)]">
           {lead.evidenceId}
           {lead.contentHash && ` · content ${lead.contentHash}`}
+          {lead.corroboratingOnly &&
+            " · a primary source established this fact; kept as corroboration"}
         </p>
       ) : (
         <p className="ib-breakable mt-1 text-xs text-[color:var(--ib-ink-3)]">
@@ -337,8 +343,11 @@ export default function V3ResearchPanel({ v3 }: { v3: V3Research | null }) {
           )}
           {chair.deterministicFallback && (
             <p className="mt-2 max-w-3xl text-xs leading-relaxed text-amber-200/90">
-              No model was available for the chair, so this verdict is the ledger&apos;s
-              own arithmetic rather than an interpretation of it.
+              {chair.fallbackReason === "council_did_not_convene"
+                ? "The council did not convene, so there was nothing for the chair to synthesise. This verdict is the ledger's own arithmetic — not a model's, and not a sign that one was missing."
+                : chair.fallbackReason === "no_chair_model_available"
+                  ? "No chair model was available, so this verdict is the ledger's own arithmetic rather than an interpretation of it."
+                  : "This verdict is the ledger's own arithmetic rather than a model's."}
             </p>
           )}
           {chair.openQuestions.length > 0 && (
@@ -386,8 +395,16 @@ export default function V3ResearchPanel({ v3 }: { v3: V3Research | null }) {
           </summary>
           <dl className="mt-4 grid grid-cols-2 gap-5 sm:grid-cols-4">
             <Stat label="Web searches" value={n(consumption.webSearchCalls)} />
-            <Stat label="URL fetches" value={n(consumption.urlFetchCalls)} />
-            <Stat label="Documents" value={n(consumption.documentsFetched)} />
+            <Stat
+              label="URL retrievals"
+              value={n(consumption.urlFetchCalls)}
+              hint="pages this platform fetched itself"
+            />
+            <Stat
+              label="Corpus documents"
+              value={n(consumption.documentsFetched)}
+              hint="persisted to the corpus"
+            />
             <Stat
               label="Useful findings"
               value={n(consumption.verifiedUsefulFindings)}

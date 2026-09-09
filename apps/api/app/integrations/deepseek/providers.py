@@ -616,10 +616,46 @@ class DeepSeekModelProvider:
     transport: DeepSeekTransport
     provider_id: str = PROVIDER_ID
     temperature: float = 0.1
+    #: Tokens spent since the last :meth:`consume_usage`, in the shape the routing
+    #: layer's per-vendor attribution expects.
+    #:
+    #: This existed for the Azure client and not for this one, so a run whose
+    #: Investigator was routed to DeepSeek reported an EMPTY ``model_by_vendor`` while
+    #: genuinely spending tens of thousands of tokens. The pipeline reads usage with
+    #: ``getattr(client, "consume_usage", None)``, so an absent method is silently
+    #: "this vendor spent nothing" — the one answer that was certainly wrong.
+    _calls: int = 0
+    _prompt_tokens: int = 0
+    _completion_tokens: int = 0
 
     @property
     def model(self) -> str:
         return getattr(self.transport, "model", "")
+
+    def consume_usage(self) -> Any:
+        """Pop the usage accumulated since the last call, or ``None``.
+
+        ``None`` for a client that was never used, matching the Azure client's contract:
+        an unused vendor must be absent from the attribution rather than present with
+        zeros, because zero spend and no participation read the same and are not.
+        """
+        if self._calls == 0:
+            return None
+        from app.services.llm.client import LLMUsage
+
+        usage = LLMUsage(
+            prompt_tokens=self._prompt_tokens,
+            completion_tokens=self._completion_tokens,
+            total_tokens=self._prompt_tokens + self._completion_tokens,
+            calls=self._calls,
+            # DeepSeek returns provider usage metadata on every response, so these are
+            # measured rather than estimated from character counts.
+            estimated=False,
+        )
+        self._calls = 0
+        self._prompt_tokens = 0
+        self._completion_tokens = 0
+        return usage
 
     async def complete(
         self, *, system: str, user: str, max_tokens: int = 1200, timeout: int = 40
@@ -631,6 +667,9 @@ class DeepSeekModelProvider:
             temperature=self.temperature,
             timeout=timeout,
         )
+        self._calls += 1
+        self._prompt_tokens += int(response.prompt_tokens or 0)
+        self._completion_tokens += int(response.completion_tokens or 0)
         payload = _json_object(response.text)
         return ModelResponse(
             provider=self.provider_id,

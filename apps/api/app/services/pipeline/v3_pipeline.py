@@ -71,6 +71,7 @@ from app.services.memory import store as memory
 from app.services.memory.delta import compute_delta, persist_delta
 from app.services.playbooks import select as select_playbooks
 from app.services.research_mode import budget_for, limits_for, parse_mode
+from app.services.sources.taxonomy import tier_rank
 
 #: The key the V3 research state is attached under. Additive on a JSONB column the
 #: report API already returns and the frontend already tolerates unknown keys in.
@@ -438,7 +439,16 @@ async def _run(
     )
     outcome.chair = verdict.to_dict()
     if verdict.deterministic_fallback:
-        outcome.degraded.append("the chair fell back to the deterministic verdict")
+        # Named, because the two states mean opposite things about the deployment. The
+        # live MRNA run reported this as a model being unavailable while a chair model
+        # was routed and reachable — the council simply had no findings to synthesise.
+        outcome.degraded.append(
+            "the chair returned the deterministic verdict because the council did not "
+            "convene (no findings to synthesise)"
+            if verdict.fallback_reason == "council_did_not_convene"
+            else "the chair fell back to the deterministic verdict: no chair model was "
+            "available"
+        )
 
     # 9. What a reader can cite.
     outcome.findings = [f.to_dict() for f in council.findings[:60]]
@@ -509,6 +519,49 @@ async def _tool_call_consumption(session: Any, run: Any, company: Any) -> dict[s
     return totals
 
 
+#: Regulator hosts whose documents are primary filings. Deliberately short and
+#: suffix-matched: a list that tried to enumerate every issuer domain would be wrong
+#: for most companies, and guessing a tier is worse than declining to.
+_REGULATOR_HOST_SUFFIXES: tuple[str, ...] = ("sec.gov", "europa.eu", "fca.org.uk")
+
+
+def external_source_tier(url: str | None) -> str:
+    """The source tier of a retrieved external URL.
+
+    Three answers only, and the third is the honest default. A regulator host serves
+    primary filings; anything else the external path reaches is secondary until
+    something establishes otherwise. There is no attempt to recognise issuer domains
+    here — `verified_issuer_sources` owns that question for the paths that have an
+    issuer to check against, and inventing a second, weaker answer would let a
+    lookalike domain be read as the company's own.
+    """
+    from urllib.parse import urlsplit
+
+    try:
+        host = (urlsplit(url or "").hostname or "").lower()
+    except ValueError:
+        return "T5_api_aggregator"
+    if not host:
+        return "T5_api_aggregator"
+    if any(host == suffix or host.endswith("." + suffix) for suffix in _REGULATOR_HOST_SUFFIXES):
+        return "T1_primary_filing"
+    return "T5_api_aggregator"
+
+
+def _claim_identity(lead: Any) -> tuple[str, str, str]:
+    """What makes two leads the SAME fact: value, period and scope.
+
+    Claim TEXT is deliberately not part of it — two sources reporting one figure word
+    it differently, and keying on prose would call them different facts and promote
+    both.
+    """
+    return (
+        str(getattr(lead, "claimed_value", "") or "").strip().lower(),
+        str(getattr(lead, "claimed_period", "") or "").strip().lower(),
+        str(getattr(lead, "claimed_scope", "") or "").strip().lower(),
+    )
+
+
 async def _external_research(session: Any, run: Any, company: Any) -> dict[str, Any]:
     """The external path's provenance: what was claimed, what we fetched, what survived.
 
@@ -540,6 +593,27 @@ async def _external_research(session: Any, run: Any, company: Any) -> dict[str, 
             return (urlsplit(url or "").hostname or "").lower() or None
         except ValueError:
             return None
+
+    # Source hierarchy. Among the leads that VERIFIED, a primary regulator source
+    # outranks a secondary one for the same fact — same value, same period, same scope.
+    # The lower-tier source is kept and labelled corroboration rather than discarded:
+    # a second independent source agreeing is worth recording, and dropping it would
+    # lose information without improving the canonical choice.
+    #
+    # The provider's job here is DISCOVERY. It names URLs; it does not decide which
+    # source this platform stands behind. On the live MRNA run it named both an SEC
+    # exhibit and a news site, and whichever verified first became the evidence.
+    canonical_by_claim: dict[tuple[str, str, str], Any] = {}
+    for lead in leads:
+        if not lead.promoted_evidence_id:
+            continue
+        key = _claim_identity(lead)
+        best = canonical_by_claim.get(key)
+        if best is None or tier_rank(external_source_tier(lead.fetched_url)) < tier_rank(
+            external_source_tier(best.fetched_url)
+        ):
+            canonical_by_claim[key] = lead
+    canonical_ids = {id(lead) for lead in canonical_by_claim.values()}
 
     return {
         "leads_discovered": len(leads),
@@ -579,6 +653,13 @@ async def _external_research(session: Any, run: Any, company: Any) -> dict[str, 
                 # lead with one contributed anything a finding may cite.
                 "evidence_id": lead.promoted_evidence_id,
                 "is_canonical_evidence": bool(lead.promoted_evidence_id),
+                # The tier of the source this platform actually retrieved.
+                "source_tier": external_source_tier(lead.fetched_url),
+                # True when a HIGHER-tier source established the same fact in this run,
+                # so this one stands as corroboration rather than as the citation.
+                "corroborating_only": bool(
+                    lead.promoted_evidence_id and id(lead) not in canonical_ids
+                ),
             }
             for lead in leads[:40]
         ],
