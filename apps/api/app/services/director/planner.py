@@ -42,7 +42,7 @@ model from filling a hole with prose.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Protocol, runtime_checkable
 
 from app.services.agent_tools.contracts import EXTERNAL_TOOL_NAMES
@@ -196,6 +196,12 @@ class ResearchPlan:
     #: rather than silently absent: a plan that quietly forgot a playbook's question
     #: would report a methodology it did not apply.
     dropped_for_capacity: list[str] = field(default_factory=list)
+    #: Assignments that will produce a thinner answer than the question asks for, with
+    #: the reason. A question needing the open web handed to a role that cannot reach it
+    #: is assigned anyway — the role can still answer from internal evidence — but the
+    #: run must not present that as an ordinary result. Distinguishing "searched and
+    #: found nothing" from "never searched" is the whole point.
+    degraded: list[str] = field(default_factory=list)
     playbook_versions: dict[str, int] = field(default_factory=dict)
     refined_by_model: bool = False
 
@@ -348,8 +354,37 @@ async def plan_research(
     #     say only when the external feature flag is on. Same single condition the role
     #     seating uses below, and for the same reason: one switch, not two that can
     #     disagree about whether the platform is allowed to reach the open web.
-    for question in _external_questions(implemented_tools(cfg)):
+    available_now = implemented_tools(cfg)
+    for question in _external_questions(available_now):
         questions.setdefault(question.key, question)
+
+    # 3c. A RE-ASKED question keeps the tools its definition requires.
+    #
+    # A prior gap becomes a question with EMPTY `required_tools` — the gap record does
+    # not carry them — and `setdefault` above then cannot supply the real definition,
+    # because the key is already present. For `recent_external_developments` that is
+    # ruinous in a way nothing reports: with no external tool required,
+    # `wants_external` is False, the eligibility rule below disqualifies every role
+    # holding an external tool, and the question is handed to a role that cannot
+    # search. **The external role is excluded from its own question.**
+    #
+    # It only bites from a company's SECOND run onward, once the first run has left the
+    # question unanswered as a gap — which is exactly how it reached production
+    # unnoticed: the first MRNA run searched the web, and every run after it silently
+    # did not. Found in production acceptance, by asking why a run took four seconds.
+    _definitions: dict[str, frozenset[str]] = {
+        key: tools for key, _text, tools in BASELINE_QUESTIONS
+    }
+    _definitions.update({key: tools for key, _text, tools in EXTERNAL_QUESTIONS})
+    for key, tools in _definitions.items():
+        existing = questions.get(key)
+        if existing is None or existing.required_tools:
+            continue
+        # Only tools something actually implements, so a re-asked question cannot
+        # become unassignable because of a capability that is switched off.
+        needed = frozenset(tools) & available_now
+        if needed:
+            questions[key] = replace(existing, required_tools=needed)
 
     ordered = sorted(
         questions.values(),
@@ -447,6 +482,32 @@ async def plan_research(
             )
             continue
         chosen = _least_loaded(candidates, assignments)
+
+        # SILENT DEGRADATION GUARD.
+        #
+        # A question whose canonical definition needs the open web must not be handed to
+        # a role that cannot reach it without the run SAYING so. The broken repeat runs
+        # did exactly that: `recent_external_developments` went to `financial_analyst`,
+        # which holds no external tool, the run finished in under four seconds and
+        # reported only a gap. Nothing distinguished "searched and found nothing" from
+        # "never searched at all", which are different answers about the world and about
+        # this platform.
+        #
+        # This is a REASON, not a refusal. Assigning it anyway is better than dropping
+        # the question — the role can still answer from internal evidence — but the
+        # reader is owed the reason the answer is thinner than it looks.
+        canonical_external = frozenset(
+            tools for _key, _text, tools in EXTERNAL_QUESTIONS if _key == question.key
+        )
+        needs_external = bool(
+            set(question.required_tools) & EXTERNAL_TOOL_NAMES
+        ) or bool(next(iter(canonical_external), frozenset()) & EXTERNAL_TOOL_NAMES)
+        if needs_external and not (chosen.tools & EXTERNAL_TOOL_NAMES):
+            plan.degraded.append(
+                f"{question.key} needs external research and was assigned to "
+                f"{chosen.role_id}, which holds no external tool"
+            )
+
         task = assignments.setdefault(
             chosen.role_id,
             PlannedTask(

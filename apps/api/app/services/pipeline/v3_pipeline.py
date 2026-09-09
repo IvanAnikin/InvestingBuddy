@@ -327,6 +327,10 @@ async def _run(
         prior_open_gaps=carry_forward,
         cfg=cfg,
     )
+    # A plan that will answer a question with less than it asks for says so on the run,
+    # where a reader sees it — not only in the planner's own record.
+    for reason in plan.degraded:
+        outcome.degraded.append(reason)
     await persist_plan(session, run, plan)
 
     # 5. Investigate, with real tools and a real model where one resolved.

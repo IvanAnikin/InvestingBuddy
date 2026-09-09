@@ -32,6 +32,13 @@ import fresh from "../fixtures/mrna-fresh-report.json";
 
 const CONTENT = fresh.content_markdown as unknown as string;
 
+/**
+ * `content_markdown` is the ONLY carrier of `numeric_verification`. Confirmed against
+ * the live API payload: the report resource has 27 fields, and the verdict appears in
+ * none of them except the markdown document, which embeds the report JSON in a fenced
+ * block. So reading it means parsing that field with the canonical parser every other
+ * reader uses — `extractFinalReportContent` — not casting it into a shape it never had.
+ */
 test.describe("the server verdict reaches the reader", () => {
   test("conflicts are read from a markdown string", () => {
     const server = readServerVerification(CONTENT);
@@ -101,5 +108,75 @@ test.describe("a conflicting claim does not survive to the reader", () => {
       0,
     );
     expect(total).toBeGreaterThan(3);
+  });
+});
+
+test.describe("the four states are distinguishable", () => {
+  /** A report whose server verdict found a conflict. */
+  function withVerdict(section: object): string {
+    return [
+      "# INTERNAL ADMIN DRAFT — FINAL REPORT",
+      "",
+      "```json",
+      JSON.stringify({ numeric_verification: section }),
+      "```",
+    ].join("\n");
+  }
+
+  test("a report with a server CONFLICT surfaces it", () => {
+    const server = readServerVerification(
+      withVerdict({
+        statements_examined: 4,
+        consistent: 1,
+        unchecked: 2,
+        conflicting: 1,
+        conflicts: [{ statement: "Revenue was $9 billion in FY2025." }],
+      }),
+    );
+    expect(server.conflicting).toBe(1);
+    expect(server.conflicts.size).toBe(1);
+    expect([...server.conflicts][0]).toContain("revenue was $9 billion");
+  });
+
+  test("a report with a server PASS reports a pass, not an absence", () => {
+    /* Nothing conflicting, but the verdict EXISTS — different from never having run. */
+    const server = readServerVerification(
+      withVerdict({
+        statements_examined: 12,
+        consistent: 9,
+        unchecked: 3,
+        conflicting: 0,
+        conflicts: [],
+      }),
+    );
+    expect(server.conflicting).toBe(0);
+    expect(server.conflicts.size).toBe(0);
+    expect(server.statementsExamined).toBe(12);
+    expect(server.present, 'a pass is a verdict, not an absence').toBe(true);
+  });
+
+  test("a report with NO verdict is genuinely absent", () => {
+    const noSection = [
+      "# INTERNAL ADMIN DRAFT — FINAL REPORT",
+      "",
+      "```json",
+      JSON.stringify({ executive_summary: { company_name: "x" } }),
+      "```",
+    ].join("\n");
+    const server = readServerVerification(noSection);
+    expect(server.present, "no section means no verdict").toBe(false);
+    expect(server.statementsExamined).toBe(0);
+    expect(server.conflicts.size).toBe(0);
+  });
+
+  test("an old pre-feature report gets no fabricated verdict", () => {
+    /* Report content is persisted, so every report written before this feature has no
+       section and can never gain one. It must read as absent, never as a pass. */
+    const legacy = "# INTERNAL ADMIN DRAFT\n\nNo structured content at all.";
+    const server = readServerVerification(legacy);
+    expect(server.present, "a legacy report must not read as a pass").toBe(false);
+    expect(server.statementsExamined).toBe(0);
+    expect(server.conflicting).toBe(0);
+    expect(server.conflicts.size).toBe(0);
   });
 });
