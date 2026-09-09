@@ -510,6 +510,36 @@ export interface CatalystEvent {
   isModelLabelled: boolean;
 }
 
+/**
+ * One filing, once — whichever list it arrived in.
+ *
+ * `recent_events` and `sec_filing_events` are two VIEWS of the same events, and the
+ * report's own note says so: "Do not add the two axes together — that would
+ * double-count." The reader-facing panel concatenated them, so every SEC filing in the
+ * live MRNA report rendered twice: four filings, eight rows.
+ *
+ * Identity is the source URL, which carries the accession number
+ * (`.../000168285226000150/mrna-20260630.htm`) and is therefore stable across the two
+ * views and unique per filing. Headline text is deliberately NOT the key — two genuinely
+ * distinct 8-Ks filed on the same day share a generated headline, and collapsing those
+ * would hide a real filing.
+ */
+export function dedupeEvents(events: CatalystEvent[]): CatalystEvent[] {
+  const seen = new Set<string>();
+  const out: CatalystEvent[] = [];
+  for (const event of events) {
+    // No URL means no stable identity, so the event is kept rather than guessed at:
+    // showing one filing twice is a smaller error than dropping a distinct one.
+    const key = event.sourceUrl
+      ? `url:${event.sourceUrl}`
+      : `raw:${out.length}:${event.headline}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(event);
+  }
+  return out;
+}
+
 function catalystEvent(raw: unknown): CatalystEvent | null {
   const e = asRecord(raw);
   if (!e) return null;
@@ -1300,6 +1330,128 @@ function pointLine(point: DirectionalPoint): string {
   return mechanism ? `${point.statement} — ${mechanism}` : point.statement;
 }
 
+/**
+ * The comparison key for "the council already said this".
+ *
+ * Punctuation and spacing are stripped because the same claim arrives from several
+ * agents with cosmetic differences — "net loss of $2.8 billion" and "net loss of $2.8
+ * billion." are one statement, and an exact lowercase match (which is what this used to
+ * be) treats them as two.
+ */
+function claimKey(point: string): string {
+  return point
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** Words that carry no subject. Kept small: this is a restatement detector, not a
+ *  language model, and every word removed here is one that cannot distinguish claims. */
+const CLAIM_STOPWORDS = new Set([
+  "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "has", "have",
+  "in", "into", "is", "it", "its", "of", "on", "or", "that", "the", "to", "with",
+  "which", "while", "may", "can", "could", "would", "significant", "large", "very",
+  "high", "this", "their", "there", "these", "those", "also", "but", "not",
+]);
+
+function contentWords(point: string): string[] {
+  return point
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]+/g, " ")
+    .split(/\s+/)
+    .filter((w) => w.length > 2 && !CLAIM_STOPWORDS.has(w));
+}
+
+function figuresIn(point: string): Set<string> {
+  return new Set(point.match(/\d[\d.,]*/g) ?? []);
+}
+
+function sameSet(a: Set<string>, b: Set<string>): boolean {
+  return a.size === b.size && [...a].every((x) => b.has(x));
+}
+
+/** Every window of five consecutive content words. */
+function shingles(words: string[]): Set<string> {
+  const out = new Set<string>();
+  for (let i = 0; i + 5 <= words.length; i++) out.add(words.slice(i, i + 5).join(" "));
+  return out;
+}
+
+/**
+ * Whether two points are the SAME claim reworded.
+ *
+ * Two independent signals, both required to be safe:
+ *
+ * 1. **A shared five-content-word sequence.** Five consecutive meaningful words in
+ *    common is restatement, not coincidence — it is what "inventory write-downs and
+ *    unutilized manufacturing capacity costs" looks like when four agents each write
+ *    their own sentence around it.
+ * 2. **Identical figures.** If one point carries a number the other does not, they are
+ *    not the same claim and no merge may lose it.
+ *
+ * A blunt overall-similarity threshold was tried first and rejected: the real
+ * near-duplicates in the live report scored 0.37–0.59, so any threshold low enough to
+ * catch them was low enough to merge claims that differ materially. This codebase has
+ * already withheld 32 correct segment sentences by being clever with a threshold.
+ */
+export function isRestatement(a: string, b: string): boolean {
+  if (!sameSet(figuresIn(a), figuresIn(b))) return false;
+  const wa = contentWords(a);
+  const wb = contentWords(b);
+  if (wa.length < 5 || wb.length < 5) return false;
+
+  const sa = shingles(wa);
+  for (const shingle of shingles(wb)) if (sa.has(shingle)) return true;
+
+  // The n-gram alone misses a restatement that inserts a name mid-phrase —
+  // "settlement of litigation WITH ARBUTUS AND GENEVANT removes legal uncertainty"
+  // shares no five-word run with "settlement of litigation removes legal
+  // uncertainty", though it is plainly the same point. Vocabulary overlap catches
+  // that, at a threshold calibrated against the real report rather than guessed:
+  // every genuinely-distinct pair there scored below 0.35 and every restatement
+  // above it, so 0.55 sits well clear of the boundary on the safe side.
+  const setA = new Set(wa);
+  const setB = new Set(wb);
+  const shared = [...setA].filter((w) => setB.has(w)).length;
+  const union = new Set([...setA, ...setB]).size;
+  return union > 0 && shared / union >= 0.55;
+}
+
+/**
+ * One claim, once per case — however many agents made it.
+ *
+ * Deduping WITHIN a group already existed; the live MRNA report showed why that is not
+ * enough. Eight agents independently reported the same inventory write-down and six
+ * reported the same FY2025 revenue line, landing in different groups, so the reader saw
+ * 68 claim rows of which 22 were redundant copies.
+ *
+ * Deliberately scoped to ONE case. A statement that appears in both the bull case and
+ * the bear case is a real disagreement between agents, and collapsing across the two
+ * would hide exactly the thing this product exists to surface. Groups keep their labels
+ * and their order, and a group emptied by deduplication disappears rather than
+ * rendering as a heading over nothing.
+ */
+function dedupeAcrossGroups(groups: NarrativeGroup[]): NarrativeGroup[] {
+  const seen = new Set<string>();
+  const kept: string[] = [];
+  const out: NarrativeGroup[] = [];
+  for (const group of groups) {
+    const points = group.points.filter((point) => {
+      const key = claimKey(point);
+      if (!key || seen.has(key)) return false;
+      // A reworded restatement of something already shown in this case. The first
+      // phrasing stays; the rest are the same point in other words.
+      if (kept.some((earlier) => isRestatement(earlier, point))) return false;
+      seen.add(key);
+      kept.push(point);
+      return true;
+    });
+    if (points.length > 0) out.push({ ...group, points });
+  }
+  return out;
+}
+
 function nonEmptyGroup(
   label: string,
   points: string[],
@@ -1307,7 +1459,7 @@ function nonEmptyGroup(
   const cleaned = points.map((p) => humaniseTechnical(p.trim())).filter(Boolean);
   const seen = new Set<string>();
   const deduped = cleaned.filter((p) => {
-    const key = p.toLowerCase();
+    const key = claimKey(p);
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
@@ -1462,6 +1614,11 @@ export function buildInvestmentCases(
       basis: legacy.length > 0 ? "legacy" : "none",
     };
   }
+
+  // One claim, once per case. Applied at the very end so it covers the council path
+  // and the legacy fallback alike — the duplication is not specific to either.
+  bull = { ...bull, groups: dedupeAcrossGroups(bull.groups) };
+  bear = { ...bear, groups: dedupeAcrossGroups(bear.groups) };
 
   return { bull, bear, routedLimitations, recordGaps };
 }

@@ -1,6 +1,7 @@
 import Surface from "@/components/product/Surface";
 import { sourceTierWord } from "@/components/research/reportSections";
 import type { CatalystsView } from "@/components/research/reportSections";
+import { dedupeEvents } from "@/components/research/reportSections";
 import type { DisclosureView } from "@/components/research/reportView";
 
 /**
@@ -76,7 +77,12 @@ export default function RecentDevelopments({
   catalysts: CatalystsView;
   disclosures: DisclosureView[];
 }) {
-  const events = [...catalysts.companyEvents, ...catalysts.filingEvents];
+  // Deduplicated: the two lists are overlapping VIEWS of the same events, not
+  // disjoint sets, and concatenating them rendered every SEC filing twice.
+  const events = dedupeEvents([
+    ...catalysts.companyEvents,
+    ...catalysts.filingEvents,
+  ]);
   const hasAnything =
     events.length > 0 ||
     disclosures.length > 0 ||
