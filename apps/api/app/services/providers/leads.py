@@ -251,6 +251,14 @@ def parse_number_candidates(value: str | None) -> list[float]:
     # parenthesis may sit either side of the scale word and the glyph may sit either
     # side of the sign. Peel in this order: outer parentheses, scale word, inner
     # parentheses, sign, currency.
+    # A trailing percent sign is a UNIT, not part of the number, and it hides the
+    # closing parenthesis behind it: "(1.1)%" is how a filing writes a negative margin,
+    # and leaving the "%" in place made the accounting-parentheses check fail and the
+    # figure come back POSITIVE. Removed first, for the same reason the scale word is.
+    body = body.rstrip()
+    if body.endswith("%"):
+        body = body[:-1].rstrip()
+
     negative = False
     if body.startswith("(") and body.endswith(")"):
         negative = True

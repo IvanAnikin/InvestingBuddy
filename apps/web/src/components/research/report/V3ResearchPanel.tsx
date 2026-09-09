@@ -416,28 +416,56 @@ export default function V3ResearchPanel({ v3 }: { v3: V3Research | null }) {
             />
           </dl>
           <dl className="mt-5 grid grid-cols-2 gap-5 sm:grid-cols-4">
+            {/* Two DIFFERENT spends, and the labels now say which. The routed models are
+                the investigator, chair and red team; the research provider is the
+                search leg, whose calls are recorded on the tool rows. They are separate
+                clients with separate transports, so nothing is counted twice. */}
             <Stat
-              label="Council tokens in"
+              label="Routed model tokens in"
               value={n(consumption.modelInputTokens)}
+              hint="investigator, chair, red team"
             />
             <Stat
-              label="Council tokens out"
+              label="Routed model tokens out"
               value={n(consumption.modelOutputTokens)}
             />
             <Stat
-              label="Provider tokens in"
+              label="Research provider tokens in"
               value={n(consumption.providerInputTokens)}
               hint={
                 consumption.providerCachedTokens
-                  ? `${consumption.providerCachedTokens} cached`
-                  : undefined
+                  ? `${consumption.providerCachedTokens} cached · the search leg`
+                  : "the search leg"
               }
             />
             <Stat
-              label="Provider tokens out"
+              label="Research provider tokens out"
               value={n(consumption.providerOutputTokens)}
             />
           </dl>
+
+          {consumption.byVendor.length > 0 && (
+            <div className="mt-5" data-testid="v3-vendor-attribution">
+              <p className="text-xs font-medium uppercase tracking-[0.14em] text-[color:var(--ib-ink-3)]">
+                By vendor
+              </p>
+              <ul className="mt-2 space-y-1">
+                {consumption.byVendor.map((v) => (
+                  <li
+                    key={v.vendor}
+                    className="text-sm leading-relaxed text-[color:var(--ib-ink-2)]"
+                  >
+                    {labelWords(v.vendor)} — {v.calls} call
+                    {v.calls === 1 ? "" : "s"}, {v.input} in, {v.output} out
+                  </li>
+                ))}
+              </ul>
+              <p className="mt-2 text-xs leading-relaxed text-[color:var(--ib-ink-3)]">
+                A vendor absent from this list made no routed call in this run. That is
+                not the same as spending nothing, and it is not reported as zero.
+              </p>
+            </div>
+          )}
           <p className="mt-4 max-w-3xl text-xs leading-relaxed text-[color:var(--ib-ink-3)]">
             {consumption.estimatedCostUsd === null
               ? (consumption.costUnknownBecause ??
