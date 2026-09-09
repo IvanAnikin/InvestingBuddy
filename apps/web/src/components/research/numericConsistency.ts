@@ -1,3 +1,4 @@
+import { extractFinalReportContent } from "@/components/reports/finalReportContent";
 // Council prose must not contradict the report's own canonical figures.
 //
 // The council writes in sentences; the financial record holds the canonical
@@ -744,9 +745,30 @@ export function normaliseStatement(text: string | null | undefined): string {
   return (text ?? "").replace(/\s+/g, " ").trim().toLowerCase();
 }
 
+/**
+ * Read the server's numeric verdict from a report.
+ *
+ * Takes the report's `content_markdown` in the shape it ACTUALLY has — a markdown
+ * document with the report JSON in a fenced block — and parses it the same way every
+ * other reader of that field does.
+ *
+ * It used to take `Record<string, unknown>`, and the page satisfied that with
+ * `as Record<string, unknown> | null`. The cast compiled; at runtime the value is a
+ * string, `content?.["numeric_verification"]` is `undefined`, and the function returned
+ * "no conflicts" for every report ever rendered. **The server-side numeric verification
+ * has therefore never been applied on the web** — found in production acceptance, when
+ * two quarter-vs-full-year sentences the server had marked conflicting rendered as
+ * ordinary text.
+ *
+ * An object is still accepted, because that is what the tests and the admin page hold.
+ */
 export function readServerVerification(
-  content: Record<string, unknown> | null | undefined,
+  input: string | Record<string, unknown> | null | undefined,
 ): ServerNumericVerification {
+  const content: Record<string, unknown> | null =
+    typeof input === "string"
+      ? (extractFinalReportContent(input) as Record<string, unknown> | null)
+      : (input ?? null);
   const section = content?.["numeric_verification"];
   if (!section || typeof section !== "object" || Array.isArray(section)) {
     return EMPTY_SERVER_VERIFICATION;

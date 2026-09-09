@@ -144,9 +144,9 @@ export default async function ResearchReportPage({
   // approves. The browser guard below it stays as defence in depth — every
   // report generated before this existed has no server section, and report
   // content is persisted, so those can never gain one.
-  const serverNumeric = readServerVerification(
-    report.content_markdown as Record<string, unknown> | null,
-  );
+  // Passed as it IS — a markdown string — not cast to an object it never was. The cast
+  // compiled and silently returned "no conflicts" for every report.
+  const serverNumeric = readServerVerification(report.content_markdown);
   const investor = reconcileCouncilNumbers(
     buildInvestorReportView(report.content_markdown, council),
     view.snapshot,
