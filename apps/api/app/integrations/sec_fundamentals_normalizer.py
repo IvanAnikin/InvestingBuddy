@@ -195,7 +195,16 @@ def _select_metric(
         for e in entries:
             if e.get("val") is None:
                 continue
-            if e.get("form") in _ANNUAL_FORMS and e.get("fp", "FY") == "FY":
+            # An annual FORM spanning a full year IS an annual figure, whatever the
+            # `fp` tag says. Requiring `fp == "FY"` meant a 10-K entry tagged "Q4" was
+            # neither annual here nor quarterly (10-K is not a quarterly form), so it
+            # was dropped entirely — and the field then fell through to the legacy
+            # period-blind parser, which shipped a stale FY2022 figure with no warning.
+            # Found by review. `_is_full_year_period` is the honest test: it measures
+            # the period rather than trusting a tag filers set inconsistently.
+            if e.get("form") in _ANNUAL_FORMS and (
+                e.get("fp", "FY") == "FY" or _is_full_year_period(e)
+            ):
                 annual_candidates.append((concept, e))
             elif e.get("form") in _QUARTERLY_FORMS:
                 quarterly_candidates.append((concept, e))

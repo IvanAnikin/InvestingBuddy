@@ -160,3 +160,56 @@ class TestTheSupersessionIsRecorded:
         base, _ = parse_company_facts(data, "MRNA", "1682852")
         _merged, warnings = merge_fundamentals(data, "MRNA", "1682852", base)
         assert not any("superseded" in w for w in warnings)
+
+
+class TestTheStaleValueCannotSlipThroughOnATag:
+    """`fp` is set inconsistently by filers, and requiring `fp == "FY"` let the defect
+    back in through a side door. Found by review.
+
+    A 10-K entry tagged ``fp="Q4"`` was neither an annual candidate for the period-aware
+    selector nor a quarterly one (10-K is not a quarterly form), so it was dropped
+    entirely — and the field fell through to the legacy alias-order parser, which
+    shipped the stale FY2022 figure with no supersede warning at all.
+    """
+
+    @pytest.fixture
+    def q4_tagged(self) -> dict:
+        data = json.loads(FIXTURE.read_text())
+        for concept in (
+            "Revenues",
+            "RevenueFromContractWithCustomerExcludingAssessedTax",
+        ):
+            for entry in data["facts"]["us-gaap"][concept]["units"]["USD"]:
+                entry["fp"] = "Q4"
+        return data
+
+    def test_a_full_year_10k_period_is_annual_whatever_the_tag_says(
+        self, q4_tagged
+    ) -> None:
+        n = normalize_company_facts(q4_tagged, "MRNA", "1682852")
+        assert n.revenue == FY2025_REVENUE
+
+    def test_the_stale_value_does_not_ship(self, q4_tagged) -> None:
+        merged = _merge(q4_tagged)
+        assert merged["sec_edgar.revenue"].value == FY2025_REVENUE
+        assert merged["sec_edgar.revenue"].value != STALE_FY2022_REVENUE
+
+    def test_an_unresolved_covered_field_is_never_silent(self) -> None:
+        """Defence in depth. If the selector resolves nothing for a field it covers,
+        the legacy value still ships — dropping a real figure would be worse — but the
+        run says so, because a value chosen by alias order rather than by period is
+        exactly what put FY2022 revenue into a report labelled FY2025."""
+        data = json.loads(FIXTURE.read_text())
+        # A shape the period-aware selector cannot resolve at all.
+        for concept in (
+            "Revenues",
+            "RevenueFromContractWithCustomerExcludingAssessedTax",
+        ):
+            for entry in data["facts"]["us-gaap"][concept]["units"]["USD"]:
+                entry["fp"] = "Q4"
+                entry["start"] = "2022-10-01"
+                entry["end"] = "2022-12-31"
+        warnings = _merge_warnings(data)
+        assert any("resolved nothing" in w for w in warnings), (
+            f"an unverified period must be declared; warnings were {warnings}"
+        )

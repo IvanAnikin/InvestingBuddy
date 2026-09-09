@@ -1351,9 +1351,34 @@ function claimKey(point: string): string {
 const CLAIM_STOPWORDS = new Set([
   "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "has", "have",
   "in", "into", "is", "it", "its", "of", "on", "or", "that", "the", "to", "with",
-  "which", "while", "may", "can", "could", "would", "significant", "large", "very",
-  "high", "this", "their", "there", "these", "those", "also", "but", "not",
+  "which", "may", "can", "could", "would", "significant", "large", "very",
+  "high", "this", "their", "there", "these", "those", "also",
 ]);
+
+/**
+ * Words that reverse or qualify a claim. NEVER stopwords, and checked separately.
+ *
+ * "not", "but" and "while" were in the stopword list, which made a claim and its
+ * NEGATION identical after normalisation — "Phase 3 results support approval" and
+ * "Phase 3 results do NOT support approval" reduced to the same words, so the second
+ * was dropped from the report as a duplicate of the first. Removing a negation from a
+ * financial research report is worse than any amount of repetition. Found by review.
+ */
+const POLARITY_MARKERS = new Set([
+  "not", "no", "never", "without", "cannot", "failed", "fails", "unable",
+  "but", "while", "however", "although", "despite", "unlike", "except",
+  "insufficient", "unsupported", "unavailable", "declined", "denied",
+]);
+
+/** The polarity markers a claim carries, as a comparable key. */
+function polarityOf(point: string): string {
+  const found = point
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]+/g, " ")
+    .split(/\s+/)
+    .filter((w) => POLARITY_MARKERS.has(w));
+  return [...new Set(found)].sort().join(",");
+}
 
 function contentWords(point: string): string[] {
   return point
@@ -1397,6 +1422,9 @@ function shingles(words: string[]): Set<string> {
  */
 export function isRestatement(a: string, b: string): boolean {
   if (!sameSet(figuresIn(a), figuresIn(b))) return false;
+  // Opposite claims are not one claim. Two statements that differ in negation or
+  // contrast are never merged, however similar the rest of their wording.
+  if (polarityOf(a) !== polarityOf(b)) return false;
   const wa = contentWords(a);
   const wb = contentWords(b);
   if (wa.length < 5 || wb.length < 5) return false;

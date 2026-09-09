@@ -352,11 +352,22 @@ def parse_number_candidates(value: str | None) -> list[float]:
         magnitude = reading * multiplier
         for scale in _REPORTING_SCALES:
             candidate = magnitude / scale
-            # The prose reading is always kept ("1.0 billion" is written "1.0" in a
-            # billions table). Other scales are kept only where the figure would
-            # actually be printed at that scale — below one whole unit it would not be,
-            # and admitting it invites a spurious match on a small unrelated number.
-            if candidate != reading and abs(candidate) < 1.0:
+            if abs(candidate) < 1.0:
+                # Below one whole unit the figure would not be printed at that scale.
+                continue
+            # A bare mantissa is not admitted as a match target.
+            #
+            # "$1.0 billion" used to yield 1.0 among its readings, and `numbers_in`
+            # scans a whole filing — so ANY occurrence of "1.0" anywhere verified the
+            # claim. Mantissas of one to nine are the most common numbers in a financial
+            # document, which made every scaled claim close to unfalsifiable. Found by
+            # review, and it defeated the purpose of the gate rather than widening it.
+            #
+            # Scaled representations are still kept, because they are the SAME quantity
+            # as a filing's table prints it — 1,000 in millions, 1,000,000 in thousands.
+            # What is dropped is only the reading with too few significant digits to
+            # identify anything: fewer than three digits before the decimal point.
+            if abs(candidate) < 100 and candidate != magnitude:
                 continue
             rounded = round(candidate, 6)
             if rounded not in out:

@@ -141,3 +141,63 @@ class TestTheAttributionAnswersTheQuestion:
         )
         out = _consumption(routing, _Loop(), _Summary(), _Verdict(), _Challenge(), None, {})
         assert out["model_by_vendor"]["deepseek"]["calls"] == 5
+
+
+class TestTheSearchLegIsPricedToo:
+    """`units` accumulated only from routing slots, so `derive_cost` excluded the
+    research provider's tokens entirely — and they were not listed as unpriced either,
+    because they were not in the instrumented set. The commit that surfaced them
+    quantified the problem as "a search that spent 27k input tokens was recorded as
+    costing nothing", and then costed them at zero one field over. Found by review.
+    """
+
+    def test_provider_tokens_reach_the_measured_units(self) -> None:
+        out = _consumption(
+            _Routing({}),
+            _Loop(),
+            _Summary(),
+            _Verdict(),
+            _Challenge(),
+            None,
+            {"model_calls": 2, "model_input_tokens": 27136, "model_output_tokens": 3086},
+        )
+        model = out["model"]
+        assert model["model_input_tokens"] == 27136
+        assert model["model_output_tokens"] == 3086
+        assert model["model_calls"] == 2
+
+    def test_they_are_priced_with_everything_else(self) -> None:
+        """With a price list configured, the search leg must contribute to the cost."""
+
+        class _Priced:
+            v3_price_usd_per_million_input_tokens = 1.0
+            v3_price_usd_per_million_output_tokens = 2.0
+
+        without = _consumption(
+            _Routing({}), _Loop(), _Summary(), _Verdict(), _Challenge(), _Priced(), {}
+        )
+        with_search = _consumption(
+            _Routing({}),
+            _Loop(),
+            _Summary(),
+            _Verdict(),
+            _Challenge(),
+            _Priced(),
+            {"model_calls": 1, "model_input_tokens": 1_000_000},
+        )
+        assert (with_search["estimated_cost_usd"] or 0) > (without["estimated_cost_usd"] or 0)
+
+    def test_the_routed_and_search_legs_are_summed_not_confused(self) -> None:
+        out = _consumption(
+            _Routing({"investigator": _Slot("deepseek", _Client(_Usage(1, 100, 10)))}),
+            _Loop(),
+            _Summary(),
+            _Verdict(),
+            _Challenge(),
+            None,
+            {"model_calls": 1, "model_input_tokens": 900, "model_output_tokens": 90},
+        )
+        # The vendor breakdown is the ROUTED leg only; the totals include both.
+        assert out["model_by_vendor"]["deepseek"]["input"] == 100
+        assert out["model"]["model_input_tokens"] == 1000
+        assert out["provider_input_tokens"] == 900

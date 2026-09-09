@@ -548,17 +548,38 @@ def external_source_tier(url: str | None) -> str:
     return "T5_api_aggregator"
 
 
-def _claim_identity(lead: Any) -> tuple[str, str, str]:
-    """What makes two leads the SAME fact: value, period and scope.
+def _claim_identity(lead: Any) -> tuple[float, str, str, str] | None:
+    """What makes two leads the SAME fact, or ``None`` when that cannot be decided.
 
-    Claim TEXT is deliberately not part of it — two sources reporting one figure word
-    it differently, and keying on prose would call them different facts and promote
-    both.
+    ``None`` is the important return. The first version keyed on
+    ``(claimed_value, claimed_period, claimed_scope)`` as raw strings, so every lead
+    with a blank value collapsed onto ``("", "", "")`` and all but one were stamped
+    "a higher-tier source established the same fact" about facts never established.
+    Scope is routinely blank on this path, which made that common rather than rare.
+    Found by review.
+
+    Three changes: the value is NORMALISED (so "$1,343 million" and "1343000000" are
+    one identity rather than two), the metric is part of the key (so two unrelated
+    figures that happen to be equal are not one fact), and a lead that cannot supply
+    both a value and a period is not ranked at all.
     """
+    from app.services.providers.leads import parse_number_candidates
+
+    readings = parse_number_candidates(getattr(lead, "claimed_value", None))
+    period = str(getattr(lead, "claimed_period", "") or "").strip().lower()
+    if not readings or not period:
+        return None
+    metric = str(getattr(lead, "metric", "") or "").strip().lower()
+    if not metric:
+        # Derived from the claim's own words rather than invented: a lead with no
+        # metric field is identified by the largest reading plus its own text, which
+        # cannot collide with a different metric's claim.
+        metric = (str(getattr(lead, "claim_text", "") or "")[:60]).strip().lower()
     return (
-        str(getattr(lead, "claimed_value", "") or "").strip().lower(),
-        str(getattr(lead, "claimed_period", "") or "").strip().lower(),
+        max(readings, key=abs),
+        period,
         str(getattr(lead, "claimed_scope", "") or "").strip().lower(),
+        metric,
     )
 
 
@@ -608,6 +629,11 @@ async def _external_research(session: Any, run: Any, company: Any) -> dict[str, 
         if not lead.promoted_evidence_id:
             continue
         key = _claim_identity(lead)
+        if key is None:
+            # Not rankable, so not ranked. A lead that cannot say what it measured is
+            # left as its own citation rather than labelled corroboration for a fact
+            # nothing established.
+            continue
         best = canonical_by_claim.get(key)
         if best is None or tier_rank(external_source_tier(lead.fetched_url)) < tier_rank(
             external_source_tier(best.fetched_url)
@@ -724,6 +750,26 @@ def _consumption(
     # Prices are CONFIGURATION. With none supplied this stays `None` — unpriced, never
     # free, because an unpriced provider reported as costless is how a benchmark picks
     # the wrong one.
+    # The search leg's spend counts too.
+    #
+    # `units` accumulated only from routing slots, so `derive_cost` excluded the
+    # research provider's tokens entirely — and they were not listed as unpriced
+    # either, because they were not in the instrumented set. The commit that surfaced
+    # them quantified the problem as "a search that spent 27k input tokens was recorded
+    # as costing nothing", and then costed them at zero one field over. Found by review.
+    tool_model = tool_units or {}
+    if any(
+        tool_model.get(k) for k in ("model_calls", "model_input_tokens", "model_output_tokens")
+    ):
+        units = units + ConsumptionUnits(
+            model_calls=int(tool_model.get("model_calls", 0) or 0),
+            model_input_tokens=int(tool_model.get("model_input_tokens", 0) or 0),
+            model_output_tokens=int(tool_model.get("model_output_tokens", 0) or 0),
+            instrumented=frozenset(
+                {"model_calls", "model_input_tokens", "model_output_tokens"}
+            ),
+        )
+
     prices = PriceBook(
         usd_per_million_input_tokens=getattr(cfg, "v3_price_usd_per_million_input_tokens", None),
         usd_per_million_output_tokens=getattr(cfg, "v3_price_usd_per_million_output_tokens", None),

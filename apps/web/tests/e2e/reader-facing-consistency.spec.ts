@@ -130,9 +130,10 @@ test.describe("one claim, once per case", () => {
   });
 
   test("it materially reduced the repetition in the live report", () => {
-    /* Measured, not asserted in the abstract: the live bear case carried 30 points of
-       which 10 were rewordings of points already made. */
-    expect(cases.bear.groups.flatMap((g) => g.points).length).toBeLessThanOrEqual(24);
+    /* Measured, not asserted in the abstract. The bound loosened when the polarity
+       guard below was added — correctly, because refusing to merge a claim with its
+       negation is worth more than a lower point count. */
+    expect(cases.bear.groups.flatMap((g) => g.points).length).toBeLessThanOrEqual(28);
   });
 
   test("no claim is repeated within a case at all", () => {
@@ -160,5 +161,42 @@ test.describe("one claim, once per case", () => {
         expect(group.points.length).toBeGreaterThan(0);
       }
     }
+  });
+});
+
+test.describe("a claim and its negation are not one claim", () => {
+  /* THE finding that mattered most in review. "not", "but" and "while" were
+     stopwords, so a claim and its opposite reduced to the same words and the
+     NEGATION was dropped from the report as a duplicate. Removing a negation from a
+     financial research report is worse than any amount of repetition. */
+  const opposites: [string, string][] = [
+    [
+      "Phase 3 trial results support regulatory approval in the United States",
+      "Phase 3 trial results do not support regulatory approval in the United States",
+    ],
+    [
+      "Respiratory product demand is expected to recover next season",
+      "Respiratory product demand is not expected to recover next season",
+    ],
+    [
+      "The committee found cash runway sufficient through the restructuring",
+      "The committee found cash runway insufficient through the restructuring",
+    ],
+  ];
+
+  for (const [positive, negative] of opposites) {
+    test(`kept apart: ${positive.slice(0, 44)}...`, () => {
+      expect(isRestatement(positive, negative)).toBe(false);
+    });
+  }
+
+  test("a genuine reword is still collapsed", () => {
+    /* The guard must not disable the dedup it sits inside. */
+    expect(
+      isRestatement(
+        "Inventory write-downs and unutilized manufacturing capacity costs suggest overcapacity",
+        "Inventory write-downs and unutilized manufacturing capacity costs suggest inefficiency",
+      ),
+    ).toBe(true);
   });
 });

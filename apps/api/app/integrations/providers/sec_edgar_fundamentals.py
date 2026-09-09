@@ -236,6 +236,18 @@ def parse_company_facts(
     return datapoints, warnings
 
 
+#: Fields the period-aware normalizer is authoritative over. Kept beside the merge so
+#: a new concept added to `_CONCEPT_MAP` without a normalizer counterpart is visible.
+_NORMALIZER_COVERED_FIELDS: frozenset[str] = frozenset(
+    {
+        "revenue", "gross_profit", "operating_income", "net_income", "eps_basic",
+        "eps_diluted", "operating_cash_flow", "capital_expenditures",
+        "cash_and_equivalents", "total_assets", "total_liabilities",
+        "shareholders_equity", "short_term_debt", "long_term_debt",
+    }
+)
+
+
 def merge_fundamentals(
     data: dict,
     ticker: str,
@@ -279,6 +291,24 @@ def merge_fundamentals(
         warnings.append(
             "SEC EDGAR: period-aware selection superseded the legacy alias-order value "
             f"for {', '.join(superseded)}."
+        )
+
+    # Defence in depth for the case above: a field the normalizer COVERS but did not
+    # resolve leaves the legacy period-blind value as the only candidate. It still
+    # ships — dropping a real figure would be worse — but never silently, because a
+    # value chosen by alias order rather than by period is exactly what put a FY2022
+    # revenue into a report labelled FY2025.
+    unresolved = sorted(
+        dp.field_name
+        for dp in base
+        if dp.field_name not in by_name
+        and dp.field_name.removeprefix("sec_edgar.") in _NORMALIZER_COVERED_FIELDS
+    )
+    if unresolved:
+        warnings.append(
+            "SEC EDGAR: the period-aware selector resolved nothing for "
+            f"{', '.join(unresolved)}; the value shipped for those fields was chosen "
+            "by alias order and its period is not verified."
         )
 
     merged = [dp for dp in base if dp.field_name not in by_name]

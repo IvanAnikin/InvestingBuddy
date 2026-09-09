@@ -103,8 +103,22 @@ class TestScaleEquivalenceIsNotLooseness:
         """Prose says "$1.0 billion"; the table in the same filing says "1,000"."""
         candidates = parse_number_candidates("$1.0 billion")
         assert 1000.0 in candidates
-        assert 1.0 in candidates
         assert 1_000_000_000.0 in candidates
+
+    def test_the_bare_mantissa_is_not_a_match_target(self) -> None:
+        """`numbers_in` scans a WHOLE filing, so admitting 1.0 as a reading of
+        "$1.0 billion" meant any occurrence of "1.0" anywhere verified the claim.
+        Mantissas of one to nine are the most common numbers in a financial document,
+        which made every scaled claim close to unfalsifiable. Found by review.
+
+        This is not the gate getting looser or stricter about the QUANTITY — it is
+        refusing a reading with too few significant digits to identify anything."""
+        assert 1.0 not in parse_number_candidates("$1.0 billion")
+        assert 3.2 not in parse_number_candidates("3.2 billion")
+        assert -1.1 not in parse_number_candidates("$(1.1) billion")
+        # An unscaled figure is untouched: it is what the document literally says.
+        assert parse_number_candidates("145") == [145.0]
+        assert parse_number_candidates("12.5%") == [12.5]
 
     def test_it_does_not_admit_a_different_quantity(self) -> None:
         """Every candidate is the SAME quantity at another scale. 1.1 is not among

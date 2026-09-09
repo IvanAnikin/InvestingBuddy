@@ -539,12 +539,23 @@ def _periods_in(sentence: str) -> set[str]:
 #: Deliberately narrow. "Revenue was $145m in Q2 2026 and $1.9bn in FY2025" is two facts
 #: coexisting and stays untouched — the canonical rule allows same-frequency comparison
 #: OR explicitly labelled non-comparative coexistence, and this only refuses the first.
-_COMPARISON_WORDS: tuple[str, ...] = (
-    "compared to", "compared with", "versus", " vs ", " vs. ",
-    "decline", "declined", "declining", "decrease", "decreased",
-    "growth", "grew", "increase", "increased", "rose", "risen",
-    "fell", "fallen", "drop", "dropped", "down from", "up from",
-    "year-over-year", "year over year", "yoy",
+#: Multi-word phrases, matched as substrings because they cannot occur inside a word.
+_COMPARISON_PHRASES: tuple[str, ...] = (
+    "compared to", "compared with", "versus", "vs", "vs.",
+    "down from", "up from", "year-over-year", "year over year", "yoy",
+)
+#: Single words, matched on WORD BOUNDARIES. Substring matching flagged "fellow" for
+#: "fell", "arose" for "rose" and "dropout" for "drop" — the last is ruinous for a
+#: biotech pipeline, where a trial dropout is ordinary prose. Found by review, after the
+#: author had already removed "trend" for one instance of the same class.
+_COMPARISON_TOKENS: frozenset[str] = frozenset(
+    {
+        "decline", "declined", "declines", "declining",
+        "decrease", "decreased", "decreases", "decreasing",
+        "grew", "increase", "increased", "increases", "increasing",
+        "rose", "risen", "fell", "fallen",
+        "drop", "dropped", "drops", "dropping",
+    }
 )
 #: "trend" is deliberately NOT in that list. It appears in "limiting trend analysis" —
 #: an honest statement about what the data does NOT support — and flagging that would
@@ -554,9 +565,15 @@ _COMPARISON_WORDS: tuple[str, ...] = (
 
 
 def is_comparative(sentence: str) -> bool:
-    """Whether a sentence asserts a direction of change rather than stating figures."""
+    """Whether a sentence asserts a direction of change rather than stating figures.
+
+    "growth" is deliberately absent: "withdrew FY2025 growth guidance" names a thing,
+    it does not assert a direction. The verbs do.
+    """
     text = (sentence or "").casefold()
-    return any(word in text for word in _COMPARISON_WORDS)
+    if any(phrase in text for phrase in _COMPARISON_PHRASES):
+        return True
+    return any(token in _COMPARISON_TOKENS for token in re.findall(r"[a-z-]+", text))
 
 
 def incompatible_periods(sentence: str) -> tuple[str, str] | None:
@@ -572,16 +589,17 @@ def incompatible_periods(sentence: str) -> tuple[str, str] | None:
     quarter is a real comparison an analyst makes, and refusing it here would suppress
     true statements. This campaign has made that mistake before: a numeric guard built
     on the group figure alone withheld 32 correct segment sentences from one report.
-    The canonical rule is same-FREQUENCY comparison, and that is what is enforced.
 
-    Returns ``None`` when fewer than two periods are named, which is the common case
-    and must stay silent.
+    This reports what the SENTENCE NAMES. Whether the sentence actually compares them
+    is :func:`comparative_period_conflict`'s question, because coexistence is allowed.
     """
+    return _first_incompatible(sorted(_periods_in((sentence or "").casefold())))
+
+
+def _first_incompatible(keys: list[str]) -> tuple[str, str] | None:
+    """The first pair of period keys measuring different-length spans."""
     from app.services.sources.financial_period import parse_period
 
-    keys = sorted(_periods_in((sentence or "").casefold()))
-    if len(keys) < 2:
-        return None
     for i, left in enumerate(keys):
         for right in keys[i + 1 :]:
             a, b = parse_period(left), parse_period(right)
@@ -590,6 +608,13 @@ def incompatible_periods(sentence: str) -> tuple[str, str] | None:
             if a.period_type != b.period_type:
                 return (left, right)
     return None
+
+
+def _clause_is_comparative(clause: str) -> bool:
+    """`is_comparative`, applied to one clause rather than the whole sentence."""
+    if any(phrase in clause for phrase in _COMPARISON_PHRASES):
+        return True
+    return any(token in _COMPARISON_TOKENS for token in re.findall(r"[a-z-]+", clause))
 
 
 def comparative_period_conflict(sentence: str) -> tuple[str, str] | None:
@@ -607,7 +632,35 @@ def comparative_period_conflict(sentence: str) -> tuple[str, str] | None:
     """
     if not is_comparative(sentence):
         return None
-    return incompatible_periods(sentence)
+
+    text = (sentence or "").casefold()
+    if len(_periods_in(text)) < 2:
+        return None
+
+    # Only the periods ADJACENT TO the comparison are compared.
+    #
+    # Scanning every pair in the sentence flagged pairs the sentence never sets against
+    # each other: "Q2 2026 revenue rose to 145 from 142 in Q2 2025, and FY2026 guidance
+    # was reiterated" is a valid quarter-on-quarter comparison, and the whole-sentence
+    # scan refused it over the guidance clause. Found by review — and it is exactly the
+    # over-suppression this module's own docstring warns about.
+    clauses = re.split(r"[;,]| and | but | while ", text)
+    for index, clause in enumerate(clauses):
+        if not _clause_is_comparative(clause):
+            continue
+        local = sorted(_periods_in(clause))
+        if len(local) < 2:
+            # The comparison and the periods it compares can straddle a clause boundary
+            # — "revenue fell sharply, from FY2025 to Q2 2026". Widen to the neighbours,
+            # but ONLY here: a clause already naming two periods is self-contained, and
+            # widening it would drag in an unrelated period from elsewhere, which is the
+            # defect this fix exists to remove.
+            window = clauses[max(0, index - 1) : index + 2]
+            local = sorted({key for c in window for key in _periods_in(c)})
+        conflict = _first_incompatible(local)
+        if conflict is not None:
+            return conflict
+    return None
 
 
 def scopes_in(sentence: str, index: CanonicalIndex) -> set[str]:
