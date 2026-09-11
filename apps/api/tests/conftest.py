@@ -82,6 +82,58 @@ def _no_live_sec_classification(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 # ---------------------------------------------------------------------------
+# No test fetches a filing body by accident
+# ---------------------------------------------------------------------------
+
+
+# Captured at conftest IMPORT time, which is before any fixture can patch the module
+# attribute. Resolving it lazily inside the fixture would hand back the inert stub the
+# autouse guard installs, because autouse fixtures run first.
+from app.services.corpus.filing_acquisition import (  # noqa: E402
+    acquire_sec_filing as _REAL_ACQUIRE_SEC_FILING,
+)
+
+
+@pytest.fixture(autouse=True)
+def _no_live_filing_acquisition(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make the V3.16 filing-body acquirer inert for every test by default.
+
+    `ensure_filing_corpus_evidence` falls back to the REAL acquirer when no `acquire`
+    is injected, and the real one fetches from www.sec.gov. A unit suite that reaches
+    the SEC is slow, offline-hostile and green or red according to somebody else's
+    availability — and it would be doing so on behalf of a test that only meant to
+    check a code path.
+
+    Tests that mean to exercise acquisition inject their own `acquire=`; a
+    `monkeypatch.setattr` in the test body simply wins over this one.
+    """
+    from app.services.corpus import filing_acquisition
+
+    async def _inert(session, **kwargs):  # noqa: ANN001, ANN003, ANN202
+        from app.services.corpus.filing_evidence import AcquireOutcome
+
+        return AcquireOutcome(
+            acquired=False,
+            fetched=False,
+            reason="acquisition_disabled_in_tests",
+        )
+
+    monkeypatch.setattr(filing_acquisition, "acquire_sec_filing", _inert)
+
+
+@pytest.fixture
+def real_acquire_sec_filing():  # noqa: ANN201
+    """The genuine acquirer, for the tests that mean to exercise it.
+
+    Captured at import time, before `_no_live_filing_acquisition` replaces the module
+    attribute. Asking for this fixture is an explicit statement that the test wants the
+    real code path — and the real one still makes no network call when its own flags
+    are off, which is exactly what such a test checks.
+    """
+    return _REAL_ACQUIRE_SEC_FILING
+
+
+# ---------------------------------------------------------------------------
 # DB mock
 # ---------------------------------------------------------------------------
 

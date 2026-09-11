@@ -1060,6 +1060,19 @@ class Settings(BaseSettings):
     # Gated separately from the tool surface itself, and OFF by default: with it off
     # the tool returns an honest empty result naming this flag, never a silent zero.
     v3_filings_tool_enabled: bool = False
+    # V3.16 — the filing-to-corpus evidence bridge. Separate from the discovery flag
+    # above on purpose: `get_recent_filings` returns regulator METADATA, and this one
+    # governs whether the platform may go on to acquire a filing's BODY so a specialist
+    # can actually search and cite it. Off by default; turning on discovery must not
+    # silently start fetching filing bodies.
+    v3_filing_body_bridge_enabled: bool = False
+    # How many filing BODIES one discovery call may acquire. `get_recent_filings`
+    # returns up to 50 rows, and acquiring every one of them would turn a single
+    # question into fifty SEC fetches and fifty extractions — the "download every
+    # filing the issuer ever made" failure. Three is enough to cover an annual report
+    # plus the two most recent interim filings, which is what the biotech playbook's
+    # blocking questions actually read.
+    v3_filing_body_bridge_max_documents: int = 3
 
     v3_run_max_model_calls: int = 0
     v3_run_max_model_tokens: int = 0
