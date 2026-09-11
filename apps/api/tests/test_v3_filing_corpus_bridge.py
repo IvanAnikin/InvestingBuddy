@@ -690,12 +690,12 @@ async def test_one_discovery_call_cannot_acquire_more_than_the_budget(
 
     events = [_Event(f"000168285225{i:06d}") for i in range(1, 9)]
     out = await _call_tool(
-        session, company, _cfg(v3_filing_body_bridge_max_documents=2), monkeypatch, events
+        session, company, _cfg(v3_filing_body_bridge_max_attempts=2), monkeypatch, events
     )
 
     assert len(out["items"]) == 5, "the tool's own row limit still applies"
     assert len(fetched) == 2, f"budget of 2 exceeded: {fetched}"
-    assert out["corpus"]["acquire_budget"] == 2
+    assert out["corpus"]["acquire_attempt_budget"] == 2
     # The ones that were not acquired are reported, not hidden.
     assert out["corpus"]["reasons"].get("acquire_budget_exhausted")
     assert all(i["corpus_ready"] is False for i in out["items"][2:])
@@ -722,7 +722,7 @@ async def test_an_already_searchable_filing_costs_no_budget(session, monkeypatch
 
     events = [_Event(first), _Event("0001682852-25-000002"), _Event("0001682852-25-000003")]
     out = await _call_tool(
-        session, company, _cfg(v3_filing_body_bridge_max_documents=2), monkeypatch, events
+        session, company, _cfg(v3_filing_body_bridge_max_attempts=2), monkeypatch, events
     )
     assert out["corpus"]["ready"] == 1, "the held filing should be reported as reused"
     assert len(fetched) == 2, "both budget slots go to filings not already held"
@@ -743,3 +743,125 @@ async def test_an_unsupported_form_is_never_fetched(session, real_acquire_sec_fi
     assert outcome.acquired is False
     assert outcome.reason == "no_document_resolved"
     assert outcome.fetched is False
+
+
+# ---------------------------------------------------------------------------
+# CORRECTIVE 2 — the bounded resource is ACQUISITION ATTEMPTS, not body fetches
+# ---------------------------------------------------------------------------
+
+
+async def test_failed_acquisitions_cannot_escape_the_attempt_cap(session, monkeypatch):
+    """The defect: budget was decremented only on `outcome.fetched`.
+
+    An acquisition that fails before the body — an accession whose index names no
+    selectable document — reports `fetched=False`, yet it has already made SEC index
+    requests. So ten unresolvable filings made ten round-trips while a cap of three
+    never moved. The cap now counts attempts.
+    """
+    company = await _company(session)
+    attempts: list = []
+
+    async def _always_fails_before_the_body(session_, **k):  # noqa: ANN001, ANN003, ANN202
+        from app.services.corpus.filing_evidence import AcquireOutcome
+
+        attempts.append(k["accession"])
+        # Exactly the shape that used to be free: no body fetched, index work done.
+        return AcquireOutcome(
+            acquired=False, fetched=False, reason="no_document_resolved"
+        )
+
+    import app.services.corpus.filing_acquisition as acq
+
+    monkeypatch.setattr(acq, "acquire_sec_filing", _always_fails_before_the_body)
+
+    events = [_Event(f"000168285225{i:06d}") for i in range(1, 11)]  # 10 filings
+    out = await _call_tool(
+        session,
+        company,
+        _cfg(v3_filing_body_bridge_max_attempts=3),
+        monkeypatch,
+        events,
+    )
+
+    assert len(attempts) == 3, f"attempt cap of 3 escaped: {len(attempts)} attempts"
+    assert out["corpus"]["attempted"] == 3
+    assert out["corpus"]["acquire_attempt_budget"] == 3
+    # The rest were not attempted, and say so rather than being silently dropped.
+    assert out["corpus"]["reasons"].get("no_document_resolved") == 3
+    assert out["corpus"]["reasons"].get("acquire_budget_exhausted") == 2
+    assert len(out["items"]) == 5, "the tool's own row limit still applies"
+    assert all(i["corpus_ready"] is False for i in out["items"])
+
+
+async def test_a_failed_acquisition_is_not_retried_inside_the_same_call(
+    session, monkeypatch
+):
+    """§5 — one slot per filing per call. A failure must not be re-attempted in the same
+    tool call, or a cap of three would still permit unbounded work on three filings."""
+    company = await _company(session)
+    attempts: list = []
+
+    async def _fails(session_, **k):  # noqa: ANN001, ANN003, ANN202
+        from app.services.corpus.filing_evidence import AcquireOutcome
+
+        attempts.append(k["accession"])
+        return AcquireOutcome(acquired=False, fetched=True, reason="extraction_failed")
+
+    import app.services.corpus.filing_acquisition as acq
+
+    monkeypatch.setattr(acq, "acquire_sec_filing", _fails)
+
+    out = await _call_tool(
+        session, company, _cfg(v3_filing_body_bridge_max_attempts=3), monkeypatch,
+        [_Event("0001682852-25-000077")],
+    )
+    assert attempts == ["0001682852-25-000077"], "the same filing was attempted twice"
+    assert out["corpus"]["attempted"] == 1
+
+
+async def test_already_ready_filings_never_consume_attempt_budget(session, monkeypatch):
+    """The mixture the brief asks for: READY, failed, READY, failed, failed, unready.
+
+    A filing already searchable is answered from the database, so it must cost nothing —
+    otherwise a repeat run would starve its budget on documents it already holds.
+    """
+    company = await _company(session)
+
+    ready_a, ready_b = "0001682852-25-000201", "0001682852-25-000203"
+    for acc in (ready_a, ready_b):
+        await _make_searchable(
+            session, company, accession=acc,
+            url=f"https://www.sec.gov/Archives/edgar/data/{CIK}/{acc.replace('-','')}/x.htm",
+        )
+
+    attempts: list = []
+
+    async def _fails(session_, **k):  # noqa: ANN001, ANN003, ANN202
+        from app.services.corpus.filing_evidence import AcquireOutcome
+
+        attempts.append(k["accession"])
+        return AcquireOutcome(acquired=False, fetched=False, reason="no_document_resolved")
+
+    import app.services.corpus.filing_acquisition as acq
+
+    monkeypatch.setattr(acq, "acquire_sec_filing", _fails)
+
+    events = [
+        _Event(ready_a),                    # ready  — free
+        _Event("0001682852-25-000202"),     # failed — slot 1
+        _Event(ready_b),                    # ready  — free
+        _Event("0001682852-25-000204"),     # failed — slot 2
+        _Event("0001682852-25-000205"),     # failed — slot 3
+    ]
+    out = await _call_tool(
+        session, company, _cfg(v3_filing_body_bridge_max_attempts=3), monkeypatch, events
+    )
+
+    assert out["corpus"]["ready"] == 2, "both held filings should be recognised"
+    assert len(attempts) == 3, f"ready filings consumed budget: {attempts}"
+    assert ready_a not in attempts and ready_b not in attempts
+    assert out["corpus"]["attempted"] == 3
+    # The two recognised-for-free filings are the ones reported searchable.
+    ready_flags = {i["accession_number"]: i["corpus_ready"] for i in out["items"]}
+    assert ready_flags[ready_a] is True
+    assert ready_flags[ready_b] is True

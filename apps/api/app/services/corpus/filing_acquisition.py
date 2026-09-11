@@ -133,7 +133,7 @@ async def acquire_sec_filing(
         cfg=cfg,
     )
 
-    # AND THEN INDEX IT.
+    # AND THEN INDEX IT — *it*, and nothing else.
     #
     # `persist_chunks` creates chunk ROWS; it does not create index ENTRIES, and the
     # lexical query filters on `indexed_at IS NOT NULL`. Until V3.16 the only caller of
@@ -141,7 +141,14 @@ async def acquire_sec_filing(
     # created sat un-indexed and unfindable — chunks in the table, nothing in search.
     # That is the second half of why a specialist searching Moderna's filings got
     # nothing, and it is invisible on SQLite because the backend is PostgreSQL-only.
-    indexed = await _index_new_versions(session, company_id=company_id, cfg=cfg)
+    #
+    # Scoped to THIS accession. Indexing every current version the company happens to
+    # own would make one requested filing do unrelated work: re-indexing documents
+    # nobody asked about, on a path whose cost and failure modes belong to a different
+    # request. A filing left un-indexed by some other path is that path's bug to fix.
+    indexed = await _index_acquired_version(
+        session, company_id=company_id, accession=accession, cfg=cfg
+    )
 
     return AcquireOutcome(
         acquired=True,
@@ -155,19 +162,30 @@ async def acquire_sec_filing(
     )
 
 
-async def _index_new_versions(
-    session: Any, *, company_id: uuid.UUID, cfg: "Settings"
+async def _index_acquired_version(
+    session: Any, *, company_id: uuid.UUID, accession: str, cfg: "Settings"
 ) -> int:
-    """Index the current version(s) this company just acquired. Never raises.
+    """Index the current version of the filing just acquired. Never raises.
 
-    Uses the configured backend. With none configured the chunks are still stored —
-    they simply are not retrievable yet, and the readiness predicate will say so rather
-    than let the caller believe otherwise.
+    Resolves the version through ``current_version_for_filing`` — the same lookup the
+    readiness predicate uses, so the acquirer and the predicate can never disagree about
+    which version a filing means.
+
+    With no backend configured the chunks are still stored; they simply are not
+    retrievable, and the readiness predicate says so rather than letting a caller believe
+    otherwise.
     """
-    from sqlalchemy import select
-
-    from app.models.research_document import ResearchDocument, ResearchDocumentVersion
+    from app.services.corpus.filing_evidence import current_version_for_filing
     from app.services.corpus.indexing import index_version
+
+    version = await current_version_for_filing(
+        session, company_id=company_id, accession=accession
+    )
+    if version is None:
+        # Persisting produced no current version for this company — the cross-company
+        # `content_hash` dedup does this. Saying nothing was indexed is the truth, and
+        # the bridge's own re-read will report the filing unavailable.
+        return 0
 
     try:
         from app.services.corpus.search.factory import get_search_backend
@@ -179,37 +197,17 @@ async def _index_new_versions(
     if backend is None:
         return 0
 
-    versions = (
-        (
-            await session.execute(
-                select(ResearchDocumentVersion)
-                .join(
-                    ResearchDocument,
-                    ResearchDocument.id
-                    == ResearchDocumentVersion.research_document_id,
-                )
-                .where(
-                    ResearchDocument.company_id == company_id,
-                    ResearchDocumentVersion.is_current.is_(True),
-                )
-            )
+    try:
+        result = await index_version(
+            session,
+            research_document_version_id=version.id,
+            backend=backend,
+            cfg=cfg,
         )
-        .scalars()
-        .all()
-    )
-    total = 0
-    for version in versions:
-        try:
-            result = await index_version(
-                session,
-                research_document_version_id=version.id,
-                backend=backend,
-                cfg=cfg,
-            )
-            total += int(result.indexed) + int(result.updated)
-        except Exception:  # noqa: BLE001 - one version failing must not lose the rest
-            logger.exception("Indexing failed for version %s", version.id)
-    return total
+    except Exception:  # noqa: BLE001 - indexing failure is reported, never raised
+        logger.exception("Indexing failed for version %s", version.id)
+        return 0
+    return int(result.indexed) + int(result.updated)
 
 
 __all__ = ["DEFAULT_ACQUIRE_BUDGET_SECONDS", "acquire_sec_filing"]

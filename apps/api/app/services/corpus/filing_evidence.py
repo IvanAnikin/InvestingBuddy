@@ -158,31 +158,36 @@ async def filing_evidence_state(
         )
 
     fragment = _url_fragment(canonical)
-    # The company lives on the LOGICAL document, not the retrieval, so the scope filter
-    # is a join rather than a column on the version. Getting that wrong is precisely how
-    # one issuer's filing would come to satisfy another's request.
-    version = (
-        await session.execute(
-            select(ResearchDocumentVersion)
-            .join(
-                ResearchDocument,
-                ResearchDocument.id == ResearchDocumentVersion.research_document_id,
-            )
-            .where(
-                ResearchDocument.company_id == company_id,
-                ResearchDocumentVersion.canonical_url.contains(fragment),
-            )
-            .order_by(ResearchDocumentVersion.is_current.desc())
-            .limit(1)
-        )
-    ).scalar_one_or_none()
+    version = await current_version_for_filing(
+        session, company_id=company_id, accession=canonical
+    )
 
     if version is None:
-        # No corpus version. There may still be a V2 row — that is STATE B, and the
-        # caller must not mistake its excerpts for searchable content.
+        # A SUPERSEDED version is not a fallback.
+        #
+        # The query above REQUIRES `is_current`, and that is load-bearing rather than
+        # tidy. Expressing "current" as an `ORDER BY is_current DESC` ranks a current
+        # version first but does not require one to exist — so where every matching
+        # version had been superseded, a stale one was selected and could satisfy READY
+        # on the strength of chunks belonging to a reading of the document the platform
+        # has already replaced. The bridge would then report `reused`, skip
+        # reacquisition, and leave a specialist searching the old reading for ever.
+        superseded = await _superseded_version_exists(
+            session, company_id=company_id, fragment=fragment
+        )
         extracted_id = await _historical_extracted_document_id(
             session, company_id=company_id, fragment=fragment
         )
+        if superseded:
+            return FilingEvidenceState(
+                state=STATE_HISTORICAL_WITHOUT_CHUNKS,
+                accession=canonical,
+                extracted_document_id=extracted_id,
+                detail=(
+                    "every corpus version of this filing is SUPERSEDED; a stale "
+                    "reading is not evidence, so the filing must be reacquired"
+                ),
+            )
         if extracted_id is not None:
             return FilingEvidenceState(
                 state=STATE_HISTORICAL_WITHOUT_CHUNKS,
@@ -267,6 +272,66 @@ async def filing_evidence_state(
     )
 
 
+async def current_version_for_filing(
+    session: Any,
+    *,
+    company_id: uuid.UUID | None,
+    accession: str | int | None,
+) -> ResearchDocumentVersion | None:
+    """The CURRENT corpus version of one filing, for one company, or ``None``.
+
+    One definition, used by the readiness predicate and by the acquirer that has to know
+    which version it just produced. Two lookups would be two chances to disagree about
+    which version a filing means.
+
+    Company scope is a join because ``company_id`` lives on the LOGICAL document, not on
+    the retrieval — getting that wrong is exactly how one issuer's filing would come to
+    satisfy another's request.
+    """
+    canonical = canonical_accession(accession)
+    if canonical is None or company_id is None:
+        return None
+    return (
+        await session.execute(
+            select(ResearchDocumentVersion)
+            .join(
+                ResearchDocument,
+                ResearchDocument.id == ResearchDocumentVersion.research_document_id,
+            )
+            .where(
+                ResearchDocument.company_id == company_id,
+                ResearchDocumentVersion.canonical_url.contains(
+                    _url_fragment(canonical)
+                ),
+                # REQUIRED, not merely preferred. See `filing_evidence_state`.
+                ResearchDocumentVersion.is_current.is_(True),
+            )
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+
+async def _superseded_version_exists(
+    session: Any, *, company_id: uuid.UUID, fragment: str
+) -> bool:
+    """True when this company holds only non-current versions of this filing."""
+    found = (
+        await session.execute(
+            select(ResearchDocumentVersion.id)
+            .join(
+                ResearchDocument,
+                ResearchDocument.id == ResearchDocumentVersion.research_document_id,
+            )
+            .where(
+                ResearchDocument.company_id == company_id,
+                ResearchDocumentVersion.canonical_url.contains(fragment),
+            )
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    return found is not None
+
+
 async def _historical_extracted_document_id(
     session: Any, *, company_id: uuid.UUID, fragment: str
 ) -> uuid.UUID | None:
@@ -342,6 +407,11 @@ class FilingEvidenceResult:
     chunk_count: int = 0
     #: True only when this call went to the network for a filing body.
     fetched: bool = False
+    #: True when an acquisition was ATTEMPTED — which is the bounded resource, not
+    #: ``fetched``. An attempt that fails before the body (an unresolvable accession,
+    #: say) has still made SEC index requests, so a caller budgeting on ``fetched``
+    #: would let a list of unresolvable filings make unbounded network calls.
+    attempted: bool = False
     #: True when the filing was already searchable and nothing was fetched.
     reused: bool = False
     notes: list[str] = field(default_factory=list)
@@ -357,6 +427,7 @@ class FilingEvidenceResult:
             "reason": self.reason,
             "chunk_count": self.chunk_count,
             "fetched": self.fetched,
+            "attempted": self.attempted,
             "reused": self.reused,
             "notes": list(self.notes),
         }
@@ -472,6 +543,9 @@ async def ensure_filing_corpus_evidence(
             state=STATE_UNAVAILABLE,
             accession=canonical,
             reason="acquisition_error",
+            # The attempt happened, so it consumes a slot. A failure that refunded its
+            # budget would let a list of failing filings retry without limit.
+            attempted=True,
             notes=[*notes, f"{type(exc).__name__}"],
         )
 
@@ -491,6 +565,7 @@ async def ensure_filing_corpus_evidence(
             version_id=after.version_id,
             chunk_count=after.indexable_chunk_count,
             fetched=outcome.fetched,
+            attempted=True,
             notes=notes,
         )
 
@@ -499,6 +574,7 @@ async def ensure_filing_corpus_evidence(
         accession=canonical,
         reason=outcome.reason or "no_indexable_content",
         fetched=outcome.fetched,
+        attempted=True,
         notes=[
             *notes,
             after.detail

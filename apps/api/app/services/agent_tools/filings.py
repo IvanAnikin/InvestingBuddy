@@ -212,6 +212,7 @@ async def _ensure_filing_bodies(
         "acquired": 0,
         "unavailable": 0,
         "fetched": 0,
+        "attempted": 0,
         "reasons": {},
     }
     if not getattr(cfg, "v3_filing_body_bridge_enabled", False):
@@ -227,12 +228,19 @@ async def _ensure_filing_bodies(
 
     from app.services.corpus.filing_evidence import ensure_filing_corpus_evidence
 
-    # BOUNDED. Acquiring every discovered filing would turn one question into fifty SEC
-    # fetches. The cap applies to how many bodies may be ACQUIRED, not to how many
-    # filings are examined: a filing already searchable costs nothing and is always
-    # checked, so the budget is spent only on documents the platform does not yet hold.
-    budget = max(0, int(getattr(cfg, "v3_filing_body_bridge_max_documents", 3) or 0))
-    summary["acquire_budget"] = budget
+    # BOUNDED, and the bounded resource is ACQUISITION ATTEMPTS.
+    #
+    # Budgeting on successful body fetches was wrong: an attempt that fails before the
+    # body — an accession whose index names no selectable document, say — has still made
+    # SEC index requests, and it reported `fetched=False`. A discovery result full of
+    # unresolvable filings therefore made unbounded network calls while the counter
+    # never moved.
+    #
+    # Free, and deliberately so: a filing already searchable (answered from the
+    # database), and the readiness check itself. Budget is spent only where the platform
+    # actually reaches out.
+    budget = max(0, int(getattr(cfg, "v3_filing_body_bridge_max_attempts", 3) or 0))
+    summary["acquire_attempt_budget"] = budget
 
     for item in items:
         try:
@@ -246,8 +254,11 @@ async def _ensure_filing_bodies(
                 cfg=cfg,
                 ready_only=budget <= 0,
             )
-            if outcome.fetched:
+            # One slot per ATTEMPT, success or failure. A failure that refunded its
+            # slot would let the same failing filings be retried without limit.
+            if outcome.attempted:
                 budget -= 1
+                summary["attempted"] += 1
         except Exception:  # noqa: BLE001 - discovery must survive a failed acquisition
             item["corpus_ready"] = False
             summary["unavailable"] += 1
@@ -278,9 +289,12 @@ def _bridge_summary(bridge: dict[str, Any]) -> str:
     ready = int(bridge.get("ready", 0))
     acquired = int(bridge.get("acquired", 0))
     unavailable = int(bridge.get("unavailable", 0))
+    attempted = int(bridge.get("attempted", 0))
+    budget = int(bridge.get("acquire_attempt_budget", 0))
     return (
         f"{ready + acquired} searchable in the corpus ({acquired} acquired now, "
-        f"{ready} already held), {unavailable} not searchable."
+        f"{ready} already held), {unavailable} not searchable; "
+        f"{attempted} of {budget} acquisition attempts used."
     )
 
 

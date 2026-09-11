@@ -47,6 +47,17 @@ PIPELINE_TEXT = (
 )
 
 
+
+def _fresh_accession() -> str:
+    """A unique 18-digit accession per call.
+
+    The scratch database persists between tests and runs, and `extracted_documents`
+    dedups on `content_hash`, so a fixed accession makes a test pass once and fail
+    afterwards. Each test owns its filing identity.
+    """
+    return f"0001682852-25-{int(uuid.uuid4().hex[:6], 16) % 1000000:06d}"
+
+
 def _cfg(**over) -> Settings:  # noqa: ANN003
     base = {
         "v3_corpus_enabled": True,
@@ -743,3 +754,339 @@ class TestKnownLimitationV2DocumentDedupIsNotCompanyScoped:
         assert second_state.state != "ready"
         assert bridged.is_ready is False
         assert bridged.state == "unavailable"
+
+
+# ---------------------------------------------------------------------------
+# CORRECTIVE 1 — READY must require the CURRENT version
+# ---------------------------------------------------------------------------
+
+
+async def _make_version(  # noqa: ANN201
+    session,  # noqa: ANN001
+    company_id,  # noqa: ANN001
+    accession,  # noqa: ANN001
+    *,
+    is_current: bool,
+    with_chunks: bool = True,
+    indexed: bool = True,
+    document=None,  # noqa: ANN001
+    text: str = PIPELINE_TEXT,
+):
+    """One version of one filing, with its derivation/chunk/index state chosen.
+
+    ``document`` lets two versions share one logical document, which is what a
+    supersession actually looks like — and the only way to exercise "stale version
+    beside a current one" faithfully.
+    """
+    from app.models.research_chunk import ResearchDocumentChunk
+    from app.models.research_derivation import ResearchDocumentDerivation
+    from app.models.research_document import ResearchDocument, ResearchDocumentVersion
+
+    nodash = accession.replace("-", "")
+    if document is None:
+        document = ResearchDocument(
+            id=uuid.uuid4(),
+            company_id=company_id,
+            document_key=f"sec_filing:{accession}",
+            document_type="sec_filing",
+            title=f"10-K {accession}",
+        )
+        session.add(document)
+        await session.flush()
+
+    version = ResearchDocumentVersion(
+        id=uuid.uuid4(),
+        research_document_id=document.id,
+        content_hash=uuid.uuid4().hex * 2,
+        canonical_url=f"https://www.sec.gov/Archives/edgar/data/{CIK}/{nodash}/x.htm",
+        transport="sec_edgar",
+        source_tier="T1_primary_filing",
+        access_class="public_official",
+        extraction_status="extracted",
+        retrieved_at=datetime.now(timezone.utc),
+        is_current=is_current,
+    )
+    session.add(version)
+    await session.flush()
+
+    if not with_chunks:
+        return document, version, None
+
+    deriv = ResearchDocumentDerivation(
+        id=uuid.uuid4(),
+        research_document_version_id=version.id,
+        pipeline_version=15,
+        extraction_profile="live",
+        extraction_method="html",
+        status="complete",
+        is_active=True,
+        pages_persisted=1,
+        page_count=1,
+        char_count=len(text),
+    )
+    session.add(deriv)
+    await session.flush()
+    chunk = ResearchDocumentChunk(
+        id=uuid.uuid4(),
+        chunk_id=f"c:{uuid.uuid4().hex}",
+        derivation_id=deriv.id,
+        research_document_version_id=version.id,
+        company_id=company_id,
+        ordinal=1,
+        kind="prose",
+        text=text,
+        char_start=0,
+        char_end=len(text),
+        indexable=True,
+        indexed_at=datetime.now(timezone.utc) if indexed else None,
+        document_type="sec_filing",
+        source_tier="T1_primary_filing",
+        access_class="public_official",
+    )
+    session.add(chunk)
+    await session.flush()
+    return document, version, chunk
+
+
+@requires_postgres
+class TestReadyRequiresTheCurrentVersion:
+    """A superseded version must never satisfy readiness.
+
+    The predicate's contract is *current* version → active derivation → indexable,
+    indexed chunk. The query originally expressed "current" as an ``ORDER BY
+    is_current DESC``, which ranks a current version first but does not REQUIRE one — so
+    where every matching version was superseded, a stale one was selected and could
+    satisfy READY on the strength of chunks belonging to a reading of the document the
+    platform has already replaced.
+    """
+
+    async def test_A_a_stale_indexed_version_alone_is_not_ready(self, pg) -> None:  # noqa: ANN001
+        from app.services.corpus.filing_evidence import filing_evidence_state
+
+        company_id = await _company(pg)
+        accession = _fresh_accession()
+        async with pg() as s:
+            await _make_version(s, company_id, accession, is_current=False)
+            await s.commit()
+
+        async with pg() as s:
+            state = await filing_evidence_state(
+                s, company_id=company_id, accession=accession
+            )
+        assert state.state != "ready", (
+            "a superseded version satisfied readiness: its chunks describe a reading of "
+            "the document that has already been replaced"
+        )
+        assert state.is_ready is False
+
+    async def test_B_a_current_chunkless_version_governs_over_a_stale_indexed_one(
+        self, pg
+    ) -> None:  # noqa: ANN001
+        """Supersession as it really happens: reprocessing wrote a new current version
+        whose chunks are not there yet, while the old indexed one lingers."""
+        from app.services.corpus.filing_evidence import filing_evidence_state
+
+        company_id = await _company(pg)
+        accession = _fresh_accession()
+        async with pg() as s:
+            document, _stale, _c = await _make_version(
+                s, company_id, accession, is_current=False
+            )
+            await _make_version(
+                s, company_id, accession, is_current=True, with_chunks=False,
+                document=document,
+            )
+            await s.commit()
+
+        async with pg() as s:
+            state = await filing_evidence_state(
+                s, company_id=company_id, accession=accession
+            )
+        assert state.state == "historical_without_chunks"
+        assert state.is_ready is False
+
+    async def test_C_a_current_indexed_version_is_ready(self, pg) -> None:  # noqa: ANN001
+        from app.services.corpus.filing_evidence import filing_evidence_state
+
+        company_id = await _company(pg)
+        accession = _fresh_accession()
+        async with pg() as s:
+            await _make_version(s, company_id, accession, is_current=True)
+            await s.commit()
+
+        async with pg() as s:
+            state = await filing_evidence_state(
+                s, company_id=company_id, accession=accession
+            )
+        assert state.state == "ready"
+        assert state.indexable_chunk_count == 1
+
+    async def test_a_stale_version_does_not_let_the_bridge_skip_acquisition(
+        self, pg
+    ) -> None:  # noqa: ANN001
+        """The consequence that would have shipped: a stale version reading as READY
+        means the bridge returns `reused` and never reacquires, so the specialist
+        searches a superseded reading for ever."""
+        from app.services.corpus.filing_evidence import (
+            AcquireOutcome,
+            ensure_filing_corpus_evidence,
+        )
+
+        company_id = await _company(pg)
+        accession = _fresh_accession()
+        async with pg() as s:
+            await _make_version(s, company_id, accession, is_current=False)
+            await s.commit()
+
+        attempts: list = []
+
+        async def _acquire(session_, **k):  # noqa: ANN001, ANN003, ANN202
+            attempts.append(k["accession"])
+            return AcquireOutcome(acquired=False, fetched=True, reason="extraction_failed")
+
+        async with pg() as s:
+            out = await ensure_filing_corpus_evidence(
+                s,
+                company_id=company_id,
+                cik=CIK,
+                accession=accession,
+                form="10-K",
+                cfg=_cfg(),
+                acquire=_acquire,
+            )
+        assert attempts == [accession], "a stale version must not stand in for the filing"
+        assert out.is_ready is False
+        assert out.reused is False
+
+
+# ---------------------------------------------------------------------------
+# CORRECTIVE 3 — one accession indexes ONE filing
+# ---------------------------------------------------------------------------
+
+
+@requires_postgres
+class TestIndexingIsScopedToTheAcquiredFiling:
+    """Acquiring filing A must not index filing B.
+
+    The original `_index_new_versions` selected EVERY current version for the company and
+    indexed all of them. That made one requested filing do unrelated work — re-indexing
+    documents nobody asked about, on a path whose cost and failure modes belong to a
+    different request. A document left un-indexed by some other path is that path's bug.
+    """
+
+    async def test_only_the_acquired_filing_is_indexed(
+        self, pg, real_acquire_sec_filing
+    ) -> None:  # noqa: ANN001
+        from sqlalchemy import select
+
+        from app.models.research_chunk import ResearchDocumentChunk
+        from app.services.corpus.filing_evidence import filing_evidence_state
+
+        company_id = await _company(pg)
+        accession_a = _fresh_accession()
+        accession_b = _fresh_accession()
+
+        # Filing B: current, with chunks, deliberately NOT indexed.
+        async with pg() as s:
+            _doc_b, version_b, chunk_b = await _make_version(
+                s, company_id, accession_b, is_current=True, indexed=False,
+                text="Unrelated filing B content about supply agreements.",
+            )
+            chunk_b_id = chunk_b.chunk_id
+            version_b_id = version_b.id
+            await s.commit()
+
+        # Acquire filing A through the real chain.
+        outcome = await _ingest_via_the_real_chain(
+            pg, company_id, real_acquire_sec_filing, accession=accession_a
+        )
+        assert outcome.acquired is True, outcome.detail
+
+        async with pg() as s:
+            state_a = await filing_evidence_state(
+                s, company_id=company_id, accession=accession_a
+            )
+            state_b = await filing_evidence_state(
+                s, company_id=company_id, accession=accession_b
+            )
+            b_row = (
+                await s.execute(
+                    select(ResearchDocumentChunk).where(
+                        ResearchDocumentChunk.chunk_id == chunk_b_id
+                    )
+                )
+            ).scalar_one()
+
+        # A is indexed and searchable.
+        assert state_a.state == "ready", state_a.detail
+        assert state_a.indexable_chunk_count > 0
+        # B was left exactly as it was — not indexed, not ready, not touched.
+        assert b_row.indexed_at is None, "filing B was indexed by filing A's acquisition"
+        assert state_b.state == "historical_without_chunks"
+        assert state_b.version_id == version_b_id
+
+    async def test_a_second_ensure_of_the_same_filing_does_no_work(
+        self, pg, real_acquire_sec_filing
+    ) -> None:  # noqa: ANN001
+        """§5 — the second run must be free: no acquisition, no re-index, still READY."""
+        from sqlalchemy import select
+
+        from app.models.research_chunk import ResearchDocumentChunk
+        from app.services.corpus.filing_evidence import ensure_filing_corpus_evidence
+
+        company_id = await _company(pg)
+        accession = _fresh_accession()
+        await _ingest_via_the_real_chain(
+            pg, company_id, real_acquire_sec_filing, accession=accession
+        )
+
+        async with pg() as s:
+            before = sorted(
+                (c.chunk_id, c.indexed_at)
+                for c in (
+                    await s.execute(
+                        select(ResearchDocumentChunk).where(
+                            ResearchDocumentChunk.company_id == company_id
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+
+        attempts: list = []
+
+        async def _never(*a, **k):  # noqa: ANN002, ANN003, ANN202
+            attempts.append(k)
+            raise AssertionError("a ready filing must not be acquired again")
+
+        async with pg() as s:
+            out = await ensure_filing_corpus_evidence(
+                s,
+                company_id=company_id,
+                cik=CIK,
+                accession=accession,
+                form="10-K",
+                cfg=_cfg(),
+                acquire=_never,
+            )
+            after = sorted(
+                (c.chunk_id, c.indexed_at)
+                for c in (
+                    await s.execute(
+                        select(ResearchDocumentChunk).where(
+                            ResearchDocumentChunk.company_id == company_id
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+
+        assert out.state == "ready"
+        assert out.reused is True
+        assert out.fetched is False
+        assert out.attempted is False
+        assert attempts == []
+        # Byte-for-byte the same index state: no re-index, not even an idempotent one.
+        assert after == before, "the second ensure re-indexed an already-indexed filing"
