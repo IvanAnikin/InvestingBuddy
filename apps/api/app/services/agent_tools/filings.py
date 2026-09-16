@@ -155,9 +155,22 @@ async def _get_recent_filings(
         if len(items) >= arguments["limit"]:
             break
 
+    # V3.16 — THE BRIDGE, run deterministically by the platform after discovery.
+    #
+    # Discovery and evidence stay separate: the items above are still metadata and no
+    # prose is added to any of them. What this adds is `corpus_ready`, which answers a
+    # question the specialist otherwise has to guess at — "can I actually search this
+    # filing?" — and, when the answer is no, makes it true.
+    #
+    # The model cannot aim this. It supplied a ticker and a form list; the accessions
+    # come from the regulator, and every URL is built inside the SEC pipeline from
+    # code-defined constants. There is no argument through which a URL could arrive.
+    bridge = await _ensure_filing_bodies(context, cfg=cfg, cik=result.cik, items=items)
+
     return {
         "items": items,
         "cik": result.cik,
+        "corpus": bridge,
         "population": {
             "definition": (
                 "filings the regulator lists for this issuer within the lookback window"
@@ -170,11 +183,119 @@ async def _get_recent_filings(
         "summary": (
             f"{len(items)} filing(s) on record with the regulator. Metadata only — the "
             "filing's contents are not returned, because turning a filing into citable "
-            "text is the corpus's job."
+            "text is the corpus's job. "
+            + _bridge_summary(bridge)
         ),
         # Headlines are the issuer's own words, from outside the platform.
         "contains_untrusted_content": True,
     }
+
+
+async def _ensure_filing_bodies(
+    context: "ToolContext",
+    *,
+    cfg: Any,
+    cik: str | None,
+    items: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Make the discovered filings searchable, or record honestly why not.
+
+    Returns counts only — never text, never a URL the caller did not already have. A
+    filing that could not be acquired is reported as not ready rather than omitted,
+    because a specialist needs to tell "there is nothing in this filing" from "this
+    filing was never read".
+
+    Never raises: evidence acquisition degrading must not fail a discovery call.
+    """
+    summary: dict[str, Any] = {
+        "ready": 0,
+        "acquired": 0,
+        "unavailable": 0,
+        "fetched": 0,
+        "attempted": 0,
+        "reasons": {},
+    }
+    if not getattr(cfg, "v3_filing_body_bridge_enabled", False):
+        summary["enabled"] = False
+        return summary
+    summary["enabled"] = True
+
+    session = getattr(context, "session", None)
+    company_id = getattr(context, "company_id", None)
+    if session is None or company_id is None or not cik:
+        summary["reasons"]["no_company_context"] = len(items)
+        return summary
+
+    from app.services.corpus.filing_evidence import ensure_filing_corpus_evidence
+
+    # BOUNDED, and the bounded resource is ACQUISITION ATTEMPTS.
+    #
+    # Budgeting on successful body fetches was wrong: an attempt that fails before the
+    # body — an accession whose index names no selectable document, say — has still made
+    # SEC index requests, and it reported `fetched=False`. A discovery result full of
+    # unresolvable filings therefore made unbounded network calls while the counter
+    # never moved.
+    #
+    # Free, and deliberately so: a filing already searchable (answered from the
+    # database), and the readiness check itself. Budget is spent only where the platform
+    # actually reaches out.
+    budget = max(0, int(getattr(cfg, "v3_filing_body_bridge_max_attempts", 3) or 0))
+    summary["acquire_attempt_budget"] = budget
+
+    for item in items:
+        try:
+            # `ready_only` spends no budget: it answers from the database and stops.
+            outcome = await ensure_filing_corpus_evidence(
+                session,
+                company_id=company_id,
+                cik=cik,
+                accession=item.get("accession_number"),
+                form=item.get("form_type"),
+                cfg=cfg,
+                ready_only=budget <= 0,
+            )
+            # One slot per ATTEMPT, success or failure. A failure that refunded its
+            # slot would let the same failing filings be retried without limit.
+            if outcome.attempted:
+                budget -= 1
+                summary["attempted"] += 1
+        except Exception:  # noqa: BLE001 - discovery must survive a failed acquisition
+            item["corpus_ready"] = False
+            summary["unavailable"] += 1
+            summary["reasons"]["bridge_error"] = (
+                summary["reasons"].get("bridge_error", 0) + 1
+            )
+            continue
+
+        item["corpus_ready"] = outcome.is_ready
+        if outcome.fetched:
+            summary["fetched"] += 1
+        if outcome.is_ready:
+            summary["ready" if outcome.reused else "acquired"] += 1
+        else:
+            summary["unavailable"] += 1
+            reason = outcome.reason or "unknown"
+            summary["reasons"][reason] = summary["reasons"].get(reason, 0) + 1
+    return summary
+
+
+def _bridge_summary(bridge: dict[str, Any]) -> str:
+    """One sentence a reader can act on, including when nothing happened."""
+    if not bridge.get("enabled"):
+        return (
+            "V3_FILING_BODY_BRIDGE_ENABLED is off, so no filing body was acquired and "
+            "none of these filings is searchable."
+        )
+    ready = int(bridge.get("ready", 0))
+    acquired = int(bridge.get("acquired", 0))
+    unavailable = int(bridge.get("unavailable", 0))
+    attempted = int(bridge.get("attempted", 0))
+    budget = int(bridge.get("acquire_attempt_budget", 0))
+    return (
+        f"{ready + acquired} searchable in the corpus ({acquired} acquired now, "
+        f"{ready} already held), {unavailable} not searchable; "
+        f"{attempted} of {budget} acquisition attempts used."
+    )
 
 
 GET_RECENT_FILINGS_SPEC = ToolSpec(

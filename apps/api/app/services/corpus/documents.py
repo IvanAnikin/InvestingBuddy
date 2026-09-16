@@ -382,10 +382,19 @@ async def ingest_extracted_document(
 
     The compatibility bridge, and the reason no bulk migration is needed: the V2
     writer keeps doing exactly what it did, and the corpus record is created
-    beside it with ``extracted_document_id`` pointing back — so a corpus read for
-    a document whose full text has not been persisted yet (Slice 1.3) can still
-    fall back to that row's bounded ``excerpts_json`` rather than answering "not
-    available".
+    beside it with ``extracted_document_id`` pointing back.
+
+    .. warning::
+
+       This docstring previously claimed a corpus read could "fall back to that row's
+       bounded ``excerpts_json``". **It cannot, and never could.**
+       ``search_company_corpus`` reads ``research_document_chunks`` and nothing else;
+       there is no excerpts fallback in retrieval, indexing or the search backend. A
+       version created here carries chunks ONLY when ``artifact.extraction`` captured
+       blocks or tables — which a freshly fetched document does and a cache rebuilt
+       from excerpts does not. Ask
+       :func:`app.services.corpus.filing_evidence.is_corpus_search_ready`; it is the
+       single definition of whether the backend can return anything for a document.
 
     Duck-typed on ``artifact`` deliberately: this module stays free of connector
     imports, exactly as ``document_period`` does, so the corpus does not acquire a
@@ -486,6 +495,20 @@ async def backfill_from_extracted_documents(
     now: datetime | None = None,
 ) -> CorpusIngestResult:
     """Create corpus documents/versions for existing ``extracted_documents`` rows.
+
+    .. warning::
+
+       **This does NOT make anything searchable.** It calls ``upsert_document_version``
+       and stops: no derivation, no pages, no chunks. ``search_company_corpus`` reads
+       ``research_document_chunks``, so a completed backfill can report "N versions
+       created" and leave every search returning nought — the exact false success V3.16
+       was opened to investigate.
+
+       It cannot do better, either: a historical row's bytes were never retained, so
+       there is nothing to re-parse into chunks. Use this for document/version LINEAGE.
+       To make a filing searchable use
+       :func:`app.services.corpus.filing_evidence.ensure_filing_corpus_evidence`, which
+       reacquires and re-extracts the official filing.
 
     **Resumable and idempotent**, per the three-step backfill pattern in the
     migration plan: it selects only rows that have no corpus version yet, so
