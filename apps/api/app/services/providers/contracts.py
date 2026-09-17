@@ -301,6 +301,15 @@ class ModelResponse:
     cost: CostEstimate = field(default_factory=CostEstimate)
     finish_reason: str | None = None
     truncated: bool = False
+    #: Did the provider actually parse a JSON object out of the reply?
+    #:
+    #: ``payload={}`` is ambiguous on its own: it means *either* the model returned an
+    #: empty object *or* nothing parseable came back and the provider substituted one.
+    #: Those are different failures — the first is a model that had nothing to say, the
+    #: second is a reply the platform could not read — and a caller that cannot tell them
+    #: apart records neither. Defaults ``True`` so a provider that never fails to parse
+    #: (and every existing construction) is unchanged.
+    payload_parsed: bool = True
 
     def __post_init__(self) -> None:
         for unit in self.instrumented_units:

@@ -359,6 +359,102 @@ def _build_prompt(
 
 
 @dataclass
+class InvestigatorDiagnostics:
+    """Why a model reply produced no finding — COUNTED, never inferred.
+
+    The defect this exists for: an investigator could retrieve six citable T1 chunks,
+    call the model, spend the tokens, and write neither a finding nor a gap — because two
+    paths out of ``_write_up`` returned silently. Nothing was wrong with the evidence and
+    nothing was recorded about the reply, so from the outside "the model had nothing to
+    say" and "we could not read what it said" looked identical.
+
+    Five outcomes, and they are deliberately separate counters rather than one
+    "failed" tally, because each points at a different fix:
+
+    ==================================  ====================================
+    ``responses_with_findings``          (e) worked
+    ``responses_empty_payload``          (a) valid JSON, nothing in it
+    ``responses_unparseable``            (b) no JSON object could be read
+    ``responses_truncated``              (c) the reply hit the output ceiling
+    ``statements_dropped_uncited``       (d) a statement citing nothing
+    ==================================  ====================================
+
+    (b) and (c) are counted INDEPENDENTLY and often co-occur: a reply cut at the token
+    limit is usually also unparseable. Collapsing them would hide which one to fix, which
+    is the whole point of the slice.
+
+    Nothing here holds model text, a prompt, a URL or a credential — only counts and the
+    provider's own short finish reason.
+    """
+
+    responses_total: int = 0
+    responses_with_findings: int = 0
+    responses_empty_payload: int = 0
+    responses_unparseable: int = 0
+    responses_truncated: int = 0
+    statements_dropped_uncited: int = 0
+    #: Provider finish reasons seen, e.g. ``{"length": 3}``. A closed, short vocabulary
+    #: from the provider — never content.
+    finish_reasons: dict[str, int] = field(default_factory=dict)
+
+    def note_finish_reason(self, reason: str | None) -> None:
+        key = _safe_finish_reason(reason)
+        if key:
+            self.finish_reasons[key] = self.finish_reasons.get(key, 0) + 1
+
+    def merge(self, other: "InvestigatorDiagnostics") -> None:
+        self.responses_total += other.responses_total
+        self.responses_with_findings += other.responses_with_findings
+        self.responses_empty_payload += other.responses_empty_payload
+        self.responses_unparseable += other.responses_unparseable
+        self.responses_truncated += other.responses_truncated
+        self.statements_dropped_uncited += other.statements_dropped_uncited
+        for key, count in other.finish_reasons.items():
+            self.finish_reasons[key] = self.finish_reasons.get(key, 0) + count
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "responses_total": self.responses_total,
+            "responses_with_findings": self.responses_with_findings,
+            "responses_empty_payload": self.responses_empty_payload,
+            "responses_unparseable": self.responses_unparseable,
+            "responses_truncated": self.responses_truncated,
+            "statements_dropped_uncited": self.statements_dropped_uncited,
+            "finish_reasons": dict(self.finish_reasons),
+        }
+
+
+#: Finish reasons a provider may report. Anything else is recorded as ``other`` rather
+#: than passed through, so a provider cannot put arbitrary text into stored telemetry.
+_KNOWN_FINISH_REASONS: frozenset[str] = frozenset(
+    {"stop", "length", "max_tokens", "content_filter", "tool_calls", "function_call"}
+)
+
+
+def _safe_finish_reason(reason: str | None) -> str | None:
+    """A short, allowlisted finish reason. Never provider prose."""
+    value = str(reason or "").strip().lower()
+    if not value:
+        return None
+    return value if value in _KNOWN_FINISH_REASONS else "other"
+
+
+@dataclass
+class _ModelReply:
+    """One model reply and what the platform could tell about it.
+
+    This exists because ``_complete_json`` used to return ``payload`` alone, throwing
+    away ``truncated`` and ``finish_reason`` — which the provider had already worked out
+    correctly. That is the information loss V3.16.1a removes.
+    """
+
+    payload: dict[str, Any]
+    parsed: bool = True
+    truncated: bool = False
+    finish_reason: str | None = None
+
+
+@dataclass
 class LLMInvestigator:
     """A real specialist: runs tools, then asks a model to write up what they returned."""
 
@@ -374,6 +470,9 @@ class LLMInvestigator:
     #: Set when a model reply cited an id it was never given. Kept for the acceptance
     #: record: it is the number that says whether the guard is doing anything.
     fabricated_citations: list[str] = field(default_factory=list)
+    #: V3.16.1a — why a reply produced no finding. Collected per worker and merged by the
+    #: caller, exactly as ``fabricated_citations`` already is.
+    diagnostics: InvestigatorDiagnostics = field(default_factory=InvestigatorDiagnostics)
 
     async def investigate(
         self,
@@ -569,9 +668,15 @@ class LLMInvestigator:
             )
 
         system, user = _build_prompt(question, evidence, role_id)
+        self.diagnostics.responses_total += 1
         try:
-            payload = await self._complete_json(system, user)
+            reply = await self._complete(system, user)
         except Exception as exc:  # noqa: BLE001 - a provider failure is a gap, not a crash
+            # Unchanged behaviour. The V2 client raises `LLMJsonError` here after its own
+            # repair attempt, which is the shape V3.16.1a makes the V3 path match — so
+            # the same failure is counted the same way whichever client served the call.
+            if type(exc).__name__ == "LLMJsonError":
+                self.diagnostics.responses_unparseable += 1
             return (
                 [],
                 [
@@ -588,6 +693,25 @@ class LLMInvestigator:
                 False,
             )
 
+        # (c) TRUNCATION — counted independently, because a reply cut at the ceiling is
+        # usually ALSO unparseable, and which one to fix differs.
+        self.diagnostics.note_finish_reason(reply.finish_reason)
+        if reply.truncated:
+            self.diagnostics.responses_truncated += 1
+
+        # (b) UNPARSEABLE — the provider could not read a JSON object out of the reply.
+        # Before V3.16.1a this arrived as an empty dict and produced nothing at all.
+        if not reply.parsed:
+            self.diagnostics.responses_unparseable += 1
+            return ([], [self._unreadable_gap(question, reply, "unparseable")], False)
+
+        # (a) EMPTY PAYLOAD — valid JSON, and nothing in it. A different failure from (b):
+        # the model was read correctly and had nothing to say.
+        if not reply.payload:
+            self.diagnostics.responses_empty_payload += 1
+            return ([], [self._unreadable_gap(question, reply, "empty")], False)
+
+        payload = reply.payload
         findings: list[FindingDraft] = []
         gaps: list[GapDraft] = []
         for raw in (payload.get("findings") or [])[:MAX_FINDINGS_PER_QUESTION]:
@@ -620,6 +744,12 @@ class LLMInvestigator:
                 )
                 continue
             if not real:
+                # (d) A statement citing NOTHING. Dropped exactly as before — the
+                # citation rule is right — but no longer in silence: before V3.16.1a this
+                # `continue` left no gap, no counter and no trace, so a model that
+                # answered without citing was indistinguishable from one that never
+                # answered.
+                self.diagnostics.statements_dropped_uncited += 1
                 continue
             direction = str(raw.get("direction") or "").strip().lower() or None
             if direction not in {"supportive", "adverse", "neutral", None}:
@@ -682,25 +812,93 @@ class LLMInvestigator:
                         why_it_matters=(str(raw.get("why_it_matters") or "").strip() or None),
                     )
                 )
+        if findings:
+            self.diagnostics.responses_with_findings += 1  # (e)
         return findings, gaps, bool(findings)
 
-    async def _complete_json(self, system: str, user: str) -> dict[str, Any]:
-        """One structured completion, whichever client shape resolved.
+    def _unreadable_gap(
+        self, question: PlannedQuestion, reply: _ModelReply, kind: str
+    ) -> GapDraft:
+        """A gap for a reply the platform could not turn into findings.
+
+        Carries the provider's own short finish reason and nothing else — no model text,
+        no prompt, no URL. "Evidence was retrieved and not interpreted" is the honest
+        statement, and it is the one a reader needs in order to tell this from "there was
+        nothing to find".
+        """
+        reason = _safe_finish_reason(reply.finish_reason)
+        detail = (
+            "returned no parseable JSON object"
+            if kind == "unparseable"
+            else "returned an empty JSON object"
+        )
+        why = (
+            f"finish_reason={reason}" if reason else "finish_reason not reported"
+        ) + (", truncated at the output limit" if reply.truncated else "")
+        return GapDraft(
+            gap_type=ledger.GAP_TOOL_UNAVAILABLE,
+            description=(
+                f"The model {detail} while writing up {question.key!r} ({why}). "
+                "The evidence was retrieved and was not interpreted."
+            ),
+            question_key=question.key,
+            why_it_matters=(
+                "Citable evidence existed for this question, so it is answerable and "
+                "unanswered — which is a different state from having found nothing."
+            ),
+        )
+
+    async def _complete(self, system: str, user: str) -> _ModelReply:
+        """One structured completion, with **what the provider knew about it kept**.
 
         Two shapes exist: the V2 ``LLMClient`` with ``complete_json``, and V3.4's
         ``ModelProvider`` with ``complete``. Both are supported rather than one being
         wrapped, because wrapping would put a translation layer between the platform and
         the client that already has the error taxonomy the worker reads.
+
+        **What changed in V3.16.1a.** This used to return ``payload`` alone:
+
+        .. code-block:: python
+
+            payload = getattr(response, "payload", None)
+            return payload if isinstance(payload, dict) else {}
+
+        ``ModelResponse`` carries ``truncated`` and ``finish_reason``, and the provider
+        had already decided whether a JSON object could be read at all. Returning the
+        dict discarded every one of those — so a reply cut off at the token ceiling and a
+        model with nothing to say arrived at the caller as the same empty dict, and the
+        run recorded neither. The reply is now returned whole.
+
+        The two client shapes stay asymmetric in one respect, deliberately: the V2 client
+        *raises* on a malformed reply after one repair attempt, and that exception keeps
+        propagating to the caller's existing handler. This method does not convert it,
+        because converting it would change V2 behaviour, and V3.16.1a changes no
+        behaviour that already worked.
         """
         if hasattr(self.client, "complete_json"):
-            return await self.client.complete_json(
+            payload = await self.client.complete_json(
                 system, user, max_tokens=self.max_tokens, timeout=self.timeout
+            )
+            # The V2 client exposes truncation as a property of the last raw call.
+            truncated = bool(getattr(self.client, "last_response_truncated", False))
+            return _ModelReply(
+                payload=payload if isinstance(payload, dict) else {},
+                parsed=True,  # it returned rather than raising, so it parsed.
+                truncated=truncated,
+                finish_reason="length" if truncated else None,
             )
         response = await self.client.complete(
             system=system, user=user, max_tokens=self.max_tokens, timeout=self.timeout
         )
         payload = getattr(response, "payload", None)
-        return payload if isinstance(payload, dict) else {}
+        return _ModelReply(
+            payload=payload if isinstance(payload, dict) else {},
+            # A provider that does not report parse state is taken at its word that the
+            # payload is what the model said — the pre-V3.16.1a assumption, now explicit.
+            parsed=bool(getattr(response, "payload_parsed", True)),
+            truncated=bool(getattr(response, "truncated", False)),
+            finish_reason=getattr(response, "finish_reason", None),
+        )
 
 
 __all__ = [
