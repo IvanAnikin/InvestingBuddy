@@ -219,6 +219,13 @@ class DeepSeekTransport(Protocol):
         max_tokens: int,
         temperature: float,
         timeout: int,
+        #: Declared here because a caller passes it. It was implemented on the concrete
+        #: HTTP transport and left off this Protocol, so the seam did not describe the
+        #: call its own implementation served: mypy rejected the keyword, and the shared
+        #: fake — which asserts it satisfies this Protocol — raised `TypeError` on it.
+        #: A seam narrower than its implementations is a seam nothing can be tested
+        #: through.
+        json_mode: bool = False,
     ) -> DeepSeekResponse: ...  # pragma: no cover - protocol
 
     async def search(
@@ -274,6 +281,10 @@ class FakeDeepSeekTransport:
     completions: list[tuple[str, str]] = field(default_factory=list)
     searches: list[str] = field(default_factory=list)
     investigations: list[str] = field(default_factory=list)
+    #: Whether each completion asked for JSON mode. Recorded rather than ignored so a
+    #: test can assert a caller actually opted in — `json_mode` was implemented here and
+    #: forwarded by nobody for a whole phase, which is a documented trap in this repo.
+    json_mode_calls: list[bool] = field(default_factory=list)
 
     async def complete(
         self,
@@ -283,8 +294,10 @@ class FakeDeepSeekTransport:
         max_tokens: int,
         temperature: float,
         timeout: int,
+        json_mode: bool = False,
     ) -> DeepSeekResponse:
         self.completions.append((system, user))
+        self.json_mode_calls.append(json_mode)
         if self.raises is not None:
             raise self.raises
         return DeepSeekResponse(

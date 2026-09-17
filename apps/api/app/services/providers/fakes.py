@@ -54,10 +54,20 @@ class FakeModelProvider:
     raises: Exception | None = None
     truncated: bool = False
     calls: list[tuple[str, str]] = field(default_factory=list)
+    #: Whether each call asked for JSON mode. Recorded so a test can assert the
+    #: investigator actually opts in, rather than assuming the wiring survived.
+    json_mode_calls: list[bool] = field(default_factory=list)
 
     async def complete(
-        self, *, system: str, user: str, max_tokens: int = 1200, timeout: int = 40
+        self,
+        *,
+        system: str,
+        user: str,
+        max_tokens: int = 1200,
+        timeout: int = 40,
+        json_mode: bool = False,
     ) -> ModelResponse:
+        self.json_mode_calls.append(json_mode)
         self.calls.append((system, user))
         if self.raises is not None:
             raise self.raises
