@@ -53,7 +53,7 @@ from app.services.agent_tools.policy import policy_for
 from app.services.agent_tools.registry import ToolRegistry
 from app.services.agent_tools.session import ToolSession
 from app.services.agents.chair import ChairVerdict, LLMChair
-from app.services.agents.investigator import LLMInvestigator
+from app.services.agents.investigator import InvestigatorDiagnostics, LLMInvestigator
 from app.services.agents.red_team import LLMRedTeam, LLMResponder
 from app.services.agents.routing import (
     SLOT_CHAIR,
@@ -160,6 +160,45 @@ class V3ResearchOutcome:
                 "council's verdict and the Red Team's challenges, with citable ids."
             ),
         }
+
+
+def _investigator_degraded_reasons(diagnostics: dict[str, Any]) -> list[str]:
+    """Name, on the run, why model replies produced no findings.
+
+    A run whose specialists retrieved evidence and wrote nothing used to look identical
+    to one that found nothing to write about. These lines are what make the two
+    distinguishable to a reader of the report, not only to someone with database access.
+
+    Counts only — no model text, no prompt, no provider identifier.
+    """
+    reasons: list[str] = []
+    unparseable = int(diagnostics.get("responses_unparseable", 0) or 0)
+    empty = int(diagnostics.get("responses_empty_payload", 0) or 0)
+    truncated = int(diagnostics.get("responses_truncated", 0) or 0)
+    uncited = int(diagnostics.get("statements_dropped_uncited", 0) or 0)
+    total = int(diagnostics.get("responses_total", 0) or 0)
+
+    if unparseable:
+        reasons.append(
+            f"{unparseable} of {total} model repl(ies) could not be read as JSON, so the "
+            "evidence retrieved for those questions was never interpreted"
+        )
+    if empty:
+        reasons.append(
+            f"{empty} of {total} model repl(ies) were read correctly and contained "
+            "nothing; the questions stay open"
+        )
+    if truncated:
+        reasons.append(
+            f"{truncated} of {total} model repl(ies) stopped at the output limit "
+            "(finish_reason=length)"
+        )
+    if uncited:
+        reasons.append(
+            f"{uncited} statement(s) were discarded for citing no evidence at all — the "
+            "citation rule held, and the question stays open"
+        )
+    return reasons
 
 
 async def run_v3_research(
@@ -401,6 +440,7 @@ async def _run(
 
         def __init__(self) -> None:
             self.fabricated: list[str] = []
+            self.diagnostics = InvestigatorDiagnostics()
             self.tool_calls = 0
 
         async def investigate(self, *, role_id, questions, round_index, remaining_tool_calls):  # noqa: ANN001, ANN201
@@ -457,6 +497,10 @@ async def _run(
                 remaining_tool_calls=remaining_tool_calls,
             )
             self.fabricated.extend(worker.fabricated_citations)
+            # V3.16.1a — merged per worker, exactly as `fabricated_citations` already is.
+            # A fresh investigator is built per task, so a counter left on the worker
+            # would be discarded at the end of every task.
+            self.diagnostics.merge(worker.diagnostics)
             self.tool_calls += result.tool_calls
             return result
 
@@ -471,6 +515,11 @@ async def _run(
     )
     outcome.loop = loop_result.to_dict()
     outcome.loop["fabricated_citations_discarded"] = len(investigator.fabricated)
+    # V3.16.1a — why a model reply produced no finding, counted rather than guessed.
+    diagnostics = investigator.diagnostics.to_dict()
+    outcome.loop["investigator_diagnostics"] = diagnostics
+    for reason in _investigator_degraded_reasons(diagnostics):
+        outcome.degraded.append(reason)
 
     # 6. Council V2 input — which may refuse to convene, with a reason.
     council = await council_inputs.assemble(session, run)

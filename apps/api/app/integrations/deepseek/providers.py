@@ -677,6 +677,11 @@ class DeepSeekModelProvider:
             # An unparseable completion is an empty payload with the reason recorded, not
             # an exception: one failed agent must not end a council.
             payload=payload if payload is not None else {},
+            # …and the reason is now CARRIED, not merely recorded here. `payload={}`
+            # cannot distinguish "the model returned {}" from "nothing parseable came
+            # back"; this flag can, and a caller that drops it is the reason a whole
+            # research run could produce no findings and no explanation.
+            payload_parsed=payload is not None,
             consumption=_model_consumption(response),
             instrumented_units=MODEL_UNITS,
             cost=CostEstimate(basis="unknown"),
