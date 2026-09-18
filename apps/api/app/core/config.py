@@ -1079,6 +1079,23 @@ class Settings(BaseSettings):
     # what the biotech playbook's blocking questions actually read.
     v3_filing_body_bridge_max_attempts: int = 3
 
+    # --- V3.17 research escalation ------------------------------------------
+    # The master switch. OFF by default and ABSENT in production: escalation creates
+    # PAID research runs without a human clicking anything, so it must be turned on
+    # deliberately rather than inherited by a deploy.
+    v3_research_escalation_enabled: bool = False
+    # How many rounds one decision may have. Two, because the second is the round that
+    # demonstrates whether escalation helps and the third has never been shown to.
+    v3_escalation_max_rounds: int = 2
+    # How many decisions one discovery run may create. A thesis run can return fifty
+    # candidates, every one of which can satisfy the per-candidate clauses at once.
+    v3_escalation_max_decisions_per_run: int = 5
+    # Cumulative USD cap per decision. 0.0 means "no cap configured" — which does NOT
+    # mean unlimited: unknown spend blocks escalation on its own (see
+    # `escalation/predicates._clause_budget`), so an unpriced platform stops after one
+    # round whatever this is set to.
+    v3_escalation_cost_cap_usd: float = 0.0
+
     v3_run_max_model_calls: int = 0
     v3_run_max_model_tokens: int = 0
     v3_run_max_web_searches: int = 0
