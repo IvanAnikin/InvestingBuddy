@@ -456,7 +456,13 @@ class ModelProvider(Protocol):
     model: str
 
     async def complete(
-        self, *, system: str, user: str, max_tokens: int = 1200, timeout: int = 40
+        self,
+        *,
+        system: str,
+        user: str,
+        max_tokens: int = 1200,
+        timeout: int = 40,
+        json_mode: bool = False,
     ) -> ModelResponse:
         ...  # pragma: no cover - protocol
 

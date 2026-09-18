@@ -243,8 +243,14 @@ class TestConsumerTheInvestigatorClassifiesTheOutcome:
 
         assert inv.diagnostics.responses_truncated == 1
         assert inv.diagnostics.responses_unparseable == 1
-        assert inv.diagnostics.finish_reasons.get("length") == 1
         assert "truncated at the output limit" in gaps[0].description
+        # TWO "length" reasons for ONE question, since V3.16.1b: a truncated reply is
+        # retried once, this client truncates again, and `finish_reasons` records one
+        # reason per MODEL CALL so that a retry cannot hide inside a question. The two
+        # counters above still count the question, not the calls.
+        assert inv.diagnostics.finish_reasons == {"length": 2}
+        assert inv.diagnostics.responses_retried_after_truncation == 1
+        assert inv.diagnostics.retries_recovered == 0
 
     async def test_d_a_statement_citing_nothing_is_counted_not_silent(self) -> None:
         """The production signature: fabricated=0 and findings=0 together."""
@@ -465,6 +471,8 @@ class TestDiagnosticsCarryNoSensitiveContent:
             "responses_total", "responses_with_findings", "responses_empty_payload",
             "responses_unparseable", "responses_truncated",
             "statements_dropped_uncited", "finish_reasons",
+            # V3.16.1b.
+            "responses_retried_after_truncation", "retries_recovered",
         }
         assert all(isinstance(v, int) for k, v in out.items() if k != "finish_reasons")
 

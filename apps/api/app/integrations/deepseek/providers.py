@@ -658,14 +658,30 @@ class DeepSeekModelProvider:
         return usage
 
     async def complete(
-        self, *, system: str, user: str, max_tokens: int = 1200, timeout: int = 40
+        self,
+        *,
+        system: str,
+        user: str,
+        max_tokens: int = 1200,
+        timeout: int = 40,
+        json_mode: bool = False,
     ) -> ModelResponse:
+        """One completion.
+
+        ``json_mode`` was supported by the transport from the day it was written and
+        forwarded by nobody, so every V3 agent asked for JSON in prompt wording while the
+        API was never told to enforce it. Defaulting to ``False`` keeps that behaviour for
+        callers that have not opted in; the transport guarantees the literal the API
+        demands when it is ``True``, so opting in cannot produce the HTTP 400 that made
+        this opt-in in the first place.
+        """
         response = await self.transport.complete(
             system=system,
             user=user,
             max_tokens=max_tokens,
             temperature=self.temperature,
             timeout=timeout,
+            json_mode=json_mode,
         )
         self._calls += 1
         self._prompt_tokens += int(response.prompt_tokens or 0)
