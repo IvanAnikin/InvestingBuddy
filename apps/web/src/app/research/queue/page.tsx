@@ -1,4 +1,4 @@
-import { fetchResearchDecisions } from "@/lib/api";
+import { ApiError, fetchResearchDecisions } from "@/lib/api";
 import type { ResearchDecisionList } from "@/types/api";
 import GlassCard from "@/components/ui/GlassCard";
 import StatusPill from "@/components/ui/StatusPill";
@@ -20,12 +20,15 @@ async function getData(): Promise<{
 }> {
   try {
     return { data: await fetchResearchDecisions({ limit: 100 }), error: null };
-  } catch {
-    return {
-      data: null,
-      error:
-        "Could not load the research queue. The escalation tables arrive with migration 040 — if it has not been applied, there is nothing to show yet.",
-    };
+  } catch (err) {
+    // The API distinguishes "this environment has no such table" (503, with the
+    // migration named) from a real failure. Both are shown as themselves — an empty
+    // list would claim there are no decisions, which is a different fact.
+    const detail =
+      err instanceof ApiError && err.status === 503
+        ? err.message
+        : "Could not load the research queue.";
+    return { data: null, error: detail };
   }
 }
 

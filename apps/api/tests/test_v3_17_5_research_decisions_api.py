@@ -242,3 +242,48 @@ class TestTheEndpointsAreRegisteredAndAdminShaped:
 
         assert "not investment advice" in disclaimer.lower()
         assert "not a recommendation" in disclaimer.lower()
+
+
+class TestAMissingSchemaIsANamedStateNotAnError:
+    """Migrations are deliberately manual here, so a deploy can legitimately carry code
+    whose table does not exist yet.
+
+    Observed on the live deployment: `/api/v1/research-decisions` returned a bare
+    `500 Internal Server Error` because migration 040 had not been applied. Two wrong
+    answers were available and both were rejected:
+
+    * **500** says "something is broken", which reads as an outage and buries the one
+      fact an operator needs.
+    * **An empty list** would be a lie — "there are no research decisions" is a
+      different claim from "this environment has no such table".
+
+    So the endpoint reports the schema state, in words, with a 503.
+    """
+
+    def test_the_known_state_is_recognised(self) -> None:
+        from app.api.v1.research_decisions import _schema_missing
+
+        undefined = type("UndefinedTable", (Exception,), {})()
+        wrapped = RuntimeError("relation does not exist")
+        wrapped.__cause__ = undefined
+
+        assert _schema_missing(wrapped) is True
+        assert _schema_missing(RuntimeError("no such table: research_decisions")) is True
+
+    def test_a_real_failure_is_not_swallowed(self) -> None:
+        """A connection reset must still surface as a failure, not as a schema note."""
+        from app.api.v1.research_decisions import _schema_missing
+
+        assert _schema_missing(RuntimeError("connection reset by peer")) is False
+        assert _schema_missing(ValueError("bad uuid")) is False
+
+    def test_the_message_names_the_migration_and_refuses_to_imply_emptiness(
+        self,
+    ) -> None:
+        from app.api.v1.research_decisions import _schema_missing_error
+
+        err = _schema_missing_error()
+
+        assert err.status_code == 503
+        assert "040" in err.detail
+        assert "different fact" in err.detail

@@ -33,6 +33,37 @@ from app.schemas.research_decision import (
 
 router = APIRouter(prefix="/research-decisions", tags=["research-decisions"])
 
+#: Raised by PostgreSQL when `research_decisions` does not exist yet.
+_UNDEFINED_TABLE = "UndefinedTable"
+
+
+def _schema_missing(exc: Exception) -> bool:
+    """Is this "migration 040 has not been applied here" rather than a real failure?
+
+    Migrations are deliberately manual in this platform, so a deploy can legitimately
+    carry code whose table does not exist yet. That is a KNOWN, NAMEABLE state — not an
+    internal error, and emphatically not an empty list, which would claim there are no
+    research decisions when the truth is that the feature's table is absent.
+    """
+    seen = {type(exc).__name__}
+    cause = exc.__cause__ or exc.__context__
+    while cause is not None and len(seen) < 8:
+        seen.add(type(cause).__name__)
+        cause = cause.__cause__ or cause.__context__
+    return _UNDEFINED_TABLE in seen or "no such table" in str(exc).lower()
+
+
+def _schema_missing_error() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail=(
+            "The research-escalation tables are not present in this environment. "
+            "Migration 040 has not been applied here. This is a schema state, not a "
+            "failure, and it is reported rather than answered with an empty list — "
+            "there being no table is a different fact from there being no decisions."
+        ),
+    )
+
 _INTERNAL = (
     "INTERNAL ADMIN ONLY. Not investment advice, not a recommendation, no price "
     "target or valuation."
@@ -133,12 +164,16 @@ async def list_research_decisions(
         count_stmt = count_stmt.where(ResearchDecision.company_id == company_id)
 
     stmt = stmt.order_by(ResearchDecision.created_at.desc()).limit(limit)
-    rows = (await db.execute(stmt)).scalars().all()
-    total = int((await db.execute(count_stmt)).scalar_one() or 0)
+    try:
+        rows = (await db.execute(stmt)).scalars().all()
+        total = int((await db.execute(count_stmt)).scalar_one() or 0)
+        decisions = [await _to_read(db, r) for r in rows]
+    except Exception as exc:  # noqa: BLE001 - re-raised unless it is the known state
+        if _schema_missing(exc):
+            raise _schema_missing_error() from exc
+        raise
 
-    return ResearchDecisionList(
-        decisions=[await _to_read(db, r) for r in rows], total=total
-    )
+    return ResearchDecisionList(decisions=decisions, total=total)
 
 
 @router.get(
@@ -151,7 +186,12 @@ async def list_research_decisions(
 async def get_research_decision(
     decision_id: uuid.UUID, db: AsyncSession = Depends(get_db)
 ) -> ResearchDecisionRead:
-    row = await db.get(ResearchDecision, decision_id)
+    try:
+        row = await db.get(ResearchDecision, decision_id)
+    except Exception as exc:  # noqa: BLE001 - re-raised unless it is the known state
+        if _schema_missing(exc):
+            raise _schema_missing_error() from exc
+        raise
     if row is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -176,7 +216,12 @@ async def cancel_research_decision(
 ) -> ResearchDecisionRead:
     from app.services.escalation import store
 
-    row = await db.get(ResearchDecision, decision_id)
+    try:
+        row = await db.get(ResearchDecision, decision_id)
+    except Exception as exc:  # noqa: BLE001 - re-raised unless it is the known state
+        if _schema_missing(exc):
+            raise _schema_missing_error() from exc
+        raise
     if row is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
