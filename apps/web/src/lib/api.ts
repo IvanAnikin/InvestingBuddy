@@ -38,6 +38,9 @@ import type {
   SupportedThemesResponse,
   WorkflowRunRequest,
   WorkflowRunResponse,
+  EscalateResponse,
+  ResearchDecision,
+  ResearchDecisionList,
 } from "@/types/api";
 
 // All protected API calls are routed through the Next.js server-side proxy so
@@ -546,4 +549,44 @@ export async function previewSourceEvidence(
     method: "POST",
     body: JSON.stringify(data),
   });
+}
+
+// --- V3.17.5: the research-escalation queue -------------------------------
+
+export async function fetchResearchDecisions(params?: {
+  status?: string;
+  open?: boolean;
+  companyId?: string;
+  limit?: number;
+}): Promise<ResearchDecisionList> {
+  const q = new URLSearchParams();
+  if (params?.status) q.set("status", params.status);
+  if (params?.open) q.set("open", "true");
+  if (params?.companyId) q.set("company_id", params.companyId);
+  q.set("limit", String(params?.limit ?? 50));
+  return apiFetch<ResearchDecisionList>(`/api/v1/research-decisions?${q}`);
+}
+
+export async function fetchResearchDecision(
+  id: string,
+): Promise<ResearchDecision> {
+  return apiFetch<ResearchDecision>(`/api/v1/research-decisions/${id}`);
+}
+
+export async function cancelResearchDecision(
+  id: string,
+): Promise<ResearchDecision> {
+  return apiFetch<ResearchDecision>(
+    `/api/v1/research-decisions/${id}/cancel`,
+    { method: "POST" },
+  );
+}
+
+export async function escalateDiscoveryRun(
+  runId: string,
+): Promise<EscalateResponse> {
+  return apiFetch<EscalateResponse>(
+    `/api/v1/market-discovery/runs/${runId}/escalate`,
+    { method: "POST" },
+  );
 }

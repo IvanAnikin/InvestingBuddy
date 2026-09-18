@@ -18,6 +18,7 @@ from app.api.v1.financial_data import router as financial_data_router
 from app.api.v1.health import router as health_router
 from app.api.v1.market_discovery import router as market_discovery_router
 from app.api.v1.reports import router as reports_router
+from app.api.v1.research_decisions import router as research_decisions_router
 from app.api.v1.scoring import router as scoring_router
 from app.api.v1.sources import router as sources_router
 from app.api.v1.workflows import router as workflows_router
@@ -209,6 +210,7 @@ app.include_router(scoring_router, prefix="/api/v1")
 app.include_router(final_reports_router, prefix="/api/v1")
 app.include_router(backtesting_router, prefix="/api/v1")
 app.include_router(market_discovery_router, prefix="/api/v1")
+app.include_router(research_decisions_router, prefix="/api/v1")
 # Phase 32A Slice 6D — Deep Field Review (a THIRD, separate council: it
 # compares the ALREADY-COMPLETED analyses of a discovery run's candidates).
 app.include_router(field_review_router, prefix="/api/v1")

@@ -1351,3 +1351,75 @@ export interface EvidencePreviewResponse {
   warnings: string[];
   disclaimer: string;
 }
+
+// --- V3.17.5: the research-escalation queue -------------------------------
+//
+// These mirror `app/schemas/research_decision.py`. The evidence delta is READ from the
+// backend, never recomputed here: two implementations of the same arithmetic drift, and
+// the one on screen is the one a human acts on.
+
+export interface EvidenceDelta {
+  indexed_chunks_added: number;
+  searchable_documents_added: number;
+  closable_gaps_closed: number;
+  facts_added: number;
+  /** Secondary telemetry. Shown, never used to decide anything. */
+  verified_findings_added: number;
+  improved: boolean;
+  reasons: string[];
+}
+
+export interface ResearchDecision {
+  id: string;
+  company_id: string | null;
+  ticker: string | null;
+  exchange: string | null;
+  company_name: string | null;
+  discovery_run_id: string | null;
+  discovery_candidate_id: string | null;
+  source: string;
+  decision: string;
+  status: string;
+  reason: string;
+  priority: number;
+  escalation_round: number;
+  max_rounds: number;
+  last_job_id: string | null;
+  job_status: string | null;
+  job_attempt: number | null;
+  job_max_attempts: number | null;
+  evidence_before: Record<string, number> | null;
+  evidence_after: Record<string, number> | null;
+  improvement: EvidenceDelta | null;
+  terminal_reason: string | null;
+  /**
+   * `null` means UNKNOWN and must render as "unknown" — never as 0. Production reports
+   * cost as null because no price book is configured, and a 0 on screen would tell an
+   * operator the work was free.
+   */
+  cost_usd_total: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ResearchDecisionList {
+  decisions: ResearchDecision[];
+  total: number;
+  disclaimer: string;
+}
+
+export interface EscalateResponse {
+  run_id: string;
+  candidates_considered: number;
+  created: string[];
+  created_count: number;
+  refusals: Array<{
+    candidate_id?: string;
+    company_id?: string;
+    clause: string | null;
+    reason: string;
+  }>;
+  refused_count: number;
+  blocked_reason: string | null;
+  blocked_detail: string | null;
+}
