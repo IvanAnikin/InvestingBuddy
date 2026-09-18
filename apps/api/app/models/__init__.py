@@ -32,6 +32,7 @@ from app.models.monitoring import MonitoringSignal, Watchlist, WatchlistEntry
 from app.models.report import Report
 from app.models.research_artifact import ResearchArtifact
 from app.models.research_chunk import ResearchDocumentChunk
+from app.models.research_decision import ResearchDecision
 from app.models.research_derivation import (
     ResearchDocumentDerivation,
     ResearchDocumentPage,
@@ -86,6 +87,7 @@ __all__ = [
     "ResearchFinding",
     "ResearchGap",
     "ResearchHypothesis",
+    "ResearchDecision",
     "ResearchJob",
     "ResearchQuestion",
     "ResearchRun",
