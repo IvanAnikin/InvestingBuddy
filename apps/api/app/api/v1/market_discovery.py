@@ -625,3 +625,70 @@ async def get_discovery_council_review(
             detail="No discovery council review found for this run.",
         )
     return DiscoveryCouncilReviewResponse.from_envelope(run_id, envelope)
+
+
+# ---------------------------------------------------------------------------
+# V3.17.3 — escalation
+#
+# The council's `research_next` bucket has been written for several phases and read by
+# nobody. This is the endpoint that reads it.
+#
+# EXPLICIT, not automatic on council completion. The design's reasoning, which is the
+# same argument migration 019's docstring makes about backfills that start themselves:
+# an escalation that begins the moment a council finishes is how a feature becomes an
+# outage. A human asks for it, once, per run.
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/runs/{run_id}/escalate",
+    summary="Create research decisions from a council-reviewed run (admin only)",
+    description=(
+        "ADMIN/INTERNAL ONLY. Reads this run's completed discovery-council review and, "
+        "for each candidate the council placed in 'research_next', applies the "
+        "DETERMINISTIC escalation predicate and — only where every clause passes — "
+        "creates a research decision and queues the work. The council's action is one "
+        "input to that predicate and never an instruction: a model that could create "
+        "work could start unbounded paid research. Every refusal is returned with the "
+        "clause that caused it. Creates nothing and explains why when "
+        "V3_RESEARCH_ESCALATION_ENABLED or V3_DURABLE_JOBS_ENABLED is off. Never an "
+        "investment recommendation, a price target or a fair value. " + _INTERNAL
+    ),
+)
+async def escalate_discovery_run_endpoint(
+    run_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    from app.services.escalation.controller import escalate_discovery_run
+    from app.services.escalation.from_council import (
+        candidates_proposed_for_research,
+    )
+
+    run = await svc.get_run(db, run_id)
+    if run is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Discovery run {run_id} not found",
+        )
+    if svc.get_council_envelope(run) is None:
+        # Escalation reads the council's decision. Without a review there is no decision
+        # to read, and inventing one from scores would be the platform deciding what to
+        # research on grounds nobody asked for.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "This run has no completed discovery-council review, so there is no "
+                "'research_next' decision to act on."
+            ),
+        )
+
+    candidates = await candidates_proposed_for_research(db, run)
+    outcome = await escalate_discovery_run(
+        db, discovery_run_id=run_id, candidates=candidates
+    )
+    await db.commit()
+    return {
+        "run_id": str(run_id),
+        "candidates_considered": len(candidates),
+        **outcome.to_dict(),
+    }
