@@ -733,3 +733,180 @@ class TestTheCouncilBucketIsFinallyConsumed:
         facts = await candidates_proposed_for_research(session, run)
 
         assert facts[0].company_id is None, "matched a company on a different exchange"
+
+
+# --------------------------------------------------------------------------- #
+# 6. V3.17.4 — what happens after a round, and the crash that must not strand
+# --------------------------------------------------------------------------- #
+
+
+class TestRoundCompletion:
+    async def _decision(self, session, company_id, **over):  # noqa: ANN001, ANN003
+        return await store.create_decision(
+            session,
+            company_id=company_id,
+            discovery_run_id=over.pop("run_id", uuid.uuid4()),
+            discovery_candidate_id=None,
+            source="discovery_council",
+            decision="research_next",
+            reason="test",
+            max_rounds=over.pop("max_rounds", 2),
+            **over,
+        )
+
+    async def test_a_round_that_acquired_nothing_terminates_as_exhausted(
+        self, session, flags
+    ) -> None:  # noqa: ANN001
+        from app.services.escalation.controller import complete_round
+
+        company_id = await _company(session)
+        decision = await self._decision(session, company_id)
+        queue = _RecordingQueue()
+
+        verdict = await complete_round(
+            session, decision, job_completed=True, enqueue=queue
+        )
+
+        assert verdict.status == "exhausted"
+        assert decision.terminal_reason == "exhausted_no_improvement"
+        assert queue.jobs == [], "a terminal decision enqueued more work"
+
+    async def test_a_job_that_did_not_complete_never_reads_as_exhausted(
+        self, session, flags
+    ) -> None:  # noqa: ANN001
+        """The distinction, enforced end to end rather than only in the pure function."""
+        from app.services.escalation.controller import complete_round
+
+        company_id = await _company(session)
+        decision = await self._decision(session, company_id)
+
+        verdict = await complete_round(
+            session, decision, job_completed=False, enqueue=_RecordingQueue()
+        )
+
+        assert decision.terminal_reason == "research_did_not_complete"
+        assert verdict.status == "abandoned"
+
+    async def test_the_measured_evidence_is_persisted_for_a_reader(
+        self, session, flags
+    ) -> None:  # noqa: ANN001
+        """evidence_after_json and improvement_json must survive, not be recomputed."""
+        from app.services.escalation.controller import complete_round
+
+        company_id = await _company(session)
+        decision = await self._decision(session, company_id)
+
+        await complete_round(session, decision, job_completed=True, enqueue=_RecordingQueue())
+
+        assert decision.evidence_after_json is not None
+        assert "indexed_chunks" in decision.evidence_after_json
+        assert decision.improvement_json["next_status"] == "exhausted"
+        assert decision.improvement_json["reasons"]
+
+    async def test_each_round_gets_its_own_deterministic_job_key(
+        self, session, flags
+    ) -> None:  # noqa: ANN001
+        """One decision, several rounds, one job each — and recomputable from the row."""
+        from app.services.escalation.controller import round_idempotency_key
+
+        decision_id = uuid.uuid4()
+        keys = {round_idempotency_key(decision_id, n) for n in range(3)}
+
+        assert len(keys) == 3
+        assert round_idempotency_key(decision_id, 1) == round_idempotency_key(
+            decision_id, 1
+        )
+
+
+class TestACrashMustNotStrandACompany:
+    """The transaction boundary that could cause a permanent outage.
+
+    A decision row and a job row are written in DIFFERENT transactions — `JobStore` owns
+    its own session by design. Whichever order they go in, a process that dies between
+    them leaves one without the other, and an open decision with no executable job means
+    `ux_research_decisions_one_open` locks that company out of every future decision.
+    """
+
+    async def _stranded(self, session, company_id):  # noqa: ANN001
+        """A decision that is open and has no job — the state a crash can leave."""
+        return await store.create_decision(
+            session,
+            company_id=company_id,
+            discovery_run_id=uuid.uuid4(),
+            discovery_candidate_id=None,
+            source="discovery_council",
+            decision="research_next",
+            reason="crashed before the job landed",
+            max_rounds=2,
+        )
+
+    async def test_an_open_decision_with_no_job_is_recovered(
+        self, session, flags
+    ) -> None:  # noqa: ANN001
+        from app.services.escalation.controller import recover_stranded_decisions
+
+        company_id = await _company(session)
+        decision = await self._stranded(session, company_id)
+        assert decision.last_job_id is None
+
+        queue = _RecordingQueue()
+        recovered = await recover_stranded_decisions(session, enqueue=queue)
+
+        assert decision.id in recovered
+        assert len(queue.jobs) == 1
+        assert decision.last_job_id == queue.jobs[0]["job_id"]
+        assert decision.status == "queued"
+
+    async def test_recovery_is_safe_to_run_twice(self, session, flags) -> None:  # noqa: ANN001
+        """It will run on a schedule; a second pass must not duplicate paid work."""
+        from app.services.escalation.controller import recover_stranded_decisions
+
+        company_id = await _company(session)
+        await self._stranded(session, company_id)
+
+        queue = _RecordingQueue()
+        first = await recover_stranded_decisions(session, enqueue=queue)
+        second = await recover_stranded_decisions(session, enqueue=queue)
+
+        assert len(first) == 1
+        assert second == [], "a recovered decision was recovered again"
+        assert len(queue.jobs) == 1
+
+    async def test_a_healthy_decision_is_left_alone(self, session, flags) -> None:  # noqa: ANN001
+        from app.services.escalation.controller import recover_stranded_decisions
+
+        company_id = await _company(session)
+        queue = _RecordingQueue()
+        await escalate_discovery_run(
+            session,
+            discovery_run_id=uuid.uuid4(),
+            candidates=[_candidate(company_id)],
+            enqueue=queue,
+        )
+
+        recovered = await recover_stranded_decisions(session, enqueue=queue)
+
+        assert recovered == []
+        assert len(queue.jobs) == 1
+
+    async def test_a_decision_with_no_company_is_closed_not_left_open(
+        self, session, flags
+    ) -> None:  # noqa: ANN001
+        """Nothing to research, so it must not keep occupying an open slot."""
+        from app.services.escalation.controller import recover_stranded_decisions
+
+        decision = await store.create_decision(
+            session,
+            company_id=None,
+            discovery_run_id=uuid.uuid4(),
+            discovery_candidate_id=None,
+            source="discovery_council",
+            decision="research_next",
+            reason="orphaned",
+            max_rounds=2,
+        )
+
+        await recover_stranded_decisions(session, enqueue=_RecordingQueue())
+
+        assert decision.status == "abandoned"
+        assert decision.terminal_reason == "research_did_not_complete"

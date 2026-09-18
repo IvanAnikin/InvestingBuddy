@@ -142,9 +142,17 @@ TERMINAL_COST_UNKNOWN = "cost_unknown"
 TERMINAL_OPERATOR_CANCELLED = "operator_cancelled"
 TERMINAL_JOB_DEAD_LETTERED = "job_dead_lettered"
 TERMINAL_EVIDENCE_SUFFICIENT = "evidence_sufficient"
+#: V3.17.4. **The one that must never be confused with `exhausted_no_improvement`.**
+#: That reason is a claim about the WORLD — research ran and there was nothing new. This
+#: one is a claim about the PLATFORM — we did not manage to look. Recording a provider
+#: timeout as "no improvement" writes a false statement about the evidence into the
+#: record, and it is the more dangerous error because it reads as a finished
+#: investigation and nobody goes back.
+TERMINAL_RESEARCH_DID_NOT_COMPLETE = "research_did_not_complete"
 
 TERMINAL_REASONS: frozenset[str] = frozenset(
     {
+        TERMINAL_RESEARCH_DID_NOT_COMPLETE,
         TERMINAL_EXHAUSTED_NO_IMPROVEMENT,
         TERMINAL_MAX_ROUNDS,
         TERMINAL_COST_CAP,

@@ -41,20 +41,29 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass, field
-from typing import Any
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Any
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.research_decision import (
     DECISION_RESEARCH_NEXT,
+    OPEN_STATUSES,
     SOURCE_DISCOVERY_COUNCIL,
+    STATUS_ABANDONED,
+    TERMINAL_RESEARCH_DID_NOT_COMPLETE,
 )
+from app.models.research_decision import ResearchDecision as ResearchDecisionModel
 from app.services.escalation import store
 from app.services.escalation.predicates import (
     EscalationInputs,
     EscalationVerdict,
     evaluate,
 )
+
+if TYPE_CHECKING:  # pragma: no cover
+    from app.services.escalation.rounds import RoundVerdict
 
 logger = logging.getLogger(__name__)
 
@@ -235,7 +244,7 @@ async def escalate_discovery_run(
 
 
 async def _enqueue(
-    session: AsyncSession, decision: Any, *, enqueue: Any = None
+    session: AsyncSession, decision: Any, *, enqueue: Any = None, round_index: int = 0
 ) -> uuid.UUID | None:
     """Put the decision on the existing queue. No second queue is built here.
 
@@ -251,7 +260,7 @@ async def _enqueue(
     company = await session.get(_company_model(), decision.company_id)
     view, _created = await JobStore().enqueue(
         job_type="company_research",
-        idempotency_key=f"escalation:{decision.id}",
+        idempotency_key=round_idempotency_key(decision.id, round_index),
         company_id=decision.company_id,
         payload={
             "company_id": str(decision.company_id),
@@ -260,7 +269,7 @@ async def _enqueue(
             # first look.
             "escalation": {
                 "decision_id": str(decision.id),
-                "round": int(decision.escalation_round),
+                "round": round_index,
                 "max_rounds": int(decision.max_rounds),
             },
             "company": {
@@ -282,9 +291,167 @@ def _company_model():  # noqa: ANN202
 
 __all__ = [
     "REFUSED_DURABLE_JOBS_DISABLED",
+    "complete_round",
+    "recover_stranded_decisions",
+    "round_idempotency_key",
     "REFUSED_ESCALATION_DISABLED",
     "REFUSED_NO_COMPANY",
     "CandidateFacts",
     "EscalationOutcome",
     "escalate_discovery_run",
 ]
+
+
+# --------------------------------------------------------------------------- #
+# V3.17.4 — what happens after a round
+# --------------------------------------------------------------------------- #
+
+
+def round_idempotency_key(decision_id: uuid.UUID, escalation_round: int) -> str:
+    """The job key for one decision's one round.
+
+    DETERMINISTIC, and that is what makes the whole thing crash-safe. Because the key can
+    be recomputed from the decision alone, enqueueing "again" after a process died is not
+    a duplicate — the database recognises it as the same logical work and joins it. This
+    is the property :func:`recover_stranded_decisions` depends on.
+    """
+    return f"escalation:{decision_id}:round:{escalation_round}"
+
+
+async def complete_round(
+    session: AsyncSession,
+    decision: Any,
+    *,
+    job_completed: bool,
+    job_dead_lettered: bool = False,
+    enqueue: Any = None,
+) -> "RoundVerdict":
+    """Measure what the round acquired, decide what happens next, and record both.
+
+    ORDER OF OPERATIONS, AND WHY
+    ----------------------------
+    The evidence is measured BEFORE anything is written, so the snapshot describes the
+    world at the moment the round ended rather than after our own bookkeeping.
+
+    When another round is authorised, the job is enqueued **before** the decision moves
+    to ``reanalysis``. A crash between the two leaves a decision in
+    ``evidence_updated`` with a live job — recoverable. The opposite order would leave a
+    decision in ``reanalysis`` with nothing to execute, and because
+    ``ux_research_decisions_one_open`` forbids a second open decision for that company,
+    the company would be locked out permanently. See
+    :func:`recover_stranded_decisions`.
+    """
+    from app.services.escalation.evidence import (
+        EvidenceSnapshot,
+        measure_evidence_delta,
+        snapshot_evidence,
+    )
+    from app.services.escalation.rounds import (
+        RoundInputs,
+        decide_next_state,
+        verdict_payload,
+    )
+
+    before = EvidenceSnapshot.from_dict(decision.evidence_before_json)
+    after = await snapshot_evidence(session, decision.company_id)
+    delta = measure_evidence_delta(before, after)
+
+    _escalation_on, _durable_on, max_rounds, _per_run, cost_cap = _flags()
+    verdict = decide_next_state(
+        RoundInputs(
+            job_completed=job_completed,
+            job_dead_lettered=job_dead_lettered,
+            improved=bool(delta["improved"]),
+            open_closable_gaps_remain=after.open_closable_gaps > 0,
+            escalation_round=int(decision.escalation_round),
+            max_rounds=int(decision.max_rounds or max_rounds),
+            # Unknown stays unknown. Never coerced to 0 — see `_clause_budget`.
+            cost_usd_so_far=(
+                float(decision.cost_usd_total)
+                if decision.cost_usd_total is not None
+                else None
+            ),
+            cost_cap_usd=cost_cap,
+        )
+    )
+
+    decision.evidence_after_json = after.to_dict()
+    decision.improvement_json = verdict_payload(delta, verdict)
+    decision.updated_at = datetime.now(timezone.utc)
+
+    if verdict.is_terminal:
+        await store.mark_terminal(
+            session,
+            decision,
+            status=verdict.status,
+            terminal_reason=verdict.terminal_reason or "",
+        )
+        return verdict
+
+    # Another round. Job first, then the status — see the docstring.
+    next_round = int(decision.escalation_round) + 1
+    job_id = await _enqueue(session, decision, enqueue=enqueue, round_index=next_round)
+    decision.escalation_round = next_round
+    decision.evidence_before_json = after.to_dict()
+    decision.status = verdict.status
+    decision.last_job_id = job_id
+    await session.flush()
+    return verdict
+
+
+async def recover_stranded_decisions(
+    session: AsyncSession, *, enqueue: Any = None, limit: int = 50
+) -> list[uuid.UUID]:
+    """Re-enqueue work for open decisions that have none, and return what was fixed.
+
+    WHY THIS EXISTS
+    ---------------
+    A decision row and a job row are written in **different transactions** — ``JobStore``
+    owns its own session by design, so the two cannot be made atomic without breaking
+    that boundary. Whichever order they are written in, a process that dies between them
+    leaves one without the other.
+
+    ``complete_round`` chooses the order that makes the survivable case survivable. This
+    function closes the remaining one: an open decision whose job never landed would
+    otherwise sit forever, and ``ux_research_decisions_one_open`` would lock that company
+    out of every future decision — a permanent outage from a crash at the wrong
+    microsecond.
+
+    Safe to run repeatedly and safe to run concurrently, because
+    :func:`round_idempotency_key` is deterministic: re-enqueueing a job that already
+    exists joins it rather than duplicating it.
+    """
+    stmt = (
+        select(ResearchDecisionModel)
+        .where(
+            ResearchDecisionModel.status.in_(OPEN_STATUSES),
+            ResearchDecisionModel.last_job_id.is_(None),
+        )
+        .limit(limit)
+    )
+    stranded = (await session.execute(stmt)).scalars().all()
+
+    recovered: list[uuid.UUID] = []
+    for decision in stranded:
+        if decision.company_id is None:
+            # Nothing to research. Close it honestly rather than leaving it open.
+            await store.mark_terminal(
+                session,
+                decision,
+                status=STATUS_ABANDONED,
+                terminal_reason=TERMINAL_RESEARCH_DID_NOT_COMPLETE,
+            )
+            continue
+        job_id = await _enqueue(
+            session,
+            decision,
+            enqueue=enqueue,
+            round_index=int(decision.escalation_round),
+        )
+        await store.mark_queued(session, decision, job_id=job_id)
+        recovered.append(decision.id)
+        logger.info(
+            "v3_escalation_decision_recovered",
+            extra={"decision_id": str(decision.id), "job_id": str(job_id)},
+        )
+    return recovered
