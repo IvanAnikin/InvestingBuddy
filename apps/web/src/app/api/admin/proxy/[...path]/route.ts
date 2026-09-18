@@ -56,6 +56,10 @@ const ALLOWED_PREFIXES = [
   "/api/v1/citations",
   "/api/v1/backtesting",
   "/api/v1/market-discovery",
+  // V3.17.5 — the research-escalation queue. A SEPARATE router again: segment
+  // matching is exact, so neither "/api/v1/reports" nor "/api/v1/company-research"
+  // reaches it.
+  "/api/v1/research-decisions",
 ];
 
 function isAllowed(backendPath: string): boolean {
