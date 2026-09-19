@@ -346,8 +346,12 @@ that, so activate it explicitly.
 # Open a remote shell on the deployed API container
 az webapp ssh --resource-group ib-stg-rg --name ib-stg-api
 
-# Inside the shell:
-cd /home/site/wwwroot
+# Inside the shell. NOTE (verified 2026-09-19 during the V3.17 activation): the running
+# app is NOT served from /home/site/wwwroot. Oryx extracts it to a /tmp directory and the
+# shell already opens there, so DO NOT cd anywhere -- confirm instead:
+pwd                               # e.g. /tmp/8df15c4c400ed3a
+ls -d antenv alembic.ini app      # all three must be here; if not, find the real root:
+# find /tmp -maxdepth 2 -name alembic.ini -print 2>/dev/null
 
 # Confirm which virtualenv this container actually has before trusting either name.
 ls -d antenv .venv 2>/dev/null

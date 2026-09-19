@@ -68,7 +68,7 @@ from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
 from app.core.structured_logging import log_event
-from app.services.jobs.job_contract import JobView
+from app.services.jobs.job_contract import STATUS_DEAD_LETTER, JobView
 from app.services.jobs.job_store import JobStore
 
 logger = logging.getLogger(__name__)
@@ -77,6 +77,70 @@ logger = logging.getLogger(__name__)
 #: waiting on a 202 does not perceive it, long enough that an idle deployment is
 #: not running a query every few milliseconds.
 DEFAULT_POLL_INTERVAL_SECONDS = 2.0
+
+
+# -- terminal observers ----------------------------------------------------
+#
+# WHY THIS SEAM EXISTS
+# ====================
+# This module knows how to own a unit of work; it deliberately knows nothing
+# about research. But some domains own state that OUTLIVES a job and must move
+# when the job reaches a terminal state — a research decision has to measure what
+# the round acquired and decide whether to stop or run again.
+#
+# Before V3.17.7 there was no seam for that, so ``escalation.controller.
+# complete_round`` existed, was correct, was tested, and was never called by
+# anything in production: a decision's job completed and the decision itself sat
+# in ``queued`` for ever. Because ``ux_research_decisions_one_open`` forbids a
+# second open decision for a company, that silently locked the company out of all
+# future escalation.
+#
+# An observer is registered BY the domain (see ``jobs.handlers``), never imported
+# by it, so this file still imports nothing from the research domain.
+#
+# An observer must never be able to damage a job that already ended correctly:
+# the terminal write has happened before any observer runs, and an observer that
+# raises is logged by type and skipped.
+TerminalObserver = Callable[..., Awaitable[None]]
+
+_terminal_observers: list[TerminalObserver] = []
+
+
+def register_terminal_observer(fn: TerminalObserver) -> TerminalObserver:
+    """Register ``fn`` to run after a job reaches a terminal state.
+
+    Usable as a decorator. Registration is idempotent so that re-importing the
+    handler module in a test process does not double-notify.
+    """
+    if fn not in _terminal_observers:
+        _terminal_observers.append(fn)
+    return fn
+
+
+def clear_terminal_observers() -> None:
+    """Drop every observer. For tests, which must not leak into one another."""
+    _terminal_observers.clear()
+
+
+async def notify_terminal(job: JobView, *, completed: bool, dead_lettered: bool) -> None:
+    """Tell every observer this job ended. Never raises, never blocks the outcome.
+
+    ``completed`` is the question ``complete_round`` actually asks: did the work
+    RUN to a successful end? A job that failed or dead-lettered did not, and the
+    difference between "research found nothing" and "research did not happen" is
+    the one distinction the escalation contract calls mandatory.
+    """
+    for observer in list(_terminal_observers):
+        try:
+            await observer(job, completed=completed, dead_lettered=dead_lettered)
+        except Exception as exc:  # noqa: BLE001 - an observer must not undo an outcome
+            logger.warning(
+                "v3_terminal_observer_failed job_id=%s observer=%s error_type=%s",
+                job.id,
+                getattr(observer, "__name__", "anonymous"),
+                type(exc).__name__,
+            )
+
 
 #: Backoff after a polling error (a database blip). Distinct from the job-level
 #: retry backoff, which is about the work; this is about the loop itself.
@@ -489,6 +553,9 @@ class ResearchWorker:
             warning_count=len(result.warnings),
             duration_ms=_elapsed_ms(started),
         )
+        # The job row is already terminal. Only now may a domain that owns
+        # longer-lived state react to it.
+        await notify_terminal(completed, completed=True, dead_lettered=False)
 
     async def _record_failure(
         self, job: JobView, exc: BaseException, started: datetime
@@ -524,6 +591,16 @@ class ResearchWorker:
             will_retry=outcome.will_retry,
             error_class=error_class,
             duration_ms=_elapsed_ms(started),
+        )
+        if outcome.will_retry:
+            # Not terminal: another attempt is scheduled. Telling a decision the
+            # round ended here would record "research did not complete" while the
+            # research is in fact about to be retried.
+            return
+        await notify_terminal(
+            outcome.job,
+            completed=False,
+            dead_lettered=outcome.job.status == STATUS_DEAD_LETTER,
         )
 
     # -- liveness ---------------------------------------------------------
