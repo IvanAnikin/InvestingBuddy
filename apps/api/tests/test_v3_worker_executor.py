@@ -503,6 +503,85 @@ def _worker(store, reg, *, owner="w1", **kw) -> ResearchWorker:
     )
 
 
+class TestTerminalObservers:
+    """V3.17.7 — the worker must announce a terminal job to the domain.
+
+    These drive the REAL ``run_once`` path. Asserting ``notify_terminal`` works in
+    isolation would have passed for all of V3.17.4-.6, while the worker never called
+    it and every escalation decision was stranded in production.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolate(self):
+        from app.services.jobs import worker as worker_mod
+
+        saved = list(worker_mod._terminal_observers)
+        worker_mod.clear_terminal_observers()
+        yield
+        worker_mod._terminal_observers[:] = saved
+
+    async def test_a_completed_job_notifies_observers(self, store):
+        from app.services.jobs import worker as worker_mod
+
+        seen: list[tuple] = []
+
+        async def _obs(job, *, completed, dead_lettered):
+            seen.append((str(job.id), completed, dead_lettered))
+
+        worker_mod.register_terminal_observer(_obs)
+
+        async def handler(ctx: JobContext) -> JobOutcome:
+            return JobOutcome()
+
+        view, _ = await store.enqueue(job_type=JOB_TYPE, idempotency_key="obs-ok")
+        await _worker(store, _registry(JOB_TYPE, handler)).run_once()
+
+        assert seen == [(str(view.id), True, False)], (
+            "the worker completed a job without telling the domain - every research "
+            "decision executing on that job is now stranded"
+        )
+
+    async def test_a_permanently_failed_job_notifies_with_completed_false(self, store):
+        from app.services.jobs import worker as worker_mod
+
+        seen: list[tuple] = []
+
+        async def _obs(job, *, completed, dead_lettered):
+            seen.append((completed, dead_lettered))
+
+        worker_mod.register_terminal_observer(_obs)
+
+        async def handler(ctx: JobContext) -> JobOutcome:
+            raise ValueError("permanent")
+
+        await store.enqueue(job_type=JOB_TYPE, idempotency_key="obs-fail")
+        await _worker(store, _registry(JOB_TYPE, handler)).run_once()
+
+        assert seen, "a permanently failed job told nobody"
+        assert seen[-1][0] is False, "a failure was announced as a completed round"
+
+    async def test_a_retryable_failure_does_not_announce_a_terminal_round(self, store):
+        """A round that is about to be retried has not ended."""
+        from app.services.jobs import worker as worker_mod
+
+        seen: list[tuple] = []
+
+        async def _obs(job, *, completed, dead_lettered):
+            seen.append((completed, dead_lettered))
+
+        worker_mod.register_terminal_observer(_obs)
+
+        async def handler(ctx: JobContext) -> JobOutcome:
+            raise TimeoutError("transient")
+
+        await store.enqueue(job_type=JOB_TYPE, idempotency_key="obs-retry")
+        await _worker(store, _registry(JOB_TYPE, handler)).run_once()
+
+        assert seen == [], (
+            "a transient failure with attempts left was announced as a finished round"
+        )
+
+
 class TestWorkerLoop:
     async def test_run_once_is_false_when_there_is_nothing_to_do(self, store):
         w = _worker(store, _registry(JOB_TYPE, lambda ctx: None))

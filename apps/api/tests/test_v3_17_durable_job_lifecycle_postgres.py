@@ -447,3 +447,131 @@ class TestCompletion:
         )
 
         assert again is None or again.id != view.id
+
+
+# --------------------------------------------------------------------------- #
+# V3.17.7 — reconciliation, on the database that actually implements the locking
+# --------------------------------------------------------------------------- #
+
+
+@requires_postgres
+class TestReconciliationOnRealPostgres:
+    """`FOR UPDATE ... SKIP LOCKED` is a no-op on SQLite.
+
+    Every SQLite test of `reconcile_terminal_decisions` therefore proves its FILTERING
+    and nothing about its CONCURRENCY. Two workers sweeping the same backlog is the
+    normal case the moment a second process exists, so it is proven here or not at all.
+    """
+
+    async def _decision_on_terminal_job(self, factory, job_type: str, status: str):  # noqa: ANN001, ANN202
+        from app.services.escalation import store as esc_store
+
+        company_id = await _company(factory)
+        store = JobStore(factory, lease_seconds=60, max_attempts=3)
+        view, _ = await store.enqueue(
+            job_type=job_type, idempotency_key=_key(), company_id=company_id
+        )
+        claimed = await store.claim_next(owner="w", job_types=[job_type])
+        assert claimed is not None
+        if status in (contract.STATUS_COMPLETED, contract.STATUS_COMPLETED_WITH_WARNINGS):
+            await store.complete(claimed.id, owner="w")
+        else:
+            for _ in range(5):
+                await store.fail(
+                    claimed.id, owner="w", transient=False, error_class="E", error_message="E"
+                )
+                nxt = await store.claim_next(owner="w", job_types=[job_type])
+                if nxt is None:
+                    break
+
+        async with factory() as s:
+            decision = await esc_store.create_decision(
+                s,
+                company_id=company_id,
+                discovery_run_id=uuid.uuid4(),
+                discovery_candidate_id=None,
+                source="discovery_council",
+                decision="research_next",
+                reason="reconcile-pg",
+                max_rounds=2,
+            )
+            decision.last_job_id = view.id
+            await s.commit()
+            return decision.id
+
+    async def test_two_concurrent_sweeps_do_not_both_close_one_decision(
+        self, factory, job_type, monkeypatch
+    ):  # noqa: ANN001
+        """SKIP LOCKED must make the sets disjoint, not contended."""
+        import asyncio
+
+        import app.core.config as config
+        from app.models.research_decision import ResearchDecision
+        from app.services.escalation.controller import reconcile_terminal_decisions
+
+        for name, value in (
+            ("v3_research_escalation_enabled", True),
+            ("v3_durable_jobs_enabled", True),
+            ("v3_escalation_max_rounds", 2),
+            ("v3_escalation_cost_cap_usd", 0.0),
+        ):
+            monkeypatch.setattr(config.settings, name, value, raising=False)
+
+        decision_id = await self._decision_on_terminal_job(
+            factory, job_type, contract.STATUS_COMPLETED
+        )
+
+        async def _sweep():
+            async with factory() as s:
+                out = await reconcile_terminal_decisions(s)
+                await s.commit()
+                return out
+
+        first, second = await asyncio.gather(_sweep(), _sweep(), return_exceptions=True)
+        for r in (first, second):
+            assert not isinstance(r, Exception), f"a concurrent sweep raised: {r!r}"
+
+        claimed_by = [r for r in (first, second) if decision_id in r]
+        assert len(claimed_by) == 1, (
+            "the same decision was reconciled by both sweeps - SKIP LOCKED is not "
+            "protecting the round, and complete_round ran twice"
+        )
+
+        async with factory() as s:
+            row = await s.get(ResearchDecision, decision_id)
+            assert row.terminal_reason, "the decision was left open by both sweeps"
+
+    async def test_reconciliation_is_idempotent_across_repeated_sweeps(
+        self, factory, job_type, monkeypatch
+    ):  # noqa: ANN001
+        import app.core.config as config
+        from app.models.research_decision import ResearchDecision
+        from app.services.escalation.controller import reconcile_terminal_decisions
+
+        for name, value in (
+            ("v3_research_escalation_enabled", True),
+            ("v3_durable_jobs_enabled", True),
+            ("v3_escalation_max_rounds", 2),
+            ("v3_escalation_cost_cap_usd", 0.0),
+        ):
+            monkeypatch.setattr(config.settings, name, value, raising=False)
+
+        decision_id = await self._decision_on_terminal_job(
+            factory, job_type, contract.STATUS_COMPLETED
+        )
+
+        async with factory() as s:
+            assert decision_id in await reconcile_terminal_decisions(s)
+            await s.commit()
+        async with factory() as s:
+            row = await s.get(ResearchDecision, decision_id)
+            first_updated = row.updated_at
+
+        for _ in range(3):
+            async with factory() as s:
+                assert decision_id not in await reconcile_terminal_decisions(s)
+                await s.commit()
+
+        async with factory() as s:
+            row = await s.get(ResearchDecision, decision_id)
+            assert row.updated_at == first_updated, "a replayed sweep rewrote the decision"
