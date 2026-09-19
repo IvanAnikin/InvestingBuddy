@@ -103,7 +103,7 @@ Bicep — native Azure DSL, idempotent, GitHub Actions native, no state file.
 
 ### Naming Convention
 
-`ib-{env}-{resource}` (e.g. `ib-stg-api`, `ib-stg-db`, `ib-stg-kv`)
+`ib-{env}-{resource}` (e.g. `ib-stg-api`, `ib-stg-psql`, `ib-stg-kv`)
 
 Storage Account exception: `ib{env}storage` (no hyphens)
 
@@ -122,7 +122,7 @@ Storage Account exception: `ib{env}storage` (no hyphens)
 | `ib-stg-plan` | App Service Plan | **B1 Linux (shared)** | Compute for API + Web (cost-optimised) | Bicep ready |
 | `ib-stg-api` | App Service (Python 3.12) | — | FastAPI backend | Bicep ready |
 | `ib-stg-web` | App Service (Node 22) | — | Next.js frontend | Bicep ready |
-| `ib-stg-db` | PostgreSQL Flexible Server 16 | Standard_B1ms | Main database | Bicep ready |
+| `ib-stg-psql` | PostgreSQL Flexible Server 16 | Standard_B1ms | Main database | Deployed (the name is `ib-stg-psql`, NOT `ib-stg-db`) |
 | `ibstgstorage` | Storage Account (LRS) | Standard | Blob storage for documents | Bicep ready |
 
 ### Phase 7 (provisioned — local real-LLM dev)
@@ -301,7 +301,7 @@ source ~/.venvs/azure-cli/bin/activate
 az keyvault secret set \
   --vault-name ib-stg-kv \
   --name database-url \
-  --value "postgresql+psycopg://ibadmin:${AZURE_STAGING_DB_PASSWORD}@ib-stg-db.postgres.database.azure.com:5432/investingbuddy?sslmode=require"
+  --value "postgresql+psycopg://ibadmin:${AZURE_STAGING_DB_PASSWORD}@ib-stg-psql.postgres.database.azure.com:5432/investingbuddy?sslmode=require"
 
 # Random secret key for the API
 az keyvault secret set \
@@ -329,7 +329,18 @@ az keyvault secret set \
 Alembic migrations are **not run automatically** by the deployment workflow.
 Run manually after first provisioning or when new migrations are added.
 
+> **Both recipes below were wrong until 2026-09-19, and a V3.17 activation failed on
+> them.** Option 1 activated a virtualenv this deployment does not create; Option 2 named
+> a database server that does not exist. Corrected and re-derived from the live resources
+> — if you are following this from memory, re-read it.
+
 ### Option 1: Via Azure App Service SSH (recommended)
+
+`ib-stg-api` runs with `WEBSITE_RUN_FROM_PACKAGE=0` and
+`SCM_DO_BUILD_DURING_DEPLOYMENT=true`, so **Oryx builds the virtualenv at container start
+and calls it `antenv`** — there is no `.venv` in `wwwroot`. The startup command relies on
+App Service activating `antenv` for it; an interactive SSH shell does **not** inherit
+that, so activate it explicitly.
 
 ```bash
 # Open a remote shell on the deployed API container
@@ -337,35 +348,57 @@ az webapp ssh --resource-group ib-stg-rg --name ib-stg-api
 
 # Inside the shell:
 cd /home/site/wwwroot
-source .venv/bin/activate
-alembic upgrade head
-alembic current
+
+# Confirm which virtualenv this container actually has before trusting either name.
+ls -d antenv .venv 2>/dev/null
+
+source antenv/bin/activate        # NOT .venv — Oryx names it antenv
+python -m alembic current         # what is applied right now
+python -m alembic upgrade head
+python -m alembic current         # confirm the new head
 ```
 
+If `alembic` is not found after activating, use `python -m alembic` as above — it runs the
+module from the environment rather than relying on a console script being on `PATH`.
+
 ### Option 2: Via local machine with DB firewall rule
+
+The server is **`ib-stg-psql`**, not `ib-stg-db`. Note also that
+`firewall-rule create` takes `--server-name` for the server and `--name` for the *rule*;
+passing the server to `--name` creates a rule with that name against no server and fails.
 
 ```bash
 # Add your IP to the DB firewall temporarily
 YOUR_IP=$(curl -s https://api.ipify.org)
 az postgres flexible-server firewall-rule create \
   --resource-group ib-stg-rg \
-  --name ib-stg-db \
+  --server-name ib-stg-psql \
   --rule-name local-dev \
-  --start-ip-address $YOUR_IP \
-  --end-ip-address $YOUR_IP
+  --start-ip-address "$YOUR_IP" \
+  --end-ip-address "$YOUR_IP"
 
-# Run migrations from local machine
+# Run migrations from local machine. Take DATABASE_URL from the app setting rather than
+# retyping a password: it is already correct, and retyping it is how a wrong host or a
+# missing sslmode gets introduced.
 cd apps/api
-source .venv/bin/activate
-DATABASE_URL="postgresql+psycopg://ibadmin:<password>@ib-stg-db.postgres.database.azure.com:5432/investingbuddy?sslmode=require" \
+source .venv/bin/activate         # the LOCAL venv — this one does exist
+DATABASE_URL="$(az webapp config appsettings list -g ib-stg-rg -n ib-stg-api \
+  --query "[?name=='DATABASE_URL'].value | [0]" -o tsv)" \
   alembic upgrade head
 
-# Remove the temporary firewall rule
+# Remove the temporary firewall rule — in a SEPARATE command, so a failed migration
+# above cannot leave the database open to the internet.
 az postgres flexible-server firewall-rule delete \
   --resource-group ib-stg-rg \
-  --name ib-stg-db \
+  --server-name ib-stg-psql \
   --rule-name local-dev --yes
 ```
+
+### Verify, from outside the database
+
+`GET /api/v1/research-decisions` answers **503 naming the missing migration** when 040 has
+not been applied, and 200 once it has. That is a schema check that needs no database
+access at all.
 
 ### Verify migrations applied
 
