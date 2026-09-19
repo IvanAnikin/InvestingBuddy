@@ -62,6 +62,7 @@ import contextlib
 import logging
 import os
 import socket
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -77,6 +78,11 @@ logger = logging.getLogger(__name__)
 #: waiting on a 202 does not perceive it, long enough that an idle deployment is
 #: not running a query every few milliseconds.
 DEFAULT_POLL_INTERVAL_SECONDS = 2.0
+
+#: How often the periodic sweeps run. Deliberately far slower than the poll
+#: interval: a sweep is a repair path, not a work queue, and running it every
+#: 2 seconds would put a bounded-but-pointless query on the database forever.
+DEFAULT_SWEEP_INTERVAL_SECONDS = 300.0
 
 
 # -- terminal observers ----------------------------------------------------
@@ -120,6 +126,47 @@ def register_terminal_observer(fn: TerminalObserver) -> TerminalObserver:
 def clear_terminal_observers() -> None:
     """Drop every observer. For tests, which must not leak into one another."""
     _terminal_observers.clear()
+
+
+# -- periodic sweeps -------------------------------------------------------
+#
+# A terminal observer is a NOTIFICATION, and a notification can be lost: it runs
+# after its own commit, in its own session, and `notify_terminal` deliberately
+# swallows whatever it raises so a listener can never undo a finished job. One
+# dropped connection there and the domain state it was going to move stays
+# unmoved for ever, because the job will not run again to notify twice.
+#
+# So a domain that cannot tolerate a lost notification registers a SWEEP as well:
+# a bounded, idempotent query that asks the database what still needs finishing.
+# The notification is the fast path; this is the durable one.
+SweepHook = Callable[[], Awaitable[None]]
+
+_sweep_hooks: list[SweepHook] = []
+
+
+def register_sweep_hook(fn: SweepHook) -> SweepHook:
+    """Register ``fn`` to run at worker startup and periodically thereafter."""
+    if fn not in _sweep_hooks:
+        _sweep_hooks.append(fn)
+    return fn
+
+
+def clear_sweep_hooks() -> None:
+    """Drop every sweep hook. For tests, which must not leak into one another."""
+    _sweep_hooks.clear()
+
+
+async def run_sweeps() -> None:
+    """Run every sweep once. Never raises: a sweep failure must not kill the loop."""
+    for hook in list(_sweep_hooks):
+        try:
+            await hook()
+        except Exception as exc:  # noqa: BLE001 - a sweep is best-effort by design
+            logger.warning(
+                "v3_sweep_hook_failed hook=%s error_type=%s",
+                getattr(hook, "__name__", "anonymous"),
+                type(exc).__name__,
+            )
 
 
 async def notify_terminal(job: JobView, *, completed: bool, dead_lettered: bool) -> None:
@@ -345,6 +392,7 @@ class ResearchWorker:
         heartbeat_seconds: float | None = None,
         poll_interval_seconds: float = DEFAULT_POLL_INTERVAL_SECONDS,
         error_backoff_seconds: float = DEFAULT_ERROR_BACKOFF_SECONDS,
+        sweep_interval_seconds: float = DEFAULT_SWEEP_INTERVAL_SECONDS,
     ) -> None:
         self.store = store if store is not None else JobStore()
         self.handlers = handlers if handlers is not None else registry
@@ -354,6 +402,8 @@ class ResearchWorker:
         self._heartbeat_seconds = heartbeat_seconds
         self.poll_interval_seconds = poll_interval_seconds
         self.error_backoff_seconds = error_backoff_seconds
+        self.sweep_interval_seconds = sweep_interval_seconds
+        self._last_sweep: float | None = None
 
         self._current: JobView | None = None
         self._stop = asyncio.Event()
@@ -402,6 +452,10 @@ class ResearchWorker:
             job_types=",".join(self.job_types or self.handlers.job_types),
             poll_interval_seconds=self.poll_interval_seconds,
         )
+        # Once at startup, BEFORE claiming anything: this process may be replacing one
+        # that died between a job's terminal write and its notification, and every such
+        # decision is an open one holding a company's lock.
+        await self._maybe_sweep(force=True)
         while not self._stop.is_set():
             try:
                 did_work = await self.run_once()
@@ -409,9 +463,23 @@ class ResearchWorker:
                 logger.exception("v3_worker_loop_error type=%s", type(exc).__name__)
                 await self._sleep(self.error_backoff_seconds)
                 continue
+            await self._maybe_sweep()
             if not did_work:
                 await self._sleep(self.poll_interval_seconds)
         log_event(logger, "v3_worker_stopped", owner=self.owner)
+
+    async def _maybe_sweep(self, *, force: bool = False) -> None:
+        """Run the registered sweeps if the cadence is due. Never raises.
+
+        Time-based rather than iteration-based: an idle worker and a busy one must
+        repair at the same rate, and iteration count means neither.
+        """
+        now = time.monotonic()
+        if not force and self._last_sweep is not None:
+            if now - self._last_sweep < self.sweep_interval_seconds:
+                return
+        self._last_sweep = now
+        await run_sweeps()
 
     async def _sleep(self, seconds: float) -> None:
         """Interruptible wait — a stop request must not wait out a poll interval."""

@@ -293,6 +293,7 @@ __all__ = [
     "REFUSED_DURABLE_JOBS_DISABLED",
     "complete_round",
     "recover_stranded_decisions",
+    "reconcile_terminal_decisions",
     "round_idempotency_key",
     "REFUSED_ESCALATION_DISABLED",
     "REFUSED_NO_COMPANY",
@@ -397,6 +398,104 @@ async def complete_round(
     decision.last_job_id = job_id
     await session.flush()
     return verdict
+
+
+async def reconcile_terminal_decisions(
+    session: AsyncSession, *, enqueue: Any = None, limit: int = 50
+) -> list[uuid.UUID]:
+    """Close rounds whose job already ended but whose decision was never advanced.
+
+    WHY THIS EXISTS, AND WHY THE OBSERVER IS NOT ENOUGH
+    ---------------------------------------------------
+    ``jobs.worker.notify_terminal`` calls the escalation observer immediately after the
+    job's terminal write commits, and it **deliberately swallows** anything the observer
+    raises: a listener must never be able to undo an outcome that already happened.
+
+    That safety has a cost. The observer runs in its own session, after its own commit,
+    so a transient database error there is discarded along with the exception — and the
+    job will never run again to produce a second notification. The decision then stays
+    OPEN for ever, and ``ux_research_decisions_one_open`` locks that company out of every
+    future decision. Exactly the outage V3.17.7 was written to end, reachable by a single
+    dropped connection.
+
+    So the notification is the FAST path and this is the DURABLE one: the database, not a
+    callback, is the authority on what still needs finishing. Anything the observer
+    missed — including everything it missed while the fix was not yet deployed — is
+    healed the next time a worker runs this.
+
+    WHAT IT WILL AND WILL NOT TOUCH
+    -------------------------------
+    * Only decisions in an OPEN status whose ``last_job_id`` names a job in
+      :data:`job_contract.TERMINAL`. A retried job is returned to ``pending``, which is
+      not terminal, so work that is still owed an attempt is never finalised.
+    * Ordinary company research has no decision pointing at it and is invisible here.
+    * A decision already closed — by the observer, or by another worker one microsecond
+      ago — is skipped under the lock, not rewritten.
+
+    CONCURRENCY
+    -----------
+    Rows are taken ``FOR UPDATE ... SKIP LOCKED`` so two workers reconcile disjoint sets
+    rather than contending, and the OPEN re-check happens **after** the lock is held.
+    ``complete_round`` is reused verbatim — its ``round_idempotency_key`` is deterministic,
+    so even a next-round enqueue that somehow ran twice joins rather than duplicates.
+    """
+    from app.models.research_job import ResearchJob
+    from app.services.jobs.job_contract import (
+        HAS_RESULT,
+        STATUS_DEAD_LETTER,
+        TERMINAL,
+    )
+
+    stmt = (
+        select(ResearchDecisionModel)
+        .join(ResearchJob, ResearchJob.id == ResearchDecisionModel.last_job_id)
+        .where(
+            ResearchDecisionModel.status.in_(OPEN_STATUSES),
+            ResearchJob.status.in_(tuple(TERMINAL)),
+        )
+        .order_by(ResearchDecisionModel.updated_at)
+        .limit(limit)
+    )
+    # SQLite ignores row locking; PostgreSQL is where it matters and where it runs.
+    try:
+        stmt = stmt.with_for_update(of=ResearchDecisionModel, skip_locked=True)
+    except Exception:  # noqa: BLE001 - dialect without row locking
+        pass
+
+    candidates = (await session.execute(stmt)).scalars().all()
+
+    reconciled: list[uuid.UUID] = []
+    for decision in candidates:
+        # Re-read UNDER THE LOCK. Between the select and here, the observer for this very
+        # job may have closed it; writing again would move a terminal decision.
+        if decision.status not in OPEN_STATUSES:
+            continue
+        job = await session.get(ResearchJob, decision.last_job_id)
+        if job is None or job.status not in TERMINAL:
+            continue
+
+        # HAS_RESULT is the contract's own "the work produced something" set. Naming it
+        # here rather than restating {completed, completed_with_warnings} keeps this from
+        # silently disagreeing with the state machine if a status is ever added.
+        verdict = await complete_round(
+            session,
+            decision,
+            job_completed=job.status in HAS_RESULT,
+            job_dead_lettered=job.status == STATUS_DEAD_LETTER,
+            enqueue=enqueue,
+        )
+        reconciled.append(decision.id)
+        logger.info(
+            "v3_escalation_decision_reconciled",
+            extra={
+                "decision_id": str(decision.id),
+                "job_id": str(decision.last_job_id),
+                "job_status": job.status,
+                "terminal": bool(verdict.is_terminal),
+                "verdict_status": verdict.status,
+            },
+        )
+    return reconciled
 
 
 async def recover_stranded_decisions(

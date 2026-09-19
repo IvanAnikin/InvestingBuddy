@@ -42,7 +42,7 @@ import uuid
 from typing import Any
 
 from app.core.structured_logging import log_event
-from app.services.jobs.worker import register_terminal_observer
+from app.services.jobs.worker import register_sweep_hook, register_terminal_observer
 
 logger = logging.getLogger(__name__)
 
@@ -107,3 +107,41 @@ async def advance_research_decision(job: Any, *, completed: bool, dead_lettered:
         status=verdict.status,
         terminal_reason=verdict.terminal_reason or "",
     )
+
+
+#: How many stranded decisions one sweep will repair. Bounded so a backlog is drained
+#: over several passes instead of one unbounded query, and so a pathological table can
+#: never turn the repair path into the outage.
+RECONCILE_LIMIT = 50
+
+
+@register_sweep_hook
+async def reconcile_missed_rounds() -> None:
+    """Finish rounds whose job ended but whose decision was never advanced.
+
+    The terminal observer above is a notification and notifications can be lost — it
+    runs after its own commit, in its own session, and ``notify_terminal`` swallows
+    whatever it raises so that a listener can never undo a finished job. A single
+    dropped connection there would otherwise leave the decision OPEN for ever and
+    ``ux_research_decisions_one_open`` would lock that company out permanently.
+
+    This asks the database the same question instead of trusting a callback, so it also
+    heals decisions stranded BEFORE this code existed. Runs at worker startup and on a
+    slow cadence thereafter; bounded, idempotent, and safe to run from several workers at
+    once because the rows are taken ``FOR UPDATE ... SKIP LOCKED``.
+    """
+    from app.services.escalation.controller import reconcile_terminal_decisions
+
+    factory = _session_factory()
+    async with factory() as session:
+        repaired = await reconcile_terminal_decisions(session, limit=RECONCILE_LIMIT)
+        if repaired:
+            await session.commit()
+
+    if repaired:
+        log_event(
+            logger,
+            "v3_escalation_reconciled",
+            count=len(repaired),
+            decision_ids=",".join(str(d) for d in repaired),
+        )
