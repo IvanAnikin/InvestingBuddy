@@ -463,10 +463,26 @@ class TestReconciliationOnRealPostgres:
     normal case the moment a second process exists, so it is proven here or not at all.
     """
 
+    async def _discovery_run(self, factory) -> uuid.UUID:  # noqa: ANN001
+        """A REAL discovery run row.
+
+        `research_decisions.discovery_run_id` carries a foreign key. SQLite runs this
+        suite with foreign keys OFF, so an invented uuid is accepted there and rejected
+        here — which is exactly what these PostgreSQL tests exist to catch, and did.
+        """
+        from app.models.discovery import DiscoveryRun
+
+        async with factory() as s:
+            run = DiscoveryRun(id=uuid.uuid4(), status="completed")
+            s.add(run)
+            await s.commit()
+            return run.id
+
     async def _decision_on_terminal_job(self, factory, job_type: str, status: str):  # noqa: ANN001, ANN202
         from app.services.escalation import store as esc_store
 
         company_id = await _company(factory)
+        run_id = await self._discovery_run(factory)
         store = JobStore(factory, lease_seconds=60, max_attempts=3)
         view, _ = await store.enqueue(
             job_type=job_type, idempotency_key=_key(), company_id=company_id
@@ -488,7 +504,7 @@ class TestReconciliationOnRealPostgres:
             decision = await esc_store.create_decision(
                 s,
                 company_id=company_id,
-                discovery_run_id=uuid.uuid4(),
+                discovery_run_id=run_id,
                 discovery_candidate_id=None,
                 source="discovery_council",
                 decision="research_next",

@@ -117,7 +117,7 @@ RECONCILE_LIMIT = 50
 
 @register_sweep_hook
 async def reconcile_missed_rounds() -> None:
-    """Finish rounds whose job ended but whose decision was never advanced.
+    """Repair every way an open decision can be left with nothing to advance it.
 
     The terminal observer above is a notification and notifications can be lost — it
     runs after its own commit, in its own session, and ``notify_terminal`` swallows
@@ -130,14 +130,38 @@ async def reconcile_missed_rounds() -> None:
     slow cadence thereafter; bounded, idempotent, and safe to run from several workers at
     once because the rows are taken ``FOR UPDATE ... SKIP LOCKED``.
     """
-    from app.services.escalation.controller import reconcile_terminal_decisions
+    from app.services.escalation.controller import (
+        reconcile_terminal_decisions,
+        recover_stranded_decisions,
+    )
 
     factory = _session_factory()
     async with factory() as session:
+        # Two different strandings, both of which hold the company's lock for ever:
+        #
+        #   last_job_id IS NULL      the decision was written and the crash came before
+        #                            its job was -> `recover_stranded_decisions` enqueues
+        #                            the missing job.
+        #   job already TERMINAL     the job ran and finished, but the notification that
+        #                            should have closed the round was lost ->
+        #                            `reconcile_terminal_decisions` closes it.
+        #
+        # Recovery runs FIRST: it gives a decision the job it never had, and the round
+        # that job eventually finishes is then closed by a later pass. Doing it the other
+        # way round would still work, one sweep later, but this ordering means a single
+        # sweep leaves nothing obviously half-repaired.
+        recovered = await recover_stranded_decisions(session, limit=RECONCILE_LIMIT)
         repaired = await reconcile_terminal_decisions(session, limit=RECONCILE_LIMIT)
-        if repaired:
+        if recovered or repaired:
             await session.commit()
 
+    if recovered:
+        log_event(
+            logger,
+            "v3_escalation_recovered",
+            count=len(recovered),
+            decision_ids=",".join(str(d) for d in recovered),
+        )
     if repaired:
         log_event(
             logger,

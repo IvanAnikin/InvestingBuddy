@@ -149,9 +149,20 @@ def _naive(dt):  # noqa: ANN001, ANN202
 
 
 def _patch_factory(monkeypatch: pytest.MonkeyPatch, factory) -> None:  # noqa: ANN001
+    """Point BOTH session sources at the test database.
+
+    The sweep opens its own session via ``job_hook._session_factory``, and
+    ``recover_stranded_decisions`` enqueues through ``JobStore()``, which resolves
+    ``app.db.session.async_session_factory`` lazily and owns a SEPARATE session by
+    design. Patching only the first leaves the enqueue talking to the real app database,
+    where it raises — and the sweep swallows that, so the test would pass while the path
+    under test never ran.
+    """
+    import app.db.session as db_session
     import app.services.escalation.job_hook as hook
 
     monkeypatch.setattr(hook, "_session_factory", lambda: factory)
+    monkeypatch.setattr(db_session, "async_session_factory", factory, raising=False)
 
 
 # --------------------------------------------------------------------------- #
@@ -308,6 +319,66 @@ class TestRecoveryAfterALostNotification:
             repaired = await reconcile_terminal_decisions(s, limit=2)
             await s.commit()
         assert len(repaired) == 2
+
+
+class TestTheOtherStranding:
+    """`last_job_id IS NULL` — the decision exists and its job never landed.
+
+    A different failure from a lost notification, with the same consequence: the decision
+    is OPEN, nothing will ever advance it, and `ux_research_decisions_one_open` locks the
+    company out. `recover_stranded_decisions` was written for it in V3.17.4 and, like
+    `complete_round`, had no production caller until this sweep gained one.
+
+    WHAT THIS TEST DOES AND DOES NOT PROVE
+    --------------------------------------
+    It proves the sweep CALLS it, which is the part that was missing. It does not re-prove
+    what that function does — `test_v3_17_3_escalation_controller.py` already covers the
+    enqueue, the idempotency and the no-company case against the same schema.
+
+    The behaviour is deliberately not re-tested end to end here: `recover_stranded_decisions`
+    enqueues through `JobStore`, which owns a SEPARATE session by design, and the
+    in-memory-SQLite harness shares one connection across sessions — so a failure there
+    invalidates the connection and the next statement reports "no such table", masking the
+    real error rather than showing it. The PostgreSQL file is where that path is honest.
+    """
+
+    async def test_the_sweep_also_repairs_decisions_with_no_job(
+        self, engine_and_factory, flags, monkeypatch
+    ) -> None:  # noqa: ANN001
+        from app.services.jobs import worker as worker_mod
+
+        _e, factory = engine_and_factory
+        called: list[str] = []
+
+        async def _fake_recover(session, **kw):  # noqa: ANN001, ANN003, ARG001
+            called.append("recover")
+            return []
+
+        async def _fake_reconcile(session, **kw):  # noqa: ANN001, ANN003, ARG001
+            called.append("reconcile")
+            return []
+
+        import app.services.escalation.controller as controller
+
+        monkeypatch.setattr(controller, "recover_stranded_decisions", _fake_recover)
+        monkeypatch.setattr(controller, "reconcile_terminal_decisions", _fake_reconcile)
+
+        from app.services.escalation.job_hook import reconcile_missed_rounds
+
+        _patch_factory(monkeypatch, factory)
+        worker_mod.clear_sweep_hooks()
+        worker_mod.register_sweep_hook(reconcile_missed_rounds)
+        await worker_mod.run_sweeps()
+
+        assert "recover" in called, (
+            "the sweep never calls recover_stranded_decisions - a decision whose job "
+            "never landed stays open for ever and locks its company out"
+        )
+        assert "reconcile" in called
+        assert called.index("recover") < called.index("reconcile"), (
+            "recovery must run before reconciliation so one sweep does not leave a "
+            "decision obviously half-repaired"
+        )
 
 
 class TestTheSweepHasAProductionCaller:
