@@ -1359,9 +1359,23 @@ export interface EvidencePreviewResponse {
 // the one on screen is the one a human acts on.
 
 export interface EvidenceDelta {
+  /**
+   * V3.17.8. READ THIS BEFORE THE NUMBERS. `false` means no pre-round snapshot existed,
+   * so no delta was computed and every count below is a default rather than a
+   * measurement. The backend writes no numeric dimensions at all in that case, so that
+   * a zero on screen is always a measured zero.
+   */
+  measurable: boolean;
   indexed_chunks_added: number;
   searchable_documents_added: number;
+  /** Non-negative. Gaps that CLOSED during the round. */
   closable_gaps_closed: number;
+  /**
+   * Non-negative. Gaps the round newly DISCOVERED — reported, never counted against
+   * improvement. Two counts rather than one signed number: "-14 gaps closed" is not a
+   * statement anything can render honestly, and production carried four of them.
+   */
+  closable_gaps_opened: number;
   facts_added: number;
   /** Secondary telemetry. Shown, never used to decide anything. */
   verified_findings_added: number;

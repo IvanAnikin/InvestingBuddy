@@ -67,12 +67,19 @@ class EvidenceSnapshot:
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any] | None) -> "EvidenceSnapshot":
-        """Rebuild from persisted JSON, tolerating a key that did not exist yet.
+        """Rebuild from persisted JSON, tolerating a KEY that did not exist yet.
 
-        An absent key reads as 0 here **only** because a snapshot is a measurement of a
-        count, and a count that was never taken and a count of zero are the same thing
-        for the purpose of a delta. That is not true of cost, which is why cost is
-        nowhere in this class.
+        An absent *key* reads as 0 because a snapshot is a measurement of a count, and a
+        dimension that was not yet being measured contributes nothing to a delta on the
+        dimensions that were.
+
+        AN ABSENT *SNAPSHOT* IS A DIFFERENT THING ENTIRELY, and this method does not
+        distinguish it — ``from_dict(None)`` returns all zeros, which reads as "this
+        company had no evidence at all". That is exactly the substitution that produced
+        `closable_gaps_closed: -14` in production: a baseline that was never taken was
+        silently treated as a baseline of nothing, so evidence the platform had held for
+        weeks was counted as this round's acquisition. Use :meth:`persisted` wherever the
+        difference between "measured zero" and "never measured" can change a decision.
         """
         raw = raw or {}
         return cls(
@@ -87,6 +94,23 @@ class EvidenceSnapshot:
                 )
             }
         )
+
+    @classmethod
+    def persisted(cls, raw: dict[str, Any] | None) -> "EvidenceSnapshot | None":
+        """The stored snapshot, or ``None`` when no snapshot was ever stored.
+
+        The counterpart to :meth:`from_dict` for the one place the distinction is
+        load-bearing: a **missing baseline is not a baseline of zero.** A decision whose
+        ``evidence_before_json`` is NULL or ``{}`` was never measured, and a delta
+        computed against nothing is not a small delta — it is not a delta at all.
+
+        A snapshot of genuine zeros (``{"indexed_chunks": 0, ...}``) is a real
+        measurement of a company that held no evidence yet, and is returned as such. The
+        difference between that and ``None`` is the whole point of this method.
+        """
+        if not raw:
+            return None
+        return cls.from_dict(raw)
 
 
 async def snapshot_evidence(
@@ -271,11 +295,23 @@ def measure_evidence_delta(
     moved in the right direction.** Gaps CLOSING counts; gaps opening does not count
     against, because discovering a new gap is a legitimate result of having read
     something new.
+
+    GAPS OPENED AND GAPS CLOSED ARE TWO NUMBERS, NOT ONE SIGNED NUMBER
+    -----------------------------------------------------------------
+    A single ``closable_gaps_closed`` that is allowed to go negative reads, to anything
+    that renders it, as *"minus fourteen gaps were closed"* — a statement with no
+    meaning. Production carried exactly that: `-14`, `-16`, `-28`, `-32`. So the two
+    directions are reported separately and both are non-negative: gaps that closed, and
+    gaps the round newly discovered. A reader can then see "closed 0, opened 14" and know
+    what actually happened, which the signed number never said.
     """
     chunks = after.indexed_chunks - before.indexed_chunks
     documents = after.searchable_documents - before.searchable_documents
-    # Gaps go the other way: fewer open closable gaps is progress.
-    gaps_closed = before.open_closable_gaps - after.open_closable_gaps
+    # Gaps go the other way: fewer open closable gaps is progress. Split into two
+    # non-negative counts — see the docstring.
+    gap_movement = before.open_closable_gaps - after.open_closable_gaps
+    gaps_closed = max(0, gap_movement)
+    gaps_opened = max(0, -gap_movement)
     facts = after.active_facts - before.active_facts
     findings = after.verified_findings - before.verified_findings
 
@@ -283,9 +319,15 @@ def measure_evidence_delta(
         "indexed_chunks_added": chunks,
         "searchable_documents_added": documents,
         "closable_gaps_closed": gaps_closed,
+        #: Newly discovered gaps. Reported, never counted against improvement.
+        "closable_gaps_opened": gaps_opened,
         "facts_added": facts,
         # Secondary. Present for the reader; absent from DECISIVE_DIMENSIONS.
         "verified_findings_added": findings,
+        # This delta rests on a real before-snapshot. The controller writes
+        # ``measurable: False`` instead of a delta when it does not have one, so a
+        # reader is never handed zeros that were never measured.
+        "measurable": True,
     }
 
     reasons: list[str] = []
@@ -297,6 +339,11 @@ def measure_evidence_delta(
         reasons.append(f"{gaps_closed} closable research gap(s) closed")
     if facts > 0:
         reasons.append(f"{facts} new active, scoped fact(s)")
+    if gaps_opened > 0:
+        reasons.append(
+            f"{gaps_opened} new closable research gap(s) were discovered — a legitimate "
+            "result of having read something new, and not counted against improvement"
+        )
 
     improved = any(delta[d] > 0 for d in DECISIVE_DIMENSIONS)
     if not improved:
@@ -316,9 +363,27 @@ def measure_evidence_delta(
     return delta
 
 
+def unmeasurable_delta(reason: str) -> dict[str, Any]:
+    """What is recorded when a round finished but its baseline was never taken.
+
+    **No numeric dimensions at all.** Writing zeros here would be the original defect
+    wearing a different hat: a reader — human or UI — cannot tell a measured zero from a
+    zero that stands in for an absent measurement, and the whole point of this slice is
+    that the platform stops making that substitution. ``improved`` is ``False`` because
+    improvement was never established, not because it was disproved, and the reason says
+    which.
+    """
+    return {
+        "measurable": False,
+        "improved": False,
+        "reasons": [reason],
+    }
+
+
 __all__ = [
     "DECISIVE_DIMENSIONS",
     "EvidenceSnapshot",
     "measure_evidence_delta",
     "snapshot_evidence",
+    "unmeasurable_delta",
 ]

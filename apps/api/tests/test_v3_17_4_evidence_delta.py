@@ -121,13 +121,20 @@ class TestTheDeltaVerdict:
         assert d["improved"] is True
 
     def test_a_new_gap_does_not_count_against_progress(self) -> None:
-        """Discovering a gap is a legitimate result of having read something new."""
+        """Discovering a gap is a legitimate result of having read something new.
+
+        V3.17.8 changed the SHAPE of the answer, not the verdict. This used to report
+        ``closable_gaps_closed: -5``, which is not a statement about anything: minus five
+        gaps were not closed. Production carried four of them (`-14`, `-16`, `-28`,
+        `-32`) and they were the arithmetic tell of the missing round-0 baseline.
+        """
         d = measure_evidence_delta(
             _snap(indexed_chunks=0, open_closable_gaps=1),
             _snap(indexed_chunks=40, open_closable_gaps=6),
         )
 
-        assert d["closable_gaps_closed"] == -5
+        assert d["closable_gaps_closed"] == 0, "a gap that opened read as a gap closed"
+        assert d["closable_gaps_opened"] == 5
         assert d["improved"] is True, "new chunks were ignored because a gap opened"
 
     def test_every_dimension_stays_visible(self) -> None:

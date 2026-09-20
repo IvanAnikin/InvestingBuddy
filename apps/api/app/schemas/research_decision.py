@@ -17,9 +17,21 @@ from pydantic import BaseModel, Field
 class EvidenceDeltaRead(BaseModel):
     """What one round changed, as the backend computed it."""
 
+    #: V3.17.8. **Read this before the numbers.** ``False`` means no pre-round snapshot
+    #: existed, so no delta was computed and every count below is a schema default rather
+    #: than a measurement. The backend writes no numeric dimensions at all in that case,
+    #: precisely so that a zero on screen is always a measured zero.
+    measurable: bool = True
+
     indexed_chunks_added: int = 0
     searchable_documents_added: int = 0
+    #: Non-negative. Gaps that CLOSED during the round.
     closable_gaps_closed: int = 0
+    #: Non-negative. Gaps the round newly DISCOVERED — reported, never counted against
+    #: improvement. Two counts rather than one signed number, because "-14 gaps closed"
+    #: is not a statement anything can render honestly, and production carried four of
+    #: them.
+    closable_gaps_opened: int = 0
     facts_added: int = 0
     #: Secondary telemetry. Shown, never used to decide anything.
     verified_findings_added: int = 0

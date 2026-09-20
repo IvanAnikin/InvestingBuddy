@@ -14,6 +14,14 @@ investigation and nobody goes back.
 
 So :func:`decide_next_state` takes the job's own outcome, and a job that did not complete
 can never reach ``exhausted``. Every branch below is pure and every one is tested.
+
+V3.17.8 ADDS A THIRD CLAIM, WEAKER THAN BOTH
+============================================
+``evidence_baseline_missing`` claims nothing about the world *or* the platform's ability
+to look. It says only that no pre-round snapshot was taken, so the delta cannot be
+computed — and a round whose delta cannot be computed must never authorise a paid one.
+Production reached ``improved: true`` on every round 0 for exactly this reason, because a
+missing baseline was being read as a baseline of zero.
 """
 
 from __future__ import annotations
@@ -28,6 +36,7 @@ from app.models.research_decision import (
     STATUS_REANALYSIS,
     TERMINAL_COST_CAP,
     TERMINAL_COST_UNKNOWN,
+    TERMINAL_EVIDENCE_BASELINE_MISSING,
     TERMINAL_EVIDENCE_SUFFICIENT,
     TERMINAL_EXHAUSTED_NO_IMPROVEMENT,
     TERMINAL_JOB_DEAD_LETTERED,
@@ -48,6 +57,13 @@ class RoundInputs:
 
     improved: bool = False
     open_closable_gaps_remain: bool = False
+
+    #: V3.17.8. Was a real pre-round snapshot taken? ``False`` means ``improved`` above
+    #: carries no information — it was computed against a baseline that does not exist,
+    #: or was not computed at all. Defaulting to ``True`` is safe **only** because the
+    #: single caller that can have a missing baseline passes it explicitly; every pure
+    #: test that omits it is describing a measured round.
+    evidence_baseline_known: bool = True
 
     escalation_round: int = 0
     max_rounds: int = 2
@@ -94,7 +110,26 @@ def decide_next_state(i: RoundInputs) -> RoundVerdict:
             "an evidence one.",
         )
 
-    # --- 2. It ran. Did it acquire anything? ----------------------------------
+    # --- 2. It ran. COULD we tell what it acquired? ---------------------------
+    #
+    # Asked before "did it acquire anything?", because without a pre-round snapshot that
+    # question has no answer — and the branch below would answer it anyway, in whichever
+    # direction the missing baseline happened to bias it. In production that direction
+    # was `improved: true` on every round 0, because a NULL baseline read as a company
+    # holding no evidence at all, so weeks of accumulated corpus counted as this round's
+    # acquisition. With a price book configured that would have bought a second round on
+    # the strength of evidence the platform already had.
+    if not i.evidence_baseline_known:
+        return RoundVerdict(
+            STATUS_ABANDONED,
+            TERMINAL_EVIDENCE_BASELINE_MISSING,
+            "No pre-round evidence snapshot exists for this decision, so what this "
+            "round acquired cannot be measured. This is NOT a finding that nothing was "
+            "acquired — it is the platform refusing to guess, and refusing to authorise "
+            "further paid work on a guess.",
+        )
+
+    # --- 3. It ran and we can measure it. Did it acquire anything? ------------
     if not i.improved:
         return RoundVerdict(
             STATUS_EXHAUSTED,
@@ -103,7 +138,7 @@ def decide_next_state(i: RoundInputs) -> RoundVerdict:
             "rounds would repeat it at the same cost.",
         )
 
-    # --- 3. It acquired something. Is there anything left to ask? -------------
+    # --- 4. It acquired something. Is there anything left to ask? -------------
     if not i.open_closable_gaps_remain:
         return RoundVerdict(
             STATUS_COMPLETED,
@@ -112,7 +147,7 @@ def decide_next_state(i: RoundInputs) -> RoundVerdict:
             "open.",
         )
 
-    # --- 4. There is more to ask. May we? -------------------------------------
+    # --- 5. There is more to ask. May we? -------------------------------------
     if i.escalation_round + 1 >= i.max_rounds:
         return RoundVerdict(
             STATUS_ABANDONED,
@@ -161,6 +196,7 @@ def verdict_payload(delta: dict[str, Any], verdict: RoundVerdict) -> dict[str, A
 
 
 __all__ = [
+    "TERMINAL_EVIDENCE_BASELINE_MISSING",
     "TERMINAL_RESEARCH_DID_NOT_COMPLETE",
     "RoundInputs",
     "RoundVerdict",

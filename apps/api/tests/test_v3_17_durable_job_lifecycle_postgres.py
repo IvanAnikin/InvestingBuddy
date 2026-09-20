@@ -501,6 +501,8 @@ class TestReconciliationOnRealPostgres:
                     break
 
         async with factory() as s:
+            from app.services.escalation.evidence import snapshot_evidence
+
             decision = await esc_store.create_decision(
                 s,
                 company_id=company_id,
@@ -510,6 +512,9 @@ class TestReconciliationOnRealPostgres:
                 decision="research_next",
                 reason="reconcile-pg",
                 max_rounds=2,
+                # V3.17.8: the round-0 baseline. A decision without one is refused, and
+                # a round without one is closed as unmeasurable rather than reconciled.
+                evidence_before=(await snapshot_evidence(s, company_id)).to_dict(),
             )
             decision.last_job_id = view.id
             await s.commit()

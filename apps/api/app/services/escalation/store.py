@@ -85,6 +85,16 @@ async def decisions_created_for_run(
     return int((await session.execute(stmt)).scalar_one() or 0)
 
 
+class MissingEvidenceBaseline(RuntimeError):
+    """A decision that could execute research was about to exist without a baseline.
+
+    Raised rather than logged, and raised at the two places where the invariant can
+    actually be broken (:func:`create_decision` and ``controller._enqueue``), because the
+    failure this guards is silent by nature: the round runs perfectly, the delta is
+    computed against nothing, and the answer looks like a very successful round.
+    """
+
+
 async def create_decision(
     session: AsyncSession,
     *,
@@ -95,16 +105,40 @@ async def create_decision(
     decision: str,
     reason: str,
     max_rounds: int,
+    evidence_before: dict[str, int] | None,
     escalation_round: int = 0,
     priority: int = 100,
 ) -> ResearchDecision:
-    """Write the decision. It is not queued yet — that is a separate, later state.
+    """Write the decision, **with the baseline its first round will be measured against.**
 
     Two states rather than one because they can fail independently: the decision is the
     platform's own record that it intends to research, and the job is the queue's record
     that it will. A decision written and never queued is visible and fixable; a job
     queued with no decision behind it is work nobody can explain.
+
+    WHY ``evidence_before`` IS A REQUIRED ARGUMENT AND NOT AN OPTIONAL ONE
+    ---------------------------------------------------------------------
+    V3.17.1–7 wrote ``evidence_before_json`` at exactly one place —
+    ``controller.complete_round``, for the *next* round — so every round 0 in production
+    was measured against ``EvidenceSnapshot.from_dict(None)``, all zeros. A company
+    holding 383 indexed chunks and 32 open gaps before research began recorded that
+    entire pre-existing corpus as the round's own acquisition, and the arithmetic tell
+    reached the database as ``closable_gaps_closed: -14``.
+
+    A default would let that return the moment somebody adds a caller and does not think
+    about it. Passing it is therefore **mandatory**, and passing ``None`` for a decision
+    that names a company is an error rather than a permission: the only decision allowed
+    to have no baseline is one with no company, which can never execute research at all.
     """
+    if company_id is not None and not evidence_before:
+        raise MissingEvidenceBaseline(
+            "A research decision for a company must carry the evidence snapshot its "
+            "first round will be measured against. Snapshot the company's evidence "
+            "with `snapshot_evidence` BEFORE creating the decision — a round measured "
+            "against a missing baseline reports pre-existing evidence as new "
+            "acquisition."
+        )
+
     row = ResearchDecision(
         id=uuid.uuid4(),
         company_id=company_id,
@@ -117,6 +151,9 @@ async def create_decision(
         priority=priority,
         escalation_round=escalation_round,
         max_rounds=max_rounds,
+        # Persisted in the same flush as the row itself, and therefore long before any
+        # job for it can exist: `controller._enqueue` refuses a decision without one.
+        evidence_before_json=dict(evidence_before) if evidence_before else None,
     )
     session.add(row)
     await session.flush()
@@ -154,6 +191,7 @@ async def mark_terminal(
 
 
 __all__ = [
+    "MissingEvidenceBaseline",
     "create_decision",
     "decisions_created_for_run",
     "mark_queued",
