@@ -117,6 +117,65 @@ class TestTheReadProjection:
 
         assert read.cost_usd_total == pytest.approx(0.0145)
 
+    async def test_a_delta_with_no_baseline_reads_as_unmeasurable(self, session) -> None:  # noqa: ANN001
+        """V3.17.8. The four production rows, read through the current schema.
+
+        They were written before `measurable` existed, so it would take its schema
+        default of `True` and assert — next to a NULL `evidence_before` and a
+        `closable_gaps_closed` of MINUS THIRTY-TWO — that those numbers were measured.
+        They were not: they are the company's pre-existing evidence subtracted from a
+        baseline that was never taken.
+
+        The stored row is deliberately NOT rewritten; the flag is derived on read.
+        """
+        from app.api.v1.research_decisions import _to_read
+
+        company_id = await _company(session)
+        row = await _decision(
+            session,
+            company_id,
+            evidence_before_json=None,
+            improvement_json={
+                "indexed_chunks_added": 0,
+                "closable_gaps_closed": -32,
+                "facts_added": 31,
+                "improved": True,
+                "reasons": ["31 new active, scoped fact(s)"],
+            },
+        )
+
+        read = await _to_read(session, row)
+
+        assert read.improvement.measurable is False
+        assert read.evidence_before is None
+        # The stored record is untouched: it is the evidence of the defect.
+        assert row.improvement_json["closable_gaps_closed"] == -32
+
+    async def test_a_delta_WITH_a_baseline_is_left_alone(self, session) -> None:  # noqa: ANN001
+        """The derivation must not make every delta look unmeasurable."""
+        from app.api.v1.research_decisions import _to_read
+
+        company_id = await _company(session)
+        row = await _decision(
+            session,
+            company_id,
+            evidence_before_json={"indexed_chunks": 383, "open_closable_gaps": 32},
+            improvement_json={
+                "measurable": True,
+                "indexed_chunks_added": 38,
+                "closable_gaps_closed": 0,
+                "closable_gaps_opened": 2,
+                "improved": True,
+                "reasons": ["38 new searchable corpus chunk(s)"],
+            },
+        )
+
+        read = await _to_read(session, row)
+
+        assert read.improvement.measurable is True
+        assert read.improvement.indexed_chunks_added == 38
+        assert read.improvement.closable_gaps_opened == 2
+
     async def test_the_delta_is_read_back_not_recomputed(self, session) -> None:  # noqa: ANN001
         """The API returns what was MEASURED, verbatim.
 

@@ -95,13 +95,27 @@ async def _to_read(
 
     improvement = None
     if row.improvement_json:
-        improvement = EvidenceDeltaRead(
-            **{
-                k: v
-                for k, v in row.improvement_json.items()
-                if k in EvidenceDeltaRead.model_fields
-            }
-        )
+        fields = {
+            k: v
+            for k, v in row.improvement_json.items()
+            if k in EvidenceDeltaRead.model_fields
+        }
+        # V3.17.8. A delta computed against a baseline that does not exist is not a
+        # measurement, and this is the read that has to say so.
+        #
+        # The stored row is NOT rewritten — the four production decisions carrying
+        # `closable_gaps_closed: -14/-16/-28/-32` are the evidence of the defect and
+        # `docs/v3.17-production-acceptance-report.md` §15.6 depends on them surviving
+        # verbatim. But `measurable` did not exist when they were written, so it would
+        # otherwise take its schema default of `True` and assert, next to a null
+        # `evidence_before`, that those numbers were measured. They were not: they are
+        # the company's pre-existing evidence subtracted from nothing.
+        #
+        # Derived from `evidence_before_json` rather than trusted from the payload, so
+        # it is correct for every row written before the field existed.
+        if not row.evidence_before_json:
+            fields["measurable"] = False
+        improvement = EvidenceDeltaRead(**fields)
 
     return ResearchDecisionRead(
         id=row.id,
