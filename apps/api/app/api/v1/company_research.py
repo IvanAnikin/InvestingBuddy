@@ -34,6 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.session import get_db
 from app.schemas.company_research import (
     CompanyResearchJobCreate,
+    CompanyResearchJobLineage,
     CompanyResearchJobResponse,
 )
 from app.services import company_research_service as svc
@@ -219,6 +220,40 @@ async def get_company_research_job(
     return CompanyResearchJobResponse.from_envelope(
         envelope, message=_message(envelope)
     )
+
+
+@router.get(
+    "/jobs/{job_id}/lineage",
+    response_model=CompanyResearchJobLineage,
+    summary="What one durable research job is on the record for (admin only)",
+    description=(
+        "Row counts for every V3 table that carries a `research_job_id` foreign key to "
+        "this job: research runs, tool calls, leads, calculations and run consumption. "
+        "Answers the one question an operator has after a run — *was this job's work "
+        "attributed to it?* — without database access, which this platform's network "
+        "does not permit from outside. A count is only ever of rows whose "
+        "`research_job_id` EQUALS this id; nothing is matched by company, by AgentRun "
+        "or by time, so a zero means nothing was attributed. `estimated_cost_usd` is "
+        "`null` when unpriced or unrecorded, and never 0. " + _INTERNAL
+    ),
+)
+async def get_company_research_job_lineage(
+    job_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+) -> CompanyResearchJobLineage:
+    from app.services.jobs import lineage
+
+    counts = await lineage.counts_for_job(db, job_id)
+    if not counts.exists:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                f"No durable research job {job_id} exists. A V2 job id resolves here as "
+                "absent rather than as a job with nothing attributed — the two are "
+                "different facts."
+            ),
+        )
+    return CompanyResearchJobLineage(**counts.to_dict())
 
 
 @router.get(

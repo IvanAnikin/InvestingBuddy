@@ -7,7 +7,11 @@
  * which words, which colour, which of three very different endings this is.
  */
 import type { PillColor } from "@/components/ui/StatusPill";
-import type { EvidenceDelta, ResearchDecision } from "@/types/api";
+import type {
+  DecisionSpend,
+  EvidenceDelta,
+  ResearchDecision,
+} from "@/types/api";
 
 /**
  * The council's word and the platform's execution state are DIFFERENT CONCEPTS and are
@@ -98,6 +102,31 @@ export function outcomeSentence(d: ResearchDecision): string | null {
 export function costLabel(cost: number | null): string {
   if (cost === null || cost === undefined) return "unknown";
   return `$${cost.toFixed(4)}`;
+}
+
+/**
+ * WHY the cost is unknown, in one short phrase. Empty when it is known.
+ *
+ * `costLabel` deliberately still answers exactly "unknown" — an operator must never
+ * read a cost as free. This says which unknown it is, because they need different
+ * fixes: "not attributed" is a defect in the platform's lineage, "not recorded" means
+ * the consumption recorder is switched off, and "not priced" means the measurement
+ * exists and no price book covers it.
+ */
+export function costUnknownReason(
+  spend: DecisionSpend | null | undefined,
+): string {
+  if (!spend || spend.cost_usd_total !== null) return "";
+  switch (spend.basis) {
+    case "no_jobs":
+      return "no research job yet";
+    case "no_consumption_recorded":
+      return "consumption not recorded";
+    case "unpriced_consumption":
+      return "measured, not priced";
+    default:
+      return "";
+  }
 }
 
 export function roundLabel(d: ResearchDecision): string {

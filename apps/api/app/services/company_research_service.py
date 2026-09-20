@@ -51,6 +51,7 @@ from __future__ import annotations
 import logging
 import time
 import uuid
+from dataclasses import replace
 from typing import Any, Awaitable, Callable
 
 from sqlalchemy import select
@@ -64,6 +65,7 @@ from app.models.company import Company
 from app.models.report import Report
 from app.services import consumption, research_job
 from app.services.company_service import get_company_by_ticker
+from app.services.jobs import lineage
 from app.workflows.company_analysis import run_company_analysis
 
 logger = logging.getLogger(__name__)
@@ -611,6 +613,7 @@ def _report_summary_dict(final_report_response: Any) -> dict[str, Any] | None:
 async def process_company_research_by_id(
     job_id: uuid.UUID,
     *,
+    durable_job_id: uuid.UUID | None = None,
     session_factory: async_sessionmaker[AsyncSession] | None = None,
     run_analysis: AnalysisRunner | None = None,
     generate_final_report: FinalReportRunner | None = None,
@@ -622,6 +625,22 @@ async def process_company_research_by_id(
     Must NOT reuse the request-scoped session — the 202 has already been sent
     and that session is closed. Only ids, statuses, stages and durations are
     logged — never prompts, completions, evidence excerpts or credentials.
+
+    TWO IDS, AND THEY ARE NOT INTERCHANGEABLE (V3.17.9)
+    ---------------------------------------------------
+    ``job_id`` is the **content record** — an ``AgentRun`` whose ``AgentStep`` holds the
+    reader-facing envelope. It has always been this, and the name is historical.
+
+    ``durable_job_id`` is the **``research_jobs`` row** a worker leased to run this, and
+    it is the target of the ``research_job_id`` foreign key on ``research_runs``,
+    ``research_leads``, ``research_tool_calls``, ``calculation_records`` and
+    ``research_run_consumption``. It is passed explicitly or it is ``None``; it is never
+    inferred from ``job_id``, from the company, or from the most recent job — see
+    ``app.services.jobs.lineage``.
+
+    **The V2 path passes nothing and gets NULL, honestly.** A V2 run has no durable job,
+    and a link invented for it would be a false statement about which job paid for the
+    evidence.
 
     ``progress`` is called with each reader-facing stage as it is entered. The
     V2 path leaves it None; the V3 durable path passes the worker's checkpoint,
@@ -656,6 +675,15 @@ async def process_company_research_by_id(
             run = await session.get(AgentRun, job_id)
             envelope = dict(step.output_json or {})
             request = dict(step.input_json or {})
+
+            # Checked ONCE, here, against the real table — before it can reach any of
+            # the five foreign keys that point at `research_jobs.id`. The V3 pipeline
+            # checks again on its own entry (defence in depth, and it has callers of its
+            # own), but the consumption recorder writes outside the pipeline's SAVEPOINT
+            # and must never be handed an id that could abort this session's transaction.
+            durable_job_id = await lineage.resolve_durable_job_id(
+                session, durable_job_id
+            )
 
             company = await resolve_company(
                 session, company_id=uuid.UUID(str(request.get("company_id")))
@@ -776,7 +804,12 @@ async def process_company_research_by_id(
                 session,
                 company=company,
                 report_id=report_id,
-                research_job_id=job_id,
+                # The DURABLE job id, never `job_id`. `job_id` is an AgentRun, and
+                # `research_tool_calls.research_job_id` is a foreign key to
+                # `research_jobs` — passing the wrong one here is the defect V3.17.9
+                # closes, and V3.13.1's guard is the only reason it cost telemetry
+                # rather than the report.
+                research_job_id=durable_job_id,
             )
             if v3_outcome is not None:
                 warnings.extend(
@@ -837,6 +870,8 @@ async def process_company_research_by_id(
                 result,
                 company_id=company.id,
                 agent_run_id=job_id,
+                research_job_id=durable_job_id,
+                v3_outcome=v3_outcome,
                 outcome=status,
             )
             log_event(
@@ -891,6 +926,12 @@ async def _run_v3_pipeline(
             logger,
             "v3_pipeline_completed",
             company_id=company.id,
+            # V3.17.9. The DURABLE job this run's rows are attributed to, on the event
+            # that says the run finished — so the lineage is checkable from the log
+            # stream alone, without database access. `None` here is the honest V2 answer,
+            # and it is also what a dropped link looks like; `outcome.degraded` says
+            # which, on the same run.
+            research_job_id=str(research_job_id) if research_job_id else None,
             research_run_id=(
                 str(outcome.research_run_id) if outcome.research_run_id else None
             ),
@@ -911,6 +952,8 @@ async def _record_consumption(
     company_id: uuid.UUID | None,
     agent_run_id: uuid.UUID | None,
     outcome: str | None,
+    research_job_id: uuid.UUID | None = None,
+    v3_outcome: Any = None,
 ) -> None:
     """Persist what this run consumed. Never fails the run.
 
@@ -918,12 +961,26 @@ async def _record_consumption(
     anything: a run that failed after ingesting eleven documents and running six
     council agents spent a real budget, and averaging only the successes would
     produce the one number nobody needs.
+
+    ONE ROW PER RUN, COVERING THE WHOLE RUN (V3.17.9)
+    -------------------------------------------------
+    ``result["consumption"]`` is the **V2** half: the council's tokens plus wall time.
+    The V3 pipeline runs after ``execute_company_research`` returns, so its investigator
+    and tool spend — which on a real run is the larger half — reached this table not at
+    all. It was recorded per tool call in ``research_tool_calls.consumption_json`` and
+    summarised onto the report, and neither of those is the money record.
+
+    Adding it here rather than writing a second row keeps ``research_run_consumption``
+    what it claims to be: **one row per research run**. A second row would have to be
+    told apart from a retry by every reader that ever sums this table, and
+    ``escalation.cost`` is now one of them.
     """
     from app.services import consumption_recorder
 
     units = (result or {}).get("consumption")
     if not isinstance(units, consumption.ConsumptionUnits):
         return
+    units = units + _v3_consumption_units(v3_outcome)
     report_id = (result or {}).get("analysis_report_id")
     await consumption_recorder.record_run(
         session,
@@ -931,9 +988,63 @@ async def _record_consumption(
         units=units,
         company_id=company_id,
         agent_run_id=agent_run_id,
+        # The durable job this run belongs to, or None on the V2 path. This is the column
+        # `escalation.cost.spend_for_decision` attributes by, and the reason a decision
+        # can now be told "measured but unpriced" apart from "not linked at all".
+        research_job_id=research_job_id,
         report_id=report_id if isinstance(report_id, uuid.UUID) else None,
         outcome=outcome,
     )
+
+
+def _v3_consumption_units(v3_outcome: Any) -> "consumption.ConsumptionUnits":
+    """What the V3 pipeline consumed, as units. Empty when it did not run.
+
+    Reads the outcome the pipeline already computed rather than re-deriving anything:
+    ``consumption["model"]`` is a ``ConsumptionUnits`` round-trip and already includes the
+    external research provider's tokens, which ``_consumption`` folds in precisely so they
+    are not costed at zero.
+
+    ``elapsed_seconds`` is deliberately NOT taken from here. The V2 record already measures
+    wall time across the whole run, V3 included, and adding V3's again would report a run
+    as having lasted longer than it did.
+    """
+    empty = consumption.EMPTY_CONSUMPTION
+    summary = getattr(v3_outcome, "consumption", None)
+    if not isinstance(summary, dict):
+        return empty
+    model = summary.get("model")
+    units = (
+        consumption.ConsumptionUnits.from_dict(model)
+        if isinstance(model, dict)
+        else empty
+    )
+    # `from_dict` restores `elapsed_seconds` too; drop it for the reason above.
+    units = replace(units, elapsed_seconds=0.0)
+    # The three tool units, named one at a time rather than looped over the summary's
+    # keys. The summary also carries DERIVED values — `cost_per_verified_useful_finding`,
+    # `findings_total` — which are not consumption, and a loop would sum them as if they
+    # were. A typo in a `**dict` is a silent zero; a typo here does not compile.
+    searches = int(summary.get("web_search_calls") or 0)
+    fetches = int(summary.get("url_fetch_calls") or 0)
+    documents = int(summary.get("documents_fetched") or 0)
+    measured = {
+        name
+        for name, value in (
+            ("web_search_calls", searches),
+            ("url_fetch_calls", fetches),
+            ("documents_downloaded", documents),
+        )
+        if value
+    }
+    if measured:
+        units = units + consumption.ConsumptionUnits(
+            web_search_calls=searches,
+            url_fetch_calls=fetches,
+            documents_downloaded=documents,
+            instrumented=frozenset(measured),
+        )
+    return units
 
 
 async def _mark_failed_fresh(

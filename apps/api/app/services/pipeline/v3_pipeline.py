@@ -270,28 +270,24 @@ async def _resolve_research_job_id(
     An id that does not is dropped rather than written: the column is a link, and a
     broken link is worth less than no link — it costs the entire transaction, and with
     it the report the V2 path had already produced.
+
+    The check itself moved to ``jobs.lineage`` in V3.17.9 so that the consumption
+    recorder — which writes outside this module's SAVEPOINT — is guarded by the same
+    rule rather than by a second copy of it. What stays here is the **degraded line**:
+    an unlinked run has to say so on the outcome, or the empty column is a mystery
+    nobody can date.
     """
     if research_job_id is None:
         return None
-    try:
-        from sqlalchemy import select
+    from app.services.jobs.lineage import resolve_durable_job_id
 
-        from app.models.research_job import ResearchJob
-
-        found = (
-            await session.execute(
-                select(ResearchJob.id).where(ResearchJob.id == research_job_id)
-            )
-        ).scalar_one_or_none()
-    except Exception:  # noqa: BLE001 - never fail a run over a link
-        return None
-    if found is None:
+    resolved = await resolve_durable_job_id(session, research_job_id)
+    if resolved is None:
         outcome.degraded.append(
             "tool calls are not linked to a durable job row; the id supplied names no "
             "research_jobs row"
         )
-        return None
-    return research_job_id
+    return resolved
 
 
 async def _run(
@@ -406,6 +402,12 @@ async def _run(
         mode=resolved_mode.value,
         company_id=company.id,
         legal_entity_id=getattr(company, "legal_entity_id", None),
+        # V3.17.9. `ledger.open_run` has taken this argument since V3.5 and nothing ever
+        # passed it, so `research_runs.research_job_id` was NULL on every row in
+        # production — a run could not be traced to the job that paid for it even once
+        # the id became correct. Already validated by `_resolve_research_job_id` above,
+        # so this can only ever be a real job or None.
+        research_job_id=research_job_id,
         budget=budget_for(resolved_mode, cfg).__dict__,
         playbook_versions=dict(selection.versions),
     )

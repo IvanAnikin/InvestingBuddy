@@ -91,6 +91,14 @@ class ToolContext:
     cfg: "Settings"
     company_id: uuid.UUID | None = None
     legal_entity_id: uuid.UUID | None = None
+    #: The durable ``research_jobs`` row this call belongs to, or None. V3.17.9.
+    #:
+    #: A tool that persists a row carrying a ``research_job_id`` foreign key — the lead
+    #: record, the calculation record — reads it from here. It arrives ALREADY VALIDATED
+    #: by ``jobs.lineage.resolve_durable_job_id``: a tool must never be in a position to
+    #: write a broken foreign key, because a tool's own ``except Exception`` cannot
+    #: un-abort the transaction the V2 report is waiting to commit in.
+    research_job_id: uuid.UUID | None = None
     role: str = ""
     task_ref: str | None = None
     #: The corpus search backend, when one is configured. Injected rather than chosen:
@@ -252,6 +260,11 @@ class ToolSession:
             cfg=self.cfg,
             company_id=self.company_id,
             legal_entity_id=self.legal_entity_id,
+            # The same id `_record` stamps on the tool-call row, so a lead or a
+            # calculation a tool persists is attributable to the same durable job as the
+            # call that produced it. They disagreed before only because the context had
+            # no way to carry it.
+            research_job_id=self.research_job_id,
             role=self.policy.role,
             task_ref=task_ref,
             search_backend=self.search_backend,

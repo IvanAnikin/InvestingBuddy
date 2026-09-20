@@ -26,6 +26,7 @@ from app.models.research_decision import (
     ResearchDecision,
 )
 from app.schemas.research_decision import (
+    DecisionSpendRead,
     EvidenceDeltaRead,
     ResearchDecisionList,
     ResearchDecisionRead,
@@ -71,13 +72,19 @@ _INTERNAL = (
 
 
 async def _to_read(
-    session: AsyncSession, row: ResearchDecision
+    session: AsyncSession, row: ResearchDecision, *, live_spend: bool = False
 ) -> ResearchDecisionRead:
     """Project one decision, joining only what a reader needs to identify it.
 
     The job's own state is read from ``research_jobs`` rather than mirrored onto the
     decision, because a mirrored status is a second copy that goes stale — the queue is
     the authority on what the queue is doing.
+
+    ``live_spend`` recomputes the cost attribution from the consumption rows instead of
+    reading what the last round recorded. The single-decision read sets it, because a
+    decision that is still ``queued`` or ``running`` has no recorded spend yet and is
+    exactly the one an operator is looking at. A LIST does not: three extra queries per
+    row would make a 200-row page 600 queries to restate numbers the round already wrote.
     """
     company = (
         await session.get(Company, row.company_id) if row.company_id else None
@@ -117,6 +124,27 @@ async def _to_read(
             fields["measurable"] = False
         improvement = EvidenceDeltaRead(**fields)
 
+    # V3.17.9. Live on the detail read, recorded on a list read — see the docstring.
+    spend = None
+    if live_spend:
+        from app.services.escalation.cost import spend_for_decision
+
+        try:
+            spend = DecisionSpendRead(**(await spend_for_decision(session, row)).to_dict())
+        except Exception as exc:  # noqa: BLE001 - re-raised unless it is the known state
+            if not _schema_missing(exc):
+                raise
+    elif isinstance(row.improvement_json, dict) and isinstance(
+        row.improvement_json.get("spend"), dict
+    ):
+        spend = DecisionSpendRead(
+            **{
+                k: v
+                for k, v in row.improvement_json["spend"].items()
+                if k in DecisionSpendRead.model_fields
+            }
+        )
+
     return ResearchDecisionRead(
         id=row.id,
         company_id=row.company_id,
@@ -144,6 +172,7 @@ async def _to_read(
         cost_usd_total=(
             float(row.cost_usd_total) if row.cost_usd_total is not None else None
         ),
+        spend=spend,
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
@@ -211,7 +240,7 @@ async def get_research_decision(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Research decision {decision_id} not found",
         )
-    return await _to_read(db, row)
+    return await _to_read(db, row, live_spend=True)
 
 
 @router.post(
@@ -254,4 +283,4 @@ async def cancel_research_decision(
 
             await JobStore().request_cancel(row.last_job_id)
         await db.commit()
-    return await _to_read(db, row)
+    return await _to_read(db, row, live_spend=True)

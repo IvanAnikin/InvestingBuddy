@@ -330,6 +330,9 @@ async def _persist(
         id=uuid.uuid4(),
         company_id=uuid.UUID(arguments["company_id"]),
         legal_entity_id=context.legal_entity_id,
+        # V3.17.9. The column has existed since migration 030 and nothing wrote it, so a
+        # refused calculation could not be traced to the run that attempted it.
+        research_job_id=context.research_job_id,
         definition_key=outcome.definition_key,
         definition_version=outcome.definition_version,
         formula=(outcome.formula or None),

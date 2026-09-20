@@ -999,6 +999,37 @@ See `Implementation_docs/INVESTINGBUDDY_TECH_SPEC.md` Section 12 for full column
 
 ---
 
+## `research_job_id` — the five lineage columns, and who writes them (V3.17.9)
+
+Five tables carry a `research_job_id` foreign key to `research_jobs.id`. Between them they
+are the whole record of what one durable research job retrieved, computed and spent.
+
+**Every one of them was NULL in production until V3.17.9**, for two stacked reasons: the
+id that reached the pipeline was an `AgentRun` id (dropped by the V3.13.1 guard, correctly
+— writing it aborts the transaction and takes the V2 report with it), and three of the
+five writers never took the argument at all.
+
+| Table | Written by | Note |
+|---|---|---|
+| `research_runs` | `pipeline/v3_pipeline.py` → `ledger.open_run` | the argument existed since V3.5; no caller passed it |
+| `research_tool_calls` | `agent_tools/session.py` `_record` | wired since V3.13; the id was wrong |
+| `research_leads` | `agent_tools/external.py` → `providers/leads.persist_lead` | the argument existed since V3.13; no caller passed it |
+| `calculation_records` | `agent_tools/calculations.py` `_persist` | the column existed since migration 030; nothing wrote it |
+| `research_run_consumption` | `company_research_service._record_consumption` | **the money record** — `escalation.cost` attributes by this column alone |
+
+The id is threaded explicitly from `ctx.job.id` as its own parameter
+(`process_company_research_by_id(..., durable_job_id=...)`) and validated once by
+`jobs/lineage.resolve_durable_job_id`, which is **fail-closed**: an id naming no
+`research_jobs` row is dropped rather than written. It is never derived from an AgentRun
+id, a company id, a timestamp or "the most recent job". A run with no durable job — the V2
+background path — stores NULL, honestly.
+
+`research_run_consumption.estimated_cost_usd` stays **nullable, and NULL means "no price
+book configured", never "free"**. `ResearchDecision.cost_usd_total` is derived from it and
+inherits the same rule.
+
+---
+
 ## Rules
 
 - Every schema change requires an Alembic migration — no exceptions.

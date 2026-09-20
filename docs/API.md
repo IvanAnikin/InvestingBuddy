@@ -3121,6 +3121,38 @@ will take, and claiming "62% complete" would be a fabrication.
 null until the assembly step succeeds (the deterministic draft the workflow
 writes is not one, and is reported separately as `legacy_draft_report_id`).
 
+### `GET /api/v1/company-research/jobs/{job_id}/lineage` — admin only (V3.17.9)
+
+**Was this job's work attributed to it?** Row counts for every V3 table carrying a
+`research_job_id` foreign key to this job:
+
+```json
+{
+  "job_id": "…", "exists": true, "agent_run_id": "…", "attributed": true,
+  "research_runs": 1, "tool_calls": 14, "research_leads": 3,
+  "calculation_records": 2, "consumption_rows": 1,
+  "tool_call_model_calls": 9, "tool_call_model_tokens": 30102,
+  "estimated_cost_usd": null,
+  "priced_consumption_rows": 0, "unpriced_consumption_rows": 1
+}
+```
+
+A row is counted only when its `research_job_id` **equals** this id — never by company,
+by AgentRun or by time — so a zero means nothing was attributed to this job. Until
+V3.17.9 every one of these counts was 0 in production, because the id threaded through
+company research was an `AgentRun` id.
+
+`agent_run_id` is the **content** record and is always a different id. A response where
+the two agree is one where a substitution happened.
+
+`estimated_cost_usd` is `null` when unpriced or unrecorded, and **never 0** — no subtotal
+over just the priced rows is reported here. `404` when no durable job has that id: "this
+job exists and nothing was attributed to it" is the defect, and "no such job" is a V2 job
+id. Collapsing the two would hide the first.
+
+This endpoint exists because the platform's PostgreSQL is not reachable from outside its
+virtual network, so the lineage has to be checkable over HTTP or not at all.
+
 ### `GET /api/v1/company-research/jobs?company_id={id}`
 
 The most recent job for ONE company. This is how a reader who refreshed the

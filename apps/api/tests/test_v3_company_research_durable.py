@@ -27,6 +27,7 @@ import threading
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 import pytest
 from sqlalchemy import select
@@ -389,6 +390,99 @@ class TestDurableExecution:
 
         row = await _job_row(factory, envelope["job_id"])
         assert row.agent_run_id == runs[0].id
+
+    async def test_the_durable_job_id_reaches_the_v3_pipeline_unchanged(
+        self, durable_on, store, company, factory, monkeypatch
+    ):
+        """V3.17.9. THE PRODUCER→CONSUMER SEAM, through the real worker.
+
+        The handler holds two ids: ``ctx.job.id`` (the ``research_jobs`` row a worker
+        leased) and ``content_run_id`` (the ``AgentRun`` holding the envelope). Until
+        V3.17.9 the second was passed where the first was wanted, so every
+        ``research_job_id`` foreign key in V3 was NULL.
+
+        Asserted end to end — submit, claim, execute — rather than by calling the handler
+        directly, because the defect lived in what the worker's own context carried.
+        """
+        seen: dict[str, Any] = {}
+
+        async def fake_v3(session, *, company, report_id, research_job_id=None):
+            seen["v3"] = research_job_id
+            return None
+
+        monkeypatch.setattr(svc, "_run_v3_pipeline", fake_v3)
+
+        envelope, _ = await durable.submit(company, store=store)
+        assert await _run_the_job(store, factory, report_id=uuid.uuid4()) is True
+
+        row = await _job_row(factory, envelope["job_id"])
+        assert seen["v3"] == row.id, (
+            "the V3 pipeline did not receive the durable job id"
+        )
+        assert seen["v3"] != row.agent_run_id, (
+            "the AgentRun id was substituted for the durable job id — this is the "
+            "exact defect V3.17.9 closes"
+        )
+
+    async def test_the_consumption_row_names_the_durable_job(
+        self, durable_on, store, company, factory, monkeypatch
+    ):
+        """V3.17.9. The money record is attributable, which is what cost derivation reads.
+
+        ``research_run_consumption.research_job_id`` is the column
+        ``escalation.cost.spend_for_decision`` attributes by. A NULL here is why
+        ``ResearchDecision.cost_usd_total`` could never be anything but unknown.
+        """
+        from app.models.research_run_consumption import ResearchRunConsumption
+
+        monkeypatch.setattr(
+            "app.core.config.settings.v3_run_consumption_enabled", True, raising=False
+        )
+
+        envelope, _ = await durable.submit(company, store=store)
+        assert await _run_the_job(store, factory, report_id=uuid.uuid4()) is True
+        row = await _job_row(factory, envelope["job_id"])
+
+        async with factory() as s:
+            rows = (await s.execute(select(ResearchRunConsumption))).scalars().all()
+
+        assert len(rows) == 1
+        assert rows[0].research_job_id == row.id
+        assert rows[0].agent_run_id == row.agent_run_id
+        # The two ids are DIFFERENT columns holding DIFFERENT ids. A row where they
+        # agree is a row where one of them was substituted for the other.
+        assert rows[0].research_job_id != rows[0].agent_run_id
+        # No price book is configured, so the cost is unknown — never 0.0.
+        assert rows[0].estimated_cost_usd is None
+
+    async def test_the_v2_path_records_no_durable_link(
+        self, factory, company, monkeypatch
+    ):
+        """V3.17.9. The compatibility half: no durable job means NULL, not a fake link."""
+        from app.models.research_run_consumption import ResearchRunConsumption
+
+        monkeypatch.setattr(
+            "app.core.config.settings.v3_run_consumption_enabled", True, raising=False
+        )
+
+        async with factory() as s:
+            envelope = await svc.create_job_record(s, company)
+        run_analysis, generate_final = _fake_pipeline(uuid.uuid4())
+        await svc.process_company_research_by_id(
+            uuid.UUID(str(envelope["job_id"])),
+            session_factory=factory,
+            run_analysis=run_analysis,
+            generate_final_report=generate_final,
+        )
+
+        async with factory() as s:
+            rows = (await s.execute(select(ResearchRunConsumption))).scalars().all()
+
+        assert len(rows) == 1
+        assert rows[0].research_job_id is None, (
+            "a V2 run was linked to a durable job that does not exist"
+        )
+        assert rows[0].agent_run_id == uuid.UUID(str(envelope["job_id"]))
 
     async def test_a_retry_reuses_the_content_record(
         self, durable_on, store, company, factory
