@@ -947,6 +947,59 @@ class TestJobLineageIsReadable:
         assert got.unpriced_consumption_rows == 1
         # Unpriced stays unknown. Never 0.0.
         assert got.estimated_cost_usd is None
+        assert got.basis == BASIS_UNPRICED
+
+    async def test_the_basis_separates_the_two_nulls(self, session) -> None:  # noqa: ANN001
+        """V3.17.9.1. `recorder off` and `nothing prices it` look identical in the column.
+
+        Both report `estimated_cost_usd: null`. One is fixed by a setting and the other by
+        a price book, so a reader who cannot tell them apart fixes the wrong one — which
+        is exactly what happened when the recorder turned out to be off in production.
+        """
+        from app.services.jobs.lineage import counts_for_job
+
+        company_id = await _company(session)
+
+        recorder_off = await _job(
+            session, company_id=company_id, key=f"f:{uuid.uuid4()}#1"
+        )
+        assert (await counts_for_job(session, recorder_off)).basis == (
+            BASIS_NO_CONSUMPTION
+        )
+
+        measured = await _job(session, company_id=company_id, key=f"g:{uuid.uuid4()}#1")
+        await _consumption(session, job_id=measured, company_id=company_id, usd=None)
+        got = await counts_for_job(session, measured)
+        assert got.basis == BASIS_UNPRICED
+        assert got.estimated_cost_usd is None, "the two nulls are still the same null"
+
+    async def test_a_job_that_exists_is_never_no_jobs(self, session) -> None:  # noqa: ANN001
+        """`no_jobs` means a DECISION ordered no work. It cannot describe a job."""
+        from app.services.jobs.lineage import counts_for_job
+
+        company_id = await _company(session)
+        job_id = await _job(session, company_id=company_id, key=f"h:{uuid.uuid4()}#1")
+
+        assert (await counts_for_job(session, job_id)).basis != BASIS_NO_JOBS
+
+    async def test_the_job_and_its_decision_agree_on_the_basis(self, session) -> None:  # noqa: ANN001
+        """One vocabulary, one classification. Two copies of it would drift."""
+        from app.services.jobs.lineage import counts_for_job
+
+        company_id = await _company(session)
+        decision = await _decision(session, company_id)
+        job_id = await _job(
+            session,
+            company_id=company_id,
+            key=round_idempotency_key(decision.id, 0) + "#1",
+        )
+        await _consumption(session, job_id=job_id, company_id=company_id, usd=None)
+        await session.flush()
+
+        job_basis = (await counts_for_job(session, job_id)).basis
+        decision_basis = (await spend_for_decision(session, decision)).basis
+
+        assert job_basis == decision_basis == BASIS_UNPRICED
 
     async def test_an_unknown_job_is_absent_not_unattributed(self, session) -> None:  # noqa: ANN001
         """Two different facts, and collapsing them would hide the defect.
@@ -973,6 +1026,7 @@ class TestJobLineageIsReadable:
 
         assert got.estimated_cost_usd == pytest.approx(0.25)
         assert got.priced_consumption_rows == 2
+        assert got.basis == BASIS_PRICED
 
     async def test_a_partly_priced_job_reports_no_number_at_all(self, session) -> None:  # noqa: ANN001
         """No subtotal. A cap compared against one passes on spend it never saw."""
@@ -1028,6 +1082,7 @@ class TestTheReadEndpointsProjectIt:
         assert read.tool_calls == 1
         assert read.tool_call_model_tokens == 1200
         assert read.estimated_cost_usd is None
+        assert read.basis == BASIS_NO_CONSUMPTION
         assert "not investment advice" in read.disclaimer.lower()
 
     async def test_the_decision_detail_read_recomputes_spend(self, session) -> None:  # noqa: ANN001

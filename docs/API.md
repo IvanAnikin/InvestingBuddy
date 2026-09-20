@@ -3131,11 +3131,20 @@ writes is not one, and is reported separately as `legacy_draft_report_id`).
   "job_id": "…", "exists": true, "agent_run_id": "…", "attributed": true,
   "research_runs": 1, "tool_calls": 14, "research_leads": 3,
   "calculation_records": 2, "consumption_rows": 1,
-  "tool_call_model_calls": 9, "tool_call_model_tokens": 30102,
+  "tool_call_model_calls": 1, "tool_call_model_tokens": 847,
   "estimated_cost_usd": null,
-  "priced_consumption_rows": 0, "unpriced_consumption_rows": 1
+  "priced_consumption_rows": 0, "unpriced_consumption_rows": 1,
+  "basis": "unpriced_consumption"
 }
 ```
+
+`basis` says **which** null a null cost is, in the same vocabulary
+`ResearchDecision.spend.basis` uses (the constants are imported, not restated):
+`no_consumption_recorded` — the recorder is off and the money record was never written —
+versus `unpriced_consumption` — it was written and nothing prices it. Both render as
+`estimated_cost_usd: null` and they need different fixes, so the backend classifies rather
+than leaving it to the reader. A job that exists is never `no_jobs`: that basis means a
+*decision* ordered no work.
 
 A row is counted only when its `research_job_id` **equals** this id — never by company,
 by AgentRun or by time — so a zero means nothing was attributed to this job. Until

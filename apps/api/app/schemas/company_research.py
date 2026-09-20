@@ -236,6 +236,13 @@ class CompanyResearchJobLineage(BaseModel):
     priced_consumption_rows: int = 0
     unpriced_consumption_rows: int = 0
 
+    #: **WHICH of the NULLs this is.** `no_consumption_recorded` means the recorder was
+    #: off and the money record was never written; `unpriced_consumption` means it WAS
+    #: written and nothing prices it. They read the same in a null cost column and they
+    #: need different fixes, so the backend classifies rather than leaving it to the
+    #: reader. Same vocabulary as `ResearchDecision.spend.basis`.
+    basis: str = "no_jobs"
+
     disclaimer: str = (
         "INTERNAL ADMIN ONLY. Row counts and measured consumption for one research "
         "job. Not investment advice, not a recommendation, no price target or "
