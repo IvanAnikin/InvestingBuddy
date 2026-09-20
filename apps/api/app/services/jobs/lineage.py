@@ -46,6 +46,17 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
+# The basis vocabulary is DEFINED in `escalation.cost` and imported here rather than
+# restated. One job and the decision that ordered it must never classify the same
+# consumption rows differently, and two copies of four string constants is precisely how
+# that happens.
+from app.services.escalation.cost import (
+    BASIS_NO_CONSUMPTION,
+    BASIS_NO_JOBS,
+    BASIS_PRICED,
+    BASIS_UNPRICED,
+)
+
 __all__ = [
     "JobLineage",
     "coerce_job_id",
@@ -131,6 +142,12 @@ class JobLineage:
     estimated_cost_usd: float | None = None
     priced_consumption_rows: int = 0
     unpriced_consumption_rows: int = 0
+    #: WHICH of the three NULLs this is, in the SAME vocabulary a research decision
+    #: uses — the constants are imported from ``escalation.cost`` rather than restated,
+    #: so a job and the decision that ordered it can never classify the same rows
+    #: differently. Reading the counts and classifying them by eye is how two readers
+    #: reach two answers.
+    basis: str = BASIS_NO_JOBS
 
     @property
     def attributed(self) -> bool:
@@ -159,6 +176,7 @@ class JobLineage:
             "estimated_cost_usd": self.estimated_cost_usd,
             "priced_consumption_rows": self.priced_consumption_rows,
             "unpriced_consumption_rows": self.unpriced_consumption_rows,
+            "basis": self.basis,
         }
 
 
@@ -218,6 +236,16 @@ async def counts_for_job(session: Any, job_id: uuid.UUID) -> JobLineage:
         else None
     )
 
+    # The SAME three-way classification a decision applies, over one job's rows. A job
+    # that exists is never `no_jobs` — that basis means "the decision ordered no work",
+    # which cannot be true of a job you are holding.
+    if not costs:
+        basis = BASIS_NO_CONSUMPTION
+    elif len(priced) < len(costs):
+        basis = BASIS_UNPRICED
+    else:
+        basis = BASIS_PRICED
+
     return JobLineage(
         job_id=job_id,
         exists=True,
@@ -232,6 +260,7 @@ async def counts_for_job(session: Any, job_id: uuid.UUID) -> JobLineage:
         estimated_cost_usd=total,
         priced_consumption_rows=len(priced),
         unpriced_consumption_rows=len(costs) - len(priced),
+        basis=basis,
     )
 
 
