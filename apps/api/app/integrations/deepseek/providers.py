@@ -650,6 +650,13 @@ class DeepSeekModelProvider:
     _calls: int = 0
     _prompt_tokens: int = 0
     _completion_tokens: int = 0
+    #: V3.17.9.2 — the cache split, without which these tokens cannot be priced at all.
+    #: DeepSeek bills a hit at $0.006/M against $0.3/M for a miss, and the transport has
+    #: parsed both since it was written; this class simply never carried them, so every
+    #: run reported `model_input_tokens[deepseek:cache_unreported]` and a cost of None.
+    _cached_prompt_tokens: int = 0
+    #: True only while EVERY call so far reported its split. `None` means no call yet.
+    _cache_reported: bool | None = None
 
     @property
     def model(self) -> str:
@@ -674,10 +681,17 @@ class DeepSeekModelProvider:
             # DeepSeek returns provider usage metadata on every response, so these are
             # measured rather than estimated from character counts.
             estimated=False,
+            cached_prompt_tokens=self._cached_prompt_tokens,
+            # False unless every contributing call carried a split. A sum containing one
+            # unreported call is not a reported sum, and reporting it as one would bill
+            # cache hits at up to fifty times their rate.
+            cache_reported=bool(self._cache_reported),
         )
         self._calls = 0
         self._prompt_tokens = 0
         self._completion_tokens = 0
+        self._cached_prompt_tokens = 0
+        self._cache_reported = None
         return usage
 
     async def complete(
@@ -709,6 +723,12 @@ class DeepSeekModelProvider:
         self._calls += 1
         self._prompt_tokens += int(response.prompt_tokens or 0)
         self._completion_tokens += int(response.completion_tokens or 0)
+        self._cached_prompt_tokens += int(response.cached_tokens or 0)
+        reported = bool(response.cache_reported)
+        self._cache_reported = (
+            reported if self._cache_reported is None
+            else (self._cache_reported and reported)
+        )
         payload = _json_object(response.text)
         return ModelResponse(
             provider=self.provider_id,
