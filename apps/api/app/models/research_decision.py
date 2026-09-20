@@ -149,10 +149,19 @@ TERMINAL_EVIDENCE_SUFFICIENT = "evidence_sufficient"
 #: record, and it is the more dangerous error because it reads as a finished
 #: investigation and nobody goes back.
 TERMINAL_RESEARCH_DID_NOT_COMPLETE = "research_did_not_complete"
+#: V3.17.8. **The third member of that family, and the one that says the least.**
+#: `exhausted_no_improvement` claims the world holds nothing new;
+#: `research_did_not_complete` claims the platform failed to look. This one claims
+#: neither: research may well have run and acquired a great deal, but no pre-round
+#: snapshot was ever taken, so the delta cannot be computed at all. The decision stops
+#: because an unmeasurable round must never be allowed to authorise a paid one — not
+#: because anything about the evidence has been established.
+TERMINAL_EVIDENCE_BASELINE_MISSING = "evidence_baseline_missing"
 
 TERMINAL_REASONS: frozenset[str] = frozenset(
     {
         TERMINAL_RESEARCH_DID_NOT_COMPLETE,
+        TERMINAL_EVIDENCE_BASELINE_MISSING,
         TERMINAL_EXHAUSTED_NO_IMPROVEMENT,
         TERMINAL_MAX_ROUNDS,
         TERMINAL_COST_CAP,

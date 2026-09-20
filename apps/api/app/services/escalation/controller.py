@@ -14,12 +14,19 @@ to nothing.
 
 THE ORDER OF OPERATIONS IS LOAD-BEARING
 =======================================
-decision row → job row → decision marked queued.
+**evidence snapshot → decision row (carrying it) → job row → decision marked queued.**
 
-Not job-first. A job with no decision behind it is work nobody can explain, and it would
-already be claimable by a worker before the record of *why* exists. Decision-first means
-the worst case is a decision in ``research_required`` that was never queued — visible,
-queryable, and fixable — rather than paid work with no audit trail.
+The snapshot comes first (V3.17.8). A job is the only thing that can change a company's
+evidence, so measuring before the job exists is the only way to be certain the
+measurement describes the world *before* the round. Measuring afterwards — or, as
+V3.17.1–7 did, not at all — makes every round 0 compare against zero and report the
+corpus the platform already held as its own acquisition.
+
+The rest is unchanged, and deliberately not job-first: a job with no decision behind it
+is work nobody can explain, and it would already be claimable by a worker before the
+record of *why* exists. Decision-first means the worst case is a decision in
+``research_required`` that was never queued — visible, queryable, and fixable — rather
+than paid work with no audit trail.
 
 WHY IT REFUSES WHEN THE WORKER IS OFF
 =====================================
@@ -52,10 +59,13 @@ from app.models.research_decision import (
     OPEN_STATUSES,
     SOURCE_DISCOVERY_COUNCIL,
     STATUS_ABANDONED,
+    STATUS_RESEARCH_REQUIRED,
+    TERMINAL_EVIDENCE_BASELINE_MISSING,
     TERMINAL_RESEARCH_DID_NOT_COMPLETE,
 )
 from app.models.research_decision import ResearchDecision as ResearchDecisionModel
 from app.services.escalation import store
+from app.services.escalation.evidence import snapshot_evidence
 from app.services.escalation.predicates import (
     EscalationInputs,
     EscalationVerdict,
@@ -215,6 +225,12 @@ async def escalate_discovery_run(
             )
             continue
 
+        # THE BASELINE, TAKEN BEFORE ANYTHING CAN MOVE IT. Not after the decision, not
+        # after the enqueue: at this point no job for this decision exists, so nothing
+        # is able to add a chunk, a fact or a document on its behalf. `create_decision`
+        # refuses a company decision without one, and `_enqueue` refuses to queue one.
+        baseline = await snapshot_evidence(session, candidate.company_id)
+
         decision = await store.create_decision(
             session,
             company_id=candidate.company_id,
@@ -224,6 +240,7 @@ async def escalate_discovery_run(
             decision=DECISION_RESEARCH_NEXT,
             reason=verdict.reason,
             max_rounds=max_rounds,
+            evidence_before=baseline.to_dict(),
         )
 
         job_id = await _enqueue(session, decision, enqueue=enqueue)
@@ -243,6 +260,24 @@ async def escalate_discovery_run(
     return outcome
 
 
+def _refuse_without_baseline(decision: Any, *, round_index: int) -> None:
+    """No paid round may become executable without something to measure it against.
+
+    A decision with no company cannot execute research at all — it is closed by
+    :func:`recover_stranded_decisions` rather than queued — so it is exempt, and that
+    exemption is narrow on purpose.
+    """
+    if getattr(decision, "company_id", None) is None:
+        return
+    if not getattr(decision, "evidence_before_json", None):
+        raise store.MissingEvidenceBaseline(
+            f"Refusing to enqueue round {round_index} for research decision "
+            f"{getattr(decision, 'id', None)}: it carries no evidence baseline, so what "
+            "the round acquired could not be measured afterwards and pre-existing "
+            "evidence would be counted as new acquisition."
+        )
+
+
 async def _enqueue(
     session: AsyncSession, decision: Any, *, enqueue: Any = None, round_index: int = 0
 ) -> uuid.UUID | None:
@@ -251,7 +286,17 @@ async def _enqueue(
     ``idempotency_key`` is the **decision id**, which is what makes the link a fact rather
     than a convention: the same decision can never produce two jobs, and the job can
     always be traced back to the decision that ordered it.
+
+    THE CHOKE POINT FOR THE BASELINE INVARIANT (V3.17.8)
+    ----------------------------------------------------
+    Every path that can make escalation work executable goes through here: the discovery
+    council's escalation, the next round authorised by :func:`complete_round`, and
+    :func:`recover_stranded_decisions`. So the check lives here rather than in each of
+    them — a future producer gets the guarantee without having to know it exists, which
+    is the only version of this that survives the next slice.
     """
+    _refuse_without_baseline(decision, round_index=round_index)
+
     if enqueue is not None:
         return await enqueue(session, decision)
 
@@ -341,11 +386,31 @@ async def complete_round(
     ``ux_research_decisions_one_open`` forbids a second open decision for that company,
     the company would be locked out permanently. See
     :func:`recover_stranded_decisions`.
+
+    THE NEXT ROUND'S BASELINE IS WRITTEN BEFORE ITS JOB EXISTS (V3.17.8)
+    -------------------------------------------------------------------
+    The ``after`` snapshot of this round is the ``before`` snapshot of the next — that
+    was already true, and is preserved. What changes is that it is flushed *before* the
+    next round's job is enqueued rather than after, so the same rule holds for round
+    *n+1* as for round 0: nothing that could move the evidence exists until the
+    measurement it will be judged against is on the row. The job-before-status ordering
+    above is untouched.
+
+    A MISSING BASELINE IS NOT A BASELINE OF ZERO
+    --------------------------------------------
+    A decision created before V3.17.8, or by any path that somehow skipped the snapshot,
+    has ``evidence_before_json`` NULL. Such a round is **unmeasurable**, and this
+    function will not guess: it records the after-snapshot (a true measurement, worth
+    keeping), records that no delta could be computed, and closes the decision with
+    ``evidence_baseline_missing``. It does **not** fabricate a baseline from the current
+    evidence — that would be indistinguishable from a round that acquired nothing, and
+    would write a false zero-delta into a permanent record.
     """
     from app.services.escalation.evidence import (
         EvidenceSnapshot,
         measure_evidence_delta,
         snapshot_evidence,
+        unmeasurable_delta,
     )
     from app.services.escalation.rounds import (
         RoundInputs,
@@ -353,9 +418,20 @@ async def complete_round(
         verdict_payload,
     )
 
-    before = EvidenceSnapshot.from_dict(decision.evidence_before_json)
+    # `persisted`, NOT `from_dict`: the difference between a measured zero and a
+    # measurement that was never taken is the entire subject of this slice.
+    before = EvidenceSnapshot.persisted(decision.evidence_before_json)
     after = await snapshot_evidence(session, decision.company_id)
-    delta = measure_evidence_delta(before, after)
+
+    if before is None:
+        delta = unmeasurable_delta(
+            "No pre-round evidence snapshot was recorded for this decision, so the "
+            "evidence this round acquired cannot be separated from the evidence the "
+            "platform already held. No delta is reported, because reporting zeros here "
+            "would be indistinguishable from a round that genuinely acquired nothing."
+        )
+    else:
+        delta = measure_evidence_delta(before, after)
 
     _escalation_on, _durable_on, max_rounds, _per_run, cost_cap = _flags()
     verdict = decide_next_state(
@@ -363,6 +439,7 @@ async def complete_round(
             job_completed=job_completed,
             job_dead_lettered=job_dead_lettered,
             improved=bool(delta["improved"]),
+            evidence_baseline_known=before is not None,
             open_closable_gaps_remain=after.open_closable_gaps > 0,
             escalation_round=int(decision.escalation_round),
             max_rounds=int(decision.max_rounds or max_rounds),
@@ -389,11 +466,14 @@ async def complete_round(
         )
         return verdict
 
-    # Another round. Job first, then the status — see the docstring.
+    # Another round. The baseline it will be measured against, flushed first; then the
+    # job; then the status — see the docstring.
     next_round = int(decision.escalation_round) + 1
+    decision.evidence_before_json = after.to_dict()
+    await session.flush()
+
     job_id = await _enqueue(session, decision, enqueue=enqueue, round_index=next_round)
     decision.escalation_round = next_round
-    decision.evidence_before_json = after.to_dict()
     decision.status = verdict.status
     decision.last_job_id = job_id
     await session.flush()
@@ -519,6 +599,19 @@ async def recover_stranded_decisions(
     Safe to run repeatedly and safe to run concurrently, because
     :func:`round_idempotency_key` is deterministic: re-enqueueing a job that already
     exists joins it rather than duplicating it.
+
+    RECOVERY MAY NOT INVENT A BASELINE (V3.17.8)
+    --------------------------------------------
+    Every decision created before V3.17.8 has ``evidence_before_json`` NULL, and this
+    function is the one place that could quietly repair that by snapshotting the
+    company's evidence now and calling it "before". It must not, in general: if the round
+    has already run, "now" is *after*, and the resulting delta would report a successful
+    round as having acquired nothing.
+
+    So the snapshot is taken only where the platform can *prove* the round has not begun
+    — see :func:`_round_zero_never_started`. Everywhere else the decision is closed with
+    ``evidence_baseline_missing``, which frees the company (``ux_research_decisions_one_open``
+    stops blocking it) without writing a measurement nobody took.
     """
     stmt = (
         select(ResearchDecisionModel)
@@ -526,12 +619,28 @@ async def recover_stranded_decisions(
             ResearchDecisionModel.status.in_(OPEN_STATUSES),
             ResearchDecisionModel.last_job_id.is_(None),
         )
+        .order_by(ResearchDecisionModel.updated_at)
         .limit(limit)
     )
+    # V3.17.8. This function now WRITES a baseline, so two sweepers meeting the same row
+    # could each take their own snapshot of it — and a snapshot taken after the other
+    # sweeper's job has begun is an "after" measurement labelled "before". The same
+    # `FOR UPDATE ... SKIP LOCKED` `reconcile_terminal_decisions` uses: disjoint sets,
+    # no contention, and the re-check below happens with the lock held.
+    # SQLite ignores row locking; PostgreSQL is where it matters and where it runs.
+    try:
+        stmt = stmt.with_for_update(of=ResearchDecisionModel, skip_locked=True)
+    except Exception:  # noqa: BLE001 - dialect without row locking
+        pass
+
     stranded = (await session.execute(stmt)).scalars().all()
 
     recovered: list[uuid.UUID] = []
     for decision in stranded:
+        # Re-read UNDER THE LOCK. Between the select and here another sweeper may have
+        # given this decision a job, or a baseline, or closed it.
+        if decision.status not in OPEN_STATUSES or decision.last_job_id is not None:
+            continue
         if decision.company_id is None:
             # Nothing to research. Close it honestly rather than leaving it open.
             await store.mark_terminal(
@@ -541,6 +650,35 @@ async def recover_stranded_decisions(
                 terminal_reason=TERMINAL_RESEARCH_DID_NOT_COMPLETE,
             )
             continue
+
+        if not decision.evidence_before_json:
+            if not await _round_zero_never_started(session, decision):
+                # Work may already have run. Closing it is the truthful outcome: the
+                # company is freed for a fresh decision that will carry a real baseline,
+                # and nothing claims to know what this round did.
+                await store.mark_terminal(
+                    session,
+                    decision,
+                    status=STATUS_ABANDONED,
+                    terminal_reason=TERMINAL_EVIDENCE_BASELINE_MISSING,
+                )
+                logger.info(
+                    "v3_escalation_decision_closed_without_baseline",
+                    extra={
+                        "decision_id": str(decision.id),
+                        "company_id": str(decision.company_id),
+                        "escalation_round": int(decision.escalation_round),
+                        "status_before": decision.status,
+                    },
+                )
+                continue
+            # Provably nothing has run for this decision, so the evidence as it stands
+            # IS the pre-round evidence. Flushed before the enqueue below, exactly as
+            # `escalate_discovery_run` orders it.
+            baseline = await snapshot_evidence(session, decision.company_id)
+            decision.evidence_before_json = baseline.to_dict()
+            await session.flush()
+
         job_id = await _enqueue(
             session,
             decision,
@@ -554,3 +692,39 @@ async def recover_stranded_decisions(
             extra={"decision_id": str(decision.id), "job_id": str(job_id)},
         )
     return recovered
+
+
+async def _round_zero_never_started(session: AsyncSession, decision: Any) -> bool:
+    """Can the platform PROVE no research has run for this decision yet?
+
+    Three conditions, and all three are needed:
+
+    * ``status == research_required`` — the decision has never been marked queued.
+    * ``escalation_round == 0`` — a later round exists only because an earlier one ran.
+    * **no ``research_jobs`` row carries this decision's round-0 idempotency key.**
+
+    The third is the one that is not obvious. ``JobStore`` commits in its own session, so
+    a job can exist while the decision that ordered it was rolled back to
+    ``last_job_id IS NULL``; that job is claimable, and a worker may already have
+    executed it. A baseline snapshotted after that would be an *after* snapshot wearing a
+    "before" label — the exact substitution this slice removes, reintroduced by the
+    repair path.
+
+    Answering "no" costs a decision its open slot. Answering "yes" wrongly costs a false
+    measurement in a permanent record, so the bias is deliberate.
+    """
+    if decision.status != STATUS_RESEARCH_REQUIRED:
+        return False
+    if int(decision.escalation_round or 0) != 0:
+        return False
+
+    from app.models.research_job import ResearchJob
+
+    existing = (
+        await session.execute(
+            select(ResearchJob.id).where(
+                ResearchJob.idempotency_key == round_idempotency_key(decision.id, 0)
+            )
+        )
+    ).first()
+    return existing is None

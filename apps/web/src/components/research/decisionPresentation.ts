@@ -82,6 +82,8 @@ export function outcomeSentence(d: ResearchDecision): string | null {
       return "The cost of the work so far could not be determined, and unknown spend is treated as unaffordable rather than as free.";
     case "operator_cancelled":
       return "Stopped by an operator.";
+    case "evidence_baseline_missing":
+      return "No pre-round evidence snapshot exists for this decision, so what the round acquired cannot be measured. Stopped rather than guessed at — this is not a finding that nothing was acquired.";
     default:
       return null;
   }
@@ -102,9 +104,19 @@ export function roundLabel(d: ResearchDecision): string {
   return `round ${d.escalation_round + 1} of ${d.max_rounds}`;
 }
 
-/** The delta lines a reader sees, in the backend's own numbers. */
+/**
+ * The delta lines a reader sees, in the backend's own numbers.
+ *
+ * An UNMEASURABLE round renders as a sentence, not as a row of zeros. `measurable:
+ * false` means no pre-round snapshot existed, so the counts are schema defaults and
+ * showing "0 searchable chunk(s)" would assert a measurement nobody took.
+ */
 export function deltaLines(delta: EvidenceDelta | null): string[] {
   if (!delta) return [];
+  if (delta.measurable === false)
+    return [
+      "No pre-round evidence snapshot exists, so what this round acquired cannot be measured.",
+    ];
   const lines: string[] = [];
   if (delta.indexed_chunks_added)
     lines.push(`${delta.indexed_chunks_added} searchable chunk(s)`);
@@ -112,6 +124,8 @@ export function deltaLines(delta: EvidenceDelta | null): string[] {
     lines.push(`${delta.searchable_documents_added} searchable document(s)`);
   if (delta.closable_gaps_closed)
     lines.push(`${delta.closable_gaps_closed} gap(s) closed`);
+  if (delta.closable_gaps_opened)
+    lines.push(`${delta.closable_gaps_opened} new gap(s) found`);
   if (delta.facts_added) lines.push(`${delta.facts_added} fact(s)`);
   if (delta.verified_findings_added)
     lines.push(`${delta.verified_findings_added} finding(s) — secondary`);

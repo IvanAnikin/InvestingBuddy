@@ -32,6 +32,7 @@ from sqlalchemy.pool import StaticPool
 from app.db.base import Base
 from app.models.research_decision import OPEN_STATUSES
 from app.services.escalation import store
+from app.services.escalation.evidence import snapshot_evidence
 
 pytestmark = pytest.mark.asyncio
 
@@ -123,15 +124,19 @@ async def _job(session, status: str) -> uuid.UUID:  # noqa: ANN001
 
 
 async def _decision_on_job(session, job_id: uuid.UUID):  # noqa: ANN001
+    company_id = await _company(session)
     decision = await store.create_decision(
         session,
-        company_id=await _company(session),
+        company_id=company_id,
         discovery_run_id=uuid.uuid4(),
         discovery_candidate_id=None,
         source="discovery_council",
         decision="research_next",
         reason="test",
         max_rounds=2,
+        # V3.17.8: the round-0 baseline. Without it `complete_round` refuses to
+        # measure, which is a different test (see test_v3_17_8_round_zero_baseline).
+        evidence_before=(await snapshot_evidence(session, company_id)).to_dict(),
     )
     decision.last_job_id = job_id
     await session.flush()

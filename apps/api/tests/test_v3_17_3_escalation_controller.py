@@ -166,6 +166,18 @@ async def _company_with_ticker(session):  # noqa: ANN001, ANN201
     return await _company(session, ticker), ticker
 
 
+async def _baseline(session, company_id):  # noqa: ANN001, ANN201
+    """The real pre-round snapshot, taken the way the controller takes it.
+
+    V3.17.8 made `evidence_before` a required argument of `create_decision`, so a test
+    that builds a decision by hand must supply one. Measuring it rather than writing a
+    literal keeps these fixtures honest if a dimension is ever added.
+    """
+    from app.services.escalation.evidence import snapshot_evidence
+
+    return (await snapshot_evidence(session, company_id)).to_dict()
+
+
 def _candidate(company_id, **over) -> CandidateFacts:  # noqa: ANN001, ANN003
     base = {
         "candidate_id": uuid.uuid4(),
@@ -385,6 +397,7 @@ class TestBoundsAgainstRealRows:
             decision="research_next",
             reason="already open",
             max_rounds=2,
+            evidence_before=await _baseline(session, company_id),
         )
         queue = _RecordingQueue()
 
@@ -751,6 +764,9 @@ class TestRoundCompletion:
             decision="research_next",
             reason="test",
             max_rounds=over.pop("max_rounds", 2),
+            evidence_before=over.pop(
+                "evidence_before", await _baseline(session, company_id)
+            ),
             **over,
         )
 
@@ -838,6 +854,7 @@ class TestACrashMustNotStrandACompany:
             decision="research_next",
             reason="crashed before the job landed",
             max_rounds=2,
+            evidence_before=await _baseline(session, company_id),
         )
 
     async def test_an_open_decision_with_no_job_is_recovered(
@@ -904,6 +921,9 @@ class TestACrashMustNotStrandACompany:
             decision="research_next",
             reason="orphaned",
             max_rounds=2,
+            # No company means nothing to snapshot — the one exemption, and it can
+            # never execute research.
+            evidence_before=None,
         )
 
         await recover_stranded_decisions(session, enqueue=_RecordingQueue())

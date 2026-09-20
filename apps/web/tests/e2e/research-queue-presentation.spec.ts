@@ -149,9 +149,11 @@ test.describe("the council's suggestion is not the platform's execution", () => 
 
 test.describe("evidence numbers come from the backend", () => {
   const delta: EvidenceDelta = {
+    measurable: true,
     indexed_chunks_added: 218,
     searchable_documents_added: 3,
     closable_gaps_closed: 2,
+    closable_gaps_opened: 0,
     facts_added: 0,
     verified_findings_added: 18,
     improved: true,
@@ -176,6 +178,58 @@ test.describe("evidence numbers come from the backend", () => {
 
   test("no delta renders no lines rather than zeros", () => {
     expect(deltaLines(null)).toEqual([]);
+  });
+
+  // --- V3.17.8 ------------------------------------------------------------
+  //
+  // Production recorded `closable_gaps_closed: -14, -16, -28, -32` on all four live
+  // decisions — the arithmetic tell of a round-0 baseline that was never captured, so
+  // every round compared against zero. A gap that OPENED and a gap that CLOSED are now
+  // two non-negative counts, and a round with no baseline renders as a sentence rather
+  // than as a row of zeros a reader would take for a measurement.
+
+  test("a gap the round discovered is not rendered as a gap it closed", () => {
+    const lines = deltaLines({
+      ...delta,
+      closable_gaps_closed: 0,
+      closable_gaps_opened: 14,
+    });
+
+    expect(lines.join(" ")).toContain("14 new gap(s) found");
+    expect(lines.join(" ")).not.toContain("gap(s) closed");
+    expect(lines.join(" ")).not.toContain("-14");
+  });
+
+  test("an unmeasurable round says so instead of showing zeros", () => {
+    const lines = deltaLines({
+      ...delta,
+      measurable: false,
+      indexed_chunks_added: 0,
+      searchable_documents_added: 0,
+      closable_gaps_closed: 0,
+      closable_gaps_opened: 0,
+      facts_added: 0,
+      verified_findings_added: 0,
+      improved: false,
+      reasons: [],
+    });
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("cannot be measured");
+  });
+
+  test("'we could not measure' is not worded as 'we found nothing'", () => {
+    // The distinction the whole escalation design rests on: a claim about the world
+    // versus a claim about the platform.
+    const unmeasurable = outcomeSentence(
+      decision({ terminal_reason: "evidence_baseline_missing" }),
+    );
+
+    expect(unmeasurable).toContain("cannot be measured");
+    expect(unmeasurable).toContain("not a finding that nothing was acquired");
+    expect(unmeasurable).not.toBe(
+      outcomeSentence(decision({ terminal_reason: "exhausted_no_improvement" })),
+    );
   });
 });
 
