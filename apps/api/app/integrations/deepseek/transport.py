@@ -190,6 +190,14 @@ class DeepSeekResponse:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     cached_tokens: int = 0
+    #: Did the response actually CARRY a cache split? V3.17.9.2.
+    #:
+    #: ``cached_tokens: 0`` from a body that never mentioned caching is indistinguishable
+    #: from a genuine zero, and DeepSeek bills a hit at $0.006/M against $0.3/M for a
+    #: miss. A caller that cannot tell them apart prices the whole prompt at the miss
+    #: rate and overstates by up to fifty times, so presence is recorded rather than
+    #: inferred from the value.
+    cache_reported: bool = False
     finish_reason: str | None = None
     #: The ``tools`` array the API echoes back. Load-bearing on ``/responses``, which
     #: accepts an unknown tool with a 200 and silently drops it: this is how a caller
@@ -485,6 +493,7 @@ class HttpDeepSeekTransport:
             prompt_tokens=int(usage.get("prompt_tokens") or 0),
             completion_tokens=int(usage.get("completion_tokens") or 0),
             cached_tokens=int(details.get("cached_tokens") or 0),
+            cache_reported="cached_tokens" in details,
             finish_reason=(first.get("finish_reason") if isinstance(first, dict) else None),
             served_model=(str(body.get("model")) if body.get("model") else None),
             raw=body,
@@ -535,6 +544,7 @@ class HttpDeepSeekTransport:
             prompt_tokens=int(usage.get("input_tokens") or 0),
             completion_tokens=int(usage.get("output_tokens") or 0),
             cached_tokens=int(in_details.get("cached_tokens") or 0),
+            cache_reported="cached_tokens" in in_details,
             # `incomplete` plus a reason is the truncation signal on this endpoint;
             # there is no `finish_reason` field.
             finish_reason=(

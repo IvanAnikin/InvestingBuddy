@@ -1113,6 +1113,19 @@ class Settings(BaseSettings):
     # change is a config change and historical runs stay comparable. All 0 by
     # default, which yields a cost of NULL — "we do not know what this cost",
     # never "this cost nothing".
+    # V3.17.9.2 — PER-VENDOR, PER-CACHE-CLASS rates, because the flat pair below
+    # cannot express what providers actually bill. JSON, because the vendor set is not
+    # fixed in code and a setting per vendor would need a release to add one:
+    #
+    #   {"deepseek": {"input_per_million": 0.3,
+    #                 "cached_input_per_million": 0.006,
+    #                 "output_per_million": 1.2},
+    #    "azure_openai": {...}}
+    #
+    # A vendor absent from the map is UNPRICED, and a run that used it reports a cost of
+    # None — never a cost computed at some other vendor's rate. Malformed JSON yields an
+    # empty book for the same reason: unknown is better than wrong.
+    v3_price_vendor_rates: str = ""
     v3_price_per_million_input_tokens: float = 0.0
     v3_price_per_million_output_tokens: float = 0.0
     v3_price_per_thousand_web_searches: float = 0.0

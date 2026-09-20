@@ -44,7 +44,7 @@ from __future__ import annotations
 
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from app.services.agent_tools.builtin import register_builtins
@@ -609,7 +609,7 @@ async def _rows_for_this_run(session: Any, run: Any, company: Any, model: Any) -
         return []
 
 
-async def _tool_call_consumption(session: Any, run: Any, company: Any) -> dict[str, int]:
+async def _tool_call_consumption(session: Any, run: Any, company: Any) -> dict[str, Any]:
     """Units the TOOLS spent, summed from the rows the session already wrote.
 
     `documents_fetched` was hardcoded to 0 and web searches were not reported at all,
@@ -618,12 +618,21 @@ async def _tool_call_consumption(session: Any, run: Any, company: Any) -> dict[s
     time, one table away, in `research_tool_calls.consumption_json`.
     """
     from app.models.research_tool_call import ResearchToolCall
+    from app.services.consumption import VendorUsage, merge_vendor_usage
 
-    totals: dict[str, int] = {}
+    totals: dict[str, Any] = {}
+    # V3.17.9.2 — the per-vendor, per-cache-class attribution each tool recorded, merged
+    # across the run. This is what makes the tool leg priceable: without it its tokens
+    # arrive as an anonymous sum and can only be priced by guessing whose they were.
+    vendors: tuple[VendorUsage, ...] = ()
     for row in await _rows_for_this_run(session, run, company, ResearchToolCall):
-        for unit, value in (row.consumption_json or {}).items():
-            if isinstance(value, int | float):
-                totals[unit] = totals.get(unit, 0) + int(value)
+        payload = row.consumption_json or {}
+        for unit, value in payload.items():
+            if isinstance(value, int | float) and not isinstance(value, bool):
+                totals[unit] = int(totals.get(unit, 0)) + int(value)
+        parsed = [VendorUsage.from_dict(v) for v in (payload.get("by_vendor") or [])]
+        vendors = merge_vendor_usage(vendors, tuple(v for v in parsed if v is not None))
+    totals["by_vendor"] = vendors
     return totals
 
 
@@ -812,7 +821,7 @@ def _consumption(
     verdict: ChairVerdict,
     challenge_result: Any,
     cfg: Any = None,
-    tool_units: dict[str, int] | None = None,
+    tool_units: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """What the run actually consumed, and what it produced that was worth consuming it.
 
@@ -826,12 +835,23 @@ def _consumption(
     Red Team. Counting every statement the model emitted would make a run that produced
     forty retracted claims look productive.
     """
-    from app.services.consumption import ConsumptionUnits, PriceBook, derive_cost
+    from app.services.consumption import (
+        ConsumptionUnits,
+        PriceBook,
+        VendorUsage,
+        derive_cost,
+        merge_vendor_usage,
+        price_book_from_settings,
+    )
 
     units = ConsumptionUnits(
         instrumented=frozenset({"model_calls", "model_input_tokens", "model_output_tokens"})
     )
     by_vendor: dict[str, dict[str, int]] = {}
+    # V3.17.9.2 — the same numbers, split by the vendor that BILLS them and by cache
+    # class. `by_vendor` above is the reader-facing summary and has been here since
+    # V3.11; this is the priceable form, and it is what reaches the consumption row.
+    vendor_usage: tuple[VendorUsage, ...] = ()
     seen: set[int] = set()
     for slot in model_routing.slots.values():
         client = slot.client
@@ -842,18 +862,38 @@ def _consumption(
         popped = usage() if callable(usage) else None
         if popped is None:
             continue
+        calls = int(getattr(popped, "calls", 0) or 0)
+        prompt = int(getattr(popped, "prompt_tokens", 0) or 0)
+        completion = int(getattr(popped, "completion_tokens", 0) or 0)
         units = units + ConsumptionUnits(
-            model_calls=int(getattr(popped, "calls", 0) or 0),
-            model_input_tokens=int(getattr(popped, "prompt_tokens", 0) or 0),
-            model_output_tokens=int(getattr(popped, "completion_tokens", 0) or 0),
+            model_calls=calls,
+            model_input_tokens=prompt,
+            model_output_tokens=completion,
             instrumented=frozenset({"model_calls", "model_input_tokens", "model_output_tokens"}),
+        )
+        vendor_usage = merge_vendor_usage(
+            vendor_usage,
+            (
+                VendorUsage(
+                    vendor=slot.vendor or "unknown",
+                    calls=calls,
+                    input_tokens=prompt,
+                    cached_input_tokens=int(
+                        getattr(popped, "cached_prompt_tokens", 0) or 0
+                    ),
+                    output_tokens=completion,
+                    # Defaults to False on any client that predates the field, which is
+                    # the safe direction: unreported means unpriceable, not free.
+                    cache_reported=bool(getattr(popped, "cache_reported", False)),
+                ),
+            ),
         )
         bucket = by_vendor.setdefault(
             slot.vendor or "unknown", {"calls": 0, "input": 0, "output": 0}
         )
-        bucket["calls"] += int(getattr(popped, "calls", 0) or 0)
-        bucket["input"] += int(getattr(popped, "prompt_tokens", 0) or 0)
-        bucket["output"] += int(getattr(popped, "completion_tokens", 0) or 0)
+        bucket["calls"] += calls
+        bucket["input"] += prompt
+        bucket["output"] += completion
 
     # Prices are CONFIGURATION. With none supplied this stays `None` — unpriced, never
     # free, because an unpriced provider reported as costless is how a benchmark picks
@@ -877,11 +917,33 @@ def _consumption(
                 {"model_calls", "model_input_tokens", "model_output_tokens"}
             ),
         )
+        # V3.17.9.2 — the research provider's own tokens, attributed to the vendor the
+        # TOOL CALL recorded. A leg whose tool named no vendor contributes no attributed
+        # usage, so its tokens stay outside every priced class and the run reports an
+        # unknown cost rather than billing them at some other vendor's rate.
+        vendor_usage = merge_vendor_usage(
+            vendor_usage, tuple(tool_model.get("by_vendor") or ())
+        )
 
-    prices = PriceBook(
-        usd_per_million_input_tokens=getattr(cfg, "v3_price_usd_per_million_input_tokens", None),
-        usd_per_million_output_tokens=getattr(cfg, "v3_price_usd_per_million_output_tokens", None),
-    )
+    units = replace(units, by_vendor=vendor_usage)
+
+    # ONE price book, read through ONE function. V3.17.9.2.
+    #
+    # This block used to build its own `PriceBook` from `v3_price_usd_per_million_*`
+    # while `consumption_recorder` built a different one from `v3_price_per_million_*` —
+    # two setting families, one letter apart, for the same number. Configuring either
+    # produced a cost in one place and silence in the other. The V3.11 pair is kept as a
+    # fallback so an environment that set it is not silently unpriced.
+    prices = price_book_from_settings(cfg)
+    if prices.is_empty:
+        prices = PriceBook(
+            usd_per_million_input_tokens=getattr(
+                cfg, "v3_price_usd_per_million_input_tokens", None
+            ),
+            usd_per_million_output_tokens=getattr(
+                cfg, "v3_price_usd_per_million_output_tokens", None
+            ),
+        )
     cost = derive_cost(units, prices)
     useful = max(
         0,

@@ -182,6 +182,49 @@ def _extract_usage(result: object) -> tuple[int, int, int] | None:
     return None
 
 
+def _extract_cached_prompt_tokens(result: object) -> int | None:
+    """Prompt tokens that HIT the provider's context cache, or ``None``. V3.17.9.2.
+
+    ``None`` means the provider said nothing about caching, which is a different fact
+    from reporting zero — DeepSeek bills a hit at $0.006/M against $0.3/M for a miss, so
+    reading silence as zero overstates the input term by up to fifty times. The caller
+    turns ``None`` into "unpriceable" rather than into a number.
+
+    Three shapes are read because three are in use and all are documented:
+
+    * langchain's normalised ``usage_metadata['input_token_details']['cache_read']``;
+    * OpenAI-compatible ``token_usage['prompt_tokens_details']['cached_tokens']``, which
+      is what Azure OpenAI and DeepSeek both return;
+    * DeepSeek's own ``token_usage['prompt_cache_hit_tokens']``, documented as identical
+      to ``cached_tokens``.
+
+    Never raises, never reads text.
+    """
+    try:
+        um = getattr(result, "usage_metadata", None)
+        if isinstance(um, dict):
+            details = um.get("input_token_details")
+            if isinstance(details, dict):
+                hit = details.get("cache_read")
+                if isinstance(hit, int):
+                    return max(0, hit)
+        rm = getattr(result, "response_metadata", None)
+        if isinstance(rm, dict):
+            tu = rm.get("token_usage") or rm.get("usage")
+            if isinstance(tu, dict):
+                details = tu.get("prompt_tokens_details")
+                if isinstance(details, dict):
+                    hit = details.get("cached_tokens")
+                    if isinstance(hit, int):
+                        return max(0, hit)
+                hit = tu.get("prompt_cache_hit_tokens")
+                if isinstance(hit, int):
+                    return max(0, hit)
+    except (AttributeError, TypeError, ValueError):
+        return None
+    return None
+
+
 def _extract_finish_reason(result: object) -> str | None:
     """Best-effort provider finish reason (e.g. "stop", "length").
 
@@ -318,6 +361,9 @@ async def _ainvoke_chat(
                 completion_tokens=completion_tokens,
                 total_tokens=total_tokens,
                 estimated=False,
+                # None when the provider said nothing about caching. Passed through as
+                # None rather than coerced to 0 — see `_extract_cached_prompt_tokens`.
+                cached_prompt_tokens=_extract_cached_prompt_tokens(result),
             )
     content = getattr(result, "content", result)
     if isinstance(content, list):

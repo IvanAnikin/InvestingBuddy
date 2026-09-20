@@ -160,13 +160,23 @@ class TestDerivedCost:
         dear = c.derive_cost(units, c.PriceBook(usd_per_million_input_tokens=4.0))
         assert (cheap.estimated_usd, dear.estimated_usd) == (1.0, 4.0)
 
-    def test_an_unpriced_unit_is_named_not_dropped(self):
-        """An estimate missing its dominant term is worse than no estimate."""
+    def test_an_unpriced_unit_is_named_AND_blocks_the_total(self):
+        """An estimate missing its dominant term is worse than no estimate.
+
+        V3.17.9.2 made this function act on that sentence instead of only asserting it.
+        It used to return the sum of what it COULD price — $2.00 here — and list the
+        searches it could not, so a caller storing the number stored a **subtotal
+        labelled as a cost**. `research_run_consumption.estimated_cost_usd` is read by a
+        budget cap, and a cap compared against a subtotal passes on spend it never saw.
+
+        The unpriced units are still named, because "which term is missing" is the
+        actionable part. What changed is that the total is now `None`.
+        """
         cost = c.derive_cost(
             c.ConsumptionUnits(model_input_tokens=1_000_000, web_search_calls=60),
             c.PriceBook(usd_per_million_input_tokens=2.0),
         )
-        assert cost.estimated_usd == pytest.approx(2.0)
+        assert cost.estimated_usd is None
         assert "web_search_calls" in cost.unpriced_units
 
     def test_estimated_and_actual_are_separate_fields(self):

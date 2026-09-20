@@ -56,6 +56,17 @@ class LLMUsage:
     calls: int = 0
     estimated: bool = False
 
+    #: Prompt tokens that HIT the provider's context cache. V3.17.9.2.
+    cached_prompt_tokens: int = 0
+    #: Did the provider report the cache split for EVERY contributing call?
+    #:
+    #: Load-bearing, and deliberately not defaulted to True. DeepSeek bills a cache hit
+    #: at $0.006/M against $0.3/M for a miss — **fifty times apart** — so a zero in
+    #: ``cached_prompt_tokens`` that merely means "nobody looked" would be billed at the
+    #: miss rate and overstate the input term by up to that factor. False makes the
+    #: tokens unpriceable, and `derive_cost` then answers None instead of guessing.
+    cache_reported: bool = False
+
 
 class LLMError(Exception):
     """Base class for recoverable council-client errors."""
@@ -175,8 +186,16 @@ class LLMClient(ABC):
         completion_tokens: int,
         total_tokens: int | None = None,
         estimated: bool = False,
+        cached_prompt_tokens: int | None = None,
     ) -> None:
-        """Accumulate one raw call's token usage (counts only, never text)."""
+        """Accumulate one raw call's token usage (counts only, never text).
+
+        ``cached_prompt_tokens`` is ``None`` when the provider did not report a cache
+        split for this call — which is a different fact from reporting zero, and the
+        difference is worth up to fifty times the input rate. One unreported call makes
+        the whole accumulated record unreported (an AND, never an OR): a sum containing
+        one unknown is not a known sum.
+        """
         usage = self._usage if self._usage is not None else LLMUsage()
         usage.prompt_tokens += max(0, int(prompt_tokens))
         usage.completion_tokens += max(0, int(completion_tokens))
@@ -188,6 +207,14 @@ class LLMClient(ABC):
                 else prompt_tokens + completion_tokens
             ),
         )
+        reported = cached_prompt_tokens is not None
+        # ALL of them, not any: the flag describes the accumulated SUM, and a sum
+        # containing one unmeasured call is not a measured sum.
+        usage.cache_reported = (
+            reported if usage.calls == 0 else (usage.cache_reported and reported)
+        )
+        if cached_prompt_tokens is not None:
+            usage.cached_prompt_tokens += max(0, int(cached_prompt_tokens))
         usage.calls += 1
         usage.estimated = usage.estimated or estimated
         self._usage = usage
