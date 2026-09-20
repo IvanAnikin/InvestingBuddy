@@ -357,3 +357,92 @@ class TestThePriceBookIsConfiguration:
                 f"{module.__name__} builds its own price book instead of reading the "
                 "one function that knows where prices live"
             )
+
+
+# --------------------------------------------------------------------------- #
+# 6. THE PRODUCER — every client that spends tokens must report its cache split
+#
+# Found in PRODUCTION, not in review: with the price book configured and correct, the
+# run still reported `model_input_tokens[deepseek:cache_unreported]` and a cost of None,
+# because `DeepSeekModelProvider` accumulated prompt and completion tokens and dropped
+# the cache split its own transport had already parsed. The rule caught it exactly.
+# --------------------------------------------------------------------------- #
+
+
+class TestTheDeepSeekModelProviderReportsItsCacheSplit:
+    def _response(self, *, cached: int, reported: bool):  # noqa: ANN202
+        from app.integrations.deepseek.transport import DeepSeekResponse
+
+        return DeepSeekResponse(
+            text="{}",
+            prompt_tokens=1_000,
+            completion_tokens=200,
+            cached_tokens=cached,
+            cache_reported=reported,
+        )
+
+    def _provider(self):  # noqa: ANN202
+        from app.integrations.deepseek.providers import DeepSeekModelProvider
+
+        return DeepSeekModelProvider(transport=object())  # type: ignore[arg-type]
+
+    def test_a_reported_split_reaches_the_usage_record(self) -> None:
+        provider = self._provider()
+        provider._calls += 1
+        provider._prompt_tokens += 1_000
+        provider._completion_tokens += 200
+        provider._cached_prompt_tokens += 400
+        provider._cache_reported = True
+
+        usage = provider.consume_usage()
+
+        assert usage.cached_prompt_tokens == 400
+        assert usage.cache_reported is True
+
+    def test_the_usage_it_reports_is_priceable(self) -> None:
+        """The end of the chain: a reported split makes the run cost a real number."""
+        units = ConsumptionUnits(
+            by_vendor=(VendorUsage("deepseek", 1, 1_000, 400, 200, True),)
+        )
+
+        cost = derive_cost(units, _book(deepseek=DEEPSEEK))
+
+        assert cost.estimated_usd == pytest.approx(
+            round(600 / 1e6 * 0.3 + 400 / 1e6 * 0.006 + 200 / 1e6 * 1.2, 6)
+        )
+
+    def test_consume_usage_resets_the_split_with_everything_else(self) -> None:
+        """A second run must not inherit the first run's cached tokens."""
+        provider = self._provider()
+        provider._calls += 1
+        provider._cached_prompt_tokens += 400
+        provider._cache_reported = True
+        provider.consume_usage()
+
+        assert provider._cached_prompt_tokens == 0
+        assert provider._cache_reported is None
+        assert provider.consume_usage() is None
+
+    def test_the_transport_reads_presence_not_value(self) -> None:
+        """`cached_tokens: 0` from a body that never mentioned caching is not a zero."""
+        from app.integrations.deepseek.transport import HttpDeepSeekTransport
+
+        with_split = HttpDeepSeekTransport._reduce(
+            {
+                "choices": [{"message": {"content": "{}"}}],
+                "usage": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 10,
+                    "prompt_tokens_details": {"cached_tokens": 0},
+                },
+            }
+        )
+        silent = HttpDeepSeekTransport._reduce(
+            {
+                "choices": [{"message": {"content": "{}"}}],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 10},
+            }
+        )
+
+        assert with_split.cached_tokens == 0 and with_split.cache_reported is True
+        assert silent.cached_tokens == 0 and silent.cache_reported is False
