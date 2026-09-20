@@ -47,6 +47,7 @@ from __future__ import annotations
 import hashlib
 import uuid
 from collections.abc import Sequence
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from app.services.agent_tools.contracts import (
@@ -219,14 +220,22 @@ async def _search_web(context: "ToolContext", arguments: dict[str, Any]) -> dict
         # silently short by the most expensive call in it — and `cost_per_verified_
         # finding`, the metric the whole provider strategy turns on, is computed from
         # exactly these rows.
-        "consumption": units_for(
-            SEARCH_WEB_UNITS,
-            web_search_calls=spent.web_search_calls,
-            url_fetch_calls=spent.url_fetch_calls,
-            model_calls=spent.model_calls,
-            model_input_tokens=spent.model_input_tokens,
-            model_output_tokens=spent.model_output_tokens,
-            cached_tokens=spent.cached_tokens,
+        # V3.17.9.2 — `units_for` validates UNIT counts and knows nothing about
+        # vendors, so the provider's own attribution is carried across afterwards. Its
+        # tokens are billed by a named vendor at named rates; without this they arrive
+        # in `research_run_consumption` as an anonymous sum that can only be priced by
+        # guessing whose they were.
+        "consumption": replace(
+            units_for(
+                SEARCH_WEB_UNITS,
+                web_search_calls=spent.web_search_calls,
+                url_fetch_calls=spent.url_fetch_calls,
+                model_calls=spent.model_calls,
+                model_input_tokens=spent.model_input_tokens,
+                model_output_tokens=spent.model_output_tokens,
+                cached_tokens=spent.cached_tokens,
+            ),
+            by_vendor=tuple(getattr(spent, "by_vendor", ()) or ()),
         ),
         "note": (
             "Every item here is a CLAIM from an external vendor. None of it is evidence "

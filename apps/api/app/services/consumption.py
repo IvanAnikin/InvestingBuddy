@@ -80,6 +80,96 @@ UNIT_NAMES: tuple[str, ...] = (
 
 
 @dataclass(frozen=True)
+class VendorUsage:
+    """One vendor's model tokens, split into the classes it BILLS separately. V3.17.9.2.
+
+    WHY THIS EXISTS
+    ===============
+    ``ConsumptionUnits.model_input_tokens`` is a sum across every vendor and every cache
+    class, and no provider bills a sum. Measured on the first priced production run:
+    6 of 7 calls went to DeepSeek and 1 to the research provider, and DeepSeek bills
+    cache hits at **$0.006/M against $0.3/M for misses — fifty times apart**. Multiplying
+    that sum by one rate does not produce an approximate cost; it produces a number whose
+    error is unbounded in a direction nobody can see.
+
+    ``cache_reported`` is the load-bearing field, and it is **not** a convenience flag.
+    A provider that does not report its cache split leaves ``cached_input_tokens`` at 0,
+    which is indistinguishable from "nothing hit the cache" — and billing all of it at
+    the miss rate would overstate by up to 50x. Absent is not zero, here as everywhere
+    else in this module: ``False`` makes the vendor's input **unpriceable**, and
+    :func:`derive_cost` then answers ``None`` rather than guessing.
+    """
+
+    vendor: str
+    calls: int = 0
+    input_tokens: int = 0
+    #: The subset of ``input_tokens`` that HIT the provider's context cache. Meaningful
+    #: only when ``cache_reported`` is True.
+    cached_input_tokens: int = 0
+    output_tokens: int = 0
+    #: Did the provider actually report the cache split for these calls?
+    cache_reported: bool = False
+
+    @property
+    def uncached_input_tokens(self) -> int:
+        return max(0, self.input_tokens - self.cached_input_tokens)
+
+    def merge(self, other: "VendorUsage") -> "VendorUsage":
+        """Add another record for the SAME vendor.
+
+        ``cache_reported`` is an AND, not an OR: if any contributing call did not report
+        its split, the merged total's split is not known either, and an OR here would
+        quietly launder one unreported call into a fully-attributed sum.
+        """
+        if other.vendor != self.vendor:  # pragma: no cover - guarded by the caller
+            raise ValueError("cannot merge usage for two different vendors")
+        return VendorUsage(
+            vendor=self.vendor,
+            calls=self.calls + other.calls,
+            input_tokens=self.input_tokens + other.input_tokens,
+            cached_input_tokens=self.cached_input_tokens + other.cached_input_tokens,
+            output_tokens=self.output_tokens + other.output_tokens,
+            cache_reported=self.cache_reported and other.cache_reported,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "vendor": self.vendor,
+            "calls": self.calls,
+            "input_tokens": self.input_tokens,
+            "cached_input_tokens": self.cached_input_tokens,
+            "uncached_input_tokens": self.uncached_input_tokens,
+            "output_tokens": self.output_tokens,
+            "cache_reported": self.cache_reported,
+        }
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any] | None) -> "VendorUsage | None":
+        if not isinstance(raw, dict) or not raw.get("vendor"):
+            return None
+        return cls(
+            vendor=str(raw["vendor"]),
+            calls=int(raw.get("calls") or 0),
+            input_tokens=int(raw.get("input_tokens") or 0),
+            cached_input_tokens=int(raw.get("cached_input_tokens") or 0),
+            output_tokens=int(raw.get("output_tokens") or 0),
+            cache_reported=bool(raw.get("cache_reported")),
+        )
+
+
+def merge_vendor_usage(
+    *groups: "tuple[VendorUsage, ...]",
+) -> "tuple[VendorUsage, ...]":
+    """Merge several per-vendor breakdowns into one, keyed by vendor, sorted by name."""
+    merged: dict[str, VendorUsage] = {}
+    for group in groups:
+        for item in group:
+            existing = merged.get(item.vendor)
+            merged[item.vendor] = existing.merge(item) if existing else item
+    return tuple(merged[k] for k in sorted(merged))
+
+
+@dataclass(frozen=True)
 class ConsumptionUnits:
     """What one research run consumed, in units that outlive a price list.
 
@@ -111,6 +201,11 @@ class ConsumptionUnits:
     #: comparison is meaningful.
     instrumented: frozenset[str] = frozenset()
 
+    #: The model tokens above, split by the vendor that billed them. V3.17.9.2.
+    #: Empty means "not broken down", which is a DIFFERENT statement from "one vendor" —
+    #: see :func:`derive_cost`, which refuses to price a breakdown it does not have.
+    by_vendor: tuple[VendorUsage, ...] = ()
+
     @property
     def model_tokens(self) -> int:
         return self.model_input_tokens + self.model_output_tokens
@@ -123,6 +218,7 @@ class ConsumptionUnits:
             merged[name] = getattr(self, name) + getattr(other, name)
         merged["tokens_estimated"] = self.tokens_estimated or other.tokens_estimated
         merged["instrumented"] = self.instrumented | other.instrumented
+        merged["by_vendor"] = merge_vendor_usage(self.by_vendor, other.by_vendor)
         return ConsumptionUnits(**merged)
 
     def measured(self, name: str) -> bool:
@@ -136,6 +232,7 @@ class ConsumptionUnits:
         # Named explicitly rather than left for a reader to subtract, because
         # the whole point is that these zeros mean nothing.
         out["not_instrumented"] = sorted(set(UNIT_NAMES) - self.instrumented)
+        out["by_vendor"] = [v.to_dict() for v in self.by_vendor]
         return out
 
     @classmethod
@@ -143,14 +240,16 @@ class ConsumptionUnits:
         raw = raw or {}
         kwargs: dict[str, Any] = {}
         for f in fields(cls):
-            if f.name in ("instrumented",):
+            if f.name in ("instrumented", "by_vendor"):
                 continue
             if f.name in raw:
                 kwargs[f.name] = raw[f.name]
         instrumented = raw.get("instrumented") or []
+        vendors = [VendorUsage.from_dict(v) for v in (raw.get("by_vendor") or [])]
         return cls(
             **kwargs,
             instrumented=frozenset(str(x) for x in instrumented),
+            by_vendor=tuple(v for v in vendors if v is not None),
         )
 
     def with_instrumented(self, *names: str) -> "ConsumptionUnits":
@@ -163,6 +262,29 @@ EMPTY_CONSUMPTION = ConsumptionUnits()
 # ---------------------------------------------------------------------------
 # Derived cost
 # ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ModelPrice:
+    """One vendor's token rates, in the classes that vendor actually bills. V3.17.9.2.
+
+    Three rates, because DeepSeek's published table has three and so does Azure
+    OpenAI's: uncached input, cached input, output. A vendor with no cache discount is
+    configured with the same number twice, which is a statement rather than an omission.
+    """
+
+    usd_per_million_input: float | None = None
+    usd_per_million_cached_input: float | None = None
+    usd_per_million_output: float | None = None
+
+    @property
+    def is_complete(self) -> bool:
+        """Can this price every class of token a vendor can return?"""
+        return (
+            self.usd_per_million_input is not None
+            and self.usd_per_million_cached_input is not None
+            and self.usd_per_million_output is not None
+        )
 
 
 @dataclass(frozen=True)
@@ -183,9 +305,32 @@ class PriceBook:
     usd_per_thousand_index_queries: float | None = None
     usd_per_browser_minute: float | None = None
 
+    #: Per-vendor model rates. A tuple of pairs rather than a dict so the dataclass
+    #: stays frozen and hashable. V3.17.9.2 — the flat ``usd_per_million_*`` fields
+    #: above cannot express two vendors, and production runs two.
+    vendor_rates: tuple[tuple[str, ModelPrice], ...] = ()
+
+    def for_vendor(self, vendor: str) -> ModelPrice | None:
+        """This vendor's rates, or ``None`` when none are configured for it.
+
+        Matched case-insensitively on the exact vendor name the telemetry recorded. No
+        prefix or fuzzy matching: a rate applied to the wrong vendor is the failure this
+        whole type exists to prevent, and a near-match is how that happens.
+        """
+        wanted = (vendor or "").strip().lower()
+        for name, price in self.vendor_rates:
+            if name.strip().lower() == wanted:
+                return price
+        return None
+
     @property
     def is_empty(self) -> bool:
-        return all(getattr(self, f.name) is None for f in fields(self))
+        flat = all(
+            getattr(self, f.name) is None
+            for f in fields(self)
+            if f.name != "vendor_rates"
+        )
+        return flat and not self.vendor_rates
 
 
 @dataclass(frozen=True)
@@ -212,7 +357,27 @@ class DerivedCost:
 
 
 def derive_cost(units: ConsumptionUnits, prices: PriceBook) -> DerivedCost:
-    """Money from units. Returns ``None`` when nothing can be priced."""
+    """Money from units. Returns ``None`` unless EVERY measured unit could be priced.
+
+    THE RULE, AND WHY IT CHANGED IN V3.17.9.2
+    =========================================
+    This function used to return the sum of whatever it *could* price and list the rest
+    in ``unpriced_units``. A caller storing that number stores a **subtotal labelled as a
+    cost** — and ``research_run_consumption.estimated_cost_usd`` is read by a budget cap,
+    which then passes on spend it never saw. A partial total is not a total. If anything
+    measured is unpriced, the answer is ``None``.
+
+    MODEL TOKENS ARE PRICED PER VENDOR, PER CACHE CLASS
+    ===================================================
+    ``model_input_tokens`` is a sum across vendors and cache classes, and no provider
+    bills a sum. When ``units.by_vendor`` is present each vendor's tokens are priced at
+    that vendor's own rates. When it is absent the flat rates apply — which is correct
+    only for a single-vendor, cache-free record, and is the legacy path.
+
+    **A vendor that did not report its cache split cannot be priced at all.** Its input
+    tokens are billed at two rates up to fifty times apart and nothing says how they
+    divide, so guessing either one is a fabrication. ``None`` is the honest answer.
+    """
     if prices.is_empty:
         return DerivedCost(estimated_usd=None, unpriced_units=tuple(sorted(UNIT_NAMES)))
 
@@ -230,18 +395,68 @@ def derive_cost(units: ConsumptionUnits, prices: PriceBook) -> DerivedCost:
         total += quantity / per * price
         priced_any = True
 
-    add(
-        "model_input_tokens",
-        units.model_input_tokens,
-        prices.usd_per_million_input_tokens,
-        1_000_000,
+    # ONE vendor and a flat rate is exactly what the flat setting means, so a record
+    # that carries a single-vendor breakdown and no per-vendor rate falls back to it.
+    # TWO vendors cannot: one rate applied to both is wrong whatever was configured,
+    # because only one rate was given. The fallback keeps an environment configured
+    # before V3.17.9.2 priced, instead of silently going unknown the day a breakdown
+    # started being recorded.
+    flat_fallback = (
+        len(units.by_vendor) == 1
+        and prices.for_vendor(units.by_vendor[0].vendor) is None
+        and (
+            prices.usd_per_million_input_tokens is not None
+            or prices.usd_per_million_output_tokens is not None
+        )
     )
-    add(
-        "model_output_tokens",
-        units.model_output_tokens,
-        prices.usd_per_million_output_tokens,
-        1_000_000,
-    )
+
+    if units.by_vendor and not flat_fallback:
+        for usage in units.by_vendor:
+            rate = prices.for_vendor(usage.vendor)
+            if rate is None:
+                if usage.input_tokens > 0 or usage.output_tokens > 0:
+                    unpriced.append(f"model_tokens[{usage.vendor}:no_rate_configured]")
+                continue
+            add(
+                f"model_output_tokens[{usage.vendor}]",
+                usage.output_tokens,
+                rate.usd_per_million_output,
+                1_000_000,
+            )
+            if usage.input_tokens <= 0:
+                continue
+            if not usage.cache_reported:
+                # Absent is not zero. Billing all of it at the miss rate would overstate
+                # by up to the full cache discount, and at the hit rate would understate
+                # by the same. Neither is an estimate.
+                unpriced.append(f"model_input_tokens[{usage.vendor}:cache_unreported]")
+                continue
+            add(
+                f"model_input_tokens[{usage.vendor}:uncached]",
+                usage.uncached_input_tokens,
+                rate.usd_per_million_input,
+                1_000_000,
+            )
+            add(
+                f"model_input_tokens[{usage.vendor}:cached]",
+                usage.cached_input_tokens,
+                rate.usd_per_million_cached_input,
+                1_000_000,
+            )
+    else:
+        add(
+            "model_input_tokens",
+            units.model_input_tokens,
+            prices.usd_per_million_input_tokens,
+            1_000_000,
+        )
+        add(
+            "model_output_tokens",
+            units.model_output_tokens,
+            prices.usd_per_million_output_tokens,
+            1_000_000,
+        )
+
     add(
         "web_search_calls",
         units.web_search_calls,
@@ -268,8 +483,11 @@ def derive_cost(units: ConsumptionUnits, prices: PriceBook) -> DerivedCost:
     )
     add("browser_minutes", units.browser_minutes, prices.usd_per_browser_minute, 1)
 
+    # A partial total is not a total. See the docstring: the one caller that matters
+    # here feeds a budget cap.
+    known = priced_any and not unpriced
     return DerivedCost(
-        estimated_usd=round(total, 6) if priced_any else None,
+        estimated_usd=round(total, 6) if known else None,
         unpriced_units=tuple(sorted(unpriced)),
     )
 
@@ -392,6 +610,53 @@ def budget_from_settings(cfg: Any | None = None) -> ResearchBudget:
     )
 
 
+def _vendor_rates_from_settings(cfg: Any) -> tuple[tuple[str, ModelPrice], ...]:
+    """Parse ``V3_PRICE_VENDOR_RATES``. Never raises; a bad value yields no rates.
+
+    A malformed price book that raised would take down every research run over a typo in
+    a setting. A malformed price book that guessed would produce a wrong number, which is
+    worse. It yields **nothing**, so the cost reports as unknown and the log says why.
+    """
+    import json
+
+    raw = (getattr(cfg, "v3_price_vendor_rates", "") or "").strip()
+    if not raw:
+        return ()
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return ()
+    if not isinstance(parsed, dict):
+        return ()
+
+    def rate(block: Any, key: str) -> float | None:
+        if not isinstance(block, dict):
+            return None
+        try:
+            value = float(block.get(key))  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return None
+        # A ZERO rate is accepted as a real price: a free tier is a fact, and coercing it
+        # to "unknown" would report a free vendor as unpriceable. Negative is not.
+        return value if value >= 0 else None
+
+    out: list[tuple[str, ModelPrice]] = []
+    for vendor, block in parsed.items():
+        if not isinstance(vendor, str) or not vendor.strip():
+            continue
+        out.append(
+            (
+                vendor.strip(),
+                ModelPrice(
+                    usd_per_million_input=rate(block, "input_per_million"),
+                    usd_per_million_cached_input=rate(block, "cached_input_per_million"),
+                    usd_per_million_output=rate(block, "output_per_million"),
+                ),
+            )
+        )
+    return tuple(out)
+
+
 def price_book_from_settings(cfg: Any | None = None) -> PriceBook:
     """The configured price book. Empty unless the user has entered prices."""
     if cfg is None:
@@ -402,6 +667,7 @@ def price_book_from_settings(cfg: Any | None = None) -> PriceBook:
         return float(raw) if float(raw) > 0 else None
 
     return PriceBook(
+        vendor_rates=_vendor_rates_from_settings(cfg),
         usd_per_million_input_tokens=price("v3_price_per_million_input_tokens"),
         usd_per_million_output_tokens=price("v3_price_per_million_output_tokens"),
         usd_per_thousand_web_searches=price("v3_price_per_thousand_web_searches"),

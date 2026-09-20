@@ -74,7 +74,7 @@ from app.integrations.deepseek.transport import (
     DeepSeekUnavailableError,
     canonical_search_url,
 )
-from app.services.consumption import ConsumptionUnits
+from app.services.consumption import ConsumptionUnits, VendorUsage
 from app.services.providers.contracts import (
     STATUS_COMPLETED,
     STATUS_FAILED,
@@ -150,12 +150,35 @@ MAX_CANDIDATES = 25
 MAX_LEADS = 40
 
 
+#: The vendor these adapters bill under, as the price book keys it. V3.17.9.2.
+#: A literal rather than a config lookup: this module IS the DeepSeek integration, and a
+#: vendor name read from configuration could be changed to one whose rates do not apply.
+VENDOR = "deepseek"
+
+
+def _vendor_usage(response: DeepSeekResponse) -> VendorUsage:
+    """This call's tokens, attributed to the vendor that billed them. V3.17.9.2.
+
+    Without this the tokens reach ``research_run_consumption`` as an anonymous sum and
+    can only be priced by guessing which vendor they belonged to.
+    """
+    return VendorUsage(
+        vendor=VENDOR,
+        calls=1,
+        input_tokens=response.prompt_tokens,
+        cached_input_tokens=response.cached_tokens,
+        output_tokens=response.completion_tokens,
+        cache_reported=response.cache_reported,
+    )
+
+
 def _model_consumption(response: DeepSeekResponse) -> ConsumptionUnits:
     return ConsumptionUnits(
         model_calls=1,
         model_input_tokens=response.prompt_tokens,
         model_output_tokens=response.completion_tokens,
         cached_tokens=response.cached_tokens,
+        by_vendor=(_vendor_usage(response),),
     )
 
 
@@ -825,6 +848,7 @@ class DeepSeekSearchProvider:
                 model_input_tokens=response.prompt_tokens,
                 model_output_tokens=response.completion_tokens,
                 cached_tokens=response.cached_tokens,
+                by_vendor=(_vendor_usage(response),),
             ),
             instrumented_units=SEARCH_UNITS,
             cost=CostEstimate(basis="unknown"),
@@ -1071,6 +1095,7 @@ class DeepSeekResearchProvider:
                 model_input_tokens=response.prompt_tokens,
                 model_output_tokens=response.completion_tokens,
                 cached_tokens=response.cached_tokens,
+                by_vendor=(_vendor_usage(response),),
             ),
             instrumented_units=RESEARCH_UNITS_RETRIEVAL
             if self.search_enabled
