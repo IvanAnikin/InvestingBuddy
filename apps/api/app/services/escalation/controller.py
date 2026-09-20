@@ -406,6 +406,7 @@ async def complete_round(
     evidence — that would be indistinguishable from a round that acquired nothing, and
     would write a false zero-delta into a permanent record.
     """
+    from app.services.escalation.cost import spend_for_decision
     from app.services.escalation.evidence import (
         EvidenceSnapshot,
         measure_evidence_delta,
@@ -433,6 +434,20 @@ async def complete_round(
     else:
         delta = measure_evidence_delta(before, after)
 
+    # WHAT THIS ROUND COST, RECOMPUTED FROM THE ROWS. V3.17.9.
+    #
+    # `cost_usd_total` had no producer at all before this line, so it was NULL on every
+    # decision and the transition below could only ever reach `cost_unknown`. That read
+    # as "no price book" — true, but it also concealed that the spend was UNATTRIBUTABLE,
+    # which configuring prices would not have fixed.
+    #
+    # DERIVED, NEVER ACCUMULATED. The whole total is recomputed from
+    # `research_run_consumption` every time, so closing the same round twice — the
+    # terminal observer and the startup sweep can both do it — yields the same number
+    # instead of twice it. `+=` here would be the double count.
+    spend = await spend_for_decision(session, decision)
+    decision.cost_usd_total = spend.cost_usd_total
+
     _escalation_on, _durable_on, max_rounds, _per_run, cost_cap = _flags()
     verdict = decide_next_state(
         RoundInputs(
@@ -443,18 +458,22 @@ async def complete_round(
             open_closable_gaps_remain=after.open_closable_gaps > 0,
             escalation_round=int(decision.escalation_round),
             max_rounds=int(decision.max_rounds or max_rounds),
-            # Unknown stays unknown. Never coerced to 0 — see `_clause_budget`.
-            cost_usd_so_far=(
-                float(decision.cost_usd_total)
-                if decision.cost_usd_total is not None
-                else None
-            ),
+            # Unknown stays unknown. Never coerced to 0 — see `_clause_budget`. With no
+            # price book configured this is legitimately None, and the loop stops on
+            # `cost_unknown` rather than spending against a number nobody has.
+            cost_usd_so_far=spend.cost_usd_total,
             cost_cap_usd=cost_cap,
         )
     )
 
     decision.evidence_after_json = after.to_dict()
-    decision.improvement_json = verdict_payload(delta, verdict)
+    # The spend record goes in beside the verdict, not instead of it: a reader six months
+    # from now has to be able to tell `cost NULL because nothing was linked` from
+    # `cost NULL because nothing is priced`, and the column alone says neither.
+    decision.improvement_json = {
+        **verdict_payload(delta, verdict),
+        "spend": spend.to_dict(),
+    }
     decision.updated_at = datetime.now(timezone.utc)
 
     if verdict.is_terminal:

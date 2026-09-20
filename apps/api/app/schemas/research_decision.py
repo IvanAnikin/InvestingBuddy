@@ -39,6 +39,51 @@ class EvidenceDeltaRead(BaseModel):
     reasons: list[str] = Field(default_factory=list)
 
 
+class DecisionSpendRead(BaseModel):
+    """What this decision's durable jobs consumed, and whether it can be stated in money.
+
+    V3.17.9. Exists so that the three things behind a NULL cost are **separately
+    visible**: whether the jobs are linked, whether their consumption was measured, and
+    whether anything priced it. A single null column answers none of those, and the
+    difference between "unattributed" (a defect) and "unpriced" (an honest gap) is the
+    whole subject of this slice.
+    """
+
+    #: Every durable ``research_jobs.id`` attributed to this decision. The lineage
+    #: itself, listed rather than counted, so an operator can check one against the
+    #: ``research_job_id`` on a tool-call or run row.
+    job_ids: list[uuid.UUID] = Field(default_factory=list)
+    job_count: int = 0
+
+    consumption_rows: int = 0
+    priced_rows: int = 0
+    unpriced_rows: int = 0
+
+    #: The sum over PRICED rows only. Shown so measurement is visible; it is not the
+    #: total and the UI must never present it as one.
+    priced_subtotal_usd: float | None = None
+    #: ``None`` means unknown. Mirrors ``ResearchDecisionRead.cost_usd_total``.
+    cost_usd_total: float | None = None
+
+    #: ``no_jobs`` | ``no_consumption_recorded`` | ``unpriced_consumption`` |
+    #: ``attributed_from_priced_consumption`` — why the total is what it is.
+    basis: str = "no_jobs"
+
+    #: Consumption that IS known, whatever the price situation.
+    model_calls: int = 0
+    model_tokens: int = 0
+    tool_calls: int = 0
+    research_runs: int = 0
+    #: Summed from ``research_tool_calls.consumption_json``, which is written whatever
+    #: ``V3_RUN_CONSUMPTION_ENABLED`` says. With the recorder off this is the ONLY place
+    #: consumption is visible, and it is what distinguishes "we did not look" from "we
+    #: looked and nothing priced it". It overlaps the run record and is never money.
+    tool_call_model_calls: int = 0
+    tool_call_model_tokens: int = 0
+
+    detail: str = ""
+
+
 class ResearchDecisionRead(BaseModel):
     """One decision, and everything it caused."""
 
@@ -76,6 +121,11 @@ class ResearchDecisionRead(BaseModel):
     #: Production reports cost as NULL because no price book is configured, and a 0 on
     #: screen would tell an operator the work was free.
     cost_usd_total: float | None = None
+
+    #: V3.17.9. Why ``cost_usd_total`` is what it is, and what IS known instead. On the
+    #: single-decision read this is recomputed live; in a list it is the record written
+    #: when the round closed.
+    spend: DecisionSpendRead | None = None
 
     created_at: datetime
     updated_at: datetime

@@ -192,3 +192,52 @@ class CompanyResearchJobResponse(BaseModel):
             warnings=list(envelope.get("warnings") or []),
             message=message,
         )
+
+
+class CompanyResearchJobLineage(BaseModel):
+    """What one durable research job is on the record for. V3.17.9.
+
+    Row COUNTS, not money — five tables carry a ``research_job_id`` foreign key to
+    ``research_jobs.id``, and until V3.17.9 every one of them was NULL because the id
+    threaded through company research was an ``AgentRun`` id. Counted per table rather
+    than as one total, because the five writers fail independently: three of them never
+    passed the column at all, and a single total would have read as merely low rather
+    than structurally wrong.
+
+    A row is counted only when its ``research_job_id`` **equals** this job's id. Nothing
+    is matched by company, by AgentRun or by time, so a zero means exactly that: nothing
+    was attributed to this job.
+    """
+
+    job_id: uuid.UUID
+    #: False when no ``research_jobs`` row has this id — a V2 job id, for instance.
+    exists: bool = False
+    #: The CONTENT record. A different id from ``job_id``, always; a response where the
+    #: two agree is one where a substitution happened.
+    agent_run_id: uuid.UUID | None = None
+    #: True when any V3 row names this job.
+    attributed: bool = False
+
+    research_runs: int = 0
+    tool_calls: int = 0
+    research_leads: int = 0
+    calculation_records: int = 0
+    consumption_rows: int = 0
+
+    #: Consumption measured per tool call. Written whatever
+    #: ``V3_RUN_CONSUMPTION_ENABLED`` says, so this is where "consumption was measured"
+    #: is visible when the run-level recorder is off.
+    tool_call_model_calls: int = 0
+    tool_call_model_tokens: int = 0
+
+    #: ``None`` means UNKNOWN — unpriced, or never recorded. **Never 0.0.** A partial sum
+    #: over only the priced rows is not reported here at all.
+    estimated_cost_usd: float | None = None
+    priced_consumption_rows: int = 0
+    unpriced_consumption_rows: int = 0
+
+    disclaimer: str = (
+        "INTERNAL ADMIN ONLY. Row counts and measured consumption for one research "
+        "job. Not investment advice, not a recommendation, no price target or "
+        "valuation."
+    )

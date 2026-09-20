@@ -4,6 +4,7 @@ import {
   COUNCIL_LABEL,
   EXECUTION_LABEL,
   costLabel,
+  costUnknownReason,
   deltaLines,
   executionColor,
   outcomeSentence,
@@ -61,6 +62,46 @@ test.describe("cost is never invented", () => {
     // on screen would tell an operator the research was free.
     expect(costLabel(null)).toBe("unknown");
     expect(costLabel(null)).not.toContain("0");
+  });
+
+  test("an unknown cost says WHICH unknown it is", () => {
+    // V3.17.9. "not attributed", "not recorded" and "not priced" need different
+    // fixes, and a bare "unknown" names none of them. `costLabel` is unchanged —
+    // the reason is a second line, so cost can still never read as free.
+    const base = {
+      job_ids: [],
+      job_count: 0,
+      consumption_rows: 0,
+      priced_rows: 0,
+      unpriced_rows: 0,
+      priced_subtotal_usd: null,
+      cost_usd_total: null,
+      model_calls: 0,
+      model_tokens: 0,
+      tool_calls: 0,
+      research_runs: 0,
+      tool_call_model_calls: 0,
+      tool_call_model_tokens: 0,
+      detail: "",
+    };
+    expect(costUnknownReason({ ...base, basis: "no_jobs" })).toBe(
+      "no research job yet",
+    );
+    expect(
+      costUnknownReason({ ...base, basis: "no_consumption_recorded" }),
+    ).toBe("consumption not recorded");
+    expect(costUnknownReason({ ...base, basis: "unpriced_consumption" })).toBe(
+      "measured, not priced",
+    );
+    // A KNOWN cost has no reason to explain, and none is offered.
+    expect(
+      costUnknownReason({
+        ...base,
+        basis: "attributed_from_priced_consumption",
+        cost_usd_total: 0.4,
+      }),
+    ).toBe("");
+    expect(costUnknownReason(null)).toBe("");
   });
 
   test("a real cost renders as money", () => {

@@ -355,6 +355,10 @@ async def _fetch_public_source(
                     session,
                     lead,
                     outcome,
+                    # V3.17.9. `persist_lead` has taken this since V3.13 and no caller
+                    # passed it, so every `research_leads` row was unattributable to the
+                    # job that paid the provider for it.
+                    research_job_id=context.research_job_id,
                     company_id=context.company_id,
                     legal_entity_id=context.legal_entity_id,
                     subject=subject,

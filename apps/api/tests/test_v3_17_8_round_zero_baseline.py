@@ -879,7 +879,7 @@ class TestTheNextRoundsBaseline:
     ) -> None:  # noqa: ANN001
         company_id = await _company(session)
         decision = await _decision(session, company_id, max_rounds=3)
-        decision.cost_usd_total = 0.25
+        await _priced_spend(session, decision, 0.25)
         _set(monkeypatch, v3_escalation_cost_cap_usd=5.0)
         # The round runs: it acquires corpus and leaves a gap still open.
         await _corpus(session, company_id, chunks=6)
@@ -904,7 +904,7 @@ class TestTheNextRoundsBaseline:
         """
         company_id = await _company(session)
         decision = await _decision(session, company_id, max_rounds=3)
-        decision.cost_usd_total = 0.25
+        await _priced_spend(session, decision, 0.25)
         _set(monkeypatch, v3_escalation_cost_cap_usd=5.0)
         await _corpus(session, company_id, chunks=6)
         await _gap_on_sqlite(session, company_id)
@@ -916,6 +916,52 @@ class TestTheNextRoundsBaseline:
         assert queue.jobs[0]["baseline_at_enqueue"] == decision.evidence_after_json, (
             "round n+1 was queued while the decision still carried round n's baseline"
         )
+
+
+async def _priced_spend(session, decision, usd: float, *, round_index: int = 0):  # noqa: ANN001, ANN201
+    """Real, attributable, PRICED consumption for one round of this decision.
+
+    V3.17.9 made ``cost_usd_total`` **derived**: ``complete_round`` recomputes it from
+    ``research_run_consumption`` and overwrites whatever is on the column. So a test that
+    wants a decision with known spend has to produce the rows the derivation reads —
+    assigning the column by hand, which is what these tests used to do, now asserts
+    nothing at all.
+
+    That is the point rather than an inconvenience. Derivation is what makes closing the
+    same round twice (the terminal observer AND the startup sweep can both do it) yield
+    the same total instead of twice it.
+    """
+    from app.models.research_job import ResearchJob
+    from app.models.research_run_consumption import ResearchRunConsumption
+    from app.services.escalation.controller import round_idempotency_key
+
+    job = ResearchJob(
+        id=uuid.uuid4(),
+        job_type="company_research",
+        # The key the controller itself mints — which is how `jobs_for_decision` finds
+        # every round's job, not just the one `last_job_id` currently points at.
+        idempotency_key=round_idempotency_key(decision.id, round_index) + "#1",
+        status="completed",
+        company_id=decision.company_id,
+        attempt=1,
+        max_attempts=3,
+    )
+    session.add(job)
+    await session.flush()
+    session.add(
+        ResearchRunConsumption(
+            id=uuid.uuid4(),
+            run_type="company_research",
+            research_job_id=job.id,
+            company_id=decision.company_id,
+            model_calls=7,
+            model_tokens=12_000,
+            elapsed_seconds=11.0,
+            estimated_cost_usd=usd,
+        )
+    )
+    await session.flush()
+    return job.id
 
 
 async def _corpus(session, company_id, *, chunks: int) -> None:  # noqa: ANN001
@@ -1041,7 +1087,7 @@ class TestSpendSafetyOnceCostIsKnown:
         await _gap_on_sqlite(session, company_id)
 
         decision = await _decision(session, company_id, max_rounds=3)
-        decision.cost_usd_total = 0.40
+        await _priced_spend(session, decision, 0.40)
         # The round runs and acquires nothing. Nothing is seeded between here and
         # `complete_round`.
         queue = _RecordingQueue()
@@ -1060,7 +1106,7 @@ class TestSpendSafetyOnceCostIsKnown:
     ) -> None:  # noqa: ANN001
         company_id = await _company(session)
         decision = await _decision(session, company_id, max_rounds=2)
-        decision.cost_usd_total = 0.40
+        await _priced_spend(session, decision, 0.40)
         # Round 0 genuinely acquires evidence, and leaves a gap open.
         await _corpus(session, company_id, chunks=40)
         await _gap_on_sqlite(session, company_id)
@@ -1084,7 +1130,7 @@ class TestSpendSafetyOnceCostIsKnown:
     ) -> None:  # noqa: ANN001
         company_id = await _company(session)
         decision = await _legacy_decision(session, company_id, max_rounds=3)
-        decision.cost_usd_total = 0.40
+        await _priced_spend(session, decision, 0.40)
         await _corpus(session, company_id, chunks=40)
         await _gap_on_sqlite(session, company_id)
         queue = _RecordingQueue()

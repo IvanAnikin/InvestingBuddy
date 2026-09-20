@@ -68,6 +68,7 @@ from app.core.structured_logging import log_event
 from app.models.company import Company
 from app.services import research_job
 from app.services.jobs import job_contract as contract
+from app.services.jobs import lineage
 from app.services.jobs.job_contract import JobView
 from app.services.jobs.job_store import JobStore
 from app.services.jobs.worker import JobContext, JobOutcome, register_handler
@@ -338,6 +339,19 @@ async def run_company_research_job(ctx: JobContext) -> JobOutcome:
 
     envelope = await svc.process_company_research_by_id(
         uuid.UUID(content_run_id),
+        # THE DURABLE JOB ID, ON ITS OWN PARAMETER. V3.17.9.
+        #
+        # The positional id above is the CONTENT record — an `AgentRun` — and it is what
+        # `process_company_research_by_id` loads its envelope from. It is not this job.
+        # Until this slice it was also the only id the function received, so everything
+        # downstream that wanted `research_jobs.id` got an AgentRun id instead: the V3
+        # safety guard dropped it (correctly) and five lineage columns stayed NULL, which
+        # is why no research spend could be attributed to the job that caused it.
+        #
+        # Two ids, two parameters. Overloading one of them is what produced the defect,
+        # and a single parameter carrying "whichever id the caller happened to have" is
+        # exactly the shape that cannot be checked.
+        durable_job_id=lineage.coerce_job_id(ctx.job.id),
         progress=ctx.checkpoint,
         raise_on_error=True,
     )

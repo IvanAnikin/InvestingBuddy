@@ -6,6 +6,7 @@ import {
   COUNCIL_LABEL,
   EXECUTION_LABEL,
   costLabel,
+  costUnknownReason,
   deltaLines,
   executionColor,
   outcomeSentence,
@@ -103,6 +104,14 @@ export default async function ResearchQueuePage() {
                     <dd className="inline text-slate-200">
                       {costLabel(d.cost_usd_total)}
                     </dd>
+                    {/* WHICH unknown. "not attributed", "not recorded" and "not
+                        priced" need different fixes, and a bare "unknown" names
+                        none of them. */}
+                    {costUnknownReason(d.spend) && (
+                      <dd className="text-[11px] text-slate-500">
+                        {costUnknownReason(d.spend)}
+                      </dd>
+                    )}
                   </div>
                   {d.job_status && (
                     <div>

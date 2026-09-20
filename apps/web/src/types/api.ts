@@ -1412,8 +1412,48 @@ export interface ResearchDecision {
    * operator the work was free.
    */
   cost_usd_total: number | null;
+  /**
+   * V3.17.9. WHY `cost_usd_total` is what it is, and what IS known instead.
+   *
+   * A single null column cannot distinguish "the spend was never linked to a job"
+   * (a defect) from "it was measured and nothing prices it" (an honest gap). Those
+   * need opposite fixes, so the backend names which one applies.
+   *
+   * Optional: a list read carries the record written when the round closed, and a
+   * decision whose first round has not closed yet has none.
+   */
+  spend?: DecisionSpend | null;
   created_at: string;
   updated_at: string;
+}
+
+/** What one decision's durable jobs consumed. See `ResearchDecision.spend`. */
+export interface DecisionSpend {
+  /** Every durable `research_jobs.id` attributed to this decision. */
+  job_ids: string[];
+  job_count: number;
+  consumption_rows: number;
+  priced_rows: number;
+  unpriced_rows: number;
+  /**
+   * The sum over PRICED rows only. NEVER render this as the total — a subtotal shown
+   * as a total tells an operator the work cost less than it did.
+   */
+  priced_subtotal_usd: number | null;
+  cost_usd_total: number | null;
+  basis:
+    | "no_jobs"
+    | "no_consumption_recorded"
+    | "unpriced_consumption"
+    | "attributed_from_priced_consumption"
+    | string;
+  model_calls: number;
+  model_tokens: number;
+  tool_calls: number;
+  research_runs: number;
+  tool_call_model_calls: number;
+  tool_call_model_tokens: number;
+  detail: string;
 }
 
 export interface ResearchDecisionList {
