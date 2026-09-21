@@ -11,19 +11,20 @@
       "lead": null,
       "sentences": [
         {
-          "text": "Copper was 78% of 2025 net sales.",
-          "labels": [
-            "F1"
-          ]
-        },
-        {
-          "text": "World copper mine production was 23,000 thousand tons in 2025.",
+          "text": "Copper dominates the company's sales by a wide margin.",
           "labels": [
             "F2"
           ]
+        },
+        {
+          "text": "World mine output of copper is concentrated in a few countries.",
+          "labels": [
+            "F3"
+          ]
         }
       ],
-      "author": "editor_model_verified"
+      "author": "editor_model_checked",
+      "author_note": "Written by an editor model from the cited findings. Each sentence was checked for citations, for figures (it may state none) and for prohibited language \u2014 not for meaning. The cited findings are the research; read them."
     },
     {
       "key": "thesis_fit",
@@ -32,7 +33,7 @@
       "status": "partially_evidenced",
       "findings": [
         {
-          "label": "F6",
+          "label": "F1",
           "finding_id": "g",
           "statement": "EVs use about 83 kg of copper per vehicle.",
           "question_key": "thesis_fit__electric_vehicles",
@@ -50,6 +51,7 @@
         }
       ],
       "findings_omitted": 0,
+      "referenced_labels": [],
       "open_questions": [
         {
           "question_key": "thesis_fit__electric_vehicles",
@@ -82,14 +84,16 @@
           "dimension": "electric_vehicles",
           "status": "partially_evidenced",
           "finding_labels": [
-            "F6"
-          ]
+            "F1"
+          ],
+          "referenced_labels": []
         },
         {
           "question_key": "thesis_fit__semiconductors",
           "dimension": "semiconductors",
           "status": "not_established",
-          "finding_labels": []
+          "finding_labels": [],
+          "referenced_labels": []
         }
       ],
       "size_fit": {
@@ -103,15 +107,15 @@
       "key": "business_model",
       "title": "Business model",
       "lead": {
-        "text": "Copper dominates sales at 78%.",
+        "text": "Copper is the product that drives the business.",
         "labels": [
-          "F1"
+          "F2"
         ]
       },
       "status": "evidenced",
       "findings": [
         {
-          "label": "F1",
+          "label": "F2",
           "finding_id": "a",
           "statement": "Copper was 78% of 2025 net sales.",
           "question_key": "business_model",
@@ -131,6 +135,7 @@
         }
       ],
       "findings_omitted": 0,
+      "referenced_labels": [],
       "open_questions": [],
       "questions_asked": 1
     },
@@ -141,7 +146,7 @@
       "status": "partially_evidenced",
       "findings": [
         {
-          "label": "F2",
+          "label": "F3",
           "finding_id": "b",
           "statement": "World copper mine production was 23,000 thousand tons in 2025.",
           "question_key": "industry_economics",
@@ -161,6 +166,7 @@
         }
       ],
       "findings_omitted": 0,
+      "referenced_labels": [],
       "open_questions": [
         {
           "question_key": "industry_economics",
@@ -208,6 +214,7 @@
       "status": "not_established",
       "findings": [],
       "findings_omitted": 0,
+      "referenced_labels": [],
       "open_questions": [],
       "questions_asked": 0
     },
@@ -218,30 +225,46 @@
       "status": "not_established",
       "findings": [],
       "findings_omitted": 0,
+      "referenced_labels": [],
       "open_questions": [],
       "questions_asked": 0,
       "peer_table": [
         {
           "ticker": "SCCO",
-          "is_subject": true,
           "period": "FY2025",
           "revenue_usd_m": 13420.0,
           "operating_margin_pct": 52.2,
           "net_margin_pct": 33.1,
           "cash_conversion": 1.08,
           "capex_to_ocf_pct": 24.0,
-          "net_debt_usd_m": 2100.0
+          "net_debt_usd_m": 2100.0,
+          "evidence_ids": [
+            "peerfin:SCCO:FY2025:revenue",
+            "peerfin:SCCO:FY2025:operating_margin",
+            "peerfin:SCCO:FY2025:net_margin",
+            "peerfin:SCCO:FY2025:cash_conversion",
+            "peerfin:SCCO:FY2025:capex_to_ocf",
+            "peerfin:SCCO:FY2025:net_debt"
+          ],
+          "is_subject": true
         },
         {
           "ticker": "FCX",
-          "is_subject": false,
           "period": "FY2025",
           "revenue_usd_m": 25455.0,
           "operating_margin_pct": 25.1,
           "net_margin_pct": 8.9,
           "cash_conversion": 2.5,
           "capex_to_ocf_pct": 62.0,
-          "net_debt_usd_m": null
+          "net_debt_usd_m": null,
+          "evidence_ids": [
+            "peerfin:FCX:FY2025:revenue",
+            "peerfin:FCX:FY2025:operating_margin",
+            "peerfin:FCX:FY2025:net_margin",
+            "peerfin:FCX:FY2025:cash_conversion",
+            "peerfin:FCX:FY2025:capex_to_ocf"
+          ],
+          "is_subject": false
         }
       ]
     },
@@ -252,6 +275,7 @@
       "status": "not_established",
       "findings": [],
       "findings_omitted": 0,
+      "referenced_labels": [],
       "open_questions": [
         {
           "question_key": "upcoming_catalysts",
@@ -271,6 +295,7 @@
       "status": "not_established",
       "findings": [],
       "findings_omitted": 0,
+      "referenced_labels": [],
       "open_questions": [],
       "questions_asked": 0
     },
@@ -281,6 +306,7 @@
       "status": "not_established",
       "findings": [],
       "findings_omitted": 0,
+      "referenced_labels": [],
       "open_questions": [],
       "questions_asked": 0
     },
@@ -291,7 +317,7 @@
       "status": "evidenced",
       "findings": [
         {
-          "label": "F3",
+          "label": "F4",
           "finding_id": "c",
           "statement": "Operations in Peru face community opposition.",
           "question_key": "material_risks",
@@ -308,7 +334,7 @@
           "references": []
         },
         {
-          "label": "F4",
+          "label": "F5",
           "finding_id": "d",
           "statement": "A 10% fall in the copper price would reduce revenue materially.",
           "question_key": "counter_thesis",
@@ -326,6 +352,7 @@
         }
       ],
       "findings_omitted": 0,
+      "referenced_labels": [],
       "open_questions": [],
       "questions_asked": 2
     },
@@ -336,7 +363,7 @@
       "status": "evidenced",
       "findings": [
         {
-          "label": "F5",
+          "label": "F6",
           "finding_id": "e",
           "statement": "Revenue moves with the LME copper price.",
           "question_key": "commodity_price_sensitivity",
@@ -354,6 +381,7 @@
         }
       ],
       "findings_omitted": 0,
+      "referenced_labels": [],
       "open_questions": [],
       "questions_asked": 1
     },
@@ -362,7 +390,7 @@
       "title": "What would change the thesis",
       "lead": null,
       "counter_thesis_labels": [
-        "F4"
+        "F5"
       ],
       "catalyst_labels": [],
       "unestablished_thesis_dimensions": [
@@ -409,34 +437,43 @@
         }
       ],
       "business_risk_labels": [
-        "F3"
+        "F4"
       ],
+      "findings_shown": 6,
+      "findings_not_shown": 0,
+      "findings_withheld_for_safety": 0,
+      "unclassified_findings": 0,
       "explanation": "Platform evidence gaps are what this research could not acquire \u2014 a limit of the platform, not a statement about the company. Business risks are findings about the company, each resting on cited evidence.",
       "domain_cost": {
         "industry_economics": {
           "tool_calls": 9,
-          "external_searches": 2
+          "corpus_queries": 2,
+          "external_searches": 2,
+          "fetches": 5
         }
       }
     }
   ],
   "finding_labels": {
-    "a": "F1",
-    "b": "F2",
-    "c": "F3",
-    "d": "F4",
-    "e": "F5",
-    "g": "F6"
+    "g": "F1",
+    "a": "F2",
+    "b": "F3",
+    "c": "F4",
+    "d": "F5",
+    "e": "F6"
   },
+  "findings_count": 6,
   "council_convened": false,
   "editor": {
     "used": true,
     "synthesis_sentences_kept": 2,
     "leads_kept": 1,
     "rejected_by_reason": {
-      "figure_not_in_cited_findings": 1
+      "states_a_figure": 1
     },
-    "fallback": false
+    "fallback": false,
+    "checks": "citations, figures (none allowed), prohibited language; not meaning"
   },
-  "disclaimer": "Internal research draft. Not investment advice and not a recommendation. Every statement rests on the cited findings; a gap marked 'not acquired by the platform' is a limit of this research, not a fact about the company. Human review required."
+  "disclaimer": "Internal research draft. Not investment advice and not a recommendation. Every statement rests on the cited findings; a gap marked 'not acquired by the platform' is a limit of this research, not a fact about the company. Human review required.",
+  "withheld_for_safety": 0
 }

@@ -361,6 +361,8 @@ export type ProfessionalResearch = {
   version: number | null;
   subject: { ticker: string | null; name: string | null } | null;
   sections: ProfessionalSection[];
+  /** Findings shown across all sections. Zero means the ledger had nothing to say. */
+  findingCount: number;
   findingLabels: Record<string, string>;
   councilConvened: boolean | null;
   editor: ProfessionalEditor | null;
@@ -677,7 +679,9 @@ function readProfessionalFinding(r: Record<string, unknown>): ProfessionalFindin
     evidenceIds: strings(r.evidence_ids),
     calculationIds: strings(r.calculation_ids),
     sourceKinds: strings(r.source_kinds),
-    confidence: str(r.confidence),
+    // The producer writes a float (0–1); a string is tolerated for older payloads.
+    confidence:
+      num(r.confidence) !== null ? String(num(r.confidence)) : str(r.confidence),
     direction: str(r.direction),
     periodKey: str(r.period_key),
     references: strings(r.references),
@@ -907,10 +911,16 @@ export function readProfessionalResearch(v3Payload: unknown): ProfessionalResear
     }
   }
 
+  const findingCount = sections.reduce(
+    (total, section) => total + ("findings" in section ? section.findings.length : 0),
+    0,
+  );
+
   return {
     version: num(raw.version),
     subject: subject && (subject.ticker || subject.name) ? subject : null,
     sections,
+    findingCount,
     findingLabels,
     councilConvened: bool(raw.council_convened),
     editor,

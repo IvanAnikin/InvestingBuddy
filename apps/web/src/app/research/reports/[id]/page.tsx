@@ -140,7 +140,12 @@ export default async function ResearchReportPage({
   // research on this page and the V1 council's narrative sections are not rendered
   // beside it — two accounts of one company, built from different evidence, would
   // contradict each other. Absent (every earlier report), the page is unchanged.
-  const professional = v3?.professionalResearch ?? null;
+  // A report with NO findings (the ledger had nothing to say) does not replace the V1
+  // narrative: thirteen "not established" sections are not a better account than one.
+  const professional =
+    v3?.professionalResearch && v3.professionalResearch.findingCount > 0
+      ? v3.professionalResearch
+      : null;
   const view = buildResearchReportView(report, council);
   // Council prose and the canonical figures are two representations of the
   // same facts. Where they disagree the sentence is withheld and said to

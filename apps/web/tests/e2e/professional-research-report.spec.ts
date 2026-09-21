@@ -78,6 +78,8 @@ test.describe("reading the professional research payload", () => {
         "disclaimer",
         "editor",
         "finding_labels",
+        "findings_count",
+        "withheld_for_safety",
         "sections",
         "subject",
         "version",
@@ -93,11 +95,12 @@ test.describe("reading the professional research payload", () => {
       "lead",
       "open_questions",
       "questions_asked",
+      "referenced_labels",
       "status",
       "title",
     ];
     expect(sorted(byKey.executive_synthesis)).toEqual(
-      ["author", "key", "lead", "sentences", "title"].sort(),
+      ["author", "author_note", "key", "lead", "sentences", "title"].sort(),
     );
     expect(sorted(byKey.thesis_fit)).toEqual(
       [...DOMAIN, "dimensions", "size_fit", "thesis"].sort(),
@@ -125,6 +128,9 @@ test.describe("reading the professional research payload", () => {
         "business_risk_labels",
         "domain_cost",
         "explanation",
+        "findings_not_shown",
+        "findings_shown",
+        "findings_withheld_for_safety",
         "key",
         "lead",
         "platform_evidence_gaps",
@@ -132,6 +138,7 @@ test.describe("reading the professional research payload", () => {
         "source_diversity",
         "title",
         "unresolved_by_reason",
+        "unclassified_findings",
       ].sort(),
     );
 
@@ -186,6 +193,7 @@ test.describe("reading the professional research payload", () => {
       [
         "capex_to_ocf_pct",
         "cash_conversion",
+        "evidence_ids",
         "is_subject",
         "net_debt_usd_m",
         "net_margin_pct",
@@ -197,7 +205,7 @@ test.describe("reading the professional research payload", () => {
     );
     const thesis = byKey.thesis_fit as { dimensions: object[] };
     expect(sorted(thesis.dimensions[0])).toEqual(
-      ["dimension", "finding_labels", "question_key", "status"].sort(),
+      ["dimension", "finding_labels", "question_key", "referenced_labels", "status"].sort(),
     );
     const evidence = byKey.evidence_quality_and_gaps as {
       source_diversity: object;
@@ -232,8 +240,9 @@ test.describe("reading the professional research payload", () => {
 
     const [synthesis] = pro!.sections;
     if (synthesis.kind !== "synthesis") throw new Error("section 1 is the synthesis");
-    expect(synthesis.author).toBe("editor_model_verified");
-    expect(synthesis.sentences[0].labels).toEqual(["F1"]);
+    expect(synthesis.author).toBe("editor_model_checked");
+    // Labels run in READING order: F1 is the thesis-fit finding, F2 the business one.
+    expect(synthesis.sentences[0].labels).toEqual(["F2"]);
 
     const thesis = pro!.sections.find((s) => s.key === "thesis_fit")!;
     if (thesis.kind !== "domain") throw new Error("thesis_fit is a domain section");
@@ -259,7 +268,7 @@ test.describe("reading the professional research payload", () => {
 
     const change = pro!.sections.find((s) => s.key === "what_would_change_the_thesis")!;
     if (change.kind !== "change") throw new Error("change section");
-    expect(change.counterThesisLabels).toEqual(["F4"]);
+    expect(change.counterThesisLabels).toEqual(["F5"]);
     expect(change.unestablishedThesisDimensions).toEqual(["semiconductors"]);
     expect(change.evidenceToSettle[0].questionKey).toBe("industry_economics");
 
@@ -269,11 +278,13 @@ test.describe("reading the professional research payload", () => {
     expect(evidence.platformEvidenceGaps[0].knowledgeState).toBe(
       "not_acquired_by_platform",
     );
-    expect(evidence.businessRiskLabels).toEqual(["F3"]);
+    expect(evidence.businessRiskLabels).toEqual(["F4"]);
     expect(evidence.sourceDiversity!.acquiredDistinctSources).toBe(2);
     expect(evidence.domainCost[0].counts).toEqual({
       tool_calls: 9,
+      corpus_queries: 2,
       external_searches: 2,
+      fetches: 5,
     });
   });
 
@@ -352,23 +363,27 @@ test.describe("the professional report on the report page", () => {
   test("a label in the synthesis links to the finding it cites", async ({ page }) => {
     await page.goto(PRO_REPORT);
     const synthesis = page.getByTestId("professional-section-executive_synthesis");
-    await expect(synthesis.getByTestId("professional-synthesis-author")).toHaveText(
-      "Written by the editor model; every sentence verified against the cited findings.",
+    // Said as it is: checked for citations, figures and language — NOT for meaning.
+    await expect(synthesis.getByTestId("professional-synthesis-author")).toContainText(
+      "not for meaning",
+    );
+    await expect(synthesis.getByTestId("professional-synthesis-author")).not.toContainText(
+      "verified",
     );
 
-    const ref = synthesis.getByRole("link", { name: "Finding F1" });
-    await expect(ref).toHaveAttribute("href", "#finding-F1");
+    const ref = synthesis.getByRole("link", { name: "Finding F2" });
+    await expect(ref).toHaveAttribute("href", "#finding-F2");
     await ref.click();
-    await expect(page).toHaveURL(/#finding-F1$/);
+    await expect(page).toHaveURL(/#finding-F2$/);
 
     // The finding lives ONCE, in the section that owns it.
-    const finding = page.locator("#finding-F1");
+    const finding = page.locator("#finding-F2");
     await expect(finding).toHaveCount(1);
     await expect(finding).toBeInViewport();
     await expect(
-      page.getByTestId("professional-section-business_model").locator("#finding-F1"),
+      page.getByTestId("professional-section-business_model").locator("#finding-F2"),
     ).toContainText("Copper was 78% of 2025 net sales.");
-    await expect(finding.getByTestId("finding-label")).toHaveText("F1");
+    await expect(finding.getByTestId("finding-label")).toHaveText("F2");
   });
 
   test("what would change the thesis refers to findings, and does not restate them", async ({
@@ -377,10 +392,10 @@ test.describe("the professional report on the report page", () => {
     await page.goto(PRO_REPORT);
     const change = page.getByTestId("professional-section-what_would_change_the_thesis");
     await expect(
-      change.getByTestId("change-counter-thesis").getByRole("link", { name: "Finding F4" }),
-    ).toHaveAttribute("href", "#finding-F4");
+      change.getByTestId("change-counter-thesis").getByRole("link", { name: "Finding F5" }),
+    ).toHaveAttribute("href", "#finding-F5");
     await expect(
-      page.getByTestId("professional-section-risks_and_counter_thesis").locator("#finding-F4"),
+      page.getByTestId("professional-section-risks_and_counter_thesis").locator("#finding-F5"),
     ).toContainText("A 10% fall in the copper price");
     await expect(change).not.toContainText("A 10% fall in the copper price");
     await expect(change.getByTestId("change-evidence-to-settle")).toContainText(
@@ -453,9 +468,9 @@ test.describe("the professional report on the report page", () => {
     const risks = section.getByTestId("professional-business-risks");
     await expect(risks.getByRole("heading", { level: 3, name: "Business risks" })).toBeVisible();
     await expect(risks).not.toContainText(gap);
-    await expect(risks.getByRole("link", { name: "Finding F3" })).toHaveAttribute(
+    await expect(risks.getByRole("link", { name: "Finding F4" })).toHaveAttribute(
       "href",
-      "#finding-F3",
+      "#finding-F4",
     );
     // The two blocks are siblings, never nested: a gap cannot be read as a risk.
     await expect(risks.getByTestId("professional-platform-gaps")).toHaveCount(0);

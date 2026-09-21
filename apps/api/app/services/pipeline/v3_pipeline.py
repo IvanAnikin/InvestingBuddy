@@ -733,13 +733,11 @@ async def _run(
     tool_units = await _tool_call_consumption(session, run, company)
     outcome.external_research = await _external_research(session, run, company)
     outcome.external_research["reused_verifications"] = list(investigator.reused.values())[:40]
-    outcome.consumption = _consumption(
-        model_routing, loop_result, summary, verdict, challenge_result, cfg, tool_units
-    )
-
     # 11. V3.18.8 — the professional report, from the ledger. Never costs the run.
+    #     BEFORE consumption is read: the editor's model call is spend on the chair's
+    #     client, and `_consumption` takes each client's usage once.
     try:
-        outcome.professional_research = await _professional_report(
+        report, withheld_reason = await _professional_report(
             session,
             run,
             plan,
@@ -751,11 +749,21 @@ async def _run(
             council_convened=bool(council.convened),
             editor_client=model_routing.client_for(SLOT_CHAIR),
         )
+        outcome.professional_research = report
+        if withheld_reason:
+            outcome.degraded.append(withheld_reason)
     except Exception as exc:  # noqa: BLE001 - a report failure costs the report block only
         outcome.degraded.append(
             f"the professional report could not be assembled ({type(exc).__name__})"
         )
+    outcome.consumption = _consumption(
+        model_routing, loop_result, summary, verdict, challenge_result, cfg, tool_units
+    )
     await session.flush()
+
+
+#: Findings read into the report. The ledger may hold more; the report says how many.
+MAX_REPORT_FINDINGS = 200
 
 
 async def _professional_report(
@@ -770,15 +778,25 @@ async def _professional_report(
     table_payloads: dict[str, list[dict[str, Any]]],
     council_convened: bool,
     editor_client: Any,
-) -> dict[str, Any] | None:
-    """Assemble, edit, screen. Returns ``None`` only when the screen cannot pass."""
-    from sqlalchemy import select
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Screen, assemble, edit, rescan. ``(None, reason)`` only when the final scan fails
+    — and then the reason is on the run, never a silent absence."""
+    from sqlalchemy import func, select
 
     from app.models.ledger import ResearchFinding, ResearchGap, ResearchQuestion
+    from app.schemas.catalyst import neutralize_forbidden_terms
     from app.services import safety_terms
     from app.services.pipeline import professional_research as pr
 
     async with session.begin_nested():
+        findings_total = await session.scalar(
+            select(func.count())
+            .select_from(ResearchFinding)
+            .where(
+                ResearchFinding.research_run_id == run.id,
+                ResearchFinding.verification_status != "withdrawn",
+            )
+        )
         question_rows = (
             await session.execute(
                 select(ResearchQuestion).where(ResearchQuestion.research_run_id == run.id)
@@ -797,7 +815,7 @@ async def _professional_report(
                     ResearchFinding.created_at,
                     ResearchFinding.statement,
                 )
-                .limit(120)
+                .limit(MAX_REPORT_FINDINGS)
             )
         ).scalars().all()
         gap_rows = (
@@ -823,6 +841,11 @@ async def _professional_report(
             missing=tuple((row.contract_detail_json or {}).get("missing") or ()),
             why_it_matters=row.why_it_matters,
             blocking=bool(row.blocking),
+            referenced_finding_ids=tuple(
+                str(step.get("referenced_finding_id"))
+                for step in (row.acquisition_log_json or [])
+                if step.get("rung") == "ownership" and step.get("referenced_finding_id")
+            ),
         )
         for row in question_rows
     ]
@@ -858,6 +881,17 @@ async def _professional_report(
         for ref in refs
         if ref is not None
     ]
+    findings, withheld = pr.screen(findings)
+    # The user's own thesis words are shown, never allowed to block the report: the
+    # same neutralisation V2 applies to text it copies into its memo.
+    safe_thesis = (
+        {
+            key: (neutralize_forbidden_terms(value) if isinstance(value, str) else value)
+            for key, value in thesis.items()
+        }
+        if thesis
+        else None
+    )
     inputs = pr.ReportInputs(
         subject={
             "ticker": getattr(company, "ticker", None),
@@ -868,8 +902,10 @@ async def _professional_report(
         findings=findings,
         gaps=gaps,
         acquired=acquired,
-        thesis=thesis,
+        thesis=safe_thesis,
         size_fit=thesis_size,
+        findings_total=int(findings_total or 0),
+        withheld_for_safety=withheld,
         commodity_rows=pr.commodity_rows(table_payloads.get("get_industry_series", [])),
         peer_rows=pr.peer_rows(
             table_payloads.get("get_peer_financials", []), getattr(company, "ticker", None)
@@ -880,15 +916,19 @@ async def _professional_report(
         ),
     )
     report = pr.assemble(inputs)
-    withheld = pr.screen_findings(report)
     report = await pr.edit(report, editor_client)
     report["withheld_for_safety"] = withheld
     hits = safety_terms.scan_value(report, path="professional_research")
     if hits:
         # Every component was screened; a hit here is in text this module composed or a
-        # question text. It is not shown: an unscreened report is worse than none.
-        return None
-    return report
+        # question text. It is not shown — an unscreened report is worse than none —
+        # and the run SAYS so, with where the hit was.
+        where = ", ".join(sorted({str(getattr(h, "path", h)) for h in hits})[:3])
+        return None, (
+            "the professional report was withheld: the final safety scan flagged "
+            f"{len(hits)} passage(s) ({where})"
+        )
+    return report, None
 
 
 async def _ledger_findings(session: Any, run: Any, *, limit: int) -> list[dict[str, Any]]:

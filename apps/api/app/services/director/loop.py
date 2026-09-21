@@ -627,7 +627,19 @@ def _domain_of(question: Any, role_id: str) -> str | None:
     if declared:
         return declared
     owner = getattr(question, "owner_role", None) or role_id
-    return next((spec.domain for spec in DOMAIN_SPECS if spec.default_owner == owner), None)
+    owned = next((spec.domain for spec in DOMAIN_SPECS if spec.default_owner == owner), None)
+    # Roles that own no domain still write findings — a re-asked gap answered by the
+    # macro or external analyst — and a finding with no domain has no report section.
+    return owned or _ROLE_DOMAIN.get(owner)
+
+
+#: The domain a finding from a role that OWNS none belongs to.
+_ROLE_DOMAIN: dict[str, str] = {
+    "macro_analyst": "industry_economics",
+    "management_analyst": "governance",
+    "capital_allocation_analyst": "capital_allocation",
+    "external_research_analyst": "catalysts",
+}
 
 
 async def _judge_contracts(

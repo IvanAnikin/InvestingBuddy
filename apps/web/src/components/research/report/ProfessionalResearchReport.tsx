@@ -232,12 +232,14 @@ function Bullets({ items }: { items: ReactNode[] }) {
 /* ── Sections ───────────────────────────────────────────────────────────────────── */
 
 function authorLine(author: string | null, editor: ProfessionalEditor | null): string {
-  if (author === "editor_model_verified") {
-    return "Written by the editor model; every sentence verified against the cited findings.";
+  if (author === "editor_model_checked") {
+    // Stated as the producer states it: the checks cover citations, figures and
+    // language — not meaning. The cited findings are the research.
+    return "Written by an editor model from the cited findings. Each sentence was checked for citations, for figures (it may state none) and for prohibited language — not for meaning. Read the cited findings.";
   }
   if (author === "deterministic") {
     return editor?.used && editor.fallback
-      ? "Assembled deterministically from the findings. The editor model's draft did not pass verification, so it was not used."
+      ? "Assembled deterministically from the findings. The editor model's draft did not pass the checks, so it was not used."
       : "Assembled deterministically from the findings.";
   }
   return "How this synthesis was written is not recorded.";
