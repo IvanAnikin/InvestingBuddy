@@ -32,18 +32,20 @@ from app.services.sources.taxonomy import (
     T5_API_AGGREGATOR,
 )
 
-#: Securities regulators and official filing systems: the page IS a filing.
+#: Official filing systems: a page here IS a filing — of SOME entity. Whose is not a
+#: question the host answers, so the tier never says "the issuer's own" (see
+#: ``contracts.evidence_ref_for``).
 _FILING_HOSTS: tuple[str, ...] = (
-    "sec.gov",
     "sedarplus.ca",
     "sedar.com",
-    "fca.org.uk",
-    "esma.europa.eu",
     "asx.com.au",
     "cnmv.es",
     "bmv.com.mx",
     "smv.gob.pe",
 )
+#: sec.gov is a regulator's whole website — speeches, statistics, enforcement notices.
+#: Only its filing archive is a filing.
+_SEC_FILING_PATHS: tuple[str, ...] = ("/archives/", "/cgi-bin/browse-edgar", "/ix")
 
 #: Specialist statistical and technical agencies for a domain (the taxonomy's own
 #: examples of T3 are USGS, IEA and ENTSO-E). Listed BEFORE the generic government
@@ -95,9 +97,24 @@ _GOVERNMENT_HOSTS: tuple[str, ...] = (
     "treasury.gov",
     "whitehouse.gov",
     "congress.gov",
+    "sec.gov",
+    "fca.org.uk",
+    "esma.europa.eu",
 )
-#: Government suffixes, matched on a label boundary: ``.gov``, ``.gov.au``, ``.gob.mx``.
-_GOVERNMENT_SUFFIX_LABELS: tuple[str, ...] = ("gov", "gob", "gouv", "gv", "go", "govt")
+#: Government second-level domains, EXPLICITLY. A rule on the label alone ("gov" under
+#: any two-letter TLD) accepted ``gov.io`` and ``go.me`` — second-level names anyone
+#: can register under an open ccTLD. Each entry here is a registry reserved for its
+#: government.
+_GOVERNMENT_SLDS: tuple[str, ...] = (
+    "gov.uk", "gov.au", "gov.br", "gov.in", "gov.za", "gov.cn", "gov.sg", "gov.hk",
+    "gov.tw", "gov.il", "gov.it", "gov.pl", "gov.co", "gov.ph", "gov.my", "gov.sa",
+    "gov.ae", "gov.tr", "gov.ar", "gov.cl", "gov.ie", "gov.pt", "gov.gr", "gov.ng",
+    "gov.kz", "gov.mn", "gov.cd", "gov.zm", "gov.bo",
+    "gob.mx", "gob.pe", "gob.cl", "gob.ar", "gob.es", "gob.ec", "gob.bo", "gob.gt",
+    "gouv.fr", "gouv.qc.ca", "gc.ca", "canada.ca",
+    "go.jp", "go.kr", "go.id", "go.th", "go.ke", "go.tz",
+    "govt.nz", "gv.at",
+)
 
 #: Editorially accountable media and established trade press.
 _QUALITY_MEDIA_HOSTS: tuple[str, ...] = (
@@ -133,13 +150,18 @@ def _matches(host: str, suffixes: tuple[str, ...]) -> bool:
 def _is_government(host: str) -> bool:
     if _matches(host, _GOVERNMENT_HOSTS):
         return True
-    labels = host.split(".")
-    # "x.gov", "x.gov.au", "x.gob.mx", "x.gouv.fr" — the government label must be the
-    # TLD or the second-level label under a two-letter country code. "gov.example.com"
-    # is not a government.
-    if labels[-1] in _GOVERNMENT_SUFFIX_LABELS:
+    # ".gov" is the one government-only TLD; everything else must be a listed registry.
+    # A bare registry ("gov.uk" itself) is not a publisher.
+    if host.endswith(".gov"):
         return True
-    return len(labels) >= 3 and len(labels[-1]) == 2 and labels[-2] in _GOVERNMENT_SUFFIX_LABELS
+    return any(host.endswith("." + sld) for sld in _GOVERNMENT_SLDS)
+
+
+def _path_of(url: str | None) -> str:
+    try:
+        return (urlsplit(url or "").path or "").lower()
+    except ValueError:
+        return ""
 
 
 def publisher_tier(url: str | None) -> str:
@@ -148,6 +170,10 @@ def publisher_tier(url: str | None) -> str:
     if not host:
         return T5_API_AGGREGATOR
     if _matches(host, _FILING_HOSTS):
+        return T1_PRIMARY_FILING
+    if _matches(host, ("data.sec.gov", "efts.sec.gov")):
+        return T1_PRIMARY_FILING
+    if _matches(host, ("sec.gov",)) and _path_of(url).startswith(_SEC_FILING_PATHS):
         return T1_PRIMARY_FILING
     if _matches(host, _SPECIALIST_HOSTS):
         return T3_INDUSTRY_SPECIALIST

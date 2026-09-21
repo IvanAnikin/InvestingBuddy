@@ -44,6 +44,7 @@ from typing import Any
 
 from app.services.agent_tools.contracts import (
     EXTERNAL_TOOL_NAMES,
+    OUTCOME_REFUSED,
     TOOL_FETCH_PUBLIC_SOURCE,
     TOOL_GET_CALCULATED_METRICS,
     TOOL_GET_FINANCIAL_FACTS,
@@ -167,6 +168,14 @@ class ExternalSearchBudget:
             return False
         self.used += 1
         return True
+
+    def give_back(self) -> None:
+        """Return a search the session refused before any provider was called.
+
+        A refusal (a role's own cap, a policy) spent nothing; counting it would let one
+        refused call deny a later question the search the run could still afford.
+        """
+        self.used = max(0, self.used - 1)
 
 
 @dataclass(frozen=True)
@@ -761,6 +770,13 @@ class LLMInvestigator:
                 item.ref for item in evidence if item.ref is not None
             ]
             outcome.acquisition_steps.setdefault(question.key, []).extend(steps)
+            if not evidence and question.key in contexts and contexts[
+                question.key
+            ].prior_evidence:
+                # A follow-up that found nothing NEW. The question's evidence from the
+                # earlier round stands, and "no citable evidence was retrieved" would be
+                # a false statement about it; the contract verdict carries the rest.
+                continue
             if not evidence:
                 outcome.gaps.append(
                     GapDraft(
@@ -785,6 +801,21 @@ class LLMInvestigator:
                     question.key,
                 )
         return outcome
+
+    def can_search_externally(self, role_id: str) -> bool:
+        """Could a follow-up for a question held by ``role_id`` reach the web at all?
+
+        The loop asks before re-queuing a partially met question: a follow-up only runs
+        the external rung, so without this it re-asked questions nothing could improve.
+        """
+        role = role_for(role_id)
+        return bool(
+            role is not None
+            and self.external_budget is not None
+            and self.external_budget.remaining > 0
+            and role.can_acquire_with(TOOL_SEARCH_WEB)
+            and role.can_acquire_with(TOOL_FETCH_PUBLIC_SOURCE)
+        )
 
     def _intent_values(self) -> dict[str, str | None]:
         return {
@@ -951,6 +982,12 @@ class LLMInvestigator:
             stop = "external_research_not_configured"
         elif context.external_searches_done >= contract.max_external_searches:
             stop = "question_search_cap_reached"
+        elif context.external_searches_done >= len(
+            list(getattr(question, "search_intents", ()) or ()) or [question.text]
+        ):
+            # Every intent has been searched once. Cycling back to the first would send
+            # the provider the identical query and pay for the identical answer.
+            stop = "search_intents_exhausted"
         elif budget <= 1:
             stop = "run_tool_budget_exhausted"
         elif not self.external_budget.take():
@@ -960,7 +997,7 @@ class LLMInvestigator:
             return step, [], 0
 
         intents = list(getattr(question, "search_intents", ()) or ()) or [question.text]
-        template = intents[context.external_searches_done % len(intents)]
+        template = intents[context.external_searches_done]
         query = fill_intent(template, self._intent_values())
         subject = self.company_name or self.ticker or "the issuer"
         arguments = {
@@ -978,6 +1015,8 @@ class LLMInvestigator:
         used = 1
         step["query"] = arguments["query"]
         if not result.ok:
+            if getattr(result, "outcome", None) == OUTCOME_REFUSED and self.external_budget:
+                self.external_budget.give_back()
             step["stopped"] = f"search_refused:{result.refusal_reason or 'error'}"
             return step, [], used
         leads = (result.payload or {}).get("leads") or []
@@ -1023,8 +1062,15 @@ class LLMInvestigator:
             )
             if arguments is None:
                 continue
+            # The run's search ceiling binds EVERY search, including a role whose plan
+            # asks for `search_web` outright — not only the acquisition ladder's.
+            metered = tool == TOOL_SEARCH_WEB and self.external_budget is not None
+            if metered and not self.external_budget.take():  # type: ignore[union-attr]
+                continue
             result = await self.session.call(tool, arguments, task_ref=f"{role_id}:{question.key}")
             used += 1
+            if metered and getattr(result, "outcome", None) == OUTCOME_REFUSED:
+                self.external_budget.give_back()  # type: ignore[union-attr]
             if not result.ok:
                 continue
             evidence.extend(_harvest(tool, result.payload, result.contains_untrusted_content))

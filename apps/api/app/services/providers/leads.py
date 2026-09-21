@@ -54,9 +54,10 @@ import asyncio
 import hashlib
 import re
 import uuid
-from collections.abc import Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
+from functools import partial
 from html.parser import HTMLParser
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -706,12 +707,50 @@ class KnownLead:
     claimed_period: str | None = None
     matched_excerpt: str | None = None
     period_verified: bool = False
+    #: When the platform verified it (the row's ``verified_at``, else ``created_at``).
+    verified_at: datetime | None = None
+
+
+#: How long a verification may be re-cited without fetching the page again. A page is
+#: not immutable: an issuer revises a presentation, an agency revises a series.
+REUSE_MAX_AGE_DAYS = 90
+
+
+def reusable_verification(
+    known: Sequence[KnownLead], lead_key: str, *, now: datetime | None = None
+) -> KnownLead | None:
+    """A verification of exactly this claim that may be cited again, or ``None``.
+
+    Only one that kept the passage it was verified against — without it a finding
+    would cite the provider's sentence, which is the thing V3.18.3 stopped doing — and
+    only a recent one.
+    """
+    moment = now or datetime.now(timezone.utc)
+    for candidate in known:
+        if (
+            candidate.lead_key != lead_key
+            or candidate.status != LEAD_VERIFIED
+            or not candidate.promoted_evidence_id
+            or not (candidate.matched_excerpt or "").strip()
+            or candidate.verified_at is None
+        ):
+            continue
+        verified_at = candidate.verified_at
+        if verified_at.tzinfo is None:
+            verified_at = verified_at.replace(tzinfo=timezone.utc)
+        if (moment - verified_at).days <= REUSE_MAX_AGE_DAYS:
+            return candidate
+    return None
 
 
 # ── Locating a claim in a document (V3.18.3) ─────────────────────────────────── #
 
 #: How far either side of a matched number the claim's own terms must appear.
 CONTEXT_WINDOW_CHARS = 320
+#: A table row's caption sits ABOVE it, often further than a sentence away: a filing's
+#: "Copper production (thousand pounds)" heads a table whose row reads "Toquepala 485.3".
+#: When the number's own LINE carries a claim term, the rest may come from this far back.
+TABLE_LOOKBACK_CHARS = 2_000
 #: The quote kept from a verified document.
 EXCERPT_MAX_CHARS = 700
 #: Bounds on the scan, for the event-loop reason `numbers_in` gives.
@@ -733,20 +772,96 @@ _GENERIC_TERMS: frozenset[str] = frozenset(
     thousand thousands tons tonnes metric pounds ounces dollars cents percent usd
     """.split()
 )
-_NEGATIONS: frozenset[str] = frozenset({"not", "no", "never", "without", "neither", "nor"})
+#: A sentence that carries one of these says the OPPOSITE of the same words without it.
+#: "has yet to", "failed to" and "unable to" negate as surely as "not" does.
+_NEGATION_RE = re.compile(
+    r"\b(?:not|no|never|without|neither|nor|cannot|yet to|failed to|unable to)\b"
+    r"|n['’]t\b"
+)
 _TERM_RE = re.compile(r"[A-Za-z][A-Za-z\-']{3,}")
+#: A number as a CLAIM writes it, with its scale word: "$1.2 billion", "120,000 tons".
+#: Stricter than `_NUMBER_TOKEN_RE` on purpose — that one joins "1 2026" in "Q1 2026"
+#: into one grouped token, which in a claim would demand a number no page contains.
+_CLAIM_NUMBER_RE = re.compile(
+    r"(?<![\w.,])(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)"
+    r"(?:\s*(thousand|million|billion|trillion|bn|mn|m|k)\b)?",
+    re.IGNORECASE,
+)
+_SCALE_OF: dict[str, float] = {
+    "thousand": 1e3, "k": 1e3, "million": 1e6, "mn": 1e6, "m": 1e6,
+    "billion": 1e9, "bn": 1e9, "trillion": 1e12,
+}
+#: A document states a figure in whatever unit its table uses — "$1.2 billion" is
+#: "1,200" in a table in millions. These are the only rescalings a match may make.
+_DOCUMENT_SCALES: tuple[float, ...] = (1.0, 1e3, 1e6, 1e9)
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?;])\s+|\n\s*\n")
 
 
-def claim_terms(claim: str | None) -> list[str]:
-    """The distinctive words of a claim, casefolded, in order of first appearance."""
+def claim_terms(claim: str | None, *, exclude: Iterable[str] = ()) -> list[str]:
+    """The distinctive words of a claim, casefolded, in order of first appearance.
+
+    ``exclude`` removes words that carry no information about WHAT the claim measures —
+    the subject company's own name, above all. "Southern Copper" appears on every page
+    about Southern Copper, so two name words beside a number made any figure on the
+    company's own page look "in context".
+    """
+    excluded = {word.casefold() for word in exclude}
     seen: dict[str, None] = {}
     for match in _TERM_RE.finditer(claim or ""):
         word = match.group(0).casefold().strip("-'")
         # "copper's" is "copper": a possessive must not stop the plain word matching.
         word = word.removesuffix("'s").removesuffix("’s")
-        if len(word) >= 4 and word not in _GENERIC_TERMS:
+        if len(word) >= 4 and word not in _GENERIC_TERMS and word not in excluded:
             seen.setdefault(word, None)
     return list(seen)
+
+
+def name_terms(name: str | None) -> list[str]:
+    """The words of a company name that ``claim_terms`` would otherwise count."""
+    return claim_terms(name)
+
+
+def _has_term(normalized: str, term: str) -> bool:
+    """A whole-word match, allowing a plural or possessive. "ore" is not in "more"."""
+    return (
+        re.search(
+            rf"(?<![a-z0-9]){re.escape(term)}(?:e?s|['’]s)?(?![a-z0-9])", normalized
+        )
+        is not None
+    )
+
+
+def _count_terms(normalized: str, terms: Sequence[str]) -> int:
+    return sum(1 for term in terms if _has_term(normalized, term))
+
+
+def _is_negated(normalized: str) -> bool:
+    return _NEGATION_RE.search(normalized) is not None
+
+
+def _normalized_with_offsets(text: str) -> tuple[str, list[int]]:
+    """``normalize_text(text)`` and, for each of its characters, where it came from.
+
+    Positions found in the normalised text are positions in a DIFFERENT string: every
+    collapsed run of whitespace shifts everything after it. Mapping back through this is
+    how a match in the normalised text is quoted from the original.
+    """
+    out: list[str] = []
+    offsets: list[int] = []
+    pending_space: int | None = None
+    for index, char in enumerate(text):
+        if char.isspace() or char in "  ":
+            if out and pending_space is None:
+                pending_space = index
+            continue
+        if pending_space is not None:
+            out.append(" ")
+            offsets.append(pending_space)
+            pending_space = None
+        for folded in char.casefold():
+            out.append(folded)
+            offsets.append(index)
+    return "".join(out), offsets
 
 
 def _excerpt_around(text: str, start: int, end: int) -> str:
@@ -757,15 +872,27 @@ def _excerpt_around(text: str, start: int, end: int) -> str:
     return ("…" if lo > 0 else "") + snippet + ("…" if hi < len(text) else "")
 
 
-def _terms_near(haystack: str, start: int, end: int, terms: Sequence[str]) -> int:
-    lo = max(0, start - CONTEXT_WINDOW_CHARS)
-    hi = min(len(haystack), end + CONTEXT_WINDOW_CHARS)
-    window = haystack[lo:hi]
-    return sum(1 for term in terms if term in window)
+def _line_of(text: str, start: int, end: int) -> str:
+    lo = text.rfind("\n", 0, start) + 1
+    hi = text.find("\n", end)
+    return text[lo : hi if hi != -1 else len(text)]
+
+
+def _context_holds(
+    normalized: str, terms: Sequence[str], needed: int, metric_terms: Sequence[str]
+) -> bool:
+    if _count_terms(normalized, terms) < needed:
+        return False
+    return not metric_terms or any(_has_term(normalized, term) for term in metric_terms)
 
 
 def locate_value_in_context(
-    text: str, claimed_numbers: Sequence[float], claim: str | None
+    text: str,
+    claimed_numbers: Sequence[float],
+    claim: str | None,
+    *,
+    metric: str | None = None,
+    exclude_terms: Iterable[str] = (),
 ) -> tuple[bool, str | None]:
     """Is the claimed value in the document NEAR what the claim says it measures?
 
@@ -774,22 +901,27 @@ def locate_value_in_context(
     against any document that printed 250 — a page count, a share count, another year's
     figure. A number is evidence for a claim only where the claim's own terms surround
     it, so the match must fall within ``CONTEXT_WINDOW_CHARS`` of at least two of the
-    claim's distinctive words (one, when the claim has only one).
+    claim's distinctive words (one, when the claim has only one), matched as whole
+    words. The subject's own name does not count: it is on every page about the
+    subject. When the claim names its ``metric``, a word of that metric must be there.
+
+    A table is the one layout where the terms legitimately sit further away: when the
+    number's own line carries a claim term (its row label), the others may come from
+    the ``TABLE_LOOKBACK_CHARS`` above it, where the caption is.
 
     A claim with no distinctive words at all keeps the old behaviour: there is nothing
     to anchor it to, and refusing it would be a new rejection of something the gate
-    always accepted.
+    always accepted. A claim whose only distinctive words are the subject's name is
+    anchored to the name, as before.
     """
-    haystack = normalize_text(text)
-    terms = claim_terms(claim)
+    exclude = tuple(exclude_terms)
+    terms = claim_terms(claim, exclude=exclude) or claim_terms(claim)
+    metric_terms = claim_terms(metric, exclude=exclude)
     needed = min(2, len(terms))
     windows = [(claimed, precision_window(claimed)) for claimed in claimed_numbers]
     found_anywhere = False
     checked = 0
-    for match in _NUMBER_TOKEN_RE.finditer(text):
-        readings = parse_number_candidates(match.group(0))
-        if not readings:
-            continue
+    for start, end, readings in _number_tokens(text):
         if not any(
             values_match(claimed, candidate) and abs(claimed - candidate) <= window
             for claimed, window in windows
@@ -798,56 +930,183 @@ def locate_value_in_context(
             continue
         found_anywhere = True
         checked += 1
-        if not needed or _terms_near(
-            haystack, match.start(), match.end(), terms
-        ) >= needed:
-            return True, _excerpt_around(text, match.start(), match.end())
+        if not needed and not metric_terms:
+            return True, _excerpt_around(text, start, end)
+        lo = max(0, start - CONTEXT_WINDOW_CHARS)
+        hi = min(len(text), end + CONTEXT_WINDOW_CHARS)
+        # Normalised AFTER slicing: offsets into `text` are not offsets into
+        # `normalize_text(text)`, and the first version mixed the two.
+        if _context_holds(normalize_text(text[lo:hi]), terms, needed, metric_terms):
+            return True, _excerpt_around(text, start, end)
+        line = normalize_text(_line_of(text, start, end))
+        if _count_terms(line, terms) >= 1:
+            back = max(0, start - TABLE_LOOKBACK_CHARS)
+            table = normalize_text(text[back:start]) + " " + line
+            if _context_holds(table, terms, needed, metric_terms):
+                return True, _excerpt_around(text, start, end)
         if checked >= _MAX_VALUE_MATCHES:
             break
     return found_anywhere, None
 
 
-def locate_passage(text: str, claim: str | None) -> str | None:
+#: "23 000" and "1 234 567,5" are ONE number in a European document; "485.3 470.1" is
+#: two adjacent table cells that `_NUMBER_TOKEN_RE` joins because it allows a space.
+_SPACE_GROUPED_RE = re.compile(r"^\d{1,3}(?: \d{3})+(?:[.,]\d+)?$")
+
+
+def _number_tokens(text: str) -> Iterator[tuple[int, int, list[float]]]:
+    """``(start, end, readings)`` for every number in ``text``, table cells apart.
+
+    A token joined only by spaces that is NOT a valid space-grouped number is split back
+    into its cells: the joined string has no reading at all, so a table row's figures
+    were invisible to the context check.
+    """
+    for match in _NUMBER_TOKEN_RE.finditer(text):
+        token = match.group(0).replace("\u00a0", " ").replace("\u202f", " ")
+        if " " not in token.strip() or _SPACE_GROUPED_RE.match(token.strip()):
+            readings = parse_number_candidates(match.group(0))
+            if readings:
+                yield match.start(), match.end(), readings
+            continue
+        for cell in re.finditer(r"\S+", token):
+            readings = parse_number_candidates(cell.group(0))
+            if readings:
+                start = match.start() + cell.start()
+                yield start, start + len(cell.group(0)), readings
+
+
+@dataclass(frozen=True)
+class _ClaimNumber:
+    value: float
+    scale: float
+    window: float
+
+
+def _claim_numbers(claim: str | None) -> list[_ClaimNumber]:
+    out: list[_ClaimNumber] = []
+    for match in _CLAIM_NUMBER_RE.finditer(claim or ""):
+        try:
+            value = float(match.group(1).replace(",", ""))
+        except ValueError:
+            continue
+        scale = _SCALE_OF.get((match.group(2) or "").casefold(), 1.0)
+        out.append(_ClaimNumber(value, scale, precision_window(value)))
+    return out
+
+
+def _number_stated(claimed: _ClaimNumber, found: Sequence[float]) -> bool:
+    """Does the passage state this figure, in any unit its table might use?
+
+    Rounding, not proximity: "$1.2 billion" is satisfied by "1,234" in a table in
+    millions, because 1,234 million rounds to 1.2 billion — and not by "1,290".
+    """
+    for scale in _DOCUMENT_SCALES:
+        target = claimed.value * claimed.scale / scale
+        window = claimed.window * claimed.scale / scale
+        if any(abs(target - candidate) <= window for candidate in found):
+            return True
+    return False
+
+
+def _sentences(window: str) -> list[str]:
+    return [
+        normalize_text(part)
+        for part in _SENTENCE_SPLIT_RE.split(window)
+        if part and part.strip()
+    ]
+
+
+def locate_passage(
+    text: str, claim: str | None, *, exclude_terms: Iterable[str] = ()
+) -> str | None:
     """A passage of the document that states what a prose claim states, or ``None``.
 
     A prose claim was verified only as an EXACT substring, which a real page almost
     never satisfies — so external prose evidence was, in practice, never promoted. This
-    finds a window of the document containing most of the claim's distinctive words
-    (at least three, and at least 70%), and every negation the claim contains.
+    finds a window of the document where the claim's distinctive words sit together
+    (at least three, and at least 70%) — counted only in sentences whose POLARITY is
+    the claim's — and where every figure the claim states is stated too.
+
+    * Polarity is judged per sentence. "It has received the permit" is not supported
+      by a window whose sentence reads "has not received the permit", even when a
+      "not" elsewhere in the window, about something else, satisfies a window-wide
+      check. And a window where an opposite-polarity sentence carries the claim's
+      words is a page that says the opposite nearby: refused.
+    * Every number is checked. "Tia Maria will produce 120,000 tons" is not supported
+      by a passage about Tia Maria that says 90,000.
+    * The subject's own name counts toward the words, never toward the distinctive
+      minimum: two name words and one real term is not a passage.
 
     What this changes is what gets CITED. The evidence becomes the document's own
     passage, verbatim, not the provider's paraphrase of it: a finding built on it reads
     the source's words, including any qualification the provider dropped.
     """
+    exclude = tuple(exclude_terms)
     terms = claim_terms(claim)
-    if len(terms) < 3:
+    distinctive = claim_terms(claim, exclude=exclude)
+    if len(terms) < 3 or len(distinctive) < 2:
         return None
     needed = max(3, -(-7 * len(terms) // 10))
-    claim_low = normalize_text(claim)
-    negations = [n for n in _NEGATIONS if re.search(rf"\b{n}\b", claim_low)]
-    anchor = max(terms, key=len)
+    needed_distinctive = max(2, -(-7 * len(distinctive) // 10))
+    claim_negated = _is_negated(normalize_text(claim))
+    numbers = _claim_numbers(claim)
+    anchor = max(distinctive, key=len)
     # Scanned in the ORIGINAL text so the quote keeps the document's own capitals and
     # punctuation; only the comparison is case-folded.
     for hits, match in enumerate(re.finditer(re.escape(anchor), text, re.IGNORECASE)):
         if hits >= _MAX_ANCHOR_HITS:
             return None
+        if _anchor_sentence_is_negated(text, match.start(), match.end()) != claim_negated:
+            continue
         lo = max(0, match.start() - CONTEXT_WINDOW_CHARS)
         hi = min(len(text), match.end() + CONTEXT_WINDOW_CHARS)
-        window = normalize_text(text[lo:hi])
-        if sum(1 for term in terms if term in window) < needed:
+        aligned: list[str] = []
+        contradicted = False
+        for sentence in _sentences(text[lo:hi]):
+            if _is_negated(sentence) == claim_negated:
+                aligned.append(sentence)
+            elif _count_terms(sentence, distinctive) >= needed_distinctive:
+                contradicted = True
+                break
+        if contradicted:
             continue
-        if any(not re.search(rf"\b{n}\b", window) for n in negations):
+        support = " ".join(aligned)
+        if _count_terms(support, terms) < needed:
             continue
-        if not negations and _anchor_sentence_is_negated(text, match.start(), match.end()):
-            # The page NEGATES what the claim asserts: "has not received the permit"
-            # beside a claim that it has. The words overlap perfectly and the meaning is
-            # the opposite, so this window is not support.
+        if _count_terms(support, distinctive) < needed_distinctive:
             continue
-        return _excerpt_around(text, lo, hi)
+        if numbers:
+            found = [
+                reading
+                for _start, _end, readings in _number_tokens(support)
+                for reading in readings
+            ]
+            if not all(_number_stated(number, found) for number in numbers):
+                continue
+        return _excerpt_around(text, match.start(), match.end())
     return None
 
 
-_SENTENCE_BOUNDARY_RE = re.compile(r"[.!?;]\s")
+def locate_exact_text(text: str, claim: str | None) -> str | None:
+    """The claim verbatim in the document, quoted from where it actually is.
+
+    The quote is taken around the MATCH, mapped back from the normalised text — not
+    around the first occurrence of the claim's first word, which can be pages away. A
+    verbatim match inside a sentence that negates it ("it is not true that …") is not
+    support, and falls through to the passage rule, which will refuse it.
+    """
+    needle = normalize_text(claim)
+    if not needle:
+        return None
+    haystack, offsets = _normalized_with_offsets(text)
+    position = haystack.find(needle)
+    if position < 0:
+        return None
+    start = offsets[position]
+    end = offsets[position + len(needle) - 1] + 1
+    if _anchor_sentence_is_negated(text, start, end) != _is_negated(needle):
+        return None
+    return _excerpt_around(text, start, end)
 
 
 def _anchor_sentence_is_negated(text: str, start: int, end: int) -> bool:
@@ -855,15 +1114,12 @@ def _anchor_sentence_is_negated(text: str, start: int, end: int) -> bool:
     before = text[max(0, start - 400) : start]
     after = text[end : end + 400]
     last = None
-    for last in _SENTENCE_BOUNDARY_RE.finditer(before):
+    for last in _SENTENCE_SPLIT_RE.finditer(before):
         pass
     head = before[last.end() :] if last else before
-    stop = _SENTENCE_BOUNDARY_RE.search(after)
+    stop = _SENTENCE_SPLIT_RE.search(after)
     tail = after[: stop.start()] if stop else after
-    sentence = normalize_text(head + text[start:end] + tail)
-    return any(re.search(rf"\b{n}\b", sentence) for n in _NEGATIONS) or bool(
-        re.search(r"\bn['’]t\b|\bnot\b", sentence)
-    )
+    return _is_negated(normalize_text(head + text[start:end] + tail))
 
 
 # ── The gate ────────────────────────────────────────────────────────────────── #
@@ -880,6 +1136,7 @@ async def verify_lead(
     source_scope: str | None = None,
     known_leads: Sequence[KnownLead] = (),
     subject: str | None = None,
+    subject_name: str | None = None,
 ) -> LeadVerificationOutcome:
     """Put one lead through the gate. Never raises; always names its reason.
 
@@ -892,6 +1149,9 @@ async def verify_lead(
     ``source_period`` / ``source_scope`` are what the **platform** independently
     determined about the fetched document. Absent, no period or scope judgement is made
     and the outcome says so; they are never read from the provider.
+
+    ``subject_name`` is the researched company's name. Its words appear on every page
+    about the company, so they never count as the context a figure is found in.
     """
     from app.core.config import settings as default_settings
 
@@ -1155,7 +1415,14 @@ async def verify_lead(
         # IN CONTEXT: the number must sit near the claim's own terms. Run off the event
         # loop, for the reason the old bound was introduced.
         found, excerpt = await asyncio.to_thread(
-            locate_value_in_context, text, claimed_numbers, lead.claim_text
+            partial(
+                locate_value_in_context,
+                text,
+                claimed_numbers,
+                lead.claim_text,
+                metric=lead.claimed_metric,
+                exclude_terms=name_terms(subject_name),
+            )
         )
         if found and excerpt is None:
             return _absent(
@@ -1196,22 +1463,21 @@ async def verify_lead(
             )
     else:
         needle = normalize_text(lead.claim_text)
-        excerpt = None
         basis = "exact_text"
-        if needle and needle in haystack:
-            # Quoted from the original text: locate the claim's first distinctive word
-            # there, falling back to the normalised text only when it cannot be found.
-            terms = claim_terms(lead.claim_text)
-            located = (
-                re.search(re.escape(terms[0]), text, re.IGNORECASE) if terms else None
+        excerpt = (
+            await asyncio.to_thread(locate_exact_text, text, lead.claim_text)
+            if needle and needle in haystack
+            else None
+        )
+        if excerpt is None:
+            excerpt = await asyncio.to_thread(
+                partial(
+                    locate_passage,
+                    text,
+                    lead.claim_text,
+                    exclude_terms=name_terms(subject_name),
+                )
             )
-            if located is not None:
-                excerpt = _excerpt_around(text, located.start(), located.end())
-            else:
-                position = haystack.find(needle)
-                excerpt = _excerpt_around(haystack, position, position + len(needle))
-        else:
-            excerpt = await asyncio.to_thread(locate_passage, text, lead.claim_text)
             basis = "document_passage"
         if not needle or excerpt is None:
             return _absent(
@@ -1514,7 +1780,7 @@ async def known_leads_for(
     statement as the LIMIT, never applied in Python afterwards. A filter in one layer
     and a bound in another means the bound wins and the filter is decorative.
     """
-    from sqlalchemy import select
+    from sqlalchemy import func, select
 
     from app.models.research_lead import ResearchLeadRecord
 
@@ -1529,6 +1795,7 @@ async def known_leads_for(
         ResearchLeadRecord.claimed_period,
         ResearchLeadRecord.matched_excerpt,
         ResearchLeadRecord.period_verified,
+        func.coalesce(ResearchLeadRecord.verified_at, ResearchLeadRecord.created_at),
     )
     if company_id is not None:
         stmt = stmt.where(ResearchLeadRecord.company_id == company_id)
@@ -1546,6 +1813,7 @@ async def known_leads_for(
             claimed_period=row[7],
             matched_excerpt=row[8],
             period_verified=bool(row[9]),
+            verified_at=row[10],
         )
         for row in rows
     ]

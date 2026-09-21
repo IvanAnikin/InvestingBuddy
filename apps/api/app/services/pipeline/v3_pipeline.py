@@ -657,17 +657,27 @@ async def _ledger_findings(session: Any, run: Any, *, limit: int) -> list[dict[s
     from app.services.council_v2.inputs import FindingRef
 
     try:
-        rows = (
-            await session.execute(
-                select(ResearchFinding)
-                .where(
-                    ResearchFinding.research_run_id == run.id,
-                    ResearchFinding.verification_status != "withdrawn",
+        async with session.begin_nested():
+            rows = (
+                await session.execute(
+                    select(ResearchFinding)
+                    .where(
+                        ResearchFinding.research_run_id == run.id,
+                        ResearchFinding.verification_status != "withdrawn",
+                    )
+                    # Deterministic. Every finding of one run shares the transaction's
+                    # `created_at` on PostgreSQL, so ordering by it alone let the LIMIT
+                    # pick a different subset each read; grouped by domain and question
+                    # it is also the order a reader wants.
+                    .order_by(
+                        ResearchFinding.domain.asc().nulls_last(),
+                        ResearchFinding.question_key.asc().nulls_last(),
+                        ResearchFinding.created_at,
+                        ResearchFinding.statement,
+                    )
+                    .limit(limit)
                 )
-                .order_by(ResearchFinding.created_at)
-                .limit(limit)
-            )
-        ).scalars().all()
+            ).scalars().all()
     except Exception:  # noqa: BLE001 - a read that fails must not cost the run
         return []
     out: list[dict[str, Any]] = []

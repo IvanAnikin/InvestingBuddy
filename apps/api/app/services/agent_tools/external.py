@@ -299,6 +299,24 @@ def _validate_fetch_public_source(arguments: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+async def _company_name(session: Any, company_id: Any) -> str | None:
+    """The researched company's name, whose words never count as a claim's context."""
+    from sqlalchemy import select
+
+    from app.models.company import Company
+
+    try:
+        # A SAVEPOINT for the reason `persist_lead` below has one: an error swallowed
+        # here must not leave the V2 report's transaction aborted.
+        async with session.begin_nested():
+            name = await session.scalar(
+                select(Company.name).where(Company.id == company_id)
+            )
+        return str(name) if name else None
+    except Exception:  # noqa: BLE001 - a lookup failure costs the exclusion, not the gate
+        return None
+
+
 async def _fetch_public_source(
     context: "ToolContext", arguments: dict[str, Any]
 ) -> dict[str, Any]:
@@ -319,6 +337,7 @@ async def _fetch_public_source(
         known_leads_for,
         lead_key_for,
         persist_lead,
+        reusable_verification,
         verify_lead,
     )
     from app.services.sources.publisher_tiers import publisher_tier
@@ -342,11 +361,13 @@ async def _fetch_public_source(
     session = getattr(context, "session", None)
     subject = str(context.company_id) if context.company_id else None
     known: Sequence[Any] = ()
+    subject_name: str | None = None
     if session is not None and context.company_id is not None:
         try:
             known = await known_leads_for(session, company_id=context.company_id)
         except Exception:  # noqa: BLE001 - a lookup failure must not block the gate
             known = ()
+        subject_name = await _company_name(session, context.company_id)
 
     # V3.18.3 — a claim this platform ALREADY verified, for this company, is cited again
     # rather than rejected. The gate's duplicate rule exists so one claim is not recorded
@@ -354,15 +375,11 @@ async def _fetch_public_source(
     # never be cited in this week's — so every re-run of a company lost its external
     # evidence. The evidence id is the one minted from bytes this platform fetched then;
     # nothing is re-asserted, and no new lead row is written.
+    #
+    # Only a verification that kept its matched passage, and a recent one: see
+    # `reusable_verification`.
     key = lead_key_for(lead, subject=subject)
-    reusable = next(
-        (
-            k
-            for k in known
-            if k.lead_key == key and k.status == LEAD_VERIFIED and k.promoted_evidence_id
-        ),
-        None,
-    )
+    reusable = reusable_verification(known, key)
     if reusable is not None:
         reused: dict[str, Any] = {
             "url": arguments["url"],
@@ -398,6 +415,7 @@ async def _fetch_public_source(
         allow_public_web=True,
         known_leads=known,
         subject=subject,
+        subject_name=subject_name,
     )
 
     # Minted BEFORE persisting, so the row records the id a finding will actually cite.

@@ -419,24 +419,22 @@ async def plan_research(
                 )
             questions[key] = restored
 
-    ordered = _dependency_ordered(
-        sorted(
-            questions.values(),
-            # Blocking first, then priority, then a stable key order. A blocking
-            # question dropped for capacity would be a methodology silently not applied.
-            key=lambda q: (not q.blocking, q.priority, q.key),
-        )
-    )
+    # Blocking first, then priority, then the METHODOLOGY before the generic model
+    # within one priority level, then a stable key order. A blocking question dropped
+    # for capacity would be a methodology silently not applied — and so, the review of
+    # #221 found, would a playbook question losing an alphabetical tie to a base one.
+    ranked = sorted(questions.values(), key=_rank)
 
     # 4. An optional model refinement, bounded and unable to do harm.
     if refiner is not None:
-        ordered, plan.refined_by_model = await _refine(refiner, subject, ordered, limits)
+        ranked, plan.refined_by_model = await _refine(refiner, subject, ranked, limits)
 
+    # The cap is applied to the RANKED list, keeping each kept question's prerequisites,
+    # and only then ordered by dependency. Capping the dependency-ordered list dropped
+    # exactly the questions that depend on others — they sort last.
     cap = min(ABSOLUTE_MAX_QUESTIONS, max(1, limits.max_tasks * 3))
-    if len(ordered) > cap:
-        plan.dropped_for_capacity = [q.key for q in ordered[cap:]]
-        ordered = ordered[:cap]
-    plan.questions = ordered
+    kept, plan.dropped_for_capacity = _cap_keeping_prerequisites(ranked, cap)
+    plan.questions = _dependency_ordered(kept)
 
     # 5. Assignment. Who cannot answer is a fact, not a judgement.
     wanted_roles = list(ALWAYS_PRESENT)
@@ -564,17 +562,134 @@ async def plan_research(
         )
         task.question_keys.append(question.key)
 
-    tasks = list(assignments.values())
-    if len(tasks) > limits.max_tasks:
-        # Keep the tasks carrying the most questions; the rest become unassignable with
-        # a reason, never silently dropped.
-        tasks.sort(key=lambda t: (-len(t.question_keys), t.role_id))
-        for task in tasks[limits.max_tasks :]:
-            for key in task.question_keys:
-                plan.unassignable.append((key, "task budget exhausted"))
-        tasks = tasks[: limits.max_tasks]
-    plan.tasks = sorted(tasks, key=lambda t: t.role_id)
+    plan.tasks = _fit_first_round(plan, list(assignments.values()), limits)
     return plan
+
+
+#: Within one priority level: the playbook (the methodology), then a re-asked gap, then
+#: the base model and the Director, then anything else.
+_ORIGIN_RANK: dict[str, int] = {
+    ledger.ORIGIN_PLAYBOOK: 0,
+    ledger.ORIGIN_PRIOR_GAP: 1,
+    ledger.ORIGIN_DIRECTOR: 2,
+}
+
+
+def _rank(question: "PlannedQuestion") -> tuple[bool, int, int, str]:
+    return (
+        not question.blocking,
+        question.priority,
+        _ORIGIN_RANK.get(question.origin, 3),
+        question.key,
+    )
+
+
+def _cap_keeping_prerequisites(
+    ranked: "list[PlannedQuestion]", cap: int
+) -> "tuple[list[PlannedQuestion], list[str]]":
+    """The first ``cap`` questions by rank, each with the questions it depends on.
+
+    A question kept without its prerequisite would be answered without what it needs;
+    so a prerequisite is pulled in with it — ahead of lower-ranked questions — and a
+    question whose prerequisites no longer fit is dropped with them rather than kept
+    half-planned.
+    """
+    by_key = {q.key: q for q in ranked}
+    kept: dict[str, PlannedQuestion] = {}
+
+    def _closure(question: "PlannedQuestion") -> list[PlannedQuestion]:
+        out: list[PlannedQuestion] = []
+        stack = [question]
+        seen: set[str] = set()
+        while stack:
+            current = stack.pop()
+            if current.key in seen or current.key in kept:
+                continue
+            seen.add(current.key)
+            out.append(current)
+            stack.extend(by_key[k] for k in current.depends_on if k in by_key)
+        return out
+
+    for question in ranked:
+        if question.key in kept:
+            continue
+        needed = _closure(question)
+        if len(kept) + len(needed) > cap:
+            continue
+        for item in needed:
+            kept[item.key] = item
+    ordered = [q for q in ranked if q.key in kept]
+    dropped = [q.key for q in ranked if q.key not in kept]
+    return ordered, dropped
+
+
+def follow_up_reserve(limits: ModeLimits) -> int:
+    """Tasks held back from round 0 so a follow-up round can actually run.
+
+    Standard mode plans eight tasks and allows eight; seating every always-present role
+    and every owner spent all eight in round 0, so no follow-up could ever run and every
+    standard run stopped on ``max_tasks`` — reported, correctly, as incomplete.
+    """
+    if limits.max_rounds <= 1:
+        return 0
+    return max(1, limits.max_tasks // 4)
+
+
+def _fit_first_round(
+    plan: ResearchPlan, tasks: "list[PlannedTask]", limits: ModeLimits
+) -> "list[PlannedTask]":
+    """At most ``max_tasks - follow_up_reserve`` tasks, losing roles, not questions.
+
+    The roles kept are those carrying blocking questions, then the playbook's
+    specialists, then the busiest. A trimmed role's questions move to a kept role that
+    holds their tools (the owner is then absent, and the plan says so); only a question
+    no kept role can answer becomes unassignable, with the reason.
+    """
+    first_round = max(1, limits.max_tasks - follow_up_reserve(limits))
+    if len(tasks) <= first_round:
+        return sorted(tasks, key=lambda t: t.role_id)
+    by_key = {q.key: q for q in plan.questions}
+
+    def _importance(task: "PlannedTask") -> tuple[int, int, int, str]:
+        questions = [by_key[k] for k in task.question_keys if k in by_key]
+        return (
+            0 if any(q.blocking for q in questions) else 1,
+            0 if any(q.origin == ledger.ORIGIN_PLAYBOOK for q in questions) else 1,
+            -len(questions),
+            task.role_id,
+        )
+
+    ranked = sorted(tasks, key=_importance)
+    kept, trimmed = ranked[:first_round], ranked[first_round:]
+    kept_roles = {t.role_id: t for t in kept}
+    for task in trimmed:
+        for key in task.question_keys:
+            question = by_key.get(key)
+            wants_external = bool(
+                question and set(question.required_tools) & EXTERNAL_TOOL_NAMES
+            )
+            hosts = [
+                role
+                for role in roles_that_can_answer(
+                    question.required_tools if question else frozenset()
+                )
+                if role.role_id in kept_roles
+                and (wants_external or not (role.tools & EXTERNAL_TOOL_NAMES))
+            ]
+            if not hosts:
+                plan.unassignable.append((key, "task budget exhausted"))
+                continue
+            host = min(
+                hosts,
+                key=lambda role: (len(kept_roles[role.role_id].question_keys), role.role_id),
+            )
+            kept_roles[host.role_id].question_keys.append(key)
+            if question is not None and question.owner_role == task.role_id:
+                plan.degraded.append(
+                    f"{key} is owned by {task.role_id}, which the task budget could not "
+                    f"seat; answered by {host.role_id}"
+                )
+    return sorted(kept, key=lambda t: t.role_id)
 
 
 def _dependency_ordered(questions: "list[PlannedQuestion]") -> "list[PlannedQuestion]":
@@ -667,7 +782,9 @@ async def _refine(
             )
         )
         added += 1
-    seen.sort(key=lambda q: (not q.blocking, q.priority, q.key))
+    # Stable, so the model's order survives within one rank — and the rank itself (and
+    # the dependency order applied after the cap) is not the model's to undo.
+    seen.sort(key=lambda q: (not q.blocking, q.priority, _ORIGIN_RANK.get(q.origin, 3)))
     return seen, True
 
 

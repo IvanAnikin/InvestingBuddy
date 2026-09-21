@@ -397,3 +397,162 @@ class TestTheLoopJudgesContracts:
             await session.execute(select(ResearchGap).where(ResearchGap.research_run_id == run.id))
         ).scalars().all()
         assert gaps and {g.knowledge_state for g in gaps} == {NOT_ACQUIRED_BY_PLATFORM}
+
+
+# ── The review of #221: budgets that starved the work they bound ──────────── #
+
+
+def _pq(key: str, *, priority: int = 2, origin: str = ledger.ORIGIN_DIRECTOR,
+        depends_on: tuple[str, ...] = (), blocking: bool = False,
+        tools: frozenset[str] = frozenset({"get_financial_facts"})) -> PlannedQuestion:
+    return PlannedQuestion(key=key, text=key, origin=origin, priority=priority,
+                           depends_on=depends_on, blocking=blocking, required_tools=tools)
+
+
+@dataclass
+class _Playbook:
+    questions: list[PlannedQuestion]
+    playbook_id: str = "pb"
+    version: int = 1
+    roles: list[str] = field(default_factory=list)
+
+    def mandatory_questions(self):  # noqa: ANN201
+        return self.questions
+
+    def specialist_roles(self):  # noqa: ANN201
+        return self.roles
+
+    def completion_rules(self):  # noqa: ANN201
+        return []
+
+
+class TestTheBudgetsLeaveRoomForTheWork:
+    async def test_standard_mode_holds_tasks_back_for_a_follow_up(self) -> None:
+        """Round 0 spent all eight standard tasks, so no follow-up could ever run and
+        every standard run stopped on `max_tasks`."""
+        from app.services.director.planner import follow_up_reserve
+
+        plan = await plan_research(subject="ANY:US", mode="standard", cfg=_CFG)
+        assert follow_up_reserve(plan.limits) >= 1
+        assert len(plan.tasks) <= plan.limits.max_tasks - follow_up_reserve(plan.limits)
+
+    async def test_trimming_a_role_moves_its_questions_rather_than_dropping_them(self) -> None:
+        plan = await plan_research(subject="ANY:US", mode="standard", cfg=_CFG)
+        assigned = {k for t in plan.tasks for k in t.question_keys}
+        budget_lost = {k for k, reason in plan.unassignable if "budget" in reason}
+        for question in plan.questions:
+            assert question.key in assigned or question.key in {
+                k for k, _r in plan.unassignable
+            }
+        assert not budget_lost & {q.key for q in BASE_QUESTIONS if q.priority == 1}, (
+            "a core question lost to the task budget while a kept role could answer it"
+        )
+
+    async def test_a_standard_run_with_partial_contracts_is_not_stopped_by_a_limit(
+        self, session
+    ) -> None:
+        from app.services.director.loop import STOPPED_MAX_TASKS
+
+        run = await ledger.open_run(session, mode="standard")
+        plan = await plan_research(subject="ANY:US", mode="standard", cfg=_CFG)
+        await persist_plan(session, run, plan)
+        issuer = [_ref("ev:1", c.ISSUER_FILING, "T1_primary_filing", "10-K")]
+        investigator = _GraphInvestigator({q.key: issuer for q in plan.questions})
+        result = await run_investigation(
+            session, run, plan, investigator=investigator, limits=plan.limits
+        )
+        assert result.stopped_by != STOPPED_MAX_TASKS
+        assert not result.stopped_by_a_limit
+        assert result.is_complete_analysis
+        assert len(result.rounds) == 2, "the improvement round ran"
+        # The improvement round re-asked partially met questions, carrying what the
+        # first round found, within the tasks the planner held back.
+        re_asked = [
+            key for ctx in investigator.contexts_seen for key, qc in ctx.items()
+            if qc.prior_evidence
+        ]
+        assert re_asked
+        assert result.tasks_run <= plan.limits.max_tasks
+
+    async def test_a_playbook_question_outranks_a_base_one_at_the_same_priority(self) -> None:
+        """An alphabetical tie-break dropped `zinc_market` before `business_model`."""
+        playbook = _Playbook([_pq(f"zz_playbook_{i}", priority=1, origin=ledger.ORIGIN_PLAYBOOK)
+                              for i in range(20)])
+        plan = await plan_research(subject="ANY:US", mode="standard", cfg=_CFG,
+                                   playbooks=[playbook])
+        kept = {q.key for q in plan.questions}
+        assert {f"zz_playbook_{i}" for i in range(20)} <= kept
+        assert all(not k.startswith("zz_playbook") for k in plan.dropped_for_capacity)
+
+    def test_a_kept_question_keeps_its_prerequisite(self) -> None:
+        """Capping the dependency-ordered list dropped exactly the dependants."""
+        from app.services.director.planner import _cap_keeping_prerequisites
+
+        ranked = [
+            _pq("important", priority=1, depends_on=("parent",)),
+            _pq("a", priority=2), _pq("b", priority=2),
+            _pq("parent", priority=5),
+        ]
+        kept, dropped = _cap_keeping_prerequisites(ranked, 2)
+        assert [q.key for q in kept] == ["important", "parent"]
+        assert dropped == ["a", "b"]
+
+    def test_a_question_whose_prerequisites_do_not_fit_is_dropped_whole(self) -> None:
+        from app.services.director.planner import _cap_keeping_prerequisites
+
+        ranked = [_pq("a", priority=1), _pq("child", priority=2, depends_on=("p1", "p2")),
+                  _pq("p1", priority=5), _pq("p2", priority=5)]
+        kept, dropped = _cap_keeping_prerequisites(ranked, 3)
+        assert "child" in dropped
+        assert {q.key for q in kept} == {"a", "p1", "p2"} - set(dropped) | {"a"}
+
+    async def test_the_model_refiner_cannot_undo_the_dependency_order(self) -> None:
+        @dataclass
+        class _Reverse:
+            async def refine(self, *, subject, questions, max_new):  # noqa: ANN001, ANN202
+                return [q.key for q in reversed(questions)], []
+
+        plan = await plan_research(subject="ANY:US", mode="deep", cfg=_CFG,
+                                   refiner=_Reverse())
+        order = [q.key for q in plan.questions]
+        assert order.index("material_risks") < order.index("counter_thesis")
+
+
+class TestFollowUpsNeedSomethingToClimb:
+    async def test_no_follow_up_when_the_web_cannot_be_reached(self, session) -> None:
+        """A follow-up runs only the external rung; without search it re-asked the
+        question and did nothing."""
+
+        @dataclass
+        class _NoSearch(_GraphInvestigator):
+            def can_search_externally(self, role_id: str) -> bool:
+                return False
+
+        run = await ledger.open_run(session, mode="deep")
+        plan = await plan_research(subject="ANY:US", mode="deep", cfg=_CFG)
+        await persist_plan(session, run, plan)
+        issuer = [_ref("ev:1", c.ISSUER_FILING, "T1_primary_filing", "10-K")]
+        investigator = _NoSearch({"industry_economics": issuer})
+        await run_investigation(session, run, plan, investigator=investigator,
+                                limits=plan.limits)
+        seen = [ctx for ctx in investigator.contexts_seen if "industry_economics" in ctx]
+        assert len(seen) == 1
+
+    async def test_follow_ups_beyond_the_task_budget_name_the_limit(self, session) -> None:
+        """A closable gap left without a follow-up for want of tasks is a LIMIT."""
+        from app.services.director.loop import STOPPED_MAX_TASKS
+        from app.services.director.planner import PlannedTask
+
+        run = await ledger.open_run(session, mode="deep")
+        plan = await plan_research(subject="ANY:US", mode="deep", cfg=_CFG)
+        await persist_plan(session, run, plan)
+        roles = sorted({t.role_id for t in plan.tasks})[:3]
+        keys = [q.key for q in plan.questions][:3]
+        plan.tasks = [PlannedTask(role_id=r, question_keys=[k]) for r, k in zip(roles, keys)]
+        limits = dataclasses.replace(plan.limits, max_tasks=4, max_rounds=3)
+        # Nothing is ever found: every question keeps a closable gap.
+        result = await run_investigation(
+            session, run, plan, investigator=_GraphInvestigator({}), limits=limits
+        )
+        assert result.stopped_by == STOPPED_MAX_TASKS
+        assert result.tasks_run <= 4

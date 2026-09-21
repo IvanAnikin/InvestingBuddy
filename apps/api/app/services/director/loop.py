@@ -190,8 +190,12 @@ class LoopResult:
     blocking_open_question_keys: tuple[str, ...] = ()
     council_may_convene: bool = False
     elapsed_seconds: float = 0.0
+    #: A limit that ended an IMPROVEMENT round after the run was already complete.
+    improvement_stopped_by: str | None = None
 
     def __post_init__(self) -> None:
+        if self.improvement_stopped_by not in LIMIT_STOP_REASONS | {None}:
+            raise ValueError(f"{self.improvement_stopped_by!r} is not a limit.")
         if self.stopped_by not in LOOP_STOP_REASONS:
             raise ValueError(
                 f"{self.stopped_by!r} is not a loop stop reason. Every member is either "
@@ -228,6 +232,7 @@ class LoopResult:
             "blocking_open_question_keys": list(self.blocking_open_question_keys),
             "council_may_convene": self.council_may_convene,
             "elapsed_seconds": round(self.elapsed_seconds, 3),
+            "improvement_stopped_by": self.improvement_stopped_by,
         }
 
 
@@ -263,6 +268,14 @@ async def run_investigation(
     #: V3.18.3 — external searches already spent per question, so a follow-up uses the
     #: NEXT search intent and a question's own cap binds across rounds.
     searches_so_far: dict[str, int] = {}
+    #: Questions with a closable gap that a follow-up could not be given for want of
+    #: task budget. If they are still open at the end, a LIMIT ended the run.
+    starved_gap_keys: set[str] = set()
+    can_improve = _improvement_probe(investigator, plan)
+    #: The completion rules were met. Later rounds only IMPROVE the run — close gaps on
+    #: non-blocking questions, meet partially met contracts — and cannot un-complete it.
+    completed = False
+    improvement_stopped_by: str | None = None
 
     for round_index in range(limits.max_rounds):
         if not pending:
@@ -274,14 +287,21 @@ async def run_investigation(
         for role_id, question_keys in pending:
             # Checked BEFORE the work each limit would authorise. A budget satisfied by
             # noticing afterwards is a budget that was exceeded.
+            limit_hit = None
             if tasks_run >= limits.max_tasks:
-                stop_reason = STOPPED_MAX_TASKS
-                break
-            if tool_calls >= limits.max_tool_calls:
-                stop_reason = STOPPED_MAX_TOOL_CALLS
-                break
-            if (clock() - started) >= limits.max_wall_seconds:
-                stop_reason = STOPPED_MAX_WALL_SECONDS
+                limit_hit = STOPPED_MAX_TASKS
+            elif tool_calls >= limits.max_tool_calls:
+                limit_hit = STOPPED_MAX_TOOL_CALLS
+            elif (clock() - started) >= limits.max_wall_seconds:
+                limit_hit = STOPPED_MAX_WALL_SECONDS
+            if limit_hit is not None:
+                if completed:
+                    # An IMPROVEMENT round of a run that was already complete: the
+                    # limit ended the improvement, not the analysis.
+                    stop_reason = STOPPED_COMPLETE
+                    improvement_stopped_by = limit_hit
+                else:
+                    stop_reason = limit_hit
                 break
 
             task = await ledger.add_task(
@@ -433,24 +453,55 @@ async def run_investigation(
             break
 
         summary = await ledger.summarise(session, run)
-        if _rules_satisfied(summary, completion_rules):
-            stop_reason = STOPPED_COMPLETE
-            break
+        if not completed and _rules_satisfied(summary, completion_rules):
+            completed = True
 
         # Gap review. Only a CLOSABLE gap becomes a follow-up: an unclosable one would
         # consume a whole round to fail again.
-        follow_ups = await _follow_up_tasks(
+        follow_ups, gap_keys = await _follow_up_tasks(
             session,
             run,
             plan,
             answered_keys=answered,
             improvable_keys=_improvable(
-                questions_by_key, evidence_so_far, searches_so_far
+                questions_by_key, evidence_so_far, searches_so_far, can_improve
             ),
         )
+        if completed:
+            # V3.18.3 review. Stopping the moment the rules were met meant a run whose
+            # every question had SOME answer never climbed to the independent source
+            # its contracts ask for: the improvement round could not happen. It now
+            # may, while rounds and tasks remain — and the run stays complete.
+            remaining = limits.max_tasks - tasks_run
+            if not follow_ups or round_index == limits.max_rounds - 1 or remaining <= 0:
+                stop_reason = STOPPED_COMPLETE
+                if follow_ups and remaining <= 0:
+                    improvement_stopped_by = STOPPED_MAX_TASKS
+                break
+            if len(follow_ups) > remaining:
+                follow_ups, _starved = _within_task_budget(
+                    follow_ups, gap_keys, questions_by_key, remaining
+                )
+            pending = follow_ups
+            continue
         if not follow_ups:
             stop_reason = STOPPED_NOTHING_LEFT
             break
+        if round_index == limits.max_rounds - 1 and not gap_keys:
+            # What is left is only PARTIALLY met contracts a further round might
+            # improve. No closable gap remains, so the round limit did not cut the work
+            # short; each such question carries `contract_unmet` and says what it lacks.
+            stop_reason = STOPPED_NOTHING_LEFT
+            break
+        remaining = limits.max_tasks - tasks_run
+        if remaining <= 0:
+            stop_reason = STOPPED_MAX_TASKS if gap_keys else STOPPED_NOTHING_LEFT
+            break
+        if len(follow_ups) > remaining:
+            follow_ups, starved = _within_task_budget(
+                follow_ups, gap_keys, questions_by_key, remaining
+            )
+            starved_gap_keys |= starved & gap_keys
         pending = follow_ups
     else:
         # The `for` ran to completion without breaking: the round budget is the reason.
@@ -459,6 +510,10 @@ async def run_investigation(
 
     if stop_reason is None:
         stop_reason = STOPPED_NOTHING_LEFT
+    if stop_reason not in LIMIT_STOP_REASONS and starved_gap_keys - answered:
+        # A closable gap was left without a follow-up because the task budget ran out:
+        # the budget ended that work, whatever else finished.
+        stop_reason = STOPPED_MAX_TASKS
 
     # Whatever remains open and unclosable is ACCEPTED — the run finished with it open
     # and says so, which is the honest outcome for a gap no source can close.
@@ -493,6 +548,7 @@ async def run_investigation(
         ),
         council_may_convene=summary.council_may_convene,
         elapsed_seconds=clock() - started,
+        improvement_stopped_by=improvement_stopped_by,
     )
     await ledger.close_run(
         session,
@@ -678,7 +734,7 @@ async def _follow_up_tasks(
     *,
     answered_keys: "set[str]",
     improvable_keys: "set[str] | None" = None,
-) -> list[tuple[str, list[str]]]:
+) -> tuple[list[tuple[str, list[str]]], set[str]]:
     """A closable gap becomes a follow-up task for a role that can address it.
 
     The gap's own question decides the role, reusing the plan's assignment rather than
@@ -689,7 +745,7 @@ async def _follow_up_tasks(
     gaps = await ledger.open_gaps(session, run, closable_only=True, limit=100)
     improvable = set(improvable_keys or ())
     if not gaps and not improvable:
-        return []
+        return [], set()
     role_for_question: dict[str, str] = {}
     for task in plan.tasks:
         for key in task.question_keys:
@@ -705,17 +761,75 @@ async def _follow_up_tasks(
         if question_key not in keys:
             keys.append(question_key)
 
+    gap_keys: set[str] = set()
     for gap in gaps:
         question_key = gap.question_key
         if not question_key or question_key in answered_keys:
             continue
+        if question_key in role_for_question:
+            gap_keys.add(question_key)
         _add(question_key)
     # V3.18.3 — a question ANSWERED with a partial contract is still worth a round when
     # acquisition can still improve it. "Has a finding" used to end a question's
     # research, so one issuer excerpt settled the industry question for good.
     for question_key in sorted(improvable):
         _add(question_key)
-    return sorted(by_role.items())
+    return sorted(by_role.items()), gap_keys
+
+
+def _within_task_budget(
+    follow_ups: "list[tuple[str, list[str]]]",
+    gap_keys: "set[str]",
+    questions_by_key: dict[str, Any],
+    remaining: int,
+) -> tuple[list[tuple[str, list[str]]], set[str]]:
+    """The follow-ups that fit, most important first; and the keys left without one.
+
+    A blocking question's follow-up before any other, then one closing a gap before one
+    only improving a partial contract, then the busiest.
+    """
+
+    def _importance(item: tuple[str, list[str]]) -> tuple[int, int, int, str]:
+        role_id, keys = item
+        return (
+            0 if any(getattr(questions_by_key.get(k), "blocking", False) for k in keys)
+            else 1,
+            0 if set(keys) & gap_keys else 1,
+            -len(keys),
+            role_id,
+        )
+
+    ranked = sorted(follow_ups, key=_importance)
+    kept = ranked[:remaining]
+    starved = {key for _role, keys in ranked[remaining:] for key in keys}
+    return sorted(kept), starved
+
+
+def _improvement_probe(investigator: Any, plan: ResearchPlan) -> Any:
+    """``key -> bool``: could a follow-up for this question reach a new source at all?
+
+    A follow-up runs only the external rung, so without this the loop re-queued
+    partially met questions when search was switched off or its budget spent, and each
+    re-ask did nothing. An investigator that cannot say keeps the earlier behaviour.
+    """
+    probe = getattr(investigator, "can_search_externally", None)
+    role_for_question: dict[str, str] = {}
+    for task in plan.tasks:
+        for key in task.question_keys:
+            role_for_question.setdefault(key, task.role_id)
+
+    def _can(key: str) -> bool:
+        if not callable(probe):
+            return True
+        role_id = role_for_question.get(key)
+        if role_id is None:
+            return False
+        try:
+            return bool(probe(role_id))
+        except Exception:  # noqa: BLE001 - a probe failure means "no", never a crash
+            return False
+
+    return _can
 
 
 def _accepts(fn: Any, parameter: str) -> bool:
@@ -745,6 +859,7 @@ def _improvable(
     questions_by_key: dict[str, Any],
     evidence_so_far: dict[str, dict[str, Any]],
     searches_so_far: dict[str, int],
+    can_improve: Any = None,
 ) -> set[str]:
     """Questions whose contract is unmet and whose ladder still has a rung to climb."""
     from app.services.director.contracts import evaluate_contract
@@ -754,12 +869,16 @@ def _improvable(
         contract = getattr(question, "evidence_contract", None)
         if contract is None or not contract.allow_external:
             continue
-        if searches_so_far.get(key, 0) >= contract.max_external_searches:
+        intents = len(getattr(question, "search_intents", ()) or ()) or 1
+        if searches_so_far.get(key, 0) >= min(contract.max_external_searches, intents):
+            # No search left that would not repeat one already paid for.
             continue
         if key not in evidence_so_far and key not in searches_so_far:
             # Never worked (unassigned, or dropped for capacity): not a follow-up.
             continue
         if evaluate_contract(contract, evidence_so_far.get(key, {}).values()).satisfied:
+            continue
+        if can_improve is not None and not can_improve(key):
             continue
         out.add(key)
     return out

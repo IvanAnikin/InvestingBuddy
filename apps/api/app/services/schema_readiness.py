@@ -67,9 +67,13 @@ async def migration_041_readiness(session: Any, *, use_cache: bool = True) -> Re
         return Readiness(cached[1], cached[2])
     missing: list[str] = []
     try:
-        for table, columns in MIGRATION_041_COLUMNS.items():
-            present = await _columns(session, table)
-            missing.extend(f"{table}.{c}" for c in columns if c not in present)
+        # A SAVEPOINT: on PostgreSQL a failed inspection query aborts the enclosing
+        # transaction, and the `except` below would then hand the caller a session that
+        # fails at commit — costing the V2 report this check exists to protect.
+        async with session.begin_nested():
+            for table, columns in MIGRATION_041_COLUMNS.items():
+                present = await _columns(session, table)
+                missing.extend(f"{table}.{c}" for c in columns if c not in present)
     except Exception:  # noqa: BLE001 - "could not tell" is reported as not ready
         missing.append("schema could not be inspected")
     ready = not missing

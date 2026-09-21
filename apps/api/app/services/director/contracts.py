@@ -44,6 +44,9 @@ INDUSTRY_SPECIALIST = "industry_specialist"
 QUALITY_MEDIA = "quality_media"
 SECONDARY_WEB = "secondary_web"
 PLATFORM_CALCULATION = "platform_calculation"
+#: A filing of an entity OTHER than the subject, or of one the platform could not
+#: identify: primary, but neither the issuer's own word nor an independent authority.
+THIRD_PARTY_FILING = "third_party_filing"
 
 SOURCE_KINDS: frozenset[str] = frozenset(
     {
@@ -55,6 +58,7 @@ SOURCE_KINDS: frozenset[str] = frozenset(
         QUALITY_MEDIA,
         SECONDARY_WEB,
         PLATFORM_CALCULATION,
+        THIRD_PARTY_FILING,
     }
 )
 
@@ -259,6 +263,15 @@ def evidence_ref_for(tool: str, citation_id: str, item: dict[str, Any]) -> Evide
         )
     url = item.get("canonical_url") or item.get("fetched_url") or item.get("url")
     kind = _KIND_FOR_TIER.get(tier or "", SECONDARY_WEB)
+    if kind == ISSUER_FILING and tool != "search_company_corpus" and not item.get(
+        "issuer_match"
+    ):
+        # A page on a filing system is a filing of SOME entity — a competitor's 10-K,
+        # a regulator's index. The host cannot say it is the subject's own, so it does
+        # not satisfy an issuer requirement; the issuer's filings reach the ledger
+        # through the filings tools and the company's own corpus, which know whose they
+        # are. Nor is it an independent statistical authority.
+        kind = THIRD_PARTY_FILING
     if tool == "search_company_corpus":
         ref = str(url or item.get("title") or citation_id)
     else:
@@ -302,6 +315,7 @@ __all__ = [
     "STATUS_PARTIAL",
     "STATUS_SATISFIED",
     "STATUS_UNMET",
+    "THIRD_PARTY_FILING",
     "ContractEvaluation",
     "EvidenceContract",
     "EvidenceRef",
