@@ -51,6 +51,8 @@ from app.services.agent_tools.contracts import (
     TOOL_GET_INDUSTRY_SERIES,
     TOOL_GET_IR_EVENTS,
     TOOL_GET_MACRO_SERIES,
+    TOOL_GET_PEER_FINANCIALS,
+    TOOL_GET_PEER_SET,
     TOOL_GET_RECENT_FILINGS,
     TOOL_GET_SEGMENT_FACTS,
     TOOL_GET_TRANSCRIPTS,
@@ -87,6 +89,7 @@ MAX_CORPUS_INTENTS = 2
 #: paying for the whole corpus.
 MAX_EVIDENCE_CHARS = 12_000
 MAX_ITEMS_PER_TOOL = 8
+MAX_PEER_ITEMS = 36
 
 #: A bound on what one model reply may produce, so a runaway completion cannot become
 #: forty findings nobody asked for.
@@ -215,6 +218,7 @@ def _tool_arguments(
     ticker: str | None = None,
     exchange: str | None = None,
     company_name: str | None = None,
+    primary_commodity: str | None = None,
 ) -> dict[str, Any] | None:
     """Deterministic arguments per tool. **The model chooses no arguments.**
 
@@ -273,6 +277,13 @@ def _tool_arguments(
         return {"company_id": subject}
     if tool == TOOL_GET_MACRO_SERIES:
         return None  # needs a dataset and series key the question does not carry
+    if tool == TOOL_GET_PEER_SET:
+        return {
+            "company_id": subject,
+            "commodity": getattr(question, "commodity", None) or primary_commodity,
+        }
+    if tool == TOOL_GET_PEER_FINANCIALS:
+        return None  # chained from get_peer_set's result in `_gather`, never guessed
     if tool == TOOL_GET_INDUSTRY_SERIES:
         # V3.18.5 — the commodity comes from the QUESTION, which the planner
         # instantiated from the company's own filings. Never from a model.
@@ -384,7 +395,10 @@ def _harvest(tool: str, payload: dict[str, Any] | None, untrusted: bool) -> list
     if not payload:
         return []
     out: list[_Evidence] = []
-    for item in (payload.get("items") or [])[:MAX_ITEMS_PER_TOOL]:
+    # A peer comparison is a table: five registrants times six metrics is thirty cells,
+    # and cutting it at eight would compare the subject with one peer.
+    cap = MAX_PEER_ITEMS if tool == TOOL_GET_PEER_FINANCIALS else MAX_ITEMS_PER_TOOL
+    for item in (payload.get("items") or [])[:cap]:
         if not isinstance(item, dict):
             continue
         direct = _evidence_of(tool, item, untrusted)
@@ -402,7 +416,7 @@ def _harvest(tool: str, payload: dict[str, Any] | None, untrusted: bool) -> list
                 if found is not None:
                     out.append(found)
             break
-    return out[:MAX_ITEMS_PER_TOOL]
+    return out[:cap]
 
 
 def _clean(value: Any) -> str | None:
@@ -797,6 +811,12 @@ class LLMInvestigator:
                 )
         return outcome
 
+    def _primary_commodity_slug(self) -> str | None:
+        from app.services.macro.commodities import COMMODITIES
+
+        name = (self.primary_commodity or "").strip().lower()
+        return next((c.slug for c in COMMODITIES if c.name == name), None)
+
     def _intent_values(self, question: Any = None) -> dict[str, str | None]:
         from app.services.macro.commodities import commodity_for
 
@@ -1044,6 +1064,7 @@ class LLMInvestigator:
                 ticker=self.ticker,
                 exchange=self.exchange,
                 company_name=self.company_name,
+                primary_commodity=self._primary_commodity_slug(),
             )
             if arguments is None:
                 continue
@@ -1062,6 +1083,38 @@ class LLMInvestigator:
             # produces evidence. It is chained here, deterministically, rather than left
             # to the model — the same rule the rest of this file follows: an LLM
             # choosing which URL to fetch is an LLM choosing what the platform reads.
+            # V3.18.6 — the peer set's own result names who to compare. Chained here,
+            # deterministically, like search → fetch: a model choosing the peers would
+            # be a model choosing the comparison.
+            if (
+                tool == TOOL_GET_PEER_SET
+                and role.can_use(TOOL_GET_PEER_FINANCIALS)
+                and used < budget
+                and (self.available_tools is None
+                     or TOOL_GET_PEER_FINANCIALS in self.available_tools)
+            ):
+                peers = [
+                    str(item.get("ticker"))
+                    for item in (result.payload or {}).get("items", [])
+                    if item.get("ticker") and str(item.get("exchange") or "US") == "US"
+                ][:4]
+                tickers = [t for t in [self.ticker, *peers] if t]
+                if len(tickers) > 1:
+                    peer_result = await self.session.call(
+                        TOOL_GET_PEER_FINANCIALS,
+                        {"tickers": tickers},
+                        task_ref=f"{role_id}:{question.key}",
+                    )
+                    used += 1
+                    if peer_result.ok:
+                        evidence.extend(
+                            _harvest(
+                                TOOL_GET_PEER_FINANCIALS,
+                                peer_result.payload,
+                                peer_result.contains_untrusted_content,
+                            )
+                        )
+
             if tool == TOOL_SEARCH_WEB and role.can_use(TOOL_FETCH_PUBLIC_SOURCE):
                 verified, spent = await self._verify_external_leads(
                     role_id, question, result.payload, budget - used

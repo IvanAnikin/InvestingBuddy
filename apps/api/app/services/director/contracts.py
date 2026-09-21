@@ -252,6 +252,13 @@ def evidence_ref_for(tool: str, citation_id: str, item: dict[str, Any]) -> Evide
             or "issuer_facts"
         )
         return EvidenceRef(citation_id, tool, ISSUER_FILING, tier or "T1_primary_filing", ref)
+    if tool == "get_peer_financials":
+        # Another registrant's statements, published by the regulator: independent of
+        # the subject, and one SOURCE per registrant however many metrics it yields.
+        return EvidenceRef(
+            citation_id, tool, GOVERNMENT_OR_REGULATOR, tier or "T2_regulator_or_gov",
+            f"sec:{item.get('ticker') or citation_id}",
+        )
     if tool == "get_recent_filings":
         return EvidenceRef(
             citation_id, tool, ISSUER_FILING, "T1_primary_filing",
