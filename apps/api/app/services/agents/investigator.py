@@ -57,6 +57,7 @@ from app.services.agent_tools.contracts import (
     TOOL_SEARCH_WEB,
 )
 from app.services.calculations.definitions import DEFINITIONS as _CALCULATION_DEFINITIONS
+from app.services.director.contracts import EvidenceRef, evidence_ref_for
 from app.services.director.loop import FindingDraft, GapDraft, TaskOutcome
 from app.services.director.planner import PlannedQuestion
 from app.services.director.roles import role_for
@@ -120,6 +121,9 @@ class _Evidence:
     untrusted: bool = False
     period_key: str | None = None
     scope_key: str | None = None
+    #: V3.18.2 — what KIND of source stands behind it, derived from the tool and the
+    #: tier the tool reported. The question's evidence contract is judged over these.
+    ref: EvidenceRef | None = None
 
 
 def _corpus_arguments(question: PlannedQuestion, company_id: uuid.UUID) -> dict[str, Any]:
@@ -168,7 +172,19 @@ def _tool_arguments(
     if tool == TOOL_GET_SEGMENT_FACTS:
         return {"company_id": subject, "limit": 25}
     if tool == TOOL_GET_FINANCIAL_SERIES:
-        return None  # needs a label; a question does not reliably name one
+        # V3.18.2 — the label comes from the QUESTION's declaration, never from prose
+        # and never from a model. Before this every series call returned None here, so
+        # the baseline `revenue_trajectory` question could only ever end as a gap.
+        labels = getattr(question, "series_labels", ()) or ()
+        if not labels:
+            return None
+        return {
+            "company_id": subject,
+            "scope": "group",
+            "label": labels[0],
+            "period_type": "annual",
+            "limit": 12,
+        }
     if tool == TOOL_GET_CALCULATED_METRICS:
         # The tool's metric vocabulary is CLOSED, and the playbook question already
         # names which of them it needs. Sending no metric at all — which is what this
@@ -251,6 +267,7 @@ def _evidence_of(tool: str, item: dict[str, Any], untrusted: bool) -> _Evidence 
         # Carried from the tool's own typed result, never read out of prose.
         period_key=_clean(item.get("period_key")),
         scope_key=_clean(item.get("scope_key")),
+        ref=evidence_ref_for(tool, citation, item),
     )
 
 
@@ -615,6 +632,21 @@ class LLMInvestigator:
             evidence, used = await self._gather(role_id, role, question, budget)
             budget -= used
             outcome.tool_calls += used
+            # V3.18.2 — handed to the loop, which judges the question's evidence
+            # contract. The investigator reports what it retrieved; it does not grade it.
+            outcome.question_evidence[question.key] = [
+                item.ref for item in evidence if item.ref is not None
+            ]
+            outcome.acquisition_steps.setdefault(question.key, []).append(
+                {
+                    "rung": "platform_tools",
+                    "round": round_index,
+                    "role": role_id,
+                    "tool_calls": used,
+                    "citable_items": len(evidence),
+                    "tools": sorted({item.kind for item in evidence}),
+                }
+            )
             if not evidence:
                 outcome.gaps.append(
                     GapDraft(
@@ -924,6 +956,15 @@ class LLMInvestigator:
                     # reach.
                     period_key=period_key,
                     scope_key=scope_key,
+                    source_kinds=tuple(
+                        sorted(
+                            {
+                                item.ref.source_kind
+                                for item in evidence
+                                if item.citation_id in real and item.ref is not None
+                            }
+                        )
+                    ),
                 )
             )
 

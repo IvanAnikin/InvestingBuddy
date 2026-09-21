@@ -74,6 +74,14 @@ class RoleSpec:
     on_budget_exhausted: str = ON_EXHAUSTED_RETURN_PARTIAL
     #: True for roles instantiated on every run; False for playbook-supplied specialists.
     always_present: bool = False
+    #: V3.18.2 — tools this role may use ONLY as a rung of the acquisition ladder: when
+    #: a question's evidence contract is unmet after its own tools ran, AND the contract
+    #: allows external acquisition. Kept apart from ``tools`` deliberately. ``tools``
+    #: decide which questions a role can be ASSIGNED (a set operation, 5.2); an
+    #: acquisition tool must not widen that, or every specialist would compete for
+    #: every question the external role was built to take, and spending would be
+    #: chosen by assignment rather than by an unmet contract.
+    acquisition_tools: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         unknown = set(self.tools) - TOOL_NAMES
@@ -92,6 +100,12 @@ class RoleSpec:
             raise ValueError(
                 f"{self.role_id}: a role with no iteration cap need never stop."
             )
+        unknown_acquisition = set(self.acquisition_tools) - TOOL_NAMES
+        if unknown_acquisition:
+            raise ValueError(
+                f"{self.role_id}: acquisition tools {sorted(unknown_acquisition)} are not "
+                "tool names."
+            )
         if self.on_missing_evidence != ON_MISSING_RAISE_GAP:
             raise ValueError(
                 f"{self.role_id}: the only permitted response to missing evidence is "
@@ -101,6 +115,22 @@ class RoleSpec:
 
     def can_use(self, tool: str) -> bool:
         return tool in self.tools
+
+    def can_acquire_with(self, tool: str) -> bool:
+        return tool in self.acquisition_tools
+
+    @property
+    def session_tools(self) -> frozenset[str]:
+        """Everything this role's tool session may call: its tools and its ladder."""
+        return self.tools | self.acquisition_tools
+
+    @property
+    def session_source_classes(self) -> tuple[str, ...]:
+        """Source classes for the session policy. The ladder reads ``public_web``."""
+        classes = list(self.source_classes)
+        if self.acquisition_tools & EXTERNAL_TOOL_NAMES and "public_web" not in classes:
+            classes.append("public_web")
+        return tuple(classes)
 
     def covers(self, required_tools: "frozenset[str] | set[str]") -> bool:
         """True when this role holds every tool a question needs.
@@ -115,7 +145,11 @@ class RoleSpec:
 FINANCIAL_ANALYST = RoleSpec(
     role_id="financial_analyst",
     display_name="Lead Financial Analyst",
-    focus="Canonical facts, series, segment mix and calculation requests.",
+    focus=(
+        "Financial capacity and capital allocation: statements, free cash flow, "
+        "leverage, working capital, capital intensity, funding, earnings quality. "
+        "Owns the financial findings; others reference them rather than restate them."
+    ),
     tools=frozenset(
         {
             TOOL_LOOKUP_ENTITY,
@@ -133,8 +167,12 @@ FINANCIAL_ANALYST = RoleSpec(
 
 BUSINESS_ANALYST = RoleSpec(
     role_id="business_analyst",
-    display_name="Business / Industry Analyst",
-    focus="Business model, unit economics and industry structure.",
+    display_name="Business & Operations Analyst",
+    focus=(
+        "What the company sells, to whom, from which assets: products, segments, "
+        "geographies, customers, production, unit costs and operating economics. "
+        "Industry-wide supply, demand and prices belong to the Industry Analyst."
+    ),
     tools=frozenset(
         {
             TOOL_LOOKUP_ENTITY,
@@ -146,12 +184,38 @@ BUSINESS_ANALYST = RoleSpec(
     ),
     tool_budget={"search_company_corpus": 10},
     always_present=True,
+    acquisition_tools=frozenset({TOOL_SEARCH_WEB, TOOL_FETCH_PUBLIC_SOURCE}),
+)
+
+INDUSTRY_ANALYST = RoleSpec(
+    role_id="industry_analyst",
+    display_name="Industry / Commodity Analyst",
+    focus=(
+        "Market size, demand and supply, benchmark prices, inventories and the "
+        "structural trends that set revenue and margins across the industry — "
+        "quantified, and resting materially on INDEPENDENT sources, not only on the "
+        "issuer's own account of its market."
+    ),
+    tools=frozenset(
+        {
+            TOOL_SEARCH_COMPANY_CORPUS,
+            TOOL_GET_MACRO_SERIES,
+            TOOL_GET_INDUSTRY_SERIES,
+        }
+    ),
+    tool_budget={"search_company_corpus": 8, "get_industry_series": 8},
+    always_present=True,
+    acquisition_tools=frozenset({TOOL_SEARCH_WEB, TOOL_FETCH_PUBLIC_SOURCE}),
 )
 
 RISK_ANALYST = RoleSpec(
     role_id="risk_analyst",
-    display_name="Risk / Governance Analyst",
-    focus="Leverage, covenants, ownership, board, litigation.",
+    display_name="Risk & Governance Analyst",
+    focus=(
+        "Political, legal, labour, environmental, community and operational risks, "
+        "with evidence of current severity; ownership, control, board and related "
+        "parties; concentration and fragility. Not generic disclosure boilerplate."
+    ),
     tools=frozenset(
         {
             TOOL_GET_FINANCIAL_FACTS,
@@ -162,6 +226,7 @@ RISK_ANALYST = RoleSpec(
     ),
     tool_budget={"search_company_corpus": 8},
     always_present=True,
+    acquisition_tools=frozenset({TOOL_SEARCH_WEB, TOOL_FETCH_PUBLIC_SOURCE}),
 )
 
 MANAGEMENT_ANALYST = RoleSpec(
@@ -195,20 +260,31 @@ CAPITAL_ALLOCATION_ANALYST = RoleSpec(
 
 COMPETITIVE_ANALYST = RoleSpec(
     role_id="competitive_analyst",
-    display_name="Competitive Intelligence Analyst",
-    focus="Peer set, relative position, share shifts.",
+    display_name="Competitive Analyst",
+    focus=(
+        "Verified peers and comparable operating and financial metrics: scale, "
+        "growth, cost position, asset quality, balance sheet. Comparability is "
+        "established, never assumed."
+    ),
     tools=frozenset(
         {TOOL_GET_PEER_SET, TOOL_GET_PEER_FINANCIALS, TOOL_SEARCH_COMPANY_CORPUS}
     ),
+    always_present=True,
+    acquisition_tools=frozenset({TOOL_SEARCH_WEB, TOOL_FETCH_PUBLIC_SOURCE}),
 )
 
 EVENT_ANALYST = RoleSpec(
     role_id="event_analyst",
-    display_name="Event / Catalyst Analyst",
-    focus="Scheduled and unscheduled catalysts, the filings calendar.",
+    display_name="Growth & Catalyst Analyst",
+    focus=(
+        "The project pipeline and dated catalysts: capacity additions, capex, "
+        "permits, construction status, offtake and contracts, expected timing."
+    ),
     tools=frozenset(
         {TOOL_GET_IR_EVENTS, TOOL_GET_RECENT_FILINGS, TOOL_SEARCH_COMPANY_CORPUS}
     ),
+    always_present=True,
+    acquisition_tools=frozenset({TOOL_SEARCH_WEB, TOOL_FETCH_PUBLIC_SOURCE}),
 )
 
 MACRO_ANALYST = RoleSpec(
@@ -276,6 +352,7 @@ ROLES: dict[str, RoleSpec] = {
     for role in (
         FINANCIAL_ANALYST,
         BUSINESS_ANALYST,
+        INDUSTRY_ANALYST,
         RISK_ANALYST,
         MANAGEMENT_ANALYST,
         CAPITAL_ALLOCATION_ANALYST,
@@ -322,6 +399,7 @@ def roles_that_can_answer(required_tools: "frozenset[str] | set[str]") -> list[R
 
 __all__ = [
     "ALWAYS_PRESENT",
+    "INDUSTRY_ANALYST",
     "EXTERNAL_RESEARCH_ANALYST",
     "ON_EXHAUSTED_RETURN_PARTIAL",
     "ON_MISSING_RAISE_GAP",

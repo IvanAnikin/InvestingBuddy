@@ -512,4 +512,9 @@ class TestEndToEnd:
         assert result.tasks_run == len(plan.tasks)
         assert result.stopped_by in LOOP_STOP_REASONS
         summary = await ledger.summarise(session, run)
-        assert summary.questions_open == 0
+        # V3.18.2 — every ASSIGNED question is answered. A quick run staffs at most four
+        # tasks while the base research model has eight specialists, so questions whose
+        # owner could not be seated stay open — named in the plan, never silently
+        # dropped — and are the only open ones.
+        unstaffed = {key for key, _reason in plan.unassignable}
+        assert summary.questions_open == len(unstaffed)

@@ -104,6 +104,9 @@ class MacroSeries(Base):
     scale: Mapped[str | None] = mapped_column(sa.String(20))
     #: ISO-3166 alpha-3, an aggregate code (``EMU``, ``WLD``), or NULL for global.
     geography: Mapped[str | None] = mapped_column(sa.String(20))
+    #: V3.18 (migration 041) — the material a series describes (``copper``,
+    #: ``rare_earths`` …), so industry data is queryable by what it is about.
+    commodity: Mapped[str | None] = mapped_column(sa.String(60))
     #: ``annual`` | ``quarterly`` | ``monthly`` | ``weekly`` | ``daily``. A macro
     #: vocabulary, deliberately NOT the financial ``ReportingPeriod`` one: an issuer's
     #: fiscal half has no statistical analogue and a shared vocabulary would invite

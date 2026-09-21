@@ -99,6 +99,9 @@ class ResearchRun(Base):
     playbook_versions_json: Mapped[dict | None] = mapped_column(JSONB)
     budget_json: Mapped[dict | None] = mapped_column(JSONB)
     consumption_json: Mapped[dict | None] = mapped_column(JSONB)
+    #: V3.18 (migration 041) — the discovery thesis that caused this research, when it
+    #: came from discovery. ``None`` on a run written before V3.18 or started directly.
+    thesis_json: Mapped[dict | None] = mapped_column(JSONB)
     started_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True), nullable=False, default=_utcnow
     )
@@ -162,6 +165,26 @@ class ResearchQuestion(Base):
     resolution_status: Mapped[str] = mapped_column(
         sa.String(20), nullable=False, default="open", server_default=sa.text("'open'")
     )
+    # ── V3.18.2 (migration 041): the question as a node of a research graph ── #
+    #: Analytical domain (``director.domains``).
+    domain: Mapped[str | None] = mapped_column(sa.String(40))
+    why_it_matters: Mapped[str | None] = mapped_column(sa.String(1000))
+    #: The role that owns findings under this question.
+    owner_role: Mapped[str | None] = mapped_column(sa.String(60))
+    depends_on_json: Mapped[list | None] = mapped_column(JSONB)
+    required_metrics_json: Mapped[list | None] = mapped_column(JSONB)
+    #: ``EvidenceContract.to_dict()`` — what the evidence behind an answer must be.
+    evidence_contract_json: Mapped[dict | None] = mapped_column(JSONB)
+    search_intents_json: Mapped[list | None] = mapped_column(JSONB)
+    #: ``satisfied`` | ``partial`` | ``unmet`` — the contract's verdict, judged over the
+    #: evidence the tools returned, never over what a model wrote.
+    contract_status: Mapped[str | None] = mapped_column(sa.String(30))
+    #: ``ContractEvaluation.to_dict()`` plus the citation ids it was judged over.
+    contract_detail_json: Mapped[dict | None] = mapped_column(JSONB)
+    #: Why it is still open when the run ended — a closed vocabulary.
+    unresolved_reason: Mapped[str | None] = mapped_column(sa.String(40))
+    #: Every rung the acquisition ladder tried, in order: why it searched, why it stopped.
+    acquisition_log_json: Mapped[list | None] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True), default=_utcnow, server_default=sa.func.now()
     )
@@ -176,6 +199,7 @@ class ResearchQuestion(Base):
         sa.Index(
             "ix_research_questions_run_status", "research_run_id", "resolution_status"
         ),
+        sa.Index("ix_research_questions_run_domain", "research_run_id", "domain"),
         sa.CheckConstraint(
             "origin IN ('playbook', 'director', 'red_team', 'prior_gap')",
             name="ck_research_questions_origin",
@@ -291,6 +315,16 @@ class ResearchFinding(Base):
     scope_key: Mapped[str | None] = mapped_column(sa.String(220))
     originating_role: Mapped[str | None] = mapped_column(sa.String(60))
     provider: Mapped[str | None] = mapped_column(sa.String(40))
+    # ── V3.18 (migration 041): ownership ─────────────────────────────────── #
+    #: ``<domain>.<question or topic>`` — the one place this observation belongs.
+    topic_key: Mapped[str | None] = mapped_column(sa.String(160))
+    domain: Mapped[str | None] = mapped_column(sa.String(40))
+    #: Normalised identity of the CLAIM, used to recognise a restatement.
+    claim_key: Mapped[str | None] = mapped_column(sa.String(240))
+    #: Findings this one builds on instead of restating.
+    references_finding_ids_json: Mapped[list | None] = mapped_column(JSONB)
+    #: Source kinds of the evidence it cites (``director.contracts.SOURCE_KINDS``).
+    source_kinds_json: Mapped[list | None] = mapped_column(JSONB)
     #: ``verified`` | ``unverified`` | ``withdrawn``. A finding the Red Team withdrew
     #: is kept with its status, not deleted.
     verification_status: Mapped[str] = mapped_column(
@@ -306,6 +340,7 @@ class ResearchFinding(Base):
     __table_args__ = (
         sa.Index("ix_research_findings_run", "research_run_id"),
         sa.Index("ix_research_findings_run_question", "research_run_id", "question_key"),
+        sa.Index("ix_research_findings_run_topic", "research_run_id", "topic_key"),
         # THE RULE. A finding without evidence ids or calculation ids is not a finding,
         # and there is no "trust me" state.
         sa.CheckConstraint(
@@ -370,6 +405,8 @@ class ResearchGap(Base):
     status: Mapped[str] = mapped_column(
         sa.String(20), nullable=False, default="open", server_default=sa.text("'open'")
     )
+    #: V3.18 (migration 041) — whose gap it is (``services.knowledge_state``).
+    knowledge_state: Mapped[str | None] = mapped_column(sa.String(50))
     closed_by_finding_id: Mapped[uuid.UUID | None] = mapped_column(
         sa.Uuid(as_uuid=True),
         sa.ForeignKey(

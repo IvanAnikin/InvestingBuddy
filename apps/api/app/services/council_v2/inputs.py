@@ -83,6 +83,37 @@ class FindingRef:
     scope_key: str | None
     originating_role: str | None
     verification_status: str
+    #: V3.18.2 — which domain and topic the finding belongs to, and the kinds of source
+    #: behind it. Defaults keep every existing constructor valid.
+    domain: str | None = None
+    topic_key: str | None = None
+    question_key: str | None = None
+    source_kinds: tuple[str, ...] = ()
+    references_finding_ids: tuple[str, ...] = ()
+
+    @classmethod
+    def from_row(cls, row: Any) -> "FindingRef":
+        """ONE mapping from a ledger row, used by every reader of findings."""
+        return cls(
+            finding_id=row.id,
+            statement=row.statement,
+            mechanism=row.mechanism,
+            direction=row.direction,
+            confidence=row.confidence,
+            evidence_ids=tuple(row.evidence_ids_json or ()),
+            calculation_ids=tuple(row.calculation_ids_json or ()),
+            period_key=row.period_key,
+            scope_key=row.scope_key,
+            originating_role=row.originating_role,
+            verification_status=row.verification_status,
+            domain=getattr(row, "domain", None),
+            topic_key=getattr(row, "topic_key", None),
+            question_key=getattr(row, "question_key", None),
+            source_kinds=tuple(getattr(row, "source_kinds_json", None) or ()),
+            references_finding_ids=tuple(
+                getattr(row, "references_finding_ids_json", None) or ()
+            ),
+        )
 
     @property
     def is_verified(self) -> bool:
@@ -101,6 +132,11 @@ class FindingRef:
             "scope_key": self.scope_key,
             "originating_role": self.originating_role,
             "verification_status": self.verification_status,
+            "domain": self.domain,
+            "topic_key": self.topic_key,
+            "question_key": self.question_key,
+            "source_kinds": list(self.source_kinds),
+            "references_finding_ids": list(self.references_finding_ids),
         }
 
 
@@ -355,22 +391,7 @@ async def _findings(session: Any, run: Any) -> tuple[FindingRef, ...]:
         .limit(MAX_FINDINGS + 1)
     )
     rows = (await session.execute(stmt)).scalars().all()
-    return tuple(
-        FindingRef(
-            finding_id=row.id,
-            statement=row.statement,
-            mechanism=row.mechanism,
-            direction=row.direction,
-            confidence=row.confidence,
-            evidence_ids=tuple(row.evidence_ids_json or ()),
-            calculation_ids=tuple(row.calculation_ids_json or ()),
-            period_key=row.period_key,
-            scope_key=row.scope_key,
-            originating_role=row.originating_role,
-            verification_status=row.verification_status,
-        )
-        for row in rows
-    )
+    return tuple(FindingRef.from_row(row) for row in rows)
 
 
 async def _gaps(session: Any, run: Any) -> tuple[GapRef, ...]:

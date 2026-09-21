@@ -46,6 +46,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Protocol, runtime_checkable
 
 from app.services.agent_tools.contracts import EXTERNAL_TOOL_NAMES
+from app.services.director.contracts import DEFAULT_CONTRACT, EvidenceContract
 from app.services.director.roles import (
     ALWAYS_PRESENT,
     RoleSpec,
@@ -60,36 +61,20 @@ from app.services.research_mode import ModeLimits, ResearchMode, limits_for, par
 #: lower it and nothing can raise it: a plan with 400 questions is not a plan.
 ABSOLUTE_MAX_QUESTIONS = 40
 
-#: The baseline every run asks, whatever the industry. Deliberately short: a long generic
-#: list is how a specialised playbook's questions get crowded out of the budget.
-BASELINE_QUESTIONS: tuple[tuple[str, str, frozenset[str]], ...] = (
-    (
-        "identity",
-        "Which legal entity is this, and which securities and listings does it have?",
-        frozenset({"lookup_entity"}),
-    ),
-    (
-        "revenue_trajectory",
-        "How has Group revenue moved over the available reporting periods, and in "
-        "which period type?",
-        frozenset({"get_financial_series"}),
-    ),
-    (
-        "profitability",
-        "What are the reported margins, and what do the deterministic calculations make of them?",
-        frozenset({"get_calculated_metrics"}),
-    ),
-    (
-        "balance_sheet_risk",
-        "What is the leverage position, and what does the filing say about covenants "
-        "or refinancing?",
-        frozenset({"get_financial_facts", "search_company_corpus"}),
-    ),
-    (
-        "recent_disclosure",
-        "What has the issuer disclosed most recently, and for which period?",
-        frozenset({"search_company_corpus"}),
-    ),
+#: V3.18.2 — the baseline every run asks is the BASE RESEARCH MODEL
+#: (`director.base_model`): at least one question per analytical domain, each with an
+#: owner, a reason, an evidence contract and search intents. The five-question list this
+#: replaces was four-fifths financial statements, which is why a report on a copper miner
+#: said nothing about copper. Kept under its old name as ``(key, text, tools)`` because
+#: the carry-forward restoration below and several callers read it in that shape.
+def _base_model_questions() -> tuple:
+    from app.services.director.base_model import BASE_QUESTIONS
+
+    return BASE_QUESTIONS
+
+
+BASELINE_QUESTIONS: tuple[tuple[str, str, frozenset[str]], ...] = tuple(
+    (q.key, q.text, frozenset(q.required_tools)) for q in _base_model_questions()
 )
 
 #: Asked only when the external tools are implemented — V3.12. Kept out of
@@ -168,6 +153,14 @@ class PlannedQuestion:
     #: every calculated-metrics call fail ``invalid_arguments``, which in turn made
     #: the luxury playbook's blocking question permanently unanswerable.
     required_calculations: tuple[str, ...] = ()
+    # ── V3.18.2 — see `PlaybookQuestion` for the meaning of each ───────────── #
+    domain: str | None = None
+    why_it_matters: str = ""
+    owner_role: str | None = None
+    depends_on: tuple[str, ...] = ()
+    evidence_contract: EvidenceContract = DEFAULT_CONTRACT
+    search_intents: tuple[str, ...] = ()
+    series_labels: tuple[str, ...] = ()
 
 
 @dataclass
@@ -264,16 +257,9 @@ def implemented_tools(cfg: "Any | None" = None) -> frozenset[str]:
 
 
 def _baseline_questions() -> list[PlannedQuestion]:
-    return [
-        PlannedQuestion(
-            key=key,
-            text=text,
-            origin=ledger.ORIGIN_DIRECTOR,
-            required_tools=tools,
-            priority=2,
-        )
-        for key, text, tools in BASELINE_QUESTIONS
-    ]
+    from app.services.playbooks.schema import planned_from
+
+    return [planned_from(q, origin=ledger.ORIGIN_DIRECTOR) for q in _base_model_questions()]
 
 
 def _external_questions(available: "frozenset[str]") -> list[PlannedQuestion]:
@@ -285,6 +271,12 @@ def _external_questions(available: "frozenset[str]") -> list[PlannedQuestion]:
             origin=ledger.ORIGIN_DIRECTOR,
             required_tools=tools,
             priority=3,
+            domain="catalysts",
+            owner_role="external_research_analyst",
+            why_it_matters=(
+                "The platform's own holdings are worst at what was reported after "
+                "the latest document it holds."
+            ),
         )
         for key, text, tools in EXTERNAL_QUESTIONS
         if tools <= available
@@ -318,23 +310,22 @@ async def plan_research(
     for playbook in playbooks:
         plan.playbook_versions[playbook.playbook_id] = playbook.version
         for question in playbook.mandatory_questions():
+            # Carried WHOLE. Rebuilding it field by field here is how
+            # `required_calculations` was dropped once already; a copy with the origin
+            # pinned cannot drop anything a later slice adds.
             questions.setdefault(
-                question.key,
-                PlannedQuestion(
-                    key=question.key,
-                    text=question.text,
-                    origin=ledger.ORIGIN_PLAYBOOK,
-                    required_tools=frozenset(question.required_tools),
-                    priority=question.priority,
-                    blocking=question.blocking,
-                    required_evidence_classes=tuple(question.required_evidence_classes),
-                    required_calculations=tuple(question.required_calculations),
-                ),
+                question.key, replace(question, origin=ledger.ORIGIN_PLAYBOOK)
             )
 
     # 2. Prior gaps: a gap the last run could not close is this run's question, and it
     #    carries its origin so "we are re-asking" is visible.
+    from app.services.director.base_model import RETIRED_QUESTION_KEYS
+
     for key, text in prior_open_gaps:
+        if key in RETIRED_QUESTION_KEYS:
+            # A question this platform no longer asks, because nothing can answer it
+            # with a citable item. Re-asking it from a gap would re-plan the noise.
+            continue
         questions.setdefault(
             key,
             PlannedQuestion(
@@ -398,6 +389,7 @@ async def plan_research(
         "differently here than in `questions`"
     )
     _definitions.update(_external_defs)
+    base_by_key = {q.key: q for q in _baseline_questions()}
     for key, (text, tools, priority) in _definitions.items():
         existing = questions.get(key)
         if existing is None or existing.required_tools:
@@ -406,15 +398,34 @@ async def plan_research(
         # become unassignable because of a capability that is switched off.
         needed = frozenset(tools) & available_now
         if needed:
-            questions[key] = replace(
+            restored = replace(
                 existing, required_tools=needed, text=text, priority=priority
             )
+            # V3.18.2 — the rest of the definition comes back too: a re-asked
+            # question that lost its domain, owner and contract would be answered by
+            # whoever was least loaded and judged by the default contract.
+            definition = base_by_key.get(key)
+            if definition is not None:
+                restored = replace(
+                    restored,
+                    domain=definition.domain,
+                    why_it_matters=definition.why_it_matters,
+                    owner_role=definition.owner_role,
+                    evidence_contract=definition.evidence_contract,
+                    search_intents=definition.search_intents,
+                    series_labels=definition.series_labels,
+                    required_calculations=definition.required_calculations,
+                    depends_on=definition.depends_on,
+                )
+            questions[key] = restored
 
-    ordered = sorted(
-        questions.values(),
-        # Blocking first, then priority, then a stable key order. A blocking question
-        # dropped for capacity would be a methodology silently not applied.
-        key=lambda q: (not q.blocking, q.priority, q.key),
+    ordered = _dependency_ordered(
+        sorted(
+            questions.values(),
+            # Blocking first, then priority, then a stable key order. A blocking
+            # question dropped for capacity would be a methodology silently not applied.
+            key=lambda q: (not q.blocking, q.priority, q.key),
+        )
     )
 
     # 4. An optional model refinement, bounded and unable to do harm.
@@ -436,6 +447,13 @@ async def plan_research(
     for role_id in extra_roles:
         if role_id not in wanted_roles and role_for(role_id) is not None:
             wanted_roles.append(role_id)
+    # V3.18.2 — a question's OWNER is seated. A question owned by the valuation-context
+    # analyst must not be answered by whichever always-present role happens to hold the
+    # tools; that is the assignment rule that put eight roles on one set of facts.
+    for question in plan.questions:
+        owner = question.owner_role
+        if owner and owner not in wanted_roles and role_for(owner) is not None:
+            wanted_roles.append(owner)
 
     assignments: dict[str, PlannedTask] = {}
     available = implemented_tools(cfg)
@@ -505,7 +523,10 @@ async def plan_research(
                 )
             )
             continue
-        chosen = _least_loaded(candidates, assignments)
+        owner = next(
+            (role for role in candidates if role.role_id == question.owner_role), None
+        )
+        chosen = owner or _least_loaded(candidates, assignments)
 
         # SILENT DEGRADATION GUARD.
         #
@@ -554,6 +575,32 @@ async def plan_research(
         tasks = tasks[: limits.max_tasks]
     plan.tasks = sorted(tasks, key=lambda t: t.role_id)
     return plan
+
+
+def _dependency_ordered(questions: "list[PlannedQuestion]") -> "list[PlannedQuestion]":
+    """Stable order in which every question comes after the questions it depends on.
+
+    A dependency on a key not in the plan is ignored (it was dropped or never planned),
+    and a cycle cannot hang the planner: anything still unplaced after a full pass keeps
+    its original relative order.
+    """
+    keys = {q.key for q in questions}
+    placed: list[PlannedQuestion] = []
+    placed_keys: set[str] = set()
+    pending = list(questions)
+    while pending:
+        progressed = False
+        for question in list(pending):
+            parents = {k for k in question.depends_on if k in keys}
+            if parents <= placed_keys:
+                placed.append(question)
+                placed_keys.add(question.key)
+                pending.remove(question)
+                progressed = True
+        if not progressed:
+            placed.extend(pending)
+            break
+    return placed
 
 
 def _least_loaded(
@@ -642,6 +689,16 @@ async def persist_plan(session: Any, run: Any, plan: ResearchPlan) -> dict[str, 
             priority=question.priority,
             blocking=question.blocking,
             required_evidence_classes=question.required_evidence_classes,
+            # V3.18.2 — the graph, persisted: who owns it, why it is asked, what it
+            # needs, and what counts as an answer. "Why did the agent search for this
+            # source?" has to be answerable from the row.
+            domain=question.domain,
+            why_it_matters=question.why_it_matters or None,
+            owner_role=question.owner_role,
+            depends_on=question.depends_on,
+            required_metrics=question.required_calculations,
+            evidence_contract=question.evidence_contract.to_dict(),
+            search_intents=question.search_intents,
         )
         counts["questions"] += 1
     for task in plan.tasks:

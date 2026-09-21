@@ -124,6 +124,9 @@ class V3ResearchOutcome:
     #: and `no playbook applied` alone tells a reader neither.
     classification: dict[str, Any] = field(default_factory=dict)
     elapsed_seconds: float = 0.0
+    #: V3.18.2 — every planned question as a node: domain, owner, contract verdict,
+    #: evidence counts, why it is still open, and what acquisition tried.
+    question_graph: list[dict[str, Any]] = field(default_factory=list)
     #: Why the run produced less than a full one. Never empty on a degraded run: a
     #: pipeline that narrowed silently is one nobody can widen.
     degraded: list[str] = field(default_factory=list)
@@ -149,6 +152,7 @@ class V3ResearchOutcome:
             "consumption": dict(self.consumption),
             "external_research": dict(self.external_research),
             "classification": dict(self.classification),
+            "question_graph": list(self.question_graph),
             "elapsed_seconds": round(self.elapsed_seconds, 3),
             "degraded": list(self.degraded),
             "error": self.error,
@@ -236,6 +240,21 @@ async def run_v3_research(
     # persisted, 0 findings, and **the V2 report was never written**. The unit suite
     # runs on SQLite with foreign keys OFF, which is why 6,100 green tests missed it.
     research_job_id = await _resolve_research_job_id(session, research_job_id, outcome)
+
+    # V3.18.2 — the ledger this code writes has columns migration 041 adds. On a database
+    # without them every ledger query fails, so the run is not attempted: it degrades
+    # with the reason named, and the report the V2 path produced is untouched.
+    from app.services.schema_readiness import migration_041_readiness
+
+    readiness = await migration_041_readiness(session)
+    if not readiness.ready:
+        outcome.error = "schema_not_ready"
+        outcome.degraded.append(
+            "the V3 research graph was not run: migration 041 is not applied to this "
+            f"database (missing {', '.join(readiness.missing[:4])})"
+        )
+        outcome.elapsed_seconds = clock() - started
+        return outcome
 
     try:
         # A SAVEPOINT, so a V3 error that PROPAGATES releases only V3's writes rather
@@ -449,14 +468,17 @@ async def _run(
             from app.services.director.roles import role_for
 
             role = role_for(role_id)
-            tools = role.tools if role is not None else frozenset()
+            # V3.18.2 — the session may call the role's acquisition ladder too. Holding a
+            # ladder tool does not ASSIGN questions (that is `tools`), and the ladder is
+            # climbed only when a question's contract is unmet and allows it.
+            tools = role.session_tools if role is not None else frozenset()
             # A role's declared source classes must reach its policy, or the governance
             # check refuses every tool that reads anything but platform-internal data.
             # V3.12 found this by running it: `search_web` reads `public_web`, the
             # external role declares `public_web`, and the policy was built with an
             # empty set — so the very first external call was refused
             # `access_class_not_permitted`. The check was right; the wiring was not.
-            classes = role.source_classes if role is not None else ()
+            classes = role.session_source_classes if role is not None else ()
             # A role's declared `tool_budget` was persisted to the plan and enforced by
             # nothing: it is keyed by TOOL NAME while `ToolBudget` bounds tool CLASSES,
             # so the two shapes never met. What maps unambiguously is the total — the
@@ -559,8 +581,18 @@ async def _run(
         )
 
     # 9. What a reader can cite.
-    outcome.findings = [f.to_dict() for f in council.findings[:60]]
+    #
+    # V3.18.2 — from the LEDGER, not from the Council's input. A refused Council used
+    # to empty this list: one open blocking question and the report showed no findings
+    # at all while the ledger held them (MRNA, live: ten findings recorded, zero shown).
+    # A refusal withholds the SYNTHESIS — the verdict an unanswered blocking question
+    # makes unsafe — not the research. Each finding says whether the Council convened.
+    if council.convened:
+        outcome.findings = [f.to_dict() for f in council.findings[:60]]
+    else:
+        outcome.findings = await _ledger_findings(session, run, limit=60)
     outcome.gaps = [g.to_dict() for g in council.gaps[:40]]
+    outcome.question_graph = await _question_graph(session, run)
 
     # 10. Research memory: the delta against the previous run.
     #
@@ -585,6 +617,95 @@ async def _run(
         model_routing, loop_result, summary, verdict, challenge_result, cfg, tool_units
     )
     await session.flush()
+
+
+async def _ledger_findings(session: Any, run: Any, *, limit: int) -> list[dict[str, Any]]:
+    """Findings straight from the ledger, for a run whose Council did not convene."""
+    from sqlalchemy import select
+
+    from app.models.ledger import ResearchFinding
+    from app.services.council_v2.inputs import FindingRef
+
+    try:
+        rows = (
+            await session.execute(
+                select(ResearchFinding)
+                .where(
+                    ResearchFinding.research_run_id == run.id,
+                    ResearchFinding.verification_status != "withdrawn",
+                )
+                .order_by(ResearchFinding.created_at)
+                .limit(limit)
+            )
+        ).scalars().all()
+    except Exception:  # noqa: BLE001 - a read that fails must not cost the run
+        return []
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        try:
+            ref = FindingRef.from_row(row)
+            item = ref.to_dict()
+        except Exception:  # noqa: BLE001
+            continue
+        item["council_convened"] = False
+        out.append(item)
+    return out
+
+
+async def _question_graph(session: Any, run: Any) -> list[dict[str, Any]]:
+    """The question graph as a reader sees it. Bounded, and never raises."""
+    from sqlalchemy import func, select
+
+    from app.models.ledger import ResearchFinding, ResearchQuestion
+
+    try:
+        questions = (
+            await session.execute(
+                select(ResearchQuestion)
+                .where(ResearchQuestion.research_run_id == run.id)
+                .order_by(ResearchQuestion.priority, ResearchQuestion.question_key)
+            )
+        ).scalars().all()
+        counts = dict(
+            (
+                await session.execute(
+                    select(ResearchFinding.question_key, func.count())
+                    .where(
+                        ResearchFinding.research_run_id == run.id,
+                        ResearchFinding.verification_status != "withdrawn",
+                    )
+                    .group_by(ResearchFinding.question_key)
+                )
+            ).all()
+        )
+    except Exception:  # noqa: BLE001
+        return []
+    graph: list[dict[str, Any]] = []
+    for q in questions[:60]:
+        detail = q.contract_detail_json or {}
+        graph.append(
+            {
+                "question_key": q.question_key,
+                "text": q.text,
+                "domain": q.domain,
+                "owner_role": q.owner_role,
+                "origin": q.origin,
+                "priority": q.priority,
+                "blocking": q.blocking,
+                "why_it_matters": q.why_it_matters,
+                "depends_on": list(q.depends_on_json or []),
+                "resolution_status": q.resolution_status,
+                "contract_status": q.contract_status,
+                "contract_missing": list(detail.get("missing") or []),
+                "evidence_items": detail.get("items", 0),
+                "distinct_sources": detail.get("distinct_sources", 0),
+                "source_kinds": list(detail.get("kinds_present") or []),
+                "findings": int(counts.get(q.question_key, 0)),
+                "unresolved_reason": q.unresolved_reason,
+                "acquisition_log": list(q.acquisition_log_json or [])[-8:],
+            }
+        )
+    return graph
 
 
 async def _rows_for_this_run(session: Any, run: Any, company: Any, model: Any) -> list[Any]:

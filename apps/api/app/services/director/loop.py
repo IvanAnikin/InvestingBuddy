@@ -102,6 +102,8 @@ class FindingDraft:
     confidence: float | None = None
     period_key: str | None = None
     scope_key: str | None = None
+    #: V3.18.2 — source kinds of the cited evidence, for the finding's provenance.
+    source_kinds: tuple[str, ...] = ()
 
 
 @dataclass
@@ -132,6 +134,12 @@ class TaskOutcome:
     stopped_by: str | None = None
     failed: bool = False
     detail: str | None = None
+    #: V3.18.2 — every citable item retrieved, per question, as the evidence contract
+    #: sees it. Evaluated by the loop, never by the investigator, so the verdict on a
+    #: question cannot be written by the same code that wrote its answer.
+    question_evidence: dict[str, list[Any]] = field(default_factory=dict)
+    #: Per question, what each rung of acquisition did, in order.
+    acquisition_steps: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
 
 
 @runtime_checkable
@@ -248,6 +256,9 @@ async def run_investigation(
     pending: list[tuple[str, list[str]]] = [
         (task.role_id, list(task.question_keys)) for task in plan.tasks
     ]
+    #: V3.18.2 — everything retrieved per question across ALL rounds, so a contract is
+    #: judged over the question's whole evidence and not only its latest round's.
+    evidence_so_far: dict[str, dict[str, Any]] = {}
 
     for round_index in range(limits.max_rounds):
         if not pending:
@@ -303,6 +314,8 @@ async def run_investigation(
             record.tool_calls += max(0, int(outcome.tool_calls))
 
             for draft in outcome.findings:
+                question_def = questions_by_key.get(draft.question_key or "")
+                domain = _domain_of(question_def, role_id)
                 try:
                     await ledger.record_finding(
                         session,
@@ -318,6 +331,15 @@ async def run_investigation(
                         period_key=draft.period_key,
                         scope_key=draft.scope_key,
                         originating_role=role_id,
+                        # V3.18.2 — ownership. The finding belongs to its question's
+                        # domain, so the report can place it exactly once.
+                        domain=domain,
+                        topic_key=(
+                            f"{domain}.{draft.question_key}"
+                            if domain and draft.question_key
+                            else None
+                        ),
+                        source_kinds=draft.source_kinds,
                     )
                 except ledger.UnsupportedFindingError:
                     # An investigator that returned a statement with no support has
@@ -358,6 +380,13 @@ async def run_investigation(
 
             answered.update(outcome.answered_question_keys)
             await _mark_answered(session, run, outcome.answered_question_keys)
+            await _judge_contracts(
+                session,
+                run,
+                outcome,
+                questions_by_key,
+                evidence_so_far,
+            )
 
             if outcome.failed:
                 await ledger.finish_task(
@@ -416,6 +445,14 @@ async def run_investigation(
             await ledger.accept_gap(session, open_gap)
             accepted += 1
 
+    await _record_unresolved(
+        session,
+        run,
+        plan,
+        stop_reason=stop_reason,
+        evidence_so_far=evidence_so_far,
+    )
+
     summary = await ledger.summarise(session, run)
     open_keys = await _open_question_keys(session, run)
     result = LoopResult(
@@ -444,6 +481,112 @@ async def run_investigation(
         consumption={"tool_calls": tool_calls, "tasks": tasks_run},
     )
     return result
+
+
+def _domain_of(question: Any, role_id: str) -> str | None:
+    """A question's domain, or its owner role's default one for a pre-V3.18 question."""
+    from app.services.director.domains import DOMAIN_SPECS
+
+    declared = getattr(question, "domain", None)
+    if declared:
+        return declared
+    owner = getattr(question, "owner_role", None) or role_id
+    return next((spec.domain for spec in DOMAIN_SPECS if spec.default_owner == owner), None)
+
+
+async def _judge_contracts(
+    session: Any,
+    run: Any,
+    outcome: TaskOutcome,
+    questions_by_key: dict[str, Any],
+    evidence_so_far: dict[str, dict[str, Any]],
+) -> None:
+    """Judge each worked question's evidence contract and record the verdict.
+
+    The verdict is the LOOP's, over what the tools returned. It is recorded beside the
+    question with the missing dimension named, so "partially answered — no independent
+    statistical source" is a fact the next round and a reader can both act on.
+
+    Never raises: a record that fails must not cost the run its findings.
+    """
+    from app.services.director.contracts import evaluate_contract
+
+    worked = set(outcome.question_evidence) | set(outcome.acquisition_steps)
+    for key in worked:
+        pool = evidence_so_far.setdefault(key, {})
+        for ref in outcome.question_evidence.get(key, ()):
+            if ref is not None:
+                pool.setdefault(ref.citation_id, ref)
+        question = questions_by_key.get(key)
+        evaluation = evaluate_contract(
+            getattr(question, "evidence_contract", None), pool.values()
+        )
+        detail = evaluation.to_dict()
+        detail["citation_ids"] = sorted(pool)[:60]
+        try:
+            await ledger.update_question_graph_state(
+                session,
+                run,
+                key,
+                contract_status=evaluation.status,
+                contract_detail=detail,
+                acquisition_steps=outcome.acquisition_steps.get(key, ()),
+                clear_unresolved=evaluation.satisfied,
+            )
+        except Exception:  # noqa: BLE001 - the audit record must not end the run
+            continue
+
+
+async def _record_unresolved(
+    session: Any,
+    run: Any,
+    plan: ResearchPlan,
+    *,
+    stop_reason: str,
+    evidence_so_far: dict[str, dict[str, Any]],
+) -> None:
+    """Name why every question that did not reach its contract is still open.
+
+    Four answers a reader needs told apart: nothing citable was acquired; something was
+    acquired but not enough of the right kind; a budget ended the run first; or no tool
+    could answer it at all. They call for different fixes, and "open" alone says none.
+    """
+    from sqlalchemy import select
+
+    from app.models.ledger import ResearchQuestion
+
+    unassignable = {
+        key: reason for key, reason in plan.unassignable
+    }
+    rows = (
+        await session.execute(
+            select(ResearchQuestion).where(ResearchQuestion.research_run_id == run.id)
+        )
+    ).scalars().all()
+    limited = stop_reason in LIMIT_STOP_REASONS
+    for row in rows:
+        if row.contract_status == "satisfied":
+            continue
+        if row.question_key in unassignable:
+            # A question dropped because the MODE's task cap was reached is a budget
+            # outcome, not a capability one — widening the mode answers it.
+            reason = (
+                ledger.UNRESOLVED_BUDGET_EXHAUSTED
+                if "budget" in unassignable[row.question_key]
+                else ledger.UNRESOLVED_TOOL_UNAVAILABLE
+            )
+        elif evidence_so_far.get(row.question_key):
+            reason = ledger.UNRESOLVED_CONTRACT_UNMET
+        elif row.question_key not in evidence_so_far and limited:
+            reason = ledger.UNRESOLVED_BUDGET_EXHAUSTED
+        elif row.question_key not in evidence_so_far and row.contract_status is None:
+            reason = ledger.UNRESOLVED_NOT_REACHED
+        else:
+            reason = ledger.UNRESOLVED_NOT_ACQUIRED
+        if row.contract_status is None:
+            row.contract_status = "unmet"
+        row.unresolved_reason = reason
+    await session.flush()
 
 
 def _rules_satisfied(
