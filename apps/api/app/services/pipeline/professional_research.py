@@ -352,12 +352,20 @@ def assemble(inputs: ReportInputs) -> dict[str, Any]:
         ][:12],
     }
 
-    platform_gaps = [
-        {"description": g.description, "question_key": g.question_key,
-         "knowledge_state": g.knowledge_state}
-        for g in inputs.gaps
-        if (g.kind or "platform_evidence_gap") == "platform_evidence_gap"
-    ]
+    platform_gaps: list[dict[str, Any]] = []
+    seen_gaps: set[tuple[str | None, str]] = set()
+    for g in inputs.gaps:
+        if (g.kind or "platform_evidence_gap") != "platform_evidence_gap":
+            continue
+        # One entry per (question, statement): a gap re-recorded each round is one gap.
+        identity = (g.question_key, g.description)
+        if identity in seen_gaps:
+            continue
+        seen_gaps.add(identity)
+        platform_gaps.append(
+            {"description": g.description, "question_key": g.question_key,
+             "knowledge_state": g.knowledge_state}
+        )
     business_risks = [
         f["label"] for f in by_section["risks_and_counter_thesis"]
         if f["domain"] in {"risks", "governance"}

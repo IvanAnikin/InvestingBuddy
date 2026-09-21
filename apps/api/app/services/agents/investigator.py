@@ -56,6 +56,7 @@ from app.services.agent_tools.contracts import (
     TOOL_GET_PEER_FINANCIALS,
     TOOL_GET_PEER_SET,
     TOOL_GET_RECENT_FILINGS,
+    TOOL_GET_SEC_STATEMENTS,
     TOOL_GET_SEGMENT_FACTS,
     TOOL_GET_TRANSCRIPTS,
     TOOL_LOOKUP_ENTITY,
@@ -210,6 +211,10 @@ class QuestionContext:
     #: V3.18.7 — ``(finding_id, statement, domain)`` other domains already own. The
     #: writer is told to reference these by id rather than restate them.
     established_elsewhere: tuple[tuple[str, str, str | None], ...] = ()
+    #: Corpus search intents already run for this question, across rounds.
+    corpus_intents_done: int = 0
+    #: Rounds this question has already been worked in.
+    rounds_attempted: int = 0
 
 
 _PLACEHOLDER_RE = re.compile(r"\{(\w+)\}")
@@ -296,7 +301,9 @@ def _tool_arguments(
         metrics = [m for m in question.required_calculations if m in CALCULATION_NAMES]
         if not metrics:
             return None
-        return {"company_id": subject, "metrics": metrics}
+        # `scope` is REQUIRED — the engine refuses arithmetic over mixed scopes — and
+        # was never sent, so this call was refused `invalid_arguments` on every run.
+        return {"company_id": subject, "metrics": metrics, "scope": "group"}
     if tool == TOOL_GET_RECENT_FILINGS:
         # A regulator is asked about an ISSUER, so this takes a ticker too.
         if not ticker:
@@ -315,6 +322,8 @@ def _tool_arguments(
         }
     if tool == TOOL_GET_PEER_FINANCIALS:
         return None  # chained from get_peer_set's result in `_gather`, never guessed
+    if tool == TOOL_GET_SEC_STATEMENTS:
+        return {"company_id": subject}
     if tool == TOOL_GET_INDUSTRY_SERIES:
         # V3.18.5 — the commodity comes from the QUESTION, which the planner
         # instantiated from the company's own filings. Never from a model.
@@ -446,7 +455,11 @@ def _harvest(tool: str, payload: dict[str, Any] | None, untrusted: bool) -> list
     out: list[_Evidence] = []
     # A peer comparison is a table: five registrants times six metrics is thirty cells,
     # and cutting it at eight would compare the subject with one peer.
-    cap = MAX_PEER_ITEMS if tool == TOOL_GET_PEER_FINANCIALS else MAX_ITEMS_PER_TOOL
+    cap = (
+        MAX_PEER_ITEMS
+        if tool in (TOOL_GET_PEER_FINANCIALS, TOOL_GET_SEC_STATEMENTS)
+        else MAX_ITEMS_PER_TOOL
+    )
     for item in (payload.get("items") or [])[:cap]:
         if not isinstance(item, dict):
             continue
@@ -868,12 +881,13 @@ class LLMInvestigator:
                 item.ref for item in evidence if item.ref is not None
             ]
             outcome.acquisition_steps.setdefault(question.key, []).extend(steps)
-            if not evidence and question.key in contexts and contexts[
-                question.key
-            ].prior_evidence:
-                # A follow-up that found nothing NEW. The question's evidence from the
-                # earlier round stands, and "no citable evidence was retrieved" would be
-                # a false statement about it; the contract verdict carries the rest.
+            prior_context = contexts.get(question.key) or QuestionContext()
+            if not evidence and (
+                prior_context.prior_evidence or prior_context.rounds_attempted > 0
+            ):
+                # A repeat that found nothing NEW. With earlier evidence, "no citable
+                # evidence was retrieved" would be false; without it, the earlier round's
+                # gap already says so — recording it again per round only multiplies it.
                 continue
             if not evidence:
                 outcome.gaps.append(
@@ -964,7 +978,14 @@ class LLMInvestigator:
         evidence: list[_Evidence] = []
         used = 0
         contract = getattr(question, "evidence_contract", None)
-        follow_up = round_index > 0 and bool(context.prior_evidence)
+        # A REPEAT starts where the last attempt ended — with or without evidence from
+        # it. The platform rung's arguments are deterministic and would return the same
+        # items, and the corpus rung moves on to the intents not yet run. Re-running both
+        # unchanged is what spent a deep run's whole task budget on questions that had
+        # already come back empty (SCCO, live).
+        follow_up = round_index > 0 and (
+            bool(context.prior_evidence) or context.rounds_attempted > 0
+        )
 
         def verdict():  # noqa: ANN202
             refs = list(context.prior_evidence) + [
@@ -991,16 +1012,16 @@ class LLMInvestigator:
 
         # Rung 2 — the corpus again, by the question's distinctive terms.
         intents = list(getattr(question, "search_intents", ()) or ())
+        start = context.corpus_intents_done if follow_up else 0
+        batch = intents[start : start + MAX_CORPUS_INTENTS]
         if (
             not current.satisfied
-            and not follow_up
-            and intents
+            and batch
             and role.can_use(TOOL_SEARCH_COMPANY_CORPUS)
             and used < budget
         ):
             queries = [
-                fill_intent(intent, self._intent_values(question))
-                for intent in intents[:MAX_CORPUS_INTENTS]
+                fill_intent(intent, self._intent_values(question)) for intent in batch
             ]
             found = 0
             for query in queries:

@@ -806,12 +806,34 @@ class TestTheLadder:
             context=QuestionContext(
                 prior_evidence=(c.EvidenceRef("ev:1", "x", c.ISSUER_FILING, None, "a"),),
                 external_searches_done=1,
+                corpus_intents_done=2,
+                rounds_attempted=1,
             ),
             round_index=1,
         )
-        assert steps[0]["rung"] == "external_search"
+        assert steps[0]["rung"] == "external_search", "every corpus intent was already run"
         second_intent = fill_intent(question.search_intents[1], worker._intent_values())
         assert steps[0]["query"].endswith(second_intent)
+
+    async def test_a_repeat_with_no_evidence_moves_on_too(self) -> None:
+        """Live SCCO: a question that came back empty was re-asked each round with the
+        same platform tools and the same two corpus queries — sixteen tasks, nothing
+        new. A repeat starts where the last attempt ended even with no evidence."""
+        question = dataclasses.replace(
+            _industry_question(),
+            search_intents=("{company} one", "{company} two", "{company} three"),
+        )
+        session = _Session(leads=[])
+        worker = _investigator(session)
+        _e, _u, steps = await worker._acquire(
+            "industry_analyst", _role("industry_analyst"), question, 50,
+            context=QuestionContext(corpus_intents_done=2, rounds_attempted=1),
+            round_index=1,
+        )
+        rungs = [s["rung"] for s in steps]
+        assert "platform_tools" not in rungs, "deterministic tools are not re-run"
+        corpus = next(s for s in steps if s["rung"] == "corpus_by_intent")
+        assert corpus["queries"] == ["Southern Copper Corp three"]
 
     async def test_an_intent_is_never_searched_twice(self) -> None:
         """Cycling back to the first intent paid for the identical answer again."""

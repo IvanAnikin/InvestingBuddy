@@ -246,6 +246,7 @@ BASE_QUESTIONS: tuple[PlaybookQuestion, ...] = (
             "which period type?"
         ),
         required_tools=frozenset({"get_financial_series"}),
+        optional_tools=frozenset({"get_sec_statements"}),
         priority=2,
         domain=d.FINANCIAL_CAPACITY,
         owner_role="financial_analyst",
@@ -260,6 +261,7 @@ BASE_QUESTIONS: tuple[PlaybookQuestion, ...] = (
             "make of them?"
         ),
         required_tools=frozenset({"get_calculated_metrics"}),
+        optional_tools=frozenset({"get_sec_statements"}),
         required_calculations=("operating_margin", "net_margin", "gross_margin"),
         priority=2,
         domain=d.FINANCIAL_CAPACITY,
@@ -274,6 +276,7 @@ BASE_QUESTIONS: tuple[PlaybookQuestion, ...] = (
             "leveraged is it, and can it fund its commitments and projects?"
         ),
         required_tools=frozenset({"get_financial_facts", "get_calculated_metrics", _CORPUS}),
+        optional_tools=frozenset({"get_sec_statements"}),
         required_calculations=("cash_conversion", "capex_to_ocf", "net_debt"),
         priority=1,
         domain=d.FINANCIAL_CAPACITY,
@@ -292,6 +295,7 @@ BASE_QUESTIONS: tuple[PlaybookQuestion, ...] = (
             "or refinancing?"
         ),
         required_tools=frozenset({"get_financial_facts", _CORPUS}),
+        optional_tools=frozenset({"get_sec_statements"}),
         priority=2,
         domain=d.FINANCIAL_CAPACITY,
         owner_role="financial_analyst",
@@ -305,6 +309,7 @@ BASE_QUESTIONS: tuple[PlaybookQuestion, ...] = (
             "reduction and acquisitions, and what policy has the company stated?"
         ),
         required_tools=frozenset({"get_financial_facts", _CORPUS}),
+        optional_tools=frozenset({"get_sec_statements"}),
         required_calculations=("dividend_cover_by_fcf",),
         priority=2,
         domain=d.CAPITAL_ALLOCATION,
@@ -322,6 +327,7 @@ BASE_QUESTIONS: tuple[PlaybookQuestion, ...] = (
             "missing? State them; never estimate a value, a target or a return."
         ),
         required_tools=frozenset({"get_financial_facts"}),
+        optional_tools=frozenset({"get_sec_statements"}),
         priority=3,
         domain=d.VALUATION_CONTEXT,
         owner_role="valuation_context_analyst",

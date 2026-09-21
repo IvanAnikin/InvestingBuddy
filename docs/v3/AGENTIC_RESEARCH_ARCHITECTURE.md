@@ -119,8 +119,13 @@ get_calculated_metrics        fetch_public_source
 get_recent_filings            get_peer_set
 get_ir_events                 get_peer_financials
 get_transcripts               get_macro_series
-                              get_industry_series
+get_sec_statements            get_industry_series
 ```
+
+`get_sec_statements` (V3.18) returns the SUBJECT's latest annual statement lines and
+defined metrics from its own SEC XBRL filings — the producer the report's own figures and
+the peer table use — so a financial question is not empty for a company whose documents
+were never extracted into validated facts.
 
 Agents must **never** receive unrestricted SQL, shell, filesystem, HTTP, or any
 production write. Reasons, in order of severity:

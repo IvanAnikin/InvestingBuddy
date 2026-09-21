@@ -631,3 +631,63 @@ class TestTheSecondReview:
         )
         assert result.stopped_by == STOPPED_NOTHING_LEFT
         assert len(result.rounds) == 2, "the improvement round for the partial one ran"
+
+
+class TestAQuestionWithNothingLeftIsNotReAsked:
+    """Live SCCO (deep): every issuer question returned nothing in round 0 and was
+    re-asked in rounds 1 and 2 with identical tools — the run stopped on max_tasks."""
+
+    def test_the_rung_left_rule(self) -> None:
+        from app.services.director.base_model import base_question
+        from app.services.director.loop import _has_a_rung_left
+        from app.services.playbooks.schema import planned_from
+
+        industry = planned_from(base_question("industry_economics"), origin="director")
+        intents = len(industry.search_intents)
+        assert _has_a_rung_left(industry, 0, 0, can_search=False), "corpus intents left"
+        assert _has_a_rung_left(industry, intents, 0, can_search=True), "a search left"
+        assert not _has_a_rung_left(industry, intents, 0, can_search=False)
+        profitability = planned_from(base_question("profitability"), origin="director")
+        assert not _has_a_rung_left(
+            profitability, len(profitability.search_intents), 0, can_search=True
+        ), "a deterministic question with no web contract has nothing left"
+
+    async def test_an_empty_question_is_not_re_asked_forever(self, session) -> None:
+        run = await ledger.open_run(session, mode="deep")
+        plan = await plan_research(subject="ANY:US", mode="deep", cfg=_CFG)
+        await persist_plan(session, run, plan)
+
+        class _Empty(_GraphInvestigator):
+            """Finds nothing, and reports its corpus rung as the real ladder does."""
+
+            def can_search_externally(self, role_id: str) -> bool:
+                return False
+
+            async def investigate(self, *, role_id, questions, round_index,  # noqa: ANN001, ANN202
+                                  remaining_tool_calls, question_context=None):
+                outcome = await super().investigate(
+                    role_id=role_id, questions=questions, round_index=round_index,
+                    remaining_tool_calls=remaining_tool_calls,
+                    question_context=question_context,
+                )
+                for q in questions:
+                    done = (question_context or {}).get(q.key)
+                    start = done.corpus_intents_done if done else 0
+                    batch = list(q.search_intents)[start:start + 2]
+                    outcome.acquisition_steps.setdefault(q.key, []).append(
+                        {"rung": "corpus_by_intent", "queries": batch}
+                    )
+                return outcome
+
+        investigator = _Empty({})
+        result = await run_investigation(session, run, plan, investigator=investigator,
+                                         limits=plan.limits)
+        asked = {}
+        for ctx in investigator.contexts_seen:
+            for key in ctx:
+                asked[key] = asked.get(key, 0) + 1
+        most_intents = max(len(q.search_intents) for q in plan.questions)
+        assert max(asked.values()) <= 1 + -(-most_intents // 2), (
+            "re-asked beyond what its corpus intents could justify"
+        )
+        assert result.tasks_run < plan.limits.max_tasks

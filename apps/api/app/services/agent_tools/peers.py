@@ -22,11 +22,14 @@ pretend to know them.
 from __future__ import annotations
 
 import asyncio
+import uuid
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
 from app.services.agent_tools.contracts import (
     TOOL_GET_PEER_FINANCIALS,
     TOOL_GET_PEER_SET,
+    TOOL_GET_SEC_STATEMENTS,
     ToolCost,
     ToolSpec,
     units_for,
@@ -122,15 +125,22 @@ async def _get_peer_set(context: "ToolContext", arguments: dict[str, Any]) -> di
                 "industry": industry,
                 "commodities": commodities,
                 "commodity_basis": "corpus" if texts else "name_only",
-                "shares_commodity": bool(
-                    arguments["commodity"] and arguments["commodity"] in commodities
+                # UNKNOWN, not false, when the platform holds none of the peer's
+                # documents and its name names no commodity: "Freeport-McMoRan" says
+                # nothing about copper, and reporting FCX as not a copper producer
+                # would be a statement about FCX the research never checked.
+                "shares_commodity": (
+                    (bool(arguments["commodity"]) and arguments["commodity"] in commodities)
+                    if (texts or commodities)
+                    else None
                 ),
                 "basis": "same canonical industry in the platform's company universe",
                 "source_tier": "T3_curated_reference_list",
             }
         )
-    items.sort(key=lambda i: (not i["shares_commodity"], i["commodity_basis"] != "corpus",
-                              str(i["ticker"])))
+    items.sort(key=lambda i: (i["shares_commodity"] is not True,
+                              i["shares_commodity"] is False,
+                              i["commodity_basis"] != "corpus", str(i["ticker"])))
     items = items[: arguments["limit"]]
     gaps = []
     if len([i for i in items if i["shares_commodity"]]) < 3:
@@ -196,6 +206,10 @@ async def _facts_for(
         cik = await provider.resolve_cik(ticker, exchange)
     except Exception as exc:  # noqa: BLE001
         return None, f"not a resolvable SEC registrant ({type(exc).__name__})"
+    cached = _FACTS_CACHE.get(str(cik))
+    now = datetime.now(timezone.utc)
+    if cached is not None and now - cached[0] < FACTS_CACHE_TTL:
+        return cached[1], None
     try:
         async with httpx.AsyncClient(headers={"User-Agent": _USER_AGENT}, timeout=25.0) as client:
             url = _SEC_FACTS_URL.format(cik=str(cik).zfill(10))
@@ -207,9 +221,20 @@ async def _facts_for(
                     body.extend(chunk)
                     if len(body) > MAX_FACTS_BYTES:
                         return None, "companyfacts exceeds the size cap; not read"
-            return json.loads(bytes(body)), None
+            facts = json.loads(bytes(body))
     except Exception as exc:  # noqa: BLE001
         return None, f"companyfacts unreachable ({type(exc).__name__})"
+    if len(_FACTS_CACHE) >= FACTS_CACHE_MAX:
+        _FACTS_CACHE.pop(next(iter(_FACTS_CACHE)))
+    _FACTS_CACHE[str(cik)] = (now, facts)
+    return facts, None
+
+
+#: One run asks for the subject's statements from several questions and again for the
+#: peer table: companyfacts for a large registrant is tens of megabytes. Per process.
+_FACTS_CACHE: dict[str, tuple[datetime, dict]] = {}
+FACTS_CACHE_TTL = timedelta(hours=1)
+FACTS_CACHE_MAX = 8
 
 
 def _peer_metrics(ticker: str, facts: dict) -> tuple[list[dict[str, Any]], list[str]]:
@@ -341,9 +366,143 @@ GET_PEER_FINANCIALS_SPEC = ToolSpec(
 )
 
 
+# ── The subject's own SEC statements (V3.18 live acceptance) ──────────────── #
+
+#: Statement lines, as the normaliser names them, with how a reader should see each.
+STATEMENT_LINES: tuple[tuple[str, str, str], ...] = (
+    ("revenue", "Revenue / net sales", "USD millions"),
+    ("gross_profit", "Gross profit", "USD millions"),
+    ("operating_income", "Operating income", "USD millions"),
+    ("net_income", "Net income", "USD millions"),
+    ("ebitda", "EBITDA (as tagged)", "USD millions"),
+    ("operating_cash_flow", "Operating cash flow", "USD millions"),
+    ("capital_expenditures", "Capital expenditure", "USD millions"),
+    ("free_cash_flow", "Free cash flow (OCF - capex)", "USD millions"),
+    ("dividends_paid", "Dividends paid", "USD millions"),
+    ("total_assets", "Total assets", "USD millions"),
+    ("total_liabilities", "Total liabilities", "USD millions"),
+    ("shareholders_equity", "Shareholders' equity", "USD millions"),
+    ("cash_and_equivalents", "Cash and equivalents", "USD millions"),
+    ("short_term_debt", "Short-term debt", "USD millions"),
+    ("long_term_debt", "Long-term debt", "USD millions"),
+    ("total_debt", "Total debt (short + long)", "USD millions"),
+    ("eps_diluted", "Diluted EPS", "USD per share"),
+    ("revenue_yoy_growth", "Revenue growth vs prior fiscal year", "%"),
+    ("net_income_yoy_growth", "Net income growth vs prior fiscal year", "%"),
+)
+
+
+def validate_get_sec_statements(arguments: dict[str, Any]) -> dict[str, Any]:
+    company_id = str(arguments.get("company_id") or "").strip()
+    try:
+        uuid.UUID(company_id)
+    except ValueError as exc:
+        raise ValueError("company_id must be a UUID.") from exc
+    return {"company_id": company_id}
+
+
+def statement_items(ticker: str, facts: dict) -> tuple[list[dict[str, Any]], list[str]]:
+    """The subject's latest annual statements and defined metrics, from SEC XBRL.
+
+    The SAME producer as the report's own figures and the peer table: the normaliser's
+    own-period rule (a line not tagged for the reporting period is withheld, never
+    carried from another year), and the defined metrics with their directions.
+    """
+    from app.integrations.sec_fundamentals_normalizer import normalize_company_facts
+
+    n = normalize_company_facts(facts, ticker)
+    if n.fiscal_year is None or n.period_basis != "annual":
+        return [], [f"{ticker}: no annual statements could be normalised"]
+    period = f"FY{n.fiscal_year}"
+    both_legs = (
+        not ({"short_term_debt", "long_term_debt"} & set(n.withheld_fields))
+        and n.short_term_debt is not None
+        and n.long_term_debt is not None
+    )
+    items: list[dict[str, Any]] = []
+    for field_name, label, unit in STATEMENT_LINES:
+        value = getattr(n, field_name, None)
+        if value is None or field_name in n.withheld_fields:
+            continue
+        if field_name == "total_debt" and not both_legs:
+            continue
+        own = (n.field_periods or {}).get(field_name) or {}
+        items.append(
+            {
+                "id": f"secfin:{ticker}:{period}:{field_name}",
+                "ticker": ticker,
+                "line": label,
+                "metric_id": field_name,
+                "value": value,
+                "unit": unit,
+                "period": period,
+                "period_end": own.get("end") or n.reporting_period_end,
+                "scope": "group",
+                "form": n.form_type,
+                "accession": n.accession_number,
+                "filed": n.filed_date,
+                "source_tier": "T1_primary_filing",
+                "source_ref": n.source_url,
+            }
+        )
+    metrics, gaps = _peer_metrics(ticker, facts)
+    for item in metrics:
+        if item.get("metric_id") == "revenue":
+            continue  # already a statement line
+        item["id"] = str(item["id"]).replace("peerfin:", "secfin:", 1)
+        items.append(item)
+    return items, gaps
+
+
+async def _get_sec_statements(
+    context: "ToolContext", arguments: dict[str, Any]
+) -> dict[str, Any]:
+    from app.integrations.providers.sec_edgar_fundamentals import SecEdgarFundamentalsProvider
+    from app.models.company import Company
+
+    company = await context.session.get(Company, uuid.UUID(arguments["company_id"]))
+    if company is None:
+        return {"items": [], "gaps": ["the subject company is not held"],
+                "summary": "no subject", "contains_untrusted_content": False}
+    facts, reason = await _facts_for(
+        company.ticker, company.exchange, SecEdgarFundamentalsProvider()
+    )
+    if facts is None:
+        return {"items": [], "gaps": [f"{company.ticker}: {reason}"],
+                "summary": "SEC statements unavailable",
+                "consumption": units_for(PEER_UNITS, url_fetch_calls=1),
+                "contains_untrusted_content": False}
+    items, gaps = await asyncio.to_thread(statement_items, company.ticker, facts)
+    return {
+        "items": items,
+        "gaps": gaps,
+        "summary": (
+            f"{len(items)} statement line(s) and defined metric(s) for {company.ticker} "
+            "from its SEC XBRL filings, own-period rule applied"
+        ),
+        "consumption": units_for(PEER_UNITS, url_fetch_calls=1),
+        "contains_untrusted_content": False,
+    }
+
+
+GET_SEC_STATEMENTS_SPEC = ToolSpec(
+    name=TOOL_GET_SEC_STATEMENTS,
+    description=(
+        "The subject's latest annual statement lines and defined metrics from its own "
+        "SEC XBRL filings, each line for the reporting period or withheld."
+    ),
+    handler=_get_sec_statements,
+    validate_arguments=validate_get_sec_statements,
+    cost=ToolCost(fetches=1),
+    instrumented_units=PEER_UNITS,
+    access_classes=("public_official",),
+)
+
+
 def register_peer_tools(registry: "ToolRegistry") -> "ToolRegistry":
     registry.register(GET_PEER_SET_SPEC)
     registry.register(GET_PEER_FINANCIALS_SPEC)
+    registry.register(GET_SEC_STATEMENTS_SPEC)
     return registry
 
 

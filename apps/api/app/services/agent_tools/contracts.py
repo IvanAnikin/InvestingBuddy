@@ -70,6 +70,7 @@ TOOL_SEARCH_WEB = "search_web"
 TOOL_FETCH_PUBLIC_SOURCE = "fetch_public_source"
 TOOL_GET_PEER_SET = "get_peer_set"
 TOOL_GET_PEER_FINANCIALS = "get_peer_financials"
+TOOL_GET_SEC_STATEMENTS = "get_sec_statements"
 TOOL_GET_MACRO_SERIES = "get_macro_series"
 TOOL_GET_INDUSTRY_SERIES = "get_industry_series"
 
@@ -92,6 +93,7 @@ TOOL_NAMES: frozenset[str] = frozenset(
         TOOL_FETCH_PUBLIC_SOURCE,
         TOOL_GET_PEER_SET,
         TOOL_GET_PEER_FINANCIALS,
+        TOOL_GET_SEC_STATEMENTS,
         TOOL_GET_MACRO_SERIES,
         TOOL_GET_INDUSTRY_SERIES,
     }
@@ -415,6 +417,7 @@ __all__ = [
     "TOOL_GET_OPEN_RESEARCH_GAPS",
     "TOOL_GET_PEER_FINANCIALS",
     "TOOL_GET_PEER_SET",
+    "TOOL_GET_SEC_STATEMENTS",
     "TOOL_GET_PREVIOUS_RESEARCH",
     "TOOL_GET_RECENT_FILINGS",
     "TOOL_GET_SEGMENT_FACTS",

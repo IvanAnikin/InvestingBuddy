@@ -130,6 +130,8 @@ class V3ResearchOutcome:
     thesis: dict[str, Any] | None = None
     #: V3.18.8 — the reader-facing report, assembled from the ledger.
     professional_research: dict[str, Any] | None = None
+    #: What the pre-run indexing of the company's corpus did.
+    corpus_index: dict[str, int] = field(default_factory=dict)
     #: V3.18.2 — every planned question as a node: domain, owner, contract verdict,
     #: evidence counts, why it is still open, and what acquisition tried.
     question_graph: list[dict[str, Any]] = field(default_factory=list)
@@ -162,6 +164,7 @@ class V3ResearchOutcome:
             "subject_profile": dict(self.subject_profile),
             "thesis": self.thesis,
             "professional_research": self.professional_research,
+            "corpus_index": dict(self.corpus_index),
             "elapsed_seconds": round(self.elapsed_seconds, 3),
             "degraded": list(self.degraded),
             "error": self.error,
@@ -356,6 +359,23 @@ async def _run(
             outcome.degraded.append(
                 f"corpus search unavailable ({type(exc).__name__}); "
                 "the internal corpus was not searched"
+            )
+
+    # V3.18 live acceptance — the corpus the specialists search must be INDEXED. A
+    # company whose chunks were written by the V2 ingestion had none, and every corpus
+    # search came back empty. Indexing is index state on rows already held: no cost.
+    if search_backend is not None:
+        from app.services.corpus.indexing import ensure_company_indexed
+
+        try:
+            async with session.begin_nested():
+                outcome.corpus_index = await ensure_company_indexed(
+                    session, company_id=company.id, backend=search_backend, cfg=cfg
+                )
+        except Exception as exc:  # noqa: BLE001 - an index failure costs the search leg
+            outcome.degraded.append(
+                f"the company's corpus could not be indexed ({type(exc).__name__}); "
+                "corpus searches may return nothing"
             )
 
     model_routing = routing or resolve_routing(cfg)
@@ -575,6 +595,14 @@ async def _run(
             # Per-tool caps remain unenforced; `MAX_CALLS_PER_QUESTION` and the run's
             # `max_tool_calls` are the bounds that actually bite today.
             declared = sum((role.tool_budget or {}).values()) if role is not None else 0
+            if declared:
+                # V3.18.3's ladder spends per QUESTION — corpus by intent, one search,
+                # its verifications — on top of the platform tools the declaration
+                # budgeted. Without this allowance the live SCCO run had 48 corpus calls
+                # and 15 searches refused `budget_exceeded` by a ceiling sized before the
+                # ladder existed. The run's own max_tool_calls and search budget still
+                # bound the total.
+                declared += LADDER_CALLS_PER_QUESTION * len(questions)
             tool_session = ToolSession(
                 registry=registry,
                 policy=policy_for(
@@ -768,6 +796,9 @@ async def _run(
 
 #: Findings read into the report. The ledger may hold more; the report says how many.
 MAX_REPORT_FINDINGS = 200
+#: Tool calls the acquisition ladder may add per question: two corpus intents, one
+#: search, up to four verifications.
+LADDER_CALLS_PER_QUESTION = 7
 
 
 async def _professional_report(
