@@ -182,10 +182,11 @@ def pdf_text_without_superscripts(content: bytes) -> str:
             if not sizes:
                 continue
             body = sizes.most_common(1)[0][0]
-            clean = page.filter(
-                lambda o, body=body: o.get("object_type") != "char"
-                or o.get("size", body) >= body * 0.85
-            )
+
+            def _keep(obj: dict[str, Any], body: float = body) -> bool:
+                return obj.get("object_type") != "char" or obj.get("size", body) >= body * 0.85
+
+            clean = page.filter(_keep)
             pages.append(clean.extract_text() or "")
     return "\n".join(pages)
 
@@ -400,12 +401,11 @@ async def fetch_fred_prices(
         resolve_ip=True,
         extra_text_content_types=("application/csv", "text/csv"),
     )
-    if not getattr(result, "ok", False) or not getattr(result, "content", None):
+    content = getattr(result, "content", None) if getattr(result, "ok", False) else None
+    if not content:
         release.skipped.append(f"FRED unreachable: {getattr(result, 'error', None) or 'no body'}")
         return release
-    return parse_fred_csv(
-        result.content.decode("utf-8", "replace"), commodity=commodity, source_ref=url
-    )
+    return parse_fred_csv(content.decode("utf-8", "replace"), commodity=commodity, source_ref=url)
 
 
 async def fetch_usgs_summary(
@@ -423,8 +423,9 @@ async def fetch_usgs_summary(
     for edition in (year, year - 1):
         url = usgs_url(commodity.usgs_slug, edition)
         result = await fetch(url, allowed_domains=(USGS_HOST,), cfg=cfg, resolve_ip=True)
-        if getattr(result, "ok", False) and getattr(result, "content", None):
-            text = await asyncio.to_thread(pdf_text_without_superscripts, result.content)
+        content = getattr(result, "content", None) if getattr(result, "ok", False) else None
+        if content:
+            text = await asyncio.to_thread(pdf_text_without_superscripts, content)
             return parse_usgs_mcs(text, commodity=commodity, year=edition, source_ref=url)
         release.skipped.append(f"USGS {edition} edition unreachable")
     return release
