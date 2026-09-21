@@ -124,6 +124,9 @@ class V3ResearchOutcome:
     #: and `no playbook applied` alone tells a reader neither.
     classification: dict[str, Any] = field(default_factory=dict)
     elapsed_seconds: float = 0.0
+    #: V3.18.2 — every planned question as a node: domain, owner, contract verdict,
+    #: evidence counts, why it is still open, and what acquisition tried.
+    question_graph: list[dict[str, Any]] = field(default_factory=list)
     #: Why the run produced less than a full one. Never empty on a degraded run: a
     #: pipeline that narrowed silently is one nobody can widen.
     degraded: list[str] = field(default_factory=list)
@@ -149,6 +152,7 @@ class V3ResearchOutcome:
             "consumption": dict(self.consumption),
             "external_research": dict(self.external_research),
             "classification": dict(self.classification),
+            "question_graph": list(self.question_graph),
             "elapsed_seconds": round(self.elapsed_seconds, 3),
             "degraded": list(self.degraded),
             "error": self.error,
@@ -236,6 +240,21 @@ async def run_v3_research(
     # persisted, 0 findings, and **the V2 report was never written**. The unit suite
     # runs on SQLite with foreign keys OFF, which is why 6,100 green tests missed it.
     research_job_id = await _resolve_research_job_id(session, research_job_id, outcome)
+
+    # V3.18.2 — the ledger this code writes has columns migration 041 adds. On a database
+    # without them every ledger query fails, so the run is not attempted: it degrades
+    # with the reason named, and the report the V2 path produced is untouched.
+    from app.services.schema_readiness import migration_041_readiness
+
+    readiness = await migration_041_readiness(session)
+    if not readiness.ready:
+        outcome.error = "schema_not_ready"
+        outcome.degraded.append(
+            "the V3 research graph was not run: migration 041 is not applied to this "
+            f"database (missing {', '.join(readiness.missing[:4])})"
+        )
+        outcome.elapsed_seconds = clock() - started
+        return outcome
 
     try:
         # A SAVEPOINT, so a V3 error that PROPAGATES releases only V3's writes rather
@@ -432,6 +451,27 @@ async def _run(
     # registry built without it can never contain them however the run was configured.
     registry = register_builtins(ToolRegistry(), cfg=cfg)
     investigator_client = model_routing.client_for(SLOT_INVESTIGATOR)
+    # V3.18.3 — ONE ceiling on external searches for the whole run, shared by every
+    # specialist. `max_web_searches` was declared per mode and enforced by nothing; the
+    # acquisition ladder makes a search reachable from any question whose contract
+    # allows it, so the ceiling has to be real before that is switched on.
+    from app.services.agents.investigator import (
+        ExternalSearchBudget,
+        clean_company_name,
+        role_can_search_externally,
+    )
+
+    external_budget = (
+        # The run's BUDGET, not the mode preset: `budget_for` applies the operator's
+        # `V3_RUN_MAX_WEB_SEARCHES`, which narrows whatever the mode proposes. Reading
+        # the preset let a STANDARD run spend 12 paid searches against a cap of 2, while
+        # the budget recorded on the run said 2.
+        ExternalSearchBudget(limit=int(budget_for(resolved_mode, cfg).max_web_searches))
+        if "search_web" in registry.names()
+        else None
+    )
+    subject_name = clean_company_name(getattr(company, "name", None))
+    subject_industry = classification.industry or classification.sector
 
     class _RoleRoutedInvestigator:
         """One session per role, because a tool policy is per role.
@@ -444,19 +484,40 @@ async def _run(
             self.fabricated: list[str] = []
             self.diagnostics = InvestigatorDiagnostics()
             self.tool_calls = 0
+            #: Earlier verifications this run cited again. They write no lead row for
+            #: this run, so without this list a finding could cite an evidence id the
+            #: run's external-research panel never shows.
+            self.reused: dict[str, dict[str, Any]] = {}
 
-        async def investigate(self, *, role_id, questions, round_index, remaining_tool_calls):  # noqa: ANN001, ANN201
+        def can_search_externally(self, role_id: str) -> bool:
+            # The loop's probe, answered for the RUN's shared budget. Without it the
+            # loop saw no probe on this wrapper and re-queued questions for a follow-up
+            # that could only climb a rung the run had already spent or switched off.
+            return role_can_search_externally(role_id, external_budget)
+
+        async def investigate(  # noqa: ANN201
+            self,
+            *,
+            role_id,  # noqa: ANN001
+            questions,  # noqa: ANN001
+            round_index,  # noqa: ANN001
+            remaining_tool_calls,  # noqa: ANN001
+            question_context=None,  # noqa: ANN001
+        ):
             from app.services.director.roles import role_for
 
             role = role_for(role_id)
-            tools = role.tools if role is not None else frozenset()
+            # V3.18.2 — the session may call the role's acquisition ladder too. Holding a
+            # ladder tool does not ASSIGN questions (that is `tools`), and the ladder is
+            # climbed only when a question's contract is unmet and allows it.
+            tools = role.session_tools if role is not None else frozenset()
             # A role's declared source classes must reach its policy, or the governance
             # check refuses every tool that reads anything but platform-internal data.
             # V3.12 found this by running it: `search_web` reads `public_web`, the
             # external role declares `public_web`, and the policy was built with an
             # empty set — so the very first external call was refused
             # `access_class_not_permitted`. The check was right; the wiring was not.
-            classes = role.source_classes if role is not None else ()
+            classes = role.session_source_classes if role is not None else ()
             # A role's declared `tool_budget` was persisted to the plan and enforced by
             # nothing: it is keyed by TOOL NAME while `ToolBudget` bounds tool CLASSES,
             # so the two shapes never met. What maps unambiguously is the total — the
@@ -491,12 +552,16 @@ async def _run(
                 ticker=getattr(company, "ticker", None),
                 exchange=getattr(company, "exchange", None),
                 client=investigator_client,
+                company_name=subject_name,
+                industry=subject_industry,
+                external_budget=external_budget,
             )
             result = await worker.investigate(
                 role_id=role_id,
                 questions=questions,
                 round_index=round_index,
                 remaining_tool_calls=remaining_tool_calls,
+                question_context=question_context,
             )
             self.fabricated.extend(worker.fabricated_citations)
             # V3.16.1a — merged per worker, exactly as `fabricated_citations` already is.
@@ -504,6 +569,25 @@ async def _run(
             # would be discarded at the end of every task.
             self.diagnostics.merge(worker.diagnostics)
             self.tool_calls += result.tool_calls
+            for call in tool_session.calls:
+                payload = getattr(call, "payload", None)
+                if getattr(call, "tool_name", None) != "fetch_public_source" or not (
+                    isinstance(payload, dict)
+                ):
+                    continue
+                for item in payload.get("items") or []:
+                    if isinstance(item, dict) and item.get(
+                        "reused_from_earlier_verification"
+                    ) and item.get("evidence_id"):
+                        self.reused.setdefault(
+                            str(item["evidence_id"]),
+                            {
+                                "evidence_id": str(item["evidence_id"]),
+                                "fetched_url": item.get("fetched_url"),
+                                "claim": item.get("claim"),
+                                "source_excerpt": str(item.get("source_excerpt") or "")[:400],
+                            },
+                        )
             return result
 
     investigator = _RoleRoutedInvestigator()
@@ -517,6 +601,11 @@ async def _run(
     )
     outcome.loop = loop_result.to_dict()
     outcome.loop["fabricated_citations_discarded"] = len(investigator.fabricated)
+    if external_budget is not None:
+        outcome.loop["external_searches"] = {
+            "limit": external_budget.limit,
+            "used": external_budget.used,
+        }
     # V3.16.1a — why a model reply produced no finding, counted rather than guessed.
     diagnostics = investigator.diagnostics.to_dict()
     outcome.loop["investigator_diagnostics"] = diagnostics
@@ -559,8 +648,18 @@ async def _run(
         )
 
     # 9. What a reader can cite.
-    outcome.findings = [f.to_dict() for f in council.findings[:60]]
+    #
+    # V3.18.2 — from the LEDGER, not from the Council's input. A refused Council used
+    # to empty this list: one open blocking question and the report showed no findings
+    # at all while the ledger held them (MRNA, live: ten findings recorded, zero shown).
+    # A refusal withholds the SYNTHESIS — the verdict an unanswered blocking question
+    # makes unsafe — not the research. Each finding says whether the Council convened.
+    if council.convened:
+        outcome.findings = [f.to_dict() for f in council.findings[:60]]
+    else:
+        outcome.findings = await _ledger_findings(session, run, limit=60)
     outcome.gaps = [g.to_dict() for g in council.gaps[:40]]
+    outcome.question_graph = await _question_graph(session, run)
 
     # 10. Research memory: the delta against the previous run.
     #
@@ -581,10 +680,110 @@ async def _run(
     summary = await ledger.summarise(session, run)
     tool_units = await _tool_call_consumption(session, run, company)
     outcome.external_research = await _external_research(session, run, company)
+    outcome.external_research["reused_verifications"] = list(investigator.reused.values())[:40]
     outcome.consumption = _consumption(
         model_routing, loop_result, summary, verdict, challenge_result, cfg, tool_units
     )
     await session.flush()
+
+
+async def _ledger_findings(session: Any, run: Any, *, limit: int) -> list[dict[str, Any]]:
+    """Findings straight from the ledger, for a run whose Council did not convene."""
+    from sqlalchemy import select
+
+    from app.models.ledger import ResearchFinding
+    from app.services.council_v2.inputs import FindingRef
+
+    try:
+        async with session.begin_nested():
+            rows = (
+                await session.execute(
+                    select(ResearchFinding)
+                    .where(
+                        ResearchFinding.research_run_id == run.id,
+                        ResearchFinding.verification_status != "withdrawn",
+                    )
+                    # Deterministic. Every finding of one run shares the transaction's
+                    # `created_at` on PostgreSQL, so ordering by it alone let the LIMIT
+                    # pick a different subset each read; grouped by domain and question
+                    # it is also the order a reader wants.
+                    .order_by(
+                        ResearchFinding.domain.asc().nulls_last(),
+                        ResearchFinding.question_key.asc().nulls_last(),
+                        ResearchFinding.created_at,
+                        ResearchFinding.statement,
+                    )
+                    .limit(limit)
+                )
+            ).scalars().all()
+    except Exception:  # noqa: BLE001 - a read that fails must not cost the run
+        return []
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        try:
+            ref = FindingRef.from_row(row)
+            item = ref.to_dict()
+        except Exception:  # noqa: BLE001
+            continue
+        item["council_convened"] = False
+        out.append(item)
+    return out
+
+
+async def _question_graph(session: Any, run: Any) -> list[dict[str, Any]]:
+    """The question graph as a reader sees it. Bounded, and never raises."""
+    from sqlalchemy import func, select
+
+    from app.models.ledger import ResearchFinding, ResearchQuestion
+
+    try:
+        questions = (
+            await session.execute(
+                select(ResearchQuestion)
+                .where(ResearchQuestion.research_run_id == run.id)
+                .order_by(ResearchQuestion.priority, ResearchQuestion.question_key)
+            )
+        ).scalars().all()
+        counts = dict(
+            (
+                await session.execute(
+                    select(ResearchFinding.question_key, func.count())
+                    .where(
+                        ResearchFinding.research_run_id == run.id,
+                        ResearchFinding.verification_status != "withdrawn",
+                    )
+                    .group_by(ResearchFinding.question_key)
+                )
+            ).all()
+        )
+    except Exception:  # noqa: BLE001
+        return []
+    graph: list[dict[str, Any]] = []
+    for q in questions[:60]:
+        detail = q.contract_detail_json or {}
+        graph.append(
+            {
+                "question_key": q.question_key,
+                "text": q.text,
+                "domain": q.domain,
+                "owner_role": q.owner_role,
+                "origin": q.origin,
+                "priority": q.priority,
+                "blocking": q.blocking,
+                "why_it_matters": q.why_it_matters,
+                "depends_on": list(q.depends_on_json or []),
+                "resolution_status": q.resolution_status,
+                "contract_status": q.contract_status,
+                "contract_missing": list(detail.get("missing") or []),
+                "evidence_items": detail.get("items", 0),
+                "distinct_sources": detail.get("distinct_sources", 0),
+                "source_kinds": list(detail.get("kinds_present") or []),
+                "findings": int(counts.get(q.question_key, 0)),
+                "unresolved_reason": q.unresolved_reason,
+                "acquisition_log": list(q.acquisition_log_json or [])[-8:],
+            }
+        )
+    return graph
 
 
 async def _rows_for_this_run(session: Any, run: Any, company: Any, model: Any) -> list[Any]:
@@ -636,12 +835,6 @@ async def _tool_call_consumption(session: Any, run: Any, company: Any) -> dict[s
     return totals
 
 
-#: Regulator hosts whose documents are primary filings. Deliberately short and
-#: suffix-matched: a list that tried to enumerate every issuer domain would be wrong
-#: for most companies, and guessing a tier is worse than declining to.
-_REGULATOR_HOST_SUFFIXES: tuple[str, ...] = ("sec.gov", "europa.eu", "fca.org.uk")
-
-
 def external_source_tier(url: str | None) -> str:
     """The source tier of a retrieved external URL.
 
@@ -652,17 +845,12 @@ def external_source_tier(url: str | None) -> str:
     issuer to check against, and inventing a second, weaker answer would let a
     lookalike domain be read as the company's own.
     """
-    from urllib.parse import urlsplit
+    # V3.18.3 — one registry, `publisher_tiers`, shared with the evidence contracts.
+    # This function used to know three regulator hosts and call everything else T5, so
+    # a page fetched from a geological survey counted as a content farm.
+    from app.services.sources.publisher_tiers import publisher_tier
 
-    try:
-        host = (urlsplit(url or "").hostname or "").lower()
-    except ValueError:
-        return "T5_api_aggregator"
-    if not host:
-        return "T5_api_aggregator"
-    if any(host == suffix or host.endswith("." + suffix) for suffix in _REGULATOR_HOST_SUFFIXES):
-        return "T1_primary_filing"
-    return "T5_api_aggregator"
+    return publisher_tier(url)
 
 
 def _claim_identity(lead: Any) -> tuple[float, str, str, str] | None:

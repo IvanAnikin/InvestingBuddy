@@ -126,6 +126,13 @@ class ResearchLeadRecord(Base):
         sa.Boolean(), nullable=False, default=False, server_default=sa.text("false")
     )
 
+    # ── V3.18 (migration 041) ─────────────────────────────────────────────── #
+    #: The text around the value verification actually matched — a quote from the
+    #: document InvestingBuddy fetched, never provider prose.
+    matched_excerpt: Mapped[str | None] = mapped_column(sa.String(800))
+    #: What the claimed number measures, and for which geography.
+    claimed_metric: Mapped[str | None] = mapped_column(sa.String(120))
+    claimed_geography: Mapped[str | None] = mapped_column(sa.String(80))
     promoted_evidence_id: Mapped[str | None] = mapped_column(sa.String(120))
     promoted_fact_id: Mapped[uuid.UUID | None] = mapped_column(sa.Uuid(as_uuid=True))
 

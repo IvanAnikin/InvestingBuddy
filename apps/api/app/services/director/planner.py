@@ -46,6 +46,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Protocol, runtime_checkable
 
 from app.services.agent_tools.contracts import EXTERNAL_TOOL_NAMES
+from app.services.director.contracts import DEFAULT_CONTRACT, EvidenceContract
 from app.services.director.roles import (
     ALWAYS_PRESENT,
     RoleSpec,
@@ -60,36 +61,20 @@ from app.services.research_mode import ModeLimits, ResearchMode, limits_for, par
 #: lower it and nothing can raise it: a plan with 400 questions is not a plan.
 ABSOLUTE_MAX_QUESTIONS = 40
 
-#: The baseline every run asks, whatever the industry. Deliberately short: a long generic
-#: list is how a specialised playbook's questions get crowded out of the budget.
-BASELINE_QUESTIONS: tuple[tuple[str, str, frozenset[str]], ...] = (
-    (
-        "identity",
-        "Which legal entity is this, and which securities and listings does it have?",
-        frozenset({"lookup_entity"}),
-    ),
-    (
-        "revenue_trajectory",
-        "How has Group revenue moved over the available reporting periods, and in "
-        "which period type?",
-        frozenset({"get_financial_series"}),
-    ),
-    (
-        "profitability",
-        "What are the reported margins, and what do the deterministic calculations make of them?",
-        frozenset({"get_calculated_metrics"}),
-    ),
-    (
-        "balance_sheet_risk",
-        "What is the leverage position, and what does the filing say about covenants "
-        "or refinancing?",
-        frozenset({"get_financial_facts", "search_company_corpus"}),
-    ),
-    (
-        "recent_disclosure",
-        "What has the issuer disclosed most recently, and for which period?",
-        frozenset({"search_company_corpus"}),
-    ),
+#: V3.18.2 — the baseline every run asks is the BASE RESEARCH MODEL
+#: (`director.base_model`): at least one question per analytical domain, each with an
+#: owner, a reason, an evidence contract and search intents. The five-question list this
+#: replaces was four-fifths financial statements, which is why a report on a copper miner
+#: said nothing about copper. Kept under its old name as ``(key, text, tools)`` because
+#: the carry-forward restoration below and several callers read it in that shape.
+def _base_model_questions() -> tuple:
+    from app.services.director.base_model import BASE_QUESTIONS
+
+    return BASE_QUESTIONS
+
+
+BASELINE_QUESTIONS: tuple[tuple[str, str, frozenset[str]], ...] = tuple(
+    (q.key, q.text, frozenset(q.required_tools)) for q in _base_model_questions()
 )
 
 #: Asked only when the external tools are implemented — V3.12. Kept out of
@@ -168,6 +153,14 @@ class PlannedQuestion:
     #: every calculated-metrics call fail ``invalid_arguments``, which in turn made
     #: the luxury playbook's blocking question permanently unanswerable.
     required_calculations: tuple[str, ...] = ()
+    # ── V3.18.2 — see `PlaybookQuestion` for the meaning of each ───────────── #
+    domain: str | None = None
+    why_it_matters: str = ""
+    owner_role: str | None = None
+    depends_on: tuple[str, ...] = ()
+    evidence_contract: EvidenceContract = DEFAULT_CONTRACT
+    search_intents: tuple[str, ...] = ()
+    series_labels: tuple[str, ...] = ()
 
 
 @dataclass
@@ -264,16 +257,9 @@ def implemented_tools(cfg: "Any | None" = None) -> frozenset[str]:
 
 
 def _baseline_questions() -> list[PlannedQuestion]:
-    return [
-        PlannedQuestion(
-            key=key,
-            text=text,
-            origin=ledger.ORIGIN_DIRECTOR,
-            required_tools=tools,
-            priority=2,
-        )
-        for key, text, tools in BASELINE_QUESTIONS
-    ]
+    from app.services.playbooks.schema import planned_from
+
+    return [planned_from(q, origin=ledger.ORIGIN_DIRECTOR) for q in _base_model_questions()]
 
 
 def _external_questions(available: "frozenset[str]") -> list[PlannedQuestion]:
@@ -285,6 +271,12 @@ def _external_questions(available: "frozenset[str]") -> list[PlannedQuestion]:
             origin=ledger.ORIGIN_DIRECTOR,
             required_tools=tools,
             priority=3,
+            domain="catalysts",
+            owner_role="external_research_analyst",
+            why_it_matters=(
+                "The platform's own holdings are worst at what was reported after "
+                "the latest document it holds."
+            ),
         )
         for key, text, tools in EXTERNAL_QUESTIONS
         if tools <= available
@@ -318,23 +310,22 @@ async def plan_research(
     for playbook in playbooks:
         plan.playbook_versions[playbook.playbook_id] = playbook.version
         for question in playbook.mandatory_questions():
+            # Carried WHOLE. Rebuilding it field by field here is how
+            # `required_calculations` was dropped once already; a copy with the origin
+            # pinned cannot drop anything a later slice adds.
             questions.setdefault(
-                question.key,
-                PlannedQuestion(
-                    key=question.key,
-                    text=question.text,
-                    origin=ledger.ORIGIN_PLAYBOOK,
-                    required_tools=frozenset(question.required_tools),
-                    priority=question.priority,
-                    blocking=question.blocking,
-                    required_evidence_classes=tuple(question.required_evidence_classes),
-                    required_calculations=tuple(question.required_calculations),
-                ),
+                question.key, replace(question, origin=ledger.ORIGIN_PLAYBOOK)
             )
 
     # 2. Prior gaps: a gap the last run could not close is this run's question, and it
     #    carries its origin so "we are re-asking" is visible.
+    from app.services.director.base_model import RETIRED_QUESTION_KEYS
+
     for key, text in prior_open_gaps:
+        if key in RETIRED_QUESTION_KEYS:
+            # A question this platform no longer asks, because nothing can answer it
+            # with a citable item. Re-asking it from a gap would re-plan the noise.
+            continue
         questions.setdefault(
             key,
             PlannedQuestion(
@@ -398,6 +389,7 @@ async def plan_research(
         "differently here than in `questions`"
     )
     _definitions.update(_external_defs)
+    base_by_key = {q.key: q for q in _baseline_questions()}
     for key, (text, tools, priority) in _definitions.items():
         existing = questions.get(key)
         if existing is None or existing.required_tools:
@@ -406,26 +398,43 @@ async def plan_research(
         # become unassignable because of a capability that is switched off.
         needed = frozenset(tools) & available_now
         if needed:
-            questions[key] = replace(
+            restored = replace(
                 existing, required_tools=needed, text=text, priority=priority
             )
+            # V3.18.2 — the rest of the definition comes back too: a re-asked
+            # question that lost its domain, owner and contract would be answered by
+            # whoever was least loaded and judged by the default contract.
+            definition = base_by_key.get(key)
+            if definition is not None:
+                restored = replace(
+                    restored,
+                    domain=definition.domain,
+                    why_it_matters=definition.why_it_matters,
+                    owner_role=definition.owner_role,
+                    evidence_contract=definition.evidence_contract,
+                    search_intents=definition.search_intents,
+                    series_labels=definition.series_labels,
+                    required_calculations=definition.required_calculations,
+                    depends_on=definition.depends_on,
+                )
+            questions[key] = restored
 
-    ordered = sorted(
-        questions.values(),
-        # Blocking first, then priority, then a stable key order. A blocking question
-        # dropped for capacity would be a methodology silently not applied.
-        key=lambda q: (not q.blocking, q.priority, q.key),
-    )
+    # Blocking first, then priority, then the METHODOLOGY before the generic model
+    # within one priority level, then a stable key order. A blocking question dropped
+    # for capacity would be a methodology silently not applied — and so, the review of
+    # #221 found, would a playbook question losing an alphabetical tie to a base one.
+    ranked = sorted(questions.values(), key=_rank)
 
     # 4. An optional model refinement, bounded and unable to do harm.
     if refiner is not None:
-        ordered, plan.refined_by_model = await _refine(refiner, subject, ordered, limits)
+        ranked, plan.refined_by_model = await _refine(refiner, subject, ranked, limits)
 
+    # The cap is applied to the RANKED list, keeping each kept question's prerequisites,
+    # and only then ordered by dependency. Capping the dependency-ordered list dropped
+    # exactly the questions that depend on others — they sort last.
     cap = min(ABSOLUTE_MAX_QUESTIONS, max(1, limits.max_tasks * 3))
-    if len(ordered) > cap:
-        plan.dropped_for_capacity = [q.key for q in ordered[cap:]]
-        ordered = ordered[:cap]
-    plan.questions = ordered
+    kept, plan.dropped_for_capacity = _cap_keeping_prerequisites(ranked, cap)
+    plan.questions = _dependency_ordered(kept)
 
     # 5. Assignment. Who cannot answer is a fact, not a judgement.
     wanted_roles = list(ALWAYS_PRESENT)
@@ -436,6 +445,13 @@ async def plan_research(
     for role_id in extra_roles:
         if role_id not in wanted_roles and role_for(role_id) is not None:
             wanted_roles.append(role_id)
+    # V3.18.2 — a question's OWNER is seated. A question owned by the valuation-context
+    # analyst must not be answered by whichever always-present role happens to hold the
+    # tools; that is the assignment rule that put eight roles on one set of facts.
+    for question in plan.questions:
+        owner = question.owner_role
+        if owner and owner not in wanted_roles and role_for(owner) is not None:
+            wanted_roles.append(owner)
 
     assignments: dict[str, PlannedTask] = {}
     available = implemented_tools(cfg)
@@ -505,7 +521,10 @@ async def plan_research(
                 )
             )
             continue
-        chosen = _least_loaded(candidates, assignments)
+        owner_spec = next(
+            (role for role in candidates if role.role_id == question.owner_role), None
+        )
+        chosen = owner_spec or _least_loaded(candidates, assignments)
 
         # SILENT DEGRADATION GUARD.
         #
@@ -543,17 +562,175 @@ async def plan_research(
         )
         task.question_keys.append(question.key)
 
-    tasks = list(assignments.values())
-    if len(tasks) > limits.max_tasks:
-        # Keep the tasks carrying the most questions; the rest become unassignable with
-        # a reason, never silently dropped.
-        tasks.sort(key=lambda t: (-len(t.question_keys), t.role_id))
-        for task in tasks[limits.max_tasks :]:
-            for key in task.question_keys:
-                plan.unassignable.append((key, "task budget exhausted"))
-        tasks = tasks[: limits.max_tasks]
-    plan.tasks = sorted(tasks, key=lambda t: t.role_id)
+    plan.tasks = _fit_first_round(plan, list(assignments.values()), limits)
     return plan
+
+
+#: Within one priority level: the playbook (the methodology), then a re-asked gap, then
+#: the base model and the Director, then anything else.
+_ORIGIN_RANK: dict[str, int] = {
+    ledger.ORIGIN_PLAYBOOK: 0,
+    ledger.ORIGIN_PRIOR_GAP: 1,
+    ledger.ORIGIN_DIRECTOR: 2,
+}
+
+
+def _rank(question: "PlannedQuestion") -> tuple[bool, int, int, str]:
+    return (
+        not question.blocking,
+        question.priority,
+        _ORIGIN_RANK.get(question.origin, 3),
+        question.key,
+    )
+
+
+def _cap_keeping_prerequisites(
+    ranked: "list[PlannedQuestion]", cap: int
+) -> "tuple[list[PlannedQuestion], list[str]]":
+    """The first ``cap`` questions by rank, each with the questions it depends on.
+
+    A question kept without its prerequisite would be answered without what it needs;
+    so a prerequisite is pulled in with it — ahead of lower-ranked questions — and a
+    question whose prerequisites no longer fit is dropped with them rather than kept
+    half-planned.
+    """
+    by_key = {q.key: q for q in ranked}
+    kept: dict[str, PlannedQuestion] = {}
+
+    def _closure(question: "PlannedQuestion") -> list[PlannedQuestion]:
+        out: list[PlannedQuestion] = []
+        stack = [question]
+        seen: set[str] = set()
+        while stack:
+            current = stack.pop()
+            if current.key in seen or current.key in kept:
+                continue
+            seen.add(current.key)
+            out.append(current)
+            stack.extend(by_key[k] for k in current.depends_on if k in by_key)
+        return out
+
+    for question in ranked:
+        if question.key in kept:
+            continue
+        needed = _closure(question)
+        if len(kept) + len(needed) > cap:
+            continue
+        for item in needed:
+            kept[item.key] = item
+    ordered = [q for q in ranked if q.key in kept]
+    dropped = [q.key for q in ranked if q.key not in kept]
+    return ordered, dropped
+
+
+def follow_up_reserve(limits: ModeLimits) -> int:
+    """Tasks held back from round 0 so a follow-up round can actually run.
+
+    Standard mode plans eight tasks and allows eight; seating every always-present role
+    and every owner spent all eight in round 0, so no follow-up could ever run and every
+    standard run stopped on ``max_tasks`` — reported, correctly, as incomplete.
+    """
+    if limits.max_rounds <= 1:
+        return 0
+    return max(1, limits.max_tasks // 4)
+
+
+def _fit_first_round(
+    plan: ResearchPlan, tasks: "list[PlannedTask]", limits: ModeLimits
+) -> "list[PlannedTask]":
+    """At most ``max_tasks - follow_up_reserve`` tasks, losing roles, not questions.
+
+    The roles kept are those carrying blocking questions, then the playbook's
+    specialists, then the busiest. A trimmed role's questions move to a kept role that
+    holds their tools (the owner is then absent, and the plan says so); only a question
+    no kept role can answer becomes unassignable, with the reason.
+    """
+    first_round = max(1, limits.max_tasks - follow_up_reserve(limits))
+    if len(tasks) <= first_round:
+        return sorted(tasks, key=lambda t: t.role_id)
+    by_key = {q.key: q for q in plan.questions}
+    seated = {t.role_id for t in tasks}
+
+    def _hosts(question: "PlannedQuestion") -> set[str]:
+        wants_external = bool(set(question.required_tools) & EXTERNAL_TOOL_NAMES)
+        return {
+            role.role_id
+            for role in roles_that_can_answer(question.required_tools)
+            if role.role_id in seated
+            and (wants_external or not (role.tools & EXTERNAL_TOOL_NAMES))
+        }
+
+    def _importance(task: "PlannedTask") -> tuple[int, int, int, int, str]:
+        questions = [by_key[k] for k in task.question_keys if k in by_key]
+        # Questions NO other seated role could take: trimming this role loses them.
+        # Ranking by this is what keeps the one role holding `search_web` seated, where
+        # "busiest first" dropped it and its question became "task budget exhausted".
+        irreplaceable = sum(1 for q in questions if _hosts(q) <= {task.role_id})
+        return (
+            0 if any(q.blocking for q in questions) else 1,
+            -irreplaceable,
+            0 if any(q.origin == ledger.ORIGIN_PLAYBOOK for q in questions) else 1,
+            -len(questions),
+            task.role_id,
+        )
+
+    ranked = sorted(tasks, key=_importance)
+    kept, trimmed = ranked[:first_round], ranked[first_round:]
+    kept_roles = {t.role_id: t for t in kept}
+    for task in trimmed:
+        for key in task.question_keys:
+            question = by_key.get(key)
+            wants_external = bool(
+                question and set(question.required_tools) & EXTERNAL_TOOL_NAMES
+            )
+            hosts = [
+                role
+                for role in roles_that_can_answer(
+                    question.required_tools if question else frozenset()
+                )
+                if role.role_id in kept_roles
+                and (wants_external or not (role.tools & EXTERNAL_TOOL_NAMES))
+            ]
+            if not hosts:
+                plan.unassignable.append((key, "task budget exhausted"))
+                continue
+            host = min(
+                hosts,
+                key=lambda role: (len(kept_roles[role.role_id].question_keys), role.role_id),
+            )
+            kept_roles[host.role_id].question_keys.append(key)
+            if question is not None and question.owner_role == task.role_id:
+                plan.degraded.append(
+                    f"{key} is owned by {task.role_id}, which the task budget could not "
+                    f"seat; answered by {host.role_id}"
+                )
+    return sorted(kept, key=lambda t: t.role_id)
+
+
+def _dependency_ordered(questions: "list[PlannedQuestion]") -> "list[PlannedQuestion]":
+    """Stable order in which every question comes after the questions it depends on.
+
+    A dependency on a key not in the plan is ignored (it was dropped or never planned),
+    and a cycle cannot hang the planner: anything still unplaced after a full pass keeps
+    its original relative order.
+    """
+    keys = {q.key for q in questions}
+    placed: list[PlannedQuestion] = []
+    placed_keys: set[str] = set()
+    pending = list(questions)
+    while pending:
+        progressed = False
+        for question in list(pending):
+            parents = {k for k in question.depends_on if k in keys}
+            if parents <= placed_keys:
+                placed.append(question)
+                placed_keys.add(question.key)
+                pending.remove(question)
+                progressed = True
+        if not progressed:
+            placed.extend(pending)
+            break
+    return placed
 
 
 def _least_loaded(
@@ -620,7 +797,9 @@ async def _refine(
             )
         )
         added += 1
-    seen.sort(key=lambda q: (not q.blocking, q.priority, q.key))
+    # Stable, so the model's order survives within one rank — and the rank itself (and
+    # the dependency order applied after the cap) is not the model's to undo.
+    seen.sort(key=lambda q: (not q.blocking, q.priority, _ORIGIN_RANK.get(q.origin, 3)))
     return seen, True
 
 
@@ -642,6 +821,16 @@ async def persist_plan(session: Any, run: Any, plan: ResearchPlan) -> dict[str, 
             priority=question.priority,
             blocking=question.blocking,
             required_evidence_classes=question.required_evidence_classes,
+            # V3.18.2 — the graph, persisted: who owns it, why it is asked, what it
+            # needs, and what counts as an answer. "Why did the agent search for this
+            # source?" has to be answerable from the row.
+            domain=question.domain,
+            why_it_matters=question.why_it_matters or None,
+            owner_role=question.owner_role,
+            depends_on=question.depends_on,
+            required_metrics=question.required_calculations,
+            evidence_contract=question.evidence_contract.to_dict(),
+            search_intents=question.search_intents,
         )
         counts["questions"] += 1
     for task in plan.tasks:

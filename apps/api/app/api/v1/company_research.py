@@ -257,6 +257,21 @@ async def get_company_research_job_lineage(
 
 
 @router.get(
+    "/schema-readiness",
+    summary="Is the database at the schema the research graph needs? (admin only)",
+    description=(
+        "Read-only. Reports whether the columns migration 041 adds are present, so a "
+        "deployment can be checked without database access. " + _INTERNAL
+    ),
+)
+async def research_schema_readiness(db: AsyncSession = Depends(get_db)) -> dict:
+    from app.services.schema_readiness import migration_041_readiness
+
+    readiness = await migration_041_readiness(db, use_cache=False)
+    return {"migration": "041", **readiness.to_dict()}
+
+
+@router.get(
     "/jobs",
     response_model=CompanyResearchJobResponse,
     summary="Recover the latest company-research job for one company",

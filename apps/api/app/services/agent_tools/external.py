@@ -193,6 +193,8 @@ async def _search_web(context: "ToolContext", arguments: dict[str, Any]) -> dict
             "claimed_period": lead.claimed_period,
             "claimed_scope": lead.claimed_scope,
             "claimed_publisher": lead.claimed_publisher,
+            "claimed_metric": getattr(lead, "claimed_metric", None),
+            "claimed_geography": getattr(lead, "claimed_geography", None),
             "verified_by_investingbuddy": False,
         }
         for index, lead in enumerate(result.research_leads[:MAX_LEADS_RETURNED])
@@ -289,8 +291,30 @@ def _validate_fetch_public_source(arguments: dict[str, Any]) -> dict[str, Any]:
         "claimed_period": str(arguments.get("claimed_period") or "").strip() or None,
         "claimed_scope": str(arguments.get("claimed_scope") or "").strip() or None,
         "claimed_publisher": str(arguments.get("claimed_publisher") or "").strip() or None,
+        "claimed_unit": str(arguments.get("claimed_unit") or "").strip()[:40] or None,
+        "claimed_currency": str(arguments.get("claimed_currency") or "").strip()[:10] or None,
+        "claimed_metric": str(arguments.get("claimed_metric") or "").strip()[:120] or None,
+        "claimed_geography": str(arguments.get("claimed_geography") or "").strip()[:80] or None,
         "provider": str(arguments.get("provider") or "external").strip()[:64],
     }
+
+
+async def _company_name(session: Any, company_id: Any) -> str | None:
+    """The researched company's name, whose words never count as a claim's context."""
+    from sqlalchemy import select
+
+    from app.models.company import Company
+
+    try:
+        # A SAVEPOINT for the reason `persist_lead` below has one: an error swallowed
+        # here must not leave the V2 report's transaction aborted.
+        async with session.begin_nested():
+            name = await session.scalar(
+                select(Company.name).where(Company.id == company_id)
+            )
+        return str(name) if name else None
+    except Exception:  # noqa: BLE001 - a lookup failure costs the exclusion, not the gate
+        return None
 
 
 async def _fetch_public_source(
@@ -309,7 +333,15 @@ async def _fetch_public_source(
     leave the cited host, and the byte cap — all of it the existing boundary, none of it
     reimplemented here.
     """
-    from app.services.providers.leads import known_leads_for, persist_lead, verify_lead
+    from app.services.providers.leads import (
+        known_leads_for,
+        lead_key_for,
+        persist_lead,
+        reusable_verification,
+        slot_key_for,
+        verify_lead,
+    )
+    from app.services.sources.publisher_tiers import publisher_tier
 
     lead = ResearchLead(
         claim_text=arguments["claim"],
@@ -319,18 +351,67 @@ async def _fetch_public_source(
         claimed_source_url=arguments["url"],
         claimed_publisher=arguments.get("claimed_publisher"),
         claimed_value=arguments.get("claimed_value"),
+        claimed_unit=arguments.get("claimed_unit"),
+        claimed_currency=arguments.get("claimed_currency"),
         claimed_period=arguments.get("claimed_period"),
         claimed_scope=arguments.get("claimed_scope"),
+        claimed_metric=arguments.get("claimed_metric"),
+        claimed_geography=arguments.get("claimed_geography"),
     )
 
     session = getattr(context, "session", None)
     subject = str(context.company_id) if context.company_id else None
     known: Sequence[Any] = ()
+    subject_name: str | None = None
     if session is not None and context.company_id is not None:
         try:
             known = await known_leads_for(session, company_id=context.company_id)
         except Exception:  # noqa: BLE001 - a lookup failure must not block the gate
             known = ()
+        subject_name = await _company_name(session, context.company_id)
+
+    # V3.18.3 — a claim this platform ALREADY verified, for this company, is cited again
+    # rather than rejected. The gate's duplicate rule exists so one claim is not recorded
+    # twice; it was also, in effect, a rule that a fact verified in last week's run could
+    # never be cited in this week's — so every re-run of a company lost its external
+    # evidence. The evidence id is the one minted from bytes this platform fetched then;
+    # nothing is re-asserted, and no new lead row is written.
+    #
+    # Only a verification that kept its matched passage, and a recent one: see
+    # `reusable_verification`.
+    key = lead_key_for(lead, subject=subject)
+    reusable = reusable_verification(
+        known, key, slot_key=slot_key_for(lead, subject=subject)
+    )
+    if reusable is not None:
+        reused: dict[str, Any] = {
+            "url": arguments["url"],
+            "status": LEAD_VERIFIED,
+            "verified": True,
+            "reused_from_earlier_verification": True,
+            "evidence_id": reusable.promoted_evidence_id,
+            "claim": reusable.claim_text or arguments["claim"],
+            "source_excerpt": reusable.matched_excerpt,
+            "fetched_url": reusable.fetched_url,
+            "source_tier": publisher_tier(reusable.fetched_url),
+            "period_key": (
+                _canonical_period(reusable.claimed_period)
+                if reusable.period_verified
+                else None
+            ),
+            "scope_key": None,
+            # The labels stored WITH the verification, never this call's arguments:
+            # nothing checked today's labels against the stored page.
+            "claimed_metric": reusable.claimed_metric,
+            "claimed_unit": reusable.claimed_unit,
+            "claimed_currency": reusable.claimed_currency,
+            "claimed_geography": reusable.claimed_geography,
+        }
+        return {
+            "items": [reused],
+            "verified": True,
+            "consumption": units_for(FETCH_UNITS, url_fetch_calls=0),
+        }
 
     outcome = await verify_lead(
         lead,
@@ -340,6 +421,7 @@ async def _fetch_public_source(
         allow_public_web=True,
         known_leads=known,
         subject=subject,
+        subject_name=subject_name,
     )
 
     # Minted BEFORE persisting, so the row records the id a finding will actually cite.
@@ -407,9 +489,22 @@ async def _fetch_public_source(
         ),
     }
 
+    # Who published the page, from its host. Never a verdict on the claim — `verify_lead`
+    # is that — but what the question's evidence contract needs to tell an independent
+    # statistical agency from a content farm.
+    record["source_tier"] = publisher_tier(outcome.fetched_url or arguments["url"])
     if minted:
         record["evidence_id"] = minted
         record["claim"] = arguments["claim"]
+        # The document's OWN words at the point verification matched. A finding built on
+        # this lead reads the source, not the provider's paraphrase of it.
+        record["source_excerpt"] = getattr(outcome, "matched_excerpt", None)
+        record["verification_basis"] = getattr(outcome, "verification_basis", None)
+        record["claimed_value"] = arguments.get("claimed_value")
+        record["claimed_unit"] = arguments.get("claimed_unit")
+        record["claimed_currency"] = arguments.get("claimed_currency")
+        record["claimed_metric"] = arguments.get("claimed_metric")
+        record["claimed_geography"] = arguments.get("claimed_geography")
         # Period and scope travel with the evidence ONLY where the platform confirmed
         # them against the document. Period now can be: `periods_in` reads the periods a
         # retrieved document names about itself, so a claim matching one of them at the

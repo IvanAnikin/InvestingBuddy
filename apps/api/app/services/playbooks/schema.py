@@ -45,6 +45,8 @@ from typing import Any
 from app.services.agent_tools.contracts import TOOL_NAMES
 from app.services.calculations.definitions import DEFINITIONS
 from app.services.corpus.policy import ACCESS_CLASSES
+from app.services.director.contracts import DEFAULT_CONTRACT, EvidenceContract
+from app.services.director.domains import DOMAINS
 from app.services.director.roles import ROLES
 from app.services.sector_taxonomy import normalize_industry, normalize_sector
 
@@ -77,8 +79,36 @@ class PlaybookQuestion:
     #: **Cannot be answered ⇒ the Council does not convene.** The run reports
     #: insufficient evidence rather than analysing around the hole.
     blocking: bool = False
+    # ── V3.18.2: the question as a node of a research graph ──────────────── #
+    #: Which analytical domain the answer belongs to. ``None`` only on a question
+    #: written before V3.18, which is treated as its owner role's default domain.
+    domain: str | None = None
+    #: Why an analyst would ask it. Shown in the audit trail and in the gap section,
+    #: so an unanswered question says what its absence costs.
+    why_it_matters: str = ""
+    #: The role that OWNS findings under this question. Others may reference them.
+    owner_role: str | None = None
+    #: Question keys whose answers this one builds on; scheduled after them.
+    depends_on: tuple[str, ...] = ()
+    #: What the evidence behind an answer must look like. See `director.contracts`.
+    evidence_contract: EvidenceContract = DEFAULT_CONTRACT
+    #: Deterministic query templates, in order, for the corpus and — when the contract
+    #: allows it — the open web. ``{company}`` and ``{ticker}`` are filled by the
+    #: platform; the model never writes a query.
+    search_intents: tuple[str, ...] = ()
+    #: For ``get_financial_series``: which fact labels to read. A question does not
+    #: reliably name a label in prose, which is why that tool was never called.
+    series_labels: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
+        if self.domain is not None and self.domain not in DOMAINS:
+            raise ValueError(f"question {self.key!r}: {self.domain!r} is not a domain.")
+        if self.owner_role is not None and self.owner_role not in ROLES:
+            raise ValueError(
+                f"question {self.key!r}: owner {self.owner_role!r} is not a declared role."
+            )
+        if self.key in self.depends_on:
+            raise ValueError(f"question {self.key!r} cannot depend on itself.")
         unknown_tools = set(self.required_tools) - TOOL_NAMES
         if unknown_tools:
             raise ValueError(
@@ -106,6 +136,36 @@ class PlaybookQuestion:
                 "and it would look like a coverage problem rather than a declaration "
                 "error."
             )
+
+
+def planned_from(question: "PlaybookQuestion", *, origin: str) -> "Any":
+    """A declared question as the Director plans it — EVERY field carried across.
+
+    V3.18.2. This used to build ``PlannedQuestion`` inline and dropped
+    ``required_calculations`` on the way, so ``get_calculated_metrics`` — whose
+    vocabulary is closed and comes ONLY from the question — was never called for any
+    playbook question, and the calculation leg of every methodology silently never ran.
+    One function, used by every producer, is how a field stops being dropped.
+    """
+    from app.services.director.planner import PlannedQuestion
+
+    return PlannedQuestion(
+        key=question.key,
+        text=question.text,
+        origin=origin,
+        required_tools=frozenset(question.required_tools),
+        priority=question.priority,
+        blocking=question.blocking,
+        required_evidence_classes=tuple(question.required_evidence_classes),
+        required_calculations=tuple(question.required_calculations),
+        domain=question.domain,
+        why_it_matters=question.why_it_matters,
+        owner_role=question.owner_role,
+        depends_on=tuple(question.depends_on),
+        evidence_contract=question.evidence_contract,
+        search_intents=tuple(question.search_intents),
+        series_labels=tuple(question.series_labels),
+    )
 
 
 @dataclass(frozen=True)
@@ -241,21 +301,9 @@ class Playbook:
     # -- the `PlaybookLike` protocol the Director consumes (5.2) -------------- #
 
     def mandatory_questions(self) -> "tuple[Any, ...]":
-        from app.services.director.planner import PlannedQuestion
         from app.services.ledger import store as ledger
 
-        return tuple(
-            PlannedQuestion(
-                key=q.key,
-                text=q.text,
-                origin=ledger.ORIGIN_PLAYBOOK,
-                required_tools=frozenset(q.required_tools),
-                priority=q.priority,
-                blocking=q.blocking,
-                required_evidence_classes=tuple(q.required_evidence_classes),
-            )
-            for q in self.questions
-        )
+        return tuple(planned_from(q, origin=ledger.ORIGIN_PLAYBOOK) for q in self.questions)
 
     def specialist_role_ids(self) -> "tuple[str, ...]":
         return self.specialist_roles
@@ -359,6 +407,7 @@ class PlaybookSelection:
 
 __all__ = [
     "EVALUABLE_COMPLETION_RULES",
+    "planned_from",
     "AppliesTo",
     "Playbook",
     "PlaybookQuestion",

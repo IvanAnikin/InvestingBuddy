@@ -227,6 +227,10 @@ class ResearchLead:
     claimed_currency: str | None = None
     claimed_period: str | None = None
     claimed_scope: str | None = None
+    #: V3.18.3 — what the claimed number measures ("world mine production", "copper
+    #: price") and for where. Metadata about the claim, never a verified fact.
+    claimed_metric: str | None = None
+    claimed_geography: str | None = None
 
     status: str = LEAD_PENDING
     rejection_reason: str | None = None

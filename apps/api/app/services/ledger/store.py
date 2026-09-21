@@ -209,6 +209,13 @@ async def add_question(
     priority: int = 3,
     blocking: bool = False,
     required_evidence_classes: Sequence[str] = (),
+    domain: str | None = None,
+    why_it_matters: str | None = None,
+    owner_role: str | None = None,
+    depends_on: Sequence[str] = (),
+    required_metrics: Sequence[str] = (),
+    evidence_contract: dict[str, Any] | None = None,
+    search_intents: Sequence[str] = (),
 ) -> ResearchQuestion:
     if origin not in QUESTION_ORIGINS:
         raise ValueError(f"{origin!r} is not a question origin.")
@@ -221,6 +228,13 @@ async def add_question(
         priority=int(priority),
         blocking=bool(blocking),
         required_evidence_classes_json=list(required_evidence_classes) or None,
+        domain=_clip(domain, 40),
+        why_it_matters=_clip(why_it_matters, _TEXT_MAX),
+        owner_role=_clip(owner_role, 60),
+        depends_on_json=list(depends_on) or None,
+        required_metrics_json=list(required_metrics) or None,
+        evidence_contract_json=dict(evidence_contract) if evidence_contract else None,
+        search_intents_json=list(search_intents) or None,
     )
     session.add(question)
     await session.flush()
@@ -312,6 +326,11 @@ async def record_finding(
     originating_role: str | None = None,
     provider: str | None = None,
     verification_status: str = "unverified",
+    domain: str | None = None,
+    topic_key: str | None = None,
+    claim_key: str | None = None,
+    references_finding_ids: Sequence[str] = (),
+    source_kinds: Sequence[str] = (),
 ) -> ResearchFinding:
     """Persist one finding. **The counts are derived here and nowhere else.**"""
     evidence = [str(value).strip() for value in evidence_ids if str(value).strip()]
@@ -347,10 +366,80 @@ async def record_finding(
         originating_role=_clip(originating_role, 60),
         provider=_clip(provider, 40),
         verification_status=verification_status,
+        domain=_clip(domain, 40),
+        topic_key=_clip(topic_key, 160),
+        claim_key=_clip(claim_key, 240),
+        references_finding_ids_json=[str(v) for v in references_finding_ids] or None,
+        source_kinds_json=sorted({str(k) for k in source_kinds}) or None,
     )
     session.add(finding)
     await session.flush()
     return finding
+
+
+#: Why a question is still open when its run ended. Closed, so "which domain does this
+#: platform keep failing, and why" aggregates.
+UNRESOLVED_NOT_ACQUIRED = "not_acquired"
+UNRESOLVED_CONTRACT_UNMET = "contract_unmet"
+UNRESOLVED_BUDGET_EXHAUSTED = "budget_exhausted"
+UNRESOLVED_TOOL_UNAVAILABLE = "tool_unavailable"
+UNRESOLVED_NOT_REACHED = "not_reached"
+
+UNRESOLVED_REASONS: frozenset[str] = frozenset(
+    {
+        UNRESOLVED_NOT_ACQUIRED,
+        UNRESOLVED_CONTRACT_UNMET,
+        UNRESOLVED_BUDGET_EXHAUSTED,
+        UNRESOLVED_TOOL_UNAVAILABLE,
+        UNRESOLVED_NOT_REACHED,
+    }
+)
+
+
+async def update_question_graph_state(
+    session: Any,
+    run: ResearchRun,
+    question_key: str,
+    *,
+    contract_status: str | None = None,
+    contract_detail: dict[str, Any] | None = None,
+    acquisition_steps: Sequence[dict[str, Any]] = (),
+    unresolved_reason: str | None = None,
+    clear_unresolved: bool = False,
+) -> None:
+    """Record what the research graph learned about one question. Never raises.
+
+    ``acquisition_steps`` are APPENDED: the log is the question's history across rounds,
+    and replacing it would lose the reason an earlier rung was tried.
+    """
+    from sqlalchemy import select
+
+    if unresolved_reason is not None and unresolved_reason not in UNRESOLVED_REASONS:
+        raise ValueError(f"{unresolved_reason!r} is not an unresolved reason.")
+    row = (
+        await session.execute(
+            select(ResearchQuestion).where(
+                ResearchQuestion.research_run_id == run.id,
+                ResearchQuestion.question_key == question_key,
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        return
+    if contract_status is not None:
+        row.contract_status = contract_status
+    if contract_detail is not None:
+        row.contract_detail_json = dict(contract_detail)
+    if acquisition_steps:
+        row.acquisition_log_json = [
+            *(row.acquisition_log_json or []),
+            *(dict(step) for step in acquisition_steps),
+        ][-40:]
+    if clear_unresolved:
+        row.unresolved_reason = None
+    elif unresolved_reason is not None:
+        row.unresolved_reason = unresolved_reason
+    await session.flush()
 
 
 # ── Gaps ────────────────────────────────────────────────────────────────────── #
@@ -367,7 +456,15 @@ async def record_gap(
     sources_tried: Sequence[str] = (),
     closable: bool = True,
     blocks_council: bool = False,
+    knowledge_state: str | None = None,
 ) -> ResearchGap:
+    from app.services.knowledge_state import KNOWLEDGE_STATES, NOT_ACQUIRED_BY_PLATFORM
+
+    # V3.18 — whose gap it is. The default is the humble answer: a gap in THIS
+    # PLATFORM's evidence says nothing about whether the company discloses it.
+    state = knowledge_state or NOT_ACQUIRED_BY_PLATFORM
+    if state not in KNOWLEDGE_STATES:
+        raise ValueError(f"{state!r} is not a knowledge state.")
     if gap_type not in GAP_TYPES:
         raise ValueError(
             f"{gap_type!r} is not a gap type. A type invented at a call site is one "
@@ -386,6 +483,7 @@ async def record_gap(
         closable=bool(closable),
         blocks_council=bool(blocks_council),
         status=GAP_OPEN,
+        knowledge_state=state,
     )
     session.add(gap)
     await session.flush()

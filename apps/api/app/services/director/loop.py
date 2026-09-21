@@ -44,6 +44,7 @@ without a model, a network or a database of documents.
 
 from __future__ import annotations
 
+import inspect
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -102,6 +103,8 @@ class FindingDraft:
     confidence: float | None = None
     period_key: str | None = None
     scope_key: str | None = None
+    #: V3.18.2 — source kinds of the cited evidence, for the finding's provenance.
+    source_kinds: tuple[str, ...] = ()
 
 
 @dataclass
@@ -132,6 +135,12 @@ class TaskOutcome:
     stopped_by: str | None = None
     failed: bool = False
     detail: str | None = None
+    #: V3.18.2 — every citable item retrieved, per question, as the evidence contract
+    #: sees it. Evaluated by the loop, never by the investigator, so the verdict on a
+    #: question cannot be written by the same code that wrote its answer.
+    question_evidence: dict[str, list[Any]] = field(default_factory=dict)
+    #: Per question, what each rung of acquisition did, in order.
+    acquisition_steps: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
 
 
 @runtime_checkable
@@ -181,8 +190,12 @@ class LoopResult:
     blocking_open_question_keys: tuple[str, ...] = ()
     council_may_convene: bool = False
     elapsed_seconds: float = 0.0
+    #: A limit that ended an IMPROVEMENT round after the run was already complete.
+    improvement_stopped_by: str | None = None
 
     def __post_init__(self) -> None:
+        if self.improvement_stopped_by not in LIMIT_STOP_REASONS | {None}:
+            raise ValueError(f"{self.improvement_stopped_by!r} is not a limit.")
         if self.stopped_by not in LOOP_STOP_REASONS:
             raise ValueError(
                 f"{self.stopped_by!r} is not a loop stop reason. Every member is either "
@@ -219,6 +232,7 @@ class LoopResult:
             "blocking_open_question_keys": list(self.blocking_open_question_keys),
             "council_may_convene": self.council_may_convene,
             "elapsed_seconds": round(self.elapsed_seconds, 3),
+            "improvement_stopped_by": self.improvement_stopped_by,
         }
 
 
@@ -248,6 +262,17 @@ async def run_investigation(
     pending: list[tuple[str, list[str]]] = [
         (task.role_id, list(task.question_keys)) for task in plan.tasks
     ]
+    #: V3.18.2 — everything retrieved per question across ALL rounds, so a contract is
+    #: judged over the question's whole evidence and not only its latest round's.
+    evidence_so_far: dict[str, dict[str, Any]] = {}
+    #: V3.18.3 — external searches already spent per question, so a follow-up uses the
+    #: NEXT search intent and a question's own cap binds across rounds.
+    searches_so_far: dict[str, int] = {}
+    can_improve = _improvement_probe(investigator, plan)
+    #: The completion rules were met. Later rounds only IMPROVE the run — close gaps on
+    #: non-blocking questions, meet partially met contracts — and cannot un-complete it.
+    completed = False
+    improvement_stopped_by: str | None = None
 
     for round_index in range(limits.max_rounds):
         if not pending:
@@ -259,14 +284,21 @@ async def run_investigation(
         for role_id, question_keys in pending:
             # Checked BEFORE the work each limit would authorise. A budget satisfied by
             # noticing afterwards is a budget that was exceeded.
+            limit_hit = None
             if tasks_run >= limits.max_tasks:
-                stop_reason = STOPPED_MAX_TASKS
-                break
-            if tool_calls >= limits.max_tool_calls:
-                stop_reason = STOPPED_MAX_TOOL_CALLS
-                break
-            if (clock() - started) >= limits.max_wall_seconds:
-                stop_reason = STOPPED_MAX_WALL_SECONDS
+                limit_hit = STOPPED_MAX_TASKS
+            elif tool_calls >= limits.max_tool_calls:
+                limit_hit = STOPPED_MAX_TOOL_CALLS
+            elif (clock() - started) >= limits.max_wall_seconds:
+                limit_hit = STOPPED_MAX_WALL_SECONDS
+            if limit_hit is not None:
+                if completed:
+                    # An IMPROVEMENT round of a run that was already complete: the
+                    # limit ended the improvement, not the analysis.
+                    stop_reason = STOPPED_COMPLETE
+                    improvement_stopped_by = limit_hit
+                else:
+                    stop_reason = limit_hit
                 break
 
             task = await ledger.add_task(
@@ -280,12 +312,20 @@ async def run_investigation(
                 questions_by_key[key] for key in question_keys if key in questions_by_key
             ]
             try:
-                outcome = await investigator.investigate(
-                    role_id=role_id,
-                    questions=questions,
-                    round_index=round_index,
-                    remaining_tool_calls=max(0, limits.max_tool_calls - tool_calls),
-                )
+                kwargs: dict[str, Any] = {
+                    "role_id": role_id,
+                    "questions": questions,
+                    "round_index": round_index,
+                    "remaining_tool_calls": max(0, limits.max_tool_calls - tool_calls),
+                }
+                # V3.18.3 — what earlier rounds established, so a follow-up starts where
+                # the last round ended. Offered only to an investigator that accepts it:
+                # the Protocol predates it and every existing implementer stays valid.
+                if _accepts(investigator.investigate, "question_context"):
+                    kwargs["question_context"] = _question_context(
+                        question_keys, evidence_so_far, searches_so_far
+                    )
+                outcome = await investigator.investigate(**kwargs)
             except Exception as exc:  # noqa: BLE001 - one role must not end the run
                 await ledger.finish_task(
                     session,
@@ -303,6 +343,8 @@ async def run_investigation(
             record.tool_calls += max(0, int(outcome.tool_calls))
 
             for draft in outcome.findings:
+                question_def = questions_by_key.get(draft.question_key or "")
+                domain = _domain_of(question_def, role_id)
                 try:
                     await ledger.record_finding(
                         session,
@@ -318,6 +360,15 @@ async def run_investigation(
                         period_key=draft.period_key,
                         scope_key=draft.scope_key,
                         originating_role=role_id,
+                        # V3.18.2 — ownership. The finding belongs to its question's
+                        # domain, so the report can place it exactly once.
+                        domain=domain,
+                        topic_key=(
+                            f"{domain}.{draft.question_key}"
+                            if domain and draft.question_key
+                            else None
+                        ),
+                        source_kinds=draft.source_kinds,
                     )
                 except ledger.UnsupportedFindingError:
                     # An investigator that returned a statement with no support has
@@ -358,6 +409,18 @@ async def run_investigation(
 
             answered.update(outcome.answered_question_keys)
             await _mark_answered(session, run, outcome.answered_question_keys)
+            await _judge_contracts(
+                session,
+                run,
+                outcome,
+                questions_by_key,
+                evidence_so_far,
+            )
+            for key, steps in outcome.acquisition_steps.items():
+                searches_so_far[key] = searches_so_far.get(key, 0) + sum(
+                    1 for step in steps if step.get("rung") == "external_search"
+                    and step.get("query")
+                )
 
             if outcome.failed:
                 await ledger.finish_task(
@@ -387,18 +450,61 @@ async def run_investigation(
             break
 
         summary = await ledger.summarise(session, run)
-        if _rules_satisfied(summary, completion_rules):
-            stop_reason = STOPPED_COMPLETE
-            break
+        if not completed and _rules_satisfied(summary, completion_rules):
+            completed = True
 
         # Gap review. Only a CLOSABLE gap becomes a follow-up: an unclosable one would
         # consume a whole round to fail again.
-        follow_ups = await _follow_up_tasks(
-            session, run, plan, answered_keys=answered
+        follow_ups, gap_keys = await _follow_up_tasks(
+            session,
+            run,
+            plan,
+            answered_keys=answered,
+            improvable_keys=_improvable(
+                questions_by_key, evidence_so_far, searches_so_far, can_improve
+            ),
         )
+        if completed:
+            # V3.18.3 review. Stopping the moment the rules were met meant a run whose
+            # every question had SOME answer never climbed to the independent source
+            # its contracts ask for: the improvement round could not happen. It now
+            # may, while rounds and tasks remain — and the run stays complete.
+            remaining = limits.max_tasks - tasks_run
+            if not follow_ups or round_index == limits.max_rounds - 1 or remaining <= 0:
+                stop_reason = STOPPED_COMPLETE
+                # Improvement left undone is said, not hidden: which limit cut it short.
+                if follow_ups:
+                    improvement_stopped_by = (
+                        STOPPED_MAX_TASKS if remaining <= 0 else STOPPED_MAX_ROUNDS
+                    )
+                break
+            if len(follow_ups) > remaining:
+                follow_ups, _starved = _within_task_budget(
+                    follow_ups, gap_keys, questions_by_key, remaining
+                )
+                improvement_stopped_by = STOPPED_MAX_TASKS
+            pending = follow_ups
+            continue
         if not follow_ups:
             stop_reason = STOPPED_NOTHING_LEFT
             break
+        if round_index == limits.max_rounds - 1 and not gap_keys:
+            # What is left is only PARTIALLY met contracts a further round might
+            # improve. No closable gap remains, so the round limit did not cut the work
+            # short; each such question carries `contract_unmet` and says what it lacks.
+            stop_reason = STOPPED_NOTHING_LEFT
+            break
+        remaining = limits.max_tasks - tasks_run
+        if remaining <= 0:
+            stop_reason = STOPPED_MAX_TASKS if gap_keys else STOPPED_NOTHING_LEFT
+            break
+        if len(follow_ups) > remaining:
+            # The most important follow-ups run; a closable gap left out stays open and
+            # is re-offered next round, so a run that ends with it open ends on a LIMIT
+            # (max_rounds or max_tasks) — never on "nothing left".
+            follow_ups, _starved = _within_task_budget(
+                follow_ups, gap_keys, questions_by_key, remaining
+            )
         pending = follow_ups
     else:
         # The `for` ran to completion without breaking: the round budget is the reason.
@@ -415,6 +521,14 @@ async def run_investigation(
         if not open_gap.closable:
             await ledger.accept_gap(session, open_gap)
             accepted += 1
+
+    await _record_unresolved(
+        session,
+        run,
+        plan,
+        stop_reason=stop_reason,
+        evidence_so_far=evidence_so_far,
+    )
 
     summary = await ledger.summarise(session, run)
     open_keys = await _open_question_keys(session, run)
@@ -433,6 +547,7 @@ async def run_investigation(
         ),
         council_may_convene=summary.council_may_convene,
         elapsed_seconds=clock() - started,
+        improvement_stopped_by=improvement_stopped_by,
     )
     await ledger.close_run(
         session,
@@ -444,6 +559,115 @@ async def run_investigation(
         consumption={"tool_calls": tool_calls, "tasks": tasks_run},
     )
     return result
+
+
+def _domain_of(question: Any, role_id: str) -> str | None:
+    """A question's domain, or its owner role's default one for a pre-V3.18 question."""
+    from app.services.director.domains import DOMAIN_SPECS
+
+    declared = getattr(question, "domain", None)
+    if declared:
+        return declared
+    owner = getattr(question, "owner_role", None) or role_id
+    return next((spec.domain for spec in DOMAIN_SPECS if spec.default_owner == owner), None)
+
+
+async def _judge_contracts(
+    session: Any,
+    run: Any,
+    outcome: TaskOutcome,
+    questions_by_key: dict[str, Any],
+    evidence_so_far: dict[str, dict[str, Any]],
+) -> None:
+    """Judge each worked question's evidence contract and record the verdict.
+
+    The verdict is the LOOP's, over what the tools returned. It is recorded beside the
+    question with the missing dimension named, so "partially answered — no independent
+    statistical source" is a fact the next round and a reader can both act on.
+
+    Never raises: a record that fails must not cost the run its findings.
+    """
+    from app.services.director.contracts import evaluate_contract
+
+    worked = set(outcome.question_evidence) | set(outcome.acquisition_steps)
+    for key in worked:
+        pool = evidence_so_far.setdefault(key, {})
+        for ref in outcome.question_evidence.get(key, ()):
+            if ref is not None:
+                pool.setdefault(ref.citation_id, ref)
+        question = questions_by_key.get(key)
+        evaluation = evaluate_contract(
+            getattr(question, "evidence_contract", None), pool.values()
+        )
+        detail = evaluation.to_dict()
+        detail["citation_ids"] = sorted(pool)[:60]
+        try:
+            # A SAVEPOINT: on PostgreSQL a swallowed database error would otherwise leave
+            # the whole transaction aborted, and the report with it.
+            async with session.begin_nested():
+                await ledger.update_question_graph_state(
+                    session,
+                    run,
+                    key,
+                    contract_status=evaluation.status,
+                    contract_detail=detail,
+                    acquisition_steps=outcome.acquisition_steps.get(key, ()),
+                    clear_unresolved=evaluation.satisfied,
+                )
+        except Exception:  # noqa: BLE001 - the audit record must not end the run
+            continue
+
+
+async def _record_unresolved(
+    session: Any,
+    run: Any,
+    plan: ResearchPlan,
+    *,
+    stop_reason: str,
+    evidence_so_far: dict[str, dict[str, Any]],
+) -> None:
+    """Name why every question that did not reach its contract is still open.
+
+    Four answers a reader needs told apart: nothing citable was acquired; something was
+    acquired but not enough of the right kind; a budget ended the run first; or no tool
+    could answer it at all. They call for different fixes, and "open" alone says none.
+    """
+    from sqlalchemy import select
+
+    from app.models.ledger import ResearchQuestion
+
+    unassignable = {
+        key: reason for key, reason in plan.unassignable
+    }
+    rows = (
+        await session.execute(
+            select(ResearchQuestion).where(ResearchQuestion.research_run_id == run.id)
+        )
+    ).scalars().all()
+    limited = stop_reason in LIMIT_STOP_REASONS
+    for row in rows:
+        if row.contract_status == "satisfied":
+            continue
+        if row.question_key in unassignable:
+            # A question dropped because the MODE's task cap was reached is a budget
+            # outcome, not a capability one — widening the mode answers it.
+            reason = (
+                ledger.UNRESOLVED_BUDGET_EXHAUSTED
+                if "budget" in unassignable[row.question_key]
+                else ledger.UNRESOLVED_TOOL_UNAVAILABLE
+            )
+        elif evidence_so_far.get(row.question_key):
+            reason = ledger.UNRESOLVED_CONTRACT_UNMET
+        elif row.question_key not in evidence_so_far and limited:
+            reason = ledger.UNRESOLVED_BUDGET_EXHAUSTED
+        elif row.question_key not in evidence_so_far and row.contract_status is None:
+            reason = ledger.UNRESOLVED_NOT_REACHED
+        else:
+            reason = ledger.UNRESOLVED_NOT_ACQUIRED
+        if row.contract_status is None:
+            row.contract_status = "unmet"
+        row.unresolved_reason = reason
+    await session.flush()
 
 
 def _rules_satisfied(
@@ -506,8 +730,13 @@ async def _open_question_keys(session: Any, run: Any) -> list[str]:
 
 
 async def _follow_up_tasks(
-    session: Any, run: Any, plan: ResearchPlan, *, answered_keys: "set[str]"
-) -> list[tuple[str, list[str]]]:
+    session: Any,
+    run: Any,
+    plan: ResearchPlan,
+    *,
+    answered_keys: "set[str]",
+    improvable_keys: "set[str] | None" = None,
+) -> tuple[list[tuple[str, list[str]]], set[str]]:
     """A closable gap becomes a follow-up task for a role that can address it.
 
     The gap's own question decides the role, reusing the plan's assignment rather than
@@ -516,25 +745,145 @@ async def _follow_up_tasks(
     fail identically.
     """
     gaps = await ledger.open_gaps(session, run, closable_only=True, limit=100)
-    if not gaps:
-        return []
+    improvable = set(improvable_keys or ())
+    if not gaps and not improvable:
+        return [], set()
     role_for_question: dict[str, str] = {}
     for task in plan.tasks:
         for key in task.question_keys:
             role_for_question.setdefault(key, task.role_id)
 
     by_role: dict[str, list[str]] = {}
+
+    def _add(question_key: str) -> None:
+        role_id = role_for_question.get(question_key)
+        if role_id is None:
+            return
+        keys = by_role.setdefault(role_id, [])
+        if question_key not in keys:
+            keys.append(question_key)
+
+    gap_keys: set[str] = set()
     for gap in gaps:
         question_key = gap.question_key
         if not question_key or question_key in answered_keys:
             continue
-        role_id = role_for_question.get(question_key)
+        if question_key in role_for_question:
+            gap_keys.add(question_key)
+        _add(question_key)
+    # V3.18.3 — a question ANSWERED with a partial contract is still worth a round when
+    # acquisition can still improve it. "Has a finding" used to end a question's
+    # research, so one issuer excerpt settled the industry question for good.
+    for question_key in sorted(improvable):
+        _add(question_key)
+    return sorted(by_role.items()), gap_keys
+
+
+def _within_task_budget(
+    follow_ups: "list[tuple[str, list[str]]]",
+    gap_keys: "set[str]",
+    questions_by_key: dict[str, Any],
+    remaining: int,
+) -> tuple[list[tuple[str, list[str]]], set[str]]:
+    """The follow-ups that fit, most important first; and the keys left without one.
+
+    A blocking question's follow-up before any other, then one closing a gap before one
+    only improving a partial contract, then the busiest.
+    """
+
+    def _importance(item: tuple[str, list[str]]) -> tuple[int, int, int, str]:
+        role_id, keys = item
+        return (
+            0 if any(getattr(questions_by_key.get(k), "blocking", False) for k in keys)
+            else 1,
+            0 if set(keys) & gap_keys else 1,
+            -len(keys),
+            role_id,
+        )
+
+    ranked = sorted(follow_ups, key=_importance)
+    kept = ranked[:remaining]
+    starved = {key for _role, keys in ranked[remaining:] for key in keys}
+    return sorted(kept), starved
+
+
+def _improvement_probe(investigator: Any, plan: ResearchPlan) -> Any:
+    """``key -> bool``: could a follow-up for this question reach a new source at all?
+
+    A follow-up runs only the external rung, so without this the loop re-queued
+    partially met questions when search was switched off or its budget spent, and each
+    re-ask did nothing. An investigator that cannot say keeps the earlier behaviour.
+    """
+    probe = getattr(investigator, "can_search_externally", None)
+    role_for_question: dict[str, str] = {}
+    for task in plan.tasks:
+        for key in task.question_keys:
+            role_for_question.setdefault(key, task.role_id)
+
+    def _can(key: str) -> bool:
+        if not callable(probe):
+            return True
+        role_id = role_for_question.get(key)
         if role_id is None:
+            return False
+        try:
+            return bool(probe(role_id))
+        except Exception:  # noqa: BLE001 - a probe failure means "no", never a crash
+            return False
+
+    return _can
+
+
+def _accepts(fn: Any, parameter: str) -> bool:
+    try:
+        return parameter in inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+def _question_context(
+    question_keys: "Sequence[str]",
+    evidence_so_far: dict[str, dict[str, Any]],
+    searches_so_far: dict[str, int],
+) -> dict[str, Any]:
+    from app.services.agents.investigator import QuestionContext
+
+    return {
+        key: QuestionContext(
+            prior_evidence=tuple(evidence_so_far.get(key, {}).values()),
+            external_searches_done=searches_so_far.get(key, 0),
+        )
+        for key in question_keys
+    }
+
+
+def _improvable(
+    questions_by_key: dict[str, Any],
+    evidence_so_far: dict[str, dict[str, Any]],
+    searches_so_far: dict[str, int],
+    can_improve: Any = None,
+) -> set[str]:
+    """Questions whose contract is unmet and whose ladder still has a rung to climb."""
+    from app.services.director.contracts import evaluate_contract
+
+    out: set[str] = set()
+    for key, question in questions_by_key.items():
+        contract = getattr(question, "evidence_contract", None)
+        if contract is None or not contract.allow_external:
             continue
-        keys = by_role.setdefault(role_id, [])
-        if question_key not in keys:
-            keys.append(question_key)
-    return sorted(by_role.items())
+        intents = len(getattr(question, "search_intents", ()) or ()) or 1
+        if searches_so_far.get(key, 0) >= min(contract.max_external_searches, intents):
+            # No search left that would not repeat one already paid for.
+            continue
+        if key not in evidence_so_far and key not in searches_so_far:
+            # Never worked (unassigned, or dropped for capacity): not a follow-up.
+            continue
+        if evaluate_contract(contract, evidence_so_far.get(key, {}).values()).satisfied:
+            continue
+        if can_improve is not None and not can_improve(key):
+            continue
+        out.add(key)
+    return out
 
 
 __all__ = [
