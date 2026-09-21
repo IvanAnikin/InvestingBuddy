@@ -127,19 +127,27 @@ class TestEveryFactCarriesItsOwnPeriod:
         assert "2025-12-31" in note
         assert "RevenueFromContractWithCustomerExcludingAssessedTax" in note
 
-    def test_a_bundle_spanning_two_years_says_so(self) -> None:
-        """The headline `fiscal_year` is one field's period, not every field's. When
-        they genuinely differ the bundle must not be presented as one year's accounts —
-        that presentation is what turned a stale figure into "FY2025 revenue"."""
+    def test_a_figure_for_another_year_is_withheld_not_warned_about(self) -> None:
+        """The headline `fiscal_year` is one field's period, not every field's.
+
+        Until V3.18.1 this test asserted that a bundle mixing FY2022 revenue with FY2025
+        statements *warned* about it — and the stale figure still shipped, under a
+        FY2025 headline, which is what Southern Copper's FY2019 gross profit then did in
+        production. A warning nobody reads is not a control. The figure is now withheld:
+        missing for the period it is not for, with its real period on the record.
+        """
         data = json.loads(FIXTURE.read_text())
         # Remove the current revenue tag so revenue falls back to the FY2022 concept
         # while the other statements stay FY2025 — the exact production shape.
         del data["facts"]["us-gaap"]["RevenueFromContractWithCustomerExcludingAssessedTax"]
         n = normalize_company_facts(data, "MRNA", "1682852")
-        assert n.revenue == STALE_FY2022_REVENUE, "precondition: revenue is now stale"
-        assert any("span more than one fiscal year" in w for w in n.warnings), (
-            f"a mixed-period bundle must be declared; warnings were {n.warnings}"
-        )
+        assert n.revenue is None, "a FY2022 figure must not stand as FY2025 revenue"
+        withheld = n.withheld_fields["revenue"]
+        assert withheld["value"] == STALE_FY2022_REVENUE
+        assert withheld["end"].startswith("2022")
+        assert withheld["reason"] == "stale_period"
+        assert n.net_margin is None, "no ratio may be built on a withheld figure"
+        assert any("NOT REPORTED FOR THE CURRENT PERIOD" in w for w in n.warnings)
 
 
 class TestTheSupersessionIsRecorded:

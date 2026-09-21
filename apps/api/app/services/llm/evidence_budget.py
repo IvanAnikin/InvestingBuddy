@@ -59,6 +59,13 @@ CATEGORY_STATEMENT_TABLE = "statement_table_content"
 CATEGORY_PRIMARY_DOCUMENT = "primary_document"
 CATEGORY_FINANCIAL_SUMMARY = "financial_summary"
 CATEGORY_PRICE_TREND_METRIC = "price_trend_metric"
+#: V3.18.1 — engine-computed metrics that carry their own definition and reading. A
+#: category of its own: they are T6 and must not be counted as statement FACTS, and they
+#: must not share the capped price/trend group, where they would be the first thing
+#: dropped and the council would be back to dividing figures itself.
+CATEGORY_DEFINED_METRIC = "defined_metric"
+#: All of them are reserved. There are at most three, by construction of the pack.
+DEFINED_METRIC_FLOOR = 3
 CATEGORY_COMPANY_PRESS = "company_press"
 CATEGORY_REGULATOR_EVENT = "regulator_event"
 CATEGORY_MATERIAL_NEWS = "material_news"
@@ -266,6 +273,11 @@ def evidence_category(item: EvidenceItem) -> str:
     # 2. Structured SEC/XBRL statement facts + high-confidence issuer facts.
     if st in _FINANCIAL_FACT_TYPES:
         return CATEGORY_FINANCIAL_FACT
+
+    # 2b. V3.18.1 — engine-computed metrics carrying their own definition. See
+    # ``CATEGORY_DEFINED_METRIC``.
+    if st == "defined_financial_metric":
+        return CATEGORY_DEFINED_METRIC
 
     # 3. Derived / price / market / trend metrics.
     if st in _PRICE_TREND_TYPES or (fields & _PRICE_TREND_FIELDS):
@@ -478,6 +490,7 @@ def _apply_category_budget(
     statement_reserved = 0
     pd_reserved = 0
     price_reserved = 0
+    defined_reserved = 0
     for order, _item, category in ranked:
         if len(reserved) >= max_items:
             break
@@ -507,6 +520,12 @@ def _apply_category_budget(
         ):
             reserved.add(order)
             price_reserved += 1
+        elif (
+            category == CATEGORY_DEFINED_METRIC
+            and defined_reserved < DEFINED_METRIC_FLOOR
+        ):
+            reserved.add(order)
+            defined_reserved += 1
 
     # 5. Fill: reserved first, then global rank skipping any capped category.
     selected: list[tuple[int, EvidenceItem]] = []
@@ -710,6 +729,7 @@ __all__ = [
     "CATEGORY_FINANCIAL_FACT",
     "CATEGORY_STATEMENT_TABLE",
     "CATEGORY_PRIMARY_DOCUMENT",
+    "CATEGORY_DEFINED_METRIC",
     "CATEGORY_FINANCIAL_SUMMARY",
     "CATEGORY_PRICE_TREND_METRIC",
     "CATEGORY_COMPANY_PRESS",

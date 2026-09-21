@@ -49,6 +49,8 @@ from app.services.sources.period_state import (
 from app.services.sources.redaction import strip_url_secrets
 
 _EXCERPT_MAX = 280
+#: Defined metrics carry their interpretation rule in the excerpt (V3.18.1).
+_DEFINED_METRIC_EXCERPT_MAX = 1190
 _SEC_TRANSPORT = "SEC EDGAR / data.sec.gov"
 
 # Phase 32A Slice 2 — tier-split SEC/XBRL fundamentals. The keys below come from
@@ -69,6 +71,7 @@ _SEC_INCOME_KEYS = (
 _SEC_CASH_FLOW_KEYS = (
     "operating_cash_flow_usd_m",
     "capital_expenditures_usd_m",
+    "dividends_paid_usd_m",
 )
 _SEC_BALANCE_KEYS = (
     "total_assets_usd_m",
@@ -79,6 +82,12 @@ _SEC_BALANCE_KEYS = (
     "long_term_debt_usd_m",
     "shares_outstanding_mln",
 )
+#: Deterministic, engine-computed metrics delivered WITH their definition (V3.18.1).
+#: A source type of its own so the evidence budgeter can keep them: budgeted with the
+#: loose derived/price/trend items (capped at three) they would be the first thing
+#: dropped, and the council would be back to dividing figures itself.
+DEFINED_METRIC_SOURCE_TYPE = "defined_financial_metric"
+
 _SEC_DERIVED_KEYS = (
     "gross_margin_pct",
     "operating_margin_pct",
@@ -212,6 +221,7 @@ class _Builder:
         url: str | None = None,
         date: str | None = None,
         excerpt: Any = None,
+        excerpt_limit: int = _EXCERPT_MAX,
         data_quality: str | None = None,
         fields_supported: list[str] | None = None,
         transport_tier: str | None = None,
@@ -244,7 +254,7 @@ class _Builder:
                 title=title,
                 url=strip_url_secrets(url),
                 date=date,
-                excerpt=_excerpt(excerpt),
+                excerpt=_excerpt(excerpt, excerpt_limit),
                 data_quality=data_quality,
                 fields_supported=fields_supported or [],
                 relevance_level=relevance_level,
@@ -458,7 +468,68 @@ def _add_sec_fundamentals(
             fields_supported=[k for k, _ in derived],
         )
 
+    _add_defined_metrics(builder, fs, label=label, filed=filed)
     _add_market_and_price(builder, company_snapshot, fs)
+
+
+def _add_defined_metrics(
+    builder: _Builder, fs: dict[str, Any], *, label: str | None, filed: str | None
+) -> None:
+    """Deterministic metrics, each with its DEFINITION and its READING — V3.18.1.
+
+    The derived item above hands a model ``key=value`` pairs. That is enough to quote a
+    margin and not enough to read a ratio: a live council, given operating cash flow and
+    net income and no conversion metric, divided them itself, put net income on top, and
+    read the ratio's fall as weakening cash conversion — the opposite of what the same
+    two figures say on the conventional definition.
+
+    So the metrics the council reasons about most are computed by the calculation
+    engine and delivered with their formula, their favourable direction and their
+    interpretation rule in the same line. Refusals are not emitted: a metric the
+    engine would not compute is simply absent, and absent is what a model should see.
+    """
+    from app.services.calculations.statement_metrics import metrics_from_sec_summary
+
+    try:
+        readings, _refusals = metrics_from_sec_summary(fs)
+    except Exception:  # noqa: BLE001 - an evidence pack must never fail on a metric
+        return
+    if not readings:
+        return
+    # Three items, not one: the budgeter truncates an excerpt at 1,200 characters, and a
+    # reading cut off before its interpretation is a number without its meaning again.
+    groups = (
+        ("profitability", ("operating_margin", "net_margin", "gross_margin", "return_on_equity")),
+        ("cash conversion", ("cash_conversion", "fcf_conversion", "fcf_margin")),
+        (
+            "capital spending and funding",
+            ("capex_to_ocf", "capex_intensity", "dividend_cover_by_fcf", "net_debt"),
+        ),
+    )
+    by_key = {r.key: r for r in readings}
+    for name, keys in groups:
+        lines = [by_key[k].as_evidence_line() for k in keys if k in by_key]
+        if not lines:
+            continue
+        builder.add(
+            source_tier=TIER_T6_MODEL_ESTIMATE,
+            source_type=DEFINED_METRIC_SOURCE_TYPE,
+            transport_tier=TIER_T6_MODEL_ESTIMATE,
+            content_tier=TIER_T6_MODEL_ESTIMATE,
+            provider_transport=None,
+            title=(
+                f"{label} — DEFINED METRICS: {name} (computed deterministically; use "
+                "these and do not compute your own ratios)"
+            ),
+            url=None,
+            date=filed,
+            excerpt=" | ".join(lines),
+            # A reading cut off before its interpretation is a number without its
+            # meaning again. The budgeter's own per-item ceiling still applies.
+            excerpt_limit=_DEFINED_METRIC_EXCERPT_MAX,
+            data_quality=_DERIVED_QUALITY,
+            fields_supported=[k for k in keys if k in by_key],
+        )
 
 
 def _add_market_and_price(
