@@ -161,6 +161,10 @@ class PlannedQuestion:
     evidence_contract: EvidenceContract = DEFAULT_CONTRACT
     search_intents: tuple[str, ...] = ()
     series_labels: tuple[str, ...] = ()
+    per_commodity: bool = False
+    commodity: str | None = None
+    replaces: tuple[str, ...] = ()
+    optional_tools: frozenset[str] = frozenset()
 
 
 @dataclass
@@ -292,6 +296,8 @@ async def plan_research(
     refiner: PlanRefiner | None = None,
     extra_roles: "Sequence[str]" = (),
     cfg: "Any | None" = None,
+    commodities: "Sequence[Any]" = (),
+    extra_questions: "Sequence[PlannedQuestion]" = (),
 ) -> ResearchPlan:
     """Build a bounded plan. Never raises on a model failure.
 
@@ -307,15 +313,22 @@ async def plan_research(
 
     # 1. Playbook questions first: they are the methodology, and they are the only
     #    source permitted to mark a question blocking.
+    replaced: set[str] = set()
     for playbook in playbooks:
         plan.playbook_versions[playbook.playbook_id] = playbook.version
         for question in playbook.mandatory_questions():
             # Carried WHOLE. Rebuilding it field by field here is how
             # `required_calculations` was dropped once already; a copy with the origin
             # pinned cannot drop anything a later slice adds.
-            questions.setdefault(
-                question.key, replace(question, origin=ledger.ORIGIN_PLAYBOOK)
-            )
+            for instance in _instantiate(
+                replace(question, origin=ledger.ORIGIN_PLAYBOOK), commodities
+            ):
+                questions.setdefault(instance.key, instance)
+                replaced.update(instance.replaces)
+
+    # V3.18.8 — questions the caller derived for THIS run (the originating thesis).
+    for question in extra_questions:
+        questions.setdefault(question.key, question)
 
     # 2. Prior gaps: a gap the last run could not close is this run's question, and it
     #    carries its origin so "we are re-asking" is visible.
@@ -337,8 +350,11 @@ async def plan_research(
         )
 
     # 3. The baseline, last, so a specialised playbook's questions are never crowded
-    #    out of the budget by generic ones.
+    #    out of the budget by generic ones — and a base question a playbook REPLACES is
+    #    not asked at all: the sector version is the same question asked properly.
     for question in _baseline_questions():
+        if question.key in replaced:
+            continue
         questions.setdefault(question.key, question)
 
     # 3b. The external question, only when something implements its tools — which is to
@@ -690,6 +706,61 @@ def _fit_first_round(
                     f"seat; answered by {host.role_id}"
                 )
     return sorted(kept, key=lambda t: t.role_id)
+
+
+#: How many commodities a per-commodity question is asked about. The first is the one
+#: the company's documents discuss most; a fifth by-product is not where the thesis is.
+MAX_COMMODITY_INSTANCES = 2
+
+
+def _instantiate(
+    question: "PlannedQuestion", commodities: "Sequence[Any]"
+) -> "list[PlannedQuestion]":
+    """A per-commodity question becomes one question per identified commodity.
+
+    With no commodity identified, it is asked ONCE about "the company's principal
+    products" rather than dropped: the question still matters, and the research may
+    establish what the products are.
+    """
+    if not question.per_commodity:
+        return [question]
+    chosen = list(commodities)[:MAX_COMMODITY_INSTANCES]
+    if not chosen:
+        generic = "the company's principal products"
+        return [
+            replace(
+                question,
+                text=question.text.replace("{commodity}", generic),
+                search_intents=tuple(
+                    i.replace("{commodity}", "") for i in question.search_intents
+                ),
+                per_commodity=False,
+            )
+        ]
+    out: list[PlannedQuestion] = []
+    for commodity in chosen:
+        slug = getattr(commodity, "slug", str(commodity))
+        name = getattr(commodity, "name", str(commodity))
+        out.append(
+            replace(
+                question,
+                key=f"{question.key}__{slug}"[:80],
+                text=question.text.replace("{commodity}", name),
+                search_intents=tuple(
+                    i.replace("{commodity}", name) for i in question.search_intents
+                ),
+                commodity=slug,
+                per_commodity=False,
+                # A dependency on another per-commodity question means ITS instance for
+                # the same commodity; keys absent from the plan are ignored downstream.
+                depends_on=tuple(
+                    key
+                    for dep in question.depends_on
+                    for key in (dep, f"{dep}__{slug}"[:80])
+                ),
+            )
+        )
+    return out
 
 
 def _dependency_ordered(questions: "list[PlannedQuestion]") -> "list[PlannedQuestion]":

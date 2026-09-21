@@ -510,11 +510,432 @@ INDUSTRIAL_DEFENSE = Playbook(
 )
 
 
+# --------------------------------------------------------------------------- #
+# Mining and critical materials — V3.18.4
+# --------------------------------------------------------------------------- #
+#
+# The sixth playbook, and the first written after a live report showed what its absence
+# costs: a copper producer researched as a generic set of financial statements, with the
+# copper market, the mines, the reserves, the project pipeline and the controlling
+# shareholder all missing. Materials / Metals & Mining matched no playbook at all.
+#
+# NOTHING HERE NAMES A COMPANY OR A COMMODITY THE COMPANY SELLS. Per-commodity questions
+# are instantiated by the planner from the company's OWN documents (see
+# `macro.commodities.identify_commodities`), so the same playbook researches copper for
+# a copper producer, rare earths and magnets for a rare-earth producer, and lithium
+# construction for a project-stage lithium developer.
+
+from app.services.director import domains as _d  # noqa: E402
+from app.services.director.contracts import (  # noqa: E402
+    NEEDS_INDEPENDENT_AUTHORITY as _INDEPENDENT,
+)
+from app.services.director.contracts import (  # noqa: E402
+    NEEDS_ISSUER_SOURCE as _ISSUER,
+)
+from app.services.director.contracts import EvidenceContract as _Contract  # noqa: E402
+
+_CORPUS = "search_company_corpus"
+
+_MINING_ISSUER = _Contract(
+    min_items=2, required_kinds=(_ISSUER,), allow_external=True, max_external_searches=2
+)
+_MINING_CORROBORATED = _Contract(
+    min_items=3, min_distinct_sources=2, allow_external=True, max_external_searches=2
+)
+_MARKET = _Contract(
+    min_items=3,
+    min_distinct_sources=2,
+    required_kinds=(_INDEPENDENT,),
+    allow_external=True,
+    max_external_searches=2,
+)
+
+MINING_MATERIALS = Playbook(
+    playbook_id="mining_critical_materials",
+    version=1,
+    display_name="Mining and critical materials",
+    applies_to=AppliesTo(
+        sectors=("Materials",),
+        industries=(
+            "Metals & Mining",
+            "Mining",
+            "Metal Mining",
+            "Diversified Metals & Mining",
+            "Copper",
+            "Gold",
+            "Silver",
+            "Precious Metals & Minerals",
+            "Aluminum",
+            "Coal & Consumable Fuels",
+        ),
+        business_model_signals=("resource_extraction",),
+    ),
+    questions=(
+        # ── Company exposure ──────────────────────────────────────────────
+        PlaybookQuestion(
+            key="commodity_exposure",
+            text=(
+                "Which commodities and materials does the company produce and sell, and "
+                "what share of revenue and of production does each represent in the "
+                "latest reported period? Give the figures and the period."
+            ),
+            required_tools=frozenset({_CORPUS}),
+            optional_tools=frozenset({"get_segment_facts"}),
+            priority=1,
+            # The one blocking question. Without knowing what the company sells there is
+            # no commodity to analyse and no thesis to test; the Council does not
+            # synthesise around that hole (the research itself is still reported).
+            blocking=True,
+            domain=_d.PRODUCTS_SERVICES,
+            owner_role="business_analyst",
+            why_it_matters=(
+                "Which commodity moves revenue decides which market the analysis must "
+                "quantify; a 5% by-product is not where the thesis lives."
+            ),
+            evidence_contract=_MINING_ISSUER,
+            search_intents=(
+                "{company} net sales by metal copper molybdenum silver zinc revenue share",
+                "{company} sales by product annual report",
+            ),
+            replaces=("products_and_revenue_mix",),
+        ),
+        PlaybookQuestion(
+            key="value_chain_position",
+            text=(
+                "Where in the value chain does the company operate — mining, "
+                "concentration, smelting or separation, refining, metal or alloy, "
+                "component manufacturing — and which stages generate its economics?"
+            ),
+            required_tools=frozenset({_CORPUS}),
+            priority=2,
+            domain=_d.BUSINESS_MODEL,
+            owner_role="business_analyst",
+            why_it_matters=(
+                "Integration changes what the company is exposed to: a pure miner sells "
+                "concentrate at a discount to the benchmark, an integrated producer sells "
+                "refined metal or components."
+            ),
+            evidence_contract=_MINING_ISSUER,
+            search_intents=(
+                "{company} smelter refinery processing downstream integration",
+            ),
+        ),
+        # ── Assets and operations ────────────────────────────────────────
+        PlaybookQuestion(
+            key="assets_and_production",
+            text=(
+                "Which mines, projects and plants does the company operate, with its "
+                "ownership percentage, production by operation in the latest period, "
+                "capacity and utilisation, and ore grade and recovery where reported?"
+            ),
+            required_tools=frozenset({_CORPUS}),
+            priority=1,
+            domain=_d.OPERATIONS_ASSETS,
+            owner_role="business_analyst",
+            why_it_matters=(
+                "Output by operation, grade and recovery are the physical drivers behind "
+                "every revenue and margin figure."
+            ),
+            evidence_contract=_MINING_ISSUER,
+            search_intents=(
+                "{company} production by mine ore grade recovery latest results",
+                "{company} operations overview mines concentrator capacity",
+            ),
+            replaces=("operations_and_assets",),
+        ),
+        PlaybookQuestion(
+            key="reserves_and_mine_life",
+            text=(
+                "What are the proven and probable reserves and the mineral resources, by "
+                "operation and commodity, at what grade, and what reserve life do they "
+                "imply at current production?"
+            ),
+            required_tools=frozenset({_CORPUS}),
+            priority=2,
+            domain=_d.OPERATIONS_ASSETS,
+            owner_role="business_analyst",
+            why_it_matters=(
+                "Reserve life decides how long today's economics last; grade decides "
+                "what they cost."
+            ),
+            evidence_contract=_MINING_ISSUER,
+            search_intents=(
+                "{company} ore reserves mineral resources grade reserve life",
+            ),
+        ),
+        PlaybookQuestion(
+            key="unit_costs",
+            text=(
+                "What are the company's unit or cash costs (C1, all-in sustaining or the "
+                "issuer's own measure), with and without by-product credits, and how "
+                "have they moved?"
+            ),
+            required_tools=frozenset({_CORPUS}),
+            priority=1,
+            domain=_d.OPERATIONS_ASSETS,
+            owner_role="business_analyst",
+            why_it_matters=(
+                "Position on the cost curve decides who stays profitable when prices "
+                "fall; it is the most important competitive fact about a producer."
+            ),
+            evidence_contract=_MINING_ISSUER,
+            search_intents=(
+                "{company} cash cost per pound net of by-product credits",
+            ),
+        ),
+        PlaybookQuestion(
+            key="customers_and_offtake",
+            text=(
+                "Who buys the output — offtake agreements, strategic customers, export "
+                "destinations — on what terms, and how concentrated are sales?"
+            ),
+            required_tools=frozenset({_CORPUS}),
+            priority=2,
+            domain=_d.CUSTOMERS_END_MARKETS,
+            owner_role="business_analyst",
+            why_it_matters=(
+                "Offtake and customer concentration decide how much of the price is "
+                "realised and who carries the demand risk."
+            ),
+            evidence_contract=_MINING_ISSUER,
+            search_intents=(
+                "{company} offtake agreement customers sales contracts export",
+            ),
+            replaces=("customers_and_end_markets",),
+        ),
+        # ── Commodity markets (per commodity) ───────────────────────────
+        PlaybookQuestion(
+            key="commodity_market",
+            text=(
+                "For {commodity}: what are the benchmark price level and its change over "
+                "3, 12 and 36 months; global mine production and demand and their growth; "
+                "inventories or the market balance where published; and which countries "
+                "concentrate supply? Quantify each from independent sources."
+            ),
+            required_tools=frozenset({_CORPUS}),
+            optional_tools=frozenset({"get_industry_series"}),
+            priority=1,
+            domain=_d.INDUSTRY_ECONOMICS,
+            owner_role="industry_analyst",
+            why_it_matters=(
+                "A producer's revenue is volume times a price it does not set; without "
+                "the price, supply and demand in figures there is no industry analysis."
+            ),
+            evidence_contract=_MARKET,
+            search_intents=(
+                "{commodity} global demand supply balance forecast study group",
+                "{commodity} market outlook inventories deficit surplus",
+            ),
+            per_commodity=True,
+            replaces=("industry_economics",),
+        ),
+        PlaybookQuestion(
+            key="demand_drivers",
+            text=(
+                "For {commodity}: which end uses drive demand (construction, power grid, "
+                "electric vehicles, data centres, electronics, defence, other), with "
+                "their shares where published, and what structural growth do independent "
+                "agencies forecast? Are there substitutes or recycling that cap it?"
+            ),
+            required_tools=frozenset({_CORPUS}),
+            priority=2,
+            domain=_d.INDUSTRY_ECONOMICS,
+            owner_role="industry_analyst",
+            why_it_matters=(
+                "Structural demand is what a multi-year view rests on, and it is what an "
+                "electrification or critical-materials thesis actually claims."
+            ),
+            evidence_contract=_MARKET,
+            search_intents=(
+                "{commodity} demand by end use electric vehicles grid data centers share",
+                "{commodity} critical minerals demand outlook IEA",
+            ),
+            per_commodity=True,
+            depends_on=("commodity_market",),
+        ),
+        # ── Growth ───────────────────────────────────────────────────────
+        PlaybookQuestion(
+            key="growth_projects",
+            text=(
+                "For each important project: name, stage (study, permitting, "
+                "construction, ramp-up), jurisdiction, capex, expected capacity or "
+                "production, expected commissioning, permit status, financing, partners "
+                "or offtake, and the main dependency or controversy."
+            ),
+            required_tools=frozenset({_CORPUS}),
+            priority=1,
+            domain=_d.GROWTH_PIPELINE,
+            owner_role="event_analyst",
+            why_it_matters=(
+                "Production growth is a list of projects, each with a cost, a date and a "
+                "risk; an unfunded or unpermitted project is not growth yet."
+            ),
+            evidence_contract=_MINING_CORROBORATED,
+            search_intents=(
+                "{company} project pipeline capex capacity expected start production",
+                "{company} project permit construction status community opposition",
+            ),
+            replaces=("growth_pipeline",),
+        ),
+        PlaybookQuestion(
+            key="policy_and_state_support",
+            text=(
+                "What government policy bears on the company — critical-mineral "
+                "designations, grants, loans or price support, tariffs, export controls, "
+                "defence or industrial-policy offtake, royalty or tax changes?"
+            ),
+            required_tools=frozenset({_CORPUS}),
+            priority=2,
+            domain=_d.CATALYSTS,
+            owner_role="event_analyst",
+            why_it_matters=(
+                "For critical materials, policy sets prices, demand and financing as much "
+                "as markets do."
+            ),
+            evidence_contract=_MINING_CORROBORATED,
+            search_intents=(
+                "{company} government support grant loan price floor offtake defense",
+                "{commodity} critical mineral list tariff export controls policy",
+            ),
+        ),
+        # ── Competition ──────────────────────────────────────────────────
+        PlaybookQuestion(
+            key="peer_comparison",
+            text=(
+                "Which listed producers of the same commodity are the closest peers, and "
+                "how does the company compare with at least three of them on production, "
+                "growth, unit costs, grades, reserve life, capex, jurisdiction and balance "
+                "sheet? Use only comparable, sourced metrics."
+            ),
+            required_tools=frozenset({_CORPUS}),
+            optional_tools=frozenset({"get_peer_set", "get_peer_financials"}),
+            priority=1,
+            domain=_d.COMPETITIVE_POSITION,
+            owner_role="competitive_analyst",
+            why_it_matters=(
+                "A margin is only high or low against producers facing the same price."
+            ),
+            evidence_contract=_MINING_CORROBORATED,
+            search_intents=(
+                "largest {commodity} producers production cash cost comparison",
+                "{company} peers competitors cost curve position",
+            ),
+            replaces=("competitive_position",),
+        ),
+        # ── Financial capacity specific to resources ────────────────────
+        PlaybookQuestion(
+            key="commodity_price_sensitivity",
+            text=(
+                "How sensitive are revenue, operating income and cash flow to the price "
+                "of the main commodity? Use the issuer's own disclosed sensitivity where "
+                "it gives one."
+            ),
+            required_tools=frozenset({_CORPUS}),
+            priority=2,
+            domain=_d.FINANCIAL_CAPACITY,
+            owner_role="financial_analyst",
+            why_it_matters=(
+                "Sensitivity turns a price forecast into an earnings range; the issuer's "
+                "own figure is the most defensible one."
+            ),
+            evidence_contract=_Contract(min_items=1, allow_external=True),
+            search_intents=(
+                "{company} sensitivity change in copper price impact on net income",
+            ),
+        ),
+        # ── Risks ────────────────────────────────────────────────────────
+        PlaybookQuestion(
+            key="jurisdiction_and_community",
+            text=(
+                "What political, regulatory, royalty or tax, permitting and community "
+                "risks affect the operating jurisdictions now — with evidence of current "
+                "events such as protests, blockades, suspensions or legal challenges?"
+            ),
+            required_tools=frozenset({_CORPUS}),
+            priority=1,
+            domain=_d.RISKS,
+            owner_role="risk_analyst",
+            why_it_matters=(
+                "In mining, jurisdiction and social licence decide whether reserves can "
+                "be mined at all."
+            ),
+            evidence_contract=_MINING_CORROBORATED,
+            search_intents=(
+                "{company} community protest blockade project suspension",
+                "{company} royalty tax mining law change jurisdiction risk",
+            ),
+            replaces=("material_risks",),
+        ),
+        PlaybookQuestion(
+            key="operational_and_environmental",
+            text=(
+                "What operational, labour, safety, water, energy, tailings and "
+                "environmental risks are evidenced — strikes, accidents, spills, water "
+                "disputes, fines, grade decline, technical execution problems?"
+            ),
+            required_tools=frozenset({_CORPUS}),
+            priority=2,
+            domain=_d.RISKS,
+            owner_role="risk_analyst",
+            why_it_matters="These are the risks that stop production rather than price it.",
+            evidence_contract=_MINING_CORROBORATED,
+            search_intents=(
+                "{company} strike labor dispute accident environmental fine water",
+            ),
+        ),
+    ),
+    required_metrics=(
+        "revenue",
+        "operating_margin",
+        "cash_conversion",
+        "capex_to_ocf",
+        "net_debt",
+    ),
+    preferred_sources=(
+        "issuer_primary",
+        "sec_edgar",
+        "usgs_mineral_commodity_summaries",
+        "imf_primary_commodity_prices",
+        "industry_study_groups",
+        "government_mining_ministries",
+    ),
+    specialist_roles=("industry_analyst", "competitive_analyst", "event_analyst"),
+    risk_framework=(
+        "commodity_price",
+        "fx",
+        "input_cost",
+        "energy",
+        "labor",
+        "water",
+        "environmental",
+        "permitting",
+        "royalties_tax",
+        "political_jurisdiction",
+        "community",
+        "safety",
+        "technical_execution",
+        "grade_decline",
+        "funding_dilution",
+        "controlling_shareholder_governance",
+        "geographic_concentration",
+    ),
+    completion_rules=("all_blocking_questions_answered",),
+    notes=(
+        "One blocking question — commodity exposure — because without it there is no "
+        "commodity to analyse. Everything else is judged by evidence contracts, which "
+        "record which dimension is thin rather than stopping the Council. Per-commodity "
+        "questions are instantiated from the company's own documents; nothing here names "
+        "a company or assumes what it sells."
+    ),
+)
+
+
 PLAYBOOKS: tuple[Playbook, ...] = (
     BANKS_FINANCIALS,
     BIOTECH,
     INDUSTRIAL_DEFENSE,
     LUXURY,
+    MINING_MATERIALS,
     SEMICONDUCTORS,
 )
 
@@ -539,6 +960,7 @@ __all__ = [
     "BIOTECH",
     "INDUSTRIAL_DEFENSE",
     "LUXURY",
+    "MINING_MATERIALS",
     "PLAYBOOKS",
     "SEMICONDUCTORS",
     "register_all",

@@ -124,6 +124,8 @@ class V3ResearchOutcome:
     #: and `no playbook applied` alone tells a reader neither.
     classification: dict[str, Any] = field(default_factory=dict)
     elapsed_seconds: float = 0.0
+    #: V3.18.4 — what the company's own documents say it produces.
+    subject_profile: dict[str, Any] = field(default_factory=dict)
     #: V3.18.2 — every planned question as a node: domain, owner, contract verdict,
     #: evidence counts, why it is still open, and what acquisition tried.
     question_graph: list[dict[str, Any]] = field(default_factory=list)
@@ -153,6 +155,7 @@ class V3ResearchOutcome:
             "external_research": dict(self.external_research),
             "classification": dict(self.classification),
             "question_graph": list(self.question_graph),
+            "subject_profile": dict(self.subject_profile),
             "elapsed_seconds": round(self.elapsed_seconds, 3),
             "degraded": list(self.degraded),
             "error": self.error,
@@ -432,13 +435,19 @@ async def _run(
     )
     outcome.research_run_id = run.id
 
-    # 4. Plan.
+    # 4. Plan. V3.18.4 — what the company produces, from its OWN documents, so a
+    #    per-commodity question is asked about the commodities this company sells.
+    from app.services.director.subject_profile import build_subject_profile
+
+    profile = await build_subject_profile(session, company)
+    outcome.subject_profile = profile.to_dict()
     plan = await plan_research(
         subject=f"{company.ticker}:{company.exchange}",
         mode=resolved_mode,
         playbooks=playbooks,
         prior_open_gaps=carry_forward,
         cfg=cfg,
+        commodities=[m.commodity for m in profile.commodities],
     )
     # A plan that will answer a question with less than it asks for says so on the run,
     # where a reader sees it — not only in the planner's own record.
@@ -555,6 +564,10 @@ async def _run(
                 company_name=subject_name,
                 industry=subject_industry,
                 external_budget=external_budget,
+                available_tools=frozenset(registry.names()),
+                primary_commodity=(
+                    profile.commodities[0].commodity.name if profile.commodities else None
+                ),
             )
             result = await worker.investigate(
                 role_id=role_id,
