@@ -126,6 +126,10 @@ class V3ResearchOutcome:
     elapsed_seconds: float = 0.0
     #: V3.18.4 — what the company's own documents say it produces.
     subject_profile: dict[str, Any] = field(default_factory=dict)
+    #: V3.18.8 — the originating thesis, when the research followed from discovery.
+    thesis: dict[str, Any] | None = None
+    #: V3.18.8 — the reader-facing report, assembled from the ledger.
+    professional_research: dict[str, Any] | None = None
     #: V3.18.2 — every planned question as a node: domain, owner, contract verdict,
     #: evidence counts, why it is still open, and what acquisition tried.
     question_graph: list[dict[str, Any]] = field(default_factory=list)
@@ -156,6 +160,8 @@ class V3ResearchOutcome:
             "classification": dict(self.classification),
             "question_graph": list(self.question_graph),
             "subject_profile": dict(self.subject_profile),
+            "thesis": self.thesis,
+            "professional_research": self.professional_research,
             "elapsed_seconds": round(self.elapsed_seconds, 3),
             "degraded": list(self.degraded),
             "error": self.error,
@@ -218,6 +224,7 @@ async def run_v3_research(
     routing: ModelRouting | None = None,
     research_job_id: uuid.UUID | None = None,
     now: Any = None,
+    discovery_candidate_id: str | uuid.UUID | None = None,
 ) -> V3ResearchOutcome:
     """Run the V3 pipeline for one company. **Never raises.**
 
@@ -276,6 +283,7 @@ async def run_v3_research(
                 search_backend=search_backend,
                 routing=routing,
                 research_job_id=research_job_id,
+                discovery_candidate_id=discovery_candidate_id,
             )
     except Exception as exc:  # noqa: BLE001 - additive work must not fail the report
         outcome.error = type(exc).__name__
@@ -322,6 +330,7 @@ async def _run(
     search_backend: Any,
     routing: ModelRouting | None,
     research_job_id: uuid.UUID | None = None,
+    discovery_candidate_id: str | uuid.UUID | None = None,
 ) -> None:
     resolved_mode = parse_mode(mode or getattr(cfg, "v3_research_mode_default", None))
     limits = limits_for(resolved_mode)
@@ -441,6 +450,26 @@ async def _run(
 
     profile = await build_subject_profile(session, company)
     outcome.subject_profile = profile.to_dict()
+    # V3.18.8 — WHY this company is being researched. Each dimension the originating
+    # thesis names becomes a question the research must answer with evidence; the run
+    # records the thesis so the report can test it rather than decorate it.
+    from app.services.director.thesis import resolve_thesis, size_fit, thesis_questions
+
+    thesis = await resolve_thesis(session, discovery_candidate_id=discovery_candidate_id)
+    thesis_size = None
+    if thesis.present:
+        market_cap = thesis.market_cap_usd
+        if market_cap is None and getattr(company, "market_cap", None) is not None:
+            market_cap = float(company.market_cap)
+        thesis_size = size_fit(thesis, market_cap)
+        outcome.thesis = {**thesis.to_dict(), "size_fit": thesis_size}
+        run.thesis_json = outcome.thesis
+    elif discovery_candidate_id:
+        outcome.degraded.append(
+            "a discovery candidate was named but its thesis could not be read; the "
+            "research ran without it"
+        )
+
     plan = await plan_research(
         subject=f"{company.ticker}:{company.exchange}",
         mode=resolved_mode,
@@ -448,6 +477,7 @@ async def _run(
         prior_open_gaps=carry_forward,
         cfg=cfg,
         commodities=[m.commodity for m in profile.commodities],
+        extra_questions=thesis_questions(thesis),
     )
     # A plan that will answer a question with less than it asks for says so on the run,
     # where a reader sees it — not only in the planner's own record.
@@ -497,6 +527,12 @@ async def _run(
             #: this run, so without this list a finding could cite an evidence id the
             #: run's external-research panel never shows.
             self.reused: dict[str, dict[str, Any]] = {}
+            #: V3.18.8 — the payloads the report's tables are built from: exactly what
+            #: the specialists retrieved, never a second fetch.
+            self.table_payloads: dict[str, list[dict[str, Any]]] = {
+                "get_industry_series": [],
+                "get_peer_financials": [],
+            }
 
         def can_search_externally(self, role_id: str) -> bool:
             # The loop's probe, answered for the RUN's shared budget. Without it the
@@ -584,9 +620,12 @@ async def _run(
             self.tool_calls += result.tool_calls
             for call in tool_session.calls:
                 payload = getattr(call, "payload", None)
-                if getattr(call, "tool_name", None) != "fetch_public_source" or not (
-                    isinstance(payload, dict)
+                tool_name = getattr(call, "tool_name", None)
+                if tool_name in self.table_payloads and isinstance(payload, dict) and (
+                    getattr(call, "ok", True)
                 ):
+                    self.table_payloads[tool_name].append(payload)
+                if tool_name != "fetch_public_source" or not isinstance(payload, dict):
                     continue
                 for item in payload.get("items") or []:
                     if isinstance(item, dict) and item.get(
@@ -697,7 +736,159 @@ async def _run(
     outcome.consumption = _consumption(
         model_routing, loop_result, summary, verdict, challenge_result, cfg, tool_units
     )
+
+    # 11. V3.18.8 — the professional report, from the ledger. Never costs the run.
+    try:
+        outcome.professional_research = await _professional_report(
+            session,
+            run,
+            plan,
+            loop_result,
+            company=company,
+            thesis=outcome.thesis,
+            thesis_size=thesis_size,
+            table_payloads=investigator.table_payloads,
+            council_convened=bool(council.convened),
+            editor_client=model_routing.client_for(SLOT_CHAIR),
+        )
+    except Exception as exc:  # noqa: BLE001 - a report failure costs the report block only
+        outcome.degraded.append(
+            f"the professional report could not be assembled ({type(exc).__name__})"
+        )
     await session.flush()
+
+
+async def _professional_report(
+    session: Any,
+    run: Any,
+    plan: Any,
+    loop_result: Any,
+    *,
+    company: Any,
+    thesis: dict[str, Any] | None,
+    thesis_size: dict[str, Any] | None,
+    table_payloads: dict[str, list[dict[str, Any]]],
+    council_convened: bool,
+    editor_client: Any,
+) -> dict[str, Any] | None:
+    """Assemble, edit, screen. Returns ``None`` only when the screen cannot pass."""
+    from sqlalchemy import select
+
+    from app.models.ledger import ResearchFinding, ResearchGap, ResearchQuestion
+    from app.services import safety_terms
+    from app.services.pipeline import professional_research as pr
+
+    async with session.begin_nested():
+        question_rows = (
+            await session.execute(
+                select(ResearchQuestion).where(ResearchQuestion.research_run_id == run.id)
+            )
+        ).scalars().all()
+        finding_rows = (
+            await session.execute(
+                select(ResearchFinding)
+                .where(
+                    ResearchFinding.research_run_id == run.id,
+                    ResearchFinding.verification_status != "withdrawn",
+                )
+                .order_by(
+                    ResearchFinding.domain.asc().nulls_last(),
+                    ResearchFinding.question_key.asc().nulls_last(),
+                    ResearchFinding.created_at,
+                    ResearchFinding.statement,
+                )
+                .limit(120)
+            )
+        ).scalars().all()
+        gap_rows = (
+            await session.execute(
+                select(ResearchGap)
+                .where(ResearchGap.research_run_id == run.id)
+                .order_by(ResearchGap.question_key.asc().nulls_last(), ResearchGap.created_at)
+                .limit(80)
+            )
+        ).scalars().all()
+
+    section_override = {
+        q.key: getattr(q, "report_section", None) for q in getattr(plan, "questions", ())
+    }
+    questions = [
+        pr.QuestionView(
+            key=row.question_key,
+            text=row.text,
+            domain=row.domain,
+            report_section=section_override.get(row.question_key),
+            contract_status=row.contract_status,
+            unresolved_reason=row.unresolved_reason,
+            missing=tuple((row.contract_detail_json or {}).get("missing") or ()),
+            why_it_matters=row.why_it_matters,
+            blocking=bool(row.blocking),
+        )
+        for row in question_rows
+    ]
+    findings = [
+        pr.FindingView(
+            finding_id=str(row.id),
+            statement=row.statement,
+            domain=row.domain,
+            question_key=row.question_key,
+            evidence_ids=tuple(row.evidence_ids_json or ()),
+            calculation_ids=tuple(row.calculation_ids_json or ()),
+            source_kinds=tuple(row.source_kinds_json or ()),
+            confidence=row.confidence,
+            direction=row.direction,
+            period_key=row.period_key,
+            references=tuple(str(r) for r in (row.references_finding_ids_json or ())),
+        )
+        for row in finding_rows
+    ]
+    gaps = [
+        pr.GapView(
+            description=row.description,
+            question_key=row.question_key,
+            knowledge_state=row.knowledge_state,
+            kind="platform_evidence_gap",
+        )
+        for row in gap_rows
+        if row.status in (ledger.GAP_OPEN, ledger.GAP_ACCEPTED)
+    ]
+    acquired = [
+        {"kind": ref.source_kind, "source_ref": ref.source_ref, "tier": ref.source_tier}
+        for refs in getattr(loop_result, "evidence_by_question", {}).values()
+        for ref in refs
+        if ref is not None
+    ]
+    inputs = pr.ReportInputs(
+        subject={
+            "ticker": getattr(company, "ticker", None),
+            "exchange": getattr(company, "exchange", None),
+            "name": getattr(company, "name", None),
+        },
+        questions=questions,
+        findings=findings,
+        gaps=gaps,
+        acquired=acquired,
+        thesis=thesis,
+        size_fit=thesis_size,
+        commodity_rows=pr.commodity_rows(table_payloads.get("get_industry_series", [])),
+        peer_rows=pr.peer_rows(
+            table_payloads.get("get_peer_financials", []), getattr(company, "ticker", None)
+        ),
+        council_convened=council_convened,
+        domain_cost=pr.domain_cost(
+            [(row.domain, row.acquisition_log_json or []) for row in question_rows]
+        ),
+    )
+    report = pr.assemble(inputs)
+    withheld = pr.screen_findings(report)
+    report = await pr.edit(report, editor_client)
+    report["withheld_for_safety"] = withheld
+    hits = safety_terms.scan_value(report, path="professional_research")
+    if hits:
+        # Every component was screened; a hit here is in text this module composed or a
+        # question text. It is not shown: an unscreened report is worse than none.
+        return None
+    return report
 
 
 async def _ledger_findings(session: Any, run: Any, *, limit: int) -> list[dict[str, Any]]:

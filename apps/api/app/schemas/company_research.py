@@ -9,7 +9,7 @@ projection appears anywhere in this contract.
 from __future__ import annotations
 
 import uuid
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -52,6 +52,21 @@ class CompanyResearchJobCreate(BaseModel):
     )
     llm_provider: str | None = None
     require_schema_valid: bool = False
+    discovery_candidate_id: uuid.UUID | None = Field(
+        default=None,
+        description=(
+            "The discovery candidate this research follows from. Its thesis is carried "
+            "into the research: each thesis dimension becomes a question the research "
+            "must answer with evidence, and the report tests the fit."
+        ),
+    )
+    research_mode: Literal["quick", "standard", "deep"] | None = Field(
+        default=None,
+        description=(
+            "Research depth for the V3 pipeline. Omitted, the server's configured "
+            "default applies. Every mode is bounded."
+        ),
+    )
 
     @model_validator(mode="after")
     def _identity_present(self) -> "CompanyResearchJobCreate":

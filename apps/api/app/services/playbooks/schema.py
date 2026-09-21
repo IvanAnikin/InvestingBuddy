@@ -46,7 +46,7 @@ from app.services.agent_tools.contracts import TOOL_NAMES
 from app.services.calculations.definitions import DEFINITIONS
 from app.services.corpus.policy import ACCESS_CLASSES
 from app.services.director.contracts import DEFAULT_CONTRACT, EvidenceContract
-from app.services.director.domains import DOMAINS
+from app.services.director.domains import DOMAINS, REPORT_SECTION_ORDER
 from app.services.director.roles import ROLES
 from app.services.sector_taxonomy import normalize_industry, normalize_sector
 
@@ -113,8 +113,19 @@ class PlaybookQuestion:
     #: industry statistics must not become unassignable when the statistics source is
     #: switched off — it degrades to the corpus and the web instead.
     optional_tools: frozenset[str] = frozenset()
+    # ── V3.18.8 ──────────────────────────────────────────────────────────── #
+    #: The report section this question's findings belong in, when it is not its
+    #: domain's. A price-sensitivity question is valuation context by domain and a
+    #: SENSITIVITY by what a reader needs from it.
+    report_section: str | None = None
 
     def __post_init__(self) -> None:
+        if self.report_section is not None and self.report_section not in (
+            REPORT_SECTION_ORDER
+        ):
+            raise ValueError(
+                f"question {self.key!r}: {self.report_section!r} is not a report section."
+            )
         if self.domain is not None and self.domain not in DOMAINS:
             raise ValueError(f"question {self.key!r}: {self.domain!r} is not a domain.")
         if self.owner_role is not None and self.owner_role not in ROLES:
@@ -189,6 +200,7 @@ def planned_from(question: "PlaybookQuestion", *, origin: str) -> "Any":
         commodity=question.commodity,
         replaces=tuple(question.replaces),
         optional_tools=frozenset(question.optional_tools),
+        report_section=question.report_section,
     )
 
 

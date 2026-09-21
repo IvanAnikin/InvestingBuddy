@@ -111,7 +111,7 @@ class FindingView:
     evidence_ids: tuple[str, ...] = ()
     calculation_ids: tuple[str, ...] = ()
     source_kinds: tuple[str, ...] = ()
-    confidence: str | None = None
+    confidence: float | str | None = None
     direction: str | None = None
     period_key: str | None = None
     references: tuple[str, ...] = ()
@@ -542,8 +542,139 @@ def payload_size(report: Mapping[str, Any]) -> int:
     return len(json.dumps(report, default=str))
 
 
+# ── Tables, from the payloads the research actually used ──────────────────── #
+
+
+def commodity_rows(payloads: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """One row per benchmark series the research retrieved: latest price and change.
+
+    Built from ``get_industry_series`` results exactly as the specialists saw them, so
+    the table can never show a figure the research did not use.
+    """
+    latest: dict[str, dict[str, Any]] = {}
+    changes: dict[str, dict[str, Any]] = {}
+    for payload in payloads:
+        for item in payload.get("items") or []:
+            if not isinstance(item, dict) or not item.get("series_key"):
+                continue
+            key = str(item["series_key"])
+            if item.get("role") == "latest_price":
+                latest[key] = item
+            elif str(item.get("id") or "").startswith("calc:series_change:"):
+                changes[key] = item.get("changes") or {}
+    rows: list[dict[str, Any]] = []
+    for key, item in sorted(latest.items()):
+        change = changes.get(key, {})
+
+        def _pct(window: str, change: Mapping[str, Any] = change) -> float | None:
+            entry = change.get(window)
+            return entry.get("change_pct") if isinstance(entry, dict) else None
+
+        rows.append(
+            {
+                "commodity": item.get("commodity"),
+                "series_key": key,
+                "display_name": item.get("display_name"),
+                "latest_period": item.get("period_key"),
+                "latest_value": item.get("value"),
+                "unit": item.get("unit"),
+                "change_12m_pct": _pct("12m"),
+                "change_36m_pct": _pct("36m"),
+                "source_tier": item.get("source_tier"),
+                "evidence_id": item.get("id"),
+            }
+        )
+    return rows
+
+
+_PEER_FIELDS: dict[str, str] = {
+    "revenue": "revenue_usd_m",
+    "operating_margin": "operating_margin_pct",
+    "net_margin": "net_margin_pct",
+    "cash_conversion": "cash_conversion",
+    "capex_to_ocf": "capex_to_ocf_pct",
+    "net_debt": "net_debt_usd_m",
+}
+
+
+def peer_rows(
+    payloads: Sequence[Mapping[str, Any]], subject_ticker: str | None
+) -> list[dict[str, Any]]:
+    """One row per registrant, on identical definitions. Missing stays ``None``."""
+    by_ticker: dict[str, dict[str, Any]] = {}
+    for payload in payloads:
+        for item in payload.get("items") or []:
+            if not isinstance(item, dict) or not item.get("ticker"):
+                continue
+            field_name = _PEER_FIELDS.get(str(item.get("metric_id") or ""))
+            if field_name is None:
+                continue
+            ticker = str(item["ticker"]).upper()
+            row = by_ticker.setdefault(
+                ticker,
+                {"ticker": ticker, "period": item.get("period"),
+                 **{name: None for name in _PEER_FIELDS.values()}},
+            )
+            row[field_name] = item.get("value")
+            row.setdefault("evidence_ids", []).append(item.get("id"))
+    subject = (subject_ticker or "").upper()
+    rows = [
+        {**row, "is_subject": ticker == subject}
+        for ticker, row in by_ticker.items()
+    ]
+    return sorted(rows, key=lambda r: (not r["is_subject"], r["ticker"]))
+
+
+def domain_cost(
+    questions: Sequence[tuple[str | None, Sequence[Mapping[str, Any]]]]
+) -> dict[str, dict[str, int]]:
+    """What each domain's acquisition spent, from the questions' own acquisition logs."""
+    out: dict[str, dict[str, int]] = {}
+    for domain, log in questions:
+        bucket = out.setdefault(
+            domain or "unclassified",
+            {"tool_calls": 0, "corpus_queries": 0, "external_searches": 0, "fetches": 0},
+        )
+        for step in log or []:
+            rung = step.get("rung")
+            if rung == "platform_tools":
+                bucket["tool_calls"] += int(step.get("tool_calls") or 0)
+            elif rung == "corpus_by_intent":
+                bucket["corpus_queries"] += len(step.get("queries") or [])
+            elif rung == "external_search" and step.get("query"):
+                bucket["external_searches"] += 1
+                bucket["fetches"] += int(step.get("fetched") or 0)
+    return dict(sorted(out.items()))
+
+
+def screen_findings(report: dict[str, Any]) -> int:
+    """Remove any finding the safety scanner flags; return how many were withheld.
+
+    V3 findings are model-written and — until open decision #23 — were never scanned
+    for rating language. The report is where they reach a reader, so they are scanned
+    here and a hit is withheld, counted, never silently shown.
+    """
+    from app.services import safety_terms
+
+    withheld = 0
+    for section in report.get("sections") or []:
+        kept = []
+        for finding in section.get("findings") or []:
+            if safety_terms.scan_value(finding.get("statement"), path="finding"):
+                withheld += 1
+                continue
+            kept.append(finding)
+        if "findings" in section:
+            section["findings"] = kept
+    return withheld
+
+
 __all__ = [
     "DISCLAIMER",
+    "commodity_rows",
+    "domain_cost",
+    "peer_rows",
+    "screen_findings",
     "REPORT_VERSION",
     "SECTION_TITLES",
     "FindingView",

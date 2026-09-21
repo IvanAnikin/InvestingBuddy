@@ -3087,9 +3087,20 @@ Request:
   "provider_name": "free_real",
   "use_llm": false,
   "llm_provider": null,
-  "require_schema_valid": false
+  "require_schema_valid": false,
+  "discovery_candidate_id": null,
+  "research_mode": null
 }
 ```
+
+**V3.18.8.** `discovery_candidate_id` (optional) names the discovery candidate this
+research follows from: its thesis is read from the discovery tables when the research
+runs, each thesis dimension becomes a `thesis_fit__<dimension>` question, and the report
+tests the fit (including a deterministic size fit against the thesis's size band). `404`
+when the candidate does not exist; `422` when it is for a different company.
+`research_mode` (optional) is `quick` | `standard` | `deep`; omitted, the server's
+`V3_RESEARCH_MODE_DEFAULT` applies. Both are carried in the durable job payload and the
+content record's inputs; an escalation round carries the decision's candidate id.
 
 Identity is `company_id`, or the exact `(ticker, exchange)` pair the company is
 registered under. It is resolved against the database **once**, before the job

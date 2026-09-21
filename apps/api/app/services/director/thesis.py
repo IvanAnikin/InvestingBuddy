@@ -104,6 +104,9 @@ class ThesisContext:
     score_explanation: str | None = None
     council_rationale: str | None = None
     dimensions: list[str] = field(default_factory=list)
+    #: The size the candidate was matched at, from the discovery snapshot, with its date.
+    market_cap_usd: float | None = None
+    market_cap_as_of: str | None = None
 
     @property
     def present(self) -> bool:
@@ -123,6 +126,8 @@ class ThesisContext:
             "score_explanation": self.score_explanation,
             "council_rationale": self.council_rationale,
             "dimensions": list(self.dimensions),
+            "market_cap_usd": self.market_cap_usd,
+            "market_cap_as_of": self.market_cap_as_of,
         }
 
 
@@ -159,10 +164,18 @@ async def resolve_thesis(
     try:
         from app.models.discovery import DiscoveryCandidate, DiscoveryRun
 
-        candidate = await session.get(DiscoveryCandidate, uuid.UUID(str(discovery_candidate_id)))
+        # A SAVEPOINT: a failed read must not leave the report's transaction aborted.
+        async with session.begin_nested():
+            candidate = await session.get(
+                DiscoveryCandidate, uuid.UUID(str(discovery_candidate_id))
+            )
+            run = (
+                await session.get(DiscoveryRun, candidate.discovery_run_id)
+                if candidate is not None
+                else None
+            )
         if candidate is None:
             return context
-        run = await session.get(DiscoveryRun, candidate.discovery_run_id)
     except Exception:  # noqa: BLE001 - a thesis that cannot be read is absent, not fatal
         return context
     parsed = (getattr(run, "parsed_thesis_json", None) or {}) if run else {}
@@ -179,6 +192,11 @@ async def resolve_thesis(
     context.score_explanation = getattr(candidate, "score_explanation", None)
     context.council_rationale = _council_rationale(run, str(candidate.id)) if run else None
     context.dimensions = dimensions_in(context.thesis_text)
+    market_cap_mln = getattr(candidate, "market_cap_mln", None)
+    if market_cap_mln is not None:
+        context.market_cap_usd = float(market_cap_mln) * 1e6
+        created = getattr(candidate, "created_at", None)
+        context.market_cap_as_of = created.date().isoformat() if created else None
     return context
 
 
@@ -197,13 +215,16 @@ def thesis_questions(context: ThesisContext) -> list[Any]:
         questions.append(
             PlannedQuestion(
                 key=f"thesis_fit__{key}"[:80],
+                # The user's own thesis TEXT is deliberately not in the question: the
+                # question text reaches an external search provider's query context,
+                # and what a user typed into discovery is theirs. The dimension it
+                # named is enough to research; the text is shown in the report.
                 text=(
-                    f"The company was selected for research under the thesis "
-                    f"“{(context.thesis_text or '')[:240]}”. How is it exposed to "
-                    f"{dimension.label}: {dimension.exposure}? Classify the exposure as "
-                    "direct, indirect, weak or none, quantify it where a source allows, "
-                    "and cite evidence. A weak or absent link is an acceptable answer — "
-                    "do not force a fit."
+                    "The company was selected for research under an investment thesis "
+                    f"about {dimension.label}. How is it exposed to {dimension.label}: "
+                    f"{dimension.exposure}? Classify the exposure as direct, indirect, "
+                    "weak or none, quantify it where a source allows, and cite evidence. "
+                    "A weak or absent link is an acceptable answer — do not force a fit."
                 ),
                 origin=ledger.ORIGIN_DIRECTOR,
                 required_tools=frozenset({"search_company_corpus"}),

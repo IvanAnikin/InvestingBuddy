@@ -219,6 +219,8 @@ async def submit(
     use_llm: bool = False,
     llm_provider: str | None = None,
     require_schema_valid: bool = False,
+    discovery_candidate_id: str | uuid.UUID | None = None,
+    research_mode: str | None = None,
     store: JobStore | None = None,
 ) -> tuple[dict[str, Any], bool]:
     """Commit a durable research job for one company, or join the live one.
@@ -246,6 +248,12 @@ async def submit(
             "use_llm": bool(use_llm),
             "llm_provider": llm_provider,
             "require_schema_valid": bool(require_schema_valid),
+            # V3.18.8 — the originating thesis (by id; the thesis itself is read from
+            # the discovery tables when the research runs) and the requested depth.
+            "discovery_candidate_id": (
+                str(discovery_candidate_id) if discovery_candidate_id else None
+            ),
+            "research_mode": research_mode,
             # Identity resolved ONCE, from the Company row, and carried. Nothing
             # downstream re-derives which company this is from a label.
             "company": {
@@ -329,6 +337,8 @@ async def run_company_research_job(ctx: JobContext) -> JobOutcome:
                 use_llm=bool(ctx.payload.get("use_llm")),
                 llm_provider=ctx.payload.get("llm_provider"),
                 require_schema_valid=bool(ctx.payload.get("require_schema_valid")),
+                discovery_candidate_id=ctx.payload.get("discovery_candidate_id"),
+                research_mode=ctx.payload.get("research_mode"),
             )
         content_run_id = str(inner["job_id"])
         await store.link_agent_run(

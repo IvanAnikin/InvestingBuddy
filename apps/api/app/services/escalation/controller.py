@@ -310,6 +310,14 @@ async def _enqueue(
         payload={
             "company_id": str(decision.company_id),
             "use_llm": True,
+            # V3.18.8 — the thesis that caused this escalation travels with every round.
+            # It never did: the payload carried no discovery ids, so escalated research
+            # could not know why it was running.
+            "discovery_candidate_id": (
+                str(decision.discovery_candidate_id)
+                if getattr(decision, "discovery_candidate_id", None)
+                else None
+            ),
             # The escalation context, so the run knows it is a round rather than a
             # first look.
             "escalation": {

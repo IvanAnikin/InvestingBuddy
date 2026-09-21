@@ -94,6 +94,33 @@ def _message(envelope: dict) -> str:
     )
 
 
+async def _require_candidate_for(
+    db: AsyncSession, candidate_id: uuid.UUID, company: object
+) -> None:
+    """The candidate must exist and be THIS company.
+
+    A thesis attached to the wrong company would be tested against evidence about
+    another business — a wrong answer that looks exactly like a right one.
+    """
+    from app.models.discovery import DiscoveryCandidate
+
+    candidate = await db.get(DiscoveryCandidate, candidate_id)
+    if candidate is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Discovery candidate not found.",
+        )
+    same = str(candidate.ticker).upper() == str(getattr(company, "ticker", "")).upper()
+    if not same:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "The discovery candidate is for a different company than the one this "
+                "job would research."
+            ),
+        )
+
+
 async def _read_job(db: AsyncSession, job_id: uuid.UUID) -> dict | None:
     """One job's envelope, from whichever store owns it.
 
@@ -152,6 +179,9 @@ async def start_company_research_job(
             ),
         )
 
+    if payload.discovery_candidate_id is not None:
+        await _require_candidate_for(db, payload.discovery_candidate_id, company)
+
     if durable.durable_enabled():
         # V3: commit a durable job row and let a leased worker claim it. The
         # work is no longer tied to THIS process, so an App Service recycle
@@ -162,6 +192,8 @@ async def start_company_research_job(
             use_llm=payload.use_llm,
             llm_provider=payload.llm_provider,
             require_schema_valid=payload.require_schema_valid,
+            discovery_candidate_id=payload.discovery_candidate_id,
+            research_mode=payload.research_mode,
         )
     else:
         envelope, scheduled = await svc.start_company_research(
@@ -171,6 +203,8 @@ async def start_company_research_job(
             use_llm=payload.use_llm,
             llm_provider=payload.llm_provider,
             require_schema_valid=payload.require_schema_valid,
+            discovery_candidate_id=payload.discovery_candidate_id,
+            research_mode=payload.research_mode,
         )
     if scheduled:
         if not durable.durable_enabled():

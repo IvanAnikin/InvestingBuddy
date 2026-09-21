@@ -594,7 +594,7 @@ MINING_MATERIALS = Playbook(
             ),
             evidence_contract=_MINING_ISSUER,
             search_intents=(
-                "{company} net sales by metal copper molybdenum silver zinc revenue share",
+                "{company} net sales by product {commodity} revenue share",
                 "{company} sales by product annual report",
             ),
             replaces=("products_and_revenue_mix",),
@@ -840,8 +840,9 @@ MINING_MATERIALS = Playbook(
             ),
             evidence_contract=_Contract(min_items=1, allow_external=True),
             search_intents=(
-                "{company} sensitivity change in copper price impact on net income",
+                "{company} sensitivity change in {commodity} price impact on net income",
             ),
+            report_section="sensitivities",
         ),
         # ── Risks ────────────────────────────────────────────────────────
         PlaybookQuestion(

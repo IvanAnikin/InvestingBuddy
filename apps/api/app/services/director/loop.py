@@ -194,6 +194,9 @@ class LoopResult:
     elapsed_seconds: float = 0.0
     #: A limit that ended an IMPROVEMENT round after the run was already complete.
     improvement_stopped_by: str | None = None
+    #: Everything acquired per question, as contract refs. In memory only — the report
+    #: assembler reads source diversity from it; the ledger has the durable record.
+    evidence_by_question: dict[str, list[Any]] = field(default_factory=dict)
     #: V3.18.7 — statements not written because another finding already says them.
     restatements_referenced: int = 0
 
@@ -601,6 +604,9 @@ async def run_investigation(
         council_may_convene=summary.council_may_convene,
         elapsed_seconds=clock() - started,
         improvement_stopped_by=improvement_stopped_by,
+        evidence_by_question={
+            key: list(pool.values()) for key, pool in evidence_so_far.items()
+        },
     )
     await ledger.close_run(
         session,

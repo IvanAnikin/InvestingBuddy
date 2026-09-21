@@ -1370,6 +1370,22 @@ async def run_candidate_analysis(
     legacy_draft_id = result.get("legacy_draft_report_id")
     warnings = list(result.get("warnings") or [])
 
+    # V3.18.8 — the candidate-launched path runs the SAME V3 research as the company
+    # job, with THIS candidate's thesis. It never did: the report a discovery CTA
+    # produced carried no V3 state at all, which is how the SCCO baseline was written
+    # without a research graph. Additive and never raising, exactly as on the job path.
+    if linked_report_id is not None:
+        from app.services.company_research_service import _run_v3_pipeline
+
+        v3_outcome = await _run_v3_pipeline(
+            db,
+            company=company,
+            report_id=linked_report_id,
+            discovery_candidate_id=candidate.id,
+        )
+        if v3_outcome is not None:
+            warnings.extend(f"v3: {reason}" for reason in v3_outcome.degraded[:5])
+
     final_resp = result.get("final_report_response")
     if final_resp is not None:
         report_summary: ReportLinkSummary | None = _summary_from_final_response(

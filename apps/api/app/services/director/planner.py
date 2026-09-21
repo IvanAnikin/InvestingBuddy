@@ -165,6 +165,7 @@ class PlannedQuestion:
     commodity: str | None = None
     replaces: tuple[str, ...] = ()
     optional_tools: frozenset[str] = frozenset()
+    report_section: str | None = None
 
 
 @dataclass
