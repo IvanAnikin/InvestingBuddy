@@ -188,6 +188,7 @@ BASE_QUESTIONS: tuple[PlaybookQuestion, ...] = (
             "on scale, growth, cost position and financial strength?"
         ),
         required_tools=frozenset({_CORPUS}),
+        optional_tools=frozenset({"get_peer_set", "get_peer_financials"}),
         priority=2,
         domain=d.COMPETITIVE_POSITION,
         owner_role="competitive_analyst",

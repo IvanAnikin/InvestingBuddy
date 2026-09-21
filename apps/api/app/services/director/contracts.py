@@ -256,6 +256,14 @@ def evidence_ref_for(tool: str, citation_id: str, item: dict[str, Any]) -> Evide
             or "issuer_facts"
         )
         return EvidenceRef(citation_id, tool, ISSUER_FILING, tier or "T1_primary_filing", ref)
+    if tool == "get_peer_financials":
+        # Another registrant's own statements: primary, and about someone else — so a
+        # THIRD-PARTY filing, neither the subject's word nor an independent statistical
+        # authority. One SOURCE per registrant however many metrics it yields.
+        return EvidenceRef(
+            citation_id, tool, THIRD_PARTY_FILING, tier or "T1_primary_filing",
+            f"sec:{item.get('ticker') or citation_id}",
+        )
     if tool == "get_recent_filings":
         return EvidenceRef(
             citation_id, tool, ISSUER_FILING, "T1_primary_filing",

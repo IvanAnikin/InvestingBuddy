@@ -156,6 +156,7 @@ def register_builtins(registry: "ToolRegistry", *, cfg: Any = None) -> "ToolRegi
     from app.services.agent_tools.industry import register_industry_tools
     from app.services.agent_tools.ir_events import register_ir_event_tools
     from app.services.agent_tools.macro import register_macro_tools
+    from app.services.agent_tools.peers import register_peer_tools
 
     registry.register(LOOKUP_ENTITY_SPEC)
     register_fact_tools(registry)
@@ -165,6 +166,7 @@ def register_builtins(registry: "ToolRegistry", *, cfg: Any = None) -> "ToolRegi
     register_ir_event_tools(registry)
     register_filing_tools(registry)
     register_industry_tools(registry, cfg=cfg)
+    register_peer_tools(registry)
     # Conditional, and last: the only tools whose presence is a spending decision.
     register_external_tools(registry, cfg=cfg)
     return registry
