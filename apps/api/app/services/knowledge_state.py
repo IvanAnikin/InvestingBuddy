@@ -82,25 +82,77 @@ PLATFORM_GAP_WORDING = (
 
 _PLATFORM_PREFIX = "Not yet acquired by InvestingBuddy (platform evidence gap): "
 
-# An absence statement: something is missing from what was reviewed.
-_ABSENCE_RE = re.compile(
-    r"\b("
-    r"absence of|lack of|lacks|lacking|not available|unavailable|not provided|"
-    r"not sourced|not included|not present|missing|limited detail|"
-    r"no\s+(?:[\w/&-]+\s+){0,5}(?:is|are|was|were)\s+(?:available|provided|present|sourced)|"
-    r"no\s+(?:segment|geographic|dividend|ebitda|liquidity|peer|production|reserve)"
-    r"(?:[\w\s,/&-]{0,40})(?:breakdown|data|information|detail|disclosures?|figures?)"
-    r")\b",
+# WHAT COUNTS AS AN ABSENCE STATEMENT — and, more importantly, what does not.
+#
+# The first version matched bare "lack of", "lacks", "missing", "unavailable". Review
+# showed what that eats: "Lack of pricing power in a commoditised market", "Lack of
+# liquidity in the shares", "Unavailable water permits could halt the project", "Missing
+# the 2026 production target" — four real business risks, retyped as platform gaps and
+# prefixed "Not yet acquired by InvestingBuddy". A guard that rewrites findings is a worse
+# defect than the one it fixes.
+#
+# An absence statement is about INFORMATION. So an absence word only counts when the
+# thing absent is a disclosure object (data, breakdown, figures, filings …) or when the
+# sentence says what the absence does to the ANALYSIS ("limits assessment of …").
+
+_ABSENCE_WORD = (
+    r"(?:absence\s+of|lack\s+of|lacks|lacking|missing|limited|insufficient|"
+    r"unavailable|not\s+available|not\s+provided|not\s+sourced|not\s+included|no)"
+)
+#: Things that are disclosed, as opposed to things a business has or lacks.
+_DISCLOSURE_OBJECT = (
+    r"(?:data|information|details?|breakdowns?|disclosures?|figures?|metrics?|filings?|"
+    r"reporting|statistics|coverage|history|trend\s+data|ebitda|ev/ebitda|"
+    r"(?:liquidity|leverage|coverage|payout)\s+ratios?|yield|guidance\s+data)"
+)
+_ABSENCE_OF_INFORMATION_RE = re.compile(
+    # No comma between the two: "No growth is expected, and production data confirm it"
+    # is a finding, and the clause boundary is what separates it from an absence.
+    rf"\b{_ABSENCE_WORD}\b[^.;,]{{0,70}}?\b{_DISCLOSURE_OBJECT}\b",
+    re.IGNORECASE
+)
+#: "... limits / restricts (a full) assessment / evaluation / understanding of ...".
+_LIMITS_THE_ANALYSIS_RE = re.compile(
+    rf"\b{_ABSENCE_WORD}\b[^.;]{{0,120}}?\b(?:limits?|restricts?|restricting|limiting|"
+    r"constrains?|prevents?|hinders?|precludes?)\b[^.;]{0,40}?"
+    r"\b(?:assessment|evaluation|understanding|insight|analysis|visibility|view)\b",
     re.IGNORECASE,
 )
 
-# An assertion that THE ISSUER does not publish/have something.
+# AN ASSERTION THAT THE ISSUER DOES NOT DISCLOSE SOMETHING.
+#
+# Two shapes only. (1) a negated DISCLOSURE VERB acting on a disclosure object — "does
+# not disclose segment data", "fails to publish a geographic breakdown". The subject is
+# deliberately not required: a named issuer ("Southern Copper does not disclose …"), a
+# ticker and "it" all have to match, and the verb plus the object is already specific.
+# (2) "has no / lacks" an investor-relations presence. NOT matched, on purpose: "has not
+# reported positive free cash flow", "did not report a profit", "has no debt", "has no
+# dividend cover", "lacks a second supplier" — statements about a business, which the
+# first version disowned.
+_DISCLOSURE_TOPIC = (
+    r"(?:segments?|segmental|geographic(?:al)?|regional|divisional|data|information|"
+    r"details?|breakdowns?|figures?|guidance|dividend\s+(?:policy|information|data|"
+    r"history)|payout\s+(?:policy|information)|reserves?\s+(?:data|figures)|"
+    r"production\s+(?:data|figures)|unit\s+costs?)"
+)
+_NEGATION = (
+    r"(?:does\s+not|doesn['’]t|did\s+not|do\s+not|fails?\s+to|failed\s+to|has\s+not|"
+    r"have\s+not|no\s+longer|never)\s+(?:publicly\s+|separately\s+|fully\s+)?"
+)
 _ISSUER_ASSERTION_RE = re.compile(
-    r"\b(?:the\s+)?(?:company|issuer|group|management|firm)\b[^.;]{0,40}?"
-    r"\b(?:does\s+not|doesn['’]t|did\s+not|do\s+not|fails?\s+to|has\s+not|has\s+no|"
-    r"have\s+no|lacks?|without|no\s+longer)\b[^.;]{0,50}?"
-    r"\b(?:disclos\w*|report\w*|publish\w*|provid\w*|break\s*down|breakdown|segments?|"
-    r"investor[\s-]relations|\bIR\b|website|dividends?|guidance|transparen\w*)",
+    # An unambiguous disclosure verb: whatever follows it is a disclosure.
+    rf"\b{_NEGATION}(?:disclos\w*|publish\w*|provid\w*|releas\w*|break\s+(?:out|down))\b"
+    rf"[^.;]{{0,60}}?\b(?:{_DISCLOSURE_TOPIC}|dividends?)\b"
+    r"|"
+    # "report" is ambiguous — "has not reported a profit" is about the business — so it
+    # counts only with a topic that can only be a disclosure.
+    rf"\b{_NEGATION}report(?:s|ed|ing)?\b[^.;]{{0,60}}?\b{_DISCLOSURE_TOPIC}\b"
+    r"|"
+    r"\b(?:has|have)\s+no\b[^.;]{0,20}?\b(?:investor[\s-]relations|IR\s+(?:site|website|page)|"
+    r"website|segment\s+(?:reporting|disclosure))\b"
+    r"|"
+    r"\blacks?\b[^.;]{0,25}?\b(?:investor[\s-]relations|IR\s+(?:site|website|page)|"
+    r"website|segment\s+(?:reporting|disclosure)|transparency)\b",
     re.IGNORECASE,
 )
 
@@ -139,7 +191,11 @@ def label_gap(gap: str, state: str = NOT_ACQUIRED_BY_PLATFORM) -> str:
 
 
 def is_absence_statement(text: str | None) -> bool:
-    return bool(_ABSENCE_RE.search(text or ""))
+    """Is this about missing INFORMATION (not a business that lacks something)?"""
+    value = text or ""
+    return bool(
+        _ABSENCE_OF_INFORMATION_RE.search(value) or _LIMITS_THE_ANALYSIS_RE.search(value)
+    )
 
 
 def asserts_issuer_non_disclosure(text: str | None) -> bool:

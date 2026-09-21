@@ -375,7 +375,7 @@ LEVERAGE = CalculationDefinition(
 FCF_CONVERSION = CalculationDefinition(
     key="fcf_conversion",
     label="Free cash flow conversion",
-    version=1,
+    version=2,
     formula="free_cash_flow / net_income * 100",
     inputs=(
         InputSpec("free_cash_flow", ("free_cash_flow",), MONEY),
@@ -384,6 +384,10 @@ FCF_CONVERSION = CalculationDefinition(
     result_unit=UNIT_PERCENT,
     compute=lambda i: _percent(i, "free_cash_flow", "net_income"),
     non_zero_roles=("net_income",),
+    # V2 of this definition. Over a LOSS the quotient has no conversion reading: a
+    # negative free cash flow over a negative net income prints as a healthy positive
+    # percentage under "higher is better".
+    positive_roles=("net_income",),
     tags=("cash",),
     numerator="free_cash_flow",
     denominator="net_income",
@@ -421,7 +425,7 @@ CAPEX_INTENSITY = CalculationDefinition(
 ROE = CalculationDefinition(
     key="return_on_equity",
     label="Return on equity",
-    version=1,
+    version=2,
     formula="net_income / shareholders_equity * 100",
     inputs=(
         InputSpec("net_income", ("net_income",), MONEY),
@@ -430,6 +434,8 @@ ROE = CalculationDefinition(
     result_unit=UNIT_PERCENT,
     compute=lambda i: _percent(i, "net_income", "shareholders_equity"),
     non_zero_roles=("shareholders_equity",),
+    # V2. Over NEGATIVE equity a loss prints as a positive return.
+    positive_roles=("shareholders_equity",),
     tags=("returns",),
     numerator="net_income",
     denominator="shareholders_equity",

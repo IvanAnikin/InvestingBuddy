@@ -45,7 +45,10 @@ class TestTheProductionPair:
             "not a contradiction: other operating income can legitimately do this, and "
             "a rule with no exceptions would suppress correct figures"
         )
-        assert "gross_margin" in report.withheld_derived
+        assert report.withheld_derived == frozenset(), (
+            "implausible is surfaced, never withheld — withholding on it would make it a "
+            "contradiction in everything but name"
+        )
 
     def test_a_normal_income_statement_is_clean(self) -> None:
         report = check_statement_consistency(
@@ -60,7 +63,7 @@ class TestTheProductionPair:
         assert report.is_clean
 
 
-class TestContradictions:
+class TestRelationships:
     def test_gross_profit_above_revenue(self) -> None:
         report = check_statement_consistency([_fig("revenue", 100.0), _fig("gross_profit", 180.0)])
         assert report.has_contradiction
@@ -80,8 +83,21 @@ class TestContradictions:
                 _fig("shareholders_equity", 5000.0),
             ]
         )
-        assert "balance_sheet_does_not_balance" in {i.code for i in report.inconsistencies}
-        assert {"debt_to_equity", "return_on_equity"} <= report.withheld_derived
+        found = {i.code: i for i in report.inconsistencies}["balance_sheet_does_not_balance"]
+        assert found.severity == SEVERITY_IMPLAUSIBLE
+        assert not report.has_contradiction
+
+    def test_a_majority_nci_filer_is_not_a_contradiction(self) -> None:
+        """Found by review: assets 20,000 / liabilities 6,000 / PARENT equity 4,000 is a
+        balanced sheet whose other 10,000 is non-controlling interest."""
+        report = check_statement_consistency(
+            [
+                _fig("total_assets", 20000.0),
+                _fig("total_liabilities", 6000.0),
+                _fig("shareholders_equity", 4000.0),
+            ]
+        )
+        assert not report.has_contradiction and report.withheld_derived == frozenset()
 
     def test_non_controlling_interests_do_not_trip_the_identity(self) -> None:
         report = check_statement_consistency(
@@ -169,13 +185,22 @@ class TestTheNormalizerRunsIt:
         )
         n = normalize_company_facts(facts, "ANY", "1")
         assert n.gross_profit == 2914.8, "reported, so kept — not this function's to delete"
-        assert n.gross_margin is None, "a ratio built on a doubted pair carries the doubt unseen"
         codes = {i["code"] for i in n.consistency["inconsistencies"]}
         assert "operating_income_exceeds_gross_profit" in codes
-        assert any("statement consistency" in w for w in n.warnings)
-        names = {dp.field_name for dp in n.to_datapoints()}
-        assert "sec_edgar.statement_consistency" in names
-        assert "sec_edgar.gross_margin" not in names
+        assert any("statement consistency (implausible)" in w for w in n.warnings)
+        assert "sec_edgar.statement_consistency" in {dp.field_name for dp in n.to_datapoints()}
+
+    def test_a_contradiction_withholds_the_ratio_built_on_it(self) -> None:
+        facts = json.loads(FIXTURE.read_text())
+        facts["facts"]["us-gaap"]["GrossProfit"]["units"]["USD"].append(
+            {
+                "start": "2025-01-01", "end": "2025-12-31", "val": 20000000000,
+                "fy": 2025, "fp": "FY", "form": "10-K", "filed": "2026-02-27",
+            }
+        )
+        n = normalize_company_facts(facts, "ANY", "1")
+        assert n.gross_profit == 20000.0 and n.gross_margin is None
+        assert "sec_edgar.gross_margin" not in {dp.field_name for dp in n.to_datapoints()}
 
     def test_a_clean_bundle_carries_no_consistency_record(self) -> None:
         n = normalize_company_facts(json.loads(FIXTURE.read_text()), "SCCO", "1001838")

@@ -280,6 +280,23 @@ def merge_fundamentals(
     points = normalized.to_datapoints()
     by_name = {dp.field_name: dp for dp in points}
 
+    # V3.18.1 — a field the normalizer WITHHELD is not a field it failed to resolve.
+    # It resolved it, found the filer's latest value belongs to another period, and
+    # refused it. The legacy parser is period-blind, so letting it backfill here would
+    # hand back the exact stale figure that was just refused, under the bundle's
+    # current-period headline — the own-period rule undone one function later.
+    withheld = {
+        f"sec_edgar.{name}" for name in (normalized.withheld_fields or {})
+    } | set(normalized.withheld_fields or {})
+    refused = sorted(dp.field_name for dp in base if dp.field_name in withheld)
+    if refused:
+        warnings.append(
+            "SEC EDGAR: the legacy alias-order value was NOT used for "
+            f"{', '.join(refused)} — the filer has no value for the current reporting "
+            "period, and an older one is never carried into it."
+        )
+    base = [dp for dp in base if dp.field_name not in withheld]
+
     superseded = sorted(
         dp.field_name
         for dp in base
@@ -310,23 +327,6 @@ def merge_fundamentals(
             f"{', '.join(unresolved)}; the value shipped for those fields was chosen "
             "by alias order and its period is not verified."
         )
-
-    # V3.18.1 — a field the normalizer WITHHELD is not a field it failed to resolve.
-    # It resolved it, found the filer's latest value belongs to another period, and
-    # refused it. The legacy parser is period-blind, so letting it backfill here would
-    # hand back the exact stale figure that was just refused, under the bundle's
-    # current-period headline — the own-period rule undone one function later.
-    withheld = {
-        f"sec_edgar.{name}" for name in (normalized.withheld_fields or {})
-    } | set(normalized.withheld_fields or {})
-    refused = sorted(dp.field_name for dp in base if dp.field_name in withheld)
-    if refused:
-        warnings.append(
-            "SEC EDGAR: the legacy alias-order value was NOT used for "
-            f"{', '.join(refused)} — the filer has no value for the current reporting "
-            "period, and an older one is never carried into it."
-        )
-    base = [dp for dp in base if dp.field_name not in withheld]
 
     merged = [dp for dp in base if dp.field_name not in by_name]
     merged.extend(points)

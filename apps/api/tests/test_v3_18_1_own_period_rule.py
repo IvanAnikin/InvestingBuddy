@@ -176,7 +176,97 @@ class TestTheRuleIsAboutPeriodsNotAboutThisIssuer:
         correct figures from an irregular payload."""
         metric = normalizer._Metric(value=1.0, end=None, period_type="annual")
         anchor = normalizer._Metric(value=2.0, end="2025-12-31", period_type="annual")
-        assert normalizer._metrics_outside_reporting_period({"a": metric, "b": anchor}) == []
+        outside, anchor_end = normalizer._metrics_outside_reporting_period(
+            {"a": metric, "b": anchor}
+        )
+        assert outside == [] and anchor_end == "2025-12-31"
+
+
+def _entry(end: str, val: float, *, start: str | None = None, fy: int = 2025, form: str = "10-K",
+           fp: str = "FY", filed: str = "2026-02-27") -> dict:
+    entry = {"end": end, "val": val, "fy": fy, "fp": fp, "form": form, "filed": filed}
+    if start:
+        entry["start"] = start
+    return entry
+
+
+class TestOneOddConceptCannotWithholdTheBundle:
+    """Found by review. The first version anchored on the LATEST period end, so a single
+    concept dated after the fiscal year end became the anchor and revenue, net income,
+    cash flow and the whole balance sheet were withheld as 'stale' against it. A rule
+    built to stop one wrong figure must not be able to remove every right one."""
+
+    def test_an_instant_dated_after_year_end_is_the_outlier(self, facts) -> None:
+        data = copy.deepcopy(facts)
+        data["facts"]["us-gaap"]["ShortTermBorrowings"] = {
+            "units": {"USD": [_entry("2026-02-10", 75_000_000)]}
+        }
+        del data["facts"]["us-gaap"]["LongTermDebtCurrent"]
+        n = normalize_company_facts(data, "ANY", "1")
+        assert n.reporting_period_end == "2025-12-31"
+        for name, expected in FY2025.items():
+            assert getattr(n, name) == expected, f"{name} was withheld by an outlier"
+        assert n.fiscal_year == 2025 and n.period_basis == "annual"
+        assert n.withheld_fields["short_term_debt"]["reason"] == "later_period_outlier"
+
+    def test_a_flow_mis_tagged_into_the_next_quarter_is_the_outlier(self, facts) -> None:
+        data = copy.deepcopy(facts)
+        data["facts"]["us-gaap"]["PaymentsOfDividendsCommonStock"] = {
+            "units": {"USD": [_entry("2026-03-31", 9e8, start="2025-04-01", fy=2026)]}
+        }
+        n = normalize_company_facts(data, "ANY", "1")
+        assert n.revenue == FY2025["revenue"] and n.net_income == FY2025["net_income"]
+        assert n.dividends_paid is None
+        assert n.withheld_fields["dividends_paid"]["reason"] == "later_period_outlier"
+
+    def test_a_tie_goes_to_the_later_period(self) -> None:
+        a = normalizer._Metric(value=1.0, end="2024-12-31", period_type="annual")
+        b = normalizer._Metric(value=2.0, end="2025-12-31", period_type="annual")
+        outside, anchor_end = normalizer._metrics_outside_reporting_period({"a": a, "b": b})
+        assert anchor_end == "2025-12-31"
+        assert [(name, reason) for name, reason, _ in outside] == [("a", "stale_period")]
+
+    def test_a_52_53_week_filer_is_one_period(self) -> None:
+        metrics = {
+            "revenue": normalizer._Metric(value=1.0, end="2025-12-28", period_type="annual"),
+            "net_income": normalizer._Metric(value=1.0, end="2025-12-28", period_type="annual"),
+            "total_assets": normalizer._Metric(value=1.0, end="2025-12-31", period_type="annual"),
+        }
+        outside, _ = normalizer._metrics_outside_reporting_period(metrics)
+        assert outside == []
+
+
+class TestAQuarterlyBundleIsOneDurationClass:
+    def test_quarter_and_year_to_date_are_not_mixed(self) -> None:
+        """A 10-Q tags every flow twice with ONE period end. Found by review: revenue
+        came back as the quarter beside year-to-date net income."""
+        def flows(quarter: float, ytd: float) -> dict:
+            return {"units": {"USD": [
+                _entry("2026-06-30", ytd, start="2026-01-01", fy=2026, form="10-Q", fp="Q2",
+                       filed="2026-07-31"),
+                _entry("2026-06-30", quarter, start="2026-04-01", fy=2026, form="10-Q", fp="Q2",
+                       filed="2026-07-31"),
+            ]}}
+        data = {"cik": 1, "facts": {"dei": {}, "us-gaap": {
+            "Revenues": flows(100e6, 190e6),
+            "NetIncomeLoss": flows(10e6, 19e6),
+        }}}
+        n = normalize_company_facts(data, "ANY", "1")
+        assert (n.revenue, n.net_income) == (100.0, 10.0)
+        assert n.net_margin == pytest.approx(10.0)
+
+
+class TestANegativeBaseHasNoReading:
+    def test_return_on_negative_equity_is_not_printed(self, facts) -> None:
+        data = copy.deepcopy(facts)
+        for concept in ("StockholdersEquity",
+                        "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"):
+            for row in data["facts"]["us-gaap"].get(concept, {}).get("units", {}).get("USD", []):
+                row["val"] = -abs(row["val"])
+        n = normalize_company_facts(data, "ANY", "1")
+        assert n.shareholders_equity is not None and n.shareholders_equity < 0
+        assert n.return_on_equity is None and n.debt_to_equity is None
+        assert any("equity is not positive" in w for w in n.warnings)
 
 
 class TestMutation:
@@ -185,7 +275,9 @@ class TestMutation:
     def test_removing_the_rule_brings_the_stale_gross_profit_back(
         self, facts, monkeypatch
     ) -> None:
-        monkeypatch.setattr(normalizer, "_metrics_outside_reporting_period", lambda _s: [])
+        monkeypatch.setattr(
+            normalizer, "_metrics_outside_reporting_period", lambda _s: ([], None)
+        )
         n = normalize_company_facts(facts, "SCCO", "1001838")
         assert n.gross_profit == STALE_FY2019_GROSS_PROFIT
         assert n.gross_margin == pytest.approx(21.72), (

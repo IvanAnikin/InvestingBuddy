@@ -22,10 +22,11 @@ TWO STRENGTHS, KEPT APART
   pair are withheld.
 * ``implausible`` — the relationship *usually* holds and has known, legitimate
   exceptions: operating income above gross profit happens when other operating income
-  (a disposal gain, say) is large. It is not refused, because a universal rule with no
-  exceptions would suppress correct figures — this codebase once withheld thirty-two
-  correct segment sentences by being clever with a threshold. It is **surfaced**, so a
-  report cannot present the pair with unqualified confidence.
+  (a disposal gain, say) is large; assets differ from liabilities plus the PARENT's
+  equity by the non-controlling interest. NOTHING is withheld on it, because a
+  universal rule with no exceptions would suppress correct figures — this codebase
+  once withheld thirty-two correct segment sentences by being clever with a threshold.
+  It is **surfaced**, so a report cannot present the pair with unqualified confidence.
 
 Neither strength picks a winner. Which of two conflicting figures is right is a question
 for a human or for a better source, never for a tie-break.
@@ -269,9 +270,10 @@ def check_statement_consistency(figures: Sequence[StatementFigure]) -> Consisten
                         "of that, the two figures are more likely from different "
                         "periods, scopes or definitions."
                     ),
-                    # A margin built on a gross profit that fails this test would carry
-                    # the doubt without showing it.
-                    withhold_derived=("gross_margin",),
+                    # NOT withheld. `implausible` means "usually true, with legitimate
+                    # exceptions", and withholding on it would make it a contradiction in
+                    # everything but name. The pair is surfaced; the margin stands beside
+                    # the warning rather than silently.
                 )
             )
 
@@ -288,7 +290,6 @@ def check_statement_consistency(figures: Sequence[StatementFigure]) -> Consisten
                         f"({revenue.value:,.1f}); an operating margin above 100% needs "
                         "an explanation the figures alone do not give."
                     ),
-                    withhold_derived=("operating_margin",),
                 )
             )
 
@@ -325,15 +326,20 @@ def check_statement_consistency(figures: Sequence[StatementFigure]) -> Consisten
                 report.inconsistencies.append(
                     Inconsistency(
                         code="balance_sheet_does_not_balance",
-                        severity=SEVERITY_CONTRADICTION,
+                        # IMPLAUSIBLE, not a contradiction. Found by review: the equity
+                        # line this platform reads is the PARENT's, and for an Up-C or
+                        # majority-NCI filer the non-controlling share alone exceeds any
+                        # tolerance — assets 20,000 / liabilities 6,000 / parent equity
+                        # 4,000 is a balanced sheet.
+                        severity=SEVERITY_IMPLAUSIBLE,
                         metrics=("total_assets", "total_liabilities", "shareholders_equity"),
                         message=(
                             f"Total assets ({assets_f.value:,.1f}) differ from liabilities "
                             f"plus equity ({liabilities_f.value + equity_f.value:,.1f}) by "
-                            f"{gap / assets_f.value:.0%} — far more than non-controlling "
-                            "or mezzanine interests explain."
+                            f"{gap / assets_f.value:.0%}. Non-controlling or mezzanine "
+                            "interests may explain it; if they do not, these figures are "
+                            "from different periods, scopes or units."
                         ),
-                        withhold_derived=("debt_to_equity", "return_on_equity"),
                     )
                 )
 

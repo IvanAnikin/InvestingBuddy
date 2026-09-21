@@ -346,16 +346,35 @@ def _bound_and_reid(
 ) -> list[EvidenceItem]:
     """Trim per-item excerpts, keep the running total under ``max_chars`` and
     re-id survivors E1..En. Always keeps at least the first item."""
-    survivors: list[EvidenceItem] = []
-    total_chars = 0
-    for item in selected:
+    def _sized(item: EvidenceItem) -> tuple[str, int]:
         excerpt = item.excerpt or ""
         if len(excerpt) > max_chars_per_item:
             excerpt = excerpt[: max_chars_per_item - 1].rstrip() + "…"
-        item_chars = len(excerpt) + len(item.title or "")
-        if survivors and total_chars + item_chars > max_chars:
+        return excerpt, len(excerpt) + len(item.title or "")
+
+    # V3.18.1 — defined metrics are charged FIRST. They are T6, so they sort last, and a
+    # running total that reaches them last silently drops them whenever the higher-tier
+    # items are long: the item-count floor held and the definitions still vanished.
+    # Found by review. Their characters are set aside up front, and an unprotected item
+    # is skipped if admitting it would spend them.
+    protected_pending = sum(
+        _sized(item)[1]
+        for item in selected
+        if evidence_category(item) == CATEGORY_DEFINED_METRIC
+    )
+    protected_pending = min(protected_pending, max_chars)
+
+    survivors: list[EvidenceItem] = []
+    total_chars = 0
+    for item in selected:
+        excerpt, item_chars = _sized(item)
+        protected = evidence_category(item) == CATEGORY_DEFINED_METRIC
+        reserve = 0 if protected else protected_pending
+        if survivors and total_chars + item_chars + reserve > max_chars:
             continue
         total_chars += item_chars
+        if protected:
+            protected_pending = max(0, protected_pending - item_chars)
         survivors.append(
             item.model_copy(
                 update={

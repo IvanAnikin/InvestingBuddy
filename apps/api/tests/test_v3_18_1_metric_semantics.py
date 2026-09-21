@@ -105,6 +105,16 @@ class TestCashConversionIsDefinedTheConventionalWay:
         assert h1_2026[0].value == pytest.approx(113.12, abs=0.01)
         assert h1_2026[0].value > h1_2025[0].value, "higher is better ⇒ conversion improved"
 
+    def test_a_loss_over_a_loss_is_not_printed_as_healthy_conversion(self) -> None:
+        """Found by review: FCF −30 over NI −100 printed "fcf_conversion = 30.0% …
+        higher is better" — the inverted-reading defect, reintroduced WITH authority."""
+        readings, refusals = compute_statement_metrics(
+            {"free_cash_flow": -30.0, "net_income": -100.0, "shareholders_equity": -200.0},
+            period_label="FY2025", keys=("fcf_conversion", "return_on_equity"),
+        )
+        assert readings == []
+        assert {r.key for r in refusals} == {"fcf_conversion", "return_on_equity"}
+
     def test_a_loss_has_no_conversion_reading(self) -> None:
         readings, refusals = compute_statement_metrics(
             {"operating_cash_flow": 50.0, "net_income": -20.0},
@@ -141,6 +151,16 @@ class TestStatementMetrics:
         assert metrics_from_sec_summary(
             {"fiscal_year": 2026, "period_basis": "quarterly", "revenue_usd_m": 1.0}
         ) == ([], [])
+
+    def test_net_debt_is_not_defined_on_a_partial_debt_total(self) -> None:
+        """Found by review. With a debt leg withheld, `total_debt` is a partial sum."""
+        fs = {
+            "fiscal_year": 2025, "period_basis": "annual",
+            "total_debt_usd_m": 6750.7, "cash_and_equivalents_usd_m": 4304.6,
+            "withheld_fields": [{"field": "short_term_debt", "end": "2024-12-31"}],
+        }
+        readings, _ = metrics_from_sec_summary(fs)
+        assert "net_debt" not in {r.key for r in readings}
 
     def test_a_metric_the_consistency_check_withheld_stays_withheld(self) -> None:
         fs = {
@@ -266,10 +286,58 @@ class TestPercentageParsing:
         assert [p[1] for p in percentages_in("up 71.6%, or 12 percent, to 3,5 %")] == [71.6, 12.0, 3.5]
 
     def test_no_evidence_numbers_refuses_nothing(self) -> None:
-        assert unsupported_percentages("up 88.4%", []) == []
+        assert unsupported_percentages("margin of 88.4%", []) == []
 
     def test_a_dollar_figure_is_not_a_percentage(self) -> None:
         assert percentages_in("capex of $1,325.3 million") == []
+
+    def test_a_thousands_comma_is_not_a_decimal_comma(self) -> None:
+        """Found by review: `13,420` was read as 13.42, corrupting every evidence
+        number above 999."""
+        from app.services.llm.ratio_guard import evidence_numbers
+
+        assert 13420.0 in evidence_numbers(["revenue 13,420 and 1,250.5"])
+        assert 1250.5 in evidence_numbers(["revenue 13,420 and 1,250.5"])
+        assert [p[1] for p in percentages_in("up 1,250%")] == [1250.0]
+
+    def test_both_ends_of_a_range_are_checked(self) -> None:
+        assert [p[1] for p in percentages_in("margins of 50-55%")] == [50.0, 55.0]
+        assert unsupported_percentages("Operating margins of 50-52% are typical.", [50.0, 52.17]) == []
+
+
+class TestTheGuardOnlyExaminesRatioShapedClaims:
+    """Found by review. The first version refused ANY percentage the pack lacked, and
+    every sentence below is a true, sourced statement it moved to unsupported_claims —
+    the evidence states them in words, or they are not ratios of statement lines at all."""
+
+    NUMBERS = [4752.1, 13420.0, 52.17, 109.3, 17.43]
+
+    @pytest.mark.parametrize(
+        "sentence",
+        [
+            "A 15% royalty applies to operating income in Peru.",
+            "Minera Mexico is a 100% owned subsidiary.",
+            "The US statutory rate of 21% applies.",
+            "The mine sits in the top 10% of peers on cash cost.",
+            "Roughly 75% of sales came from copper.",
+            "Net income rose 71.6% in the second quarter.",
+            "Grupo Mexico holds 88.9% of the shares.",
+        ],
+    )
+    def test_a_percentage_that_is_not_a_financial_ratio_is_left_alone(self, sentence) -> None:
+        assert unsupported_percentages(sentence, self.NUMBERS) == []
+
+    @pytest.mark.parametrize(
+        "sentence",
+        [
+            "Net income was approximately 88.4% of net operating cash flow.",
+            "EBITDA margin of 58% is among the highest in the sector.",
+            "Return on equity of 44% signals strong capital efficiency.",
+            "Capital expenditures absorbed 31% of operating cash flow.",
+        ],
+    )
+    def test_an_invented_ratio_is_refused(self, sentence) -> None:
+        assert unsupported_percentages(sentence, self.NUMBERS)
 
 
 def test_the_vocabulary_is_exported() -> None:
@@ -317,6 +385,34 @@ class TestTheDefinitionSurvivesTheEvidenceBudget:
         kept = [i for i in budgeted.evidence_items if "DEFINED METRICS" in (i.title or "")]
         assert len(budgeted.evidence_items) <= 20
         assert before and len(kept) == len(before), "a definition was dropped under pressure"
+
+    def test_they_survive_the_character_budget_too(self) -> None:
+        """Found by review: the item floor held and the definitions still vanished,
+        because they sort last and the running character total reached them last."""
+        from app.core.config import Settings
+        from app.services.llm.evidence_budget import apply_evidence_budget
+        from app.services.llm.schemas import EvidenceItem
+
+        pack = _pack_with_sec_summary()
+        long_filings = [
+            EvidenceItem(
+                id=f"F{n}", source_tier="T1_primary_filing", source_type="sec_filing_excerpt",
+                title=f"10-K excerpt {n}", excerpt=("filing text " * 120),
+            )
+            for n in range(17)
+        ]
+        pack = pack.model_copy(update={"evidence_items": long_filings + list(pack.evidence_items)})
+        cfg = Settings(
+            llm_council_evidence_budgets_enabled=True,
+            source_connector_enabled=True,
+            llm_council_evidence_max_items=20,
+        )
+        budgeted = apply_evidence_budget(pack, max_items=20, max_chars=24000, cfg=cfg)
+        before = [i for i in pack.evidence_items if "DEFINED METRICS" in (i.title or "")]
+        kept = [i for i in budgeted.evidence_items if "DEFINED METRICS" in (i.title or "")]
+        assert len(kept) == len(before)
+        total = sum(len(i.excerpt or "") + len(i.title or "") for i in budgeted.evidence_items)
+        assert total <= 24000, "the ceiling itself still holds"
 
     def test_no_reading_is_cut_off_before_its_interpretation(self) -> None:
         """The budgeter truncates at 1,200 characters per item."""

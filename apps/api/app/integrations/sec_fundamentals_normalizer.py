@@ -169,6 +169,14 @@ def _is_full_year_period(entry: dict) -> bool:
     return (e - s).days >= 300
 
 
+def _is_single_quarter_period(entry: dict) -> bool:
+    """True for an instant, or a flow spanning about one quarter (not year-to-date)."""
+    start, end = _parse_end(entry.get("start")), _parse_end(entry.get("end"))
+    if start is None or end is None:
+        return True
+    return (end - start).days <= 100
+
+
 def _select_metric(
     facts: dict[str, Any],
     concepts: list[str],
@@ -225,9 +233,17 @@ def _select_metric(
     if not pool:
         return _Metric()
 
-    # Prefer full-year durations for flow concepts; fall back to the whole pool
-    # if none look full-year (e.g. balance-sheet instants, or odd filings).
-    ranked = [ce for ce in pool if _is_full_year_period(ce[1])] or pool
+    if period_type == "annual":
+        # Prefer full-year durations for flow concepts; fall back to the whole pool
+        # if none look full-year (e.g. balance-sheet instants, or odd filings).
+        ranked = [ce for ce in pool if _is_full_year_period(ce[1])] or pool
+    else:
+        # V3.18.1 — a 10-Q tags every flow twice with ONE period end: the quarter and
+        # the year to date. Ranking on (fy, filed, end) cannot tell them apart, so which
+        # one a concept got was arbitrary, and a quarter's revenue could sit beside
+        # year-to-date net income in one bundle. One duration class, consistently: the
+        # single quarter. Instants have no duration and always qualify.
+        ranked = [ce for ce in pool if _is_single_quarter_period(ce[1])] or pool
     concept, latest = max(ranked, key=lambda ce: _freshness_key(ce[1]))
 
     raw_val = latest.get("val")
@@ -611,17 +627,44 @@ def _parse_end(value: str | None) -> datetime | None:
         return None
 
 
+def _reporting_period_anchor(ends: "list[datetime]") -> datetime | None:
+    """The period end MOST metrics agree on; ties go to the later one.
+
+    Deliberately not ``max(ends)``. The first version used the maximum, and review
+    showed what that does: one mis-tagged concept dated after the fiscal year end — an
+    instant on a 10-K cover date, a dividend tagged into the next quarter — became the
+    anchor, and revenue, net income, cash flow and the whole balance sheet were withheld
+    as "stale" against it. A rule built to stop one wrong figure reaching a report must
+    not be able to remove every right one because of one wrong figure.
+
+    Agreement is measured within the same-period tolerance, so a 52/53-week filer whose
+    concepts end a few days apart still forms one group.
+    """
+    if not ends:
+        return None
+
+    def support(candidate: datetime) -> int:
+        return sum(
+            1 for end in ends if abs((end - candidate).days) <= _SAME_PERIOD_TOLERANCE_DAYS
+        )
+
+    return max(set(ends), key=lambda candidate: (support(candidate), candidate))
+
+
 def _metrics_outside_reporting_period(
     selected: "dict[str, _Metric]",
-) -> list[tuple[str, str, _Metric]]:
+) -> "tuple[list[tuple[str, str, _Metric]], str | None]":
     """Which selected metrics are NOT for the bundle's reporting period, and why.
 
-    The reporting period is the latest period end carried by any metric on the
-    bundle's basis — annual when any metric is annual, else quarterly. Two ways to be
-    outside it, kept apart because they are different defects:
+    Returns ``(outside, anchor)``. The reporting period is the period end most metrics
+    on the bundle's basis agree on (see ``_reporting_period_anchor``) — annual when any
+    metric is annual, else quarterly. Three ways to be outside it, kept apart because
+    they are different defects:
 
     * ``stale_period`` — the filer's latest value for the concept is for an EARLIER
       period (a concept it stopped tagging).
+    * ``later_period_outlier`` — the value is dated AFTER the period the rest of the
+      bundle is for. Only that metric is withheld; it never moves the anchor.
     * ``interim_in_annual_bundle`` — the concept has no annual entry at all and fell
       back to a 10-Q value. Presented under an annual headline that is a quarter
       relabelled as a year.
@@ -631,16 +674,16 @@ def _metrics_outside_reporting_period(
     """
     present = {n: m for n, m in selected.items() if m.value is not None}
     if not present:
-        return []
+        return [], None
     basis = "annual" if any(m.period_type == "annual" for m in present.values()) else "quarterly"
     ends = [
         end
         for m in present.values()
         if m.period_type == basis and (end := _parse_end(m.end)) is not None
     ]
-    if not ends:
-        return []
-    anchor = max(ends)
+    anchor = _reporting_period_anchor(ends)
+    if anchor is None:
+        return [], None
     outside: list[tuple[str, str, _Metric]] = []
     for name, metric in present.items():
         if metric.period_type != basis:
@@ -649,10 +692,12 @@ def _metrics_outside_reporting_period(
         end = _parse_end(metric.end)
         if end is None:
             continue
-        if abs((anchor - end).days) > _SAME_PERIOD_TOLERANCE_DAYS:
+        gap = (end - anchor).days
+        if gap > _SAME_PERIOD_TOLERANCE_DAYS:
+            outside.append((name, "later_period_outlier", metric))
+        elif gap < -_SAME_PERIOD_TOLERANCE_DAYS:
             outside.append((name, "stale_period", metric))
-    return outside
-
+    return outside, anchor.strftime("%Y-%m-%d")
 
 
 def normalize_company_facts(
@@ -764,7 +809,8 @@ def normalize_company_facts(
         "short_term_debt": std,
         "long_term_debt": ltd,
     }
-    for name, reason, metric in _metrics_outside_reporting_period(selected):
+    outside, anchor_end = _metrics_outside_reporting_period(selected)
+    for name, reason, metric in outside:
         result.withheld_fields[name] = {
             "value": metric.value,
             "end": metric.end,
@@ -850,7 +896,11 @@ def normalize_company_facts(
         )
 
     if headline is not None:
-        result.reporting_period_end = headline.end
+        # The ANCHOR, not the headline's own end: two kept metrics may each sit inside
+        # the tolerance of the anchor and still be further than that from each other,
+        # and a slot check made against one of them would refuse a figure this function
+        # kept.
+        result.reporting_period_end = anchor_end or headline.end
         result.fiscal_year = headline.fy
         result.fiscal_period = headline.fp
         result.form_type = headline.form
@@ -905,10 +955,20 @@ def normalize_company_facts(
     result.operating_margin = _pct(result.operating_income, result.revenue)
     result.net_margin = _pct(result.net_income, result.revenue)
     result.free_cash_flow_margin = _pct(result.free_cash_flow, result.revenue)
-    result.return_on_equity = _pct(result.net_income, result.shareholders_equity)
-
-    if result.total_debt is not None and result.shareholders_equity not in (None, 0):
-        result.debt_to_equity = round(result.total_debt / result.shareholders_equity, 3)
+    # A return on, or leverage against, NEGATIVE equity has no reading: a loss over a
+    # deficit prints as a healthy positive percentage. Refused rather than printed —
+    # the same rule the calculation engine applies (`positive_roles`).
+    if result.shareholders_equity is not None and result.shareholders_equity > 0:
+        result.return_on_equity = _pct(result.net_income, result.shareholders_equity)
+        if result.total_debt is not None:
+            result.debt_to_equity = round(
+                result.total_debt / result.shareholders_equity, 3
+            )
+    elif result.shareholders_equity is not None:
+        warnings.append(
+            "SEC EDGAR: return_on_equity and debt_to_equity not derived — shareholders' "
+            "equity is not positive, so neither ratio has a meaningful reading."
+        )
 
     # ── V3.18.1 — do the lines agree with each other? ────────────────────
     # The own-period rule above removes the cause that produced a gross profit below

@@ -227,6 +227,15 @@ def metrics_from_sec_summary(
     values = {
         label: fs.get(summary_key) for summary_key, label in SEC_SUMMARY_TO_INPUT.items()
     }
+    # A debt leg the filer has not tagged for this period makes `total_debt` a PARTIAL
+    # sum. It may well be zero — and "may well be" is not a figure. Net debt built on a
+    # partial total would be handed to the council as a defined metric, with authority.
+    debt_legs = {"short_term_debt", "long_term_debt"}
+    if any(
+        isinstance(item, dict) and item.get("field") in debt_legs
+        for item in fs.get("withheld_fields") or ()
+    ):
+        withheld.add("net_debt")
     keys = [k for k in STATEMENT_METRIC_KEYS if k not in withheld]
     return compute_statement_metrics(values, period_label=f"FY{fiscal_year}", keys=keys)
 

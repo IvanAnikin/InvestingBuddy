@@ -19,6 +19,10 @@ from app.services.llm.citation_checker import check_and_sanitize
 from app.services.llm.schemas import AgentRiskGap, CouncilAgentOutput
 
 PRODUCTION_ABSENCE_SENTENCES = (
+    "Lack of reported EBITDA and liquidity ratios limits assessment of operational efficiency",
+    "lack of trend data limits assessment of capital intensity changes",
+    "Absence of full annual or quarterly EBITDA figures limits assessment of earnings quality",
+    "The pack lacks non-US filings and company IR disclosures, restricting governance insights",
     "Absence of EBITDA and dividend yield data restricts full evaluation of cash flow quality",
     "Lack of detailed segment or geographic breakdown restricts understanding of growth drivers",
     "No dividend yield or payout information is available, restricting assessment of shareholder returns",
@@ -27,6 +31,20 @@ PRODUCTION_ABSENCE_SENTENCES = (
 )
 
 REAL_BUSINESS_RISKS = (
+    # Found by review: the first version's bare "lack of / lacks / missing /
+    # unavailable" retyped every one of these as a platform gap, and its issuer-assertion
+    # pattern disowned the four after them as unevidenced non-disclosure claims.
+    "Lack of pricing power in a commoditised copper market could compress margins",
+    "Lack of liquidity in the shares may widen spreads",
+    "Unavailable water permits could halt Tia Maria",
+    "Missing the 2026 production target would delay cash flows",
+    "The company has no dividend cover if copper prices fall",
+    "The group has not reported positive free cash flow since 2021",
+    "The company did not report a profit in three of the last five years",
+    "The firm lacks a second supplier for sulphuric acid",
+    "The company has no debt and reported record revenue.",
+    "Without new permits, production data suggests output will fall",
+    "No growth is expected, and production data confirm it",
     "Commodity price volatility could pressure cash flow and debt servicing ability.",
     "Labor disputes at Peruvian operations have disrupted production in prior years.",
     "Water availability constraints may limit expansion at the Tia Maria project.",
@@ -66,6 +84,10 @@ class TestAssertionsAboutTheIssuer:
         "sentence",
         [
             "The company does not disclose segment information.",
+            # Found by review: a NAMED issuer, a ticker and "it" were all missed.
+            "Southern Copper does not disclose segment data",
+            "It does not publish a geographic breakdown",
+            "SCCO lacks an investor relations website",
             "The company has no investor relations website.",
             "The issuer fails to report geographic revenue.",
             "Management does not provide guidance on dividends.",
@@ -90,6 +112,11 @@ class TestAssertionsAboutTheIssuer:
 
     def test_a_clumsy_but_true_absence_in_a_summary_is_left_alone(self) -> None:
         summary = "The absence of full annual data limits a complete assessment."
+        assert ks.correct_issuer_assertions(summary) == (summary, 0)
+
+    def test_a_summary_about_the_business_is_not_disowned(self) -> None:
+        """Found by review: `has no … report\\w*` matched this."""
+        summary = "The company has no debt and reported record revenue."
         assert ks.correct_issuer_assertions(summary) == (summary, 0)
 
 
