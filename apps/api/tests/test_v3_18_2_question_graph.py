@@ -556,3 +556,78 @@ class TestFollowUpsNeedSomethingToClimb:
         )
         assert result.stopped_by == STOPPED_MAX_TASKS
         assert result.tasks_run <= 4
+
+
+class TestTheSecondReview:
+    """The re-review of #222's fixes."""
+
+    async def test_the_only_role_that_can_search_keeps_its_seat(self) -> None:
+        """'Busiest first' trimmed the one role holding `search_web`, and its question
+        became 'task budget exhausted' — no kept role could take it."""
+        plan = await plan_research(subject="ANY:US", mode="standard", cfg=_CFG)
+        assert "recent_external_developments" in {q.key for q in plan.questions}
+        assigned = {k: t.role_id for t in plan.tasks for k in t.question_keys}
+        assert assigned.get("recent_external_developments") == "external_research_analyst"
+        assert "recent_external_developments" not in {k for k, _ in plan.unassignable}
+
+    async def test_improvement_cut_short_is_named(self, session) -> None:
+        from app.services.director.loop import LIMIT_STOP_REASONS
+
+        run = await ledger.open_run(session, mode="standard")
+        plan = await plan_research(subject="ANY:US", mode="standard", cfg=_CFG)
+        await persist_plan(session, run, plan)
+        issuer = [_ref("ev:1", c.ISSUER_FILING, "T1_primary_filing", "10-K")]
+        result = await run_investigation(
+            session, run, plan,
+            investigator=_GraphInvestigator({q.key: issuer for q in plan.questions}),
+            limits=plan.limits,
+        )
+        assert result.is_complete_analysis
+        assert result.improvement_stopped_by in LIMIT_STOP_REASONS, (
+            "partial contracts were still improvable when the rounds ran out"
+        )
+
+    async def test_only_partial_contracts_left_at_the_last_round_is_not_a_limit(
+        self, session
+    ) -> None:
+        """No closable gap remains — the round limit cut nothing short. Without this
+        branch the run was reported as stopped by max_rounds."""
+        from app.services.director.base_model import base_question
+        from app.services.director.loop import STOPPED_NOTHING_LEFT
+        from app.services.director.planner import PlannedTask
+        from app.services.playbooks.schema import planned_from
+
+        run = await ledger.open_run(session, mode="standard")
+        plan = await plan_research(subject="ANY:US", mode="standard", cfg=_CFG)
+        industry = planned_from(base_question("industry_economics"), origin="director")
+        blocker = dataclasses.replace(
+            planned_from(base_question("balance_sheet_risk"), origin="playbook"),
+            blocking=True,
+        )
+        plan.questions = [industry, blocker]
+        plan.tasks = [
+            PlannedTask(role_id="industry_analyst", question_keys=[industry.key]),
+            PlannedTask(role_id="financial_analyst", question_keys=[blocker.key]),
+        ]
+        await persist_plan(session, run, plan)
+
+        class _Investigator(_GraphInvestigator):
+            async def investigate(self, *, role_id, questions, round_index,  # noqa: ANN001, ANN202
+                                  remaining_tool_calls, question_context=None):
+                outcome = await super().investigate(
+                    role_id=role_id, questions=questions, round_index=round_index,
+                    remaining_tool_calls=remaining_tool_calls,
+                    question_context=question_context,
+                )
+                for gap in outcome.gaps:
+                    gap.closable = False  # another round would fail the same way
+                return outcome
+
+        issuer = [_ref("ev:1", c.ISSUER_FILING, "T1_primary_filing", "10-K")]
+        result = await run_investigation(
+            session, run, plan, investigator=_Investigator({industry.key: issuer}),
+            limits=dataclasses.replace(plan.limits, max_rounds=2),
+            completion_rules=["all_blocking_questions_answered"],
+        )
+        assert result.stopped_by == STOPPED_NOTHING_LEFT
+        assert len(result.rounds) == 2, "the improvement round for the partial one ran"

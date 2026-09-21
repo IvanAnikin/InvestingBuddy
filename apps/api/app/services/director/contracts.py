@@ -278,7 +278,10 @@ def evidence_ref_for(tool: str, citation_id: str, item: dict[str, Any]) -> Evide
         # a regulator's index. The host cannot say it is the subject's own, so it does
         # not satisfy an issuer requirement; the issuer's filings reach the ledger
         # through the filings tools and the company's own corpus, which know whose they
-        # are. Nor is it an independent statistical authority.
+        # are. Nor is it an independent statistical authority. NOTHING sets
+        # `issuer_match` today, so every web filing — the subject's own 10-K fetched
+        # from the web included — lands here: it fails safe, and matching a web filing
+        # to the issuer (by EDGAR CIK) is future work, not a claim of this code.
         kind = THIRD_PARTY_FILING
     if tool == "search_company_corpus":
         ref = str(url or item.get("title") or citation_id)
