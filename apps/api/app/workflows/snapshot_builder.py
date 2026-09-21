@@ -38,6 +38,28 @@ from app.services.exchange_registry import price_quote_currency_for_exchange
 _TODAY = date.today().isoformat()
 
 
+#: Summary key → the normalizer field it is read from. Only REPORTED statement lines
+#: and the two dollar aggregates derived from them: a ratio has no period of its own,
+#: and is simply absent when an input was withheld.
+_SEC_STATEMENT_SLOTS: dict[str, str] = {
+    "revenue_usd_m": "revenue",
+    "gross_profit_usd_m": "gross_profit",
+    "operating_income_usd_m": "operating_income",
+    "net_income_usd_m": "net_income",
+    "eps_basic": "eps_basic",
+    "eps_diluted": "eps_diluted",
+    "operating_cash_flow_usd_m": "operating_cash_flow",
+    "capital_expenditures_usd_m": "capital_expenditures",
+    "dividends_paid_usd_m": "dividends_paid",
+    "total_assets_usd_m": "total_assets",
+    "total_liabilities_usd_m": "total_liabilities",
+    "shareholders_equity_usd_m": "shareholders_equity",
+    "cash_and_equivalents_usd_m": "cash_and_equivalents",
+    "short_term_debt_usd_m": "short_term_debt",
+    "long_term_debt_usd_m": "long_term_debt",
+}
+
+
 def _make_datapoint(
     value: Any,
     unit: str | None,
@@ -471,6 +493,10 @@ def enrich_snapshot_with_free_real(snapshot: dict, free_real_dict: dict) -> dict
             dp = dp_map.get(key)
             return dp["value"] if dp else None
 
+        def _as_of(key: str) -> Any:
+            dp = dp_map.get(key)
+            return dp.get("as_of") if dp else None
+
         # Phase 19.3: normalized SEC fundamentals — income statement, cash flow,
         # balance sheet, derived margins/growth, plus filing metadata. Every key
         # is None when the underlying SEC concept was unavailable (never faked).
@@ -490,6 +516,7 @@ def enrich_snapshot_with_free_real(snapshot: dict, free_real_dict: dict) -> dict
             "operating_cash_flow_usd_m": _val("sec_edgar.operating_cash_flow"),
             "capital_expenditures_usd_m": _val("sec_edgar.capital_expenditures"),
             "free_cash_flow_usd_m": _val("sec_edgar.free_cash_flow"),
+            "dividends_paid_usd_m": _val("sec_edgar.dividends_paid"),
             # Balance sheet
             "total_assets_usd_m": _val("sec_edgar.total_assets"),
             "total_liabilities_usd_m": _val("sec_edgar.total_liabilities"),
@@ -520,6 +547,19 @@ def enrich_snapshot_with_free_real(snapshot: dict, free_real_dict: dict) -> dict
             "filed_date": _val("sec_edgar.filed_date"),
             "accession_number": _val("sec_edgar.accession_number"),
             "period_basis": period_basis,
+            # V3.18.1 — each statement figure's OWN period end. `_val` above keeps a
+            # datapoint's value and drops its `as_of`, which is the line where Southern
+            # Copper's FY2019 gross profit lost its year and inherited the bundle's
+            # FY2025 headline. The normalizer now withholds such a figure at source;
+            # this map is what lets every consumer CHECK rather than trust that.
+            "reporting_period_end": _val("sec_edgar.reporting_period_end"),
+            "field_period_ends": {
+                summary_key: _as_of(f"sec_edgar.{field}")
+                for summary_key, field in _SEC_STATEMENT_SLOTS.items()
+                if _as_of(f"sec_edgar.{field}")
+            },
+            "withheld_fields": _val("sec_edgar.withheld_fields") or [],
+            "statement_consistency": _val("sec_edgar.statement_consistency") or {},
             "data_quality": fr_fund.get("data_quality") or "B_single_credible",
             "note": (
                 "SEC EDGAR XBRL fundamentals normalized for latest fiscal periods "

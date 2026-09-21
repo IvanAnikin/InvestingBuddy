@@ -41,7 +41,13 @@ import re
 from typing import Any
 
 from app.services import safety_terms
+from app.services.knowledge_state import (
+    KIND_PLATFORM_EVIDENCE_GAP,
+    correct_issuer_assertions,
+    word_as_platform_gap,
+)
 from app.services.llm.gap_attribution import ground_gap_text
+from app.services.llm.ratio_guard import evidence_numbers, unsupported_percentages
 from app.services.llm.schemas import (
     AGENT_COMMITTEE_CHAIR,
     ALLOWED_COMMITTEE_LABELS,
@@ -273,6 +279,19 @@ def check_and_sanitize(
         )
         return _quarantine(output, len(hits), tiers), issues
 
+    # 1b. V3.18.1 — every number the evidence pack contains, once. A percentage in a
+    # claim that none of them rounds to was computed by the model: it has no
+    # definition, no declared direction and no calculation record. See `ratio_guard`.
+    pack_numbers = (
+        evidence_numbers(
+            text
+            for item in evidence_by_id.values()
+            for text in (getattr(item, "excerpt", None), getattr(item, "title", None))
+        )
+        if evidence_by_id
+        else []
+    )
+
     # 2. Citation integrity for key points.
     clean_points = []
     dropped_for_semantic_mismatch = 0
@@ -289,6 +308,16 @@ def check_and_sanitize(
             issues.append(
                 f"{output.agent_name}: an un-cited material claim was moved to "
                 "unsupported_claims."
+            )
+            continue
+        self_computed = unsupported_percentages(kp.claim, pack_numbers)
+        if self_computed and not kp.is_limitation:
+            output.unsupported_claims.append(kp.claim)
+            issues.append(
+                f"{output.agent_name}: a claim stating {', '.join(self_computed[:3])} "
+                "was moved to unsupported_claims — no evidence item contains that "
+                "figure, so it is a ratio the model computed rather than a defined, "
+                "deterministic metric."
             )
             continue
         candidate = kp.model_copy(update={"citation_ids": valid})
@@ -325,6 +354,7 @@ def check_and_sanitize(
     # an ungrounded claim is replaced with generic insufficient-evidence
     # wording. A gap item asserting no specific cause is never touched.
     clean_risks = []
+    platform_gaps = 0
     for rg in output.risks_or_gaps:
         valid, invalid = _split_citations(rg.citation_ids, evidence_ids)
         if invalid:
@@ -339,10 +369,32 @@ def check_and_sanitize(
                 "replaced with generic insufficient-evidence wording (no "
                 "matching structured cause recorded for this run)."
             )
+        # V3.18.1 — whose gap is it? An uncited statement that something is missing is
+        # about THIS PLATFORM's evidence, and is worded and typed as that, so a reader
+        # can never take "we did not acquire the segment note" for "the company does
+        # not report segments".
+        worded_item, kind = word_as_platform_gap(grounded_item, has_citation=bool(valid))
+        if kind == KIND_PLATFORM_EVIDENCE_GAP:
+            platform_gaps += 1
         clean_risks.append(
-            rg.model_copy(update={"citation_ids": valid, "item": grounded_item})
+            rg.model_copy(
+                update={"citation_ids": valid, "item": worded_item, "kind": kind}
+            )
         )
     output.risks_or_gaps = clean_risks
+    if platform_gaps:
+        issues.append(
+            f"{output.agent_name}: {platform_gaps} gap item(s) were typed and worded as "
+            "platform evidence gaps rather than business risks."
+        )
+    corrected_summary, corrected = correct_issuer_assertions(output.summary)
+    if corrected:
+        output.summary = corrected_summary
+        issues.append(
+            f"{output.agent_name}: {corrected} summary sentence(s) asserted that the "
+            "issuer does not disclose something, with no evidence; disowned as a "
+            "platform evidence gap."
+        )
 
     # 2c. Citation + vocabulary integrity for IMPLICATIONS.
     #
@@ -366,6 +418,16 @@ def check_and_sanitize(
             issues.append(
                 f"{output.agent_name}: an un-cited material implication was "
                 "moved to unsupported_claims."
+            )
+            continue
+        self_computed = unsupported_percentages(statement, pack_numbers)
+        if self_computed:
+            output.unsupported_claims.append(statement)
+            issues.append(
+                f"{output.agent_name}: an implication stating "
+                f"{', '.join(self_computed[:3])} was moved to unsupported_claims — no "
+                "evidence item contains that figure, so both the ratio and its reading "
+                "are the model's own."
             )
             continue
         direction = (imp.direction or "").strip().lower()

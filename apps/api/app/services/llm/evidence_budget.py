@@ -59,6 +59,13 @@ CATEGORY_STATEMENT_TABLE = "statement_table_content"
 CATEGORY_PRIMARY_DOCUMENT = "primary_document"
 CATEGORY_FINANCIAL_SUMMARY = "financial_summary"
 CATEGORY_PRICE_TREND_METRIC = "price_trend_metric"
+#: V3.18.1 — engine-computed metrics that carry their own definition and reading. A
+#: category of its own: they are T6 and must not be counted as statement FACTS, and they
+#: must not share the capped price/trend group, where they would be the first thing
+#: dropped and the council would be back to dividing figures itself.
+CATEGORY_DEFINED_METRIC = "defined_metric"
+#: All of them are reserved. There are at most three, by construction of the pack.
+DEFINED_METRIC_FLOOR = 3
 CATEGORY_COMPANY_PRESS = "company_press"
 CATEGORY_REGULATOR_EVENT = "regulator_event"
 CATEGORY_MATERIAL_NEWS = "material_news"
@@ -267,6 +274,11 @@ def evidence_category(item: EvidenceItem) -> str:
     if st in _FINANCIAL_FACT_TYPES:
         return CATEGORY_FINANCIAL_FACT
 
+    # 2b. V3.18.1 — engine-computed metrics carrying their own definition. See
+    # ``CATEGORY_DEFINED_METRIC``.
+    if st == "defined_financial_metric":
+        return CATEGORY_DEFINED_METRIC
+
     # 3. Derived / price / market / trend metrics.
     if st in _PRICE_TREND_TYPES or (fields & _PRICE_TREND_FIELDS):
         return CATEGORY_PRICE_TREND_METRIC
@@ -334,16 +346,39 @@ def _bound_and_reid(
 ) -> list[EvidenceItem]:
     """Trim per-item excerpts, keep the running total under ``max_chars`` and
     re-id survivors E1..En. Always keeps at least the first item."""
-    survivors: list[EvidenceItem] = []
-    total_chars = 0
-    for item in selected:
+    def _sized(item: EvidenceItem) -> tuple[str, int]:
         excerpt = item.excerpt or ""
         if len(excerpt) > max_chars_per_item:
             excerpt = excerpt[: max_chars_per_item - 1].rstrip() + "…"
-        item_chars = len(excerpt) + len(item.title or "")
-        if survivors and total_chars + item_chars > max_chars:
+        return excerpt, len(excerpt) + len(item.title or "")
+
+    # V3.18.1 — defined metrics are charged FIRST. They are T6, so they sort last, and a
+    # running total that reaches them last silently drops them whenever the higher-tier
+    # items are long: the item-count floor held and the definitions still vanished.
+    # Found by review. Their characters are set aside up front, and an unprotected item
+    # is skipped if admitting it would spend them.
+    protected_pending = sum(
+        _sized(item)[1]
+        for item in selected
+        if evidence_category(item) == CATEGORY_DEFINED_METRIC
+    )
+    protected_pending = min(protected_pending, max_chars)
+
+    survivors: list[EvidenceItem] = []
+    total_chars = 0
+    for item in selected:
+        excerpt, item_chars = _sized(item)
+        protected = evidence_category(item) == CATEGORY_DEFINED_METRIC
+        reserve = 0 if protected else protected_pending
+        if survivors and total_chars + item_chars + reserve > max_chars:
+            if protected:
+                # It cannot fit at all; stop holding room for it, or the reserve starves
+                # every item after it for nothing.
+                protected_pending = max(0, protected_pending - item_chars)
             continue
         total_chars += item_chars
+        if protected:
+            protected_pending = max(0, protected_pending - item_chars)
         survivors.append(
             item.model_copy(
                 update={
@@ -478,6 +513,7 @@ def _apply_category_budget(
     statement_reserved = 0
     pd_reserved = 0
     price_reserved = 0
+    defined_reserved = 0
     for order, _item, category in ranked:
         if len(reserved) >= max_items:
             break
@@ -507,6 +543,12 @@ def _apply_category_budget(
         ):
             reserved.add(order)
             price_reserved += 1
+        elif (
+            category == CATEGORY_DEFINED_METRIC
+            and defined_reserved < DEFINED_METRIC_FLOOR
+        ):
+            reserved.add(order)
+            defined_reserved += 1
 
     # 5. Fill: reserved first, then global rank skipping any capped category.
     selected: list[tuple[int, EvidenceItem]] = []
@@ -710,6 +752,7 @@ __all__ = [
     "CATEGORY_FINANCIAL_FACT",
     "CATEGORY_STATEMENT_TABLE",
     "CATEGORY_PRIMARY_DOCUMENT",
+    "CATEGORY_DEFINED_METRIC",
     "CATEGORY_FINANCIAL_SUMMARY",
     "CATEGORY_PRICE_TREND_METRIC",
     "CATEGORY_COMPANY_PRESS",

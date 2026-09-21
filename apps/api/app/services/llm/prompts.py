@@ -144,6 +144,25 @@ INVESTMENT_ANALYSIS_CONTRACT = (
     "itself. Every other agent should be spending its output on the business."
 )
 
+# V3.18.1 — two rules a live report broke, each now also enforced deterministically
+# (`ratio_guard`, `knowledge_state`). The prompt states them so the model does the right
+# thing first; the guards exist because a prompt instruction is not a control.
+RESEARCH_DISCIPLINE_RULES = (
+    "DEFINED METRICS ONLY. Evidence items titled 'DEFINED METRICS' give each ratio "
+    "with its formula, which direction is favourable, and how to read it. Use those "
+    "values and those readings. Do NOT compute a ratio or percentage yourself from "
+    "two figures: a percentage that appears nowhere in the evidence is discarded as "
+    "unsupported, together with whatever you concluded from it. In particular, "
+    "cash conversion is operating cash flow / net income, and a FALL in it is "
+    "weaker conversion.\n"
+    "WHOSE GAP IS IT. `known_gaps` lists what INVESTINGBUDDY has not acquired. It "
+    "says nothing about the company. Never write that the company 'lacks', 'does "
+    "not disclose', 'has no' or 'does not report' something because it is absent "
+    "from this evidence — most of it exists and simply was not retrieved. Write "
+    "'not in the evidence reviewed'. Claim the company does not disclose something "
+    "only when an evidence item says so, and cite it."
+)
+
 # The strict JSON contract every agent must satisfy. The real clients ask the
 # model for exactly this shape; the base client repairs a single malformed
 # response before giving up.
@@ -183,6 +202,7 @@ def _base_header(agent_name: str, role: str) -> str:
         f"{SAFETY_RULES}\n\n"
         f"{INVESTMENT_ANALYSIS_CONTRACT}\n\n"
         f"{INFERENCE_STRENGTH_RULES}\n\n"
+        f"{RESEARCH_DISCIPLINE_RULES}\n\n"
         f"{JSON_CONTRACT}"
     )
 

@@ -214,6 +214,17 @@ class EvidencePack(BaseModel):
     source_policy: SourcePolicy = Field(default_factory=SourcePolicy)
     evidence_items: list[EvidenceItem] = Field(default_factory=list)
     known_gaps: list[str] = Field(default_factory=list)
+    #: V3.18.1 — whose gaps those are, said ONCE and in the pack itself. Handed to a
+    #: model as bare names they can only be phrased as absences, which is how "absence
+    #: of dividend data" was published about a filer that prints its dividends on the
+    #: face of the cash-flow statement. Stated once rather than per item so the list
+    #: stays what every other consumer expects: field names.
+    known_gaps_meaning: str = (
+        "Every entry in known_gaps is something INVESTINGBUDDY HAS NOT YET ACQUIRED — a "
+        "platform evidence gap. None of them is a statement about the company: most of "
+        "this information exists and was simply not retrieved. Never report one as "
+        "something the company lacks or does not disclose."
+    )
     do_not_infer: list[str] = Field(default_factory=list)
     # Phase 29B.2: set by the deterministic evidence budgeter when it compresses
     # the pack (de-dup + tier-preferring truncation) so the omission is honest,
@@ -253,6 +264,10 @@ class AgentRiskGap(BaseModel):
     item: str
     citation_ids: list[str] = Field(default_factory=list)
     severity: str = "low"  # low | medium | high
+    #: V3.18.1 — ``business_risk`` | ``platform_evidence_gap``. Set by the citation
+    #: checker, never by the model: "we did not acquire X" and "the company lacks X" are
+    #: different statements, and only the platform knows which one an uncited absence is.
+    kind: str = "business_risk"
 
 
 class AgentImplication(BaseModel):

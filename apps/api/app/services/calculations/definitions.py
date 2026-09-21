@@ -69,6 +69,31 @@ CURRENCY_NOT_APPLICABLE = "not_applicable"
 CURRENCY_RULES: frozenset[str] = frozenset({CURRENCY_SAME, CURRENCY_NOT_APPLICABLE})
 
 
+# ── What a value MEANS ───────────────────────────────────────────────────── #
+#
+# V3.18.1. A definition used to say how a metric is computed and nothing about how it
+# is read, so reading it was left to whoever saw the number. A live report divided net
+# income by operating cash flow — a ratio this platform computes nowhere — watched it
+# fall from 113% to 88%, and called that "weakening cash conversion". On the
+# conventional definition (operating cash flow / net income) the same two periods show
+# conversion IMPROVING. The arithmetic was right and the sentence was backwards,
+# because the direction of "good" was never written down.
+#
+# So it is written down, per metric, and it travels with every value.
+
+#: A higher value is the favourable reading.
+HIGHER_IS_BETTER = "higher_is_better"
+#: A lower value is the favourable reading.
+LOWER_IS_BETTER = "lower_is_better"
+#: Neither direction is favourable in general; the interpretation rule says what the
+#: value indicates and a reader must not attach "improving"/"deteriorating" to it.
+CONTEXTUAL = "contextual"
+
+DIRECTIONALITIES: frozenset[str] = frozenset(
+    {HIGHER_IS_BETTER, LOWER_IS_BETTER, CONTEXTUAL}
+)
+
+
 @dataclass(frozen=True)
 class InputSpec:
     """One named input a definition requires."""
@@ -102,6 +127,32 @@ class CalculationDefinition:
     positive_roles: tuple[str, ...] = ()
     notes: str = ""
     tags: tuple[str, ...] = field(default_factory=tuple)
+    #: Input role on top of the ratio, and the one beneath it. ``None`` for a metric
+    #: that is not a quotient (a difference, a growth rate).
+    numerator: str | None = None
+    denominator: str | None = None
+    #: Which way is favourable. REQUIRED — see the block above ``InputSpec``.
+    directionality: str = ""
+    #: How the value is to be read, in one or two sentences a model is handed verbatim.
+    #: REQUIRED. "No model may invent the meaning of a ratio after seeing it."
+    interpretation: str = ""
+
+    def __post_init__(self) -> None:
+        if self.directionality not in DIRECTIONALITIES:
+            raise ValueError(
+                f"{self.key}: directionality must be one of {sorted(DIRECTIONALITIES)}. "
+                "A metric whose favourable direction is not declared will have one "
+                "invented for it by whoever reads the number."
+            )
+        if len(self.interpretation.strip()) < 20:
+            raise ValueError(
+                f"{self.key}: an interpretation rule is required. It is the sentence a "
+                "model receives with the value, in place of its own guess."
+            )
+        roles = {spec.role for spec in self.inputs}
+        for name, role in (("numerator", self.numerator), ("denominator", self.denominator)):
+            if role is not None and role not in roles:
+                raise ValueError(f"{self.key}: {name} {role!r} is not one of its input roles.")
 
     @property
     def input_roles(self) -> tuple[str, ...]:
@@ -130,6 +181,25 @@ class CalculationDefinition:
             "positive_roles": list(self.positive_roles),
             "notes": self.notes,
             "tags": list(self.tags),
+            "numerator": self.numerator,
+            "denominator": self.denominator,
+            "directionality": self.directionality,
+            "interpretation": self.interpretation,
+        }
+
+    def semantics(self) -> dict[str, object]:
+        """What a reader — human or model — must be told alongside a value."""
+        return {
+            "metric_id": self.key,
+            "label": self.label,
+            "definition": self.formula,
+            "numerator": self.numerator,
+            "denominator": self.denominator,
+            "unit": self.result_unit,
+            "period_rule": self.period_rule,
+            "scope_rule": self.scope_rule,
+            "directionality": self.directionality,
+            "interpretation": self.interpretation,
         }
 
 
@@ -199,6 +269,14 @@ GROSS_MARGIN = CalculationDefinition(
     compute=lambda i: _percent(i, "gross_profit", "revenue"),
     non_zero_roles=("revenue",),
     tags=("margin",),
+    numerator="gross_profit",
+    denominator="revenue",
+    directionality=HIGHER_IS_BETTER,
+    interpretation=(
+        "Share of revenue left after cost of sales. Higher means more revenue is "
+        "retained before operating costs; compare only with the same issuer's other "
+        "periods or with peers that define cost of sales the same way."
+    ),
 )
 
 OPERATING_MARGIN = CalculationDefinition(
@@ -214,6 +292,14 @@ OPERATING_MARGIN = CalculationDefinition(
     compute=lambda i: _percent(i, "operating_profit", "revenue"),
     non_zero_roles=("revenue",),
     tags=("margin",),
+    numerator="operating_profit",
+    denominator="revenue",
+    directionality=HIGHER_IS_BETTER,
+    interpretation=(
+        "Share of revenue left after operating costs. Higher is more profitable per "
+        "unit of revenue; for a commodity producer it moves with the realised price, so "
+        "a change is not by itself evidence of cost control."
+    ),
 )
 
 NET_MARGIN = CalculationDefinition(
@@ -229,6 +315,13 @@ NET_MARGIN = CalculationDefinition(
     compute=lambda i: _percent(i, "net_income", "revenue"),
     non_zero_roles=("revenue",),
     tags=("margin",),
+    numerator="net_income",
+    denominator="revenue",
+    directionality=HIGHER_IS_BETTER,
+    interpretation=(
+        "Share of revenue left as net income. Higher is more profitable; it includes "
+        "tax, interest and one-off items, so a change may not reflect operations."
+    ),
 )
 
 NET_DEBT = CalculationDefinition(
@@ -246,6 +339,11 @@ NET_DEBT = CalculationDefinition(
         "A negative result is a net cash position and is a real answer, not an error."
     ),
     tags=("leverage",),
+    directionality=LOWER_IS_BETTER,
+    interpretation=(
+        "Debt not covered by cash. Lower means less financial obligation; a negative "
+        "value is a net cash position, which is a real answer and not an error."
+    ),
 )
 
 LEVERAGE = CalculationDefinition(
@@ -265,12 +363,19 @@ LEVERAGE = CalculationDefinition(
         "refused net_debt cannot silently produce a leverage ratio."
     ),
     tags=("leverage",),
+    numerator="net_debt",
+    denominator="ebitda",
+    directionality=LOWER_IS_BETTER,
+    interpretation=(
+        "Years of EBITDA needed to repay net debt. Lower means less leverage; a "
+        "negative value means net cash."
+    ),
 )
 
 FCF_CONVERSION = CalculationDefinition(
     key="fcf_conversion",
     label="Free cash flow conversion",
-    version=1,
+    version=2,
     formula="free_cash_flow / net_income * 100",
     inputs=(
         InputSpec("free_cash_flow", ("free_cash_flow",), MONEY),
@@ -279,7 +384,19 @@ FCF_CONVERSION = CalculationDefinition(
     result_unit=UNIT_PERCENT,
     compute=lambda i: _percent(i, "free_cash_flow", "net_income"),
     non_zero_roles=("net_income",),
+    # V2 of this definition. Over a LOSS the quotient has no conversion reading: a
+    # negative free cash flow over a negative net income prints as a healthy positive
+    # percentage under "higher is better".
+    positive_roles=("net_income",),
     tags=("cash",),
+    numerator="free_cash_flow",
+    denominator="net_income",
+    directionality=HIGHER_IS_BETTER,
+    interpretation=(
+        "Free cash flow generated per unit of accounting profit. Higher means more of "
+        "reported profit arrives as cash after capital spending; a FALL means "
+        "conversion weakened, a RISE means it strengthened."
+    ),
 )
 
 CAPEX_INTENSITY = CalculationDefinition(
@@ -295,12 +412,20 @@ CAPEX_INTENSITY = CalculationDefinition(
     compute=lambda i: _percent(i, "capital_expenditure", "revenue"),
     non_zero_roles=("revenue",),
     tags=("capital",),
+    numerator="capital_expenditure",
+    denominator="revenue",
+    directionality=CONTEXTUAL,
+    interpretation=(
+        "Capital spending per unit of revenue. It measures capital intensity, not "
+        "quality: a rise may be growth investment or rising maintenance cost, and the "
+        "figure alone does not say which."
+    ),
 )
 
 ROE = CalculationDefinition(
     key="return_on_equity",
     label="Return on equity",
-    version=1,
+    version=2,
     formula="net_income / shareholders_equity * 100",
     inputs=(
         InputSpec("net_income", ("net_income",), MONEY),
@@ -309,7 +434,17 @@ ROE = CalculationDefinition(
     result_unit=UNIT_PERCENT,
     compute=lambda i: _percent(i, "net_income", "shareholders_equity"),
     non_zero_roles=("shareholders_equity",),
+    # V2. Over NEGATIVE equity a loss prints as a positive return.
+    positive_roles=("shareholders_equity",),
     tags=("returns",),
+    numerator="net_income",
+    denominator="shareholders_equity",
+    directionality=HIGHER_IS_BETTER,
+    interpretation=(
+        "Net income per unit of book equity. Higher is a better return on equity "
+        "capital, but it rises mechanically with leverage and with buybacks or "
+        "dividends that shrink equity."
+    ),
 )
 
 REVENUE_CAGR = CalculationDefinition(
@@ -330,6 +465,11 @@ REVENUE_CAGR = CalculationDefinition(
         "complex number or a division by zero — so it is refused rather than clamped."
     ),
     tags=("growth",),
+    directionality=HIGHER_IS_BETTER,
+    interpretation=(
+        "Compound annual revenue growth between two periods of one type. Higher is "
+        "faster growth; for a commodity producer it reflects price as well as volume."
+    ),
 )
 
 SEGMENT_MIX = CalculationDefinition(
@@ -350,6 +490,112 @@ SEGMENT_MIX = CalculationDefinition(
         "scope mismatch outright instead of having a general escape."
     ),
     tags=("segment",),
+    numerator="segment_revenue",
+    denominator="group_revenue",
+    directionality=CONTEXTUAL,
+    interpretation=(
+        "A segment's share of Group revenue. It describes exposure and concentration; "
+        "neither a higher nor a lower share is favourable in itself."
+    ),
+)
+
+CASH_CONVERSION = CalculationDefinition(
+    key="cash_conversion",
+    label="Cash conversion (operating cash flow / net income)",
+    version=1,
+    formula="operating_cash_flow / net_income * 100",
+    inputs=(
+        InputSpec("operating_cash_flow", ("operating_cash_flow",), MONEY),
+        InputSpec("net_income", ("net_income",), MONEY),
+    ),
+    result_unit=UNIT_PERCENT,
+    compute=lambda i: _percent(i, "operating_cash_flow", "net_income"),
+    non_zero_roles=("net_income",),
+    positive_roles=("net_income",),
+    numerator="operating_cash_flow",
+    denominator="net_income",
+    directionality=HIGHER_IS_BETTER,
+    interpretation=(
+        "Operating cash generated per unit of net income. Above 100% means cash flow "
+        "exceeded accounting profit. A RISE is stronger conversion and a FALL is weaker. "
+        "The inverse ratio (net income / operating cash flow) moves the OPPOSITE way and "
+        "must never be described as cash conversion."
+    ),
+    notes=(
+        "Refused when net income is not positive: a ratio over a loss has no "
+        "conversion reading, and printing one invites exactly the inverted sentence "
+        "this definition exists to prevent."
+    ),
+    tags=("cash",),
+)
+
+CAPEX_TO_OCF = CalculationDefinition(
+    key="capex_to_ocf",
+    label="Capital expenditure / operating cash flow",
+    version=1,
+    formula="capital_expenditure / operating_cash_flow * 100",
+    inputs=(
+        InputSpec("capital_expenditure", ("capital_expenditure", "capex"), MONEY),
+        InputSpec("operating_cash_flow", ("operating_cash_flow",), MONEY),
+    ),
+    result_unit=UNIT_PERCENT,
+    compute=lambda i: _percent(i, "capital_expenditure", "operating_cash_flow"),
+    non_zero_roles=("operating_cash_flow",),
+    positive_roles=("operating_cash_flow",),
+    numerator="capital_expenditure",
+    denominator="operating_cash_flow",
+    directionality=LOWER_IS_BETTER,
+    interpretation=(
+        "Share of operating cash flow absorbed by capital spending. Lower leaves more "
+        "cash for debt service and distributions; above 100% means capital spending "
+        "was not funded from operations in the period."
+    ),
+    tags=("cash", "capital"),
+)
+
+FCF_MARGIN = CalculationDefinition(
+    key="fcf_margin",
+    label="Free cash flow margin",
+    version=1,
+    formula="free_cash_flow / revenue * 100",
+    inputs=(
+        InputSpec("free_cash_flow", ("free_cash_flow",), MONEY),
+        InputSpec("revenue", ("revenue",), MONEY),
+    ),
+    result_unit=UNIT_PERCENT,
+    compute=lambda i: _percent(i, "free_cash_flow", "revenue"),
+    non_zero_roles=("revenue",),
+    numerator="free_cash_flow",
+    denominator="revenue",
+    directionality=HIGHER_IS_BETTER,
+    interpretation=(
+        "Free cash flow per unit of revenue. Higher means more revenue arrives as cash "
+        "after capital spending."
+    ),
+    tags=("cash", "margin"),
+)
+
+DIVIDEND_COVER = CalculationDefinition(
+    key="dividend_cover_by_fcf",
+    label="Dividend cover by free cash flow",
+    version=1,
+    formula="free_cash_flow / dividends_paid",
+    inputs=(
+        InputSpec("free_cash_flow", ("free_cash_flow",), MONEY),
+        InputSpec("dividends_paid", ("dividends_paid",), MONEY),
+    ),
+    result_unit=UNIT_RATIO,
+    compute=lambda i: _ratio(i, "free_cash_flow", "dividends_paid"),
+    non_zero_roles=("dividends_paid",),
+    positive_roles=("dividends_paid",),
+    numerator="free_cash_flow",
+    denominator="dividends_paid",
+    directionality=HIGHER_IS_BETTER,
+    interpretation=(
+        "Times the cash dividend was covered by free cash flow. Below 1.0x means the "
+        "dividend exceeded free cash flow and was funded from cash or borrowing."
+    ),
+    tags=("cash", "capital"),
 )
 
 
@@ -366,6 +612,10 @@ DEFINITIONS: dict[str, CalculationDefinition] = {
         ROE,
         REVENUE_CAGR,
         SEGMENT_MIX,
+        CASH_CONVERSION,
+        CAPEX_TO_OCF,
+        FCF_MARGIN,
+        DIVIDEND_COVER,
     )
 }
 
@@ -382,6 +632,10 @@ def definition_for(key: str | None) -> CalculationDefinition:
 
 
 __all__ = [
+    "CONTEXTUAL",
+    "DIRECTIONALITIES",
+    "HIGHER_IS_BETTER",
+    "LOWER_IS_BETTER",
     "CURRENCY_NOT_APPLICABLE",
     "CURRENCY_RULES",
     "CURRENCY_SAME",

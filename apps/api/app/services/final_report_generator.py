@@ -136,6 +136,7 @@ from app.services.sources.redaction import (
 )
 from app.services.sources.registry import build_registry, registry_gap_messages
 from app.services.sources.translation import MACHINE_TRANSLATION_WARNING
+from app.services.statement_consistency import same_reporting_period
 
 logger = logging.getLogger(__name__)
 
@@ -1917,8 +1918,38 @@ def _build_financial_snapshot(
                 fy = fs.get("fiscal_year")
                 _sec_period = f"{basis} FY{fy}" if fy else basis
 
+            # V3.18.1 — the slot is checked against the figure's OWN period end, and
+            # FAILS CLOSED. The normalizer withholds a figure that is not for the
+            # reporting period; this is the second lock, because this function is where
+            # one headline label used to be stamped on every slot whatever the figure
+            # was actually for — which is how a FY2019 gross profit was published as
+            # "annual FY2025", `sourced_fact`, T2. A snapshot written before the map
+            # existed carries none, and is rendered as before.
+            _own_ends = fs.get("field_period_ends") or {}
+            _reporting_end = fs.get("reporting_period_end")
+
             def _sec_dp(key: str, unit: str | None = None) -> dict:
                 val = fs.get(key)
+                own_end = _own_ends.get(key)
+                if (
+                    val is not None
+                    and own_end
+                    and _reporting_end
+                    and not same_reporting_period(own_end, _reporting_end)
+                ):
+                    return {
+                        "value": None,
+                        "unit": unit,
+                        "provenance": "missing_data",
+                        "source_tier": _sec_tier,
+                        "source": "sec_edgar_xbrl",
+                        "period": _sec_period,
+                        "withheld_reason": (
+                            f"The filer's latest value is for the period ending {own_end}, "
+                            f"not {_reporting_end}; it is not reported for this period."
+                        ),
+                        "human_review_required": True,
+                    }
                 return {
                     "value": val,
                     "unit": unit,
@@ -1926,6 +1957,7 @@ def _build_financial_snapshot(
                     "source_tier": _sec_tier,
                     "source": "sec_edgar_xbrl",
                     "period": _sec_period,
+                    "period_end": own_end,
                     "form_type": fs.get("form_type") or canonical.form_type,
                     "human_review_required": val is None,
                 }
@@ -1938,6 +1970,7 @@ def _build_financial_snapshot(
                 ("operating_cash_flow_usd_m", "USD_m"),
                 ("capital_expenditures_usd_m", "USD_m"),
                 ("free_cash_flow_usd_m", "USD_m"),
+                ("dividends_paid_usd_m", "USD_m"),
                 ("total_assets_usd_m", "USD_m"),
                 ("total_liabilities_usd_m", "USD_m"),
                 ("shareholders_equity_usd_m", "USD_m"),
@@ -1948,6 +1981,45 @@ def _build_financial_snapshot(
             ):
                 if fs.get(_key) is not None:
                     section[_key] = _sec_dp(_key, _unit)
+
+            # V3.18.1 — a figure refused for not being for this period is reported AS
+            # THAT. Without this the slot simply vanishes, and a reader (or a model)
+            # cannot tell "the filer reports no such line for this period" from "this
+            # platform never looked" — two statements that need opposite responses.
+            _withheld = [w for w in (fs.get("withheld_fields") or []) if isinstance(w, dict)]
+            if _withheld:
+                section["not_reported_for_period"] = {
+                    "reporting_period_end": _reporting_end,
+                    "items": [
+                        {
+                            "field": w.get("field"),
+                            "latest_period_the_filer_tagged": w.get("end"),
+                            "concept": w.get("concept"),
+                            "reason": w.get("reason"),
+                        }
+                        for w in _withheld
+                    ],
+                    "note": (
+                        "The filer's structured data carries these lines only for another "
+                        "period. They are missing for this period and no older value was "
+                        "carried into it."
+                    ),
+                    "provenance": "sourced_fact",
+                    "knowledge_state": "not_reported_in_structured_data_for_period",
+                }
+            _consistency = fs.get("statement_consistency") or {}
+            if _consistency.get("inconsistencies"):
+                section["statement_consistency"] = {
+                    **_consistency,
+                    "note": (
+                        "These statement lines do not stand in the relationship one "
+                        "scope and period's accounts usually require. They are shown as "
+                        "sourced and are NOT reconciled. Where the relationship CANNOT "
+                        "hold (a contradiction), ratios built on them were withheld; "
+                        "where it is only implausible, they were kept beside this note."
+                    ),
+                    "human_review_required": True,
+                }
 
         if fundamentals_data:
             highlights = fundamentals_data.get("highlights", {})
