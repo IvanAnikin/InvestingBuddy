@@ -65,7 +65,7 @@ THESIS_DIMENSIONS: tuple[ThesisDimension, ...] = (
     ),
     ThesisDimension(
         "semiconductors", "semiconductor supply chains",
-        (r"semiconductors?", r"\bchips?\b", r"wafers?"),
+        (r"semiconductors?", r"(?<!blue[\s-])\bchips?\b", r"wafers?"),
         "whether its products are inputs to semiconductor manufacturing, and how much",
     ),
     ThesisDimension(
@@ -193,7 +193,12 @@ async def resolve_thesis(
     context.council_rationale = _council_rationale(run, str(candidate.id)) if run else None
     context.dimensions = dimensions_in(context.thesis_text)
     market_cap_mln = getattr(candidate, "market_cap_mln", None)
-    if market_cap_mln is not None:
+    from app.services.exchange_registry import is_sec_eligible
+
+    # `market_cap_mln` is close x shares in the LISTING's currency. Only a US listing's
+    # figure is in dollars; any other is not compared with USD bands — no FX conversion
+    # is made, so an A$2.5bn company is not called "too large for small-cap".
+    if market_cap_mln is not None and is_sec_eligible(getattr(candidate, "exchange", None)):
         context.market_cap_usd = float(market_cap_mln) * 1e6
         created = getattr(candidate, "created_at", None)
         context.market_cap_as_of = created.date().isoformat() if created else None
@@ -259,7 +264,10 @@ def size_fit(context: ThesisContext, market_cap_usd: float | None) -> dict[str, 
             "requested": wanted,
             "market_cap_usd": None,
             "fits": None,
-            "note": "Market capitalisation is not available, so size fit is unknown.",
+            "note": (
+                "A market capitalisation in US dollars is not available (a non-US "
+                "listing's value is not converted), so size fit is unknown."
+            ),
         }
     fits = any(
         (low is None or market_cap_usd >= low) and (high is None or market_cap_usd < high)

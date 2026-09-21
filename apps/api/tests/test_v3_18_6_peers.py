@@ -88,7 +88,7 @@ class TestPeerFinancials:
             for row in rows:
                 row["val"] = row["val"] // 2
 
-        async def facts_for(ticker):  # noqa: ANN001, ANN202
+        async def facts_for(ticker, exchange, provider):  # noqa: ANN001, ANN202
             if ticker == "NOPE":
                 return None, "not a resolvable SEC registrant (ValueError)"
             return (subject_facts if ticker == "SCCO" else peer_facts), None
@@ -109,7 +109,7 @@ class TestPeerFinancials:
 
     async def test_a_peer_withheld_line_is_not_compared(self, monkeypatch) -> None:
         """The subject's stale gross profit is withheld; so is any peer's."""
-        async def facts_for(ticker):  # noqa: ANN001, ANN202
+        async def facts_for(ticker, exchange, provider):  # noqa: ANN001, ANN202
             return json.loads(FIXTURE.read_text()), None
 
         monkeypatch.setattr(peers, "_facts_for", facts_for)
@@ -143,7 +143,7 @@ class TestTheChain:
                 calls.append((tool, arguments))
                 if tool == "get_peer_set":
                     return SimpleNamespace(ok=True, contains_untrusted_content=False, payload={
-                        "items": [{"id": "peer:FCX:US", "ticker": "FCX", "exchange": "US"},
+                        "items": [{"id": "peer:FCX:NYSE", "ticker": "FCX", "exchange": "NYSE"},
                                   {"id": "peer:BHP:LSE", "ticker": "BHP", "exchange": "LSE"}]})
                 if tool == "get_peer_financials":
                     return SimpleNamespace(ok=True, contains_untrusted_content=False, payload={
@@ -159,5 +159,72 @@ class TestTheChain:
             "competitive_analyst", role_for("competitive_analyst"), question, 20
         )
         financials = next(args for tool, args in calls if tool == "get_peer_financials")
-        assert financials["tickers"] == ["SCCO", "FCX"], "US peers only, subject included"
+        assert [x["ticker"] for x in financials["listings"]] == ["SCCO", "FCX"], (
+            "SEC-eligible listings only — NYSE is a US venue, LSE is not — subject included"
+        )
         assert any(e.citation_id.startswith("peerfin:FCX") for e in evidence)
+
+    async def test_a_subject_that_does_not_file_with_the_sec_is_not_compared(self) -> None:
+        """Security review (M4): 'MC' on Euronext resolved against SEC's index is
+        Moelis & Co — whose figures would have been shown as the subject's."""
+        from app.services.agents.investigator import LLMInvestigator
+        from app.services.director.base_model import base_question
+        from app.services.director.roles import role_for
+        from app.services.playbooks.schema import planned_from
+
+        calls: list[tuple[str, dict]] = []
+
+        class _Session:
+            async def call(self, tool, arguments, task_ref=""):  # noqa: ANN001, ANN202
+                calls.append((tool, arguments))
+                payload = {"items": [{"ticker": "RMS", "exchange": "PA"},
+                                     {"ticker": "TPR", "exchange": "NYSE"},
+                                     {"ticker": "CPRI", "exchange": "NYSE"}]}
+                return SimpleNamespace(ok=True, contains_untrusted_content=False,
+                                       payload=payload if tool == "get_peer_set" else {})
+
+        worker = LLMInvestigator(session=_Session(), company_id=uuid.uuid4(), ticker="MC",
+                                 exchange="PA", available_tools=None)
+        question = planned_from(base_question("competitive_position"), origin="director")
+        await worker._gather("competitive_analyst", role_for("competitive_analyst"),
+                             question, 20)
+        financials = next(args for tool, args in calls if tool == "get_peer_financials")
+        assert [x["ticker"] for x in financials["listings"]] == ["TPR", "CPRI"]
+
+    async def test_the_tool_refuses_an_ineligible_listing_itself(self) -> None:
+        facts, reason = await peers._facts_for("MC", "PA", provider=None)
+        assert facts is None and "does not cover" in reason
+
+
+class TestPeerNetDebtFollowsTheSubjectsRule:
+    def _normalised(self, **over):  # noqa: ANN003, ANN202
+        base = dict(
+            fiscal_year=2025, period_basis="annual", revenue=1000.0, operating_income=200.0,
+            net_income=120.0, operating_cash_flow=250.0, capital_expenditures=80.0,
+            short_term_debt=100.0, long_term_debt=900.0, total_debt=1000.0,
+            cash_and_equivalents=500.0, withheld_fields={}, consistency={},
+            reporting_period_end="2025-12-31", source_url="https://www.sec.gov/x",
+        )
+        base.update(over)
+        return SimpleNamespace(**base)
+
+    def _metrics(self, monkeypatch, normalised):  # noqa: ANN001, ANN202
+        from app.integrations import sec_fundamentals_normalizer as norm
+
+        monkeypatch.setattr(norm, "normalize_company_facts", lambda facts, ticker: normalised)
+        items, _gaps = peers._peer_metrics("ANY", {})
+        return {i["metric_id"]: i["value"] for i in items}
+
+    def test_both_legs_give_net_debt(self, monkeypatch) -> None:
+        assert self._metrics(monkeypatch, self._normalised())["net_debt"] == 500.0
+
+    def test_a_missing_debt_leg_refuses_net_debt(self, monkeypatch) -> None:
+        """A partial total debt made a leveraged peer look like it held net cash."""
+        partial = self._normalised(long_term_debt=None, total_debt=100.0)
+        assert "net_debt" not in self._metrics(monkeypatch, partial)
+
+    def test_an_inconsistent_statement_withholds_what_it_derives(self, monkeypatch) -> None:
+        inconsistent = self._normalised(
+            consistency={"inconsistencies": [{"withhold_derived": ["operating_margin"]}]}
+        )
+        assert "operating_margin" not in self._metrics(monkeypatch, inconsistent)

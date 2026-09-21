@@ -121,16 +121,31 @@ async def _refresh(context: "ToolContext", commodity: Any) -> tuple[int, list[st
                 )
             )
     for label, start in plans:
-        fetches += 1
+        attempt_key = (label, commodity.slug)
+        last_attempt = _LAST_ATTEMPT.get(attempt_key)
+        if last_attempt is not None and now - last_attempt < RETRY_AFTER:
+            # Tried recently and it produced nothing new — a chapter this parser cannot
+            # read, a publisher that is down, a month not yet published. Re-downloading
+            # it for every question of every run is spend, not diligence.
+            notes.append(f"{label}: not re-fetched (last attempt under {RETRY_AFTER} ago)")
+            continue
+        _LAST_ATTEMPT[attempt_key] = now
         try:
             release = await start()
+            fetches += max(1, int(getattr(release, "fetch_attempts", 1) or 1))
             async with session.begin_nested():
                 written = await sources.store_release(session, release, commodity=commodity)
             if not written:
-                notes.append(f"{label}: nothing stored ({'; '.join(release.skipped[:2])})")
+                notes.append(f"{label}: nothing new stored ({'; '.join(release.skipped[:2])})")
         except Exception as exc:  # noqa: BLE001 - a publisher failure is a gap, not a crash
+            fetches += 1
             notes.append(f"{label}: fetch failed ({type(exc).__name__})")
     return fetches, notes
+
+
+#: Per process: when each (source, commodity) was last fetched. See `_refresh`.
+_LAST_ATTEMPT: dict[tuple[str, str], datetime] = {}
+RETRY_AFTER = timedelta(hours=6)
 
 
 async def _current(session: Any, *, dataset_key: str, commodity: str) -> list[tuple[Any, Any]]:
@@ -159,8 +174,25 @@ def _months_back(period_key: str, months: int) -> str:
     return f"{index // 12:04d}-{index % 12 + 1:02d}"
 
 
+def _is_estimate(obs: Any, tier: str) -> bool:
+    """The survey's convention: its latest year is an ESTIMATE ("2025e").
+
+    The superscript that says so is removed with the other superscripts, so it is
+    re-derived from the edition: a survey reading for the year before its vintage.
+    """
+    from app.services.macro.commodity_sources import USGS_TIER
+
+    vintage = getattr(obs, "vintage_at", None)
+    return (
+        tier == USGS_TIER
+        and vintage is not None
+        and str(obs.period_key) == str(vintage.year - 1)
+    )
+
+
 def _item(series: Any, obs: Any, *, tier: str, commodity: str, **extra: Any) -> dict[str, Any]:
     return {
+        "estimated": _is_estimate(obs, tier),
         "id": _obs_id(obs.id),
         "commodity": commodity,
         "series_key": series.series_key,
@@ -241,6 +273,11 @@ def _survey_items(
             continue
         prefix = f"{commodity}.{measure}."
         entries = {k[len(prefix):]: v for k, v in latest.items() if k.startswith(prefix)}
+        if entries:
+            # One period per ranking: a country whose latest reading is from an older
+            # edition is not ranked beside this year's figures.
+            period = max(v[1].period_key for v in entries.values())
+            entries = {k: v for k, v in entries.items() if v[1].period_key == period}
         world = entries.get("world")
         world_value = float(world[1].value) if world and float(world[1].value) else None
         if world is not None:
@@ -328,7 +365,8 @@ async def _get_industry_series(
             + (f"; gaps: {'; '.join(gaps[:2])}" if gaps else "")
         ),
         "consumption": units_for(INDUSTRY_UNITS, url_fetch_calls=fetches),
-        "contains_untrusted_content": False,
+        # Labels and units are read out of a publisher's PDF: data, never instructions.
+        "contains_untrusted_content": True,
     }
 
 

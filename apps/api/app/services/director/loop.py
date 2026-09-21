@@ -365,7 +365,9 @@ async def run_investigation(
             for draft in outcome.findings:
                 question_def = questions_by_key.get(draft.question_key or "")
                 domain = _domain_of(question_def, role_id)
-                owner = ownership.restated_by(draft.statement, draft.evidence_ids)
+                owner = ownership.restated_by(
+                    draft.statement, draft.evidence_ids, getattr(draft, "direction", None)
+                )
                 if owner is not None:
                     # V3.18.7 — already said, by its owner. Referenced, not repeated.
                     restatements += 1
@@ -423,6 +425,7 @@ async def run_investigation(
                         question_key=draft.question_key,
                         statement=draft.statement,
                         evidence_ids=draft.evidence_ids,
+                        direction=getattr(draft, "direction", None),
                     )
                 except ledger.UnsupportedFindingError:
                     # An investigator that returned a statement with no support has

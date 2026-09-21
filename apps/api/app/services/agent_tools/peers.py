@@ -147,31 +147,67 @@ async def _get_peer_set(context: "ToolContext", arguments: dict[str, Any]) -> di
 
 
 def validate_get_peer_financials(arguments: dict[str, Any]) -> dict[str, Any]:
+    """``listings``: ``[{"ticker", "exchange"}]``. Bare ``tickers`` are read as listings
+    with NO exchange, which the SEC eligibility rule treats as its legacy US default."""
+    listings: list[dict[str, str | None]] = []
+    for raw in arguments.get("listings") or []:
+        if isinstance(raw, dict) and str(raw.get("ticker") or "").strip():
+            listings.append(
+                {
+                    "ticker": str(raw["ticker"]).strip().upper(),
+                    "exchange": (str(raw.get("exchange")).strip().upper()
+                                 if raw.get("exchange") else None),
+                }
+            )
     tickers = arguments.get("tickers") or []
     if isinstance(tickers, str):
         tickers = [tickers]
-    tickers = [str(t).strip().upper() for t in tickers if str(t).strip()][: MAX_PEERS + 1]
-    if not tickers:
-        raise ValueError("tickers is required.")
-    return {"tickers": tickers}
+    listings.extend(
+        {"ticker": str(t).strip().upper(), "exchange": None} for t in tickers if str(t).strip()
+    )
+    if not listings:
+        raise ValueError("listings (or tickers) is required.")
+    return {"listings": listings[: MAX_PEERS + 1]}
 
 
-async def _facts_for(ticker: str) -> tuple[dict | None, str | None]:
-    """companyfacts for one US registrant, or (None, reason). Never raises."""
+#: companyfacts for a large registrant runs to tens of megabytes; beyond this it is
+#: not read.
+MAX_FACTS_BYTES = 40 * 1024 * 1024
+
+
+async def _facts_for(
+    ticker: str, exchange: str | None, provider: Any
+) -> tuple[dict | None, str | None]:
+    """companyfacts for one SEC registrant, or (None, reason). Never raises.
+
+    The listing's EXCHANGE decides eligibility first: a ticker on the ASX or Euronext
+    resolved against SEC's US index is a DIFFERENT company ("MC" is Moelis, not LVMH),
+    and its figures would be shown as the subject's.
+    """
+    import json
+
     import httpx
 
-    from app.integrations.providers.sec_edgar_fundamentals import SecEdgarFundamentalsProvider
+    from app.services.exchange_registry import is_sec_eligible
 
+    if not is_sec_eligible(exchange):
+        return None, f"listed on {exchange}, which SEC's index does not cover"
     try:
-        cik = await SecEdgarFundamentalsProvider().resolve_cik(ticker, "US")
+        cik = await provider.resolve_cik(ticker, exchange)
     except Exception as exc:  # noqa: BLE001
         return None, f"not a resolvable SEC registrant ({type(exc).__name__})"
     try:
         async with httpx.AsyncClient(headers={"User-Agent": _USER_AGENT}, timeout=25.0) as client:
-            response = await client.get(_SEC_FACTS_URL.format(cik=str(cik).zfill(10)))
-            if response.status_code != 200:
-                return None, f"companyfacts returned HTTP {response.status_code}"
-            return response.json(), None
+            url = _SEC_FACTS_URL.format(cik=str(cik).zfill(10))
+            async with client.stream("GET", url) as response:
+                if response.status_code != 200:
+                    return None, f"companyfacts returned HTTP {response.status_code}"
+                body = bytearray()
+                async for chunk in response.aiter_bytes():
+                    body.extend(chunk)
+                    if len(body) > MAX_FACTS_BYTES:
+                        return None, "companyfacts exceeds the size cap; not read"
+            return json.loads(bytes(body)), None
     except Exception as exc:  # noqa: BLE001
         return None, f"companyfacts unreachable ({type(exc).__name__})"
 
@@ -184,17 +220,33 @@ def _peer_metrics(ticker: str, facts: dict) -> tuple[list[dict[str, Any]], list[
     n = normalize_company_facts(facts, ticker)
     if n.fiscal_year is None or n.period_basis != "annual":
         return [], [f"{ticker}: no annual statements could be normalised"]
+    # THE SUBJECT'S RULES, not a looser copy: metrics derived from an inconsistent
+    # statement are withheld, and net debt needs BOTH debt legs reported for the period
+    # — a missing leg makes total debt a partial sum, and a peer would show net cash.
+    withheld = set((n.consistency or {}).get("withheld") or ())
+    for finding in (n.consistency or {}).get("inconsistencies") or []:
+        withheld.update(finding.get("withhold_derived") or ())
+    legs = {"short_term_debt", "long_term_debt"}
+    both_legs = (
+        not (legs & set(n.withheld_fields))
+        and n.short_term_debt is not None
+        and n.long_term_debt is not None
+    )
+    if not both_legs:
+        withheld.add("net_debt")
     values = {
         "revenue": n.revenue,
         "operating_profit": n.operating_income,
         "net_income": n.net_income,
         "operating_cash_flow": n.operating_cash_flow,
         "capital_expenditure": n.capital_expenditures,
-        "total_debt": n.total_debt if "short_term_debt" not in n.withheld_fields else None,
+        "total_debt": n.total_debt if both_legs else None,
         "cash_and_equivalents": n.cash_and_equivalents,
     }
     readings, refusals = compute_statement_metrics(
-        values, period_label=f"FY{n.fiscal_year}", keys=PEER_METRICS
+        values,
+        period_label=f"FY{n.fiscal_year}",
+        keys=[k for k in PEER_METRICS if k not in withheld],
     )
     items: list[dict[str, Any]] = [
         {
@@ -232,11 +284,17 @@ def _peer_metrics(ticker: str, facts: dict) -> tuple[list[dict[str, Any]], list[
 async def _get_peer_financials(
     context: "ToolContext", arguments: dict[str, Any]
 ) -> dict[str, Any]:
+    from app.integrations.providers.sec_edgar_fundamentals import SecEdgarFundamentalsProvider
+
     items: list[dict[str, Any]] = []
     gaps: list[str] = []
     fetches = 0
-    for ticker in arguments["tickers"]:
-        facts, reason = await _facts_for(ticker)
+    # ONE provider for the call: it caches SEC's ticker index, which a fresh provider
+    # per ticker downloaded again every time.
+    provider = SecEdgarFundamentalsProvider()
+    for listing in arguments["listings"]:
+        ticker, exchange = listing["ticker"], listing["exchange"]
+        facts, reason = await _facts_for(ticker, exchange, provider)
         fetches += 1
         if facts is None:
             gaps.append(f"{ticker}: {reason}")

@@ -95,6 +95,8 @@ class ParsedRelease:
     vintage_at: datetime | None = None
     unit_note: str | None = None
     skipped: list[str] = field(default_factory=list)
+    #: HTTP requests this release took (USGS tries two editions), for honest metering.
+    fetch_attempts: int = 1
 
 
 # ── FRED / IMF monthly prices ──────────────────────────────────────────────── #
@@ -167,7 +169,20 @@ _ROW_RE = re.compile(
     rf"^(?P<label>[A-Z][A-Za-z .,()'’/-]*?[a-z)\.])\s+(?P<cells>(?:{_CELL}\s*)+)$"
 )
 _UNIT_RE = re.compile(r"\[Data in ([^\]]+)\]|\(Data in ([^)]+(?:\([^)]*\)[^)]*)*)\)", re.IGNORECASE)
-_YEAR_ROW_RE = re.compile(r"^((?:(?:19|20)\d{2}e?\s*)+)$")
+#: The year row, optionally followed by the unit of the LAST (reserves) column when it
+#: differs from the production columns': "2024 2025 (thousand metric tons)".
+_YEAR_ROW_RE = re.compile(r"^((?:(?:19|20)\d{2}e?\s*)+)(?:\((?P<unit>[^)]+)\))?$")
+#: A price unit, canonically: "dollars per metric ton", "cents per pound", "dollars per
+#: dry metric ton unit". Found by pattern, never by splitting a label on commas — that
+#: stored "London Metal Exchange" and "dollars per metric ton at" as units.
+_PRICE_UNIT_RE = re.compile(
+    r"\b(dollars|cents)\s+per\s+((?:(?:dry|troy|short|long|metric)\s+)*"
+    r"(?:ton\s+unit|ton|tons|ounce|pound|kilogram|gram|flask|carat))\b",
+    re.IGNORECASE,
+)
+#: A table title may name the basis its figures are on — "World Mine Production
+#: (manganese content) and Reserves" — which overrides the chapter header's basis.
+_TABLE_BASIS_RE = re.compile(r"^World Mine Production \(([^)]+)\)", re.IGNORECASE)
 
 
 def pdf_text_without_superscripts(content: bytes) -> str:
@@ -176,7 +191,11 @@ def pdf_text_without_superscripts(content: bytes) -> str:
     import pdfplumber
 
     pages: list[str] = []
-    with pdfplumber.open(io.BytesIO(content)) as pdf:
+    try:
+        pdf = pdfplumber.open(io.BytesIO(content))
+    except Exception:  # noqa: BLE001 - a body that is not a PDF (a 404 page) has no text
+        return ""
+    with pdf:
         for page in pdf.pages[:6]:
             sizes = Counter(round(c["size"], 1) for c in page.chars)
             if not sizes:
@@ -192,8 +211,10 @@ def pdf_text_without_superscripts(content: bytes) -> str:
 
 
 def _cell_value(cell: str) -> float | None:
-    cell = cell.strip().lstrip(">")
-    if cell in {"—", "-", "W", "NA", "XX", ""}:
+    cell = cell.strip()
+    if cell.startswith(">") or cell in {"—", "-", "W", "NA", "XX", ""}:
+        # ">140,000,000" is a LOWER BOUND, not a figure: stored as one it becomes a
+        # denominator, and every share computed against it is overstated.
         return None
     try:
         return float(cell.replace(",", ""))
@@ -216,8 +237,12 @@ def parse_usgs_mcs(
     release = ParsedRelease(dataset=USGS_MCS_DATASET)
     unit_match = _UNIT_RE.search(text)
     unit = (
-        (unit_match.group(1) or unit_match.group(2)).strip() if unit_match else "as published"
+        (unit_match.group(1) or unit_match.group(2)).strip() if unit_match else None
     )
+    if unit is None:
+        release.skipped.append("the chapter states no data unit; nothing stored")
+        return release
+    unit = re.sub(r",?\s*unless otherwise specified\s*$", "", unit).strip()
     release.unit_note = unit
     release.vintage_at = datetime(year, 2, 1, tzinfo=timezone.utc)
 
@@ -228,6 +253,11 @@ def parse_usgs_mcs(
     if start is None:
         release.skipped.append("no 'World Mine … Production and Reserves' table found")
         return release
+    basis = _TABLE_BASIS_RE.match(lines[start])
+    if basis:
+        # The chapter says "thousand metric tons, gross weight"; the TABLE says its
+        # figures are "(manganese content)". The table's basis is the one its cells use.
+        unit = f"{unit.split(',')[0].strip()}, {basis.group(1).strip()}"
 
     header_i = next(
         (
@@ -244,8 +274,17 @@ def parse_usgs_mcs(
     header = lines[header_i].lower()
     year_match = _YEAR_ROW_RE.match(lines[header_i + 1])
     if not year_match:
-        release.skipped.append("table year row not found")
+        release.skipped.append(
+            "table year row not found — the table's layout is not the two-year "
+            "production-and-reserves form this parser reads; nothing stored"
+        )
         return release
+    reserves_unit = (
+        f"{year_match.group('unit').strip()}"
+        + (f", {unit.split(',', 1)[1].strip()}" if "," in unit else "")
+        if year_match.group("unit")
+        else unit
+    )
     years = [(y.rstrip("e"), y.endswith("e")) for y in year_match.group(1).split()]
     blocks: list[str] = []
     if "mine production" in header:
@@ -279,6 +318,12 @@ def parse_usgs_mcs(
             value = _cell_value(cell)
             if cell.strip() in {"W", "NA", "XX"} or period is None:
                 continue  # withheld / not available is not zero, and not a reading
+            if cell.strip().startswith(">"):
+                release.skipped.append(
+                    f"{label} {measure.replace('_', ' ')} {period}: reported as a lower "
+                    f"bound ({cell.strip()}) — not stored as a figure"
+                )
+                continue
             release.observations.append(
                 ParsedObservation(
                     series=SeriesSpec(
@@ -286,7 +331,7 @@ def parse_usgs_mcs(
                         display_name=(
                             f"{commodity.name} {measure.replace('_', ' ')} — {label}"
                         ),
-                        unit=unit[:60],
+                        unit=(reserves_unit if measure == "reserves" else unit)[:60],
                         frequency=FREQ_ANNUAL,
                         geography=None,
                     ),
@@ -307,77 +352,82 @@ _PRICE_LINE_RE = re.compile(
 )
 
 
+def _price_unit(*texts: str) -> str | None:
+    """The canonical price unit in the first text that states one, else ``None``."""
+    joined = " ".join(t for t in texts if t)
+    match = _PRICE_UNIT_RE.search(joined)
+    if not match:
+        return None
+    return f"{match.group(1).lower()} per {' '.join(match.group(2).lower().split())}"
+
+
+def _is_continuation(line: str) -> bool:
+    """A wrapped label line: starts lower-case or with a parenthesis, carries no figure."""
+    return bool(line) and (line[0].islower() or line[0] == "(") and not re.search(
+        r"\d", line
+    )
+
+
 def _usgs_prices(
     lines: list[str], commodity: Commodity, year: int, source_ref: str
 ) -> list[ParsedObservation]:
-    """Price rows in the 'Salient Statistics' block: five values for year-4 … year-1(e)."""
+    """Price rows in the 'Salient Statistics' block: five values for year-5 … year-1(e).
+
+    A price is stored only with a unit found by ``_PRICE_UNIT_RE`` in its own label or
+    the label lines it wraps across. A price whose unit cannot be read is NOT stored:
+    "5.27" in no unit is not a price.
+    """
     out: list[ParsedObservation] = []
+
+    def _emit(label: str, unit: str | None, values: list[str], key: str) -> None:
+        if unit is None or len(values) != 5:
+            return
+        for offset, raw in enumerate(values):
+            out.append(
+                ParsedObservation(
+                    series=SeriesSpec(
+                        series_key=f"{commodity.slug}.price.{_country_key(key)[:40]}",
+                        display_name=f"{commodity.name} price — {label}"[:200],
+                        unit=unit[:60],
+                        frequency=FREQ_ANNUAL,
+                    ),
+                    period_key=str(year - 5 + offset),
+                    value=_cell_value(raw),
+                    source_ref=source_ref,
+                    estimated=offset == 4,
+                )
+            )
+
     for i, line in enumerate(lines):
         if not line.lower().startswith("price"):
             continue
+        following = lines[i + 1 : i + 8]
+        # One-line form, possibly with the unit wrapped onto the next line:
+        # "Price, …, dollars per 225 275 258 252 380" / "dry metric ton unit of …".
+        inline = re.search(rf"((?:{_NUMBER}\s+){{4}}{_NUMBER})$", line)
+        if inline and len(inline.group(1).split()) == 5:
+            label = line[: inline.start()].strip(" :,")
+            wrapped = following[0] if following and _is_continuation(following[0]) else ""
+            wrapped = wrapped or (
+                following[0] if following and _PRICE_UNIT_RE.search(following[0]) and not
+                re.search(rf"{_NUMBER}\s*$", following[0]) else ""
+            )
+            _emit(label, _price_unit(label + " " + wrapped), inline.group(1).split(), label)
+            continue
+        # Multi-line form: "Price, …:" then label lines, then rows of five values.
         context = line
-        for follow in lines[i + 1 : i + 8]:
+        for follow in following:
             if follow.lower().startswith(("employment", "net import", "recycling", "stocks")):
                 break
             match = _PRICE_LINE_RE.match(follow)
             if not match:
+                if _is_continuation(follow) or not re.search(r"\d", follow):
+                    context = f"{context} {follow}"
                 continue
             values = match.group("vals").split()
-            if len(values) != 5:
-                continue
-            label = f"{context.rstrip(':')} — {match.group('label').strip()}"[:200]
-            key = _country_key(match.group("label"))[:40]
-            for offset, raw in enumerate(values):
-                period = str(year - 5 + offset)
-                out.append(
-                    ParsedObservation(
-                        series=SeriesSpec(
-                            series_key=f"{commodity.slug}.price.{key}",
-                            display_name=f"{commodity.name} price — {label}",
-                            unit=context.split(",")[-1].strip(" :")[:60] or "as published",
-                            frequency=FREQ_ANNUAL,
-                        ),
-                        period_key=period,
-                        value=_cell_value(raw),
-                        source_ref=source_ref,
-                        estimated=offset == 4,
-                    )
-                )
-        # One-line form: "Price, …, cents per pound: 432.3 410.8 395.3 431.8 490".
-        inline = re.search(rf"((?:{_NUMBER}\s+){{4}}{_NUMBER})$", line)
-        if inline and len(inline.group(1).split()) == 5:
-            label = line[: inline.start()].strip(" :,")[:200]
-            # The unit may be wrapped onto the next line: "... carbonate, 11,700 …" then
-            # "dollars per metric ton".
-            unit_line = lines[i + 1] if i + 1 < len(lines) else ""
-            wrapped = re.match(r"^((?:dollars|cents) per [a-z ]+?)\d*$", unit_line)
-            price_unit = (
-                wrapped.group(1).strip()
-                if wrapped
-                else next(
-                    (
-                        part.strip()
-                        for part in reversed(label.split(","))
-                        if re.match(r"^(?:dollars|cents) per", part.strip())
-                    ),
-                    "as published",
-                )
-            )
-            for offset, raw in enumerate(inline.group(1).split()):
-                out.append(
-                    ParsedObservation(
-                        series=SeriesSpec(
-                            series_key=f"{commodity.slug}.price.{_country_key(label)[:40]}",
-                            display_name=f"{commodity.name} — {label}",
-                            unit=price_unit[:60],
-                            frequency=FREQ_ANNUAL,
-                        ),
-                        period_key=str(year - 5 + offset),
-                        value=_cell_value(raw),
-                        source_ref=source_ref,
-                        estimated=offset == 4,
-                    )
-                )
+            row_label = match.group("label").strip()
+            unit = _price_unit(row_label) or _price_unit(context)
+            _emit(f"{context.rstrip(':')} — {row_label}"[:200], unit, values, row_label)
     return out
 
 
@@ -420,8 +470,10 @@ async def fetch_usgs_summary(
     fetch = fetcher or safe_fetch_document
     # The current year's edition is published in late January or February; before it
     # exists, the previous edition is the latest.
+    release.fetch_attempts = 0
     for edition in (year, year - 1):
         url = usgs_url(commodity.usgs_slug, edition)
+        release.fetch_attempts += 1
         result = await fetch(url, allowed_domains=(USGS_HOST,), cfg=cfg, resolve_ip=True)
         content = getattr(result, "content", None) if getattr(result, "ok", False) else None
         if content:
@@ -437,6 +489,10 @@ async def store_release(session: Any, release: ParsedRelease, *, commodity: Comm
 
     if release.vintage_at is None or not release.observations:
         return 0
+    from sqlalchemy import select
+
+    from app.models.macro import MacroObservation
+
     dataset = await upsert_dataset(session, release.dataset)
     written = 0
     series_rows: dict[str, Any] = {}
@@ -446,6 +502,19 @@ async def store_release(session: Any, release: ParsedRelease, *, commodity: Comm
             row = await upsert_series(session, dataset, obs.series)
             row.commodity = commodity.slug
             series_rows[obs.series.series_key] = row
+        # IDEMPOTENT per vintage. Fetching the same release again (FRED before its next
+        # month is out; a USGS edition re-read) is not a revision: the unique index on
+        # (series, period, vintage) would refuse it, and the refusal used to surface as a
+        # failed fetch — and a re-download — on every call.
+        exists = await session.scalar(
+            select(MacroObservation.id).where(
+                MacroObservation.series_id == row.id,
+                MacroObservation.period_key == obs.period_key,
+                MacroObservation.vintage_at == release.vintage_at,
+            )
+        )
+        if exists is not None:
+            continue
         await record_observation(
             session,
             row,

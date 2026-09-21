@@ -1385,6 +1385,19 @@ async def run_candidate_analysis(
         )
         if v3_outcome is not None:
             warnings.extend(f"v3: {reason}" for reason in v3_outcome.degraded[:5])
+        # What this run SPENT, V2 and V3 together, on the one per-run record — the
+        # candidate path recorded nothing, so a discovery click's research cost was
+        # invisible to every cost figure. No durable job exists here, so none is named.
+        from app.services.company_research_service import _record_consumption
+
+        await _record_consumption(
+            db,
+            result,
+            company_id=company.id,
+            agent_run_id=result.get("agent_run_id"),
+            outcome=str(result.get("status") or ""),
+            v3_outcome=v3_outcome,
+        )
 
     final_resp = result.get("final_report_response")
     if final_resp is not None:

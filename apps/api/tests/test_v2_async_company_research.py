@@ -772,7 +772,7 @@ async def test_post_for_an_unknown_company_is_404_not_a_started_job(
     assert res.status_code == 404
 
 
-async def _candidate_for(session, ticker: str):  # noqa: ANN001, ANN202
+async def _candidate_for(session, ticker: str, exchange: str = "CO"):  # noqa: ANN001, ANN202
     from app.models.discovery import DiscoveryCandidate, DiscoveryRun
 
     run = DiscoveryRun(id=uuid.uuid4(), status="completed", provider_name="mock",
@@ -780,7 +780,7 @@ async def _candidate_for(session, ticker: str):  # noqa: ANN001, ANN202
     session.add(run)
     await session.flush()
     candidate = DiscoveryCandidate(id=uuid.uuid4(), discovery_run_id=run.id,
-                                   ticker=ticker, exchange="CPH")
+                                   ticker=ticker, exchange=exchange)
     session.add(candidate)
     await session.commit()
     return candidate
@@ -791,12 +791,18 @@ async def test_a_thesis_for_another_company_is_refused(factory, session) -> None
     evidence about another business — a wrong answer that looks like a right one."""
     company = await _pandora(session)
     other = await _candidate_for(session, "NOVO-B")
+    elsewhere = await _candidate_for(session, "PNDORA", exchange="US")
     mine = await _candidate_for(session, "PNDORA")
     client, app = await _client(factory)
     try:
         wrong = await client.post(
             "/api/v1/company-research/jobs",
             json={"company_id": str(company.id), "discovery_candidate_id": str(other.id)},
+        )
+        same_ticker_other_exchange = await client.post(
+            "/api/v1/company-research/jobs",
+            json={"company_id": str(company.id),
+                  "discovery_candidate_id": str(elsewhere.id)},
         )
         missing = await client.post(
             "/api/v1/company-research/jobs",
@@ -816,6 +822,7 @@ async def test_a_thesis_for_another_company_is_refused(factory, session) -> None
         await client.aclose()
         app.dependency_overrides.clear()
     assert wrong.status_code == 422
+    assert same_ticker_other_exchange.status_code == 422, "a ticker is not an identity"
     assert missing.status_code == 404
     assert bad_mode.status_code == 422, "only bounded public modes are accepted"
     assert right.status_code == 202

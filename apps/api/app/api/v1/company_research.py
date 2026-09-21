@@ -110,7 +110,12 @@ async def _require_candidate_for(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Discovery candidate not found.",
         )
-    same = str(candidate.ticker).upper() == str(getattr(company, "ticker", "")).upper()
+    from app.services.exchange_registry import normalize_exchange
+
+    same = str(candidate.ticker).upper() == str(getattr(company, "ticker", "")).upper() and (
+        normalize_exchange(candidate.exchange)
+        == normalize_exchange(getattr(company, "exchange", None))
+    )
     if not same:
         raise HTTPException(
             status_code=422,

@@ -160,3 +160,45 @@ class TestTheLoopWritesItOnce:
             select(ResearchFinding).where(ResearchFinding.research_run_id == run.id)
         )).scalars().all()
         assert len(findings) == len(plan.tasks), "this is the SCCO baseline's shape"
+
+
+class TestOppositesAreNotRestatements:
+    """Review of 18.4–18.8: both were swallowed as restatements."""
+
+    def test_a_rise_not_reflected_is_not_the_rise(self) -> None:
+        from app.services.director.ownership import OwnershipIndex
+
+        index = OwnershipIndex()
+        index.add("f1", domain="industry_economics", question_key="q1",
+                  statement="The copper benchmark rose 12.3% over twelve months.",
+                  evidence_ids=["mo:1", "mo:2"])
+        assert index.restated_by(
+            "A 12.3% rise in the benchmark is not reflected in realised prices, which fell.",
+            ["mo:2"],
+        ) is None
+
+    def test_has_not_secured_is_not_has_secured(self) -> None:
+        from app.services.director.ownership import OwnershipIndex
+
+        index = OwnershipIndex()
+        index.add("f1", domain="business_model", question_key="q1",
+                  statement="The company has secured offtake agreements for its cathode.",
+                  evidence_ids=["ev:1"])
+        assert index.restated_by(
+            "The company has not secured offtake agreements for its cathode.", ["ev:1"]
+        ) is None
+        assert index.restated_by(
+            "The company has secured offtake agreements for its cathode output.", ["ev:1"]
+        ) is not None, "the same claim is still a restatement"
+
+    def test_opposite_directions_are_different_findings(self) -> None:
+        from app.services.director.ownership import OwnershipIndex
+
+        index = OwnershipIndex()
+        index.add("f1", domain="risks", question_key="q1",
+                  statement="Operating margin was 52.2% in FY2025.", evidence_ids=["ev:1"],
+                  direction="positive")
+        assert index.restated_by("Operating margin was 52.2% in FY2025.", ["ev:1"],
+                                 direction="negative") is None
+        assert index.restated_by("Operating margin was 52.2% in FY2025.", ["ev:1"],
+                                 direction="positive") is not None

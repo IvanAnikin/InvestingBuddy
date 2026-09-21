@@ -63,6 +63,58 @@ def _value(release: sources.ParsedRelease, key: str, period: str) -> float | Non
     )
 
 
+class TestTheSecondReviewOfTheSurvey:
+    """Run against the real MCS 2026 chapters; each case was a wrong stored value."""
+
+    def test_a_price_unit_is_a_unit_or_the_price_is_not_stored(self) -> None:
+        units = {
+            slug: {o.series.unit for o in _usgs(f"usgs_mcs2026_{slug}.pdf", slug).observations
+                   if ".price." in o.series.series_key}
+            for slug in ("nickel", "manganese", "tungsten")
+        }
+        assert units["nickel"] <= {"dollars per metric ton", "dollars per pound"}, (
+            "'London Metal Exchange' was stored as a unit"
+        )
+        assert units["manganese"] == {"dollars per metric ton unit"}
+        assert units["tungsten"] == {"dollars per dry metric ton unit"}, (
+            "'dollars per' was stored: the unit wraps onto the next line"
+        )
+
+    def test_a_lower_bound_is_not_a_figure(self) -> None:
+        nickel = _usgs("usgs_mcs2026_nickel.pdf", "nickel")
+        keys = {(o.series.series_key, o.period_key) for o in nickel.observations}
+        assert ("nickel.reserves.world", "2026") not in keys, (
+            ">140,000,000 is a lower bound; stored as a value it overstates every share"
+        )
+        assert any("lower bound" in s for s in nickel.skipped)
+
+    def test_the_tables_own_basis_overrides_the_chapters(self) -> None:
+        manganese = _usgs("usgs_mcs2026_manganese.pdf", "manganese")
+        production = {o.series.unit for o in manganese.observations
+                      if ".mine_production." in o.series.series_key}
+        assert production == {"thousand metric tons, manganese content"}
+
+    def test_a_reserves_column_unit_on_the_year_row_is_honoured(self) -> None:
+        """Molybdenum: production in metric tons, reserves in THOUSAND metric tons."""
+        text = (
+            "MOLYBDENUM\n[Data in metric tons, molybdenum content, unless otherwise "
+            "specified]\nWorld Mine Production and Reserves: revisions noted.\n"
+            "Mine production Reserves\n2024 2025 (thousand metric tons)\n"
+            "United States 34,000 40,000 3,500\nChile 38,000 39,000 1,400\n"
+            "World total (rounded) 263,000 260,000 15,000\nWorld Resources: large.\n"
+        )
+        release = sources.parse_usgs_mcs(text, commodity=BY_SLUG["molybdenum"], year=2026,
+                                         source_ref="u")
+        units = {o.series.series_key.split(".")[1]: o.series.unit
+                 for o in release.observations}
+        assert units["mine_production"] == "metric tons, molybdenum content"
+        assert units["reserves"] == "thousand metric tons, molybdenum content"
+        assert _value(release, "molybdenum.reserves.united_states", "2026") == 3500.0
+
+    def test_a_page_that_is_not_a_pdf_has_no_text(self) -> None:
+        assert sources.pdf_text_without_superscripts(b"<!DOCTYPE html><html>404</html>") == ""
+
+
 class TestTheSurveyIsReadExactly:
     def test_copper_world_and_country_figures(self) -> None:
         r = _usgs("usgs_mcs2026_copper.pdf", "copper")
@@ -202,6 +254,13 @@ class TestTheMiningPlaybook:
         assert owner["peer_comparison"] == "competitive_analyst"
 
 
+@pytest.fixture(autouse=True)
+def _fresh_attempt_memo():  # noqa: ANN202
+    industry._LAST_ATTEMPT.clear()
+    yield
+    industry._LAST_ATTEMPT.clear()
+
+
 @pytest.fixture
 async def session():  # noqa: ANN201
     engine = create_async_engine(
@@ -277,7 +336,27 @@ class TestTheTool:
             context, industry.validate_get_industry_series({"commodity": "copper"})
         )
         assert payload["items"] == []
-        assert any("nothing stored" in g for g in payload["gaps"])
+        assert any("nothing new stored" in g for g in payload["gaps"])
+
+    async def test_a_recent_attempt_is_not_repeated(self, session, monkeypatch) -> None:
+        """Review of 18.4: a chapter the parser cannot read was downloaded and parsed
+        again for every call of every run."""
+        calls = []
+
+        async def empty(*_a, **_kw):  # noqa: ANN002, ANN003, ANN202
+            calls.append(1)
+            return sources.ParsedRelease(dataset=sources.USGS_MCS_DATASET,
+                                         skipped=["table year row not found"])
+
+        monkeypatch.setattr(sources, "fetch_fred_prices", empty)
+        monkeypatch.setattr(sources, "fetch_usgs_summary", empty)
+        context = SimpleNamespace(session=session, cfg=_CFG, company_id=uuid.uuid4())
+        for _ in range(3):
+            payload = await industry._get_industry_series(
+                context, industry.validate_get_industry_series({"commodity": "molybdenum"})
+            )
+        assert len(calls) == 1, "one survey attempt (molybdenum has no monthly series), not three"
+        assert any("not re-fetched" in g for g in payload["gaps"])
 
     def test_it_is_registered_only_when_enabled(self) -> None:
         from app.services.agent_tools.builtin import register_builtins

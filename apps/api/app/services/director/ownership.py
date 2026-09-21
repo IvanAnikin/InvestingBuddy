@@ -57,6 +57,35 @@ def figures_in(statement: str | None) -> frozenset[str]:
     return frozenset(out)
 
 
+_NEGATION_RE = re.compile(
+    r"\b(?:not|no|never|without|neither|nor|cannot|none)\b|n['’]t\b|\b(?:yet|failed|unable)\s+to\b",
+    re.IGNORECASE,
+)
+_UP_WORDS = frozenset(
+    "rose rise rises rising increase increased increases grew grow grows growth higher "
+    "up gained gains improved improvement expanded expansion".split()
+)
+_DOWN_WORDS = frozenset(
+    "fell fall falls falling decrease decreased decreases declined decline declines lower "
+    "down dropped drop drops worsened contraction contracted shrank".split()
+)
+
+
+def polarity(statement: str) -> tuple[bool, frozenset[str]]:
+    """``(negated, trends)``: whether the statement negates, and which ways it moves.
+
+    Two statements with the same figures and evidence are NOT the same claim when one
+    says a figure rose and the other that it fell, or one asserts what the other denies
+    — "a 12.3% rise … is not reflected in realised prices, which fell" is the opposite
+    of "the benchmark rose 12.3%".
+    """
+    words = set(re.findall(r"[a-z]+", statement.lower()))
+    trends = frozenset(
+        ({"up"} if words & _UP_WORDS else set()) | ({"down"} if words & _DOWN_WORDS else set())
+    )
+    return bool(_NEGATION_RE.search(statement)), trends
+
+
 @dataclass(frozen=True)
 class OwnedFinding:
     finding_id: str
@@ -66,6 +95,9 @@ class OwnedFinding:
     evidence_ids: frozenset[str]
     figures: frozenset[str]
     terms: frozenset[str]
+    direction: str | None = None
+    negated: bool = False
+    trends: frozenset[str] = frozenset()
 
 
 @dataclass
@@ -82,7 +114,9 @@ class OwnershipIndex:
         question_key: str | None,
         statement: str,
         evidence_ids: Iterable[str],
+        direction: str | None = None,
     ) -> OwnedFinding:
+        negated, trends = polarity(statement)
         owned = OwnedFinding(
             finding_id=str(finding_id),
             domain=domain,
@@ -91,19 +125,32 @@ class OwnershipIndex:
             evidence_ids=frozenset(str(e) for e in evidence_ids),
             figures=figures_in(statement),
             terms=frozenset(claim_terms(statement)),
+            direction=direction,
+            negated=negated,
+            trends=trends,
         )
         self.findings.append(owned)
         return owned
 
     def restated_by(
-        self, statement: str, evidence_ids: Iterable[str]
+        self, statement: str, evidence_ids: Iterable[str], direction: str | None = None
     ) -> OwnedFinding | None:
-        """The existing finding a new statement restates, or ``None``."""
+        """The existing finding a new statement restates, or ``None``.
+
+        Never across a difference in DIRECTION, NEGATION or TREND: sharing evidence and
+        figures with a finding while saying the opposite is a new finding — often the
+        more important one.
+        """
         evidence = frozenset(str(e) for e in evidence_ids)
         figures = figures_in(statement)
         terms = frozenset(claim_terms(statement))
+        negated, trends = polarity(statement)
         for existing in self.findings:
             if not (evidence & existing.evidence_ids):
+                continue
+            if direction and existing.direction and direction != existing.direction:
+                continue
+            if negated != existing.negated or trends != existing.trends:
                 continue
             if figures:
                 if figures <= existing.figures:

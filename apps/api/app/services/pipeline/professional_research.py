@@ -362,7 +362,7 @@ def assemble(inputs: ReportInputs) -> dict[str, Any]:
         f["label"] for f in by_section["risks_and_counter_thesis"]
         if f["domain"] in {"risks", "governance"}
     ]
-    shown = len(labels)
+    shown_count = len(labels)
     total = inputs.findings_total if inputs.findings_total is not None else len(inputs.findings)
     evidence = {
         "key": "evidence_quality_and_gaps",
@@ -377,8 +377,8 @@ def assemble(inputs: ReportInputs) -> dict[str, Any]:
         ),
         "platform_evidence_gaps": platform_gaps[:40],
         "business_risk_labels": business_risks,
-        "findings_shown": shown,
-        "findings_not_shown": max(0, total - shown - inputs.withheld_for_safety),
+        "findings_shown": shown_count,
+        "findings_not_shown": max(0, total - shown_count - inputs.withheld_for_safety),
         "findings_withheld_for_safety": inputs.withheld_for_safety,
         "unclassified_findings": sum(1 for f in inputs.findings if not f.domain),
         "explanation": (
@@ -404,7 +404,7 @@ def assemble(inputs: ReportInputs) -> dict[str, Any]:
         "subject": dict(inputs.subject),
         "sections": [by_key[key] for key in REPORT_SECTION_ORDER],
         "finding_labels": labels,
-        "findings_count": shown,
+        "findings_count": shown_count,
         "council_convened": inputs.council_convened,
         "editor": {"used": False, "reason": "not_run"},
         "disclaimer": DISCLAIMER,

@@ -459,7 +459,11 @@ async def _run(
     thesis_size = None
     if thesis.present:
         market_cap = thesis.market_cap_usd
-        if market_cap is None and getattr(company, "market_cap", None) is not None:
+        if (
+            market_cap is None
+            and getattr(company, "market_cap", None) is not None
+            and str(getattr(company, "currency", "") or "").upper() == "USD"
+        ):
             market_cap = float(company.market_cap)
         thesis_size = size_fit(thesis, market_cap)
         outcome.thesis = {**thesis.to_dict(), "size_fit": thesis_size}

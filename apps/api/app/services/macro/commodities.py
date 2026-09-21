@@ -37,7 +37,7 @@ class Commodity:
 
 
 COMMODITIES: tuple[Commodity, ...] = (
-    Commodity("copper", "copper", (r"copper", r"cathodes?"), "PCOPPUSDM", "USD per metric ton",
+    Commodity("copper", "copper", (r"copper",), "PCOPPUSDM", "USD per metric ton",
               "copper"),
     Commodity("molybdenum", "molybdenum", (r"molybdenum", r"moly"), None, None, "molybdenum"),
     Commodity("silver", "silver", (r"silver",), None, None, "silver"),
@@ -66,7 +66,7 @@ COMMODITIES: tuple[Commodity, ...] = (
     Commodity("tin", "tin", (r"tin concentrates?", r"refined tin"), "PTINUSDM",
               "USD per metric ton", "tin"),
     Commodity("platinum_group_metals", "platinum-group metals",
-              (r"platinum", r"palladium", r"rhodium"), None, None, "platinum"),
+              (r"platinum", r"palladium", r"rhodium"), None, None, "platinum-group"),
     Commodity("graphite", "graphite", (r"graphite",), None, None, "graphite"),
     Commodity("manganese", "manganese", (r"manganese",), None, None, "manganese"),
     Commodity("vanadium", "vanadium", (r"vanadium",), None, None, "vanadium"),
