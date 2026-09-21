@@ -999,6 +999,27 @@ See `Implementation_docs/INVESTINGBUDDY_TECH_SPEC.md` Section 12 for full column
 
 ---
 
+## Migration 041 — research question graph, finding ownership, thesis lineage (V3.18)
+
+**Additive only**: nullable columns and two non-unique indexes on six existing tables. No
+column altered, renamed or dropped, no constraint changed, no backfill. `NULL` means
+"written before V3.18" on every one. Downgrade drops only what it added. Verified
+`040 → 041 → 040 → 041` on PostgreSQL 16.
+
+| Table | Columns | Why |
+|---|---|---|
+| `research_questions` | `domain`, `why_it_matters`, `owner_role`, `depends_on_json`, `required_metrics_json`, `evidence_contract_json`, `search_intents_json`, `contract_status`, `contract_detail_json`, `unresolved_reason`, `acquisition_log_json` | The flat question list becomes a graph whose nodes say who owns them, what answers them, what was tried and why it stopped. `resolution_status` and its CHECK are untouched — the contract outcome has its own column. |
+| `research_findings` | `topic_key`, `domain`, `claim_key`, `references_finding_ids_json`, `source_kinds_json` | One owner per observation; a restatement becomes a reference. |
+| `research_gaps` | `knowledge_state` | Whose gap it is: `not_acquired_by_platform` vs `not_disclosed_by_issuer`. |
+| `research_runs` | `thesis_json` | The discovery thesis that caused the research. |
+| `research_leads` | `matched_excerpt`, `claimed_metric`, `claimed_geography` | What verification actually matched, and what the number was about. |
+| `macro_series` | `commodity` | External quantitative series queryable by material. |
+
+**Deploy order.** 041 ships in a PR with **no ORM change**, so applying it is inert and it
+may be applied any time before the slices that map these columns are deployed. The reverse
+order (ORM columns on a schema without them) fails every query on the table. Apply with
+the SSH runbook in `docs/DEPLOYMENT.md`; the deploy workflow never runs migrations.
+
 ## `research_job_id` — the five lineage columns, and who writes them (V3.17.9)
 
 Five tables carry a `research_job_id` foreign key to `research_jobs.id`. Between them they
