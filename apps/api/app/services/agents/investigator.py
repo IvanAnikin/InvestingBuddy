@@ -48,6 +48,7 @@ from app.services.agent_tools.contracts import (
     TOOL_GET_CALCULATED_METRICS,
     TOOL_GET_FINANCIAL_FACTS,
     TOOL_GET_FINANCIAL_SERIES,
+    TOOL_GET_INDUSTRY_SERIES,
     TOOL_GET_IR_EVENTS,
     TOOL_GET_MACRO_SERIES,
     TOOL_GET_RECENT_FILINGS,
@@ -272,6 +273,11 @@ def _tool_arguments(
         return {"company_id": subject}
     if tool == TOOL_GET_MACRO_SERIES:
         return None  # needs a dataset and series key the question does not carry
+    if tool == TOOL_GET_INDUSTRY_SERIES:
+        # V3.18.5 — the commodity comes from the QUESTION, which the planner
+        # instantiated from the company's own filings. Never from a model.
+        commodity = getattr(question, "commodity", None)
+        return {"commodity": commodity} if commodity else None
     if tool == TOOL_SEARCH_WEB:
         # The question NAMES THE ISSUER. Every other tool here is entity-scoped by an
         # id the platform owns; this one crosses to a vendor that has no idea what "the
@@ -721,6 +727,11 @@ class LLMInvestigator:
     industry: str | None = None
     #: The run's shared ceiling on external searches. ``None`` means no external rung.
     external_budget: ExternalSearchBudget | None = None
+    #: Tools the run registered. ``None`` = unknown (every declared tool is attempted).
+    available_tools: frozenset[str] | None = None
+    #: The commodity the company's own documents discuss most, for intents that name
+    #: ``{commodity}`` on a question that is not per-commodity.
+    primary_commodity: str | None = None
 
     async def investigate(
         self,
@@ -786,11 +797,15 @@ class LLMInvestigator:
                 )
         return outcome
 
-    def _intent_values(self) -> dict[str, str | None]:
+    def _intent_values(self, question: Any = None) -> dict[str, str | None]:
+        from app.services.macro.commodities import commodity_for
+
+        commodity = commodity_for(getattr(question, "commodity", None))
         return {
             "company": self.company_name or self.ticker,
             "ticker": self.ticker,
             "industry": self.industry,
+            "commodity": commodity.name if commodity else self.primary_commodity,
         }
 
     async def _acquire(
@@ -861,7 +876,7 @@ class LLMInvestigator:
             and used < budget
         ):
             queries = [
-                fill_intent(intent, self._intent_values())
+                fill_intent(intent, self._intent_values(question))
                 for intent in intents[:MAX_CORPUS_INTENTS]
             ]
             found = 0
@@ -961,7 +976,7 @@ class LLMInvestigator:
 
         intents = list(getattr(question, "search_intents", ()) or ()) or [question.text]
         template = intents[context.external_searches_done % len(intents)]
-        query = fill_intent(template, self._intent_values())
+        query = fill_intent(template, self._intent_values(question))
         subject = self.company_name or self.ticker or "the issuer"
         arguments = {
             "query": f"{subject} ({self.ticker or ''}): {query}"[:480],
@@ -999,7 +1014,16 @@ class LLMInvestigator:
         self, role_id: str, role: Any, question: PlannedQuestion, budget: int
     ) -> tuple[list[_Evidence], int]:
         """Run the role's tools for one question. Never raises."""
-        wanted = [t for t in sorted(question.required_tools) if role.can_use(t)]
+        # V3.18.4 — a question's OPTIONAL tools run when the role holds them and the
+        # run registered them; they never decide assignment.
+        optional = [
+            t
+            for t in sorted(getattr(question, "optional_tools", ()) or ())
+            if role.can_use(t)
+            and (self.available_tools is None or t in self.available_tools)
+            and t not in question.required_tools
+        ]
+        wanted = [t for t in sorted(question.required_tools) if role.can_use(t)] + optional
         if not wanted:
             # The fallback for a question that declares no tools — a carry-forward gap,
             # typically. It must NEVER reach outside the platform: a question nobody
@@ -1010,7 +1034,7 @@ class LLMInvestigator:
             wanted = [t for t in sorted(role.tools) if t not in EXTERNAL_TOOL_NAMES]
         evidence: list[_Evidence] = []
         used = 0
-        for tool in wanted[:MAX_CALLS_PER_QUESTION]:
+        for tool in wanted[: MAX_CALLS_PER_QUESTION + len(optional)]:
             if used >= budget:
                 break
             arguments = _tool_arguments(

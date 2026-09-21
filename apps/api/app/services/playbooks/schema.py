@@ -99,6 +99,20 @@ class PlaybookQuestion:
     #: For ``get_financial_series``: which fact labels to read. A question does not
     #: reliably name a label in prose, which is why that tool was never called.
     series_labels: tuple[str, ...] = ()
+    # ── V3.18.4 ──────────────────────────────────────────────────────────── #
+    #: Ask this question once PER COMMODITY the company's own documents show it sells.
+    #: ``{commodity}`` in the text and intents is filled by the planner; the key gets a
+    #: ``__<commodity>`` suffix. Never instantiated from a ticker table.
+    per_commodity: bool = False
+    #: Set on an instantiated per-commodity question; ``None`` otherwise.
+    commodity: str | None = None
+    #: Base-model question keys this sector question supersedes. The sector version is
+    #: the same question asked properly, so asking both would be asking it twice.
+    replaces: tuple[str, ...] = ()
+    #: Tools used when available but not required for ASSIGNMENT. A question needing
+    #: industry statistics must not become unassignable when the statistics source is
+    #: switched off — it degrades to the corpus and the web instead.
+    optional_tools: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         if self.domain is not None and self.domain not in DOMAINS:
@@ -109,6 +123,12 @@ class PlaybookQuestion:
             )
         if self.key in self.depends_on:
             raise ValueError(f"question {self.key!r} cannot depend on itself.")
+        unknown_optional = set(self.optional_tools) - TOOL_NAMES
+        if unknown_optional:
+            raise ValueError(
+                f"question {self.key!r}: optional tools {sorted(unknown_optional)} are "
+                "not tool names."
+            )
         unknown_tools = set(self.required_tools) - TOOL_NAMES
         if unknown_tools:
             raise ValueError(
@@ -165,6 +185,10 @@ def planned_from(question: "PlaybookQuestion", *, origin: str) -> "Any":
         evidence_contract=question.evidence_contract,
         search_intents=tuple(question.search_intents),
         series_labels=tuple(question.series_labels),
+        per_commodity=question.per_commodity,
+        commodity=question.commodity,
+        replaces=tuple(question.replaces),
+        optional_tools=frozenset(question.optional_tools),
     )
 
 

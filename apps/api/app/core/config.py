@@ -1084,6 +1084,10 @@ class Settings(BaseSettings):
     # PAID research runs without a human clicking anything, so it must be turned on
     # deliberately rather than inherited by a deploy.
     v3_research_escalation_enabled: bool = False
+    # V3.18.5 — fetch commodity statistics (IMF prices via FRED, USGS Mineral Commodity
+    # Summaries) into the macro store and expose them as `get_industry_series`. Public,
+    # keyless publishers through the guarded fetcher; off by default like every source.
+    v3_commodity_sources_enabled: bool = False
     # How many rounds one decision may have. Two, because the second is the round that
     # demonstrates whether escalation helps and the third has never been shown to.
     v3_escalation_max_rounds: int = 2
