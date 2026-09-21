@@ -8,6 +8,7 @@ import EvidenceDisclosure from "@/components/research/report/EvidenceDisclosure"
 import InvestmentSummary from "@/components/research/report/InvestmentSummary";
 import KeyFinancials from "@/components/research/report/KeyFinancials";
 import OpenQuestions from "@/components/research/report/OpenQuestions";
+import ProfessionalResearchReport from "@/components/research/report/ProfessionalResearchReport";
 import RecentDevelopments from "@/components/research/report/RecentDevelopments";
 import RedTeam from "@/components/research/report/RedTeam";
 import ResilienceExposure from "@/components/research/report/ResilienceExposure";
@@ -135,6 +136,11 @@ export default async function ResearchReportPage({
   // every report written with the pipeline flag off — which is what keeps the existing
   // report rendering byte-for-byte unchanged.
   const v3 = readV3Research(report.source_summary_json);
+  // The report assembled from the V3 ledger (V3.18.8). When it exists it IS the
+  // research on this page and the V1 council's narrative sections are not rendered
+  // beside it — two accounts of one company, built from different evidence, would
+  // contradict each other. Absent (every earlier report), the page is unchanged.
+  const professional = v3?.professionalResearch ?? null;
   const view = buildResearchReportView(report, council);
   // Council prose and the canonical figures are two representations of the
   // same facts. Where they disagree the sentence is withheld and said to
@@ -232,11 +238,12 @@ export default async function ResearchReportPage({
           than being forced through a renderer that would show empty sections. */}
       {!view.structured ? (
         <>
+          {professional && <ProfessionalResearchReport report={professional} />}
           <Surface className="p-6">
             <p className="text-sm leading-relaxed text-[color:var(--ib-ink-2)]">
-              This report has no structured research content — it predates the
-              structured report format. Its original text is shown below, and the
-              full record is in the technical view.
+              {professional
+                ? "The report generator wrote no structured content for this report. Its own text is shown below as stored, and the full record is in the technical view."
+                : "This report has no structured research content — it predates the structured report format. Its original text is shown below, and the full record is in the technical view."}
             </p>
             <p className="mt-3">
               <Link
@@ -261,8 +268,9 @@ export default async function ResearchReportPage({
       ) : (
         <>
           {/* Evidence too thin for a full analysis: say so once, at the top,
-              and let the sections below show what IS known. */}
-          {view.thin && (
+              and let the sections below show what IS known. It speaks of the V1
+              analysis sections, so it is not shown when those are not rendered. */}
+          {view.thin && !professional && (
             <Surface
               className="border-amber-400/25 p-5"
               testId="thin-evidence-notice"
@@ -280,15 +288,19 @@ export default async function ResearchReportPage({
           )}
 
           {/* 1. The research itself, first. */}
-          <InvestmentSummary
-            chair={investor.chair}
-            reading={investor.reading}
-            summary={view.summary}
-            evidenceWordLabel={
-              view.evidence.overall ? evidenceWord(view.evidence.overall) : null
-            }
-            councilLine={councilLine}
-          />
+          {professional ? (
+            <ProfessionalResearchReport report={professional} />
+          ) : (
+            <InvestmentSummary
+              chair={investor.chair}
+              reading={investor.reading}
+              summary={view.summary}
+              evidenceWordLabel={
+                view.evidence.overall ? evidenceWord(view.evidence.overall) : null
+              }
+              councilLine={councilLine}
+            />
+          )}
 
           {/* 2. The numbers. */}
           <KeyFinancials
@@ -327,76 +339,83 @@ export default async function ResearchReportPage({
             </Surface>
           )}
 
-          {/* 4. The business. */}
-          {!view.thin && <BusinessQuality business={investor.businessQuality} />}
+          {/* 4–8. The V1 council's narrative — only when there is no professional
+                 report, which covers the same ground from the V3 ledger. */}
+          {!professional && (
+            <>
+              {/* 4. The business. */}
+              {!view.thin && <BusinessQuality business={investor.businessQuality} />}
 
-          {/* 5. What has happened lately. */}
-          {!view.thin && (
-            <RecentDevelopments
-              catalysts={investor.catalysts}
-              disclosures={view.disclosures}
-            />
-          )}
+              {/* 5. What has happened lately. */}
+              {!view.thin && (
+                <RecentDevelopments
+                  catalysts={investor.catalysts}
+                  disclosures={view.disclosures}
+                />
+              )}
 
-          {/* 6. The two cases. */}
-          {!view.thin && (
-            <div className="grid gap-5 lg:grid-cols-2">
-              <NarrativeSection
-                title="Bull case"
-                accent="positive"
-                groups={cases.bull.groups}
-                testId="bull-case"
-                emptyMessage="No bull-case argument was produced from the evidence available."
-                footnote={caseFootnote(cases.bull.basis, view.bullConfidence)}
+              {/* 6. The two cases. */}
+              {!view.thin && (
+                <div className="grid gap-5 lg:grid-cols-2">
+                  <NarrativeSection
+                    title="Bull case"
+                    accent="positive"
+                    groups={cases.bull.groups}
+                    testId="bull-case"
+                    emptyMessage="No bull-case argument was produced from the evidence available."
+                    footnote={caseFootnote(cases.bull.basis, view.bullConfidence)}
+                  />
+                  <NarrativeSection
+                    title="Bear case"
+                    accent="negative"
+                    groups={cases.bear.groups}
+                    testId="bear-case"
+                    emptyMessage="No bear-case argument was produced from the evidence available."
+                    footnote={caseFootnote(cases.bear.basis, view.bearConfidence)}
+                  />
+                </div>
+              )}
+
+              {!view.thin && <ResilienceExposure reading={investor.reading} />}
+
+              {/* 7. Risks to the BUSINESS. Research limitations are further down,
+                     under research confidence, where they belong. */}
+              {!view.thin && (
+                <NarrativeSection
+                  title="Key risks"
+                  groups={investor.risks.company}
+                  testId="risk-analysis"
+                  id="risks"
+                  emptyMessage="No risk to the business was recorded against the evidence in this report. That is an absence of analysis, not an absence of risk."
+                  footnote={investor.risks.summary ?? undefined}
+                />
+              )}
+
+              {/* 8. Who looked at it, and what each of them concluded. */}
+              <ResearchCouncil
+                council={view.council}
+                agents={investor.agents}
+                reportId={report.id}
               />
-              <NarrativeSection
-                title="Bear case"
-                accent="negative"
-                groups={cases.bear.groups}
-                testId="bear-case"
-                emptyMessage="No bear-case argument was produced from the evidence available."
-                footnote={caseFootnote(cases.bear.basis, view.bearConfidence)}
+
+              {view.council.used && (
+                <RedTeam redTeam={findAgent(investor.agents, "red_team")} />
+              )}
+
+              <ChairSynthesis
+                chair={investor.chair}
+                chairAgent={findAgent(investor.agents, "committee_chair")}
+                reading={investor.reading}
               />
-            </div>
+
+              <OpenQuestions questions={investor.openQuestions} />
+            </>
           )}
-
-          {!view.thin && <ResilienceExposure reading={investor.reading} />}
-
-          {/* 7. Risks to the BUSINESS. Research limitations are further down,
-                 under research confidence, where they belong. */}
-          {!view.thin && (
-            <NarrativeSection
-              title="Key risks"
-              groups={investor.risks.company}
-              testId="risk-analysis"
-              id="risks"
-              emptyMessage="No risk to the business was recorded against the evidence in this report. That is an absence of analysis, not an absence of risk."
-              footnote={investor.risks.summary ?? undefined}
-            />
-          )}
-
-          {/* 8. Who looked at it, and what each of them concluded. */}
-          <ResearchCouncil
-            council={view.council}
-            agents={investor.agents}
-            reportId={report.id}
-          />
-
-          {view.council.used && (
-            <RedTeam redTeam={findAgent(investor.agents, "red_team")} />
-          )}
-
-          <ChairSynthesis
-            chair={investor.chair}
-            chairAgent={findAgent(investor.agents, "committee_chair")}
-            reading={investor.reading}
-          />
-
-          <OpenQuestions questions={investor.openQuestions} />
 
           {/* 8b. The V3 research layer, when it ran. Placed after the V2 council and
                  before the confidence section because it IS research state, not a
-                 conclusion — the narrative above is still assembled by V2. */}
+                 conclusion. With a professional report above, it is that report's
+                 technical record. */}
           <V3ResearchPanel v3={v3} />
 
           {/* 9. How far the evidence goes. */}

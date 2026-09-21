@@ -8,6 +8,7 @@
 
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 
 const PORT = Number(process.env.PORT ?? 8799);
 
@@ -1997,6 +1998,56 @@ function mockV3Report(id) {
   return base;
 }
 
+// V3.18.8 — the professional research report, attached under
+// `v3_research.professional_research`. The payload is the PRODUCER's shape
+// (`app/services/pipeline/professional_research.py`), read from the shared fixture
+// rather than written here, so the reader is tested against what the backend emits.
+const PROFESSIONAL_REPORT_ID = "00000000-0000-0000-0000-0000000000f8";
+const PROFESSIONAL_LEGACY_REPORT_ID = "00000000-0000-0000-0000-0000000000f9";
+const PROFESSIONAL_RESEARCH = JSON.parse(
+  readFileSync(
+    new URL("../fixtures/professional-research-payload.json", import.meta.url),
+    "utf8",
+  ),
+);
+
+function professionalResearchPayload() {
+  const payload = structuredClone(PROFESSIONAL_RESEARCH);
+  // One long unbroken evidence id, the length live ids reach. The fixture's ids are
+  // short, and a phone-width check that never meets a long string proves nothing.
+  const business = payload.sections.find((s) => s.key === "business_model");
+  business.findings[0].evidence_ids.push(
+    "ev:issuer_filing:https://www.sec.gov/Archives/edgar/data/1001838/000100183826000012/scco-20251231x10k.htm#item7-segment-net-sales-by-product",
+  );
+  return payload;
+}
+
+// A structured V3 report that carries the professional report: the V1 narrative
+// sections must give way to it.
+function mockProfessionalReport(id) {
+  const base = mockV3Report(id);
+  base.title =
+    "LLM Council Analysis Draft — SCCO — Professional Research Test Issuer [MOCK DATA]";
+  base.source_summary_json.v3_research.professional_research =
+    professionalResearchPayload();
+  return base;
+}
+
+// A report the V2 generator wrote no structured content for, but whose V3 run did
+// produce the professional report — it must still be the research on the page.
+function mockProfessionalLegacyReport(id) {
+  const base = mockLegacyReport(id);
+  base.source_summary_json = {
+    v3_research: {
+      research_run_id: "3f1c9a6e-0000-4000-8000-000000000f09",
+      degraded: [],
+      error: null,
+      professional_research: professionalResearchPayload(),
+    },
+  };
+  return base;
+}
+
 function mockScopeReport(id) {
   const base = mockReport(id);
   base.title =
@@ -3204,6 +3255,12 @@ const server = createServer((req, res) => {
     }
     if (rid === V3_REPORT_ID) {
       return send(res, 200, mockV3Report(rid));
+    }
+    if (rid === PROFESSIONAL_REPORT_ID) {
+      return send(res, 200, mockProfessionalReport(rid));
+    }
+    if (rid === PROFESSIONAL_LEGACY_REPORT_ID) {
+      return send(res, 200, mockProfessionalLegacyReport(rid));
     }
     if (rid === LEGACY_TECH_REPORT_ID) {
       return send(res, 200, mockLegacyTechnicalReport(rid));

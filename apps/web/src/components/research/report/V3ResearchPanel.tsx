@@ -138,11 +138,12 @@ export default function V3ResearchPanel({ v3 }: { v3: V3Research | null }) {
         )}
       </div>
 
+      {/* With a professional report on the page, the report above IS this run's
+          ledger; saying the narrative came from the existing generator would be false. */}
       <p className="mt-2 max-w-3xl text-sm leading-relaxed text-[color:var(--ib-ink-3)]">
-        The multi-agent research layer, recorded beside the report. The narrative
-        sections above are assembled by the existing generator — this section is the
-        research ledger itself: what was established, with what evidence, what was
-        challenged, and what could not be closed.
+        {v3.professionalResearch
+          ? "The technical record of the research run behind the report above: what the ledger holds, what was challenged, what could not be closed, and what the run consumed."
+          : "The multi-agent research layer, recorded beside the report. The narrative sections above are assembled by the existing generator — this section is the research ledger itself: what was established, with what evidence, what was challenged, and what could not be closed."}
       </p>
 
       {/* A failed run is the most important thing on the page. Never hidden. */}
