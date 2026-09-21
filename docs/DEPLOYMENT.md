@@ -1996,6 +1996,21 @@ or price-target/fair-value text, every candidate human-review-required, and that
 
 ---
 
+## V3.18 — settings and the migration it needs
+
+| Setting | Default | What it does |
+|---|---|---|
+| `V3_COMMODITY_SOURCES_ENABLED` | `false` | Registers `get_industry_series`: IMF monthly prices via FRED (T2) and USGS Mineral Commodity Summaries (T3), fetched on a miss into the macro store. Free public sources, fixed hosts, HTTPS only. |
+| `V3_RESEARCH_MODE_DEFAULT` | `standard` | Depth when a job names none. A job may ask for `quick`, `standard` or `deep` (`research_mode` on `POST /company-research/jobs`). |
+| `V3_RUN_MAX_WEB_SEARCHES` | `0` (mode preset) | Operator cap on paid searches per run; narrows every mode. |
+
+**Migration 041 must be applied before V3.18 research runs.** Until it is, the pipeline
+skips V3 with `error="schema_not_ready"` and names the missing columns; the V2 report is
+untouched. Check from outside:
+`GET /api/v1/company-research/schema-readiness` → `{"ready": true}`. Apply per the
+Option 1 (App Service SSH) recipe in the migration section above
+(`source antenv/bin/activate && python -m alembic upgrade head`).
+
 ## Security Limitations
 
 ### Current state (Phase 12)
