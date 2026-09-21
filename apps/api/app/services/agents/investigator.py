@@ -207,6 +207,9 @@ class QuestionContext:
 
     prior_evidence: tuple[EvidenceRef, ...] = ()
     external_searches_done: int = 0
+    #: V3.18.7 — ``(finding_id, statement, domain)`` other domains already own. The
+    #: writer is told to reference these by id rather than restate them.
+    established_elsewhere: tuple[tuple[str, str, str | None], ...] = ()
 
 
 _PLACEHOLDER_RE = re.compile(r"\{(\w+)\}")
@@ -571,7 +574,8 @@ def _response_shape(*, retry: bool) -> str:
 _SCHEMA_LINE = (
     '{"findings": [{"statement": str, "mechanism": str, '
     '"direction": "supportive"|"adverse"|"neutral", "confidence": 0..1, '
-    '"evidence_ids": [str]}], "gaps": [{"description": str, "why_it_matters": str}]}'
+    '"evidence_ids": [str], "references": [str]}], '
+    '"gaps": [{"description": str, "why_it_matters": str}]}'
 )
 
 
@@ -581,6 +585,7 @@ def _build_prompt(
     role_id: str,
     *,
     retry: bool = False,
+    established: "Sequence[tuple[str, str, str | None]]" = (),
 ) -> tuple[str, str]:
     system = (
         "You are a research analyst on an evidence-first investment research platform.\n"
@@ -626,6 +631,17 @@ def _build_prompt(
         "which nothing checked — never state a unit, currency, metric or geography the "
         "excerpt itself does not.",
         "",
+        *(
+            [
+                "ALREADY ESTABLISHED BY OTHER SPECIALISTS — do NOT restate these; if your "
+                "finding builds on one, put its id in `references`:",
+                *(f"  - [{fid}] ({domain}) {statement[:160]}"
+                  for fid, statement, domain in established),
+                "",
+            ]
+            if established
+            else []
+        ),
         "ALLOWED CITATION IDS (cite only these):",
     ]
     lines.extend(f"  - {item.citation_id}" for item in evidence)
@@ -867,7 +883,17 @@ class LLMInvestigator:
                     )
                 )
                 continue
-            findings, gaps, answered = await self._write_up(role_id, question, evidence)
+            established = (
+                contexts.get(question.key) or QuestionContext()
+            ).established_elsewhere
+            # Passed only when there is something to pass, so an override of `_write_up`
+            # written before V3.18.7 keeps working.
+            findings, gaps, answered = await self._write_up(
+                role_id,
+                question,
+                evidence,
+                **({"established": established} if established else {}),
+            )
             outcome.findings.extend(findings)
             outcome.gaps.extend(gaps)
             if answered:
@@ -1288,7 +1314,12 @@ class LLMInvestigator:
         return evidence, used
 
     async def _write_up(
-        self, role_id: str, question: PlannedQuestion, evidence: "list[_Evidence]"
+        self,
+        role_id: str,
+        question: PlannedQuestion,
+        evidence: "list[_Evidence]",
+        *,
+        established: "tuple[tuple[str, str, str | None], ...]" = (),
     ) -> tuple[list[FindingDraft], list[GapDraft], bool]:
         """Ask the model to write findings, then **check every citation.**"""
         allowed = {item.citation_id for item in evidence}
@@ -1316,7 +1347,7 @@ class LLMInvestigator:
                 False,
             )
 
-        system, user = _build_prompt(question, evidence, role_id)
+        system, user = _build_prompt(question, evidence, role_id, established=established)
         self.diagnostics.responses_total += 1
         try:
             reply = await self._complete(system, user)
@@ -1464,6 +1495,10 @@ class LLMInvestigator:
                                 if item.citation_id in real and item.ref is not None
                             }
                         )
+                    ),
+                    references=tuple(
+                        str(r) for r in (raw.get("references") or [])
+                        if str(r) in {fid for fid, _s, _d in established}
                     ),
                 )
             )
