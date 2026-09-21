@@ -523,10 +523,10 @@ async def plan_research(
                 )
             )
             continue
-        owner = next(
+        owner_spec = next(
             (role for role in candidates if role.role_id == question.owner_role), None
         )
-        chosen = owner or _least_loaded(candidates, assignments)
+        chosen = owner_spec or _least_loaded(candidates, assignments)
 
         # SILENT DEGRADATION GUARD.
         #
