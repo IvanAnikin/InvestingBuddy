@@ -293,7 +293,7 @@ def merge_fundamentals(
         warnings.append(
             "SEC EDGAR: the legacy alias-order value was NOT used for "
             f"{', '.join(refused)} — the filer has no value for the current reporting "
-            "period, and an older one is never carried into it."
+            "period, and a value for another period is never carried into it."
         )
     base = [dp for dp in base if dp.field_name not in withheld]
 

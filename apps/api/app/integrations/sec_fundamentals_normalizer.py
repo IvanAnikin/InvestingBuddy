@@ -124,6 +124,9 @@ class _Metric:
     accn: str | None = None
     end: str | None = None
     period_type: str | None = None  # "annual" | "quarterly"
+    #: Days the selected flow spans; ``None`` for an instant. Distinguishes a 10-Q
+    #: quarter (~91) from a year-to-date figure (~182, ~273) with the same period end.
+    duration_days: int | None = None
 
 
 def _fy_of(entry: dict) -> int | None:
@@ -167,6 +170,13 @@ def _is_full_year_period(entry: dict) -> bool:
     except (ValueError, TypeError):
         return True
     return (e - s).days >= 300
+
+
+def _duration_days(entry: dict) -> int | None:
+    start, end = _parse_end(entry.get("start")), _parse_end(entry.get("end"))
+    if start is None or end is None:
+        return None
+    return (end - start).days
 
 
 def _is_single_quarter_period(entry: dict) -> bool:
@@ -238,12 +248,27 @@ def _select_metric(
         # if none look full-year (e.g. balance-sheet instants, or odd filings).
         ranked = [ce for ce in pool if _is_full_year_period(ce[1])] or pool
     else:
-        # V3.18.1 — a 10-Q tags every flow twice with ONE period end: the quarter and
-        # the year to date. Ranking on (fy, filed, end) cannot tell them apart, so which
-        # one a concept got was arbitrary, and a quarter's revenue could sit beside
-        # year-to-date net income in one bundle. One duration class, consistently: the
-        # single quarter. Instants have no duration and always qualify.
-        ranked = [ce for ce in pool if _is_single_quarter_period(ce[1])] or pool
+        # V3.18.1 — a 10-Q tags an income-statement flow twice with ONE period end: the
+        # quarter and the year to date. Ranking on (fy, filed, end) cannot tell them
+        # apart, so which one a concept got was arbitrary, and a quarter's revenue could
+        # sit beside year-to-date net income in one bundle.
+        #
+        # So: take the LATEST period end first, and only among entries ending there,
+        # prefer the single quarter. Preferring the quarter across the whole pool — the
+        # first version of this — broke on the cash-flow statement, which a 10-Q
+        # reports year-to-date ONLY: operating cash flow resolved to the Q1 entry and
+        # was then withheld as "stale" beside a Q2 anchor, although Q2 year-to-date cash
+        # flow was right there. Found by review. When only a year-to-date entry exists
+        # at the latest end, it is kept and its duration is recorded, so a reader can
+        # see that the period is a year-to-date one rather than infer a quarter.
+        ends_in_pool = [end for _c, e in pool if (end := _parse_end(e.get("end"))) is not None]
+        latest_end = max(ends_in_pool, default=None)
+        at_latest = [
+            ce
+            for ce in pool
+            if latest_end is not None and _parse_end(ce[1].get("end")) == latest_end
+        ] or pool
+        ranked = [ce for ce in at_latest if _is_single_quarter_period(ce[1])] or at_latest
     concept, latest = max(ranked, key=lambda ce: _freshness_key(ce[1]))
 
     raw_val = latest.get("val")
@@ -280,6 +305,7 @@ def _select_metric(
         accn=latest.get("accn"),
         end=latest.get("end"),
         period_type=period_type,
+        duration_days=_duration_days(latest),
     )
 
 
@@ -627,6 +653,17 @@ def _parse_end(value: str | None) -> datetime | None:
         return None
 
 
+#: The metrics that define what period a statement bundle is FOR. The anchor must be a
+#: period at least one of them carries; a cluster of balance-sheet instants alone cannot
+#: outvote revenue and net income.
+_HEADLINE_METRICS: tuple[str, ...] = (
+    "revenue",
+    "net_income",
+    "operating_cash_flow",
+    "total_assets",
+)
+
+
 def _reporting_period_anchor(ends: "list[datetime]") -> datetime | None:
     """The period end MOST metrics agree on; ties go to the later one.
 
@@ -681,7 +718,25 @@ def _metrics_outside_reporting_period(
         for m in present.values()
         if m.period_type == basis and (end := _parse_end(m.end)) is not None
     ]
+    headline_ends = [
+        end
+        for name in _HEADLINE_METRICS
+        if (m := present.get(name)) is not None
+        and m.period_type == basis
+        and (end := _parse_end(m.end)) is not None
+    ]
     anchor = _reporting_period_anchor(ends)
+    if (
+        anchor is not None
+        and headline_ends
+        and not any(
+            abs((anchor - end).days) <= _SAME_PERIOD_TOLERANCE_DAYS for end in headline_ends
+        )
+    ):
+        # The most-agreed period is one no headline metric is for. Anchor on the
+        # headline metrics instead: what a bundle is FOR is decided by its statements,
+        # not by a cluster of instants.
+        anchor = _reporting_period_anchor(headline_ends)
     if anchor is None:
         return [], None
     outside: list[tuple[str, str, _Metric]] = []
@@ -833,8 +888,8 @@ def normalize_company_facts(
         warnings.append(
             "SEC EDGAR: withheld as NOT REPORTED FOR THE CURRENT PERIOD — "
             f"{detail}. The filer has not tagged these concepts for the bundle's "
-            "reporting period, so they are missing for it; an older value is never "
-            "carried forward or relabelled."
+            "reporting period, so they are missing for it; a value for another period "
+            "is never carried in or relabelled."
         )
 
     # Each metric's OWN period, kept so a consumer can label the fact honestly
@@ -866,6 +921,7 @@ def normalize_company_facts(
             "form": metric.form,
             "concept": metric.concept,
             "period_type": metric.period_type,
+            "duration_days": metric.duration_days,
         }
 
     # ── Headline period (prefer revenue, then net income) ────────────────

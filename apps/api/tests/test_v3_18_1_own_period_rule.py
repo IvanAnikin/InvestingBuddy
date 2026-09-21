@@ -256,6 +256,54 @@ class TestAQuarterlyBundleIsOneDurationClass:
         assert n.net_margin == pytest.approx(10.0)
 
 
+    def test_year_to_date_cash_flow_is_kept_at_the_latest_end(self) -> None:
+        """Found by the second review. A 10-Q reports the cash-flow statement
+        YEAR-TO-DATE ONLY. Preferring the quarter across the whole pool picked the Q1
+        entry and then withheld it as stale beside a Q2 anchor, though Q2 year-to-date
+        cash flow was right there."""
+        def quarter_and_ytd(q: float, ytd: float) -> dict:
+            return {"units": {"USD": [
+                _entry("2026-06-30", ytd, start="2026-01-01", fy=2026, form="10-Q", fp="Q2",
+                       filed="2026-07-31"),
+                _entry("2026-06-30", q, start="2026-04-01", fy=2026, form="10-Q", fp="Q2",
+                       filed="2026-07-31"),
+            ]}}
+        data = {"cik": 1, "facts": {"dei": {}, "us-gaap": {
+            "Revenues": quarter_and_ytd(100e6, 190e6),
+            "NetCashProvidedByUsedInOperatingActivities": {"units": {"USD": [
+                _entry("2026-03-31", 15e6, start="2026-01-01", fy=2026, form="10-Q", fp="Q1",
+                       filed="2026-04-30"),
+                _entry("2026-06-30", 40e6, start="2026-01-01", fy=2026, form="10-Q", fp="Q2",
+                       filed="2026-07-31"),
+            ]}},
+        }}}
+        n = normalize_company_facts(data, "ANY", "1")
+        assert n.operating_cash_flow == 40.0, "the Q2 year-to-date figure, not stale Q1"
+        assert "operating_cash_flow" not in n.withheld_fields
+        assert n.field_periods["operating_cash_flow"]["duration_days"] > 170
+        assert n.field_periods["revenue"]["duration_days"] < 100
+
+
+class TestTheHeadlineDecidesWhatTheBundleIsFor:
+    def test_a_cluster_of_instants_cannot_outvote_revenue(self) -> None:
+        """Found by the second review: three balance-sheet instants dated after year end
+        outvoted revenue and net income, and both were withheld."""
+        a = "2025-12-31"
+        late = "2026-02-15"
+        metrics = {
+            "revenue": normalizer._Metric(value=1.0, end=a, period_type="annual"),
+            "net_income": normalizer._Metric(value=1.0, end=a, period_type="annual"),
+            "cash_and_equivalents": normalizer._Metric(value=1.0, end=late, period_type="annual"),
+            "short_term_debt": normalizer._Metric(value=1.0, end=late, period_type="annual"),
+            "long_term_debt": normalizer._Metric(value=1.0, end=late, period_type="annual"),
+        }
+        outside, anchor = normalizer._metrics_outside_reporting_period(metrics)
+        assert anchor == a
+        assert {name for name, _r, _m in outside} == {
+            "cash_and_equivalents", "short_term_debt", "long_term_debt",
+        }
+
+
 class TestANegativeBaseHasNoReading:
     def test_return_on_negative_equity_is_not_printed(self, facts) -> None:
         data = copy.deepcopy(facts)

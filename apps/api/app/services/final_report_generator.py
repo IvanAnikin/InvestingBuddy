@@ -2013,8 +2013,10 @@ def _build_financial_snapshot(
                     **_consistency,
                     "note": (
                         "These statement lines do not stand in the relationship one "
-                        "scope and period's accounts require. They are shown as sourced "
-                        "and are NOT reconciled; ratios built on them were withheld."
+                        "scope and period's accounts usually require. They are shown as "
+                        "sourced and are NOT reconciled. Where the relationship CANNOT "
+                        "hold (a contradiction), ratios built on them were withheld; "
+                        "where it is only implausible, they were kept beside this note."
                     ),
                     "human_review_required": True,
                 }

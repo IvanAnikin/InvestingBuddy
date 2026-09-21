@@ -330,6 +330,23 @@ class TestTheGuardOnlyExaminesRatioShapedClaims:
     @pytest.mark.parametrize(
         "sentence",
         [
+            "The margin impact of the 21% tax rate was small.",
+            "Operating margin of 52% compares with a 30% statutory tax rate.",
+        ],
+    )
+    def test_another_percentage_in_a_ratio_sentence_is_left_alone(self, sentence) -> None:
+        """Found by the second review: a sentence that MENTIONS a margin may carry a
+        percentage that is not the margin."""
+        assert unsupported_percentages(sentence, self.NUMBERS + [52.0]) == []
+
+    @pytest.mark.parametrize(
+        "sentence",
+        [
+            (
+                "The decline in net income as a percentage of operating cash flow from "
+                "113.4% in H1 2025 to 88.4% in H1 2026 suggests weakening cash conversion."
+            ),
+            "Operating margin rose to 52% in FY2025 from 49% in FY2024.",
             "Net income was approximately 88.4% of net operating cash flow.",
             "EBITDA margin of 58% is among the highest in the sector.",
             "Return on equity of 44% signals strong capital efficiency.",

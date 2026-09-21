@@ -371,6 +371,10 @@ def _bound_and_reid(
         protected = evidence_category(item) == CATEGORY_DEFINED_METRIC
         reserve = 0 if protected else protected_pending
         if survivors and total_chars + item_chars + reserve > max_chars:
+            if protected:
+                # It cannot fit at all; stop holding room for it, or the reserve starves
+                # every item after it for nothing.
+                protected_pending = max(0, protected_pending - item_chars)
             continue
         total_chars += item_chars
         if protected:

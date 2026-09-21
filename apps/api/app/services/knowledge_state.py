@@ -99,23 +99,30 @@ _ABSENCE_WORD = (
     r"(?:absence\s+of|lack\s+of|lacks|lacking|missing|limited|insufficient|"
     r"unavailable|not\s+available|not\s+provided|not\s+sourced|not\s+included|no)"
 )
-#: Things that are disclosed, as opposed to things a business has or lacks.
+#: Things that are DISCLOSED, as opposed to things a business has or lacks. Deliberately
+#: not "history", "coverage", "yield" or "reporting" on their own — review found each one
+#: eating a real risk factor: "limited operating history", "limited insurance coverage",
+#: "limited yield improvement", "missing SEC reporting deadlines". Those words count only
+#: as part of a phrase that is unambiguously about information.
 _DISCLOSURE_OBJECT = (
     r"(?:data|information|details?|breakdowns?|disclosures?|figures?|metrics?|filings?|"
-    r"reporting|statistics|coverage|history|trend\s+data|ebitda|ev/ebitda|"
-    r"(?:liquidity|leverage|coverage|payout)\s+ratios?|yield|guidance\s+data)"
+    r"statistics|trend\s+data|ebitda|ev/ebitda|"
+    r"(?:liquidity|leverage|coverage|payout)\s+ratios?|dividend\s+yield|"
+    r"segment(?:al)?\s+reporting|guidance\s+data)"
 )
 _ABSENCE_OF_INFORMATION_RE = re.compile(
     # No comma between the two: "No growth is expected, and production data confirm it"
     # is a finding, and the clause boundary is what separates it from an absence.
     rf"\b{_ABSENCE_WORD}\b[^.;,]{{0,70}}?\b{_DISCLOSURE_OBJECT}\b",
-    re.IGNORECASE
+    re.IGNORECASE,
 )
 #: "... limits / restricts (a full) assessment / evaluation / understanding of ...".
+#: Not "visibility" or "view": "no hedging of copper price exposure limits earnings
+#: visibility" is a business risk, and review showed the looser list taking it.
 _LIMITS_THE_ANALYSIS_RE = re.compile(
     rf"\b{_ABSENCE_WORD}\b[^.;]{{0,120}}?\b(?:limits?|restricts?|restricting|limiting|"
     r"constrains?|prevents?|hinders?|precludes?)\b[^.;]{0,40}?"
-    r"\b(?:assessment|evaluation|understanding|insight|analysis|visibility|view)\b",
+    r"\b(?:assessment|evaluation|understanding|insight|analysis)\b",
     re.IGNORECASE,
 )
 
@@ -130,7 +137,10 @@ _LIMITS_THE_ANALYSIS_RE = re.compile(
 # dividend cover", "lacks a second supplier" — statements about a business, which the
 # first version disowned.
 _DISCLOSURE_TOPIC = (
-    r"(?:segments?|segmental|geographic(?:al)?|regional|divisional|data|information|"
+    # "geographic" and "regional" only with a disclosure noun: "does not provide
+    # geographic diversification" is about the business, and review found it disowned.
+    r"(?:segments?|segmental|(?:geographic(?:al)?|regional|divisional)\s+"
+    r"(?:breakdown|data|information|split|revenue|sales|disclosure)|data|information|"
     r"details?|breakdowns?|figures?|guidance|dividend\s+(?:policy|information|data|"
     r"history)|payout\s+(?:policy|information)|reserves?\s+(?:data|figures)|"
     r"production\s+(?:data|figures)|unit\s+costs?)"

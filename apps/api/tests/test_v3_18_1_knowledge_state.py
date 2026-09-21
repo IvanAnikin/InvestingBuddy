@@ -45,6 +45,14 @@ REAL_BUSINESS_RISKS = (
     "The company has no debt and reported record revenue.",
     "Without new permits, production data suggests output will fall",
     "No growth is expected, and production data confirm it",
+    # Found by the second review: each word here is also a disclosure word in some
+    # other sentence, and the widened first fix ate these.
+    "Limited operating history at the new smelter raises execution risk",
+    "Limited insurance coverage for tailings dam failures could leave losses uninsured",
+    "No hedging of copper price exposure limits earnings visibility",
+    "Missing SEC reporting deadlines could trigger delisting",
+    "Limited yield improvement at the concentrator slowed output growth",
+    "The company does not provide geographic diversification beyond Peru and Mexico",
     "Commodity price volatility could pressure cash flow and debt servicing ability.",
     "Labor disputes at Peruvian operations have disrupted production in prior years.",
     "Water availability constraints may limit expansion at the Tia Maria project.",

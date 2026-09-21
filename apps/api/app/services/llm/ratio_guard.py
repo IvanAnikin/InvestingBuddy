@@ -118,10 +118,78 @@ def evidence_numbers(texts: Iterable[str | None]) -> list[float]:
 def has_financial_ratio_shape(sentence: str | None) -> bool:
     """Does this sentence present a percentage AS a ratio between statement lines?"""
     value = sentence or ""
-    return bool(_OF_A_STATEMENT_LINE_RE.search(value) or _RATIO_WORD_RE.search(value))
+    return bool(
+        _OF_A_STATEMENT_LINE_RE.search(value)
+        or _RATIO_WORD_RE.search(value)
+        or _AS_A_SHARE_OF_RE.search(value)
+    )
 
 
 _SENTENCE_RE = re.compile(r"(?<=[.!?;])\s+")
+
+
+_RATIO_TERM = (
+    r"(?:margins?|cash\s+conversion|conversion\s+(?:ratio|rate|efficiency)|"
+    r"(?:fcf|free\s+cash\s+flow)\s+conversion|payout\s+ratio|return\s+on\s+(?:equity|"
+    r"assets|capital|invested\s+capital)|\bro(?:e|a|ic)\b|capex\s+intensity|"
+    r"capital\s+intensity|(?:interest|dividend)\s+cover(?:age)?)"
+)
+#: Words that may sit between a ratio and ITS value: "margin of 58%", "margin was 52%",
+#: "ROE stood at roughly 44%", "margins of 50-55%". A word outside this list breaks the
+#: link, which is what keeps "the margin impact of the 21% tax rate" — a DIFFERENT
+#: percentage in a sentence that mentions a margin — from being read as the margin.
+#: Review showed the proximity-only version dropping exactly that sentence.
+_LINK = (
+    r"(?:of|at|was|were|is|are|stood|reached|rose|fell|increased|decreased|to|from|near|"
+    r"around|about|approximately|roughly|nearly|over|under|above|below|some|just|only|"
+    r"a|an|the|reported|in|fy\s?\d{2,4}|h[12]|q[1-4]|\d{4}|by|,)"
+)
+_RATIO_THEN_VALUE_RE = re.compile(
+    rf"{_RATIO_TERM}\s*(?:{_LINK}\s*){{0,4}}(?={_NUM})", re.IGNORECASE
+)
+#: "a 58% EBITDA margin", "a 110% cash conversion".
+_VALUE_THEN_RATIO_RE = re.compile(
+    rf"(?:%|percent|per\s+cent)\s+(?:[A-Za-z/&-]+\s+){{0,2}}{_RATIO_TERM}", re.IGNORECASE
+)
+
+
+#: "net income as a percentage of operating cash flow (fell) from 113.4% to 88.4%" —
+#: the production sentence. The ratio is NAMED, and every value after it in the clause
+#: is its value.
+_AS_A_SHARE_OF_RE = re.compile(
+    rf"\bas\s+a\s+(?:percentage|percent|share|proportion|ratio)\s+of\s+"
+    rf"(?:the\s+|its\s+|total\s+)?(?:{_STATEMENT_LINE})\b",
+    re.IGNORECASE,
+)
+#: What may sit between two values of ONE ratio: "rose to 52% in FY2025 from 49%".
+_BETWEEN_VALUES_RE = re.compile(rf"^\s*(?:(?:{_LINK})\s*|-|–|—|and\s*|,\s*)*$", re.IGNORECASE)
+
+
+def _ratio_percentages(sentence: str) -> list[tuple[str, float, int]]:
+    """Percentages that ARE the value of a ratio in this sentence, by grammar."""
+    governed_starts = {m.end() for m in _RATIO_THEN_VALUE_RE.finditer(sentence)}
+    named_from = min((m.end() for m in _AS_A_SHARE_OF_RE.finditer(sentence)), default=None)
+    out: list[tuple[str, float, int]] = []
+    previous_end: int | None = None
+    for match in _PERCENT_RE.finditer(sentence):
+        start, end = match.start(), match.end()
+        percent_tail = sentence[end - 1 : end + 80] if sentence[end - 1] == "%" else ""
+        chained = previous_end is not None and bool(
+            _BETWEEN_VALUES_RE.match(sentence[previous_end:start])
+        )
+        is_governed = (
+            start in governed_starts
+            or chained
+            or (named_from is not None and start >= named_from)
+            or bool(_OF_A_STATEMENT_LINE_RE.match(percent_tail))
+            or bool(_VALUE_THEN_RATIO_RE.match(sentence[end - 1 : end + 60]))
+        )
+        if is_governed:
+            out.extend(percentages_in(match.group(0)))
+            previous_end = end
+        else:
+            previous_end = None
+    return out
 
 
 def unsupported_percentages(claim: str | None, numbers: list[float]) -> list[str]:
@@ -137,7 +205,7 @@ def unsupported_percentages(claim: str | None, numbers: list[float]) -> list[str
     for sentence in _SENTENCE_RE.split(claim or ""):
         if not has_financial_ratio_shape(sentence):
             continue
-        for written, value, decimals in percentages_in(sentence):
+        for written, value, decimals in _ratio_percentages(sentence):
             tolerance = 0.5 * 10 ** (-decimals) + 1e-9
             if not any(abs(number - value) <= tolerance for number in numbers):
                 missing.append(written)
