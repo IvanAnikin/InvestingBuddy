@@ -44,6 +44,7 @@ without a model, a network or a database of documents.
 
 from __future__ import annotations
 
+import inspect
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -259,6 +260,9 @@ async def run_investigation(
     #: V3.18.2 — everything retrieved per question across ALL rounds, so a contract is
     #: judged over the question's whole evidence and not only its latest round's.
     evidence_so_far: dict[str, dict[str, Any]] = {}
+    #: V3.18.3 — external searches already spent per question, so a follow-up uses the
+    #: NEXT search intent and a question's own cap binds across rounds.
+    searches_so_far: dict[str, int] = {}
 
     for round_index in range(limits.max_rounds):
         if not pending:
@@ -291,12 +295,20 @@ async def run_investigation(
                 questions_by_key[key] for key in question_keys if key in questions_by_key
             ]
             try:
-                outcome = await investigator.investigate(
-                    role_id=role_id,
-                    questions=questions,
-                    round_index=round_index,
-                    remaining_tool_calls=max(0, limits.max_tool_calls - tool_calls),
-                )
+                kwargs: dict[str, Any] = {
+                    "role_id": role_id,
+                    "questions": questions,
+                    "round_index": round_index,
+                    "remaining_tool_calls": max(0, limits.max_tool_calls - tool_calls),
+                }
+                # V3.18.3 — what earlier rounds established, so a follow-up starts where
+                # the last round ended. Offered only to an investigator that accepts it:
+                # the Protocol predates it and every existing implementer stays valid.
+                if _accepts(investigator.investigate, "question_context"):
+                    kwargs["question_context"] = _question_context(
+                        question_keys, evidence_so_far, searches_so_far
+                    )
+                outcome = await investigator.investigate(**kwargs)
             except Exception as exc:  # noqa: BLE001 - one role must not end the run
                 await ledger.finish_task(
                     session,
@@ -387,6 +399,11 @@ async def run_investigation(
                 questions_by_key,
                 evidence_so_far,
             )
+            for key, steps in outcome.acquisition_steps.items():
+                searches_so_far[key] = searches_so_far.get(key, 0) + sum(
+                    1 for step in steps if step.get("rung") == "external_search"
+                    and step.get("query")
+                )
 
             if outcome.failed:
                 await ledger.finish_task(
@@ -423,7 +440,13 @@ async def run_investigation(
         # Gap review. Only a CLOSABLE gap becomes a follow-up: an unclosable one would
         # consume a whole round to fail again.
         follow_ups = await _follow_up_tasks(
-            session, run, plan, answered_keys=answered
+            session,
+            run,
+            plan,
+            answered_keys=answered,
+            improvable_keys=_improvable(
+                questions_by_key, evidence_so_far, searches_so_far
+            ),
         )
         if not follow_ups:
             stop_reason = STOPPED_NOTHING_LEFT
@@ -649,7 +672,12 @@ async def _open_question_keys(session: Any, run: Any) -> list[str]:
 
 
 async def _follow_up_tasks(
-    session: Any, run: Any, plan: ResearchPlan, *, answered_keys: "set[str]"
+    session: Any,
+    run: Any,
+    plan: ResearchPlan,
+    *,
+    answered_keys: "set[str]",
+    improvable_keys: "set[str] | None" = None,
 ) -> list[tuple[str, list[str]]]:
     """A closable gap becomes a follow-up task for a role that can address it.
 
@@ -659,7 +687,8 @@ async def _follow_up_tasks(
     fail identically.
     """
     gaps = await ledger.open_gaps(session, run, closable_only=True, limit=100)
-    if not gaps:
+    improvable = set(improvable_keys or ())
+    if not gaps and not improvable:
         return []
     role_for_question: dict[str, str] = {}
     for task in plan.tasks:
@@ -667,17 +696,73 @@ async def _follow_up_tasks(
             role_for_question.setdefault(key, task.role_id)
 
     by_role: dict[str, list[str]] = {}
+
+    def _add(question_key: str) -> None:
+        role_id = role_for_question.get(question_key)
+        if role_id is None:
+            return
+        keys = by_role.setdefault(role_id, [])
+        if question_key not in keys:
+            keys.append(question_key)
+
     for gap in gaps:
         question_key = gap.question_key
         if not question_key or question_key in answered_keys:
             continue
-        role_id = role_for_question.get(question_key)
-        if role_id is None:
-            continue
-        keys = by_role.setdefault(role_id, [])
-        if question_key not in keys:
-            keys.append(question_key)
+        _add(question_key)
+    # V3.18.3 — a question ANSWERED with a partial contract is still worth a round when
+    # acquisition can still improve it. "Has a finding" used to end a question's
+    # research, so one issuer excerpt settled the industry question for good.
+    for question_key in sorted(improvable):
+        _add(question_key)
     return sorted(by_role.items())
+
+
+def _accepts(fn: Any, parameter: str) -> bool:
+    try:
+        return parameter in inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+def _question_context(
+    question_keys: "Sequence[str]",
+    evidence_so_far: dict[str, dict[str, Any]],
+    searches_so_far: dict[str, int],
+) -> dict[str, Any]:
+    from app.services.agents.investigator import QuestionContext
+
+    return {
+        key: QuestionContext(
+            prior_evidence=tuple(evidence_so_far.get(key, {}).values()),
+            external_searches_done=searches_so_far.get(key, 0),
+        )
+        for key in question_keys
+    }
+
+
+def _improvable(
+    questions_by_key: dict[str, Any],
+    evidence_so_far: dict[str, dict[str, Any]],
+    searches_so_far: dict[str, int],
+) -> set[str]:
+    """Questions whose contract is unmet and whose ladder still has a rung to climb."""
+    from app.services.director.contracts import evaluate_contract
+
+    out: set[str] = set()
+    for key, question in questions_by_key.items():
+        contract = getattr(question, "evidence_contract", None)
+        if contract is None or not contract.allow_external:
+            continue
+        if searches_so_far.get(key, 0) >= contract.max_external_searches:
+            continue
+        if key not in evidence_so_far and key not in searches_so_far:
+            # Never worked (unassigned, or dropped for capacity): not a follow-up.
+            continue
+        if evaluate_contract(contract, evidence_so_far.get(key, {}).values()).satisfied:
+            continue
+        out.add(key)
+    return out
 
 
 __all__ = [

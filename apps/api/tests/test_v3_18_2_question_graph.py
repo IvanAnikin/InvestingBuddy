@@ -267,10 +267,19 @@ class _GraphInvestigator:
     """Returns one finding and some evidence per question; no model, no network."""
 
     evidence: dict[str, list[c.EvidenceRef]] = field(default_factory=dict)
+    contexts_seen: list[dict] = field(default_factory=list)
 
-    async def investigate(self, *, role_id, questions, round_index, remaining_tool_calls):  # noqa: ANN001, ANN201
+    async def investigate(  # noqa: ANN201
+        self, *, role_id, questions, round_index, remaining_tool_calls, question_context=None  # noqa: ANN001
+    ):
+        self.contexts_seen.append(dict(question_context or {}))
         outcome = TaskOutcome(tool_calls=len(questions))
         for q in questions:
+            prior = (question_context or {}).get(q.key)
+            if round_index > 0 and prior is not None and prior.prior_evidence:
+                # A follow-up that finds nothing new, as the platform rung would not.
+                outcome.question_evidence[q.key] = []
+                continue
             refs = self.evidence.get(q.key, [])
             outcome.question_evidence[q.key] = refs
             outcome.acquisition_steps[q.key] = [{"rung": "platform_tools", "round": round_index}]
@@ -293,6 +302,32 @@ class _GraphInvestigator:
                 )
                 outcome.answered_question_keys = (*outcome.answered_question_keys, q.key)
         return outcome
+
+
+class TestFollowUps:
+    async def test_a_partial_question_that_allows_external_gets_a_second_round(self, session) -> None:
+        """An answered question used to end its research. One issuer excerpt settled
+        the industry question for good."""
+        run = await ledger.open_run(session, mode="deep")
+        plan = await plan_research(subject="ANY:US", mode="deep", cfg=_CFG)
+        await persist_plan(session, run, plan)
+        issuer = [_ref("ev:1", c.ISSUER_FILING, "T1_primary_filing", "10-K")]
+        investigator = _GraphInvestigator({"industry_economics": issuer})
+        await run_investigation(session, run, plan, investigator=investigator, limits=plan.limits)
+        round_two = [ctx for ctx in investigator.contexts_seen if "industry_economics" in ctx]
+        assert len(round_two) >= 2, "the industry question was not re-asked"
+        prior = round_two[-1]["industry_economics"]
+        assert [r.citation_id for r in prior.prior_evidence] == ["ev:1"]
+
+    async def test_a_financial_question_is_not_re_asked_for_the_web(self, session) -> None:
+        run = await ledger.open_run(session, mode="deep")
+        plan = await plan_research(subject="ANY:US", mode="deep", cfg=_CFG)
+        await persist_plan(session, run, plan)
+        issuer = [_ref("ev:1", c.ISSUER_FILING, "T1_primary_filing", "10-K")]
+        investigator = _GraphInvestigator({"balance_sheet_risk": issuer})
+        await run_investigation(session, run, plan, investigator=investigator, limits=plan.limits)
+        seen = [ctx for ctx in investigator.contexts_seen if "balance_sheet_risk" in ctx]
+        assert len(seen) == 1, "a contract that forbids the web must not buy a second round"
 
 
 class TestTheLoopJudgesContracts:

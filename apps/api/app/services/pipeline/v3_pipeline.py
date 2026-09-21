@@ -451,6 +451,19 @@ async def _run(
     # registry built without it can never contain them however the run was configured.
     registry = register_builtins(ToolRegistry(), cfg=cfg)
     investigator_client = model_routing.client_for(SLOT_INVESTIGATOR)
+    # V3.18.3 — ONE ceiling on external searches for the whole run, shared by every
+    # specialist. `max_web_searches` was declared per mode and enforced by nothing; the
+    # acquisition ladder makes a search reachable from any question whose contract
+    # allows it, so the ceiling has to be real before that is switched on.
+    from app.services.agents.investigator import ExternalSearchBudget, clean_company_name
+
+    external_budget = (
+        ExternalSearchBudget(limit=int(limits.max_web_searches))
+        if "search_web" in registry.names()
+        else None
+    )
+    subject_name = clean_company_name(getattr(company, "name", None))
+    subject_industry = classification.industry or classification.sector
 
     class _RoleRoutedInvestigator:
         """One session per role, because a tool policy is per role.
@@ -464,7 +477,15 @@ async def _run(
             self.diagnostics = InvestigatorDiagnostics()
             self.tool_calls = 0
 
-        async def investigate(self, *, role_id, questions, round_index, remaining_tool_calls):  # noqa: ANN001, ANN201
+        async def investigate(  # noqa: ANN201
+            self,
+            *,
+            role_id,  # noqa: ANN001
+            questions,  # noqa: ANN001
+            round_index,  # noqa: ANN001
+            remaining_tool_calls,  # noqa: ANN001
+            question_context=None,  # noqa: ANN001
+        ):
             from app.services.director.roles import role_for
 
             role = role_for(role_id)
@@ -513,12 +534,16 @@ async def _run(
                 ticker=getattr(company, "ticker", None),
                 exchange=getattr(company, "exchange", None),
                 client=investigator_client,
+                company_name=subject_name,
+                industry=subject_industry,
+                external_budget=external_budget,
             )
             result = await worker.investigate(
                 role_id=role_id,
                 questions=questions,
                 round_index=round_index,
                 remaining_tool_calls=remaining_tool_calls,
+                question_context=question_context,
             )
             self.fabricated.extend(worker.fabricated_citations)
             # V3.16.1a — merged per worker, exactly as `fabricated_citations` already is.
@@ -539,6 +564,11 @@ async def _run(
     )
     outcome.loop = loop_result.to_dict()
     outcome.loop["fabricated_citations_discarded"] = len(investigator.fabricated)
+    if external_budget is not None:
+        outcome.loop["external_searches"] = {
+            "limit": external_budget.limit,
+            "used": external_budget.used,
+        }
     # V3.16.1a — why a model reply produced no finding, counted rather than guessed.
     diagnostics = investigator.diagnostics.to_dict()
     outcome.loop["investigator_diagnostics"] = diagnostics
@@ -757,12 +787,6 @@ async def _tool_call_consumption(session: Any, run: Any, company: Any) -> dict[s
     return totals
 
 
-#: Regulator hosts whose documents are primary filings. Deliberately short and
-#: suffix-matched: a list that tried to enumerate every issuer domain would be wrong
-#: for most companies, and guessing a tier is worse than declining to.
-_REGULATOR_HOST_SUFFIXES: tuple[str, ...] = ("sec.gov", "europa.eu", "fca.org.uk")
-
-
 def external_source_tier(url: str | None) -> str:
     """The source tier of a retrieved external URL.
 
@@ -773,17 +797,12 @@ def external_source_tier(url: str | None) -> str:
     issuer to check against, and inventing a second, weaker answer would let a
     lookalike domain be read as the company's own.
     """
-    from urllib.parse import urlsplit
+    # V3.18.3 — one registry, `publisher_tiers`, shared with the evidence contracts.
+    # This function used to know three regulator hosts and call everything else T5, so
+    # a page fetched from a geological survey counted as a content farm.
+    from app.services.sources.publisher_tiers import publisher_tier
 
-    try:
-        host = (urlsplit(url or "").hostname or "").lower()
-    except ValueError:
-        return "T5_api_aggregator"
-    if not host:
-        return "T5_api_aggregator"
-    if any(host == suffix or host.endswith("." + suffix) for suffix in _REGULATOR_HOST_SUFFIXES):
-        return "T1_primary_filing"
-    return "T5_api_aggregator"
+    return publisher_tier(url)
 
 
 def _claim_identity(lead: Any) -> tuple[float, str, str, str] | None:

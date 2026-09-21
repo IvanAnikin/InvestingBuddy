@@ -623,6 +623,14 @@ def parse_leads(
                 claimed_scope=(
                     str(item.get("scope")).strip() if item.get("scope") else None
                 ),
+                # V3.18.3 — what the number measures, and where. Claims about the claim,
+                # carried as metadata; verification never trusts them.
+                claimed_metric=(
+                    str(item.get("metric")).strip()[:120] if item.get("metric") else None
+                ),
+                claimed_geography=(
+                    str(item.get("geography")).strip()[:80] if item.get("geography") else None
+                ),
             )
         )
     if len(raw) > MAX_LEADS:
@@ -895,7 +903,11 @@ INVESTIGATION_SYSTEM_PROMPT = (
     "Return JSON: {\"findings\": [{\"claim\": str, \"source_url\": str|null, "
     "\"source_title\": str|null, \"publisher\": str|null, \"date\": str|null, "
     "\"value\": str|null, \"unit\": str|null, \"currency\": str|null, "
-    "\"period\": str|null, \"scope\": str|null}]}.\n"
+    "\"period\": str|null, \"scope\": str|null, \"metric\": str|null, "
+    "\"geography\": str|null}]}.\n"
+    "`metric` names what a figure measures (e.g. 'refined copper consumption', "
+    "'mine production', 'LME cash price', 'project capex'); `geography` is where it "
+    "applies ('world', 'Peru', 'China').\n"
     "Rules you must follow:\n"
     "- Cite a source URL for every claim you can. If you cannot, set source_url to null "
     "rather than citing something approximate. An uncited claim is acceptable and will "
@@ -903,6 +915,12 @@ INVESTIGATION_SYSTEM_PROMPT = (
     "- Do not state a figure you did not see. Leave value null instead.\n"
     "- Period and scope matter: say which period a figure is for, and whether it is the "
     "consolidated group or a named segment. If you do not know, use null.\n"
+    "- Quote figures as the page prints them, and phrase each claim with the words the "
+    "page uses next to the figure: the platform checks that the figure appears NEXT TO "
+    "those words, not merely somewhere on the page.\n"
+    "- For industry, market and commodity questions prefer official statistical agencies "
+    "(e.g. geological surveys, energy agencies, national statistics offices), "
+    "international bodies and industry study groups over news coverage of them.\n"
     "- You are not deciding anything. Every claim will be independently retrieved and "
     "verified before it is used.\n"
     "- PREFER THE PRIMARY SOURCE. Cite the issuer's own investor-relations page or the "
