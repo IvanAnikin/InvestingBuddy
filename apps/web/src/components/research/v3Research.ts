@@ -183,6 +183,192 @@ export type V3Classification = {
   isInferred: boolean | null;
 };
 
+/* ── The professional research report (V3.18.8) ────────────────────────────────────
+ *
+ * `v3_research.professional_research` is the report a reader reads: thirteen sections
+ * assembled from the ledger, in which every finding appears ONCE, in the section its
+ * domain owns, under a short label ("F3") that every other section refers to. The types
+ * below mirror `app/services/pipeline/professional_research.py`; the key sets are pinned
+ * against a producer payload in `tests/e2e/professional-research-report.spec.ts`. */
+
+/** A sentence the report states, and the findings (by label) it rests on. */
+export type LabelledSentence = { text: string; labels: string[] };
+
+export type ProfessionalSectionStatus =
+  | "evidenced"
+  | "partially_evidenced"
+  | "not_established"
+  | "no_thesis";
+
+export type ProfessionalFinding = {
+  /** "F3" — the handle every other section uses instead of restating the finding. */
+  label: string | null;
+  findingId: string | null;
+  statement: string;
+  questionKey: string | null;
+  domain: string | null;
+  domainLabel: string | null;
+  evidenceIds: string[];
+  calculationIds: string[];
+  sourceKinds: string[];
+  confidence: string | null;
+  direction: string | null;
+  periodKey: string | null;
+  references: string[];
+};
+
+/** A question a section was asked and could not settle. */
+export type ProfessionalOpenQuestion = {
+  questionKey: string | null;
+  text: string | null;
+  whyItMatters: string | null;
+  contractStatus: string | null;
+  unresolvedReason: string | null;
+  /** What evidence would settle it. */
+  missing: string[];
+};
+
+export type ProfessionalThesis = {
+  text: string | null;
+  dimensions: string[];
+  themes: string[];
+  matchedTheme: string | null;
+  relevanceReason: string | null;
+  councilRationale: string | null;
+};
+
+export type ThesisDimension = {
+  questionKey: string | null;
+  dimension: string;
+  status: ProfessionalSectionStatus | null;
+  findingLabels: string[];
+};
+
+export type SizeFit = {
+  requested: string[];
+  marketCapUsd: number | null;
+  /** null is "could not be determined", which is not the same as "does not fit". */
+  fits: boolean | null;
+  note: string | null;
+};
+
+export type CommodityRow = {
+  commodity: string | null;
+  displayName: string | null;
+  latestPeriod: string | null;
+  latestValue: number | null;
+  unit: string | null;
+  change12mPct: number | null;
+  change36mPct: number | null;
+  sourceTier: string | null;
+  evidenceId: string | null;
+};
+
+/** One company's figures in the peer comparison. A null is unsourced — never zero. */
+export type PeerRow = {
+  ticker: string;
+  isSubject: boolean;
+  period: string | null;
+  revenueUsdM: number | null;
+  operatingMarginPct: number | null;
+  netMarginPct: number | null;
+  cashConversion: number | null;
+  capexToOcfPct: number | null;
+  netDebtUsdM: number | null;
+};
+
+export type PlatformEvidenceGap = {
+  description: string;
+  questionKey: string | null;
+  knowledgeState: string | null;
+};
+
+type SectionHead = {
+  key: string;
+  title: string;
+  lead: LabelledSentence | null;
+};
+
+export type SynthesisSection = SectionHead & {
+  kind: "synthesis";
+  sentences: LabelledSentence[];
+  /** "deterministic" or "editor_model_verified", read as stored. */
+  author: string | null;
+};
+
+/** A section one research domain owns: its findings, its status, its open questions. */
+export type DomainSection = SectionHead & {
+  kind: "domain";
+  status: ProfessionalSectionStatus | null;
+  findings: ProfessionalFinding[];
+  findingsOmitted: number;
+  openQuestions: ProfessionalOpenQuestion[];
+  questionsAsked: number | null;
+  note: string | null;
+  /** thesis_fit only. */
+  thesis: ProfessionalThesis | null;
+  dimensions: ThesisDimension[];
+  sizeFit: SizeFit | null;
+  /** industry_and_market only. */
+  commodityTable: CommodityRow[];
+  /** competitive_position only. */
+  peerTable: PeerRow[];
+};
+
+/** Refers to findings by label; it never restates them. */
+export type ChangeSection = SectionHead & {
+  kind: "change";
+  counterThesisLabels: string[];
+  catalystLabels: string[];
+  unestablishedThesisDimensions: string[];
+  evidenceToSettle: { questionKey: string; missing: string[] }[];
+};
+
+export type EvidenceSection = SectionHead & {
+  kind: "evidence";
+  sourceDiversity: {
+    acquiredBySourceKind: Record<string, number>;
+    acquiredDistinctSources: number | null;
+    findingsCitingKind: Record<string, number>;
+    explanation: string | null;
+  } | null;
+  questionsByContractStatus: Record<string, number>;
+  unresolvedByReason: Record<string, number>;
+  /** What the platform could not acquire — a limit of the research, not of the company. */
+  platformEvidenceGaps: PlatformEvidenceGap[];
+  /** Findings about the company, by label. */
+  businessRiskLabels: string[];
+  explanation: string | null;
+  domainCost: { domain: string; counts: Record<string, number> }[];
+};
+
+export type ProfessionalSection =
+  | SynthesisSection
+  | DomainSection
+  | ChangeSection
+  | EvidenceSection;
+
+export type ProfessionalEditor = {
+  used: boolean | null;
+  reason: string | null;
+  synthesisSentencesKept: number | null;
+  leadsKept: number | null;
+  rejectedByReason: Record<string, number>;
+  fallback: boolean | null;
+};
+
+export type ProfessionalResearch = {
+  version: number | null;
+  subject: { ticker: string | null; name: string | null } | null;
+  sections: ProfessionalSection[];
+  /** Findings shown across all sections. Zero means the ledger had nothing to say. */
+  findingCount: number;
+  findingLabels: Record<string, string>;
+  councilConvened: boolean | null;
+  editor: ProfessionalEditor | null;
+  disclaimer: string | null;
+};
+
 export type V3Research = {
   runId: string | null;
   mode: string | null;
@@ -211,6 +397,8 @@ export type V3Research = {
   delta: V3Delta | null;
   classification: V3Classification | null;
   routing: { slot: string; vendor: string | null; reason: string | null }[];
+  /** The reader-facing report assembled from the ledger, when the run produced one. */
+  professionalResearch: ProfessionalResearch | null;
 };
 
 const isRecord = (v: unknown): v is Record<string, unknown> =>
@@ -460,6 +648,286 @@ function readClassification(raw: unknown): V3Classification | null {
   };
 }
 
+const SECTION_STATUSES: readonly ProfessionalSectionStatus[] = [
+  "evidenced",
+  "partially_evidenced",
+  "not_established",
+  "no_thesis",
+];
+
+function sectionStatus(v: unknown): ProfessionalSectionStatus | null {
+  const s = str(v);
+  return SECTION_STATUSES.find((known) => known === s) ?? null;
+}
+
+function readSentence(v: unknown): LabelledSentence | null {
+  if (!isRecord(v)) return null;
+  const text = str(v.text);
+  return text ? { text, labels: strings(v.labels) } : null;
+}
+
+function readProfessionalFinding(r: Record<string, unknown>): ProfessionalFinding | null {
+  const statement = str(r.statement);
+  if (!statement) return null;
+  return {
+    label: str(r.label),
+    findingId: str(r.finding_id),
+    statement,
+    questionKey: str(r.question_key),
+    domain: str(r.domain),
+    domainLabel: str(r.domain_label),
+    evidenceIds: strings(r.evidence_ids),
+    calculationIds: strings(r.calculation_ids),
+    sourceKinds: strings(r.source_kinds),
+    // The producer writes a float (0–1); a string is tolerated for older payloads.
+    confidence:
+      num(r.confidence) !== null ? String(num(r.confidence)) : str(r.confidence),
+    direction: str(r.direction),
+    periodKey: str(r.period_key),
+    references: strings(r.references),
+  };
+}
+
+function readOpenQuestion(r: Record<string, unknown>): ProfessionalOpenQuestion | null {
+  const questionKey = str(r.question_key);
+  const text = str(r.text);
+  if (!questionKey && !text) return null;
+  return {
+    questionKey,
+    text,
+    whyItMatters: str(r.why_it_matters),
+    contractStatus: str(r.contract_status),
+    unresolvedReason: str(r.unresolved_reason),
+    missing: strings(r.missing),
+  };
+}
+
+function readThesis(v: unknown): ProfessionalThesis | null {
+  if (!isRecord(v)) return null;
+  const thesis: ProfessionalThesis = {
+    text: str(v.thesis_text),
+    dimensions: strings(v.dimensions),
+    themes: strings(v.themes),
+    matchedTheme: str(v.matched_theme),
+    relevanceReason: str(v.relevance_reason),
+    councilRationale: str(v.council_rationale),
+  };
+  return thesis.text || thesis.dimensions.length > 0 || thesis.themes.length > 0
+    ? thesis
+    : null;
+}
+
+function readSizeFit(v: unknown): SizeFit | null {
+  if (!isRecord(v)) return null;
+  return {
+    requested: strings(v.requested),
+    marketCapUsd: num(v.market_cap_usd),
+    fits: bool(v.fits),
+    note: str(v.note),
+  };
+}
+
+function readCommodityRow(r: Record<string, unknown>): CommodityRow | null {
+  const commodity = str(r.commodity);
+  const displayName = str(r.display_name);
+  if (!commodity && !displayName) return null;
+  return {
+    commodity,
+    displayName,
+    latestPeriod: str(r.latest_period),
+    latestValue: num(r.latest_value),
+    unit: str(r.unit),
+    change12mPct: num(r.change_12m_pct),
+    change36mPct: num(r.change_36m_pct),
+    sourceTier: str(r.source_tier),
+    evidenceId: str(r.evidence_id),
+  };
+}
+
+function readPeerRow(r: Record<string, unknown>): PeerRow | null {
+  const ticker = str(r.ticker);
+  if (!ticker) return null;
+  return {
+    ticker,
+    isSubject: bool(r.is_subject) ?? false,
+    period: str(r.period),
+    revenueUsdM: num(r.revenue_usd_m),
+    operatingMarginPct: num(r.operating_margin_pct),
+    netMarginPct: num(r.net_margin_pct),
+    cashConversion: num(r.cash_conversion),
+    capexToOcfPct: num(r.capex_to_ocf_pct),
+    netDebtUsdM: num(r.net_debt_usd_m),
+  };
+}
+
+function readDomainSection(
+  head: SectionHead,
+  r: Record<string, unknown>,
+): DomainSection {
+  return {
+    ...head,
+    kind: "domain",
+    status: sectionStatus(r.status),
+    findings: records(r.findings)
+      .map(readProfessionalFinding)
+      .filter((f): f is ProfessionalFinding => f !== null),
+    findingsOmitted: num(r.findings_omitted) ?? 0,
+    openQuestions: records(r.open_questions)
+      .map(readOpenQuestion)
+      .filter((q): q is ProfessionalOpenQuestion => q !== null),
+    questionsAsked: num(r.questions_asked),
+    note: str(r.note),
+    thesis: readThesis(r.thesis),
+    dimensions: records(r.dimensions)
+      .map((d) => {
+        const dimension = str(d.dimension);
+        return dimension
+          ? {
+              questionKey: str(d.question_key),
+              dimension,
+              status: sectionStatus(d.status),
+              findingLabels: strings(d.finding_labels),
+            }
+          : null;
+      })
+      .filter((d): d is ThesisDimension => d !== null),
+    sizeFit: readSizeFit(r.size_fit),
+    commodityTable: records(r.commodity_table)
+      .map(readCommodityRow)
+      .filter((row): row is CommodityRow => row !== null),
+    peerTable: records(r.peer_table)
+      .map(readPeerRow)
+      .filter((row): row is PeerRow => row !== null),
+  };
+}
+
+function readEvidenceSection(
+  head: SectionHead,
+  r: Record<string, unknown>,
+): EvidenceSection {
+  const diversity = isRecord(r.source_diversity) ? r.source_diversity : null;
+  return {
+    ...head,
+    kind: "evidence",
+    sourceDiversity: diversity
+      ? {
+          acquiredBySourceKind: counts(diversity.acquired_distinct_sources_by_kind),
+          acquiredDistinctSources: num(diversity.acquired_distinct_sources),
+          findingsCitingKind: counts(diversity.findings_citing_kind),
+          explanation: str(diversity.explanation),
+        }
+      : null,
+    questionsByContractStatus: counts(r.questions_by_contract_status),
+    unresolvedByReason: counts(r.unresolved_by_reason),
+    platformEvidenceGaps: records(r.platform_evidence_gaps)
+      .map((g) => {
+        const description = str(g.description);
+        return description
+          ? {
+              description,
+              questionKey: str(g.question_key),
+              knowledgeState: str(g.knowledge_state),
+            }
+          : null;
+      })
+      .filter((g): g is PlatformEvidenceGap => g !== null),
+    businessRiskLabels: strings(r.business_risk_labels),
+    explanation: str(r.explanation),
+    domainCost: Object.entries(isRecord(r.domain_cost) ? r.domain_cost : {})
+      .map(([domain, raw]) => ({ domain, counts: counts(raw) }))
+      .filter((d) => Object.keys(d.counts).length > 0),
+  };
+}
+
+function readProfessionalSection(r: Record<string, unknown>): ProfessionalSection | null {
+  const key = str(r.key);
+  const title = str(r.title);
+  if (!key || !title) return null;
+  const head: SectionHead = { key, title, lead: readSentence(r.lead) };
+  // The three sections no single domain owns are recognised by key; every other key is
+  // a domain section, so a section the producer adds later still renders its findings.
+  if (key === "executive_synthesis") {
+    return {
+      ...head,
+      kind: "synthesis",
+      sentences: (Array.isArray(r.sentences) ? r.sentences : [])
+        .map(readSentence)
+        .filter((s): s is LabelledSentence => s !== null),
+      author: str(r.author),
+    };
+  }
+  if (key === "what_would_change_the_thesis") {
+    return {
+      ...head,
+      kind: "change",
+      counterThesisLabels: strings(r.counter_thesis_labels),
+      catalystLabels: strings(r.catalyst_labels),
+      unestablishedThesisDimensions: strings(r.unestablished_thesis_dimensions),
+      evidenceToSettle: records(r.evidence_that_would_settle_open_questions)
+        .map((q) => ({ questionKey: str(q.question_key) ?? "", missing: strings(q.missing) }))
+        .filter((q) => q.questionKey !== "" && q.missing.length > 0),
+    };
+  }
+  if (key === "evidence_quality_and_gaps") return readEvidenceSection(head, r);
+  return readDomainSection(head, r);
+}
+
+/**
+ * Read `professional_research` off the raw `v3_research` payload.
+ *
+ * `null` unless there is at least one readable section: an empty report is absence, and
+ * the page then renders exactly as it did before this report existed. Never throws — a
+ * field of the wrong type is dropped, not trusted.
+ */
+export function readProfessionalResearch(v3Payload: unknown): ProfessionalResearch | null {
+  if (!isRecord(v3Payload)) return null;
+  const raw = v3Payload.professional_research;
+  if (!isRecord(raw) || !Array.isArray(raw.sections) || raw.sections.length === 0) {
+    return null;
+  }
+  const sections = records(raw.sections)
+    .map(readProfessionalSection)
+    .filter((s): s is ProfessionalSection => s !== null);
+  if (sections.length === 0) return null;
+
+  const subject = isRecord(raw.subject)
+    ? { ticker: str(raw.subject.ticker), name: str(raw.subject.name) }
+    : null;
+  const editor = isRecord(raw.editor)
+    ? {
+        used: bool(raw.editor.used),
+        reason: str(raw.editor.reason),
+        synthesisSentencesKept: num(raw.editor.synthesis_sentences_kept),
+        leadsKept: num(raw.editor.leads_kept),
+        rejectedByReason: counts(raw.editor.rejected_by_reason),
+        fallback: bool(raw.editor.fallback),
+      }
+    : null;
+  const findingLabels: Record<string, string> = {};
+  if (isRecord(raw.finding_labels)) {
+    for (const [findingId, label] of Object.entries(raw.finding_labels)) {
+      const s = str(label);
+      if (s) findingLabels[findingId] = s;
+    }
+  }
+
+  const findingCount = sections.reduce(
+    (total, section) => total + ("findings" in section ? section.findings.length : 0),
+    0,
+  );
+
+  return {
+    version: num(raw.version),
+    subject: subject && (subject.ticker || subject.name) ? subject : null,
+    sections,
+    findingCount,
+    findingLabels,
+    councilConvened: bool(raw.council_convened),
+    editor,
+    disclaimer: str(raw.disclaimer),
+  };
+}
+
 export function readV3Research(sourceSummary: unknown): V3Research | null {
   if (!isRecord(sourceSummary)) return null;
   const raw = sourceSummary.v3_research;
@@ -468,7 +936,8 @@ export function readV3Research(sourceSummary: unknown): V3Research | null {
   const runId = str(raw.research_run_id);
   const error = str(raw.error);
   const degraded = strings(raw.degraded);
-  if (!runId && !error && degraded.length === 0) return null;
+  const professionalResearch = readProfessionalResearch(raw);
+  if (!runId && !error && degraded.length === 0 && !professionalResearch) return null;
 
   const loop = isRecord(raw.loop) ? raw.loop : {};
 
@@ -510,5 +979,6 @@ export function readV3Research(sourceSummary: unknown): V3Research | null {
         reason: str(s.reason),
       };
     }),
+    professionalResearch,
   };
 }

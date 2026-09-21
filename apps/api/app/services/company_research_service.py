@@ -491,6 +491,8 @@ async def start_company_research(
     use_llm: bool = False,
     llm_provider: str | None = None,
     require_schema_valid: bool = False,
+    discovery_candidate_id: str | uuid.UUID | None = None,
+    research_mode: str | None = None,
 ) -> tuple[dict[str, Any], bool]:
     """Create (or return the in-flight) research job for one company.
 
@@ -516,6 +518,8 @@ async def start_company_research(
         use_llm=use_llm,
         llm_provider=llm_provider,
         require_schema_valid=require_schema_valid,
+        discovery_candidate_id=discovery_candidate_id,
+        research_mode=research_mode,
     )
     return envelope, True
 
@@ -528,6 +532,8 @@ async def create_job_record(
     use_llm: bool = False,
     llm_provider: str | None = None,
     require_schema_valid: bool = False,
+    discovery_candidate_id: str | uuid.UUID | None = None,
+    research_mode: str | None = None,
 ) -> dict[str, Any]:
     """Create and COMMIT the ``AgentRun`` + ``AgentStep`` envelope for one job.
 
@@ -579,6 +585,12 @@ async def create_job_record(
             "use_llm": use_llm,
             "llm_provider": llm_provider,
             "require_schema_valid": require_schema_valid,
+            # V3.18.8 — why this company is being researched, and how deeply. Carried
+            # as inputs so the research reads them from the job, on every entry path.
+            "discovery_candidate_id": (
+                str(discovery_candidate_id) if discovery_candidate_id else None
+            ),
+            "research_mode": research_mode,
         },
         output_json=envelope,
     )
@@ -804,6 +816,8 @@ async def process_company_research_by_id(
                 session,
                 company=company,
                 report_id=report_id,
+                discovery_candidate_id=request.get("discovery_candidate_id"),
+                research_mode=request.get("research_mode"),
                 # The DURABLE job id, never `job_id`. `job_id` is an AgentRun, and
                 # `research_tool_calls.research_job_id` is a foreign key to
                 # `research_jobs` — passing the wrong one here is the defect V3.17.9
@@ -898,6 +912,8 @@ async def _run_v3_pipeline(
     company: Company,
     report_id: Any,
     research_job_id: uuid.UUID | None = None,
+    discovery_candidate_id: str | uuid.UUID | None = None,
+    research_mode: str | None = None,
 ) -> Any:
     """Run the V3 pipeline and attach its state to the report. Never raises.
 
@@ -916,7 +932,12 @@ async def _run_v3_pipeline(
         )
 
         outcome = await run_v3_research(
-            session, company, cfg=settings, research_job_id=research_job_id
+            session,
+            company,
+            cfg=settings,
+            mode=research_mode,
+            research_job_id=research_job_id,
+            discovery_candidate_id=discovery_candidate_id,
         )
         report = await session.get(Report, report_id)
         if report is not None:

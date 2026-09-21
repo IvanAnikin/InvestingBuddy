@@ -105,6 +105,8 @@ class FindingDraft:
     scope_key: str | None = None
     #: V3.18.2 — source kinds of the cited evidence, for the finding's provenance.
     source_kinds: tuple[str, ...] = ()
+    #: V3.18.7 — findings OTHER domains own that this one builds on, by id.
+    references: tuple[str, ...] = ()
 
 
 @dataclass
@@ -192,6 +194,11 @@ class LoopResult:
     elapsed_seconds: float = 0.0
     #: A limit that ended an IMPROVEMENT round after the run was already complete.
     improvement_stopped_by: str | None = None
+    #: Everything acquired per question, as contract refs. In memory only — the report
+    #: assembler reads source diversity from it; the ledger has the durable record.
+    evidence_by_question: dict[str, list[Any]] = field(default_factory=dict)
+    #: V3.18.7 — statements not written because another finding already says them.
+    restatements_referenced: int = 0
 
     def __post_init__(self) -> None:
         if self.improvement_stopped_by not in LIMIT_STOP_REASONS | {None}:
@@ -233,6 +240,7 @@ class LoopResult:
             "council_may_convene": self.council_may_convene,
             "elapsed_seconds": round(self.elapsed_seconds, 3),
             "improvement_stopped_by": self.improvement_stopped_by,
+            "restatements_referenced": self.restatements_referenced,
         }
 
 
@@ -273,6 +281,11 @@ async def run_investigation(
     #: non-blocking questions, meet partially met contracts — and cannot un-complete it.
     completed = False
     improvement_stopped_by: str | None = None
+    #: V3.18.7 — every finding written, for restatement checks and cross-references.
+    from app.services.director.ownership import OwnershipIndex
+
+    ownership = OwnershipIndex()
+    restatements = 0
 
     for round_index in range(limits.max_rounds):
         if not pending:
@@ -323,7 +336,14 @@ async def run_investigation(
                 # the Protocol predates it and every existing implementer stays valid.
                 if _accepts(investigator.investigate, "question_context"):
                     kwargs["question_context"] = _question_context(
-                        question_keys, evidence_so_far, searches_so_far
+                        question_keys,
+                        evidence_so_far,
+                        searches_so_far,
+                        ownership=ownership,
+                        domains={
+                            key: _domain_of(questions_by_key.get(key), role_id)
+                            for key in question_keys
+                        },
                     )
                 outcome = await investigator.investigate(**kwargs)
             except Exception as exc:  # noqa: BLE001 - one role must not end the run
@@ -345,8 +365,34 @@ async def run_investigation(
             for draft in outcome.findings:
                 question_def = questions_by_key.get(draft.question_key or "")
                 domain = _domain_of(question_def, role_id)
+                owner = ownership.restated_by(
+                    draft.statement, draft.evidence_ids, getattr(draft, "direction", None)
+                )
+                if owner is not None:
+                    # V3.18.7 — already said, by its owner. Referenced, not repeated.
+                    restatements += 1
+                    if draft.question_key:
+                        try:
+                            await ledger.update_question_graph_state(
+                                session,
+                                run,
+                                draft.question_key,
+                                acquisition_steps=[
+                                    {
+                                        "rung": "ownership",
+                                        "round": round_index,
+                                        "referenced_finding_id": owner.finding_id,
+                                        "owner_domain": owner.domain,
+                                        "reason": "restates a finding another question owns",
+                                    }
+                                ],
+                            )
+                        except Exception:  # noqa: BLE001 - an audit step must not end a run
+                            pass
+                    continue
+                known_ids = {f.finding_id for f in ownership.findings}
                 try:
-                    await ledger.record_finding(
+                    recorded = await ledger.record_finding(
                         session,
                         run,
                         statement=draft.statement,
@@ -369,6 +415,17 @@ async def run_investigation(
                             else None
                         ),
                         source_kinds=draft.source_kinds,
+                        references_finding_ids=[
+                            ref for ref in draft.references if ref in known_ids
+                        ],
+                    )
+                    ownership.add(
+                        str(recorded.id),
+                        domain=domain,
+                        question_key=draft.question_key,
+                        statement=draft.statement,
+                        evidence_ids=draft.evidence_ids,
+                        direction=getattr(draft, "direction", None),
                     )
                 except ledger.UnsupportedFindingError:
                     # An investigator that returned a statement with no support has
@@ -533,6 +590,7 @@ async def run_investigation(
     summary = await ledger.summarise(session, run)
     open_keys = await _open_question_keys(session, run)
     result = LoopResult(
+        restatements_referenced=restatements,
         stopped_by=stop_reason,
         rounds=rounds,
         tasks_run=tasks_run,
@@ -548,6 +606,9 @@ async def run_investigation(
         council_may_convene=summary.council_may_convene,
         elapsed_seconds=clock() - started,
         improvement_stopped_by=improvement_stopped_by,
+        evidence_by_question={
+            key: list(pool.values()) for key, pool in evidence_so_far.items()
+        },
     )
     await ledger.close_run(
         session,
@@ -569,7 +630,19 @@ def _domain_of(question: Any, role_id: str) -> str | None:
     if declared:
         return declared
     owner = getattr(question, "owner_role", None) or role_id
-    return next((spec.domain for spec in DOMAIN_SPECS if spec.default_owner == owner), None)
+    owned = next((spec.domain for spec in DOMAIN_SPECS if spec.default_owner == owner), None)
+    # Roles that own no domain still write findings — a re-asked gap answered by the
+    # macro or external analyst — and a finding with no domain has no report section.
+    return owned or _ROLE_DOMAIN.get(owner)
+
+
+#: The domain a finding from a role that OWNS none belongs to.
+_ROLE_DOMAIN: dict[str, str] = {
+    "macro_analyst": "industry_economics",
+    "management_analyst": "governance",
+    "capital_allocation_analyst": "capital_allocation",
+    "external_research_analyst": "catalysts",
+}
 
 
 async def _judge_contracts(
@@ -845,16 +918,28 @@ def _question_context(
     question_keys: "Sequence[str]",
     evidence_so_far: dict[str, dict[str, Any]],
     searches_so_far: dict[str, int],
+    *,
+    ownership: Any = None,
+    domains: "dict[str, str | None] | None" = None,
 ) -> dict[str, Any]:
     from app.services.agents.investigator import QuestionContext
 
-    return {
-        key: QuestionContext(
+    out: dict[str, Any] = {}
+    for key in question_keys:
+        established = (
+            tuple(
+                (f.finding_id, f.statement, f.domain)
+                for f in ownership.established_outside((domains or {}).get(key))
+            )
+            if ownership is not None
+            else ()
+        )
+        out[key] = QuestionContext(
             prior_evidence=tuple(evidence_so_far.get(key, {}).values()),
             external_searches_done=searches_so_far.get(key, 0),
+            established_elsewhere=established,
         )
-        for key in question_keys
-    }
+    return out
 
 
 def _improvable(

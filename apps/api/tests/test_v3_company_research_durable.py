@@ -342,6 +342,8 @@ class TestDurableSubmission:
             "use_llm",
             "llm_provider",
             "require_schema_valid",
+            "discovery_candidate_id",
+            "research_mode",
             "company",
         }
 
@@ -406,7 +408,7 @@ class TestDurableExecution:
         """
         seen: dict[str, Any] = {}
 
-        async def fake_v3(session, *, company, report_id, research_job_id=None):
+        async def fake_v3(session, *, company, report_id, research_job_id=None, **_kw):
             seen["v3"] = research_job_id
             return None
 
@@ -423,6 +425,27 @@ class TestDurableExecution:
             "the AgentRun id was substituted for the durable job id — this is the "
             "exact defect V3.17.9 closes"
         )
+
+    async def test_the_thesis_and_mode_reach_the_v3_pipeline(
+        self, durable_on, store, company, factory, monkeypatch
+    ):
+        """V3.18.8. The candidate that caused the research and the depth asked for
+        travel from the request, through the durable payload and the content record,
+        to the pipeline — the seam the SCCO baseline lost its thesis at."""
+        seen: dict[str, Any] = {}
+
+        async def fake_v3(session, *, company, report_id, research_job_id=None, **kw):
+            seen.update(kw)
+            return None
+
+        monkeypatch.setattr(svc, "_run_v3_pipeline", fake_v3)
+        candidate_id = uuid.uuid4()
+        await durable.submit(
+            company, store=store, discovery_candidate_id=candidate_id, research_mode="deep"
+        )
+        assert await _run_the_job(store, factory, report_id=uuid.uuid4()) is True
+        assert seen["discovery_candidate_id"] == str(candidate_id)
+        assert seen["research_mode"] == "deep"
 
     async def test_the_consumption_row_names_the_durable_job(
         self, durable_on, store, company, factory, monkeypatch

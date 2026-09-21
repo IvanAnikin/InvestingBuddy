@@ -772,6 +772,64 @@ async def test_post_for_an_unknown_company_is_404_not_a_started_job(
     assert res.status_code == 404
 
 
+async def _candidate_for(session, ticker: str, exchange: str = "CO"):  # noqa: ANN001, ANN202
+    from app.models.discovery import DiscoveryCandidate, DiscoveryRun
+
+    run = DiscoveryRun(id=uuid.uuid4(), status="completed", provider_name="mock",
+                       mode="thesis", thesis_text="luxury goods with pricing power")
+    session.add(run)
+    await session.flush()
+    candidate = DiscoveryCandidate(id=uuid.uuid4(), discovery_run_id=run.id,
+                                   ticker=ticker, exchange=exchange)
+    session.add(candidate)
+    await session.commit()
+    return candidate
+
+
+async def test_a_thesis_for_another_company_is_refused(factory, session) -> None:
+    """V3.18.8. A thesis attached to the wrong company would be tested against
+    evidence about another business — a wrong answer that looks like a right one."""
+    company = await _pandora(session)
+    other = await _candidate_for(session, "NOVO-B")
+    elsewhere = await _candidate_for(session, "PNDORA", exchange="US")
+    mine = await _candidate_for(session, "PNDORA")
+    client, app = await _client(factory)
+    try:
+        wrong = await client.post(
+            "/api/v1/company-research/jobs",
+            json={"company_id": str(company.id), "discovery_candidate_id": str(other.id)},
+        )
+        same_ticker_other_exchange = await client.post(
+            "/api/v1/company-research/jobs",
+            json={"company_id": str(company.id),
+                  "discovery_candidate_id": str(elsewhere.id)},
+        )
+        missing = await client.post(
+            "/api/v1/company-research/jobs",
+            json={"company_id": str(company.id),
+                  "discovery_candidate_id": str(uuid.uuid4())},
+        )
+        bad_mode = await client.post(
+            "/api/v1/company-research/jobs",
+            json={"company_id": str(company.id), "research_mode": "max"},
+        )
+        right = await client.post(
+            "/api/v1/company-research/jobs",
+            json={"company_id": str(company.id), "discovery_candidate_id": str(mine.id),
+                  "research_mode": "deep"},
+        )
+    finally:
+        await client.aclose()
+        app.dependency_overrides.clear()
+    assert wrong.status_code == 422
+    assert same_ticker_other_exchange.status_code == 422, "a ticker is not an identity"
+    assert missing.status_code == 404
+    assert bad_mode.status_code == 422, "only bounded public modes are accepted"
+    assert right.status_code == 202
+    envelope_input = await svc.get_job_envelope(session, uuid.UUID(right.json()["job_id"]))
+    assert envelope_input is not None
+
+
 async def test_post_requires_an_identity(factory, session) -> None:
     await _pandora(session)
     client, app = await _client(factory)

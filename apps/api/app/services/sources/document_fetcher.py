@@ -147,8 +147,14 @@ async def safe_fetch_document(
     cfg: Settings | None = None,
     resolve_ip: bool = False,
     resolver: Resolver = socket.getaddrinfo,
+    extra_text_content_types: tuple[str, ...] = (),
 ) -> DocumentFetchResult:
     """Fetch one allowlisted HTTPS document (bounded, guarded, never raising).
+
+    ``extra_text_content_types`` (V3.18.5) admits additional TEXT content types for this
+    one call only — a statistical publisher's CSV (``application/csv``, ``text/csv``) —
+    classified as ``text``. The global allowlist is untouched, so no existing caller can
+    start receiving a type it never asked for.
 
     Returns a ``DocumentFetchResult``. On any failure (blocked host, off-domain
     redirect, disallowed content type, timeout, http error) it degrades to a
@@ -250,6 +256,11 @@ async def safe_fetch_document(
                     result.content_type = content_type
                     doc_type = classify_content_type(content_type, current)
                     ct_prefix = (content_type or "").split(";")[0].strip().lower()
+                    if doc_type is None and ct_prefix in {
+                        t.strip().lower() for t in extra_text_content_types
+                    }:
+                        doc_type = "text"
+                        allowed_types = (*allowed_types, ct_prefix)
                     if doc_type is None or (
                         allowed_types
                         and ct_prefix

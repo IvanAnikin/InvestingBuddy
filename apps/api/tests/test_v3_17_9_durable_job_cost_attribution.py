@@ -295,7 +295,7 @@ class TestTheV2PathIsHonestlyNull:
 
         seen: dict[str, Any] = {}
 
-        async def fake_v3(session, *, company, report_id, research_job_id=None):  # noqa: ANN001
+        async def fake_v3(session, *, company, report_id, research_job_id=None, **_kw):  # noqa: ANN001
             seen["v3"] = research_job_id
             return None
 
@@ -325,7 +325,7 @@ class TestTheV2PathIsHonestlyNull:
 
         seen: dict[str, Any] = {}
 
-        async def fake_v3(session, *, company, report_id, research_job_id=None):  # noqa: ANN001
+        async def fake_v3(session, *, company, report_id, research_job_id=None, **_kw):  # noqa: ANN001
             seen["v3"] = research_job_id
             return None
 

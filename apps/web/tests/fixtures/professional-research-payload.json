@@ -1,0 +1,479 @@
+{
+  "version": 1,
+  "subject": {
+    "ticker": "SCCO",
+    "name": "Southern Copper Corp"
+  },
+  "sections": [
+    {
+      "key": "executive_synthesis",
+      "title": "Executive synthesis",
+      "lead": null,
+      "sentences": [
+        {
+          "text": "Copper dominates the company's sales by a wide margin.",
+          "labels": [
+            "F2"
+          ]
+        },
+        {
+          "text": "World mine output of copper is concentrated in a few countries.",
+          "labels": [
+            "F3"
+          ]
+        }
+      ],
+      "author": "editor_model_checked",
+      "author_note": "Written by an editor model from the cited findings. Each sentence was checked for citations, for figures (it may state none) and for prohibited language \u2014 not for meaning. The cited findings are the research; read them."
+    },
+    {
+      "key": "thesis_fit",
+      "title": "Fit with the originating thesis",
+      "lead": null,
+      "status": "partially_evidenced",
+      "findings": [
+        {
+          "label": "F1",
+          "finding_id": "g",
+          "statement": "EVs use about 83 kg of copper per vehicle.",
+          "question_key": "thesis_fit__electric_vehicles",
+          "domain": "thesis_fit",
+          "domain_label": "Thesis fit",
+          "evidence_ids": [
+            "ev:g"
+          ],
+          "calculation_ids": [],
+          "source_kinds": [],
+          "confidence": null,
+          "direction": null,
+          "period_key": null,
+          "references": []
+        }
+      ],
+      "findings_omitted": 0,
+      "referenced_labels": [],
+      "open_questions": [
+        {
+          "question_key": "thesis_fit__electric_vehicles",
+          "text": "thesis_fit__electric_vehicles?",
+          "why_it_matters": null,
+          "contract_status": "partial",
+          "unresolved_reason": null,
+          "missing": []
+        },
+        {
+          "question_key": "thesis_fit__semiconductors",
+          "text": "thesis_fit__semiconductors?",
+          "why_it_matters": null,
+          "contract_status": "unmet",
+          "unresolved_reason": null,
+          "missing": []
+        }
+      ],
+      "questions_asked": 2,
+      "thesis": {
+        "thesis_text": "small-cap critical materials for EVs",
+        "dimensions": [
+          "electric_vehicles",
+          "semiconductors"
+        ]
+      },
+      "dimensions": [
+        {
+          "question_key": "thesis_fit__electric_vehicles",
+          "dimension": "electric_vehicles",
+          "status": "partially_evidenced",
+          "finding_labels": [
+            "F1"
+          ],
+          "referenced_labels": []
+        },
+        {
+          "question_key": "thesis_fit__semiconductors",
+          "dimension": "semiconductors",
+          "status": "not_established",
+          "finding_labels": [],
+          "referenced_labels": []
+        }
+      ],
+      "size_fit": {
+        "requested": [
+          "small_cap"
+        ],
+        "fits": false
+      }
+    },
+    {
+      "key": "business_model",
+      "title": "Business model",
+      "lead": {
+        "text": "Copper is the product that drives the business.",
+        "labels": [
+          "F2"
+        ]
+      },
+      "status": "evidenced",
+      "findings": [
+        {
+          "label": "F2",
+          "finding_id": "a",
+          "statement": "Copper was 78% of 2025 net sales.",
+          "question_key": "business_model",
+          "domain": "business_model",
+          "domain_label": "Business model",
+          "evidence_ids": [
+            "ev:a"
+          ],
+          "calculation_ids": [],
+          "source_kinds": [
+            "issuer_filing"
+          ],
+          "confidence": null,
+          "direction": null,
+          "period_key": null,
+          "references": []
+        }
+      ],
+      "findings_omitted": 0,
+      "referenced_labels": [],
+      "open_questions": [],
+      "questions_asked": 1
+    },
+    {
+      "key": "industry_and_market",
+      "title": "Industry and market",
+      "lead": null,
+      "status": "partially_evidenced",
+      "findings": [
+        {
+          "label": "F3",
+          "finding_id": "b",
+          "statement": "World copper mine production was 23,000 thousand tons in 2025.",
+          "question_key": "industry_economics",
+          "domain": "industry_economics",
+          "domain_label": "Industry economics",
+          "evidence_ids": [
+            "ev:b"
+          ],
+          "calculation_ids": [],
+          "source_kinds": [
+            "industry_specialist"
+          ],
+          "confidence": null,
+          "direction": null,
+          "period_key": null,
+          "references": []
+        }
+      ],
+      "findings_omitted": 0,
+      "referenced_labels": [],
+      "open_questions": [
+        {
+          "question_key": "industry_economics",
+          "text": "industry_economics?",
+          "why_it_matters": null,
+          "contract_status": "partial",
+          "unresolved_reason": null,
+          "missing": [
+            "an independent government, statistical or industry-specialist source"
+          ]
+        }
+      ],
+      "questions_asked": 1,
+      "commodity_table": [
+        {
+          "commodity": "copper",
+          "series_key": "fred:PCOPPUSDM",
+          "display_name": "Global price of Copper (IMF, via FRED)",
+          "latest_period": "2026-07",
+          "latest_value": 9812.4,
+          "unit": "USD per metric ton",
+          "change_12m_pct": 6.3,
+          "change_36m_pct": 18.9,
+          "source_tier": "T2_regulator_or_gov",
+          "evidence_id": "mo:1234"
+        },
+        {
+          "commodity": "molybdenum",
+          "series_key": "usgs:mcs2026:molybdenum:price",
+          "display_name": "Molybdenum price (USGS MCS 2026)",
+          "latest_period": "2025",
+          "latest_value": 48.5,
+          "unit": "USD per kilogram",
+          "change_12m_pct": null,
+          "change_36m_pct": null,
+          "source_tier": "T3_industry_specialist",
+          "evidence_id": "mo:5678"
+        }
+      ]
+    },
+    {
+      "key": "operations",
+      "title": "Products, assets and operations",
+      "lead": null,
+      "status": "not_established",
+      "findings": [],
+      "findings_omitted": 0,
+      "referenced_labels": [],
+      "open_questions": [],
+      "questions_asked": 0
+    },
+    {
+      "key": "competitive_position",
+      "title": "Competitive position",
+      "lead": null,
+      "status": "not_established",
+      "findings": [],
+      "findings_omitted": 0,
+      "referenced_labels": [],
+      "open_questions": [],
+      "questions_asked": 0,
+      "peer_table": [
+        {
+          "ticker": "SCCO",
+          "period": "FY2025",
+          "revenue_usd_m": 13420.0,
+          "operating_margin_pct": 52.2,
+          "net_margin_pct": 33.1,
+          "cash_conversion": 1.08,
+          "capex_to_ocf_pct": 24.0,
+          "net_debt_usd_m": 2100.0,
+          "evidence_ids": [
+            "peerfin:SCCO:FY2025:revenue",
+            "peerfin:SCCO:FY2025:operating_margin",
+            "peerfin:SCCO:FY2025:net_margin",
+            "peerfin:SCCO:FY2025:cash_conversion",
+            "peerfin:SCCO:FY2025:capex_to_ocf",
+            "peerfin:SCCO:FY2025:net_debt"
+          ],
+          "is_subject": true
+        },
+        {
+          "ticker": "FCX",
+          "period": "FY2025",
+          "revenue_usd_m": 25455.0,
+          "operating_margin_pct": 25.1,
+          "net_margin_pct": 8.9,
+          "cash_conversion": 2.5,
+          "capex_to_ocf_pct": 62.0,
+          "net_debt_usd_m": null,
+          "evidence_ids": [
+            "peerfin:FCX:FY2025:revenue",
+            "peerfin:FCX:FY2025:operating_margin",
+            "peerfin:FCX:FY2025:net_margin",
+            "peerfin:FCX:FY2025:cash_conversion",
+            "peerfin:FCX:FY2025:capex_to_ocf"
+          ],
+          "is_subject": false
+        }
+      ]
+    },
+    {
+      "key": "growth_and_catalysts",
+      "title": "Growth pipeline and catalysts",
+      "lead": null,
+      "status": "not_established",
+      "findings": [],
+      "findings_omitted": 0,
+      "referenced_labels": [],
+      "open_questions": [
+        {
+          "question_key": "upcoming_catalysts",
+          "text": "upcoming_catalysts?",
+          "why_it_matters": null,
+          "contract_status": "unmet",
+          "unresolved_reason": "not_acquired",
+          "missing": []
+        }
+      ],
+      "questions_asked": 1
+    },
+    {
+      "key": "financial_capacity",
+      "title": "Financial capacity",
+      "lead": null,
+      "status": "not_established",
+      "findings": [],
+      "findings_omitted": 0,
+      "referenced_labels": [],
+      "open_questions": [],
+      "questions_asked": 0
+    },
+    {
+      "key": "valuation_context",
+      "title": "Valuation context",
+      "lead": null,
+      "status": "not_established",
+      "findings": [],
+      "findings_omitted": 0,
+      "referenced_labels": [],
+      "open_questions": [],
+      "questions_asked": 0
+    },
+    {
+      "key": "risks_and_counter_thesis",
+      "title": "Risks and counter-thesis",
+      "lead": null,
+      "status": "evidenced",
+      "findings": [
+        {
+          "label": "F4",
+          "finding_id": "c",
+          "statement": "Operations in Peru face community opposition.",
+          "question_key": "material_risks",
+          "domain": "risks",
+          "domain_label": "Risks",
+          "evidence_ids": [
+            "ev:c"
+          ],
+          "calculation_ids": [],
+          "source_kinds": [],
+          "confidence": null,
+          "direction": null,
+          "period_key": null,
+          "references": []
+        },
+        {
+          "label": "F5",
+          "finding_id": "d",
+          "statement": "A 10% fall in the copper price would reduce revenue materially.",
+          "question_key": "counter_thesis",
+          "domain": "counter_thesis",
+          "domain_label": "Counter-thesis",
+          "evidence_ids": [
+            "ev:d"
+          ],
+          "calculation_ids": [],
+          "source_kinds": [],
+          "confidence": null,
+          "direction": null,
+          "period_key": null,
+          "references": []
+        }
+      ],
+      "findings_omitted": 0,
+      "referenced_labels": [],
+      "open_questions": [],
+      "questions_asked": 2
+    },
+    {
+      "key": "sensitivities",
+      "title": "Sensitivities",
+      "lead": null,
+      "status": "evidenced",
+      "findings": [
+        {
+          "label": "F6",
+          "finding_id": "e",
+          "statement": "Revenue moves with the LME copper price.",
+          "question_key": "commodity_price_sensitivity",
+          "domain": "valuation_context",
+          "domain_label": "Valuation context",
+          "evidence_ids": [
+            "ev:e"
+          ],
+          "calculation_ids": [],
+          "source_kinds": [],
+          "confidence": null,
+          "direction": null,
+          "period_key": null,
+          "references": []
+        }
+      ],
+      "findings_omitted": 0,
+      "referenced_labels": [],
+      "open_questions": [],
+      "questions_asked": 1
+    },
+    {
+      "key": "what_would_change_the_thesis",
+      "title": "What would change the thesis",
+      "lead": null,
+      "counter_thesis_labels": [
+        "F5"
+      ],
+      "catalyst_labels": [],
+      "unestablished_thesis_dimensions": [
+        "semiconductors"
+      ],
+      "evidence_that_would_settle_open_questions": [
+        {
+          "question_key": "industry_economics",
+          "missing": [
+            "an independent government, statistical or industry-specialist source"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "evidence_quality_and_gaps",
+      "title": "Evidence quality and unresolved gaps",
+      "lead": null,
+      "source_diversity": {
+        "acquired_distinct_sources_by_kind": {
+          "industry_specialist": 1,
+          "issuer_filing": 1
+        },
+        "acquired_distinct_sources": 2,
+        "findings_citing_kind": {
+          "industry_specialist": 1,
+          "issuer_filing": 1
+        },
+        "explanation": "Distinct sources are counted by document, dataset or registrant, not by excerpt: twenty passages of one 10-K are one source."
+      },
+      "questions_by_contract_status": {
+        "partial": 2,
+        "satisfied": 4,
+        "unmet": 2
+      },
+      "unresolved_by_reason": {
+        "not_acquired": 1
+      },
+      "platform_evidence_gaps": [
+        {
+          "description": "No citable evidence was retrieved for 'upcoming_catalysts'.",
+          "question_key": "upcoming_catalysts",
+          "knowledge_state": "not_acquired_by_platform"
+        }
+      ],
+      "business_risk_labels": [
+        "F4"
+      ],
+      "findings_shown": 6,
+      "findings_not_shown": 0,
+      "findings_withheld_for_safety": 0,
+      "unclassified_findings": 0,
+      "explanation": "Platform evidence gaps are what this research could not acquire \u2014 a limit of the platform, not a statement about the company. Business risks are findings about the company, each resting on cited evidence.",
+      "domain_cost": {
+        "industry_economics": {
+          "tool_calls": 9,
+          "corpus_queries": 2,
+          "external_searches": 2,
+          "fetches": 5
+        }
+      }
+    }
+  ],
+  "finding_labels": {
+    "g": "F1",
+    "a": "F2",
+    "b": "F3",
+    "c": "F4",
+    "d": "F5",
+    "e": "F6"
+  },
+  "findings_count": 6,
+  "council_convened": false,
+  "editor": {
+    "used": true,
+    "synthesis_sentences_kept": 2,
+    "leads_kept": 1,
+    "rejected_by_reason": {
+      "states_a_figure": 1
+    },
+    "fallback": false,
+    "checks": "citations, figures (none allowed), prohibited language; not meaning"
+  },
+  "disclaimer": "Internal research draft. Not investment advice and not a recommendation. Every statement rests on the cited findings; a gap marked 'not acquired by the platform' is a limit of this research, not a fact about the company. Human review required.",
+  "withheld_for_safety": 0
+}
