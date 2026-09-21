@@ -455,10 +455,18 @@ async def _run(
     # specialist. `max_web_searches` was declared per mode and enforced by nothing; the
     # acquisition ladder makes a search reachable from any question whose contract
     # allows it, so the ceiling has to be real before that is switched on.
-    from app.services.agents.investigator import ExternalSearchBudget, clean_company_name
+    from app.services.agents.investigator import (
+        ExternalSearchBudget,
+        clean_company_name,
+        role_can_search_externally,
+    )
 
     external_budget = (
-        ExternalSearchBudget(limit=int(limits.max_web_searches))
+        # The run's BUDGET, not the mode preset: `budget_for` applies the operator's
+        # `V3_RUN_MAX_WEB_SEARCHES`, which narrows whatever the mode proposes. Reading
+        # the preset let a STANDARD run spend 12 paid searches against a cap of 2, while
+        # the budget recorded on the run said 2.
+        ExternalSearchBudget(limit=int(budget_for(resolved_mode, cfg).max_web_searches))
         if "search_web" in registry.names()
         else None
     )
@@ -476,6 +484,16 @@ async def _run(
             self.fabricated: list[str] = []
             self.diagnostics = InvestigatorDiagnostics()
             self.tool_calls = 0
+            #: Earlier verifications this run cited again. They write no lead row for
+            #: this run, so without this list a finding could cite an evidence id the
+            #: run's external-research panel never shows.
+            self.reused: dict[str, dict[str, Any]] = {}
+
+        def can_search_externally(self, role_id: str) -> bool:
+            # The loop's probe, answered for the RUN's shared budget. Without it the
+            # loop saw no probe on this wrapper and re-queued questions for a follow-up
+            # that could only climb a rung the run had already spent or switched off.
+            return role_can_search_externally(role_id, external_budget)
 
         async def investigate(  # noqa: ANN201
             self,
@@ -551,6 +569,25 @@ async def _run(
             # would be discarded at the end of every task.
             self.diagnostics.merge(worker.diagnostics)
             self.tool_calls += result.tool_calls
+            for call in tool_session.calls:
+                payload = getattr(call, "payload", None)
+                if getattr(call, "tool_name", None) != "fetch_public_source" or not (
+                    isinstance(payload, dict)
+                ):
+                    continue
+                for item in payload.get("items") or []:
+                    if isinstance(item, dict) and item.get(
+                        "reused_from_earlier_verification"
+                    ) and item.get("evidence_id"):
+                        self.reused.setdefault(
+                            str(item["evidence_id"]),
+                            {
+                                "evidence_id": str(item["evidence_id"]),
+                                "fetched_url": item.get("fetched_url"),
+                                "claim": item.get("claim"),
+                                "source_excerpt": str(item.get("source_excerpt") or "")[:400],
+                            },
+                        )
             return result
 
     investigator = _RoleRoutedInvestigator()
@@ -643,6 +680,7 @@ async def _run(
     summary = await ledger.summarise(session, run)
     tool_units = await _tool_call_consumption(session, run, company)
     outcome.external_research = await _external_research(session, run, company)
+    outcome.external_research["reused_verifications"] = list(investigator.reused.values())[:40]
     outcome.consumption = _consumption(
         model_routing, loop_result, summary, verdict, challenge_result, cfg, tool_units
     )

@@ -338,6 +338,7 @@ async def _fetch_public_source(
         lead_key_for,
         persist_lead,
         reusable_verification,
+        slot_key_for,
         verify_lead,
     )
     from app.services.sources.publisher_tiers import publisher_tier
@@ -379,7 +380,9 @@ async def _fetch_public_source(
     # Only a verification that kept its matched passage, and a recent one: see
     # `reusable_verification`.
     key = lead_key_for(lead, subject=subject)
-    reusable = reusable_verification(known, key)
+    reusable = reusable_verification(
+        known, key, slot_key=slot_key_for(lead, subject=subject)
+    )
     if reusable is not None:
         reused: dict[str, Any] = {
             "url": arguments["url"],
@@ -390,16 +393,19 @@ async def _fetch_public_source(
             "claim": reusable.claim_text or arguments["claim"],
             "source_excerpt": reusable.matched_excerpt,
             "fetched_url": reusable.fetched_url,
-            "source_tier": publisher_tier(reusable.fetched_url or arguments["url"]),
+            "source_tier": publisher_tier(reusable.fetched_url),
             "period_key": (
                 _canonical_period(reusable.claimed_period)
                 if reusable.period_verified
                 else None
             ),
             "scope_key": None,
-            "claimed_metric": arguments.get("claimed_metric"),
-            "claimed_unit": arguments.get("claimed_unit"),
-            "claimed_geography": arguments.get("claimed_geography"),
+            # The labels stored WITH the verification, never this call's arguments:
+            # nothing checked today's labels against the stored page.
+            "claimed_metric": reusable.claimed_metric,
+            "claimed_unit": reusable.claimed_unit,
+            "claimed_currency": reusable.claimed_currency,
+            "claimed_geography": reusable.claimed_geography,
         }
         return {
             "items": [reused],

@@ -709,6 +709,12 @@ class KnownLead:
     period_verified: bool = False
     #: When the platform verified it (the row's ``verified_at``, else ``created_at``).
     verified_at: datetime | None = None
+    #: The provider's own labels, as stored with the verification — never re-asserted
+    #: from a later call's arguments, which nothing checked against the stored page.
+    claimed_metric: str | None = None
+    claimed_unit: str | None = None
+    claimed_currency: str | None = None
+    claimed_geography: str | None = None
 
 
 #: How long a verification may be re-cited without fetching the page again. A page is
@@ -717,13 +723,20 @@ REUSE_MAX_AGE_DAYS = 90
 
 
 def reusable_verification(
-    known: Sequence[KnownLead], lead_key: str, *, now: datetime | None = None
+    known: Sequence[KnownLead],
+    lead_key: str,
+    *,
+    slot_key: str | None = None,
+    now: datetime | None = None,
 ) -> KnownLead | None:
     """A verification of exactly this claim that may be cited again, or ``None``.
 
     Only one that kept the passage it was verified against — without it a finding
-    would cite the provider's sentence, which is the thing V3.18.3 stopped doing — and
-    only a recent one.
+    would cite the provider's sentence, which is the thing V3.18.3 stopped doing — only
+    one whose fetched page is on record, only a recent one, and never one a LATER
+    verified figure for the same metric, period and scope has superseded: the gate
+    would reject that claim if it were fetched afresh, and reuse must not be the way
+    round it.
     """
     moment = now or datetime.now(timezone.utc)
     for candidate in known:
@@ -732,14 +745,25 @@ def reusable_verification(
             or candidate.status != LEAD_VERIFIED
             or not candidate.promoted_evidence_id
             or not (candidate.matched_excerpt or "").strip()
+            or not candidate.fetched_url
             or candidate.verified_at is None
         ):
             continue
         verified_at = candidate.verified_at
         if verified_at.tzinfo is None:
             verified_at = verified_at.replace(tzinfo=timezone.utc)
-        if (moment - verified_at).days <= REUSE_MAX_AGE_DAYS:
-            return candidate
+        if (moment - verified_at).days > REUSE_MAX_AGE_DAYS:
+            continue
+        slot = slot_key or candidate.slot_key
+        if any(
+            other.slot_key == slot
+            and other.lead_key != lead_key
+            and other.status == LEAD_VERIFIED
+            and _is_later(other.source_date, candidate.source_date)
+            for other in known
+        ):
+            continue
+        return candidate
     return None
 
 
@@ -1796,6 +1820,10 @@ async def known_leads_for(
         ResearchLeadRecord.matched_excerpt,
         ResearchLeadRecord.period_verified,
         func.coalesce(ResearchLeadRecord.verified_at, ResearchLeadRecord.created_at),
+        ResearchLeadRecord.claimed_metric,
+        ResearchLeadRecord.claimed_unit,
+        ResearchLeadRecord.claimed_currency,
+        ResearchLeadRecord.claimed_geography,
     )
     if company_id is not None:
         stmt = stmt.where(ResearchLeadRecord.company_id == company_id)
@@ -1814,6 +1842,10 @@ async def known_leads_for(
             matched_excerpt=row[8],
             period_verified=bool(row[9]),
             verified_at=row[10],
+            claimed_metric=row[11],
+            claimed_unit=row[12],
+            claimed_currency=row[13],
+            claimed_geography=row[14],
         )
         for row in rows
     ]

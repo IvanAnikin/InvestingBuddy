@@ -603,15 +603,18 @@ async def _judge_contracts(
         detail = evaluation.to_dict()
         detail["citation_ids"] = sorted(pool)[:60]
         try:
-            await ledger.update_question_graph_state(
-                session,
-                run,
-                key,
-                contract_status=evaluation.status,
-                contract_detail=detail,
-                acquisition_steps=outcome.acquisition_steps.get(key, ()),
-                clear_unresolved=evaluation.satisfied,
-            )
+            # A SAVEPOINT: on PostgreSQL a swallowed database error would otherwise leave
+            # the whole transaction aborted, and the report with it.
+            async with session.begin_nested():
+                await ledger.update_question_graph_state(
+                    session,
+                    run,
+                    key,
+                    contract_status=evaluation.status,
+                    contract_detail=detail,
+                    acquisition_steps=outcome.acquisition_steps.get(key, ()),
+                    clear_unresolved=evaluation.satisfied,
+                )
         except Exception:  # noqa: BLE001 - the audit record must not end the run
             continue
 

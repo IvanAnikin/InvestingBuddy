@@ -38,11 +38,13 @@ from app.services.sources.taxonomy import (
 _FILING_HOSTS: tuple[str, ...] = (
     "sedarplus.ca",
     "sedar.com",
-    "asx.com.au",
     "cnmv.es",
     "bmv.com.mx",
     "smv.gob.pe",
 )
+#: The ASX is an exchange operator's whole website; only its announcement archive is a
+#: filing.
+_ASX_FILING_PATHS: tuple[str, ...] = ("/asxpdf/", "/markets/trade-our-cash-market/announcements")
 #: sec.gov is a regulator's whole website — speeches, statistics, enforcement notices.
 #: Only its filing archive is a filing.
 _SEC_FILING_PATHS: tuple[str, ...] = ("/archives/", "/cgi-bin/browse-edgar", "/ix")
@@ -56,14 +58,11 @@ _SPECIALIST_HOSTS: tuple[str, ...] = (
     "iea.org",
     "irena.org",
     "entsoe.eu",
+    # Intergovernmental study groups: members are governments, not producers.
     "icsg.org",
     "ilzsg.org",
     "insg.org",
-    "world-aluminium.org",
-    "worldsteel.org",
-    "silverinstitute.org",
-    "gold.org",
-    "copperalliance.org",
+    # Exchanges: the reference PRICE is theirs, whoever quotes it.
     "lme.com",
     "cmegroup.com",
     "bgs.ac.uk",
@@ -100,6 +99,8 @@ _GOVERNMENT_HOSTS: tuple[str, ...] = (
     "sec.gov",
     "fca.org.uk",
     "esma.europa.eu",
+    # A government's own apex domain, where the bare domain IS the publisher.
+    "canada.ca",
 )
 #: Government second-level domains, EXPLICITLY. A rule on the label alone ("gov" under
 #: any two-letter TLD) accepted ``gov.io`` and ``go.me`` — second-level names anyone
@@ -111,13 +112,22 @@ _GOVERNMENT_SLDS: tuple[str, ...] = (
     "gov.ae", "gov.tr", "gov.ar", "gov.cl", "gov.ie", "gov.pt", "gov.gr", "gov.ng",
     "gov.kz", "gov.mn", "gov.cd", "gov.zm", "gov.bo",
     "gob.mx", "gob.pe", "gob.cl", "gob.ar", "gob.es", "gob.ec", "gob.bo", "gob.gt",
-    "gouv.fr", "gouv.qc.ca", "gc.ca", "canada.ca",
+    "gouv.fr", "gouv.qc.ca", "gc.ca",
     "go.jp", "go.kr", "go.id", "go.th", "go.ke", "go.tz",
     "govt.nz", "gv.at",
 )
 
-#: Editorially accountable media and established trade press.
+#: Editorially accountable media and established trade press — and producer-funded
+#: industry associations. An association funded by the producers is expert, and it is
+#: not INDEPENDENT of them: counting it as the independent authority an industry
+#: question's contract asks for would let the industry vouch for itself.
 _QUALITY_MEDIA_HOSTS: tuple[str, ...] = (
+    "world-aluminium.org",
+    "worldsteel.org",
+    "silverinstitute.org",
+    "gold.org",
+    "copperalliance.org",
+    "internationalcopper.org",
     "reuters.com",
     "ft.com",
     "bloomberg.com",
@@ -172,6 +182,8 @@ def publisher_tier(url: str | None) -> str:
     if _matches(host, _FILING_HOSTS):
         return T1_PRIMARY_FILING
     if _matches(host, ("data.sec.gov", "efts.sec.gov")):
+        return T1_PRIMARY_FILING
+    if _matches(host, ("asx.com.au",)) and _path_of(url).startswith(_ASX_FILING_PATHS):
         return T1_PRIMARY_FILING
     if _matches(host, ("sec.gov",)) and _path_of(url).startswith(_SEC_FILING_PATHS):
         return T1_PRIMARY_FILING

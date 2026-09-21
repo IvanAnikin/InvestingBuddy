@@ -212,6 +212,55 @@ class TestTheRunItself:
         assert any("no model provider resolved" in d for d in outcome.degraded)
         assert outcome.chair["deterministic_fallback"] is True
 
+    async def test_the_loop_can_ask_whether_a_follow_up_could_search(
+        self, session, monkeypatch
+    ) -> None:
+        """V3.18.3 review: the pipeline hands the loop a per-role WRAPPER, and the loop
+        found no probe on it — so it re-queued follow-ups that could only climb a rung
+        the run had switched off. The wrapper answers for the run's shared budget."""
+        from app.services.director import loop as loop_module
+        from app.services.pipeline import v3_pipeline
+
+        seen: dict[str, Any] = {}
+        real = loop_module.run_investigation
+
+        async def spy(session_, run, plan, *, investigator, **kw):  # noqa: ANN001, ANN003, ANN202
+            seen["probe"] = investigator.can_search_externally
+            return await real(session_, run, plan, investigator=investigator, **kw)
+
+        monkeypatch.setattr(v3_pipeline, "run_investigation", spy)
+        company = await _company(session)
+        await run_v3_research(session, company, cfg=_cfg())
+        # External tools are not registered in this configuration: no budget exists,
+        # so no follow-up could reach the web, for any role.
+        assert seen["probe"]("industry_analyst") is False
+        assert seen["probe"]("financial_analyst") is False
+
+    async def test_the_operators_search_cap_binds_the_run(self, session, monkeypatch) -> None:
+        """Security review of #222 (M1): the run's search ceiling came from the MODE
+        preset, so `V3_RUN_MAX_WEB_SEARCHES=2` let a standard run spend twelve paid
+        searches while the budget recorded on the run said two."""
+        from app.services.agent_tools.registry import ToolRegistry
+        from app.services.agents import investigator as inv_mod
+
+        seen: dict[str, int] = {}
+        real_budget = inv_mod.ExternalSearchBudget
+
+        def spy(limit: int) -> Any:
+            seen["limit"] = limit
+            return real_budget(limit=limit)
+
+        real_names = ToolRegistry.names
+        monkeypatch.setattr(inv_mod, "ExternalSearchBudget", spy)
+        monkeypatch.setattr(
+            ToolRegistry, "names", lambda self: (*real_names(self), "search_web")
+        )
+        company = await _company(session)
+        await run_v3_research(
+            session, company, cfg=_cfg(v3_run_max_web_searches=2), mode="standard"
+        )
+        assert seen["limit"] == 2
+
     async def test_the_biotech_playbook_is_selected_for_moderna(self, session) -> None:
         company = await _company(session)
         outcome = await run_v3_research(session, company, cfg=_cfg())
