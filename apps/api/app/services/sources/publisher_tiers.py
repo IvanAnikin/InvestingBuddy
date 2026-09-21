@@ -99,8 +99,17 @@ _GOVERNMENT_HOSTS: tuple[str, ...] = (
     "sec.gov",
     "fca.org.uk",
     "esma.europa.eu",
-    # A government's own apex domain, where the bare domain IS the publisher.
+    # Government portals on a registry's bare domain, where the bare domain IS the
+    # publisher: GOV.UK, and the Peruvian, Mexican, Chilean, Argentine, Spanish and
+    # Brazilian state portals (www.gob.pe/institucion/minem is Peru's mining ministry).
     "canada.ca",
+    "gov.uk",
+    "gob.pe",
+    "gob.mx",
+    "gob.cl",
+    "gob.ar",
+    "gob.es",
+    "gov.br",
 )
 #: Government second-level domains, EXPLICITLY. A rule on the label alone ("gov" under
 #: any two-letter TLD) accepted ``gov.io`` and ``go.me`` — second-level names anyone

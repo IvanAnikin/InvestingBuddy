@@ -268,9 +268,6 @@ async def run_investigation(
     #: V3.18.3 — external searches already spent per question, so a follow-up uses the
     #: NEXT search intent and a question's own cap binds across rounds.
     searches_so_far: dict[str, int] = {}
-    #: Questions with a closable gap that a follow-up could not be given for want of
-    #: task budget. If they are still open at the end, a LIMIT ended the run.
-    starved_gap_keys: set[str] = set()
     can_improve = _improvement_probe(investigator, plan)
     #: The completion rules were met. Later rounds only IMPROVE the run — close gaps on
     #: non-blocking questions, meet partially met contracts — and cannot un-complete it.
@@ -475,13 +472,17 @@ async def run_investigation(
             remaining = limits.max_tasks - tasks_run
             if not follow_ups or round_index == limits.max_rounds - 1 or remaining <= 0:
                 stop_reason = STOPPED_COMPLETE
-                if follow_ups and remaining <= 0:
-                    improvement_stopped_by = STOPPED_MAX_TASKS
+                # Improvement left undone is said, not hidden: which limit cut it short.
+                if follow_ups:
+                    improvement_stopped_by = (
+                        STOPPED_MAX_TASKS if remaining <= 0 else STOPPED_MAX_ROUNDS
+                    )
                 break
             if len(follow_ups) > remaining:
                 follow_ups, _starved = _within_task_budget(
                     follow_ups, gap_keys, questions_by_key, remaining
                 )
+                improvement_stopped_by = STOPPED_MAX_TASKS
             pending = follow_ups
             continue
         if not follow_ups:
@@ -498,10 +499,12 @@ async def run_investigation(
             stop_reason = STOPPED_MAX_TASKS if gap_keys else STOPPED_NOTHING_LEFT
             break
         if len(follow_ups) > remaining:
-            follow_ups, starved = _within_task_budget(
+            # The most important follow-ups run; a closable gap left out stays open and
+            # is re-offered next round, so a run that ends with it open ends on a LIMIT
+            # (max_rounds or max_tasks) — never on "nothing left".
+            follow_ups, _starved = _within_task_budget(
                 follow_ups, gap_keys, questions_by_key, remaining
             )
-            starved_gap_keys |= starved & gap_keys
         pending = follow_ups
     else:
         # The `for` ran to completion without breaking: the round budget is the reason.
@@ -510,10 +513,6 @@ async def run_investigation(
 
     if stop_reason is None:
         stop_reason = STOPPED_NOTHING_LEFT
-    if stop_reason not in LIMIT_STOP_REASONS and starved_gap_keys - answered:
-        # A closable gap was left without a follow-up because the task budget ran out:
-        # the budget ended that work, whatever else finished.
-        stop_reason = STOPPED_MAX_TASKS
 
     # Whatever remains open and unclosable is ACCEPTED — the run finished with it open
     # and says so, which is the honest outcome for a gap no source can close.

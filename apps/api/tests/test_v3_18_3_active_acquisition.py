@@ -240,7 +240,7 @@ class TestTheGateReviewRegressions:
             "without the exclusion, the name words alone carry it"
         )
         found, excerpt = lead_gate.locate_value_in_context(
-            text, [250.0], claim, exclude_terms=lead_gate.name_terms("Southern Copper Corp")
+            text, [250.0], claim, subject_name="Southern Copper Corp"
         )
         assert found and excerpt is None
 
@@ -338,7 +338,7 @@ class TestTheGateReviewRegressions:
             lead_gate.locate_passage(
                 text,
                 "Southern Copper Corporation output",
-                exclude_terms=lead_gate.name_terms("Southern Copper Corporation"),
+                subject_name="Southern Copper Corporation",
             )
             is None
         )
@@ -370,11 +370,153 @@ class TestTheGateReviewRegressions:
         )
         assert outcome.status == LEAD_REJECTED
 
-    def test_the_offset_map_reproduces_normalize_text(self) -> None:
-        for sample in ["  A\u00a0B\n\n  C  ", "Straße  X", "", "x"]:
-            normalised, offsets = lead_gate._normalized_with_offsets(sample)
-            assert normalised == lead_gate.normalize_text(sample)
-            assert len(offsets) == len(normalised)
+    async def test_an_exact_match_survives_whitespace_and_a_negated_first_occurrence(
+        self,
+    ) -> None:
+        """Review of #222 (low): only the first verbatim occurrence was tried."""
+        page = (
+            b"<html><body><p>It is not the case that the Pilares mine reached commercial"
+            b" output.</p><p>Update: the Pilares   mine reached commercial output.</p>"
+            b"</body></html>"
+        )
+        outcome = await lead_gate.verify_lead(
+            _lead("the Pilares mine reached commercial output"),
+            cfg=_cfg(), fetcher=_fetcher(page), allow_public_web=True,
+        )
+        assert outcome.status == LEAD_VERIFIED
+        assert outcome.verification_basis == "exact_text"
+        assert "Update" in outcome.matched_excerpt
+
+
+class TestTheSecondReviewsInputs:
+    """The re-review of #222 found each of these with a concrete input."""
+
+    def test_a_paragraph_is_not_a_table_row(self) -> None:
+        """Blocking 1: an HTML paragraph is one 'line'; the lookback rule lifted the
+        distance limit for any prose mentioning a claim term."""
+        para = (
+            "Tia Maria cathode plant: the environmental review "
+            + "covered water, dust, traffic and community consultation. " * 12
+            + "The regional office lease covers 485 square metres."
+        )
+        found, excerpt = lead_gate.locate_value_in_context(
+            para, [485.0], "Tia Maria cathode output 485 thousand tonnes",
+            metric="cathode output",
+        )
+        assert found and excerpt is None
+
+    @pytest.mark.parametrize(
+        ("page", "claim"),
+        [
+            ("Tia Maria will have annual capacity of 120 thousand tons of copper "
+             "cathodes, and will employ 90 people.",
+             "Tia Maria will have annual capacity of 90,000 tons of copper cathodes"),
+            ("Tia Maria will have annual capacity of 120,000 tons of copper cathodes "
+             "and 950 direct jobs.",
+             "Tia Maria will have annual capacity of 950,000 tons of copper cathodes"),
+            ("The Tia Maria copper project will cost $1,800 million to build and lift "
+             "average copper grades by 1.4 percentage points.",
+             "The Tia Maria copper project will cost $1.4 billion to build"),
+        ],
+    )
+    def test_a_small_number_is_not_rescaled_into_the_claims(self, page, claim) -> None:
+        """Blocking 2: every claim number was also tried at 1e3/1e6/1e9."""
+        assert lead_gate.locate_passage(page, claim) is None
+
+    def test_a_scale_the_page_states_is_honoured(self) -> None:
+        caption = (
+            "Capital expenditure (in millions of US dollars). The Tia Maria copper "
+            "project will cost 1,234 to build."
+        )
+        assert lead_gate.locate_passage(
+            caption, "The Tia Maria copper project will cost $1.2 billion to build"
+        ) is not None
+        worded = "Tia Maria will produce 120 thousand tons of copper cathodes a year."
+        assert lead_gate.locate_passage(
+            worded, "Tia Maria will produce 120,000 tons of copper cathodes a year"
+        ) is not None
+
+    @pytest.mark.parametrize(
+        ("page", "claim"),
+        [
+            ("Tia Maria received its construction license in 2019, although the water "
+             "permit has not yet been issued by the authority.",
+             "Tia Maria has not received its construction license in 2019"),
+            ("Tia Maria obtained its environmental permit in 2019 with no conditions "
+             "attached.",
+             "Tia Maria has not obtained its environmental permit in 2019"),
+        ],
+    )
+    def test_a_negation_about_something_else_is_not_the_claims(self, page, claim) -> None:
+        """Medium 3: negation was judged per sentence, not per term."""
+        assert lead_gate.locate_passage(page, claim) is None
+
+    def test_a_sentence_that_negates_a_different_thing_does_not_refuse(self) -> None:
+        """Medium 5: 'does not produce concentrate' refused a claim about cathode."""
+        page = (
+            "The Tia Maria project will produce 120,000 tons of copper cathode per "
+            "year. The Tia Maria project does not produce concentrate."
+        )
+        claim = "Tia Maria project will produce 120,000 tons of copper cathode each year"
+        assert lead_gate.locate_passage(page, claim) is not None
+
+    def test_terms_are_counted_only_where_the_polarity_matches(self) -> None:
+        """Words in a sentence that negates the claim do not make up the passage."""
+        page = (
+            "The regional authority inspected Tia Maria last month. The copper project "
+            "water permit was not received."
+        )
+        claim = "Tia Maria copper project received the water permit from the regional authority"
+        assert lead_gate.locate_passage(page, claim) is None
+
+    @pytest.mark.parametrize(
+        ("page", "claim"),
+        [
+            ("Tia Maria copper output is guided at 120,000 tons for 2025-2027.",
+             "Tia Maria copper output is guided at 120,000 tons for 2025-2027"),
+            ("As of December 31, 2025 the Tia Maria project had received all "
+             "construction permits from the regional authority.",
+             "As of December 31, 2025 the Tia Maria project had received all "
+             "construction permits"),
+            ("Tia Maria copper output rose in 2024, 2025 and 2026 at the project.",
+             "Tia Maria copper output rose in 2024, 2025 and 2026"),
+        ],
+    )
+    def test_ranges_dates_and_lists_are_read(self, page, claim) -> None:
+        """Medium 4: '2025-2027' read as -2027; '31,' could not be read at all."""
+        assert lead_gate.locate_passage(page, claim) is not None
+
+    def test_the_issuers_own_commodity_still_counts(self) -> None:
+        """Medium 6: the name was excluded word by word, so 'copper' never counted
+        for Southern Copper."""
+        page = (
+            "Molybdenum production was 25,000 tonnes in 2025.\n"
+            + "Filler about operations and safety. " * 12
+            + "\nCopper production was 954,000 tonnes."
+        )
+        found, excerpt = lead_gate.locate_value_in_context(
+            page, [25000.0], "Southern Copper copper production was 25,000 tonnes in 2025",
+            metric="copper production", subject_name="Southern Copper Corp",
+        )
+        assert found and excerpt is None
+
+    def test_a_name_only_claim_needs_its_metric(self) -> None:
+        page = "Southern Copper Corporation employs 15,000 people across its mines."
+        claim = "Southern Copper reported 15,000 tonnes"
+        assert lead_gate.locate_value_in_context(
+            page, [15000.0], claim, subject_name="Southern Copper Corp"
+        )[1] is None
+        assert lead_gate.locate_value_in_context(
+            page, [15000.0], claim, metric="copper", subject_name="Southern Copper Corp"
+        )[1] is None
+
+    def test_two_three_digit_cells_are_read_both_ways(self) -> None:
+        """Low 10: 'Toquepala 485 470' was only ever 485470."""
+        text = "Copper production by mine (thousand pounds)\nToquepala 485 470\n"
+        found, excerpt = lead_gate.locate_value_in_context(
+            text, [485.0], "Toquepala copper production was 485 thousand pounds"
+        )
+        assert found and excerpt
 
 
 class TestPublisherTiers:
@@ -396,7 +538,9 @@ class TestPublisherTiers:
             ("https://x.gov.io/stats", "T5_api_aggregator"),
             ("https://go.me/stats", "T5_api_aggregator"),
             ("https://x.go.me/stats", "T5_api_aggregator"),
-            ("https://www.gov.uk/government/statistics", "T5_api_aggregator"),
+            ("https://www.gov.uk/government/statistics", "T2_regulator_or_gov"),
+            ("https://www.gob.pe/institucion/minem/informes", "T2_regulator_or_gov"),
+            ("https://www.gob.mx/se", "T2_regulator_or_gov"),
             ("https://www.ons.gov.uk/economy", "T2_regulator_or_gov"),
             ("https://www.meti.go.jp/english/", "T2_regulator_or_gov"),
             ("https://www.economie.gouv.fr/", "T2_regulator_or_gov"),
@@ -878,3 +1022,11 @@ _KNOWN = lead_gate.KnownLead(
     fetched_url="https://pubs.usgs.gov/c.pdf",
     verified_at=datetime.now(UTC) - timedelta(days=10),
 )
+
+
+def test_a_claimed_value_keeps_its_scale_word() -> None:
+    """A module-level name reused for the prose-claim regex once shadowed the scale
+    table `parse_number_candidates` reads — "1.2 billion" would have lost its scale."""
+    assert 1.2e9 in lead_gate.parse_number_candidates("1.2 billion")
+    assert 4.1e6 in lead_gate.parse_number_candidates("$4.1 million")
+    assert isinstance(lead_gate._SCALE_WORDS, dict)

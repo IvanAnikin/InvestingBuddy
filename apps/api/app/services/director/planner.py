@@ -649,11 +649,26 @@ def _fit_first_round(
     if len(tasks) <= first_round:
         return sorted(tasks, key=lambda t: t.role_id)
     by_key = {q.key: q for q in plan.questions}
+    seated = {t.role_id for t in tasks}
 
-    def _importance(task: "PlannedTask") -> tuple[int, int, int, str]:
+    def _hosts(question: "PlannedQuestion") -> set[str]:
+        wants_external = bool(set(question.required_tools) & EXTERNAL_TOOL_NAMES)
+        return {
+            role.role_id
+            for role in roles_that_can_answer(question.required_tools)
+            if role.role_id in seated
+            and (wants_external or not (role.tools & EXTERNAL_TOOL_NAMES))
+        }
+
+    def _importance(task: "PlannedTask") -> tuple[int, int, int, int, str]:
         questions = [by_key[k] for k in task.question_keys if k in by_key]
+        # Questions NO other seated role could take: trimming this role loses them.
+        # Ranking by this is what keeps the one role holding `search_web` seated, where
+        # "busiest first" dropped it and its question became "task budget exhausted".
+        irreplaceable = sum(1 for q in questions if _hosts(q) <= {task.role_id})
         return (
             0 if any(q.blocking for q in questions) else 1,
+            -irreplaceable,
             0 if any(q.origin == ledger.ORIGIN_PLAYBOOK for q in questions) else 1,
             -len(questions),
             task.role_id,
