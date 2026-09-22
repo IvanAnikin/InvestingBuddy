@@ -132,6 +132,8 @@ class V3ResearchOutcome:
     professional_research: dict[str, Any] | None = None
     #: What the pre-run indexing of the company's corpus did.
     corpus_index: dict[str, int] = field(default_factory=dict)
+    #: Whether the latest annual and quarterly reports were secured into the corpus.
+    core_filings: dict[str, Any] = field(default_factory=dict)
     #: V3.18.2 — every planned question as a node: domain, owner, contract verdict,
     #: evidence counts, why it is still open, and what acquisition tried.
     question_graph: list[dict[str, Any]] = field(default_factory=list)
@@ -165,6 +167,7 @@ class V3ResearchOutcome:
             "thesis": self.thesis,
             "professional_research": self.professional_research,
             "corpus_index": dict(self.corpus_index),
+            "core_filings": dict(self.core_filings),
             "elapsed_seconds": round(self.elapsed_seconds, 3),
             "degraded": list(self.degraded),
             "error": self.error,
@@ -364,6 +367,27 @@ async def _run(
     # V3.18 live acceptance — the corpus the specialists search must be INDEXED. A
     # company whose chunks were written by the V2 ingestion had none, and every corpus
     # search came back empty. Indexing is index state on rows already held: no cost.
+    # V3.18 live acceptance — the corpus must HOLD the documents the questions need.
+    # The subject's latest annual and quarterly reports are secured through the V3.16
+    # bridge first; a corpus of one 10-Q and an exhibit index cannot describe a business.
+    from app.services.corpus.filing_evidence import ensure_core_filings
+
+    try:
+        async with session.begin_nested():
+            outcome.core_filings = await ensure_core_filings(
+                session, company=company, cfg=cfg
+            )
+    except Exception as exc:  # noqa: BLE001 - a failed acquisition costs the step only
+        outcome.degraded.append(
+            f"the latest annual and quarterly filings could not be secured "
+            f"({type(exc).__name__})"
+        )
+    for slot in ("annual", "quarterly"):
+        state = (outcome.core_filings.get(slot) or {}).get("state")
+        if state and state not in ("ready", "acquired", "reused"):
+            reason = (outcome.core_filings.get(slot) or {}).get("reason") or state
+            outcome.degraded.append(f"the latest {slot} report is not in the corpus ({reason})")
+
     if search_backend is not None:
         from app.services.corpus.indexing import ensure_company_indexed
 

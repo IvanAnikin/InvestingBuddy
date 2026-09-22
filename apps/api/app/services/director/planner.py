@@ -423,16 +423,15 @@ async def plan_research(
             # whoever was least loaded and judged by the default contract.
             definition = base_by_key.get(key)
             if definition is not None:
+                # The WHOLE definition, with only origin, tools and priority set for
+                # the re-ask. Copying it field by field dropped `optional_tools`, so the
+                # live SCCO re-run asked profitability without the statements tool the
+                # definition gives it — the third time a hand-copy lost a field.
                 restored = replace(
-                    restored,
-                    domain=definition.domain,
-                    why_it_matters=definition.why_it_matters,
-                    owner_role=definition.owner_role,
-                    evidence_contract=definition.evidence_contract,
-                    search_intents=definition.search_intents,
-                    series_labels=definition.series_labels,
-                    required_calculations=definition.required_calculations,
-                    depends_on=definition.depends_on,
+                    definition,
+                    origin=restored.origin,
+                    required_tools=needed,
+                    priority=priority,
                 )
             questions[key] = restored
 
