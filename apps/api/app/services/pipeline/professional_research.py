@@ -426,14 +426,33 @@ def _count(values: Any) -> dict[str, int]:
     return dict(sorted(out.items()))
 
 
+def _informativeness(finding: Mapping[str, Any]) -> tuple[int, float]:
+    """How many figures a finding states (capped), then the writer's confidence in it.
+
+    Figures, not the mere presence of a digit: "Exhibit 23.10 is a consent" has digits
+    and says nothing; "$2,600M capex, 130,000 t a year from 2031" says a great deal.
+    """
+    statement = str(finding.get("statement") or "")
+    figures = len(re.findall(r"\d[\d,.]*\s*(?:%|[A-Za-z$]{1,3}\b)?", statement))
+    try:
+        confidence = float(finding.get("confidence") or 0.0)
+    except (TypeError, ValueError):
+        confidence = 0.0
+    return (min(figures, 5), confidence)
+
+
 def deterministic_synthesis(sections: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    """One sentence per evidenced section: its first finding, verbatim, with its label."""
+    """One sentence per evidenced section: its MOST INFORMATIVE finding, verbatim.
+
+    Not its first: the first is whatever the ledger returned first, and on the live SCCO
+    run that put an exhibit list and a court resolution at the head of the report.
+    """
     out: list[dict[str, Any]] = []
     for section in sections:
         findings = section.get("findings") or []
         if not findings:
             continue
-        first = findings[0]
+        first = max(findings, key=_informativeness)
         out.append(
             {
                 "text": f"{section['title']}: {first['statement']}",
@@ -445,8 +464,19 @@ def deterministic_synthesis(sections: Sequence[Mapping[str, Any]]) -> list[dict[
 
 # ── The editor ─────────────────────────────────────────────────────────────── #
 
-_LABEL_RE = re.compile(r"\[(F\d{1,3})\]")
-_LABEL_WITH_SPACE_RE = re.compile(r"\s*\[F\d{1,3}\]")
+#: A citation group: "[F3]", "[F3, F5]", "[F3; F5]", "(F3)". Models group labels
+#: whatever the prompt says; a sentence citing "[F3, F5]" cites two findings, not none.
+_LABEL_GROUP_RE = re.compile(r"[\[(]\s*(F\d{1,3}(?:\s*[,;/&]\s*F\d{1,3})*)\s*[\])]")
+_LABEL_RE = re.compile(r"F\d{1,3}")
+_LABEL_WITH_SPACE_RE = re.compile(r"\s*[\[(]\s*F\d{1,3}(?:\s*[,;/&]\s*F\d{1,3})*\s*[\])]")
+
+
+def _labels_in(sentence: str) -> list[str]:
+    return [
+        label
+        for group in _LABEL_GROUP_RE.findall(sentence or "")
+        for label in _LABEL_RE.findall(group)
+    ]
 _NON_DISCLOSURE_RE = re.compile(
     r"\b(?:does|do|did|has|have)\s*(?:not|n['’]t)\s+(?:publicly\s+|separately\s+)?"
     r"(?:disclos\w*|publish\w*|provid\w*|report\w*|break\s+(?:out|down)|quantif\w*)",
@@ -497,12 +527,12 @@ def validate_sentence(
     from app.services import safety_terms
     from app.services.knowledge_state import asserts_issuer_non_disclosure
 
-    labels = _LABEL_RE.findall(sentence)
+    labels = _labels_in(sentence)
     if not labels:
         return False, "cites_no_finding"
     if any(label not in findings_by_label for label in labels):
         return False, "cites_unknown_finding"
-    body = _LABEL_RE.sub("", sentence)
+    body = _LABEL_WITH_SPACE_RE.sub("", sentence)
     if len(re.findall(r"[A-Za-z]{2,}", body)) < MIN_SENTENCE_WORDS:
         return False, "too_short"
     if _DIGIT_RE.search(body) or _NUMBER_WORDS_RE.search(body):
@@ -602,7 +632,7 @@ async def edit(report: dict[str, Any], client: Any) -> dict[str, Any]:
             ok, reason = validate_sentence(sentence, findings_by_label)
             if ok:
                 kept.append({"text": _strip_labels(sentence),
-                             "labels": _LABEL_RE.findall(sentence)})
+                             "labels": _labels_in(sentence)})
             else:
                 rejected[str(reason)] = rejected.get(str(reason), 0) + 1
     synthesis = report["sections"][0]
@@ -620,9 +650,9 @@ async def edit(report: dict[str, Any], client: Any) -> dict[str, Any]:
         sentence = _split_sentences(text)[0] if _split_sentences(text) else ""
         section_labels = {f["label"] for f in section.get("findings") or []}
         ok, reason = validate_sentence(sentence, findings_by_label)
-        if ok and set(_LABEL_RE.findall(sentence)) <= section_labels:
+        if ok and set(_labels_in(sentence)) <= section_labels:
             section["lead"] = {"text": _strip_labels(sentence),
-                               "labels": _LABEL_RE.findall(sentence)}
+                               "labels": _labels_in(sentence)}
             leads_kept += 1
         else:
             key = reason or "lead_cites_another_section"

@@ -228,8 +228,11 @@ def thesis_questions(context: ThesisContext) -> list[Any]:
                     "The company was selected for research under an investment thesis "
                     f"about {dimension.label}. How is it exposed to {dimension.label}: "
                     f"{dimension.exposure}? Classify the exposure as direct, indirect, "
-                    "weak or none, quantify it where a source allows, and cite evidence. "
-                    "A weak or absent link is an acceptable answer — do not force a fit."
+                    "weak or none ONLY from evidence that describes the company's "
+                    "products, their end uses or its customers — quantify it where a "
+                    "source allows, and cite it. Evidence that does not address the link "
+                    "is a gap to report, not a weak link: absence in what was read is "
+                    "not absence in the business. Do not force a fit either way."
                 ),
                 origin=ledger.ORIGIN_DIRECTOR,
                 required_tools=frozenset({"search_company_corpus"}),

@@ -596,3 +596,89 @@ __all__ = [
     "filing_evidence_state",
     "is_corpus_search_ready",
 ]
+
+
+#: The documents research on a company cannot do without, in order of preference.
+ANNUAL_FORMS: tuple[str, ...] = ("10-K", "20-F", "40-F")
+QUARTERLY_FORMS: tuple[str, ...] = ("10-Q",)
+#: How far back the regulator's list is read for them: an annual report is at most
+#: ~13 months old.
+CORE_FILINGS_LOOKBACK_DAYS = 420
+
+
+async def ensure_core_filings(
+    session: Any,
+    *,
+    company: Any,
+    cfg: "Settings",
+    provider: Any = None,
+) -> dict[str, Any]:
+    """Put the subject's LATEST annual report and quarterly report into the corpus.
+
+    V3.18 live acceptance, SCCO: the corpus held the 2026-Q2 10-Q and the 10-K's exhibit
+    index, not the 10-K itself — so the business, segment, reserves and production
+    questions reported that the evidence "contains no product, segment or revenue data".
+    The bridge ran only inside ``get_recent_filings``, on whatever that call listed
+    (8-Ks first) under a three-attempt budget. The research now secures the two filings
+    every question depends on BEFORE it asks them — through the same bridge, with the
+    same guarantees: accessions from the regulator, URLs built from code constants, never
+    from a model.
+
+    SEC registrants only. Never raises; returns what happened for each filing.
+    """
+    from app.services.exchange_registry import is_sec_eligible
+
+    out: dict[str, Any] = {"annual": None, "quarterly": None}
+    if not (
+        getattr(cfg, "v3_filings_tool_enabled", False)
+        and getattr(cfg, "v3_filing_body_bridge_enabled", False)
+    ):
+        out["skipped"] = "filings tool or filing bridge disabled"
+        return out
+    ticker = getattr(company, "ticker", None)
+    exchange = getattr(company, "exchange", None)
+    if not ticker or not is_sec_eligible(exchange):
+        out["skipped"] = "not an SEC registrant"
+        return out
+    if provider is None:
+        from app.integrations.providers.sec_recent_filings_provider import (
+            SecRecentFilingsProvider,
+        )
+
+        provider = SecRecentFilingsProvider()
+    try:
+        listed = await provider.get_recent_events(
+            ticker,
+            exchange=exchange,
+            lookback_days=CORE_FILINGS_LOOKBACK_DAYS,
+            max_events=80,
+        )
+    except Exception as exc:  # noqa: BLE001 - discovery failing costs the step only
+        out["skipped"] = f"filing list unavailable ({type(exc).__name__})"
+        return out
+    events = sorted(
+        getattr(listed, "events", []) or [],
+        key=lambda e: str(getattr(e, "filing_date", "") or ""),
+        reverse=True,
+    )
+    for slot, forms in (("annual", ANNUAL_FORMS), ("quarterly", QUARTERLY_FORMS)):
+        event = next(
+            (e for e in events if str(getattr(e, "form_type", "")).upper() in forms), None
+        )
+        if event is None:
+            out[slot] = {"state": "not_listed", "forms": list(forms)}
+            continue
+        result = await ensure_filing_corpus_evidence(
+            session,
+            company_id=getattr(company, "id", None),
+            cik=getattr(listed, "cik", None),
+            accession=getattr(event, "accession_number", None),
+            form=str(getattr(event, "form_type", "")),
+            cfg=cfg,
+        )
+        out[slot] = {
+            "form": str(getattr(event, "form_type", "")),
+            "filing_date": str(getattr(event, "filing_date", "") or "") or None,
+            **result.to_dict(),
+        }
+    return out

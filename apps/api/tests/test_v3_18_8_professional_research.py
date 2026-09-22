@@ -524,3 +524,127 @@ def test_a_gap_recorded_each_round_is_listed_once() -> None:
     report = pr.assemble(_inputs(gaps=[gap, gap, gap]))
     listed = _section(report, "evidence_quality_and_gaps")["platform_evidence_gaps"]
     assert len(listed) == 1
+
+
+class TestTheSecondLiveSccoRun:
+    """Report 347512a1 (SCCO, run 2): what reading it found."""
+
+    def test_grouped_citations_are_citations(self) -> None:
+        """All sixteen editor sentences were rejected 'cites_no_finding': the model
+        grouped its labels as [F1, F2]."""
+        labels = {"F1": {"statement": "a"}, "F2": {"statement": "b"}}
+        for sentence in ("Copper dominates the company's sales by far [F1, F2].",
+                         "Copper dominates the company's sales by far [F1; F2].",
+                         "Copper dominates the company's sales by far (F1)."):
+            assert pr.validate_sentence(sentence, labels) == (True, None), sentence
+            assert pr._strip_labels(sentence) == "Copper dominates the company's sales by far."
+        assert pr.validate_sentence("Copper leads sales by far [F1, F9].", labels) == (
+            False, "cites_unknown_finding")
+
+    def test_the_fallback_leads_with_the_most_informative_finding(self) -> None:
+        findings = [
+            _f("x", "operations_assets", "reserves_and_mine_life",
+               "Exhibit 23.10 is a Qualified Person consent.", confidence=0.9),
+            _f("y", "operations_assets", "assets_and_production",
+               "Los Chancas: $2,600M capex, 130,000 t Cu per year from 2031.",
+               confidence=0.75),
+        ]
+        report = pr.assemble(_inputs(findings=findings))
+        lead = report["sections"][0]["sentences"][0]["text"]
+        assert "Los Chancas" in lead, "a figure outranks an exhibit title"
+
+
+class TestStatementsAboutTheEvidenceAreGaps:
+    @pytest.mark.parametrize(
+        ("statement", "is_gap"),
+        [
+            ("No cited evidence names AI hardware, data centres or servers; exposure is "
+             "not classifiable from this corpus.", True),
+            ("Retrieved 2026-Q2 evidence covers related-party transactions, an employee "
+             "share plan, exhibit lists and litigation; it contains no product, segment, "
+             "geography or revenue data.", True),
+            ("No evidence quantifies any semiconductor-linked revenue, share of sales or "
+             "contract; exposure reads as weak to indirect.", True),
+            ("The 2026-Q2 evidence returned mentions mining and refining operations, but "
+             "names no commodity the company produces or sells.", True),
+            ("For 2026-Q2, the filing states sales are attributed to countries by customer "
+             "location; the country values are not included in this evidence.", False),
+            ("Evidence names molybdenum only as a by-product of copper in the Peruvian "
+             "open-pit segment; no end-use demand breakdown is given.", False),
+            ("The company has not secured offtake agreements for its cathode.", False),
+            ("As of June 30, 2026 three Peruvian labour lawsuits remained pending.", False),
+        ],
+    )
+    def test_the_detector(self, statement, is_gap) -> None:
+        from app.services.agents.investigator import is_statement_about_the_evidence
+
+        assert is_statement_about_the_evidence(statement) is is_gap
+
+
+def test_a_re_asked_question_keeps_its_whole_definition() -> None:
+    """Run 2 re-asked profitability from run 1's gap without the statements tool its
+    definition gives it — the restoration copied fields one by one and missed it."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from app.services.director.planner import plan_research
+
+    cfg = SimpleNamespace(v3_agent_tools_enabled=True, v3_deepseek_search_enabled=True,
+                          v3_filings_tool_enabled=True, v3_corpus_enabled=True)
+    plan = asyncio.run(plan_research(
+        subject="X:US", mode="deep", cfg=cfg,
+        prior_open_gaps=[("profitability", "No citable evidence was retrieved.")],
+    ))
+    question = next(q for q in plan.questions if q.key == "profitability")
+    assert question.origin == "prior_gap"
+    assert "get_sec_statements" in question.optional_tools
+    assert question.owner_role == "financial_analyst"
+
+
+class TestTheCoreFilingsAreSecuredFirst:
+    """Run 2's corpus held the 10-Q and the 10-K's exhibit index, not the 10-K: the
+    business, segment and reserves questions had nothing to read."""
+
+    def _events(self):  # noqa: ANN202
+        from types import SimpleNamespace as NS
+
+        return NS(cik="0001001838", events=[
+            NS(form_type="8-K", filing_date="2026-08-01", accession_number="000110465926000001"),
+            NS(form_type="10-Q", filing_date="2026-07-31", accession_number="000110465926089169"),
+            NS(form_type="10-K", filing_date="2026-02-27", accession_number="000110465926021492"),
+            NS(form_type="10-K", filing_date="2025-02-28", accession_number="000110465925011111"),
+        ])
+
+    async def test_the_latest_annual_and_quarterly_reports(self, monkeypatch) -> None:
+        from types import SimpleNamespace as NS
+
+        from app.services.corpus import filing_evidence as fe
+
+        calls: list[tuple[str, str]] = []
+
+        async def ensure(session, *, company_id, cik, accession, form, cfg, **kw):  # noqa: ANN001, ANN003, ANN202
+            calls.append((form, accession))
+            return fe.FilingEvidenceResult(state=fe.STATE_READY, accession=accession)
+
+        class _Provider:
+            async def get_recent_events(self_inner, ticker, **kw):  # noqa: ANN001, ANN003, ANN202, N805
+                return self._events()
+
+        monkeypatch.setattr(fe, "ensure_filing_corpus_evidence", ensure)
+        company = NS(id=uuid.uuid4(), ticker="SCCO", exchange="NYSE")
+        cfg = NS(v3_filings_tool_enabled=True, v3_filing_body_bridge_enabled=True)
+        out = await fe.ensure_core_filings(None, company=company, cfg=cfg, provider=_Provider())
+        assert calls == [("10-K", "000110465926021492"), ("10-Q", "000110465926089169")]
+        assert out["annual"]["state"] == "ready" and out["quarterly"]["form"] == "10-Q"
+
+    async def test_a_non_sec_issuer_and_disabled_flags_are_skipped(self) -> None:
+        from types import SimpleNamespace as NS
+
+        from app.services.corpus import filing_evidence as fe
+
+        on = NS(v3_filings_tool_enabled=True, v3_filing_body_bridge_enabled=True)
+        foreign = NS(id=uuid.uuid4(), ticker="MC", exchange="PA")
+        assert (await fe.ensure_core_filings(None, company=foreign, cfg=on))["skipped"]
+        off = NS(v3_filings_tool_enabled=True, v3_filing_body_bridge_enabled=False)
+        us = NS(id=uuid.uuid4(), ticker="SCCO", exchange="US")
+        assert (await fe.ensure_core_filings(None, company=us, cfg=off))["skipped"]

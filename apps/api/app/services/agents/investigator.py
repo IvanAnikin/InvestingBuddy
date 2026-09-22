@@ -626,6 +626,10 @@ def _build_prompt(
         "were read from a third-party document (a web page, a publisher's PDF): the mark "
         "says where the text came from, not whether a figure is reliable — do not "
         "repeat it in a finding.\n"
+        "8. A finding states something ABOUT THE COMPANY OR ITS MARKET that the evidence "
+        "shows. What the evidence does not contain, or only mentions in passing, belongs "
+        "in `gaps` — never in a finding, and never as a conclusion that exposure is weak "
+        "or absent.\n"
         "\n"
         + _response_shape(retry=retry)
     )
@@ -703,6 +707,61 @@ def _build_prompt(
 _MARKER_RE = re.compile(r"=+\s*(?:BEGIN|END)\s+EVIDENCE", re.IGNORECASE)
 
 
+#: The SUBJECT of the clause is the evidence the platform read.
+_META_SUBJECT_RE = re.compile(
+    r"\b(?:evidence|excerpts?|corpus|retrieved|reviewed|cited\s+items?|items?\s+reviewed|"
+    r"exhibit\s+(?:list|index))\b",
+    re.IGNORECASE,
+)
+#: A clause that STARTS with the evidence and says what it covers: "Retrieved 2026-Q2
+#: evidence covers related-party transactions…", "The evidence returned mentions…".
+_COVERAGE_RE = re.compile(
+    r"^(?:the\s+)?(?:[\w-]+\s+){0,3}?(?:evidence|excerpts?|corpus|items?)(?:\s+\w+){0,2}?"
+    r"\s+(?:covers?|contains?|includes?|comprises?|consists|mentions?)\b",
+    re.IGNORECASE,
+)
+#: "only" is NOT limiting here: "Evidence names molybdenum only as a by-product" states a
+#: fact about the company.
+_LIMITING_RE = re.compile(
+    r"\b(?:no|not|none|cannot|can't|without|absent|lacks?|unclassifiable)\b",
+    re.IGNORECASE,
+)
+_CLAUSE_RE = re.compile(r"[;:]\s+|\.\s+|,\s+(?:but|and|while|so)\s+")
+
+
+def _meta_clause(clause: str) -> bool:
+    return bool(
+        (_META_SUBJECT_RE.search(clause) and _LIMITING_RE.search(clause))
+        or _COVERAGE_RE.search(clause)
+    )
+
+
+def is_statement_about_the_evidence(statement: str) -> bool:
+    """Is ``statement`` a report on what the platform READ rather than on the company?
+
+    Its first clause must be about the evidence — what it lacks, or what it merely covers
+    — and every later clause either about the evidence too or a limitation that follows
+    from it ("…; exposure cannot be quantified"). A statement with any clause asserting
+    something about the company stays a finding: "sales are attributed by customer
+    location; the country values are not in this evidence" says something real.
+    """
+    clauses = [c.strip() for c in _CLAUSE_RE.split(statement or "") if c.strip()]
+    if not clauses or not _meta_clause(clauses[0]):
+        return False
+    return all(
+        _meta_clause(c) or _LIMITING_RE.search(c) or _ABSENCE_INFERENCE_RE.search(c)
+        for c in clauses[1:]
+    )
+
+
+#: A conclusion drawn from what the evidence LACKED: "…; exposure reads as weak". The
+#: absence of a figure in a 10-Q is not a weak link to semiconductors — that inference is
+#: the "not acquired" read as "the company lacks it" defect.
+_ABSENCE_INFERENCE_RE = re.compile(
+    r"\b(?:weak|indirect|limited|minimal|unclear|unknown|undetermined)\b", re.IGNORECASE
+)
+
+
 @dataclass
 class InvestigatorDiagnostics:
     """Why a model reply produced no finding — COUNTED, never inferred.
@@ -738,6 +797,8 @@ class InvestigatorDiagnostics:
     responses_unparseable: int = 0
     responses_truncated: int = 0
     statements_dropped_uncited: int = 0
+    #: Statements about what the evidence lacked, recorded as gaps instead (V3.18).
+    statements_about_evidence: int = 0
     #: V3.16.1b. A first attempt hit the output ceiling and a shorter one was asked for.
     #: Counted even when the retry succeeds, because the strain is worth seeing before it
     #: becomes a failure.
@@ -760,6 +821,7 @@ class InvestigatorDiagnostics:
         self.responses_unparseable += other.responses_unparseable
         self.responses_truncated += other.responses_truncated
         self.statements_dropped_uncited += other.statements_dropped_uncited
+        self.statements_about_evidence += other.statements_about_evidence
         self.responses_retried_after_truncation += (
             other.responses_retried_after_truncation
         )
@@ -775,6 +837,7 @@ class InvestigatorDiagnostics:
             "responses_unparseable": self.responses_unparseable,
             "responses_truncated": self.responses_truncated,
             "statements_dropped_uncited": self.statements_dropped_uncited,
+            "statements_about_evidence": self.statements_about_evidence,
             "responses_retried_after_truncation": (
                 self.responses_retried_after_truncation
             ),
@@ -1486,6 +1549,26 @@ class LLMInvestigator:
                 # answered without citing was indistinguishable from one that never
                 # answered.
                 self.diagnostics.statements_dropped_uncited += 1
+                continue
+            if is_statement_about_the_evidence(statement):
+                # V3.18 live acceptance: "No cited evidence names AI hardware…", "the
+                # retrieved evidence contains no segment data" — statements about what
+                # the platform READ, not about the company. As findings they graded
+                # thesis dimensions 'evidenced' and led the executive synthesis. They
+                # are what a platform evidence gap is for.
+                gaps.append(
+                    GapDraft(
+                        gap_type=ledger.GAP_EVIDENCE_UNAVAILABLE,
+                        description=statement[:600],
+                        question_key=question.key,
+                        why_it_matters=(
+                            "What the retrieved evidence does not contain is a limit of "
+                            "this research, not a fact about the company."
+                        ),
+                        sources_tried=tuple(sorted({e.kind for e in evidence})),
+                    )
+                )
+                self.diagnostics.statements_about_evidence += 1
                 continue
             direction = str(raw.get("direction") or "").strip().lower() or None
             if direction not in {"supportive", "adverse", "neutral", None}:
