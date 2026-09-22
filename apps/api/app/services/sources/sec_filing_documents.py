@@ -735,6 +735,26 @@ def _one_cik_from_filing(filing: dict[str, Any]) -> str | None:
     )
 
 
+def _ciks_from_urls(filings: list[dict[str, Any]]) -> set[str]:
+    """CIKs from official SEC Archives URLs only — the issuer's own path segment.
+
+    An accession's 10-digit prefix is NOT this: it identifies whoever SUBMITTED the
+    filing, which for most large issuers is a filing agent. SCCO's 2026 10-K is
+    ``0001104659-26-021492`` — prefix ``0001104659``, Broadridge — while the issuer is
+    ``0001001838``. Treating that prefix as an identity made the two disagree and the
+    acquisition of the 10-K fail closed, which is how a live deep run ended up with the
+    10-Q and the 10-K's exhibit index and no annual report at all.
+    """
+    found: set[str] = set()
+    for filing in filings:
+        if not isinstance(filing, dict):
+            continue
+        candidate = cik_from_archives_url(filing.get("url"))
+        if candidate:
+            found.add(candidate)
+    return found
+
+
 def _ciks_from_filings(filings: list[dict[str, Any]]) -> set[str]:
     """Every DISTINCT CIK derivable from the filing list — never just the first.
 
@@ -789,16 +809,28 @@ def resolve_sec_filer_cik(
     On success ``failure_code`` is None.
     """
     caller_cik = normalize_cik(cik)
-    derived = _ciks_from_filings(filings)
+    from_urls = _ciks_from_urls(filings)
 
-    if len(derived) > 1:
+    # Two official Archives URLs naming different issuers is a mixed list: fail closed.
+    if len(from_urls) > 1:
         return None, FAILURE_CONFLICTING_CIK
-    filings_cik = next(iter(derived), None)
-
-    if caller_cik and filings_cik and caller_cik != filings_cik:
+    url_cik = next(iter(from_urls), None)
+    if caller_cik and url_cik and caller_cik != url_cik:
+        # Both authoritative and disagreeing — one issuer's body would be attributed to
+        # another.
         return None, FAILURE_CONFLICTING_CIK
     if caller_cik:
         return caller_cik, None
+    if url_cik:
+        return url_cik, None
+
+    # Nothing authoritative. The accession prefix is the SUBMITTER's id — usually a
+    # filing agent — and is used only when nothing better exists, and only when every
+    # filing agrees on it.
+    derived = _ciks_from_filings(filings)
+    if len(derived) > 1:
+        return None, FAILURE_CONFLICTING_CIK
+    filings_cik = next(iter(derived), None)
     if filings_cik:
         return filings_cik, None
     return None, FAILURE_MISSING_CIK
