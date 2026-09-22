@@ -827,3 +827,45 @@ async def test_flag_off_writes_no_row_for_a_preflight_failure(session):
         await session.execute(select(func.count()).select_from(DocumentIngestionAttempt))
     ).scalar_one()
     assert count == 0
+
+
+class TestTheAccessionPrefixIsTheSubmitterNotTheIssuer:
+    """V3.18 live acceptance: SCCO's 10-K (0001104659-26-021492, prefix Broadridge)
+    was refused `conflicting_cik` against the issuer's own CIK 1001838, so the annual
+    report never entered the corpus and every business question read the 10-Q only."""
+
+    SCCO_INDEX = (
+        "https://www.sec.gov/Archives/edgar/data/1001838/000110465926021492/"
+        "0001104659-26-021492-index.htm"
+    )
+
+    def test_a_filing_agents_prefix_does_not_override_the_caller(self) -> None:
+        from app.services.sources.sec_filing_documents import resolve_sec_filer_cik
+
+        assert resolve_sec_filer_cik(
+            "1001838", [{"accession_number": "0001104659-26-021492"}]
+        ) == ("0001001838", None)
+
+    def test_an_official_url_agrees_with_the_caller(self) -> None:
+        from app.services.sources.sec_filing_documents import resolve_sec_filer_cik
+
+        assert resolve_sec_filer_cik(
+            "1001838",
+            [{"accession_number": "0001104659-26-021492", "url": self.SCCO_INDEX}],
+        ) == ("0001001838", None)
+
+    def test_an_official_url_naming_another_issuer_still_fails_closed(self) -> None:
+        from app.services.sources.sec_filing_documents import resolve_sec_filer_cik
+
+        other = "https://www.sec.gov/Archives/edgar/data/831259/x-index.htm"
+        assert resolve_sec_filer_cik("1001838", [{"url": other}])[1] == "conflicting_cik"
+        assert resolve_sec_filer_cik(None, [{"url": other}, {"url": self.SCCO_INDEX}])[1] == (
+            "conflicting_cik"
+        )
+
+    def test_with_nothing_authoritative_the_prefix_is_still_the_fallback(self) -> None:
+        from app.services.sources.sec_filing_documents import resolve_sec_filer_cik
+
+        assert resolve_sec_filer_cik(
+            None, [{"accession_number": "0001104659-26-021492"}]
+        ) == ("0001104659", None)

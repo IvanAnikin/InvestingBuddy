@@ -572,6 +572,12 @@ class TestStatementsAboutTheEvidenceAreGaps:
             ("Evidence names molybdenum only as a by-product of copper in the Peruvian "
              "open-pit segment; no end-use demand breakdown is given.", False),
             ("The company has not secured offtake agreements for its cathode.", False),
+            # Run 3: graded a thesis dimension "evidenced" off an absence.
+            ("Evidence describes mining/refining operations and mineral reserve reports; "
+             "no semiconductor end use or customer is named.", True),
+            # Reports on the evidence but states something true about the company.
+            ("Evidence describes the issuer as a miner, listing mineral reserve and "
+             "resource reports for named mines.", False),
             ("As of June 30, 2026 three Peruvian labour lawsuits remained pending.", False),
         ],
     )

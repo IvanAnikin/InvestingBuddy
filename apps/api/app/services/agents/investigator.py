@@ -717,7 +717,8 @@ _META_SUBJECT_RE = re.compile(
 #: evidence covers related-party transactions…", "The evidence returned mentions…".
 _COVERAGE_RE = re.compile(
     r"^(?:the\s+)?(?:[\w-]+\s+){0,3}?(?:evidence|excerpts?|corpus|items?)(?:\s+\w+){0,2}?"
-    r"\s+(?:covers?|contains?|includes?|comprises?|consists|mentions?)\b",
+    r"\s+(?:covers?|contains?|includes?|comprises?|consists|mentions?|describes?|shows?|"
+    r"lists?|identifies)\b",
     re.IGNORECASE,
 )
 #: "only" is NOT limiting here: "Evidence names molybdenum only as a by-product" states a
@@ -747,6 +748,11 @@ def is_statement_about_the_evidence(statement: str) -> bool:
     """
     clauses = [c.strip() for c in _CLAUSE_RE.split(statement or "") if c.strip()]
     if not clauses or not _meta_clause(clauses[0]):
+        return False
+    if not _LIMITING_RE.search(statement or ""):
+        # "Evidence describes the issuer as a miner" reports on the evidence but says
+        # something true about the company. Only a statement that also says what was
+        # MISSING is a gap.
         return False
     return all(
         _meta_clause(c) or _LIMITING_RE.search(c) or _ABSENCE_INFERENCE_RE.search(c)
