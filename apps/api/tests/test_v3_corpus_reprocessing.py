@@ -712,3 +712,45 @@ class TestBatch:
             and ("reprocess_batch" in p.read_text() or "reprocess_version" in p.read_text())
         ]
         assert callers == [], callers
+
+
+class TestTheResearchIndexesWhatItSearches:
+    """V3.18 live acceptance, SCCO: 678 indexable chunks, none indexed — 94 corpus
+    searches in a deep run returned nothing. The V2 ingestion writes chunks and never
+    indexes them; the research now indexes the company's current documents first."""
+
+    async def test_unindexed_chunks_of_current_versions_are_indexed(self, session) -> None:
+        from app.services.corpus.indexing import ensure_company_indexed
+        from app.services.corpus.search.backends.postgres import PostgresSearchBackend
+
+        cfg, store = _cfg(), InMemoryArtifactStore()
+        document, version, _derivation = await _seed(session, cfg=cfg, store=store)
+        chunks = (await session.execute(select(ResearchDocumentChunk))).scalars().all()
+        assert chunks and all(c.indexed_at is None for c in chunks), (
+            "the ingestion path leaves chunks unindexed — the defect's precondition"
+        )
+        backend = PostgresSearchBackend(session=session)
+        result = await ensure_company_indexed(
+            session, company_id=document.company_id, backend=backend, cfg=cfg
+        )
+        assert result == {"versions": 1, "chunks_indexed": len(chunks)}
+        refreshed = (await session.execute(select(ResearchDocumentChunk))).scalars().all()
+        assert all(c.indexed_at is not None for c in refreshed)
+        again = await ensure_company_indexed(
+            session, company_id=document.company_id, backend=backend, cfg=cfg
+        )
+        assert again == {"versions": 0, "chunks_indexed": 0}, "idempotent"
+
+    async def test_a_superseded_version_is_not_indexed(self, session) -> None:
+        from app.services.corpus.indexing import ensure_company_indexed
+        from app.services.corpus.search.backends.postgres import PostgresSearchBackend
+
+        cfg, store = _cfg(), InMemoryArtifactStore()
+        document, version, _derivation = await _seed(session, cfg=cfg, store=store)
+        version.is_current = False
+        await session.flush()
+        result = await ensure_company_indexed(
+            session, company_id=document.company_id,
+            backend=PostgresSearchBackend(session=session), cfg=cfg,
+        )
+        assert result["chunks_indexed"] == 0

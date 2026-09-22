@@ -276,6 +276,9 @@ async def run_investigation(
     #: V3.18.3 — external searches already spent per question, so a follow-up uses the
     #: NEXT search intent and a question's own cap binds across rounds.
     searches_so_far: dict[str, int] = {}
+    #: Corpus intents run, and rounds worked, per question — so a repeat moves on.
+    corpus_so_far: dict[str, int] = {}
+    attempted: dict[str, int] = {}
     can_improve = _improvement_probe(investigator, plan)
     #: The completion rules were met. Later rounds only IMPROVE the run — close gaps on
     #: non-blocking questions, meet partially met contracts — and cannot un-complete it.
@@ -339,6 +342,8 @@ async def run_investigation(
                         question_keys,
                         evidence_so_far,
                         searches_so_far,
+                        corpus_so_far=corpus_so_far,
+                        attempted=attempted,
                         ownership=ownership,
                         domains={
                             key: _domain_of(questions_by_key.get(key), role_id)
@@ -478,6 +483,12 @@ async def run_investigation(
                     1 for step in steps if step.get("rung") == "external_search"
                     and step.get("query")
                 )
+                corpus_so_far[key] = corpus_so_far.get(key, 0) + sum(
+                    len(step.get("queries") or ())
+                    for step in steps
+                    if step.get("rung") == "corpus_by_intent"
+                )
+                attempted[key] = attempted.get(key, 0) + 1
 
             if outcome.failed:
                 await ledger.finish_task(
@@ -519,6 +530,21 @@ async def run_investigation(
             answered_keys=answered,
             improvable_keys=_improvable(
                 questions_by_key, evidence_so_far, searches_so_far, can_improve
+            ),
+            # Only for an investigator that climbs the ladder (it takes the question
+            # context): what "left to try" means is the ladder's. Any other keeps the
+            # earlier rule, a closable gap is a follow-up.
+            retry_ok=(
+                (
+                    lambda key: _has_a_rung_left(
+                        questions_by_key.get(key),
+                        corpus_so_far.get(key, 0),
+                        searches_so_far.get(key, 0),
+                        can_improve(key),
+                    )
+                )
+                if _accepts(investigator.investigate, "question_context")
+                else None
             ),
         )
         if completed:
@@ -809,6 +835,7 @@ async def _follow_up_tasks(
     *,
     answered_keys: "set[str]",
     improvable_keys: "set[str] | None" = None,
+    retry_ok: Any = None,
 ) -> tuple[list[tuple[str, list[str]]], set[str]]:
     """A closable gap becomes a follow-up task for a role that can address it.
 
@@ -840,6 +867,9 @@ async def _follow_up_tasks(
     for gap in gaps:
         question_key = gap.question_key
         if not question_key or question_key in answered_keys:
+            continue
+        if retry_ok is not None and not retry_ok(question_key):
+            # Nothing left that the earlier rounds did not already try.
             continue
         if question_key in role_for_question:
             gap_keys.add(question_key)
@@ -919,6 +949,8 @@ def _question_context(
     evidence_so_far: dict[str, dict[str, Any]],
     searches_so_far: dict[str, int],
     *,
+    corpus_so_far: "dict[str, int] | None" = None,
+    attempted: "dict[str, int] | None" = None,
     ownership: Any = None,
     domains: "dict[str, str | None] | None" = None,
 ) -> dict[str, Any]:
@@ -938,8 +970,31 @@ def _question_context(
             prior_evidence=tuple(evidence_so_far.get(key, {}).values()),
             external_searches_done=searches_so_far.get(key, 0),
             established_elsewhere=established,
+            corpus_intents_done=(corpus_so_far or {}).get(key, 0),
+            rounds_attempted=(attempted or {}).get(key, 0),
         )
     return out
+
+
+def _has_a_rung_left(
+    question: Any,
+    corpus_done: int,
+    searches_done: int,
+    can_search: bool,
+) -> bool:
+    """Would another round try anything the last ones did not?
+
+    A repeat skips the deterministic platform tools, so it can only run the corpus
+    intents not yet run, or a web search the contract, the role and the budget allow.
+    With neither, re-queuing the question spends a task to fail identically.
+    """
+    intents = len(getattr(question, "search_intents", ()) or ())
+    if corpus_done < intents:
+        return True
+    contract = getattr(question, "evidence_contract", None)
+    if contract is None or not contract.allow_external or not can_search:
+        return False
+    return searches_done < min(contract.max_external_searches, intents or 1)
 
 
 def _improvable(

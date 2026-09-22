@@ -228,3 +228,33 @@ class TestPeerNetDebtFollowsTheSubjectsRule:
             consistency={"inconsistencies": [{"withhold_derived": ["operating_margin"]}]}
         )
         assert "operating_margin" not in self._metrics(monkeypatch, inconsistent)
+
+
+class TestTheSubjectsOwnStatements:
+    """V3.18 live acceptance: SCCO's financial questions were empty — no validated
+    extracted facts existed — while its SEC XBRL statements, the report's own source,
+    were reachable only through the peers chain."""
+
+    def test_statement_lines_and_metrics_for_the_reporting_period(self) -> None:
+        items, gaps = peers.statement_items("SCCO", json.loads(FIXTURE.read_text()))
+        by_metric = {i["metric_id"]: i for i in items}
+        assert by_metric["revenue"]["value"] == pytest.approx(13420.0, abs=1)
+        assert by_metric["revenue"]["id"] == "secfin:SCCO:FY2025:revenue"
+        assert by_metric["operating_margin"]["id"].startswith("secfin:SCCO:")
+        assert "gross_profit" not in by_metric, "last tagged FY2019: withheld, never shown"
+        assert all(i["source_tier"] == "T1_primary_filing" for i in items)
+
+    def test_they_are_the_issuers_own_filing(self) -> None:
+        ref = c.evidence_ref_for("get_sec_statements", "secfin:SCCO:FY2025:revenue",
+                                 {"ticker": "SCCO", "source_tier": "T1_primary_filing"})
+        assert ref.source_kind == c.ISSUER_FILING and ref.source_ref == "sec:SCCO"
+
+    def test_financial_questions_can_reach_them(self) -> None:
+        from app.services.director.base_model import base_question
+        from app.services.director.roles import role_for
+
+        for key in ("profitability", "cash_generation_and_funding", "balance_sheet_risk",
+                    "revenue_trajectory", "capital_allocation"):
+            question = base_question(key)
+            assert "get_sec_statements" in question.optional_tools, key
+            assert role_for(question.owner_role).can_use("get_sec_statements"), key

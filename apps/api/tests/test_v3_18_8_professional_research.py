@@ -517,3 +517,10 @@ class TestEscalationCarriesTheThesis:
         assert captured["payload"]["discovery_candidate_id"] == str(
             decision.discovery_candidate_id
         )
+
+
+def test_a_gap_recorded_each_round_is_listed_once() -> None:
+    gap = GAPS[0]
+    report = pr.assemble(_inputs(gaps=[gap, gap, gap]))
+    listed = _section(report, "evidence_quality_and_gaps")["platform_evidence_gaps"]
+    assert len(listed) == 1

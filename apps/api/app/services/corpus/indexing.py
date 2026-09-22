@@ -271,6 +271,67 @@ async def index_version(
     return await backend.index(to_corpus_chunks(rows, version=version))
 
 
+#: Versions indexed per run at most. A company's live documents number in the tens.
+MAX_VERSIONS_TO_INDEX = 60
+
+
+async def ensure_company_indexed(
+    session: "Any",
+    *,
+    company_id: uuid.UUID,
+    backend: "SearchBackend",
+    cfg: "Settings",
+    max_versions: int = MAX_VERSIONS_TO_INDEX,
+) -> dict[str, int]:
+    """Index a company's CURRENT documents whose permitted chunks were never indexed.
+
+    V3.18 live acceptance, SCCO: 678 chunks, every one ``indexable``, none indexed — so
+    94 corpus searches in a deep run returned nothing and every issuer question reported
+    "no citable evidence". The chunks were written by the V2 ingestion (``persist_chunks``)
+    and only the V3.16 filing bridge ever called ``index_version``. A search can only find
+    indexed chunks, so the research indexes what it is about to search: the lexical index
+    is index STATE on rows the corpus already holds — no copy, no embedding, no cost.
+
+    Only current versions, only active derivations (``index_version`` enforces the second),
+    only chunks governance permits. Bounded; never raises past the caller's savepoint.
+    """
+    if backend is None or not getattr(cfg, "v3_corpus_enabled", False):
+        return {"versions": 0, "chunks_indexed": 0}
+    version_ids = (
+        (
+            await session.execute(
+                select(ResearchDocumentChunk.research_document_version_id)
+                .join(
+                    ResearchDocumentVersion,
+                    ResearchDocumentVersion.id
+                    == ResearchDocumentChunk.research_document_version_id,
+                )
+                .where(
+                    ResearchDocumentChunk.company_id == company_id,
+                    ResearchDocumentChunk.indexable.is_(True),
+                    ResearchDocumentChunk.indexed_at.is_(None),
+                    ResearchDocumentVersion.is_current.is_(True),
+                )
+                .distinct()
+                .limit(max_versions)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    indexed = 0
+    for version_id in version_ids:
+        result = await index_version(
+            session,
+            research_document_version_id=version_id,
+            backend=backend,
+            cfg=cfg,
+            replace=False,
+        )
+        indexed += int(getattr(result, "indexed", 0) or 0)
+    return {"versions": len(version_ids), "chunks_indexed": indexed}
+
+
 async def drop_chunks_for_derivation(
     session: "Any", *, derivation_id: uuid.UUID
 ) -> int:
