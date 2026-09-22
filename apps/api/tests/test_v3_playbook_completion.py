@@ -179,7 +179,14 @@ class TestPlaybookCalculationsReachTheTool:
             ),
             company,
         )
-        assert args == {"company_id": str(company), "metrics": ["segment_revenue_mix"]}
+        # `scope` is required by the tool's own validator; without it every call was
+        # refused invalid_arguments (V3.18 live SCCO).
+        assert args == {
+            "company_id": str(company), "metrics": ["segment_revenue_mix"], "scope": "group",
+        }
+        from app.services.agent_tools.calculations import validate_get_calculated_metrics
+
+        assert validate_get_calculated_metrics(args)["scope"] == "group"
 
     def test_a_question_naming_no_calculation_makes_no_call(self) -> None:
         import uuid
