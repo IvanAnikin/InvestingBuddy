@@ -473,6 +473,8 @@ class TestDiagnosticsCarryNoSensitiveContent:
             "statements_dropped_uncited", "finish_reasons",
             # V3.16.1b.
             "responses_retried_after_truncation", "retries_recovered",
+            # V3.18.9 — statements about the evidence, recorded as gaps. A count.
+            "statements_about_evidence",
         }
         assert all(isinstance(v, int) for k, v in out.items() if k != "finish_reasons")
 
