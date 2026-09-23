@@ -833,7 +833,9 @@ class TestTheLadder:
         rungs = [s["rung"] for s in steps]
         assert "platform_tools" not in rungs, "deterministic tools are not re-run"
         corpus = next(s for s in steps if s["rung"] == "corpus_by_intent")
-        assert corpus["queries"] == ["Southern Copper Corp three"]
+        # The intent, as SEARCH TERMS (V3.18.10): in a corpus already filtered to one
+        # company, the registered name's "Corp" matches its every page.
+        assert corpus["queries"] == ["Southern Copper three"]
 
     async def test_an_intent_is_never_searched_twice(self) -> None:
         """Cycling back to the first intent paid for the identical answer again."""
