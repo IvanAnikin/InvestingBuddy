@@ -258,17 +258,21 @@ def _dimension_view(
     dimension was unestablished — the report's least true sentence.
 
     So the grade asks the one question the contract cannot: does the finding NAME the
-    dimension? ``dimensions_in`` is the same declared vocabulary that read the
-    dimensions out of the thesis in the first place, applied to the finding's own
-    statement. Nothing is inferred, nothing is dropped: a finding that does not name the
+    dimension, other than to deny it? ``names_dimension`` is the same declared
+    vocabulary that read the dimensions out of the thesis in the first place, applied to
+    the finding's own statement and refusing a mention that sits in a clause denying it
+    — live on MP Materials, "…elevators; no data-centre or AI use is stated" graded
+    ``ai_data_centres`` as exposure to data centres.
+
+    Nothing is inferred, nothing is dropped: a finding that does not name the
     dimension is still shown, still labelled, still citable — it just does not count as
     evidence that the company is exposed to something it never mentions.
     """
-    from app.services.director.thesis import dimensions_in
+    from app.services.director.thesis import names_dimension
 
     key = question.key.removeprefix("thesis_fit__")
     mine = [f for f in thesis_findings if f["question_key"] == question.key]
-    on_dimension = [f for f in mine if key in dimensions_in(str(f.get("statement") or ""))]
+    on_dimension = [f for f in mine if names_dimension(str(f.get("statement") or ""), key)]
     named = {f["label"] for f in on_dimension}
     off_dimension = [f["label"] for f in mine if f["label"] not in named]
     # A reference counts the same way a finding does: only if it names the dimension.
@@ -276,7 +280,7 @@ def _dimension_view(
     # its own, on a reference to a finding that does not mention semiconductors.
     lookup = statement_by_label or {}
     on_reference = [
-        label for label in referenced if key in dimensions_in(lookup.get(label, ""))
+        label for label in referenced if names_dimension(lookup.get(label, ""), key)
     ]
     view: dict[str, Any] = {
         "question_key": question.key,

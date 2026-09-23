@@ -352,6 +352,32 @@ class TestADimensionIsGradedOnWhatNamesIt:
         assert semis["status"] == "partially_evidenced"
         assert "findings_not_naming_the_dimension" not in semis
 
+    def test_a_denial_is_not_exposure(self) -> None:
+        """MP Materials, live: "…elevators; no data-centre or AI use is stated" graded
+        `ai_data_centres` EVIDENCED — exposure read out of its denial."""
+        report = pr.assemble(_inputs(
+            questions=[_q("thesis_fit__ai_data_centres", "thesis_fit")],
+            findings=[_f("x", "thesis_fit", "thesis_fit__ai_data_centres",
+                         "Named end-uses of NdFeB magnets are EVs, wind, robots, motors, "
+                         "pumps, compressors, elevators; no data-centre or AI use is stated.")],
+        ))
+        dim = _section(report, "thesis_fit")["dimensions"][0]
+        assert dim["status"] == "not_established"
+        assert dim["findings_not_naming_the_dimension"] == ["F1"]
+        change = _section(report, "what_would_change_the_thesis")
+        assert change["unestablished_thesis_dimensions"] == ["ai_data_centres"]
+
+    def test_one_affirmative_mention_is_enough(self) -> None:
+        report = pr.assemble(_inputs(
+            questions=[_q("thesis_fit__semiconductors", "thesis_fit")],
+            findings=[_f("x", "thesis_fit", "thesis_fit__semiconductors",
+                         "Copper is not a semiconductor input, but our foil ships to "
+                         "semiconductor packaging customers.")],
+        ))
+        dim = _section(report, "thesis_fit")["dimensions"][0]
+        assert dim["status"] == "evidenced"
+        assert dim["finding_labels"] == ["F1"]
+
     def test_a_finding_that_names_the_dimension_evidences_it(self) -> None:
         report = pr.assemble(_inputs(
             questions=[*_QUESTIONS_WITH_SEMIS],

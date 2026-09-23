@@ -141,6 +141,55 @@ def dimensions_in(text: str | None) -> list[str]:
     return found
 
 
+#: Words that turn a mention into a denial. A finding that says "no data-centre or AI use
+#: is stated" NAMES the dimension and denies it, and V3.18.12 graded that as exposure.
+_NEGATION_CUES: frozenset[str] = frozenset(
+    {"no", "not", "none", "never", "without", "nor", "neither", "lacks", "lack",
+     "lacking", "absent", "excludes", "excluding", "omits", "omitted"}
+)
+
+#: A denial scopes to its CLAUSE, not to a fixed number of words. "…elevators; no
+#: data-centre or AI use is stated" denies both mentions however long the list; "copper
+#: is not a semiconductor input, but our foil ships to semiconductor packaging" denies
+#: only the first clause. A token window did one of these correctly and never both.
+_CLAUSE_SPLIT_RE = re.compile(
+    r"[;.]\s+|,\s+(?:but|although|though|while|whereas|yet)\s+"
+)
+
+_WORD_TOKEN_RE = re.compile(r"[a-z0-9]+")
+
+
+def names_dimension(text: str | None, dimension_key: str) -> bool:
+    """Does ``text`` name this dimension other than to DENY it? — V3.18.14.
+
+    The affirmative half of ``dimensions_in``. Live on MP Materials, the finding *"Named
+    end-uses of NdFeB magnets are EVs, wind, robots, motors, pumps, compressors,
+    elevators; no data-centre or AI use is stated"* graded ``ai_data_centres`` as
+    **evidenced** — on a sentence whose whole point is that the company's own list of end
+    uses omits them. Grading exposure from a denial of it is the "absence read as
+    presence" defect, inverted.
+
+    One affirmative mention is enough: "copper is not a semiconductor input, but our foil
+    ships to semiconductor packaging" names it. Only when EVERY mention sits in a clause
+    that denies it does the dimension go unnamed.
+    """
+    low = (text or "").lower()
+    dimension = next((d for d in THESIS_DIMENSIONS if d.key == dimension_key), None)
+    if dimension is None or not low:
+        return False
+    for clause in _CLAUSE_SPLIT_RE.split(low):
+        if not clause:
+            continue
+        for pattern in dimension.patterns:
+            match = re.search(pattern, clause)
+            if match is None:
+                continue
+            before = _WORD_TOKEN_RE.findall(clause[: match.start()])
+            if not any(token in _NEGATION_CUES for token in before):
+                return True
+    return False
+
+
 def _council_rationale(run: Any, candidate_id: str) -> str | None:
     envelope = ((getattr(run, "config_json", None) or {}).get("discovery_council") or {})
     review = envelope.get("review") or {}
@@ -291,6 +340,7 @@ def size_fit(context: ThesisContext, market_cap_usd: float | None) -> dict[str, 
 
 
 __all__ = [
+    "names_dimension",
     "SIZE_BANDS",
     "THESIS_DIMENSIONS",
     "ThesisContext",
