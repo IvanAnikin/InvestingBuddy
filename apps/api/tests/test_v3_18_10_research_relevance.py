@@ -1,4 +1,4 @@
-"""V3.18.10 — ask the corpus a query, grade a dimension on what names it, keep the period.
+"""V3.18.10/11 — ask the corpus a query, grade a dimension on what names it, keep the period.
 
 Three defects, all read off SCCO's fourth live run and all diagnosed against the
 production database rather than guessed at:
@@ -27,10 +27,14 @@ from typing import Any
 
 from app.services.agents.investigator import (
     CORPUS_TOP_K,
+    MAX_EVIDENCE_CHARS,
     ExternalSearchBudget,
     LLMInvestigator,
     QuestionContext,
+    _build_prompt,
+    _by_density,
     _corpus_arguments,
+    _Evidence,
     _harvest,
     _period_key_of,
 )
@@ -189,6 +193,72 @@ class TestTheLadderNeverAsksTheSameThingTwice:
         ) == 2
 
 
+class TestTheBudgetKeepsTheFigures:
+    """V3.18.11 — the prompt's evidence budget is spent on the densest evidence.
+
+    Live on SCCO run 5: the cash-generation question retrieved eight corpus chunks —
+    12,000 characters, the whole budget — and then nineteen SEC statement lines, which
+    were trimmed away unread. The writer recorded "Retrieved evidence contains no
+    operating cash flow, capex, free cash flow, debt or cash balance figures" about a
+    question whose own tool had returned every one of them.
+    """
+
+    def test_typed_records_come_before_prose(self) -> None:
+        chunk = _ev("ev:c:1", "search_company_corpus", "a paragraph")
+        line = _ev("secfin:SCCO:FY2025:operating_cash_flow", "get_sec_statements", "OCF")
+        peer = _ev("peerfin:FCX:FY2025:revenue", "get_peer_financials", "rev")
+        assert [e.citation_id for e in _by_density([chunk, line, peer])] == [
+            line.citation_id, peer.citation_id, chunk.citation_id,
+        ]
+
+    def test_order_within_a_group_is_untouched(self) -> None:
+        items = [_ev(f"ev:c:{i}", "search_company_corpus", "x") for i in range(4)]
+        assert _by_density(items) == items
+
+    def test_a_questions_own_figures_survive_a_corpus_that_fills_the_budget(self) -> None:
+        """The exact live shape: chunks first by acquisition order, statements after."""
+        chunks = [
+            _ev(f"ev:c:{i}", "search_company_corpus", "prose " * 300) for i in range(12)
+        ]
+        lines = [
+            _ev(f"secfin:SCCO:FY2025:{name}", "get_sec_statements",
+                f'{{"line": "{name}", "value": 1.0, "period": "FY2025"}}')
+            for name in ("operating_cash_flow", "capex", "free_cash_flow", "long_term_debt")
+        ]
+        assert sum(len(c.text) for c in chunks) > MAX_EVIDENCE_CHARS
+        _system, user = _build_prompt(
+            _question(), [*chunks, *lines], "financial_analyst",
+        )
+        for line in lines:
+            assert line.citation_id in user, f"{line.citation_id} was trimmed away"
+
+    def test_a_trimmed_tool_is_named_and_absence_about_it_is_forbidden(self) -> None:
+        chunks = [
+            _ev(f"ev:c:{i}", "search_company_corpus", "prose " * 300) for i in range(12)
+        ]
+        _system, user = _build_prompt(_question(), chunks, "financial_analyst")
+        assert "search_company_corpus" in user
+        assert "Nothing may be called absent from search_company_corpus" in user
+
+    def test_a_trimmed_id_is_not_an_allowed_citation(self) -> None:
+        """A citation to evidence the model never read is the fabrication rule 1 forbids."""
+        chunks = [
+            _ev(f"ev:c:{i}", "search_company_corpus", "prose " * 300) for i in range(12)
+        ]
+        _system, user = _build_prompt(_question(), chunks, "financial_analyst")
+        allowed = user.split("ALLOWED CITATION IDS")[1].split("=== BEGIN EVIDENCE")[0]
+        listed = {line.strip("  - ").strip() for line in allowed.splitlines() if "ev:c:" in line}
+        shown = {c.citation_id for c in chunks if f"[{c.citation_id}]" in user}
+        assert listed == shown
+        assert len(listed) < len(chunks), "this fixture must overflow the budget"
+
+    def test_nothing_is_said_when_everything_fits(self) -> None:
+        _system, user = _build_prompt(
+            _question(), [_ev("ev:c:1", "search_company_corpus", "short")], "risk_analyst",
+        )
+        assert "did not fit" not in user
+
+
 class TestATableRowIsRenderedAsWhatItSays:
     """A spacer cell is not content, and a repeat is not a second mention."""
 
@@ -297,6 +367,14 @@ class TestAFindingKeepsItsPeriod:
 _QUESTIONS_WITH_SEMIS = [
     _q("thesis_fit__semiconductors", "thesis_fit"),
 ]
+
+
+def _ev(citation_id: str, kind: str, text: str) -> _Evidence:
+    return _Evidence(citation_id=citation_id, kind=kind, text=text, untrusted=False)
+
+
+def _question() -> Any:
+    return planned_from(base_question("cash_generation_and_funding"), origin="director")
 
 
 def _with(question: Any, **over: Any) -> Any:
