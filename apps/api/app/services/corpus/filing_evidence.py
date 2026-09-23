@@ -242,6 +242,23 @@ async def filing_evidence_state(
             or 0
         )
 
+    if derivation is not None and indexable > 0 and is_exhibit_url(version.canonical_url):
+        # Searchable, and not the filing. Reacquiring now selects the body, because the
+        # selector no longer mistakes an "…exhibit96…" name for a body document.
+        return FilingEvidenceState(
+            state=STATE_HISTORICAL_WITHOUT_CHUNKS,
+            accession=canonical,
+            version_id=version.id,
+            derivation_id=derivation.id,
+            extracted_document_id=version.extracted_document_id,
+            chunk_count=chunk_count,
+            indexable_chunk_count=indexable,
+            detail=(
+                "the only searchable document for this filing is an EXHIBIT; the "
+                "filing body was never acquired"
+            ),
+        )
+
     if derivation is not None and indexable > 0:
         return FilingEvidenceState(
             state=STATE_READY,
@@ -272,6 +289,23 @@ async def filing_evidence_state(
     )
 
 
+#: How many current versions of one accession are considered. An accession is a folder,
+#: and a 10-K's folder holds the body and its exhibits.
+_MAX_VERSIONS_PER_FILING = 8
+
+
+def is_exhibit_url(url: str | None) -> bool:
+    """Is this URL an EXHIBIT of a filing rather than the filing body?
+
+    Decided on the file name the issuer published, by the same rule the document
+    selector uses, so "which file is the filing" has one answer in this codebase.
+    """
+    from app.services.sources.sec_filing_documents import is_exhibit_name
+
+    name = (str(url or "").rstrip("/").rsplit("/", 1)[-1]).strip()
+    return is_exhibit_name(name)
+
+
 async def current_version_for_filing(
     session: Any,
     *,
@@ -291,24 +325,42 @@ async def current_version_for_filing(
     canonical = canonical_accession(accession)
     if canonical is None or company_id is None:
         return None
-    return (
-        await session.execute(
-            select(ResearchDocumentVersion)
-            .join(
-                ResearchDocument,
-                ResearchDocument.id == ResearchDocumentVersion.research_document_id,
+    rows = (
+        (
+            await session.execute(
+                select(ResearchDocumentVersion)
+                .join(
+                    ResearchDocument,
+                    ResearchDocument.id == ResearchDocumentVersion.research_document_id,
+                )
+                .where(
+                    ResearchDocument.company_id == company_id,
+                    ResearchDocumentVersion.canonical_url.contains(
+                        _url_fragment(canonical)
+                    ),
+                    # REQUIRED, not merely preferred. See `filing_evidence_state`.
+                    ResearchDocumentVersion.is_current.is_(True),
+                )
+                # Deterministic: one accession can hold several documents, and an
+                # arbitrary `limit(1)` made "which version is this filing" depend on the
+                # planner. Ordering by URL also makes the preference below stable.
+                .order_by(ResearchDocumentVersion.canonical_url)
+                .limit(_MAX_VERSIONS_PER_FILING)
             )
-            .where(
-                ResearchDocument.company_id == company_id,
-                ResearchDocumentVersion.canonical_url.contains(
-                    _url_fragment(canonical)
-                ),
-                # REQUIRED, not merely preferred. See `filing_evidence_state`.
-                ResearchDocumentVersion.is_current.is_(True),
-            )
-            .limit(1)
         )
-    ).scalar_one_or_none()
+        .scalars()
+        .all()
+    )
+    if not rows:
+        return None
+    # THE FILING BODY, not an exhibit filed beside it. A 10-K's exhibits live in the same
+    # accession folder and match the same fragment, so an exhibit could answer "is this
+    # filing searchable?" — which is how MP Materials' corpus came to hold a 500-page
+    # technical report summary and not the 10-K.
+    for version in rows:
+        if not is_exhibit_url(version.canonical_url):
+            return version
+    return rows[0]
 
 
 async def _superseded_version_exists(

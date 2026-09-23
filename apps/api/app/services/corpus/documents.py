@@ -46,6 +46,7 @@ from app.models.extracted_document import ExtractedDocument
 from app.models.research_artifact import ResearchArtifact
 from app.models.research_document import ResearchDocument, ResearchDocumentVersion
 from app.services.corpus.identity import (
+    DOC_KIND_ANNUAL_REPORT,
     annual_period_from,
     document_key_for,
     normalize_document_type,
@@ -151,6 +152,21 @@ def period_fields(period: DocumentPeriod | None) -> tuple[str | None, str | None
     )
 
 
+#: Period types that cannot describe an annual document, whatever its body says.
+_SUB_ANNUAL_PERIOD_TYPES: frozenset[str] = frozenset({"quarter", "half"})
+
+
+def _contradicts_document_type(doc_type: str, period_type: str | None) -> bool:
+    """Is this period type impossible for a document of this kind?
+
+    Only the one direction, and only for the kind the platform is sure about: an annual
+    report covering a quarter is a contradiction. The reverse is not — an interim report
+    legitimately carries a quarter, and a document whose kind is ``other`` states no
+    claim to contradict.
+    """
+    return doc_type == DOC_KIND_ANNUAL_REPORT and (period_type or "") in _SUB_ANNUAL_PERIOD_TYPES
+
+
 async def upsert_document_version(
     session: "Any",
     payload: DocumentVersionInput,
@@ -181,6 +197,17 @@ async def upsert_document_version(
     canonical = _clip(canonicalize_source_url(payload.canonical_url), _URL_MAX) or ""
     doc_type = normalize_document_type(payload.document_type)
     period_key, period_type, period_basis = period_fields(payload.period)
+    if _contradicts_document_type(doc_type, period_type):
+        # An ANNUAL document cannot cover a quarter. `document_period` reads a bounded
+        # slice of the body, and its quarter rules were written for a quarterly results
+        # release, whose leading text IS about its own period. In a 10-K — or, live on
+        # MP Materials, in the 500-page technical report summary filed with one — a
+        # sentence about "the first quarter of 2027" is a FORECAST, and it stamped the
+        # document, and through it 1,938 chunks and every finding built on them, with a
+        # period in the future. A contradiction is refused rather than resolved: the
+        # document falls back to the rule that reads a year only beside the document's
+        # own name for itself.
+        period_key, period_type, period_basis = None, None, None
     if period_key is None:
         # ``document_period`` found nothing, which for an annual report is the
         # normal outcome — it refuses a bare year on purpose. Fall back to the

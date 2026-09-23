@@ -76,7 +76,11 @@ from app.services.sources.document_period import (
     DocumentPeriod,
     detect_document_period,
 )
-from app.services.sources.financial_period import PERIOD_TYPE_ANNUAL, ReportingPeriod
+from app.services.sources.financial_period import (
+    PERIOD_TYPE_ANNUAL,
+    PERIOD_TYPE_QUARTER,
+    ReportingPeriod,
+)
 from app.services.sources.taxonomy import T1_PRIMARY_FILING
 from tests.helpers.source_scan import modules_using
 
@@ -666,7 +670,12 @@ class TestBackfill:
     async def test_the_backfill_derives_a_period_from_the_documents_own_words(
         self, session
     ) -> None:  # noqa: ANN001
-        session.add(_extracted(title="Q2 2026 sales release"))
+        # A "Q2 2026 sales release" is a RESULTS RELEASE — the document kind this rule
+        # was written for (Richemont's, live). Typed `annual_report`, as this fixture
+        # had it, the quarter is now refused as a contradiction: an annual document
+        # cannot cover a quarter, and V3.18.13 would rather have no period than a wrong
+        # one. See `TestAnAnnualDocumentCannotCoverAQuarter`.
+        session.add(_extracted(title="Q2 2026 sales release", source_type="results_release"))
         await session.flush()
         await backfill_from_extracted_documents(session, cfg=_cfg())
         version = (await session.execute(select(ResearchDocumentVersion))).scalars().one()
@@ -803,3 +812,62 @@ class TestIngestionWiring:
         assert result.corpus_versions_created == 0
         assert (await session.execute(select(ResearchDocument))).scalars().all() == []
         assert (await session.execute(select(ResearchDocumentVersion))).scalars().all() == []
+
+
+class TestAnAnnualDocumentCannotCoverAQuarter:
+    """V3.18.13 — a period the document's BODY offered, contradicted by its kind.
+
+    MP Materials' Exhibit 96.1 technical report summary, filed with the FY2025 10-K,
+    was stored as ``annual_report`` with ``period_key = 2027-Q1``: ``document_period``
+    scans a bounded slice of body text, and a 500-page technical report says "the first
+    quarter of 2027" about a FORECAST. 1,938 chunks inherited it, and V3.18.10 — which
+    gave findings their periods back — then printed a period in the future on the page.
+    """
+
+    async def test_a_forecast_quarter_is_refused_on_an_annual_document(self, session) -> None:  # noqa: ANN001
+        version = await upsert_document_version(
+            session,
+            _payload(
+                document_type="annual_report",
+                canonical_url=(
+                    "https://www.sec.gov/Archives/edgar/data/1801368/"
+                    "000180136826000008/mpmcexhibit961123125.htm"
+                ),
+                title="Technical Report Summary — Mountain Pass",
+                period=DocumentPeriod(
+                    period=ReportingPeriod(PERIOD_TYPE_QUARTER, 2027, 1, "Q1 2027"),
+                    basis=BASIS_PERIOD_LABEL,
+                    evidence="first quarter of 2027",
+                ),
+            ),
+            cfg=_cfg(),
+        )
+        assert version is not None
+        # Refused, not resolved: no period at all beats a period in the future.
+        assert version.period_key is None
+        assert version.period_type is None
+
+    async def test_an_interim_report_keeps_its_quarter(self, session) -> None:  # noqa: ANN001
+        version = await upsert_document_version(
+            session,
+            _payload(
+                document_type="interim_report",
+                canonical_url="https://example.com/mp-20260630.htm",
+                title="Quarterly report",
+                period=DocumentPeriod(
+                    period=ReportingPeriod(PERIOD_TYPE_QUARTER, 2026, 2, "Q2 2026"),
+                    basis=BASIS_PERIOD_LABEL,
+                    evidence="quarter ended June 30, 2026",
+                ),
+            ),
+            cfg=_cfg(),
+        )
+        assert version is not None
+        assert version.period_key == "2026-Q2"
+        assert version.period_type == PERIOD_TYPE_QUARTER
+
+    async def test_an_annual_period_on_an_annual_document_is_untouched(self, session) -> None:  # noqa: ANN001
+        version = await upsert_document_version(session, _payload(), cfg=_cfg())
+        assert version is not None
+        assert version.period_key == "2025"
+        assert version.period_type == PERIOD_TYPE_ANNUAL

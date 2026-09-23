@@ -139,7 +139,12 @@ _HTML_SUFFIXES = (".htm", ".html")
 # Real EDGAR exhibits are typed ``EX-…`` and conventionally named ``ex99…`` /
 # ``ex-10_1…``. Both shapes are treated as exhibits (a superset of the "starts
 # with EX-" rule) so an exhibit never masquerades as the primary document.
-_EXHIBIT_NAME_RE = re.compile(r"^ex[-_]?\d", re.IGNORECASE)
+#: An exhibit, by the name the issuer gave the file. Two conventions, because relying on
+#: the index's ``type`` field alone let MP Materials' 500-page Exhibit 96.1 technical
+#: report summary — ``mpmcexhibit961123125.htm``, typed only in some index listings —
+#: past the exhibit filter and win step 3, which prefers the LARGEST body document. The
+#: 10-K itself was never ingested. A filing body is never called "exhibit<number>".
+_EXHIBIT_NAME_RE = re.compile(r"^ex[-_]?\d|exhibit[-_]?\d", re.IGNORECASE)
 # XBRL viewer fragments: R1.htm, R42.htm — rendered slices, never the filing.
 _XBRL_FRAGMENT_RE = re.compile(r"^r\d+\.html?$", re.IGNORECASE)
 
@@ -335,12 +340,17 @@ def _is_html_entry(entry: dict[str, Any]) -> bool:
     return _entry_name(entry).lower().endswith(_HTML_SUFFIXES)
 
 
+def is_exhibit_name(name: str | None) -> bool:
+    """Is this file name an exhibit's? The one rule, so callers cannot disagree."""
+    return bool(_EXHIBIT_NAME_RE.search((name or "").lower()))
+
+
 def _is_exhibit_entry(entry: dict[str, Any]) -> bool:
     name = _entry_name(entry).lower()
     etype = _entry_type(entry).lower()
     if etype.startswith("ex-") or name.startswith("ex-"):
         return True
-    return bool(_EXHIBIT_NAME_RE.match(name))
+    return is_exhibit_name(name)
 
 
 def _is_noise_entry(entry: dict[str, Any]) -> bool:
@@ -1280,5 +1290,6 @@ __all__ = [
     "parse_filing_index",
     "resolve_filing_documents",
     "resolve_sec_filer_cik",
+    "is_exhibit_name",
     "select_primary_document",
 ]
