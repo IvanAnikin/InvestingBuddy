@@ -155,7 +155,7 @@ class TestTheChain:
         worker = LLMInvestigator(session=_Session(), company_id=uuid.uuid4(), ticker="SCCO",
                                  exchange="US", available_tools=None)
         question = planned_from(base_question("competitive_position"), origin="director")
-        evidence, _used = await worker._gather(
+        evidence, _used, _intents = await worker._gather(
             "competitive_analyst", role_for("competitive_analyst"), question, 20
         )
         financials = next(args for tool, args in calls if tool == "get_peer_financials")

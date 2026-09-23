@@ -64,6 +64,7 @@ from app.services.agent_tools.contracts import (
     TOOL_SEARCH_WEB,
 )
 from app.services.calculations.definitions import DEFINITIONS as _CALCULATION_DEFINITIONS
+from app.services.corpus.query_terms import keyword_query
 from app.services.director.contracts import (
     EvidenceRef,
     evaluate_contract,
@@ -87,6 +88,13 @@ MAX_EXTERNAL_VERIFICATIONS = 4
 #: question sentence alone matched the question's generic words ("what", "company",
 #: "latest"); the intents are the question's distinctive terms.
 MAX_CORPUS_INTENTS = 2
+
+#: Hits per corpus query. Six was the live setting, and on SCCO's 10-K the passage
+#: carrying the year's headline revenue figure ranked seventh for the query that asked
+#: for it: one place outside the window, and the question was recorded as a gap. A
+#: chunk is bounded (2,000 characters) and the writer's evidence budget bounds what
+#: reaches the prompt, so the cost of the extra hits is one wider SELECT.
+CORPUS_TOP_K = 8
 
 #: How much tool payload reaches the prompt. A model handed the whole corpus is a model
 #: paying for the whole corpus.
@@ -143,12 +151,45 @@ class _Evidence:
     ref: EvidenceRef | None = None
 
 
-def _corpus_arguments(question: PlannedQuestion, company_id: uuid.UUID) -> dict[str, Any]:
+def _corpus_arguments(
+    question: PlannedQuestion,
+    company_id: uuid.UUID,
+    values: dict[str, str | None] | None = None,
+) -> dict[str, Any] | None:
+    """The corpus call for a question — its OWN search intent, as search terms.
+
+    Two changes from what the first four live runs did (V3.18.10), both measured on
+    SCCO's 10-K in production:
+
+    * the query is the question's **first search intent** when the playbook wrote one.
+      The intents were already the distinctive terms of the question — they were simply
+      never reached, because the platform rung searched first with the question's prose
+      and the contract counted the six general paragraphs that came back as satisfying
+      it. The best query the playbook has is now the first one asked;
+    * whatever the query is, it goes through ``keyword_query``. The index has no
+      stopword list, so a question's function words were outranking its subject matter.
+
+    A question whose every word is a stopword — "What has the issuer disclosed most
+    recently, and for which period?" asks about recency, not about any term — reduces to
+    nothing. It falls back to its own text rather than skipping the corpus: a weak query
+    finds less than a good one, and no query finds nothing at all.
+    """
+    text = str(getattr(question, "text", "") or "").strip()
+    intents = list(getattr(question, "search_intents", ()) or ())
+    query = ""
+    if intents:
+        query = keyword_query(fill_intent(intents[0], values or {}))
+    if not query:
+        query = keyword_query(text)
+    if not query:
+        query = text
+    if not query:
+        return None
     return {
-        "query": question.text,
+        "query": query,
         "company_ids": [str(company_id)],
         "mode": "lexical",
-        "top_k": 6,
+        "top_k": CORPUS_TOP_K,
     }
 
 
@@ -255,6 +296,7 @@ def _tool_arguments(
     exchange: str | None = None,
     company_name: str | None = None,
     primary_commodity: str | None = None,
+    intent_values: dict[str, str | None] | None = None,
 ) -> dict[str, Any] | None:
     """Deterministic arguments per tool. **The model chooses no arguments.**
 
@@ -264,7 +306,7 @@ def _tool_arguments(
     """
     subject = str(company_id)
     if tool == TOOL_SEARCH_COMPANY_CORPUS:
-        return _corpus_arguments(question, company_id)
+        return _corpus_arguments(question, company_id, intent_values)
     if tool == TOOL_LOOKUP_ENTITY:
         # It resolves an ISSUER, so it takes a ticker — not the company row's id, which
         # is the answer rather than the question. The first real pipeline run refused
@@ -364,6 +406,35 @@ def _tool_arguments(
 _NESTED_RECORD_KEYS: tuple[str, ...] = ("facts", "points", "metrics", "records", "values")
 
 
+#: What a period key looks like, so a tool's ``period`` field is read as one only when
+#: it IS one. ``get_sec_statements`` names its period ``FY2025`` and a commodity series
+#: names its ``2026-07``; a tool that says "the three months ended June 30" is describing
+#: a period in prose, and prose is exactly what a period key must never come from.
+_PERIOD_KEY_RE = re.compile(r"^(?:FY\d{4}|\d{4}-Q[1-4]|\d{4}-\d{2}(?:-\d{2})?|\d{4})$")
+
+
+def _period_key_of(item: dict[str, Any]) -> str | None:
+    """The period this record is FOR — V3.18.10.
+
+    ``period_key`` first, then ``period``. The alias exists because the producers and
+    this reader disagreed silently: ``get_sec_statements`` stamps every line with
+    ``"period": "FY2025"``, nothing read it, and so every finding built on the subject's
+    own audited statements — revenue, margins, cash conversion, the valuation inputs —
+    reached the report carrying no period at all. The values were right and the report
+    could not say what year they were.
+
+    Shape-checked rather than trusted: a field named ``period`` that does not look like
+    a period key is left alone.
+    """
+    explicit = _clean(item.get("period_key"))
+    if explicit:
+        return explicit
+    candidate = _clean(item.get("period"))
+    if candidate and _PERIOD_KEY_RE.match(candidate):
+        return candidate
+    return None
+
+
 def _citation_of(item: dict[str, Any]) -> str | None:
     """The platform-minted id for one record, or ``None``.
 
@@ -434,8 +505,8 @@ def _evidence_of(tool: str, item: dict[str, Any], untrusted: bool) -> _Evidence 
         text=text[:1500],
         untrusted=untrusted,
         # Carried from the tool's own typed result, never read out of prose.
-        period_key=_clean(item.get("period_key")),
-        scope_key=_clean(item.get("scope_key")),
+        period_key=_period_key_of(item),
+        scope_key=_clean(item.get("scope_key")) or _clean(item.get("scope")),
         ref=evidence_ref_for(tool, citation, item),
     )
 
@@ -1053,6 +1124,9 @@ class LLMInvestigator:
         steps: list[dict[str, Any]] = []
         evidence: list[_Evidence] = []
         used = 0
+        # How many of this question's intents the platform rung already asked, so the
+        # corpus rung continues from there instead of repeating the first one.
+        intents_used = 0
         contract = getattr(question, "evidence_contract", None)
         # A REPEAT starts where the last attempt ended — with or without evidence from
         # it. The platform rung's arguments are deterministic and would return the same
@@ -1071,7 +1145,9 @@ class LLMInvestigator:
 
         # Rung 1 — the question's own platform tools.
         if not follow_up:
-            gathered, spent = await self._gather(role_id, role, question, budget)
+            gathered, spent, intents_used = await self._gather(
+                role_id, role, question, budget
+            )
             evidence.extend(gathered)
             used += spent
             steps.append(
@@ -1079,6 +1155,9 @@ class LLMInvestigator:
                     "rung": "platform_tools",
                     "round": round_index,
                     "role": role_id,
+                    # The corpus call this rung made used the question's first intent,
+                    # and the loop counts it so a later round continues past it.
+                    "corpus_intents": intents_used,
                     "tool_calls": spent,
                     "citable_items": len(gathered),
                     "tools": sorted({item.kind for item in gathered}),
@@ -1088,7 +1167,7 @@ class LLMInvestigator:
 
         # Rung 2 — the corpus again, by the question's distinctive terms.
         intents = list(getattr(question, "search_intents", ()) or ())
-        start = context.corpus_intents_done if follow_up else 0
+        start = context.corpus_intents_done if follow_up else intents_used
         batch = intents[start : start + MAX_CORPUS_INTENTS]
         if (
             not current.satisfied
@@ -1096,8 +1175,12 @@ class LLMInvestigator:
             and role.can_use(TOOL_SEARCH_COMPANY_CORPUS)
             and used < budget
         ):
+            # The SAME reduction the platform rung's query goes through: an intent is
+            # already close to search terms, and the index has no stopword list, so
+            # "{company}" expanding to a registered name must not bring "Corp" with it.
             queries = [
-                fill_intent(intent, self._intent_values(question)) for intent in batch
+                keyword_query(fill_intent(intent, self._intent_values(question)))
+                for intent in batch
             ]
             found = 0
             for query in queries:
@@ -1240,8 +1323,15 @@ class LLMInvestigator:
 
     async def _gather(
         self, role_id: str, role: Any, question: PlannedQuestion, budget: int
-    ) -> tuple[list[_Evidence], int]:
-        """Run the role's tools for one question. Never raises."""
+    ) -> tuple[list[_Evidence], int, int]:
+        """Run the role's tools for one question. Never raises.
+
+        Returns the evidence, the tool calls spent, and **how many of the question's
+        search intents the corpus call consumed** — 0 or 1. The ladder's next rung
+        starts after it, so the run never asks the corpus the same thing twice and
+        never leaves the playbook's remaining intents unasked.
+        """
+        intents_used = 0
         # V3.18.4 — a question's OPTIONAL tools run when the role holds them and the
         # run registered them; they never decide assignment.
         optional = [
@@ -1273,9 +1363,14 @@ class LLMInvestigator:
                 exchange=self.exchange,
                 company_name=self.company_name,
                 primary_commodity=self._primary_commodity_slug(),
+                intent_values=self._intent_values(question),
             )
             if arguments is None:
                 continue
+            if tool == TOOL_SEARCH_COMPANY_CORPUS and getattr(
+                question, "search_intents", ()
+            ):
+                intents_used = 1
             # The run's search ceiling binds EVERY search, including a role whose plan
             # asks for `search_web` outright — not only the acquisition ladder's.
             metered = tool == TOOL_SEARCH_WEB and self.external_budget is not None
@@ -1346,7 +1441,7 @@ class LLMInvestigator:
                 )
                 evidence.extend(verified)
                 used += spent
-        return evidence, used
+        return evidence, used, intents_used
 
     async def _verify_external_leads(
         self,

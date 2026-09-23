@@ -74,6 +74,8 @@ from app.services.corpus.scope_resolution import (
 from app.services.sources.fact_scope import scope_from_columns
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from app.core.config import Settings
     from app.services.corpus.parsed import ParsedDocument, ParsedSection, ParsedTable
 
@@ -187,6 +189,36 @@ def _paragraph_breaks(text: str, base: int) -> list[int]:
     return breaks
 
 
+#: Characters an HTML filing uses for an empty cell. A ``&#8203;`` is not content, and a
+#: grid made of them was outranking the paragraph that carried the year's revenue.
+_BLANK_CELL_CHARS = "\u200b\u200c\u200d\ufeff\xa0 \t"
+
+
+def _row_text(row: "Sequence[object]") -> str:
+    """One table row as searchable text — empty cells dropped, repeats collapsed.
+
+    An HTML table with ``colspan`` expands one header cell into N identical cells, and
+    a filing's layout tables are mostly spacer cells holding a zero-width space. Both
+    are rendering artefacts, and both were *evidence* to the ranking: ``ts_rank_cd``
+    counts every repeat, so a spacer grid whose header said "Three Months Ended" six
+    times outscored the paragraph stating the year's net sales. Measured on SCCO's 10-K
+    in production, such a grid took the top rank for three of seven questions.
+
+    Collapsing a repeat removes no information: the grid itself is untouched in
+    ``research_document_tables``, and a cell that says the same thing as the cell beside
+    it says it once here.
+    """
+    cells: list[str] = []
+    for cell in row:
+        value = str(cell).strip(_BLANK_CELL_CHARS).strip()
+        if not value:
+            continue
+        if cells and cells[-1] == value:
+            continue
+        cells.append(value)
+    return " | ".join(cells)
+
+
 def render_table(table: "ParsedTable", *, max_chars: int) -> str:
     """A searchable text surface for a grid — never a replacement for it.
 
@@ -199,7 +231,9 @@ def render_table(table: "ParsedTable", *, max_chars: int) -> str:
     if table.column_periods:
         lines.append("Periods: " + ", ".join(table.column_periods))
     for row in table.rows:
-        lines.append(" | ".join(str(cell) for cell in row))
+        line = _row_text(row)
+        if line:
+            lines.append(line)
     return "\n".join(lines)[:max_chars]
 
 

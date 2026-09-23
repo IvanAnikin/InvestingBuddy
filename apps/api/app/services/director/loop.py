@@ -46,7 +46,7 @@ from __future__ import annotations
 
 import inspect
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
@@ -242,6 +242,23 @@ class LoopResult:
             "improvement_stopped_by": self.improvement_stopped_by,
             "restatements_referenced": self.restatements_referenced,
         }
+
+
+def corpus_intents_in(steps: "Sequence[Mapping[str, Any]]") -> int:
+    """How many of a question's search intents one round's ladder spent.
+
+    Both rungs can spend one: the platform rung asks the question's FIRST intent
+    (V3.18.10), and the corpus rung continues from there. Counting only the second —
+    which is what the loop did — made the next round re-ask an intent that had already
+    run, and leave the last one unasked for ever.
+    """
+    total = 0
+    for step in steps:
+        if step.get("rung") == "corpus_by_intent":
+            total += len(step.get("queries") or ())
+        else:
+            total += int(step.get("corpus_intents") or 0)
+    return total
 
 
 async def run_investigation(
@@ -483,11 +500,7 @@ async def run_investigation(
                     1 for step in steps if step.get("rung") == "external_search"
                     and step.get("query")
                 )
-                corpus_so_far[key] = corpus_so_far.get(key, 0) + sum(
-                    len(step.get("queries") or ())
-                    for step in steps
-                    if step.get("rung") == "corpus_by_intent"
-                )
+                corpus_so_far[key] = corpus_so_far.get(key, 0) + corpus_intents_in(steps)
                 attempted[key] = attempted.get(key, 0) + 1
 
             if outcome.failed:

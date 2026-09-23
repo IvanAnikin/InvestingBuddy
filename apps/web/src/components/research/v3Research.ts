@@ -242,6 +242,12 @@ export type ThesisDimension = {
   dimension: string;
   status: ProfessionalSectionStatus | null;
   findingLabels: string[];
+  /**
+   * Why findings sit under a dimension that is not established: they are findings on
+   * the question, and they do not NAME the dimension, so they are not exposure to it.
+   * Present only when there are such findings.
+   */
+  note: string | null;
 };
 
 export type SizeFit = {
@@ -787,6 +793,7 @@ function readDomainSection(
               dimension,
               status: sectionStatus(d.status),
               findingLabels: strings(d.finding_labels),
+              note: str(d.note),
             }
           : null;
       })
