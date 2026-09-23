@@ -242,6 +242,50 @@ def _source_diversity(acquired: Sequence[Mapping[str, Any]], findings: Sequence[
     }
 
 
+def _dimension_view(
+    question: QuestionView,
+    thesis_findings: Sequence[Mapping[str, Any]],
+    referenced: Sequence[str],
+) -> dict[str, Any]:
+    """One thesis dimension, graded by findings that are ABOUT it — V3.18.10.
+
+    The contract asks for two citable items from the issuer's own filings, and an
+    investigator that searched an issuer whose filings never mention the dimension
+    still comes back with two: they are simply about something else. Live on SCCO, the
+    "semiconductor supply chains" dimension was graded **evidenced** on a finding about
+    the filing's exhibit index, and "What would change the thesis" then reported that no
+    dimension was unestablished — the report's least true sentence.
+
+    So the grade asks the one question the contract cannot: does the finding NAME the
+    dimension? ``dimensions_in`` is the same declared vocabulary that read the
+    dimensions out of the thesis in the first place, applied to the finding's own
+    statement. Nothing is inferred, nothing is dropped: a finding that does not name the
+    dimension is still shown, still labelled, still citable — it just does not count as
+    evidence that the company is exposed to something it never mentions.
+    """
+    from app.services.director.thesis import dimensions_in
+
+    key = question.key.removeprefix("thesis_fit__")
+    mine = [f for f in thesis_findings if f["question_key"] == question.key]
+    on_dimension = [f for f in mine if key in dimensions_in(str(f.get("statement") or ""))]
+    named = {f["label"] for f in on_dimension}
+    off_dimension = [f["label"] for f in mine if f["label"] not in named]
+    view: dict[str, Any] = {
+        "question_key": question.key,
+        "dimension": key,
+        "status": _status([question], on_dimension, bool(referenced)),
+        "finding_labels": [f["label"] for f in on_dimension],
+        "referenced_labels": list(referenced),
+    }
+    if off_dimension:
+        view["findings_not_naming_the_dimension"] = off_dimension
+        view["note"] = (
+            f"{len(off_dimension)} finding(s) on this question do not name "
+            f"{key.replace('_', ' ')}, so they are not graded as exposure to it."
+        )
+    return view
+
+
 def assemble(inputs: ReportInputs) -> dict[str, Any]:
     """The report, deterministically. Never calls a model; never raises on content.
 
@@ -302,18 +346,7 @@ def assemble(inputs: ReportInputs) -> dict[str, Any]:
     thesis_section = next(s for s in sections if s["key"] == "thesis_fit")
     thesis_section["thesis"] = dict(inputs.thesis) if inputs.thesis else None
     thesis_section["dimensions"] = [
-        {
-            "question_key": q.key,
-            "dimension": q.key.removeprefix("thesis_fit__"),
-            "status": _status(
-                [q],
-                [f for f in by_section["thesis_fit"] if f["question_key"] == q.key],
-                bool(_referenced_labels(q)),
-            ),
-            "finding_labels": [f["label"] for f in by_section["thesis_fit"]
-                               if f["question_key"] == q.key],
-            "referenced_labels": _referenced_labels(q),
-        }
+        _dimension_view(q, by_section["thesis_fit"], _referenced_labels(q))
         for q in questions_by_section["thesis_fit"]
     ]
     thesis_section["size_fit"] = dict(inputs.size_fit) if inputs.size_fit else None

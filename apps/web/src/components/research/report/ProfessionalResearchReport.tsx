@@ -578,6 +578,14 @@ function ThesisFit({
                 <span className="ib-breakable">{words(d.dimension)}</span>
                 <StatusBadge status={d.status} />
                 <FindingRefs labels={d.findingLabels} anchored={anchored} />
+                {d.note && (
+                  <span
+                    className="ib-breakable basis-full text-[color:var(--ib-ink-3)]"
+                    data-testid="dimension-note"
+                  >
+                    {d.note}
+                  </span>
+                )}
               </li>
             ))}
           </ul>

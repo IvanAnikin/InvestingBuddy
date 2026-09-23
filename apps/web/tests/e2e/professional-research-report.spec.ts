@@ -205,6 +205,9 @@ test.describe("reading the professional research payload", () => {
     );
     const thesis = byKey.thesis_fit as { dimensions: object[] };
     expect(sorted(thesis.dimensions[0])).toEqual(
+      // Two more keys appear on a dimension that HAS findings not naming it —
+      // `findings_not_naming_the_dimension` and `note`. This fixture's first dimension
+      // has none, and `a dimension says why it is not established` covers that shape.
       ["dimension", "finding_labels", "question_key", "referenced_labels", "status"].sort(),
     );
     const evidence = byKey.evidence_quality_and_gaps as {
@@ -286,6 +289,38 @@ test.describe("reading the professional research payload", () => {
       external_searches: 2,
       fetches: 5,
     });
+  });
+
+  test("a dimension says why it is not established", () => {
+    // The live defect: findings sat under 'semiconductors' and none of them said
+    // 'semiconductor'. The dimension is not established, the findings are still there,
+    // and the report says which is which.
+    const pro = readProfessionalResearch({
+      professional_research: {
+        sections: [
+          {
+            key: "thesis_fit",
+            title: "Fit with the originating thesis",
+            dimensions: [
+              {
+                question_key: "thesis_fit__semiconductors",
+                dimension: "semiconductors",
+                status: "not_established",
+                finding_labels: [],
+                findings_not_naming_the_dimension: ["F1"],
+                note: "1 finding(s) on this question do not name semiconductors, so they are not graded as exposure to it.",
+              },
+            ],
+          },
+        ],
+      },
+    });
+    const section = pro!.sections[0];
+    if (section.kind !== "domain") throw new Error("thesis_fit is a domain section");
+    const [dimension] = section.dimensions;
+    expect(dimension.status).toBe("not_established");
+    expect(dimension.findingLabels).toEqual([]);
+    expect(dimension.note).toContain("do not name semiconductors");
   });
 
   test("a field of the wrong type is dropped, never trusted", () => {
