@@ -323,6 +323,35 @@ class TestADimensionIsGradedOnWhatNamesIt:
         change = _section(report, "what_would_change_the_thesis")
         assert change["unestablished_thesis_dimensions"] == ["semiconductors"]
 
+    def test_a_reference_that_does_not_name_the_dimension_does_not_evidence_it(
+        self,
+    ) -> None:
+        """SCCO run 6: 'semiconductors' read partially evidenced with no finding of its
+        own, on a reference to a finding that never mentions semiconductors."""
+        question = _q("thesis_fit__semiconductors", "thesis_fit",
+                      referenced_finding_ids=("other",))
+        report = pr.assemble(_inputs(
+            questions=[question],
+            findings=[_f("other", "business_model", "business_model",
+                         "Copper cathode is sold to rod mills.")],
+        ))
+        semis = _section(report, "thesis_fit")["dimensions"][0]
+        assert semis["status"] == "not_established"
+        assert semis["referenced_labels"] == ["F1"]
+        assert semis["findings_not_naming_the_dimension"] == ["F1"]
+
+    def test_a_reference_that_names_the_dimension_still_counts(self) -> None:
+        question = _q("thesis_fit__semiconductors", "thesis_fit",
+                      referenced_finding_ids=("other",))
+        report = pr.assemble(_inputs(
+            questions=[question],
+            findings=[_f("other", "business_model", "business_model",
+                         "Copper foil ships to semiconductor packaging customers.")],
+        ))
+        semis = _section(report, "thesis_fit")["dimensions"][0]
+        assert semis["status"] == "partially_evidenced"
+        assert "findings_not_naming_the_dimension" not in semis
+
     def test_a_finding_that_names_the_dimension_evidences_it(self) -> None:
         report = pr.assemble(_inputs(
             questions=[*_QUESTIONS_WITH_SEMIS],

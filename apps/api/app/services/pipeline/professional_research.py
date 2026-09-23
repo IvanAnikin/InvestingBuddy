@@ -246,6 +246,7 @@ def _dimension_view(
     question: QuestionView,
     thesis_findings: Sequence[Mapping[str, Any]],
     referenced: Sequence[str],
+    statement_by_label: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """One thesis dimension, graded by findings that are ABOUT it — V3.18.10.
 
@@ -270,17 +271,25 @@ def _dimension_view(
     on_dimension = [f for f in mine if key in dimensions_in(str(f.get("statement") or ""))]
     named = {f["label"] for f in on_dimension}
     off_dimension = [f["label"] for f in mine if f["label"] not in named]
+    # A reference counts the same way a finding does: only if it names the dimension.
+    # Live on SCCO run 6, "semiconductors" read *partially evidenced* with no finding of
+    # its own, on a reference to a finding that does not mention semiconductors.
+    lookup = statement_by_label or {}
+    on_reference = [
+        label for label in referenced if key in dimensions_in(lookup.get(label, ""))
+    ]
     view: dict[str, Any] = {
         "question_key": question.key,
         "dimension": key,
-        "status": _status([question], on_dimension, bool(referenced)),
+        "status": _status([question], on_dimension, bool(on_reference)),
         "finding_labels": [f["label"] for f in on_dimension],
         "referenced_labels": list(referenced),
     }
-    if off_dimension:
-        view["findings_not_naming_the_dimension"] = off_dimension
+    unnamed = [*off_dimension, *[r for r in referenced if r not in on_reference]]
+    if unnamed:
+        view["findings_not_naming_the_dimension"] = unnamed
         view["note"] = (
-            f"{len(off_dimension)} finding(s) on this question do not name "
+            f"{len(unnamed)} finding(s) here do not name "
             f"{key.replace('_', ' ')}, so they are not graded as exposure to it."
         )
     return view
@@ -345,8 +354,18 @@ def assemble(inputs: ReportInputs) -> dict[str, Any]:
     # Thesis fit: per dimension, and size — both deterministic.
     thesis_section = next(s for s in sections if s["key"] == "thesis_fit")
     thesis_section["thesis"] = dict(inputs.thesis) if inputs.thesis else None
+    # Every finding by label, so a dimension can ask what a REFERENCED finding says —
+    # a reference is another specialist's finding, and it evidences this dimension only
+    # on the same terms as one written here: by naming it.
+    statement_by_label = {
+        f["label"]: str(f.get("statement") or "")
+        for section_findings in by_section.values()
+        for f in section_findings
+    }
     thesis_section["dimensions"] = [
-        _dimension_view(q, by_section["thesis_fit"], _referenced_labels(q))
+        _dimension_view(
+            q, by_section["thesis_fit"], _referenced_labels(q), statement_by_label
+        )
         for q in questions_by_section["thesis_fit"]
     ]
     thesis_section["size_fit"] = dict(inputs.size_fit) if inputs.size_fit else None

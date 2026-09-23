@@ -317,14 +317,23 @@ class TestTheSecondReviewOfTheReport:
 
     def test_a_question_answered_by_reference_is_not_unestablished(self) -> None:
         """V3.18.7 suppressed a restatement; the report then called the thesis
-        dimension unestablished although another finding established it."""
+        dimension unestablished although another finding established it.
+
+        V3.18.11 narrowed this to the case it was written for: the reference must be to
+        a finding that NAMES the dimension. This fixture referenced "world copper mine
+        production" as evidence of semiconductor exposure, which is the false positive
+        SCCO run 6 produced live — see
+        ``test_v3_18_10_research_relevance.py::TestADimensionIsGradedOnWhatNamesIt``.
+        """
+        owned = _f("s", "business_model", "business_model",
+                   "Copper foil for semiconductor substrates is sold to two customers.")
         questions = [q if q.key != "thesis_fit__semiconductors" else
-                     dataclasses.replace(q, referenced_finding_ids=("b",))
+                     dataclasses.replace(q, referenced_finding_ids=("s",))
                      for q in QUESTIONS]
-        report = pr.assemble(_inputs(questions=questions))
+        report = pr.assemble(_inputs(questions=questions, findings=[*FINDINGS, owned]))
         dims = {d["dimension"]: d for d in _section(report, "thesis_fit")["dimensions"]}
         assert dims["semiconductors"]["status"] == pr.STATUS_PARTIAL
-        assert dims["semiconductors"]["referenced_labels"] == [report["finding_labels"]["b"]]
+        assert dims["semiconductors"]["referenced_labels"] == [report["finding_labels"]["s"]]
         change = _section(report, "what_would_change_the_thesis")
         assert "semiconductors" not in change["unestablished_thesis_dimensions"]
 
