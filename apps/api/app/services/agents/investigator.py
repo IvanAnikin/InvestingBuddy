@@ -97,8 +97,10 @@ MAX_CORPUS_INTENTS = 2
 CORPUS_TOP_K = 8
 
 #: How much tool payload reaches the prompt. A model handed the whole corpus is a model
-#: paying for the whole corpus.
-MAX_EVIDENCE_CHARS = 12_000
+#: paying for the whole corpus. Eight corpus chunks alone can reach 12,000 characters,
+#: which is what pushed a question's own typed figures out of its prompt entirely
+#: (V3.18.11); the headroom is for the typed records, which are ~150 characters each.
+MAX_EVIDENCE_CHARS = 16_000
 MAX_ITEMS_PER_TOOL = 8
 MAX_PEER_ITEMS = 36
 
@@ -736,7 +738,11 @@ def _build_prompt(
         ),
         "ALLOWED CITATION IDS (cite only these):",
     ]
-    lines.extend(f"  - {item.citation_id}" for item in evidence)
+    # Built from the items that FIT, not from everything retrieved: an id whose text the
+    # budget trimmed away is an id this model has not read, and a citation to unread
+    # evidence is the fabrication rule 1 exists to prevent.
+    shown, dropped = _fit_to_budget(evidence)
+    lines.extend(f"  - {item.citation_id}" for item in shown)
     lines.append("")
     # A marker no page can know. Up to 700 characters of fetched web text now sit inside
     # this block verbatim, and a page that printed the fixed closing marker could end
@@ -751,8 +757,7 @@ def _build_prompt(
             f"  - [{fid}] ({domain}) {_MARKER_RE.sub('[marker removed]', statement[:160])}"
             for fid, statement, domain in established
         )
-    total = 0
-    for item in evidence:
+    for item in shown:
         stamp = " ".join(
             part
             for part in (
@@ -765,14 +770,79 @@ def _build_prompt(
             if part
         )
         text = _MARKER_RE.sub("[marker removed]", item.text)
-        block = f"[{item.citation_id}] ({item.kind}{' ' + stamp if stamp else ''}) {text}"
-        if total + len(block) > MAX_EVIDENCE_CHARS:
-            lines.append("… evidence truncated to fit the budget …")
-            break
-        lines.append(block)
-        total += len(block)
+        lines.append(
+            f"[{item.citation_id}] ({item.kind}{' ' + stamp if stamp else ''}) {text}"
+        )
+    for tool, count in sorted(dropped.items()):
+        lines.append(
+            f"… {count} further item(s) from {tool} did not fit this prompt. They "
+            f"EXIST and were retrieved. Nothing may be called absent from {tool}."
+        )
     lines.append(f"=== END EVIDENCE {nonce} ===")
     return system, "\n".join(lines)
+
+
+#: Tools whose payload is TYPED RECORDS — a statement line, a peer metric, a price
+#: point: a figure with its period, scope and unit, in about a tenth of the characters a
+#: paragraph takes. Everything else is prose.
+_TYPED_RECORD_TOOLS: frozenset[str] = frozenset({
+    TOOL_GET_SEC_STATEMENTS,
+    TOOL_GET_PEER_FINANCIALS,
+    TOOL_GET_PEER_SET,
+    TOOL_GET_INDUSTRY_SERIES,
+    TOOL_GET_MACRO_SERIES,
+    TOOL_GET_FINANCIAL_FACTS,
+    TOOL_GET_FINANCIAL_SERIES,
+    TOOL_GET_SEGMENT_FACTS,
+    TOOL_GET_CALCULATED_METRICS,
+})
+
+
+def _fit_to_budget(
+    evidence: "Sequence[_Evidence]",
+) -> "tuple[list[_Evidence], dict[str, int]]":
+    """What fits in the prompt's evidence budget, and what each tool lost to it.
+
+    Densest first (see ``_by_density``), then as much as the budget holds. An item that
+    does not fit is counted against its TOOL rather than silently dropped, because the
+    one thing the writer must not conclude from a trimmed result is that the tool
+    returned nothing — which is exactly what SCCO run 5 concluded about its own cash
+    flow statement.
+    """
+    shown: list[_Evidence] = []
+    dropped: dict[str, int] = {}
+    total = 0
+    for item in _by_density(evidence):
+        # The block's own framing costs characters too; counting the text alone let the
+        # budget drift by the number of items.
+        cost = len(item.text) + len(item.citation_id) + len(item.kind) + 8
+        if total + cost > MAX_EVIDENCE_CHARS:
+            dropped[item.kind] = dropped.get(item.kind, 0) + 1
+            continue
+        shown.append(item)
+        total += cost
+    return shown, dropped
+
+
+def _by_density(evidence: "Sequence[_Evidence]") -> "list[_Evidence]":
+    """Typed records first, prose after — V3.18.11. Stable within each group.
+
+    The prompt's evidence budget used to be spent in ACQUISITION order, and the platform
+    rung runs the corpus before a question's optional tools. Live on SCCO: the
+    cash-generation question retrieved eight corpus chunks (up to 1,500 characters each,
+    so 12,000 — the entire budget) and then nineteen SEC statement lines, which were
+    trimmed away unread. The writer, seeing only prose, recorded "Retrieved evidence
+    contains no operating cash flow, capex, free cash flow, debt or cash balance
+    figures" — about a question whose own tool had returned every one of them.
+
+    Ordering by density rather than by arrival fixes it for every question at once: a
+    statement line costs ~150 characters and carries a figure with its period and scope;
+    a chunk costs ten times that. What the budget now drops is the least dense evidence,
+    never the figures.
+    """
+    typed = [item for item in evidence if item.kind in _TYPED_RECORD_TOOLS]
+    prose = [item for item in evidence if item.kind not in _TYPED_RECORD_TOOLS]
+    return [*typed, *prose]
 
 
 _MARKER_RE = re.compile(r"=+\s*(?:BEGIN|END)\s+EVIDENCE", re.IGNORECASE)
