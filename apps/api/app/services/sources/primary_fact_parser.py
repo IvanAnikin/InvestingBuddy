@@ -33,6 +33,11 @@ from app.services.sources.document_text_extractor import (
     DocumentTextExtraction,
 )
 from app.services.sources.financial_period import parse_period
+from app.services.sources.metric_semantics import (
+    NET_DEBT_LABEL,
+    is_flow_or_ratio_at,
+    label_end,
+)
 from app.services.sources.primary_document_extractor import (
     _infer_scope,
     scope_claim_signal,
@@ -276,6 +281,24 @@ _PERIOD_QUALIFIER = (
     r")?"
 )
 
+# V3.19.1 — a BALANCE is stated at a date: "net debt at 31 December 2025 was €2,100
+# million". Unconsumed, the day of that date fell into the label→value gap and "31" was
+# taken as the value (reproduced on main). A dated "at/as at/as of/on <date>" or "at year
+# end" is consumed here; month names are the real ones only, so nothing else is absorbed.
+_MONTH = (
+    r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?"
+    r"|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)"
+)
+_DATE_QUALIFIER = (
+    r"(?:\s+(?:at|as\s+at|as\s+of|on)\s+(?:"
+    # The year is optional: "net debt at 30 June was €1.5bn" states a balance date too.
+    rf"\d{{1,2}}\s+{_MONTH}\.?(?:\s+(?:19|20)\d{{2}})?"
+    rf"|{_MONTH}\.?\s+\d{{1,2}}(?:,?\s+(?:19|20)\d{{2}})?"
+    r"|(?:the\s+)?(?:end\s+of\s+(?:the\s+)?(?:year|period|(?:19|20)\d{2}))"
+    r"|year[- ]end(?:\s+(?:19|20)\d{2})?"
+    r"))?"
+)
+
 # An optional "<trend verb> by X%" clause that can sit BETWEEN a label and its
 # connector (e.g. "net cash rose by 3% to €8,496 million"). Real financial
 # narrative very commonly states a percentage CHANGE before the absolute
@@ -377,6 +400,7 @@ def _money_pattern(
     return re.compile(
         rf"{guard}(?:{label_alts})"
         rf"{_PERIOD_QUALIFIER}"
+        rf"{_DATE_QUALIFIER}"
         rf"{_TREND_CLAUSE}"
         rf"(?:\s+(?:of|was|were|to|at|amounted to|reached|totalled|totaled|:))?"
         rf"(?P<gap>[^\d\n]{{0,25}}?)"
@@ -490,11 +514,15 @@ _MONEY_FIELDS: list[tuple[str, re.Pattern[str]]] = [
     # — not itself stating a debt figure — matching a nearby unrelated number.
     # "total"/"gross" qualified mentions are a genuine, low-ambiguity signal;
     # the bare word alone is not.
+    # V3.19.1 — a balance label next to a flow prefix ("cost of net debt", "change in cash
+    # and cash equivalents") or a ratio suffix ("net debt / EBITDA", "net debt cost") names
+    # a DIFFERENT metric. Judged on the label's own span in ``parse_primary_facts`` via
+    # ``metric_semantics.is_flow_or_ratio_at`` — the one rule all three matchers share.
     (
         FIELD_TOTAL_DEBT,
         _money_pattern(r"total debt|gross debt|total borrowings|gross borrowings"),
     ),
-    (FIELD_NET_DEBT, _money_pattern(r"net (?:financial )?debt")),
+    (FIELD_NET_DEBT, _money_pattern(NET_DEBT_LABEL)),
     (FIELD_CASH, _money_pattern(r"cash and cash equivalents")),
     (
         FIELD_NET_CASH,
@@ -511,6 +539,15 @@ _MONEY_FIELDS: list[tuple[str, re.Pattern[str]]] = [
         ),
     ),
 ]
+
+#: V3.19.1 — the balance fields and the label each one's match begins with, for the
+#: flow/ratio check in ``parse_primary_facts``.
+_BALANCE_LABELS: dict[str, str] = {
+    FIELD_TOTAL_DEBT: r"total debt|gross debt|total borrowings|gross borrowings",
+    FIELD_NET_DEBT: NET_DEBT_LABEL,
+    FIELD_CASH: r"cash and cash equivalents",
+    FIELD_NET_CASH: r"net cash position|net cash",
+}
 
 _PERCENT_FIELDS: list[tuple[str, re.Pattern[str]]] = [
     (
@@ -585,7 +622,11 @@ _EMPLOYEES_RE2 = re.compile(
 
 
 def _ambiguous_multiple(
-    pattern: re.Pattern[str], text: str, *, require_scale_or_currency: bool = False
+    pattern: re.Pattern[str],
+    text: str,
+    *,
+    require_scale_or_currency: bool = False,
+    balance_label: str | None = None,
 ) -> bool:
     """True when a labelled metric matches with two *different* magnitudes.
 
@@ -602,6 +643,12 @@ def _ambiguous_multiple(
     """
     vals: set[float] = set()
     for m in _iter_clause_safe(pattern, text):
+        # V3.19.1 — a mention that names a flow or a ratio of the balance ("the cost of
+        # net debt was €122m") is a DIFFERENT metric, not a second magnitude of this one.
+        if balance_label is not None and is_flow_or_ratio_at(
+            text, m.start(), label_end(balance_label, text, m.start())
+        ):
+            continue
         num = _norm_number(m.group("num"))
         if num is None:
             continue
@@ -981,6 +1028,13 @@ def _parse_excerpt(excerpt: DocumentExcerpt, source_url: str | None) -> list[Pri
         # whole-excerpt inference fallback) is unchanged when NO candidate
         # in this excerpt has its own local signal.
         candidates = list(_iter_clause_safe(pattern, text))
+        if field in _BALANCE_LABELS:
+            label = _BALANCE_LABELS[field]
+            candidates = [
+                c
+                for c in candidates
+                if not is_flow_or_ratio_at(text, c.start(), label_end(label, text, c.start()))
+            ]
         if not candidates:
             continue
         m = next(
@@ -998,7 +1052,12 @@ def _parse_excerpt(excerpt: DocumentExcerpt, source_url: str | None) -> list[Pri
         currency = _find_currency(m.group(0)) or _find_currency(text)
         # Refuse ambiguity: the same label with two different magnitudes, or a
         # bare number with neither a scale nor a currency (too weak to trust).
-        if _ambiguous_multiple(pattern, text, require_scale_or_currency=True):
+        if _ambiguous_multiple(
+            pattern,
+            text,
+            require_scale_or_currency=True,
+            balance_label=_BALANCE_LABELS.get(field),
+        ):
             continue
         if scale is None and currency is None:
             continue

@@ -66,6 +66,7 @@ from app.services.sources.financial_period import (
     format_period,
     parse_period,
 )
+from app.services.sources.metric_semantics import NET_DEBT_LABEL, is_flow_or_ratio_at
 from app.services.sources.primary_document_extractor import (
     METHOD_HTML,
     METHOD_NATIVE_PDF,
@@ -170,10 +171,7 @@ _LABEL_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     ),
     # "Net interest-bearing debt (NIBD)" is the standard Nordic/European
     # phrasing of the same line item "net debt" names elsewhere.
-    (
-        re.compile(r"net (?:financial |interest[- ]bearing )?debt", re.I),
-        FIELD_NET_DEBT,
-    ),
+    (re.compile(NET_DEBT_LABEL, re.I), FIELD_NET_DEBT),
     (re.compile(r"total (?:debt|borrowings)|gross debt", re.I), FIELD_TOTAL_DEBT),
     (re.compile(r"total assets", re.I), FIELD_TOTAL_ASSETS),
     (re.compile(r"total liabilities", re.I), FIELD_TOTAL_LIABILITIES),
@@ -443,6 +441,11 @@ class _Candidate:
 # --------------------------------------------------------------------------- #
 
 
+_BALANCE_ROW_LABELS: frozenset[str] = frozenset(
+    {FIELD_NET_DEBT, FIELD_TOTAL_DEBT, FIELD_CASH, FIELD_NET_CASH}
+)
+
+
 def _match_label(text: str) -> str | None:
     """Return the single normalized label for a row-header cell, else None.
 
@@ -451,7 +454,19 @@ def _match_label(text: str) -> str | None:
     """
     if not text:
         return None
-    matched = {label for pat, label in _LABEL_PATTERNS if pat.search(text)}
+    matched: set[str] = set()
+    for pat, label in _LABEL_PATTERNS:
+        found = pat.search(text)
+        if found is None:
+            continue
+        # V3.19.1 — "Cost of net debt", "Change in cash and cash equivalents", "Net debt /
+        # EBITDA": a flow or a multiple of a balance, never the balance. Judged on the
+        # label's OWN span, so "Net debt (average cost of debt 2.1%)" is still net debt.
+        if label in _BALANCE_ROW_LABELS and is_flow_or_ratio_at(
+            text, found.start(), found.end()
+        ):
+            continue
+        matched.add(label)
     if len(matched) == 1:
         return next(iter(matched))
     return None
