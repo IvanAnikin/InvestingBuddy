@@ -76,6 +76,46 @@ _COHORT = re.compile(
     r"|universe|shortlist)|cohort|candidate\s+set)\b",
     re.IGNORECASE,
 )
+#: V3.19.11 — further ways a council describes the WHOLE result ("the run returned 10
+#: candidates …, mostly micro to small caps"). Used only to decide who a sentence is
+#: about — never to switch off the requested-language exemption, so "the user asked for
+#: small caps; 10 candidates were returned" still stands.
+_COHORT_WIDE = re.compile(
+    r"\b(?:the\s+run|mostly|\d+\s+candidates|(?:most|majority)\s+of\s+(?:the\s+)?"
+    r"(?:candidates|companies|names)|most\s+(?:candidates|companies|names))\b",
+    re.IGNORECASE,
+)
+#: A sentence whose subject is OTHER companies ("peers show a size mismatch").
+_PEER_SUBJECT = re.compile(
+    r"\b(?:peers?|rivals?|competitors?|counterparts|incumbents)\b", re.IGNORECASE
+)
+#: A negation directly before a size verdict turns it into the opposite verdict:
+#: "does not fit the requested size" asserts a MISMATCH.
+_VERDICT_NEGATION = re.compile(
+    r"\b(?:not|no|never|doesn't|does\s+not|isn't|is\s+not|aren't|are\s+not|fails?\s+to)"
+    r"\s+(?:\w+\s+)?$",
+    re.IGNORECASE,
+)
+#: V3.19.11 — a VERDICT on size against the request ("size mismatch with user request",
+#: "fits the requested size"). Unlike a band word it inherently mentions the request, so
+#: the requested-language exemption never applies to it; it needs the candidate's own
+#: size constraint to have FAILED (mismatch) or PASSED (match) on verified evidence.
+_SIZE_MISMATCH_RE = re.compile(
+    r"\bsize[\s-](?:mismatch\w*|misfit)\b|\bmismatch\w*\s+(?:on|in|with)\s+(?:the\s+)?"
+    r"(?:requested\s+)?size\b"
+    # Only a size judged against the REQUEST: "cash too small to fund the build" is risk
+    # prose about something else and must stand.
+    r"|\btoo\s+(?:large|big|small)\s+(?:for|relative\s+to)\s+the\s+(?:request\w*|brief"
+    r"|thesis|query|criteri\w+|requested\s+size|size\s+(?:band|filter|criterion))"
+    r"|\b(?:larger|bigger|smaller)\s+than\s+(?:the\s+)?requested\b"
+    r"|\b(?:outside|exceeds?|above|below)\s+the\s+requested\s+size",
+    re.IGNORECASE,
+)
+_SIZE_MATCH_RE = re.compile(
+    r"\bsize[\s-]match(?:es|ed)?\b|\b(?:fits?|match(?:es)?|meets?)\s+the\s+(?:requested\s+)?"
+    r"size\b|\bwithin\s+the\s+requested\s+size",
+    re.IGNORECASE,
+)
 _CREF = re.compile(r"\bC(\d{1,3})\b")
 #: Sentence boundaries, KEPT (captured) so the original separators — newlines, bullets —
 #: survive: the chair synthesis is rendered whitespace-preserving.
@@ -115,7 +155,9 @@ class CandidateAttributes:
             record = {"ref": f"C{index}", "attrs": attrs,
                       "ticker": str(entry.get("ticker") or ""),
                       "eligibility": entry.get("eligibility"),
-                      "unknown_constraints": list(entry.get("unknown_constraints") or [])}
+                      "unknown_constraints": list(entry.get("unknown_constraints") or []),
+                      "constraint_status": dict(entry.get("constraint_status") or {}),
+                      "has_current_research": bool(entry.get("has_current_research"))}
             self.all.append(record)
             for key in (f"C{index}", str(entry.get("candidate_id") or ""),
                         str(entry.get("ticker") or "").upper()):
@@ -150,7 +192,7 @@ def _subjects(
     named = _named(sentence, attrs)
     if named:
         return named
-    if _COHORT.search(sentence):
+    if _COHORT.search(sentence) or _COHORT_WIDE.search(sentence):
         return list(attrs.all)
     return [own] if own is not None else []
 
@@ -172,11 +214,41 @@ def _growth_mentions(text: str) -> list[tuple[int, int]]:
     ]
 
 
+def _size_verdict(
+    text: str, attrs: CandidateAttributes, own: dict[str, Any] | None
+) -> str | None:
+    """A size verdict stands only for candidates whose size constraint has that status."""
+    for regex, positive, negated in ((_SIZE_MISMATCH_RE, "fail", "pass"),
+                                     (_SIZE_MATCH_RE, "pass", "fail")):
+        needed = None
+        for m in regex.finditer(text):
+            if _QUALIFIER_AFTER.search(text[m.end() : m.end() + 48]):
+                continue  # "a size mismatch is not verified": honest, stands
+            before = text[max(0, m.start() - 40) : m.start()]
+            needed = negated if _VERDICT_NEGATION.search(before) else positive
+            break
+        if needed is None:
+            continue
+        word = "a size mismatch" if needed == "fail" else "a size match"
+        # About peers, the verdict concerns only candidates the sentence NAMES.
+        subjects = (_named(text, attrs) if _PEER_SUBJECT.search(text)
+                    else _subjects(text, attrs, own))
+        wrong = [s["ref"] for s in subjects
+                 if (s.get("constraint_status") or {}).get("size") != needed]
+        if wrong:
+            return (f"states {word} for {', '.join(wrong[:6])} whose size was not verified "
+                    f"to {needed} the request")
+    return None
+
+
 def check_sentence(
     sentence: str, attrs: CandidateAttributes, own: dict[str, Any] | None
 ) -> str | None:
     """None when the sentence may stand; otherwise the reason it may not."""
     text = sentence.translate(_HYPHENS)
+    verdict = _size_verdict(text, attrs, own)
+    if verdict is not None:
+        return verdict
     sizes = [(b, a, z) for b, a, z in _size_mentions(text) if not _qualified(text, a, z)]
     growth = [(a, z) for a, z in _growth_mentions(text) if not _qualified(text, a, z)]
     if not sizes and not growth:
@@ -298,8 +370,10 @@ def guard_review(
             record = _own(entry, attrs)
             if record and record.get("eligibility") == "eligible_unverified":
                 entry["unverified_constraints"] = record.get("unknown_constraints") or []
+    reclassified = _evidence_gaps_are_not_rejections(out, attrs)
     out["attribute_guard"] = {
-        "version": 1,
+        "version": 2,
+        "reclassified": reclassified,
         "rule": (
             "a size band or growth label may be attributed to a candidate only when that "
             "attribute is verified; sentences about what was REQUESTED are kept"
@@ -310,4 +384,67 @@ def guard_review(
     return out
 
 
-__all__ = ["CandidateAttributes", "check_sentence", "guard_review"]
+#: Shown beside a candidate the council had put under "reject" for want of research.
+GAP_NOT_REJECTION_NOTE = (
+    "Moved from reject to insufficient data by the platform: this candidate's requested "
+    "constraints were checked against official sources and it is not excluded, and it "
+    "has no current research yet — missing research is a gap to fill, not evidence "
+    "against the company."
+)
+GAP_NOT_REJECTION_NOTE_UNVERIFIED = (
+    "Moved from reject to insufficient data by the platform: this candidate is not "
+    "excluded — some requested constraints are still unverified — and it has no current "
+    "research yet. Missing research is a gap to fill, not evidence against the company."
+)
+
+
+def _evidence_gaps_are_not_rejections(
+    review: dict[str, Any], attrs: CandidateAttributes
+) -> list[dict[str, Any]]:
+    """V3.19.11 — the council may not reject a candidate for having no research yet.
+
+    Seen live (critical-materials run): the three companies discovery found and fully
+    verified — listing, size and industry from official sources — were rejected as "no
+    sourced fundamentals or filings". A candidate the platform did not exclude and that
+    has no current research can only be insufficient data; it is moved there, with the
+    council's own words kept and a note saying why.
+    """
+    rejected = review.get("candidates_to_reject")
+    if not isinstance(rejected, list):
+        return []
+    # Deliberately whatever the stated reason: without current research the council has
+    # nothing but the evidence pack's gaps to reject on, so its rejection is a gap.
+    keep: list[Any] = []
+    moved: list[dict[str, Any]] = []
+    insufficient = list(review.get("candidates_insufficient_data") or [])
+    for entry in rejected:
+        record = _own(entry, attrs) if isinstance(entry, dict) else None
+        if (record is None or record.get("has_current_research")
+                or record.get("eligibility") not in ("eligible", "eligible_unverified")):
+            keep.append(entry)
+            continue
+        note = (GAP_NOT_REJECTION_NOTE if record.get("eligibility") == "eligible"
+                else GAP_NOT_REJECTION_NOTE_UNVERIFIED)
+        item = {**entry, "placement_note": note, "council_placement": "reject_for_now"}
+        # Never listed twice: an existing insufficient-data entry for the same candidate
+        # is replaced by the moved one, which carries the council's reject rationale.
+        insufficient = [e for e in insufficient
+                        if not (isinstance(e, dict) and _own(e, attrs) is record)]
+        insufficient.append(item)
+        moved.append(item)
+    if not moved:
+        return []
+    review["candidates_to_reject"] = keep
+    review["candidates_insufficient_data"] = insufficient
+    return [{"ticker": m.get("ticker"), "candidate_ref": m.get("candidate_ref"),
+             "from": "candidates_to_reject", "to": "candidates_insufficient_data"}
+            for m in moved]
+
+
+__all__ = [
+    "GAP_NOT_REJECTION_NOTE",
+    "GAP_NOT_REJECTION_NOTE_UNVERIFIED",
+    "CandidateAttributes",
+    "check_sentence",
+    "guard_review",
+]

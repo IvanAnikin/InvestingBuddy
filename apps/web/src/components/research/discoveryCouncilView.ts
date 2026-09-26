@@ -168,6 +168,10 @@ export interface CouncilPriorityEntry {
   resilience: string | null;
   keyFinancialSignal: string | null;
   strongestDimension: string | null;
+  /** V3.19.11 — requested constraints still unverified for this candidate. */
+  unverifiedConstraints: string[];
+  /** V3.19.11 — why the platform moved it out of the council's own placement. */
+  placementNote: string | null;
   /** Other agents that placed this candidate in the SAME band, with why. */
   supporting: { agent: string; rationale: string | null }[];
   /** Other agents that placed it in a DIFFERENT band, with why. */
@@ -397,6 +401,8 @@ export function buildDiscoveryCouncilView(
         resilience: text(entry.resilience),
         keyFinancialSignal: text(entry.key_financial_signal),
         strongestDimension: text(entry.strongest_dimension),
+        unverifiedConstraints: (entry.unverified_constraints ?? []).filter(Boolean),
+        placementNote: text(entry.placement_note),
         supporting: others
           .filter((p) => p.action === band)
           .map((p) => ({ agent: p.agent, rationale: p.rationale })),

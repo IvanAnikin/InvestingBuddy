@@ -614,6 +614,12 @@ class DiscoveryCouncilCandidateEntry(BaseModel):
     exchange: str | None = None
     rationale: str | None = None
     confidence: str | None = None
+    # V3.19.11 — persisted by the attribute guard and dropped here until now: which of
+    # the reader's requested constraints are still unverified for this candidate, and
+    # why the platform moved it out of the council's own placement.
+    unverified_constraints: list[str] = Field(default_factory=list)
+    placement_note: str | None = None
+    council_placement: str | None = None
     # What could make this business more valuable, and what could pressure it.
     upside_drivers: list[str] = Field(default_factory=list)
     downside_drivers: list[str] = Field(default_factory=list)
@@ -674,6 +680,8 @@ class DiscoveryCouncilReviewResponse(BaseModel):
     evidence_gaps: list[str] = Field(default_factory=list)
     next_source_tasks: list[str] = Field(default_factory=list)
     agent_outputs: dict[str, Any] = Field(default_factory=dict)
+    # V3.19.11 — what the requested-vs-verified guard removed or moved, and why.
+    attribute_guard: dict[str, Any] | None = None
     warnings: list[str] = Field(default_factory=list)
     safety_valid: bool = True
     # Phase 32A Slice 6A: surfaces whether the deterministic discovery-chair
@@ -740,6 +748,18 @@ class DiscoveryCouncilReviewResponse(BaseModel):
         for key in ("llm_used", "agents_completed", "agents_failed", "safety_valid"):
             if env.get(key) is not None:
                 data[key] = env[key]
+        # The guard's record reaches the reader as WHERE and WHY only: a removed
+        # sentence was removed precisely so nobody reads it (it also never passed the
+        # safety gate as reader-facing text). The stored review keeps it for audit.
+        guard = data.get("attribute_guard")
+        if isinstance(guard, dict):
+            data["attribute_guard"] = {
+                **guard,
+                "removed": [
+                    {k: v for k, v in item.items() if k != "sentence"}
+                    for item in guard.get("removed") or [] if isinstance(item, dict)
+                ],
+            }
         resp = cls(run_id=run_id, **data)
         resp.status = status
         resp.review_available = status in {"completed", "completed_with_warnings"} and (

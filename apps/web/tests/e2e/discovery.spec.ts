@@ -2146,6 +2146,48 @@ test.describe("Admin Discovery — council review (Phase 28B)", () => {
     );
   });
 
+  test("C3b. V3.19.11 — unverified constraints and platform placement notes are shown", async ({
+    page,
+  }) => {
+    await mockDiscoveryRoutes(page);
+    await page.route(COUNCIL_URL, (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ...MOCK_COUNCIL_REVIEW,
+          candidates_to_research_next: [
+            {
+              ...MOCK_COUNCIL_REVIEW.candidates_to_research_next[0],
+              unverified_constraints: ["growth", "size"],
+            },
+          ],
+          candidates_insufficient_data: [
+            {
+              candidate_ref: "C2",
+              ticker: "PRE",
+              exchange: "LSE",
+              rationale: "No sourced fundamentals yet.",
+              confidence: "low",
+              council_placement: "reject_for_now",
+              placement_note:
+                "Moved from reject to insufficient data by the platform: missing research is a gap to fill, not evidence against the company.",
+            },
+          ],
+          attribute_guard: { version: 2, removed_count: 0, removed: [], reclassified: [] },
+        }),
+      }),
+    );
+    await page.goto("/admin/discovery");
+    await expect(
+      page.getByTestId("council-research-next").getByTestId("council-entry-unverified"),
+    ).toContainText("not verified: growth, size");
+    await expect(
+      page.getByTestId("council-insufficient").getByTestId("council-entry-placement-note"),
+    ).toContainText("not evidence against the company");
+    await expect(page.getByTestId("council-reject")).toHaveCount(0);
+  });
+
   test("C4. Internal action pill renders on the matching candidate row", async ({
     page,
   }) => {
