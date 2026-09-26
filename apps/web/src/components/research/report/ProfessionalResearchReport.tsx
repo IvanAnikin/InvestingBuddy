@@ -71,7 +71,7 @@ const UNRESOLVED_REASON_WORDS: Record<string, string> = {
   not_acquired: "evidence not acquired by the platform",
   // V3.19.13 — a segment check that could not apply: no segment is named in evidence.
   precondition_absent:
-    "not applicable — the evidence names no reportable segment",
+    "not applicable — no segment was found in the evidence the platform read",
 };
 
 const KNOWLEDGE_STATE_WORDS: Record<string, string> = {
