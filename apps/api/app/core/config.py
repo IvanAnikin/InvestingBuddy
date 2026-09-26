@@ -1088,6 +1088,16 @@ class Settings(BaseSettings):
     # for a discovery council, never current evidence. Legacy (pre-V3.18) reports are never
     # current at any age. See app/services/discovery/freshness.py.
     v3_research_fresh_days: int = 120
+    # V3.19.4 — dynamic discovery: external company leads, listing verification,
+    # lightweight screening and evidence-backed constraints. OFF by default: it spends on
+    # the external research provider. Every bound is capped again in code.
+    v3_dynamic_discovery_enabled: bool = False
+    v3_discovery_max_lead_queries: int = 4
+    v3_discovery_max_raw_leads: int = 60
+    v3_discovery_max_verified: int = 30
+    v3_discovery_max_screened: int = 16
+    v3_discovery_screening_concurrency: int = 4
+    v3_discovery_max_verifications_per_issuer: int = 5
     # V3.18.5 — fetch commodity statistics (IMF prices via FRED, USGS Mineral Commodity
     # Summaries) into the macro store and expose them as `get_industry_series`. Public,
     # keyless publishers through the guarded fetcher; off by default like every source.

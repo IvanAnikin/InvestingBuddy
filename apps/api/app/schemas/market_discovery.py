@@ -247,6 +247,8 @@ class DiscoveryCandidateRead(BaseModel):
     # NULL for ticker runs). Internal prioritization signals only.
     thesis_relevance_score: float | None = None
     combined_internal_score: float | None = None
+    # V3.19.4 — carries ``v319``: identity, provenance, constraint results, eligibility.
+    thesis_match_json: dict | None = None
 
     momentum_score: float | None
     fundamentals_score: float | None
