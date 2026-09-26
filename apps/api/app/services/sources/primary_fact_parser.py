@@ -505,6 +505,9 @@ _MONEY_FIELDS: list[tuple[str, re.Pattern[str]]] = [
             r"(?:net )?cash (?:flow )?(?:generated |provided )?from operating activities"
             r"|cash flow from operations|operating cash flow"
             r"|(?:net )?cash flows? from operating activities"
+            # V3.19.8 — "Net cash received from operating activities" (IFRS wording).
+            r"|(?:net )?cash (?:flows? )?(?:received|generated|provided) (?:from|by) "
+            r"operating activities"
         ),
     ),
     (FIELD_TOTAL_ASSETS, _money_pattern(r"total assets")),
