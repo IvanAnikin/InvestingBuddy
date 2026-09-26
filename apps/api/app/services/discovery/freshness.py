@@ -115,6 +115,7 @@ def classify_report(
     now: datetime | None = None,
     fresh_days: int = DEFAULT_FRESH_DAYS,
     newer_annual_period: str | None = None,
+    with_evidence: bool = True,
 ) -> ResearchFreshness:
     """The freshness class of ONE report. Never raises on content."""
     now = _aware(now) or datetime.now(timezone.utc)
@@ -122,7 +123,9 @@ def classify_report(
     age_days = (now - created).days if created else None
     version, depth = engine_version_of(report)
     report_id = str(getattr(report, "id", "") or "") or None
-    evidence_as_of = _evidence_as_of(report)
+    # ``with_evidence=False`` never touches the report body: a caller that loaded only
+    # the freshness columns (the discovery page) must not trigger a lazy load.
+    evidence_as_of = _evidence_as_of(report) if with_evidence else None
     base: dict[str, Any] = {
         "research_engine_version": version,
         "research_depth": depth,

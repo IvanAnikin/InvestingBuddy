@@ -6,6 +6,8 @@ import Surface from "@/components/product/Surface";
 import CandidateCard from "@/components/research/discovery/CandidateCard";
 import CandidateComparison from "@/components/research/discovery/CandidateComparison";
 import DiscoveryCouncilPanel from "@/components/research/discovery/DiscoveryCouncilPanel";
+import DiscoveryIntentPanel from "@/components/research/discovery/DiscoveryIntentPanel";
+import ExcludedCandidates from "@/components/research/discovery/ExcludedCandidates";
 import RunLimitations from "@/components/research/discovery/RunLimitations";
 import { splitWarningSubjects } from "@/components/research/discovery/candidateView";
 import { useDiscoveryCouncil } from "@/components/research/discovery/useDiscoveryCouncil";
@@ -283,7 +285,8 @@ export default function DiscoveryWorkbench() {
 
   const loadCandidates = useCallback(async (id: string) => {
     try {
-      const data = await listDiscoveryCandidates(id, { sort: "candidate_score" });
+      // V3.19 — the run's own ranking (eligibility first on a verified run).
+      const data = await listDiscoveryCandidates(id, { sort: "rank" });
       setCandidates(data.candidates);
       setCandidatesError(null);
     } catch (e) {
@@ -421,12 +424,16 @@ export default function DiscoveryWorkbench() {
       // Built by the SAME helper the admin console uses, so an identical
       // description produces an identical run on either surface — including
       // the lookback window and provider the admin console has always sent.
+      // V3.19 — only filters the READER set travel as filters. The backend reads the
+      // sentence itself into a multi-valued Discovery Intent ("Europe, North America
+      // and Australia"); echoing the single detected value back as an explicit
+      // selector would override the text and silently narrow it to one region.
       const created = await createThesisDiscoveryRun(
         buildThesisDiscoveryRequest({
           thesisText: thesis,
-          region,
-          country,
-          sector,
+          region: regionEdited.current ? region : undefined,
+          country: countryEdited.current ? country : undefined,
+          sector: sectorEdited.current ? sector : undefined,
           industry,
           maxUniverseSize: parseInt(maxUniverse, 10) || undefined,
           maxCandidates: parseInt(maxCandidates, 10) || undefined,
@@ -536,6 +543,13 @@ export default function DiscoveryWorkbench() {
               filter has been inferred from it. You can still set the filters
               yourself, or leave them open.
             </p>
+          )}
+
+          {detected?.discovery_intent && !detected.needs_narrowing && (
+            <DiscoveryIntentPanel
+              intent={detected.discovery_intent}
+              openDiscovery={detected.dynamic_discovery_enabled ?? null}
+            />
           )}
 
           {detected && (
@@ -783,6 +797,14 @@ export default function DiscoveryWorkbench() {
             </div>
           )}
 
+          {/* V3.19 — what this run understood, and the verification funnel. */}
+          <div className="mt-4 space-y-3">
+            <DiscoveryIntentPanel
+              intent={run.parsed_thesis_json?.discovery_intent}
+              testId="run-intent"
+            />
+            <ExcludedCandidates stage={run.universe_json?.dynamic} />
+          </div>
         </Surface>
       )}
 
@@ -832,10 +854,11 @@ export default function DiscoveryWorkbench() {
           {/* One page-level explanation of the score, instead of the same
               paragraph repeated under every card. */}
           <p className="max-w-3xl text-sm leading-relaxed text-[color:var(--ib-ink-3)]">
-            Research priority is an internal screening score out of 100. It
-            ranks candidates for human research triage — it is not a rating, it
-            says nothing about what a company is worth, and it implies no
-            investment action.
+            The screening score in the comparison is an internal, deterministic
+            score out of 100 (it includes share-price momentum). It is not the
+            council&apos;s research priority, not a rating, says nothing about
+            what a company is worth, and implies no investment action. Candidates
+            are ordered by how fully they were verified against your requirements.
           </p>
 
           <ul className="space-y-3 pt-1" data-testid="discovery-candidates">
