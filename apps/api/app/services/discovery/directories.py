@@ -125,7 +125,8 @@ DIRECTORY_FOR_VENUE: dict[str, _Directory] = {
 
 _CACHE: dict[tuple[str, str], list[DirectoryListing]] = {}
 #: Per-key locks so concurrent leads download a directory once, not once each.
-_LOCKS: dict[str, asyncio.Lock] = {}
+#: Keyed by the running loop too: an asyncio.Lock binds to the first loop that waits on it.
+_LOCKS: dict[tuple[int, str], asyncio.Lock] = {}
 #: directory key → monotonic time of its last failed download; retried after this long.
 _FAILED_AT: dict[str, float] = {}
 FAILURE_RETRY_SECONDS = 900.0
@@ -263,7 +264,8 @@ async def load(
     key = (directory.key, _today())
     if key in _CACHE:
         return _CACHE[key]
-    async with _LOCKS.setdefault(directory.key, asyncio.Lock()):
+    lock_key = (id(asyncio.get_running_loop()), directory.key)
+    async with _LOCKS.setdefault(lock_key, asyncio.Lock()):
         if key in _CACHE:
             return _CACHE[key]
         failed = _FAILED_AT.get(directory.key)
@@ -346,7 +348,9 @@ async def find_listing(
         if hit:
             return hit, None
     if symbol:
-        by_symbol = [r for r in in_venue if r.ticker == symbol]
+        # A share class is written "BRK.B" or "BRK-B" depending on the list.
+        forms = {symbol, symbol.replace(".", "-"), symbol.replace("-", ".")}
+        by_symbol = [r for r in in_venue if r.ticker in forms]
         # The symbol is authoritative only when the NAME agrees: a provider can pair a
         # real ticker with the wrong company.
         for row in by_symbol:

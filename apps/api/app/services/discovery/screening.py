@@ -343,9 +343,14 @@ def _issuer_site_urls(issuer: IdentityOutcome) -> list[str]:
         parts = urlsplit(raw or "")
         if parts.scheme != "https" or not parts.hostname:
             continue
-        # Judged against the lead's legal name, never the directory's ALL-CAPS short
-        # form ("RIO TINTO LIMITED" would make any 3-letter first word an "acronym").
-        if not issuer_domain_matches(parts.hostname, issuer.lead.name or issuer.name):
+        # The site must belong to the lead's company AND to the company actually matched:
+        # a lead "Aker Solutions" paired with ticker AKER is matched to Aker ASA, and
+        # akersolutions.com must not describe Aker ASA. The matched (directory) name is
+        # title-cased first so an ALL-CAPS short form ("RIO TINTO LIMITED") cannot make
+        # any three-letter first word pass as an acronym.
+        matched = (issuer.name or "").title() if (issuer.name or "").isupper() else issuer.name
+        if not all(issuer_domain_matches(parts.hostname, n)
+                   for n in {issuer.lead.name, matched} if n):
             continue
         for url in (raw, f"https://{parts.hostname}/"):
             if url and url not in urls:

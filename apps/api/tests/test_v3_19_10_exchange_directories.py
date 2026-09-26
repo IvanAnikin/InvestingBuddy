@@ -430,3 +430,59 @@ async def test_a_directory_whose_shape_changed_is_unreadable_not_an_exception():
     assert await d.load(d.SEC, fetcher=_fetch) == []
     assert await d.load(d.TSX, fetcher=_fetch) == []
     d.reset_cache()
+
+
+async def test_a_lead_matched_to_a_sibling_company_never_reads_the_siblings_site():
+    """Lead "Aker Solutions" with ticker AKER is matched to Aker ASA; akersolutions.com
+    must not become a verified description of Aker ASA."""
+    from app.core.config import settings
+    from app.services.discovery.identity import IdentityOutcome
+    from app.services.discovery.intent import build_intent
+    from app.services.discovery.leads import CompanyLead
+    from app.services.discovery.screening import _terms, issuer_site_exposures
+
+    fetched: list[str] = []
+
+    async def _fetch(url, **_kw):  # noqa: ANN001, ANN202
+        fetched.append(url)
+        raise AssertionError("must not fetch")
+
+    lead = CompanyLead(name="Aker Solutions ASA", ticker="AKER", exchange_raw="OL",
+                       country="Norway", listing_source_url=None,
+                       evidence_url="https://www.akersolutions.com/about", why=None,
+                       source="external_search")
+    issuer = IdentityOutcome(lead=lead, status="verified", ticker="AKER", exchange="OL",
+                             name="AKER")
+    found, fetches = await issuer_site_exposures(
+        issuer, _terms(build_intent("rare earth miners in Europe")), cfg=settings,
+        fetcher=_fetch)
+    assert (found, fetches, fetched) == ([], 0, [])
+
+
+def test_rio_tinto_all_caps_directory_name_does_not_make_rio_an_acronym():
+    from app.services.discovery.identity import IdentityOutcome
+    from app.services.discovery.leads import CompanyLead
+    from app.services.discovery.screening import _issuer_site_urls
+
+    lead = CompanyLead(name="RIO TINTO LIMITED", ticker="RIO", exchange_raw="AU",
+                       country="Australia", listing_source_url=None,
+                       evidence_url="https://www.rio.com/x", why=None, source="x")
+    issuer = IdentityOutcome(lead=lead, status="verified", ticker="RIO", exchange="AU",
+                             name="RIO TINTO LIMITED")
+    # The matched name is title-cased; the lead's own ALL-CAPS name still passes as an
+    # acronym, so both must agree — and "Rio Tinto Limited" rejects rio.com.
+    assert _issuer_site_urls(issuer) == []
+
+
+async def test_share_class_symbol_forms_match():
+    from app.services.discovery import directories as d
+
+    d.reset_cache()
+    row = d.DirectoryListing(name="BERKSHIRE HATHAWAY INC", ticker="BRK-B", exchange="US",
+                             isin=None, country=None, market_cap=None, currency="USD",
+                             price=None, industry=None, mic="NYSE", directory="sec",
+                             source_url=d.SEC.url, tier="regulator", as_of=d._today())
+    d._store(("sec", d._today()), [row])
+    found, _ = await d.find_listing(name="Berkshire Hathaway Inc.", ticker="BRK.B", venue="US")
+    assert found == row
+    d.reset_cache()
