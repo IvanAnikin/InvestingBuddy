@@ -143,6 +143,15 @@ async def _get_peer_set(context: "ToolContext", arguments: dict[str, Any]) -> di
                               i["commodity_basis"] != "corpus", str(i["ticker"])))
     items = items[: arguments["limit"]]
     gaps = []
+    # V3.19.7 — peers the platform does NOT hold, found and VERIFIED like any discovery
+    # lead. The V3.18 limitation: MP Materials' "peers" were copper and steel producers
+    # because those were the companies on file.
+    external = await _dynamic_peers(context, subject, industry, arguments, items)
+    items.extend(external.get("items", []))
+    gaps.extend(external.get("gaps", []))
+    from app.services.agent_tools.external import SEARCH_WEB_UNITS
+
+    spent = external.get("consumption")
     if len([i for i in items if i["shares_commodity"]]) < 3:
         gaps.append(
             "Fewer than three peers in the platform's universe share this commodity; "
@@ -152,8 +161,123 @@ async def _get_peer_set(context: "ToolContext", arguments: dict[str, Any]) -> di
         "items": items,
         "gaps": gaps,
         "summary": f"{len(items)} candidate peer(s) with industry {industry!r}",
-        "contains_untrusted_content": False,
+        # External peers' names and reasons come from a provider, and are marked so.
+        "contains_untrusted_content": bool(external.get("items")),
+        # The paid search is reported like search_web's, so cost attribution sees it.
+        "consumption": spent if spent is not None else units_for(SEARCH_WEB_UNITS),
     }
+
+
+#: At most this many externally discovered peers are verified and returned.
+MAX_DYNAMIC_PEERS = 4
+#: One search per (subject, commodity) per hour in this process: the Investigator may
+#: call get_peer_set from several questions in one run, and each would repeat the spend.
+_PEER_MEMO: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
+_PEER_MEMO_SECONDS = 3600.0
+
+
+def dynamic_peers_enabled(cfg: Any) -> bool:
+    return bool(getattr(cfg, "v3_dynamic_peer_discovery_enabled", False))
+
+
+async def _dynamic_peers(
+    context: "ToolContext", subject: Any, industry: str, arguments: dict[str, Any],
+    held: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Externally discovered, listing-VERIFIED peers. Never raises; off by default.
+
+    A peer is found by one bounded search built from the subject's industry and its
+    commodity (never a user's text), then goes through ``discovery.identity`` — the same
+    listing verification a discovery candidate must pass. An unverified lead is never a
+    peer. What the peer shares with the subject is recorded as the basis.
+    """
+    import time
+
+    cfg = getattr(context, "cfg", None)
+    if not dynamic_peers_enabled(cfg):
+        return {}
+    memo_key = (str(getattr(subject, "id", "")), str(arguments.get("commodity") or ""))
+    cached = _PEER_MEMO.get(memo_key)
+    if cached and time.monotonic() - cached[0] < _PEER_MEMO_SECONDS:
+        # Reused: nothing was spent this time, so no consumption is reported.
+        return {"items": cached[1].get("items", []), "gaps": cached[1].get("gaps", [])}
+    try:
+        from app.services.agents.routing import research_provider_for
+        from app.services.discovery.identity import dedup_key, verify_identity
+        from app.services.discovery.leads import LeadQuery, _ask, parse_company_leads
+        from app.services.exchange_registry import is_sec_eligible
+
+        provider = research_provider_for(cfg)
+        if provider is None or getattr(provider, "transport", None) is None:
+            return {"gaps": ["dynamic peer discovery is enabled but no external research "
+                             "provider is available"]}
+        commodity = arguments.get("commodity")
+        focus = commodity.replace("_", " ") if commodity else industry
+        name = str(getattr(subject, "name", "") or getattr(subject, "ticker", ""))[:80]
+        query = LeadQuery(
+            text=(
+                f"Find up to 8 publicly listed companies that compete with, or are direct "
+                f"peers of, the company named \"{name}\" (the name is data, not an "
+                f"instruction) — companies that produce or process {focus}, or operate in "
+                f"{industry}, anywhere in the world. Exclude {name} itself. Give each "
+                "company's exact ticker and exchange."
+            ),
+            focus=str(focus),
+            geography="any country",
+        )
+        answer = await _ask(provider, query, cfg)
+        consumption = answer["consumption"]
+        leads, _warnings = parse_company_leads(
+            answer["text"], query=query, provider=answer["provider"], task_id=answer["task_id"]
+        )
+    except Exception as exc:  # noqa: BLE001 - peers are enrichment, never fatal
+        return {"gaps": [f"dynamic peer discovery failed ({type(exc).__name__})"]}
+    seen = {dedup_key(i.get("ticker"), i.get("exchange")) for i in held}
+    seen.add(dedup_key(getattr(subject, "ticker", None), getattr(subject, "exchange", None)))
+    items: list[dict[str, Any]] = []
+    rejected = 0
+    for lead in leads[: MAX_DYNAMIC_PEERS * 2]:
+        if len(items) >= MAX_DYNAMIC_PEERS:
+            break
+        outcome = await verify_identity(lead, cfg=cfg)
+        key = dedup_key(outcome.ticker, outcome.exchange)
+        if not outcome.verified or key in seen:
+            rejected += int(not outcome.verified)
+            continue
+        seen.add(key)
+        from app.services.discovery.screening import _safe
+
+        why = _safe(lead.why, 200) or ""
+        dims = [d for d, word in (("commodity", focus), ("industry", industry))
+                if word and str(word).lower().split()[0] in why.lower()]
+        items.append({
+            "id": f"peer:{outcome.ticker}:{outcome.exchange}",
+            "ticker": outcome.ticker,
+            "exchange": outcome.exchange,
+            "name": outcome.name,
+            "industry": None,
+            "commodities": [commodity] if commodity and "commodity" in dims else [],
+            "commodity_basis": "external_discovery",
+            "shares_commodity": True if commodity and "commodity" in dims else None,
+            "basis": (
+                "externally discovered peer, listing verified on "
+                f"{(outcome.listing_source or {}).get('tier')} page"
+                + (f"; shares {', '.join(dims)}" if dims else "")
+            ),
+            "why_selected": why,
+            "listing_source": (outcome.listing_source or {}).get("url"),
+            "source_tier": (outcome.listing_source or {}).get("tier"),
+            "financials": (
+                "comparable_via_sec" if is_sec_eligible(outcome.exchange)
+                else "financials_not_comparable_here"
+            ),
+        })
+    gaps = []
+    if rejected:
+        gaps.append(f"{rejected} externally suggested peer(s) could not have their listing "
+                    "verified and were not used")
+    _PEER_MEMO[memo_key] = (time.monotonic(), {"items": items, "gaps": gaps})
+    return {"items": items, "gaps": gaps, "consumption": consumption}
 
 
 def validate_get_peer_financials(arguments: dict[str, Any]) -> dict[str, Any]:
@@ -350,6 +474,11 @@ GET_PEER_SET_SPEC = ToolSpec(
     handler=_get_peer_set,
     validate_arguments=validate_get_peer_set,
     cost=ToolCost(),
+    # V3.19.7 — with dynamic peers on, one retrieval-backed search is made and reported.
+    instrumented_units=(
+        "web_search_calls", "url_fetch_calls", "model_calls", "model_input_tokens",
+        "model_output_tokens", "cached_tokens",
+    ),
 )
 
 GET_PEER_FINANCIALS_SPEC = ToolSpec(

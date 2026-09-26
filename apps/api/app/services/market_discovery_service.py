@@ -2186,7 +2186,7 @@ async def candidate_research_freshness(
             await db.execute(
                 select(Company.id, Company.ticker, Company.exchange).where(
                     or_(*[
-                        and_(Company.ticker == c.ticker.upper(),
+                        and_(Company.ticker == (c.ticker or "").upper(),
                              Company.exchange == (c.exchange or "").upper())
                         for c in subset
                     ])
@@ -2220,7 +2220,7 @@ async def candidate_research_freshness(
             best[report.company_id] = freshness
     out: dict[uuid.UUID, dict[str, Any]] = {}
     for candidate in subset:
-        cid = by_listing.get((candidate.ticker.upper(), (candidate.exchange or "").upper()))
+        cid = by_listing.get(((candidate.ticker or "").upper(), (candidate.exchange or "").upper()))
         if cid in best:
             out[candidate.id] = best[cid].to_dict()
     return out
