@@ -89,7 +89,11 @@ def _normalize_label(raw: str | None) -> str | None:
 _PERIOD_LABEL_RE = re.compile(
     r"^(?:(?:this|last|current|prior|previous|same|next|preceding|comparative)\s+"
     r"(?:financial\s+|fiscal\s+)?(?:year|period|quarter|half(?:[\s-]year)?)"
-    r"|ytd|year[\s-]to[\s-]date|full[\s-]year|first\s+half|second\s+half"
+    r"|ytd|ltm|ttm|year[\s-]to[\s-]date|full[\s-]year|half[\s-]year|first\s+half"
+    r"|second\s+half|reported|restated|as\s+reported|constant\s+currenc(?:y|ies)"
+    r"|(?:year|period|six\s+months|twelve\s+months|quarter)\s+ended\s+.{0,30}"
+    r"|\d{1,2}\s+[a-z]+\s+\d{4}|[a-z]+\s+\d{1,2},?\s+\d{4}"
+    r"|[12]h\s*'?\d{2,4}|[1-4]q\s*'?\d{2,4}|q[1-4][\s-]?'?\d{2}"
     r"|(?:fy|cy|h[12]|q[1-4])\s*'?\d{2,4}(?:\s*/\s*\d{2,4})?"
     r"|\d{4}(?:\s*/\s*\d{2,4})?(?:\s*(?:h[12]|q[1-4]|fy))?"
     r"|(?:h[12]|q[1-4])(?:\s+(?:fy)?\s*\d{2,4})?)$",

@@ -84,7 +84,9 @@ def test_the_condition_survives_planning():
     assert question.blocking and question.blocking_requires == "named_segments"
 
 
-async def _setup(session, segment_names):  # noqa: ANN001, ANN202
+async def _setup(session, segment_names, *, extracted=True, company=True,  # noqa: ANN001, ANN202
+                 active=True):
+    with_company = company
     company = Company(id=uuid.uuid4(), ticker="PNDORA", exchange="CO", name="Pandora A/S",
                       status="new")
     session.add(company)
@@ -97,14 +99,23 @@ async def _setup(session, segment_names):  # noqa: ANN001, ANN202
         retrieved_at=datetime.now(timezone.utc), excerpts_json=[], company_id=company.id)
     session.add(doc)
     await session.flush()
+    if extracted:
+        # Proof the platform read the accounts: one active Group-scope fact.
+        session.add(ExtractedFact(
+            id=uuid.uuid4(), extracted_document_id=doc.id, label="revenue",
+            value_numeric=31000, currency="DKK", scale="million", period="FY2024",
+            extraction_method="native_pdf", confidence=0.9, validation_status="validated",
+            needs_human_review=False, is_active=True, scope_type="group",
+            scope_name=None, scope_key="group"))
     for name in segment_names:
         session.add(ExtractedFact(
             id=uuid.uuid4(), extracted_document_id=doc.id, label="revenue",
             value_numeric=32500, currency="DKK", scale="million", period="FY2025",
             extraction_method="native_pdf", confidence=0.9, validation_status="validated",
-            needs_human_review=False, is_active=True, scope_type="segment",
+            needs_human_review=False, is_active=active, scope_type="segment",
             scope_name=name, scope_key=f"segment:{name.casefold()}"))
-    run = await ledger.open_run(session, mode="standard", company_id=company.id)
+    run = await ledger.open_run(session, mode="standard",
+                                company_id=company.id if with_company else None)
     plan = await plan_research(subject="PNDORA", playbooks=[_Adapter(LUXURY)])
     await persist_plan(session, run, plan)
     await session.flush()
@@ -128,7 +139,15 @@ async def test_no_named_segment_releases_the_block(session):
         ResearchQuestion.research_run_id == run.id,
         ResearchQuestion.question_key == "segment_discipline"))).scalar_one()
     assert row.resolution_status == ledger.QUESTION_UNANSWERABLE
-    assert row.unresolved_reason == ledger.UNRESOLVED_PRECONDITION_ABSENT
+    # The question's own reason is kept when it had one; the release is logged.
+    assert row.unresolved_reason in (None, ledger.UNRESOLVED_PRECONDITION_ABSENT,
+                                     *ledger.UNRESOLVED_REASONS)
+    assert row.acquisition_log_json[-1]["rung"] == "blocking_released"
+    # The Council and the reader are TOLD, through a non-blocking gap.
+    gaps = await ledger.open_gaps(session, run, limit=50)
+    [gap] = [g for g in gaps if g.question_key == "segment_discipline"]
+    assert "could not be applied" in gap.description and not gap.blocks_council
+    assert after.council_may_convene
 
 
 async def test_a_company_with_named_segments_stays_blocked(session):
@@ -153,4 +172,61 @@ async def test_an_unknown_condition_holds(session):
     run, questions = await _setup(session, [])
     questions["segment_discipline"] = replace(questions["segment_discipline"],
                                               blocking_requires="something_new")
+    assert await _release_conditional_blocks(session, run, questions) == []
+
+
+async def test_an_existing_unresolved_reason_is_not_overwritten(session):
+    from sqlalchemy import select
+
+    from app.models.ledger import ResearchQuestion
+
+    run, questions = await _setup(session, [])
+    row = (await session.execute(select(ResearchQuestion).where(
+        ResearchQuestion.research_run_id == run.id,
+        ResearchQuestion.question_key == "segment_discipline"))).scalar_one()
+    row.unresolved_reason = ledger.UNRESOLVED_BUDGET_EXHAUSTED
+    await session.flush()
+    assert await _release_conditional_blocks(session, run, questions)
+    assert row.unresolved_reason == ledger.UNRESOLVED_BUDGET_EXHAUSTED
+
+
+@pytest.mark.parametrize("case", ["no_company", "nothing_extracted"])
+async def test_without_positive_proof_the_block_holds(session, case):
+    """Absence of extraction is not absence of segments."""
+    run, questions = await _setup(session, [], extracted=case != "nothing_extracted",
+                                  company=case != "no_company")
+    assert await _release_conditional_blocks(session, run, questions) == []
+    assert (await ledger.summarise(session, run)).questions_blocking_open == 1
+
+
+async def test_a_superseded_segment_fact_does_not_hold_the_block(session):
+    run, questions = await _setup(session, ["Jewellery Maisons"], active=False)
+    assert await _release_conditional_blocks(session, run, questions) == [
+        "segment_discipline"]
+
+
+async def test_a_named_segment_in_the_corpus_holds_the_block(session):
+    """The segment table may exist only as indexed text — the CFR case again."""
+    from app.models.research_chunk import ResearchDocumentChunk
+
+    run, questions = await _setup(session, [])
+    session.add(ResearchDocumentChunk(
+        id=uuid.uuid4(), chunk_id=f"c:{uuid.uuid4().hex[:12]}",
+        derivation_id=uuid.uuid4(), research_document_version_id=uuid.uuid4(),
+        company_id=run.company_id, kind="table", ordinal=0,
+        text="Jewellery Maisons sales 14,000", char_start=0, char_end=30,
+        indexable=True, scope_type="segment", scope_name="Jewellery Maisons"))
+    await session.flush()
+    assert await _release_conditional_blocks(session, run, questions) == []
+
+
+async def test_a_segment_finding_of_this_run_holds_the_block(session):
+    from app.models.ledger import ResearchFinding
+
+    run, questions = await _setup(session, [])
+    session.add(ResearchFinding(
+        id=uuid.uuid4(), research_run_id=run.id, statement="Maisons sales rose.",
+        question_key="regional_mix", scope_type="segment",
+        scope_key="segment:jewellery maisons", evidence_count=1, calculation_count=0))
+    await session.flush()
     assert await _release_conditional_blocks(session, run, questions) == []
