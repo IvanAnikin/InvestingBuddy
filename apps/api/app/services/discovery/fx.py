@@ -171,10 +171,11 @@ async def usd_rate(
         return USD_IDENTITY, None
     if major not in FX_SERIES:
         return None, f"no official FX series is configured for {major}"
-    as_of = as_of or datetime.now(timezone.utc).date()
     series, _ = FX_SERIES[major]
     key = (series, datetime.now(timezone.utc).date().isoformat())
     rows = _CACHE.get(key)
+    if rows == []:
+        return None, f"the official FX series {series} could not be fetched today"
     if rows is None:
         from app.services.sources.document_fetcher import safe_fetch_document
 
@@ -193,9 +194,15 @@ async def usd_rate(
             )
         content = getattr(result, "content", None) if getattr(result, "ok", False) else None
         if not content:
+            _CACHE[key] = []  # negative cache: one failed fetch per series per day
             return None, f"the official FX series {series} could not be fetched"
         rows = parse_fred_csv(content.decode("utf-8", "replace"))
         _CACHE[key] = rows
+    if as_of is None:
+        # No stated date: the latest published rate, which is never after today.
+        if not rows:
+            return None, f"the official FX series {series} has no observations"
+        as_of = rows[-1][0]
     rate = rate_from_rows(major, rows, as_of)
     if rate is None:
         return None, f"no {series} observation within 10 days before {as_of.isoformat()}"

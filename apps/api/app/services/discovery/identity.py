@@ -45,6 +45,7 @@ REJECT_UNKNOWN_VENUE = "unknown_venue"
 REJECT_NO_TICKER = "no_ticker"
 REJECT_NO_LISTING_EVIDENCE = "no_listing_evidence"
 REJECT_NAME_MISMATCH = "name_mismatch"
+REJECT_VENUE_UNVERIFIED = "venue_unverified"
 REJECT_FETCH_FAILED = "fetch_failed"
 REJECT_DUPLICATE = "duplicate"
 REJECT_BUDGET = "verification_budget_exhausted"
@@ -86,10 +87,13 @@ VENUE_ALIASES: dict[str, str] = {
     "vienna stock exchange": "VI", "wiener börse": "VI", "warsaw stock exchange": "WA",
     "asx": "AU", "australian securities exchange": "AU",
     "tsx": "TO", "toronto stock exchange": "TO", "tsx venture": "V",
-    "tsx venture exchange": "V", "tsxv": "V", "tsx-v": "V", "cse": None,  # type: ignore[dict-item]
+    "tsx venture exchange": "V", "tsxv": "V", "cse": None,  # type: ignore[dict-item]
     "nasdaq": "US", "nyse": "US", "nyse american": "US", "nasdaq capital market": "US",
     "nasdaq global select": "US", "nasdaq global market": "US", "nyse arca": "US",
-    "otc": "OTC", "otcqx": "OTC", "otcqb": "OTC", "otc markets": "OTC",
+    "otc": "OTC", "otcqx": "OTC", "otcqb": "OTC", "otc markets": "OTC", "otc pink": "OTC",
+    "lse aim": "LSE", "london aim": "LSE", "euronext growth paris": "PA",
+    "euronext growth": "PA", "nasdaq copenhagen a/s": "CO", "johannesburg": "JSE",
+    "tsx-v": "V", "cboe canada": "NEO",
     "tokyo stock exchange": "TSE", "hong kong stock exchange": "HK", "hkex": "HK",
     "nzx": "NZ", "johannesburg stock exchange": "JSE", "jse": "JSE",
 }
@@ -104,32 +108,73 @@ _LEGAL_SUFFIXES = {
 _ISIN_RE = re.compile(r"\b[A-Z]{2}[A-Z0-9]{9}\d\b")
 
 
+def _canonical_code(code: str | None) -> str | None:
+    """One code per venue family for dedup: every SEC-eligible US venue is ``US``."""
+    info = get_exchange(code) if code else None
+    if info is None:
+        return None
+    if info.is_us and info.sec_eligible:
+        return "US"
+    return info.code
+
+
 def normalise_venue(raw: str | None) -> str | None:
-    """A registry venue code for a provider's venue string, or None when unknown."""
+    """A registry venue code for a provider's venue string, or None when unknown.
+
+    Tried in order: the whole string, the string with parenthesised parts removed, each
+    parenthesised part, then comma/colon/semicolon-separated parts. A hyphen is never a
+    separator ("TSX-V" is the Venture exchange, not "TSX").
+    """
     if not raw:
         return None
     text = re.sub(r"\s+", " ", str(raw).strip())
-    if get_exchange(text) is not None:
-        return get_exchange(text).code  # type: ignore[union-attr]
-    low = text.lower().replace("(", " ").replace(")", " ").strip()
-    low = re.sub(r"\s+", " ", low)
-    if low in VENUE_ALIASES:
-        return VENUE_ALIASES[low]
-    # "Euronext Paris (EPA)" / "ASX: XYZ" — try each comma/colon-separated part.
-    for part in re.split(r"[,:/;|-]", low):
-        part = part.strip()
-        if part in VENUE_ALIASES and VENUE_ALIASES[part]:
-            return VENUE_ALIASES[part]
-        found = get_exchange(part.upper())
+    candidates = [text]
+    bare = re.sub(r"\([^)]*\)", " ", text).strip()
+    candidates.append(re.sub(r"\s+", " ", bare))
+    candidates.extend(m.strip() for m in re.findall(r"\(([^)]*)\)", text))
+    candidates.extend(part.strip() for part in re.split(r"[,:;/|]", bare))
+    for candidate in candidates:
+        if not candidate:
+            continue
+        low = candidate.lower()
+        if low in VENUE_ALIASES:
+            if VENUE_ALIASES[low]:
+                return _canonical_code(VENUE_ALIASES[low]) or VENUE_ALIASES[low]
+            continue
+        found = _canonical_code(candidate.upper())
         if found is not None:
-            return found.code
+            return found
     return None
+
+
+#: The words a page uses for each venue. A listing is verified only when the page names
+#: the company, its ticker AND its venue — a provider saying "Frankfurt" for a NYSE
+#: company is refused, not turned into a German listing.
+def venue_words(code: str | None) -> list[str]:
+    info = get_exchange(code) if code else None
+    words = {alias for alias, target in VENUE_ALIASES.items()
+             if target and (_canonical_code(target) or target) == code and len(alias) >= 3}
+    if info is not None:
+        words.add(info.name.lower())
+    if code == "US":
+        words.update({"nasdaq", "nyse", "new york stock exchange", "nyse american"})
+    return sorted(w for w in words if w)
 
 
 def name_tokens(name: str | None) -> list[str]:
     """Distinctive tokens of a company name: legal suffixes and short words dropped."""
-    words = re.findall(r"[a-z0-9&]+", (name or "").lower().replace("é", "e").replace("è", "e"))
+    words = re.findall(r"[a-z0-9&]+", _fold(name))
     return [w for w in words if w not in _LEGAL_SUFFIXES and len(w) >= 3]
+
+
+def _fold(text: str | None) -> str:
+    """Lower-case, accents folded: "Hermès" → "hermes", "Ørsted" → "orsted"."""
+    import unicodedata
+
+    raw = (text or "").lower().replace("ø", "o").replace("æ", "ae").replace("ß", "ss")
+    return "".join(
+        ch for ch in unicodedata.normalize("NFKD", raw) if not unicodedata.combining(ch)
+    )
 
 
 def registrable_label(host: str | None) -> str | None:
@@ -154,22 +199,65 @@ def registrable_domain(host: str | None) -> str | None:
     return ".".join(parts[-2:]) if len(parts) >= 2 else None
 
 
+#: Words too generic to identify an issuer by domain: "Global Mining Ltd" must not make
+#: mining.com (a news site) its own website.
+_GENERIC_TOKENS = frozenset({
+    "mining", "mines", "minerals", "mineral", "metals", "metal", "resources", "resource",
+    "gold", "silver", "copper", "lithium", "uranium", "nickel", "energy", "power", "global",
+    "international", "capital", "industries", "industrial", "technologies", "technology",
+    "tech", "materials", "material", "rare", "earth", "earths", "critical", "strategic",
+    "luxury", "fashion", "brands", "brand", "group", "royal", "american", "european",
+    "first", "new", "united", "national", "general", "exploration", "ventures", "partners",
+    "investments", "finance", "financial", "bank", "trust", "fund", "holdings", "world",
+    "news", "market", "markets", "stock", "stocks", "invest", "investor", "investors",
+})
+#: TLDs an issuer's own site plausibly uses: generic corporate ones and the country codes
+#: of the venues the platform knows. ``kering.xyz`` or ``kering.io`` is not Kering's site.
+_ISSUER_TLDS = frozenset({
+    "com", "net", "org", "group", "global",
+    "fr", "it", "de", "ch", "dk", "se", "no", "fi", "uk", "au", "ca", "us", "nl", "be",
+    "es", "at", "ie", "pt", "pl", "lu", "jp", "hk", "nz", "za", "mx", "br", "cn", "kr",
+    "tw", "in", "sg",
+})
+
+
 def issuer_domain_matches(host: str | None, company_name: str | None) -> bool:
-    """True when the host's registrable label EQUALS a distinctive name token (or their
-    concatenation): ``kering.com`` for Kering; ``mpmaterials.com`` for MP Materials."""
+    """True when the host is plausibly the ISSUER's own site. By equality, never similarity.
+
+    The registrable label must equal the company's distinctive name — the concatenation
+    of its distinctive tokens, or its first token when that token is itself distinctive
+    (``kering`` for Kering SA, ``mpmaterials`` for MP Materials, ``lynasrareearths`` or
+    ``lynas`` for Lynas Rare Earths) — never a generic word, and only on a corporate or
+    venue-country TLD.
+    """
     label = registrable_label(host)
-    if not label:
+    domain = registrable_domain(host)
+    if not label or not domain:
+        return False
+    tld = domain.rsplit(".", 1)[-1]
+    if tld not in _ISSUER_TLDS:
         return False
     label = label.replace("-", "")
     tokens = name_tokens(company_name)
     if not tokens:
         return False
-    candidates = set(tokens)
-    candidates.add("".join(tokens))
-    candidates.add("".join(tokens[:2]))
-    raw = re.findall(r"[a-z0-9]+", (company_name or "").lower())
-    candidates.add("".join(w for w in raw if w not in _LEGAL_SUFFIXES))
-    return any(len(c) >= 4 and c == label for c in candidates)
+    raw = [w for w in re.findall(r"[a-z0-9]+", _fold(company_name))
+           if w not in _LEGAL_SUFFIXES]
+    candidates = {"".join(tokens), "".join(raw)}
+    if len(raw) >= 2:
+        candidates.add("".join(raw[:2]))
+    first = raw[0] if raw else tokens[0]
+    # An acronym name ("BHP Group") is distinctive at three letters.
+    acronym = bool(re.match(r"^[A-Z0-9]{3}\b", (company_name or "").strip()))
+    if first not in _GENERIC_TOKENS and (len(first) >= 4 or acronym):
+        candidates.add(first)
+        # The issuer's own group/investor domain: pandoragroup.com, kering-group.com …
+        for suffix in ("group", "corp", "inc", "plc", "holding", "holdings", "ir",
+                       "investors", "global", "international", "company", "co"):
+            candidates.add(first + suffix)
+    minimum = 3 if acronym else 4
+    candidates = {c for c in candidates if c and c not in _GENERIC_TOKENS and len(c) >= minimum}
+    return label in candidates
 
 
 def publisher_kind(url: str | None, company_name: str | None) -> str | None:
@@ -199,25 +287,59 @@ def _isin_valid(isin: str) -> bool:
         return False
 
 
-def page_evidences_listing(text: str, *, name: str, ticker: str | None) -> tuple[bool, str]:
-    """Does this page name the company AND its ticker (or a valid ISIN)? ``(ok, basis)``."""
+_TICKER_CONTEXT = re.compile(
+    r"(?:ticker|symbol|code|stock|shares?|listed|listing|exchange|isin|mnemonic|epa|asx|tsx"
+    r"|nasdaq|nyse|lse|six|euronext|xetra|otc)",
+    re.IGNORECASE,
+)
+
+
+def page_evidences_listing(
+    text: str, *, name: str, ticker: str | None, venue: str | None = None
+) -> tuple[bool, str]:
+    """Does this page name the company AND its ticker (or its ISIN)? ``(ok, basis)``.
+
+    The ticker must appear as an upper-case token; a short one (≤3 characters: "MP",
+    "AI", "ON") only counts beside a listing word ("ticker", "shares", a venue name …)
+    so incidental words cannot pass. An ISIN counts only when it sits within 300
+    characters of the company's name — an exchange list page carries hundreds of them.
+    """
     if not text:
         return False, "the page has no readable text"
-    low = text.lower()
+    low = _fold(text)
     tokens = name_tokens(name)
     named = [t for t in tokens if re.search(rf"(?<![a-z0-9]){re.escape(t)}(?![a-z0-9])", low)]
     # Every distinctive token for a short name; at least two of three for a long one.
     needed = len(tokens) if len(tokens) <= 2 else max(2, (len(tokens) * 2 + 2) // 3)
     if not tokens or len(named) < needed:
         return False, f"the page does not name the company ({', '.join(tokens) or name})"
+    if venue is not None:
+        words = venue_words(venue)
+        if words and not any(
+            re.search(rf"(?<![a-z0-9]){re.escape(w)}(?![a-z0-9])", low) for w in words
+        ):
+            return False, f"the page does not name the claimed venue ({venue})"
     if ticker:
         symbol = re.escape(ticker.upper())
-        if re.search(rf"(?<![A-Za-z0-9]){symbol}(?![A-Za-z0-9])", text):
-            return True, f"names the company and its ticker {ticker.upper()}"
-    for isin in _ISIN_RE.findall(text):
-        if _isin_valid(isin):
-            return True, f"names the company and ISIN {isin}"
-    return False, "the page names the company but not its ticker or a valid ISIN"
+        for match in re.finditer(rf"(?<![A-Za-z0-9]){symbol}(?![A-Za-z0-9])", text):
+            if len(ticker) > 3:
+                return True, f"names the company and its ticker {ticker.upper()}"
+            window = text[max(0, match.start() - 40) : match.end() + 40]
+            if _TICKER_CONTEXT.search(window):
+                return True, (
+                    f"names the company and its ticker {ticker.upper()} in a listing context"
+                )
+    anchor = next(
+        (m.start() for t in tokens[:1]
+         for m in re.finditer(rf"(?<![a-z0-9]){re.escape(t)}(?![a-z0-9])", low)),
+        None,
+    )
+    for match in _ISIN_RE.finditer(text):
+        if anchor is not None and abs(match.start() - anchor) <= 300 and _isin_valid(
+            match.group(0)
+        ):
+            return True, f"names the company and, beside it, ISIN {match.group(0)}"
+    return False, "the page names the company but not its ticker or its ISIN"
 
 
 @dataclass
@@ -265,11 +387,15 @@ class IdentityOutcome:
 def dedup_key(ticker: str | None, exchange: str | None) -> str | None:
     if not ticker or not exchange:
         return None
-    return f"{exchange.upper()}:{ticker.upper()}"
+    code = _canonical_code(exchange) or exchange.upper()
+    return f"{code}:{ticker.upper()}"
 
 
 def normalised_name(name: str | None) -> str:
-    return " ".join(name_tokens(name))
+    """The FULL name minus legal suffixes, for dedup. Short words are kept: "AB Science"
+    must not collapse to "science" and collide with another company."""
+    words = re.findall(r"[a-z0-9&]+", _fold(name))
+    return " ".join(w for w in words if w not in _LEGAL_SUFFIXES)
 
 
 async def _page_text(url: str, cfg: Any, fetcher: Any) -> tuple[str | None, dict[str, Any]]:
@@ -359,7 +485,7 @@ async def verify_identity(
         attempts.append(record)
         if text is None:
             continue
-        ok, basis = page_evidences_listing(text, name=lead.name, ticker=ticker)
+        ok, basis = page_evidences_listing(text, name=lead.name, ticker=ticker, venue=exchange)
         record["basis"] = basis
         if ok:
             return IdentityOutcome(
@@ -378,6 +504,7 @@ async def verify_identity(
             )
         last_reason = (
             REJECT_NAME_MISMATCH if "does not name the company" in basis
+            else REJECT_VENUE_UNVERIFIED if "claimed venue" in basis
             else REJECT_NO_LISTING_EVIDENCE
         )
         last_detail = basis

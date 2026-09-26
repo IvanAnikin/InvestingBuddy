@@ -95,8 +95,17 @@ class StageResult:
             "queries": self.queries,
             "excluded": [c.to_dict() for c in self.excluded],
             "rejected_leads": [
-                {**r.lead.to_dict(), "rejection_reason": r.rejection_reason,
-                 "detail": r.detail, "exchange": r.exchange}
+                {
+                    "name": _safe_text(r.lead.name, 200),
+                    "ticker": r.lead.ticker,
+                    "exchange_raw": r.lead.exchange_raw,
+                    "exchange": r.exchange,
+                    "source": r.lead.source,
+                    "listing_source_url": r.lead.listing_source_url,
+                    "why": _safe_text(r.lead.why, 200),
+                    "rejection_reason": r.rejection_reason,
+                    "detail": r.detail,
+                }
                 for r in self.rejected
             ][:120],
             "warnings": self.warnings[:40],
@@ -140,15 +149,27 @@ async def _held_companies(session: Any) -> list[Any]:
 
 
 def _held_leads(held: list[Any], intent: DiscoveryIntent) -> list[CompanyLead]:
-    """Companies the platform already holds whose CLASSIFICATION matches the intent."""
-    from app.services.sector_taxonomy import industry_matches
+    """Companies the platform already holds whose CLASSIFICATION matches the intent.
 
-    if not intent.industries:
+    The theme recorded is the one whose OWN industry list names the company's industry —
+    never simply the intent's first theme — so a held company's industry PASS rests on its
+    stored classification, not on a label this function wrote.
+    """
+    from app.services.market_thesis_parser import _THEME_TABLE
+    from app.services.sector_taxonomy import normalize_industry
+
+    if not intent.themes:
         return []
     out = []
     for company in held:
         industry = getattr(company, "industry", None)
-        if not industry or not any(industry_matches(i, industry) for i in intent.industries):
+        canonical = normalize_industry(industry) or industry
+        theme = next(
+            (t for t in intent.themes
+             if canonical and canonical in (_THEME_TABLE.get(t, {}).get("industries") or [])),
+            None,
+        )
+        if theme is None:
             continue
         out.append(
             CompanyLead(
@@ -165,7 +186,7 @@ def _held_leads(held: list[Any], intent: DiscoveryIntent) -> list[CompanyLead]:
                     "company_name": company.name, "industry": industry,
                     "sector": getattr(company, "sector", None),
                     "country": getattr(company, "country", None),
-                    "theme": intent.themes[0] if intent.themes else None,
+                    "theme": theme,
                     "universe_source": "platform_company_registry",
                     "source_tier": "T3_curated_reference_list",
                 },
@@ -218,11 +239,14 @@ async def evaluate(
     if observation is not None and observation.verified:
         from datetime import date
 
+        # Only a date the PAGE states dates the rate. A fetch-date observation uses the
+        # latest published rate: H.10 lags about a week, and "today" would find none.
         as_of = None
-        try:
-            as_of = date.fromisoformat(str(observation.as_of)[:10]) if observation.as_of else None
-        except ValueError:
-            as_of = None
+        if observation.as_of_basis == "stated" and observation.as_of:
+            try:
+                as_of = date.fromisoformat(str(observation.as_of)[:10])
+            except ValueError:
+                as_of = None
         rate, reason = await usd_rate(observation.currency, as_of, cfg=cfg, fetcher=fx_fetcher)
     results.append(cons.verify_size(intent.size, observation, rate, fx_unavailable_reason=reason))
     results.append(cons.verify_growth(intent.growth, screening.growth if screening else []))
@@ -275,7 +299,6 @@ async def run_dynamic_stage(
     # 2. Dedup — cheap, before any fetch. A lead matching a HELD company inherits its
     #    identity (reference data on record) and is not re-verified.
     held_by_key = {dedup_key(c.ticker, c.exchange): c for c in held}
-    held_by_name = {normalised_name(c.name): c for c in held if c.name}
     seen_keys: set[str] = set()
     seen_names: set[str] = set()
     to_verify: list[CompanyLead] = []
@@ -296,9 +319,9 @@ async def run_dynamic_stage(
             seen_keys.add(key)
         if name_key:
             seen_names.add(name_key)
+        # A HELD company is inherited only on the same listing (venue + ticker). A name
+        # match alone is not an identity: the lead is verified like any other.
         held_match = held_by_key.get(key) if key else None
-        if held_match is None and lead.source == "external_search" and name_key:
-            held_match = held_by_name.get(name_key)
         if lead.source != "external_search" or held_match is not None:
             identities.append(
                 platform_identity(
@@ -307,8 +330,9 @@ async def run_dynamic_stage(
                         exchange_raw=held_match.exchange, country=lead.country,
                         listing_source_url=lead.listing_source_url,
                         evidence_url=lead.evidence_url, why=lead.why,
-                        source=lead.source if lead.source != "external_search"
-                        else "platform_registry",
+                        # Provenance keeps where the lead CAME FROM; the identity status
+                        # says it matched a held listing.
+                        source=lead.source,
                         discovery_query=lead.discovery_query, provider=lead.provider,
                         registry_item=lead.registry_item,
                     ),
@@ -418,12 +442,18 @@ def _provenance(identity: IdentityOutcome) -> dict[str, Any]:
         "discovery_source": lead.source,
         "discovery_query": lead.discovery_query,
         "source_url": lead.evidence_url or lead.listing_source_url,
-        "why": lead.why,
+        "why": _safe_text(lead.why, 300),
         "verified_identity_source": (identity.listing_source or {}).get("url")
         or (identity.listing_source or {}).get("registry"),
         "identity_status": identity.status,
         "provider": lead.provider,
     }
+
+
+def _safe_text(text: str | None, limit: int) -> str | None:
+    from app.services.discovery.screening import _safe
+
+    return _safe(text, limit)
 
 
 def universe_item(record: CandidateRecord, intent: DiscoveryIntent) -> dict[str, Any]:

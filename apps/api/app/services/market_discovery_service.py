@@ -959,7 +959,21 @@ async def process_run(
         candidate.rank = rank
 
     # ── Finalize run status ───────────────────────────────────────────────
-    if processed == 0 and dynamic_ran and not universe:
+    stage_record = (run.universe_json or {}).get("dynamic") or {}
+    if processed == 0 and dynamic_ran and not universe and (
+        stage_record.get("status") != "completed"
+        or stage_record.get("external_discovery") == "unavailable"
+        and not (stage_record.get("funnel") or {}).get("verified_issuers")
+    ):
+        # The stage could not look — a failure or no provider — which is NOT the same
+        # answer as "nothing qualified", and must never be reported as one.
+        final_status = "failed"
+        warnings.append(
+            "Dynamic discovery could not run ("
+            + str(stage_record.get("error") or "no external research provider available")
+            + "), and the curated registry held no match. Nothing was screened."
+        )
+    elif processed == 0 and dynamic_ran and not universe:
         # Nothing met the hard constraints. That is an ANSWER, not a failure: the
         # excluded companies and rejected leads are on the run with their reasons.
         final_status = "completed_with_warnings"

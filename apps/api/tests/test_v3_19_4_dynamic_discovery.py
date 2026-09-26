@@ -361,3 +361,133 @@ async def test_flag_off_keeps_the_curated_path(monkeypatch):
                                 discovery_provider=_Provider(), discovery_fetcher=_fetch)
     assert "dynamic" not in (run.universe_json or {})
     assert {o.ticker for o in added if isinstance(o, mds.DiscoveryCandidate)} >= {"KER", "MC"}
+
+
+# ── review follow-ups (code + security reviews of V3.19.4) ──────────────────── #
+
+from app.services.discovery import screening as scr  # noqa: E402
+
+
+@pytest.mark.parametrize(
+    ("host", "name", "expected"),
+    [
+        ("www.mining.com", "Lundin Mining Corp", False),
+        ("www.gold.org", "Gold Fields Ltd", False),
+        ("www.lithium.com", "American Lithium Corp", False),
+        ("global.com", "Global Atomic Corp", False),
+        ("kering.xyz", "Kering SA", False),
+        ("kering.io", "Kering SA", False),
+        ("www.pandoragroup.com", "Pandora A/S", True),
+        ("www.bhp.com", "BHP Group Ltd", True),
+        ("orsted.com", "Ørsted A/S", True),
+        ("www.goldfields.com", "Gold Fields Ltd", True),
+    ],
+)
+def test_issuer_domain_is_never_a_generic_word_or_foreign_tld(host, name, expected):
+    assert issuer_domain_matches(host, name) is expected
+
+
+def test_short_ticker_needs_a_listing_context():
+    assert not page_evidences_listing("ON THE MOVE — On Semi Corp", name="On Semi Corp",
+                                      ticker="ON")[0]
+    assert not page_evidences_listing("Agilent. A strong year.", name="Agilent", ticker="A")[0]
+    assert page_evidences_listing("Agilent (NYSE: A)", name="Agilent", ticker="A")[0]
+
+
+def test_an_isin_counts_only_beside_the_company():
+    page = "Kering SA annual report. " + ("x " * 400) + "Other: ISIN US0378331005"
+    assert not page_evidences_listing(page, name="Kering SA", ticker="ZZZ")[0]
+
+
+def test_a_claimed_venue_the_page_does_not_name_is_refused():
+    ok, basis = page_evidences_listing("MP Materials Corp. (NYSE: MP)", name="MP Materials",
+                                       ticker="MP", venue="F")
+    assert not ok and "venue" in basis
+
+
+@pytest.mark.parametrize(
+    ("raw", "code"),
+    [("TSX-V: ABC", "V"), ("Euronext Paris (EPA)", "PA"), ("LSE AIM", "LSE"),
+     ("London (AIM)", "LSE"), ("Nasdaq Copenhagen A/S", "CO"), ("NYSE", "US"),
+     ("Nasdaq", "US"), ("OTC Pink", "OTC")],
+)
+def test_more_venues(raw, code):
+    assert normalise_venue(raw) == code
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [("FY2025: 8%", 8.0), ("2024-25 growth 12%", 12.0), ("(3.2)%", -3.2),
+     ("5% despite a decline in volumes", 5.0), ("down 4%", -4.0), ("−4%", -4.0)],
+)
+def test_growth_percent_parsing(value, expected):
+    assert scr._percent(value) == expected
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [("FY 2025 1.2 billion", 1.2e9), ("EUR 27.39 billion", 27.39e9)],
+)
+def test_amount_parsing(value, expected):
+    assert scr._amount(value, None) == pytest.approx(expected)
+
+
+@pytest.mark.parametrize(
+    ("value", "code"),
+    [("HK$ 120bn", "HKD"), ("CA$ 5bn", "CAD"), ("A$ 3bn", "AUD"), ("NZ$ 1bn", "NZD"),
+     ("€900m", "EUR")],
+)
+def test_currency_symbols(value, code):
+    assert scr._currency(None, value) == code
+
+
+def test_pence_is_not_pounds():
+    assert scr._currency("GBp", None) == "GBX"
+
+
+def test_hq_is_the_first_country_in_the_passage():
+    assert scr._country_in("Headquartered in London, United Kingdom; mines in Chile") == (
+        "United Kingdom"
+    )
+
+
+async def test_scale_currency_and_date_come_from_the_page_not_the_claim():
+    """The page says 'EUR 900 million'; a claim of '900' 'billion' USD cannot become that."""
+    lead = _lead("market capitalisation", "Market capitalisation 900 billion",
+                 "https://www.maisonexemple.com/investors/key-figures", "900 billion", "USD")
+
+    class _P(_Provider):
+        async def investigate(self, *, question, **_kw):
+            return ResearchProviderResult(
+                provider="deepseek", model="m", task_id="t", status="completed",
+                started_at=datetime.now(timezone.utc), research_leads=[lead],
+            )
+
+    from app.services.discovery.identity import IdentityOutcome
+
+    issuer = IdentityOutcome(
+        lead=CompanyLead(name="Maison Exemple SA", ticker="MEX", exchange_raw="PA",
+                         country="France", listing_source_url=None, evidence_url=None,
+                         why=None, source="external_search"),
+        status="verified", ticker="MEX", exchange="PA", name="Maison Exemple SA",
+        listing_currency="EUR",
+    )
+    result = await scr.screen_issuer(issuer, build_intent(LUXURY), cfg=settings,
+                                     provider=_P(), fetcher=_fetch)
+    if result.market_cap is not None:
+        assert result.market_cap.currency == "EUR"
+        assert result.market_cap.amount == pytest.approx(900e6)
+        assert result.market_cap.as_of == "2026-09-20"
+
+
+async def test_failed_or_unavailable_stage_is_not_reported_as_no_match(monkeypatch):
+    monkeypatch.setattr(settings, "v3_dynamic_discovery_enabled", True)
+    monkeypatch.setattr(settings, "v3_deepseek_search_enabled", False)
+    db, _added = _db()
+    run = await mds.create_pending_thesis_run(
+        db, ThesisDiscoveryRunCreate(
+            thesis_text="gallium producers in Oceania", provider_name="free_real")
+    )
+    run = await mds.process_run(db, run, extractor=_fake_extractor())
+    assert run.status == "failed"
+    assert any("could not run" in w for w in run.warnings)
