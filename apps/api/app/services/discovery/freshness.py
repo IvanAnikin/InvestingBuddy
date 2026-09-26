@@ -123,7 +123,7 @@ def classify_report(
     version, depth = engine_version_of(report)
     report_id = str(getattr(report, "id", "") or "") or None
     evidence_as_of = _evidence_as_of(report)
-    base = {
+    base: dict[str, Any] = {
         "research_engine_version": version,
         "research_depth": depth,
         "report_id": report_id,
