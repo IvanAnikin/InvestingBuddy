@@ -79,6 +79,14 @@ class PlaybookQuestion:
     #: **Cannot be answered ⇒ the Council does not convene.** The run reports
     #: insufficient evidence rather than analysing around the hole.
     blocking: bool = False
+    #: V3.19.13 — the hazard a blocking question guards against, when it exists only
+    #: under a condition. ``"named_segments"``: the question blocks only while the
+    #: company's evidence names at least one reportable segment. Segment discipline
+    #: exists to stop a segment figure being reported as the Group's (the CFR failure);
+    #: a company whose evidence names no segment cannot be mis-scoped that way, and its
+    #: open question becomes ``unanswerable`` with the reason recorded, instead of
+    #: refusing every finding the run made (read live: Pandora, 32 findings → 0).
+    blocking_requires: str | None = None
     # ── V3.18.2: the question as a node of a research graph ──────────────── #
     #: Which analytical domain the answer belongs to. ``None`` only on a question
     #: written before V3.18, which is treated as its owner role's default domain.
@@ -187,6 +195,7 @@ def planned_from(question: "PlaybookQuestion", *, origin: str) -> "Any":
         required_tools=frozenset(question.required_tools),
         priority=question.priority,
         blocking=question.blocking,
+        blocking_requires=question.blocking_requires,
         required_evidence_classes=tuple(question.required_evidence_classes),
         required_calculations=tuple(question.required_calculations),
         domain=question.domain,

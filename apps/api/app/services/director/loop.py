@@ -625,6 +625,7 @@ async def run_investigation(
         stop_reason=stop_reason,
         evidence_so_far=evidence_so_far,
     )
+    await _release_conditional_blocks(session, run, questions_by_key)
 
     summary = await ledger.summarise(session, run)
     open_keys = await _open_question_keys(session, run)
@@ -803,6 +804,92 @@ def _rules_satisfied(
         else:
             return False
     return True
+
+
+#: ``PlaybookQuestion.blocking_requires`` values this loop can evaluate. An unknown
+#: condition is treated as HOLDING — a block the platform cannot evaluate is never
+#: released by being ignored.
+BLOCKING_REQUIRES_NAMED_SEGMENTS = "named_segments"
+
+
+async def company_has_named_segments(session: Any, company_id: Any) -> bool:
+    """True when any active extracted fact of the company is scoped to a NAMED segment.
+
+    Read through ``scope_from_columns``, so a period label stored as a segment name
+    ("This year") does not count. Errors count as True: never release on doubt.
+    """
+    if not company_id:
+        return True
+    try:
+        from sqlalchemy import select
+
+        from app.models.extracted_document import ExtractedDocument, ExtractedFact
+        from app.services.sources.fact_scope import SCOPE_TYPE_SEGMENT, scope_from_columns
+
+        async with session.begin_nested():
+            names = (
+                await session.execute(
+                    select(ExtractedFact.scope_type, ExtractedFact.scope_name)
+                    .join(ExtractedDocument,
+                          ExtractedFact.extracted_document_id == ExtractedDocument.id)
+                    .where(ExtractedDocument.company_id == company_id,
+                           ExtractedFact.is_active.is_(True),
+                           ExtractedFact.scope_type == SCOPE_TYPE_SEGMENT)
+                    .distinct()
+                    .limit(200)
+                )
+            ).all()
+    except Exception:  # noqa: BLE001 - doubt keeps the block
+        return True
+    return any(
+        scope_from_columns(scope_type, scope_name).scope_type == SCOPE_TYPE_SEGMENT
+        for scope_type, scope_name in names
+    )
+
+
+async def _release_conditional_blocks(
+    session: Any, run: Any, questions_by_key: dict[str, Any]
+) -> list[str]:
+    """V3.19.13 — an open blocking question whose hazard is ABSENT becomes unanswerable.
+
+    Only a question that declares ``blocking_requires`` is considered, only when its
+    condition is evaluated and found not to hold, and the reason is recorded on the row
+    (``precondition_absent``) and stays visible as an open-question outcome. Returns the
+    released keys.
+    """
+    conditional = {
+        key: q for key, q in questions_by_key.items()
+        if getattr(q, "blocking", False) and getattr(q, "blocking_requires", None)
+    }
+    if not conditional:
+        return []
+    from sqlalchemy import select
+
+    from app.models.ledger import ResearchQuestion
+
+    rows = (
+        await session.execute(
+            select(ResearchQuestion).where(
+                ResearchQuestion.research_run_id == run.id,
+                ResearchQuestion.question_key.in_(list(conditional)),
+                ResearchQuestion.resolution_status == ledger.QUESTION_OPEN,
+                ResearchQuestion.blocking.is_(True),
+            )
+        )
+    ).scalars().all()
+    released: list[str] = []
+    for row in rows:
+        condition = conditional[row.question_key].blocking_requires
+        if condition != BLOCKING_REQUIRES_NAMED_SEGMENTS:
+            continue  # unknown condition: the block holds
+        if await company_has_named_segments(session, getattr(run, "company_id", None)):
+            continue
+        row.resolution_status = ledger.QUESTION_UNANSWERABLE
+        row.unresolved_reason = ledger.UNRESOLVED_PRECONDITION_ABSENT
+        released.append(row.question_key)
+    if released:
+        await session.flush()
+    return released
 
 
 async def _mark_answered(

@@ -145,6 +145,8 @@ class PlannedQuestion:
     #: **Only a playbook may set this.** A blocking question stops the Council
     #: convening, so a model able to set one could stop every run.
     blocking: bool = False
+    #: See ``PlaybookQuestion.blocking_requires``.
+    blocking_requires: str | None = None
     required_evidence_classes: tuple[str, ...] = ()
     #: The deterministic calculations an answer needs, straight from the playbook.
     #: This is the ONLY source of metric names for ``get_calculated_metrics``: the
