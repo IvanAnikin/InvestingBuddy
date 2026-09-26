@@ -384,6 +384,9 @@ UNRESOLVED_CONTRACT_UNMET = "contract_unmet"
 UNRESOLVED_BUDGET_EXHAUSTED = "budget_exhausted"
 UNRESOLVED_TOOL_UNAVAILABLE = "tool_unavailable"
 UNRESOLVED_NOT_REACHED = "not_reached"
+#: V3.19.13 — a conditionally blocking question whose condition does not hold (e.g. the
+#: evidence names no segment): unanswerable, and it no longer blocks the Council.
+UNRESOLVED_PRECONDITION_ABSENT = "precondition_absent"
 
 UNRESOLVED_REASONS: frozenset[str] = frozenset(
     {
@@ -392,6 +395,7 @@ UNRESOLVED_REASONS: frozenset[str] = frozenset(
         UNRESOLVED_BUDGET_EXHAUSTED,
         UNRESOLVED_TOOL_UNAVAILABLE,
         UNRESOLVED_NOT_REACHED,
+        UNRESOLVED_PRECONDITION_ABSENT,
     }
 )
 

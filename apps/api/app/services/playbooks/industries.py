@@ -86,6 +86,8 @@ LUXURY = Playbook(
             # The CFR failure mode. Without segment discipline a luxury analysis is
             # about a company that does not exist.
             blocking=True,
+            # …which can only happen to a company whose evidence names segments.
+            blocking_requires="named_segments",
         ),
         PlaybookQuestion(
             key="regional_mix",

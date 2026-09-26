@@ -81,6 +81,32 @@ def _normalize_label(raw: str | None) -> str | None:
     return text[:_SCOPE_NAME_MAX]
 
 
+#: V3.19.13 — a heading that names a PERIOD, not a business area. Read in production:
+#: Pandora's FY2025 revenue carried the segment "This year" (a table's column header),
+#: and the luxury playbook then found no real segment and refused the whole Council.
+#: A period label is neither the Group nor a segment: it is UNKNOWN (fail-closed — an
+#: unknown scope still never becomes the Group).
+_PERIOD_LABEL_RE = re.compile(
+    r"^(?:(?:this|last|current|prior|previous|same|next|preceding|comparative)\s+"
+    r"(?:financial\s+|fiscal\s+)?(?:year|period|quarter|half(?:[\s-]year)?)"
+    r"|ytd|ltm|ttm|year[\s-]to[\s-]date|full[\s-]year|half[\s-]year|first\s+half"
+    r"|second\s+half|reported|restated|as\s+reported|constant\s+currenc(?:y|ies)"
+    r"|(?:year|period|six\s+months|twelve\s+months|quarter)\s+ended\s+.{0,30}"
+    r"|\d{1,2}\s+[a-z]+\s+\d{4}|[a-z]+\s+\d{1,2},?\s+\d{4}"
+    r"|[12]h\s*'?\d{2,4}|[1-4]q\s*'?\d{2,4}|q[1-4][\s-]?'?\d{2}"
+    r"|(?:fy|cy|h[12]|q[1-4])\s*'?\d{2,4}(?:\s*/\s*\d{2,4})?"
+    r"|\d{4}(?:\s*/\s*\d{2,4})?(?:\s*(?:h[12]|q[1-4]|fy))?"
+    r"|(?:h[12]|q[1-4])(?:\s+(?:fy)?\s*\d{2,4})?)$",
+    re.IGNORECASE,
+)
+
+
+def is_period_label(raw: str | None) -> bool:
+    """True when ``raw`` names a reporting period rather than a business area."""
+    label = _normalize_label(raw)
+    return bool(label and _PERIOD_LABEL_RE.match(label))
+
+
 def is_group_label(raw: str | None) -> bool:
     """True when ``raw`` names the consolidated Group, per the one vocabulary."""
     label = _normalize_label(raw)
@@ -170,6 +196,8 @@ def parse_scope(raw: str | None) -> FactScope:
         return UNKNOWN_SCOPE
     if label.casefold() in GROUP_SCOPE_LABELS:
         return GROUP_SCOPE
+    if _PERIOD_LABEL_RE.match(label):
+        return UNKNOWN_SCOPE
     return FactScope(scope_type=SCOPE_TYPE_SEGMENT, scope_name=label)
 
 
@@ -192,7 +220,9 @@ def scope_from_columns(
         return GROUP_SCOPE
     if scope_type == SCOPE_TYPE_SEGMENT:
         name = _normalize_label(scope_name)
-        if name is None:
+        if name is None or _PERIOD_LABEL_RE.match(name):
+            # A row written before V3.19.13 with a period for a segment name degrades
+            # on READ — no backfill, no destructive migration.
             return UNKNOWN_SCOPE
         return FactScope(scope_type=SCOPE_TYPE_SEGMENT, scope_name=name)
     # Legacy row (pre-018) that only ever had the free-text label available, or

@@ -625,6 +625,7 @@ async def run_investigation(
         stop_reason=stop_reason,
         evidence_so_far=evidence_so_far,
     )
+    await _release_conditional_blocks(session, run, questions_by_key)
 
     summary = await ledger.summarise(session, run)
     open_keys = await _open_question_keys(session, run)
@@ -803,6 +804,168 @@ def _rules_satisfied(
         else:
             return False
     return True
+
+
+#: ``PlaybookQuestion.blocking_requires`` values this loop can evaluate. An unknown
+#: condition is treated as HOLDING — a block the platform cannot evaluate is never
+#: released by being ignored.
+BLOCKING_REQUIRES_NAMED_SEGMENTS = "named_segments"
+
+
+#: Documents whose extracted facts prove the platform actually READ the company's
+#: accounts. Without that proof, "no segment fact" may only mean "nothing extracted".
+_PRIMARY_TIERS = ("T1_primary_filing", "T1_primary_company_source", "T2_regulator_or_gov")
+
+
+def _names_a_segment(scope_type: str | None, scope_name: str | None) -> bool:
+    from app.services.sources.fact_scope import SCOPE_TYPE_SEGMENT, scope_from_columns
+
+    return scope_from_columns(scope_type, scope_name).scope_type == SCOPE_TYPE_SEGMENT
+
+
+async def segment_hazard_absent(session: Any, run: Any) -> bool:
+    """True ONLY on positive proof that nothing in this company's evidence names a segment.
+
+    All must hold, else False (the block stays):
+    * the run has a company, and the platform extracted at least one active fact from
+      that company's primary documents — absence of extraction is not absence of segments;
+    * no active extracted fact is scoped to a NAMED segment (a period label such as
+      "This year" is not a name — see ``fact_scope``);
+    * no indexed corpus chunk of the company is scoped to a named segment;
+    * no finding of THIS run is scoped to a named segment.
+    Any error: False.
+    """
+    company_id = getattr(run, "company_id", None)
+    if not company_id:
+        return False
+    try:
+        from sqlalchemy import or_, select
+
+        from app.models.extracted_document import ExtractedDocument, ExtractedFact
+        from app.models.ledger import ResearchFinding
+        from app.models.research_chunk import ResearchDocumentChunk
+
+        async with session.begin_nested():
+            extracted = (
+                await session.execute(
+                    select(ExtractedFact.id)
+                    .join(ExtractedDocument,
+                          ExtractedFact.extracted_document_id == ExtractedDocument.id)
+                    .where(ExtractedDocument.company_id == company_id,
+                           ExtractedDocument.source_tier.in_(_PRIMARY_TIERS),
+                           ExtractedFact.is_active.is_(True))
+                    .limit(1)
+                )
+            ).first()
+            fact_scopes = (
+                await session.execute(
+                    select(ExtractedFact.scope_type, ExtractedFact.scope_name)
+                    .join(ExtractedDocument,
+                          ExtractedFact.extracted_document_id == ExtractedDocument.id)
+                    .where(ExtractedDocument.company_id == company_id,
+                           ExtractedFact.is_active.is_(True),
+                           ExtractedFact.scope_type == "segment")
+                    .distinct().limit(200)
+                )
+            ).all()
+            chunk_scopes = (
+                await session.execute(
+                    select(ResearchDocumentChunk.scope_type, ResearchDocumentChunk.scope_name)
+                    .where(ResearchDocumentChunk.company_id == company_id,
+                           ResearchDocumentChunk.scope_type == "segment")
+                    .distinct().limit(200)
+                )
+            ).all()
+            finding_keys = (
+                await session.execute(
+                    select(ResearchFinding.scope_key)
+                    # The loop records a finding's scope as KEY only ("segment:<name>");
+                    # scope_type is not written, so it cannot be the filter.
+                    .where(ResearchFinding.research_run_id == run.id,
+                           or_(ResearchFinding.scope_type == "segment",
+                               ResearchFinding.scope_key.like("segment:%")))
+                    .distinct().limit(200)
+                )
+            ).scalars().all()
+    except Exception:  # noqa: BLE001 - doubt keeps the block
+        return False
+    if extracted is None:
+        return False
+    if any(_names_a_segment(t, n) for t, n in [*fact_scopes, *chunk_scopes]):
+        return False
+    # A finding keeps only its scope KEY ("segment:<name>"); a missing name is not proof.
+    for key in finding_keys:
+        name = (key or "").split(":", 1)[1] if ":" in (key or "") else None
+        if name is None or _names_a_segment("segment", name):
+            return False
+    return True
+
+
+#: What the Council and the reader are told when a conditional block is released.
+SEGMENT_CHECK_NOT_APPLICABLE = (
+    "Segment discipline could not be applied: the company's extracted accounts, its "
+    "indexed documents and this run's findings name no reportable segment. No figure in "
+    "this analysis may be attributed to a segment; every figure is consolidated or of "
+    "unknown scope."
+)
+
+
+async def _release_conditional_blocks(
+    session: Any, run: Any, questions_by_key: dict[str, Any]
+) -> list[str]:
+    """V3.19.13 — an open blocking question whose hazard is PROVEN absent is unanswerable.
+
+    Only a question declaring ``blocking_requires``, only a condition this loop can
+    evaluate, evaluated ONCE, and only on positive proof (``segment_hazard_absent``).
+    The question's own ``unresolved_reason`` is kept; the release is appended to its
+    acquisition log, and a non-blocking gap tells the Council and the reader that the
+    check did not apply. Returns the released keys.
+    """
+    conditional = {
+        key: q for key, q in questions_by_key.items()
+        if getattr(q, "blocking", False)
+        and getattr(q, "blocking_requires", None) == BLOCKING_REQUIRES_NAMED_SEGMENTS
+    }
+    if not conditional:
+        return []
+    from sqlalchemy import select
+
+    from app.models.ledger import ResearchQuestion
+
+    rows = (
+        await session.execute(
+            select(ResearchQuestion).where(
+                ResearchQuestion.research_run_id == run.id,
+                ResearchQuestion.question_key.in_(list(conditional)),
+                ResearchQuestion.resolution_status == ledger.QUESTION_OPEN,
+                ResearchQuestion.blocking.is_(True),
+            )
+        )
+    ).scalars().all()
+    if not rows or not await segment_hazard_absent(session, run):
+        return []
+    released: list[str] = []
+    for row in rows:
+        row.resolution_status = ledger.QUESTION_UNANSWERABLE
+        if not row.unresolved_reason:
+            row.unresolved_reason = ledger.UNRESOLVED_PRECONDITION_ABSENT
+        row.acquisition_log_json = [
+            *(row.acquisition_log_json or []),
+            {"rung": "blocking_released", "condition": BLOCKING_REQUIRES_NAMED_SEGMENTS,
+             "reason": ledger.UNRESOLVED_PRECONDITION_ABSENT},
+        ]
+        released.append(row.question_key)
+        await ledger.record_gap(
+            session, run, gap_type=ledger.GAP_SCOPE_UNKNOWN,
+            description=SEGMENT_CHECK_NOT_APPLICABLE, question_key=row.question_key,
+            why_it_matters=(
+                "Segment discipline exists to stop a segment figure being reported as "
+                "the Group's; with no named segment in evidence it could not be checked."
+            ),
+            closable=False, blocks_council=False,
+        )
+    await session.flush()
+    return released
 
 
 async def _mark_answered(
