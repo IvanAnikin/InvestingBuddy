@@ -94,6 +94,21 @@ def classification_of(company: Any) -> CompanyClassification:
 T5_REFERENCE = "T5_api_aggregator"
 
 
+def _industry_for_term(term: Any, theme_table: dict[str, Any]) -> str | None:
+    """A theme's first declared industry; a commodity → the mining theme's."""
+    from app.services.macro.commodities import commodity_for
+
+    if not isinstance(term, str) or not term:
+        return None
+    industries = (theme_table.get(term) or {}).get("industries") or []
+    if industries:
+        return str(industries[0])
+    if commodity_for(term) is not None:
+        mining = (theme_table.get("mining_materials") or {}).get("industries") or []
+        return str(mining[0]) if mining else None
+    return None
+
+
 async def reference_classification(session: Any, company: Any) -> tuple[str | None, str]:
     """(industry, basis) from the platform's own references, or (None, "").
 
@@ -133,11 +148,16 @@ async def reference_classification(session: Any, company: Any) -> tuple[str | No
                  if r.get("key") == "industry" and r.get("status") == "pass"),
                 None,
             )
-            theme = (match or {}).get("theme")
-            if industry and theme in _THEME_TABLE:
-                industries = _THEME_TABLE[theme].get("industries") or []
-                if industries:
-                    return industries[0], "a discovery run that verified its industry"
+            if not industry:
+                continue
+            # The run's theme, then every term the VERIFIED industry result matched. A
+            # theme with no industry of its own ("critical_materials") left a verified
+            # rare-earth developer unclassified; a verified commodity term means mining.
+            matched = list((industry.get("value") or {}).get("matched") or [])
+            for term in [(match or {}).get("theme"), *matched]:
+                resolved = _industry_for_term(term, _THEME_TABLE)
+                if resolved:
+                    return resolved, "a discovery run that verified its industry"
     except Exception:  # noqa: BLE001 - a reference is optional
         return None, ""
     return None, ""

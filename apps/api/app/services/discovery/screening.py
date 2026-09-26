@@ -358,6 +358,22 @@ def _issuer_site_urls(issuer: IdentityOutcome) -> list[str]:
     return urls[:MAX_ISSUER_SITE_PAGES]
 
 
+#: A website segment shorter than this is navigation ("About us", "Rare Earths | NdPr"),
+#: not the company describing itself.
+MIN_PROSE_WORDS = 8
+
+
+def site_prose(text: str) -> str:
+    """The sentences of a web page, without its menus, footers and link lists.
+
+    Seen live: the "statement" proving what Pensana and Eramet do was each site's
+    navigation bar. A menu names topics; it does not say what the company does.
+    """
+    segments = re.split(r"\n+|\s*\|\s*|\s{3,}", text or "")
+    prose = [s.strip() for s in segments if len(s.split()) >= MIN_PROSE_WORDS]
+    return ".\n".join(prose)
+
+
 async def issuer_site_exposures(
     issuer: IdentityOutcome, terms: dict[str, re.Pattern[str]], *, cfg: Any, fetcher: Any,
 ) -> tuple[list[ExposureObservation], int]:
@@ -377,7 +393,7 @@ async def issuer_site_exposures(
         if not text:
             continue
         final = record.get("final_url") or url
-        found.extend(exposures_from_text(text, terms, source_url=final,
+        found.extend(exposures_from_text(site_prose(text), terms, source_url=final,
                                          source_tier="issuer", verified=True))
         if any(e.exposure in (EXPOSURE_DIRECT, EXPOSURE_INDIRECT) for e in found):
             break

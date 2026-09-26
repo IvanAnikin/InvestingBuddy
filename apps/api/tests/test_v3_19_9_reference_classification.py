@@ -108,3 +108,40 @@ async def test_a_regulator_code_still_wins(session, monkeypatch):
     await session.flush()
     result = await cls.ensure_company_classification(session, company)
     assert result.tier == "T2_regulator_or_gov"
+
+
+async def test_a_verified_material_classifies_a_critical_materials_discovery(
+    session, monkeypatch
+):
+    """V3.19.12 — read in production: Pensana (LSE), discovered for a critical-materials
+    query and verified from its own website as a rare-earth developer, was researched
+    UNCLASSIFIED because the run's theme ("critical_materials") declares no industry.
+    The verified matched terms classify it."""
+    async def no_sec(ticker, exchange):  # noqa: ANN001, ANN202
+        return None, None, "venue not SEC-eligible"
+
+    monkeypatch.setattr(cls, "_fetch_sec_classification", no_sec)
+    run = DiscoveryRun(id=uuid.uuid4(), status="completed", provider_name="free_real",
+                       mode="thesis", universe_source="thesis_generated")
+    session.add(run)
+    session.add(DiscoveryCandidate(
+        id=uuid.uuid4(), discovery_run_id=run.id, ticker="PRE", exchange="LSE",
+        thesis_match_json={"theme": "critical_materials", "v319": {"constraint_results": [
+            {"key": "industry", "status": "pass",
+             "value": {"matched": ["critical_materials", "rare_earths"]}}]}},
+    ))
+    company = Company(id=uuid.uuid4(), ticker="PRE", exchange="LSE", name="Pensana Plc",
+                      status="new")
+    session.add(company)
+    await session.flush()
+    result = await cls.ensure_company_classification(session, company)
+    assert result.industry == "Mining"
+    assert result.sector == "Materials"
+
+
+def test_the_mining_classification_selects_the_mining_playbook():
+    from app.services.playbooks import industries  # noqa: F401 - registers playbooks
+    from app.services.playbooks.registry import select
+
+    chosen = select(sector="Materials", industry="Mining")
+    assert any("mining" in p.playbook_id for p in chosen.playbooks), chosen.reason

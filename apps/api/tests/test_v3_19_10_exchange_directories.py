@@ -486,3 +486,22 @@ async def test_share_class_symbol_forms_match():
     found, _ = await d.find_listing(name="Berkshire Hathaway Inc.", ticker="BRK.B", venue="US")
     assert found == row
     d.reset_cache()
+
+
+def test_a_website_menu_is_not_the_company_describing_itself():
+    """V3.19.12 — read in production: Pensana's and Eramet's "statement" was each site's
+    navigation bar. Only prose segments may evidence what a company does."""
+    from app.services.discovery.intent import build_intent
+    from app.services.discovery.screening import _terms, exposures_from_text, site_prose
+
+    terms = _terms(build_intent("rare earth miners in Europe"))
+    menu = "Pensana PLC | Magnet Metal | Rare Earths | NdPr\nAbout us\nLongonjo Rare Earths"
+    assert site_prose(menu) == ""
+    assert exposures_from_text(site_prose(menu), terms, source_url=None,
+                               source_tier="issuer", verified=True) == []
+    page = menu + ("\nPensana is building a rare earth processing facility at Saltend to "
+                   "supply magnet metal oxides.")
+    found = exposures_from_text(site_prose(page), terms, source_url=None,
+                                source_tier="issuer", verified=True)
+    assert {e.term for e in found} >= {"rare_earths"}
+    assert all(e.statement.startswith("Pensana is building a rare earth") for e in found)
