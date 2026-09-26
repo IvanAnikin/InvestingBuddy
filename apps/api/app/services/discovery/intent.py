@@ -331,24 +331,28 @@ NOT_A_FILTER = "not_a_filter"
 
 #: Immediately before a term, these EXCLUDE it: "non-US", "not large cap", "excluding
 #: the UK", "Asia ex-Japan", "outside the US", "other than British", "avoid large caps".
+#: The cue must sit DIRECTLY before the term — only a determiner may come between — so
+#: "non-cyclical European", "no-nonsense European" or "not overvalued European" never
+#: turn Europe into an exclusion.
 _NEGATION_BEFORE = re.compile(
-    r"(?:\bnon[\s-]?|\bnot\s+(?:(?:a|an|the)\s+)?|\bno\s+|\bexclud(?:e|es|ing)\s+(?:the\s+)?"
-    r"|\bexcept\s+(?:for\s+)?(?:the\s+)?|\boutside\s+(?:of\s+)?(?:the\s+)?|\bex[\s-]"
-    r"|\bother\s+than\s+(?:the\s+)?|\bavoid(?:ing|s)?\s+(?:the\s+)?|\bwithout\s+(?:the\s+)?"
-    r"|\bbut\s+not\s+(?:the\s+)?|\bbesides\s+(?:the\s+)?)(?:[a-z-]+\s+)?$"
+    r"(?:\bnon-|\bnon\s|\bnot\s+|\bno\s+|\bexclud(?:e|es|ing)\s+|\bexcept\s+(?:for\s+)?"
+    r"|\boutside\s+(?:of\s+)?|\bex-|\bex\s|\bother\s+than\s+|\bavoid(?:ing|s)?\s+"
+    r"|\bwithout\s+|\bbut\s+not\s+|\bbesides\s+)(?:(?:the|a|an|any)\s+)?$"
 )
 #: "not just small caps", "not necessarily profitable": the user says the term is NOT a
-#: requirement — neither wanted nor excluded.
+#: requirement — neither wanted nor excluded. Followed by "but also", it is WANTED:
+#: "not only European but also US" means both.
 _NOT_A_FILTER_BEFORE = re.compile(
-    r"\bnot\s+(?:just|only|necessarily|merely|exclusively)\s+(?:[a-z-]+\s+)?$"
+    r"\bnot\s+(?:just|only|necessarily|merely|exclusively)\s+(?:(?:the|a|an)\s+)?$"
 )
+_BUT_ALSO_AFTER = re.compile(r"^[^.;:]{0,60}?\bbut\s+also\b")
 
 
 def polarity(text: str, start: int) -> str:
     """POSITIVE, NEGATED or NOT_A_FILTER for the term at ``start`` in lower-cased text."""
     before = text[max(0, start - 48) : start]
     if _NOT_A_FILTER_BEFORE.search(before):
-        return NOT_A_FILTER
+        return POSITIVE if _BUT_ALSO_AFTER.search(text[start:]) else NOT_A_FILTER
     if _NEGATION_BEFORE.search(before):
         return NEGATED
     return POSITIVE
@@ -458,6 +462,10 @@ def _materials(text: str, *, mining_theme: bool = False) -> list[str]:
 #: "US" as a country, not the pronoun: upper-case in the ORIGINAL text, or lower-case
 #: not governed by a verb/preposition that takes the pronoun ("help us", "for us").
 _US_UPPER = re.compile(r"(?<![A-Za-z])(?:US|U\.S\.|USA|U\.S\.A\.)(?![A-Za-z])")
+_US_NOT_A_PLACE_AFTER = re.compile(
+    r"^[\s-]*(?:investors?|dollars?|\$|tax(?:payers?|es)?|residents?|citizens?|persons?"
+    r"|accounts?|clients?|customers?\s+only)\b"
+)
 _US_PRONOUN_BEFORE = re.compile(
     r"\b(?:help|give|show|tell|let|for|to|find|send|with|of|let's|lets|gives|shows)\s+$"
 )
@@ -478,11 +486,13 @@ def _geo_terms(original: str, text: str) -> list[tuple[int, str, str]]:
             ):
                 continue
             out.append((m.start(), "country", named_country))
-    lowered_positions = set()
-    for m in _US_UPPER.finditer(original):
-        lowered_positions.add(m.start())
+    # ``original`` and ``text`` are the SAME whitespace-normalised string (one cased, one
+    # lower-cased), so a position in one is the same position in the other.
+    upper_positions = {m.start() for m in _US_UPPER.finditer(original)}
     for m in re.finditer(r"(?<![a-z0-9])(?:us|u\.s\.|usa)(?![a-z0-9])", text):
-        if m.start() in lowered_positions or not _US_PRONOUN_BEFORE.search(
+        if _US_NOT_A_PLACE_AFTER.search(text[m.end() : m.end() + 24]):
+            continue  # "for US investors", "US dollars": the investor or a currency
+        if m.start() in upper_positions or not _US_PRONOUN_BEFORE.search(
             text[max(0, m.start() - 12) : m.start()]
         ):
             out.append((m.start(), "country", "United States"))
@@ -647,9 +657,21 @@ def build_intent(
             if i in kept_industries or i == "Metals & Mining" or i in explicit
         ]
 
+    normalised = re.sub(r"\s+", " ", thesis_text or "").strip()
     regions, countries, excluded_geo, geo_hardness = _geography(
-        thesis_text or "", text, region=region, country=country
+        normalised, text, region=region, country=country
     )
+    # An exclusion of a place the platform cannot filter on is SAID, never dropped silently.
+    for match in re.finditer(
+        r"\b(?:outside|excluding|except|ex-|non-)\s*(?:of\s+)?(?:the\s+)?([A-Z][a-z]{3,})",
+        normalised,
+    ):
+        name = match.group(1).lower()
+        if name not in _REGION_WORDS and name not in _COUNTRY_WORDS:
+            warnings.append(
+                f"'{match.group(0)}': {match.group(1)} is not a place this platform can "
+                "filter on, so it is not excluded"
+            )
     catalysts = [key for key, pattern in CATALYST_VOCABULARY.items() if re.search(pattern, text)]
     horizon: tuple[int, int] | None = None
     match = _HORIZON_RANGE.search(text)

@@ -308,3 +308,42 @@ def test_growing_fast_is_high_growth():
     assert _constraint(build_intent("luxury companies growing fast"), "growth").requested == (
         "high_growth",
     )
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "no-nonsense European luxury companies",
+        "Nonetheless European defence companies",
+        "non-cyclical European luxury companies",
+        "not overvalued European luxury companies",
+        "ex-growth European luxury",
+        "luxury companies excluding banks European",
+    ],
+)
+def test_a_negator_not_directly_before_the_place_does_not_exclude_it(text):
+    geo = _constraint(build_intent(text), "geography")
+    assert geo.requested == ("Europe",) and geo.excluded == ()
+
+
+def test_negated_place_does_not_negate_the_material():
+    assert build_intent("non-US uranium miners").materials == ("uranium",)
+
+
+@pytest.mark.parametrize(
+    "text", ["semiconductor  companies for US investors", "  semiconductors for US investors"]
+)
+def test_us_investors_is_not_a_us_geography(text):
+    assert _constraint(build_intent(text), "geography") is None
+
+
+def test_not_only_but_also_wants_both():
+    geo = _constraint(build_intent("not only European but also US luxury companies"), "geography")
+    assert set(geo.requested) == {"Europe", "United States"}
+    size = _constraint(build_intent("not only small caps but also mid caps luxury"), "size")
+    assert size.requested == ("small_cap", "mid_cap")
+
+
+def test_an_unfilterable_exclusion_is_said():
+    intent = build_intent("uranium miners outside Kazakhstan")
+    assert any("Kazakhstan" in w for w in intent.warnings)
