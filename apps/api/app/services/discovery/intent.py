@@ -662,15 +662,15 @@ def build_intent(
         normalised, text, region=region, country=country
     )
     # An exclusion of a place the platform cannot filter on is SAID, never dropped silently.
-    for match in re.finditer(
+    for exclusion in re.finditer(
         r"\b(?:outside|excluding|except|ex-|non-)\s*(?:of\s+)?(?:the\s+)?([A-Z][a-z]{3,})",
         normalised,
     ):
-        name = match.group(1).lower()
+        name = exclusion.group(1).lower()
         if name not in _REGION_WORDS and name not in _COUNTRY_WORDS:
             warnings.append(
-                f"'{match.group(0)}': {match.group(1)} is not a place this platform can "
-                "filter on, so it is not excluded"
+                f"'{exclusion.group(0)}': {exclusion.group(1)} is not a place this platform "
+                "can filter on, so it is not excluded"
             )
     catalysts = [key for key, pattern in CATALYST_VOCABULARY.items() if re.search(pattern, text)]
     horizon: tuple[int, int] | None = None
