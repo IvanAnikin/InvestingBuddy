@@ -47,6 +47,7 @@ from app.services import research_job, safety_terms
 from app.services.company_research_service import execute_company_research
 from app.services.company_service import get_company_by_ticker
 from app.services.current_research_resolver import research_signals_for_company
+from app.services.discovery.intent import build_intent
 from app.services.discovery_filters import (
     canonical_country,
     canonical_region,
@@ -676,13 +677,30 @@ async def create_pending_thesis_run(
         industry_keywords=payload.industry_keywords,
         market_cap_bucket=payload.market_cap_bucket,
     )
-    if parsed.needs_narrowing:
+    # V3.19.2 — the Discovery Intent: what the user ASKED FOR, as closed-vocabulary
+    # constraints with hard/soft semantics. Stored beside the legacy parse (every existing
+    # reader of ``parsed_thesis_json`` keeps working) and it, not the legacy parse, decides
+    # the universe: it knows materials, multi-region geography and end markets.
+    intent = build_intent(
+        payload.thesis_text,
+        parsed=parsed,
+        region=region,
+        country=country,
+        sector=payload.sector,
+        industry=payload.industry,
+        industry_keywords=payload.industry_keywords,
+        market_cap_bucket=payload.market_cap_bucket,
+    )
+    if intent.needs_narrowing:
         raise ValueError(
             "Thesis needs narrowing before a bounded universe can be built: "
-            + " ".join(parsed.warnings)
+            + " ".join(intent.warnings or parsed.warnings)
         )
 
-    universe = build_universe(parsed.to_dict(), max_universe_size=payload.max_universe_size)
+    universe = build_universe(
+        {**parsed.to_dict(), **intent.universe_filter()},
+        max_universe_size=payload.max_universe_size,
+    )
     if universe.needs_narrowing:
         raise ValueError(
             "Thesis needs narrowing: " + " ".join(universe.warnings)
@@ -705,7 +723,7 @@ async def create_pending_thesis_run(
         universe_count=len(tickers),
         requested_tickers=tickers,
         thesis_text=payload.thesis_text,
-        parsed_thesis_json=parsed.to_dict(),
+        parsed_thesis_json={**parsed.to_dict(), "discovery_intent": intent.to_dict()},
         universe_json=universe.to_dict(),
         processed_count=0,
         candidate_count=0,

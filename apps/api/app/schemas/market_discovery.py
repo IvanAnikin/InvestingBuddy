@@ -441,6 +441,9 @@ class ParseThesisResponse(BaseModel):
     extraction_source: str = "prompt_text"
     needs_narrowing: bool = False
     warnings: list[str] = Field(default_factory=list)
+    # V3.19.2 — the structured Discovery Intent (schema ``discovery_intent/1``): themes,
+    # materials, geography, and the size/growth constraints with their hard/soft basis.
+    discovery_intent: dict | None = None
     disclaimer: str = INTERNAL_DISCLAIMER
 
 
