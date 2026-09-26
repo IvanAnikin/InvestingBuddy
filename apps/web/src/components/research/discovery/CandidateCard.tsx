@@ -23,6 +23,8 @@ import {
   type ResearchLinkState,
 } from "@/components/research/reportResolution";
 import type { DiscoveryCandidate } from "@/types/api";
+import CandidateConstraints from "./CandidateConstraints";
+import { candidateRecord } from "./v319View";
 
 /**
  * One discovery candidate, in reading order.
@@ -187,6 +189,9 @@ export default function CandidateCard({
         </div>
       </div>
 
+      {/* V3.19 — why it is here and what was VERIFIED about it, before any prose. */}
+      <CandidateConstraints record={candidateRecord(c)} freshness={c.research_freshness} />
+
       {/* Why it surfaced, in the council's words. */}
       {council.hasReview && (
         <p
@@ -274,14 +279,10 @@ export default function CandidateCard({
         <span className={READINESS_TONE[readiness]}>
           {READINESS_WORD[readiness]}
         </span>
-        {typeof c.candidate_score === "number" && (
-          <span className="text-[color:var(--ib-ink-3)]">
-            Research priority{" "}
-            <span className="font-mono text-[color:var(--ib-ink-2)]">
-              {c.candidate_score.toFixed(1)} / 100
-            </span>
-          </span>
-        )}
+        {/* V3.19.6 — the deterministic 0–100 screen is NOT the research priority
+            (the council's placement above is). It lives in the comparison table
+            as the "Screening score", with what it measures; showing it here as
+            "Research priority" produced "Council: highest priority · 0.0". */}
 
         <details className="text-[color:var(--ib-ink-3)]" data-testid="candidate-limitations">
           <summary className="cursor-pointer list-none underline decoration-dotted underline-offset-4 hover:text-[color:var(--ib-ink-2)]">

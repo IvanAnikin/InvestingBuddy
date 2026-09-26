@@ -183,6 +183,7 @@ async def parse_thesis_preview(payload: ParseThesisRequest) -> ParseThesisRespon
     intent = build_intent(payload.thesis, parsed=parsed)
     return ParseThesisResponse(
         discovery_intent=intent.to_dict(),
+        dynamic_discovery_enabled=svc.dynamic_discovery_enabled(),
         themes=parsed.themes,
         region=parsed.region,
         country=parsed.country,
@@ -334,11 +335,13 @@ async def list_discovery_candidates(
         has_news=has_news,
         ticker=ticker,
     )
-    return DiscoveryCandidateListResponse(
-        candidates=[DiscoveryCandidateRead.model_validate(c) for c in candidates],
-        total=total,
-        run_id=run_id,
-    )
+    freshness = await svc.candidate_research_freshness(db, candidates)
+    rows = []
+    for c in candidates:
+        row = DiscoveryCandidateRead.model_validate(c)
+        row.research_freshness = freshness.get(c.id)
+        rows.append(row)
+    return DiscoveryCandidateListResponse(candidates=rows, total=total, run_id=run_id)
 
 
 # ---------------------------------------------------------------------------

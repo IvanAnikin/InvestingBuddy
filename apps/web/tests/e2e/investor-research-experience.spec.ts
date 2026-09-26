@@ -235,7 +235,7 @@ test.describe("Discovery — candidates", () => {
     const table = page.getByTestId("candidate-comparison");
     await expect(table).toBeVisible();
     await expect(table.getByTestId("comparison-row")).toHaveCount(3);
-    await expect(table).toContainText("Research priority");
+    await expect(table).toContainText("Screening score");
     await expect(table).toContainText("Evidence confidence");
     await expect(table).toContainText("Council view");
     // Each column reports one measured thing; none of them is blended.
@@ -322,13 +322,14 @@ test.describe("Discovery — candidates", () => {
     await runDiscovery(page, REVIEWED_THESIS);
     // The standing explanation appears once, not under every card.
     await expect(
-      page.getByText("Research priority is an internal screening score"),
+      page.getByText("The screening score in the comparison is an internal"),
     ).toHaveCount(1);
-    // The card shows the number, and never calls it a rating.
+    // V3.19.6 — the card no longer shows the screen as "Research priority" (the
+    // council's placement is the priority); it never calls anything a rating.
     const kering = page
       .getByTestId("candidate-card")
       .filter({ hasText: "Kering" });
-    await expect(kering).toContainText("60.9 / 100");
+    await expect(kering).not.toContainText("Research priority");
     await expect(kering).not.toContainText("Investment score");
   });
 });

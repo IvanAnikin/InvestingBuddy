@@ -342,8 +342,11 @@ const ALL_DIMENSIONS: (ComparisonDimension & {
   },
   {
     key: "priority",
-    label: "Research priority",
-    hint: "The deterministic screening score, 0-100. Not a rating, and not a view on value.",
+    // V3.19.6 — renamed: this is the deterministic SCREEN, not the council's research
+    // priority, and it includes share-price momentum. Calling it "Research priority"
+    // put "Council: highest priority" beside "0.0" on the same page.
+    label: "Screening score",
+    hint: "The deterministic screening score, 0-100 (includes share-price momentum). Not the council's research priority, not a rating, and not a view on value.",
     numeric: true,
     supported: (candidates) =>
       candidates.some((c) => typeof c.candidate_score === "number"),

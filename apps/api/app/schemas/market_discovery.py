@@ -249,6 +249,9 @@ class DiscoveryCandidateRead(BaseModel):
     combined_internal_score: float | None = None
     # V3.19.4 — carries ``v319``: identity, provenance, constraint results, eligibility.
     thesis_match_json: dict | None = None
+    # V3.19.6 — the freshness of this company's prior research (legacy | v3_current |
+    # v3_stale), resolved at read time; None when the company has no research at all.
+    research_freshness: dict | None = None
 
     momentum_score: float | None
     fundamentals_score: float | None
@@ -446,6 +449,8 @@ class ParseThesisResponse(BaseModel):
     # V3.19.2 — the structured Discovery Intent (schema ``discovery_intent/1``): themes,
     # materials, geography, and the size/growth constraints with their hard/soft basis.
     discovery_intent: dict | None = None
+    # V3.19.6 — whether open external company discovery would run for this thesis.
+    dynamic_discovery_enabled: bool = False
     disclaimer: str = INTERNAL_DISCLAIMER
 
 

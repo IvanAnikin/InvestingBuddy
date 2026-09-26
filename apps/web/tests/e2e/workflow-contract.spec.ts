@@ -330,10 +330,11 @@ test.describe("Contract — discovery request", () => {
     expect(serialized).not.toContain("nato");
     expect(serialized).not.toContain("ibtest");
 
-    // Inferred scope: broad, and never a narrower industry the reader did not
-    // ask for.
-    expect(body.region).toBe("Europe");
-    expect(body.sector).toBe("Consumer Discretionary");
+    // V3.19: inferred scope is SHOWN, never sent. The backend reads the sentence
+    // into a multi-valued Discovery Intent; a single detected value sent back as
+    // an explicit selector would override (and narrow) what the text says.
+    expect(body.region).toBeUndefined();
+    expect(body.sector).toBeUndefined();
     expect(body.industry).toBeUndefined();
 
     // Defaults that match the admin console.
@@ -362,8 +363,9 @@ test.describe("Contract — discovery request", () => {
     expect(bodies[0].thesis_text).toBe(
       "European defense suppliers benefiting from NATO spending",
     );
-    expect(bodies[0].sector).toBe("Industrials");
-    expect(bodies[0].region).toBe("Europe");
+    // Inferred, so shown and not sent (V3.19).
+    expect(bodies[0].sector).toBeUndefined();
+    expect(bodies[0].region).toBeUndefined();
   });
 
   test("Case 3: a watch thesis resolves to Switzerland, and the narrower industry is left to the backend", async ({
@@ -383,9 +385,9 @@ test.describe("Contract — discovery request", () => {
     await page.getByTestId("run-discovery").click();
     await expect(page.getByTestId("discovery-run-state")).toBeVisible();
 
-    // ...and the country travels, because country is one of the three fields
-    // inference is allowed to fill.
-    expect(bodies[0].country).toBe("Switzerland");
+    // ...and, being inferred, the country is not sent as a selector: the backend
+    // reads "Swiss" itself and never widens it to Europe (V3.19).
+    expect(bodies[0].country).toBeUndefined();
     // The industry is NOT pinned as a request filter: the backend derives it
     // from the same sentence, and echoing a moment-old detection back as a
     // filter is how a universe gets silently narrowed.
@@ -440,7 +442,7 @@ test.describe("Contract — discovery request", () => {
     await expect(page.getByTestId("discovery-run-state")).toBeVisible();
 
     expect(bodies[0].thesis_text).toBe("US semiconductor equipment companies");
-    expect(bodies[0].sector).toBe("Technology");
+    expect(bodies[0].sector).toBeUndefined();
     const serialized = JSON.stringify(bodies[0]).toLowerCase();
     expect(serialized).not.toContain("industrials");
     expect(serialized).not.toContain("defense");

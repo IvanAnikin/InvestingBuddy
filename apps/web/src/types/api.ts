@@ -603,6 +603,8 @@ export interface ParsedThesis {
   industry?: string | null;
   theme?: string | null;
   extraction_source?: string;
+  // V3.19.2 — stored beside the legacy parse on every thesis run.
+  discovery_intent?: DiscoveryIntent | null;
 }
 
 // Phase 27.1C — prompt-derived autofill preview (no run created).
@@ -617,6 +619,9 @@ export interface ParseThesisResponse {
   extraction_source: string;
   needs_narrowing: boolean;
   warnings: string[];
+  // V3.19.2 — the structured Discovery Intent; V3.19.6 — whether open discovery runs.
+  discovery_intent?: DiscoveryIntent | null;
+  dynamic_discovery_enabled?: boolean;
   disclaimer?: string;
 }
 
@@ -665,6 +670,145 @@ export interface GeneratedUniverse {
   warnings: string[];
   needs_narrowing: boolean;
   requested_max: number;
+  // V3.19.4 — the dynamic discovery stage (absent on curated-only runs).
+  dynamic?: DiscoveryDynamicStage | null;
+}
+
+// ─── V3.19 — Discovery Intent, constraint verification, freshness ───────────
+// A user's words are a FILTER HYPOTHESIS. They become a company attribute only
+// in `verified_attributes`, from evidence. These types mirror
+// apps/api/app/services/discovery/{intent,constraints,pipeline,freshness}.py.
+
+export type ConstraintHardness = "hard" | "soft";
+
+export interface DiscoveryIntentConstraint {
+  key: "listing" | "geography" | "industry" | "size" | "growth" | "profitability" | string;
+  requested: string[];
+  excluded?: string[];
+  hardness: ConstraintHardness;
+  hardness_basis: string;
+  phrase: string;
+  verification_required: boolean;
+}
+
+export interface DiscoveryIntent {
+  schema: "discovery_intent/1";
+  text: string;
+  themes: string[];
+  sectors: string[];
+  industries: string[];
+  regions: string[];
+  countries: string[];
+  materials: string[];
+  materials_role?: "product" | "input" | null;
+  end_markets: string[];
+  catalysts: string[];
+  horizon_years: [number, number] | null;
+  constraints: DiscoveryIntentConstraint[];
+  exclusions: string[];
+  unmatched_terms: string[];
+  warnings: string[];
+  needs_narrowing: boolean;
+}
+
+export type ConstraintStatus = "pass" | "fail" | "unknown" | "not_requested";
+
+export interface ConstraintSource {
+  url?: string | null;
+  tier?: string | null;
+  as_of?: string | null;
+  period?: string | null;
+  registry?: string | null;
+}
+
+export interface ConstraintResult {
+  key: string;
+  requested: string[];
+  hardness: ConstraintHardness;
+  status: ConstraintStatus;
+  value: Record<string, unknown> | null;
+  basis: string;
+  sources: ConstraintSource[];
+  borderline: boolean;
+}
+
+export type EligibilityStatus =
+  | "eligible"
+  | "included_with_mismatch"
+  | "eligible_unverified"
+  | "excluded";
+
+export interface CandidateEligibility {
+  status: EligibilityStatus;
+  reasons: string[];
+  hard_passes: number;
+  soft_passes: number;
+  unknown_hard: string[];
+  failed_soft: string[];
+}
+
+export interface VerifiedAttributes {
+  size_bucket?: string;
+  market_cap_usd?: number;
+  market_cap?: { amount?: number; currency?: string; as_of?: string; as_of_basis?: string };
+  size_borderline?: boolean;
+  growth_status?: "established" | "declining" | "mixed" | "not_established";
+  growth_basis?: string;
+  geography?: Record<string, unknown>;
+  industry_exposure?: { matched?: string[]; exposure?: string; statement?: string };
+}
+
+export interface DiscoveryCandidateRecord {
+  schema: "discovery_candidate/1";
+  identity: {
+    identity_status: "verified" | "platform_registry" | "rejected";
+    ticker: string | null;
+    exchange: string | null;
+    name: string | null;
+    listing_country?: string | null;
+    listing_source?: { url?: string | null; tier?: string | null; basis?: string } | null;
+  };
+  provenance: {
+    discovery_source: "external_search" | "curated_registry" | "platform_registry" | string;
+    discovery_query?: string | null;
+    source_url?: string | null;
+    why?: string | null;
+    verified_identity_source?: string | null;
+  };
+  constraint_results: ConstraintResult[];
+  verified_attributes: VerifiedAttributes;
+  unknown_constraints: string[];
+  failed_constraints: string[];
+  eligibility: CandidateEligibility;
+  screening: { status: string; business_description?: string | null };
+}
+
+export interface DiscoveryDynamicStage {
+  schema?: string;
+  status: "running" | "completed" | "failed";
+  external_discovery?: "available" | "unavailable";
+  funnel?: Record<string, number>;
+  excluded?: DiscoveryCandidateRecord[];
+  rejected_leads?: {
+    name?: string | null;
+    ticker?: string | null;
+    exchange?: string | null;
+    rejection_reason?: string | null;
+    detail?: string | null;
+  }[];
+  warnings?: string[];
+  error?: string;
+}
+
+export interface ResearchFreshness {
+  status: "legacy" | "v3_current" | "v3_stale";
+  research_engine_version: string;
+  research_depth: string;
+  report_id: string | null;
+  researched_at: string | null;
+  evidence_as_of: string | null;
+  age_days: number | null;
+  reason: string;
 }
 
 // Phase 27.1B — a research theme the thesis parser can match, offered in the
@@ -789,6 +933,11 @@ export interface DiscoveryCandidate {
   // Phase 27 — thesis relevance + blended internal score (null for ticker runs).
   thesis_relevance_score?: number | null;
   combined_internal_score?: number | null;
+  // Phase 27 thesis match; V3.19.4 adds `v319` — identity, provenance, constraint
+  // results, verified attributes, eligibility.
+  thesis_match_json?: ({ v319?: DiscoveryCandidateRecord | null } & Record<string, unknown>) | null;
+  // V3.19.6 — freshness of this company's prior research (absent: none exists).
+  research_freshness?: ResearchFreshness | null;
   momentum_score: number | null;
   fundamentals_score: number | null;
   catalyst_score: number | null;
@@ -845,8 +994,6 @@ export interface DiscoveryCandidateDetail extends DiscoveryCandidate {
   missing_sources_json: string[] | null;
   missing_fields_json: string[] | null;
   raw_signal_json: Record<string, unknown> | null;
-  // Phase 27 — matched keywords, relevance reason, interest label, source/tier.
-  thesis_match_json?: Record<string, unknown> | null;
   // Phase 28A.1 — the report this candidate links to (if any). Drives the
   // "View Latest Final Report" vs "View Legacy Draft" label.
   latest_report?: ReportLinkSummary | null;

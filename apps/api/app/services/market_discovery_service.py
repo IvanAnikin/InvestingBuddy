@@ -2162,6 +2162,24 @@ def _candidate_to_evidence_dict(
     }
 
 
+async def candidate_research_freshness(
+    db: AsyncSession, candidates: list[DiscoveryCandidate]
+) -> dict[uuid.UUID, dict[str, Any]]:
+    """V3.19.6 — each candidate's prior-research freshness, for the page. Read-only;
+    never raises; a company with no research maps to nothing."""
+    out: dict[uuid.UUID, dict[str, Any]] = {}
+    for candidate in candidates[:100]:
+        try:
+            company = await get_company_by_ticker(db, candidate.ticker, candidate.exchange)
+            signals = await resolve_research_for_discovery(db, company.id if company else None)
+        except Exception:  # noqa: BLE001 - enrichment is never fatal
+            continue
+        freshness = signals.get("research_freshness") if signals else None
+        if isinstance(freshness, dict):
+            out[candidate.id] = freshness
+    return out
+
+
 async def resolve_candidate_research_signals(
     db: AsyncSession, candidates: list[DiscoveryCandidate]
 ) -> dict[uuid.UUID, dict[str, Any]]:
