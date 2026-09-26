@@ -748,6 +748,18 @@ class DiscoveryCouncilReviewResponse(BaseModel):
         for key in ("llm_used", "agents_completed", "agents_failed", "safety_valid"):
             if env.get(key) is not None:
                 data[key] = env[key]
+        # The guard's record reaches the reader as WHERE and WHY only: a removed
+        # sentence was removed precisely so nobody reads it (it also never passed the
+        # safety gate as reader-facing text). The stored review keeps it for audit.
+        guard = data.get("attribute_guard")
+        if isinstance(guard, dict):
+            data["attribute_guard"] = {
+                **guard,
+                "removed": [
+                    {k: v for k, v in item.items() if k != "sentence"}
+                    for item in guard.get("removed") or [] if isinstance(item, dict)
+                ],
+            }
         resp = cls(run_id=run_id, **data)
         resp.status = status
         resp.review_available = status in {"completed", "completed_with_warnings"} and (

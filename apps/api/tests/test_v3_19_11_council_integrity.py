@@ -164,3 +164,16 @@ def test_legacy_only_research_does_not_count_as_current():
     cands = [_cand("KER", research=False)]
     out = guard_review({"candidates_to_reject": [{"ticker": "KER"}]}, cands)
     assert out["candidates_to_reject"] == []
+
+
+def test_removed_sentences_never_reach_the_reader():
+    cands = [_cand("CLF", size="unknown")]
+    review = {"candidates_to_monitor": [
+        {"ticker": "CLF", "rationale": "Size mismatch with user request."}]}
+    stored = guard_review(review, cands)
+    assert stored["attribute_guard"]["removed"][0]["sentence"]  # kept for audit
+    body = DiscoveryCouncilReviewResponse.from_envelope(
+        uuid.uuid4(), {"status": "completed", "review": stored}).model_dump()
+    [removed] = body["attribute_guard"]["removed"]
+    assert "sentence" not in removed and removed["reason"]
+    assert "Size mismatch" not in str(body)
