@@ -28,6 +28,8 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.services.discovery.constraints import SIZE_BANDS_USD as _BANDS
+
 
 @dataclass(frozen=True)
 class ThesisDimension:
@@ -81,12 +83,15 @@ THESIS_DIMENSIONS: tuple[ThesisDimension, ...] = (
 )
 
 #: Size bands a thesis may name, by market capitalisation in USD. Declared thresholds,
-#: so "does SCCO fit a small-cap thesis?" is a comparison anyone can check.
+#: so "does SCCO fit a small-cap thesis?" is a comparison anyone can check. V3.19.3 — ONE
+#: table for the platform: derived from ``discovery.constraints.SIZE_BANDS_USD``. A
+#: "large-cap" thesis keeps its V3.18 meaning (≥ $10bn, mega included).
 SIZE_BANDS: dict[str, tuple[float | None, float | None]] = {
-    "micro_cap": (None, 300e6),
-    "small_cap": (300e6, 2e9),
-    "mid_cap": (2e9, 10e9),
-    "large_cap": (10e9, None),
+    "micro_cap": _BANDS["micro_cap"],
+    "small_cap": _BANDS["small_cap"],
+    "mid_cap": _BANDS["mid_cap"],
+    "large_cap": (_BANDS["large_cap"][0], None),
+    "mega_cap": _BANDS["mega_cap"],
 }
 
 

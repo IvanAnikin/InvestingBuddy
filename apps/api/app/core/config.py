@@ -1084,6 +1084,10 @@ class Settings(BaseSettings):
     # PAID research runs without a human clicking anything, so it must be turned on
     # deliberately rather than inherited by a deploy.
     v3_research_escalation_enabled: bool = False
+    # V3.19.3 — a V3 professional report older than this is STALE research: dated context
+    # for a discovery council, never current evidence. Legacy (pre-V3.18) reports are never
+    # current at any age. See app/services/discovery/freshness.py.
+    v3_research_fresh_days: int = 120
     # V3.18.5 — fetch commodity statistics (IMF prices via FRED, USGS Mineral Commodity
     # Summaries) into the macro store and expose them as `get_industry_series`. Public,
     # keyless publishers through the guarded fetcher; off by default like every source.
