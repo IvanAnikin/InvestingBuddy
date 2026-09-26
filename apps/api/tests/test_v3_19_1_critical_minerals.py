@@ -47,7 +47,9 @@ def test_2025_additions_are_exactly_the_published_ten():
 def test_composite_commodities_map_to_their_listed_members():
     ree = designation("rare_earths")
     assert ree is not None and ree["designated"]
-    assert "neodymium" in ree["listed_as"] and "praseodymium" in ree["listed_as"]
+    assert "neodymium" in ree["list_entries"] and "praseodymium" in ree["list_entries"]
+    # Shown as the list's entries for the composite, never as elements the company makes.
+    assert ree["listed_as"] == "16 list entries for rare earths"
     assert designation("platinum_group_metals")["designated"]
 
 
@@ -101,12 +103,44 @@ def _dimension(report):
     return next(d for d in section["dimensions"] if d["dimension"] == "critical_materials")
 
 
-def test_designation_partially_evidences_the_dimension():
+def test_designation_plus_a_product_finding_partially_evidences_the_dimension():
     report = pr.assemble(_inputs(designations_for(["rare_earths"])))
     view = _dimension(report)
+    # The finding "NdPr oxide output rose 12%" states the company produces rare earths.
     assert view["status"] == pr.STATUS_PARTIAL
     assert "90 FR 50494" in view["status_basis"]
     assert "supply concentration is not established" in view["status_basis"]
+
+
+def test_a_designation_without_a_product_finding_does_not_upgrade():
+    """A battery maker's filings talk about lithium; that is not producing lithium."""
+    inputs = _inputs(designations_for(["lithium"]))
+    inputs.findings = [
+        FindingView(
+            finding_id="b", statement="Battery demand depends on lithium availability.",
+            domain="operations", question_key=None, evidence_ids=("ev:b",),
+        )
+    ]
+    view = _dimension(pr.assemble(inputs))
+    assert view["status"] == pr.STATUS_NOT_ESTABLISHED
+    assert "no finding states the company produces or sells it" in view["status_basis_note"]
+
+
+def test_a_negated_product_statement_does_not_count():
+    inputs = _inputs(designations_for(["gallium"]))
+    inputs.findings = [
+        FindingView(
+            finding_id="n", statement="The company does not produce gallium.",
+            domain="operations", question_key=None, evidence_ids=("ev:n",),
+        )
+    ]
+    assert _dimension(pr.assemble(inputs))["status"] == pr.STATUS_NOT_ESTABLISHED
+
+
+def test_malformed_designations_never_crash_assembly():
+    for bad in ([{"designated": True}], [{"designated": True, "commodity": "x", "list": None}],
+                ["junk"], {"not": "a list"}):
+        pr.assemble(_inputs(bad))
 
 
 def test_no_designation_leaves_the_dimension_unestablished():
@@ -131,3 +165,26 @@ def test_company_wording_never_designates():
     ]
     view = _dimension(pr.assemble(inputs))
     assert "official_designations" not in view
+
+
+import pytest  # noqa: E402
+
+from app.services.macro.commodities import commodity_for  # noqa: E402
+from app.services.pipeline.professional_research import _names_production  # noqa: E402
+
+
+@pytest.mark.parametrize(
+    ("statement", "slug", "expected"),
+    [
+        ("NdPr oxide output rose 12% in 2025.", "rare_earths", True),
+        ("The company produces copper concentrate in Peru.", "copper", True),
+        ("We mined 1.2 Mt of copper in 2025.", "copper", True),
+        ("Our revenue is sensitive to lithium prices.", "lithium", False),
+        ("Lithium supply constraints could raise our battery costs.", "lithium", False),
+        ("Rising copper prices increased our manufacturing costs.", "copper", False),
+        ("We sell electric vehicles containing nickel and cobalt.", "nickel", False),
+    ],
+)
+def test_production_requires_the_commodity_as_the_product(statement, slug, expected):
+    alternation = "|".join(commodity_for(slug).patterns)
+    assert _names_production(statement, alternation) is expected

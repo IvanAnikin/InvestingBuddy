@@ -242,38 +242,125 @@ def _source_diversity(acquired: Sequence[Mapping[str, Any]], findings: Sequence[
     }
 
 
-def _apply_official_designations(
-    dimensions: list[dict[str, Any]], designations: Any
-) -> None:
-    """V3.19.1 — the ``critical_materials`` dimension, graded by the OFFICIAL list.
+#: A production/sales VERB whose OBJECT is the commodity ("produces NdPr oxide", "mined
+#: 1.2 Mt of copper"), or the commodity as the SUBJECT of an output noun ("NdPr oxide
+#: output", "copper production"). Proximity is not enough: "revenue is sensitive to
+#: lithium prices" or "we sell vehicles containing nickel" say nothing about producing it.
+_PRODUCTION_VERB = (
+    r"\b(?:produc(?:e|es|ed|ing)|min(?:e|es|ed|ing)|refin(?:e|es|ed|ing)|sell(?:s|ing)?|sold"
+    r"|extract(?:s|ed|ing)?|recover(?:s|ed|ing)?|process(?:es|ed|ing)?|ship(?:s|ped|ping)?"
+    r"|output\s+of|production\s+of|sales\s+of|revenue\s+from)\b"
+)
+_OUTPUT_NOUN = (
+    r"(?:output|production|sales|shipments|volumes?|concentrates?|oxides?|metal|mine"
+    r"|mining|refining|deliveries|capacity)\b"
+)
+#: Words that, between the verb and the commodity, make the commodity a COMPONENT of
+#: something else the company sells.
+_NOT_THE_PRODUCT = re.compile(
+    r"\b(?:containing|contain|contains|using|uses|use|with|made|for|that|which|including"
+    r"|requiring|powered|based)\b",
+    re.IGNORECASE,
+)
 
-    A designation is a legal act by a government, so it is evidence of half of what the
-    dimension asks (whether the products are on an official list) — never of the other
-    half (how concentrated their supply is), and never from the company's own wording. A
-    dimension with no finding of its own therefore rises to *partially evidenced* on a
-    designation, and says which half is still open.
+
+def _names_production(clause: str, alternation: str) -> bool:
+    verb_object = re.compile(
+        _PRODUCTION_VERB + r"(?P<between>(?:\s+[\w,%.-]+){0,4}?)\s+(?:" + alternation + r")\b",
+        re.IGNORECASE,
+    )
+    for found in verb_object.finditer(clause):
+        if not _NOT_THE_PRODUCT.search(found.group("between") or ""):
+            return True
+    subject_noun = re.compile(
+        r"\b(?:" + alternation + r")\b(?:\s+[\w-]+){0,1}\s+" + _OUTPUT_NOUN, re.IGNORECASE
+    )
+    return subject_noun.search(clause) is not None
+
+
+def _product_finding(
+    commodity_slug: str, statement_by_label: Mapping[str, str]
+) -> str | None:
+    """The label of a finding stating the company PRODUCES or SELLS this commodity.
+
+    A designation says the MINERAL is critical; whether it is this company's product is a
+    separate fact, and a count of mentions in its filings is not that fact (a battery
+    maker's 10-K names lithium constantly and mines none). So the fact must come from a
+    finding: one that names the commodity affirmatively beside a production/sales word.
+    """
+    from app.services.director.thesis import _CLAUSE_SPLIT_RE, _NEGATION_CUES, _WORD_TOKEN_RE
+    from app.services.macro.commodities import commodity_for
+
+    commodity = commodity_for(commodity_slug)
+    if commodity is None:
+        return None
+    alternation = "|".join(commodity.patterns)
+    pattern = re.compile(r"\b(?:" + alternation + r")\b", re.IGNORECASE)
+    for label, statement in statement_by_label.items():
+        for clause in _CLAUSE_SPLIT_RE.split(statement or ""):
+            found = pattern.search(clause)
+            if found is None or not _names_production(clause, alternation):
+                continue
+            before = _WORD_TOKEN_RE.findall(clause[: found.start()].lower())
+            if any(token in _NEGATION_CUES for token in before):
+                continue
+            return label
+    return None
+
+
+def _apply_official_designations(
+    dimensions: list[dict[str, Any]],
+    designations: Any,
+    statement_by_label: Mapping[str, str] | None = None,
+) -> None:
+    """V3.19.1 — the ``critical_materials`` dimension, graded against the OFFICIAL list.
+
+    Two facts make half the answer, and both must be evidenced: the mineral is on an
+    official list (a legal act by a government — the list is the source), AND it is the
+    company's product (a finding says so). Only then does a dimension with no finding of
+    its own rise to *partially evidenced*; supply concentration, the other half of the
+    question, stays open. The designation is shown either way, worded as what it is.
     """
     if not isinstance(designations, list) or not designations:
         return
-    designated = [d for d in designations if isinstance(d, dict) and d.get("designated")]
+    rows = [d for d in designations if isinstance(d, dict) and d.get("commodity")]
+    designated = [d for d in rows if d.get("designated")]
+    lookup = statement_by_label or {}
     for view in dimensions:
         if view.get("dimension") != "critical_materials":
             continue
-        view["official_designations"] = list(designations)
-        if designated and view.get("status") == STATUS_NOT_ESTABLISHED:
+        view["official_designations"] = rows
+        view["official_designations_note"] = (
+            "commodities most discussed in the company's own filings, checked against the "
+            "official U.S. List of Critical Minerals"
+        )
+        supported = []
+        for d in designated:
+            label = _product_finding(str(d.get("commodity")), lookup)
+            if label:
+                supported.append((d, label))
+        if supported and view.get("status") == STATUS_NOT_ESTABLISHED:
             view["status"] = STATUS_PARTIAL
             view["status_basis"] = (
-                "on the official U.S. List of Critical Minerals ("
-                + ", ".join(
-                    f"{d['commodity']} — {d['list']['version']} list, {d['list']['citation']}"
-                    for d in designated
+                "; ".join(
+                    f"{d.get('commodity')} is on the official U.S. List of Critical "
+                    f"Minerals ({(d.get('list') or {}).get('version', '?')} list, "
+                    f"{(d.get('list') or {}).get('citation', 'citation unavailable')}) and "
+                    f"{label} states the company produces or sells it"
+                    for d, label in supported
                 )
-                + "); supply concentration is not established by a designation"
+                + "; supply concentration is not established by a designation"
+            )
+        elif designated and not supported:
+            view["status_basis_note"] = (
+                "the official list designates "
+                + ", ".join(str(d.get("commodity")) for d in designated)
+                + ", but no finding states the company produces or sells it"
             )
         elif not designated:
             view["status_basis_note"] = (
-                "none of the company's commodities is on the official U.S. List of "
-                "Critical Minerals"
+                "none of the commodities its filings discuss most is on the official U.S. "
+                "List of Critical Minerals"
             )
 
 
@@ -410,6 +497,7 @@ def assemble(inputs: ReportInputs) -> dict[str, Any]:
     _apply_official_designations(
         thesis_section["dimensions"],
         (inputs.thesis or {}).get("critical_mineral_designations"),
+        statement_by_label,
     )
     thesis_section["size_fit"] = dict(inputs.size_fit) if inputs.size_fit else None
     if not inputs.thesis:

@@ -131,14 +131,23 @@ def designation(
     ``None`` when no list names it — the honest answer for gold, iron ore or molybdenum,
     which is "not designated", not "unknown".
     """
-    members = members_for(slug)
+    key = (slug or "").strip().lower()
+    members = members_for(key)
     for listing in reversed(tuple(lists)):
         named = [m for m in members if m in listing.minerals]
         if named:
             return {
-                "commodity": slug,
+                "commodity": key,
                 "designated": True,
-                "listed_as": named,
+                # A composite names the ENTRIES the list has for it, not the elements this
+                # company produces: "the 16 rare-earth element entries", never "neodymium,
+                # scandium, yttrium …" as if the company produced each.
+                "listed_as": (
+                    f"{len(named)} list entries for {key.replace('_', ' ')}"
+                    if key in _COMMODITY_MEMBERS
+                    else named[0]
+                ),
+                "list_entries": named,
                 "list": listing.to_dict(),
                 "current_list": listing is CURRENT_LIST,
             }

@@ -152,3 +152,72 @@ def test_excerpt_ranker_does_not_credit_cost_of_net_debt_as_net_debt():
 
     assert "net_debt" not in fields("The cost of net debt was €122 million.")
     assert "net_debt" in fields("Net debt was €2,315 million.")
+
+
+# ── review follow-ups: phrasings a fixed-width lookbehind missed ──────────── #
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Net debt cost was €122 million in 2025.",
+        "The cost of\nnet debt was €122 million.",
+        "The cost  of  net debt was €122 million.",
+        "Net debt to total capital was 35 per cent.",
+        "We reduced net debt to 1.2x LTM EBITDA.",
+        "Finance costs on net debt were €80 million.",
+        "Financial expenses on net debt amounted to €95 million.",
+    ],
+)
+def test_more_flow_and_ratio_phrasings_never_yield_a_balance(text):
+    assert not _by_field(text).get("net_debt")
+
+
+@pytest.mark.parametrize(
+    "row",
+    ["Net debt cost", "Net financial debt costs", "Finance costs on net debt",
+     "Net debt / LTM EBITDA", "Net debt/Adj. EBITDA", "Net debt to total capital"],
+)
+def test_more_table_rows_refused(row):
+    assert _match_label(row) is None
+
+
+@pytest.mark.parametrize(
+    ("row", "field"),
+    [
+        ("Net debt (average cost of debt 2.1%)", "net_debt"),
+        ("Net cash from operating activities (after interest on borrowings)",
+         "operating_cash_flow"),
+    ],
+)
+def test_the_check_is_anchored_on_the_label_not_the_whole_cell(row, field):
+    assert _match_label(row) == field
+
+
+def test_a_dated_balance_takes_the_amount_not_the_day():
+    assert _by_field("Net debt at 31 December 2025 was €2,100 million.")["net_debt"] == [2100.0]
+    assert _by_field("Net debt as at December 31, 2025 was €2,100 million.")["net_debt"] == [
+        2100.0
+    ]
+
+
+def test_all_three_matchers_agree():
+    def ranker(text: str) -> bool:
+        return "net_debt" in {field for field, _ in metric_value_matches(text)}
+
+    for text in (
+        "Cost of the net financial debt was €122 million.",
+        "Financial expenses on net debt amounted to €122 million.",
+        "Average net debt was €3 billion.",
+    ):
+        assert not ranker(text)
+        assert not _by_field(text).get("net_debt")
+
+
+def test_a_change_in_net_debt_is_not_the_balance():
+    assert not _by_field("An increase in net debt of €300 million was recorded.").get("net_debt")
+    assert not _by_field("A reduction in net debt of €200 million.").get("net_debt")
+
+
+def test_a_balance_date_without_a_year_is_not_the_value():
+    assert _by_field("Net debt at 30 June was €1.5 billion.")["net_debt"] == [1.5]

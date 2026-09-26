@@ -30,7 +30,11 @@ import re
 from app.services.sources.financial_fact_categories import (
     financial_fact_category,
 )
-from app.services.sources.metric_semantics import NET_DEBT_LABEL
+from app.services.sources.metric_semantics import (
+    BALANCE_FIELDS,
+    NET_DEBT_LABEL,
+    is_flow_or_ratio_at,
+)
 
 # (field_name, label alternation) pairs for a MONEY-valued metric — field
 # names mirror primary_fact_parser.FIELD_* / financial_fact_categories'
@@ -63,7 +67,7 @@ _MONEY_METRIC_LABELS: tuple[tuple[str, str], ...] = (
     ),
     ("total_assets", r"total assets"),
     ("total_debt", r"total debt|gross debt|total borrowings|gross borrowings"),
-    ("net_debt", r"(?<!cost of )(?<!interest on )" + NET_DEBT_LABEL),
+    ("net_debt", NET_DEBT_LABEL),
     ("cash_and_equivalents", r"cash and cash equivalents"),
     ("net_cash", r"net cash position|net cash"),
     (
@@ -142,11 +146,22 @@ def metric_value_matches(text: str) -> list[tuple[str, str]]:
     for field, pattern in _ALL_PATTERNS:
         if field in seen:
             continue
-        m = pattern.search(text)
-        if m:
+        for m in pattern.finditer(text):
+            # V3.19.1 — the same flow/ratio rule as the parsers, on the label's own span.
+            if field in BALANCE_FIELDS and is_flow_or_ratio_at(
+                text, m.start(), m.start() + _label_length(field, text, m.start())
+            ):
+                continue
             seen.add(field)
             out.append((field, m.group(0)))
+            break
     return out
+
+
+def _label_length(field: str, text: str, start: int) -> int:
+    alt = dict(_MONEY_METRIC_LABELS).get(field)
+    found = re.match(alt, text[start:], re.IGNORECASE) if alt else None
+    return found.end() if found else 0
 
 
 # A generic, bounded signal for a "financial highlights"-style section
