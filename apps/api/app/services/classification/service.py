@@ -91,6 +91,58 @@ def classification_of(company: Any) -> CompanyClassification:
     )
 
 
+T5_REFERENCE = "T5_api_aggregator"
+
+
+async def reference_classification(session: Any, company: Any) -> tuple[str | None, str]:
+    """(industry, basis) from the platform's own references, or (None, "").
+
+    1. The curated research registry's entry for this exact listing.
+    2. The most recent discovery candidate for this listing whose industry constraint
+       was VERIFIED (``thesis_match_json.v319``) — its matched theme's industry.
+    Never a guess from a name.
+    """
+    from app.services.market_universe_builder import THEME_COMPANY_REGISTRY
+
+    ticker = str(getattr(company, "ticker", "") or "").upper()
+    exchange = str(getattr(company, "exchange", "") or "").upper()
+    for entries in THEME_COMPANY_REGISTRY.values():
+        for entry in entries:
+            if entry["ticker"].upper() == ticker and entry["exchange"].upper() == exchange:
+                return entry["industry"], "the curated research registry"
+    try:
+        from sqlalchemy import select
+
+        from app.models.discovery import DiscoveryCandidate
+        from app.services.market_thesis_parser import _THEME_TABLE
+
+        async with session.begin_nested():
+            rows = (
+                await session.execute(
+                    select(DiscoveryCandidate.thesis_match_json)
+                    .where(DiscoveryCandidate.ticker == ticker,
+                           DiscoveryCandidate.exchange == exchange)
+                    .order_by(DiscoveryCandidate.created_at.desc())
+                    .limit(5)
+                )
+            ).scalars().all()
+        for match in rows:
+            v319 = (match or {}).get("v319") or {}
+            industry = next(
+                (r for r in v319.get("constraint_results") or []
+                 if r.get("key") == "industry" and r.get("status") == "pass"),
+                None,
+            )
+            theme = (match or {}).get("theme")
+            if industry and theme in _THEME_TABLE:
+                industries = _THEME_TABLE[theme].get("industries") or []
+                if industries:
+                    return industries[0], "a discovery run that verified its industry"
+    except Exception:  # noqa: BLE001 - a reference is optional
+        return None, ""
+    return None, ""
+
+
 async def ensure_company_classification(
     session: Any,
     company: Any,
@@ -132,13 +184,24 @@ async def ensure_company_classification(
         elif reason:
             notes.append(f"No SEC classification available ({reason}).")
 
+    stored_industry, stored_tier = stored.industry, stored.tier
+    if not sic_code and not stored.is_known:
+        # V3.19.9 — no regulator code and nothing stored: a European issuer (Kering,
+        # Pandora) was researched with the GENERIC methodology — no luxury playbook, no
+        # industry questions — although the platform's own curated registry classifies
+        # it. That reference, or the theme a discovery run VERIFIED for the company, is a
+        # weaker source (T5) than any regulator code, and is labelled as what it is.
+        reference, basis = await reference_classification(session, company)
+        if reference:
+            stored_industry, stored_tier = reference, T5_REFERENCE
+            notes.append(f"Industry {reference!r} taken from {basis} (no SEC SIC code).")
     resolved = resolve_classification(
         sic_code=sic_code,
         sic_description=sic_description,
         stored_sector=stored.sector,
-        stored_industry=stored.industry,
+        stored_industry=stored_industry,
         stored_industry_raw=stored.industry_raw,
-        stored_tier=stored.tier,
+        stored_tier=stored_tier,
     )
     resolved.notes = notes + resolved.notes
 
