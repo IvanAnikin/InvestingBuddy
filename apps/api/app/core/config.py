@@ -1092,6 +1092,8 @@ class Settings(BaseSettings):
     # lightweight screening and evidence-backed constraints. OFF by default: it spends on
     # the external research provider. Every bound is capped again in code.
     v3_dynamic_discovery_enabled: bool = False
+    # V3.19.7 — externally discovered, listing-verified peers in get_peer_set.
+    v3_dynamic_peer_discovery_enabled: bool = False
     v3_discovery_max_lead_queries: int = 4
     v3_discovery_max_raw_leads: int = 60
     v3_discovery_max_verified: int = 30
