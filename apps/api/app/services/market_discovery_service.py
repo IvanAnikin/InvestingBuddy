@@ -2459,7 +2459,11 @@ async def _compute_council_result(
          "eligibility": d.get("eligibility"),
          "unknown_constraints": sorted(
              k for k, v in (d.get("constraint_status") or {}).items() if v == "unknown"),
-         "has_current_research": bool(signals_by_candidate.get(c.id))}
+         # CURRENT V3 research only: a legacy-only or stale company has nothing the
+         # council is shown as evidence, so a rejection of it is a gap too.
+         "has_current_research": (
+             ((signals_by_candidate.get(c.id) or {}).get("research_freshness") or {})
+             .get("status") == "v3_current")}
         for c, d in zip(candidates, candidate_dicts, strict=True)
     ]
     result = await maybe_run_discovery_council(

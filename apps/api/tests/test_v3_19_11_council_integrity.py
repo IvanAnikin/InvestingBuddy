@@ -15,9 +15,12 @@ from __future__ import annotations
 
 import uuid
 
+import pytest
+
 from app.schemas.market_discovery import DiscoveryCouncilReviewResponse
 from app.services.discovery.attribute_guard import (
     GAP_NOT_REJECTION_NOTE,
+    GAP_NOT_REJECTION_NOTE_UNVERIFIED,
     CandidateAttributes,
     check_sentence,
     guard_review,
@@ -52,6 +55,10 @@ def test_size_mismatch_needs_a_failed_size_constraint():
     assert check_sentence(sentence, ATTRS, CLF) is not None  # size unknown
     assert check_sentence(sentence, ATTRS, FCX) is None  # size verified to FAIL
     assert check_sentence("CLF looks too large for the brief.", ATTRS, None) is not None
+    assert check_sentence("CLF is larger than requested.", ATTRS, None) is not None
+    # A negated match IS a mismatch claim.
+    assert check_sentence("CLF does not fit the requested size.", ATTRS, None) is not None
+    assert check_sentence("FCX does not fit the requested size.", ATTRS, None) is None
     # Saying the verdict is NOT established is exactly right, and stands.
     assert check_sentence("A size mismatch for CLF is not verified.", ATTRS, None) is None
 
@@ -112,3 +119,48 @@ def test_unverified_constraints_note_and_guard_record_reach_the_api():
     body = response.model_dump()
     assert body["candidates_to_monitor"][0]["unverified_constraints"] == ["growth", "size"]
     assert body["attribute_guard"]["version"] == 2
+
+
+RBW = ATTRS.lookup("RBW")
+
+
+@pytest.mark.parametrize("sentence", [
+    # "too small" about something other than the company's size is risk prose (rule 7).
+    "Cash balance too small to fund the Phalaborwa build.",
+    "Market share is too small to matter.",
+    "The evidence set is too small to judge.",
+    "The sample is too small a base for conclusions.",
+    # About peers, not the candidate.
+    "Peers show a size mismatch with the request.",
+    # About what was asked for.
+    "The user requested small caps; most candidates have unknown size.",
+    "Mostly, the thesis asked for small caps.",
+    "The user asked for small caps; 10 candidates were returned.",
+])
+def test_legitimate_prose_is_kept(sentence):
+    assert check_sentence(sentence, ATTRS, RBW) is None
+
+
+def test_a_named_candidate_among_peers_is_still_checked():
+    assert check_sentence("Peers such as CLF are too large for the brief.", ATTRS,
+                          RBW) is not None
+
+
+def test_eligible_unverified_gets_an_honest_note_and_nothing_is_listed_twice():
+    cands = [_cand("UHR", eligibility="eligible_unverified", unknown=("size",))]
+    review = {
+        "candidates_to_reject": [{"ticker": "UHR", "rationale": "no fundamentals"}],
+        "candidates_insufficient_data": [{"ticker": "UHR", "rationale": "gaps"}],
+    }
+    out = guard_review(review, cands)
+    assert out["candidates_to_reject"] == []
+    [entry] = out["candidates_insufficient_data"]
+    assert entry["placement_note"] == GAP_NOT_REJECTION_NOTE_UNVERIFIED
+    assert "checked against official sources" not in entry["placement_note"]
+
+
+def test_legacy_only_research_does_not_count_as_current():
+    """The council is never shown legacy content, so it cannot reject on it."""
+    cands = [_cand("KER", research=False)]
+    out = guard_review({"candidates_to_reject": [{"ticker": "KER"}]}, cands)
+    assert out["candidates_to_reject"] == []

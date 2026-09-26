@@ -104,6 +104,22 @@ function PriorityEntryCard({
           {entry.rationale}
         </p>
       )}
+      {entry.unverifiedConstraints.length > 0 && (
+        <p
+          data-testid="council-entry-unverified"
+          className="mt-1 text-xs text-amber-300"
+        >
+          Not verified yet: {entry.unverifiedConstraints.join(", ")}
+        </p>
+      )}
+      {entry.placementNote && (
+        <p
+          data-testid="council-entry-placement-note"
+          className="ib-breakable mt-1 text-xs text-sky-300"
+        >
+          {entry.placementNote}
+        </p>
+      )}
 
       {/* The BUSINESS comparison. What could make this company more or less
           valuable — not how many fields the screen managed to fill. */}
@@ -360,6 +376,14 @@ function CouncilBody({ view }: { view: DiscoveryCouncilView }) {
                           {entry.ticker ?? entry.candidateRef ?? "Candidate"}
                         </span>
                         {entry.rationale ? ` — ${entry.rationale}` : ""}
+                        {entry.placementNote ? (
+                          <span
+                            data-testid="council-band-placement-note"
+                            className="block text-xs text-sky-300"
+                          >
+                            {entry.placementNote}
+                          </span>
+                        ) : null}
                       </li>
                     ))}
                   </ul>
