@@ -1112,6 +1112,22 @@ function CouncilBucket({
               <span className="text-slate-500">.{e.exchange}</span>
             ) : null}
             {e.rationale ? ` — ${e.rationale}` : ""}
+            {e.unverified_constraints && e.unverified_constraints.length > 0 ? (
+              <span
+                data-testid="council-entry-unverified"
+                className="ml-2 text-amber-300"
+              >
+                (not verified: {e.unverified_constraints.join(", ")})
+              </span>
+            ) : null}
+            {e.placement_note ? (
+              <p
+                data-testid="council-entry-placement-note"
+                className="mt-0.5 pl-2 text-[11px] text-sky-300"
+              >
+                {e.placement_note}
+              </p>
+            ) : null}
           </li>
         ))}
       </ul>

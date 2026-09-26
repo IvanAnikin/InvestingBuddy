@@ -372,6 +372,10 @@ test.describe("Discovery comparison", () => {
       "Could drive value higher",
     );
     await expect(entry).toContainText("Stands out on");
+    // V3.19.11 — a prioritised candidate says what is still unverified about it.
+    await expect(entry.getByTestId("council-entry-unverified")).toContainText(
+      "Not verified yet: growth",
+    );
   });
 });
 

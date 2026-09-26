@@ -138,6 +138,8 @@ function placement(over: Partial<CouncilPriorityEntry>): CouncilPriorityEntry {
     resilience: null,
     keyFinancialSignal: null,
     strongestDimension: null,
+    unverifiedConstraints: [],
+    placementNote: null,
     supporting: [],
     concerns: [],
     ...over,
