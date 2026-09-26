@@ -56,6 +56,14 @@ _NON_BALANCE_SUFFIX_HEAD = re.compile(
     r"|(?:/|÷|-\s*to\s*-|\bto\b)\s*(?:[\w.]+\s+){0,3}?"
     r"(?:ebitda|ebit|equity|capital|capitalisation|capitalization|market\s+cap\w*)\b"
     r"|(?:ratio|multiple|leverage|gearing|coverage)\b"
+    # V3.19.8 — a CASH-FLOW line, not a balance: "Net cash received from operating
+    # activities 3,100" (Kering URD 2025, p.54) was read as net cash of EUR 3.1bn while the
+    # group reports net debt. A flow verb, or "… operating/investing/financing
+    # activities", right after the label makes it a flow.
+    r"|\(?\s*(?:used|received|generated|provided|paid|spent|absorbed|inflows?|outflows?"
+    r"|flows?)\b"
+    r"|(?:[\w()/]+\s+){0,4}?(?:from|in|by|for)\s+(?:the\s+)?(?:operating|investing|financing)"
+    r"\s+activities\b"
     r")",
     re.IGNORECASE,
 )

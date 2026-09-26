@@ -202,7 +202,10 @@ _LABEL_PATTERNS: list[tuple[re.Pattern[str], str]] = [
             r"|net cash flows? from operating activities"
             # Plain IFRS cash-flow-statement caption, with no "net" prefix —
             # the exact wording used on the real Pandora five-year summary.
-            r"|cash flows? from operating activities",
+            r"|cash flows? from operating activities"
+            # V3.19.8 — "Net cash received from operating activities" (IFRS wording).
+            r"|(?:net )?cash (?:flows? )?(?:received|generated|provided) (?:from|by) "
+            r"operating activities",
             re.I,
         ),
         FIELD_OPERATING_CASH_FLOW,
