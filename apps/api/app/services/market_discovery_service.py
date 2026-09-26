@@ -1292,7 +1292,7 @@ async def list_candidates(
         stmt = stmt.where(DiscoveryCandidate.ticker == ticker.strip().upper())
 
     sort_map = {
-        "rank": DiscoveryCandidate.rank.asc(),
+        "rank": DiscoveryCandidate.rank.asc().nulls_last(),
         "candidate_score": DiscoveryCandidate.candidate_score.desc(),
         "combined_internal_score": DiscoveryCandidate.combined_internal_score.desc(),
         "thesis_relevance_score": DiscoveryCandidate.thesis_relevance_score.desc(),
@@ -1302,7 +1302,12 @@ async def list_candidates(
         "fundamentals_score": DiscoveryCandidate.fundamentals_score.desc(),
         "created_at": DiscoveryCandidate.created_at.desc(),
     }
-    stmt = stmt.order_by(sort_map.get(sort, DiscoveryCandidate.candidate_score.desc()))
+    # A stable tie-breaker: while a run is still screening, rank is NULL for every row.
+    stmt = stmt.order_by(
+        sort_map.get(sort, DiscoveryCandidate.candidate_score.desc()),
+        DiscoveryCandidate.created_at.asc(),
+        DiscoveryCandidate.id.asc(),
+    )
     stmt = stmt.limit(limit).offset(offset)
 
     result = await db.execute(stmt)
@@ -2065,12 +2070,21 @@ def _run_to_evidence_dict(run: DiscoveryRun) -> dict[str, Any]:
         for k, v in (run.config_json or {}).items()
         if k != COUNCIL_STORAGE_KEY
     }
+    intent = (run.parsed_thesis_json or {}).get("discovery_intent") or {}
+    stage = (run.universe_json or {}).get("dynamic") or {}
     return {
         "run_id": str(run.id),
         "mode": run.mode,
         "status": run.status,
         "thesis_text": run.thesis_text,
         "parsed_thesis": run.parsed_thesis_json,
+        # V3.19.5 — what the user ASKED FOR, labelled as such in the pack.
+        "requested_constraints": [
+            {k: c.get(k) for k in ("key", "requested", "excluded", "hardness")}
+            for c in intent.get("constraints") or []
+            if isinstance(c, dict) and c.get("key") != "listing"
+        ],
+        "discovery_funnel": dict(stage.get("funnel") or {}),
         "config": config,
         "provider": run.provider_name,
         "lookback_days": run.lookback_days,
@@ -2094,7 +2108,21 @@ def _candidate_to_evidence_dict(
     """
     raw = c.raw_signal_json if isinstance(c.raw_signal_json, dict) else {}
     data_coverage = raw.get("data_coverage") if isinstance(raw, dict) else {}
+    v319 = ((c.thesis_match_json or {}).get("v319") or {}) if isinstance(
+        c.thesis_match_json, dict) else {}
     return {
+        # V3.19.5 — what may be SAID about this candidate, and nothing requested.
+        "verified_attributes": dict(v319.get("verified_attributes") or {}),
+        "constraint_status": {
+            str(r.get("key")): str(r.get("status"))
+            for r in v319.get("constraint_results") or []
+            if isinstance(r, dict) and r.get("status") != "not_requested"
+        },
+        "eligibility": (v319.get("eligibility") or {}).get("status"),
+        "discovery_provenance": {
+            k: (v319.get("provenance") or {}).get(k)
+            for k in ("discovery_source", "identity_status")
+        } if v319 else {},
         "candidate_id": str(c.id),
         "ticker": c.ticker,
         "exchange": c.exchange,
@@ -2103,9 +2131,12 @@ def _candidate_to_evidence_dict(
         "sector": c.sector,
         "industry": c.industry,
         "thesis_relevance_score": c.thesis_relevance_score,
-        "combined_internal_score": c.combined_internal_score,
-        "candidate_score": c.candidate_score,
-        "candidate_score_grade": c.candidate_score_grade,
+        # V3.19.5 — the blended screening scores both carry share-price momentum, so a
+        # council asked about business growth is not handed them. The run's own rank
+        # (eligibility first) orders the pack instead.
+        "combined_internal_score": None,
+        "candidate_score": None,
+        "candidate_score_grade": None,
         "momentum_score": c.momentum_score,
         "catalyst_score": c.catalyst_score,
         "fundamentals_score": c.fundamentals_score,
@@ -2330,7 +2361,9 @@ async def _compute_council_result(
             "(no candidates and not in a terminal state)."
         )
 
-    sort = "combined_internal_score" if run.mode == "thesis" else "candidate_score"
+    # V3.19.5 — the run's own rank decides which candidates the council sees; the blended
+    # score (momentum-weighted) no longer does.
+    sort = "rank" if run.mode == "thesis" else "candidate_score"
     candidates, _ = await list_candidates(
         db,
         run.id,
@@ -2353,6 +2386,11 @@ async def _compute_council_result(
         for c in candidates
     ]
 
+    guard_candidates = [
+        {"candidate_id": d.get("candidate_id"), "ticker": d.get("ticker"),
+         "verified_attributes": d.get("verified_attributes") or {}}
+        for d in candidate_dicts
+    ]
     result = await maybe_run_discovery_council(
         run=run_dict,
         candidates=candidate_dicts,
@@ -2361,6 +2399,9 @@ async def _compute_council_result(
         client=client,
         logger=logger,
     )
+    # V3.19.5 — carried to finalisation for the requested-vs-verified guard, in the SAME
+    # order the pack numbered them (C1, C2 …).
+    object.__setattr__(result, "_guard_candidates", guard_candidates)
     if not result.llm_used:
         # Flags were on but no provider was available (e.g. missing credentials).
         log_event(
@@ -2383,6 +2424,13 @@ def _finalize_council_review(run: DiscoveryRun, result: Any) -> dict[str, Any]:
     """
     created_at = datetime.now(timezone.utc).isoformat()
     stored_review = result.to_storage_dict(created_at=created_at)
+    # V3.19.5 — no sentence may attribute an unverified requested attribute (size band,
+    # growth) to a candidate or the cohort. Removed, never rewritten, and recorded.
+    from app.services.discovery.attribute_guard import guard_review
+
+    stored_review = guard_review(
+        stored_review, getattr(result, "_guard_candidates", None) or []
+    )
 
     # Backstop: no forbidden investment-action language may be saved. The council
     # already quarantines unsafe agent output; this is a defensive re-scan.

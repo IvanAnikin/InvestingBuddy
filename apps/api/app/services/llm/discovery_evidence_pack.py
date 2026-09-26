@@ -138,6 +138,8 @@ def _run_context(run: dict[str, Any]) -> RunContext:
         candidate_count=int(run.get("candidate_count") or 0),
         error_count=int(run.get("error_count") or 0),
         warning_count=len(warnings) if isinstance(warnings, list) else 0,
+        requested_constraints=list(run.get("requested_constraints") or []),
+        discovery_funnel=dict(run.get("discovery_funnel") or {}),
     )
 
 
@@ -176,6 +178,35 @@ def _run_facts(run: dict[str, Any], ctx: RunContext) -> list[RunFact]:
             _clip(f"manual/curated ticker run; universe_count={ctx.universe_count}"),
         )
 
+    # V3.19.5 — the requested constraints, labelled as what they are. The user's words
+    # describe the SEARCH; a candidate has an attribute only in its verified_attributes.
+    if ctx.requested_constraints:
+        add(
+            "requested_constraints",
+            _clip(
+                "REQUESTED BY THE USER — NOT A PROPERTY OF ANY CANDIDATE: "
+                + "; ".join(
+                    f"{c.get('key')}={','.join(c.get('requested') or [])}"
+                    + (
+                        f" excluding {','.join(c.get('excluded') or [])}"
+                        if c.get("excluded")
+                        else ""
+                    )
+                    + f" ({c.get('hardness')})"
+                    for c in ctx.requested_constraints
+                ),
+                _TEXT_MAX,
+            ),
+        )
+    if ctx.discovery_funnel:
+        add(
+            "discovery_funnel",
+            _clip(
+                ", ".join(f"{k}={v}" for k, v in ctx.discovery_funnel.items()
+                          if isinstance(v, int)),
+                _TEXT_MAX,
+            ),
+        )
     add(
         "universe_and_candidates",
         _clip(
@@ -249,9 +280,11 @@ def _event_run_facts(
 
 
 def _score_breakdown(cand: dict[str, Any]) -> dict[str, Any]:
+    # V3.19.5 — no momentum. A council asked about business growth is not handed a share
+    # price signal beside it; momentum stays on the candidate row and in the screening
+    # score, and business growth reaches the council only as a VERIFIED attribute.
     return _compact(
         {
-            "momentum_score": cand.get("momentum_score"),
             "catalyst_score": cand.get("catalyst_score"),
             "fundamentals_score": cand.get("fundamentals_score"),
             "source_quality_score": cand.get("source_quality_score"),
@@ -379,7 +412,6 @@ def _catalyst_summary(cand: dict[str, Any]) -> dict[str, Any]:
     return _compact(
         {
             "coverage_status": cand.get("catalyst_coverage_status"),
-            "momentum_label": cand.get("momentum_label"),
             "positive_catalyst_count": cand.get("positive_catalyst_count"),
             "high_strength_catalyst_count": cand.get("high_strength_catalyst_count"),
             "filing_event_count": cand.get("filing_event_count"),
@@ -413,6 +445,10 @@ def _candidate_evidence(index: int, cand: dict[str, Any]) -> CandidateEvidence:
         data_coverage=_data_coverage(cand),
         catalyst_summary=_catalyst_summary(cand),
         research_signals=_research_signals(cand),
+        verified_attributes=dict(cand.get("verified_attributes") or {}),
+        constraint_status=dict(cand.get("constraint_status") or {}),
+        eligibility=cand.get("eligibility"),
+        discovery_provenance=dict(cand.get("discovery_provenance") or {}),
         safety_valid=cand.get("safety_valid"),
         human_review_required=bool(cand.get("human_review_required", True)),
         is_public=bool(cand.get("is_public", False)),

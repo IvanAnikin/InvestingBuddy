@@ -59,12 +59,29 @@ class CandidateRecord:
     registry_item: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
+        verified = cons.verified_attributes(self.results)
+        provenance = dict(self.provenance)
+        # The lead's own reason was written against the user's brief ("a fast-growing
+        # small-cap jeweller"); it is shown only if it attributes nothing unverified.
+        why = provenance.get("why")
+        if why:
+            from app.services.discovery.attribute_guard import (
+                CandidateAttributes,
+                check_sentence,
+            )
+
+            own = CandidateAttributes([{"ticker": self.identity.ticker,
+                                        "verified_attributes": verified}])
+            reason = check_sentence(str(why), own, own.all[0])
+            if reason:
+                provenance["why"] = None
+                provenance["why_withheld"] = reason
         return {
             "schema": "discovery_candidate/1",
             "identity": self.identity.identity_record(),
-            "provenance": self.provenance,
+            "provenance": provenance,
             "constraint_results": [r.to_dict() for r in self.results],
-            "verified_attributes": cons.verified_attributes(self.results),
+            "verified_attributes": verified,
             "unknown_constraints": [
                 r.key for r in self.results if r.status == cons.UNKNOWN
             ],
