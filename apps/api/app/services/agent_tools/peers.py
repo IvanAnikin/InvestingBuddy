@@ -149,6 +149,9 @@ async def _get_peer_set(context: "ToolContext", arguments: dict[str, Any]) -> di
     external = await _dynamic_peers(context, subject, industry, arguments, items)
     items.extend(external.get("items", []))
     gaps.extend(external.get("gaps", []))
+    from app.services.agent_tools.external import SEARCH_WEB_UNITS
+
+    spent = external.get("consumption")
     if len([i for i in items if i["shares_commodity"]]) < 3:
         gaps.append(
             "Fewer than three peers in the platform's universe share this commodity; "
@@ -160,11 +163,17 @@ async def _get_peer_set(context: "ToolContext", arguments: dict[str, Any]) -> di
         "summary": f"{len(items)} candidate peer(s) with industry {industry!r}",
         # External peers' names and reasons come from a provider, and are marked so.
         "contains_untrusted_content": bool(external.get("items")),
+        # The paid search is reported like search_web's, so cost attribution sees it.
+        "consumption": spent if spent is not None else units_for(SEARCH_WEB_UNITS),
     }
 
 
 #: At most this many externally discovered peers are verified and returned.
 MAX_DYNAMIC_PEERS = 4
+#: One search per (subject, commodity) per hour in this process: the Investigator may
+#: call get_peer_set from several questions in one run, and each would repeat the spend.
+_PEER_MEMO: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
+_PEER_MEMO_SECONDS = 3600.0
 
 
 def dynamic_peers_enabled(cfg: Any) -> bool:
@@ -182,9 +191,16 @@ async def _dynamic_peers(
     listing verification a discovery candidate must pass. An unverified lead is never a
     peer. What the peer shares with the subject is recorded as the basis.
     """
+    import time
+
     cfg = getattr(context, "cfg", None)
     if not dynamic_peers_enabled(cfg):
         return {}
+    memo_key = (str(getattr(subject, "id", "")), str(arguments.get("commodity") or ""))
+    cached = _PEER_MEMO.get(memo_key)
+    if cached and time.monotonic() - cached[0] < _PEER_MEMO_SECONDS:
+        # Reused: nothing was spent this time, so no consumption is reported.
+        return {"items": cached[1].get("items", []), "gaps": cached[1].get("gaps", [])}
     try:
         from app.services.agents.routing import research_provider_for
         from app.services.discovery.identity import dedup_key, verify_identity
@@ -210,6 +226,7 @@ async def _dynamic_peers(
             geography="any country",
         )
         answer = await _ask(provider, query, cfg)
+        consumption = answer["consumption"]
         leads, _warnings = parse_company_leads(
             answer["text"], query=query, provider=answer["provider"], task_id=answer["task_id"]
         )
@@ -228,7 +245,9 @@ async def _dynamic_peers(
             rejected += int(not outcome.verified)
             continue
         seen.add(key)
-        why = (lead.why or "")[:200]
+        from app.services.discovery.screening import _safe
+
+        why = _safe(lead.why, 200) or ""
         dims = [d for d, word in (("commodity", focus), ("industry", industry))
                 if word and str(word).lower().split()[0] in why.lower()]
         items.append({
@@ -257,7 +276,8 @@ async def _dynamic_peers(
     if rejected:
         gaps.append(f"{rejected} externally suggested peer(s) could not have their listing "
                     "verified and were not used")
-    return {"items": items, "gaps": gaps}
+    _PEER_MEMO[memo_key] = (time.monotonic(), {"items": items, "gaps": gaps})
+    return {"items": items, "gaps": gaps, "consumption": consumption}
 
 
 def validate_get_peer_financials(arguments: dict[str, Any]) -> dict[str, Any]:
@@ -454,6 +474,11 @@ GET_PEER_SET_SPEC = ToolSpec(
     handler=_get_peer_set,
     validate_arguments=validate_get_peer_set,
     cost=ToolCost(),
+    # V3.19.7 — with dynamic peers on, one retrieval-backed search is made and reported.
+    instrumented_units=(
+        "web_search_calls", "url_fetch_calls", "model_calls", "model_input_tokens",
+        "model_output_tokens", "cached_tokens",
+    ),
 )
 
 GET_PEER_FINANCIALS_SPEC = ToolSpec(

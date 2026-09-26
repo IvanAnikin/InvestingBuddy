@@ -117,3 +117,30 @@ async def test_flag_off_is_the_v3_18_behaviour(session):
         SimpleNamespace(session=session, cfg=SimpleNamespace()),
         peers.validate_get_peer_set({"company_id": str(subject.id)}))
     assert all(i["commodity_basis"] != "external_discovery" for i in payload["items"])
+
+
+async def test_the_search_is_reported_and_memoised(session, monkeypatch):
+    from app.services.providers.contracts import ConsumptionUnits
+
+    subject = await _subject(session)
+    calls = []
+
+    async def _fake_ask(provider, query, cfg):
+        calls.append(query)
+        return {"text": json.dumps({"companies": []}), "provider": "ds", "task_id": "t",
+                "truncated": False, "opened_urls": [], "warnings": [],
+                "consumption": ConsumptionUnits(web_search_calls=2, model_calls=1)}
+
+    monkeypatch.setattr("app.services.agents.routing.research_provider_for",
+                        lambda cfg: SimpleNamespace(transport=_Transport()))
+    monkeypatch.setattr("app.services.discovery.leads._ask", _fake_ask)
+    peers._PEER_MEMO.clear()
+    context = SimpleNamespace(session=session,
+                              cfg=SimpleNamespace(v3_dynamic_peer_discovery_enabled=True))
+    args = peers.validate_get_peer_set({"company_id": str(subject.id), "commodity": "copper"})
+    first = await peers._get_peer_set(context, args)
+    second = await peers._get_peer_set(context, args)
+    assert first["consumption"].web_search_calls == 2
+    assert second["consumption"].web_search_calls == 0
+    assert len(calls) == 1
+    peers._PEER_MEMO.clear()
