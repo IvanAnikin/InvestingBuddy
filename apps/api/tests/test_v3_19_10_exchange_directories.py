@@ -500,6 +500,11 @@ async def test_share_class_symbol_forms_match():
     # … so a negation is never cut away from what it negates.
     ('<p>We have no exposure to <a>rare earths mining or processing in any of our '
      'current operations</a> today.</p>', {"rare_earths": "denied"}),
+    # A hero line in <header>, and a WebForms body wrapped in <form>, are read.
+    ("<header class=hero><h1>We produce rare earth oxides</h1><nav>Rare Earths</nav>"
+     "</header>", {"rare_earths": "direct"}),
+    ("<form><div><p>Pensana is building a rare earth processing facility.</p></div></form>",
+     {"rare_earths": "direct"}),
     # A short headline that IS a self-description is kept.
     ("<h1>Europe's rare earth magnet metals producer</h1>", {"rare_earths": "direct"}),
 ])

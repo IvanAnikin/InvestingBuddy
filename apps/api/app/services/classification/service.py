@@ -165,7 +165,13 @@ async def reference_classification(session: Any, company: Any) -> tuple[str | No
                 terms = []
             if value.get("exposure") == "indirect":
                 continue
-            for term in [(match or {}).get("theme"), *terms]:
+            # The run's theme counts only when the company DIRECTLY matched it (or a
+            # registry classified it): a gallium producer found for a "semiconductors"
+            # query is a miner, not a semiconductor company.
+            theme = (match or {}).get("theme")
+            if theme in terms or value.get("exposure") == "classified":
+                terms = [theme, *terms]
+            for term in terms:
                 resolved = _industry_for_term(term, _THEME_TABLE)
                 if resolved:
                     return resolved, "a discovery run that verified its industry"

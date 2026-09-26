@@ -171,3 +171,26 @@ async def test_an_indirect_term_never_classifies_a_company(session, monkeypatch)
     await session.flush()
     result = await cls.ensure_company_classification(session, company)
     assert result.industry == "Mining"
+
+
+async def test_the_run_theme_classifies_only_when_directly_matched(session, monkeypatch):
+    async def no_sec(ticker, exchange):  # noqa: ANN001, ANN202
+        return None, None, "venue not SEC-eligible"
+
+    monkeypatch.setattr(cls, "_fetch_sec_classification", no_sec)
+    run = DiscoveryRun(id=uuid.uuid4(), status="completed", provider_name="free_real",
+                       mode="thesis", universe_source="thesis_generated")
+    session.add(run)
+    session.add(DiscoveryCandidate(
+        id=uuid.uuid4(), discovery_run_id=run.id, ticker="GAL", exchange="AU",
+        thesis_match_json={"theme": "semiconductors", "v319": {"constraint_results": [
+            {"key": "industry", "status": "pass",
+             "value": {"matched": ["gallium"], "direct": ["gallium"],
+                       "exposure": "direct"}}]}},
+    ))
+    company = Company(id=uuid.uuid4(), ticker="GAL", exchange="AU", name="Gal Ltd",
+                      status="new")
+    session.add(company)
+    await session.flush()
+    result = await cls.ensure_company_classification(session, company)
+    assert result.industry == "Mining"

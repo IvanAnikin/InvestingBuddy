@@ -364,8 +364,11 @@ def _issuer_site_urls(issuer: IdentityOutcome) -> list[str]:
 MIN_PROSE_WORDS = 5
 
 #: Elements whose text is never the company describing itself.
+#: Not ``header`` or ``form``: a hero line often sits in <header>, and WebForms sites
+#: wrap the whole body in <form>. Menus inside them are <nav>, and bare labels are
+#: dropped by length.
 _SKIPPED_ELEMENTS = frozenset({
-    "script", "style", "noscript", "template", "svg", "nav", "header", "footer", "form",
+    "script", "style", "noscript", "template", "svg", "nav", "footer",
     "button", "select", "option", "label", "iframe", "head", "title",
 })
 #: Elements that end a block. Every other element (a, strong, em, span …) is INLINE and
