@@ -2450,10 +2450,17 @@ async def _compute_council_result(
         for c in candidates
     ]
 
+    # Everything the guard judges by. ``eligibility``/``unknown_constraints`` were
+    # missing here, so the reader-facing "still unverified" note never fired live.
     guard_candidates = [
         {"candidate_id": d.get("candidate_id"), "ticker": d.get("ticker"),
-         "verified_attributes": d.get("verified_attributes") or {}}
-        for d in candidate_dicts
+         "verified_attributes": d.get("verified_attributes") or {},
+         "constraint_status": d.get("constraint_status") or {},
+         "eligibility": d.get("eligibility"),
+         "unknown_constraints": sorted(
+             k for k, v in (d.get("constraint_status") or {}).items() if v == "unknown"),
+         "has_current_research": bool(signals_by_candidate.get(c.id))}
+        for c, d in zip(candidates, candidate_dicts, strict=True)
     ]
     result = await maybe_run_discovery_council(
         run=run_dict,

@@ -614,6 +614,12 @@ class DiscoveryCouncilCandidateEntry(BaseModel):
     exchange: str | None = None
     rationale: str | None = None
     confidence: str | None = None
+    # V3.19.11 — persisted by the attribute guard and dropped here until now: which of
+    # the reader's requested constraints are still unverified for this candidate, and
+    # why the platform moved it out of the council's own placement.
+    unverified_constraints: list[str] = Field(default_factory=list)
+    placement_note: str | None = None
+    council_placement: str | None = None
     # What could make this business more valuable, and what could pressure it.
     upside_drivers: list[str] = Field(default_factory=list)
     downside_drivers: list[str] = Field(default_factory=list)
@@ -674,6 +680,8 @@ class DiscoveryCouncilReviewResponse(BaseModel):
     evidence_gaps: list[str] = Field(default_factory=list)
     next_source_tasks: list[str] = Field(default_factory=list)
     agent_outputs: dict[str, Any] = Field(default_factory=dict)
+    # V3.19.11 — what the requested-vs-verified guard removed or moved, and why.
+    attribute_guard: dict[str, Any] | None = None
     warnings: list[str] = Field(default_factory=list)
     safety_valid: bool = True
     # Phase 32A Slice 6A: surfaces whether the deterministic discovery-chair

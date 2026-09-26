@@ -1139,6 +1139,11 @@ export interface DiscoveryCouncilCandidateEntry {
   resilience?: string | null;
   key_financial_signal?: string | null;
   strongest_dimension?: string | null;
+  // V3.19.11 — requested constraints still unverified for this candidate, and the
+  // platform's reason when it moved the candidate out of the council's own placement.
+  unverified_constraints?: string[];
+  placement_note?: string | null;
+  council_placement?: string | null;
 }
 
 // One discovery-council agent's PERSISTED output, as stored under

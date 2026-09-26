@@ -73,7 +73,22 @@ _QUALIFIER_AFTER = re.compile(
 _COUNTING = re.compile(r"\bonly\s+\d+\s+of\b|\b\d+\s+of\s+(?:the\s+)?\d+\b", re.IGNORECASE)
 _COHORT = re.compile(
     r"\b(?:all|these|those|every|each|the\s+(?:candidates|cohort|set|group|companies|names"
-    r"|universe|shortlist)|cohort|candidate\s+set)\b",
+    r"|universe|shortlist|run)|cohort|candidate\s+set|most(?:ly)?|majority"
+    r"|\d+\s+candidates)\b",
+    re.IGNORECASE,
+)
+#: V3.19.11 — a VERDICT on size against the request ("size mismatch with user request",
+#: "fits the requested size"). Unlike a band word it inherently mentions the request, so
+#: the requested-language exemption never applies to it; it needs the candidate's own
+#: size constraint to have FAILED (mismatch) or PASSED (match) on verified evidence.
+_SIZE_MISMATCH_RE = re.compile(
+    r"\bsize[\s-](?:mismatch\w*|misfit)\b|\bmismatch\w*\s+(?:on|in|with)\s+(?:the\s+)?"
+    r"(?:requested\s+)?size\b|\btoo\s+(?:large|big|small)\b|\boutside\s+the\s+requested\s+size",
+    re.IGNORECASE,
+)
+_SIZE_MATCH_RE = re.compile(
+    r"\bsize[\s-]match(?:es|ed)?\b|\b(?:fits?|match(?:es)?|meets?)\s+the\s+(?:requested\s+)?"
+    r"size\b|\bwithin\s+the\s+requested\s+size",
     re.IGNORECASE,
 )
 _CREF = re.compile(r"\bC(\d{1,3})\b")
@@ -115,7 +130,9 @@ class CandidateAttributes:
             record = {"ref": f"C{index}", "attrs": attrs,
                       "ticker": str(entry.get("ticker") or ""),
                       "eligibility": entry.get("eligibility"),
-                      "unknown_constraints": list(entry.get("unknown_constraints") or [])}
+                      "unknown_constraints": list(entry.get("unknown_constraints") or []),
+                      "constraint_status": dict(entry.get("constraint_status") or {}),
+                      "has_current_research": bool(entry.get("has_current_research"))}
             self.all.append(record)
             for key in (f"C{index}", str(entry.get("candidate_id") or ""),
                         str(entry.get("ticker") or "").upper()):
@@ -172,11 +189,31 @@ def _growth_mentions(text: str) -> list[tuple[int, int]]:
     ]
 
 
+def _size_verdict(
+    text: str, attrs: CandidateAttributes, own: dict[str, Any] | None
+) -> str | None:
+    """A size verdict stands only for candidates whose size constraint has that status."""
+    for regex, needed, word in ((_SIZE_MISMATCH_RE, "fail", "a size mismatch"),
+                                (_SIZE_MATCH_RE, "pass", "a size match")):
+        if not any(not _qualified(text, m.start(), m.end()) for m in regex.finditer(text)):
+            continue
+        subjects = _subjects(text, attrs, own)
+        wrong = [s["ref"] for s in subjects
+                 if (s.get("constraint_status") or {}).get("size") != needed]
+        if wrong:
+            return (f"states {word} for {', '.join(wrong[:6])} whose size was not verified "
+                    f"to {needed} the request")
+    return None
+
+
 def check_sentence(
     sentence: str, attrs: CandidateAttributes, own: dict[str, Any] | None
 ) -> str | None:
     """None when the sentence may stand; otherwise the reason it may not."""
     text = sentence.translate(_HYPHENS)
+    verdict = _size_verdict(text, attrs, own)
+    if verdict is not None:
+        return verdict
     sizes = [(b, a, z) for b, a, z in _size_mentions(text) if not _qualified(text, a, z)]
     growth = [(a, z) for a, z in _growth_mentions(text) if not _qualified(text, a, z)]
     if not sizes and not growth:
@@ -298,8 +335,10 @@ def guard_review(
             record = _own(entry, attrs)
             if record and record.get("eligibility") == "eligible_unverified":
                 entry["unverified_constraints"] = record.get("unknown_constraints") or []
+    reclassified = _evidence_gaps_are_not_rejections(out, attrs)
     out["attribute_guard"] = {
-        "version": 1,
+        "version": 2,
+        "reclassified": reclassified,
         "rule": (
             "a size band or growth label may be attributed to a candidate only when that "
             "attribute is verified; sentences about what was REQUESTED are kept"
@@ -310,4 +349,46 @@ def guard_review(
     return out
 
 
-__all__ = ["CandidateAttributes", "check_sentence", "guard_review"]
+#: Shown beside a candidate the council had put under "reject" for want of research.
+GAP_NOT_REJECTION_NOTE = (
+    "Moved from reject to insufficient data by the platform: this candidate's requested "
+    "constraints were checked against official sources and it is not excluded, and it "
+    "has no current research yet — missing research is a gap to fill, not evidence "
+    "against the company."
+)
+
+
+def _evidence_gaps_are_not_rejections(
+    review: dict[str, Any], attrs: CandidateAttributes
+) -> list[dict[str, Any]]:
+    """V3.19.11 — the council may not reject a candidate for having no research yet.
+
+    Seen live (critical-materials run): the three companies discovery found and fully
+    verified — listing, size and industry from official sources — were rejected as "no
+    sourced fundamentals or filings". A candidate the platform did not exclude and that
+    has no current research can only be insufficient data; it is moved there, with the
+    council's own words kept and a note saying why.
+    """
+    rejected = review.get("candidates_to_reject")
+    if not isinstance(rejected, list):
+        return []
+    keep: list[Any] = []
+    moved: list[dict[str, Any]] = []
+    for entry in rejected:
+        record = _own(entry, attrs) if isinstance(entry, dict) else None
+        if (record is not None and not record.get("has_current_research")
+                and record.get("eligibility") in ("eligible", "eligible_unverified")):
+            moved.append({**entry, "placement_note": GAP_NOT_REJECTION_NOTE,
+                          "council_placement": "reject_for_now"})
+        else:
+            keep.append(entry)
+    if moved:
+        review["candidates_to_reject"] = keep
+        review["candidates_insufficient_data"] = [
+            *(review.get("candidates_insufficient_data") or []), *moved]
+    return [{"ticker": m.get("ticker"), "candidate_ref": m.get("candidate_ref"),
+             "from": "candidates_to_reject", "to": "candidates_insufficient_data"}
+            for m in moved]
+
+
+__all__ = ["GAP_NOT_REJECTION_NOTE", "CandidateAttributes", "check_sentence", "guard_review"]
