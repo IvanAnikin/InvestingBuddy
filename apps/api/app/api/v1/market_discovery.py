@@ -50,6 +50,7 @@ from app.schemas.market_discovery import (
     ThesisDiscoveryRunCreate,
 )
 from app.services import market_discovery_service as svc
+from app.services.discovery.intent import build_intent
 from app.services.market_discovery_service import DiscoveryCouncilDisabledError
 from app.services.market_thesis_parser import parse_thesis
 
@@ -179,7 +180,9 @@ async def list_supported_filters() -> SupportedFiltersResponse:
 )
 async def parse_thesis_preview(payload: ParseThesisRequest) -> ParseThesisResponse:
     parsed = parse_thesis(payload.thesis)
+    intent = build_intent(payload.thesis, parsed=parsed)
     return ParseThesisResponse(
+        discovery_intent=intent.to_dict(),
         themes=parsed.themes,
         region=parsed.region,
         country=parsed.country,
@@ -188,8 +191,8 @@ async def parse_thesis_preview(payload: ParseThesisRequest) -> ParseThesisRespon
         theme=parsed.theme,
         confidence=parsed.confidence,
         extraction_source=parsed.extraction_source,
-        needs_narrowing=parsed.needs_narrowing,
-        warnings=parsed.warnings,
+        needs_narrowing=intent.needs_narrowing,
+        warnings=list(intent.warnings),
     )
 
 
