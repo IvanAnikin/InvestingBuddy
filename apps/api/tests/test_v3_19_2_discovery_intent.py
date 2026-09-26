@@ -193,3 +193,118 @@ async def test_parse_thesis_endpoint_returns_the_intent(client):
     assert intent["schema"] == SCHEMA
     size = next(c for c in intent["constraints"] if c["key"] == "size")
     assert size["hardness"] == "hard" and size["hardness_basis"]
+
+
+# ── review follow-ups: negation, selectors, pronouns, idioms, cue-based hardness ── #
+
+from app.services.market_thesis_parser import parse_thesis  # noqa: E402
+from app.services.market_universe_builder import build_universe  # noqa: E402
+
+
+def _universe(text, **kw):
+    intent = build_intent(text, **kw)
+    parsed = parse_thesis(text, region=kw.get("region"), country=kw.get("country"))
+    return intent, sorted(i["ticker"] for i in build_universe(
+        {**parsed.to_dict(), **intent.universe_filter()}).items)
+
+
+@pytest.mark.parametrize(
+    ("text", "excluded"),
+    [
+        ("non-US defence companies", ("United States",)),
+        ("defense companies outside the US", ("United States",)),
+        ("luxury stocks, no US", ("United States",)),
+        ("Europe excluding UK defence companies", ("United Kingdom",)),
+        ("European defense companies other than British ones", ("United Kingdom",)),
+        ("Asia ex-Japan semiconductor companies", ("Japan",)),
+    ],
+)
+def test_negated_geography_is_an_exclusion_never_a_request(text, excluded):
+    intent = build_intent(text)
+    geo = _constraint(intent, "geography")
+    assert geo.excluded == excluded
+    assert not set(excluded) & set(geo.requested)
+
+
+def test_non_us_defence_universe_drops_the_us_names():
+    _, tickers = _universe("non-US defence companies")
+    assert tickers and not {"LMT", "RTX", "NOC", "GD", "LHX"} & set(tickers)
+
+
+@pytest.mark.parametrize(
+    ("text", "requested", "excluded"),
+    [
+        ("not large cap european luxury companies", ("micro_cap", "small_cap", "mid_cap"),
+         ("large_cap", "mega_cap")),
+        ("luxury companies, no large caps", ("micro_cap", "small_cap", "mid_cap"),
+         ("large_cap", "mega_cap")),
+        ("excluding mega caps luxury", ("micro_cap", "small_cap", "mid_cap", "large_cap"),
+         ("mega_cap",)),
+    ],
+)
+def test_negated_size_excludes_bands(text, requested, excluded):
+    size = _constraint(build_intent(text), "size")
+    assert size.requested == requested and size.excluded == excluded
+
+
+@pytest.mark.parametrize(
+    ("text", "key"),
+    [
+        ("luxury companies not just small caps", "size"),
+        ("luxury companies that are not growing", "growth"),
+        ("not necessarily profitable luxury companies", "profitability"),
+    ],
+)
+def test_negated_or_not_required_terms_make_no_constraint(text, key):
+    intent = build_intent(text)
+    assert _constraint(intent, key) is None
+    assert intent.warnings  # and the reader is told why
+
+
+def test_explicit_country_selector_is_never_widened():
+    intent, tickers = _universe("European luxury watch companies", country="Switzerland")
+    assert _constraint(intent, "geography").requested == ("Switzerland",)
+    assert tickers == ["CFR", "UHR"]
+
+
+def test_pronoun_us_is_not_the_united_states():
+    assert _constraint(build_intent("help us find luxury companies"), "geography") is None
+    assert _constraint(build_intent("US semiconductor companies"), "geography").requested == (
+        "United States",
+    )
+
+
+def test_latin_american_is_not_the_united_states():
+    geo = _constraint(build_intent("Latin American copper miners"), "geography")
+    assert geo.requested == ("South America",)
+
+
+def test_a_commodity_idiom_is_not_a_material():
+    intent = build_intent("silver lining stocks")
+    assert intent.materials == () and intent.needs_narrowing
+
+
+def test_soft_cue_softens_geography():
+    assert _constraint(build_intent("semiconductor stocks, preferably US"),
+                       "geography").hardness == SOFT
+    assert _constraint(build_intent("luxury companies, ideally European"),
+                       "geography").hardness == SOFT
+
+
+def test_material_as_input_does_not_widen_to_miners():
+    intent, tickers = _universe("semiconductor companies using gallium processing")
+    assert intent.materials_role == "input"
+    assert "mining_materials" not in intent.themes
+    assert not {"FCX", "SCCO", "MP"} & set(tickers)
+
+
+def test_copper_for_semiconductors_is_a_materials_thesis():
+    intent = build_intent("copper for semiconductors")
+    assert intent.materials == ("copper",) and intent.materials_role == "product"
+    assert "semiconductors" not in intent.themes
+
+
+def test_growing_fast_is_high_growth():
+    assert _constraint(build_intent("luxury companies growing fast"), "growth").requested == (
+        "high_growth",
+    )

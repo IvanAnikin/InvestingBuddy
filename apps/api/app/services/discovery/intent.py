@@ -59,7 +59,10 @@ _SIZE_TERMS: tuple[tuple[str, tuple[str, ...], bool], ...] = (
     (r"\blarger\b", ("large_cap", "mega_cap"), True),
 )
 
-_HIGH_GROWTH = r"high[\s-]growth|fast[\s-]growing|rapidly[\s-]growing|hyper[\s-]?growth"
+_HIGH_GROWTH = (
+    r"high[\s-]growth|fast[\s-]growing|rapidly[\s-]growing|hyper[\s-]?growth"
+    r"|rapid(?:ly)?\s+growth|growing\s+(?:fast|rapidly|quickly|strongly)"
+)
 _GROWTH = (
     r"\bgrowing\b|\bgrowth\s+(?:compan(?:y|ies)|stocks|names|businesses)"
     r"|\bexpanding\s+(?:revenues?|sales)"
@@ -126,7 +129,8 @@ _REGION_WORDS: dict[str, str] = {
     "europe": "Europe", "european": "Europe", "eurozone": "Europe", "nordic": "Europe",
     "north america": "North America", "north american": "North America",
     "asia": "Asia", "asian": "Asia", "oceania": "Oceania", "australasia": "Oceania",
-    "latin america": "South America", "south america": "South America",
+    "latin america": "South America", "latin american": "South America",
+    "south america": "South America", "south american": "South America",
     "africa": "Africa", "african": "Africa", "japan": "Japan", "japanese": "Japan",
     "china": "China", "chinese": "China",
 }
@@ -158,10 +162,14 @@ class Constraint:
     hardness_basis: str
     phrase: str
     verification_required: bool = True
+    #: What the user EXCLUDED ("non-US", "not large cap"). A candidate matching an
+    #: excluded value fails the constraint; it is never read as a request for it.
+    excluded: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         out = asdict(self)
         out["requested"] = list(self.requested)
+        out["excluded"] = list(self.excluded)
         return out
 
 
@@ -174,6 +182,9 @@ class DiscoveryIntent:
     regions: tuple[str, ...] = ()
     countries: tuple[str, ...] = ()
     materials: tuple[str, ...] = ()
+    #: "product" when the company is wanted FOR the material (a gallium producer);
+    #: "input" when it merely uses it ("semiconductor companies using gallium").
+    materials_role: str | None = None
     end_markets: tuple[str, ...] = ()
     catalysts: tuple[str, ...] = ()
     horizon_years: tuple[int, int] | None = None
@@ -223,6 +234,7 @@ class DiscoveryIntent:
             "regions": list(self.regions),
             "countries": list(self.countries),
             "materials": list(self.materials),
+            "materials_role": self.materials_role,
             "end_markets": list(self.end_markets),
             "catalysts": list(self.catalysts),
             "horizon_years": list(self.horizon_years) if self.horizon_years else None,
@@ -251,12 +263,15 @@ class DiscoveryIntent:
         else:
             # Only countries named: the legacy strict country filter is exactly right.
             countries = list(self.countries)
+        excluded = list(self.geography.excluded) if self.geography else []
         return {
             "themes": list(self.themes),
             "sectors": list(self.sectors),
             "industries": list(self.industries),
             "regions": regions,
             "countries": countries,
+            "excluded_regions": [g for g in excluded if g not in COUNTRY_TO_REGION],
+            "excluded_countries": [g for g in excluded if g in COUNTRY_TO_REGION],
             "exclusion_keywords": list(self.exclusions),
             "needs_narrowing": self.needs_narrowing,
             "warnings": list(self.warnings),
@@ -308,93 +323,238 @@ def hardness_for(text: str, start: int, *, comparative: bool = False) -> tuple[s
     return HARD, "default: a bare term names a property of the companies wanted"
 
 
-def _size_constraint(text: str) -> Constraint | None:
+# ── Polarity: a named thing may be WANTED, EXCLUDED, or not a filter at all ── #
+
+POSITIVE = "positive"
+NEGATED = "negated"
+NOT_A_FILTER = "not_a_filter"
+
+#: Immediately before a term, these EXCLUDE it: "non-US", "not large cap", "excluding
+#: the UK", "Asia ex-Japan", "outside the US", "other than British", "avoid large caps".
+_NEGATION_BEFORE = re.compile(
+    r"(?:\bnon[\s-]?|\bnot\s+(?:(?:a|an|the)\s+)?|\bno\s+|\bexclud(?:e|es|ing)\s+(?:the\s+)?"
+    r"|\bexcept\s+(?:for\s+)?(?:the\s+)?|\boutside\s+(?:of\s+)?(?:the\s+)?|\bex[\s-]"
+    r"|\bother\s+than\s+(?:the\s+)?|\bavoid(?:ing|s)?\s+(?:the\s+)?|\bwithout\s+(?:the\s+)?"
+    r"|\bbut\s+not\s+(?:the\s+)?|\bbesides\s+(?:the\s+)?)(?:[a-z-]+\s+)?$"
+)
+#: "not just small caps", "not necessarily profitable": the user says the term is NOT a
+#: requirement — neither wanted nor excluded.
+_NOT_A_FILTER_BEFORE = re.compile(
+    r"\bnot\s+(?:just|only|necessarily|merely|exclusively)\s+(?:[a-z-]+\s+)?$"
+)
+
+
+def polarity(text: str, start: int) -> str:
+    """POSITIVE, NEGATED or NOT_A_FILTER for the term at ``start`` in lower-cased text."""
+    before = text[max(0, start - 48) : start]
+    if _NOT_A_FILTER_BEFORE.search(before):
+        return NOT_A_FILTER
+    if _NEGATION_BEFORE.search(before):
+        return NEGATED
+    return POSITIVE
+
+
+def _size_constraint(text: str) -> tuple[Constraint | None, list[str]]:
+    """The size constraint, or None, plus notes. Negated sizes are EXCLUDED buckets."""
     taken: list[tuple[int, int]] = []
-    buckets: list[str] = []
+    wanted: list[str] = []
+    excluded: list[str] = []
     phrases: list[str] = []
+    notes: list[str] = []
     hardness: tuple[str, str] | None = None
     for pattern, bands, comparative in _SIZE_TERMS:
         for match in re.finditer(pattern, text):
             if any(match.start() < end and match.end() > begin for begin, end in taken):
                 continue
             taken.append((match.start(), match.end()))
+            sign = polarity(text, match.start())
+            phrase = match.group(0).strip()
+            if sign == NOT_A_FILTER:
+                notes.append(f"'{phrase}' is stated as not a requirement, so size is not filtered")
+                continue
+            phrases.append(("not " if sign == NEGATED else "") + phrase)
+            target = excluded if sign == NEGATED else wanted
             for band in bands:
-                if band not in buckets:
-                    buckets.append(band)
-            phrases.append(match.group(0).strip())
-            this = hardness_for(text, match.start(), comparative=comparative)
-            # Several size words: one hard word makes the constraint hard.
+                if band not in target:
+                    target.append(band)
+            this = (
+                (HARD, "an explicit exclusion is a hard filter")
+                if sign == NEGATED
+                else hardness_for(text, match.start(), comparative=comparative)
+            )
             if hardness is None or (this[0] == HARD and hardness[0] == SOFT):
                 hardness = this
-    if not buckets or hardness is None:
-        return None
-    ordered = tuple(b for b in SIZE_BUCKETS if b in buckets)
-    return Constraint("size", ordered, hardness[0], hardness[1], ", ".join(phrases))
+    if hardness is None or not (wanted or excluded):
+        return None, notes
+    requested = [b for b in (wanted or list(SIZE_BUCKETS)) if b not in excluded]
+    if not requested:
+        return None, [*notes, "the size words exclude every band, so size is not filtered"]
+    ordered = tuple(b for b in SIZE_BUCKETS if b in requested)
+    return (
+        Constraint("size", ordered, hardness[0], hardness[1], ", ".join(phrases),
+                   excluded=tuple(b for b in SIZE_BUCKETS if b in excluded)),
+        notes,
+    )
 
 
-def _growth_constraint(text: str) -> Constraint | None:
+def _growth_constraint(text: str) -> tuple[Constraint | None, list[str]]:
     match = re.search(_HIGH_GROWTH, text)
     requested = "high_growth"
     if match is None:
         match = re.search(_GROWTH, text)
         requested = "growing"
     if match is None:
-        return None
+        return None, []
+    sign = polarity(text, match.start())
+    if sign != POSITIVE:
+        return None, [
+            f"'{match.group(0).strip()}' is negated or not a requirement; a condition that a "
+            "company is NOT growing is not a supported filter, so growth is not filtered"
+        ]
     hardness, basis = hardness_for(text, match.start())
-    return Constraint("growth", (requested,), hardness, basis, match.group(0).strip())
+    return Constraint("growth", (requested,), hardness, basis, match.group(0).strip()), []
 
 
-def _profitability_constraint(text: str) -> Constraint | None:
+def _profitability_constraint(text: str) -> tuple[Constraint | None, list[str]]:
     match = re.search(_PROFITABLE, text)
     if match is None:
-        return None
+        return None, []
+    if polarity(text, match.start()) != POSITIVE:
+        return None, [
+            f"'{match.group(0).strip()}' is negated or not a requirement, so profitability "
+            "is not filtered"
+        ]
     hardness, basis = hardness_for(text, match.start())
-    return Constraint("profitability", ("profitable",), hardness, basis, match.group(0).strip())
+    return (
+        Constraint("profitability", ("profitable",), hardness, basis, match.group(0).strip()),
+        [],
+    )
 
 
-def _materials(padded: str) -> list[str]:
+#: A commodity word only names a MATERIAL in a materials context. "silver lining stocks"
+#: and "lead the market" name no metal; without one of these words nothing is a material.
+_MATERIALS_CONTEXT = re.compile(
+    r"\b(?:min(?:e|es|er|ers|ing)|produc\w*|develop\w*|refin\w*|process\w*|deposits?"
+    r"|projects?|metals?|minerals?|materials?|resources?|explor\w*|suppl\w*|critical"
+    r"|strategic|commodit\w*|smelt\w*|recycl\w*|concentrates?|oxides?)\b"
+)
+
+
+def _materials(text: str, *, mining_theme: bool = False) -> list[str]:
+    """Materials the text names POSITIVELY, in a materials context. The legacy parser's
+    own mining theme counts as that context ("copper for semiconductors")."""
+    if not (mining_theme or _MATERIALS_CONTEXT.search(text)):
+        return []
     found: list[str] = []
     for commodity in COMMODITIES:
         pattern = r"\b(?:" + "|".join(commodity.patterns) + r")\b"
-        if re.search(pattern, padded, re.IGNORECASE) and commodity.slug not in found:
-            found.append(commodity.slug)
+        for match in re.finditer(pattern, text, re.IGNORECASE):
+            if polarity(text, match.start()) == POSITIVE and commodity.slug not in found:
+                found.append(commodity.slug)
+                break
     return found
 
 
-def _geography(
-    padded: str, *, region: str | None, country: str | None
-) -> tuple[list[str], list[str]]:
-    regions: list[str] = []
-    countries: list[str] = []
+#: "US" as a country, not the pronoun: upper-case in the ORIGINAL text, or lower-case
+#: not governed by a verb/preposition that takes the pronoun ("help us", "for us").
+_US_UPPER = re.compile(r"(?<![A-Za-z])(?:US|U\.S\.|USA|U\.S\.A\.)(?![A-Za-z])")
+_US_PRONOUN_BEFORE = re.compile(
+    r"\b(?:help|give|show|tell|let|for|to|find|send|with|of|let's|lets|gives|shows)\s+$"
+)
+
+
+def _geo_terms(original: str, text: str) -> list[tuple[int, str, str]]:
+    """(position, kind, value) for every region/country mention. kind: region|country."""
+    out: list[tuple[int, str, str]] = []
     for word, named_region in _REGION_WORDS.items():
-        if _has_word(padded, word) and named_region not in regions:
-            regions.append(named_region)
+        for m in re.finditer(rf"(?<![a-z0-9]){re.escape(word)}(?![a-z0-9])", text):
+            out.append((m.start(), "region", named_region))
     for word, named_country in _COUNTRY_WORDS.items():
-        if (
-            named_country in COUNTRY_TO_REGION
-            and _has_word(padded, word)
-            and named_country not in countries
-        ):
-            # "American" names the United States unless "North American" named a region.
-            if word == "american" and "North America" in regions:
+        if named_country not in COUNTRY_TO_REGION or word in ("us", "u.s.", "usa"):
+            continue
+        for m in re.finditer(rf"(?<![a-z0-9]){re.escape(word)}(?![a-z0-9])", text):
+            if word == "american" and re.search(
+                r"\b(?:north|south|latin|central)\s+$", text[max(0, m.start() - 10) : m.start()]
+            ):
                 continue
-            countries.append(named_country)
-    # An explicit selector is kept even if the text never named it. A region the PARSER
-    # derived from a country is not: "Swiss watch companies" means Switzerland, and
-    # widening it to Europe would admit every European watchmaker.
+            out.append((m.start(), "country", named_country))
+    lowered_positions = set()
+    for m in _US_UPPER.finditer(original):
+        lowered_positions.add(m.start())
+    for m in re.finditer(r"(?<![a-z0-9])(?:us|u\.s\.|usa)(?![a-z0-9])", text):
+        if m.start() in lowered_positions or not _US_PRONOUN_BEFORE.search(
+            text[max(0, m.start() - 12) : m.start()]
+        ):
+            out.append((m.start(), "country", "United States"))
+    out.sort()
+    return out
+
+
+def _geography(
+    original: str, text: str, *, region: str | None, country: str | None
+) -> tuple[list[str], list[str], list[str], tuple[str, str] | None]:
+    """(regions, countries, excluded, hardness) — explicit selectors win over the text.
+
+    An explicit Country selector is the whole geography (Phase 27.1C: an explicit form
+    value overrides the prompt, and a country is never widened to its region); an explicit
+    Region selector likewise. Otherwise the text's positive mentions are a union, and its
+    negated mentions ("non-US", "Europe excluding the UK") are exclusions.
+    """
     from app.services.discovery_filters import canonical_country, canonical_region
 
-    explicit_region = canonical_region(region) if region else None
     explicit_country = canonical_country(country) if country else None
-    if explicit_region and explicit_region not in regions:
-        regions.append(explicit_region)
-    if explicit_country and explicit_country not in countries:
-        countries.append(explicit_country)
-    # A country INSIDE a named region narrows nothing and widens nothing ("European …
-    # in France" is still a France filter only if the user picked the country): keep both
-    # and let the union apply. A country OUTSIDE every named region widens the geography,
-    # which is exactly "Europe, North America and Australia".
-    return regions, countries
+    explicit_region = canonical_region(region) if region else None
+    if explicit_country:
+        return [], [explicit_country], [], (HARD, "an explicit Country selector is a hard filter")
+    if explicit_region:
+        return [explicit_region], [], [], (HARD, "an explicit Region selector is a hard filter")
+    regions: list[str] = []
+    countries: list[str] = []
+    excluded: list[str] = []
+    hardness: tuple[str, str] | None = None
+    for position, kind, value in _geo_terms(original, text):
+        sign = polarity(text, position)
+        if sign == NOT_A_FILTER:
+            continue
+        if sign == NEGATED:
+            if value not in excluded:
+                excluded.append(value)
+            continue
+        target = regions if kind == "region" else countries
+        if value not in target:
+            target.append(value)
+        if hardness is None:
+            hardness = hardness_for(text, position)
+    if hardness is None and excluded:
+        hardness = (HARD, "an explicit exclusion is a hard filter")
+    return regions, countries, excluded, hardness
+
+
+#: Words that name each industry theme as a KIND of company.
+_THEME_WORDS_RE: dict[str, str] = {
+    "semiconductors": r"semiconductors?|chips?|chipmakers?",
+    "ai_infrastructure": r"ai|data[\s-]?cent(?:er|re)s?",
+    "grid_electrification": r"grid|electrification|electrical",
+    "defense": r"defen[cs]e|aerospace",
+    "nuclear_energy": r"nuclear|uranium",
+    "luxury_goods": r"luxury|watch(?:es)?|jewell?ery",
+    "robotics_automation": r"robotics?|automation",
+    "biotech_pharma": r"biotech\w*|pharma\w*",
+    "banks_fintech": r"banks?|fintech|payments?",
+}
+
+
+def _first_theme_position(text: str, keywords: list[str], materials: list[str]) -> int | None:
+    positions = []
+    for keyword in keywords:
+        m = re.search(rf"(?<![a-z0-9]){re.escape(keyword.lower())}(?![a-z0-9])", text)
+        if m:
+            positions.append(m.start())
+    for material in materials:
+        m = re.search(rf"\b{re.escape(material.replace('_', ' ').split()[0])}", text)
+        if m:
+            positions.append(m.start())
+    return min(positions) if positions else None
 
 
 def _dedup(items: list[str]) -> tuple[str, ...]:
@@ -427,7 +587,7 @@ def build_intent(
     text = re.sub(r"\s+", " ", (thesis_text or "").lower()).strip()
     padded = _padded(thesis_text)
 
-    materials = _materials(padded)
+    materials = _materials(text, mining_theme="mining_materials" in parsed.themes)
     themes = list(parsed.themes)
     sectors = list(parsed.sectors)
     industries = list(parsed.industries)
@@ -442,19 +602,26 @@ def build_intent(
 
     if _CRITICAL_MATERIALS.search(text) and "critical_materials" not in themes:
         themes.insert(0, "critical_materials")
-    if materials:
-        # A materials thesis: industry themes that are really END MARKETS of the
-        # materials are demoted, unless the text asks for companies OF that kind.
+    materials_role: str | None = None
+    # A materials thesis names the company BY its material ("gallium producers") unless it
+    # names another kind of company and the material as its input ("semiconductor
+    # companies using gallium") — then the material is context, and must not widen the
+    # universe to miners.
+    company_kind_themes = [
+        t for t in themes
+        if t not in ("mining_materials", "critical_materials")
+        and re.search(rf"\b(?:{_THEME_WORDS_RE.get(t, '$^')})\b{_COMPANY_NOUN}", text)
+    ]
+    if materials and company_kind_themes:
+        materials_role = "input"
+    elif materials:
+        materials_role = "product"
+        # Industry themes that are really END MARKETS of the materials are demoted,
+        # unless the text asks for companies OF that kind.
         for theme, market in _END_MARKET_THEMES.items():
             if theme not in themes:
                 continue
-            words = {
-                "semiconductors": r"semiconductors?|chips?",
-                "ai_infrastructure": r"ai|data[\s-]?cent(?:er|re)s?",
-                "grid_electrification": r"grid|electrification|electrical",
-                "defense": r"defen[cs]e|aerospace",
-                "nuclear_energy": r"nuclear|uranium",
-            }[theme]
+            words = _THEME_WORDS_RE[theme]
             if not re.search(rf"\b(?:{words})\b{_COMPANY_NOUN}", text):
                 themes.remove(theme)
                 if market not in end_markets:
@@ -480,7 +647,9 @@ def build_intent(
             if i in kept_industries or i == "Metals & Mining" or i in explicit
         ]
 
-    regions, countries = _geography(padded, region=region, country=country)
+    regions, countries, excluded_geo, geo_hardness = _geography(
+        thesis_text or "", text, region=region, country=country
+    )
     catalysts = [key for key, pattern in CATALYST_VOCABULARY.items() if re.search(pattern, text)]
     horizon: tuple[int, int] | None = None
     match = _HORIZON_RANGE.search(text)
@@ -492,7 +661,8 @@ def build_intent(
         if single:
             horizon = (0, int(single.group(1)))
 
-    size = _size_constraint(text)
+    size, size_notes = _size_constraint(text)
+    warnings.extend(size_notes)
     if size is None and market_cap_bucket:
         bucket = market_cap_bucket.strip().lower().replace("-", "_").replace(" ", "_")
         if not bucket.endswith("_cap"):
@@ -502,26 +672,33 @@ def build_intent(
                 "size", (bucket,), HARD, "an explicit size selector is a hard filter",
                 market_cap_bucket,
             )
-    growth = _growth_constraint(text)
-    profitability = _profitability_constraint(text)
+    growth, growth_notes = _growth_constraint(text)
+    profitability, profit_notes = _profitability_constraint(text)
+    warnings.extend([*growth_notes, *profit_notes])
 
     geography = None
-    if regions or countries:
+    if (regions or countries or excluded_geo) and geo_hardness is not None:
         geography = Constraint(
             "geography",
             _dedup([*regions, *countries]),
-            HARD,
-            "a named region or country is a hard filter",
-            ", ".join([*regions, *countries]),
+            geo_hardness[0],
+            geo_hardness[1],
+            ", ".join([*regions, *countries, *(f"not {g}" for g in excluded_geo)]),
+            excluded=_dedup(excluded_geo),
         )
     industry_constraint = None
-    if themes or materials:
+    industry_terms = [*themes, *(materials if materials_role == "product" else [])]
+    if industry_terms:
+        first = _first_theme_position(text, parsed.keywords, materials)
+        hardness = hardness_for(text, first) if first is not None else (
+            HARD, "a named industry, theme or material is a hard filter"
+        )
         industry_constraint = Constraint(
             "industry",
-            _dedup([*themes, *materials]),
-            HARD,
-            "a named industry, theme or material is a hard filter",
-            ", ".join([*themes, *materials]),
+            _dedup(industry_terms),
+            hardness[0],
+            hardness[1],
+            ", ".join(industry_terms),
         )
 
     consumed = set()
@@ -554,6 +731,7 @@ def build_intent(
         regions=_dedup(regions),
         countries=_dedup(countries),
         materials=_dedup(materials),
+        materials_role=materials_role,
         end_markets=_dedup(end_markets),
         catalysts=_dedup(catalysts),
         horizon_years=horizon,
@@ -580,6 +758,7 @@ def intent_from_dict(data: dict[str, Any] | None) -> DiscoveryIntent | None:
             hardness=str(c.get("hardness") or HARD),
             hardness_basis=str(c.get("hardness_basis") or ""),
             phrase=str(c.get("phrase") or ""),
+            excluded=tuple(c.get("excluded") or ()),
         )
         for c in data.get("constraints") or []
         if isinstance(c, dict)
@@ -593,6 +772,7 @@ def intent_from_dict(data: dict[str, Any] | None) -> DiscoveryIntent | None:
         regions=tuple(data.get("regions") or ()),
         countries=tuple(data.get("countries") or ()),
         materials=tuple(data.get("materials") or ()),
+        materials_role=data.get("materials_role"),
         end_markets=tuple(data.get("end_markets") or ()),
         catalysts=tuple(data.get("catalysts") or ()),
         horizon_years=(int(horizon[0]), int(horizon[1])) if horizon else None,

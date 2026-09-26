@@ -301,6 +301,9 @@ def build_universe(
     parsed_countries = set(parsed.get("countries") or [])
     region_requested = bool(parsed_regions or parsed_countries)
     exclusion_keywords = {k.lower() for k in parsed.get("exclusion_keywords") or []}
+    # V3.19.2 — geography the thesis EXCLUDES ("non-US", "Europe excluding the UK").
+    excluded_regions = set(parsed.get("excluded_regions") or [])
+    excluded_countries = set(parsed.get("excluded_countries") or [])
 
     selected_pairs = _select_registry_entries(parsed)
 
@@ -340,6 +343,16 @@ def build_universe(
                     }
                 )
                 continue
+
+        if entry["country"] in excluded_countries or region in excluded_regions:
+            excluded.append(
+                {
+                    "ticker": entry["ticker"],
+                    "company_name": entry["company_name"],
+                    "reason": f"excluded geography: {entry['country']}",
+                }
+            )
+            continue
 
         # ── Exclusion-keyword filter ──────────────────────────────────────
         haystack = " ".join(
