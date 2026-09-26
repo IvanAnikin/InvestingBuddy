@@ -13,6 +13,7 @@ Two defects:
 
 from __future__ import annotations
 
+import os
 import uuid
 from datetime import datetime, timezone
 
@@ -37,13 +38,32 @@ def _jsonb(element, compiler, **kw):  # noqa: ANN001
     return "JSON"
 
 
-@pytest.fixture
-async def session():  # noqa: ANN201
+POSTGRES_URL = os.environ.get("V3_TEST_POSTGRES_URL", "")
+
+
+@pytest.fixture(params=["sqlite", "postgres"])
+async def session(request):  # noqa: ANN001, ANN201
+    """Both engines: SQLite with FKs off has hidden real outages before. On PostgreSQL
+    everything is rolled back — the database is shared with the rest of the suite."""
+    if request.param == "postgres":
+        if not POSTGRES_URL:
+            pytest.skip("set V3_TEST_POSTGRES_URL to a PostgreSQL at head")
+        engine = create_async_engine(POSTGRES_URL, future=True)
+        async with engine.connect() as conn:
+            outer = await conn.begin()
+            async with async_sessionmaker(bind=conn, expire_on_commit=False,
+                                          join_transaction_mode="create_savepoint")() as s:
+                s.info["engine"] = "postgres"
+                yield s
+            await outer.rollback()
+        await engine.dispose()
+        return
     engine = create_async_engine("sqlite+aiosqlite:///:memory:", poolclass=StaticPool,
                                  connect_args={"check_same_thread": False})
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     async with async_sessionmaker(engine, expire_on_commit=False)() as s:
+        s.info["engine"] = "sqlite"
         yield s
     await engine.dispose()
 
@@ -87,7 +107,8 @@ def test_the_condition_survives_planning():
 async def _setup(session, segment_names, *, extracted=True, company=True,  # noqa: ANN001, ANN202
                  active=True):
     with_company = company
-    company = Company(id=uuid.uuid4(), ticker="PNDORA", exchange="CO", name="Pandora A/S",
+    company = Company(id=uuid.uuid4(), ticker=f"P{uuid.uuid4().hex[:6]}".upper(),
+                      exchange="CO", name="Pandora A/S",
                       status="new")
     session.add(company)
     await session.flush()
@@ -209,6 +230,8 @@ async def test_a_named_segment_in_the_corpus_holds_the_block(session):
     """The segment table may exist only as indexed text — the CFR case again."""
     from app.models.research_chunk import ResearchDocumentChunk
 
+    if session.info.get("engine") == "postgres":
+        pytest.skip("the chunk's parent document rows are not built here (SQLite, FKs off)")
     run, questions = await _setup(session, [])
     session.add(ResearchDocumentChunk(
         id=uuid.uuid4(), chunk_id=f"c:{uuid.uuid4().hex[:12]}",
@@ -220,13 +243,25 @@ async def test_a_named_segment_in_the_corpus_holds_the_block(session):
     assert await _release_conditional_blocks(session, run, questions) == []
 
 
-async def test_a_segment_finding_of_this_run_holds_the_block(session):
-    from app.models.ledger import ResearchFinding
-
+@pytest.mark.parametrize("scope_key", ["segment:jewellery maisons", "segment:Watchmakers"])
+async def test_a_segment_finding_of_this_run_holds_the_block(session, scope_key):
+    """Recorded exactly as the loop records it: scope KEY only, no scope_type."""
     run, questions = await _setup(session, [])
-    session.add(ResearchFinding(
-        id=uuid.uuid4(), research_run_id=run.id, statement="Maisons sales rose.",
-        question_key="regional_mix", scope_type="segment",
-        scope_key="segment:jewellery maisons", evidence_count=1, calculation_count=0))
+    await ledger.record_finding(
+        session, run, statement="Maisons sales rose.", evidence_ids=["ev:c:1"],
+        question_key="regional_mix", scope_key=scope_key)
     await session.flush()
     assert await _release_conditional_blocks(session, run, questions) == []
+
+
+async def test_a_group_or_period_finding_does_not_hold_the_block(session):
+    run, questions = await _setup(session, [])
+    await ledger.record_finding(session, run, statement="Group revenue fell.",
+                                evidence_ids=["ev:c:1"], question_key="revenue",
+                                scope_key="group")
+    await ledger.record_finding(session, run, statement="Revenue this year.",
+                                evidence_ids=["ev:c:2"], question_key="revenue",
+                                scope_key="segment:this year")
+    await session.flush()
+    assert await _release_conditional_blocks(session, run, questions) == [
+        "segment_discipline"]

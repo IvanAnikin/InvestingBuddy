@@ -839,7 +839,7 @@ async def segment_hazard_absent(session: Any, run: Any) -> bool:
     if not company_id:
         return False
     try:
-        from sqlalchemy import select
+        from sqlalchemy import or_, select
 
         from app.models.extracted_document import ExtractedDocument, ExtractedFact
         from app.models.ledger import ResearchFinding
@@ -879,8 +879,11 @@ async def segment_hazard_absent(session: Any, run: Any) -> bool:
             finding_keys = (
                 await session.execute(
                     select(ResearchFinding.scope_key)
+                    # The loop records a finding's scope as KEY only ("segment:<name>");
+                    # scope_type is not written, so it cannot be the filter.
                     .where(ResearchFinding.research_run_id == run.id,
-                           ResearchFinding.scope_type == "segment")
+                           or_(ResearchFinding.scope_type == "segment",
+                               ResearchFinding.scope_key.like("segment:%")))
                     .distinct().limit(200)
                 )
             ).scalars().all()
