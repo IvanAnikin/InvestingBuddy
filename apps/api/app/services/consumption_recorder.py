@@ -63,6 +63,7 @@ async def record_run(
     outcome: str | None = None,
     budget_limit_hit: str | None = None,
     cfg: Any | None = None,
+    extra: dict[str, Any] | None = None,
 ) -> uuid.UUID | None:
     """Write one consumption row. Returns its id, or None when nothing was written.
 
@@ -84,9 +85,12 @@ async def record_run(
             agent_run_id=agent_run_id,
             company_id=company_id,
             report_id=report_id,
-            consumption_json=units_mod.run_record(
-                units, budget=budget, prices=prices
-            ),
+            # ``extra`` names what the spend was FOR when no job/report column fits —
+            # V3.19.4: a discovery run's id (one money table, never a second one).
+            consumption_json={
+                **units_mod.run_record(units, budget=budget, prices=prices),
+                **(extra or {}),
+            },
             model_calls=units.model_calls,
             model_tokens=units.model_tokens,
             elapsed_seconds=units.elapsed_seconds,

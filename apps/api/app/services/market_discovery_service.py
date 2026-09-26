@@ -261,6 +261,8 @@ def _build_candidate(
             "theme": thesis_item.get("theme"),
             "metadata_not_sourced": bool(thesis_item.get("metadata_not_sourced")),
             "explanation": thesis_explanation,
+            # V3.19.4 — identity, provenance, constraint results, eligibility, screening.
+            "v319": thesis_item.get("v319"),
             "missing_data_penalty": combined["missing_data_penalty"],
         }
 
@@ -705,7 +707,9 @@ async def create_pending_thesis_run(
         raise ValueError(
             "Thesis needs narrowing: " + " ".join(universe.warnings)
         )
-    if not universe.items:
+    # V3.19.4 — with dynamic discovery on, an empty curated universe is not the end: the
+    # external stage finds companies the registry does not hold.
+    if not universe.items and not dynamic_discovery_enabled():
         raise ValueError(
             "No companies matched this thesis in the curated registry. "
             + " ".join(universe.warnings)
@@ -794,6 +798,8 @@ async def process_run(
     run: DiscoveryRun,
     *,
     extractor: SignalExtractor | None = None,
+    discovery_provider: Any = None,
+    discovery_fetcher: Any = None,
 ) -> DiscoveryRun:
     """
     Process an already-loaded discovery run to completion using ``db``.
@@ -842,6 +848,24 @@ async def process_run(
     run.started_at = run.started_at or datetime.now(timezone.utc)
     run.updated_at = datetime.now(timezone.utc)
     await db.commit()
+
+    # ── V3.19.4 — dynamic discovery: leads → verified issuers → screening →
+    #    eligibility. Runs once per run (idempotent on resume) and REPLACES the
+    #    universe with the eligible, ranked shortlist.
+    dynamic_ran = False
+    if run.mode == "thesis" and dynamic_discovery_enabled():
+        from app.services.discovery.intent import intent_from_dict
+        from app.services.discovery.pipeline import STAGE_KEY
+
+        intent = intent_from_dict((run.parsed_thesis_json or {}).get("discovery_intent"))
+        stage_state = ((run.universe_json or {}).get(STAGE_KEY) or {}).get("status")
+        if intent is not None and stage_state != "completed":
+            await _run_dynamic_discovery(
+                db, run, intent, provider=discovery_provider, fetcher=discovery_fetcher
+            )
+        dynamic_ran = intent is not None
+        universe = _run_universe(run)
+        thesis_ctx = _thesis_context(run)
 
     parsed = run.parsed_thesis_json or {}
     log_event(
@@ -920,7 +944,11 @@ async def process_run(
     # ── Rank by internal prioritization score (desc), in memory ───────────
     # Thesis runs rank by the blended combined_internal_score; ticker runs rank
     # by the Phase 25 discovery candidate_score.
-    if run.mode == "thesis":
+    rank_key: Callable[[DiscoveryCandidate], Any]
+    if run.mode == "thesis" and dynamic_ran:
+        # V3.19.4 — eligibility decides the order; the blended score only breaks ties.
+        rank_key = _eligibility_rank_key
+    elif run.mode == "thesis":
         rank_key = lambda c: (c.combined_internal_score or 0.0)  # noqa: E731
     else:
         rank_key = lambda c: (c.candidate_score or 0.0)  # noqa: E731
@@ -931,7 +959,15 @@ async def process_run(
         candidate.rank = rank
 
     # ── Finalize run status ───────────────────────────────────────────────
-    if processed == 0:
+    if processed == 0 and dynamic_ran and not universe:
+        # Nothing met the hard constraints. That is an ANSWER, not a failure: the
+        # excluded companies and rejected leads are on the run with their reasons.
+        final_status = "completed_with_warnings"
+        warnings.append(
+            "No company met the thesis's hard constraints; see the excluded list. "
+            "Nothing was added to fill the shortlist."
+        )
+    elif processed == 0:
         final_status = "failed"
     elif error_count >= processed:
         final_status = "failed"
@@ -970,6 +1006,107 @@ async def process_run(
         duration_ms=duration_ms,
     )
     return run
+
+
+def dynamic_discovery_enabled(cfg: Any | None = None) -> bool:
+    """V3.19.4 — intent-driven external discovery. Off by default (spend + network)."""
+    return bool(getattr(cfg or settings, "v3_dynamic_discovery_enabled", False))
+
+
+def _eligibility_rank_key(candidate: DiscoveryCandidate) -> tuple:
+    """Higher sorts first (the caller sorts descending)."""
+    from app.services.discovery.constraints import ELIGIBILITY_ORDER
+
+    v319 = (candidate.thesis_match_json or {}).get("v319") or {}
+    eligibility = v319.get("eligibility") or {}
+    order = ELIGIBILITY_ORDER.get(str(eligibility.get("status")), 9)
+    return (
+        -order,
+        int(eligibility.get("hard_passes") or 0),
+        int(eligibility.get("soft_passes") or 0),
+        candidate.combined_internal_score or 0.0,
+    )
+
+
+async def _run_dynamic_discovery(
+    db: AsyncSession,
+    run: DiscoveryRun,
+    intent: Any,
+    *,
+    provider: Any = None,
+    fetcher: Any = None,
+) -> None:
+    """Run the dynamic stage and replace the run's universe with its shortlist.
+
+    Never raises: a failed stage keeps the curated universe, marked as such, so the run
+    degrades to the pre-V3.19 behaviour with the failure stated — and the constraint
+    contract still holds downstream (no candidate carries a verified attribute).
+    """
+    from app.services.discovery.pipeline import STAGE_KEY, run_dynamic_stage, universe_item
+    from app.services.discovery_thesis_scoring import score_thesis_relevance
+
+    base = dict(run.universe_json or {})
+    base[STAGE_KEY] = {"status": "running",
+                       "started_at": datetime.now(timezone.utc).isoformat()}
+    run.universe_json = base
+    await db.commit()
+    started = time.monotonic()
+    try:
+        stage = await run_dynamic_stage(
+            db,
+            intent=intent,
+            run_universe=base,
+            cfg=settings,
+            provider=provider,
+            fetcher=fetcher,
+            max_candidates=(run.config_json or {}).get("max_candidates"),
+        )
+    except Exception as exc:  # noqa: BLE001 - the run continues on the curated universe
+        logger.exception("dynamic_discovery_failed run=%s", run.id)
+        failed = dict(run.universe_json or {})
+        failed[STAGE_KEY] = {"status": "failed", "error": type(exc).__name__,
+                             "note": "the curated universe was used unchanged"}
+        run.universe_json = failed
+        run.warnings = [*(run.warnings or []),
+                        f"Dynamic discovery failed ({type(exc).__name__}); curated universe used."]
+        await db.commit()
+        return
+
+    parsed = run.parsed_thesis_json or {}
+    items = []
+    for record in stage.candidates:
+        item = universe_item(record, intent)
+        if item.get("relevance_score_pre_scan") is None:
+            relevance = score_thesis_relevance(item, parsed)
+            item["relevance_score_pre_scan"] = relevance["thesis_relevance_score"]
+            item["matched_keywords"] = item.get("matched_keywords") or relevance["matched_keywords"]
+        items.append(item)
+    updated = dict(run.universe_json or {})
+    updated["curated_items"] = base.get("items") or []
+    updated["items"] = items
+    updated[STAGE_KEY] = stage.to_dict()
+    run.universe_json = updated
+    run.universe_count = len(items)
+    run.requested_tickers = [str(i["ticker"]) for i in items]
+    run.warnings = [*(run.warnings or []), *stage.warnings[:20]]
+    await db.commit()
+    log_event(
+        logger,
+        "discovery_dynamic_stage_completed",
+        run_id=run.id,
+        elapsed_seconds=round(time.monotonic() - started, 1),
+        **{k: v for k, v in stage.funnel.items() if isinstance(v, int)},
+    )
+    if stage.consumption is not None:
+        from app.services.consumption_recorder import record_run
+
+        await record_run(
+            db,
+            run_type="discovery_screening",
+            units=stage.consumption,
+            outcome="completed",
+            extra={"discovery_run_id": str(run.id), "funnel": stage.funnel},
+        )
 
 
 async def process_discovery_run_by_id(
