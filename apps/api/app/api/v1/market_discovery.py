@@ -335,7 +335,13 @@ async def list_discovery_candidates(
         has_news=has_news,
         ticker=ticker,
     )
-    freshness = await svc.candidate_research_freshness(db, candidates)
+    # Only once the run is finished: the page polls this list every few seconds while a
+    # run is screening, and freshness does not change underneath it.
+    freshness = (
+        await svc.candidate_research_freshness(db, candidates)
+        if run.status in svc.TERMINAL_RUN_STATUSES
+        else {}
+    )
     rows = []
     for c in candidates:
         row = DiscoveryCandidateRead.model_validate(c)

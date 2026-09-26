@@ -468,6 +468,7 @@ def _build_candidate(
 
 # A run in one of these states is finished — a worker must never reprocess it.
 _TERMINAL_STATUSES = {"completed", "completed_with_warnings", "failed", "cancelled"}
+TERMINAL_RUN_STATUSES = frozenset(_TERMINAL_STATUSES)
 
 # A run stuck in "running" longer than this is treated as abandoned (e.g. the
 # process that owned it restarted — FastAPI BackgroundTasks are process-local
@@ -2165,18 +2166,63 @@ def _candidate_to_evidence_dict(
 async def candidate_research_freshness(
     db: AsyncSession, candidates: list[DiscoveryCandidate]
 ) -> dict[uuid.UUID, dict[str, Any]]:
-    """V3.19.6 — each candidate's prior-research freshness, for the page. Read-only;
-    never raises; a company with no research maps to nothing."""
+    """V3.19.6 — each candidate's prior-research freshness, for the page.
+
+    Two queries for the whole page, whatever its size: the candidates' companies, then
+    their versioned reports with only the columns freshness needs (never the report
+    body). Read-only; never raises; a company with no research maps to nothing.
+    """
+    from sqlalchemy import and_, or_
+    from sqlalchemy.orm import load_only
+
+    from app.models.company import Company
+    from app.services.discovery.freshness import classify_report, fresh_days_from
+
+    subset = candidates[:100]
+    if not subset:
+        return {}
+    try:
+        companies = (
+            await db.execute(
+                select(Company.id, Company.ticker, Company.exchange).where(
+                    or_(*[
+                        and_(Company.ticker == c.ticker.upper(),
+                             Company.exchange == (c.exchange or "").upper())
+                        for c in subset
+                    ])
+                )
+            )
+        ).all()
+        by_listing = {(t, e): cid for cid, t, e in companies}
+        company_ids = list(by_listing.values())
+        if not company_ids:
+            return {}
+        reports = (
+            await db.execute(
+                select(Report)
+                .options(load_only(Report.id, Report.company_id, Report.created_at,
+                                   Report.final_report_version, Report.source_summary_json))
+                .where(Report.company_id.in_(company_ids),
+                       Report.final_report_version.isnot(None))
+                .order_by(Report.created_at.desc())
+                .limit(500)
+            )
+        ).scalars().all()
+    except Exception:  # noqa: BLE001 - enrichment is never fatal
+        return {}
+    fresh_days = fresh_days_from(settings)
+    best: dict[Any, Any] = {}
+    for report in reports:
+        freshness = classify_report(report, fresh_days=fresh_days, with_evidence=False)
+        current = best.get(report.company_id)
+        # Professional research wins over any legacy report; newest wins within a class.
+        if current is None or (current.status == "legacy" and freshness.status != "legacy"):
+            best[report.company_id] = freshness
     out: dict[uuid.UUID, dict[str, Any]] = {}
-    for candidate in candidates[:100]:
-        try:
-            company = await get_company_by_ticker(db, candidate.ticker, candidate.exchange)
-            signals = await resolve_research_for_discovery(db, company.id if company else None)
-        except Exception:  # noqa: BLE001 - enrichment is never fatal
-            continue
-        freshness = signals.get("research_freshness") if signals else None
-        if isinstance(freshness, dict):
-            out[candidate.id] = freshness
+    for candidate in subset:
+        cid = by_listing.get((candidate.ticker.upper(), (candidate.exchange or "").upper()))
+        if cid in best:
+            out[candidate.id] = best[cid].to_dict()
     return out
 
 

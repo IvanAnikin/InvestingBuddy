@@ -208,7 +208,9 @@ export function constraintRows(record: DiscoveryCandidateRecord | null | undefin
         statusWord,
         detail,
         requested: r.requested.length ? r.requested.map(humanise).join(" or ") : null,
-        sourceUrl: source?.url ?? null,
+        // Only an https URL is ever rendered as a link (sources are pages the platform
+        // fetched over https; anything else is shown as absent rather than trusted).
+        sourceUrl: source?.url && /^https:\/\//i.test(source.url) ? source.url : null,
         sourceTier: source?.tier ?? null,
         borderline: r.borderline,
       };
