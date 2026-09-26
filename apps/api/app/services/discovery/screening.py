@@ -323,6 +323,67 @@ def _annual_year(period: str | None) -> int | None:
     return parsed.year if parsed.period_type == PERIOD_TYPE_ANNUAL else None
 
 
+#: At most this many pages of the issuer's own site are read per issuer.
+MAX_ISSUER_SITE_PAGES = 2
+
+
+def _issuer_site_urls(issuer: IdentityOutcome) -> list[str]:
+    """Pages on the ISSUER's own domain the lead named, then that domain's home page.
+
+    A recalled URL is a claim like any other; it is only ever read when its host passes
+    :func:`issuer_domain_matches` (equality with the company's distinctive name), so a
+    hallucinated or third-party domain is never treated as the company speaking.
+    """
+    from urllib.parse import urlsplit
+
+    from app.services.discovery.identity import issuer_domain_matches
+
+    urls: list[str] = []
+    for raw in (issuer.lead.evidence_url, issuer.lead.listing_source_url):
+        parts = urlsplit(raw or "")
+        if parts.scheme != "https" or not parts.hostname:
+            continue
+        # The site must belong to the lead's company AND to the company actually matched:
+        # a lead "Aker Solutions" paired with ticker AKER is matched to Aker ASA, and
+        # akersolutions.com must not describe Aker ASA. The matched (directory) name is
+        # title-cased first so an ALL-CAPS short form ("RIO TINTO LIMITED") cannot make
+        # any three-letter first word pass as an acronym.
+        matched = (issuer.name or "").title() if (issuer.name or "").isupper() else issuer.name
+        if not all(issuer_domain_matches(parts.hostname, n)
+                   for n in {issuer.lead.name, matched} if n):
+            continue
+        for url in (raw, f"https://{parts.hostname}/"):
+            if url and url not in urls:
+                urls.append(url)
+    return urls[:MAX_ISSUER_SITE_PAGES]
+
+
+async def issuer_site_exposures(
+    issuer: IdentityOutcome, terms: dict[str, re.Pattern[str]], *, cfg: Any, fetcher: Any,
+) -> tuple[list[ExposureObservation], int]:
+    """V3.19.10 — what the company says it does, read from its OWN website by the platform.
+
+    Recall gives no source URLs, so screening claims cannot be verified; the issuer's own
+    pages can. Each clause naming a requested term is classified direct / indirect /
+    denied exactly as for any verified passage. Returns (exposures, fetches). Never raises.
+    """
+    from app.services.discovery.identity import _page_text
+
+    found: list[ExposureObservation] = []
+    fetches = 0
+    for url in _issuer_site_urls(issuer):
+        fetches += 1
+        text, record = await _page_text(url, cfg, fetcher)
+        if not text:
+            continue
+        final = record.get("final_url") or url
+        found.extend(exposures_from_text(text, terms, source_url=final,
+                                         source_tier="issuer", verified=True))
+        if any(e.exposure in (EXPOSURE_DIRECT, EXPOSURE_INDIRECT) for e in found):
+            break
+    return found, fetches
+
+
 async def screen_issuer(
     issuer: IdentityOutcome,
     intent: DiscoveryIntent,
@@ -459,6 +520,12 @@ async def screen_issuer(
                 result.hq_country = country
                 result.hq_source = {"url": url, "tier": tier}
 
+    if not any(e.verified and e.exposure != EXPOSURE_DENIED for e in result.exposures):
+        site, site_fetches = await issuer_site_exposures(issuer, terms, cfg=cfg,
+                                                         fetcher=fetcher)
+        fetches += site_fetches
+        result.exposures.extend(site)
+
     # Two verified ANNUAL revenues for consecutive fiscal years, same currency → a pair.
     if revenues and not any(g.metric != "revenue_pair" for g in result.growth):
         by_year = {year: (amount, cur, url, tier) for year, amount, cur, url, tier in revenues}
@@ -533,6 +600,15 @@ async def screen_issuers(
         from app.services.agents.routing import research_provider_for
 
         provider = research_provider_for(cfg)
+    # V3.19.10 — screening asks in RECALL mode (no retrieval): the provider's builtin search
+    # stopped issuing searches on 2026-09-26 and the retrieval path then exhausted its
+    # output budget reasoning. Every claim is still verified on a page the platform fetches
+    # itself; recall only changes where the claim's URL came from.
+    if provider is not None and getattr(provider, "search_enabled", False):
+        from dataclasses import is_dataclass, replace
+
+        if is_dataclass(provider) and not isinstance(provider, type):
+            provider = replace(provider, search_enabled=False)
     limit = _bounded(getattr(cfg, "v3_discovery_max_screened", None), DEFAULT_MAX_SCREENED,
                      HARD_MAX_SCREENED)
     concurrency = _bounded(getattr(cfg, "v3_discovery_screening_concurrency", None),

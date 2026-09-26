@@ -77,7 +77,9 @@ class MarketCapObservation:
     source_url: str | None
     source_tier: str | None
     verified: bool
-    method: str = "stated_market_cap"  # | "shares_x_price"
+    #: "stated_market_cap" | "shares_x_price" | "exchange_directory" |
+    #: "admitted_shares_x_price" | "public_float_floor" (a LOWER BOUND, see verify_size)
+    method: str = "stated_market_cap"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -251,6 +253,8 @@ def verify_size(
             sources=[_source(observation.source_url, observation.source_tier)],
         )
     usd = to_usd(observation.amount, observation.currency, rate)
+    if observation.method == FLOAT_FLOOR_METHOD:
+        return _verify_size_floor(constraint, observation, rate, usd)
     bucket = size_bucket(usd)
     value = {
         "amount": observation.amount,
@@ -285,6 +289,57 @@ def verify_size(
         ),
         sources=sources,
         borderline=_borderline(usd),
+    )
+
+
+#: A public float is the market value of shares NOT held by affiliates, stated in a 10-K
+#: as of the issuer's last second-quarter end — so market cap ≥ float, but the figure can
+#: be ~15 months old. It may only prove a company is ABOVE a band, and only with this
+#: margin, so a fall in the share price since the float date cannot flip the answer.
+FLOAT_FLOOR_METHOD = "public_float_floor"
+FLOAT_FLOOR_MARGIN = 2.0
+
+
+def _verify_size_floor(
+    constraint: Constraint | None, observation: MarketCapObservation, rate: FxRate,
+    floor_usd: float,
+) -> ConstraintResult:
+    """Size from a lower bound: FAIL when even half the floor is above every requested
+    band; PASS only for an open-ended top band that even half the floor clears (the
+    price may have fallen since the float date); else UNKNOWN."""
+    requested = list(constraint.requested) if constraint else []
+    hardness = constraint.hardness if constraint else HARD
+    value = {
+        "floor_amount": observation.amount, "currency": observation.currency,
+        "floor_usd": round(floor_usd, 0), "as_of": observation.as_of,
+        "as_of_basis": observation.as_of_basis, "method": observation.method,
+        "fx": rate.to_dict(),
+    }
+    sources = [_source(observation.source_url, observation.source_tier, as_of=observation.as_of)]
+    stated = (f"public float ${floor_usd / 1e9:,.2f}bn at {observation.as_of or 'an unstated date'}"
+              " — market cap is at least this")
+    if constraint is None:
+        return ConstraintResult("size", [], HARD, NOT_REQUESTED, value=value,
+                                basis=stated, sources=sources)
+    bands = [SIZE_BANDS_USD[b] for b in constraint.requested if b in SIZE_BANDS_USD]
+    ceilings = [high for _low, high in bands]
+    if bands and None not in ceilings:
+        ceiling = max(c for c in ceilings if c is not None)
+        if floor_usd / FLOAT_FLOOR_MARGIN >= ceiling:
+            return ConstraintResult(
+                "size", requested, hardness, FAIL, value=value,
+                basis=f"{stated}; above requested {', '.join(constraint.requested)}",
+                sources=sources,
+            )
+    for low, high in bands:
+        if high is None and low is not None and floor_usd / FLOAT_FLOOR_MARGIN >= low:
+            return ConstraintResult("size", requested, hardness, PASS, value=value,
+                                    basis=f"{stated}; within the open-ended requested band",
+                                    sources=sources)
+    return ConstraintResult(
+        "size", requested, hardness, UNKNOWN, value=value,
+        basis=f"{stated}; a lower bound cannot place it in {', '.join(constraint.requested)}",
+        sources=sources,
     )
 
 
@@ -571,6 +626,7 @@ def bucket_from_words(text: str) -> str | None:
 
 
 __all__ = [
+    "FLOAT_FLOOR_METHOD",
     "ConstraintResult",
     "ELIGIBLE",
     "ELIGIBLE_UNVERIFIED",

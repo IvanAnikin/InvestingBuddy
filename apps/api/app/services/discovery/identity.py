@@ -46,6 +46,7 @@ REJECT_NO_TICKER = "no_ticker"
 REJECT_NO_LISTING_EVIDENCE = "no_listing_evidence"
 REJECT_NAME_MISMATCH = "name_mismatch"
 REJECT_VENUE_UNVERIFIED = "venue_unverified"
+REJECT_NOT_IN_DIRECTORY = "not_in_exchange_directory"
 REJECT_FETCH_FAILED = "fetch_failed"
 REJECT_DUPLICATE = "duplicate"
 REJECT_BUDGET = "verification_budget_exhausted"
@@ -358,6 +359,8 @@ class IdentityOutcome:
     company_id: str | None = None
     fetches: int = 0
     attempts: list[dict[str, Any]] = field(default_factory=list)
+    #: V3.19.10 — the exchange directory's own row for this listing, when one matched.
+    directory_listing: dict[str, Any] | None = None
 
     @property
     def verified(self) -> bool:
@@ -433,8 +436,13 @@ async def verify_identity(
     cfg: Any = None,
     fetcher: Any = None,
     max_fetches: int = 2,
+    directory_fetcher: Any = None,
 ) -> IdentityOutcome:
-    """Verify one EXTERNAL lead's listing. Never raises; always names its reason."""
+    """Verify one EXTERNAL lead's listing. Never raises; always names its reason.
+
+    Order: the venue's official directory (authoritative, vendor-free); only for a venue
+    no directory covers, a page the lead cited on an exchange/regulator/issuer host.
+    """
     exchange = normalise_venue(lead.exchange_raw)
     ticker = (lead.ticker or "").strip().upper() or None
     base: dict[str, Any] = {
@@ -458,6 +466,35 @@ async def verify_identity(
         "listing_region": region_for_exchange(exchange),
         "listing_currency": currency_for_exchange(exchange),
     }
+    # V3.19.10 — the exchange's OWN directory first: the most authoritative source for
+    # "is this listed here", with no vendor in the loop and no URL needed from the lead.
+    from app.services.discovery.directories import find_listing
+
+    row, directory_reason = await find_listing(
+        name=lead.name, ticker=ticker, venue=exchange, cfg=cfg,
+        fetcher=directory_fetcher or fetcher,
+    )
+    if row is not None:
+        base.update(ticker=row.ticker, name=row.name or lead.name)
+        return IdentityOutcome(
+            status=IDENTITY_VERIFIED,
+            listing_source={
+                "url": row.source_url,
+                "tier": row.tier,
+                "fetched_at": datetime.now(timezone.utc).isoformat(),
+                "basis": f"listed in the {row.directory.upper()} directory as {row.ticker} "
+                         f"({row.name})",
+                "directory": row.directory,
+            },
+            directory_listing=row.to_dict(),
+            **base,
+            **listing,
+        )
+    if directory_reason is not None:
+        return IdentityOutcome(
+            status=IDENTITY_REJECTED, rejection_reason=REJECT_NOT_IN_DIRECTORY,
+            detail=directory_reason, **base, **listing,
+        )
     urls: list[tuple[str, str]] = []
     for url in (lead.listing_source_url, lead.evidence_url):
         if not url or any(u == url for u, _ in urls):

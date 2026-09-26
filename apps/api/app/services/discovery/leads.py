@@ -44,7 +44,7 @@ DEFAULT_MAX_LEAD_QUERIES = 4
 DEFAULT_MAX_RAW_LEADS = 60
 #: Companies asked for per query — enough to find the long tail, few enough to answer
 #: inside one output budget.
-COMPANIES_PER_QUERY = 15
+COMPANIES_PER_QUERY = 8
 
 COMPANY_LEAD_SYSTEM_PROMPT = (
     "You are a research contractor for an evidence-first investment research platform. "
@@ -61,7 +61,7 @@ COMPANY_LEAD_SYSTEM_PROMPT = (
     "are not sure of the ticker, omit the company rather than guessing.\n"
     "- `listing_source_url`: a page on the EXCHANGE's own website, or on the COMPANY's own "
     "investor-relations website, that states the ticker. Not a news article, not a data "
-    "aggregator. Null if you did not see one.\n"
+    "aggregator. Null if you are not sure of it.\n"
     "- `evidence_url`: a page (ideally the company's own) that shows why it matches the "
     "brief. `why`: one sentence, the words that page uses.\n"
     "- Prefer smaller and less-covered companies over household names when the brief asks "
@@ -133,6 +133,8 @@ class CompanyLead:
     lead_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     #: Carried for registry-sourced leads: the curated/held classification.
     registry_item: dict[str, Any] | None = None
+    #: How the lead was produced: ``model_recall`` (no retrieval) or ``search``.
+    discovery_mode: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         out = asdict(self)
@@ -252,6 +254,7 @@ def parse_company_leads(
                 why=_clean(item.get("why"), 400),
                 source="external_search",
                 discovery_query=query.text,
+                discovery_mode="model_recall",
                 provider=provider,
                 task_id=task_id,
             )
@@ -356,44 +359,47 @@ async def discover_leads(
 
 
 async def _ask(provider: Any, query: LeadQuery, cfg: Any) -> dict[str, Any]:
-    """One retrieval-backed call with the company-lead prompt, measured like any other."""
-    from app.integrations.deepseek.providers import (
-        DEFAULT_SEARCH_TOOL_NAME,
-        RETRIEVAL_BUDGET_PROMPT,
-        _vendor_usage,
-        parse_search_payload,
-    )
+    """One bounded call with the company-lead prompt, measured like any other.
+
+    V3.19.10 — model RECALL through a plain JSON completion. On 2026-09-26 the provider's
+    builtin web search stopped issuing searches (every model, every prompt: the tool is
+    accepted and never called), and the retrieval path then spent its whole 12,000-token
+    output budget reasoning and returned nothing. Leads do not need retrieval to be
+    useful: every one is verified against the exchange's OWN directory before it may
+    enter a universe (``discovery.identity``), so a recalled name is exactly as
+    trustworthy as a searched one — which is to say, not at all until verified. The
+    provenance says ``model_recall``.
+    """
+    from app.integrations.deepseek.providers import _vendor_usage
     from app.services.providers.contracts import ConsumptionUnits
 
     transport = provider.transport
     timeout = int(getattr(cfg, "v3_external_search_timeout_seconds", 0) or 180)
-    response = await transport.investigate_with_search(
-        system=COMPANY_LEAD_SYSTEM_PROMPT + RETRIEVAL_BUDGET_PROMPT,
-        question=query.text,
-        domains=None,
-        max_output_tokens=int(getattr(provider, "max_output_tokens", 12_000) or 12_000),
+    response = await transport.complete(
+        system=COMPANY_LEAD_SYSTEM_PROMPT
+        + "\nAnswer from what you know; you have no web access in this call. Reply in json.",
+        user=query.text,
+        max_tokens=2000,
+        temperature=0.2,
         timeout=min(max(10, timeout), 300),
+        json_mode=True,
+        # A company list needs no deliberation, and with thinking on the model spent
+        # every output token reasoning and returned an empty message (measured
+        # 2026-09-26: 4,000 tokens, finish "length", no text; off: 234 tokens).
+        thinking=False,
     )
-    _candidates, trace_warnings, trace = parse_search_payload(
-        response,
-        expected_tool=getattr(transport, "search_tool_name", "") or DEFAULT_SEARCH_TOOL_NAME,
-    )
-    truncated = (response.finish_reason or "").lower() in {
-        "length", "max_tokens", "max_output_tokens", "incomplete",
-    } or (bool(response.tool_payloads) and not (response.text or "").strip())
+    truncated = (response.finish_reason or "").lower() in {"length", "max_tokens"}
     return {
         "text": response.text,
         "provider": getattr(provider, "provider_id", None),
         "task_id": str(uuid.uuid4()),
         "truncated": truncated,
-        "opened_urls": list(trace.opened_urls),
-        "warnings": list(trace_warnings)
-        + (["the answer was cut off; its list is partial, not exhaustive"] if truncated else []),
+        "opened_urls": [],
+        "mode": "model_recall",
+        "warnings": (["the answer was cut off; its list is partial, not exhaustive"]
+                     if truncated else []),
         "consumption": ConsumptionUnits(
-            provider_research_runs=1,
             model_calls=1,
-            web_search_calls=trace.query_call_count,
-            url_fetch_calls=trace.retrieval_call_count,
             model_input_tokens=response.prompt_tokens,
             model_output_tokens=response.completion_tokens,
             cached_tokens=response.cached_tokens,

@@ -1034,6 +1034,9 @@ class DeepSeekResearchProvider:
                     max_tokens=3000,
                     temperature=0.2,
                     timeout=timeout,
+                    # V3.19.10 — measured 2026-09-26: with thinking on, recall spent all
+                    # 3,000 tokens reasoning and returned no message at all.
+                    thinking=False,
                 )
         except DeepSeekUnavailableError as exc:
             # `failed` with a warning, never a partial answer presented as complete.
