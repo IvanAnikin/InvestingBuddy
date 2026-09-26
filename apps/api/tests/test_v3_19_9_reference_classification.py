@@ -64,8 +64,11 @@ async def test_a_dynamically_discovered_issuer_uses_its_verified_theme(session, 
     session.add(run)
     session.add(DiscoveryCandidate(
         id=uuid.uuid4(), discovery_run_id=run.id, ticker="MEX", exchange="PA",
+        # The shape verify_industry writes: every pass carries what was matched.
         thesis_match_json={"theme": "luxury_goods", "v319": {"constraint_results": [
-            {"key": "industry", "status": "pass"}]}},
+            {"key": "industry", "status": "pass",
+             "value": {"matched": ["luxury_goods"], "direct": ["luxury_goods"],
+                       "exposure": "direct"}}]}},
     ))
     company = Company(id=uuid.uuid4(), ticker="MEX", exchange="PA", name="Maison Exemple",
                       status="new")
