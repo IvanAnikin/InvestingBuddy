@@ -178,3 +178,74 @@ async def test_deep_research_tests_size_against_the_verified_market_cap():
     assert context.market_cap_usd == 31_500_000_000.0
     fit = size_fit(context, context.market_cap_usd)
     assert fit["fits"] is False
+
+
+# ── review follow-ups ─────────────────────────────────────────────────────── #
+
+
+@pytest.mark.parametrize(
+    "sentence",
+    [
+        "C3 is a small-cap with no net debt.",
+        "C3, a fast-growing house, lacks filings coverage.",
+        "C3 is a small cap that exceeds expectations.",
+        "C3 is a small‑cap jeweller.",
+        "C3 is a small capitalisation stock.",
+        "C3 is a smaller luxury brand.",
+        "Growth-oriented C3 is expanding.",
+        "unk is a small-cap.",
+    ],
+)
+def test_more_leaks_are_removed(sentence):
+    assert check_sentence(sentence, ATTRS, None) is not None
+
+
+@pytest.mark.parametrize(
+    "sentence",
+    [
+        "Large caps dominate the sector.",
+        "The sector is growing.",
+        "C3 operates in a growing market.",
+        "C3 benefits from growing Chinese demand.",
+        "C3 compares with mid-cap peers.",
+        "C3 is not a small cap.",
+        "C3's small-cap status is not verified.",
+    ],
+)
+def test_generic_or_qualified_sentences_stand(sentence):
+    assert check_sentence(sentence, ATTRS, None) is None
+
+
+def test_separators_are_preserved_when_nothing_is_removed():
+    text = "Para one.\n\nPara two.\n- bullet"
+    out = guard_review({"agent_outputs": {"chair": {"summary": text}}}, CANDIDATES)
+    assert out["agent_outputs"]["chair"]["summary"] == text
+
+
+def test_research_next_on_an_unverified_candidate_is_labelled():
+    candidates = [*CANDIDATES[:2], {**CANDIDATES[2], "eligibility": "eligible_unverified",
+                                    "unknown_constraints": ["size"]}]
+    out = guard_review({"candidates_to_research_next": [{"candidate_ref": "C3",
+                                                         "rationale": "Strong brand."}]},
+                       candidates)
+    assert out["candidates_to_research_next"][0]["unverified_constraints"] == ["size"]
+
+
+def test_a_leads_why_that_states_an_unverified_attribute_is_withheld():
+    from app.services.discovery import constraints as c
+    from app.services.discovery.identity import IdentityOutcome
+    from app.services.discovery.leads import CompanyLead
+    from app.services.discovery.pipeline import CandidateRecord
+
+    lead = CompanyLead(name="X SA", ticker="XSA", exchange_raw="PA", country="France",
+                       listing_source_url=None, evidence_url=None,
+                       why="a fast-growing small-cap jeweller", source="external_search")
+    identity = IdentityOutcome(lead=lead, status="verified", ticker="XSA", exchange="PA",
+                               name="X SA")
+    results = [c.verify_listing({"identity_status": "verified", "listing_source":
+                                 {"url": "https://x.example", "tier": "issuer"}})]
+    record = CandidateRecord(identity, results, c.decide_eligibility(results), None,
+                             {"discovery_source": "external_search", "why": lead.why})
+    payload = record.to_dict()
+    assert payload["provenance"]["why"] is None
+    assert "without" in payload["provenance"]["why_withheld"]

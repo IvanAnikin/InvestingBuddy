@@ -337,8 +337,9 @@ def size_fit(context: ThesisContext, market_cap_usd: float | None) -> dict[str, 
             "market_cap_usd": None,
             "fits": None,
             "note": (
-                "A market capitalisation in US dollars is not available (a non-US "
-                "listing's value is not converted), so size fit is unknown."
+                "No verified market capitalisation is available (a non-US listing is "
+                "converted only from a verified figure at an official FX rate), so size "
+                "fit is unknown."
             ),
         }
     fits = any(

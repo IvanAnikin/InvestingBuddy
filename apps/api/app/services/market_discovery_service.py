@@ -1292,7 +1292,7 @@ async def list_candidates(
         stmt = stmt.where(DiscoveryCandidate.ticker == ticker.strip().upper())
 
     sort_map = {
-        "rank": DiscoveryCandidate.rank.asc(),
+        "rank": DiscoveryCandidate.rank.asc().nulls_last(),
         "candidate_score": DiscoveryCandidate.candidate_score.desc(),
         "combined_internal_score": DiscoveryCandidate.combined_internal_score.desc(),
         "thesis_relevance_score": DiscoveryCandidate.thesis_relevance_score.desc(),
@@ -1302,7 +1302,12 @@ async def list_candidates(
         "fundamentals_score": DiscoveryCandidate.fundamentals_score.desc(),
         "created_at": DiscoveryCandidate.created_at.desc(),
     }
-    stmt = stmt.order_by(sort_map.get(sort, DiscoveryCandidate.candidate_score.desc()))
+    # A stable tie-breaker: while a run is still screening, rank is NULL for every row.
+    stmt = stmt.order_by(
+        sort_map.get(sort, DiscoveryCandidate.candidate_score.desc()),
+        DiscoveryCandidate.created_at.asc(),
+        DiscoveryCandidate.id.asc(),
+    )
     stmt = stmt.limit(limit).offset(offset)
 
     result = await db.execute(stmt)
@@ -2126,9 +2131,12 @@ def _candidate_to_evidence_dict(
         "sector": c.sector,
         "industry": c.industry,
         "thesis_relevance_score": c.thesis_relevance_score,
-        "combined_internal_score": c.combined_internal_score,
-        "candidate_score": c.candidate_score,
-        "candidate_score_grade": c.candidate_score_grade,
+        # V3.19.5 — the blended screening scores both carry share-price momentum, so a
+        # council asked about business growth is not handed them. The run's own rank
+        # (eligibility first) orders the pack instead.
+        "combined_internal_score": None,
+        "candidate_score": None,
+        "candidate_score_grade": None,
         "momentum_score": c.momentum_score,
         "catalyst_score": c.catalyst_score,
         "fundamentals_score": c.fundamentals_score,
@@ -2353,7 +2361,9 @@ async def _compute_council_result(
             "(no candidates and not in a terminal state)."
         )
 
-    sort = "combined_internal_score" if run.mode == "thesis" else "candidate_score"
+    # V3.19.5 — the run's own rank decides which candidates the council sees; the blended
+    # score (momentum-weighted) no longer does.
+    sort = "rank" if run.mode == "thesis" else "candidate_score"
     candidates, _ = await list_candidates(
         db,
         run.id,

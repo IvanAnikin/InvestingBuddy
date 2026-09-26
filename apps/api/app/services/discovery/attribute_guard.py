@@ -27,16 +27,29 @@ import re
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-_SIZE_RE = re.compile(r"\b(micro|small|mid|large|mega)[\s-]?caps?\b", re.IGNORECASE)
+_SIZE_RE = re.compile(
+    r"\b(micro|small|mid|large|mega)[\s-]?cap(?:s|itali[sz]ation)?\b", re.IGNORECASE
+)
 _SIZE_ADJ_RE = re.compile(
-    r"\b(?:(small(?:er)?|large(?:r)?|big(?:ger)?|tiny|mega)\s+(?:compan(?:y|ies)|firms?|names"
-    r"|issuers?|groups?|houses?|players?))\b",
+    r"\b(?:(small(?:er)?|large(?:r)?|big(?:ger)?|tiny|mega)\s+(?:luxury\s+)?"
+    r"(?:compan(?:y|ies)|firms?|names|issuers?|groups?|houses?|players?|brands?"
+    r"|businesses|producers?|miners?))\b",
     re.IGNORECASE,
 )
 _GROWTH_RE = re.compile(
-    r"\b(?:high[\s-]growth|fast[\s-]growing|rapidly[\s-]growing|growing|growth\s+"
-    r"(?:compan(?:y|ies)|names|stocks|businesses|stor(?:y|ies)))\b",
+    r"\b(?:high[\s-]growth|fast[\s-]growing|rapidly[\s-]growing|growth[\s-]oriented|growing"
+    r"|growth\s+(?:compan(?:y|ies)|names|stocks|businesses|stor(?:y|ies)))\b",
     re.IGNORECASE,
+)
+#: "a growing market", "growing demand": the growth of something that is not a company.
+_NOT_COMPANY_GROWTH = re.compile(
+    r"^\s*(?:\w+\s+)?(?:market|markets|demand|sector|industry|segment|category|middle"
+    r"|class|population|interest|appetite|adoption|spending|consumption|region)\b",
+    re.IGNORECASE,
+)
+#: "mid-cap peers", "larger players like …": a size phrase about OTHER companies.
+_PEER_AFTER = re.compile(
+    r"^\s*(?:peers?|players?|rivals?|competitors?|counterparts|incumbents)\b", re.IGNORECASE
 )
 #: The sentence talks about what was ASKED FOR, not what a company is.
 _REQUESTED_MARKERS = re.compile(
@@ -44,22 +57,31 @@ _REQUESTED_MARKERS = re.compile(
     r"|criteri\w+|constraint\w*|filter\w*|target\w*)\b",
     re.IGNORECASE,
 )
-#: The sentence QUALIFIES the attribute rather than asserting it.
-#: Only NEGATIVE qualifiers: "verified" or "established" never exempt a sentence — "C1 is
-#: a verified small-cap" is exactly the assertion that must be checked.
-_QUALIFIERS = re.compile(
-    r"\b(?:not|no|unverified|unknown|unestablished|uncertain|unclear|lack\w*|missing"
-    r"|cannot|can't|could\s+not|whether|mismatch\w*|outside|exceed\w*|fail\w*"
-    r"|only\s+\d+\s+of)\b",
+#: A NEGATIVE qualifier of the attribute itself, immediately around it: "not a small cap",
+#: "no verified growth", "small-cap status is unverified", "growth is not established".
+_QUALIFIER_BEFORE = re.compile(
+    r"\b(?:not|no|non|never|nor|without|lacks?|lacking|unverified|unknown|unclear|uncertain"
+    r"|isn't|aren't|whether|if|outside|beyond|above|below|exceeds?)\s+(?:\w+\s+){0,2}$",
     re.IGNORECASE,
 )
+_QUALIFIER_AFTER = re.compile(
+    r"^\W{0,3}(?:\w+\s+){0,2}(?:(?:is|are|was|remains?|being)\s+)?(?:not|un)"
+    r"(?:\s+(?:yet\s+)?)?(?:verified|established|known|confirmed|clear|shown|evidenced)\b"
+    r"|^\W{0,3}(?:status\s+)?(?:cannot|could\s+not)\s+be\s+(?:verified|confirmed)",
+    re.IGNORECASE,
+)
+_COUNTING = re.compile(r"\bonly\s+\d+\s+of\b|\b\d+\s+of\s+(?:the\s+)?\d+\b", re.IGNORECASE)
 _COHORT = re.compile(
     r"\b(?:all|these|those|every|each|the\s+(?:candidates|cohort|set|group|companies|names"
-    r"|universe|shortlist)|cohort|candidate\s+set|most)\b",
+    r"|universe|shortlist)|cohort|candidate\s+set)\b",
     re.IGNORECASE,
 )
 _CREF = re.compile(r"\bC(\d{1,3})\b")
-_SENTENCE_SPLIT = re.compile(r"(?<=[.!?;])\s+")
+#: Sentence boundaries, KEPT (captured) so the original separators — newlines, bullets —
+#: survive: the chair synthesis is rendered whitespace-preserving.
+_SENTENCE_SPLIT = re.compile(r"((?<=[.!?;])\s+|\n+)")
+_HYPHENS = str.maketrans({"\u2010": "-", "\u2011": "-", "\u2012": "-", "\u2013": "-",
+                          "\u2014": "-", "\u2212": "-", "\u00a0": " "})
 
 _BUCKET_ALIASES = {
     "micro": "micro_cap", "tiny": "micro_cap", "small": "small_cap", "smaller": "small_cap",
@@ -76,6 +98,12 @@ _SATISFIES = {
 }
 
 
+def _qualified(text: str, start: int, end: int) -> bool:
+    before = text[max(0, start - 40) : start]
+    after = text[end : end + 48]
+    return bool(_QUALIFIER_BEFORE.search(before) or _QUALIFIER_AFTER.search(after))
+
+
 class CandidateAttributes:
     """What may be said about each candidate, keyed by every handle the council uses."""
 
@@ -85,7 +113,9 @@ class CandidateAttributes:
         for index, entry in enumerate(entries, start=1):
             attrs = dict(entry.get("verified_attributes") or {})
             record = {"ref": f"C{index}", "attrs": attrs,
-                      "ticker": str(entry.get("ticker") or "")}
+                      "ticker": str(entry.get("ticker") or ""),
+                      "eligibility": entry.get("eligibility"),
+                      "unknown_constraints": list(entry.get("unknown_constraints") or [])}
             self.all.append(record)
             for key in (f"C{index}", str(entry.get("candidate_id") or ""),
                         str(entry.get("ticker") or "").upper()):
@@ -99,50 +129,68 @@ class CandidateAttributes:
         return self.by_key.get(text) or self.by_key.get(text.upper())
 
 
-def _subjects(
-    sentence: str, attrs: CandidateAttributes, own: dict[str, Any] | None
-) -> list[dict[str, Any]]:
+def _named(sentence: str, attrs: CandidateAttributes) -> list[dict[str, Any]]:
     named = [attrs.by_key[f"C{m.group(1)}"] for m in _CREF.finditer(sentence)
              if f"C{m.group(1)}" in attrs.by_key]
     for record in attrs.all:
         ticker = record["ticker"]
-        if ticker and len(ticker) >= 2 and re.search(rf"\b{re.escape(ticker)}\b", sentence):
+        if ticker and len(ticker) >= 2 and re.search(
+            rf"(?<![A-Za-z0-9]){re.escape(ticker)}(?![A-Za-z0-9])", sentence, re.IGNORECASE
+        ):
             if record not in named:
                 named.append(record)
+    return named
+
+
+def _subjects(
+    sentence: str, attrs: CandidateAttributes, own: dict[str, Any] | None
+) -> list[dict[str, Any]]:
+    """Who the sentence is ABOUT: the candidates it names; else the cohort when it says so;
+    else the note's own candidate. A sentence about nobody in particular is generic."""
+    named = _named(sentence, attrs)
     if named:
         return named
-    if _COHORT.search(sentence) or own is None:
+    if _COHORT.search(sentence):
         return list(attrs.all)
-    return [own]
+    return [own] if own is not None else []
+
+
+def _size_mentions(text: str) -> list[tuple[str, int, int]]:
+    out = []
+    for regex in (_SIZE_RE, _SIZE_ADJ_RE):
+        for m in regex.finditer(text):
+            if _PEER_AFTER.search(text[m.end() : m.end() + 24]):
+                continue
+            out.append((_BUCKET_ALIASES[m.group(1).lower()], m.start(), m.end()))
+    return out
+
+
+def _growth_mentions(text: str) -> list[tuple[int, int]]:
+    return [
+        (m.start(), m.end()) for m in _GROWTH_RE.finditer(text)
+        if not _NOT_COMPANY_GROWTH.search(text[m.end() : m.end() + 32])
+    ]
 
 
 def check_sentence(
     sentence: str, attrs: CandidateAttributes, own: dict[str, Any] | None
 ) -> str | None:
     """None when the sentence may stand; otherwise the reason it may not."""
-    size_bands: set[str] = set()
-    for match in _SIZE_RE.finditer(sentence):
-        size_bands.add(_BUCKET_ALIASES[match.group(1).lower()])
-    for match in _SIZE_ADJ_RE.finditer(sentence):
-        size_bands.add(_BUCKET_ALIASES[match.group(1).lower()])
-    growth = _GROWTH_RE.search(sentence) is not None
-    if not size_bands and not growth:
+    text = sentence.translate(_HYPHENS)
+    sizes = [(b, a, z) for b, a, z in _size_mentions(text) if not _qualified(text, a, z)]
+    growth = [(a, z) for a, z in _growth_mentions(text) if not _qualified(text, a, z)]
+    if not sizes and not growth:
         return None
-    if _QUALIFIERS.search(sentence):
+    if _COUNTING.search(text):
         return None
     # A sentence about what was ASKED FOR may stand — unless it also names a candidate
     # or the cohort: "all candidates meet the thesis's small-cap filter" is an assertion.
-    named = bool(_CREF.search(sentence)) or bool(_COHORT.search(sentence)) or any(
-        r["ticker"] and len(r["ticker"]) >= 2
-        and re.search(rf"\b{re.escape(r['ticker'])}\b", sentence)
-        for r in attrs.all
-    )
-    if _REQUESTED_MARKERS.search(sentence) and not named:
+    if _REQUESTED_MARKERS.search(text) and not (_named(text, attrs) or _COHORT.search(text)):
         return None
-    subjects = _subjects(sentence, attrs, own)
+    subjects = _subjects(text, attrs, own)
     if not subjects:
         return None
-    for band in size_bands:
+    for band in {b for b, _a, _z in sizes}:
         unverified = [
             s["ref"] for s in subjects
             if band not in _SATISFIES.get(str(s["attrs"].get("size_bucket")), set())
@@ -168,14 +216,20 @@ def _guard_text(
     text: str, attrs: CandidateAttributes, own: dict[str, Any] | None, where: str,
     removed: list[dict[str, Any]],
 ) -> str:
+    """The text minus unsupported sentences, separators preserved; unchanged if none."""
+    parts = _SENTENCE_SPLIT.split(text)
     kept: list[str] = []
-    for sentence in _SENTENCE_SPLIT.split(text):
-        reason = check_sentence(sentence, attrs, own)
+    changed = False
+    for index in range(0, len(parts), 2):
+        sentence = parts[index]
+        separator = parts[index + 1] if index + 1 < len(parts) else ""
+        reason = check_sentence(sentence, attrs, own) if sentence.strip() else None
         if reason is None:
-            kept.append(sentence)
+            kept.append(sentence + separator)
         else:
+            changed = True
             removed.append({"where": where, "sentence": sentence[:400], "reason": reason})
-    return " ".join(kept).strip()
+    return "".join(kept).strip() if changed else text
 
 
 def _own(node: Mapping[str, Any], attrs: CandidateAttributes) -> dict[str, Any] | None:
@@ -232,6 +286,18 @@ def guard_review(
     for key in _PROSE_KEYS:
         if key in out:
             out[key] = _walk(out[key], attrs, None, key, removed)
+    # A council may prioritise an eligible_unverified candidate; the reader is told what
+    # is still unverified about it, beside the council's own placement.
+    for bucket in ("candidates_to_research_next", "candidates_to_monitor"):
+        entries = out.get(bucket)
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            record = _own(entry, attrs)
+            if record and record.get("eligibility") == "eligible_unverified":
+                entry["unverified_constraints"] = record.get("unknown_constraints") or []
     out["attribute_guard"] = {
         "version": 1,
         "rule": (
