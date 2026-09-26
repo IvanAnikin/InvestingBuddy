@@ -81,6 +81,10 @@ def _lead(metric, claim, url, value=None, currency=None, period=None):
 class _Transport:
     search_tool_name = "web_search"
 
+    async def complete(self, **kw):
+        # V3.19.10 — leads are asked in recall mode; same answer as the retrieval path.
+        return await self.investigate_with_search(**kw)
+
     async def investigate_with_search(self, **_kw):
         companies = [
             {"legal_name": "Maison Exemple SA", "ticker": "MEX", "exchange": "Euronext Paris",
@@ -154,9 +158,13 @@ class _Session:
 
 @pytest.fixture(autouse=True)
 def _clear_fx_cache():
+    from app.services.discovery import directories
+
     fx._CACHE.clear()
+    directories._CACHE.clear()
     yield
     fx._CACHE.clear()
+    directories._CACHE.clear()
 
 
 async def _stage(provider=None):

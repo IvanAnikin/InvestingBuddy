@@ -223,6 +223,109 @@ def _registry_match(lead: CompanyLead, intent: DiscoveryIntent) -> dict[str, Any
     return None
 
 
+_PRIMARY_DOCUMENT_TIERS = ("T1_primary_filing", "T1_primary_company_source",
+                           "T2_regulator_or_gov")
+
+
+async def growth_from_held_facts(session: Any, company_id: Any) -> list[cons.GrowthObservation]:
+    """Revenue growth from the company's OWN primary documents the platform already read.
+
+    Validated, active, group-scope ANNUAL revenue facts (``extracted_facts``) for two
+    consecutive fiscal years in one currency and scale → a revenue-pair growth
+    observation, sourced to the issuer's filing. Never raises; [] when there is no pair.
+    """
+    if not company_id:
+        return []
+    try:
+        from sqlalchemy import select
+
+        from app.models.extracted_document import ExtractedDocument, ExtractedFact
+        from app.services.sources.fact_scope import SCOPE_TYPE_GROUP
+        from app.services.sources.financial_period import (
+            PERIOD_TYPE_ANNUAL,
+            PERIOD_TYPE_SPLIT_YEAR,
+            parse_period,
+        )
+
+        async with session.begin_nested():
+            rows = (
+                await session.execute(
+                    select(ExtractedFact, ExtractedDocument.canonical_url,
+                           ExtractedDocument.source_tier)
+                    .join(ExtractedDocument,
+                          ExtractedFact.extracted_document_id == ExtractedDocument.id)
+                    .where(ExtractedDocument.company_id == company_id,
+                           ExtractedFact.label == "revenue",
+                           ExtractedFact.is_active.is_(True),
+                           ExtractedFact.validation_status == "validated",
+                           ExtractedDocument.source_tier.in_(_PRIMARY_DOCUMENT_TIERS))
+                    .order_by(ExtractedFact.created_at.desc())
+                    .limit(200)
+                )
+            ).all()
+    except Exception:  # noqa: BLE001 - a held company's facts are an optional source
+        return []
+    # Keyed by (period type, year): an annual year pairs only with an annual year and a
+    # split fiscal year ("2024/25") only with a split year — never across the two.
+    by_year: dict[tuple[str, int], tuple[float, str, str, str | None, str | None, str]] = {}
+    for fact, url, tier in rows:
+        if fact.scope_type != SCOPE_TYPE_GROUP or fact.value_numeric is None:
+            continue
+        period = parse_period(fact.period)
+        if (period.period_type not in (PERIOD_TYPE_ANNUAL, PERIOD_TYPE_SPLIT_YEAR)
+                or period.year is None or not fact.currency):
+            continue
+        # Newest extraction wins per period (rows are newest-first).
+        by_year.setdefault((period.period_type, period.year),
+                           (float(fact.value_numeric), fact.currency, fact.scale or "",
+                            url, tier, fact.period or ""))
+    if not by_year:
+        return []
+    latest = max(by_year, key=lambda key: key[1])
+    prior = by_year.get((latest[0], latest[1] - 1))
+    current = by_year[latest]
+    if prior is None or prior[1:3] != current[1:3]:
+        return []
+    observation = cons.growth_from_revenue_pair(
+        current[0], prior[0], period=current[5], base_period=prior[5],
+        source_url=current[3], source_tier=current[4], verified=True,
+    )
+    return [observation] if observation is not None else []
+
+
+async def _official_cap(identity: IdentityOutcome, *, cfg: Any, fetcher: Any):
+    """The exchange's own market capitalisation for this listing, when it publishes one."""
+    row = identity.directory_listing
+    if not row:
+        return None
+    from app.services.discovery.directories import DirectoryListing, official_market_cap
+
+    try:
+        listing = DirectoryListing(**row)
+        amount, currency, url, basis = await official_market_cap(listing, cfg=cfg,
+                                                                 fetcher=fetcher)
+    except Exception:  # noqa: BLE001 - an official figure that cannot be read is absent
+        return None
+    if (not amount or not currency) and listing.directory == "sec":
+        from app.services.discovery.directories import sec_public_float
+
+        floor = await sec_public_float(listing.cik, cfg=cfg, fetcher=fetcher)
+        if floor is None:
+            return None
+        return cons.MarketCapObservation(
+            amount=floor[0], currency="USD", as_of=floor[1], as_of_basis="stated",
+            source_url=floor[2], source_tier=listing.tier, verified=True,
+            method=cons.FLOAT_FLOOR_METHOD,
+        )
+    if not amount or not currency:
+        return None
+    return cons.MarketCapObservation(
+        amount=amount, currency=currency, as_of=listing.as_of, as_of_basis="fetch_date",
+        source_url=url, source_tier=listing.tier, verified=True,
+        method="exchange_directory" if "published" in basis else "admitted_shares_x_price",
+    )
+
+
 async def evaluate(
     identity: IdentityOutcome,
     screening: ScreeningResult | None,
@@ -230,6 +333,7 @@ async def evaluate(
     *,
     cfg: Any,
     fx_fetcher: Any = None,
+    session: Any = None,
 ) -> tuple[list[cons.ConstraintResult], cons.Eligibility]:
     """Constraint results + eligibility for one issuer. Deterministic given its inputs."""
     results = [cons.verify_listing(identity.identity_record())]
@@ -250,7 +354,12 @@ async def evaluate(
             registry_match=_registry_match(identity.lead, intent),
         )
     )
-    observation = screening.market_cap if screening else None
+    observation = await _official_cap(identity, cfg=cfg, fetcher=fx_fetcher)
+    screened_cap = screening.market_cap if screening else None
+    # A lower bound yields to an actual verified figure; an official figure never does.
+    if observation is None or (observation.method == cons.FLOAT_FLOOR_METHOD
+                               and screened_cap is not None and screened_cap.verified):
+        observation = screened_cap or observation
     rate = None
     reason = None
     if observation is not None and observation.verified:
@@ -266,7 +375,10 @@ async def evaluate(
                 as_of = None
         rate, reason = await usd_rate(observation.currency, as_of, cfg=cfg, fetcher=fx_fetcher)
     results.append(cons.verify_size(intent.size, observation, rate, fx_unavailable_reason=reason))
-    results.append(cons.verify_growth(intent.growth, screening.growth if screening else []))
+    growth = list(screening.growth) if screening else []
+    if session is not None and identity.company_id:
+        growth.extend(await growth_from_held_facts(session, identity.company_id))
+    results.append(cons.verify_growth(intent.growth, growth))
     if intent.profitability is not None:
         results.append(
             cons.ConstraintResult(
@@ -367,9 +479,32 @@ async def run_dynamic_stage(
 
     async def _verify(lead: CompanyLead) -> IdentityOutcome:
         async with gate:
-            return await verify_identity(lead, cfg=cfg, fetcher=fetcher)
+            return await verify_identity(lead, cfg=cfg, fetcher=fetcher,
+                                         directory_fetcher=fetcher)
 
     verified_external = await asyncio.gather(*(_verify(lead) for lead in to_verify[:limit]))
+
+    # V3.19.10 — curated and held companies are looked up in their exchange's own
+    # directory too: it confirms the listing and carries the official market data.
+    from app.services.discovery.directories import find_listing
+
+    async def _enrich(identity: IdentityOutcome) -> None:
+        async with gate:
+            row, _reason = await find_listing(
+                name=identity.name, ticker=identity.ticker, venue=identity.exchange,
+                cfg=cfg, fetcher=fetcher,
+            )
+        if row is not None:
+            identity.directory_listing = row.to_dict()
+
+    await asyncio.gather(*(_enrich(i) for i in identities))
+    # A curated identity for a company the platform already holds carries its id, so
+    # the company's own extracted facts can serve as evidence.
+    for identity in identities:
+        if identity.company_id is None:
+            held_row = held_by_key.get(dedup_key(identity.ticker, identity.exchange))
+            if held_row is not None:
+                identity.company_id = str(held_row.id)
     for lead in to_verify[limit:]:
         stage.rejected.append(
             IdentityOutcome(lead=lead, status=IDENTITY_REJECTED, ticker=lead.ticker,
@@ -415,7 +550,7 @@ async def run_dynamic_stage(
     for identity in to_screen:
         screening = screened.get(f"{identity.exchange}:{identity.ticker}")
         results, eligibility = await evaluate(identity, screening, intent, cfg=cfg,
-                                              fx_fetcher=fetcher)
+                                              fx_fetcher=fetcher, session=session)
         records.append(CandidateRecord(identity, results, eligibility, screening,
                                        _provenance(identity), identity.lead.registry_item))
 
@@ -457,6 +592,7 @@ def _provenance(identity: IdentityOutcome) -> dict[str, Any]:
     lead = identity.lead
     return {
         "discovery_source": lead.source,
+        "discovery_mode": lead.discovery_mode,
         "discovery_query": lead.discovery_query,
         "source_url": lead.evidence_url or lead.listing_source_url,
         "why": _safe_text(lead.why, 300),

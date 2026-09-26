@@ -47,6 +47,10 @@ async def session():
 class _Transport:
     search_tool_name = "web_search"
 
+    async def complete(self, **kw):
+        # V3.19.10 — leads are asked in recall mode; same answer as the retrieval path.
+        return await self.investigate_with_search(**kw)
+
     async def investigate_with_search(self, **_kw):
         return DeepSeekResponse(text=json.dumps({"companies": [
             {"legal_name": "Lynas Rare Earths Ltd", "ticker": "LYC", "exchange": "ASX",

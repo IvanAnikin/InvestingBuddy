@@ -234,6 +234,11 @@ class DeepSeekTransport(Protocol):
         #: A seam narrower than its implementations is a seam nothing can be tested
         #: through.
         json_mode: bool = False,
+        #: V3.19.10 — ``False`` sends ``thinking: disabled``. Measured 2026-09-26: with
+        #: thinking on, a 4,000-token company-list completion spent every token reasoning
+        #: and returned an empty message (finish_reason ``length``); with it off the
+        #: same request answered in 234 tokens. ``None`` leaves the model default.
+        thinking: bool | None = None,
     ) -> DeepSeekResponse: ...  # pragma: no cover - protocol
 
     async def search(
@@ -293,6 +298,7 @@ class FakeDeepSeekTransport:
     #: test can assert a caller actually opted in — `json_mode` was implemented here and
     #: forwarded by nobody for a whole phase, which is a documented trap in this repo.
     json_mode_calls: list[bool] = field(default_factory=list)
+    thinking_calls: list[bool | None] = field(default_factory=list)
 
     async def complete(
         self,
@@ -303,9 +309,11 @@ class FakeDeepSeekTransport:
         temperature: float,
         timeout: int,
         json_mode: bool = False,
+        thinking: bool | None = None,
     ) -> DeepSeekResponse:
         self.completions.append((system, user))
         self.json_mode_calls.append(json_mode)
+        self.thinking_calls.append(thinking)
         if self.raises is not None:
             raise self.raises
         return DeepSeekResponse(
@@ -568,6 +576,7 @@ class HttpDeepSeekTransport:
         temperature: float,
         timeout: int,
         json_mode: bool = False,
+        thinking: bool | None = None,
     ) -> DeepSeekResponse:  # pragma: no cover - needs a real key
         """One chat completion.
 
@@ -592,6 +601,8 @@ class HttpDeepSeekTransport:
         }
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
+        if thinking is not None:
+            payload["thinking"] = {"type": "enabled" if thinking else "disabled"}
         return self._reduce(await self._post(payload, timeout))
 
     #: The instruction that goes with a search request. It tells the model to search
