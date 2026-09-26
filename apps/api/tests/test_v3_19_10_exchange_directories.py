@@ -486,3 +486,82 @@ async def test_share_class_symbol_forms_match():
     found, _ = await d.find_listing(name="Berkshire Hathaway Inc.", ticker="BRK.B", venue="US")
     assert found == row
     d.reset_cache()
+
+
+@pytest.mark.parametrize(("html", "expected"), [
+    # The live case: a menu names topics; it does not say what the company does.
+    ('<nav><a>Rare Earths</a><a>About us</a></nav>'
+     '<div>Pensana PLC | Magnet Metal | Rare Earths | NdPr</div>', {}),
+    # Inline markup never splits a sentence …
+    ('<p>Pensana is a <a href="/x">rare earths</a> company building a processing hub.</p>',
+     {"rare_earths": "direct"}),
+    ('<p>We are building a <strong>rare earth</strong> processing facility.</p>',
+     {"rare_earths": "direct"}),
+    # … so a negation is never cut away from what it negates.
+    ('<p>We have no exposure to <a>rare earths mining or processing in any of our '
+     'current operations</a> today.</p>', {"rare_earths": "denied"}),
+    # A hero line in <header>, and a WebForms body wrapped in <form>, are read.
+    ("<header class=hero><h1>We produce rare earth oxides</h1><nav>Rare Earths</nav>"
+     "</header>", {"rare_earths": "direct"}),
+    ("<form><div><p>Pensana is building a rare earth processing facility.</p></div></form>",
+     {"rare_earths": "direct"}),
+    # A short headline that IS a self-description is kept.
+    ("<h1>Europe's rare earth magnet metals producer</h1>", {"rare_earths": "direct"}),
+])
+def test_a_website_menu_is_not_the_company_describing_itself(html, expected):
+    """V3.19.12 — read in production: Pensana's and Eramet's "statement" was each site's
+    navigation bar. Only prose blocks of the page may evidence what a company does."""
+    from app.services.discovery.intent import build_intent
+    from app.services.discovery.screening import (
+        _terms,
+        exposures_from_text,
+        html_blocks,
+        site_prose,
+    )
+
+    terms = _terms(build_intent("rare earth miners in Europe"))
+    found = exposures_from_text(site_prose(html_blocks(html)), terms, source_url=None,
+                                source_tier="issuer", verified=True)
+    got = {e.term: e.exposure for e in found if e.term in expected or not expected}
+    assert got == expected
+
+
+async def test_issuer_page_text_is_neutralised_and_parsed_off_the_loop(monkeypatch):
+    """A page's own words are stored and shown, so rating language is neutralised; the
+    parse runs in a worker thread (a synchronous parse on the loop once SIGKILLed
+    gunicorn workers)."""
+    import asyncio
+
+    from app.core.config import settings
+    from app.services.discovery import screening
+    from app.services.discovery.identity import IdentityOutcome
+    from app.services.discovery.intent import build_intent
+    from app.services.discovery.leads import CompanyLead
+    from app.services.sources.document_fetcher import DocumentFetchResult
+
+    threads: list[bool] = []
+    real = asyncio.to_thread
+
+    async def _to_thread(fn, *a, **kw):  # noqa: ANN001, ANN002, ANN003, ANN202
+        threads.append(True)
+        return await real(fn, *a, **kw)
+
+    monkeypatch.setattr(screening.asyncio, "to_thread", _to_thread)
+
+    async def _fetch(url, **_kw):  # noqa: ANN001, ANN202
+        html = ("<p>Analysts say BUY: Pensana is building a rare earth processing "
+                "facility.</p>")
+        return DocumentFetchResult(requested_url=url, final_url=url, status_code=200,
+                                   content_type="text/html", document_type="html",
+                                   content=html.encode())
+
+    lead = CompanyLead(name="Pensana Plc", ticker="PRE", exchange_raw="LSE",
+                       country=None, listing_source_url=None,
+                       evidence_url="https://www.pensana.co.uk/", why=None, source="x")
+    issuer = IdentityOutcome(lead=lead, status="verified", ticker="PRE", exchange="LSE",
+                             name="Pensana Plc")
+    found, _ = await screening.issuer_site_exposures(
+        issuer, screening._terms(build_intent("rare earth miners in Europe")),
+        cfg=settings, fetcher=_fetch)
+    assert found and threads
+    assert all("BUY" not in e.statement for e in found)

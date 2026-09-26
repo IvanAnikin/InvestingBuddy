@@ -2508,6 +2508,8 @@ function discoveryCouncilReview(runId) {
         resilience: "Positive free cash flow in every reported year.",
         key_financial_signal: "FCF conversion of 68% of operating cash flow.",
         strongest_dimension: "cash_generation",
+        // V3.19.11 — what the reader asked for that is still unverified here.
+        unverified_constraints: ["growth"],
       },
       {
         candidate_ref: "C3",

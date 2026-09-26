@@ -194,7 +194,10 @@ REQUESTED_VS_VERIFIED_CONTRACT = (
     "You prioritise eligible candidates; you never redefine a candidate as eligible or "
     "as matching the request.\n"
     "- A sentence that attributes an unverified requested attribute to a candidate is "
-    "removed from your output before anyone reads it."
+    "removed from your output before anyone reads it.\n"
+    "- Missing research is a gap, not evidence against a company: a candidate with no "
+    "current research is 'insufficient_data', never 'reject_for_now' for that reason. "
+    "Do not state a size match or mismatch unless constraint_status.size is pass or fail."
 )
 
 

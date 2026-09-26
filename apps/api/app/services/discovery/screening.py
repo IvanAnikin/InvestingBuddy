@@ -358,6 +358,118 @@ def _issuer_site_urls(issuer: IdentityOutcome) -> list[str]:
     return urls[:MAX_ISSUER_SITE_PAGES]
 
 
+#: The most of one issuer page that is parsed.
+MAX_ISSUER_PAGE_BYTES = 2_000_000
+
+#: A block shorter than this is a label ("About us", "Our Business"), not the company
+#: describing itself. Menus are removed structurally first (nav/header/footer), so this
+#: only has to catch the short labels that are left.
+MIN_PROSE_WORDS = 5
+
+#: Elements whose text is never the company describing itself.
+#: Not ``header`` or ``form``: a hero line often sits in <header>, and WebForms sites
+#: wrap the whole body in <form>. Menus inside them are <nav>, and bare labels are
+#: dropped by length.
+_SKIPPED_ELEMENTS = frozenset({
+    "script", "style", "noscript", "template", "svg", "nav", "footer",
+    "button", "select", "option", "label", "iframe", "head", "title",
+})
+#: Elements that end a block. Every other element (a, strong, em, span …) is INLINE and
+#: never splits a sentence — splitting there cut "no exposure to <a>rare earths</a>"
+#: into a fragment without its negation.
+_BLOCK_ELEMENTS = frozenset({
+    "p", "div", "li", "ul", "ol", "h1", "h2", "h3", "h4", "h5", "h6", "section",
+    "article", "main", "aside", "br", "hr", "td", "th", "tr", "table", "blockquote",
+    "figcaption", "dd", "dt", "dl", "address", "pre",
+})
+
+
+def html_blocks(html: str) -> list[str]:
+    """The text of each BLOCK of an HTML page, inline markup kept inside its sentence."""
+    from html.parser import HTMLParser
+
+    class _Blocks(HTMLParser):
+        def __init__(self) -> None:
+            super().__init__(convert_charrefs=True)
+            self.blocks: list[str] = []
+            self.current: list[str] = []
+            self.skip = 0
+
+        def _end_block(self) -> None:
+            text = " ".join("".join(self.current).split())
+            if text:
+                self.blocks.append(text)
+            self.current = []
+
+        def handle_starttag(self, tag: str, attrs: Any) -> None:
+            if tag in _SKIPPED_ELEMENTS:
+                self.skip += 1
+            elif tag in _BLOCK_ELEMENTS:
+                self._end_block()
+
+        def handle_startendtag(self, tag: str, attrs: Any) -> None:
+            if tag in _BLOCK_ELEMENTS:
+                self._end_block()
+
+        def handle_endtag(self, tag: str) -> None:
+            if tag in _SKIPPED_ELEMENTS:
+                self.skip = max(0, self.skip - 1)
+            elif tag in _BLOCK_ELEMENTS:
+                self._end_block()
+
+        def handle_data(self, data: str) -> None:
+            if not self.skip:
+                self.current.append(data)
+
+    parser = _Blocks()
+    try:
+        parser.feed(html or "")
+        parser.close()
+    except Exception:  # noqa: BLE001 - malformed markup yields what was read
+        pass
+    parser._end_block()
+    return parser.blocks
+
+
+def site_prose(blocks: list[str]) -> str:
+    """The prose of a web page: its blocks, minus menus, pipes and short labels.
+
+    Seen live: the "statement" proving what Pensana and Eramet do was each site's
+    navigation bar. A menu names topics; it does not say what the company does.
+    """
+    prose: list[str] = []
+    for block in blocks:
+        for segment in re.split(r"\s*\|\s*", block):
+            if len(segment.split()) >= MIN_PROSE_WORDS:
+                prose.append(segment.strip())
+    return ".\n".join(prose)
+
+
+async def _issuer_page_prose(url: str, cfg: Any, fetcher: Any) -> tuple[str | None, str]:
+    """(prose, final url) of one issuer page, or (None, url). Never raises."""
+    from urllib.parse import urlsplit
+
+    from app.services.sources.document_fetcher import safe_fetch_document
+
+    host = (urlsplit(url).hostname or "").lower()
+    try:
+        result = await (fetcher or safe_fetch_document)(
+            url, allowed_domains=(host,), cfg=cfg, resolve_ip=True
+        )
+    except Exception:  # noqa: BLE001 - a failed fetch is no evidence
+        return None, url
+    content = getattr(result, "content", None) if getattr(result, "ok", False) else None
+    if not content or (getattr(result, "document_type", None) or "html") != "html":
+        return None, url  # only a page the company wrote as HTML prose is read here
+    final = getattr(result, "final_url", None) or url
+    # Off the event loop, and bounded: a synchronous parse of a large page on the loop is
+    # what SIGKILLed gunicorn workers once already (the 502 incident). A self-description
+    # sits near the top of a page; 2 MB is far more than any issuer home page needs.
+    html = content[:MAX_ISSUER_PAGE_BYTES].decode("utf-8", "replace")
+    prose = await asyncio.to_thread(lambda: site_prose(html_blocks(html)))
+    return prose or None, final
+
+
 async def issuer_site_exposures(
     issuer: IdentityOutcome, terms: dict[str, re.Pattern[str]], *, cfg: Any, fetcher: Any,
 ) -> tuple[list[ExposureObservation], int]:
@@ -367,18 +479,17 @@ async def issuer_site_exposures(
     pages can. Each clause naming a requested term is classified direct / indirect /
     denied exactly as for any verified passage. Returns (exposures, fetches). Never raises.
     """
-    from app.services.discovery.identity import _page_text
-
     found: list[ExposureObservation] = []
     fetches = 0
     for url in _issuer_site_urls(issuer):
         fetches += 1
-        text, record = await _page_text(url, cfg, fetcher)
-        if not text:
+        prose, final = await _issuer_page_prose(url, cfg, fetcher)
+        if not prose:
             continue
-        final = record.get("final_url") or url
-        found.extend(exposures_from_text(text, terms, source_url=final,
-                                         source_tier="issuer", verified=True))
+        # The page's own words are stored and shown: neutralised like any passage.
+        found.extend(exposures_from_text(_safe(prose, len(prose) + 1) or "", terms,
+                                         source_url=final, source_tier="issuer",
+                                         verified=True))
         if any(e.exposure in (EXPOSURE_DIRECT, EXPOSURE_INDIRECT) for e in found):
             break
     return found, fetches

@@ -461,6 +461,8 @@ def verify_industry(
             "industry", requested, constraint.hardness, PASS,
             value={
                 "matched": sorted({e.term for e in affirmed}),
+                # V3.19.12 — what the company DIRECTLY does; only these may classify it.
+                "direct": sorted({e.term for e in direct}),
                 "exposure": EXPOSURE_DIRECT if direct else EXPOSURE_INDIRECT,
                 "statement": chosen.statement[:300],
             },
