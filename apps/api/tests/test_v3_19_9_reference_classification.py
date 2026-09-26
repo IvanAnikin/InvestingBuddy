@@ -128,7 +128,9 @@ async def test_a_verified_material_classifies_a_critical_materials_discovery(
         id=uuid.uuid4(), discovery_run_id=run.id, ticker="PRE", exchange="LSE",
         thesis_match_json={"theme": "critical_materials", "v319": {"constraint_results": [
             {"key": "industry", "status": "pass",
-             "value": {"matched": ["critical_materials", "rare_earths"]}}]}},
+             "value": {"matched": ["critical_materials", "rare_earths"],
+                       "direct": ["critical_materials", "rare_earths"],
+                       "exposure": "direct"}}]}},
     ))
     company = Company(id=uuid.uuid4(), ticker="PRE", exchange="LSE", name="Pensana Plc",
                       status="new")
@@ -145,3 +147,27 @@ def test_the_mining_classification_selects_the_mining_playbook():
 
     chosen = select(sector="Materials", industry="Mining")
     assert any("mining" in p.playbook_id for p in chosen.playbooks), chosen.reason
+
+
+async def test_an_indirect_term_never_classifies_a_company(session, monkeypatch):
+    """A miner that "supplies data centres" is not a data-centre company."""
+    async def no_sec(ticker, exchange):  # noqa: ANN001, ANN202
+        return None, None, "venue not SEC-eligible"
+
+    monkeypatch.setattr(cls, "_fetch_sec_classification", no_sec)
+    run = DiscoveryRun(id=uuid.uuid4(), status="completed", provider_name="free_real",
+                       mode="thesis", universe_source="thesis_generated")
+    session.add(run)
+    session.add(DiscoveryCandidate(
+        id=uuid.uuid4(), discovery_run_id=run.id, ticker="IND", exchange="LSE",
+        thesis_match_json={"theme": "critical_materials", "v319": {"constraint_results": [
+            {"key": "industry", "status": "pass",
+             "value": {"matched": ["ai_infrastructure", "rare_earths"],
+                       "direct": ["rare_earths"], "exposure": "direct"}}]}},
+    ))
+    company = Company(id=uuid.uuid4(), ticker="IND", exchange="LSE", name="Ind Plc",
+                      status="new")
+    session.add(company)
+    await session.flush()
+    result = await cls.ensure_company_classification(session, company)
+    assert result.industry == "Mining"

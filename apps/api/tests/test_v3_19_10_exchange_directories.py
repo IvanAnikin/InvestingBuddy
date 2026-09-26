@@ -488,20 +488,34 @@ async def test_share_class_symbol_forms_match():
     d.reset_cache()
 
 
-def test_a_website_menu_is_not_the_company_describing_itself():
+@pytest.mark.parametrize(("html", "expected"), [
+    # The live case: a menu names topics; it does not say what the company does.
+    ('<nav><a>Rare Earths</a><a>About us</a></nav>'
+     '<div>Pensana PLC | Magnet Metal | Rare Earths | NdPr</div>', {}),
+    # Inline markup never splits a sentence …
+    ('<p>Pensana is a <a href="/x">rare earths</a> company building a processing hub.</p>',
+     {"rare_earths": "direct"}),
+    ('<p>We are building a <strong>rare earth</strong> processing facility.</p>',
+     {"rare_earths": "direct"}),
+    # … so a negation is never cut away from what it negates.
+    ('<p>We have no exposure to <a>rare earths mining or processing in any of our '
+     'current operations</a> today.</p>', {"rare_earths": "denied"}),
+    # A short headline that IS a self-description is kept.
+    ("<h1>Europe's rare earth magnet metals producer</h1>", {"rare_earths": "direct"}),
+])
+def test_a_website_menu_is_not_the_company_describing_itself(html, expected):
     """V3.19.12 — read in production: Pensana's and Eramet's "statement" was each site's
-    navigation bar. Only prose segments may evidence what a company does."""
+    navigation bar. Only prose blocks of the page may evidence what a company does."""
     from app.services.discovery.intent import build_intent
-    from app.services.discovery.screening import _terms, exposures_from_text, site_prose
+    from app.services.discovery.screening import (
+        _terms,
+        exposures_from_text,
+        html_blocks,
+        site_prose,
+    )
 
     terms = _terms(build_intent("rare earth miners in Europe"))
-    menu = "Pensana PLC | Magnet Metal | Rare Earths | NdPr\nAbout us\nLongonjo Rare Earths"
-    assert site_prose(menu) == ""
-    assert exposures_from_text(site_prose(menu), terms, source_url=None,
-                               source_tier="issuer", verified=True) == []
-    page = menu + ("\nPensana is building a rare earth processing facility at Saltend to "
-                   "supply magnet metal oxides.")
-    found = exposures_from_text(site_prose(page), terms, source_url=None,
+    found = exposures_from_text(site_prose(html_blocks(html)), terms, source_url=None,
                                 source_tier="issuer", verified=True)
-    assert {e.term for e in found} >= {"rare_earths"}
-    assert all(e.statement.startswith("Pensana is building a rare earth") for e in found)
+    got = {e.term: e.exposure for e in found if e.term in expected or not expected}
+    assert got == expected

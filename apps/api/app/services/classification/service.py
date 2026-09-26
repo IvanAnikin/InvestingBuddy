@@ -153,8 +153,19 @@ async def reference_classification(session: Any, company: Any) -> tuple[str | No
             # The run's theme, then every term the VERIFIED industry result matched. A
             # theme with no industry of its own ("critical_materials") left a verified
             # rare-earth developer unclassified; a verified commodity term means mining.
-            matched = list((industry.get("value") or {}).get("matched") or [])
-            for term in [(match or {}).get("theme"), *matched]:
+            value = industry.get("value") or {}
+            # Only what the company DIRECTLY does may classify it ("supplies data
+            # centres" is indirect and must not make a miner a data-centre company).
+            # A registry classification ("classified") names its industry itself.
+            if "direct" in value:
+                terms = list(value.get("direct") or [])
+            elif value.get("exposure") == "direct":
+                terms = list(value.get("matched") or [])  # rows written before "direct"
+            else:
+                terms = []
+            if value.get("exposure") == "indirect":
+                continue
+            for term in [(match or {}).get("theme"), *terms]:
                 resolved = _industry_for_term(term, _THEME_TABLE)
                 if resolved:
                     return resolved, "a discovery run that verified its industry"
