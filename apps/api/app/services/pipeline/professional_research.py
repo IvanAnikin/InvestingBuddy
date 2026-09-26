@@ -242,6 +242,41 @@ def _source_diversity(acquired: Sequence[Mapping[str, Any]], findings: Sequence[
     }
 
 
+def _apply_official_designations(
+    dimensions: list[dict[str, Any]], designations: Any
+) -> None:
+    """V3.19.1 — the ``critical_materials`` dimension, graded by the OFFICIAL list.
+
+    A designation is a legal act by a government, so it is evidence of half of what the
+    dimension asks (whether the products are on an official list) — never of the other
+    half (how concentrated their supply is), and never from the company's own wording. A
+    dimension with no finding of its own therefore rises to *partially evidenced* on a
+    designation, and says which half is still open.
+    """
+    if not isinstance(designations, list) or not designations:
+        return
+    designated = [d for d in designations if isinstance(d, dict) and d.get("designated")]
+    for view in dimensions:
+        if view.get("dimension") != "critical_materials":
+            continue
+        view["official_designations"] = list(designations)
+        if designated and view.get("status") == STATUS_NOT_ESTABLISHED:
+            view["status"] = STATUS_PARTIAL
+            view["status_basis"] = (
+                "on the official U.S. List of Critical Minerals ("
+                + ", ".join(
+                    f"{d['commodity']} — {d['list']['version']} list, {d['list']['citation']}"
+                    for d in designated
+                )
+                + "); supply concentration is not established by a designation"
+            )
+        elif not designated:
+            view["status_basis_note"] = (
+                "none of the company's commodities is on the official U.S. List of "
+                "Critical Minerals"
+            )
+
+
 def _dimension_view(
     question: QuestionView,
     thesis_findings: Sequence[Mapping[str, Any]],
@@ -372,6 +407,10 @@ def assemble(inputs: ReportInputs) -> dict[str, Any]:
         )
         for q in questions_by_section["thesis_fit"]
     ]
+    _apply_official_designations(
+        thesis_section["dimensions"],
+        (inputs.thesis or {}).get("critical_mineral_designations"),
+    )
     thesis_section["size_fit"] = dict(inputs.size_fit) if inputs.size_fit else None
     if not inputs.thesis:
         thesis_section["status"] = "no_thesis"

@@ -66,6 +66,7 @@ from app.services.sources.financial_period import (
     format_period,
     parse_period,
 )
+from app.services.sources.metric_semantics import NET_DEBT_LABEL, is_not_a_balance
 from app.services.sources.primary_document_extractor import (
     METHOD_HTML,
     METHOD_NATIVE_PDF,
@@ -170,10 +171,7 @@ _LABEL_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     ),
     # "Net interest-bearing debt (NIBD)" is the standard Nordic/European
     # phrasing of the same line item "net debt" names elsewhere.
-    (
-        re.compile(r"net (?:financial |interest[- ]bearing )?debt", re.I),
-        FIELD_NET_DEBT,
-    ),
+    (re.compile(NET_DEBT_LABEL, re.I), FIELD_NET_DEBT),
     (re.compile(r"total (?:debt|borrowings)|gross debt", re.I), FIELD_TOTAL_DEBT),
     (re.compile(r"total assets", re.I), FIELD_TOTAL_ASSETS),
     (re.compile(r"total liabilities", re.I), FIELD_TOTAL_LIABILITIES),
@@ -450,6 +448,11 @@ def _match_label(text: str) -> str | None:
     label (ambiguous → not a structured fact, mirror the prose refusal).
     """
     if not text:
+        return None
+    # V3.19.1 — "Cost of net debt", "Change in cash and cash equivalents", "Net debt /
+    # EBITDA": a flow or a multiple of a balance, never the balance. Refused outright rather
+    # than left to fall through to the balance's own row pattern.
+    if is_not_a_balance(text):
         return None
     matched = {label for pat, label in _LABEL_PATTERNS if pat.search(text)}
     if len(matched) == 1:

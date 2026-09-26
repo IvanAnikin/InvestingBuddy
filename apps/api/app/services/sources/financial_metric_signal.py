@@ -30,6 +30,7 @@ import re
 from app.services.sources.financial_fact_categories import (
     financial_fact_category,
 )
+from app.services.sources.metric_semantics import NET_DEBT_LABEL
 
 # (field_name, label alternation) pairs for a MONEY-valued metric — field
 # names mirror primary_fact_parser.FIELD_* / financial_fact_categories'
@@ -62,7 +63,7 @@ _MONEY_METRIC_LABELS: tuple[tuple[str, str], ...] = (
     ),
     ("total_assets", r"total assets"),
     ("total_debt", r"total debt|gross debt|total borrowings|gross borrowings"),
-    ("net_debt", r"net (?:financial )?debt"),
+    ("net_debt", r"(?<!cost of )(?<!interest on )" + NET_DEBT_LABEL),
     ("cash_and_equivalents", r"cash and cash equivalents"),
     ("net_cash", r"net cash position|net cash"),
     (

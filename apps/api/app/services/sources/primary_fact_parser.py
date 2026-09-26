@@ -33,6 +33,11 @@ from app.services.sources.document_text_extractor import (
     DocumentTextExtraction,
 )
 from app.services.sources.financial_period import parse_period
+from app.services.sources.metric_semantics import (
+    BALANCE_FLOW_PREFIXES,
+    NET_DEBT_LABEL,
+    RATIO_SUFFIX_LOOKAHEAD,
+)
 from app.services.sources.primary_document_extractor import (
     _infer_scope,
     scope_claim_signal,
@@ -490,17 +495,31 @@ _MONEY_FIELDS: list[tuple[str, re.Pattern[str]]] = [
     # — not itself stating a debt figure — matching a nearby unrelated number.
     # "total"/"gross" qualified mentions are a genuine, low-ambiguity signal;
     # the bare word alone is not.
+    # V3.19.1 — every balance label refuses a flow prefix ("cost of net debt", "change in
+    # cash and cash equivalents") and a ratio suffix ("net debt / EBITDA"): those name a
+    # DIFFERENT metric. See app.services.sources.metric_semantics.
     (
         FIELD_TOTAL_DEBT,
-        _money_pattern(r"total debt|gross debt|total borrowings|gross borrowings"),
+        _money_pattern(
+            r"(?:total debt|gross debt|total borrowings|gross borrowings)"
+            + RATIO_SUFFIX_LOOKAHEAD,
+            exclude_prefix=BALANCE_FLOW_PREFIXES,
+        ),
     ),
-    (FIELD_NET_DEBT, _money_pattern(r"net (?:financial )?debt")),
-    (FIELD_CASH, _money_pattern(r"cash and cash equivalents")),
+    (
+        FIELD_NET_DEBT,
+        _money_pattern(NET_DEBT_LABEL, exclude_prefix=BALANCE_FLOW_PREFIXES),
+    ),
+    (
+        FIELD_CASH,
+        _money_pattern(r"cash and cash equivalents", exclude_prefix=BALANCE_FLOW_PREFIXES),
+    ),
     (
         FIELD_NET_CASH,
         _money_pattern(
             r"net cash position|net cash(?!\s*(?:flow|inflow|outflow|generated|"
-            r"provided|from|and))"
+            r"provided|from|and))",
+            exclude_prefix=BALANCE_FLOW_PREFIXES,
         ),
     ),
     (

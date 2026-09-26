@@ -511,6 +511,14 @@ async def _run(
             market_cap = float(company.market_cap)
         thesis_size = size_fit(thesis, market_cap)
         outcome.thesis = {**thesis.to_dict(), "size_fit": thesis_size}
+        # V3.19.1 — "is it a critical mineral?" is answered by the OFFICIAL list, for the
+        # commodities the company's own documents are about. Never by its wording.
+        if "critical_materials" in thesis.dimensions:
+            from app.services.sources.critical_minerals import designations_for
+
+            outcome.thesis["critical_mineral_designations"] = designations_for(
+                m.commodity.slug for m in profile.commodities
+            )
         run.thesis_json = outcome.thesis
     elif discovery_candidate_id:
         outcome.degraded.append(
