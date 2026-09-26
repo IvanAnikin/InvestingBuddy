@@ -2065,12 +2065,21 @@ def _run_to_evidence_dict(run: DiscoveryRun) -> dict[str, Any]:
         for k, v in (run.config_json or {}).items()
         if k != COUNCIL_STORAGE_KEY
     }
+    intent = (run.parsed_thesis_json or {}).get("discovery_intent") or {}
+    stage = (run.universe_json or {}).get("dynamic") or {}
     return {
         "run_id": str(run.id),
         "mode": run.mode,
         "status": run.status,
         "thesis_text": run.thesis_text,
         "parsed_thesis": run.parsed_thesis_json,
+        # V3.19.5 — what the user ASKED FOR, labelled as such in the pack.
+        "requested_constraints": [
+            {k: c.get(k) for k in ("key", "requested", "excluded", "hardness")}
+            for c in intent.get("constraints") or []
+            if isinstance(c, dict) and c.get("key") != "listing"
+        ],
+        "discovery_funnel": dict(stage.get("funnel") or {}),
         "config": config,
         "provider": run.provider_name,
         "lookback_days": run.lookback_days,
@@ -2094,7 +2103,21 @@ def _candidate_to_evidence_dict(
     """
     raw = c.raw_signal_json if isinstance(c.raw_signal_json, dict) else {}
     data_coverage = raw.get("data_coverage") if isinstance(raw, dict) else {}
+    v319 = ((c.thesis_match_json or {}).get("v319") or {}) if isinstance(
+        c.thesis_match_json, dict) else {}
     return {
+        # V3.19.5 — what may be SAID about this candidate, and nothing requested.
+        "verified_attributes": dict(v319.get("verified_attributes") or {}),
+        "constraint_status": {
+            str(r.get("key")): str(r.get("status"))
+            for r in v319.get("constraint_results") or []
+            if isinstance(r, dict) and r.get("status") != "not_requested"
+        },
+        "eligibility": (v319.get("eligibility") or {}).get("status"),
+        "discovery_provenance": {
+            k: (v319.get("provenance") or {}).get(k)
+            for k in ("discovery_source", "identity_status")
+        } if v319 else {},
         "candidate_id": str(c.id),
         "ticker": c.ticker,
         "exchange": c.exchange,
@@ -2353,6 +2376,11 @@ async def _compute_council_result(
         for c in candidates
     ]
 
+    guard_candidates = [
+        {"candidate_id": d.get("candidate_id"), "ticker": d.get("ticker"),
+         "verified_attributes": d.get("verified_attributes") or {}}
+        for d in candidate_dicts
+    ]
     result = await maybe_run_discovery_council(
         run=run_dict,
         candidates=candidate_dicts,
@@ -2361,6 +2389,9 @@ async def _compute_council_result(
         client=client,
         logger=logger,
     )
+    # V3.19.5 — carried to finalisation for the requested-vs-verified guard, in the SAME
+    # order the pack numbered them (C1, C2 …).
+    object.__setattr__(result, "_guard_candidates", guard_candidates)
     if not result.llm_used:
         # Flags were on but no provider was available (e.g. missing credentials).
         log_event(
@@ -2383,6 +2414,13 @@ def _finalize_council_review(run: DiscoveryRun, result: Any) -> dict[str, Any]:
     """
     created_at = datetime.now(timezone.utc).isoformat()
     stored_review = result.to_storage_dict(created_at=created_at)
+    # V3.19.5 — no sentence may attribute an unverified requested attribute (size band,
+    # growth) to a candidate or the cohort. Removed, never rewritten, and recorded.
+    from app.services.discovery.attribute_guard import guard_review
+
+    stored_review = guard_review(
+        stored_review, getattr(result, "_guard_candidates", None) or []
+    )
 
     # Backstop: no forbidden investment-action language may be saved. The council
     # already quarantines unsafe agent output; this is a defensive re-scan.

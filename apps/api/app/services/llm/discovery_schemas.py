@@ -178,6 +178,9 @@ class RunContext(BaseModel):
     candidate_count: int = 0
     error_count: int = 0
     warning_count: int = 0
+    #: V3.19.5 — what the USER ASKED FOR. Never a property of any candidate.
+    requested_constraints: list[dict[str, Any]] = Field(default_factory=list)
+    discovery_funnel: dict[str, Any] = Field(default_factory=dict)
 
 
 class RunFact(BaseModel):
@@ -218,6 +221,14 @@ class CandidateEvidence(BaseModel):
     #: Nothing here is fetched or computed for the council: every value was
     #: persisted by a completed research run.
     research_signals: dict[str, Any] = Field(default_factory=dict)
+    #: V3.19.5 — what may be SAID about this candidate: only attributes verified from
+    #: evidence (size band with its market cap and source, growth status and basis,
+    #: geography, theme exposure). The user's requested attributes are NOT here.
+    verified_attributes: dict[str, Any] = Field(default_factory=dict)
+    #: key → pass | fail | unknown, for each constraint the user requested.
+    constraint_status: dict[str, str] = Field(default_factory=dict)
+    eligibility: str | None = None
+    discovery_provenance: dict[str, Any] = Field(default_factory=dict)
     safety_valid: bool | None = None
     human_review_required: bool = True
     is_public: bool = False

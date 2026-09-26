@@ -175,6 +175,29 @@ OUTPUT_DISCIPLINE = (
 )
 
 
+# V3.19.5 — the council described LVMH as "small-cap" because the user asked for small
+# caps. What the user asked for is a SEARCH; what a company is must be verified.
+REQUESTED_VS_VERIFIED_CONTRACT = (
+    "REQUESTED vs VERIFIED ATTRIBUTES:\n"
+    "- The run fact 'requested_constraints' is what the USER ASKED FOR. It is NOT a "
+    "property of any candidate. Never describe a candidate, or the cohort, with a "
+    "requested attribute (size, growth, region, theme) unless that candidate's "
+    "verified_attributes establish it.\n"
+    "- Size: say a candidate is small/mid/large-cap ONLY from verified_attributes."
+    "size_bucket, and quote its market cap. Growth: say it is growing ONLY when "
+    "verified_attributes.growth_status is 'established', citing growth_basis. Price "
+    "movement is never growth.\n"
+    "- Describe the cohort by COUNTS of verified attributes, e.g. 'the user asked for "
+    "small caps; 3 of 8 candidates have a verified market cap in that band, 5 are "
+    "unverified'. constraint_status 'unknown' means NOT VERIFIED — say so.\n"
+    "- eligibility is decided by the platform from verified constraints and is final. "
+    "You prioritise eligible candidates; you never redefine a candidate as eligible or "
+    "as matching the request.\n"
+    "- A sentence that attributes an unverified requested attribute to a candidate is "
+    "removed from your output before anyone reads it."
+)
+
+
 def _base_header(agent_name: str, role: str) -> str:
     return (
         f"You are the {role} on an internal, run-level equity-research DISCOVERY "
@@ -184,6 +207,7 @@ def _base_header(agent_name: str, role: str) -> str:
         f"{SAFETY_RULES}\n\n"
         f"{COMPARISON_CONTRACT}\n\n"
         f"{ECONOMIC_VS_EVIDENCE_CONTRACT}\n\n"
+        f"{REQUESTED_VS_VERIFIED_CONTRACT}\n\n"
         f"{JURISDICTION_CONTRACT}\n\n"
         f"{JSON_CONTRACT}\n\n"
         f"{OUTPUT_DISCIPLINE}"
@@ -198,8 +222,10 @@ _ROLE_INSTRUCTIONS: dict[str, tuple[str, str]] = {
     AGENT_RUN_COORDINATOR: (
         "Run Coordinator",
         "Summarize what this discovery run tried to find (thesis/filters or "
-        "ticker set) and whether the candidate set actually matches that intent. "
-        "Note mismatches and coverage limits. Do not rank candidates yet.",
+        "ticker set) and whether the candidate set actually matches that intent — "
+        "judged ONLY from each candidate's constraint_status and verified_attributes, "
+        "and stated as counts (verified / unverified / mismatched per requested "
+        "constraint). Note mismatches and coverage limits. Do not rank candidates yet.",
     ),
     AGENT_CANDIDATE_PRIORITIZATION: (
         "Candidate Prioritization Analyst",

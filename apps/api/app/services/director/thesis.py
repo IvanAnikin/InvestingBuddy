@@ -241,11 +241,26 @@ async def resolve_thesis(
     context.industries = list(parsed.get("industries") or [])
     context.regions = list(parsed.get("regions") or [])
     context.size_hints = list(parsed.get("size_hints") or [])
+    # V3.19.5 — the intent's size constraint (with exclusions applied) is what was asked.
+    intent_size = next(
+        (c for c in ((parsed.get("discovery_intent") or {}).get("constraints") or [])
+         if isinstance(c, dict) and c.get("key") == "size"),
+        None,
+    )
+    if intent_size and intent_size.get("requested"):
+        context.size_hints = list(intent_size["requested"])
     context.matched_theme = match.get("theme")
     context.relevance_reason = match.get("relevance_reason")
     context.score_explanation = getattr(candidate, "score_explanation", None)
     context.council_rationale = _council_rationale(run, str(candidate.id)) if run else None
     context.dimensions = dimensions_in(context.thesis_text)
+    # V3.19.5 — a VERIFIED market cap from discovery, converted with an official rate,
+    # is the size the thesis is tested against, in any listing currency.
+    verified = ((match.get("v319") or {}).get("verified_attributes") or {})
+    if verified.get("market_cap_usd"):
+        context.market_cap_usd = float(verified["market_cap_usd"])
+        context.market_cap_as_of = (verified.get("market_cap") or {}).get("as_of")
+        return context
     market_cap_mln = getattr(candidate, "market_cap_mln", None)
     from app.services.exchange_registry import is_sec_eligible
 
