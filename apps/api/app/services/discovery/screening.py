@@ -358,6 +358,9 @@ def _issuer_site_urls(issuer: IdentityOutcome) -> list[str]:
     return urls[:MAX_ISSUER_SITE_PAGES]
 
 
+#: The most of one issuer page that is parsed.
+MAX_ISSUER_PAGE_BYTES = 2_000_000
+
 #: A block shorter than this is a label ("About us", "Our Business"), not the company
 #: describing itself. Menus are removed structurally first (nav/header/footer), so this
 #: only has to catch the short labels that are left.
@@ -436,7 +439,7 @@ def site_prose(blocks: list[str]) -> str:
     """
     prose: list[str] = []
     for block in blocks:
-        for segment in re.split(r"\s*\|\s*|\s{3,}", block):
+        for segment in re.split(r"\s*\|\s*", block):
             if len(segment.split()) >= MIN_PROSE_WORDS:
                 prose.append(segment.strip())
     return ".\n".join(prose)
@@ -459,7 +462,12 @@ async def _issuer_page_prose(url: str, cfg: Any, fetcher: Any) -> tuple[str | No
     if not content or (getattr(result, "document_type", None) or "html") != "html":
         return None, url  # only a page the company wrote as HTML prose is read here
     final = getattr(result, "final_url", None) or url
-    return site_prose(html_blocks(content.decode("utf-8", "replace"))) or None, final
+    # Off the event loop, and bounded: a synchronous parse of a large page on the loop is
+    # what SIGKILLed gunicorn workers once already (the 502 incident). A self-description
+    # sits near the top of a page; 2 MB is far more than any issuer home page needs.
+    html = content[:MAX_ISSUER_PAGE_BYTES].decode("utf-8", "replace")
+    prose = await asyncio.to_thread(lambda: site_prose(html_blocks(html)))
+    return prose or None, final
 
 
 async def issuer_site_exposures(
@@ -478,8 +486,10 @@ async def issuer_site_exposures(
         prose, final = await _issuer_page_prose(url, cfg, fetcher)
         if not prose:
             continue
-        found.extend(exposures_from_text(prose, terms, source_url=final,
-                                         source_tier="issuer", verified=True))
+        # The page's own words are stored and shown: neutralised like any passage.
+        found.extend(exposures_from_text(_safe(prose, len(prose) + 1) or "", terms,
+                                         source_url=final, source_tier="issuer",
+                                         verified=True))
         if any(e.exposure in (EXPOSURE_DIRECT, EXPOSURE_INDIRECT) for e in found):
             break
     return found, fetches
