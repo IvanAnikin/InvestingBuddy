@@ -29,12 +29,14 @@ per day. A directory that cannot be read is a missing source, never a negative a
 
 from __future__ import annotations
 
+import asyncio
 import csv
 import io
 import json
 import re
+import time
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any
 
 from app.services.discovery.identity import normalised_name
@@ -122,6 +124,34 @@ DIRECTORY_FOR_VENUE: dict[str, _Directory] = {
 }
 
 _CACHE: dict[tuple[str, str], list[DirectoryListing]] = {}
+#: Per-key locks so concurrent leads download a directory once, not once each.
+_LOCKS: dict[str, asyncio.Lock] = {}
+#: directory key → monotonic time of its last failed download; retried after this long.
+_FAILED_AT: dict[str, float] = {}
+FAILURE_RETRY_SECONDS = 900.0
+#: At most this many per-ticker LSE records are kept (the tickers come from model output).
+MAX_LSE_ENTRIES = 500
+#: A TIDM / ticker as it may appear in a URL path. Anything else is never requested.
+_SAFE_TICKER_RE = re.compile(r"^[A-Z0-9][A-Z0-9.\-]{0,11}$")
+
+
+def reset_cache() -> None:
+    """Forget every cached directory and failure (tests; a manual refresh)."""
+    _CACHE.clear()
+    _FAILED_AT.clear()
+    _LOCKS.clear()
+
+
+def _store(key: tuple[str, str], rows: list[DirectoryListing]) -> None:
+    """Cache for today only: earlier days' copies are dropped, LSE records are capped."""
+    today = _today()
+    for stale in [k for k in _CACHE if k[1] != today]:
+        del _CACHE[stale]
+    if key[0].startswith("lse:"):
+        lse = [k for k in _CACHE if k[0].startswith("lse:")]
+        for old in lse[: max(0, len(lse) - MAX_LSE_ENTRIES + 1)]:
+            del _CACHE[old]
+    _CACHE[key] = rows
 
 
 def _today() -> str:
@@ -233,6 +263,24 @@ async def load(
     key = (directory.key, _today())
     if key in _CACHE:
         return _CACHE[key]
+    async with _LOCKS.setdefault(directory.key, asyncio.Lock()):
+        if key in _CACHE:
+            return _CACHE[key]
+        failed = _FAILED_AT.get(directory.key)
+        if failed is not None and time.monotonic() - failed < FAILURE_RETRY_SECONDS:
+            return []
+        listings = await _download(directory, cfg=cfg, fetcher=fetcher)
+        if listings:
+            _FAILED_AT.pop(directory.key, None)
+            _store(key, listings)
+        else:
+            _FAILED_AT[directory.key] = time.monotonic()
+        return listings
+
+
+async def _download(
+    directory: _Directory, *, cfg: Any = None, fetcher: Any = None
+) -> list[DirectoryListing]:
     from app.services.sources.document_fetcher import safe_fetch_document
 
     try:
@@ -252,15 +300,25 @@ async def load(
     except UnicodeDecodeError:
         text = content.decode("cp1252", "replace")
     parser = _PARSERS[directory.key]
-    listings = parser(text, directory)
-    _CACHE[key] = listings
-    return listings
+    try:
+        return list(parser(text, directory))
+    except Exception:  # noqa: BLE001 - a changed file shape is an unreadable directory
+        return []
+
+
+#: Venue suffixes a quoted ticker may carry ("KER.PA"). Anything else is PART of the
+#: ticker — "BT.A" is BT Group's TIDM, not BT on venue "A".
+_VENUE_SUFFIXES = frozenset({
+    "PA", "MI", "AS", "BR", "LS", "IR", "OL", "AX", "AU", "TO", "V", "SW", "US", "L", "LN",
+    "CO", "DE", "F", "HE", "ST", "MC", "VX", "CN", "NE", "TSX", "LSE", "ASX",
+})
 
 
 def _strip_suffix(ticker: str) -> str:
-    # "KER.PA", "MP.US", "EPA:KER" → "KER"
+    # "KER.PA", "MP.US", "EPA:KER" → "KER"; "BT.A" stays "BT.A"
     ticker = ticker.upper().split(":")[-1]
-    return re.sub(r"\.[A-Z]{1,3}$", "", ticker)
+    head, dot, tail = ticker.rpartition(".")
+    return head if dot and head and tail in _VENUE_SUFFIXES else ticker
 
 
 async def find_listing(
@@ -301,7 +359,9 @@ async def find_listing(
                 f"not {name!r}"
             )
     if wanted:
-        by_name = [r for r in in_venue if _names_agree(wanted, normalised_name(r.name))]
+        # With no ticker to anchor it, only the SAME name counts: "Kering Eyewear" is
+        # not Kering, and must not inherit its listing and market cap.
+        by_name = [r for r in in_venue if _expand(wanted) == _expand(normalised_name(r.name))]
         if len(by_name) == 1:
             return by_name[0], None
         if len(by_name) > 1:
@@ -333,6 +393,8 @@ async def _lse_listing(
     market capitalisation (GBP). One request per ticker, cached per day."""
     from app.services.sources.document_fetcher import safe_fetch_document
 
+    if not _SAFE_TICKER_RE.match(ticker or ""):
+        return None, None  # never interpolate an unexpected string into a request path
     url = f"https://{LSE_HOST}/api/gw/lse/instruments/alldata/{ticker}"
     key = ("lse:" + ticker, _today())
     if key in _CACHE:
@@ -350,8 +412,8 @@ async def _lse_listing(
         if not isinstance(data, dict):
             return None, None
         if not data.get("tidm"):
-            _CACHE[key] = []
-            return None, f"the London Stock Exchange lists no instrument {ticker}"
+            # An error or rate-limit body is not "not listed": no verdict, not cached.
+            return None, None
         rows = [DirectoryListing(
             name=str(data.get("issuername") or data.get("description") or ""),
             ticker=str(data["tidm"]).upper(), exchange="LSE", isin=data.get("isin"),
@@ -360,7 +422,7 @@ async def _lse_listing(
             industry=None, mic="XLON", directory="lse", source_url=url, tier=TIER_EXCHANGE,
             as_of=_today(),
         )]
-        _CACHE[key] = rows
+        _store(key, rows)
     if not rows:
         return None, f"the London Stock Exchange lists no instrument {ticker}"
     row = rows[0]
@@ -389,7 +451,17 @@ def _names_agree(a: str, b: str, *, ticker_matched: bool = False) -> bool:
     short, long_ = (ta, tb) if len(ta) <= len(tb) else (tb, ta)
     if len(short) >= 1 and long_[: len(short)] == short and len(" ".join(short)) >= 4:
         return True
-    if not ticker_matched or len(short) < 3 or any(len(t) < 3 for t in short):
+    if not ticker_matched:
+        return False
+    # Exchanges drop LEADING words too ("AIR LIQUIDE" for L'Air Liquide, "SAINT GOBAIN"
+    # for Compagnie de Saint-Gobain): once the ticker matched, one shared DISTINCTIVE
+    # word (≥4 letters, not generic) agrees. "Gold Mining" vs "Gold Rock Mining" does not.
+    from app.services.discovery.identity import _GENERIC_TOKENS
+
+    distinctive = {t for t in short if len(t) >= 4 and t not in _GENERIC_TOKENS}
+    if distinctive & set(long_):
+        return True
+    if len(short) < 3 or any(len(t) < 3 for t in short):
         return False
     remaining = iter(long_)
     return all(token in remaining for token in short)
@@ -420,6 +492,9 @@ async def official_market_cap(
 
 
 SEC_DATA_HOST = "data.sec.gov"
+#: The 10-K float is as of the last Q2 end, so a current filer's is at most ~15 months
+#: old; anything older than this is stale.
+MAX_FLOAT_AGE_DAYS = 548
 
 
 async def sec_public_float(
@@ -444,14 +519,21 @@ async def sec_public_float(
         )
         content = getattr(result, "content", None) if getattr(result, "ok", False) else None
         facts = json.loads(content or b"{}").get("units", {}).get("USD") or []
+        annual = [f for f in facts if isinstance(f, dict)
+                  and str(f.get("form", "")).startswith("10-K")
+                  and isinstance(f.get("val"), (int, float)) and f["val"] > 0
+                  and isinstance(f.get("end"), str)]
+        if not annual:
+            return None
+        latest = max(annual, key=lambda f: (f["end"], str(f.get("filed") or "")))
+        as_of = date.fromisoformat(latest["end"][:10])
     except Exception:  # noqa: BLE001 - an unreadable filing is an absent figure
         return None
-    annual = [f for f in facts if str(f.get("form", "")).startswith("10-K")
-              and isinstance(f.get("val"), (int, float)) and f["val"] > 0 and f.get("end")]
-    if not annual:
+    # A float older than this describes another company-year (a lapsed 10-K filer, a
+    # switch to 20-F): it proves nothing about today's size.
+    if (datetime.now(timezone.utc).date() - as_of).days > MAX_FLOAT_AGE_DAYS:
         return None
-    latest = max(annual, key=lambda f: (f["end"], f.get("filed") or ""))
-    return float(latest["val"]), str(latest["end"]), url
+    return float(latest["val"]), as_of.isoformat(), url
 
 
 async def euronext_admitted_shares(
@@ -471,8 +553,12 @@ async def euronext_admitted_shares(
     if not content:
         return None, None
     text = re.sub(r"<[^>]+>", " ", content.decode("utf-8", "replace"))
-    match = re.search(r"Admitted shares\s+([\d,\s]+)", text)
-    return (_num(match.group(1).replace(" ", "")) if match else None), url
+    # ONE grouped number ("123,420,778" or "123 420 778"); a following figure such as a
+    # year must never be glued onto it.
+    match = re.search(r"Admitted shares\s+(\d{1,3}(?:[, \u00a0]\d{3})*)(?!\d)", text)
+    if not match:
+        return None, url
+    return _num(re.sub(r"[, \u00a0]", "", match.group(1))), url
 
 
 __all__ = [

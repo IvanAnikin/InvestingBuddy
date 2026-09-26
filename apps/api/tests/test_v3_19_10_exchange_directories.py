@@ -51,9 +51,9 @@ async def fetcher(url: str, **_kw):  # noqa: ANN201
 
 @pytest.fixture(autouse=True)
 def _clear():
-    d._CACHE.clear()
+    d.reset_cache()
     yield
-    d._CACHE.clear()
+    d.reset_cache()
 
 
 def _lead(name, ticker, venue):
@@ -240,7 +240,8 @@ async def test_issuer_site_verifies_what_the_company_does_only_on_its_own_domain
         (61.9e9, ("micro_cap", "small_cap", "mid_cap"), "fail"),  # FCX: ≥ 2 × $10bn
         (15e9, ("micro_cap", "small_cap", "mid_cap"), "unknown"),  # could have halved
         (5e9, ("micro_cap", "small_cap", "mid_cap"), "unknown"),  # floor proves no fit
-        (250e9, ("mega_cap",), "pass"),  # open-ended top band, cleared by the floor
+        (450e9, ("mega_cap",), "pass"),  # even half the floor clears the open top band
+        (250e9, ("mega_cap",), "unknown"),  # the price may have fallen since the float date
         (150e9, ("large_cap", "mega_cap"), "unknown"),
     ],
 )
@@ -263,14 +264,16 @@ def test_public_float_is_only_a_lower_bound(floor_usd, requested, expected):
 
 async def test_sec_public_float_reads_the_latest_10k_cover():
     import json as _json
+    from datetime import date, timedelta
 
     from app.services.discovery.directories import sec_public_float
     from app.services.sources.document_fetcher import DocumentFetchResult
 
+    recent = (date.today() - timedelta(days=300)).isoformat()
     body = {"units": {"USD": [
         {"end": "2024-06-30", "val": 69.5e9, "form": "10-K", "filed": "2025-02-14"},
-        {"end": "2025-06-30", "val": 61.9e9, "form": "10-K", "filed": "2026-02-13"},
-        {"end": "2025-12-31", "val": 1.0, "form": "8-K", "filed": "2026-01-10"},
+        {"end": recent, "val": 61.9e9, "form": "10-K", "filed": "2026-02-13"},
+        {"end": "2026-12-31", "val": 1.0, "form": "8-K", "filed": "2026-01-10"},
     ]}}
     seen = {}
 
@@ -281,10 +284,16 @@ async def test_sec_public_float_reads_the_latest_10k_cover():
                                    content=_json.dumps(body).encode())
 
     assert await sec_public_float("831259", fetcher=_fetch) == (
-        61.9e9, "2025-06-30",
+        61.9e9, recent,
         "https://data.sec.gov/api/xbrl/companyconcept/CIK0000831259/dei/EntityPublicFloat.json")
     assert seen["allowed_domains"] == ("data.sec.gov",)
     assert await sec_public_float("not-a-cik", fetcher=_fetch) is None
+    # A lapsed filer's old float proves nothing about today.
+    body["units"]["USD"] = [{"end": "2019-06-30", "val": 5e9, "form": "10-K"}]
+    assert await sec_public_float("831259", fetcher=_fetch) is None
+    # A changed response shape is an absent figure, never an exception.
+    body["units"]["USD"] = ["not", "a", "fact"]
+    assert await sec_public_float("831259", fetcher=_fetch) is None
 
 
 def test_shortened_exchange_name_agrees_only_after_a_ticker_match():
@@ -295,8 +304,129 @@ def test_shortened_exchange_name_agrees_only_after_a_ticker_match():
     short = normalised_name("BAINS MER MONACO")
     assert _names_agree(legal, short, ticker_matched=True)
     assert not _names_agree(legal, short)  # a name-only search stays strict
-    # Out of order, a two-letter word, or a single word is never enough.
-    assert not _names_agree(legal, normalised_name("MONACO BAINS"), ticker_matched=True)
-    assert not _names_agree(legal, normalised_name("MONACO"), ticker_matched=True)
+    # One shared DISTINCTIVE word agrees once the ticker matched; generic words never do.
+    assert _names_agree(legal, normalised_name("MONACO"), ticker_matched=True)
+    assert not _names_agree(legal, normalised_name("MONACO"))
+    assert not _names_agree(normalised_name("Global Energy Group"),
+                            normalised_name("Energy Global"), ticker_matched=True)
     assert not _names_agree(normalised_name("Gold Mining Corp"),
                             normalised_name("Gold Rock Mining"), ticker_matched=True)
+
+
+async def test_directory_download_is_shared_bounded_and_path_safe():
+    """Concurrent leads download a directory once; a failure is not retried per lead;
+    a model-supplied ticker is never interpolated into a request path."""
+    import asyncio
+
+    from app.services.discovery import directories as d
+
+    d.reset_cache()
+    calls: list[str] = []
+
+    async def _down(url, **_kw):  # noqa: ANN001, ANN202
+        calls.append(url)
+        await asyncio.sleep(0)
+        raise OSError("down")
+
+    results = await asyncio.gather(*(d.load(d.ASX, fetcher=_down) for _ in range(5)))
+    assert results == [[]] * 5 and len(calls) == 1
+    assert await d.load(d.ASX, fetcher=_down) == [] and len(calls) == 1  # backoff
+
+    calls.clear()
+    for bad in ("../../X?Y", "A/B", "X#Y", ""):
+        assert await d._lse_listing(name="x", ticker=bad, fetcher=_down) == (None, None)
+    assert calls == []
+    d.reset_cache()
+
+
+@pytest.mark.parametrize(("lead", "listed"), [
+    ("L'Air Liquide S.A.", "AIR LIQUIDE"),
+    ("Compagnie de Saint-Gobain", "SAINT GOBAIN"),
+    ("Salvatore Ferragamo S.p.A.", "FERRAGAMO"),
+])
+def test_exchange_short_names_agree_after_a_ticker_match(lead, listed):
+    from app.services.discovery.directories import _names_agree
+    from app.services.discovery.identity import normalised_name
+
+    assert _names_agree(normalised_name(lead), normalised_name(listed), ticker_matched=True)
+
+
+async def test_name_only_search_requires_the_same_name():
+    """Without a ticker, "Kering Eyewear" must not inherit Kering's listing."""
+    from app.services.discovery import directories as d
+
+    d.reset_cache()
+    row = d.DirectoryListing(name="KERING", ticker="KER", exchange="PA", isin=None,
+                             country=None, market_cap=None, currency="EUR", price=None,
+                             industry=None, mic="XPAR", directory="euronext",
+                             source_url=d.EURONEXT.url, tier="exchange", as_of=d._today())
+    d._store(("euronext", d._today()), [row])
+    assert (await d.find_listing(name="Kering Eyewear", ticker=None, venue="PA"))[0] is None
+    assert (await d.find_listing(name="Kering SA", ticker=None, venue="PA"))[0] == row
+    d.reset_cache()
+
+
+def test_venue_suffix_is_stripped_but_a_share_class_is_kept():
+    from app.services.discovery.directories import _strip_suffix
+
+    assert _strip_suffix("KER.PA") == "KER"
+    assert _strip_suffix("EPA:KER") == "KER"
+    assert _strip_suffix("BT.A") == "BT.A"
+    assert _strip_suffix("RDSB.L") == "RDSB"
+
+
+async def test_lse_record_market_cap_is_in_pounds_and_an_error_body_is_no_verdict():
+    import json as _json
+
+    from app.services.discovery import directories as d
+    from app.services.sources.document_fetcher import DocumentFetchResult
+
+    d.reset_cache()
+    bodies = {
+        "BRBY": {"tidm": "BRBY", "issuername": "Burberry Group PLC", "isin": "GB0031743007",
+                 "marketcapitalization": 3727670338, "lastclose": 1034.5},
+        "NOPE": {"status": 429, "message": "Too many requests"},
+    }
+
+    async def _fetch(url, **_kw):  # noqa: ANN001, ANN202
+        body = bodies[url.rsplit("/", 1)[-1]]
+        return DocumentFetchResult(requested_url=url, final_url=url, status_code=200,
+                                   content_type="application/json", document_type="html",
+                                   content=_json.dumps(body).encode())
+
+    row, reason = await d._lse_listing(name="Burberry Group plc", ticker="BRBY",
+                                       fetcher=_fetch)
+    assert reason is None and row.market_cap == 3727670338 and row.currency == "GBP"
+    assert await d._lse_listing(name="x", ticker="NOPE", fetcher=_fetch) == (None, None)
+    assert not any(k[0] == "lse:NOPE" for k in d._CACHE)
+    d.reset_cache()
+
+
+async def test_admitted_shares_never_glue_a_following_number():
+    from app.services.discovery import directories as d
+    from app.services.sources.document_fetcher import DocumentFetchResult
+
+    async def _fetch(url, **_kw):  # noqa: ANN001, ANN202
+        html = "<td>Admitted shares</td><td>123,420,778</td><td>2 026</td>"
+        return DocumentFetchResult(requested_url=url, final_url=url, status_code=200,
+                                   content_type="text/html", document_type="html",
+                                   content=html.encode())
+
+    shares, _url = await d.euronext_admitted_shares("FR0000121485", "XPAR", fetcher=_fetch)
+    assert shares == 123420778
+
+
+async def test_a_directory_whose_shape_changed_is_unreadable_not_an_exception():
+    from app.services.discovery import directories as d
+    from app.services.sources.document_fetcher import DocumentFetchResult
+
+    d.reset_cache()
+
+    async def _fetch(url, **_kw):  # noqa: ANN001, ANN202
+        return DocumentFetchResult(requested_url=url, final_url=url, status_code=200,
+                                   content_type="application/json", document_type="html",
+                                   content=b'["a", "list", "not", "an", "object"]')
+
+    assert await d.load(d.SEC, fetcher=_fetch) == []
+    assert await d.load(d.TSX, fetcher=_fetch) == []
+    d.reset_cache()

@@ -161,10 +161,10 @@ def _clear_fx_cache():
     from app.services.discovery import directories
 
     fx._CACHE.clear()
-    directories._CACHE.clear()
+    directories.reset_cache()
     yield
     fx._CACHE.clear()
-    directories._CACHE.clear()
+    directories.reset_cache()
 
 
 async def _stage(provider=None):

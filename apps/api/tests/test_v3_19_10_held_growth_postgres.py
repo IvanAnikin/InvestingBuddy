@@ -113,3 +113,28 @@ async def test_split_fiscal_years_pair_only_with_each_other(factory):
         assert (obs.period, obs.base_period) == ("2025/26", "2024/25")
         assert obs.growth_pct == pytest.approx(10.0)
         await db.rollback()
+
+
+async def test_production_passes_a_string_company_id(factory):
+    """The pipeline passes ``str(held_row.id)``; a swallowed type error would read as
+    'no growth' forever."""
+    async with factory() as db:
+        company = await _company(db)
+        doc = await _document(db, company)
+        db.add_all([_fact(doc, 110, "FY2025"), _fact(doc, 100, "FY2024")])
+        await db.flush()
+        [obs] = await growth_from_held_facts(db, str(company.id))
+        assert obs.growth_pct == pytest.approx(10.0)
+        await db.rollback()
+
+
+async def test_an_annual_year_without_a_pair_does_not_hide_a_split_year_pair(factory):
+    async with factory() as db:
+        company = await _company(db)
+        doc = await _document(db, company)
+        db.add_all([_fact(doc, 999, "FY2025"), _fact(doc, 22000, "2025/26"),
+                    _fact(doc, 20000, "2024/25")])
+        await db.flush()
+        [obs] = await growth_from_held_facts(db, company.id)
+        assert (obs.period, obs.base_period) == ("2025/26", "2024/25")
+        await db.rollback()

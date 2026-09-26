@@ -305,7 +305,8 @@ def _verify_size_floor(
     floor_usd: float,
 ) -> ConstraintResult:
     """Size from a lower bound: FAIL when even half the floor is above every requested
-    band; PASS only for an open-ended top band the floor already clears; else UNKNOWN."""
+    band; PASS only for an open-ended top band that even half the floor clears (the
+    price may have fallen since the float date); else UNKNOWN."""
     requested = list(constraint.requested) if constraint else []
     hardness = constraint.hardness if constraint else HARD
     value = {
@@ -331,7 +332,7 @@ def _verify_size_floor(
                 sources=sources,
             )
     for low, high in bands:
-        if high is None and low is not None and floor_usd >= low:
+        if high is None and low is not None and floor_usd / FLOAT_FLOOR_MARGIN >= low:
             return ConstraintResult("size", requested, hardness, PASS, value=value,
                                     basis=f"{stated}; within the open-ended requested band",
                                     sources=sources)

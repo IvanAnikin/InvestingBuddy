@@ -343,7 +343,9 @@ def _issuer_site_urls(issuer: IdentityOutcome) -> list[str]:
         parts = urlsplit(raw or "")
         if parts.scheme != "https" or not parts.hostname:
             continue
-        if not issuer_domain_matches(parts.hostname, issuer.name or issuer.lead.name):
+        # Judged against the lead's legal name, never the directory's ALL-CAPS short
+        # form ("RIO TINTO LIMITED" would make any 3-letter first word an "acronym").
+        if not issuer_domain_matches(parts.hostname, issuer.lead.name or issuer.name):
             continue
         for url in (raw, f"https://{parts.hostname}/"):
             if url and url not in urls:
@@ -598,9 +600,10 @@ async def screen_issuers(
     # output budget reasoning. Every claim is still verified on a page the platform fetches
     # itself; recall only changes where the claim's URL came from.
     if provider is not None and getattr(provider, "search_enabled", False):
-        from dataclasses import replace
+        from dataclasses import is_dataclass, replace
 
-        provider = replace(provider, search_enabled=False)
+        if is_dataclass(provider) and not isinstance(provider, type):
+            provider = replace(provider, search_enabled=False)
     limit = _bounded(getattr(cfg, "v3_discovery_max_screened", None), DEFAULT_MAX_SCREENED,
                      HARD_MAX_SCREENED)
     concurrency = _bounded(getattr(cfg, "v3_discovery_screening_concurrency", None),
