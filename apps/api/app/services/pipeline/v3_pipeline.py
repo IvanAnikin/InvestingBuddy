@@ -147,7 +147,12 @@ class V3ResearchOutcome:
         return self.research_run_id is not None and self.error is None
 
     def to_dict(self) -> dict[str, Any]:
+        from app.services.discovery.freshness import ENGINE_VERSION
+
         return {
+            # V3.19.3 — which research engine produced this block, so a later discovery
+            # run can tell current professional research from a legacy report.
+            "research_engine_version": ENGINE_VERSION,
             "research_run_id": (str(self.research_run_id) if self.research_run_id else None),
             "mode": self.mode,
             "playbook_versions": dict(self.playbook_versions),

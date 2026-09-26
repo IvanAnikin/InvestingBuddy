@@ -375,3 +375,71 @@ async def research_signals_for_company(
     """Resolve + read one company's current research in a single call."""
     report = await resolve_current_research_report(db, company_id)
     return build_research_signals(report)
+
+
+# ---------------------------------------------------------------------------
+# V3.19.3 — the reuse contract for a DISCOVERY run
+# ---------------------------------------------------------------------------
+
+
+async def resolve_research_for_discovery(
+    db: AsyncSession,
+    company_id: uuid.UUID | None,
+    *,
+    cfg: Any = None,
+) -> dict[str, Any]:
+    """What a discovery council may be told about a company's prior research.
+
+    The reuse contract (spec §5.7): only ``v3_current`` professional research is CURRENT
+    evidence; ``v3_stale`` is dated context, labelled; a ``legacy`` report is history — the
+    council learns that it exists and when, never what it said. Read-only; nothing is
+    fetched or run. An empty dict means no research exists at all.
+    """
+    from app.services.discovery.freshness import (
+        LEGACY,
+        V3_CURRENT,
+        classify_report,
+        fresh_days_from,
+    )
+
+    if company_id is None:
+        return {}
+    if cfg is None:
+        from app.core.config import settings as cfg  # noqa: PLW0127
+    rows = list(
+        (
+            await db.execute(
+                select(Report)
+                .where(Report.company_id == company_id)
+                .order_by(Report.created_at.desc(), Report.id.desc())
+                .limit(_COHORT_LIMIT)
+            )
+        ).scalars()
+    )
+    structured = [r for r in rows if is_structured_research_report(r)]
+    if not structured:
+        return {}
+    fresh_days = fresh_days_from(cfg)
+    classified = [(r, classify_report(r, fresh_days=fresh_days)) for r in structured]
+    professional = [(r, f) for r, f in classified if f.status != LEGACY]
+    if not professional:
+        newest, freshness = classified[0]
+        return {
+            "historical_research_exists": True,
+            "historical_research_as_of": freshness.researched_at,
+            "research_freshness": freshness.to_dict(),
+            "note": (
+                "This company has only LEGACY research (produced before V3 professional "
+                "research). It is history, not current evidence, and is not shown."
+            ),
+        }
+    report, freshness = professional[0]
+    signals = build_research_signals(report).to_dict()
+    signals["research_freshness"] = freshness.to_dict()
+    if freshness.status != V3_CURRENT:
+        signals["dated_context"] = True
+        signals["note"] = (
+            f"STALE research ({freshness.reason}). Dated context only — not current "
+            "evidence about the company."
+        )
+    return signals

@@ -46,7 +46,7 @@ from app.schemas.market_discovery import (
 from app.services import research_job, safety_terms
 from app.services.company_research_service import execute_company_research
 from app.services.company_service import get_company_by_ticker
-from app.services.current_research_resolver import research_signals_for_company
+from app.services.current_research_resolver import resolve_research_for_discovery
 from app.services.discovery.intent import build_intent
 from app.services.discovery_filters import (
     canonical_country,
@@ -1994,13 +1994,16 @@ async def resolve_candidate_research_signals(
     no structured research, maps to an empty dict. That is the honest answer
     and it is what makes the economic dimensions read "not established".
     """
+    # V3.19.3 — under the reuse contract: current V3 research is evidence, stale V3
+    # research is labelled dated context, and a legacy report is only said to EXIST.
+    # A 2026-08 V2 report is no longer handed to the council as "current research".
     out: dict[uuid.UUID, dict[str, Any]] = {}
     for candidate in candidates:
         try:
             company = await get_company_by_ticker(
                 db, candidate.ticker, candidate.exchange
             )
-            signals = await research_signals_for_company(
+            signals = await resolve_research_for_discovery(
                 db, company.id if company else None
             )
         except Exception as exc:  # noqa: BLE001 - enrichment is never fatal
@@ -2010,8 +2013,8 @@ async def resolve_candidate_research_signals(
                 type(exc).__name__,
             )
             continue
-        if signals.available:
-            out[candidate.id] = signals.to_dict()
+        if signals:
+            out[candidate.id] = signals
     return out
 
 
