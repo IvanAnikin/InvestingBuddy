@@ -18,11 +18,13 @@ from typing import Any
 
 def company_documents_clause(company_id: Any) -> Any:
     """A SQLAlchemy condition on ``ExtractedDocument`` selecting this company's documents."""
-    from sqlalchemy import and_, or_, select
+    from sqlalchemy import and_, false, or_, select
 
     from app.models.document_ingestion_attempt import DocumentIngestionAttempt
     from app.models.extracted_document import ExtractedDocument
 
+    if not company_id:
+        return false()  # no company owns nothing — never an "IS NULL" match
     attempted = select(DocumentIngestionAttempt.content_hash).where(
         DocumentIngestionAttempt.company_id == company_id,
         DocumentIngestionAttempt.content_hash.is_not(None),

@@ -313,3 +313,11 @@ async def test_a_held_block_records_why(session, kwargs, names, reason):
     row = await _question_row(session, run)
     assert row.acquisition_log_json[-1] == {
         "rung": "blocking_held", "condition": "named_segments", "reason": reason}
+
+
+def test_no_company_matches_no_document():
+    from sqlalchemy import false
+
+    from app.services.sources.company_documents import company_documents_clause
+
+    assert str(company_documents_clause(None)) == str(false())
