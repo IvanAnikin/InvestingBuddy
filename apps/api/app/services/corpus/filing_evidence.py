@@ -175,7 +175,15 @@ def url_has_document_segment(url: str | None, ref: str) -> bool:
     for segment in parts.path.split("/"):
         if segment == ref or segment.startswith(ref + "."):
             return True
-    return any(value == ref for _key, value in parse_qsl(parts.query))
+    # Only a parameter that NAMES a document — never an arbitrary value such as a page
+    # number, which an all-digit id could otherwise equal.
+    return any(
+        key in _DOCUMENT_ID_PARAMS and value == ref for key, value in parse_qsl(parts.query)
+    )
+
+
+#: Query parameters a venue uses for its own document id (the ASX announcement address).
+_DOCUMENT_ID_PARAMS: frozenset[str] = frozenset({"idsId"})
 
 
 #: An official document identifier as it appears inside the transport's canonical URL:
@@ -373,6 +381,9 @@ async def _evidence_state_for_fragment(
 #: How many current versions of one accession are considered. An accession is a folder,
 #: and a 10-K's folder holds the body and its exhibits.
 _MAX_VERSIONS_PER_FILING = 8
+#: Candidates read for a document ref before the exact segment / id check. The SQL
+#: prefilter is a substring, so near-miss addresses must not crowd out the true one.
+_MAX_REF_CANDIDATES = 64
 
 
 def is_exhibit_url(url: str | None) -> bool:
@@ -455,7 +466,7 @@ async def _current_version_via_attempt(
             # Newest first, so a document re-fetched many times with changed bytes
             # is judged by its latest retrieval, not by an arbitrary eight.
             .order_by(DocumentIngestionAttempt.attempted_at.desc())
-            .limit(_MAX_VERSIONS_PER_FILING)
+            .limit(_MAX_REF_CANDIDATES)
         )
     ).all()
     hashes = sorted({
@@ -493,9 +504,10 @@ async def current_version_for_fragment(
     """The CURRENT corpus version whose canonical URL carries ``fragment``, for one
     company. The shared body of both lookups above.
 
-    ``whole_segment`` (document refs): the SQL narrows by an ESCAPED ``/ref`` substring
-    and the result is then required to carry ``ref`` as a whole path segment — so a
-    wildcard character can never widen the match and one id never answers for another.
+    ``whole_segment`` (document refs): the SQL narrows by an ESCAPED ``ref`` substring
+    and the result is then required to carry ``ref`` as a whole path segment or as a
+    document-id query value — so a wildcard character can never widen the match and one
+    id never answers for another.
     The SEC path keeps its fixed-width accession fragment, unchanged.
     """
     if not fragment or company_id is None:
@@ -524,7 +536,7 @@ async def current_version_for_fragment(
                 # arbitrary `limit(1)` made "which version is this filing" depend on the
                 # planner. Ordering by URL also makes the preference below stable.
                 .order_by(ResearchDocumentVersion.canonical_url)
-                .limit(_MAX_VERSIONS_PER_FILING)
+                .limit(_MAX_REF_CANDIDATES if whole_segment else _MAX_VERSIONS_PER_FILING)
             )
         )
         .scalars()
@@ -565,7 +577,7 @@ async def _superseded_version_exists(
                     else ResearchDocumentVersion.canonical_url.contains(fragment)
                 ),
             )
-            .limit(_MAX_VERSIONS_PER_FILING)
+            .limit(_MAX_REF_CANDIDATES if whole_segment else _MAX_VERSIONS_PER_FILING)
         )
     ).scalars().all()
     if whole_segment:
@@ -590,7 +602,7 @@ async def _historical_extracted_document_id(
                     else ExtractedDocument.canonical_url.contains(fragment)
                 ),
             )
-            .limit(_MAX_VERSIONS_PER_FILING)
+            .limit(_MAX_REF_CANDIDATES if whole_segment else _MAX_VERSIONS_PER_FILING)
         )
     ).all()
     for doc_id, url in rows:

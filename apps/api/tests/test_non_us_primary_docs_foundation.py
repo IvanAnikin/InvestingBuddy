@@ -93,6 +93,16 @@ class TestSafePostJson:
         method, _url, kw = seen[0]
         assert method == "POST" and kw["content"] == b'{"from": 0, "size": 1}'
 
+    def test_no_proxy_and_no_compression(self, monkeypatch):
+        import httpx
+
+        made: list = []
+        monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: made.append(kw) or _Client(
+            _Resp(headers={"content-type": "application/json"}, body=b"{}"), [], **kw))
+        _post()
+        assert made[0]["trust_env"] is False
+        assert made[0]["headers"]["Accept-Encoding"] == "identity"
+
     @pytest.mark.parametrize("url", [
         "http://api.data.fca.org.uk/search", "https://evil.example/search",
         "https://127.0.0.1/search", "https://localhost/search",
@@ -291,6 +301,8 @@ class TestReadinessIsWholeSegmentOnly:
          "03143773", False),
         ("https://www.asx.com.au/asx/v2/statistics/displayAnnouncement.do?display=pdf&idsId=03143773",
          "display", False),
+        # An arbitrary query value (a page number) is never a document id.
+        ("https://example.issuer/news?page=123456", "123456", False),
     ])
     def test_segment_rule(self, url, ref, expected):
         from app.services.corpus.filing_evidence import url_has_document_segment

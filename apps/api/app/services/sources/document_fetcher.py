@@ -364,10 +364,15 @@ async def safe_post_json(
         "follow_redirects": False,
         "timeout": timeout,
         "cookies": None,
+        # No environment proxy: a proxy would bypass the pinned, validated address.
+        "trust_env": False,
         "headers": {
             "User-Agent": _USER_AGENT,
             "Accept": "application/json",
             "Content-Type": "application/json",
+            # Uncompressed only, so the byte cap measures what is actually held — a
+            # small compressed chunk cannot expand past it before it is checked.
+            "Accept-Encoding": "identity",
         },
     }
     if transport is not None:
