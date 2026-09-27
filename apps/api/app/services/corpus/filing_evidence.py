@@ -162,19 +162,20 @@ async def filing_evidence_state(
 
 def url_has_document_segment(url: str | None, ref: str) -> bool:
     """True when ``ref`` is a WHOLE path segment of ``url`` (optionally with an
-    extension): ``…/NSM/PRN/<ref>.html``, ``…/NI-000131364/NI-000131364.pdf``,
-    ``…/file/<ref>``.
+    extension) — ``…/NSM/PRN/<ref>.html``, ``…/NI-000131364/NI-000131364.pdf`` — or
+    the EXACT value of one of its query parameters — the ASX's own announcement address
+    ``…/displayAnnouncement.do?display=pdf&idsId=<ref>``.
 
     Never a substring: ``NI-000131364`` must not match ``NI-0001313641``, and a ref that
     happens to be a word of the host or path must not match every document.
     """
-    from urllib.parse import urlsplit
+    from urllib.parse import parse_qsl, urlsplit
 
-    path = urlsplit(str(url or "")).path
-    for segment in path.split("/"):
+    parts = urlsplit(str(url or ""))
+    for segment in parts.path.split("/"):
         if segment == ref or segment.startswith(ref + "."):
             return True
-    return False
+    return any(value == ref for _key, value in parse_qsl(parts.query))
 
 
 #: An official document identifier as it appears inside the transport's canonical URL:
@@ -449,8 +450,11 @@ async def _current_version_via_attempt(
             .where(
                 DocumentIngestionAttempt.company_id == company_id,
                 DocumentIngestionAttempt.content_hash.is_not(None),
-                DocumentIngestionAttempt.canonical_url.contains("/" + ref, autoescape=True),
+                DocumentIngestionAttempt.canonical_url.contains(ref, autoescape=True),
             )
+            # Newest first, so a document re-fetched many times with changed bytes
+            # is judged by its latest retrieval, not by an arbitrary eight.
+            .order_by(DocumentIngestionAttempt.attempted_at.desc())
             .limit(_MAX_VERSIONS_PER_FILING)
         )
     ).all()
@@ -508,7 +512,7 @@ async def current_version_for_fragment(
                     ResearchDocument.company_id == company_id,
                     (
                         ResearchDocumentVersion.canonical_url.contains(
-                            "/" + fragment, autoescape=True
+                            fragment, autoescape=True
                         )
                         if whole_segment
                         else ResearchDocumentVersion.canonical_url.contains(fragment)
@@ -555,7 +559,7 @@ async def _superseded_version_exists(
                 ResearchDocument.company_id == company_id,
                 (
                     ResearchDocumentVersion.canonical_url.contains(
-                        "/" + fragment, autoescape=True
+                        fragment, autoescape=True
                     )
                     if whole_segment
                     else ResearchDocumentVersion.canonical_url.contains(fragment)
@@ -581,7 +585,7 @@ async def _historical_extracted_document_id(
             .where(
                 ExtractedDocument.company_id == company_id,
                 (
-                    ExtractedDocument.canonical_url.contains("/" + fragment, autoescape=True)
+                    ExtractedDocument.canonical_url.contains(fragment, autoescape=True)
                     if whole_segment
                     else ExtractedDocument.canonical_url.contains(fragment)
                 ),

@@ -284,6 +284,13 @@ class TestReadinessIsWholeSegmentOnly:
         ("https://asx.api.markitdigital.com/asx-research/1.0/file/2924-03139714-6A1345626",
          "2924-03139714-6A1345626", True),
         ("https://data.fca.org.uk/artefacts/NSM/PRN/x.html", "artefacts", True),
+        # The ASX's own announcement address carries its id as a query VALUE.
+        ("https://www.asx.com.au/asx/v2/statistics/displayAnnouncement.do?display=pdf&idsId=03143773",
+         "03143773", True),
+        ("https://www.asx.com.au/asx/v2/statistics/displayAnnouncement.do?display=pdf&idsId=031437731",
+         "03143773", False),
+        ("https://www.asx.com.au/asx/v2/statistics/displayAnnouncement.do?display=pdf&idsId=03143773",
+         "display", False),
     ])
     def test_segment_rule(self, url, ref, expected):
         from app.services.corpus.filing_evidence import url_has_document_segment
