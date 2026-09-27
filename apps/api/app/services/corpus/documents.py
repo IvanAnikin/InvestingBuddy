@@ -79,6 +79,11 @@ _PERIOD_BASIS_MAX = 40
 STATUS_EXTRACTED = "extracted"
 
 
+#: ``PrimaryDocumentArtifact.period_policy`` value: read the period from the official
+#: title only. See ``ingest_extracted_document``.
+PERIOD_POLICY_TITLE_ONLY = "title_only"
+
+
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -436,10 +441,14 @@ async def ingest_extracted_document(
         artifact_row_id = await _artifact_id_for(session, stored.content_hash)
 
     extraction = getattr(artifact, "extraction", None)
+    # An official announcement states its own period in its official TITLE, when it
+    # states one at all ("Interim results for the six months ended 31 December 2025");
+    # its body is where forecasts live. Title-only reads refuse the body entirely.
+    title_only = getattr(artifact, "period_policy", None) == PERIOD_POLICY_TITLE_ONLY
     period = document_period_of(
         title=getattr(artifact, "title", None),
-        url=getattr(artifact, "source_url", None),
-        extraction=extraction,
+        url=None if title_only else getattr(artifact, "source_url", None),
+        extraction=None if title_only else extraction,
     )
     payload = DocumentVersionInput(
         content_hash=document.content_hash,

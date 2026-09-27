@@ -377,7 +377,8 @@ async def _get_or_create_document(
         id=uuid.uuid4(),
         content_hash=content_hash,
         canonical_url=_clip(canonical, _CANONICAL_URL_MAX) or "",
-        provider=_clip(_ARTIFACT_PROVIDER, _PROVIDER_MAX) or _ARTIFACT_PROVIDER,
+        provider=_clip(getattr(artifact, "transport", None) or _ARTIFACT_PROVIDER,
+                       _PROVIDER_MAX) or _ARTIFACT_PROVIDER,
         source_type=_clip(
             getattr(artifact, "document_type", None) or _DEFAULT_SOURCE_TYPE,
             _SOURCE_TYPE_MAX,
@@ -390,7 +391,10 @@ async def _get_or_create_document(
         title=_clip(getattr(artifact, "title", None), _TITLE_MAX),
         # doc_date / period are NOT reliably carried on the artifact; leaving them
         # NULL is honest (a fact carries its own period). Never fabricated.
-        doc_date=None,
+        # …except the official PUBLICATION date a regulated transport states in its own
+        # metadata (an NSM / ASX announcement date). It dates the document; it is never
+        # read as the period the document covers.
+        doc_date=getattr(artifact, "published_at", None),
         period=None,
         retrieved_at=getattr(artifact, "retrieved_at", None) or _utcnow(),
         extraction_method=_clip(

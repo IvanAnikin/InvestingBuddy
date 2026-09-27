@@ -307,8 +307,127 @@ async def safe_fetch_document(
         return result
 
 
+#: The most a JSON search response may be — a listing, never a document.
+DEFAULT_MAX_JSON_BYTES = 2_000_000
+
+
+async def safe_post_json(
+    url: str,
+    payload: dict[str, Any],
+    *,
+    allowed_domains: tuple[str, ...],
+    cfg: Settings | None = None,
+    resolve_ip: bool = True,
+    resolver: Resolver = socket.getaddrinfo,
+    max_bytes: int = DEFAULT_MAX_JSON_BYTES,
+) -> DocumentFetchResult:
+    """POST one JSON query to an allowlisted HTTPS search API. Bounded, never raising.
+
+    For a regulator's SEARCH endpoint that only answers POST (the FCA National Storage
+    Mechanism). The same guards as :func:`safe_fetch_document` — host allowlist,
+    DNS-resolved public-address check with connection pinning, no cookies, no auth, a
+    timeout and a byte cap — plus two of its own:
+
+    * **no redirect is followed.** A search API has no reason to redirect a POST, and a
+      redirected POST is exactly how a request body ends up somewhere it was not sent;
+    * **the response must be JSON.** A listing is metadata; anything else is refused.
+
+    The body is the caller's own structured query (identifiers, never a URL), so this
+    is not a proxy: nothing the response says can choose what is fetched next without
+    passing the allowlist again.
+    """
+    import json as _json
+
+    cfg = cfg or default_settings
+    result = DocumentFetchResult(requested_url=strip_url_secrets(url) or url)
+    reason, pinned_ip = await async_check_fetch_url(
+        url, allowed_domains, cfg=cfg, resolve_ip=resolve_ip, resolver=resolver
+    )
+    if reason:
+        result.blocked = True
+        result.error = reason
+        result.failure_code = failure_code_for_block(reason)
+        result._gap(f"Search API could not be safely queried ({reason}).")
+        return result
+    try:
+        import httpx
+    except Exception as exc:  # noqa: BLE001
+        result.error = f"http client unavailable: {type(exc).__name__}"
+        result.failure_code = FAILURE_CLIENT_UNAVAILABLE
+        return result
+
+    timeout = max(1, cfg.source_document_extraction_timeout_seconds)
+    transport = pinned_transport_for(cfg, host_of(url), pinned_ip)
+    result.pinned = transport is not None
+    client_kwargs: dict[str, Any] = {
+        "follow_redirects": False,
+        "timeout": timeout,
+        "cookies": None,
+        "headers": {
+            "User-Agent": _USER_AGENT,
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        },
+    }
+    if transport is not None:
+        client_kwargs["transport"] = transport
+    try:
+        async with httpx.AsyncClient(**client_kwargs) as client:
+            async with client.stream(
+                "POST", url, content=_json.dumps(payload).encode("utf-8")
+            ) as resp:
+                result.status_code = resp.status_code
+                result.final_url = strip_url_secrets(url)
+                if resp.is_redirect:
+                    result.blocked = True
+                    result.error = "redirect refused on a POST"
+                    result.failure_code = FAILURE_BLOCKED_REDIRECT
+                    result._gap("Search API redirected a query; the redirect was refused.")
+                    return result
+                if resp.status_code >= 400:
+                    result.error = f"http {resp.status_code}"
+                    result.failure_code = (
+                        FAILURE_HTTP_SERVER_ERROR
+                        if resp.status_code >= 500
+                        else FAILURE_HTTP_CLIENT_ERROR
+                    )
+                    result._gap(f"Search API answered http {resp.status_code}.")
+                    return result
+                content_type = resp.headers.get("content-type")
+                result.content_type = content_type
+                if "json" not in (content_type or "").lower():
+                    result.blocked = True
+                    result.error = "unsupported content-type: not JSON"
+                    result.failure_code = FAILURE_UNSUPPORTED_CONTENT_TYPE
+                    result._gap("Search API answered with something other than JSON.")
+                    return result
+                result.document_type = "text"
+                chunks: list[bytes] = []
+                total = 0
+                async for chunk in resp.aiter_bytes():
+                    chunks.append(chunk)
+                    total += len(chunk)
+                    if total > max_bytes:
+                        # A truncated JSON listing is unparseable and must not be read
+                        # as a shorter list — refuse it outright.
+                        result.truncated = True
+                        result.error = "response exceeded the byte cap"
+                        result.failure_code = FAILURE_UNSUPPORTED_CONTENT_TYPE
+                        result._gap("Search API response exceeded the byte cap; refused.")
+                        return result
+                result.content = b"".join(chunks)
+                return result
+    except Exception as exc:  # noqa: BLE001 - a query must never crash a run
+        result.error = f"fetch failed: {type(exc).__name__}"
+        result.failure_code = failure_code_for_exception(exc)
+        result._gap(f"Search API could not be queried ({type(exc).__name__}).")
+        return result
+
+
 __all__ = [
+    "DEFAULT_MAX_JSON_BYTES",
     "DocumentFetchResult",
     "safe_fetch_document",
+    "safe_post_json",
     "classify_content_type",
 ]

@@ -60,6 +60,7 @@ or path* is fetched, because it never supplies one.
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
@@ -152,14 +153,61 @@ async def filing_evidence_state(
         return FilingEvidenceState(
             state=STATE_ABSENT, detail="accession could not be normalised"
         )
+    return await _evidence_state_for_fragment(
+        session, company_id=company_id, fragment=_url_fragment(canonical), label=canonical
+    )
+
+
+#: An official document identifier as it appears inside the transport's canonical URL:
+#: an NSM disclosure id ("NI-000131364", a UUID), an ASX document key
+#: ("2924-03139714-6A1345626"). Letters, digits, dot, dash and underscore only — so
+#: it can never be a path, a wildcard or a query.
+_DOCUMENT_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{5,79}$")
+
+
+def canonical_document_ref(raw: str | None) -> str | None:
+    """A transport's own document identifier, validated, or ``None``."""
+    value = str(raw or "").strip()
+    return value if _DOCUMENT_REF_RE.match(value) else None
+
+
+async def document_evidence_state(
+    session: Any,
+    *,
+    company_id: uuid.UUID | None,
+    document_ref: str | None,
+) -> FilingEvidenceState:
+    """The same A / B / C classification as :func:`filing_evidence_state`, for a
+    non-SEC official document identified by its transport's own document id.
+
+    One predicate, not two: both entry points resolve to the same company-scoped,
+    current-version-required, indexed-chunks-required check below.
+    """
+    ref = canonical_document_ref(document_ref)
+    if ref is None:
+        return FilingEvidenceState(
+            state=STATE_ABSENT, detail="document reference could not be validated"
+        )
+    return await _evidence_state_for_fragment(
+        session, company_id=company_id, fragment=ref, label=ref
+    )
+
+
+async def _evidence_state_for_fragment(
+    session: Any,
+    *,
+    company_id: uuid.UUID | None,
+    fragment: str,
+    label: str,
+) -> FilingEvidenceState:
+    canonical = label
     if company_id is None:
         return FilingEvidenceState(
             state=STATE_ABSENT, accession=canonical, detail="no company identity"
         )
 
-    fragment = _url_fragment(canonical)
-    version = await current_version_for_filing(
-        session, company_id=company_id, accession=canonical
+    version = await current_version_for_fragment(
+        session, company_id=company_id, fragment=fragment
     )
 
     if version is None:
@@ -325,6 +373,28 @@ async def current_version_for_filing(
     canonical = canonical_accession(accession)
     if canonical is None or company_id is None:
         return None
+    return await current_version_for_fragment(
+        session, company_id=company_id, fragment=_url_fragment(canonical)
+    )
+
+
+async def current_version_for_document_ref(
+    session: Any, *, company_id: uuid.UUID | None, document_ref: str | None
+) -> ResearchDocumentVersion | None:
+    """:func:`current_version_for_filing` for a non-SEC official document id."""
+    ref = canonical_document_ref(document_ref)
+    if ref is None or company_id is None:
+        return None
+    return await current_version_for_fragment(session, company_id=company_id, fragment=ref)
+
+
+async def current_version_for_fragment(
+    session: Any, *, company_id: uuid.UUID | None, fragment: str
+) -> ResearchDocumentVersion | None:
+    """The CURRENT corpus version whose canonical URL carries ``fragment``, for one
+    company. The shared body of both lookups above."""
+    if not fragment or company_id is None:
+        return None
     rows = (
         (
             await session.execute(
@@ -335,9 +405,7 @@ async def current_version_for_filing(
                 )
                 .where(
                     ResearchDocument.company_id == company_id,
-                    ResearchDocumentVersion.canonical_url.contains(
-                        _url_fragment(canonical)
-                    ),
+                    ResearchDocumentVersion.canonical_url.contains(fragment),
                     # REQUIRED, not merely preferred. See `filing_evidence_state`.
                     ResearchDocumentVersion.is_current.is_(True),
                 )
@@ -636,6 +704,10 @@ async def ensure_filing_corpus_evidence(
 
 
 __all__ = [
+    "canonical_document_ref",
+    "current_version_for_document_ref",
+    "current_version_for_fragment",
+    "document_evidence_state",
     "STATE_ABSENT",
     "STATE_HISTORICAL_WITHOUT_CHUNKS",
     "STATE_READY",
