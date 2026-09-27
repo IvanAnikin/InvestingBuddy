@@ -30,7 +30,12 @@ from app.services.director.loop import _release_conditional_blocks
 from app.services.director.planner import persist_plan, plan_research
 from app.services.ledger import store as ledger
 from app.services.playbooks.industries import LUXURY
-from app.services.sources.fact_scope import is_period_label, parse_scope, scope_from_columns
+from app.services.sources.fact_scope import (
+    is_period_label,
+    names_a_business_segment,
+    parse_scope,
+    scope_from_columns,
+)
 
 
 @compiles(JSONB, "sqlite")
@@ -86,11 +91,13 @@ class _Adapter:
 
 @pytest.mark.parametrize("label", ["This year", "Last year", "Prior year", "FY2025",
                                    "2025", "2025/26", "H1 2026", "Q3", "Full year"])
-def test_a_period_label_is_not_a_segment(label):
+def test_a_period_label_does_not_name_a_segment(label):
+    """It names no business area — but the FIGURE stays segment-scoped, so it can never
+    fill a Group slot under the implicit-Group convention (V3.19.15 review)."""
     assert is_period_label(label)
-    assert parse_scope(label).scope_type is None
-    # A row stored before this fix degrades on READ — no backfill.
-    assert scope_from_columns("segment", label).scope_type is None
+    assert not names_a_business_segment("segment", label)
+    assert parse_scope(label).scope_type == "segment"
+    assert scope_from_columns("segment", label).scope_type == "segment"
 
 
 @pytest.mark.parametrize("label", ["Jewellery Maisons", "Core", "Fuel with more",
@@ -326,12 +333,12 @@ def test_no_company_matches_no_document():
 @pytest.mark.parametrize("label", [
     # V3.19.15 — read live: this chunk "segment" held Pandora's block.
     "across our regions – we expect to grow our market share across all of them",
-    "and in the rest of the world, where sales were broadly flat",
     "Our jewellery business grew strongly in every market we operate in this year",
+    "where we see continued momentum in our core collections",
 ])
-def test_running_text_is_not_a_segment(label):
-    assert parse_scope(label).scope_type is None
-    assert scope_from_columns("segment", label).scope_type is None
+def test_running_text_does_not_name_a_segment(label):
+    assert not names_a_business_segment("segment", label)
+    assert parse_scope(label).scope_type == "segment"  # the figure's scope is unchanged
 
 
 @pytest.mark.parametrize("label", [
@@ -341,6 +348,29 @@ def test_running_text_is_not_a_segment(label):
 ])
 def test_a_heading_is_still_a_segment(label):
     assert parse_scope(label).scope_type == "segment"
+    assert names_a_business_segment("segment", label)
+
+
+@pytest.mark.parametrize("label", [
+    # The review's cases: long or lower-case headings that ARE segment reporting.
+    "Revenue and operating profit by reportable segment for the year ended 31 March 2025",
+    "Segment information: revenue by operating segment and geographical area",
+    "revenue by region", "sales by business segment", "eBay Marketplaces segment",
+    "e-commerce and wholesale", "iPad and Mac", "eBay and StubHub",
+])
+def test_segment_reporting_headings_keep_the_block(label):
+    assert parse_scope(label).scope_type == "segment"
+    assert names_a_business_segment("segment", label)
+
+
+def test_a_segment_figure_never_becomes_group_eligible():
+    """The CFR failure: a segment figure under any heading stays segment-scoped."""
+    from app.services.sources.fact_scope import GROUP_SCOPE
+
+    for label in ("This year", "across our regions – we expect to grow",
+                  "Revenue by reportable segment for the year ended 31 March 2025"):
+        assert parse_scope(label) != GROUP_SCOPE
+        assert scope_from_columns("segment", label).scope_type == "segment"
 
 
 async def test_a_prose_chunk_scope_does_not_hold_the_block(session):

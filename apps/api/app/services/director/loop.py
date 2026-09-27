@@ -818,9 +818,9 @@ _PRIMARY_TIERS = ("T1_primary_filing", "T1_primary_company_source", "T2_regulato
 
 
 def _names_a_segment(scope_type: str | None, scope_name: str | None) -> bool:
-    from app.services.sources.fact_scope import SCOPE_TYPE_SEGMENT, scope_from_columns
+    from app.services.sources.fact_scope import names_a_business_segment
 
-    return scope_from_columns(scope_type, scope_name).scope_type == SCOPE_TYPE_SEGMENT
+    return names_a_business_segment(scope_type, scope_name)
 
 
 async def segment_hazard_absent(session: Any, run: Any) -> bool:
