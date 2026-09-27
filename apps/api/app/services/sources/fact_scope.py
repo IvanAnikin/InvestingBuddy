@@ -109,11 +109,13 @@ _PERIOD_LABEL_RE = re.compile(
 #: "segment" "across our regions – we expect to grow our market share across…" — a
 #: sentence, not a business area — and it held the luxury block. Like the period rule,
 #: this only decides whether a label NAMES a segment; it never changes a fact's scope.
-_MAX_SEGMENT_NAME_WORDS = 8
+_MAX_SEGMENT_NAME_WORDS = 12  # combined headings run long ("Fashion & Leather Goods, …")
 
 
 #: First-person words: a heading names a business area; a sentence speaks for the issuer.
-_FIRST_PERSON_RE = re.compile(r"\b(?:we|our|us|we're|we've)\b", re.IGNORECASE)
+#: Case-SENSITIVE and lower-case only: "US", "US & Canada" and "Our Brands" are names;
+#: "…across our regions – we expect…" is a sentence (V3.19.15 review).
+_FIRST_PERSON_RE = re.compile(r"\b(?:we|our|we're|we've)\b")
 
 
 def is_prose_label(raw: str | None) -> bool:

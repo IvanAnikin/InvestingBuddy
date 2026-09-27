@@ -357,6 +357,9 @@ def test_a_heading_is_still_a_segment(label):
     "Segment information: revenue by operating segment and geographical area",
     "revenue by region", "sales by business segment", "eBay Marketplaces segment",
     "e-commerce and wholesale", "iPad and Mac", "eBay and StubHub",
+    # "US" is a country, not a pronoun.
+    "US", "US & Canada", "US Retail", "North America (US)", "Our Brands", "Our Maisons",
+    "Fashion & Leather Goods, Perfumes & Cosmetics, Watches & Jewelry, Selective Retailing",
 ])
 def test_segment_reporting_headings_keep_the_block(label):
     assert parse_scope(label).scope_type == "segment"
