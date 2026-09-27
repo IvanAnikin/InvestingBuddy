@@ -105,7 +105,7 @@ def test_the_condition_survives_planning():
 
 
 async def _setup(session, segment_names, *, extracted=True, company=True,  # noqa: ANN001, ANN202
-                 active=True):
+                 active=True, linked_by_attempt=False):
     with_company = company
     company = Company(id=uuid.uuid4(), ticker=f"P{uuid.uuid4().hex[:6]}".upper(),
                       exchange="CO", name="Pandora A/S",
@@ -117,9 +117,24 @@ async def _setup(session, segment_names, *, extracted=True, company=True,  # noq
         canonical_url="https://pandoragroup.com/ar.pdf", provider="company_ir",
         source_type="annual_report", source_tier="T1_primary_filing",
         mime_type="application/pdf", extraction_method="native_pdf", status="extracted",
-        retrieved_at=datetime.now(timezone.utc), excerpts_json=[], company_id=company.id)
+        retrieved_at=datetime.now(timezone.utc), excerpts_json=[],
+        # A REUSED document keeps its first extractor's company (here: none); this company
+        # owns it only through its ingestion attempt.
+        company_id=None if linked_by_attempt else company.id)
     session.add(doc)
     await session.flush()
+    if linked_by_attempt:
+        from app.models.document_ingestion_attempt import DocumentIngestionAttempt
+
+        session.add(DocumentIngestionAttempt(
+            id=uuid.uuid4(), company_id=company.id, canonical_url=doc.canonical_url,
+            url_hash=uuid.uuid4().hex, source_type="company_ir_annual_report",
+            source_tier="T1_primary_filing", doc_kind="annual_report",
+            discovery_strategy="static_link", attempted_at=datetime.now(timezone.utc),
+            status="extracted", mime_type="application/pdf", http_status_class="2xx",
+            extraction_method="native_pdf", page_count=10, content_hash=doc.content_hash,
+            fetch_ms=1, extraction_ms=1, total_ms=2, pinned=True))
+        await session.flush()
     if extracted:
         # Proof the platform read the accounts: one active Group-scope fact.
         session.add(ExtractedFact(
@@ -265,3 +280,36 @@ async def test_a_group_or_period_finding_does_not_hold_the_block(session):
     await session.flush()
     assert await _release_conditional_blocks(session, run, questions) == [
         "segment_discipline"]
+
+
+async def _question_row(session, run):  # noqa: ANN001, ANN202
+    from sqlalchemy import select
+
+    from app.models.ledger import ResearchQuestion
+
+    return (await session.execute(select(ResearchQuestion).where(
+        ResearchQuestion.research_run_id == run.id,
+        ResearchQuestion.question_key == "segment_discipline"))).scalar_one()
+
+
+async def test_a_document_owned_through_its_ingestion_attempt_counts(session):
+    """V3.19.14 — read live: Pandora's block held though nothing named a segment. A
+    reused document keeps its FIRST extractor's company_id; the platform's own
+    provenance link is the ingestion attempt, and that is what is read now."""
+    run, questions = await _setup(session, ["This year"], linked_by_attempt=True)
+    assert await _release_conditional_blocks(session, run, questions) == [
+        "segment_discipline"]
+
+
+@pytest.mark.parametrize(("kwargs", "names", "reason"), [
+    ({"extracted": False}, [], "no_extraction_proof"),
+    ({"company": False}, [], "no_company"),
+    ({}, ["Jewellery Maisons"], "segment_fact:Jewellery Maisons"),
+])
+async def test_a_held_block_records_why(session, kwargs, names, reason):
+    """A refused run must be auditable from the report alone."""
+    run, questions = await _setup(session, names, **kwargs)
+    assert await _release_conditional_blocks(session, run, questions) == []
+    row = await _question_row(session, run)
+    assert row.acquisition_log_json[-1] == {
+        "rung": "blocking_held", "condition": "named_segments", "reason": reason}

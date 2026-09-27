@@ -138,3 +138,30 @@ async def test_an_annual_year_without_a_pair_does_not_hide_a_split_year_pair(fac
         [obs] = await growth_from_held_facts(db, company.id)
         assert (obs.period, obs.base_period) == ("2025/26", "2024/25")
         await db.rollback()
+
+
+async def test_a_document_owned_through_its_ingestion_attempt_counts(factory):
+    """V3.19.14 — a reused document keeps its first extractor's company_id; this company
+    owns it through its ingestion attempt (the platform's provenance link)."""
+    from app.models.document_ingestion_attempt import DocumentIngestionAttempt
+
+    async with factory() as db:
+        company = await _company(db)
+        doc = await _document(db, company)
+        doc.company_id = None
+        db.add(DocumentIngestionAttempt(
+            id=uuid.uuid4(), company_id=company.id, canonical_url=doc.canonical_url,
+            url_hash=uuid.uuid4().hex, source_type="company_ir_annual_report",
+            source_tier="T1_primary_filing", doc_kind="annual_report",
+            discovery_strategy="static_link", attempted_at=datetime.now(UTC),
+            status="extracted", mime_type="application/pdf", http_status_class="2xx",
+            extraction_method="native_pdf", page_count=10, content_hash=doc.content_hash,
+            fetch_ms=1, extraction_ms=1, total_ms=2, pinned=True))
+        db.add_all([_fact(doc, 110, "FY2025"), _fact(doc, 100, "FY2024")])
+        await db.flush()
+        [obs] = await growth_from_held_facts(db, company.id)
+        assert obs.growth_pct == pytest.approx(10.0)
+        # Another company never borrows it.
+        other = await _company(db)
+        assert await growth_from_held_facts(db, other.id) == []
+        await db.rollback()

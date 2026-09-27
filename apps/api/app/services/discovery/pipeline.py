@@ -240,6 +240,7 @@ async def growth_from_held_facts(session: Any, company_id: Any) -> list[cons.Gro
         from sqlalchemy import select
 
         from app.models.extracted_document import ExtractedDocument, ExtractedFact
+        from app.services.sources.company_documents import company_documents_clause
         from app.services.sources.fact_scope import SCOPE_TYPE_GROUP
         from app.services.sources.financial_period import (
             PERIOD_TYPE_ANNUAL,
@@ -254,7 +255,7 @@ async def growth_from_held_facts(session: Any, company_id: Any) -> list[cons.Gro
                            ExtractedDocument.source_tier)
                     .join(ExtractedDocument,
                           ExtractedFact.extracted_document_id == ExtractedDocument.id)
-                    .where(ExtractedDocument.company_id == company_id,
+                    .where(company_documents_clause(company_id),
                            ExtractedFact.label == "revenue",
                            ExtractedFact.is_active.is_(True),
                            ExtractedFact.validation_status == "validated",
