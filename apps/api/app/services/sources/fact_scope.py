@@ -101,6 +101,26 @@ _PERIOD_LABEL_RE = re.compile(
 )
 
 
+#: V3.19.15 — a segment heading is a short NAME ("Jewellery Maisons", "Specialist
+#: Watchmakers", "Americas"). Read in production: a Pandora corpus chunk carried the
+#: "segment" "across our regions – we expect to grow our market share across…" — a
+#: sentence, not a business area — and it held the luxury block. A scope label longer
+#: than a heading, or one that starts mid-sentence (lower case, 3+ words), is UNKNOWN.
+_MAX_SEGMENT_NAME_WORDS = 8
+
+
+def is_prose_label(raw: str | None) -> bool:
+    """True when ``raw`` reads as running text rather than a segment heading."""
+    label = _normalize_label(raw)
+    if not label:
+        return False
+    words = label.split()
+    if len(words) > _MAX_SEGMENT_NAME_WORDS:
+        return True
+    first = next((ch for ch in label if ch.isalpha()), "")
+    return bool(first) and first.islower() and len(words) >= 3
+
+
 def is_period_label(raw: str | None) -> bool:
     """True when ``raw`` names a reporting period rather than a business area."""
     label = _normalize_label(raw)
@@ -196,7 +216,7 @@ def parse_scope(raw: str | None) -> FactScope:
         return UNKNOWN_SCOPE
     if label.casefold() in GROUP_SCOPE_LABELS:
         return GROUP_SCOPE
-    if _PERIOD_LABEL_RE.match(label):
+    if _PERIOD_LABEL_RE.match(label) or is_prose_label(label):
         return UNKNOWN_SCOPE
     return FactScope(scope_type=SCOPE_TYPE_SEGMENT, scope_name=label)
 
@@ -220,7 +240,7 @@ def scope_from_columns(
         return GROUP_SCOPE
     if scope_type == SCOPE_TYPE_SEGMENT:
         name = _normalize_label(scope_name)
-        if name is None or _PERIOD_LABEL_RE.match(name):
+        if name is None or _PERIOD_LABEL_RE.match(name) or is_prose_label(name):
             # A row written before V3.19.13 with a period for a segment name degrades
             # on READ — no backfill, no destructive migration.
             return UNKNOWN_SCOPE

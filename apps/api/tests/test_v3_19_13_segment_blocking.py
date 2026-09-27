@@ -321,3 +321,41 @@ def test_no_company_matches_no_document():
     from app.services.sources.company_documents import company_documents_clause
 
     assert str(company_documents_clause(None)) == str(false())
+
+
+@pytest.mark.parametrize("label", [
+    # V3.19.15 — read live: this chunk "segment" held Pandora's block.
+    "across our regions – we expect to grow our market share across all of them",
+    "and in the rest of the world, where sales were broadly flat",
+    "Our jewellery business grew strongly in every market we operate in this year",
+])
+def test_running_text_is_not_a_segment(label):
+    assert parse_scope(label).scope_type is None
+    assert scope_from_columns("segment", label).scope_type is None
+
+
+@pytest.mark.parametrize("label", [
+    "Jewellery Maisons", "Specialist Watchmakers", "Other Businesses", "Americas",
+    "Fuel with more", "Asia Pacific", "iPhone", "Rest of the world",
+    "Specialist Watchmakers and Other Businesses",
+])
+def test_a_heading_is_still_a_segment(label):
+    assert parse_scope(label).scope_type == "segment"
+
+
+async def test_a_prose_chunk_scope_does_not_hold_the_block(session):
+    from app.models.research_chunk import ResearchDocumentChunk
+
+    if session.info.get("engine") == "postgres":
+        pytest.skip("the chunk's parent document rows are not built here (SQLite, FKs off)")
+    run, questions = await _setup(session, [])
+    session.add(ResearchDocumentChunk(
+        id=uuid.uuid4(), chunk_id=f"c:{uuid.uuid4().hex[:12]}",
+        derivation_id=uuid.uuid4(), research_document_version_id=uuid.uuid4(),
+        company_id=run.company_id, kind="text", ordinal=0,
+        text="across our regions – we expect to grow our market share", char_start=0,
+        char_end=55, indexable=True, scope_type="segment",
+        scope_name="across our regions – we expect to grow our market share across"))
+    await session.flush()
+    assert await _release_conditional_blocks(session, run, questions) == [
+        "segment_discipline"]
