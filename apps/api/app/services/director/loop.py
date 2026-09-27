@@ -824,6 +824,12 @@ def _names_a_segment(scope_type: str | None, scope_name: str | None) -> bool:
 
 
 async def segment_hazard_absent(session: Any, run: Any) -> bool:
+    """See :func:`segment_hazard_check`; True only when the hazard is proven absent."""
+    absent, _reason = await segment_hazard_check(session, run)
+    return absent
+
+
+async def segment_hazard_check(session: Any, run: Any) -> tuple[bool, str]:
     """True ONLY on positive proof that nothing in this company's evidence names a segment.
 
     All must hold, else False (the block stays):
@@ -837,13 +843,14 @@ async def segment_hazard_absent(session: Any, run: Any) -> bool:
     """
     company_id = getattr(run, "company_id", None)
     if not company_id:
-        return False
+        return False, "no_company"
     try:
         from sqlalchemy import or_, select
 
         from app.models.extracted_document import ExtractedDocument, ExtractedFact
         from app.models.ledger import ResearchFinding
         from app.models.research_chunk import ResearchDocumentChunk
+        from app.services.sources.company_documents import company_documents_clause
 
         async with session.begin_nested():
             extracted = (
@@ -851,7 +858,7 @@ async def segment_hazard_absent(session: Any, run: Any) -> bool:
                     select(ExtractedFact.id)
                     .join(ExtractedDocument,
                           ExtractedFact.extracted_document_id == ExtractedDocument.id)
-                    .where(ExtractedDocument.company_id == company_id,
+                    .where(company_documents_clause(company_id),
                            ExtractedDocument.source_tier.in_(_PRIMARY_TIERS),
                            ExtractedFact.is_active.is_(True))
                     .limit(1)
@@ -862,7 +869,7 @@ async def segment_hazard_absent(session: Any, run: Any) -> bool:
                     select(ExtractedFact.scope_type, ExtractedFact.scope_name)
                     .join(ExtractedDocument,
                           ExtractedFact.extracted_document_id == ExtractedDocument.id)
-                    .where(ExtractedDocument.company_id == company_id,
+                    .where(company_documents_clause(company_id),
                            ExtractedFact.is_active.is_(True),
                            ExtractedFact.scope_type == "segment")
                     .distinct().limit(200)
@@ -887,18 +894,20 @@ async def segment_hazard_absent(session: Any, run: Any) -> bool:
                     .distinct().limit(200)
                 )
             ).scalars().all()
-    except Exception:  # noqa: BLE001 - doubt keeps the block
-        return False
+    except Exception as exc:  # noqa: BLE001 - doubt keeps the block
+        return False, f"error:{type(exc).__name__}"
     if extracted is None:
-        return False
-    if any(_names_a_segment(t, n) for t, n in [*fact_scopes, *chunk_scopes]):
-        return False
+        return False, "no_extraction_proof"
+    for label, scopes in (("segment_fact", fact_scopes), ("segment_chunk", chunk_scopes)):
+        named = [n for t, n in scopes if _names_a_segment(t, n)]
+        if named:
+            return False, f"{label}:{str(named[0])[:60]}"
     # A finding keeps only its scope KEY ("segment:<name>"); a missing name is not proof.
     for key in finding_keys:
         name = (key or "").split(":", 1)[1] if ":" in (key or "") else None
         if name is None or _names_a_segment("segment", name):
-            return False
-    return True
+            return False, f"segment_finding:{str(key)[:60]}"
+    return True, "no_named_segment"
 
 
 #: What the Council and the reader are told when a conditional block is released.
@@ -942,7 +951,19 @@ async def _release_conditional_blocks(
             )
         )
     ).scalars().all()
-    if not rows or not await segment_hazard_absent(session, run):
+    if not rows:
+        return []
+    absent, reason = await segment_hazard_check(session, run)
+    if not absent:
+        # The block holds — and WHY is recorded, so a refused run can be audited from the
+        # report alone (read live: a Pandora refusal whose cause was not observable).
+        for row in rows:
+            row.acquisition_log_json = [
+                *(row.acquisition_log_json or []),
+                {"rung": "blocking_held", "condition": BLOCKING_REQUIRES_NAMED_SEGMENTS,
+                 "reason": reason},
+            ]
+        await session.flush()
         return []
     released: list[str] = []
     for row in rows:
