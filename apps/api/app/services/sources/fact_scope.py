@@ -84,8 +84,11 @@ def _normalize_label(raw: str | None) -> str | None:
 #: V3.19.13 — a heading that names a PERIOD, not a business area. Read in production:
 #: Pandora's FY2025 revenue carried the segment "This year" (a table's column header),
 #: and the luxury playbook then found no real segment and refused the whole Council.
-#: A period label is neither the Group nor a segment: it is UNKNOWN (fail-closed — an
-#: unknown scope still never becomes the Group).
+#: Used ONLY to decide whether a label NAMES a business segment (the director's segment
+#: hazard check). It does not change a fact's scope: a segment-headed figure stays a
+#: segment everywhere, because an UNKNOWN figure may fill a Group slot under the implicit
+#: Group convention — a segment row whose column header was captured as its scope must
+#: never become eligible to be the Group's number (V3.19.15 review).
 _PERIOD_LABEL_RE = re.compile(
     r"^(?:(?:this|last|current|prior|previous|same|next|preceding|comparative)\s+"
     r"(?:financial\s+|fiscal\s+)?(?:year|period|quarter|half(?:[\s-]year)?)"
@@ -101,10 +104,58 @@ _PERIOD_LABEL_RE = re.compile(
 )
 
 
+#: V3.19.15 — a segment heading is a short NAME ("Jewellery Maisons", "Specialist
+#: Watchmakers", "Americas"). Read in production: a Pandora corpus chunk carried the
+#: "segment" "across our regions – we expect to grow our market share across…" — a
+#: sentence, not a business area — and it held the luxury block. Like the period rule,
+#: this only decides whether a label NAMES a segment; it never changes a fact's scope.
+_MAX_SEGMENT_NAME_WORDS = 12  # combined headings run long ("Fashion & Leather Goods, …")
+
+
+#: First-person words: a heading names a business area; a sentence speaks for the issuer.
+#: Case-SENSITIVE and lower-case only: "US", "US & Canada" and "Our Brands" are names;
+#: "…across our regions – we expect…" is a sentence (V3.19.15 review).
+_FIRST_PERSON_RE = re.compile(r"\b(?:we|our|we're|we've)\b")
+
+
+def is_prose_label(raw: str | None) -> bool:
+    """True when ``raw`` reads as running text rather than a segment heading: longer than
+    a heading, or written in the first person ("across our regions – we expect…").
+    Case is NOT a signal — "e-commerce and wholesale" and "eBay" are real names."""
+    label = _normalize_label(raw)
+    if not label:
+        return False
+    return len(label.split()) > _MAX_SEGMENT_NAME_WORDS or bool(_FIRST_PERSON_RE.search(label))
+
+
 def is_period_label(raw: str | None) -> bool:
     """True when ``raw`` names a reporting period rather than a business area."""
     label = _normalize_label(raw)
     return bool(label and _PERIOD_LABEL_RE.match(label))
+
+
+#: A label that says the figure comes from segment reporting, whatever its shape
+#: ("Revenue by reportable segment for the year ended …", "sales by region").
+_SEGMENT_REPORTING_RE = re.compile(
+    r"\bsegments?\b|\bby\s+(?:region|geograph\w*|division|business|brand|maison|"
+    r"product\s+line|operating\s+unit)", re.IGNORECASE)
+
+
+def names_a_business_segment(scope_type: str | None, scope_name: str | None) -> bool:
+    """True when a persisted scope NAMES a business segment — the director's question
+    "does this company's evidence report segments?".
+
+    A period header ("This year") or a sentence fragment is not a segment name, unless
+    the label itself speaks of segment reporting — then segments exist and the answer
+    stays True (fail-closed: holding the segment block is the safe direction).
+    """
+    scope = scope_from_columns(scope_type, scope_name)
+    if scope.scope_type != SCOPE_TYPE_SEGMENT or not scope.scope_name:
+        return False
+    name = scope.scope_name
+    if _SEGMENT_REPORTING_RE.search(name):
+        return True
+    return not (_PERIOD_LABEL_RE.match(name) or is_prose_label(name))
 
 
 def is_group_label(raw: str | None) -> bool:
@@ -196,8 +247,6 @@ def parse_scope(raw: str | None) -> FactScope:
         return UNKNOWN_SCOPE
     if label.casefold() in GROUP_SCOPE_LABELS:
         return GROUP_SCOPE
-    if _PERIOD_LABEL_RE.match(label):
-        return UNKNOWN_SCOPE
     return FactScope(scope_type=SCOPE_TYPE_SEGMENT, scope_name=label)
 
 
@@ -220,9 +269,7 @@ def scope_from_columns(
         return GROUP_SCOPE
     if scope_type == SCOPE_TYPE_SEGMENT:
         name = _normalize_label(scope_name)
-        if name is None or _PERIOD_LABEL_RE.match(name):
-            # A row written before V3.19.13 with a period for a segment name degrades
-            # on READ — no backfill, no destructive migration.
+        if name is None:
             return UNKNOWN_SCOPE
         return FactScope(scope_type=SCOPE_TYPE_SEGMENT, scope_name=name)
     # Legacy row (pre-018) that only ever had the free-text label available, or
