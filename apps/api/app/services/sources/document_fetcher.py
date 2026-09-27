@@ -46,6 +46,7 @@ from app.services.sources.ingestion_status import (
     FAILURE_HTTP_CLIENT_ERROR,
     FAILURE_HTTP_SERVER_ERROR,
     FAILURE_REDIRECT_LIMIT,
+    FAILURE_RESPONSE_TOO_LARGE,
     FAILURE_UNSUPPORTED_CONTENT_TYPE,
     failure_code_for_block,
     failure_code_for_exception,
@@ -378,7 +379,7 @@ async def safe_post_json(
             ) as resp:
                 result.status_code = resp.status_code
                 result.final_url = strip_url_secrets(url)
-                if resp.is_redirect:
+                if resp.is_redirect or 300 <= resp.status_code < 400:
                     result.blocked = True
                     result.error = "redirect refused on a POST"
                     result.failure_code = FAILURE_BLOCKED_REDIRECT
@@ -395,7 +396,8 @@ async def safe_post_json(
                     return result
                 content_type = resp.headers.get("content-type")
                 result.content_type = content_type
-                if "json" not in (content_type or "").lower():
+                media = (content_type or "").split(";")[0].strip().lower()
+                if media != "application/json" and not media.endswith("+json"):
                     result.blocked = True
                     result.error = "unsupported content-type: not JSON"
                     result.failure_code = FAILURE_UNSUPPORTED_CONTENT_TYPE
@@ -409,10 +411,11 @@ async def safe_post_json(
                     total += len(chunk)
                     if total > max_bytes:
                         # A truncated JSON listing is unparseable and must not be read
-                        # as a shorter list — refuse it outright.
-                        result.truncated = True
+                        # as a shorter list — refuse it outright. Not "truncated": that
+                        # word means partial content IS present, and here none is.
+                        result.blocked = True
                         result.error = "response exceeded the byte cap"
-                        result.failure_code = FAILURE_UNSUPPORTED_CONTENT_TYPE
+                        result.failure_code = FAILURE_RESPONSE_TOO_LARGE
                         result._gap("Search API response exceeded the byte cap; refused.")
                         return result
                 result.content = b"".join(chunks)

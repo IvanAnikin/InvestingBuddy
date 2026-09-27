@@ -120,6 +120,8 @@ class FilingEvidenceState:
 
     state: str
     accession: str | None = None
+    #: A non-SEC transport's own document id (never an accession, never a URL).
+    document_ref: str | None = None
     version_id: uuid.UUID | None = None
     derivation_id: uuid.UUID | None = None
     extracted_document_id: uuid.UUID | None = None
@@ -158,6 +160,23 @@ async def filing_evidence_state(
     )
 
 
+def url_has_document_segment(url: str | None, ref: str) -> bool:
+    """True when ``ref`` is a WHOLE path segment of ``url`` (optionally with an
+    extension): ``…/NSM/PRN/<ref>.html``, ``…/NI-000131364/NI-000131364.pdf``,
+    ``…/file/<ref>``.
+
+    Never a substring: ``NI-000131364`` must not match ``NI-0001313641``, and a ref that
+    happens to be a word of the host or path must not match every document.
+    """
+    from urllib.parse import urlsplit
+
+    path = urlsplit(str(url or "")).path
+    for segment in path.split("/"):
+        if segment == ref or segment.startswith(ref + "."):
+            return True
+    return False
+
+
 #: An official document identifier as it appears inside the transport's canonical URL:
 #: an NSM disclosure id ("NI-000131364", a UUID), an ASX document key
 #: ("2924-03139714-6A1345626"). Letters, digits, dot, dash and underscore only — so
@@ -189,7 +208,7 @@ async def document_evidence_state(
             state=STATE_ABSENT, detail="document reference could not be validated"
         )
     return await _evidence_state_for_fragment(
-        session, company_id=company_id, fragment=ref, label=ref
+        session, company_id=company_id, fragment=ref, label=ref, document_ref=ref
     )
 
 
@@ -199,16 +218,27 @@ async def _evidence_state_for_fragment(
     company_id: uuid.UUID | None,
     fragment: str,
     label: str,
+    document_ref: str | None = None,
 ) -> FilingEvidenceState:
-    canonical = label
+    # An accession for the SEC entry point; the transport's document id otherwise. The
+    # two are never mixed: a document ref must not reach anything that builds an SEC
+    # URL from ``accession``.
+    canonical = None if document_ref else label
+    ref_kw: dict[str, Any] = {"document_ref": document_ref}
     if company_id is None:
         return FilingEvidenceState(
-            state=STATE_ABSENT, accession=canonical, detail="no company identity"
+            state=STATE_ABSENT, accession=canonical, detail="no company identity",
+            **ref_kw,
         )
 
-    version = await current_version_for_fragment(
-        session, company_id=company_id, fragment=fragment
-    )
+    if document_ref:
+        version = await current_version_for_document_ref(
+            session, company_id=company_id, document_ref=document_ref
+        )
+    else:
+        version = await current_version_for_fragment(
+            session, company_id=company_id, fragment=fragment
+        )
 
     if version is None:
         # A SUPERSEDED version is not a fallback.
@@ -221,15 +251,17 @@ async def _evidence_state_for_fragment(
         # has already replaced. The bridge would then report `reused`, skip
         # reacquisition, and leave a specialist searching the old reading for ever.
         superseded = await _superseded_version_exists(
-            session, company_id=company_id, fragment=fragment
+            session, company_id=company_id, fragment=fragment,
+            whole_segment=bool(document_ref),
         )
         extracted_id = await _historical_extracted_document_id(
-            session, company_id=company_id, fragment=fragment
+            session, company_id=company_id, fragment=fragment,
+            whole_segment=bool(document_ref),
         )
         if superseded:
             return FilingEvidenceState(
                 state=STATE_HISTORICAL_WITHOUT_CHUNKS,
-                accession=canonical,
+                accession=canonical, **ref_kw,
                 extracted_document_id=extracted_id,
                 detail=(
                     "every corpus version of this filing is SUPERSEDED; a stale "
@@ -239,14 +271,14 @@ async def _evidence_state_for_fragment(
         if extracted_id is not None:
             return FilingEvidenceState(
                 state=STATE_HISTORICAL_WITHOUT_CHUNKS,
-                accession=canonical,
+                accession=canonical, **ref_kw,
                 extracted_document_id=extracted_id,
                 detail=(
                     "a V2 extracted document exists with bounded excerpts and no corpus "
                     "version; excerpts are not searchable filing content"
                 ),
             )
-        return FilingEvidenceState(state=STATE_ABSENT, accession=canonical)
+        return FilingEvidenceState(state=STATE_ABSENT, accession=canonical, **ref_kw)
 
     derivation = (
         await session.execute(
@@ -295,7 +327,7 @@ async def _evidence_state_for_fragment(
         # selector no longer mistakes an "…exhibit96…" name for a body document.
         return FilingEvidenceState(
             state=STATE_HISTORICAL_WITHOUT_CHUNKS,
-            accession=canonical,
+            accession=canonical, **ref_kw,
             version_id=version.id,
             derivation_id=derivation.id,
             extracted_document_id=version.extracted_document_id,
@@ -310,7 +342,7 @@ async def _evidence_state_for_fragment(
     if derivation is not None and indexable > 0:
         return FilingEvidenceState(
             state=STATE_READY,
-            accession=canonical,
+            accession=canonical, **ref_kw,
             version_id=version.id,
             derivation_id=derivation.id,
             extracted_document_id=version.extracted_document_id,
@@ -323,7 +355,7 @@ async def _evidence_state_for_fragment(
     # cache hit leaves behind. It is NOT evidence.
     return FilingEvidenceState(
         state=STATE_HISTORICAL_WITHOUT_CHUNKS,
-        accession=canonical,
+        accession=canonical, **ref_kw,
         version_id=version.id,
         derivation_id=derivation.id if derivation is not None else None,
         extracted_document_id=version.extracted_document_id,
@@ -385,14 +417,83 @@ async def current_version_for_document_ref(
     ref = canonical_document_ref(document_ref)
     if ref is None or company_id is None:
         return None
-    return await current_version_for_fragment(session, company_id=company_id, fragment=ref)
+    version = await current_version_for_fragment(
+        session, company_id=company_id, fragment=ref, whole_segment=True
+    )
+    if version is not None:
+        return version
+    return await _current_version_via_attempt(session, company_id=company_id, ref=ref)
+
+
+async def _current_version_via_attempt(
+    session: Any, *, company_id: uuid.UUID, ref: str
+) -> ResearchDocumentVersion | None:
+    """The current version of a document this company ACQUIRED from ``ref``, when the
+    same bytes had first been stored under another address.
+
+    Documents are deduplicated by content hash and keep their FIRST address, so a
+    regulator-stored annual report already fetched from the issuer's own site keeps the
+    issuer's URL — and a lookup by the regulator's document id would never find it, and
+    the document would be re-acquired on every run. The ingestion attempt records what
+    was fetched from WHERE for WHICH company; its content hash leads to the version.
+    Company-scoped at both ends.
+    """
+    from app.models.document_ingestion_attempt import DocumentIngestionAttempt
+
+    attempts = (
+        await session.execute(
+            select(
+                DocumentIngestionAttempt.canonical_url,
+                DocumentIngestionAttempt.content_hash,
+            )
+            .where(
+                DocumentIngestionAttempt.company_id == company_id,
+                DocumentIngestionAttempt.content_hash.is_not(None),
+                DocumentIngestionAttempt.canonical_url.contains("/" + ref, autoescape=True),
+            )
+            .limit(_MAX_VERSIONS_PER_FILING)
+        )
+    ).all()
+    hashes = sorted({
+        str(content_hash).lower()
+        for url, content_hash in attempts
+        if content_hash and url_has_document_segment(url, ref)
+    })
+    if not hashes:
+        return None
+    return (
+        await session.execute(
+            select(ResearchDocumentVersion)
+            .join(
+                ResearchDocument,
+                ResearchDocument.id == ResearchDocumentVersion.research_document_id,
+            )
+            .where(
+                ResearchDocument.company_id == company_id,
+                ResearchDocumentVersion.content_hash.in_(hashes),
+                ResearchDocumentVersion.is_current.is_(True),
+            )
+            .order_by(ResearchDocumentVersion.canonical_url)
+            .limit(1)
+        )
+    ).scalar_one_or_none()
 
 
 async def current_version_for_fragment(
-    session: Any, *, company_id: uuid.UUID | None, fragment: str
+    session: Any,
+    *,
+    company_id: uuid.UUID | None,
+    fragment: str,
+    whole_segment: bool = False,
 ) -> ResearchDocumentVersion | None:
     """The CURRENT corpus version whose canonical URL carries ``fragment``, for one
-    company. The shared body of both lookups above."""
+    company. The shared body of both lookups above.
+
+    ``whole_segment`` (document refs): the SQL narrows by an ESCAPED ``/ref`` substring
+    and the result is then required to carry ``ref`` as a whole path segment — so a
+    wildcard character can never widen the match and one id never answers for another.
+    The SEC path keeps its fixed-width accession fragment, unchanged.
+    """
     if not fragment or company_id is None:
         return None
     rows = (
@@ -405,7 +506,13 @@ async def current_version_for_fragment(
                 )
                 .where(
                     ResearchDocument.company_id == company_id,
-                    ResearchDocumentVersion.canonical_url.contains(fragment),
+                    (
+                        ResearchDocumentVersion.canonical_url.contains(
+                            "/" + fragment, autoescape=True
+                        )
+                        if whole_segment
+                        else ResearchDocumentVersion.canonical_url.contains(fragment)
+                    ),
                     # REQUIRED, not merely preferred. See `filing_evidence_state`.
                     ResearchDocumentVersion.is_current.is_(True),
                 )
@@ -419,6 +526,8 @@ async def current_version_for_fragment(
         .scalars()
         .all()
     )
+    if whole_segment:
+        rows = [v for v in rows if url_has_document_segment(v.canonical_url, fragment)]
     if not rows:
         return None
     # THE FILING BODY, not an exhibit filed beside it. A 10-K's exhibits live in the same
@@ -432,42 +541,58 @@ async def current_version_for_fragment(
 
 
 async def _superseded_version_exists(
-    session: Any, *, company_id: uuid.UUID, fragment: str
+    session: Any, *, company_id: uuid.UUID, fragment: str, whole_segment: bool = False
 ) -> bool:
     """True when this company holds only non-current versions of this filing."""
-    found = (
+    urls = (
         await session.execute(
-            select(ResearchDocumentVersion.id)
+            select(ResearchDocumentVersion.canonical_url)
             .join(
                 ResearchDocument,
                 ResearchDocument.id == ResearchDocumentVersion.research_document_id,
             )
             .where(
                 ResearchDocument.company_id == company_id,
-                ResearchDocumentVersion.canonical_url.contains(fragment),
+                (
+                    ResearchDocumentVersion.canonical_url.contains(
+                        "/" + fragment, autoescape=True
+                    )
+                    if whole_segment
+                    else ResearchDocumentVersion.canonical_url.contains(fragment)
+                ),
             )
-            .limit(1)
+            .limit(_MAX_VERSIONS_PER_FILING)
         )
-    ).scalar_one_or_none()
-    return found is not None
+    ).scalars().all()
+    if whole_segment:
+        urls = [u for u in urls if url_has_document_segment(u, fragment)]
+    return bool(urls)
 
 
 async def _historical_extracted_document_id(
-    session: Any, *, company_id: uuid.UUID, fragment: str
+    session: Any, *, company_id: uuid.UUID, fragment: str, whole_segment: bool = False
 ) -> uuid.UUID | None:
     """The V2 ``ExtractedDocument`` for this filing, if this company has one."""
     from app.models.extracted_document import ExtractedDocument
 
-    return (
+    rows = (
         await session.execute(
-            select(ExtractedDocument.id)
+            select(ExtractedDocument.id, ExtractedDocument.canonical_url)
             .where(
                 ExtractedDocument.company_id == company_id,
-                ExtractedDocument.canonical_url.contains(fragment),
+                (
+                    ExtractedDocument.canonical_url.contains("/" + fragment, autoescape=True)
+                    if whole_segment
+                    else ExtractedDocument.canonical_url.contains(fragment)
+                ),
             )
-            .limit(1)
+            .limit(_MAX_VERSIONS_PER_FILING)
         )
-    ).scalar_one_or_none()
+    ).all()
+    for doc_id, url in rows:
+        if not whole_segment or url_has_document_segment(url, fragment):
+            return doc_id
+    return None
 
 
 async def is_corpus_search_ready(
@@ -705,6 +830,7 @@ async def ensure_filing_corpus_evidence(
 
 __all__ = [
     "canonical_document_ref",
+    "url_has_document_segment",
     "current_version_for_document_ref",
     "current_version_for_fragment",
     "document_evidence_state",

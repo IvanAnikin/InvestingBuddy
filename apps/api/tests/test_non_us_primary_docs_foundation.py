@@ -116,7 +116,24 @@ class TestSafePostJson:
         _patch(monkeypatch, _Resp(headers={"content-type": "application/json"},
                                   body=b"x" * 5000))
         r = _post(max_bytes=1000)
-        assert not r.ok and r.content is None and r.truncated
+        assert not r.ok and r.content is None and r.blocked
+        assert not r.truncated  # "truncated" means partial content IS present
+        assert r.failure_code == "response_too_large"
+
+    def test_a_3xx_without_location_is_still_a_refused_redirect(self, monkeypatch):
+        _patch(monkeypatch, _Resp(status_code=303, headers={"content-type": "application/json"},
+                                  body=b"{}"))
+        assert _post().blocked
+
+    @pytest.mark.parametrize("ctype", ["application/jsonp", "text/json-ish", "text/html"])
+    def test_only_a_json_media_type_is_accepted(self, monkeypatch, ctype):
+        _patch(monkeypatch, _Resp(headers={"content-type": ctype}, body=b"{}"))
+        assert _post().blocked
+
+    def test_a_json_suffix_media_type_is_accepted(self, monkeypatch):
+        _patch(monkeypatch, _Resp(headers={"content-type": "application/vnd.api+json"},
+                                  body=b"{}"))
+        assert _post().ok
 
 
 # --------------------------------------------------------------------------- #
@@ -252,3 +269,144 @@ class TestReadinessByDocumentRef:
         state = await document_evidence_state(session, company_id=uuid.uuid4(),
                                               document_ref=ref)
         assert state.state == "absent"
+
+
+class TestReadinessIsWholeSegmentOnly:
+    """HIGH-1 (review): a ref matched as a substring let one document answer for another."""
+
+    @pytest.mark.parametrize(("url", "ref", "expected"), [
+        ("https://data.fca.org.uk/artefacts/NSM/Portal/NI-000131364/NI-000131364.pdf",
+         "NI-000131364", True),
+        ("https://data.fca.org.uk/artefacts/NSM/Portal/NI-0001313641/NI-0001313641.pdf",
+         "NI-000131364", False),
+        ("https://data.fca.org.uk/artefacts/NSM/PRN/91cc0ab0-3199-4dac-8d0f-35a6a5701273.html",
+         "91cc0ab0-3199-4dac-8d0f-35a6a5701273", True),
+        ("https://asx.api.markitdigital.com/asx-research/1.0/file/2924-03139714-6A1345626",
+         "2924-03139714-6A1345626", True),
+        ("https://data.fca.org.uk/artefacts/NSM/PRN/x.html", "artefacts", True),
+    ])
+    def test_segment_rule(self, url, ref, expected):
+        from app.services.corpus.filing_evidence import url_has_document_segment
+
+        assert url_has_document_segment(url, ref) is expected
+
+    async def test_a_colliding_id_is_never_ready_for_another(self, session):
+        from app.services.corpus.filing_evidence import document_evidence_state
+
+        company = await _persist(
+            session, title="Annual Report",
+            url="https://data.fca.org.uk/artefacts/NSM/Portal/NI-0001313641/NI-0001313641.pdf")
+        await TestReadinessByDocumentRef()._index_all(session)
+        state = await document_evidence_state(session, company_id=company,
+                                              document_ref="NI-000131364")
+        assert not state.is_ready and state.version_id is None
+
+    async def test_an_underscore_is_not_a_wildcard(self, session):
+        from app.services.corpus.filing_evidence import document_evidence_state
+
+        company = await _persist(
+            session, title="Update",
+            url="https://data.fca.org.uk/artefacts/NSM/PRN/ABCDEFxH.html")
+        await TestReadinessByDocumentRef()._index_all(session)
+        state = await document_evidence_state(session, company_id=company,
+                                              document_ref="ABCDEF_H")
+        assert not state.is_ready
+
+    async def test_a_document_ref_is_never_reported_as_an_accession(self, session):
+        from app.services.corpus.filing_evidence import document_evidence_state
+
+        state = await document_evidence_state(session, company_id=uuid.uuid4(),
+                                              document_ref="NI-000131364")
+        assert state.accession is None and state.document_ref == "NI-000131364"
+
+
+class TestSameBytesFromAnotherAddress:
+    """HIGH-2 (review): bytes first stored under the issuer's URL keep that URL, so a
+    lookup by the regulator's id never found them and re-acquired every run."""
+
+    async def test_readiness_follows_the_ingestion_attempt_to_the_version(self, session):
+        from app.models.document_ingestion_attempt import DocumentIngestionAttempt
+        from app.models.research_document import ResearchDocumentVersion
+        from app.services.corpus.filing_evidence import document_evidence_state
+
+        ref = "NI-000131364"
+        company = await _persist(session, title="2025 Annual Report",
+                                 url="https://pensana.co.uk/wp-content/ar2025.pdf")
+        await TestReadinessByDocumentRef()._index_all(session)
+        version = (await session.execute(select(ResearchDocumentVersion))).scalar_one()
+        before = await document_evidence_state(session, company_id=company,
+                                               document_ref=ref)
+        assert not before.is_ready  # nothing records that the NSM copy is these bytes
+        session.add(DocumentIngestionAttempt(
+            id=uuid.uuid4(), company_id=company,
+            canonical_url=f"https://data.fca.org.uk/artefacts/NSM/Portal/{ref}/{ref}.pdf",
+            url_hash=uuid.uuid4().hex, source_type="uk_nsm_disclosure",
+            source_tier="T1_primary_filing", doc_kind="annual_report",
+            discovery_strategy="uk_fca_nsm", attempted_at=datetime.now(timezone.utc),
+            status="extracted", mime_type="application/pdf", http_status_class="2xx",
+            extraction_method="native_pdf", page_count=1, content_hash=version.content_hash,
+            fetch_ms=1, extraction_ms=1, total_ms=2, pinned=True))
+        await session.flush()
+        after = await document_evidence_state(session, company_id=company, document_ref=ref)
+        assert after.is_ready and after.version_id == version.id
+        other = await document_evidence_state(session, company_id=uuid.uuid4(),
+                                              document_ref=ref)
+        assert not other.is_ready
+
+
+class TestTitleOnlyEverywhere:
+    """MEDIUM-3 (review): the policy must hold on every path that computes a period."""
+
+    async def test_the_persisted_source_type_carries_the_policy_to_backfill(self, session):
+        from app.models.extracted_document import ExtractedDocument
+        from app.models.research_document import ResearchDocumentVersion
+        from app.services.corpus.documents import backfill_from_extracted_documents
+
+        session.add(ExtractedDocument(
+            id=uuid.uuid4(), content_hash="b" * 64,
+            canonical_url="https://data.fca.org.uk/artefacts/NSM/PRN/2028-Q1-forecast.html",
+            provider="uk_fca_nsm", source_type="uk_nsm_disclosure",
+            source_tier="T1_primary_filing", mime_type="text/html",
+            title="Update on Longonjo Financing", extraction_method="html",
+            status="extracted", retrieved_at=datetime.now(timezone.utc),
+            excerpts_json=[], company_id=uuid.uuid4()))
+        await session.flush()
+        await backfill_from_extracted_documents(session, cfg=CFG)
+        version = (await session.execute(select(ResearchDocumentVersion))).scalar_one()
+        assert version.period_key is None  # the URL's "2028-Q1" is not read
+
+    def test_the_title_only_helper_ignores_url_and_body(self):
+        from app.services.sources.disclosure_period_policy import document_period_for
+        from app.services.sources.primary_document_extractor import extract_html
+
+        extraction = extract_html(FORECAST_BODY, cfg=CFG, capture_blocks=True)
+        period = document_period_for(title="Project update",
+                                     url="https://x.example/q1-2028.html",
+                                     extraction=extraction, title_only=True)
+        assert period.basis == "unknown" and period.period.year is None
+        body_read = document_period_for(title="Project update", url=None,
+                                        extraction=extraction, title_only=False)
+        assert body_read.period.year == 2028  # what the policy prevents
+
+    async def test_the_facts_default_period_is_title_only_on_the_live_path(self, monkeypatch):
+        """``_artifact_from_fetch`` validates facts against the document period; with
+        the policy that period comes from the title, never the forecast in the body."""
+        from app.services.sources import live_fetchers
+        from app.services.sources.document_fetcher import DocumentFetchResult
+
+        seen: list = []
+
+        def _validate(extraction, **kw):  # noqa: ANN001, ANN202
+            seen.append(kw.get("document_period"))
+            return []
+
+        monkeypatch.setattr(live_fetchers, "validate_extracted_facts", _validate)
+        fetched = DocumentFetchResult(
+            requested_url="https://data.fca.org.uk/artefacts/NSM/PRN/x.html",
+            final_url="https://data.fca.org.uk/artefacts/NSM/PRN/x.html", status_code=200,
+            content_type="text/html", document_type="html", content=FORECAST_BODY)
+        artifact = await live_fetchers._artifact_from_fetch(
+            fetched, title="Project update", original_language=None, issuer_context=None,
+            cfg=CFG, fetch_ms=1, period_policy="title_only")
+        assert artifact.period_policy == "title_only"
+        assert seen and seen[0].basis == "unknown" and seen[0].period.year is None

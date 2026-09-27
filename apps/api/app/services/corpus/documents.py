@@ -53,7 +53,12 @@ from app.services.corpus.identity import (
 )
 from app.services.corpus.parsed import build_parsed_document, persist_parsed_document
 from app.services.corpus.policy import ACCESS_PUBLIC_ISSUER, normalize_access_class
-from app.services.sources.document_period import DocumentPeriod, document_period_of
+from app.services.sources.disclosure_period_policy import (
+    PERIOD_POLICY_TITLE_ONLY,
+    document_period_for,
+    is_title_only,
+)
+from app.services.sources.document_period import DocumentPeriod
 from app.services.sources.redaction import canonicalize_source_url
 
 if TYPE_CHECKING:
@@ -77,11 +82,6 @@ _PERIOD_TYPE_MAX = 20
 _PERIOD_BASIS_MAX = 40
 
 STATUS_EXTRACTED = "extracted"
-
-
-#: ``PrimaryDocumentArtifact.period_policy`` value: read the period from the official
-#: title only. See ``ingest_extracted_document``.
-PERIOD_POLICY_TITLE_ONLY = "title_only"
 
 
 def _utcnow() -> datetime:
@@ -127,6 +127,8 @@ class DocumentVersionInput:
     failure_code: str | None = None
     research_artifact_id: uuid.UUID | None = None
     extracted_document_id: uuid.UUID | None = None
+    #: ``title_only`` for an official announcement: see ``disclosure_period_policy``.
+    period_policy: str | None = None
 
 
 @dataclass
@@ -222,7 +224,8 @@ async def upsert_document_version(
         # radius. An interim period, when one was detected, always wins outright —
         # this branch is unreachable in that case.
         period_key, period_type, period_basis = annual_period_from(
-            title=payload.title, url=canonical
+            title=payload.title,
+            url=None if payload.period_policy == PERIOD_POLICY_TITLE_ONLY else canonical,
         )
     key = document_key_for(
         document_type=doc_type, period_key=period_key, canonical_url=canonical
@@ -444,11 +447,14 @@ async def ingest_extracted_document(
     # An official announcement states its own period in its official TITLE, when it
     # states one at all ("Interim results for the six months ended 31 December 2025");
     # its body is where forecasts live. Title-only reads refuse the body entirely.
-    title_only = getattr(artifact, "period_policy", None) == PERIOD_POLICY_TITLE_ONLY
-    period = document_period_of(
+    title_only = is_title_only(
+        policy=getattr(artifact, "period_policy", None), source_type=document.source_type
+    )
+    period = document_period_for(
         title=getattr(artifact, "title", None),
-        url=None if title_only else getattr(artifact, "source_url", None),
-        extraction=None if title_only else extraction,
+        url=getattr(artifact, "source_url", None),
+        extraction=extraction,
+        title_only=title_only,
     )
     payload = DocumentVersionInput(
         content_hash=document.content_hash,
@@ -471,6 +477,7 @@ async def ingest_extracted_document(
         failure_code=getattr(artifact, "failure_code", None),
         research_artifact_id=artifact_row_id,
         extracted_document_id=document.id,
+        period_policy=PERIOD_POLICY_TITLE_ONLY if title_only else None,
     )
     version = await upsert_document_version(
         session, payload, cfg=cfg, now=now, result=result
@@ -578,7 +585,10 @@ async def backfill_from_extracted_documents(
 
     rows: "Sequence[ExtractedDocument]" = (await session.execute(stmt)).scalars().all()
     for row in rows:
-        period = document_period_of(title=row.title, url=row.canonical_url, extraction=None)
+        title_only = is_title_only(source_type=row.source_type)
+        period = document_period_for(
+            title=row.title, url=row.canonical_url, extraction=None, title_only=title_only
+        )
         payload = DocumentVersionInput(
             content_hash=row.content_hash,
             canonical_url=row.canonical_url,
@@ -597,6 +607,7 @@ async def backfill_from_extracted_documents(
             # never stored, and the corpus says so rather than implying otherwise.
             research_artifact_id=None,
             extracted_document_id=row.id,
+            period_policy=PERIOD_POLICY_TITLE_ONLY if title_only else None,
         )
         await upsert_document_version(session, payload, cfg=cfg, now=now, result=result)
     return result

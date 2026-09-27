@@ -1110,7 +1110,10 @@ async def _revalidate_document(
 
     # Case A — complete reconstruction from the persisted excerpts alone.
     from app.services.sources.connectors.company_ir import PrimaryDocumentArtifact
-    from app.services.sources.document_period import document_period_of
+    from app.services.sources.disclosure_period_policy import (
+        document_period_for,
+        is_title_only,
+    )
     from app.services.sources.extracted_fact_validator import (
         IssuerContext,
         validate_extracted_facts,
@@ -1142,8 +1145,13 @@ async def _revalidate_document(
         extraction,
         issuer_context=issuer_context or IssuerContext(),
         cfg=cfg,
-        document_period=document_period_of(
-            title=doc.title, url=doc.canonical_url, extraction=extraction
+        # Same policy on the cached path as the live one — keyed by the persisted
+        # source type, so an announcement reused from the cache keeps title-only.
+        document_period=document_period_for(
+            title=doc.title,
+            url=doc.canonical_url,
+            extraction=extraction,
+            title_only=is_title_only(source_type=doc.source_type),
         ),
     )
     await _deactivate_active_facts(session, doc.id)
