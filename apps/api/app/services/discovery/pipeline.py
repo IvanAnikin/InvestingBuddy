@@ -266,9 +266,12 @@ async def growth_from_held_facts(session: Any, company_id: Any) -> list[cons.Gro
             ).all()
     except Exception:  # noqa: BLE001 - a held company's facts are an optional source
         return []
-    # Keyed by (period type, year): an annual year pairs only with an annual year and a
-    # split fiscal year ("2024/25") only with a split year — never across the two.
-    by_year: dict[tuple[str, int], tuple[float, str, str, str | None, str | None, str]] = {}
+    # Keyed by (document, period type, year). A pair is taken from ONE document — an
+    # annual report prints the year and its comparative side by side — so two documents
+    # about different issuers can never be spliced into one growth figure. An annual year
+    # pairs only with an annual year, a split fiscal year ("2024/25") only with a split.
+    by_doc: dict[Any, dict[tuple[str, int], tuple[float, str, str, str | None, str | None,
+                                                  str]]] = {}
     for fact, url, tier in rows:
         if fact.scope_type != SCOPE_TYPE_GROUP or fact.value_numeric is None:
             continue
@@ -277,20 +280,24 @@ async def growth_from_held_facts(session: Any, company_id: Any) -> list[cons.Gro
                 or period.year is None or not fact.currency):
             continue
         # Newest extraction wins per period (rows are newest-first).
-        by_year.setdefault((period.period_type, period.year),
-                           (float(fact.value_numeric), fact.currency, fact.scale or "",
-                            url, tier, fact.period or ""))
-    if not by_year:
+        by_doc.setdefault(fact.extracted_document_id, {}).setdefault(
+            (period.period_type, period.year),
+            (float(fact.value_numeric), fact.currency, fact.scale or "", url, tier,
+             fact.period or ""))
+    best: tuple[tuple, tuple] | None = None
+    for by_year in by_doc.values():
+        # The newest period in this document that HAS a same-type, same-currency,
+        # same-scale predecessor.
+        for latest in sorted(by_year, key=lambda key: key[1], reverse=True):
+            prior = by_year.get((latest[0], latest[1] - 1))
+            current = by_year[latest]
+            if prior is not None and prior[1:3] == current[1:3]:
+                if best is None or latest[1] > best[0][1]:
+                    best = ((latest[0], latest[1]), (current, prior))
+                break
+    if best is None:
         return []
-    # The newest period that HAS a same-type, same-currency, same-scale predecessor: an
-    # annual and a split-year figure for the same year must not hide each other's pair.
-    for latest in sorted(by_year, key=lambda key: key[1], reverse=True):
-        prior = by_year.get((latest[0], latest[1] - 1))
-        current = by_year[latest]
-        if prior is not None and prior[1:3] == current[1:3]:
-            break
-    else:
-        return []
+    current, prior = best[1]
     observation = cons.growth_from_revenue_pair(
         current[0], prior[0], period=current[5], base_period=prior[5],
         source_url=current[3], source_tier=current[4], verified=True,

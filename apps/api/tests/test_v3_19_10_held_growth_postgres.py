@@ -165,3 +165,40 @@ async def test_a_document_owned_through_its_ingestion_attempt_counts(factory):
         other = await _company(db)
         assert await growth_from_held_facts(db, other.id) == []
         await db.rollback()
+
+
+async def test_a_pair_is_never_spliced_across_two_documents(factory):
+    """A parent's FY2025 in one document and the company's FY2024 in another are not a
+    growth rate: a pair comes from one document, as an annual report prints it."""
+    async with factory() as db:
+        company = await _company(db)
+        doc_a = await _document(db, company)
+        doc_b = await _document(db, company)
+        db.add_all([_fact(doc_a, 110, "FY2025"), _fact(doc_b, 100, "FY2024")])
+        await db.flush()
+        assert await growth_from_held_facts(db, company.id) == []
+        await db.rollback()
+
+
+async def test_a_document_owned_by_another_company_is_never_borrowed(factory):
+    """A subsidiary that fetched its parent's annual report does not acquire the
+    parent's accounts: the document is OWNED by the parent."""
+    from app.models.document_ingestion_attempt import DocumentIngestionAttempt
+
+    async with factory() as db:
+        parent = await _company(db)
+        subsidiary = await _company(db)
+        doc = await _document(db, parent)
+        db.add(DocumentIngestionAttempt(
+            id=uuid.uuid4(), company_id=subsidiary.id, canonical_url=doc.canonical_url,
+            url_hash=uuid.uuid4().hex, source_type="company_ir_annual_report",
+            source_tier="T1_primary_filing", doc_kind="annual_report",
+            discovery_strategy="static_link", attempted_at=datetime.now(UTC),
+            status="extracted", mime_type="application/pdf", http_status_class="2xx",
+            extraction_method="native_pdf", page_count=10, content_hash=doc.content_hash,
+            fetch_ms=1, extraction_ms=1, total_ms=2, pinned=True))
+        db.add_all([_fact(doc, 110, "FY2025"), _fact(doc, 100, "FY2024")])
+        await db.flush()
+        assert await growth_from_held_facts(db, subsidiary.id) == []
+        assert len(await growth_from_held_facts(db, parent.id)) == 1
+        await db.rollback()
