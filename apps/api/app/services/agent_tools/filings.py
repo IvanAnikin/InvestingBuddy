@@ -70,12 +70,21 @@ def validate_get_recent_filings(arguments: dict[str, Any]) -> dict[str, Any]:
         for v in (arguments.get("form_types") or [])
         if str(v).strip()
     )
+    from app.services.sources.disclosures.relevance import clean_topics
+
+    raw_topics = arguments.get("topics") or []
+    if not isinstance(raw_topics, (list, tuple)):
+        raise ValueError("topics must be a list of short words")
     return {
         "ticker": ticker,
         "exchange": exchange,
         "lookback_days": lookback,
         "limit": limit,
         "form_types": form_types,
+        # Words that PRIORITISE which official headlines are read first ("offtake",
+        # "Longonjo"). Validated to short plain words; never a URL, never a filter
+        # that could hide a document.
+        "topics": clean_topics(raw_topics),
     }
 
 
@@ -102,7 +111,11 @@ async def _get_recent_filings(
     from app.integrations.providers.sec_recent_filings_provider import (
         SecRecentFilingsProvider,
     )
-    from app.services.exchange_registry import is_sec_eligible
+    from app.services.exchange_registry import is_sec_eligible, normalize_exchange
+    from app.services.sources.disclosures.model import VENUE_ASX, VENUE_LSE
+
+    if normalize_exchange(arguments["exchange"] or "") in (VENUE_LSE, VENUE_ASX):
+        return await _get_official_disclosures(context, arguments)
 
     if not is_sec_eligible(arguments["exchange"]):
         # The Boeing/BAE rule, applied here: SEC's ticker index covers US registrants,
@@ -185,6 +198,116 @@ async def _get_recent_filings(
             "filing's contents are not returned, because turning a filing into citable "
             "text is the corpus's job. "
             + _bridge_summary(bridge)
+        ),
+        # Headlines are the issuer's own words, from outside the platform.
+        "contains_untrusted_content": True,
+    }
+
+
+async def _get_official_disclosures(
+    context: "ToolContext", arguments: dict[str, Any]
+) -> dict[str, Any]:
+    """LSE / ASX: the issuer's own official disclosures, and the bridge that makes the
+    most relevant unread ones searchable.
+
+    The company is the SESSION's subject — resolved by id, never by the ticker the model
+    typed — and a ticker or venue that does not match it is refused. Items are
+    metadata; the documents' text reaches a specialist only through corpus search after
+    the bridge has made it searchable.
+    """
+    from app.models.company import Company
+    from app.services.exchange_registry import normalize_exchange
+    from app.services.sources.disclosures.acquisition import (
+        ensure_disclosure_evidence,
+        list_disclosures,
+        source_for,
+    )
+    from app.services.sources.disclosures.relevance import topic_boost
+
+    cfg = context.cfg
+    empty: dict[str, Any] = {
+        "items": [],
+        "population": {"definition": "official disclosures for this issuer",
+                       "filters": dict(arguments), "returned": 0},
+        "contains_untrusted_content": False,
+    }
+    session = getattr(context, "session", None)
+    company_id = getattr(context, "company_id", None)
+    company = await session.get(Company, company_id) if session and company_id else None
+    if company is None:
+        return {**empty, "summary": "No research subject is set, so no issuer was looked up."}
+    if (str(company.ticker or "").upper() != arguments["ticker"]
+            or normalize_exchange(company.exchange or "")
+            != normalize_exchange(arguments["exchange"] or "")):
+        return {**empty, "summary": (
+            "The ticker and venue asked for are not this research subject's; official "
+            "disclosures are looked up for the subject only.")}
+    source_id, why = source_for(company, cfg)
+    if source_id is None:
+        return {**empty, "summary": (
+            f"No official disclosure source is enabled for this venue ({why}). This is a "
+            "statement about configuration, not about the issuer's disclosures.")}
+
+    listing = await list_disclosures(session, company, cfg=cfg)
+    if listing.issuer is None or not listing.documents:
+        return {**empty, "summary": (
+            f"No official disclosure was listed ({listing.reason}"
+            f"{': ' + listing.detail if listing.detail else ''}).")}
+
+    topics = tuple(arguments.get("topics") or ())
+    window_days = int(arguments["lookback_days"])
+    from datetime import datetime, timedelta, timezone
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=window_days)
+    documents = [d for d in listing.documents
+                 if d.published_at is None or d.published_at >= cutoff]
+    # Most useful first: requested topics, then research rank, then newest.
+    documents.sort(key=lambda d: (-topic_boost(d.headline, topics), d.research_rank,
+                                  -(d.published_at.timestamp() if d.published_at else 0)))
+    documents = documents[: arguments["limit"]]
+
+    budget = max(0, int(getattr(cfg, "v3_filing_body_bridge_max_attempts", 3) or 0))
+    corpus: dict[str, Any] = {"ready": 0, "acquired": 0, "unavailable": 0, "attempted": 0,
+                              "acquire_attempt_budget": budget, "reasons": {}}
+    items: list[dict[str, Any]] = []
+    for document in documents:
+        item = document.to_item()
+        if document.research_rank >= 5:
+            # Administrative notices are listed, never fetched by this tool.
+            item["corpus_ready"] = None
+            items.append(item)
+            continue
+        outcome = await ensure_disclosure_evidence(
+            session, issuer=listing.issuer, document=document, cfg=cfg,
+            ready_only=budget <= 0)
+        if outcome.attempted:
+            budget -= 1
+            corpus["attempted"] += 1
+        item["corpus_ready"] = outcome.is_ready
+        if outcome.is_ready:
+            corpus["ready" if outcome.reused else "acquired"] += 1
+        else:
+            corpus["unavailable"] += 1
+            reason = outcome.reason or "unknown"
+            corpus["reasons"][reason] = corpus["reasons"].get(reason, 0) + 1
+        items.append(item)
+
+    return {
+        "items": items,
+        "issuer": listing.issuer.to_dict(),
+        "corpus": corpus,
+        "population": {
+            "definition": f"official disclosures from {source_id} for this issuer",
+            "filters": dict(arguments), "row_limit": arguments["limit"],
+            "returned": len(items),
+        },
+        "summary": (
+            f"{len(items)} official disclosure(s) listed by {source_id}. Metadata only — "
+            "headlines are not the documents' contents; search the corpus for what they "
+            f"say. {corpus['ready'] + corpus['acquired']} searchable "
+            f"({corpus['acquired']} acquired now), {corpus['unavailable']} not; "
+            f"{corpus['attempted']} of {corpus['acquire_attempt_budget']} acquisition "
+            "attempts used."
         ),
         # Headlines are the issuer's own words, from outside the platform.
         "contains_untrusted_content": True,
@@ -303,6 +426,9 @@ GET_RECENT_FILINGS_SPEC = ToolSpec(
     description=(
         "Filing METADATA from the issuer's own regulator — form type, filing and report "
         "dates, accession number and the regulator's URL. Never the filing's contents. "
+        "For an LSE or ASX issuer: its official disclosures (UK FCA National Storage "
+        "Mechanism / ASX announcements), with the most relevant made searchable in the "
+        "corpus; optional `topics` (short words) prioritise which headlines are read. "
         "Returns an honest empty result, naming the reason, when the flag is off or the "
         "venue is not one the regulator's index covers."
     ),

@@ -354,7 +354,12 @@ _SCAFFOLD_TABLE: list[tuple[str, str, str | None, str | None, str | None]] = [
     ("sedar_plus", "SEDAR+ (Canada)", "CA", "North America",
      "Canadian issuer filings; no fabricated filings."),
     ("asx_announcements", "ASX Announcements", "AU", "Oceania",
-     "ASX company announcements; no fabricated JORC / Appendix 5B data."),
+     "Report time: scaffold (no report-time evidence item). V3 research "
+     "(V3_ASX_ANNOUNCEMENTS_ENABLED): the issuer's announcements are listed from the "
+     "ASX's own announcements page for its verified ASX code, and the attached PDF of "
+     "each selected announcement is fetched from announcements.asx.com.au, checked to "
+     "name the issuer, extracted and indexed into the corpus. ASX terms: private and "
+     "personal use only. No fabricated JORC / Appendix 5B data."),
 ]
 
 
@@ -418,11 +423,16 @@ def build_registry(cfg: Settings | None = None) -> SourceRegistry:
             connector_implemented=True,
             capabilities=["fetch_filings", "fetch_events"],
             reliability_note=(
-                "Emits a T2 regulator-transport SOURCE REFERENCE to a verified "
-                "UK issuer's FCA NSM / RNS disclosure venue (metadata only). The "
-                "T1 primary filing CONTENT is not fetched at report time — live "
-                "content retrieval is a Phase 29B.4 follow-up. No fabricated "
-                "filings, notices, or RNS numbers."
+                "Report time: a T2 regulator-transport SOURCE REFERENCE to a verified "
+                "UK issuer's FCA NSM disclosure venue (metadata only; content is not "
+                "fetched at report time). "
+                "V3 research (V3_UK_NSM_DISCLOSURES_ENABLED): the issuer — matched by "
+                "LEI via the LSE instrument record and GLEIF, never by name — has its "
+                "official documents (annual reports, interim results, RNS text) "
+                "fetched from data.fca.org.uk, extracted and indexed into the corpus; "
+                "T1 primary disclosure content via T2 regulator transport. FCA terms "
+                "restrict automated access without written consent: private-use "
+                "deployment only. No fabricated filings, notices, or RNS numbers."
             ),
         ),
         RegisteredSource(

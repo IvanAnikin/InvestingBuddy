@@ -1079,6 +1079,29 @@ class Settings(BaseSettings):
     # what the biotech playbook's blocking questions actually read.
     v3_filing_body_bridge_max_attempts: int = 3
 
+    # --- Non-US primary disclosures (UK FCA NSM, ASX announcements) -----------
+    # Each OFF by default. On, the research secures a bounded set of the issuer's own
+    # official disclosures (latest annual / interim / quarterly and a few recent
+    # research-relevant announcements) into the corpus BEFORE its questions are asked,
+    # and ``get_recent_filings`` can acquire more for LSE / ASX issuers.
+    #
+    # TERMS: the FCA restricts automated access to NSM content without its written
+    # consent; the ASX permits announcements for private and personal use only. The
+    # owner enabled both for the private-use deployment (2026-09-27). Before ANY public
+    # or commercial use, obtain FCA consent and ASX authority or turn these off.
+    v3_uk_nsm_disclosures_enabled: bool = False
+    v3_asx_announcements_enabled: bool = False
+    # Documents secured per research run before the questions are asked. Each is one
+    # fetch and one extraction; the latest annual report alone can be 80 pages.
+    v3_disclosure_core_max_documents: int = 5
+    # How far back a disclosure listing is read. A research run needs the latest
+    # annual report (at most ~15 months old) and recent material announcements, not an
+    # issuer's history.
+    v3_disclosure_lookback_days: int = 540
+    # Wall-clock budget for securing core disclosures before the questions are asked.
+    # Once spent, remaining documents are answered from the database only.
+    v3_disclosure_core_budget_seconds: float = 300.0
+
     # --- V3.17 research escalation ------------------------------------------
     # The master switch. OFF by default and ABSENT in production: escalation creates
     # PAID research runs without a human clicking anything, so it must be turned on

@@ -134,6 +134,9 @@ class V3ResearchOutcome:
     corpus_index: dict[str, int] = field(default_factory=dict)
     #: Whether the latest annual and quarterly reports were secured into the corpus.
     core_filings: dict[str, Any] = field(default_factory=dict)
+    #: Non-US issuers: which official disclosures (UK FCA NSM / ASX) were secured into
+    #: the corpus before the questions were asked, and why any was not.
+    core_disclosures: dict[str, Any] = field(default_factory=dict)
     #: V3.18.2 — every planned question as a node: domain, owner, contract verdict,
     #: evidence counts, why it is still open, and what acquisition tried.
     question_graph: list[dict[str, Any]] = field(default_factory=list)
@@ -173,6 +176,7 @@ class V3ResearchOutcome:
             "professional_research": self.professional_research,
             "corpus_index": dict(self.corpus_index),
             "core_filings": dict(self.core_filings),
+            "core_disclosures": dict(self.core_disclosures),
             "elapsed_seconds": round(self.elapsed_seconds, 3),
             "degraded": list(self.degraded),
             "error": self.error,
@@ -392,6 +396,42 @@ async def _run(
         if state and state not in ("ready", "acquired", "reused"):
             reason = (outcome.core_filings.get(slot) or {}).get("reason") or state
             outcome.degraded.append(f"the latest {slot} report is not in the corpus ({reason})")
+
+    # The same step for an issuer SEC does not cover: its own official disclosures —
+    # the UK FCA National Storage Mechanism or the ASX — secured into the corpus before
+    # a single question is asked. Without it a verified LSE / ASX small cap reached
+    # research with an empty corpus, and a blocking playbook question refused the
+    # Council (Pensana, V3.19).
+    from app.services.sources.disclosures.acquisition import ensure_core_disclosures
+
+    try:
+        async with session.begin_nested():
+            outcome.core_disclosures = await ensure_core_disclosures(
+                session, company=company, cfg=cfg
+            )
+    except Exception as exc:  # noqa: BLE001 - a failed acquisition costs the step only
+        outcome.degraded.append(
+            f"the issuer's official disclosures could not be secured ({type(exc).__name__})"
+        )
+    skipped = outcome.core_disclosures.get("skipped")
+    if skipped == "connector_disabled":
+        # An LSE / ASX issuer researched with its disclosure source off: said, not silent.
+        outcome.degraded.append(
+            "the issuer's official disclosure source is not enabled for its venue, so "
+            "its own announcements and reports were not secured into the corpus"
+        )
+    elif outcome.core_disclosures.get("source_id") and skipped:
+        outcome.degraded.append(
+            f"no official disclosure was secured from {outcome.core_disclosures['source_id']}"
+            f" ({skipped})"
+        )
+    for item in outcome.core_disclosures.get("documents") or []:
+        if item.get("state") != "ready":
+            outcome.degraded.append(
+                f"an official {item.get('document_kind') or 'document'} "
+                f"({item.get('source_id')} {item.get('document_ref')}) is not in the "
+                f"corpus ({item.get('reason')})"
+            )
 
     if search_backend is not None:
         from app.services.corpus.indexing import ensure_company_indexed

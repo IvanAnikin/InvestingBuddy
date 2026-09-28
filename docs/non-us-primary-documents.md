@@ -1,6 +1,6 @@
 # Non-US primary documents — UK (LSE) and Australia (ASX)
 
-**Status:** `IN PROGRESS`. Acceptance evidence is recorded in
+**Status:** `IN PROGRESS` — foundation (PR #250) and connectors built; production acceptance pending. Acceptance evidence is recorded in
 [non-us-primary-documents-acceptance.md](non-us-primary-documents-acceptance.md).
 
 ## 1. Why
@@ -20,10 +20,10 @@ verified issuer → official announcement → the actual document → persisted 
 
 | | UK (LSE) | ASX |
 |---|---|---|
-| Discovery | FCA National Storage Mechanism search (`POST api.data.fca.org.uk/search?index=nsm-search`) — the regulator's store of regulated information | ASX research API (`GET asx.api.markitdigital.com/asx-research/1.0/companies/{code}/announcements`) — the service asx.com.au itself uses |
-| Content | `https://data.fca.org.uk/artefacts/<download_link>` — the full RNS text (HTML), annual-report PDFs, iXBRL XHTML | `https://asx.api.markitdigital.com/asx-research/1.0/file/{documentKey}` — the attached PDF itself |
-| Identity | LSE instrument record → ISIN → **GLEIF** (the LEI authority) → LEI; the NSM query is by LEI and **every** record must carry that LEI | ASX official company directory (V3.19) → ASX code; the API's `displayName` must agree with the directory name |
-| Typing | NSM `type` / `category_group` (e.g. "Annual Financial Report", "Half-year Financial Report", "Director/PDMR Shareholding") | `announcementType` + `isPriceSensitive` |
+| Discovery | FCA National Storage Mechanism search (`POST api.data.fca.org.uk/search?index=nsm-search`) — the regulator's store of regulated information | The ASX's own yearly announcements page for the code (`www.asx.com.au/asx/v2/statistics/announcements.do?by=asxCode&asxCode=<CODE>&timeframe=Y&year=<Y>`): a full year per request, each row's own `idsId`, the exchange's price-sensitive marker. (The research API returns only the latest five.) |
+| Content | `https://data.fca.org.uk/artefacts/<download_link>` — the full RNS text (HTML), annual-report PDFs, iXBRL XHTML | The announcement's display page (`displayAnnouncement.do?display=pdf&idsId=<id>`, what a citation opens) names the attached PDF, accepted only as exactly `https://announcements.asx.com.au/asxpdf/<8 digits>/pdf/<id>.pdf`; that PDF is fetched |
+| Identity | LSE instrument record → ISIN → **GLEIF** (the LEI authority) → LEI, one record whose legal name agrees; an LEI already held by the platform must agree with GLEIF; the NSM query is by LEI and **every** record must carry that LEI | ASX official company list (V3.19) → ASX code (a suffix like `.AX` stripped) |
+| Typing | NSM `type` (e.g. "Annual Financial Report", "Half-year Financial Report", "Director/PDMR Shareholding") and `document_format` | the headline and the exchange's own price-sensitive marker |
 
 Measured hazards that shaped the design:
 
@@ -73,3 +73,65 @@ authority are required, or both connectors must be switched off.**
 2. **Connectors and research integration** — UK NSM and ASX discovery, identity,
    classification, bounded selection, acquisition bridge, pre-research core disclosures,
    `get_recent_filings` for LSE/ASX, flags, registry and health.
+
+## 5. As built (slice 2)
+
+- `app/services/sources/disclosures/`: `model` (shapes, closed reasons, ranks),
+  `relevance` (document kind + rank on the shared `disclosure_events` vocabulary; an NSM
+  "Annual Financial Report" is the report only as a PDF / tagged filing — the plain-text
+  "Publication of Annual Report" RNS is a notice), `uk_nsm` (LEI identity, NSM listing,
+  amendment suffix `NI-…-0` → the document's base id, so a re-filing is a new VERSION),
+  `asx` (yearly listing, display-page PDF), `acquisition` (the bridge, bounded
+  selection, `ensure_core_disclosures`).
+- Research integration: `v3_pipeline` runs `ensure_core_disclosures` right after the SEC
+  `core_filings` step (recorded as `core_disclosures`, with degraded notes naming the
+  document id and reason); `get_recent_filings` serves LSE / ASX issuers from their own
+  source for the research SUBJECT only, lists administrative notices without fetching
+  them, and makes the most relevant unread documents searchable within
+  `V3_FILING_BODY_BRIDGE_MAX_ATTEMPTS`; optional `topics` only reorder headlines.
+- Content identity: a fetched document must name the issuer (a distinctive word of the
+  exchange's name for it, or `ASX: CODE`) in its CONTENT — never its title — or it is
+  refused and not stored.
+- Headlines and titles are external wording: neutralised before storage (the report
+  safety gate matches rating words as substrings — "share buy-back").
+- Flags: `V3_UK_NSM_DISCLOSURES_ENABLED`, `V3_ASX_ANNOUNCEMENTS_ENABLED` (both off by
+  default), `V3_DISCLOSURE_CORE_MAX_DOCUMENTS` (5), `V3_DISCLOSURE_LOOKBACK_DAYS` (540).
+  Acquisition also requires the existing corpus and primary-document persistence flags.
+- Known limit: indexing (and so READY) needs the PostgreSQL search backend, as in
+  production; extraction of a large PDF can hit the extractor's own time budget on a
+  loaded host and yield a partial derivation.
+
+### Review fixes (code, security, evidence integrity)
+
+- **One address, one document.** Announcements are keyed by their official address, not
+  `<kind>:<period>` — a half-year report and its results presentation are two documents.
+- **No future period, title or body.** A period that had not begun at publication is a
+  forecast and is dropped ("Q1 2028 first production update", published 2026) — for the
+  corpus version AND the extracted facts' default period, on the live, cached and
+  backfill paths alike (`disclosure_period_policy.document_period_for(published_at=…)`).
+  A FISCAL label may start up to a year before its calendar reading: "Q1 FY2027" of a
+  June year-end, published October 2026, keeps its period.
+- **A stale holding out of budget stays ready.** When an NSM correction is not fetched
+  because the acquisition budget is spent, the held reading is still searchable and is
+  reported as such, with a note.
+- **Corrections are read.** An NSM re-filing keeps its address; the source's
+  `last_updated_date` after the last acquisition makes the holding stale.
+- **Content identity** needs the issuer's WHOLE name (legal suffix dropped) as a phrase,
+  or an exchange ticker citation — one word ("Australian") accepted another issuer.
+- **Shared bytes.** The same PDF held for another company (dual listing, a second row)
+  gets its own corpus version for this company, so it becomes READY instead of being
+  re-fetched every run.
+- **Every year in the window** is read from the ASX (a February run spans three).
+- **Linear, bounded listing parse** off the event loop (a regex over unbalanced tags was
+  quadratic); a 300 s wall budget for the core step; savepoints around index and audit
+  writes so a failure costs one document.
+- Known limits: an ASX re-issue gets a new id and both copies stay current (the ASX gives
+  no supersession signal); a half-year period label follows the existing detector
+  ("half-year ended 31 December 2025" → H1 2025); issuer headlines are neutralised,
+  which can change their wording ("price target" → redacted); a quarterly titled only
+  "for the quarter ended 30 September 2026" gets no period (the existing detector reads
+  no period from an end date alone); an LSE name written "SAINSBURY(J) PLC" does not
+  match "J Sainsbury plc" as a phrase, so such an issuer needs a ticker citation in the
+  document (otherwise `identity_unverified`, never a wrong issuer); an NSM amendment
+  published at a NEW address is a new document, and the superseded one stays current
+  until it ages out.
