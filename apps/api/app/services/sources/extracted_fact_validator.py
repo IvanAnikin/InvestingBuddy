@@ -559,6 +559,13 @@ _EXPLICIT_USD_RE = re.compile(
     re.I)
 
 
+#: Another country's dollar named anywhere: then "US dollars" may be an FX note
+#: ("presented in Australian dollars … 30% of sales are in US dollars").
+_OTHER_DOLLAR_RE = re.compile(
+    r"(?<![a-z])(?:(?:australian|canadian|new zealand|hong kong|singapore)\s+dollars?"
+    r"|(?:aud|cad|nzd|hkd|sgd)(?![a-z])|(?:a|au|c|ca|nz|hk|s)\$)", re.I)
+
+
 def _resolve_dollar(currency: str | None, text: str, issuer: IssuerContext) -> str | None:
     """``currency``, except USD where the issuer says a bare dollar is not known to be
     US dollars (``IssuerContext.bare_dollar_is_usd``). There, USD needs an EXPLICIT US
@@ -570,7 +577,8 @@ def _resolve_dollar(currency: str | None, text: str, issuer: IssuerContext) -> s
     if currency != "USD" or issuer.bare_dollar_is_usd:
         return currency
     low = (text or "").lower()
-    if _EXPLICIT_USD_RE.search(low) and None not in dollar_codes(low):
+    if (_EXPLICIT_USD_RE.search(low) and None not in dollar_codes(low)
+            and not _OTHER_DOLLAR_RE.search(low)):
         return currency
     return None
 

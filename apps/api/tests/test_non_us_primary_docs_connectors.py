@@ -1254,7 +1254,9 @@ class TestProMedicusAcceptanceFixes:
 
         for text in ("Revenue A$161.5 million; amounts are presented in Australian dollars",
                      "The financial report is presented in Australian dollars. Revenue 161.5 "
-                     "million", "Revenue of 161.5 million Canadian dollars"):
+                     "million", "Revenue of 161.5 million Canadian dollars",
+                     "Presented in Australian dollars. Revenue 161.5 million; 30% of sales "
+                     "are in US dollars"):
             assert _resolve_dollar(_find_currency(text), text, asx) != "USD", text
         assert _resolve_dollar("USD", "revenue in USD millions", asx) == "USD"
         assert _resolve_dollar("USD", "presented in US dollars", asx) == "USD"
