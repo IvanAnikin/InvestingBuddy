@@ -44,7 +44,7 @@ import re
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
@@ -348,6 +348,21 @@ class PrimaryDocumentArtifact(BaseModel):
     # document content. The persistence layer turns this into a
     # ``research_artifacts`` row and into ``ExtractedDocument.blob_path``.
     raw_artifact: StoredArtifact | None = None
+    # Non-US primary disclosures. All optional and defaulted: every existing construction
+    # is unchanged, and ``None`` means "the V2 behaviour".
+    #
+    # The TRANSPORT that delivered this document (``uk_fca_nsm``, ``asx_announcements``).
+    # Persistence previously stamped every artifact ``company_ir``, which would have
+    # made a regulator-stored announcement claim it came from the issuer's website.
+    transport: str | None = None
+    # The official publication date the transport's own metadata states. A PUBLICATION
+    # date — never used to infer the reporting period the document covers.
+    published_at: date | None = None
+    # ``"title_only"``: the reporting period may be read from the official title alone,
+    # never from body text. An announcement's body routinely states FUTURE periods
+    # ("first production expected in Q1 2028"), and the body detector stamped such a
+    # document — and every chunk and finding built on it — with that forecast.
+    period_policy: str | None = None
 
 
 # A DEEP document extractor fetches ONE allowlisted annual-report document, runs

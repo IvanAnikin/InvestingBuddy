@@ -103,8 +103,11 @@ FAILURE_OCR_PROVIDER_ERROR = "ocr_provider_error"
 FAILURE_OCR_MALFORMED_RESULT = "ocr_malformed_result"
 FAILURE_OCR_LOW_CONFIDENCE = "ocr_low_confidence"
 FAILURE_OCR_BUDGET_EXHAUSTED = "ocr_budget_exhausted"
+#: A search API answered with more than the listing cap; refused, never read short.
+FAILURE_RESPONSE_TOO_LARGE = "response_too_large"
 
 ALL_FAILURE_CODES: tuple[str, ...] = (
+    FAILURE_RESPONSE_TOO_LARGE,
     FAILURE_BLOCKED_HOST,
     FAILURE_BLOCKED_SCHEME,
     FAILURE_BLOCKED_PRIVATE_IP,

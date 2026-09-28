@@ -37,11 +37,14 @@ from app.services.sources.connectors.company_ir import (
     PrimaryDocumentArtifact,
     PrimaryDocumentBundle,
 )
+from app.services.sources.disclosure_period_policy import (
+    document_period_for,
+    is_title_only,
+)
 from app.services.sources.document_fetcher import (
     DocumentFetchResult,
     safe_fetch_document,
 )
-from app.services.sources.document_period import document_period_of
 from app.services.sources.document_text_extractor import extract_document_text
 from app.services.sources.extracted_fact_validator import (
     IssuerContext,
@@ -463,6 +466,7 @@ async def _artifact_from_fetch(
     ocr_budget: OcrBudget | None = None,
     access_class: str = ACCESS_PUBLIC_ISSUER,
     artifact_store: ArtifactStore | None = None,
+    period_policy: str | None = None,
 ) -> PrimaryDocumentArtifact:
     """Extract + validate ONE already-fetched document into an artifact.
 
@@ -590,10 +594,16 @@ async def _artifact_from_fetch(
             extraction,
             issuer_context=issuer_context or IssuerContext(),
             cfg=cfg,
-            document_period=document_period_of(
-                title=title, url=artifact.source_url, extraction=extraction
+            # An official announcement's facts take their default period from the
+            # title alone — see ``disclosure_period_policy``.
+            document_period=document_period_for(
+                title=title,
+                url=artifact.source_url,
+                extraction=extraction,
+                title_only=is_title_only(policy=period_policy),
             ),
         )
+    artifact.period_policy = period_policy
     return artifact
 
 
@@ -608,6 +618,7 @@ async def live_primary_document_extractor(
     resolver: Resolver = socket.getaddrinfo,
     ocr_provider: OcrProvider | None = None,
     ocr_budget: OcrBudget | None = None,
+    period_policy: str | None = None,
 ) -> PrimaryDocumentArtifact:
     """DEEP fetch + structure-aware extraction + stricter validation of ONE doc.
 
@@ -648,6 +659,7 @@ async def live_primary_document_extractor(
         fetch_ms=fetch_ms,
         ocr_provider=ocr_provider,
         ocr_budget=ocr_budget,
+        period_policy=period_policy,
     )
 
 
