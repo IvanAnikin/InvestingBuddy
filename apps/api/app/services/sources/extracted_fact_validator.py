@@ -861,6 +861,7 @@ def _make_candidate(
 def _resolve_fallback_period(
     parsed: "list[tuple[PrimaryFact, Any]]",
     document_period: DocumentPeriod,
+    title_only: bool = False,
 ) -> tuple[str | None, bool]:
     """The period an undated prose fact may inherit, and whether it is INTERIM.
 
@@ -880,6 +881,14 @@ def _resolve_fallback_period(
     """
     if document_period.is_interim:
         return format_period(document_period.period), True
+    if title_only:
+        # An official announcement's period comes from its TITLE only
+        # (``disclosure_period_policy``): the body's majority year is where forecasts
+        # and targets live — Pro Medicus's FY26 annual report, full of "FY27"
+        # targets, gave its undated "revenue of $266.6m" the period 2027.
+        if document_period.is_known:
+            return format_period(document_period.period), False
+        return None, False
     periods_seen = [fact.period for fact, _exc in parsed if fact.period]
     if not periods_seen:
         return None, False
@@ -890,6 +899,7 @@ def _candidates_from_excerpts(
     extraction: PrimaryDocumentExtraction,
     document_period: DocumentPeriod = UNKNOWN_DOCUMENT_PERIOD,
     issuer: IssuerContext | None = None,
+    title_only_period: bool = False,
 ) -> list[_Candidate]:
     """Turn each bounded PROSE excerpt into fact candidates.
 
@@ -952,11 +962,11 @@ def _candidates_from_excerpts(
             confidence=_confidence_bucket(exc.confidence),
             evidence_type=exc.evidence_type,
         )
-        for fact in _parse_excerpt(wrapper, None):
+        for fact in _parse_excerpt(wrapper, None, local_period_only=title_only_period):
             parsed.append((fact, exc))
 
     dominant_period, from_document_period = _resolve_fallback_period(
-        parsed, document_period
+        parsed, document_period, title_only_period
     )
 
     # Explicit-period (never inferred) anchor magnitudes per (label, scope,
@@ -1472,6 +1482,7 @@ def validate_extracted_facts(
     issuer_context: IssuerContext,
     cfg: Settings | None = None,
     document_period: DocumentPeriod = UNKNOWN_DOCUMENT_PERIOD,
+    title_only_period: bool = False,
 ) -> list[ValidatedFact]:
     """Validate an extraction's tables into candidate structured facts.
 
@@ -1503,7 +1514,9 @@ def validate_extracted_facts(
         )
     # Phase 32A corrective (Problem A): prose excerpts are now ALSO a candidate
     # source, not just tables — see ``_candidates_from_excerpts``.
-    candidates.extend(_candidates_from_excerpts(extraction, document_period, issuer))
+    candidates.extend(
+        _candidates_from_excerpts(extraction, document_period, issuer, title_only_period)
+    )
     candidates, superseded = _supersede_prose_read_of_reconstructed_table(candidates)
     _refuse_annual_authority_of_interim_document(candidates, document_period)
 

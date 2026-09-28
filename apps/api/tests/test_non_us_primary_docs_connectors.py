@@ -1386,3 +1386,148 @@ def test_the_filing_lei_scan_is_linear_on_a_hostile_page():
     _xbrl_lei_identifiers(hostile)
     _xbrl_lei_identifiers("<xbrli:identifier " * 1_000_000)
     assert time.perf_counter() - started < 2.0
+
+
+class TestReuseRevalidationOfAnnouncements:
+    """Live acceptance E (EcoGraf rerun, report a392e32c): the report-regeneration
+    reuse path re-validated a stored ASX announcement under the DEFAULT context, so
+    "Cash and cash equivalents of $3.8 million" (Australian dollars) stayed a validated
+    USD fact and the row was stamped current before the corrected reading could run."""
+
+    async def _doc(self, session, source_type):  # noqa: ANN001, ANN202
+        from app.models.extracted_document import ExtractedDocument
+
+        doc = ExtractedDocument(
+            id=uuid.uuid4(), content_hash=uuid.uuid4().hex * 2,
+            canonical_url="https://www.asx.com.au/asx/v2/statistics/displayAnnouncement.do"
+                          "?display=pdf&idsId=03120015",
+            provider="asx_announcements", source_type=source_type,
+            source_tier="T1_PRIMARY_FILING", mime_type="application/pdf",
+            extraction_method="native_pdf", status="extracted",
+            title="June 2026 Quarterly Activities Report", pipeline_version=16,
+            excerpts_json=[{"excerpt_id": "X2", "page_number": 2,
+                            "text": "Cash and cash equivalents of $3.8 million at 30 June "
+                                    "2026", "extraction_method": "native_pdf",
+                            "confidence": 0.9}])
+        session.add(doc)
+        await session.flush()
+        return doc
+
+    async def _revalidate(self, session, doc, extractor=None):  # noqa: ANN001, ANN202
+        from app.services.extracted_document_service import _revalidate_document
+        from app.services.sources.extracted_fact_validator import IssuerContext
+
+        return await _revalidate_document(
+            session, doc, cfg=CFG, existing_active_facts=[],
+            issuer_context=IssuerContext(company_name="ECOGRAF LIMITED", ticker="EGR"),
+            primary_document_extractor=extractor)
+
+    async def test_an_announcement_is_revalidated_without_the_bare_dollar_as_usd(
+        self, session
+    ):
+        from app.models.extracted_document import ExtractedFact
+
+        announcement = await self._doc(session, "asx_announcement")
+        await self._revalidate(session, announcement)
+        facts = (await session.execute(select(ExtractedFact).where(
+            ExtractedFact.extracted_document_id == announcement.id))).scalars().all()
+        assert not [f for f in facts if f.currency == "USD"], facts
+
+    async def test_the_same_text_elsewhere_keeps_the_existing_reading(self, session):
+        """Control: the default path is unchanged (a US issuer's "$" is USD)."""
+        from app.models.extracted_document import ExtractedFact
+
+        ir = await self._doc(session, "company_ir")
+        await self._revalidate(session, ir)
+        facts = (await session.execute(select(ExtractedFact).where(
+            ExtractedFact.extracted_document_id == ir.id))).scalars().all()
+        assert [f for f in facts if f.currency == "USD"]
+
+    async def test_an_announcements_official_page_is_never_refetched_as_content(
+        self, session
+    ):
+        from app.services.extracted_document_service import _attempt_full_reextraction
+
+        called = []
+
+        async def extractor(url, **kw):  # noqa: ANN001, ANN003, ANN202
+            called.append(url)
+
+        announcement = await self._doc(session, "asx_announcement")
+        assert await _attempt_full_reextraction(
+            announcement, cfg=CFG, issuer_context=None,
+            primary_document_extractor=extractor) is None
+        assert called == []
+
+
+async def test_a_declined_announcement_reread_retires_its_facts(session):
+    """Review of PR #254: when the reuse path declines to re-read an announcement whose
+    facts are table-derived, those facts (derived under the corrected reading) must not
+    stay active for the facts / calculation tools."""
+    from app.models.extracted_document import ExtractedDocument, ExtractedFact
+    from app.services.extracted_document_service import _revalidate_document
+    from app.services.sources.extracted_fact_validator import IssuerContext
+
+    doc = ExtractedDocument(
+        id=uuid.uuid4(), content_hash=uuid.uuid4().hex * 2,
+        canonical_url="https://www.asx.com.au/asx/v2/statistics/displayAnnouncement.do"
+                      "?display=pdf&idsId=03059473",
+        provider="asx_announcements", source_type="asx_announcement",
+        source_tier="T1_PRIMARY_FILING", mime_type="application/pdf",
+        extraction_method="native_pdf", status="extracted", title="Half Year Accounts",
+        pipeline_version=16, excerpts_json=[])
+    session.add(doc)
+    table_fact = ExtractedFact(
+        id=uuid.uuid4(), extracted_document_id=doc.id, label="revenue",
+        value_numeric=1402.0, value_text="1,402", currency="USD", scale="million",
+        period="2024", extraction_method="native_pdf", confidence=0.8,
+        validation_status="validated", is_active=True, table_location="p16:t1")
+    session.add(table_fact)
+    await session.flush()
+    async def never(url, **kw):  # noqa: ANN001, ANN003, ANN202
+        raise AssertionError("an announcement is never re-read on the reuse path")
+
+    await _revalidate_document(
+        session, doc, cfg=CFG, existing_active_facts=[table_fact],
+        issuer_context=IssuerContext(company_name="PRO MEDICUS LIMITED", ticker="PME"),
+        primary_document_extractor=never)
+    await session.refresh(table_fact)
+    assert table_fact.is_active is False
+    assert doc.pipeline_version == 16  # not restamped: the acquisition re-reads it
+
+
+def test_an_announcements_undated_figure_never_takes_a_year_from_elsewhere_in_the_body():
+    """Live acceptance E (Pro Medicus rerun, report 49268894): "revenue of $266.6m"
+    (FY26) took the period 2027 from "…through to 30 June 2027", an LTI vesting clause
+    three sentences later — the excerpt-wide first-year fallback."""
+    from app.services.sources.document_period import UNKNOWN_DOCUMENT_PERIOD
+    from app.services.sources.extracted_fact_validator import (
+        IssuerContext,
+        validate_extracted_facts,
+    )
+    from app.services.sources.primary_document_extractor import (
+        PrimaryDocumentExcerpt,
+        PrimaryDocumentExtraction,
+    )
+
+    text = ("Executive remuneration outcomes for FY26 were closely aligned with Company "
+            "performance. The Company delivered underlying EBIT of $199.5m and revenue of "
+            "$266.6m, up from $152.4m and $206.3m respectively in FY25. Accordingly, the "
+            "STI outcome for participants was between 78% and 80% of target. Pleasingly, "
+            "this has resulted in 100% vesting for the FY24-FY26 LTI tranche, which "
+            "remains conditional on continued employment through to 30 June 2027.")
+    extraction = PrimaryDocumentExtraction(
+        content_hash="x" * 64, mime_type="application/pdf", extraction_method="native_pdf",
+        status="extracted", excerpts=[PrimaryDocumentExcerpt(
+            excerpt_id="X1", text=text, page_number=32, extraction_method="native_pdf",
+            confidence=0.9)])
+
+    def facts(title_only):  # noqa: ANN001, ANN202
+        return [f for f in validate_extracted_facts(
+            extraction, issuer_context=IssuerContext(company_name="PRO MEDICUS LIMITED"),
+            cfg=CFG, document_period=UNKNOWN_DOCUMENT_PERIOD,
+            title_only_period=title_only) if "266.6" in f.value_text]
+
+    assert facts(True) and all(f.period is None for f in facts(True))
+    # Control: the existing (non-announcement) reading takes the body's year.
+    assert any(f.period == "2027" for f in facts(False))

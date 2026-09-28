@@ -962,6 +962,26 @@ def _insert_active_facts(
         )
 
 
+def _context_for_document(
+    doc: ExtractedDocument, issuer_context: "IssuerContext | None"
+) -> "IssuerContext":
+    """The issuer context a STORED document is re-validated under.
+
+    An official announcement (ASX / UK NSM, keyed by its persisted ``source_type``)
+    never reads a bare "$" as US dollars, whichever path re-validates it. Measured in
+    production: the report-regeneration reuse path re-derived EcoGraf's "Cash and
+    cash equivalents of $3.8 million" (Australian dollars) as USD under the default
+    context and stamped the row current, so the corrected reading never ran.
+    """
+    from app.services.sources.disclosure_period_policy import is_title_only
+    from app.services.sources.extracted_fact_validator import IssuerContext
+
+    context = issuer_context or IssuerContext()
+    if is_title_only(source_type=doc.source_type):
+        return context.model_copy(update={"bare_dollar_is_usd": False})
+    return context
+
+
 async def _attempt_full_reextraction(
     doc: ExtractedDocument,
     *,
@@ -981,10 +1001,16 @@ async def _attempt_full_reextraction(
     declining to guess at reconciliation here rather than merging two
     different filings' facts). Never raises.
     """
-    from app.services.sources.extracted_fact_validator import IssuerContext
+    from app.services.sources.disclosure_period_policy import is_title_only
     from app.services.sources.live_fetchers import live_primary_document_extractor
     from app.services.sources.primary_document_extractor import STATUS_EXTRACTED
 
+    if is_title_only(source_type=doc.source_type):
+        # An announcement's stored address is its OFFICIAL page (for the ASX, an HTML
+        # wrapper that names the PDF), not its content: re-reading it here would fetch
+        # the wrong bytes. The disclosure acquisition re-reads it from its content
+        # address when the pipeline version moves on.
+        return None
     extractor = primary_document_extractor or live_primary_document_extractor
     host = (urlsplit(doc.canonical_url or "").hostname or "").lower()
     if not host:
@@ -994,7 +1020,7 @@ async def _attempt_full_reextraction(
             doc.canonical_url,
             allowed_domains=(host,),
             title_hint=doc.title,
-            issuer_context=issuer_context or IssuerContext(),
+            issuer_context=_context_for_document(doc, issuer_context),
             cfg=cfg,
         )
     except Exception:  # noqa: BLE001 - a re-extraction failure is Case C, never a crash
@@ -1097,6 +1123,17 @@ async def _revalidate_document(
             primary_document_extractor=primary_document_extractor,
         )
         if artifact is None:
+            from app.services.sources.disclosure_period_policy import is_title_only
+
+            if is_title_only(source_type=doc.source_type):
+                # An announcement is never re-read here (see
+                # ``_attempt_full_reextraction``), so its table-derived facts cannot be
+                # rebuilt on this path — and they were derived under a reading since
+                # corrected (a bare "$" as USD). They are retired, kept for audit; the
+                # disclosure acquisition re-reads the document from its content address
+                # and restores a current set. No figure is better than a wrong one.
+                await _deactivate_active_facts(session, doc.id)
+                await session.flush()
             return _degraded_artifact_after_failed_reextraction(doc)
         extraction = artifact.extraction
         if extraction is None:  # pragma: no cover - guarded by _attempt_full_reextraction
@@ -1115,7 +1152,6 @@ async def _revalidate_document(
         is_title_only,
     )
     from app.services.sources.extracted_fact_validator import (
-        IssuerContext,
         validate_extracted_facts,
     )
     from app.services.sources.primary_document_extractor import (
@@ -1143,7 +1179,7 @@ async def _revalidate_document(
     # round-trip defect class this campaign already paid for once with scope.
     validated_facts = validate_extracted_facts(
         extraction,
-        issuer_context=issuer_context or IssuerContext(),
+        issuer_context=_context_for_document(doc, issuer_context),
         cfg=cfg,
         # Same policy on the cached path as the live one — keyed by the persisted
         # source type, so an announcement reused from the cache keeps title-only.
@@ -1154,6 +1190,7 @@ async def _revalidate_document(
             title_only=is_title_only(source_type=doc.source_type),
             published_at=doc.doc_date,
         ),
+        title_only_period=is_title_only(source_type=doc.source_type),
     )
     await _deactivate_active_facts(session, doc.id)
     _insert_active_facts(session, doc.id, validated_facts)

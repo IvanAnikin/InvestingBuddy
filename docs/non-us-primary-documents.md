@@ -171,6 +171,22 @@ authority are required, or both connectors must be switched off.**
   "revenue 1,402 USD") are replaced on the next run, not served forever. The filing-LEI
   scan is a literal search with a fixed window (linear; a tag-start regex took 15 s on a
   hostile 18 MB page).
+- **Every path re-validates an announcement the same way.** Production, EcoGraf rerun
+  (report `a392e32c`): the report-regeneration reuse path re-validated stored ASX
+  announcements under the DEFAULT issuer context, so "Cash and cash equivalents of $3.8
+  million" (Australian dollars) stayed a validated USD fact and the row was stamped
+  version 16 — current — before the disclosure acquisition could read it correctly. A
+  stored announcement (keyed by its persisted `source_type`) is now re-validated with
+  `bare_dollar_is_usd=False` on every path, and that path never re-fetches an
+  announcement's official page as if it were the content — when it therefore declines
+  to re-read one, the facts it cannot rebuild are retired (kept for audit) until the
+  disclosure acquisition re-reads the document. Pipeline version 17.
+- **A prose figure's year comes from its own clause.** Production, Pro Medicus rerun
+  (report `49268894`): the FY26 annual report's "revenue of $266.6m" was stored for
+  2027 — the parser's excerpt-wide fallback took "30 June 2027" from an LTI vesting
+  clause three sentences later. In an announcement, an undated prose figure now takes
+  a year only from its own local window, and otherwise inherits only the TITLE's
+  period — never the body's majority year.
 - Known limits: a table scope label can be a whole sentence ("segment:the group has
   identified its operating segments…" — Pro Medicus) — segment, never Group, but not a
   segment NAME; an ASX re-issue gets a new id and both copies stay current (the ASX gives
