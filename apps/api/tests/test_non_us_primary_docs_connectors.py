@@ -436,6 +436,44 @@ class TestAcquisitionChain:
                   (await session.execute(select(ResearchDocumentVersion))).scalars().all()]
         assert not any("Annual Report" in (t or "") for t in titles)
 
+    async def test_out_of_time_before_the_name_is_extraction_failed_not_identity(
+        self, session, monkeypatch
+    ):
+        """Production (EcoGraf 03070575): a loaded host read the cover page only. That is
+        a partial extraction, not another issuer's document — and it is still not stored."""
+        from app.models.research_document import ResearchDocumentVersion
+        from app.services.sources.primary_document_extractor import PrimaryDocumentExtraction
+
+        pdf = "https://announcements.asx.com.au/asxpdf/20260925/pdf/074hv8s0yw9t50.pdf"
+        web = FakeWeb({pdf: ("text/html", OTHER_ISSUER_DOC)})
+        real = web.extractor()
+
+        async def out_of_time(url, **kw):  # noqa: ANN001, ANN003, ANN202
+            artifact = await real(url, **kw)
+            if url == pdf:
+                assert isinstance(artifact.extraction, PrimaryDocumentExtraction)
+                artifact.extraction.warnings.append(
+                    "Extraction time budget exceeded; partial extraction only.")
+            return artifact
+
+        company = await _company(session, "EGR", "AU", "EcoGraf Limited")
+        out = await acq.ensure_core_disclosures(
+            session, company=company, cfg=CFG, fetcher=web.get, poster=web.post,
+            extractor=out_of_time, now=NOW)
+        annual = next(d for d in out["documents"] if d["document_ref"] == "03143773")
+        assert annual["state"] == "unavailable" and annual["reason"] == "extraction_failed"
+        titles = [v.title for v in
+                  (await session.execute(select(ResearchDocumentVersion))).scalars().all()]
+        assert not any("Annual Report" in (t or "") for t in titles)
+
+    def test_announcements_get_their_own_extraction_budget(self):
+        cfg = acq._extraction_cfg(CFG)
+        assert cfg.primary_document_extraction_timeout_seconds == (
+            CFG.v3_disclosure_extraction_timeout_seconds) > (
+            CFG.primary_document_extraction_timeout_seconds)
+        low = CFG.model_copy(update={"v3_disclosure_extraction_timeout_seconds": 10})
+        assert acq._extraction_cfg(low) is low  # never LOWERS the generic budget
+
     async def test_mutation_forecast_period_never_stamps_the_announcement(self, session):
         from app.models.research_document import ResearchDocumentVersion
 
@@ -973,3 +1011,120 @@ class TestCodeReviewFixes:
         assert classify_uk(nsm_type="Annual Financial Report",
                            headline="Publication of Annual Report 2025 and Notice of AGM",
                            document_format="Plain text")[1] == "other"
+
+
+class TestReportLineage:
+    """Live acceptance C (EcoGraf, report 8b246736): the research read four ASX
+    documents, and the report's primary-documents view showed none — the acquisition
+    recorded its attempts with no run. The consumer is the view; it is read here."""
+
+    async def _run(self, session):  # noqa: ANN001, ANN202
+        from app.models.agent_run import AgentRun
+
+        run = AgentRun(id=uuid.uuid4(), workflow_name="company_research",
+                       workflow_version="test", status="running")
+        session.add(run)
+        await session.flush()
+        return run.id
+
+    async def _view(self, session, company, run_id):  # noqa: ANN001, ANN202
+        from app.services.primary_document_view_service import get_report_primary_documents
+
+        return await get_report_primary_documents(
+            session, report_company_id=company.id, report_agent_run_id=run_id,
+            report_id=uuid.uuid4())
+
+    async def test_acquired_then_reused_documents_appear_in_each_runs_report(
+        self, session
+    ):
+        from datetime import timedelta
+
+        from app.models.extracted_document import ExtractedDocument
+
+        web = FakeWeb()
+        company = await _company(session, "EGR", "AU", "EcoGraf Limited")
+        first = await self._run(session)
+        out = await acq.ensure_core_disclosures(
+            session, company=company, cfg=CFG, fetcher=web.get, poster=web.post,
+            extractor=web.extractor(), now=NOW, agent_run_id=first)
+        ready = {d["document_ref"] for d in out["documents"] if d["state"] == "ready"}
+        assert ready
+        view = await self._view(session, company, first)
+        assert {d.canonical_url.rsplit("=", 1)[-1] for d in view.documents} >= ready
+        assert view.summary.extracted_count >= len(ready)
+        assert not any(d.reused for d in view.documents)
+        # Older documents, as they would be on a later day.
+        for doc in (await session.execute(select(ExtractedDocument))).scalars().all():
+            doc.created_at = doc.created_at - timedelta(hours=1)
+        await session.flush()
+
+        fetched = len(web.content_fetches())
+        second = await self._run(session)
+        again = await acq.ensure_core_disclosures(
+            session, company=company, cfg=CFG, fetcher=web.get, poster=web.post,
+            extractor=web.extractor(), now=NOW, agent_run_id=second)
+        assert len(web.content_fetches()) == fetched  # no network for READY documents
+        assert {d["document_ref"] for d in again["documents"] if d.get("reused")} == ready
+        rerun = await self._view(session, company, second)
+        shown = {d.canonical_url.rsplit("=", 1)[-1] for d in rerun.documents}
+        assert shown == ready and all(d.reused for d in rerun.documents)
+        assert all(d.pinned is None for d in rerun.documents)  # nothing was fetched
+
+    async def test_a_reuse_row_never_hides_a_pending_correction(self, session):
+        """A stale holding answered from the corpus records NO reuse row: its time
+        would read as 'acquired after the correction'."""
+        from app.models.document_ingestion_attempt import DocumentIngestionAttempt
+
+        web = FakeWeb()
+        company = await _company(session, "PRE", "LSE", "Pensana Plc")
+        await _core(session, company, web)
+        listing = await acq.list_disclosures(session, company, cfg=CFG, fetcher=web.get,
+                                             poster=web.post, now=NOW)
+        held = next(d for d in listing.documents if d.research_rank < 5)
+        stale = dataclasses.replace(held, updated_at=datetime(2099, 1, 1, tzinfo=timezone.utc))
+        run = await self._run(session)
+        await acq.ensure_disclosure_evidence(
+            session, issuer=listing.issuer, document=stale, cfg=CFG, fetcher=web.get,
+            extractor=web.extractor(), ready_only=True, agent_run_id=run)
+        rows = (await session.execute(select(DocumentIngestionAttempt).where(
+            DocumentIngestionAttempt.agent_run_id == run))).scalars().all()
+        assert rows == []
+        assert await acq._changed_since_acquired(session, company_id=company.id,
+                                                 document=stale)
+
+    async def test_the_front_door_links_the_reports_own_run(self, session, monkeypatch):
+        """Caller level (review): the run the documents carry is the REPORT's
+        ``created_by_agent_run_id`` — the id its primary-documents view reads — not the
+        durable job id the pipeline also receives."""
+        from app.models.report import Report
+        from app.services import company_research_service as svc
+        from app.services.sources.disclosures import acquisition
+
+        seen: dict = {}
+
+        async def spy(session, *, company, cfg, agent_run_id=None, **kw):  # noqa: ANN001, ANN003, ANN202
+            seen["agent_run_id"] = agent_run_id
+            return {"source_id": None, "documents": [], "skipped": "spy"}
+
+        monkeypatch.setattr(acquisition, "ensure_core_disclosures", spy)
+        monkeypatch.setattr(svc, "settings", CFG.model_copy(update={
+            "v3_pipeline_enabled": True, "azure_openai_api_key": "",
+            "azure_openai_endpoint": "", "deepseek_api_key": ""}))
+        company = await _company(session, "PRE", "LSE", "Pensana Plc")
+        run = await self._run(session)
+        report = Report(id=uuid.uuid4(), title="t", slug=f"s-{uuid.uuid4().hex[:8]}",
+                        report_type="company_deep_dive", status="draft",
+                        created_by_agent_run_id=run, company_id=company.id)
+        session.add(report)
+        await session.flush()
+        await svc._run_v3_pipeline(session, company=company, report_id=report.id,
+                                   research_job_id=uuid.uuid4())
+        assert seen["agent_run_id"] == run == report.created_by_agent_run_id
+
+    async def test_the_pipeline_links_only_a_real_agent_run(self, session):
+        from app.services.pipeline.v3_pipeline import _existing_agent_run_id
+
+        run = await self._run(session)
+        assert await _existing_agent_run_id(session, run) == run
+        assert await _existing_agent_run_id(session, uuid.uuid4()) is None
+        assert await _existing_agent_run_id(session, None) is None

@@ -125,6 +125,20 @@ authority are required, or both connectors must be switched off.**
 - **Linear, bounded listing parse** off the event loop (a regex over unbalanced tags was
   quadratic); a 300 s wall budget for the core step; savepoints around index and audit
   writes so a failure costs one document.
+- **Announcement extraction budget** (`V3_DISCLOSURE_EXTRACTION_TIMEOUT_SECONDS`, 150 s,
+  never lower than the generic 60 s). Production, EcoGraf half-year report (03070575): on
+  the 1-vCPU host with two jobs running, the 60 s budget read the cover page only (the
+  issuer's name is a logo there) and the document was refused as `identity_unverified`.
+  An out-of-time read that never reached the issuer's name is now `extraction_failed` —
+  still not stored — because running out of time is not evidence of another issuer.
+- **Report lineage.** Production, EcoGraf report `8b246736`: the research read four ASX
+  documents and the report's primary-documents view showed none — acquisition recorded
+  its attempts with no run, and the view is scoped to the report's own run. The front
+  door now passes the report's own `created_by_agent_run_id` to the pipeline (the
+  durable job id it also receives is a different id; only an id that names an
+  `agent_runs` row is used); acquired documents and their attempts carry it, and a READY
+  document served from the corpus records this run's reuse row (no fetch, `pinned`
+  unset) — except for a stale holding, whose row would hide a pending correction.
 - Known limits: an ASX re-issue gets a new id and both copies stay current (the ASX gives
   no supersession signal); a half-year period label follows the existing detector
   ("half-year ended 31 December 2025" → H1 2025); issuer headlines are neutralised,
