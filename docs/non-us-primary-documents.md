@@ -187,6 +187,13 @@ authority are required, or both connectors must be switched off.**
   clause three sentences later. In an announcement, an undated prose figure now takes
   a year only from its own local window, and otherwise inherits only the TITLE's
   period — never the body's majority year.
+- **A headcount is a headcount; a table's units are its own.** Production, Pensana
+  rerun (report `37b14401`): "Performance rights and options granted to directors,
+  officers and employees 782,293" (a US$ share-based-payment charge) was validated as
+  782,293 employees; and a whole-US$ table ("US$" headers, net loss 3,265,409)
+  borrowed "million" from page prose. The employees label now matches a headcount row
+  only (never a row about pay, benefits, awards or loans), and an announcement's table
+  takes its currency and scale from the table alone. Pipeline version 18.
 - Known limits: a table scope label can be a whole sentence ("segment:the group has
   identified its operating segments…" — Pro Medicus) — segment, never Group, but not a
   segment NAME; an ASX re-issue gets a new id and both copies stay current (the ASX gives

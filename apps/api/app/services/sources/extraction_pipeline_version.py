@@ -322,8 +322,13 @@ from __future__ import annotations
 # "FY27" targets gave "revenue of $266.6m" the period 2027), and a prose figure in an
 # announcement takes a year only from its own local window — never the excerpt-wide
 # first year ("30 June 2027" from an LTI vesting clause three sentences later).
+# Version 18: a money row that merely MENTIONS employees ("Performance rights and
+# options granted to directors, officers and employees 782,293", Pensana) is not a
+# headcount; and an announcement's table takes its currency and scale from the table
+# alone, never from page prose ("40,133" in a whole-US$ table read as US$ million).
+# Every version-17 row may carry those readings.
 LEGACY_EXTRACTION_PIPELINE_VERSION = 1
-CURRENT_EXTRACTION_PIPELINE_VERSION = 17
+CURRENT_EXTRACTION_PIPELINE_VERSION = 18
 
 # The pipeline version at/after which persisted ``excerpts_json`` text is
 # guaranteed to have been produced by column-aware page extraction UNDER
