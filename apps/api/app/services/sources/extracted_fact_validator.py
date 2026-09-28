@@ -274,11 +274,18 @@ _LABEL_PATTERNS: list[tuple[re.Pattern[str], str]] = [
         # A HEADCOUNT row, never a money row that merely mentions employees — Pensana:
         # "Performance rights and options granted to directors, officers and employees
         # 782,293" (a US$ share-based-payment charge) became 782,293 employees.
+        # A positive SHAPE — the label starts as a headcount ("Employees at year
+        # end", "Average number of employees", "Headcount", "Full-time equivalents")
+        # — and never mentions money ("Payments to suppliers and employees").
         re.compile(
             r"^(?!.*\b(?:benefits?|costs?|expenses?|salar\w*|wages?|remuneration"
             r"|compensation|pensions?|options?|rights|shares?|share-based|awards?"
-            r"|granted|paid|payable|loans?|charges?)\b)"
-            r".*?(?:employees|headcount|full[- ]time equivalents)", re.I | re.S),
+            r"|granted|paid|payable|payments?|receipts?|suppliers|amounts?|owed|due"
+            r"|provisions?|entitlements?|liabilit\w*|superannuation|contributions?"
+            r"|leave|loans?|charges?)\b)"
+            r"\s*(?:(?:total|average|group)\s+)*(?:number\s+of\s+)?"
+            r"(?:employees(?!\s*['’])|headcount|full[- ]time\s+equivalents?|ftes?)\b",
+            re.I | re.S),
         FIELD_EMPLOYEES,
     ),
 ]
