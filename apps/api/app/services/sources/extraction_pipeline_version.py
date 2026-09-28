@@ -302,8 +302,17 @@ from __future__ import annotations
 # 2,951 million" gave this year's EBIT the previous sentence's 2025 and — with
 # "first half" also in the window — stamped it H1 2025. Every version-14 row was
 # written under that reading, so it must not be replayed.
+# Version 16 (non-US primary documents, live acceptance D — Pro Medicus, ASX) fixes
+# three readings of already-extracted tables, found in a council finding that read
+# "the only Group revenue figure in evidence is FY2024: USD 1,402 million": the
+# "Deferred revenue" row of a deferred-tax table matched ``revenue``; a "$'000"
+# column header was not read as thousands (the page's "million" won); and "A$" was
+# read as US dollars (a bare "$" in an ASX / LSE announcement is now no currency at
+# all — ``IssuerContext.bare_dollar_is_usd``). Every version-15 row was written under
+# those readings, so it must not be replayed. Raw-text extraction is unchanged, so
+# ``EXTRACTION_TEXT_LAYER_MIN_VERSION`` does not advance.
 LEGACY_EXTRACTION_PIPELINE_VERSION = 1
-CURRENT_EXTRACTION_PIPELINE_VERSION = 15
+CURRENT_EXTRACTION_PIPELINE_VERSION = 16
 
 # The pipeline version at/after which persisted ``excerpts_json`` text is
 # guaranteed to have been produced by column-aware page extraction UNDER

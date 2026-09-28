@@ -167,4 +167,26 @@ def topic_boost(headline: str, topics: Iterable[str]) -> int:
     return 0
 
 
-__all__ = ["classify_asx", "classify_uk", "clean_topics", "topic_boost"]
+#: A FULL-YEAR results announcement: the narrative of the year the annual report covers
+#: (an issuer's annual report can carry its narrative only as page images — Rainbow's
+#: 2025 iXBRL report). Not "results of AGM", not a results date.
+_FULL_YEAR_RESULTS_RE = re.compile(
+    r"\b(?:final|full[- ]year|annual|preliminary)\s+results\b(?!\s+(?:of|date))"
+    r"|\bresults\s+for\s+the\s+(?:financial\s+)?year\s+ended\b"
+    r"|\bfy\s?'?\d{2}(?:\d{2})?\s+results\b"
+    r"|\bpreliminary\s+final\s+report\b|\bappendix\s+4e\b", re.I)
+#: About the results, not the results: a trading update "ahead of" them, the deck, the
+#: call (review: "Trading Update ahead of Full Year Results" took the slot).
+_NOT_THE_RESULTS_RE = re.compile(
+    r"\b(?:trading|ahead of|presentation|webcast|webinar|call|briefing|conference|"
+    r"notice|date|retail offer|agm|general meeting)\b", re.I)
+
+
+def is_full_year_results(headline: str | None) -> bool:
+    """True for a full-year results announcement headline."""
+    text = headline or ""
+    return bool(_FULL_YEAR_RESULTS_RE.search(text)) and not _NOT_THE_RESULTS_RE.search(text)
+
+
+__all__ = ["classify_asx", "classify_uk", "clean_topics", "is_full_year_results",
+           "topic_boost"]

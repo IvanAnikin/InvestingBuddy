@@ -139,7 +139,41 @@ authority are required, or both connectors must be switched off.**
   `agent_runs` row is used); acquired documents and their attempts carry it, and a READY
   document served from the corpus records this run's reuse row (no fetch, `pinned`
   unset) — except for a stale holding, whose row would hide a pending correction.
-- Known limits: an ASX re-issue gets a new id and both copies stay current (the ASX gives
+- **A filing's own LEI; the year's narrative.** Production, Rainbow report `00cb55fb`:
+  the 2025 annual report on the NSM is an inline-XBRL filing (16.5 MB) whose narrative
+  pages are embedded images — only the statements are text — and it was refused as
+  `identity_unverified`. An inline-XBRL filing whose contexts name the reporting entity
+  ONLY by the verified issuer's LEI (ISO 17442 scheme) is now the issuer's own (a mixed
+  or foreign LEI is still refused); a read with no readable text is
+  `no_indexable_content`, never "another issuer". The full-year results announcement
+  ("Preliminary / Final Results", ASX "Appendix 4E" / "Preliminary Final Report") now
+  has its own slot in the annual window — the year's narrative in text. (The LEI rule
+  alone does not make that annual report searchable: its only text is the statements,
+  which index to nothing, so it is honestly `no_indexable_content`; the full-year
+  results announcement is what delivers the year. A headline ABOUT the results — a
+  trading update ahead of them, the presentation, the webcast — is not the results.)
+- **No invented currency, scale or line item.** Production, Pro Medicus report
+  `f9ddd4c3`: a council finding read "the only Group revenue figure in evidence is
+  FY2024: USD 1,402 million". The figure was the "Deferred revenue" row of a
+  deferred-tax table, in A$'000, in a half-year's comparative column. Now: a
+  prefixed dollar SYMBOL before an amount is its own currency (`A$25M` AUD, `A$'000`,
+  `C$`, `NZ$`, `HK$`, `S$`, `US$` — "A$25M" was USD), consulted only where a bare "$"
+  would have been, so currency words keep their priority, and only when EVERY "$" in
+  the text carries that one prefix (one "HK$10m" aside never relabels bare "$"
+  figures; a mix is no currency); a bare "$" in an ASX / LSE announcement is not known to be US
+  dollars (`IssuerContext.bare_dollar_is_usd=False`: USD only with an explicit `US$` / `USD` / "US dollars" and no bare "$"; "presented in Australian dollars" is not USD
+  — a "US$ loan note" aside does not make a "$'000" table US dollars), so the currency
+  stays unknown and the money fact is not validated; a "$'000" column header states thousands; "Deferred
+  / unearned revenue" and "revenue received in advance" are not revenue. Every existing
+  (SEC / US) path keeps a bare "$" as USD. `CURRENT_EXTRACTION_PIPELINE_VERSION` is
+  16: a READY announcement whose facts were derived by an older pipeline is read once
+  more and its active facts superseded — production's version-15 rows (the Pro Medicus
+  "revenue 1,402 USD") are replaced on the next run, not served forever. The filing-LEI
+  scan is a literal search with a fixed window (linear; a tag-start regex took 15 s on a
+  hostile 18 MB page).
+- Known limits: a table scope label can be a whole sentence ("segment:the group has
+  identified its operating segments…" — Pro Medicus) — segment, never Group, but not a
+  segment NAME; an ASX re-issue gets a new id and both copies stay current (the ASX gives
   no supersession signal); a half-year period label follows the existing detector
   ("half-year ended 31 December 2025" → H1 2025); issuer headlines are neutralised,
   which can change their wording ("price target" → redacted); a quarterly titled only

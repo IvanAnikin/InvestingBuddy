@@ -219,6 +219,39 @@ def _scale_word(w: str | None) -> str | None:
     return None
 
 
+#: A dollar SYMBOL with its country prefix, directly before an amount or a scale marker
+#: ("A$25M", "A$'000", "US$1.2bn", "NZ$ 4m"). Consulted only where a bare "$" would
+#: have been read as US dollars, so every currency WORD keeps its priority ("in
+#: millions of euros … a US$500 million bond" is still EUR) and an incidental
+#: "Canadian dollar" never becomes a table's currency. Letter-bounded before, amount
+#: after: "US$" is never Singapore's "S$", and "company's$ amounts" is nothing.
+_PREFIXED_DOLLAR_RE = re.compile(
+    r"(?<![a-z])(us|a|au|c|ca|nz|hk|s)\$\s?(?=\d|[’']?000\b|(?:m|bn|mn|million|billion|thousand)\b)"
+)
+_PREFIXED_DOLLAR_CODES = {"us": "USD", "a": "AUD", "au": "AUD", "c": "CAD", "ca": "CAD",
+                          "nz": "NZD", "hk": "HKD", "s": "SGD"}
+#: The letters (if any) directly before each "$".
+_DOLLAR_PREFIX_RE = re.compile(r"([a-z]{0,2})\$")
+
+
+def dollar_codes(low: str) -> set[str | None]:
+    """The currency each "$" in ``low`` (lower-cased text) is prefixed with — ``None``
+    for a bare "$". A prefix that is not a dollar prefix counts as bare."""
+    codes: set[str | None] = set()
+    for m in _DOLLAR_PREFIX_RE.finditer(low):
+        prefix = m.group(1)
+        # "us$" → "us"; "a$" → "a"; "company's$" → "s" only when "s" stands alone.
+        code = None
+        for size in (2, 1):
+            cand = prefix[-size:] if len(prefix) >= size else ""
+            start = m.start(1) + len(prefix) - size
+            if cand in _PREFIXED_DOLLAR_CODES and (start == 0 or not low[start - 1].isalpha()):
+                code = _PREFIXED_DOLLAR_CODES[cand]
+                break
+        codes.add(code)
+    return codes
+
+
 def _find_currency(text: str) -> str | None:
     low = text.lower()
     # Prefer explicit "in millions of euros" / "reporting currency" phrasing.
@@ -229,6 +262,15 @@ def _find_currency(text: str) -> str | None:
     # still matched as plain substrings.
     for word, code in _CURRENCY_WORDS.items():
         if word in _CURRENCY_SYMBOLS:
+            if word == "$" and word in text:
+                # A prefixed symbol decides only when EVERY "$" in the text carries
+                # that one prefix: one "HK$10m" aside never relabels a table's "$"
+                # figures, and a mix of prefixes is no currency at all.
+                codes = dollar_codes(low)
+                if len(codes) == 1 and None not in codes and _PREFIXED_DOLLAR_RE.search(low):
+                    return next(iter(codes))
+                if None not in codes:
+                    return None
             if word in text:
                 return code
             continue

@@ -278,6 +278,10 @@ class PrimaryDocumentExtraction(BaseModel):
     # on a SUCCESSFUL extraction: an owner-password-only document restricts
     # printing/copying yet opens with no user password.
     encrypted: bool = False
+    # Inline XBRL only: the LEIs the filing's OWN contexts name as the reporting
+    # entity (``<xbrli:identifier scheme="…/iso/17442">``). Content, not metadata —
+    # the filing's machine-readable statement of whose accounts these are.
+    entity_lei_identifiers: list[str] = Field(default_factory=list)
 
     @property
     def has_content(self) -> bool:
@@ -2048,6 +2052,31 @@ class _DocumentHtmlParser(HTMLParser):
             self._cur_text.append(data)
 
 
+#: Inline-XBRL entity identifiers in the LEI scheme, found by a LITERAL search for the
+#: scheme attribute and a match anchored in a small fixed window after it — linear in
+#: the page, whatever the page contains (a regex scanning from every tag start was
+#: measured at 15 s of CPU on a hostile 18 MB page).
+_XBRL_LEI_SCHEME = 'scheme="http://standards.iso.org/iso/17442"'
+_XBRL_LEI_VALUE_RE = re.compile(r"[^<>]{0,120}>\s*([A-Z0-9]{18}[0-9]{2})\s*</xbrli:identifier>")
+_XBRL_LEI_MAX_CONTEXTS = 5_000
+
+
+def _xbrl_lei_identifiers(html: str) -> set[str]:
+    found: set[str] = set()
+    pos = html.find(_XBRL_LEI_SCHEME)
+    seen = 0
+    while pos != -1 and seen < _XBRL_LEI_MAX_CONTEXTS:
+        seen += 1
+        tag_start = html.rfind("<", max(0, pos - 200), pos)
+        if tag_start != -1 and html.startswith("<xbrli:identifier", tag_start):
+            end = pos + len(_XBRL_LEI_SCHEME)
+            m = _XBRL_LEI_VALUE_RE.match(html, end, end + 200)
+            if m:
+                found.add(m.group(1))
+        pos = html.find(_XBRL_LEI_SCHEME, pos + 1)
+    return found
+
+
 def extract_html(
     raw: bytes,
     *,
@@ -2089,6 +2118,8 @@ def extract_html(
         result.error_type = type(exc).__name__
         result.source_gaps.append("HTML could not be decoded; not extracted.")
         return result
+
+    result.entity_lei_identifiers = sorted(_xbrl_lei_identifiers(html))[:8]
 
     parser = _DocumentHtmlParser(include_container_blocks=capture_blocks)
     try:
