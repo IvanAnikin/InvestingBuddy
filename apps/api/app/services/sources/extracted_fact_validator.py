@@ -554,17 +554,25 @@ def _column_periods(
     return {}
 
 
+_EXPLICIT_USD_RE = re.compile(
+    r"(?<![a-z])(?:us\$|usd(?![a-z])|u\.s\. dollars?|us dollars?|united states dollars?)",
+    re.I)
+
+
 def _resolve_dollar(currency: str | None, text: str, issuer: IssuerContext) -> str | None:
-    """``currency``, except USD where the issuer says a bare "$" is not known to be US
-    dollars (``IssuerContext.bare_dollar_is_usd``) and the text has a bare "$" at all:
-    a "US$ loan note" aside does not make a "$'000" table US dollars."""
+    """``currency``, except USD where the issuer says a bare dollar is not known to be
+    US dollars (``IssuerContext.bare_dollar_is_usd``). There, USD needs an EXPLICIT US
+    dollar (``US$``, ``USD``, "US dollars") and no bare "$" at all: "presented in
+    Australian dollars" is not USD (the word "dollars" alone maps to USD), and a "US$
+    loan note" aside does not make a "$'000" table US dollars."""
     from app.services.sources.primary_fact_parser import dollar_codes
 
-    if currency == "USD" and not issuer.bare_dollar_is_usd and None in dollar_codes(
-        (text or "").lower()
-    ):
-        return None
-    return currency
+    if currency != "USD" or issuer.bare_dollar_is_usd:
+        return currency
+    low = (text or "").lower()
+    if _EXPLICIT_USD_RE.search(low) and None not in dollar_codes(low):
+        return currency
+    return None
 
 
 def _table_currency_scale(

@@ -1249,6 +1249,15 @@ class TestProMedicusAcceptanceFixes:
         # Security review: a "US$" aside does not make a "$'000" table US dollars.
         assert _resolve_dollar(
             "USD", "Revenue $'000 12,345; US$ denominated loan note", asx) is None
+        # Re-review: the WORD "dollars" maps to USD; an ASX "Australian dollars" is not.
+        from app.services.sources.primary_fact_parser import _find_currency
+
+        for text in ("Revenue A$161.5 million; amounts are presented in Australian dollars",
+                     "The financial report is presented in Australian dollars. Revenue 161.5 "
+                     "million", "Revenue of 161.5 million Canadian dollars"):
+            assert _resolve_dollar(_find_currency(text), text, asx) != "USD", text
+        assert _resolve_dollar("USD", "revenue in USD millions", asx) == "USD"
+        assert _resolve_dollar("USD", "presented in US dollars", asx) == "USD"
 
     @pytest.mark.parametrize(("text", "scale"), [
         ("$’000", "thousand"), ("$'000", "thousand"), ("£000", "thousand"),

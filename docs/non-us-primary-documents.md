@@ -161,7 +161,7 @@ authority are required, or both connectors must be switched off.**
   would have been, so currency words keep their priority, and only when EVERY "$" in
   the text carries that one prefix (one "HK$10m" aside never relabels bare "$"
   figures; a mix is no currency); a bare "$" in an ASX / LSE announcement is not known to be US
-  dollars (`IssuerContext.bare_dollar_is_usd=False`: USD only when no bare "$" appears
+  dollars (`IssuerContext.bare_dollar_is_usd=False`: USD only with an explicit `US$` / `USD` / "US dollars" and no bare "$"; "presented in Australian dollars" is not USD
   — a "US$ loan note" aside does not make a "$'000" table US dollars), so the currency
   stays unknown and the money fact is not validated; a "$'000" column header states thousands; "Deferred
   / unearned revenue" and "revenue received in advance" are not revenue. Every existing
