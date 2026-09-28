@@ -424,7 +424,7 @@ def build_registry(cfg: Settings | None = None) -> SourceRegistry:
             capabilities=["fetch_filings", "fetch_events"],
             reliability_note=(
                 "Report time: a T2 regulator-transport SOURCE REFERENCE to a verified "
-                "UK issuer's FCA NSM disclosure venue (metadata only; no network). "
+                "UK issuer's FCA NSM disclosure venue (metadata only; content is not fetched at report time). "
                 "V3 research (V3_UK_NSM_DISCLOSURES_ENABLED): the issuer — matched by "
                 "LEI via the LSE instrument record and GLEIF, never by name — has its "
                 "official documents (annual reports, interim results, RNS text) "
