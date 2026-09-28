@@ -271,7 +271,14 @@ _LABEL_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"(?<!deferred\s)(?<!unearned\s)(?<!accrued\s)revenue(?!\s+received in advance)"
                 r"|net sales|total sales|turnover", re.I), FIELD_REVENUE),
     (
-        re.compile(r"employees|headcount|full[- ]time equivalents", re.I),
+        # A HEADCOUNT row, never a money row that merely mentions employees — Pensana:
+        # "Performance rights and options granted to directors, officers and employees
+        # 782,293" (a US$ share-based-payment charge) became 782,293 employees.
+        re.compile(
+            r"^(?!.*\b(?:benefits?|costs?|expenses?|salar\w*|wages?|remuneration"
+            r"|compensation|pensions?|options?|rights|shares?|share-based|awards?"
+            r"|granted|paid|payable|loans?|charges?)\b)"
+            r".*?(?:employees|headcount|full[- ]time equivalents)", re.I | re.S),
         FIELD_EMPLOYEES,
     ),
 ]
@@ -726,10 +733,19 @@ def _candidates_from_table(
     excerpts_by_page: dict[int | None, list[str]],
     issuer: IssuerContext,
     document_period: DocumentPeriod = UNKNOWN_DOCUMENT_PERIOD,
+    table_units_only: bool = False,
 ) -> list[_Candidate]:
-    """Turn one bounded table into per-cell candidates + run the subtotal check."""
+    """Turn one bounded table into per-cell candidates + run the subtotal check.
+
+    ``table_units_only`` (official announcements): the table's currency and scale
+    come from the TABLE alone, never from prose elsewhere on its page — Pensana's
+    interim statements are in whole US dollars ("US$" headers, net loss 3,265,409),
+    and a "million" in the page's prose made "40,133" read as US$ 40,133 million.
+    """
     col_period = _column_periods(table, document_period)
-    currency, scale = _table_currency_scale(table, excerpts_by_page, issuer)
+    currency, scale = _table_currency_scale(
+        table, {} if table_units_only else excerpts_by_page, issuer
+    )
     candidates: list[_Candidate] = []
 
     for row in table.rows:
@@ -1510,7 +1526,8 @@ def validate_extracted_facts(
     candidates: list[_Candidate] = []
     for table in extraction.tables:
         candidates.extend(
-            _candidates_from_table(table, excerpts_by_page, issuer, document_period)
+            _candidates_from_table(table, excerpts_by_page, issuer, document_period,
+                                   table_units_only=title_only_period)
         )
     # Phase 32A corrective (Problem A): prose excerpts are now ALSO a candidate
     # source, not just tables — see ``_candidates_from_excerpts``.

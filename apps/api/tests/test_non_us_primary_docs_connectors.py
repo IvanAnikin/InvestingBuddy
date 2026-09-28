@@ -1531,3 +1531,59 @@ def test_an_announcements_undated_figure_never_takes_a_year_from_elsewhere_in_th
     assert facts(True) and all(f.period is None for f in facts(True))
     # Control: the existing (non-announcement) reading takes the body's year.
     assert any(f.period == "2027" for f in facts(False))
+
+
+@pytest.mark.parametrize(("label", "field"), [
+    ("Performance rights and options granted to directors, officers and employees", None),
+    ("Directors' fees and employee benefits", None),
+    ("Employees benefits expense", None),
+    ("Loans to employees", None),
+    ("Total employees (end of period), number", "employees"),
+    ("Number of employees", "employees"),
+    ("Average headcount", "employees"),
+    ("Full-time equivalents", "employees"),
+])
+def test_a_money_row_about_employees_is_not_a_headcount(label, field):
+    """Live acceptance E (Pensana rerun, report 37b14401): a US$ share-based payment
+    row mentioning employees was validated as 782,293 employees."""
+    from app.services.sources.extracted_fact_validator import _match_label
+
+    assert _match_label(label) == field
+
+
+def test_an_announcement_table_takes_its_scale_from_the_table_alone():
+    """Live acceptance E (Pensana rerun): a whole-US$ table ("US$" header, no scale)
+    borrowed "million" from page prose, so cash of 40,133 read as US$ 40,133 million."""
+    from app.services.sources.document_period import UNKNOWN_DOCUMENT_PERIOD
+    from app.services.sources.extracted_fact_validator import (
+        IssuerContext,
+        validate_extracted_facts,
+    )
+    from app.services.sources.primary_document_extractor import (
+        ExtractedTable,
+        PrimaryDocumentExcerpt,
+        PrimaryDocumentExtraction,
+    )
+
+    rows = [["", "31 December 2025 US$", "30 June 2025 US$"],
+            ["Cash and cash equivalents", "4,012,345", "40,133"]]
+    extraction = PrimaryDocumentExtraction(
+        content_hash="x" * 64, mime_type="text/html", extraction_method="html",
+        status="extracted",
+        tables=[ExtractedTable(table_location="t0", table_index=0, page_number=None,
+                               rows=rows, row_count=2, col_count=3,
+                               extraction_method="html")],
+        excerpts=[PrimaryDocumentExcerpt(
+            excerpt_id="X1", page_number=None, extraction_method="html", confidence=0.9,
+            text="The Group secured US$268 million of project finance for Longonjo.")])
+
+    def cash(title_only):  # noqa: ANN001, ANN202
+        return [f for f in validate_extracted_facts(
+            extraction, issuer_context=IssuerContext(company_name="PENSANA PLC"),
+            cfg=CFG, document_period=UNKNOWN_DOCUMENT_PERIOD,
+            title_only_period=title_only) if f.label == "cash_and_equivalents"]
+
+    assert cash(True) and all(f.scale is None and f.validation_status != "validated"
+                              for f in cash(True))
+    # Control: the existing path borrows the page's "million".
+    assert any(f.scale == "million" for f in cash(False))
