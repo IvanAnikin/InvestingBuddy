@@ -1,6 +1,6 @@
 # Non-US primary documents — UK (LSE) and Australia (ASX)
 
-**Status:** `IN PROGRESS`. Acceptance evidence is recorded in
+**Status:** `IN PROGRESS` — foundation (PR #250) and connectors built; production acceptance pending. Acceptance evidence is recorded in
 [non-us-primary-documents-acceptance.md](non-us-primary-documents-acceptance.md).
 
 ## 1. Why
@@ -20,8 +20,8 @@ verified issuer → official announcement → the actual document → persisted 
 
 | | UK (LSE) | ASX |
 |---|---|---|
-| Discovery | FCA National Storage Mechanism search (`POST api.data.fca.org.uk/search?index=nsm-search`) — the regulator's store of regulated information | ASX research API (`GET asx.api.markitdigital.com/asx-research/1.0/companies/{code}/announcements`) — the service asx.com.au itself uses |
-| Content | `https://data.fca.org.uk/artefacts/<download_link>` — the full RNS text (HTML), annual-report PDFs, iXBRL XHTML | `https://asx.api.markitdigital.com/asx-research/1.0/file/{documentKey}` — the attached PDF itself |
+| Discovery | FCA National Storage Mechanism search (`POST api.data.fca.org.uk/search?index=nsm-search`) — the regulator's store of regulated information | The ASX's own yearly announcements page for the code (`www.asx.com.au/asx/v2/statistics/announcements.do?by=asxCode&asxCode=<CODE>&timeframe=Y&year=<Y>`): a full year per request, each row's own `idsId`, the exchange's price-sensitive marker. (The research API returns only the latest five.) |
+| Content | `https://data.fca.org.uk/artefacts/<download_link>` — the full RNS text (HTML), annual-report PDFs, iXBRL XHTML | The announcement's display page (`displayAnnouncement.do?display=pdf&idsId=<id>`, what a citation opens) names the attached PDF, accepted only as exactly `https://announcements.asx.com.au/asxpdf/<8 digits>/pdf/<id>.pdf`; that PDF is fetched |
 | Identity | LSE instrument record → ISIN → **GLEIF** (the LEI authority) → LEI; the NSM query is by LEI and **every** record must carry that LEI | ASX official company directory (V3.19) → ASX code; the API's `displayName` must agree with the directory name |
 | Typing | NSM `type` / `category_group` (e.g. "Annual Financial Report", "Half-year Financial Report", "Director/PDMR Shareholding") | `announcementType` + `isPriceSensitive` |
 
@@ -73,3 +73,30 @@ authority are required, or both connectors must be switched off.**
 2. **Connectors and research integration** — UK NSM and ASX discovery, identity,
    classification, bounded selection, acquisition bridge, pre-research core disclosures,
    `get_recent_filings` for LSE/ASX, flags, registry and health.
+
+## 5. As built (slice 2)
+
+- `app/services/sources/disclosures/`: `model` (shapes, closed reasons, ranks),
+  `relevance` (document kind + rank on the shared `disclosure_events` vocabulary; an NSM
+  "Annual Financial Report" is the report only as a PDF / tagged filing — the plain-text
+  "Publication of Annual Report" RNS is a notice), `uk_nsm` (LEI identity, NSM listing,
+  amendment suffix `NI-…-0` → the document's base id, so a re-filing is a new VERSION),
+  `asx` (yearly listing, display-page PDF), `acquisition` (the bridge, bounded
+  selection, `ensure_core_disclosures`).
+- Research integration: `v3_pipeline` runs `ensure_core_disclosures` right after the SEC
+  `core_filings` step (recorded as `core_disclosures`, with degraded notes naming the
+  document id and reason); `get_recent_filings` serves LSE / ASX issuers from their own
+  source for the research SUBJECT only, lists administrative notices without fetching
+  them, and makes the most relevant unread documents searchable within
+  `V3_FILING_BODY_BRIDGE_MAX_ATTEMPTS`; optional `topics` only reorder headlines.
+- Content identity: a fetched document must name the issuer (a distinctive word of the
+  exchange's name for it, or `ASX: CODE`) in its CONTENT — never its title — or it is
+  refused and not stored.
+- Headlines and titles are external wording: neutralised before storage (the report
+  safety gate matches rating words as substrings — "share buy-back").
+- Flags: `V3_UK_NSM_DISCLOSURES_ENABLED`, `V3_ASX_ANNOUNCEMENTS_ENABLED` (both off by
+  default), `V3_DISCLOSURE_CORE_MAX_DOCUMENTS` (5), `V3_DISCLOSURE_LOOKBACK_DAYS` (540).
+  Acquisition also requires the existing corpus and primary-document persistence flags.
+- Known limit: indexing (and so READY) needs the PostgreSQL search backend, as in
+  production; extraction of a large PDF can hit the extractor's own time budget on a
+  loaded host and yield a partial derivation.

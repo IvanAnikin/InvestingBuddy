@@ -91,7 +91,9 @@ class TestGating:
         non-US local ticker up in it does not fail — it returns an unrelated US issuer."""
         result = await GET_RECENT_FILINGS_SPEC.handler(
             _Context(cfg=Settings(v3_filings_tool_enabled=True)),
-            validate_get_recent_filings({"ticker": "BA", "exchange": "LSE"}),
+            # Euronext Paris: a non-SEC venue with no official-disclosure connector.
+            # (LSE and ASX now go to their own regulator/exchange, never to SEC.)
+            validate_get_recent_filings({"ticker": "BA", "exchange": "PA"}),
         )
         assert result["items"] == []
         assert "unrelated US issuer" in result["summary"]

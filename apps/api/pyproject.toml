@@ -106,4 +106,5 @@ asyncio_mode = "auto"
 pythonpath = ["."]
 markers = [
     "integration: live network tests — run with ENABLE_INTEGRATION_TESTS=true; never runs in CI",
+    "real_postgres: runs against V3_TEST_POSTGRES_URL with the real search backend",
 ]
