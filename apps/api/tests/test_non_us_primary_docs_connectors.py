@@ -1386,3 +1386,75 @@ def test_the_filing_lei_scan_is_linear_on_a_hostile_page():
     _xbrl_lei_identifiers(hostile)
     _xbrl_lei_identifiers("<xbrli:identifier " * 1_000_000)
     assert time.perf_counter() - started < 2.0
+
+
+class TestReuseRevalidationOfAnnouncements:
+    """Live acceptance E (EcoGraf rerun, report a392e32c): the report-regeneration
+    reuse path re-validated a stored ASX announcement under the DEFAULT context, so
+    "Cash and cash equivalents of $3.8 million" (Australian dollars) stayed a validated
+    USD fact and the row was stamped current before the corrected reading could run."""
+
+    async def _doc(self, session, source_type):  # noqa: ANN001, ANN202
+        from app.models.extracted_document import ExtractedDocument
+
+        doc = ExtractedDocument(
+            id=uuid.uuid4(), content_hash=uuid.uuid4().hex * 2,
+            canonical_url="https://www.asx.com.au/asx/v2/statistics/displayAnnouncement.do"
+                          "?display=pdf&idsId=03120015",
+            provider="asx_announcements", source_type=source_type,
+            source_tier="T1_PRIMARY_FILING", mime_type="application/pdf",
+            extraction_method="native_pdf", status="extracted",
+            title="June 2026 Quarterly Activities Report", pipeline_version=16,
+            excerpts_json=[{"excerpt_id": "X2", "page_number": 2,
+                            "text": "Cash and cash equivalents of $3.8 million at 30 June "
+                                    "2026", "extraction_method": "native_pdf",
+                            "confidence": 0.9}])
+        session.add(doc)
+        await session.flush()
+        return doc
+
+    async def _revalidate(self, session, doc, extractor=None):  # noqa: ANN001, ANN202
+        from app.services.extracted_document_service import _revalidate_document
+        from app.services.sources.extracted_fact_validator import IssuerContext
+
+        return await _revalidate_document(
+            session, doc, cfg=CFG, existing_active_facts=[],
+            issuer_context=IssuerContext(company_name="ECOGRAF LIMITED", ticker="EGR"),
+            primary_document_extractor=extractor)
+
+    async def test_an_announcement_is_revalidated_without_the_bare_dollar_as_usd(
+        self, session
+    ):
+        from app.models.extracted_document import ExtractedFact
+
+        announcement = await self._doc(session, "asx_announcement")
+        await self._revalidate(session, announcement)
+        facts = (await session.execute(select(ExtractedFact).where(
+            ExtractedFact.extracted_document_id == announcement.id))).scalars().all()
+        assert not [f for f in facts if f.currency == "USD"], facts
+
+    async def test_the_same_text_elsewhere_keeps_the_existing_reading(self, session):
+        """Control: the default path is unchanged (a US issuer's "$" is USD)."""
+        from app.models.extracted_document import ExtractedFact
+
+        ir = await self._doc(session, "company_ir")
+        await self._revalidate(session, ir)
+        facts = (await session.execute(select(ExtractedFact).where(
+            ExtractedFact.extracted_document_id == ir.id))).scalars().all()
+        assert [f for f in facts if f.currency == "USD"]
+
+    async def test_an_announcements_official_page_is_never_refetched_as_content(
+        self, session
+    ):
+        from app.services.extracted_document_service import _attempt_full_reextraction
+
+        called = []
+
+        async def extractor(url, **kw):  # noqa: ANN001, ANN003, ANN202
+            called.append(url)
+
+        announcement = await self._doc(session, "asx_announcement")
+        assert await _attempt_full_reextraction(
+            announcement, cfg=CFG, issuer_context=None,
+            primary_document_extractor=extractor) is None
+        assert called == []

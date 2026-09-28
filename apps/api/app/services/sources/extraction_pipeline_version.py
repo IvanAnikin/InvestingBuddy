@@ -311,8 +311,14 @@ from __future__ import annotations
 # all — ``IssuerContext.bare_dollar_is_usd``). Every version-15 row was written under
 # those readings, so it must not be replayed. Raw-text extraction is unchanged, so
 # ``EXTRACTION_TEXT_LAYER_MIN_VERSION`` does not advance.
+# Version 17 (live acceptance E): the report-regeneration reuse path re-validated
+# stored ASX / NSM announcements under the DEFAULT issuer context, so a bare "$"
+# was US dollars again ("Cash and cash equivalents of $3.8 million", EcoGraf, A$) and
+# the row was stamped 16 — current — before the disclosure acquisition could read it
+# correctly. Announcements are now re-validated with ``bare_dollar_is_usd=False``
+# whichever path does it; every version-16 announcement row may carry that reading.
 LEGACY_EXTRACTION_PIPELINE_VERSION = 1
-CURRENT_EXTRACTION_PIPELINE_VERSION = 16
+CURRENT_EXTRACTION_PIPELINE_VERSION = 17
 
 # The pipeline version at/after which persisted ``excerpts_json`` text is
 # guaranteed to have been produced by column-aware page extraction UNDER
