@@ -1128,3 +1128,83 @@ class TestReportLineage:
         assert await _existing_agent_run_id(session, run) == run
         assert await _existing_agent_run_id(session, uuid.uuid4()) is None
         assert await _existing_agent_run_id(session, None) is None
+
+
+def _ixbrl(*leis: str, text: str = "") -> bytes:
+    """An inline-XBRL annual report: contexts naming ``leis``, statements as a table,
+    and (like Rainbow's) no narrative text unless ``text`` is given."""
+    contexts = "".join(
+        f'<xbrli:context id="C{i}"><xbrli:entity><xbrli:identifier '
+        f'scheme="http://standards.iso.org/iso/17442">{lei}</xbrli:identifier>'
+        f"</xbrli:entity></xbrli:context>" for i, lei in enumerate(leis))
+    return _html(
+        f'<div style="display:none"><ix:header><ix:resources>{contexts}</ix:resources>'
+        f"</ix:header></div><img src=\"data:image/png;base64,AAAA\"/>"
+        f"<table><tr><th>US$000</th><th>2025</th></tr><tr><td>Exploration costs</td>"
+        f"<td>1,200</td></tr></table>{text}")
+
+
+class TestRainbowAcceptanceFixes:
+    """Live acceptance B (Rainbow, report 00cb55fb): the 2025 annual report is an
+    iXBRL filing whose narrative is page images; it was refused as another issuer's
+    document, and the year's text narrative (its "Preliminary Results" RNS) was never
+    selected."""
+
+    ANNUAL = "https://data.fca.org.uk/artefacts/NSM/Portal/NI-000131364/NI-000131364.pdf"
+
+    async def _annual(self, session, content):  # noqa: ANN001, ANN202
+        web = FakeWeb({self.ANNUAL: ("text/html", content)})
+        company = await _company(session, "PRE", "LSE", "Pensana Plc")
+        out = await _core(session, company, web)
+        return next(d for d in out["documents"] if d["document_kind"] == "annual_report")
+
+    async def test_a_filing_whose_own_contexts_name_the_issuers_lei_is_the_issuers(
+        self, session
+    ):
+        annual = await self._annual(session, _ixbrl(
+            PENSANA_LEI, text="<p>" + "The Group continued construction of the mine. " * 8
+            + "</p>"))
+        assert annual["state"] == "ready", annual
+
+    @pytest.mark.parametrize("leis", [("5493001KJTIIGC8Y1R12",),
+                                      (PENSANA_LEI, "5493001KJTIIGC8Y1R12")])
+    async def test_another_or_a_mixed_lei_is_refused(self, session, leis):
+        annual = await self._annual(session, _ixbrl(
+            *leis, text="<p>" + "The Group continued construction of the mine. " * 8
+            + "</p>"))
+        assert annual["state"] == "unavailable"
+        assert annual["reason"] == "identity_unverified"
+
+    async def test_a_document_with_no_readable_text_is_not_called_another_issuers(
+        self, session
+    ):
+        # Statements as a table, narrative as images, no identifier: extracted, but
+        # nothing readable to name anyone.
+        annual = await self._annual(session, _ixbrl())
+        assert annual["state"] == "unavailable"
+        assert annual["reason"] == "no_indexable_content"
+
+    def test_the_full_year_results_announcement_has_its_own_slot(self):
+        from datetime import timedelta
+
+        from app.services.sources.disclosures.model import DisclosureListing, OfficialDocument
+
+        def doc(ref, days, headline, kind, rank):  # noqa: ANN001, ANN202
+            return OfficialDocument(
+                source_id="uk_fca_nsm", document_ref=ref,
+                published_at=NOW - timedelta(days=days), headline=headline,
+                venue_category="", category="results", doc_kind=kind, research_rank=rank,
+                price_sensitive=None, media="html", official_url=f"https://x/{ref}")
+
+        listing = DisclosureListing(issuer=None, documents=[
+            doc("ar", 336, "Annual report 30 June 2025", "annual_report", 0),
+            doc("prelim", 336, "Preliminary Results for Year-end 30 June 2025",
+                "results_release", 2),
+            doc("agm", 320, "Results of Annual General Meeting", "results_release", 5),
+            doc("hy", 181, "Interim Results for six months to 31 December 2025",
+                "interim_report", 1),
+            doc("mou", 4, "MoU with Neo Performance Materials", "other", 3),
+        ])
+        refs = [d.document_ref for d in acq.select_core_documents(
+            listing, max_documents=5, now=NOW)]
+        assert refs[:3] == ["ar", "prelim", "hy"] and "agm" not in refs

@@ -278,6 +278,10 @@ class PrimaryDocumentExtraction(BaseModel):
     # on a SUCCESSFUL extraction: an owner-password-only document restricts
     # printing/copying yet opens with no user password.
     encrypted: bool = False
+    # Inline XBRL only: the LEIs the filing's OWN contexts name as the reporting
+    # entity (``<xbrli:identifier scheme="…/iso/17442">``). Content, not metadata —
+    # the filing's machine-readable statement of whose accounts these are.
+    entity_lei_identifiers: list[str] = Field(default_factory=list)
 
     @property
     def has_content(self) -> bool:
@@ -2048,6 +2052,14 @@ class _DocumentHtmlParser(HTMLParser):
             self._cur_text.append(data)
 
 
+#: One inline-XBRL entity identifier in the LEI scheme. Bounded: ``[^>]{0,200}`` cannot
+#: run past a tag, and the value is exactly an LEI's 20 characters.
+_XBRL_LEI_IDENTIFIER_RE = re.compile(
+    r'<xbrli:identifier[^>]{0,200}?scheme="http://standards\.iso\.org/iso/17442"[^>]{0,200}>'
+    r"\s*([A-Z0-9]{18}[0-9]{2})\s*</xbrli:identifier>"
+)
+
+
 def extract_html(
     raw: bytes,
     *,
@@ -2089,6 +2101,10 @@ def extract_html(
         result.error_type = type(exc).__name__
         result.source_gaps.append("HTML could not be decoded; not extracted.")
         return result
+
+    result.entity_lei_identifiers = sorted(
+        {m.group(1) for m in _XBRL_LEI_IDENTIFIER_RE.finditer(html)}
+    )[:8]
 
     parser = _DocumentHtmlParser(include_container_blocks=capture_blocks)
     try:

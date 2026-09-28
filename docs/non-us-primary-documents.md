@@ -139,6 +139,15 @@ authority are required, or both connectors must be switched off.**
   `agent_runs` row is used); acquired documents and their attempts carry it, and a READY
   document served from the corpus records this run's reuse row (no fetch, `pinned`
   unset) — except for a stale holding, whose row would hide a pending correction.
+- **A filing's own LEI; the year's narrative.** Production, Rainbow report `00cb55fb`:
+  the 2025 annual report on the NSM is an inline-XBRL filing (16.5 MB) whose narrative
+  pages are embedded images — only the statements are text — and it was refused as
+  `identity_unverified`. An inline-XBRL filing whose contexts name the reporting entity
+  ONLY by the verified issuer's LEI (ISO 17442 scheme) is now the issuer's own (a mixed
+  or foreign LEI is still refused); a read with no readable text is
+  `no_indexable_content`, never "another issuer". The full-year results announcement
+  ("Preliminary / Final Results", ASX "Appendix 4E" / "Preliminary Final Report") now
+  has its own slot in the annual window — the year's narrative in text.
 - Known limits: an ASX re-issue gets a new id and both copies stay current (the ASX gives
   no supersession signal); a half-year period label follows the existing detector
   ("half-year ended 31 December 2025" → H1 2025); issuer headlines are neutralised,

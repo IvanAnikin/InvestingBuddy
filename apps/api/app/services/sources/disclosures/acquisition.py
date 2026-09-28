@@ -171,6 +171,12 @@ def document_names_issuer(artifact: Any, issuer: VerifiedIssuer) -> bool:
     """
     from app.services.discovery.identity import normalised_name
 
+    # An inline-XBRL filing states whose accounts it is, in its own contexts: accepted
+    # when EVERY entity identifier it carries is the verified issuer's LEI.
+    leis = set(getattr(getattr(artifact, "extraction", None), "entity_lei_identifiers",
+                       None) or [])
+    if issuer.lei and leis and leis == {issuer.lei}:
+        return True
     folded = _fold(content_text(artifact))
     # The issuer's WHOLE name (legal suffix dropped) as a phrase of whole words —
     # "rainbow rare earths", "australian strategic materials", "igo". One distinctive
@@ -512,6 +518,13 @@ async def ensure_disclosure_evidence(
     if not document_names_issuer(artifact, issuer):
         # Not stored, not attributed: a document that does not name the issuer is not
         # the issuer's evidence, whatever the listing said.
+        if not content_text(artifact).strip():
+            # Nothing readable at all (a report whose narrative is page images) is not
+            # evidence of another issuer either.
+            return DisclosureEvidenceResult(
+                state="unavailable", document_ref=ref, reason=REASON_NOT_INDEXED,
+                attempted=True, fetched=True,
+                notes=["the document yielded no readable text; nothing was stored"])
         if _read_partially_for_time(artifact):
             # Out of time after the cover page is not evidence of another issuer:
             # say what happened (measured: an EcoGraf half-year report read to 404
@@ -582,8 +595,9 @@ def select_core_documents(
 ) -> list[OfficialDocument]:
     """The documents research on this issuer cannot do without, in acquisition order:
 
-    the latest annual report (within ~18 months), the latest interim report (12
-    months), the latest periodic release (6 months), then recent material
+    the latest annual report (within ~18 months), the latest full-year results
+    announcement (same window), the latest interim report (12 months), the latest
+    periodic release (6 months), then recent material
     announcements (12 months) — newest first, topic matches first — up to the budget.
     Administrative notices are never chosen here.
     """
@@ -597,10 +611,22 @@ def select_core_documents(
         pool = [(d, at) for d, at in dated if d.doc_kind == kind and at >= window]
         return max(pool, key=lambda pair: pair[1])[0] if pool else None
 
-    for kind, days in ((DOC_KIND_ANNUAL_REPORT, 550), (DOC_KIND_INTERIM_REPORT, 380),
-                       (DOC_KIND_RESULTS_RELEASE, 190)):
+    from app.services.sources.disclosures.relevance import is_full_year_results
+
+    annual = newest(DOC_KIND_ANNUAL_REPORT, 550)
+    if annual is not None:
+        chosen.append(annual)
+    # The full-year results announcement, in the same window as the annual report: the
+    # year's narrative in text (Rainbow's 2025 annual report carries it only as page
+    # images; its "Preliminary Results" RNS the same day has it in full).
+    window_fy = now - timedelta(days=550)
+    full_year = [(d, at) for d, at in dated if d.doc_kind == DOC_KIND_RESULTS_RELEASE
+                 and at >= window_fy and is_full_year_results(d.headline)]
+    if full_year:
+        chosen.append(max(full_year, key=lambda pair: pair[1])[0])
+    for kind, days in ((DOC_KIND_INTERIM_REPORT, 380), (DOC_KIND_RESULTS_RELEASE, 190)):
         pick = newest(kind, days)
-        if pick is not None:
+        if pick is not None and pick not in chosen:
             chosen.append(pick)
     window = now - timedelta(days=380)
     material = sorted(
