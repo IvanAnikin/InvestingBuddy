@@ -219,8 +219,24 @@ def _scale_word(w: str | None) -> str | None:
     return None
 
 
+#: Dollars that are NOT US dollars, and an explicit US dollar, checked BEFORE a bare
+#: "$" (which the map below reads as USD): "A$25M" was USD. Letter-bounded, so "US$"
+#: is never read as Singapore's "S$".
+_PREFIXED_DOLLARS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"(?<![a-z])us\$"), "USD"),
+    (re.compile(r"(?<![a-z])(?:a\$|au\$|aud(?![a-z])|australian dollars?)"), "AUD"),
+    (re.compile(r"(?<![a-z])(?:c\$|ca\$|cad(?![a-z])|canadian dollars?)"), "CAD"),
+    (re.compile(r"(?<![a-z])(?:nz\$|nzd(?![a-z])|new zealand dollars?)"), "NZD"),
+    (re.compile(r"(?<![a-z])(?:hk\$|hkd(?![a-z])|hong kong dollars?)"), "HKD"),
+    (re.compile(r"(?<![a-z])(?:s\$|sgd(?![a-z])|singapore dollars?)"), "SGD"),
+)
+
+
 def _find_currency(text: str) -> str | None:
     low = text.lower()
+    for pattern, code in _PREFIXED_DOLLARS:
+        if pattern.search(low):
+            return code
     # Prefer explicit "in millions of euros" / "reporting currency" phrasing.
     # A currency WORD (as opposed to a symbol like "€") must be matched at
     # letter-boundaries, not as a raw substring — "eur" is also a substring

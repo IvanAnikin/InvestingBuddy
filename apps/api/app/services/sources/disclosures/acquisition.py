@@ -482,7 +482,9 @@ async def ensure_disclosure_evidence(
     try:
         artifact = await extractor(
             url, allowed_domains=(host,), title_hint=_title(document),
-            issuer_context=IssuerContext(company_name=issuer.name, ticker=issuer.ticker),
+            # A bare "$" in an ASX / LSE announcement is not known to be US dollars.
+            issuer_context=IssuerContext(company_name=issuer.name, ticker=issuer.ticker,
+                                         bare_dollar_is_usd=False),
             cfg=_extraction_cfg(cfg), period_policy=PERIOD_POLICY_TITLE_ONLY,
             published_at=document.published_on,
         )

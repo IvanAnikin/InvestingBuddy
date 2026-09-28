@@ -265,7 +265,11 @@ _LABEL_PATTERNS: list[tuple[re.Pattern[str], str]] = [
         ),
         FIELD_OPERATING_PROFIT,
     ),
-    (re.compile(r"revenue|net sales|total sales|turnover", re.I), FIELD_REVENUE),
+    # Not "Deferred revenue" / "unearned revenue" / "revenue received in advance": a
+    # balance-sheet liability (Pro Medicus: a deferred-tax table's "Deferred revenue"
+    # row became validated Group revenue).
+    (re.compile(r"(?<!deferred )(?<!unearned )(?<!accrued )revenue(?!\s+received in advance)"
+                r"|net sales|total sales|turnover", re.I), FIELD_REVENUE),
     (
         re.compile(r"employees|headcount|full[- ]time equivalents", re.I),
         FIELD_EMPLOYEES,
@@ -281,7 +285,11 @@ _SUBTOTAL_RULES: list[tuple[str, tuple[str, ...]]] = [
 _YEAR_RE = re.compile(r"(?:19|20)\d{2}")
 # Accept singular OR plural scale words ("million"/"millions") + the abbreviations.
 _SCALE_RE = re.compile(
-    r"(?:€|£|\$)?\s*(millions?|billions?|thousands?|bn|mn|m)\b", re.IGNORECASE
+    r"(?:€|£|\$)?\s*(millions?|billions?|thousands?|bn|mn|m)\b"
+    # A column header "$'000" / "£’000" / "€000" states THOUSANDS (Pro Medicus: a
+    # "$’000" table read "million" from elsewhere on the page).
+    r"|(?:€|£|\$)\s?[’']?(000)\b|(?<![\d,.])[’'](000)\b",
+    re.IGNORECASE,
 )
 
 # Confidence model. ``high`` is a bucket at >= 0.75 (see extractor
@@ -328,6 +336,13 @@ class IssuerContext(BaseModel):
     ticker: str | None = None
     reporting_currency: str | None = None
     default_period: str | None = None  # e.g. "2024" fiscal year
+    # False when a BARE "$" / "dollars" does not identify a currency for this issuer:
+    # an ASX issuer's "$'000" is Australian dollars, a UK issuer's "$" is whatever it
+    # reports in. Measured (Pro Medicus half-year accounts, ASX): a "$'000" table
+    # became a validated USD figure. With it False, only an explicit US$ / USD / "US
+    # dollars" is USD; otherwise the currency stays unknown and the money fact is not
+    # validated. Default True keeps every existing (SEC / US) path unchanged.
+    bare_dollar_is_usd: bool = True
 
     def is_known(self) -> bool:
         return bool(
@@ -478,6 +493,8 @@ def _match_label(text: str) -> str | None:
 def _find_scale(text: str) -> str | None:
     """Return million/billion/thousand if a scale token is present, else None."""
     m = _SCALE_RE.search(text or "")
+    if m and (m.group(2) or m.group(3)):
+        return "thousand"
     # rstrip("s") normalizes a plural ("millions" → "million") for _scale_word.
     return _scale_word(m.group(1).rstrip("s")) if m else None
 
@@ -537,6 +554,20 @@ def _column_periods(
     return {}
 
 
+_EXPLICIT_USD_RE = re.compile(r"(?<![a-z])(?:us\$|usd|u\.s\. dollars?|us dollars?)(?![a-z])",
+                              re.I)
+
+
+def _resolve_dollar(currency: str | None, text: str, issuer: IssuerContext) -> str | None:
+    """``currency``, except a USD read off a bare "$" where the issuer says a bare
+    dollar is not known to be US dollars (see ``IssuerContext.bare_dollar_is_usd``)."""
+    if currency == "USD" and not issuer.bare_dollar_is_usd and not _EXPLICIT_USD_RE.search(
+        text or ""
+    ):
+        return None
+    return currency
+
+
 def _table_currency_scale(
     table: ExtractedTable,
     excerpts_by_page: dict[int | None, list[str]],
@@ -549,12 +580,12 @@ def _table_currency_scale(
     missing currency/scale simply stays None (and blocks money-fact validation).
     """
     flat = " ".join(cell for row in table.rows for cell in row)
-    currency = _find_currency(flat)
+    currency = _resolve_dollar(_find_currency(flat), flat, issuer)
     scale = _find_scale(flat)
 
     if currency is None or scale is None:
         for text in excerpts_by_page.get(table.page_number, []):
-            currency = currency or _find_currency(text)
+            currency = currency or _resolve_dollar(_find_currency(text), text, issuer)
             scale = scale or _find_scale(text)
             if currency and scale:
                 break
@@ -843,6 +874,7 @@ def _resolve_fallback_period(
 def _candidates_from_excerpts(
     extraction: PrimaryDocumentExtraction,
     document_period: DocumentPeriod = UNKNOWN_DOCUMENT_PERIOD,
+    issuer: IssuerContext | None = None,
 ) -> list[_Candidate]:
     """Turn each bounded PROSE excerpt into fact candidates.
 
@@ -942,6 +974,8 @@ def _candidates_from_excerpts(
 
     candidates: list[_Candidate] = []
     for fact, exc in parsed:
+        currency = _resolve_dollar(fact.currency, str(getattr(exc, "text", "") or ""),
+                                   issuer or IssuerContext())
         period = fact.period
         inferred_period = False
         if period is None and fact.scope is not None and dominant_period is not None:
@@ -961,13 +995,13 @@ def _candidates_from_excerpts(
         if is_money:
             status = (
                 VALIDATION_VALIDATED
-                if period_known and fact.currency and fact.scale
+                if period_known and currency and fact.scale
                 else VALIDATION_EXCERPT_ONLY
             )
         else:
             status = VALIDATION_VALIDATED if period_known else VALIDATION_EXCERPT_ONLY
         fully_qualified = (
-            bool(fact.currency and fact.scale and period)
+            bool(currency and fact.scale and period)
             if is_money
             else bool(period)
         )
@@ -977,7 +1011,7 @@ def _candidates_from_excerpts(
             value_numeric=fact.numeric_value,
             value_text=fact.value,
             unit=fact.unit,
-            currency=fact.currency,
+            currency=currency,
             scale=fact.scale,
             page_number=fact.page_number,
             # Reuses the ``table_location`` slot for the excerpt id — the
@@ -1454,7 +1488,7 @@ def validate_extracted_facts(
         )
     # Phase 32A corrective (Problem A): prose excerpts are now ALSO a candidate
     # source, not just tables — see ``_candidates_from_excerpts``.
-    candidates.extend(_candidates_from_excerpts(extraction, document_period))
+    candidates.extend(_candidates_from_excerpts(extraction, document_period, issuer))
     candidates, superseded = _supersede_prose_read_of_reconstructed_table(candidates)
     _refuse_annual_authority_of_interim_document(candidates, document_period)
 

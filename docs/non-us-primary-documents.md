@@ -147,8 +147,24 @@ authority are required, or both connectors must be switched off.**
   or foreign LEI is still refused); a read with no readable text is
   `no_indexable_content`, never "another issuer". The full-year results announcement
   ("Preliminary / Final Results", ASX "Appendix 4E" / "Preliminary Final Report") now
-  has its own slot in the annual window — the year's narrative in text.
-- Known limits: an ASX re-issue gets a new id and both copies stay current (the ASX gives
+  has its own slot in the annual window — the year's narrative in text. (The LEI rule
+  alone does not make that annual report searchable: its only text is the statements,
+  which index to nothing, so it is honestly `no_indexable_content`; the full-year
+  results announcement is what delivers the year. A headline ABOUT the results — a
+  trading update ahead of them, the presentation, the webcast — is not the results.)
+- **No invented currency, scale or line item.** Production, Pro Medicus report
+  `f9ddd4c3`: a council finding read "the only Group revenue figure in evidence is
+  FY2024: USD 1,402 million". The figure was the "Deferred revenue" row of a
+  deferred-tax table, in A$'000, in a half-year's comparative column. Now: a
+  prefixed dollar is its own currency (`A$` AUD, `C$` CAD, `NZ$`, `HK$`, `S$`, `US$`
+  — "A$25M" was USD); a bare "$" in an ASX / LSE announcement is not known to be US
+  dollars (`IssuerContext.bare_dollar_is_usd=False`), so the currency stays unknown and
+  the money fact is not validated; a "$'000" column header states thousands; "Deferred
+  / unearned revenue" and "revenue received in advance" are not revenue. Every existing
+  (SEC / US) path keeps a bare "$" as USD.
+- Known limits: a table scope label can be a whole sentence ("segment:the group has
+  identified its operating segments…" — Pro Medicus) — segment, never Group, but not a
+  segment NAME; an ASX re-issue gets a new id and both copies stay current (the ASX gives
   no supersession signal); a half-year period label follows the existing detector
   ("half-year ended 31 December 2025" → H1 2025); issuer headlines are neutralised,
   which can change their wording ("price target" → redacted); a quarterly titled only

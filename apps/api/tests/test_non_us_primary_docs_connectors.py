@@ -1207,4 +1207,97 @@ class TestRainbowAcceptanceFixes:
         ])
         refs = [d.document_ref for d in acq.select_core_documents(
             listing, max_documents=5, now=NOW)]
-        assert refs[:3] == ["ar", "prelim", "hy"] and "agm" not in refs
+        assert refs == ["ar", "prelim", "hy", "mou"]  # material kept; AGM never chosen
+
+
+class TestProMedicusAcceptanceFixes:
+    """Live acceptance D (Pro Medicus, report f9ddd4c3): a council finding read "The
+    only Group revenue figure in evidence is FY2024: USD 1,402 million". The figure was
+    the "Deferred revenue" row of a deferred-tax table, A$'000, in a half-year's
+    comparative column — label, currency, scale and period all wrong."""
+
+    @pytest.mark.parametrize(("text", "code"), [
+        ("A$25M contract", "AUD"), ("US$ million", "USD"), ("S$ 3m", "SGD"),
+        ("AUD 5m", "AUD"), ("C$ 10m", "CAD"), ("NZ$ 4m", "NZD"), ("€m", "EUR"),
+    ])
+    def test_a_prefixed_dollar_is_its_own_currency(self, text, code):
+        from app.services.sources.primary_fact_parser import _find_currency
+
+        assert _find_currency(text) == code
+
+    def test_a_bare_dollar_is_usd_only_where_the_issuer_says_so(self):
+        from app.services.sources.extracted_fact_validator import (
+            IssuerContext,
+            _resolve_dollar,
+        )
+
+        us = IssuerContext(company_name="X")  # default: every existing path unchanged
+        asx = IssuerContext(company_name="X", bare_dollar_is_usd=False)
+        assert _resolve_dollar("USD", "$'000", us) == "USD"
+        assert _resolve_dollar("USD", "$'000", asx) is None
+        assert _resolve_dollar("USD", "US$ million", asx) == "USD"
+        assert _resolve_dollar("AUD", "A$'000", asx) == "AUD"
+
+    @pytest.mark.parametrize(("text", "scale"), [
+        ("$’000", "thousand"), ("$'000", "thousand"), ("£000", "thousand"),
+        ("US$ million", "million"), ("2,000", None),
+    ])
+    def test_a_thousands_column_header_is_thousands(self, text, scale):
+        from app.services.sources.extracted_fact_validator import _find_scale
+
+        assert _find_scale(text) == scale
+
+    @pytest.mark.parametrize(("label", "field"), [
+        ("Deferred revenue", None), ("Unearned revenue", None),
+        ("Revenue received in advance", None), ("Revenue", "revenue"),
+        ("Total revenue", "revenue"),
+    ])
+    def test_deferred_revenue_is_not_revenue(self, label, field):
+        from app.services.sources.extracted_fact_validator import _match_label
+
+        assert _match_label(label) == field
+
+    async def test_mutation_an_asx_dollar_table_never_becomes_a_usd_fact(self, session):
+        """End to end through acquisition: an ASX annual report's "$'000" revenue row is
+        held, but never as a validated USD figure."""
+        from app.models.extracted_document import ExtractedFact
+
+        pdf = "https://announcements.asx.com.au/asxpdf/20260925/pdf/074hv8s0yw9t50.pdf"
+        annual = _html(
+            "<h1>Annual Report 2026</h1><p>"
+            + "EcoGraf Limited is developing the Epanko graphite project. " * 20
+            + "</p><table><tr><th>Consolidated</th><th>2026 $'000</th>"
+              "<th>2025 $'000</th></tr><tr><td>Revenue</td><td>5,000</td>"
+              "<td>4,000</td></tr><tr><td>Deferred revenue</td><td>1,402</td>"
+              "<td>900</td></tr></table>")
+        web = FakeWeb({pdf: ("text/html", annual)})
+        company = await _company(session, "EGR", "AU", "EcoGraf Limited")
+        out = await _core(session, company, web)
+        assert next(d for d in out["documents"]
+                    if d["document_ref"] == "03143773")["state"] == "ready"
+        facts = (await session.execute(select(ExtractedFact))).scalars().all()
+        assert not [f for f in facts if f.currency == "USD"]
+        assert not [f for f in facts if f.validation_status == "validated"
+                    and f.label == "revenue"]
+        assert not [f for f in facts if "1,402" in (f.value_text or "")
+                    and f.label == "revenue"]
+
+    @pytest.mark.parametrize("headline", [
+        "Trading Update ahead of Full Year Results", "Full Year Results Presentation",
+        "Annual Results Webcast", "Notice of Final Results Date",
+        "Final Results of Retail Offer", "Results of Annual General Meeting",
+    ])
+    def test_about_the_results_is_not_the_results(self, headline):
+        from app.services.sources.disclosures.relevance import is_full_year_results
+
+        assert not is_full_year_results(headline)
+
+    @pytest.mark.parametrize("headline", [
+        "Results for the year ended 30 June 2025", "FY25 Results",
+        "Preliminary Final Report FY26 (Appendix 4E)",
+        "Preliminary Results for Year-end 30 June 2025",
+    ])
+    def test_full_year_results_headlines(self, headline):
+        from app.services.sources.disclosures.relevance import is_full_year_results
+
+        assert is_full_year_results(headline)
