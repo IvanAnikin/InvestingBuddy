@@ -377,6 +377,26 @@ async def _index(session: Any, *, company_id: uuid.UUID, ref: str, cfg: Any) -> 
     return int(result.indexed) + int(result.updated)
 
 
+async def _read_by_an_older_pipeline(session: Any, extracted_document_id: Any) -> bool:
+    """True when the held document's facts were derived by an older extraction
+    pipeline (``CURRENT_EXTRACTION_PIPELINE_VERSION``): read once more, so a
+    since-corrected reading (a "Deferred revenue" row as revenue, "A$" as USD) is
+    superseded instead of served from the corpus forever. Unknown → not stale."""
+    if extracted_document_id is None:
+        return False
+    from app.models.extracted_document import ExtractedDocument
+    from app.services.sources.extraction_pipeline_version import (
+        CURRENT_EXTRACTION_PIPELINE_VERSION,
+    )
+
+    try:
+        doc = await session.get(ExtractedDocument, extracted_document_id)
+    except Exception:  # noqa: BLE001 - a read that fails is not a reason to refetch
+        return False
+    version = getattr(doc, "pipeline_version", None)
+    return version is not None and int(version) < CURRENT_EXTRACTION_PIPELINE_VERSION
+
+
 async def _changed_since_acquired(
     session: Any, *, company_id: uuid.UUID, document: OfficialDocument
 ) -> bool:
@@ -440,8 +460,10 @@ async def ensure_disclosure_evidence(
     except Exception as exc:  # noqa: BLE001
         return DisclosureEvidenceResult(state="unavailable", document_ref=ref,
                                         reason=REASON_NOT_INDEXED, notes=[type(exc).__name__])
-    stale = before.is_ready and await _changed_since_acquired(
-        session, company_id=issuer.company_id, document=document)
+    stale = before.is_ready and (
+        await _changed_since_acquired(session, company_id=issuer.company_id,
+                                      document=document)
+        or await _read_by_an_older_pipeline(session, before.extracted_document_id))
     if before.is_ready and not stale:
         # Not for a stale holding: this row's time would read as "acquired after the
         # correction" and hide the correction from the next run.

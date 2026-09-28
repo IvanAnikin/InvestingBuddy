@@ -268,7 +268,7 @@ _LABEL_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     # Not "Deferred revenue" / "unearned revenue" / "revenue received in advance": a
     # balance-sheet liability (Pro Medicus: a deferred-tax table's "Deferred revenue"
     # row became validated Group revenue).
-    (re.compile(r"(?<!deferred )(?<!unearned )(?<!accrued )revenue(?!\s+received in advance)"
+    (re.compile(r"(?<!deferred\s)(?<!unearned\s)(?<!accrued\s)revenue(?!\s+received in advance)"
                 r"|net sales|total sales|turnover", re.I), FIELD_REVENUE),
     (
         re.compile(r"employees|headcount|full[- ]time equivalents", re.I),
@@ -288,7 +288,7 @@ _SCALE_RE = re.compile(
     r"(?:€|£|\$)?\s*(millions?|billions?|thousands?|bn|mn|m)\b"
     # A column header "$'000" / "£’000" / "€000" states THOUSANDS (Pro Medicus: a
     # "$’000" table read "million" from elsewhere on the page).
-    r"|(?:€|£|\$)\s?[’']?(000)\b|(?<![\d,.])[’'](000)\b",
+    r"|(?:€|£|\$)\s?[’']?(000)\b",
     re.IGNORECASE,
 )
 
@@ -493,7 +493,7 @@ def _match_label(text: str) -> str | None:
 def _find_scale(text: str) -> str | None:
     """Return million/billion/thousand if a scale token is present, else None."""
     m = _SCALE_RE.search(text or "")
-    if m and (m.group(2) or m.group(3)):
+    if m and m.group(2):
         return "thousand"
     # rstrip("s") normalizes a plural ("millions" → "million") for _scale_word.
     return _scale_word(m.group(1).rstrip("s")) if m else None
@@ -554,15 +554,14 @@ def _column_periods(
     return {}
 
 
-_EXPLICIT_USD_RE = re.compile(r"(?<![a-z])(?:us\$|usd|u\.s\. dollars?|us dollars?)(?![a-z])",
-                              re.I)
-
-
 def _resolve_dollar(currency: str | None, text: str, issuer: IssuerContext) -> str | None:
-    """``currency``, except a USD read off a bare "$" where the issuer says a bare
-    dollar is not known to be US dollars (see ``IssuerContext.bare_dollar_is_usd``)."""
-    if currency == "USD" and not issuer.bare_dollar_is_usd and not _EXPLICIT_USD_RE.search(
-        text or ""
+    """``currency``, except USD where the issuer says a bare "$" is not known to be US
+    dollars (``IssuerContext.bare_dollar_is_usd``) and the text has a bare "$" at all:
+    a "US$ loan note" aside does not make a "$'000" table US dollars."""
+    from app.services.sources.primary_fact_parser import dollar_codes
+
+    if currency == "USD" and not issuer.bare_dollar_is_usd and None in dollar_codes(
+        (text or "").lower()
     ):
         return None
     return currency

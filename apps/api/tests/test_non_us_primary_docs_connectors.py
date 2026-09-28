@@ -1217,8 +1217,17 @@ class TestProMedicusAcceptanceFixes:
     comparative column — label, currency, scale and period all wrong."""
 
     @pytest.mark.parametrize(("text", "code"), [
-        ("A$25M contract", "AUD"), ("US$ million", "USD"), ("S$ 3m", "SGD"),
-        ("AUD 5m", "AUD"), ("C$ 10m", "CAD"), ("NZ$ 4m", "NZD"), ("€m", "EUR"),
+        ("A$25M contract", "AUD"), ("A$'000", "AUD"), ("US$ million", "USD"),
+        ("S$ 3m", "SGD"), ("C$ 10m", "CAD"), ("NZ$ 4m", "NZD"), ("€m", "EUR"),
+        # Review: an incidental mention never displaces the table's own currency.
+        ("(in millions) $ 4,210 exposure to the Canadian dollar", "USD"),
+        ("Revenue $ 1,000 (in thousands) AUD hedges", "USD"),
+        ("in millions of euros; the Group issued a US$500 million bond", "EUR"),
+        ("company's$ amounts", None),  # not an amount; fails closed
+        # Security review: one prefixed aside never relabels bare "$" figures.
+        ("Revenue $5.2bn; HK$10m deposit", "USD"),
+        ("Revenue $5.2 billion; hedges of the Australian dollar", "USD"),
+        ("C$ 10m and A$ 5m", None),  # a mix of prefixes is no currency
     ])
     def test_a_prefixed_dollar_is_its_own_currency(self, text, code):
         from app.services.sources.primary_fact_parser import _find_currency
@@ -1237,10 +1246,13 @@ class TestProMedicusAcceptanceFixes:
         assert _resolve_dollar("USD", "$'000", asx) is None
         assert _resolve_dollar("USD", "US$ million", asx) == "USD"
         assert _resolve_dollar("AUD", "A$'000", asx) == "AUD"
+        # Security review: a "US$" aside does not make a "$'000" table US dollars.
+        assert _resolve_dollar(
+            "USD", "Revenue $'000 12,345; US$ denominated loan note", asx) is None
 
     @pytest.mark.parametrize(("text", "scale"), [
         ("$’000", "thousand"), ("$'000", "thousand"), ("£000", "thousand"),
-        ("US$ million", "million"), ("2,000", None),
+        ("US$ million", "million"), ("2,000", None), ("'000 employees", None),
     ])
     def test_a_thousands_column_header_is_thousands(self, text, scale):
         from app.services.sources.extracted_fact_validator import _find_scale
@@ -1248,7 +1260,7 @@ class TestProMedicusAcceptanceFixes:
         assert _find_scale(text) == scale
 
     @pytest.mark.parametrize(("label", "field"), [
-        ("Deferred revenue", None), ("Unearned revenue", None),
+        ("Deferred revenue", None), ("Deferred\xa0revenue", None), ("Unearned revenue", None),
         ("Revenue received in advance", None), ("Revenue", "revenue"),
         ("Total revenue", "revenue"),
     ])
@@ -1301,3 +1313,65 @@ class TestProMedicusAcceptanceFixes:
         from app.services.sources.disclosures.relevance import is_full_year_results
 
         assert is_full_year_results(headline)
+
+
+class TestOlderPipelineHoldings:
+    """Production already holds facts read under the corrected readings (Pro Medicus:
+    "Deferred revenue 1,402" as USD Group revenue). A READY holding derived by an older
+    extraction pipeline is read once more, and its facts are superseded — never served
+    from the corpus forever."""
+
+    async def test_an_older_pipeline_holding_is_reread_and_its_facts_superseded(
+        self, session
+    ):
+        from app.models.extracted_document import ExtractedDocument, ExtractedFact
+        from app.services.sources.extraction_pipeline_version import (
+            CURRENT_EXTRACTION_PIPELINE_VERSION,
+        )
+
+        web = FakeWeb()
+        company = await _company(session, "EGR", "AU", "EcoGraf Limited")
+        await _core(session, company, web)
+        docs = (await session.execute(select(ExtractedDocument))).scalars().all()
+        assert docs and all(d.pipeline_version == CURRENT_EXTRACTION_PIPELINE_VERSION
+                            for d in docs)
+        held = docs[0]
+        bogus = ExtractedFact(
+            id=uuid.uuid4(), extracted_document_id=held.id, label="revenue",
+            value_numeric=1402.0, value_text="1,402", currency="USD", scale="million",
+            period="2024", extraction_method="native_pdf", confidence=0.8,
+            validation_status="validated", is_active=True)
+        session.add(bogus)
+        held.pipeline_version = CURRENT_EXTRACTION_PIPELINE_VERSION - 1
+        await session.flush()
+
+        fetched = len(web.content_fetches())
+        await _core(session, company, web)
+        assert len(web.content_fetches()) == fetched + 1  # only the outdated one
+        await session.refresh(bogus)
+        await session.refresh(held)
+        assert bogus.is_active is False
+        assert held.pipeline_version == CURRENT_EXTRACTION_PIPELINE_VERSION
+        # Current again: the next run reads nothing.
+        await _core(session, company, web)
+        assert len(web.content_fetches()) == fetched + 1
+
+
+def test_the_filing_lei_scan_is_linear_on_a_hostile_page():
+    """Security review: a regex scanning from every tag start took 15 s of CPU on a
+    hostile 18 MB page. The literal scan is bounded."""
+    import time
+
+    from app.services.sources.primary_document_extractor import _xbrl_lei_identifiers
+
+    real = ('<xbrli:identifier scheme="http://standards.iso.org/iso/17442">'
+            + PENSANA_LEI + "</xbrli:identifier>")
+    assert _xbrl_lei_identifiers("<html>" + real * 3 + "</html>") == {PENSANA_LEI}
+    assert _xbrl_lei_identifiers('<other scheme="http://standards.iso.org/iso/17442">'
+                                 + PENSANA_LEI + "</xbrli:identifier>") == set()
+    hostile = ('<xbrli:identifier ' + "a" * 190
+               + ' scheme="http://standards.iso.org/iso/17442" ' + "b" * 190) * 50_000
+    started = time.perf_counter()
+    _xbrl_lei_identifiers(hostile)
+    _xbrl_lei_identifiers("<xbrli:identifier " * 1_000_000)
+    assert time.perf_counter() - started < 2.0

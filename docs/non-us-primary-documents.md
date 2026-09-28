@@ -156,12 +156,21 @@ authority are required, or both connectors must be switched off.**
   `f9ddd4c3`: a council finding read "the only Group revenue figure in evidence is
   FY2024: USD 1,402 million". The figure was the "Deferred revenue" row of a
   deferred-tax table, in A$'000, in a half-year's comparative column. Now: a
-  prefixed dollar is its own currency (`A$` AUD, `C$` CAD, `NZ$`, `HK$`, `S$`, `US$`
-  — "A$25M" was USD); a bare "$" in an ASX / LSE announcement is not known to be US
-  dollars (`IssuerContext.bare_dollar_is_usd=False`), so the currency stays unknown and
-  the money fact is not validated; a "$'000" column header states thousands; "Deferred
+  prefixed dollar SYMBOL before an amount is its own currency (`A$25M` AUD, `A$'000`,
+  `C$`, `NZ$`, `HK$`, `S$`, `US$` — "A$25M" was USD), consulted only where a bare "$"
+  would have been, so currency words keep their priority, and only when EVERY "$" in
+  the text carries that one prefix (one "HK$10m" aside never relabels bare "$"
+  figures; a mix is no currency); a bare "$" in an ASX / LSE announcement is not known to be US
+  dollars (`IssuerContext.bare_dollar_is_usd=False`: USD only when no bare "$" appears
+  — a "US$ loan note" aside does not make a "$'000" table US dollars), so the currency
+  stays unknown and the money fact is not validated; a "$'000" column header states thousands; "Deferred
   / unearned revenue" and "revenue received in advance" are not revenue. Every existing
-  (SEC / US) path keeps a bare "$" as USD.
+  (SEC / US) path keeps a bare "$" as USD. `CURRENT_EXTRACTION_PIPELINE_VERSION` is
+  16: a READY announcement whose facts were derived by an older pipeline is read once
+  more and its active facts superseded — production's version-15 rows (the Pro Medicus
+  "revenue 1,402 USD") are replaced on the next run, not served forever. The filing-LEI
+  scan is a literal search with a fixed window (linear; a tag-start regex took 15 s on a
+  hostile 18 MB page).
 - Known limits: a table scope label can be a whole sentence ("segment:the group has
   identified its operating segments…" — Pro Medicus) — segment, never Group, but not a
   segment NAME; an ASX re-issue gets a new id and both copies stay current (the ASX gives
