@@ -240,6 +240,7 @@ async def run_v3_research(
     research_job_id: uuid.UUID | None = None,
     now: Any = None,
     discovery_candidate_id: str | uuid.UUID | None = None,
+    report_agent_run_id: uuid.UUID | None = None,
 ) -> V3ResearchOutcome:
     """Run the V3 pipeline for one company. **Never raises.**
 
@@ -264,11 +265,12 @@ async def run_v3_research(
     # Measured on real PostgreSQL at head 038, before this line existed: 0 tool calls
     # persisted, 0 findings, and **the V2 report was never written**. The unit suite
     # runs on SQLite with foreign keys OFF, which is why 6,100 green tests missed it.
-    # The same id names the AgentRun that will own the report; documents this run
-    # acquires are recorded against it, so the report's primary-documents view shows
-    # them. Only an id that really names an agent_runs row is used (a broken link would
-    # abort the shared transaction, see above).
-    agent_run_id = await _existing_agent_run_id(session, research_job_id)
+    # The AgentRun that OWNS the report this research attaches to (the caller reads it
+    # off the report: ``Report.created_by_agent_run_id``, the id the report's
+    # primary-documents view is scoped to). Documents this run acquires or reuses are
+    # recorded against it. Only an id that names an agent_runs row is used — a broken
+    # link would abort the shared transaction, see above.
+    agent_run_id = await _existing_agent_run_id(session, report_agent_run_id)
     research_job_id = await _resolve_research_job_id(session, research_job_id, outcome)
 
     # V3.18.2 — the ledger this code writes has columns migration 041 adds. On a database

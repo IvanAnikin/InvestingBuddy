@@ -133,9 +133,10 @@ authority are required, or both connectors must be switched off.**
   still not stored — because running out of time is not evidence of another issuer.
 - **Report lineage.** Production, EcoGraf report `8b246736`: the research read four ASX
   documents and the report's primary-documents view showed none — acquisition recorded
-  its attempts with no run, and the view is scoped to the report's own run. The
-  pipeline now passes the AgentRun that owns the report (only an id that names an
-  `agent_runs` row); acquired documents and their attempts carry it, and a READY
+  its attempts with no run, and the view is scoped to the report's own run. The front
+  door now passes the report's own `created_by_agent_run_id` to the pipeline (the
+  durable job id it also receives is a different id; only an id that names an
+  `agent_runs` row is used); acquired documents and their attempts carry it, and a READY
   document served from the corpus records this run's reuse row (no fetch, `pinned`
   unset) — except for a stale holding, whose row would hide a pending correction.
 - Known limits: an ASX re-issue gets a new id and both copies stay current (the ASX gives

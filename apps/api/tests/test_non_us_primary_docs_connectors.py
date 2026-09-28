@@ -1092,6 +1092,35 @@ class TestReportLineage:
         assert await acq._changed_since_acquired(session, company_id=company.id,
                                                  document=stale)
 
+    async def test_the_front_door_links_the_reports_own_run(self, session, monkeypatch):
+        """Caller level (review): the run the documents carry is the REPORT's
+        ``created_by_agent_run_id`` — the id its primary-documents view reads — not the
+        durable job id the pipeline also receives."""
+        from app.models.report import Report
+        from app.services import company_research_service as svc
+        from app.services.sources.disclosures import acquisition
+
+        seen: dict = {}
+
+        async def spy(session, *, company, cfg, agent_run_id=None, **kw):  # noqa: ANN001, ANN003, ANN202
+            seen["agent_run_id"] = agent_run_id
+            return {"source_id": None, "documents": [], "skipped": "spy"}
+
+        monkeypatch.setattr(acquisition, "ensure_core_disclosures", spy)
+        monkeypatch.setattr(svc, "settings", CFG.model_copy(update={
+            "v3_pipeline_enabled": True, "azure_openai_api_key": "",
+            "azure_openai_endpoint": "", "deepseek_api_key": ""}))
+        company = await _company(session, "PRE", "LSE", "Pensana Plc")
+        run = await self._run(session)
+        report = Report(id=uuid.uuid4(), title="t", slug=f"s-{uuid.uuid4().hex[:8]}",
+                        report_type="company_deep_dive", status="draft",
+                        created_by_agent_run_id=run, company_id=company.id)
+        session.add(report)
+        await session.flush()
+        await svc._run_v3_pipeline(session, company=company, report_id=report.id,
+                                   research_job_id=uuid.uuid4())
+        assert seen["agent_run_id"] == run == report.created_by_agent_run_id
+
     async def test_the_pipeline_links_only_a_real_agent_run(self, session):
         from app.services.pipeline.v3_pipeline import _existing_agent_run_id
 

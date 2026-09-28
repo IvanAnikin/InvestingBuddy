@@ -931,6 +931,7 @@ async def _run_v3_pipeline(
             run_v3_research,
         )
 
+        report = await session.get(Report, report_id)
         outcome = await run_v3_research(
             session,
             company,
@@ -938,8 +939,12 @@ async def _run_v3_pipeline(
             mode=research_mode,
             research_job_id=research_job_id,
             discovery_candidate_id=discovery_candidate_id,
+            # The report's OWN run — what its primary-documents view is scoped to —
+            # so the official documents this research acquires are visible there.
+            report_agent_run_id=(
+                report.created_by_agent_run_id if report is not None else None
+            ),
         )
-        report = await session.get(Report, report_id)
         if report is not None:
             attach_to_report(report, outcome)
             await session.flush()
