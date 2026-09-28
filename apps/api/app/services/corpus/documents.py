@@ -159,24 +159,12 @@ def period_fields(period: DocumentPeriod | None) -> tuple[str | None, str | None
     )
 
 
-def _period_began_by(period_key: str, published: date | None) -> bool:
-    """True unless the period demonstrably STARTS after ``published``.
+def _period_began_by(period_key: str, published: date | None,
+                     basis: str | None = None) -> bool:
+    """See ``disclosure_period_policy.period_began_by`` — one rule for every path."""
+    from app.services.sources.disclosure_period_policy import period_began_by
 
-    Unknown publication, or a period this cannot place, is not treated as a forecast.
-    """
-    if published is None:
-        return True
-    from app.services.sources.financial_period import parse_period
-
-    period = parse_period(period_key)
-    if period.year is None:
-        return True
-    month = 1
-    if period.period_type == "half" and period.ordinal:
-        month = 1 + 6 * (int(period.ordinal) - 1)
-    elif period.period_type == "quarter" and period.ordinal:
-        month = 1 + 3 * (int(period.ordinal) - 1)
-    return date(int(period.year), month, 1) <= published
+    return period_began_by(period_key, published, basis=basis)
 
 
 #: Period types that cannot describe an annual document, whatever its body says.
@@ -248,7 +236,9 @@ async def upsert_document_version(
             url=None if payload.period_policy == PERIOD_POLICY_TITLE_ONLY else canonical,
         )
     title_only = payload.period_policy == PERIOD_POLICY_TITLE_ONLY
-    if title_only and period_key and not _period_began_by(period_key, payload.published_at):
+    if title_only and period_key and not _period_began_by(
+        period_key, payload.published_at, period_basis
+    ):
         # A period that had not even STARTED when the document was published is a
         # forecast, wherever it was read — a title says "Q1 2028 first production
         # update" as readily as a body does. Missing is honest; a future period is not.
@@ -487,6 +477,7 @@ async def ingest_extracted_document(
         url=getattr(artifact, "source_url", None),
         extraction=extraction,
         title_only=title_only,
+        published_at=document.doc_date,
     )
     payload = DocumentVersionInput(
         content_hash=document.content_hash,
@@ -619,7 +610,8 @@ async def backfill_from_extracted_documents(
     for row in rows:
         title_only = is_title_only(source_type=row.source_type)
         period = document_period_for(
-            title=row.title, url=row.canonical_url, extraction=None, title_only=title_only
+            title=row.title, url=row.canonical_url, extraction=None, title_only=title_only,
+            published_at=row.doc_date,
         )
         payload = DocumentVersionInput(
             content_hash=row.content_hash,

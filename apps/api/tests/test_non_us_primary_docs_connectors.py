@@ -11,6 +11,7 @@ The mutation tests the brief demands are named ``test_mutation_*``.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import uuid
 from datetime import datetime, timezone
@@ -195,12 +196,12 @@ class FakeWeb:
         from app.services.sources import live_fetchers
 
         async def _extract(url, *, allowed_domains, title_hint=None, issuer_context=None,  # noqa: ANN001, ANN202
-                           cfg=None, period_policy=None, **_kw):
+                           cfg=None, period_policy=None, published_at=None, **_kw):
             fetched = await self.get(url, allowed_domains=allowed_domains)
             return await live_fetchers._artifact_from_fetch(
                 fetched, title=title_hint, original_language=None,
                 issuer_context=issuer_context, cfg=cfg, fetch_ms=1,
-                period_policy=period_policy)
+                period_policy=period_policy, published_at=published_at)
 
         return _extract
 
@@ -714,10 +715,23 @@ class TestEvidenceIntegrityFixes:
             ResearchDocumentVersion.is_current.is_(True)))).scalars().all()
         assert len(current) == 2  # neither superseded the other
 
-    async def test_a_forecast_in_the_official_title_is_refused_too(self, session):
-        """HIGH (review): "Q1 2028 first production update" in a TITLE is a forecast."""
+    async def test_a_forecast_in_the_official_title_is_refused_too(self, session,
+                                                                   monkeypatch):
+        """HIGH (review): "Q1 2028 first production update" in a TITLE is a forecast —
+        for the corpus version AND the facts' default period (re-review)."""
         from app.models.research_document import ResearchDocumentVersion
+        from app.services.sources import live_fetchers
         from app.services.sources.disclosures.relevance import classify_uk
+
+        fact_periods = []
+        real = live_fetchers.document_period_for
+
+        def spy(**kw):  # noqa: ANN003, ANN202
+            found = real(**kw)
+            fact_periods.append((kw.get("title"), found))
+            return found
+
+        monkeypatch.setattr(live_fetchers, "document_period_for", spy)
 
         assert classify_uk(nsm_type="Statement re",
                            headline="Q1 2028 first production update",
@@ -735,6 +749,37 @@ class TestEvidenceIntegrityFixes:
         versions = (await session.execute(select(ResearchDocumentVersion))).scalars().all()
         forecast = next(v for v in versions if ref in (v.canonical_url or ""))
         assert forecast.period_key is None  # published 2026-09: 2028-Q1 had not begun
+        facts_default = [p for t, p in fact_periods if "Q1 2028" in (t or "")]
+        assert facts_default and not any(p.is_known for p in facts_default)
+
+    def test_the_facts_period_rule_is_the_corpus_rule(self):
+        """One rule on every path: title only, and nothing that had not begun."""
+        from datetime import date as _date
+
+        from app.services.sources.disclosure_period_policy import document_period_for
+
+        title = "Pensana Plc - Q1 2028 first production update"
+        assert not document_period_for(title=title, url=None, extraction=None,
+                                       title_only=True,
+                                       published_at=_date(2026, 9, 1)).is_known
+        assert document_period_for(title=title, url=None, extraction=None,
+                                   title_only=True,
+                                   published_at=_date(2028, 4, 2)).is_known
+        # A fiscal quarter of a June year-end began before its calendar reading
+        # (code review): kept, while a fiscal year still years away is not.
+        for fiscal, published in (("Quarterly Activities Report - Q1 FY2027",
+                                   _date(2026, 10, 28)),
+                                  ("Q2 FY27 Quarterly Activities Report",
+                                   _date(2027, 1, 30))):
+            assert document_period_for(title=fiscal, url=None, extraction=None,
+                                       title_only=True, published_at=published).is_known
+        assert not document_period_for(title="Q1 FY2030 production target", url=None,
+                                       extraction=None, title_only=True,
+                                       published_at=_date(2026, 10, 28)).is_known
+        report = "Half Year Report for the six months ended 31 December 2025"
+        assert document_period_for(title=report, url=None, extraction=None,
+                                   title_only=True,
+                                   published_at=_date(2026, 2, 27)).is_known
 
     async def test_a_corrected_refiling_is_fetched_again(self, session):
         """MEDIUM (review): an NSM amendment keeps the address; the source's update time
@@ -765,6 +810,25 @@ class TestEvidenceIntegrityFixes:
         new = await current_version_for_document_ref(session, company_id=company.id,
                                                      document_ref=ref)
         assert new.id != old.id and new.content_hash != old.content_hash
+
+    async def test_a_stale_holding_out_of_budget_is_still_ready(self, session):
+        """Code review: a correction not fetched for budget leaves the held reading
+        searchable — it is reported ready, not unavailable."""
+        from app.services.sources.disclosures import acquisition as acq
+
+        web = FakeWeb()
+        company = await _company(session, "PRE", "LSE", "Pensana Plc")
+        await _core(session, company, web)
+        listing = await acq.list_disclosures(session, company, cfg=CFG, fetcher=web.get,
+                                             poster=web.post, now=NOW)
+        held = next(d for d in listing.documents if d.research_rank < 5)
+        stale = dataclasses.replace(held, updated_at=datetime(2099, 1, 1, tzinfo=timezone.utc))
+        before = len(web.content_fetches())
+        result = await acq.ensure_disclosure_evidence(
+            session, issuer=listing.issuer, document=stale, cfg=CFG, fetcher=web.get,
+            extractor=web.extractor(), ready_only=True)
+        assert result.state == "ready" and result.reason is None
+        assert len(web.content_fetches()) == before
 
     @pytest.mark.parametrize(("headline", "kind"), [
         ("Final Results of Retail Offer", "other"),

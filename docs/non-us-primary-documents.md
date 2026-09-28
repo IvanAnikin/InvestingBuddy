@@ -106,7 +106,14 @@ authority are required, or both connectors must be switched off.**
 - **One address, one document.** Announcements are keyed by their official address, not
   `<kind>:<period>` — a half-year report and its results presentation are two documents.
 - **No future period, title or body.** A period that had not begun at publication is a
-  forecast and is dropped ("Q1 2028 first production update", published 2026).
+  forecast and is dropped ("Q1 2028 first production update", published 2026) — for the
+  corpus version AND the extracted facts' default period, on the live, cached and
+  backfill paths alike (`disclosure_period_policy.document_period_for(published_at=…)`).
+  A FISCAL label may start up to a year before its calendar reading: "Q1 FY2027" of a
+  June year-end, published October 2026, keeps its period.
+- **A stale holding out of budget stays ready.** When an NSM correction is not fetched
+  because the acquisition budget is spent, the held reading is still searchable and is
+  reported as such, with a note.
 - **Corrections are read.** An NSM re-filing keeps its address; the source's
   `last_updated_date` after the last acquisition makes the holding stale.
 - **Content identity** needs the issuer's WHOLE name (legal suffix dropped) as a phrase,
@@ -121,4 +128,10 @@ authority are required, or both connectors must be switched off.**
 - Known limits: an ASX re-issue gets a new id and both copies stay current (the ASX gives
   no supersession signal); a half-year period label follows the existing detector
   ("half-year ended 31 December 2025" → H1 2025); issuer headlines are neutralised,
-  which can change their wording ("price target" → redacted).
+  which can change their wording ("price target" → redacted); a quarterly titled only
+  "for the quarter ended 30 September 2026" gets no period (the existing detector reads
+  no period from an end date alone); an LSE name written "SAINSBURY(J) PLC" does not
+  match "J Sainsbury plc" as a phrase, so such an issuer needs a ticker citation in the
+  document (otherwise `identity_unverified`, never a wrong issuer); an NSM amendment
+  published at a NEW address is a new document, and the superseded one stays current
+  until it ages out.

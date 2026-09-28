@@ -389,6 +389,13 @@ async def ensure_disclosure_evidence(
             state="ready", document_ref=ref, chunk_count=before.indexable_chunk_count,
             reused=True, notes=["already searchable; no fetch and no extraction"])
     if ready_only:
+        if before.is_ready:
+            # Out of budget for the correction, but the held reading is still
+            # searchable: say so rather than call it unavailable.
+            return DisclosureEvidenceResult(
+                state="ready", document_ref=ref, chunk_count=before.indexable_chunk_count,
+                reused=True, notes=["searchable; a later correction at the source was "
+                                    "not fetched (acquisition budget spent)"])
         return DisclosureEvidenceResult(state="unavailable", document_ref=ref,
                                         reason=REASON_BUDGET_EXHAUSTED)
 
@@ -413,6 +420,7 @@ async def ensure_disclosure_evidence(
             url, allowed_domains=(host,), title_hint=_title(document),
             issuer_context=IssuerContext(company_name=issuer.name, ticker=issuer.ticker),
             cfg=cfg, period_policy=PERIOD_POLICY_TITLE_ONLY,
+            published_at=document.published_on,
         )
     except Exception as exc:  # noqa: BLE001
         return DisclosureEvidenceResult(state="unavailable", document_ref=ref,

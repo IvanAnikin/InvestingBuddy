@@ -23,7 +23,7 @@ import logging
 import socket
 import time
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any
 
 from app.core.config import Settings
@@ -467,6 +467,7 @@ async def _artifact_from_fetch(
     access_class: str = ACCESS_PUBLIC_ISSUER,
     artifact_store: ArtifactStore | None = None,
     period_policy: str | None = None,
+    published_at: date | None = None,
 ) -> PrimaryDocumentArtifact:
     """Extract + validate ONE already-fetched document into an artifact.
 
@@ -601,6 +602,7 @@ async def _artifact_from_fetch(
                 url=artifact.source_url,
                 extraction=extraction,
                 title_only=is_title_only(policy=period_policy),
+                published_at=published_at,
             ),
         )
     artifact.period_policy = period_policy
@@ -619,6 +621,7 @@ async def live_primary_document_extractor(
     ocr_provider: OcrProvider | None = None,
     ocr_budget: OcrBudget | None = None,
     period_policy: str | None = None,
+    published_at: date | None = None,
 ) -> PrimaryDocumentArtifact:
     """DEEP fetch + structure-aware extraction + stricter validation of ONE doc.
 
@@ -660,6 +663,7 @@ async def live_primary_document_extractor(
         ocr_provider=ocr_provider,
         ocr_budget=ocr_budget,
         period_policy=period_policy,
+        published_at=published_at,
     )
 
 

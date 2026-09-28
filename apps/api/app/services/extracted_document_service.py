@@ -1152,6 +1152,7 @@ async def _revalidate_document(
             url=doc.canonical_url,
             extraction=extraction,
             title_only=is_title_only(source_type=doc.source_type),
+            published_at=doc.doc_date,
         ),
     )
     await _deactivate_active_facts(session, doc.id)
