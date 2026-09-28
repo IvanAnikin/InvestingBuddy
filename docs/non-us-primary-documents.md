@@ -178,7 +178,9 @@ authority are required, or both connectors must be switched off.**
   version 16 — current — before the disclosure acquisition could read it correctly. A
   stored announcement (keyed by its persisted `source_type`) is now re-validated with
   `bare_dollar_is_usd=False` on every path, and that path never re-fetches an
-  announcement's official page as if it were the content. Pipeline version 17.
+  announcement's official page as if it were the content — when it therefore declines
+  to re-read one, the facts it cannot rebuild are retired (kept for audit) until the
+  disclosure acquisition re-reads the document. Pipeline version 17.
 - Known limits: a table scope label can be a whole sentence ("segment:the group has
   identified its operating segments…" — Pro Medicus) — segment, never Group, but not a
   segment NAME; an ASX re-issue gets a new id and both copies stay current (the ASX gives

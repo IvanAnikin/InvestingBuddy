@@ -1458,3 +1458,36 @@ class TestReuseRevalidationOfAnnouncements:
             announcement, cfg=CFG, issuer_context=None,
             primary_document_extractor=extractor) is None
         assert called == []
+
+
+async def test_a_declined_announcement_reread_retires_its_facts(session):
+    """Review of PR #254: when the reuse path declines to re-read an announcement whose
+    facts are table-derived, those facts (derived under the corrected reading) must not
+    stay active for the facts / calculation tools."""
+    from app.models.extracted_document import ExtractedDocument, ExtractedFact
+    from app.services.extracted_document_service import _revalidate_document
+    from app.services.sources.extracted_fact_validator import IssuerContext
+
+    doc = ExtractedDocument(
+        id=uuid.uuid4(), content_hash=uuid.uuid4().hex * 2,
+        canonical_url="https://www.asx.com.au/asx/v2/statistics/displayAnnouncement.do"
+                      "?display=pdf&idsId=03059473",
+        provider="asx_announcements", source_type="asx_announcement",
+        source_tier="T1_PRIMARY_FILING", mime_type="application/pdf",
+        extraction_method="native_pdf", status="extracted", title="Half Year Accounts",
+        pipeline_version=16, excerpts_json=[])
+    session.add(doc)
+    table_fact = ExtractedFact(
+        id=uuid.uuid4(), extracted_document_id=doc.id, label="revenue",
+        value_numeric=1402.0, value_text="1,402", currency="USD", scale="million",
+        period="2024", extraction_method="native_pdf", confidence=0.8,
+        validation_status="validated", is_active=True, table_location="p16:t1")
+    session.add(table_fact)
+    await session.flush()
+    await _revalidate_document(
+        session, doc, cfg=CFG, existing_active_facts=[table_fact],
+        issuer_context=IssuerContext(company_name="PRO MEDICUS LIMITED", ticker="PME"),
+        primary_document_extractor=None)
+    await session.refresh(table_fact)
+    assert table_fact.is_active is False
+    assert doc.pipeline_version == 16  # not restamped: the acquisition re-reads it

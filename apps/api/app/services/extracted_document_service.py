@@ -1123,6 +1123,17 @@ async def _revalidate_document(
             primary_document_extractor=primary_document_extractor,
         )
         if artifact is None:
+            from app.services.sources.disclosure_period_policy import is_title_only
+
+            if is_title_only(source_type=doc.source_type):
+                # An announcement is never re-read here (see
+                # ``_attempt_full_reextraction``), so its table-derived facts cannot be
+                # rebuilt on this path — and they were derived under a reading since
+                # corrected (a bare "$" as USD). They are retired, kept for audit; the
+                # disclosure acquisition re-reads the document from its content address
+                # and restores a current set. No figure is better than a wrong one.
+                await _deactivate_active_facts(session, doc.id)
+                await session.flush()
             return _degraded_artifact_after_failed_reextraction(doc)
         extraction = artifact.extraction
         if extraction is None:  # pragma: no cover - guarded by _attempt_full_reextraction
