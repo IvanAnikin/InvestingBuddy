@@ -1101,6 +1101,12 @@ class Settings(BaseSettings):
     # Wall-clock budget for securing core disclosures before the questions are asked.
     # Once spent, remaining documents are answered from the database only.
     v3_disclosure_core_budget_seconds: float = 300.0
+    # Extraction budget for ONE official announcement (the generic primary-document
+    # budget is 60 s). Measured: a 32-page ASX half-year report takes ~24 s on a dev
+    # machine, and on the 1-vCPU production host with two jobs running a 60 s budget
+    # read the cover page only, so the issuer's name was never reached. Bounded by the
+    # core wall budget above.
+    v3_disclosure_extraction_timeout_seconds: int = 150
 
     # --- V3.17 research escalation ------------------------------------------
     # The master switch. OFF by default and ABSENT in production: escalation creates

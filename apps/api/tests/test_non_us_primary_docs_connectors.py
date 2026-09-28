@@ -436,6 +436,44 @@ class TestAcquisitionChain:
                   (await session.execute(select(ResearchDocumentVersion))).scalars().all()]
         assert not any("Annual Report" in (t or "") for t in titles)
 
+    async def test_out_of_time_before_the_name_is_extraction_failed_not_identity(
+        self, session, monkeypatch
+    ):
+        """Production (EcoGraf 03070575): a loaded host read the cover page only. That is
+        a partial extraction, not another issuer's document — and it is still not stored."""
+        from app.models.research_document import ResearchDocumentVersion
+        from app.services.sources.primary_document_extractor import PrimaryDocumentExtraction
+
+        pdf = "https://announcements.asx.com.au/asxpdf/20260925/pdf/074hv8s0yw9t50.pdf"
+        web = FakeWeb({pdf: ("text/html", OTHER_ISSUER_DOC)})
+        real = web.extractor()
+
+        async def out_of_time(url, **kw):  # noqa: ANN001, ANN003, ANN202
+            artifact = await real(url, **kw)
+            if url == pdf:
+                assert isinstance(artifact.extraction, PrimaryDocumentExtraction)
+                artifact.extraction.warnings.append(
+                    "Extraction time budget exceeded; partial extraction only.")
+            return artifact
+
+        company = await _company(session, "EGR", "AU", "EcoGraf Limited")
+        out = await acq.ensure_core_disclosures(
+            session, company=company, cfg=CFG, fetcher=web.get, poster=web.post,
+            extractor=out_of_time, now=NOW)
+        annual = next(d for d in out["documents"] if d["document_ref"] == "03143773")
+        assert annual["state"] == "unavailable" and annual["reason"] == "extraction_failed"
+        titles = [v.title for v in
+                  (await session.execute(select(ResearchDocumentVersion))).scalars().all()]
+        assert not any("Annual Report" in (t or "") for t in titles)
+
+    def test_announcements_get_their_own_extraction_budget(self):
+        cfg = acq._extraction_cfg(CFG)
+        assert cfg.primary_document_extraction_timeout_seconds == (
+            CFG.v3_disclosure_extraction_timeout_seconds) > (
+            CFG.primary_document_extraction_timeout_seconds)
+        low = CFG.model_copy(update={"v3_disclosure_extraction_timeout_seconds": 10})
+        assert acq._extraction_cfg(low) is low  # never LOWERS the generic budget
+
     async def test_mutation_forecast_period_never_stamps_the_announcement(self, session):
         from app.models.research_document import ResearchDocumentVersion
 

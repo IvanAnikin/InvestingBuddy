@@ -145,6 +145,21 @@ def content_text(artifact: Any, limit: int = _IDENTITY_TEXT_CHARS) -> str:
     return " ".join(parts)[:limit]
 
 
+def _extraction_cfg(cfg: Any) -> Any:
+    """``cfg`` with the announcement extraction budget (see config) when it is larger."""
+    budget = int(getattr(cfg, "v3_disclosure_extraction_timeout_seconds", 0) or 0)
+    current = int(getattr(cfg, "primary_document_extraction_timeout_seconds", 0) or 0)
+    if budget <= current or not hasattr(cfg, "model_copy"):
+        return cfg
+    return cfg.model_copy(update={"primary_document_extraction_timeout_seconds": budget})
+
+
+def _read_partially_for_time(artifact: Any) -> bool:
+    extraction = getattr(artifact, "extraction", None)
+    return any("time budget" in str(w).lower()
+               for w in (getattr(extraction, "warnings", None) or []))
+
+
 def document_names_issuer(artifact: Any, issuer: VerifiedIssuer) -> bool:
     """True when the fetched document names THIS issuer.
 
@@ -419,7 +434,7 @@ async def ensure_disclosure_evidence(
         artifact = await extractor(
             url, allowed_domains=(host,), title_hint=_title(document),
             issuer_context=IssuerContext(company_name=issuer.name, ticker=issuer.ticker),
-            cfg=cfg, period_policy=PERIOD_POLICY_TITLE_ONLY,
+            cfg=_extraction_cfg(cfg), period_policy=PERIOD_POLICY_TITLE_ONLY,
             published_at=document.published_on,
         )
     except Exception as exc:  # noqa: BLE001
@@ -453,6 +468,15 @@ async def ensure_disclosure_evidence(
     if not document_names_issuer(artifact, issuer):
         # Not stored, not attributed: a document that does not name the issuer is not
         # the issuer's evidence, whatever the listing said.
+        if _read_partially_for_time(artifact):
+            # Out of time after the cover page is not evidence of another issuer:
+            # say what happened (measured: an EcoGraf half-year report read to 404
+            # characters on a loaded host).
+            return DisclosureEvidenceResult(
+                state="unavailable", document_ref=ref, reason=REASON_EXTRACTION_FAILED,
+                attempted=True, fetched=True,
+                notes=["extraction ran out of time before the issuer was named; "
+                       "nothing was stored"])
         return DisclosureEvidenceResult(
             state="unavailable", document_ref=ref, reason=REASON_IDENTITY_UNVERIFIED,
             attempted=True, fetched=True,
