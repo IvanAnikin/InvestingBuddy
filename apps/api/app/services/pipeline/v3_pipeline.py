@@ -264,6 +264,11 @@ async def run_v3_research(
     # Measured on real PostgreSQL at head 038, before this line existed: 0 tool calls
     # persisted, 0 findings, and **the V2 report was never written**. The unit suite
     # runs on SQLite with foreign keys OFF, which is why 6,100 green tests missed it.
+    # The same id names the AgentRun that will own the report; documents this run
+    # acquires are recorded against it, so the report's primary-documents view shows
+    # them. Only an id that really names an agent_runs row is used (a broken link would
+    # abort the shared transaction, see above).
+    agent_run_id = await _existing_agent_run_id(session, research_job_id)
     research_job_id = await _resolve_research_job_id(session, research_job_id, outcome)
 
     # V3.18.2 — the ledger this code writes has columns migration 041 adds. On a database
@@ -299,12 +304,29 @@ async def run_v3_research(
                 routing=routing,
                 research_job_id=research_job_id,
                 discovery_candidate_id=discovery_candidate_id,
+                agent_run_id=agent_run_id,
             )
     except Exception as exc:  # noqa: BLE001 - additive work must not fail the report
         outcome.error = type(exc).__name__
         outcome.degraded.append(f"the V3 pipeline raised {type(exc).__name__}")
     outcome.elapsed_seconds = clock() - started
     return outcome
+
+
+async def _existing_agent_run_id(session: Any, run_id: uuid.UUID | None) -> uuid.UUID | None:
+    """``run_id`` when it names an ``agent_runs`` row, else ``None`` (never raises)."""
+    if run_id is None:
+        return None
+    try:
+        from sqlalchemy import select
+
+        from app.models.agent_run import AgentRun
+
+        found = (await session.execute(
+            select(AgentRun.id).where(AgentRun.id == run_id))).scalar_one_or_none()
+    except Exception:  # noqa: BLE001 - a missing link is honest; a broken one is not
+        return None
+    return found
 
 
 async def _resolve_research_job_id(
@@ -346,6 +368,7 @@ async def _run(
     routing: ModelRouting | None,
     research_job_id: uuid.UUID | None = None,
     discovery_candidate_id: str | uuid.UUID | None = None,
+    agent_run_id: uuid.UUID | None = None,
 ) -> None:
     resolved_mode = parse_mode(mode or getattr(cfg, "v3_research_mode_default", None))
     limits = limits_for(resolved_mode)
@@ -407,7 +430,7 @@ async def _run(
     try:
         async with session.begin_nested():
             outcome.core_disclosures = await ensure_core_disclosures(
-                session, company=company, cfg=cfg
+                session, company=company, cfg=cfg, agent_run_id=agent_run_id
             )
     except Exception as exc:  # noqa: BLE001 - a failed acquisition costs the step only
         outcome.degraded.append(

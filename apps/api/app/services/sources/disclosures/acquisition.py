@@ -238,20 +238,56 @@ def _raw_title(document: OfficialDocument) -> str:
 
 
 async def _record_attempt(session: Any, artifact: Any, *, company_id: uuid.UUID,
-                          source_type: str, cfg: Any) -> None:
+                          source_type: str, cfg: Any,
+                          agent_run_id: uuid.UUID | None = None) -> None:
     from app.services.document_ingestion_attempt_service import record_ingestion_attempts
     from app.services.sources.ingestion_attempts import artifact_to_attempt
     from app.services.sources.taxonomy import T1_PRIMARY_FILING
 
     try:
         await record_ingestion_attempts(
-            session, company_id=company_id, agent_run_id=None,
+            session, company_id=company_id, agent_run_id=agent_run_id,
             attempts=[artifact_to_attempt(artifact, source_type=source_type,
                                           source_tier=T1_PRIMARY_FILING)],
             cfg=cfg,
         )
     except Exception:  # noqa: BLE001 - an audit row failing never fails acquisition
         logger.warning("ingestion attempt could not be recorded")
+
+
+async def _record_reuse(
+    session: Any, *, document: OfficialDocument, version_id: uuid.UUID | None,
+    company_id: uuid.UUID, agent_run_id: uuid.UUID | None, source_type: str, cfg: Any,
+) -> None:
+    """This RUN's attempt row for a document it read from the corpus without a fetch.
+
+    The report's primary-documents view is scoped to the report's own run, so a
+    document served from the corpus would otherwise be invisible there on every rerun.
+    No fetch happened: ``pinned`` stays ``None``; the content hash is the current
+    version's, so the view marks it reused."""
+    if agent_run_id is None or version_id is None:
+        return
+    from app.models.research_document import ResearchDocumentVersion
+    from app.services.document_ingestion_attempt_service import (
+        IngestionAttemptRecord,
+        record_ingestion_attempts,
+    )
+    from app.services.sources.taxonomy import T1_PRIMARY_FILING
+
+    try:
+        async with session.begin_nested():
+            version = await session.get(ResearchDocumentVersion, version_id)
+            if version is None:
+                return
+            await record_ingestion_attempts(
+                session, company_id=company_id, agent_run_id=agent_run_id, cfg=cfg,
+                attempts=[IngestionAttemptRecord(
+                    canonical_url=document.official_url, source_type=source_type,
+                    source_tier=T1_PRIMARY_FILING, status="extracted",
+                    doc_kind=document.doc_kind, discovery_strategy=document.source_id,
+                    content_hash=version.content_hash, pinned=None)])
+    except Exception:  # noqa: BLE001 - an audit row never fails acquisition
+        logger.warning("reuse attempt could not be recorded")
 
 
 async def _record_attempt_safely(session: Any, artifact: Any, **kw: Any) -> None:
@@ -381,6 +417,7 @@ async def ensure_disclosure_evidence(
     fetcher: Any = None,
     extractor: Any = None,
     ready_only: bool = False,
+    agent_run_id: uuid.UUID | None = None,
 ) -> DisclosureEvidenceResult:
     """Make one official disclosure searchable for its issuer, or say why not."""
     from app.services.sources.disclosure_period_policy import PERIOD_POLICY_TITLE_ONLY
@@ -399,6 +436,12 @@ async def ensure_disclosure_evidence(
                                         reason=REASON_NOT_INDEXED, notes=[type(exc).__name__])
     stale = before.is_ready and await _changed_since_acquired(
         session, company_id=issuer.company_id, document=document)
+    if before.is_ready and not stale:
+        # Not for a stale holding: this row's time would read as "acquired after the
+        # correction" and hide the correction from the next run.
+        await _record_reuse(session, document=document, version_id=before.version_id,
+                            company_id=issuer.company_id, agent_run_id=agent_run_id,
+                            source_type=_SOURCE_TYPES[document.source_id], cfg=cfg)
     if before.is_ready and not stale:
         return DisclosureEvidenceResult(
             state="ready", document_ref=ref, chunk_count=before.indexable_chunk_count,
@@ -456,7 +499,8 @@ async def ensure_disclosure_evidence(
 
     if getattr(artifact, "status", None) != "extracted":
         await _record_attempt_safely(session, artifact, company_id=issuer.company_id,
-                                     source_type=source_type, cfg=cfg)
+                                     source_type=source_type, cfg=cfg,
+                                     agent_run_id=agent_run_id)
         code = getattr(artifact, "failure_code", None) or "unknown"
         reason = (REASON_PRIMARY_DOCUMENT_UNAVAILABLE
                   if code.startswith(("blocked", "http", "fetch", "redirect", "unsupported",
@@ -488,9 +532,10 @@ async def ensure_disclosure_evidence(
         async with session.begin_nested():
             persisted = await persist_primary_document_artifacts(
                 session, artifacts=[artifact], company_id=issuer.company_id,
-                agent_run_id=None, cfg=cfg)
+                agent_run_id=agent_run_id, cfg=cfg)
             await _record_attempt(session, artifact, company_id=issuer.company_id,
-                                  source_type=source_type, cfg=cfg)
+                                  source_type=source_type, cfg=cfg,
+                                  agent_run_id=agent_run_id)
     except Exception as exc:  # noqa: BLE001
         logger.exception("persisting a disclosure failed")
         return DisclosureEvidenceResult(state="unavailable", document_ref=ref,
@@ -570,9 +615,13 @@ def select_core_documents(
 async def ensure_core_disclosures(
     session: Any, *, company: Any, cfg: Any, fetcher: Any = None, poster: Any = None,
     extractor: Any = None, now: datetime | None = None,
+    agent_run_id: uuid.UUID | None = None,
 ) -> dict[str, Any]:
     """Secure an LSE / ASX issuer's core official documents in the corpus before its
-    research questions are asked. Returns what happened; never raises."""
+    research questions are asked. Returns what happened; never raises.
+
+    ``agent_run_id`` (the run that will own the report) links every acquired or reused
+    document to that run, so the report's primary-documents view shows them."""
     out: dict[str, Any] = {"source_id": None, "documents": []}
     source_id, why = source_for(company, cfg)
     if source_id is None:
@@ -608,7 +657,7 @@ async def ensure_core_disclosures(
         spent = time.monotonic() - started >= budget
         result = await ensure_disclosure_evidence(
             session, issuer=listing.issuer, document=document, cfg=cfg, fetcher=fetcher,
-            extractor=extractor, ready_only=spent)
+            extractor=extractor, ready_only=spent, agent_run_id=agent_run_id)
         out["documents"].append({
             **document.to_item(), **result.to_dict(),
         })

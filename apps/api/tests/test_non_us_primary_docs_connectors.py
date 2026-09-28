@@ -1011,3 +1011,91 @@ class TestCodeReviewFixes:
         assert classify_uk(nsm_type="Annual Financial Report",
                            headline="Publication of Annual Report 2025 and Notice of AGM",
                            document_format="Plain text")[1] == "other"
+
+
+class TestReportLineage:
+    """Live acceptance C (EcoGraf, report 8b246736): the research read four ASX
+    documents, and the report's primary-documents view showed none — the acquisition
+    recorded its attempts with no run. The consumer is the view; it is read here."""
+
+    async def _run(self, session):  # noqa: ANN001, ANN202
+        from app.models.agent_run import AgentRun
+
+        run = AgentRun(id=uuid.uuid4(), workflow_name="company_research",
+                       workflow_version="test", status="running")
+        session.add(run)
+        await session.flush()
+        return run.id
+
+    async def _view(self, session, company, run_id):  # noqa: ANN001, ANN202
+        from app.services.primary_document_view_service import get_report_primary_documents
+
+        return await get_report_primary_documents(
+            session, report_company_id=company.id, report_agent_run_id=run_id,
+            report_id=uuid.uuid4())
+
+    async def test_acquired_then_reused_documents_appear_in_each_runs_report(
+        self, session
+    ):
+        from datetime import timedelta
+
+        from app.models.extracted_document import ExtractedDocument
+
+        web = FakeWeb()
+        company = await _company(session, "EGR", "AU", "EcoGraf Limited")
+        first = await self._run(session)
+        out = await acq.ensure_core_disclosures(
+            session, company=company, cfg=CFG, fetcher=web.get, poster=web.post,
+            extractor=web.extractor(), now=NOW, agent_run_id=first)
+        ready = {d["document_ref"] for d in out["documents"] if d["state"] == "ready"}
+        assert ready
+        view = await self._view(session, company, first)
+        assert {d.canonical_url.rsplit("=", 1)[-1] for d in view.documents} >= ready
+        assert view.summary.extracted_count >= len(ready)
+        assert not any(d.reused for d in view.documents)
+        # Older documents, as they would be on a later day.
+        for doc in (await session.execute(select(ExtractedDocument))).scalars().all():
+            doc.created_at = doc.created_at - timedelta(hours=1)
+        await session.flush()
+
+        fetched = len(web.content_fetches())
+        second = await self._run(session)
+        again = await acq.ensure_core_disclosures(
+            session, company=company, cfg=CFG, fetcher=web.get, poster=web.post,
+            extractor=web.extractor(), now=NOW, agent_run_id=second)
+        assert len(web.content_fetches()) == fetched  # no network for READY documents
+        assert {d["document_ref"] for d in again["documents"] if d.get("reused")} == ready
+        rerun = await self._view(session, company, second)
+        shown = {d.canonical_url.rsplit("=", 1)[-1] for d in rerun.documents}
+        assert shown == ready and all(d.reused for d in rerun.documents)
+        assert all(d.pinned is None for d in rerun.documents)  # nothing was fetched
+
+    async def test_a_reuse_row_never_hides_a_pending_correction(self, session):
+        """A stale holding answered from the corpus records NO reuse row: its time
+        would read as 'acquired after the correction'."""
+        from app.models.document_ingestion_attempt import DocumentIngestionAttempt
+
+        web = FakeWeb()
+        company = await _company(session, "PRE", "LSE", "Pensana Plc")
+        await _core(session, company, web)
+        listing = await acq.list_disclosures(session, company, cfg=CFG, fetcher=web.get,
+                                             poster=web.post, now=NOW)
+        held = next(d for d in listing.documents if d.research_rank < 5)
+        stale = dataclasses.replace(held, updated_at=datetime(2099, 1, 1, tzinfo=timezone.utc))
+        run = await self._run(session)
+        await acq.ensure_disclosure_evidence(
+            session, issuer=listing.issuer, document=stale, cfg=CFG, fetcher=web.get,
+            extractor=web.extractor(), ready_only=True, agent_run_id=run)
+        rows = (await session.execute(select(DocumentIngestionAttempt).where(
+            DocumentIngestionAttempt.agent_run_id == run))).scalars().all()
+        assert rows == []
+        assert await acq._changed_since_acquired(session, company_id=company.id,
+                                                 document=stale)
+
+    async def test_the_pipeline_links_only_a_real_agent_run(self, session):
+        from app.services.pipeline.v3_pipeline import _existing_agent_run_id
+
+        run = await self._run(session)
+        assert await _existing_agent_run_id(session, run) == run
+        assert await _existing_agent_run_id(session, uuid.uuid4()) is None
+        assert await _existing_agent_run_id(session, None) is None
