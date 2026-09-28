@@ -283,7 +283,8 @@ _LABEL_PATTERNS: list[tuple[re.Pattern[str], str]] = [
             r"|granted|paid|payable|payments?|receipts?|suppliers|amounts?|owed|due"
             r"|provisions?|entitlements?|liabilit\w*|superannuation|contributions?"
             r"|leave|loans?|charges?)\b)"
-            r"\s*(?:(?:total|average|group)\s+)*(?:number\s+of\s+)?"
+            r"\s*(?:the\s+)?(?:(?:total|group|weighted|average|monthly)\s+)*"
+            r"(?:number\s+of\s+)?"
             r"(?:employees(?!\s*['’])|headcount|full[- ]time\s+equivalents?|ftes?)\b",
             re.I | re.S),
         FIELD_EMPLOYEES,
