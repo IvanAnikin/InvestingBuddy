@@ -670,3 +670,242 @@ class TestTool:
         assert args["topics"] == ("offtake", "Longonjo", "funding", "permit", "drilling")
         with pytest.raises(ValueError):
             validate_get_recent_filings({"ticker": "PRE", "topics": "offtake"})
+
+
+# ── Evidence-integrity review fixes ────────────────────────────────────────── #
+
+
+class TestEvidenceIntegrityFixes:
+    async def test_a_report_and_its_presentation_stay_two_documents(self, session):
+        """HIGH (review): keyed "<kind>:<period>", a half-year presentation fetched
+        after the half-year REPORT superseded it and dropped it out of search."""
+        from app.models.research_document import ResearchDocument, ResearchDocumentVersion
+
+        report = "https://announcements.asx.com.au/asxpdf/20260225/pdf/0aaaaaaaaaaaaa.pdf"
+        deck = "https://announcements.asx.com.au/asxpdf/20260225/pdf/0bbbbbbbbbbbbb.pdf"
+        body = lambda t: _html(f"<h1>{t}</h1><p>" + f"EcoGraf Limited {t}. " * 20 + "</p>")  # noqa: E731
+        page = ("<table>"
+                + _asx_row("03070575", "Appendix 4D and Half Year Report for the half-year "
+                           "ended 31 December 2025", sensitive=True, date="25/02/2026")
+                + _asx_row("03070576", "Half Year Results Presentation - half-year ended "
+                           "31 December 2025", sensitive=True, date="25/02/2026")
+                + "</table>")
+        base = ("https://www.asx.com.au/asx/v2/statistics/displayAnnouncement.do"
+                "?display=pdf&idsId=")
+        web = FakeWeb({
+            "https://www.asx.com.au/asx/v2/statistics/announcements.do?by=asxCode&asxCode=EGR"
+            "&timeframe=Y&year=2026": ("text/html", page.encode()),
+            base + "03070575": ("text/html", _display(report).encode()),
+            base + "03070576": ("text/html", _display(deck).encode()),
+            report: ("text/html", body("half year report")),
+            deck: ("text/html", body("results presentation")),
+        })
+        company = await _company(session, "EGR", "AU", "EcoGraf Limited")
+        listing = await acq.list_disclosures(session, company, cfg=CFG, fetcher=web.get,
+                                             now=NOW)
+        for document in listing.documents:
+            result = await acq.ensure_disclosure_evidence(
+                session, issuer=listing.issuer, document=document, cfg=CFG,
+                fetcher=web.get, extractor=web.extractor())
+            assert result.is_ready, result
+        documents = (await session.execute(select(ResearchDocument))).scalars().all()
+        assert len(documents) == 2
+        current = (await session.execute(select(ResearchDocumentVersion).where(
+            ResearchDocumentVersion.is_current.is_(True)))).scalars().all()
+        assert len(current) == 2  # neither superseded the other
+
+    async def test_a_forecast_in_the_official_title_is_refused_too(self, session):
+        """HIGH (review): "Q1 2028 first production update" in a TITLE is a forecast."""
+        from app.models.research_document import ResearchDocumentVersion
+        from app.services.sources.disclosures.relevance import classify_uk
+
+        assert classify_uk(nsm_type="Statement re",
+                           headline="Q1 2028 first production update",
+                           document_format="Plain text")[1] == "other"
+        ref = "91cc0ab0-3199-4dac-8d0f-35a6a5701273"
+        NSM_RESPONSE["hits"]["hits"][0]["_source"]["headline"] = (
+            "Pensana Plc - Q1 2028 first production update")
+        try:
+            web = FakeWeb()
+            company = await _company(session, "PRE", "LSE", "Pensana Plc")
+            await _core(session, company, web)
+        finally:
+            NSM_RESPONSE["hits"]["hits"][0]["_source"]["headline"] = (
+                "Pensana Plc - Update on Longonjo Financing")
+        versions = (await session.execute(select(ResearchDocumentVersion))).scalars().all()
+        forecast = next(v for v in versions if ref in (v.canonical_url or ""))
+        assert forecast.period_key is None  # published 2026-09: 2028-Q1 had not begun
+
+    async def test_a_corrected_refiling_is_fetched_again(self, session):
+        """MEDIUM (review): an NSM amendment keeps the address; the source's update time
+        after the last acquisition makes the holding stale."""
+        from app.services.corpus.filing_evidence import current_version_for_document_ref
+
+        ref = "91cc0ab0-3199-4dac-8d0f-35a6a5701273"
+        url = f"https://data.fca.org.uk/artefacts/NSM/PRN/{ref}.html"
+        web = FakeWeb()
+        company = await _company(session, "PRE", "LSE", "Pensana Plc")
+        await _core(session, company, web)
+        old = await current_version_for_document_ref(session, company_id=company.id,
+                                                     document_ref=ref)
+        before = len(web.content_fetches())
+        # Unchanged at the source: reused, not fetched.
+        await _core(session, company, web)
+        assert len(web.content_fetches()) == before
+        # The regulator records an amendment after our acquisition.
+        hit = NSM_RESPONSE["hits"]["hits"][0]["_source"]
+        hit["last_updated_date"] = "2099-01-01T00:00:00Z"
+        web.post_map = {k: json.dumps(NSM_RESPONSE).encode() for k in web.post_map}
+        web.get_map[url] = ("text/html", RNS_FINANCING.replace(b"30%", b"35%"))
+        try:
+            await _core(session, company, web)
+        finally:
+            hit.pop("last_updated_date")
+        assert len(web.content_fetches()) > before
+        new = await current_version_for_document_ref(session, company_id=company.id,
+                                                     document_ref=ref)
+        assert new.id != old.id and new.content_hash != old.content_hash
+
+    @pytest.mark.parametrize(("headline", "kind"), [
+        ("Final Results of Retail Offer", "other"),
+        ("Notice of Final Results Date", "other"),
+        ("Final Results for the year ended 30 June 2026", "results_release"),
+    ])
+    def test_uk_results_wording(self, headline, kind):
+        from app.services.sources.disclosures.relevance import classify_uk
+
+        assert classify_uk(nsm_type="Statement re", headline=headline,
+                           document_format="Plain text")[1] == kind
+
+    @pytest.mark.parametrize("headline", [
+        "2026 Sustainability Annual Report", "Annual Report on Tenements",
+        "Annual Report Webinar",
+    ])
+    def test_an_asx_annual_something_is_not_the_annual_report(self, headline):
+        from app.services.sources.disclosures.relevance import classify_asx
+
+        assert classify_asx(headline=headline, price_sensitive=False)[1] != "annual_report"
+
+    def test_the_listing_parser_is_linear_on_hostile_html(self):
+        """MEDIUM (security): a regex over unbalanced tags was quadratic — 40 KB took
+        9.6 s, and the parse ran on the event loop."""
+        import time
+
+        from app.services.sources.disclosures.asx import parse_asx_listing
+
+        start = time.perf_counter()
+        parse_asx_listing("<tr " + "<" * 2_000_000)
+        parse_asx_listing("<tr><td>" + "<a" * 1_000_000)
+        assert time.perf_counter() - start < 2.0
+
+
+# ── Code review fixes ──────────────────────────────────────────────────────── #
+
+
+class TestCodeReviewFixes:
+    async def test_a_february_run_reads_every_year_in_the_window(self, session):
+        """BLOCKING (review): {now.year, cutoff.year} skipped the middle year, which
+        holds the latest annual and half-year reports."""
+        web = FakeWeb()
+        company = await _company(session, "EGR", "AU", "EcoGraf Limited")
+        await acq.list_disclosures(session, company, cfg=CFG, fetcher=web.get,
+                                   now=datetime(2027, 2, 10, tzinfo=timezone.utc))
+        years = [u.rsplit("year=", 1)[1] for _m, u in web.calls if "announcements.do" in u]
+        assert years == ["2027", "2026", "2025"]
+
+    async def test_the_same_bytes_are_ready_for_a_second_company(self, session):
+        """HIGH (review): documents are deduplicated by content hash globally; a second
+        company holding the same issuer's PDF was never READY and re-fetched forever."""
+        web = FakeWeb()
+        first = await _company(session, "EGR", "AU", "EcoGraf Limited")
+        await _core(session, first, web)
+        second = await _company(session, "EGR.AX", "ASX", "EcoGraf Limited")
+        out = await _core(session, second, web)
+        assert out["documents"] and all(d["state"] == "ready" for d in out["documents"]), [
+            (d["document_ref"], d["reason"]) for d in out["documents"]]
+        fetched = len(web.content_fetches())
+        again = await _core(session, second, web)
+        assert len(web.content_fetches()) == fetched and all(d["reused"] for d in again["documents"])
+
+    @pytest.mark.parametrize(("issuer_name", "text", "expected"), [
+        ("AUSTRALIAN STRATEGIC MATERIALS LTD", "Australian rare earths leader Lynas Rare "
+         "Earths Limited reports record output.", False),
+        ("IGO LIMITED", "Indigo Minerals announces drilling.", False),
+        ("IGO LIMITED", "IGO Limited announces its quarterly report.", True),
+        ("RAINBOW RARE EARTHS LIMITED", "Rainbow Rare Earths Limited signs an MoU.", True),
+        ("PENSANA PLC", "Pensana Plc (the Company) announces financing.", True),
+        ("NICK SCALI LIMITED", "Results for Nick Scali (ASX: NCK).", True),
+        ("NICK SCALI LIMITED", "Furniture retailer update (ASX: NCK).", True),
+    ])
+    def test_the_content_must_name_the_whole_issuer(self, issuer_name, text, expected):
+        from types import SimpleNamespace
+
+        from app.services.sources.disclosures.model import VerifiedIssuer
+
+        ticker = {"IGO LIMITED": "IGO", "NICK SCALI LIMITED": "NCK"}.get(issuer_name, "XXX")
+        issuer = VerifiedIssuer(company_id=uuid.uuid4(), ticker=ticker, venue="AU",
+                                name=issuer_name, source_id="asx_announcements",
+                                identity_basis="t")
+        artifact = SimpleNamespace(title=issuer_name, extraction=SimpleNamespace(
+            blocks=[SimpleNamespace(text=text)], excerpts=[]))
+        assert acq.document_names_issuer(artifact, issuer) is expected
+
+    async def test_a_suffixed_ticker_and_an_aim_venue_are_understood(self, session):
+        web = FakeWeb()
+        asx = await _company(session, "EGR.AX", "ASX", "EcoGraf Limited")
+        listing = await acq.list_disclosures(session, asx, cfg=CFG, fetcher=web.get, now=NOW)
+        assert listing.issuer is not None and listing.issuer.ticker == "EGR"
+        aim = await _company(session, "PRE", "AIM", "Pensana Plc")
+        assert acq.source_for(aim, CFG) == ("uk_fca_nsm", None)
+
+    async def test_a_held_lei_that_disagrees_with_gleif_fails_closed(self, session, monkeypatch):
+        from app.services.sources.disclosures import uk_nsm
+
+        async def _held(_session, _company):  # noqa: ANN001, ANN202
+            return "213800NW5GVIRMXSRL48"
+
+        monkeypatch.setattr(uk_nsm, "_lei_from_entity_master", _held)
+        web = FakeWeb()
+        company = await _company(session, "PRE", "LSE", "Pensana Plc")
+        listing = await acq.list_disclosures(session, company, cfg=CFG, fetcher=web.get,
+                                             poster=web.post, now=NOW)
+        assert listing.issuer is None and listing.reason == "identity_unverified"
+
+    async def test_an_unreadable_directory_is_source_unavailable_not_identity(self, session):
+        web = FakeWeb()
+        web.get_map.pop(
+            "https://asx.api.markitdigital.com/asx-research/1.0/companies/directory/file")
+        company = await _company(session, "EGR", "AU", "EcoGraf Limited")
+        listing = await acq.list_disclosures(session, company, cfg=CFG, fetcher=web.get,
+                                             now=NOW)
+        assert listing.issuer is None and listing.reason == "source_unavailable"
+
+    async def test_an_index_failure_is_a_reason_never_an_exception(self, session, monkeypatch):
+        async def _boom(*_a, **_k):  # noqa: ANN002, ANN003, ANN202
+            raise RuntimeError("index backend down")
+
+        monkeypatch.setattr(acq, "_index", _boom)
+        web = FakeWeb()
+        company = await _company(session, "PRE", "LSE", "Pensana Plc")
+        out = await _core(session, company, web)
+        assert out["documents"] and all(d["state"] == "unavailable" for d in out["documents"])
+
+    async def test_the_wall_budget_stops_further_fetches(self, session):
+        web = FakeWeb()
+        company = await _company(session, "PRE", "LSE", "Pensana Plc")
+        cfg = Settings(**{**CFG.model_dump(), "v3_disclosure_core_budget_seconds": 0.0001})
+        out = await acq.ensure_core_disclosures(session, company=company, cfg=cfg,
+                                                fetcher=web.get, poster=web.post,
+                                                extractor=web.extractor(), now=NOW)
+        reasons = [d["reason"] for d in out["documents"]]
+        assert "acquire_budget_exhausted" in reasons and len(web.content_fetches()) <= 1
+
+    def test_a_text_annual_financial_report_with_results_is_a_results_release(self):
+        from app.services.sources.disclosures.relevance import classify_uk
+
+        assert classify_uk(nsm_type="Annual Financial Report",
+                           headline="Final Results for the year ended 30 June 2026",
+                           document_format="Plain text")[1] == "results_release"
+        assert classify_uk(nsm_type="Annual Financial Report",
+                           headline="Publication of Annual Report 2025 and Notice of AGM",
+                           document_format="Plain text")[1] == "other"

@@ -1098,6 +1098,9 @@ class Settings(BaseSettings):
     # annual report (at most ~15 months old) and recent material announcements, not an
     # issuer's history.
     v3_disclosure_lookback_days: int = 540
+    # Wall-clock budget for securing core disclosures before the questions are asked.
+    # Once spent, remaining documents are answered from the database only.
+    v3_disclosure_core_budget_seconds: float = 300.0
 
     # --- V3.17 research escalation ------------------------------------------
     # The master switch. OFF by default and ABSENT in production: escalation creates

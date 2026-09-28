@@ -414,7 +414,13 @@ async def _run(
             f"the issuer's official disclosures could not be secured ({type(exc).__name__})"
         )
     skipped = outcome.core_disclosures.get("skipped")
-    if outcome.core_disclosures.get("source_id") and skipped:
+    if skipped == "connector_disabled":
+        # An LSE / ASX issuer researched with its disclosure source off: said, not silent.
+        outcome.degraded.append(
+            "the issuer's official disclosure source is not enabled for its venue, so "
+            "its own announcements and reports were not secured into the corpus"
+        )
+    elif outcome.core_disclosures.get("source_id") and skipped:
         outcome.degraded.append(
             f"no official disclosure was secured from {outcome.core_disclosures['source_id']}"
             f" ({skipped})"

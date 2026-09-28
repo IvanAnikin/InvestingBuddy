@@ -181,29 +181,30 @@ async def resolve_uk_issuer(
     session: Any, company: Any, *, cfg: Any, fetcher: Any = None
 ) -> tuple[VerifiedIssuer | None, str | None, int]:
     """``(issuer, why-not, requests)``. Fails closed at every step."""
-    from app.services.discovery.directories import find_listing
+    from app.services.discovery.directories import _strip_suffix, find_listing
 
-    ticker = str(getattr(company, "ticker", "") or "").upper()
+    ticker = _strip_suffix(str(getattr(company, "ticker", "") or ""))
     row, reason = await find_listing(
         name=getattr(company, "name", None), ticker=ticker, venue=VENUE_LSE, cfg=cfg,
         fetcher=fetcher,
     )
     requests = 1
     if row is None:
-        return None, reason or "the London Stock Exchange's own record could not be read", requests
+        return None, reason, requests
     isin = str(row.isin or "").upper()
     if not _ISIN_RE.match(isin):
         return None, "the exchange's record states no valid ISIN", requests
-    lei = await _lei_from_entity_master(session, company)
     basis = f"LSE instrument {row.ticker} ({row.name}), ISIN {isin}"
-    if lei:
-        basis += ", LEI from the platform's entity master"
-    else:
-        lei, detail, n = await _lei_from_gleif(isin, row.name, cfg=cfg, fetcher=fetcher)
-        requests += n
-        if lei is None:
-            return None, detail, requests
-        basis += f", {detail}"
+    # GLEIF always decides; an LEI the platform already holds must AGREE with it, so a
+    # wrong entity-master row can never point the listing at another issuer.
+    lei, detail, n = await _lei_from_gleif(isin, row.name, cfg=cfg, fetcher=fetcher)
+    requests += n
+    if lei is None:
+        return None, detail, requests
+    held = await _lei_from_entity_master(session, company)
+    if held and held != lei:
+        return None, "the platform's entity master holds a different LEI than GLEIF", requests
+    basis += f", {detail}"
     return VerifiedIssuer(
         company_id=company.id, ticker=row.ticker, venue=VENUE_LSE, name=row.name,
         source_id=SOURCE_UK_FCA_NSM, identity_basis=basis, isin=isin, lei=lei,
@@ -274,6 +275,7 @@ def parse_nsm_hits(
             headline=headline, venue_category=nsm_type, category=category,
             doc_kind=doc_kind, research_rank=rank, price_sensitive=None, media=media,
             official_url=url, content_url=url,
+            updated_at=_parse_time(source.get("last_updated_date")),
         ))
     return documents, refused
 
@@ -292,8 +294,11 @@ async def list_uk_disclosures(
         return DisclosureListing(issuer=None, reason=REASON_IDENTITY_UNVERIFIED,
                                  detail=type(exc).__name__)
     if issuer is None:
-        return DisclosureListing(issuer=None, reason=REASON_IDENTITY_UNVERIFIED,
-                                 detail=why, requests=requests)
+        return DisclosureListing(
+            issuer=None,
+            reason=REASON_IDENTITY_UNVERIFIED if why else REASON_SOURCE_UNAVAILABLE,
+            detail=why or "the London Stock Exchange's own record could not be read",
+            requests=requests)
     result = await (poster or safe_post_json)(
         NSM_SEARCH_URL, _query(issuer.lei or ""), allowed_domains=(NSM_SEARCH_HOST,),
         cfg=cfg,

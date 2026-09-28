@@ -22,8 +22,8 @@ verified issuer → official announcement → the actual document → persisted 
 |---|---|---|
 | Discovery | FCA National Storage Mechanism search (`POST api.data.fca.org.uk/search?index=nsm-search`) — the regulator's store of regulated information | The ASX's own yearly announcements page for the code (`www.asx.com.au/asx/v2/statistics/announcements.do?by=asxCode&asxCode=<CODE>&timeframe=Y&year=<Y>`): a full year per request, each row's own `idsId`, the exchange's price-sensitive marker. (The research API returns only the latest five.) |
 | Content | `https://data.fca.org.uk/artefacts/<download_link>` — the full RNS text (HTML), annual-report PDFs, iXBRL XHTML | The announcement's display page (`displayAnnouncement.do?display=pdf&idsId=<id>`, what a citation opens) names the attached PDF, accepted only as exactly `https://announcements.asx.com.au/asxpdf/<8 digits>/pdf/<id>.pdf`; that PDF is fetched |
-| Identity | LSE instrument record → ISIN → **GLEIF** (the LEI authority) → LEI; the NSM query is by LEI and **every** record must carry that LEI | ASX official company directory (V3.19) → ASX code; the API's `displayName` must agree with the directory name |
-| Typing | NSM `type` / `category_group` (e.g. "Annual Financial Report", "Half-year Financial Report", "Director/PDMR Shareholding") | `announcementType` + `isPriceSensitive` |
+| Identity | LSE instrument record → ISIN → **GLEIF** (the LEI authority) → LEI, one record whose legal name agrees; an LEI already held by the platform must agree with GLEIF; the NSM query is by LEI and **every** record must carry that LEI | ASX official company list (V3.19) → ASX code (a suffix like `.AX` stripped) |
+| Typing | NSM `type` (e.g. "Annual Financial Report", "Half-year Financial Report", "Director/PDMR Shareholding") and `document_format` | the headline and the exchange's own price-sensitive marker |
 
 Measured hazards that shaped the design:
 
@@ -100,3 +100,25 @@ authority are required, or both connectors must be switched off.**
 - Known limit: indexing (and so READY) needs the PostgreSQL search backend, as in
   production; extraction of a large PDF can hit the extractor's own time budget on a
   loaded host and yield a partial derivation.
+
+### Review fixes (code, security, evidence integrity)
+
+- **One address, one document.** Announcements are keyed by their official address, not
+  `<kind>:<period>` — a half-year report and its results presentation are two documents.
+- **No future period, title or body.** A period that had not begun at publication is a
+  forecast and is dropped ("Q1 2028 first production update", published 2026).
+- **Corrections are read.** An NSM re-filing keeps its address; the source's
+  `last_updated_date` after the last acquisition makes the holding stale.
+- **Content identity** needs the issuer's WHOLE name (legal suffix dropped) as a phrase,
+  or an exchange ticker citation — one word ("Australian") accepted another issuer.
+- **Shared bytes.** The same PDF held for another company (dual listing, a second row)
+  gets its own corpus version for this company, so it becomes READY instead of being
+  re-fetched every run.
+- **Every year in the window** is read from the ASX (a February run spans three).
+- **Linear, bounded listing parse** off the event loop (a regex over unbalanced tags was
+  quadratic); a 300 s wall budget for the core step; savepoints around index and audit
+  writes so a failure costs one document.
+- Known limits: an ASX re-issue gets a new id and both copies stay current (the ASX gives
+  no supersession signal); a half-year period label follows the existing detector
+  ("half-year ended 31 December 2025" → H1 2025); issuer headlines are neutralised,
+  which can change their wording ("price target" → redacted).

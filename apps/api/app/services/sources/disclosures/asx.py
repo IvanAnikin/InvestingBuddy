@@ -65,8 +65,11 @@ _ASX_TZ = ZoneInfo("Australia/Sydney")
 
 _CODE_RE = re.compile(r"^[A-Z0-9]{3,6}$")
 _IDS_ID_RE = re.compile(r"^[0-9]{6,10}$")
-_ROW_RE = re.compile(r"<tr[^>]*>(.*?)</tr>", re.S | re.I)
-_CELL_RE = re.compile(r"<td[^>]*>(.*?)</td>", re.S | re.I)
+#: Bounds that keep parsing linear whatever the page holds: the page is cut to this
+#: many bytes, and a row longer than this is not a listing row.
+MAX_LISTING_BYTES = 2_000_000
+_MAX_ROW_CHARS = 20_000
+_CELL_RE = re.compile(r"<td[^>]{0,200}>(.{0,8000}?)</td>", re.S | re.I)
 _LINK_RE = re.compile(
     r'href="/asx/v2/statistics/displayAnnouncement\.do\?display=pdf&(?:amp;)?idsId=([0-9]{6,10})"',
     re.I,
@@ -75,12 +78,28 @@ _DATE_RE = re.compile(r"(\d{2})/(\d{2})/(\d{4})")
 _TIME_RE = re.compile(r"(\d{1,2}):(\d{2})\s*([ap]m)", re.I)
 _PAGES_RE = re.compile(r"(\d+)\s+pages?", re.I)
 #: The only attached-document address accepted from a display page.
-PDF_URL_RE = re.compile(r"^https://announcements\.asx\.com\.au/asxpdf/\d{8}/pdf/[a-z0-9]{6,40}\.pdf$")
-_PDF_FIELD_RE = re.compile(r'name="pdfURL"\s+value="([^"]+)"', re.I)
+PDF_URL_RE = re.compile(
+    r"^https://announcements\.asx\.com\.au/asxpdf/[0-9]{8}/pdf/[a-z0-9]{6,40}\.pdf$")
+_PDF_FIELD_RE = re.compile(r'name="pdfURL"\s{1,5}value="([^"]{1,300})"', re.I)
+
+
+def _strip_tags(fragment: str) -> str:
+    """Tag removal in one linear pass (a regex over unbalanced ``<`` is quadratic)."""
+    out: list[str] = []
+    depth = False
+    for ch in fragment:
+        if ch == "<":
+            depth = True
+        elif ch == ">" and depth:
+            depth = False
+            out.append(" ")
+        elif not depth:
+            out.append(ch)
+    return "".join(out)
 
 
 def _text(fragment: str) -> str:
-    return re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", fragment))).strip()
+    return re.sub(r"\s+", " ", html.unescape(_strip_tags(fragment))).strip()
 
 
 def _published(cell: str) -> datetime | None:
@@ -105,7 +124,12 @@ def parse_asx_listing(page: str) -> tuple[list[dict[str, Any]], int]:
     """``(rows, refused)`` from one yearly announcements page. Pure; never raises."""
     rows: list[dict[str, Any]] = []
     refused = 0
-    for row in _ROW_RE.findall(page or ""):
+    # Split, don't match: rows are the text between "</tr>" boundaries, each bounded.
+    for chunk in (page or "")[:MAX_LISTING_BYTES].split("</tr>"):
+        start = chunk.rfind("<tr")
+        row = chunk[start:] if start >= 0 else ""
+        if not row or len(row) > _MAX_ROW_CHARS:
+            continue
         link = _LINK_RE.search(row)
         if not link:
             continue  # header or spacer rows
@@ -135,7 +159,7 @@ def pdf_url_from_display_page(page: str) -> str | None:
     Accepted only when it is exactly an ``announcements.asx.com.au/asxpdf/…pdf`` address —
     a display page can never point the fetch anywhere else.
     """
-    match = _PDF_FIELD_RE.search(page or "")
+    match = _PDF_FIELD_RE.search((page or "")[:MAX_LISTING_BYTES])
     if not match:
         return None
     url = html.unescape(match.group(1)).strip()
@@ -145,9 +169,9 @@ def pdf_url_from_display_page(page: str) -> str | None:
 async def resolve_asx_issuer(
     company: Any, *, cfg: Any, fetcher: Any = None
 ) -> tuple[VerifiedIssuer | None, str | None, int]:
-    from app.services.discovery.directories import find_listing
+    from app.services.discovery.directories import _strip_suffix, find_listing
 
-    code = str(getattr(company, "ticker", "") or "").upper()
+    code = _strip_suffix(str(getattr(company, "ticker", "") or ""))
     if not _CODE_RE.match(code):
         return None, "the ticker is not an ASX code", 0
     row, reason = await find_listing(
@@ -155,7 +179,9 @@ async def resolve_asx_issuer(
         fetcher=fetcher,
     )
     if row is None:
-        return None, reason or "the ASX's own list could not be read", 1
+        # ``reason`` None means the directory could not be READ — a source problem,
+        # not a verdict about the issuer.
+        return None, reason, 1
     return VerifiedIssuer(
         company_id=company.id, ticker=row.ticker, venue=VENUE_ASX, name=row.name,
         source_id=SOURCE_ASX_ANNOUNCEMENTS,
@@ -176,15 +202,19 @@ async def list_asx_announcements(
         return DisclosureListing(issuer=None, reason=REASON_IDENTITY_UNVERIFIED,
                                  detail=type(exc).__name__)
     if issuer is None:
-        return DisclosureListing(issuer=None, reason=REASON_IDENTITY_UNVERIFIED,
-                                 detail=why, requests=requests)
+        return DisclosureListing(
+            issuer=None,
+            reason=REASON_IDENTITY_UNVERIFIED if why else REASON_SOURCE_UNAVAILABLE,
+            detail=why or "the ASX's own list could not be read", requests=requests)
     now = now or datetime.now(timezone.utc)
     cutoff = now - timedelta(
         days=max(1, int(getattr(cfg, "v3_disclosure_lookback_days", 540) or 540)))
     documents: list[OfficialDocument] = []
     refused = 0
     reached = False
-    for year in sorted({now.year, cutoff.year}, reverse=True)[:2]:
+    # EVERY calendar year the window touches — a 540-day window read in February spans
+    # three, and the middle one holds the latest annual and half-year reports.
+    for year in range(now.year, cutoff.year - 1, -1):
         result = await (fetcher or safe_fetch_document)(
             ASX_LISTING_URL.format(code=issuer.ticker, year=year),
             allowed_domains=(ASX_HOST,), cfg=cfg, resolve_ip=True,
@@ -194,7 +224,10 @@ async def list_asx_announcements(
         if not content:
             continue
         reached = True
-        rows, bad = parse_asx_listing(content.decode("utf-8", "replace"))
+        import asyncio
+
+        page = content[:MAX_LISTING_BYTES].decode("utf-8", "replace")
+        rows, bad = await asyncio.to_thread(parse_asx_listing, page)
         refused += bad
         for row in rows:
             if row["published_at"] < cutoff:

@@ -57,7 +57,8 @@ _UK_MATERIAL_TYPES = (
 _ASX_ANNUAL_RE = re.compile(r"\bannual report\b", re.I)
 _ASX_NOT_THE_REPORT_RE = re.compile(
     r"corporate governance|appendix 4g|notice of|letter to shareholders|access to|"
-    r"proxy", re.I)
+    r"proxy|sustainab|\besg\b|tenement|webinar|presentation|briefing|conference call",
+    re.I)
 _ASX_INTERIM_RE = re.compile(
     r"half[- ]?year(?:ly)?\b|appendix 4d\b|interim (?:financial )?report|half year accounts",
     re.I)
@@ -78,10 +79,13 @@ _ASX_ADMIN_RE = re.compile(
 
 # UK headlines that are periodic reports whatever the NSM type says.
 _UK_FINAL_RESULTS_RE = re.compile(
-    r"\b(?:final|full[- ]year|annual|preliminary)\s+results\b", re.I)
+    r"\b(?:final|full[- ]year|annual|preliminary)\s+results\b(?!\s+(?:of|date))", re.I)
+#: A periodic TRADING statement. Not "Q1 2028 update": a quarter named in a headline is
+#: as likely a forecast as a report.
 _UK_QUARTERLY_RE = re.compile(
-    r"\bquarterly\b|\bq[1-4]\b.*\b(?:update|results|report)\b|trading update|"
+    r"\bquarterly\s+(?:results|report|update|trading)|trading update|"
     r"interim management statement", re.I)
+_UK_NOT_RESULTS_RE = re.compile(r"retail offer|results? date|notice of", re.I)
 
 
 def _has(label: str, needles: Iterable[str]) -> bool:
@@ -103,12 +107,14 @@ def classify_uk(*, nsm_type: str, headline: str, document_format: str) -> tuple[
         # plain text. Measured on Pensana: both appear, on the same day.
         if fmt in _UK_REPORT_FORMATS and not _is_notice_about_a_filing(headline or ""):
             return category, DOC_KIND_ANNUAL_REPORT, RANK_ANNUAL
-        return category, DOC_KIND_OTHER, RANK_ORDINARY
+        # A text filing under this type is either the full-year results RNS (the
+        # headline says so, below) or the notice of publication (ordinary).
     if "half-year" in label or "half year" in label or "half yearly" in label:
         return category, DOC_KIND_INTERIM_REPORT, RANK_INTERIM
-    if _UK_FINAL_RESULTS_RE.search(headline or ""):
-        return category, DOC_KIND_RESULTS_RELEASE, RANK_PERIODIC
-    if _UK_QUARTERLY_RE.search(headline or ""):
+    head = headline or ""
+    if not _UK_NOT_RESULTS_RE.search(head) and (
+        _UK_FINAL_RESULTS_RE.search(head) or _UK_QUARTERLY_RE.search(head)
+    ):
         return category, DOC_KIND_RESULTS_RELEASE, RANK_PERIODIC
     if _has(label, _UK_ADMIN_TYPES):
         return category, DOC_KIND_OTHER, RANK_ADMINISTRATIVE

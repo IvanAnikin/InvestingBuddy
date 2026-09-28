@@ -70,12 +70,19 @@ _IDENTITY_TEXT_CHARS = 40_000
 
 # ── Which source covers which company ──────────────────────────────────────── #
 
+#: Venue codes a company row may carry for the same two markets.
+_VENUE_ALIASES = {
+    "LSE": VENUE_LSE, "LON": VENUE_LSE, "L": VENUE_LSE, "LN": VENUE_LSE, "AIM": VENUE_LSE,
+    "XLON": VENUE_LSE, "AU": VENUE_ASX, "ASX": VENUE_ASX, "AX": VENUE_ASX, "XASX": VENUE_ASX,
+}
+
 
 def source_for(company: Any, cfg: Any) -> tuple[str | None, str | None]:
     """``(source_id, why-not)`` for a company's listing venue."""
     from app.services.exchange_registry import normalize_exchange
 
     venue = normalize_exchange(getattr(company, "exchange", None) or "")
+    venue = _VENUE_ALIASES.get(venue.upper(), venue)
     if venue == VENUE_LSE:
         if not getattr(cfg, "v3_uk_nsm_disclosures_enabled", False):
             return None, REASON_CONNECTOR_DISABLED
@@ -147,19 +154,19 @@ def document_names_issuer(artifact: Any, issuer: VerifiedIssuer) -> bool:
     document's metadata title is deliberately excluded from the search: the headline
     is metadata, and it is the CONTENT that must name the issuer.
     """
-    extraction_text = _fold(content_text(artifact))
-    tokens = issuer_name_tokens(issuer.name)
-    for token in tokens:
-        if re.search(r"\b" + re.escape(token) + r"\b", extraction_text):
-            return True
-    if not tokens:
-        from app.services.discovery.identity import normalised_name
+    from app.services.discovery.identity import normalised_name
 
-        full = normalised_name(issuer.name)
-        if full and full in re.sub(r"[^a-z0-9& ]+", " ", extraction_text):
-            return True
+    folded = _fold(content_text(artifact))
+    # The issuer's WHOLE name (legal suffix dropped) as a phrase of whole words —
+    # "rainbow rare earths", "australian strategic materials", "igo". One distinctive
+    # word was too weak: "Australian" accepted a Lynas document, and a bare substring
+    # found "IGO" inside "Indigo".
+    words = re.sub(r"[^a-z0-9&]+", " ", folded)
+    full = normalised_name(issuer.name)
+    if full and re.search(r"(?<![a-z0-9])" + re.escape(full) + r"(?![a-z0-9])", words):
+        return True
     ticker = re.escape(issuer.ticker.lower())
-    return bool(re.search(r"\b(?:asx|lse|aim)\s*:\s*" + ticker + r"\b", extraction_text))
+    return bool(re.search(r"\b(?:asx|lse|aim)\s*:\s*" + ticker + r"\b", folded))
 
 
 # ── Readiness, acquisition, indexing ───────────────────────────────────────── #
@@ -232,6 +239,62 @@ async def _record_attempt(session: Any, artifact: Any, *, company_id: uuid.UUID,
         logger.warning("ingestion attempt could not be recorded")
 
 
+async def _record_attempt_safely(session: Any, artifact: Any, **kw: Any) -> None:
+    try:
+        async with session.begin_nested():
+            await _record_attempt(session, artifact, **kw)
+    except Exception:  # noqa: BLE001 - an audit row never fails acquisition
+        logger.warning("ingestion attempt could not be recorded")
+
+
+async def _ensure_company_version(
+    session: Any, *, artifact: Any, company_id: uuid.UUID, ref: str, cfg: Any
+) -> None:
+    """Give THIS company a corpus version of the bytes it just read, when the shared
+    ``ExtractedDocument`` belongs to another company (or to none)."""
+    from app.services.corpus.filing_evidence import current_version_for_document_ref
+
+    if await current_version_for_document_ref(session, company_id=company_id,
+                                              document_ref=ref) is not None:
+        return
+    try:
+        from types import SimpleNamespace
+
+        from sqlalchemy import select
+
+        from app.models.extracted_document import ExtractedDocument
+        from app.services.corpus.documents import ingest_extracted_document
+
+        content_hash = getattr(getattr(artifact, "extraction", None), "content_hash", None)
+        if not content_hash:
+            return
+        shared = (await session.execute(
+            select(ExtractedDocument).where(ExtractedDocument.content_hash == content_hash)
+            .limit(1))).scalar_one_or_none()
+        if shared is None or shared.company_id == company_id:
+            return
+        # The same row, seen as this company's: the corpus version points back at the
+        # shared V2 document, and it carries THIS company, THIS address and THIS
+        # transport — the retrieval that actually happened.
+        view = SimpleNamespace(
+            id=shared.id, content_hash=shared.content_hash,
+            canonical_url=getattr(artifact, "source_url", None) or shared.canonical_url,
+            provider=getattr(artifact, "transport", None) or shared.provider,
+            source_tier=shared.source_tier, company_id=company_id,
+            source_type=getattr(artifact, "document_type", None) or shared.source_type,
+            title=getattr(artifact, "title", None) or shared.title,
+            mime_type=shared.mime_type, doc_date=getattr(artifact, "published_at", None),
+            retrieved_at=getattr(artifact, "retrieved_at", None) or shared.retrieved_at,
+            status=shared.status,
+        )
+        async with session.begin_nested():
+            await ingest_extracted_document(
+                session, artifact=artifact, document=view, cfg=cfg  # type: ignore[arg-type]
+            )
+    except Exception:  # noqa: BLE001 - costs this document's readiness only
+        logger.exception("a company-scoped corpus version could not be created")
+
+
 async def _index(session: Any, *, company_id: uuid.UUID, ref: str, cfg: Any) -> int:
     from app.services.corpus.filing_evidence import current_version_for_document_ref
     from app.services.corpus.indexing import index_version
@@ -255,6 +318,43 @@ async def _index(session: Any, *, company_id: uuid.UUID, ref: str, cfg: Any) -> 
         logger.exception("indexing failed for a disclosure version")
         return 0
     return int(result.indexed) + int(result.updated)
+
+
+async def _changed_since_acquired(
+    session: Any, *, company_id: uuid.UUID, document: OfficialDocument
+) -> bool:
+    """True when the source changed this disclosure after the platform last acquired it.
+
+    An NSM correction is re-filed at the SAME address (a new amendment of the same
+    document), so the holding looks READY while describing the superseded filing. The
+    source's own ``last_updated_date`` against this company's latest acquisition of the
+    address decides; with no update time the holding stands.
+    """
+    if document.updated_at is None:
+        return False
+    try:
+        from sqlalchemy import func, select
+
+        from app.models.document_ingestion_attempt import DocumentIngestionAttempt
+        from app.services.sources.redaction import canonicalize_source_url
+
+        url = canonicalize_source_url(document.official_url) or document.official_url
+        latest = (
+            await session.execute(
+                select(func.max(DocumentIngestionAttempt.attempted_at)).where(
+                    DocumentIngestionAttempt.company_id == company_id,
+                    DocumentIngestionAttempt.canonical_url.in_(
+                        [url, document.official_url]),
+                )
+            )
+        ).scalar_one_or_none()
+    except Exception:  # noqa: BLE001 - doubt keeps the holding
+        return False
+    if latest is None:
+        return False
+    if latest.tzinfo is None:
+        latest = latest.replace(tzinfo=timezone.utc)
+    return latest < document.updated_at
 
 
 async def ensure_disclosure_evidence(
@@ -282,7 +382,9 @@ async def ensure_disclosure_evidence(
     except Exception as exc:  # noqa: BLE001
         return DisclosureEvidenceResult(state="unavailable", document_ref=ref,
                                         reason=REASON_NOT_INDEXED, notes=[type(exc).__name__])
-    if before.is_ready:
+    stale = before.is_ready and await _changed_since_acquired(
+        session, company_id=issuer.company_id, document=document)
+    if before.is_ready and not stale:
         return DisclosureEvidenceResult(
             state="ready", document_ref=ref, chunk_count=before.indexable_chunk_count,
             reused=True, notes=["already searchable; no fetch and no extraction"])
@@ -330,8 +432,8 @@ async def ensure_disclosure_evidence(
     artifact.discovery_strategy = document.source_id
 
     if getattr(artifact, "status", None) != "extracted":
-        await _record_attempt(session, artifact, company_id=issuer.company_id,
-                              source_type=source_type, cfg=cfg)
+        await _record_attempt_safely(session, artifact, company_id=issuer.company_id,
+                                     source_type=source_type, cfg=cfg)
         code = getattr(artifact, "failure_code", None) or "unknown"
         reason = (REASON_PRIMARY_DOCUMENT_UNAVAILABLE
                   if code.startswith(("blocked", "http", "fetch", "redirect", "unsupported",
@@ -362,9 +464,25 @@ async def ensure_disclosure_evidence(
         return DisclosureEvidenceResult(state="unavailable", document_ref=ref,
                                         reason=REASON_NOT_INDEXED, attempted=True,
                                         fetched=True, notes=[type(exc).__name__])
-    indexed = await _index(session, company_id=issuer.company_id, ref=ref, cfg=cfg)
+    # The same bytes may already be held for ANOTHER company (documents are deduplicated
+    # by content hash, globally), and the corpus version then belongs to that company —
+    # a dual-listed issuer's identical report, or a second row for the same issuer,
+    # would never become READY here and would be re-fetched every run. This company
+    # gets its own corpus version of the bytes it just read.
+    await _ensure_company_version(session, artifact=artifact, company_id=issuer.company_id,
+                                  ref=ref, cfg=cfg)
+    try:
+        async with session.begin_nested():
+            indexed = await _index(session, company_id=issuer.company_id, ref=ref, cfg=cfg)
+    except Exception:  # noqa: BLE001 - a failed index costs this document only
+        indexed = 0
 
-    after = await _state(session, issuer.company_id, ref)
+    try:
+        after = await _state(session, issuer.company_id, ref)
+    except Exception as exc:  # noqa: BLE001
+        return DisclosureEvidenceResult(state="unavailable", document_ref=ref,
+                                        reason=REASON_NOT_INDEXED, fetched=True,
+                                        attempted=True, notes=[type(exc).__name__])
     notes = [f"documents created={persisted.documents_created} "
              f"reused={persisted.documents_reused} "
              f"corpus versions={persisted.corpus_versions_created} "
@@ -447,10 +565,18 @@ async def ensure_core_disclosures(
     selected = select_core_documents(
         listing, now=now,
         max_documents=int(getattr(cfg, "v3_disclosure_core_max_documents", 5) or 5))
+    import time
+
+    budget = float(getattr(cfg, "v3_disclosure_core_budget_seconds", 300) or 300)
+    started = time.monotonic()
     for document in selected:
+        # A wall budget for the whole step: each document is a fetch and an extraction
+        # (an 80-page PDF can take a minute on a small host). Once spent, the rest are
+        # answered from the database only — READY ones still count, nothing is fetched.
+        spent = time.monotonic() - started >= budget
         result = await ensure_disclosure_evidence(
             session, issuer=listing.issuer, document=document, cfg=cfg, fetcher=fetcher,
-            extractor=extractor)
+            extractor=extractor, ready_only=spent)
         out["documents"].append({
             **document.to_item(), **result.to_dict(),
         })

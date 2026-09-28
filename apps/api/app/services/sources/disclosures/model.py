@@ -104,6 +104,9 @@ class OfficialDocument:
     #: The address the content is fetched from, when it is known without a request.
     content_url: str | None = None
     pages: int | None = None
+    #: When the SOURCE last changed this disclosure (NSM ``last_updated_date``). A
+    #: corrected re-filing keeps its address; a holding older than this is stale.
+    updated_at: datetime | None = None
     notes: list[str] = field(default_factory=list)
 
     @property
