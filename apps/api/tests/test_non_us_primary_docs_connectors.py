@@ -1484,10 +1484,50 @@ async def test_a_declined_announcement_reread_retires_its_facts(session):
         validation_status="validated", is_active=True, table_location="p16:t1")
     session.add(table_fact)
     await session.flush()
+    async def never(url, **kw):  # noqa: ANN001, ANN003, ANN202
+        raise AssertionError("an announcement is never re-read on the reuse path")
+
     await _revalidate_document(
         session, doc, cfg=CFG, existing_active_facts=[table_fact],
         issuer_context=IssuerContext(company_name="PRO MEDICUS LIMITED", ticker="PME"),
-        primary_document_extractor=None)
+        primary_document_extractor=never)
     await session.refresh(table_fact)
     assert table_fact.is_active is False
     assert doc.pipeline_version == 16  # not restamped: the acquisition re-reads it
+
+
+def test_an_announcements_undated_figure_never_takes_a_year_from_elsewhere_in_the_body():
+    """Live acceptance E (Pro Medicus rerun, report 49268894): "revenue of $266.6m"
+    (FY26) took the period 2027 from "…through to 30 June 2027", an LTI vesting clause
+    three sentences later — the excerpt-wide first-year fallback."""
+    from app.services.sources.document_period import UNKNOWN_DOCUMENT_PERIOD
+    from app.services.sources.extracted_fact_validator import (
+        IssuerContext,
+        validate_extracted_facts,
+    )
+    from app.services.sources.primary_document_extractor import (
+        PrimaryDocumentExcerpt,
+        PrimaryDocumentExtraction,
+    )
+
+    text = ("Executive remuneration outcomes for FY26 were closely aligned with Company "
+            "performance. The Company delivered underlying EBIT of $199.5m and revenue of "
+            "$266.6m, up from $152.4m and $206.3m respectively in FY25. Accordingly, the "
+            "STI outcome for participants was between 78% and 80% of target. Pleasingly, "
+            "this has resulted in 100% vesting for the FY24-FY26 LTI tranche, which "
+            "remains conditional on continued employment through to 30 June 2027.")
+    extraction = PrimaryDocumentExtraction(
+        content_hash="x" * 64, mime_type="application/pdf", extraction_method="native_pdf",
+        status="extracted", excerpts=[PrimaryDocumentExcerpt(
+            excerpt_id="X1", text=text, page_number=32, extraction_method="native_pdf",
+            confidence=0.9)])
+
+    def facts(title_only):  # noqa: ANN001, ANN202
+        return [f for f in validate_extracted_facts(
+            extraction, issuer_context=IssuerContext(company_name="PRO MEDICUS LIMITED"),
+            cfg=CFG, document_period=UNKNOWN_DOCUMENT_PERIOD,
+            title_only_period=title_only) if "266.6" in f.value_text]
+
+    assert facts(True) and all(f.period is None for f in facts(True))
+    # Control: the existing (non-announcement) reading takes the body's year.
+    assert any(f.period == "2027" for f in facts(False))

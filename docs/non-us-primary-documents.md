@@ -181,6 +181,12 @@ authority are required, or both connectors must be switched off.**
   announcement's official page as if it were the content — when it therefore declines
   to re-read one, the facts it cannot rebuild are retired (kept for audit) until the
   disclosure acquisition re-reads the document. Pipeline version 17.
+- **A prose figure's year comes from its own clause.** Production, Pro Medicus rerun
+  (report `49268894`): the FY26 annual report's "revenue of $266.6m" was stored for
+  2027 — the parser's excerpt-wide fallback took "30 June 2027" from an LTI vesting
+  clause three sentences later. In an announcement, an undated prose figure now takes
+  a year only from its own local window, and otherwise inherits only the TITLE's
+  period — never the body's majority year.
 - Known limits: a table scope label can be a whole sentence ("segment:the group has
   identified its operating segments…" — Pro Medicus) — segment, never Group, but not a
   segment NAME; an ASX re-issue gets a new id and both copies stay current (the ASX gives

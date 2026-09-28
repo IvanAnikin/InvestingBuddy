@@ -604,6 +604,7 @@ async def _artifact_from_fetch(
                 title_only=is_title_only(policy=period_policy),
                 published_at=published_at,
             ),
+            title_only_period=is_title_only(policy=period_policy),
         )
     artifact.period_policy = period_policy
     return artifact

@@ -317,6 +317,11 @@ from __future__ import annotations
 # the row was stamped 16 — current — before the disclosure acquisition could read it
 # correctly. Announcements are now re-validated with ``bare_dollar_is_usd=False``
 # whichever path does it; every version-16 announcement row may carry that reading.
+# Also in 17: an undated prose figure in an announcement inherits only the TITLE's
+# period, never the body's majority year (Pro Medicus: an FY26 annual report full of
+# "FY27" targets gave "revenue of $266.6m" the period 2027), and a prose figure in an
+# announcement takes a year only from its own local window — never the excerpt-wide
+# first year ("30 June 2027" from an LTI vesting clause three sentences later).
 LEGACY_EXTRACTION_PIPELINE_VERSION = 1
 CURRENT_EXTRACTION_PIPELINE_VERSION = 17
 

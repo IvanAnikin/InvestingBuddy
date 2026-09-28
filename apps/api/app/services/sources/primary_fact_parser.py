@@ -945,7 +945,9 @@ def _interim_marker_near(window_text: str) -> str | None:
 _SENTENCE_BOUNDARY_RE = re.compile(r"[.!?\n](?=\s)")
 
 
-def _period_near(text: str, pos: int, *, window: int = 120) -> str | None:
+def _period_near(
+    text: str, pos: int, *, window: int = 120, local_only: bool = False
+) -> str | None:
     """Best-effort period from the year NEAREST ``pos`` (a matched value's own
     position) rather than the first year mentioned anywhere in the excerpt —
     a comparative aside elsewhere in the excerpt ("...up from EUR8.1bn in
@@ -984,6 +986,12 @@ def _period_near(text: str, pos: int, *, window: int = 120) -> str | None:
         year = m.group(0)
         marker = _interim_marker_near(local)
         return f"{marker} {year}" if marker else year
+    if local_only:
+        # An official announcement's body is where forecasts, targets and vesting
+        # dates live: a year outside the figure's own window is not its period
+        # (Pro Medicus: "revenue of $266.6m" took "30 June 2027" from an LTI vesting
+        # clause three sentences later).
+        return None
     m = _YEAR_RE.search(text)
     if not m:
         return None
@@ -993,7 +1001,9 @@ def _period_near(text: str, pos: int, *, window: int = 120) -> str | None:
     return m.group(0)
 
 
-def _parse_excerpt(excerpt: DocumentExcerpt, source_url: str | None) -> list[PrimaryFact]:
+def _parse_excerpt(
+    excerpt: DocumentExcerpt, source_url: str | None, *, local_period_only: bool = False
+) -> list[PrimaryFact]:
     text = excerpt.text
     facts: list[PrimaryFact] = []
     seen_fields: set[str] = set()
@@ -1127,7 +1137,7 @@ def _parse_excerpt(excerpt: DocumentExcerpt, source_url: str | None) -> list[Pri
                 currency=currency,
                 scale=scale,
                 scope=_infer_prose_scope(sentence),
-                period=_period_near(text, m.start()),
+                period=_period_near(text, m.start(), local_only=local_period_only),
                 source_url=source_url,
                 excerpt_id=excerpt.excerpt_id,
                 page_number=excerpt.page_number,
@@ -1156,7 +1166,7 @@ def _parse_excerpt(excerpt: DocumentExcerpt, source_url: str | None) -> list[Pri
                 numeric_value=num,
                 unit="percent",
                 scope=_infer_prose_scope(sentence),
-                period=_period_near(text, m.start()),
+                period=_period_near(text, m.start(), local_only=local_period_only),
                 source_url=source_url,
                 excerpt_id=excerpt.excerpt_id,
                 page_number=excerpt.page_number,

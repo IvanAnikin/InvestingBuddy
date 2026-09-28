@@ -1190,6 +1190,7 @@ async def _revalidate_document(
             title_only=is_title_only(source_type=doc.source_type),
             published_at=doc.doc_date,
         ),
+        title_only_period=is_title_only(source_type=doc.source_type),
     )
     await _deactivate_active_facts(session, doc.id)
     _insert_active_facts(session, doc.id, validated_facts)
