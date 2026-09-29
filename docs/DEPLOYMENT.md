@@ -610,6 +610,27 @@ Operational notes:
   background tasks. Adding workers does not make the tasks durable.
 - No new env var and no migration are required for Phase 25.1.
 
+### UK / ASX primary documents (non-US primary documents, 2026-09-28)
+
+`V3_UK_NSM_DISCLOSURES_ENABLED=true` and `V3_ASX_ANNOUNCEMENTS_ENABLED=true` are set on
+`ib-stg-api`. They let V3 research read an LSE issuer's regulated disclosures from the FCA
+National Storage Mechanism and an ASX issuer's announcements from the ASX, into the corpus
+([design](non-us-primary-documents.md), [acceptance](non-us-primary-documents-acceptance.md)).
+Both also need the corpus, primary-document ingestion and citation-persistence flags, which
+were already on.
+
+- **Terms — private use only.** The FCA site terms restrict automated access without written
+  consent; the ASX permits private and personal use. Before any public or commercial use,
+  obtain FCA consent and ASX authority, or set both flags to `false`.
+- Tuning (defaults, not set in production): `V3_DISCLOSURE_CORE_MAX_DOCUMENTS` (5),
+  `V3_DISCLOSURE_LOOKBACK_DAYS` (540), `V3_DISCLOSURE_CORE_BUDGET_SECONDS` (300),
+  `V3_DISCLOSURE_EXTRACTION_TIMEOUT_SECONDS` (150 — above the generic 60 s
+  primary-document budget, and above the unread `primary_document_total_timeout_seconds`
+  note in `config.py`).
+- No migration. Hosts contacted: `api.data.fca.org.uk`, `data.fca.org.uk`, `api.gleif.org`,
+  `api.londonstockexchange.com`, `asx.api.markitdigital.com`, `www.asx.com.au`,
+  `announcements.asx.com.au` — each through the guarded fetcher.
+
 ### Deploy health-check hardening (Phase 19.2.1)
 
 The API deploy previously could report a **false green**: Azure sometimes routed

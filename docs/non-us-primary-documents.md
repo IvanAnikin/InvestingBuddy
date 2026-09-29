@@ -1,6 +1,7 @@
 # Non-US primary documents — UK (LSE) and Australia (ASX)
 
-**Status:** `IN PROGRESS` — foundation (PR #250) and connectors built; production acceptance pending. Acceptance evidence is recorded in
+**Status:** `COMPLETE — with known limitations` — PRs #250–#255, live in production with both flags on
+(2026-09-28). Acceptance evidence, verdicts and known limitations:
 [non-us-primary-documents-acceptance.md](non-us-primary-documents-acceptance.md).
 
 ## 1. Why
