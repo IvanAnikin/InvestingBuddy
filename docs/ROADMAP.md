@@ -1,5 +1,16 @@
 # Roadmap
 
+> ## PROPOSED — Open-web research (2026-09-29, awaiting user approval)
+>
+> A specification-only proposal to let Discovery and company research search the live
+> web, then fetch, verify and ingest what they find. Nothing is implemented; phases W0–W10
+> start only after approval. Start with
+> [`open-web-research-spec.md`](open-web-research-spec.md). Companions:
+> [implementation plan](open-web-research-implementation-plan.md) ·
+> [provider evaluation](open-web-search-provider-evaluation.md) ·
+> [threat model](open-web-research-threat-model.md) ·
+> [acceptance plan](open-web-research-acceptance-plan.md).
+
 > ## ⚠ V3 CAMPAIGN OPEN — 2026-09-04
 >
 > The V2 baseline is frozen at `4b60e07` (tag `v2-final-pre-v3-2026-09-04`,
