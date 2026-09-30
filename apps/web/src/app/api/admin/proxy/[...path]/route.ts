@@ -60,6 +60,9 @@ const ALLOWED_PREFIXES = [
   // matching is exact, so neither "/api/v1/reports" nor "/api/v1/company-research"
   // reaches it.
   "/api/v1/research-decisions",
+  // Open-web W1 — the web search provenance audit (admin read-only). Its own prefix:
+  // "/api/v1/admin/reports" above does not cover it.
+  "/api/v1/admin/web-research",
 ];
 
 function isAllowed(backendPath: string): boolean {

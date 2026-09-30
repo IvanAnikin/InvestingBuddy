@@ -413,6 +413,36 @@ def default_governance(cfg: "Settings | None" = None) -> ProviderGovernance:
             ),
         )
     )
+    # Open-web W1: the dedicated web search provider (spec §8, §24). PUBLIC ONLY — a
+    # search provider receives sanitised public-context queries and nothing else (rule
+    # G1), and this row is what the search adapter's runtime check reads (rule G4).
+    governance.register(
+        ProviderPolicy(
+            provider_id="tavily",
+            allowed_access_classes=PUBLIC_ONLY,
+            authority=(
+                "Open-web research spec §8/§24 (proposed ADR-057, decision U1): the "
+                "web search provider receives public-context queries only (rule G1)"
+            ),
+            is_external=True,
+            note=(
+                "Dark until V3_WEB_SEARCH_ENABLED and a key are both set. Its terms let "
+                "it train on inputs, which is acceptable only because queries are "
+                "public-context by construction."
+            ),
+        )
+    )
+    # The web search test double. In-process, no network; registered so the fake runs
+    # through the same governance check as a real adapter instead of bypassing it.
+    governance.register(
+        ProviderPolicy(
+            provider_id="fake_web_search",
+            allowed_access_classes=PUBLIC_ONLY,
+            authority="Open-web research spec §8.2: the fake is the only provider CI uses",
+            is_external=False,
+            note="Serves recorded fixtures; opens no socket.",
+        )
+    )
     # Deferred and not activated, each for a recorded reason. Kept in the matrix so the
     # register is a complete statement rather than a list of whatever happens to be on.
     for provider_id, decision in (

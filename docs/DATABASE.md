@@ -1020,6 +1020,29 @@ may be applied any time before the slices that map these columns are deployed. T
 order (ORM columns on a schema without them) fails every query on the table. Apply with
 the SSH runbook in `docs/DEPLOYMENT.md`; the deploy workflow never runs migrations.
 
+## Migration 042 — web search and fetch provenance (open-web W1)
+
+**Additive only**: three new tables, no existing column touched, no unique index. Every
+lineage FK (`research_jobs`, `discovery_runs`, `agent_runs`, `companies`) is nullable with
+`ON DELETE SET NULL`, so deleting a job never deletes its search audit. Downgrade drops
+exactly these three tables. Verified `041 → 042 → 041 → 042` on PostgreSQL 16
+(`tests/test_web_w1_search_postgres.py`). Spec: `docs/open-web-research-spec.md` §15.1,
+§22.3, §26.3.
+
+| Table | Columns | Why |
+|---|---|---|
+| `web_search_queries` | `research_job_id`, `discovery_run_id`, `agent_run_id`, `company_id`, `stage`, `family`, `origin`, `template_version`, `query_text`, `request_hash`, `filters_json`, `provider`, `executed`, `provider_request_id`, `http_status`, `network_call_count`, `latency_ms`, `result_count`, `cost_units_json`, `error_code`, `created_at` | The network fact of every query issued **or refused**. `executed=true` only on a 2xx with a request id and a parsed result list. A query refused for a private token (rule G1) or a credential is stored as `[withheld: <code>]` with `request_hash = withheld:<code>` — never its text or a hash of it. `filters_json` = `{requested, enforced_by, client_filtered_count, served_from_query_id?}`. |
+| `web_search_results` | `query_id` (CASCADE), `rank`, `url`, `canonical_url`, `domain`, `title`, `snippet`, `published_hint`, `language_hint`, `provider_score`, `disposition`, `disposition_reason`, `created_at` | One row per normalised result. Title/snippet are untrusted and NULL when the provider's `result_storage` forbids keeping them. `disposition` is `candidate` until W2 selection. |
+| `web_fetch_attempts` | `research_job_id`, `discovery_run_id`, `web_search_result_id`, `parent_attempt_id`, `origin`, `requested_url`, `final_url`, `canonical_url`, `redirect_chain_json`, `policy_decision`, `robots_decision`, `tdm_decision`, `http_status`, `mime_served`, `mime_sniffed`, `bytes`, `truncated`, `content_hash`, `fetch_ms`, `status`, `failure_code`, `created_at` | Open-web fetch audit. Schema only in W1; written from W2. |
+
+Indexes: `web_search_queries(research_job_id)`, `(discovery_run_id)`,
+`(request_hash, provider, created_at)` (the 24 h search cache), `web_search_results(query_id,
+rank)`, and the two lineage columns plus `web_search_result_id` on `web_fetch_attempts`.
+
+**Deploy order.** Nothing reads or writes these tables while `V3_WEB_SEARCH_ENABLED` is off
+(the default), so the W1 code is inert on a database without 042; the admin audit endpoint
+answers 503 naming the migration. Apply 042 before turning the flag on (decision U9).
+
 ## `research_job_id` — the five lineage columns, and who writes them (V3.17.9)
 
 Five tables carry a `research_job_id` foreign key to `research_jobs.id`. Between them they

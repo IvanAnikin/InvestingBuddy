@@ -52,6 +52,7 @@ CREDENTIAL_SETTING_FIELDS: frozenset[str] = frozenset(
         "openai_api_key",
         "deepseek_api_key",
         "azure_document_intelligence_api_key",
+        "tavily_api_key",
     }
 )
 
@@ -1403,6 +1404,26 @@ class Settings(BaseSettings):
     # [10, 300]. It was read via ``getattr(..., 180)`` for months without ever being
     # defined, so an operator setting it had no effect on a documented knob (W0).
     v3_external_search_timeout_seconds: int = 180
+
+    # ── Open-web research W1: the web search provider (spec §8, §26.2) ───────
+    # Master switch for ANY call to a web search provider. Consumer:
+    # ``services/web_research/search.py``. Off → state ``web_search_disabled`` and no
+    # row, no socket.
+    v3_web_search_enabled: bool = False
+    # ``none`` | ``fake`` | ``tavily``. Consumer: ``integrations/search``'s factory.
+    # DeepSeek is deliberately NOT a value here (spec §8.2): an unknown value is
+    # reported as unavailable, never mapped to some other provider.
+    v3_web_search_provider: str = "none"
+    # Platform-wide cap on search calls per UTC day, counted from
+    # ``web_search_queries`` rows (failed calls included). Consumer:
+    # ``services/web_research/budget.py``. 0 means no calls at all, not unbounded.
+    v3_web_search_max_queries_per_day: int = 300
+    # Credential. `repr=False` and listed in CREDENTIAL_SETTING_FIELDS. Consumer:
+    # ``integrations/search/tavily.py``. Key Vault reference in a deployed environment.
+    tavily_api_key: str = Field(default="", repr=False)
+    # Only ``https://api.tavily.com`` is accepted by the adapter's host allowlist; any
+    # other value makes the provider refuse to call out (``host_not_allowed``).
+    tavily_base_url: str = "https://api.tavily.com"
 
     # ── Real OCR: Azure Document Intelligence (Phase 32A Slice 5B.2) ─────────
     # Only ever consulted when ``primary_document_ocr_enabled`` (Slice 5,

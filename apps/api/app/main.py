@@ -21,6 +21,7 @@ from app.api.v1.reports import router as reports_router
 from app.api.v1.research_decisions import router as research_decisions_router
 from app.api.v1.scoring import router as scoring_router
 from app.api.v1.sources import router as sources_router
+from app.api.v1.web_research_admin import router as web_research_admin_router
 from app.api.v1.workflows import router as workflows_router
 from app.core.config import settings
 from app.core.logging_config import configure_logging
@@ -228,6 +229,9 @@ app.include_router(final_reports_router, prefix="/api/v1")
 app.include_router(backtesting_router, prefix="/api/v1")
 app.include_router(market_discovery_router, prefix="/api/v1")
 app.include_router(research_decisions_router, prefix="/api/v1")
+# Open-web W1 — search provenance audit. Admin only: same guard as research_decisions
+# (backend Basic Auth + the admin-allowlisted Next.js proxy).
+app.include_router(web_research_admin_router, prefix="/api/v1")
 # Phase 32A Slice 6D — Deep Field Review (a THIRD, separate council: it
 # compares the ALREADY-COMPLETED analyses of a discovery run's candidates).
 app.include_router(field_review_router, prefix="/api/v1")
