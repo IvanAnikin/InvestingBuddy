@@ -76,9 +76,21 @@ from app.services.sources.primary_document_extractor import (
     _confidence_bucket,
 )
 from app.services.sources.primary_fact_parser import (
+    FIELD_ADMINISTRATIVE_EXPENSES,
+    FIELD_BORROWINGS,
+    FIELD_CAPITAL_EXPENDITURE,
     FIELD_CASH,
+    FIELD_CURRENT_ASSETS,
+    FIELD_CURRENT_LIABILITIES,
+    FIELD_DEVELOPMENT_EXPENDITURE,
     FIELD_EMPLOYEES,
+    FIELD_EXPLORATION_CAPITALISED,
+    FIELD_EXPLORATION_EXPENSED,
+    FIELD_EXPLORATION_PAYMENTS,
+    FIELD_FINANCING_CASH_FLOW,
     FIELD_FREE_CASH_FLOW,
+    FIELD_INVESTING_CASH_FLOW,
+    FIELD_ISSUED_CAPITAL,
     FIELD_NET_CASH,
     FIELD_NET_DEBT,
     FIELD_NET_INCOME,
@@ -92,6 +104,8 @@ from app.services.sources.primary_fact_parser import (
     FIELD_TOTAL_ASSETS,
     FIELD_TOTAL_DEBT,
     FIELD_TOTAL_EQUITY,
+    FIELD_TOTAL_LIABILITIES,
+    SPEND_FIELDS,
     PrimaryFact,
     _find_currency,
     _interim_marker_near,
@@ -117,12 +131,12 @@ UNIT_PERCENT = "percent"
 # Extra component labels needed for the cross-field arithmetic (subtotal) check.
 FIELD_SHORT_TERM_DEBT = "short_term_debt"
 FIELD_LONG_TERM_DEBT = "long_term_debt"
-FIELD_CURRENT_ASSETS = "total_current_assets"
 FIELD_NON_CURRENT_ASSETS = "total_non_current_assets"
 # Balance-sheet identity check (Phase 32A Slice 5B.2): assets == liabilities +
-# equity. Local to this file, same pattern as the debt/asset subtotal labels
-# above — a cross-check-only label, not surfaced as its own report field.
-FIELD_TOTAL_LIABILITIES = "total_liabilities"
+# equity. Item 21: ``total_current_assets`` and ``total_liabilities`` are now part of
+# the parser's own vocabulary (``primary_fact_parser.STATEMENT_DETAIL_FIELDS``) — the
+# issuer statements view shows them — and are re-exported here under the names this
+# module has always used.
 
 # Money labels require a KNOWN currency AND scale (the stricter bar). Percent
 # labels (margins) require only an explicit period. Count labels require only
@@ -147,6 +161,18 @@ _MONEY_LABELS: frozenset[str] = frozenset(
         FIELD_TOTAL_LIABILITIES,
         FIELD_TOTAL_EQUITY,
         FIELD_OPERATING_CASH_FLOW,
+        # Item 21 — UK / ASX statement lines.
+        FIELD_CURRENT_LIABILITIES,
+        FIELD_INVESTING_CASH_FLOW,
+        FIELD_FINANCING_CASH_FLOW,
+        FIELD_CAPITAL_EXPENDITURE,
+        FIELD_ADMINISTRATIVE_EXPENSES,
+        FIELD_EXPLORATION_EXPENSED,
+        FIELD_EXPLORATION_CAPITALISED,
+        FIELD_EXPLORATION_PAYMENTS,
+        FIELD_DEVELOPMENT_EXPENDITURE,
+        FIELD_BORROWINGS,
+        FIELD_ISSUED_CAPITAL,
     }
 )
 # Phase 32A corrective (Problem A/B): a table row like "Operating margin | 20.0%"
@@ -157,6 +183,14 @@ _PERCENT_LABELS: frozenset[str] = frozenset(
 )
 _COUNT_LABELS: frozenset[str] = frozenset({FIELD_EMPLOYEES})
 
+#: Item 21 — "Net cash used in / (used in)/from / outflow from / generated from …
+#: {activity} activities". ``{activity}`` is filled per statement section.
+_NET_CASH_ACTIVITY = (
+    r"|net cash (?:flows?\s+)?(?:\(?\s*(?:used\s+in|used\s+by|applied\s+to|absorbed\s+by"
+    r"|outflows?|inflows?|generated|provided|received|from|by|in)\s*\)?[\s/]*){{1,4}}"
+    r"{activity} activities"
+)
+
 # Row-header label patterns → normalized label. Ordered most-specific first so a
 # component ("short-term debt", "total current assets") is never swallowed by a
 # broader subtotal pattern ("total debt", "total assets"), and a "recurring"
@@ -164,21 +198,35 @@ _COUNT_LABELS: frozenset[str] = frozenset({FIELD_EMPLOYEES})
 _LABEL_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"short[- ]term (?:debt|borrowings)", re.I), FIELD_SHORT_TERM_DEBT),
     (re.compile(r"long[- ]term (?:debt|borrowings)", re.I), FIELD_LONG_TERM_DEBT),
-    (re.compile(r"total current assets|current assets", re.I), FIELD_CURRENT_ASSETS),
+    # Item 21 — "Total NON-current assets" contains "current assets": without the
+    # guard both labels matched, the row was ambiguous, and neither ever became a fact.
+    (
+        re.compile(r"(?<!non-)(?<!non )(?<!non)\bcurrent assets", re.I),
+        FIELD_CURRENT_ASSETS,
+    ),
     (
         re.compile(r"total non[- ]current assets|non[- ]current assets", re.I),
         FIELD_NON_CURRENT_ASSETS,
+    ),
+    (
+        re.compile(r"(?<!non-)(?<!non )(?<!non)\bcurrent liabilities", re.I),
+        FIELD_CURRENT_LIABILITIES,
     ),
     # "Net interest-bearing debt (NIBD)" is the standard Nordic/European
     # phrasing of the same line item "net debt" names elsewhere.
     (re.compile(NET_DEBT_LABEL, re.I), FIELD_NET_DEBT),
     (re.compile(r"total (?:debt|borrowings)|gross debt", re.I), FIELD_TOTAL_DEBT),
     (re.compile(r"total assets", re.I), FIELD_TOTAL_ASSETS),
-    (re.compile(r"total liabilities", re.I), FIELD_TOTAL_LIABILITIES),
+    # "Total liabilities AND equity" is the balance-sheet total (= total assets), and
+    # "Total equity AND liabilities" the UK spelling of it: neither is liabilities nor
+    # equity. Before item 21 the UK form matched ``total_equity``, gave equity a second
+    # magnitude in the same table, and demoted the real equity line to excerpt-only.
+    (re.compile(r"total liabilities(?!\s+and\b)", re.I), FIELD_TOTAL_LIABILITIES),
     (
         re.compile(
-            r"total (?:shareholders|stockholders)[’']?\s*equity"
-            r"|shareholders[’']?\s*equity|total equity"
+            r"total (?:shareholders|stockholders)[’']?\s*equity(?!\s+and\s+liabilities)"
+            r"|shareholders[’']?\s*equity(?!\s+and\s+liabilities)"
+            r"|total equity(?!\s+and\s+liabilities)"
             # A table ROW-HEADER cell whose ENTIRE content is just "Equity"
             # (e.g. LVMH's "Financial highlights" table: a bare "Equity" row
             # alongside "Revenue", "Net financial debt", ...) is a safe,
@@ -205,12 +253,121 @@ _LABEL_PATTERNS: list[tuple[re.Pattern[str], str]] = [
             r"|cash flows? from operating activities"
             # V3.19.8 — "Net cash received from operating activities" (IFRS wording).
             r"|(?:net )?cash (?:flows? )?(?:received|generated|provided) (?:from|by) "
-            r"operating activities",
+            r"operating activities"
+            # Item 21 — the UK / ASX spellings: "Net cash used in operating
+            # activities", "Net cash (used in)/from operating activities", "Net cash
+            # outflow from operating activities". The sign is read from the caption
+            # (``_signed_value``), never assumed.
+            + _NET_CASH_ACTIVITY.format(activity="operating"),
             re.I,
         ),
         FIELD_OPERATING_CASH_FLOW,
     ),
-    (re.compile(r"cash and cash equivalents", re.I), FIELD_CASH),
+    (
+        re.compile(
+            r"cash flows? (?:from|used in) investing activities"
+            + _NET_CASH_ACTIVITY.format(activity="investing"),
+            re.I,
+        ),
+        FIELD_INVESTING_CASH_FLOW,
+    ),
+    (
+        re.compile(
+            r"cash flows? (?:from|used in) financing activities"
+            + _NET_CASH_ACTIVITY.format(activity="financing"),
+            re.I,
+        ),
+        FIELD_FINANCING_CASH_FLOW,
+    ),
+    (
+        re.compile(r"cash and cash equivalents|^\s*cash at bank and (?:in hand|on deposit)\s*$",
+                   re.I),
+        FIELD_CASH,
+    ),
+    # ── Item 21 — spend lines (stored as the positive amount spent) ─────────── #
+    (
+        re.compile(
+            r"(?:payments?\s+for|purchases?\s+of|acquisitions?\s+of|additions?\s+to)"
+            r"\s+(?:property,?\s+)?plant\s+(?:and|&)\s+equipment"
+            r"|^\s*capital\s+expenditure\s*$",
+            re.I,
+        ),
+        FIELD_CAPITAL_EXPENDITURE,
+    ),
+    (
+        re.compile(
+            # Never SG&A: "selling, general and administrative" includes selling costs.
+            r"^(?!.*\bselling\b).*?(?:"
+            r"(?:general\s+and\s+)?administrative\s+expenses?"
+            r"|administration\s+(?:costs|expenses?)"
+            r"|corporate\s+and\s+administration\s+(?:costs|expenses?))",
+            re.I | re.S,
+        ),
+        FIELD_ADMINISTRATIVE_EXPENSES,
+    ),
+    # Exploration: three DIFFERENT statements. A bare "Exploration and evaluation
+    # expenditure" caption is none of them — on an ASX balance sheet it is the
+    # capitalised ASSET, in a profit-and-loss statement the expense — so it is left
+    # unlabelled rather than guessed.
+    (
+        re.compile(
+            r"exploration(?:\s+and\s+evaluation)?\s+(?:expenditure|costs?)\s+"
+            r"(?:expensed|written\s+off|not\s+capitali[sz]ed)"
+            r"|exploration(?:\s+and\s+evaluation)?\s+expenses?\b"
+            r"|exploration\s+expensed",
+            re.I,
+        ),
+        FIELD_EXPLORATION_EXPENSED,
+    ),
+    (
+        re.compile(
+            r"capitali[sz]ed\s+exploration"
+            r"|exploration(?:\s+and\s+evaluation)?\s+(?:expenditure|costs?)\s+capitali[sz]ed"
+            r"|additions?\s+to\s+exploration(?:\s+and\s+evaluation)?\s+assets?",
+            re.I,
+        ),
+        FIELD_EXPLORATION_CAPITALISED,
+    ),
+    (
+        re.compile(
+            r"^(?!.*capitali[sz]ed)(?!.*expensed).*\bpayments?\s+for\s+exploration"
+            r"(?:\s+and\s+evaluation)?",
+            re.I | re.S,
+        ),
+        FIELD_EXPLORATION_PAYMENTS,
+    ),
+    (
+        re.compile(
+            r"payments?\s+for\s+(?:mine\s+|project\s+)?development(?:\s+(?:assets|"
+            r"expenditure|costs|activities))?"
+            r"|payments?\s+for\s+mine\s+(?:properties|construction)"
+            r"|additions?\s+to\s+(?:mine\s+)?development\s+(?:assets|expenditure|costs)",
+            re.I,
+        ),
+        FIELD_DEVELOPMENT_EXPENDITURE,
+    ),
+    # ── Item 21 — balance-sheet lines ──────────────────────────────────────── #
+    (
+        # Whole-cell only: a "Borrowings" line, never "Proceeds from borrowings" (a
+        # flow) or "Repayment of borrowings". Not total debt — see FIELD_BORROWINGS.
+        re.compile(
+            r"^\s*(?:interest[- ]bearing\s+)?(?:loans\s+and\s+)?borrowings"
+            r"\s*(?:\d{1,2}(?:\([a-z]\))?)?\s*$",
+            re.I,
+        ),
+        FIELD_BORROWINGS,
+    ),
+    (
+        # Whole-cell only, so "Issue of share capital" (a movement in the year) is
+        # never read as the balance.
+        re.compile(
+            r"^\s*(?:total\s+)?(?:issued|share|called[- ]up(?:\s+share)?|ordinary\s+share)"
+            r"\s+capital\s*(?:\d{1,2}(?:\([a-z]\))?)?\s*$"
+            r"|^\s*contributed\s+equity\s*(?:\d{1,2}(?:\([a-z]\))?)?\s*$",
+            re.I,
+        ),
+        FIELD_ISSUED_CAPITAL,
+    ),
     (
         re.compile(
             r"net cash position|net cash(?!\s*(?:flow|inflow|outflow|generated|"
@@ -228,9 +385,22 @@ _LABEL_PATTERNS: list[tuple[re.Pattern[str], str]] = [
             # (Richemont: 3 464 from continuing operations, 3 484 for the
             # year), so matching them to one label made a single table
             # contradict itself and demoted the genuine bottom line.
-            r"|profit(?:/\(loss\))? for the year(?!\s+from\b)"
-            r"|profit attributable",
-            re.I,
+            r"|profit(?:/\(loss\))? for the (?:financial )?(?:year|period|half[- ]year)"
+            r"(?!\s+from\b)"
+            r"|profit attributable"
+            # Item 21 — the LOSS captions a pre-revenue issuer prints. The value's sign
+            # is decided from the caption (``_signed_value``): under "Loss for the
+            # year" a printed 3,265 and a printed (3,265) are both a loss of 3,265.
+            # Never a comprehensive, operating or discontinued-operations loss, and
+            # never the non-controlling interests' share.
+            r"|^(?!.*non[- ]controlling)(?!.*comprehensive)(?!.*\boperating\s+loss).*(?:"
+            r"\(loss\)\s*/\s*profit for the (?:financial )?(?:year|period|half[- ]year)"
+            r"|(?<!operating )loss for the (?:financial )?(?:year|period|half[- ]year)"
+            r"|net loss(?!\s+(?:on|from|per)\b)"
+            r"|loss after (?:income )?tax(?:ation)?"
+            r"|loss attributable to (?:owners|members|equity holders|shareholders)"
+            r")(?!\s+from\b)",
+            re.I | re.S,
         ),
         FIELD_NET_INCOME,
     ),
@@ -268,7 +438,11 @@ _LABEL_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     # Not "Deferred revenue" / "unearned revenue" / "revenue received in advance": a
     # balance-sheet liability (Pro Medicus: a deferred-tax table's "Deferred revenue"
     # row became validated Group revenue).
-    (re.compile(r"(?<!deferred\s)(?<!unearned\s)(?<!accrued\s)revenue(?!\s+received in advance)"
+    # Item 21 — nor "Interest revenue" / "Other revenue" / "Finance revenue": an ASX
+    # explorer's statement of profit or loss prints "Interest revenue" and nothing
+    # else, and that must never read as the company having revenue.
+    (re.compile(r"(?<!deferred\s)(?<!unearned\s)(?<!accrued\s)(?<!interest\s)"
+                r"(?<!other\s)(?<!finance\s)revenue(?!\s+received in advance)"
                 r"|net sales|total sales|turnover", re.I), FIELD_REVENUE),
     (
         # A HEADCOUNT row, never a money row that merely mentions employees — Pensana:
@@ -479,6 +653,11 @@ _BALANCE_ROW_LABELS: frozenset[str] = frozenset(
 )
 
 
+_OPENING_BALANCE_RE = re.compile(
+    r"\b(?:beginning|opening|start)\b|brought\s+forward", re.I
+)
+
+
 def _match_label(text: str) -> str | None:
     """Return the single normalized label for a row-header cell, else None.
 
@@ -498,6 +677,12 @@ def _match_label(text: str) -> str | None:
         if label in _BALANCE_ROW_LABELS and is_flow_or_ratio_at(
             text, found.start(), found.end()
         ):
+            continue
+        # Item 21 — "Cash and cash equivalents at the BEGINNING of the year" is the
+        # prior period's closing balance printed in this period's column: the same
+        # statement then carried two magnitudes for one (cash, period) and the real
+        # closing balance was demoted to excerpt-only.
+        if label == FIELD_CASH and _OPENING_BALANCE_RE.search(text):
             continue
         matched.add(label)
     if len(matched) == 1:
@@ -625,6 +810,28 @@ def _table_currency_scale(
     return currency, scale
 
 
+_MINUS_SIGNS = str.maketrans({"\u2212": "-", "\u2013": "-", "\u2014": "-"})
+
+
+def _cell_number(cell: str) -> float | None:
+    """One statement cell as a number, with its printed sign.
+
+    Item 21 — a UK or ASX statement prints a negative as ``(3,265)`` (and sometimes
+    with a typographic minus). Before this, ``_norm_number`` refused the parentheses,
+    so every loss, outflow and deficit in such a statement was silently NOT a number:
+    a loss-making issuer's statements yielded no net income and no operating cash flow
+    at all. A lone dash is a nil cell and stays ``None``.
+    """
+    text = (cell or "").strip().translate(_MINUS_SIGNS)
+    negative = False
+    if len(text) > 2 and text.startswith("(") and text.endswith(")"):
+        text, negative = text[1:-1].strip(), True
+    num = _norm_number(text)
+    if num is None:
+        return None
+    return -abs(num) if negative else num
+
+
 def _numeric_cells(row: list[str]) -> list[tuple[int, str, float]]:
     """Return ``(col, raw_text, numeric)`` for every parseable numeric cell in a
     row, skipping the leading label column (col 0)."""
@@ -632,10 +839,72 @@ def _numeric_cells(row: list[str]) -> list[tuple[int, str, float]]:
     for col, cell in enumerate(row):
         if col == 0:
             continue
-        num = _norm_number(cell)
+        num = _cell_number(cell)
         if num is not None:
             out.append((col, cell.strip(), num))
     return out
+
+
+#: Item 21 — the caption says which way the money moved; the printed sign may not.
+_OUTFLOW_WORDS_RE = re.compile(
+    r"\b(?:used|outflows?|applied|absorbed|spent)\b", re.I
+)
+_INFLOW_WORDS_RE = re.compile(
+    r"\b(?:generated|provided|received|inflows?)\b|(?<!outflow )(?<!outflows )\bfrom\b",
+    re.I,
+)
+_LOSS_WORD_RE = re.compile(r"\bloss\b", re.I)
+_PROFIT_WORD_RE = re.compile(r"\bprofit\b", re.I)
+_LIABILITY_BALANCES: frozenset[str] = frozenset(
+    {
+        FIELD_TOTAL_LIABILITIES,
+        FIELD_CURRENT_LIABILITIES,
+        FIELD_BORROWINGS,
+        FIELD_TOTAL_DEBT,
+        FIELD_SHORT_TERM_DEBT,
+        FIELD_LONG_TERM_DEBT,
+    }
+)
+_CASH_FLOW_SUBTOTALS: frozenset[str] = frozenset(
+    {FIELD_OPERATING_CASH_FLOW, FIELD_INVESTING_CASH_FLOW, FIELD_FINANCING_CASH_FLOW}
+)
+
+
+def _signed_value(label: str, caption: str, value: float) -> tuple[float, str | None]:
+    """The value under the platform's sign convention, and a note when it was changed.
+
+    See ``primary_fact_parser`` for the convention: cash-flow subtotals and net income
+    are signed (negative = outflow / loss); spend lines are the positive amount spent.
+
+    * A pure LOSS caption ("Loss for the year", "Net loss") states the size of a loss,
+      whether the document printed ``3,265`` or ``(3,265)``: net income is negative.
+      A combined caption ("(Loss)/profit for the year") keeps the printed sign.
+    * A pure OUTFLOW caption ("Net cash used in operating activities") is negative
+      whatever was printed; a combined one ("(used in)/from") keeps the printed sign.
+    * A spend line ("Payments for property, plant and equipment") is the amount spent.
+    """
+    if label in SPEND_FIELDS:
+        if value < 0:
+            return abs(value), "Spend line printed as an outflow; stored as the amount spent."
+        return value, None
+    if label in _LIABILITY_BALANCES:
+        # A UK "net assets" balance sheet prints liabilities in brackets; a liability
+        # balance is the amount owed, never a negative quantity. Without this the
+        # identity check (assets = liabilities + equity) failed on every such sheet.
+        if value < 0:
+            return abs(value), "Liability printed in brackets; stored as the amount owed."
+        return value, None
+    if label == FIELD_NET_INCOME:
+        if _LOSS_WORD_RE.search(caption) and not _PROFIT_WORD_RE.search(caption):
+            if value > 0:
+                return -value, "Loss caption: stored as a negative net income."
+        return value, None
+    if label in _CASH_FLOW_SUBTOTALS:
+        if _OUTFLOW_WORDS_RE.search(caption) and not _INFLOW_WORDS_RE.search(caption):
+            if value > 0:
+                return -value, "Outflow caption: stored as a negative cash flow."
+        return value, None
+    return value, None
 
 
 def _numeric_cells_percent(row: list[str]) -> list[tuple[int, str, float]]:
@@ -784,7 +1053,7 @@ def _candidates_from_table(
                         label,
                         issuer.default_period,
                         t,
-                        n,
+                        _signed_value(label, row[0], n)[0],
                         table,
                         currency if is_money else None,
                         scale if is_money else None,
@@ -799,7 +1068,8 @@ def _candidates_from_table(
             col, t, n = nums[0]
             pairs.append((issuer.default_period, t, n, col))
 
-        for period, text, num, _col in pairs:
+        for period, text, raw_num, _col in pairs:
+            num, sign_note = _signed_value(label, row[0], raw_num)
             status = VALIDATION_VALIDATED
             note = None
             if period is None:
@@ -826,6 +1096,8 @@ def _candidates_from_table(
                     note=note,
                 )
             )
+            if sign_note:
+                candidates[-1].notes.append(sign_note)
 
     _apply_subtotal_check(candidates)
     _apply_balance_sheet_check(candidates)

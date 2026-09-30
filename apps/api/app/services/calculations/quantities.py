@@ -43,10 +43,12 @@ from app.services.sources.financial_period import ReportingPeriod
 #: Derived units this engine can produce that no fact ever carries.
 UNIT_RATIO = "ratio"
 UNIT_YEARS = "years"
+#: Item 21 — a count of quarter-equivalents (cash runway).
+UNIT_QUARTERS = "quarters"
 
 #: Every unit an input or a result may have.
 UNITS: frozenset[str] = frozenset(
-    {UNIT_CURRENCY_AMOUNT, UNIT_PERCENT, UNIT_PEOPLE, UNIT_RATIO, UNIT_YEARS}
+    {UNIT_CURRENCY_AMOUNT, UNIT_PERCENT, UNIT_PEOPLE, UNIT_RATIO, UNIT_YEARS, UNIT_QUARTERS}
 )
 
 #: Units whose magnitude depends on a scale word, so a scale is load-bearing.
@@ -158,6 +160,7 @@ __all__ = [
     "UNIT_CURRENCY_AMOUNT",
     "UNIT_PEOPLE",
     "UNIT_PERCENT",
+    "UNIT_QUARTERS",
     "UNIT_RATIO",
     "UNIT_YEARS",
     "Quantity",

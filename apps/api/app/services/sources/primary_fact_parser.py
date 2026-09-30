@@ -64,6 +64,45 @@ FIELD_CASH = "cash_and_equivalents"
 FIELD_TOTAL_EQUITY = "total_equity"
 FIELD_EMPLOYEES = "employees"
 
+# Item 21 — the statement lines a UK / ASX annual or interim report prints that the
+# vocabulary above had no name for. Read from a statement TABLE's row label only
+# (``extracted_fact_validator._LABEL_PATTERNS``), never guessed from prose.
+#
+# SIGN CONVENTION (one rule, stated once):
+#   * cash-flow SUBTOTALS (operating / investing / financing) and net income are SIGNED:
+#     negative is an outflow or a loss, however the document printed it;
+#   * SPEND lines (capital expenditure, exploration, development, administrative
+#     expenses) are the POSITIVE amount spent — the same convention as the SEC
+#     ``capital_expenditures`` statement line, so one metric never means two things.
+FIELD_CURRENT_ASSETS = "total_current_assets"
+FIELD_CURRENT_LIABILITIES = "total_current_liabilities"
+FIELD_TOTAL_LIABILITIES = "total_liabilities"
+FIELD_INVESTING_CASH_FLOW = "investing_cash_flow"
+FIELD_FINANCING_CASH_FLOW = "financing_cash_flow"
+#: Payments for property, plant and equipment ("purchase of PP&E", "capital
+#: expenditure"). Never includes exploration or development spend, which have their own
+#: fields below: a developer's capital programme is several lines, and adding them up
+#: would be this platform deciding which of them the issuer counts as capex.
+FIELD_CAPITAL_EXPENDITURE = "capital_expenditure"
+FIELD_ADMINISTRATIVE_EXPENSES = "administrative_expenses"
+#: Exploration and evaluation spend EXPENSED through profit or loss.
+FIELD_EXPLORATION_EXPENSED = "exploration_expensed"
+#: Exploration and evaluation spend CAPITALISED as an asset. Kept apart from the
+#: expensed line: the two are different accounting policies, and a report that summed
+#: them would describe neither.
+FIELD_EXPLORATION_CAPITALISED = "exploration_capitalised"
+#: "Payments for exploration and evaluation" — cash paid, with the accounting
+#: treatment NOT stated by the line itself. Never promoted to either field above.
+FIELD_EXPLORATION_PAYMENTS = "exploration_payments"
+#: Payments for / capitalised mine or project development.
+FIELD_DEVELOPMENT_EXPENDITURE = "development_expenditure"
+#: A bare "Borrowings" / "Loans and borrowings" line. Not ``total_debt``: a balance
+#: sheet prints it once under current and once under non-current liabilities, and
+#: either one alone is not the total.
+FIELD_BORROWINGS = "borrowings"
+#: Issued / share capital / contributed equity.
+FIELD_ISSUED_CAPITAL = "issued_capital"
+
 # Private-use readiness PR-C — the parser's OWN vocabulary, exported so every
 # consumer admits exactly the fields this parser can actually produce.
 #
@@ -97,6 +136,43 @@ FINANCIAL_STATEMENT_FIELDS: frozenset[str] = frozenset(
     }
 )
 
+#: Item 21 — statement lines surfaced by the ISSUER statements view (V3,
+#: ``pipeline.issuer_financials``). Deliberately NOT part of
+#: ``FINANCIAL_STATEMENT_FIELDS``: the V2 report's canonical slots are unchanged, so
+#: every report the V2 generator writes stays byte-identical.
+STATEMENT_DETAIL_FIELDS: frozenset[str] = frozenset(
+    {
+        FIELD_CURRENT_ASSETS,
+        FIELD_CURRENT_LIABILITIES,
+        FIELD_TOTAL_LIABILITIES,
+        FIELD_INVESTING_CASH_FLOW,
+        FIELD_FINANCING_CASH_FLOW,
+        FIELD_CAPITAL_EXPENDITURE,
+        FIELD_ADMINISTRATIVE_EXPENSES,
+        FIELD_EXPLORATION_EXPENSED,
+        FIELD_EXPLORATION_CAPITALISED,
+        FIELD_EXPLORATION_PAYMENTS,
+        FIELD_DEVELOPMENT_EXPENDITURE,
+        FIELD_BORROWINGS,
+        FIELD_ISSUED_CAPITAL,
+    }
+)
+
+#: Everything the issuer statements view may place in a slot.
+ISSUER_STATEMENT_FIELDS: frozenset[str] = FINANCIAL_STATEMENT_FIELDS | STATEMENT_DETAIL_FIELDS
+
+#: Spend lines — stored as the POSITIVE amount spent (see the sign convention above).
+SPEND_FIELDS: frozenset[str] = frozenset(
+    {
+        FIELD_CAPITAL_EXPENDITURE,
+        FIELD_ADMINISTRATIVE_EXPENSES,
+        FIELD_EXPLORATION_EXPENSED,
+        FIELD_EXPLORATION_CAPITALISED,
+        FIELD_EXPLORATION_PAYMENTS,
+        FIELD_DEVELOPMENT_EXPENDITURE,
+    }
+)
+
 #: Company-identity facts. Never a financial fundamental — ``employees`` is a
 #: real, useful figure but "we know the headcount" must not read as "we have
 #: financial statements".
@@ -121,6 +197,14 @@ NON_INTERCHANGEABLE_FIELD_PAIRS: tuple[tuple[str, str], ...] = (
     (FIELD_OPERATING_CASH_FLOW, FIELD_FREE_CASH_FLOW),
     (FIELD_FREE_CASH_FLOW, FIELD_OPERATING_FREE_CASH_FLOW),
     (FIELD_OPERATING_MARGIN, FIELD_RECURRING_OPERATING_MARGIN),
+    # Item 21: a bare "Borrowings" line is one side of the balance sheet, not the total;
+    # expensed, capitalised and "paid for" exploration are three different statements.
+    (FIELD_BORROWINGS, FIELD_TOTAL_DEBT),
+    (FIELD_EXPLORATION_EXPENSED, FIELD_EXPLORATION_CAPITALISED),
+    (FIELD_EXPLORATION_PAYMENTS, FIELD_EXPLORATION_CAPITALISED),
+    (FIELD_EXPLORATION_PAYMENTS, FIELD_EXPLORATION_EXPENSED),
+    (FIELD_CAPITAL_EXPENDITURE, FIELD_EXPLORATION_CAPITALISED),
+    (FIELD_CAPITAL_EXPENDITURE, FIELD_DEVELOPMENT_EXPENDITURE),
 )
 
 
@@ -181,6 +265,9 @@ _NUM = r"(?P<num>\d[\d.,  ]*\d|\d)"
 _SCALE = r"(?P<scale>million|billion|thousand|bn|mn|m)\b"
 
 
+_MULTI_GROUPED_RE = re.compile(r"-?\d{1,3}(?:,\d{3}){2,}")
+
+
 def _norm_number(raw: str) -> float | None:
     """Parse a grouped number string to float, else None. No unit inference."""
     s = raw.strip().replace(" ", "").replace(" ", "").replace(" ", "")
@@ -197,6 +284,11 @@ def _norm_number(raw: str) -> float | None:
         # with exactly 3 trailing digits as grouping; else as decimal.
         parts = s.split(",")
         if len(parts) == 2 and len(parts[1]) == 3:
+            s = s.replace(",", "")
+        elif len(parts) > 2 and _MULTI_GROUPED_RE.fullmatch(s):
+            # Item 21 — "3,265,409": a decimal comma cannot occur twice, so two or more
+            # three-digit groups are grouping. Before this a whole-currency statement
+            # (an ASX half-year in whole dollars) yielded no number over 999,999.
             s = s.replace(",", "")
         else:
             s = s.replace(",", ".")
@@ -485,6 +577,10 @@ def _percent_pattern(
     )
 
 
+#: Item 21 — the internal key of the net-LOSS caption. Never emitted: a match is stored
+#: as ``net_income`` with a negative value (``_parse_excerpt``).
+_LOSS_FIELD = "_net_loss_caption"
+
 _MONEY_FIELDS: list[tuple[str, re.Pattern[str]]] = [
     (
         FIELD_REVENUE,
@@ -534,6 +630,21 @@ _MONEY_FIELDS: list[tuple[str, re.Pattern[str]]] = [
             # for the year" — guarded so it never mislabels those as net
             # income (a real, live-observed collision — Phase 32A corrective).
             r"|(?<!operating )(?<!recurring operating )profit for the year"
+        ),
+    ),
+    (
+        # Item 21 — a LOSS caption states net income as a loss. The figure after it is
+        # the size of the loss ("net loss of A$3.2 million"), so the fact is stored as
+        # a NEGATIVE net income (see ``_LOSS_FIELD``). Never "net loss on disposal" /
+        # "from discontinued operations" (a different line), never a comprehensive,
+        # operating, underlying or adjusted loss (different metrics).
+        _LOSS_FIELD,
+        _money_pattern(
+            r"net loss(?!\s+(?:on|from|per|attributable\s+to\s+non)\b)"
+            r"|loss after (?:income )?tax(?:ation)?(?!\s+from\b)"
+            r"|loss for the (?:financial )?(?:year|period|half[- ]year)(?!\s+from\b)",
+            exclude_prefix=("comprehensive ", "operating ", "underlying ", "adjusted ",
+                            "(profit)/", "profit/("),
         ),
     ),
     (FIELD_OPERATING_FREE_CASH_FLOW, _money_pattern(r"operating free cash flow")),
@@ -944,6 +1055,12 @@ def _interim_marker_near(window_text: str) -> str | None:
 #: previous sentence's year is about to be stolen.
 _SENTENCE_BOUNDARY_RE = re.compile(r"[.!?\n](?=\s)")
 
+#: "(2024: £1.9 million)", "(FY24: A$3.1m)", "(H1 2025: $0.8m)" — the prior-period
+#: comparative a UK or ASX results narrative prints after each figure.
+_COMPARATIVE_ASIDE_RE = re.compile(
+    r"\(\s*(?:(?:FY|H[12]|Q[1-4])\s*)?(?:19|20)?\d{2}\s*:[^()\n]{0,60}\)", re.IGNORECASE
+)
+
 
 def _period_near(
     text: str, pos: int, *, window: int = 120, local_only: bool = False
@@ -973,6 +1090,11 @@ def _period_near(
     # flow in H1 2026 was equal to EUR 34.0 million" puts the previous
     # sentence's year closer to the label than its own, so it moved three
     # correct facts onto the prior year.
+    # Item 21 — a UK / ASX comparative aside "(2024: £1.9 million)" names the PRIOR
+    # year's figure; its year is never the period of the figure before it ("Loss after
+    # tax was £2.5 million (2024: £1.9 million)" read as a 2024 loss). Masked with
+    # spaces of the same length, so every position below is unchanged.
+    text = _COMPARATIVE_ASIDE_RE.sub(lambda m: " " * len(m.group(0)), text)
     lo = max(0, pos - window)
     boundary = None
     for match in _SENTENCE_BOUNDARY_RE.finditer(text, lo, pos):
@@ -1122,6 +1244,10 @@ def _parse_excerpt(
             if (scale and currency)
             else "Scale or currency inferred from surrounding text; verify."
         )
+        stored_field = field
+        if field == _LOSS_FIELD:
+            # "Net loss of 3.2 million" states a loss of 3.2 million: net income -3.2.
+            stored_field, num = FIELD_NET_INCOME, -abs(num)
         # Phase 32A corrective — scope + period are derived from THIS fact's
         # own local sentence (never the whole excerpt), so a segment-scoped
         # figure or a comparative aside elsewhere in the excerpt can never be
@@ -1130,7 +1256,7 @@ def _parse_excerpt(
         sentence = _sentence_around(text, m.start())
         add(
             PrimaryFact(
-                field=field,
+                field=stored_field,
                 value=m.group(0).strip(),
                 numeric_value=num,
                 unit="currency_amount",
@@ -1254,7 +1380,23 @@ __all__ = [
     "FIELD_CASH",
     "FIELD_TOTAL_EQUITY",
     "FIELD_EMPLOYEES",
+    "FIELD_CURRENT_ASSETS",
+    "FIELD_CURRENT_LIABILITIES",
+    "FIELD_TOTAL_LIABILITIES",
+    "FIELD_INVESTING_CASH_FLOW",
+    "FIELD_FINANCING_CASH_FLOW",
+    "FIELD_CAPITAL_EXPENDITURE",
+    "FIELD_ADMINISTRATIVE_EXPENSES",
+    "FIELD_EXPLORATION_EXPENSED",
+    "FIELD_EXPLORATION_CAPITALISED",
+    "FIELD_EXPLORATION_PAYMENTS",
+    "FIELD_DEVELOPMENT_EXPENDITURE",
+    "FIELD_BORROWINGS",
+    "FIELD_ISSUED_CAPITAL",
     "FINANCIAL_STATEMENT_FIELDS",
+    "STATEMENT_DETAIL_FIELDS",
+    "ISSUER_STATEMENT_FIELDS",
+    "SPEND_FIELDS",
     "IDENTITY_FIELDS",
     "NON_INTERCHANGEABLE_FIELD_PAIRS",
 ]

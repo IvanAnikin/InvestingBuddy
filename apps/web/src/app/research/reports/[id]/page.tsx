@@ -260,6 +260,8 @@ export default async function ResearchReportPage({
       <ReportHeader
         identity={view.identity}
         periods={view.snapshot.periods}
+        annualState={view.snapshot.annualState}
+        currentState={view.snapshot.currentState}
         council={view.council}
         evidenceWordLabel={
           view.evidence.overall ? evidenceWord(view.evidence.overall) : null

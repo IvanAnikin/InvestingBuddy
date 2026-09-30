@@ -31,6 +31,12 @@ import type { EvidenceLabel } from "./ResearchStatusBadge";
 import { evidenceLabelOf } from "./ResearchStatusBadge";
 import type { ResearchArtefactKind } from "./reportResolution";
 import { partitionRecordGaps } from "./recordGaps";
+import {
+  readFinancialStatements,
+  type DerivedMetric,
+  type StatementState,
+  type V3FinancialStatements,
+} from "./v3Research";
 
 // ---------------------------------------------------------------------------
 // Small readers
@@ -86,6 +92,24 @@ export const FINANCIAL_FIELDS: { key: string; label: string }[] = [
   { key: "total_debt", label: "Total debt" },
   { key: "net_debt", label: "Net debt" },
   { key: "net_cash", label: "Net cash" },
+  // Item 21 — statement lines a UK / ASX issuer prints, read by the V3 statements view
+  // (`v3_research.financial_statements_state`). The V2 snapshot never carries them.
+  { key: "administrative_expenses", label: "Administrative expenses" },
+  { key: "exploration_expensed", label: "Exploration expensed" },
+  { key: "investing_cash_flow", label: "Investing cash flow" },
+  { key: "financing_cash_flow", label: "Financing cash flow" },
+  { key: "capital_expenditure", label: "Capital expenditure" },
+  { key: "exploration_capitalised", label: "Exploration capitalised" },
+  {
+    key: "exploration_payments",
+    label: "Exploration payments (treatment not stated)",
+  },
+  { key: "development_expenditure", label: "Development expenditure" },
+  { key: "total_current_assets", label: "Current assets" },
+  { key: "total_current_liabilities", label: "Current liabilities" },
+  { key: "total_liabilities", label: "Total liabilities" },
+  { key: "borrowings", label: "Borrowings" },
+  { key: "issued_capital", label: "Issued capital" },
 ];
 
 /** Regulator/aggregator statement slots, present on SEC-registered issuers. */
@@ -210,9 +234,30 @@ export interface ReportingPeriods {
   note: string | null;
 }
 
+/**
+ * Item 21 — what the report can say about a reporting period it shows no figures for.
+ * `null` on a report written before the statements view existed: the page then says
+ * only that the period is not in this report, never "not reported".
+ */
+export interface PeriodStateView {
+  state: StatementState["state"];
+  /** The full sentence, for the header and the financials section. */
+  label: string;
+  /** A short form for a table cell. */
+  short: string;
+  reason: string | null;
+}
+
 export interface FinancialSnapshotView {
   present: boolean;
   periods: ReportingPeriods | null;
+  /** Item 21 — the annual / current-period situation when no figures fill it. */
+  annualState: PeriodStateView | null;
+  currentState: PeriodStateView | null;
+  /** True when the figures shown came from the V3 statements view, not the V2 snapshot. */
+  fromIssuerStatements: boolean;
+  /** Platform-derived metrics over the issuer's own statement lines (cash runway). */
+  derived: DerivedMetric[];
   annual: FinancialDatapoint[];
   currentPeriod: FinancialDatapoint[];
   /** Regulator/aggregator statement slots (SEC XBRL and similar). */
@@ -226,6 +271,10 @@ export interface FinancialSnapshotView {
 const EMPTY_SNAPSHOT: FinancialSnapshotView = {
   present: false,
   periods: null,
+  annualState: null,
+  currentState: null,
+  fromIssuerStatements: false,
+  derived: [],
   annual: [],
   currentPeriod: [],
   statements: [],
@@ -270,6 +319,10 @@ function buildFinancialSnapshot(
   return {
     present: true,
     periods,
+    annualState: null,
+    currentState: null,
+    fromIssuerStatements: false,
+    derived: [],
     annual,
     currentPeriod,
     statements,
@@ -282,6 +335,98 @@ function buildFinancialSnapshot(
     ),
     fallbackNote: noteText(section["note"]),
   };
+}
+
+function shortState(state: StatementState): string {
+  switch (state.state) {
+    case "facts_extracted":
+      return state.period ?? state.label;
+    case "report_acquired_facts_not_extracted":
+      return `${state.period ? `${state.period} report` : "Report"} acquired — not extracted`;
+    case "not_reported_by_issuer":
+      return "Not reported by issuer";
+    default:
+      return "Not acquired";
+  }
+}
+
+function stateView(state: StatementState | null): PeriodStateView | null {
+  if (!state) return null;
+  return {
+    state: state.state,
+    label: state.label,
+    short: shortState(state),
+    reason: state.reason,
+  };
+}
+
+/**
+ * Item 21 — fold the V3 issuer statements into the V2 snapshot. C > B > A:
+ *
+ * - the V2 snapshot's own figures win when it has a period (it is the report's canonical
+ *   snapshot, and the V3 view reads by the same rules);
+ * - otherwise the V3 view's figures are shown when it extracted any (C);
+ * - otherwise the period is described by the V3 state — "FY2025 annual report acquired —
+ *   figures not yet extracted" (B), "No annual report acquired" (A), or, only with the
+ *   official listing as evidence, "Issuer has not reported …".
+ *
+ * Nothing is mixed: an annual column is either all V2 or all V3.
+ */
+export function withIssuerStatements(
+  snapshot: FinancialSnapshotView,
+  statements: V3FinancialStatements | null,
+): FinancialSnapshotView {
+  if (!statements) return snapshot;
+  const slots = statements.slots;
+  const v3Annual: FinancialDatapoint[] = [];
+  const v3Current: FinancialDatapoint[] = [];
+  for (const { key, label } of FINANCIAL_FIELDS) {
+    const a = toDatapoint(key, label, slots[`${key}_primary_filing`]);
+    if (a) v3Annual.push(a);
+    const c = toDatapoint(key, label, slots[`${key}_current_period`]);
+    if (c) v3Current.push(c);
+  }
+  const periods: ReportingPeriods = snapshot.periods ?? {
+    latestAnnual: null,
+    latestInterim: null,
+    latestQuarter: null,
+    latestCurrent: null,
+    note: null,
+  };
+  const useAnnual =
+    !periods.latestAnnual &&
+    statements.annual?.state === "facts_extracted" &&
+    v3Annual.length > 0;
+  const useCurrent =
+    !periods.latestCurrent &&
+    statements.currentPeriod?.state === "facts_extracted" &&
+    v3Current.length > 0;
+  const rp = statements.reportingPeriods;
+  return {
+    ...snapshot,
+    present: snapshot.present || useAnnual || useCurrent,
+    periods: {
+      ...periods,
+      latestAnnual: useAnnual ? rp.latestAnnual : periods.latestAnnual,
+      latestInterim: useCurrent ? rp.latestInterim : periods.latestInterim,
+      latestQuarter: useCurrent ? rp.latestQuarter : periods.latestQuarter,
+      latestCurrent: useCurrent ? rp.latestCurrent : periods.latestCurrent,
+    },
+    annual: useAnnual ? v3Annual : snapshot.annual,
+    currentPeriod: useCurrent ? v3Current : snapshot.currentPeriod,
+    annualState: periods.latestAnnual ? null : stateView(statements.annual),
+    currentState: periods.latestCurrent ? null : stateView(statements.currentPeriod),
+    fromIssuerStatements: useAnnual || useCurrent,
+    derived: statements.derived,
+  };
+}
+
+/** The header's words for a period: the period, else the situation, never a guess. */
+export function periodText(
+  period: string | null | undefined,
+  state: PeriodStateView | null | undefined,
+): string {
+  return period ?? state?.label ?? "Not in this report";
 }
 
 // ---------------------------------------------------------------------------
@@ -744,7 +889,10 @@ export function buildResearchReportView(
     summary: fieldText(exec?.["committee_note"]) ?? report.summary,
     evidence: buildEvidenceQuality(content),
     channels: buildChannels(content),
-    snapshot: buildFinancialSnapshot(content),
+    snapshot: withIssuerStatements(
+      buildFinancialSnapshot(content),
+      readFinancialStatements(report.source_summary_json),
+    ),
     trends: buildTrends(content),
     disclosures: buildDisclosures(content),
     bull: buildNarrative(content, "bull_case", [
@@ -827,6 +975,10 @@ export interface LibraryRow {
   exchange: string | null;
   latestAnnual: string | null;
   latestCurrent: string | null;
+  /** Item 21 — the short situation when no period is shown ("Report acquired — not
+      extracted"), or null when the report says nothing either way. */
+  annualStateShort: string | null;
+  currentStateShort: string | null;
   evidence: EvidenceLabel | null;
   councilUsed: boolean;
   councilCompleted: number;
@@ -858,7 +1010,10 @@ export function buildLibraryRow(
 ): LibraryRow {
   const content = extractFinalReportContent(report.content_markdown);
   const identity = buildIdentity(content);
-  const snapshot = buildFinancialSnapshot(content);
+  const snapshot = withIssuerStatements(
+    buildFinancialSnapshot(content),
+    readFinancialStatements(report.source_summary_json),
+  );
   const quality = buildEvidenceQuality(content);
   const council = readCouncilMetadata(report.source_summary_json);
 
@@ -871,6 +1026,8 @@ export function buildLibraryRow(
     exchange: identity.exchange,
     latestAnnual: snapshot.periods?.latestAnnual ?? null,
     latestCurrent: snapshot.periods?.latestCurrent ?? null,
+    annualStateShort: snapshot.annualState?.short ?? null,
+    currentStateShort: snapshot.currentState?.short ?? null,
     evidence: quality.overall,
     councilUsed: Boolean(council?.llm_used),
     councilCompleted: council?.agents_completed ?? 0,

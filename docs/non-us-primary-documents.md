@@ -207,3 +207,61 @@ authority are required, or both connectors must be switched off.**
   document (otherwise `identity_unverified`, never a wrong issuer); an NSM amendment
   published at a NEW address is a new document, and the superseded one stays current
   until it ages out.
+
+## Statements from acquired reports, and an honest "not reported" (item 21)
+
+The V2 report — which owns `financial_snapshot.reporting_periods` — is assembled BEFORE
+the V3 run acquires an issuer's NSM / ASX reports, and it never read the persisted
+`ExtractedFact` rows those reports produce. So an LSE / ASX report said **"Latest annual:
+Not reported"** while the issuer's annual report sat in the research corpus.
+
+**The statements view.** Right after `ensure_core_disclosures`, the V3 run reads the
+company's active, validated statement facts through `company_documents_clause` (an
+`ExtractedDocument` is shared by content hash) and builds
+`v3_research.financial_statements_state`
+(`app/services/pipeline/issuer_financials.py`). Slots are chosen by the SAME functions
+that fill the V2 snapshot (`_high_confidence_facts_for`, `_current_period_facts_for`):
+high confidence only, a segment or subsidiary fact never fills a Group slot, an interim
+figure never takes an annual slot. Two documents that state one Group figure differently
+for one period fill no slot and are listed under `conflicts`.
+
+**Four states, never merged** (`annual` and `current_period`):
+
+| State | Meaning | Page text |
+|---|---|---|
+| `facts_extracted` | a validated Group statement figure exists for the period | `FY2025` |
+| `report_acquired_facts_not_extracted` | the report is in the corpus; no validated Group figure came out of it | "FY2025 annual report acquired (2025-09-30) — figures not yet extracted" |
+| `not_acquired` | nothing acquired — says nothing about the issuer (`not_acquired_by_platform`) | "No annual report acquired" |
+| `not_reported_by_issuer` | the official listing reaches back ≥ 18 months (`listing_oldest`) and lists no annual report or full-year results (`annual_documents_listed = 0`) | "Issuer has not reported an annual report in the last 18 months" |
+
+The page (`reportView.withIssuerStatements`) prefers C > B > A: the V2 snapshot's own
+figures when it has a period, else the V3 view's figures, else the V3 state's sentence.
+"Not reported" is no longer printed anywhere; a report written before this reads "Not in
+this report".
+
+**Statement reading (pipeline version 19).** A bracketed cell `(3,265)` is a negative
+number (it was no number at all); `3,265,409` is a number; loss and outflow captions set
+the sign ("Loss for the year", "Net cash used in operating activities"), a combined
+caption ("(Loss)/profit", "(used in)/from") keeps the printed sign; liabilities printed in
+brackets are the amount owed. New lines: current liabilities, total liabilities, investing
+and financing cash flow, capital expenditure (payments for PP&E only), administrative
+expenses, exploration **expensed** / **capitalised** / **paid (treatment not stated)** —
+three different statements, a bare "Exploration and evaluation expenditure" is none of
+them — development expenditure, borrowings (never total debt) and issued capital. "Total
+non-current assets" no longer collides with current assets, "Total equity and
+liabilities" is not equity, "Interest / Other / Finance revenue" is not revenue, the
+OPENING cash balance is not cash, and a prose figure's period ignores a "(2024: £1.9m)"
+comparative aside. Spend lines are stored as the positive amount spent, cash-flow
+subtotals and net income are signed. The new lines are V3-only
+(`STATEMENT_DETAIL_FIELDS`): the V2 snapshot's slots are unchanged.
+
+**Cash runway.** `cash_runway_quarters` (calculation definition v1) = cash ÷
+(−(operating cash flow − |capex|) ÷ quarters in the period). Refused unless the three
+inputs share one period, scope and currency, unless the period is a year, half or quarter,
+and unless the net flow is an outflow (`not_a_cash_burn`). Labelled derived, never an
+issuer figure; exploration and development spend are not added in. No EBITDA is ever
+derived.
+
+Known limits: a whole-currency statement ("US$" headers, no '000) states no scale, so its
+money facts stay excerpt-only (state B, honestly); an issuer's annual period taken from a
+headline ("Annual Report 2025" → FY2025) is only a label in the B sentence, never a slot.

@@ -662,6 +662,29 @@ def select_core_documents(
     return chosen[: max(0, int(max_documents))]
 
 
+def _listing_coverage(listing: DisclosureListing) -> dict[str, Any]:
+    """How far back the official listing reaches, and how many annual documents it holds.
+
+    Item 21 — the evidence behind "the issuer has not reported an annual report": a
+    listing that reaches back at least 18 months and lists no annual report or
+    full-year results. Without the reach, an empty result says nothing about the issuer.
+    """
+    from app.services.sources.disclosures.relevance import is_full_year_results
+
+    dated = [d.published_at for d in listing.documents if d.published_at is not None]
+    annual = sum(
+        1
+        for d in listing.documents
+        if d.doc_kind == DOC_KIND_ANNUAL_REPORT
+        or (d.doc_kind == DOC_KIND_RESULTS_RELEASE and is_full_year_results(d.headline))
+    )
+    return {
+        "listing_oldest": min(dated).date().isoformat() if dated else None,
+        "listing_newest": max(dated).date().isoformat() if dated else None,
+        "annual_documents_listed": annual,
+    }
+
+
 async def ensure_core_disclosures(
     session: Any, *, company: Any, cfg: Any, fetcher: Any = None, poster: Any = None,
     extractor: Any = None, now: datetime | None = None,
@@ -687,7 +710,7 @@ async def ensure_core_disclosures(
         return out
     out.update({"issuer": listing.issuer.to_dict() if listing.issuer else None,
                 "listed": len(listing.documents), "refused": listing.refused,
-                "requests": listing.requests})
+                "requests": listing.requests, **_listing_coverage(listing)})
     if listing.issuer is None or not listing.documents:
         out["skipped"] = listing.reason or REASON_DATA_NOT_SOURCED
         if listing.detail:

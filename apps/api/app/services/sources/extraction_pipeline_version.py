@@ -327,8 +327,20 @@ from __future__ import annotations
 # headcount; and an announcement's table takes its currency and scale from the table
 # alone, never from page prose ("40,133" in a whole-US$ table read as US$ million).
 # Every version-17 row may carry those readings.
+# Version 19 (item 21 — UK / ASX statements): a bracketed statement cell "(3,265)" is a
+# negative number (it was no number at all, so a loss-maker's statements yielded no net
+# income or operating cash flow); loss and outflow captions set the sign ("Loss for the
+# year", "Net cash used in operating activities"); liabilities printed in brackets are
+# the amount owed; new statement lines are read (current liabilities, investing and
+# financing cash flow, capital expenditure, administrative expenses, expensed /
+# capitalised / paid exploration, development, borrowings, issued capital); "Total
+# non-current assets" and "Total equity and liabilities" no longer collide with the
+# current-assets and equity rows; "Interest revenue" / "Other revenue" are not revenue;
+# the opening cash balance is not cash; "3,265,409" is a number (two or more
+# thousands separators were read as no number at all); and a prose figure's period ignores a
+# "(2024: £1.9m)" comparative aside. Every version-18 row may carry the old readings.
 LEGACY_EXTRACTION_PIPELINE_VERSION = 1
-CURRENT_EXTRACTION_PIPELINE_VERSION = 18
+CURRENT_EXTRACTION_PIPELINE_VERSION = 19
 
 # The pipeline version at/after which persisted ``excerpts_json`` text is
 # guaranteed to have been produced by column-aware page extraction UNDER

@@ -38,6 +38,7 @@ from decimal import Decimal
 from app.services.calculations.quantities import (
     UNIT_CURRENCY_AMOUNT,
     UNIT_PERCENT,
+    UNIT_QUARTERS,
     UNIT_RATIO,
     Quantity,
 )
@@ -136,6 +137,10 @@ class CalculationDefinition:
     #: How the value is to be read, in one or two sentences a model is handed verbatim.
     #: REQUIRED. "No model may invent the meaning of a ratio after seeing it."
     interpretation: str = ""
+    #: Item 21 — a domain rule the declarative fields cannot state ("the inputs must
+    #: describe a cash BURN"). Returns ``(refusal_reason, detail)`` to refuse, or
+    #: ``None``. Pure; run by the engine after every relationship check has passed.
+    domain_check: "Callable[[dict[str, Quantity]], tuple[str, str] | None] | None" = None
 
     def __post_init__(self) -> None:
         if self.directionality not in DIRECTIONALITIES:
@@ -599,6 +604,111 @@ DIVIDEND_COVER = CalculationDefinition(
 )
 
 
+# ── Cash runway — item 21 ─────────────────────────────────────────────────── #
+#
+# Named by playbooks ("cash_runway_quarters") and by the research-field vocabulary long
+# before anything could compute it. It is the one definition here whose inputs are not a
+# plain quotient: the burn is operating cash flow PLUS capital expenditure, and it only
+# means anything when that sum is an OUTFLOW. A company whose operations and capital
+# spending together generate cash has no runway to measure — refusing is the answer,
+# not "infinite quarters".
+
+#: Refusal reason for a runway over a period that burned no cash.
+REFUSED_NOT_A_CASH_BURN = "not_a_cash_burn"
+#: Refusal reason for a runway over a period that is not a year, half or quarter.
+REFUSED_RUNWAY_PERIOD = "runway_period_not_supported"
+
+#: Quarters in each period type a runway can be stated over.
+_QUARTERS_IN_PERIOD: dict[str, int] = {"annual": 4, "half": 2, "quarter": 1}
+
+
+def _runway_magnitudes(inputs: dict[str, Quantity]) -> tuple[Decimal, Decimal, Decimal]:
+    """Cash, operating cash flow and capex on one scale (the engine checked they can be)."""
+    cash, ocf, capex = inputs["cash"], inputs["operating_cash_flow"], inputs["capital_expenditure"]
+    if cash.scale == ocf.scale == capex.scale:
+        return cash.value, ocf.value, capex.value
+    values = (cash.base_value, ocf.base_value, capex.base_value)
+    if any(v is None for v in values):  # pragma: no cover - refused before computing
+        raise ValueError("incombinable scales reached compute()")
+    return values  # type: ignore[return-value]
+
+
+def _net_cash_flow(inputs: dict[str, Quantity]) -> Decimal:
+    """Operating cash flow less the capital spent. Capex is read as an AMOUNT spent —
+    the platform's convention — so a document printing it as a negative outflow and one
+    printing it positive give the same burn."""
+    _cash, ocf, capex = _runway_magnitudes(inputs)
+    return ocf - abs(capex)
+
+
+def _runway_domain(inputs: dict[str, Quantity]) -> tuple[str, str] | None:
+    period = inputs["operating_cash_flow"].period
+    period_type = period.period_type if period else None
+    if period_type not in _QUARTERS_IN_PERIOD:
+        return (
+            REFUSED_RUNWAY_PERIOD,
+            f"a runway needs a full year, a half-year or a quarter of cash flow; "
+            f"{period.label() if period else 'no period'} is none of them",
+        )
+    if _net_cash_flow(inputs) >= 0:
+        return (
+            REFUSED_NOT_A_CASH_BURN,
+            "operating cash flow less capital expenditure is not an outflow in this "
+            "period, so there is no burn to measure a runway against",
+        )
+    return None
+
+
+def _cash_runway_quarters(inputs: dict[str, Quantity]) -> Decimal:
+    cash, _ocf, _capex = _runway_magnitudes(inputs)
+    period = inputs["operating_cash_flow"].period
+    if period is None:  # pragma: no cover - refused before computing
+        raise ValueError("runway without a period reached compute()")
+    quarters = Decimal(_QUARTERS_IN_PERIOD[str(period.period_type)])
+    burn_per_quarter = -_net_cash_flow(inputs) / quarters
+    return cash / burn_per_quarter
+
+
+CASH_RUNWAY_QUARTERS = CalculationDefinition(
+    key="cash_runway_quarters",
+    label="Cash runway (quarter-equivalents, derived)",
+    version=1,
+    formula=(
+        "cash_and_equivalents / (-(operating_cash_flow - |capital_expenditure|) / "
+        "quarters_in_period)"
+    ),
+    inputs=(
+        InputSpec("cash", ("cash_and_equivalents", "cash"), MONEY, "the period-end balance"),
+        InputSpec(
+            "operating_cash_flow", ("operating_cash_flow",), MONEY,
+            "signed: negative is an outflow",
+        ),
+        InputSpec(
+            "capital_expenditure", ("capital_expenditure", "capex"), MONEY,
+            "the amount spent on property, plant and equipment",
+        ),
+    ),
+    result_unit=UNIT_QUARTERS,
+    compute=_cash_runway_quarters,
+    positive_roles=("cash",),
+    domain_check=_runway_domain,
+    notes=(
+        "DERIVED by the platform, never an issuer figure. Refused unless all three inputs "
+        "share one period, one scope and one currency, and unless operating cash flow "
+        "less capital expenditure is an outflow. Exploration and development spend are "
+        "separate statement lines and are NOT included: the burn is the one the "
+        "statement's own operating and capital-expenditure lines state."
+    ),
+    tags=("cash", "runway", "derived"),
+    directionality=HIGHER_IS_BETTER,
+    interpretation=(
+        "Quarters the period-end cash would last if operating cash flow and capital "
+        "expenditure continued at the rate of the period measured. A derived estimate, not "
+        "a forecast: it ignores financing, committed spending and any change in the rate."
+    ),
+)
+
+
 DEFINITIONS: dict[str, CalculationDefinition] = {
     definition.key: definition
     for definition in (
@@ -616,6 +726,7 @@ DEFINITIONS: dict[str, CalculationDefinition] = {
         CAPEX_TO_OCF,
         FCF_MARGIN,
         DIVIDEND_COVER,
+        CASH_RUNWAY_QUARTERS,
     )
 }
 
@@ -643,6 +754,8 @@ __all__ = [
     "PERIOD_RULES",
     "PERIOD_SAME",
     "PERIOD_TWO_OF_ONE_TYPE",
+    "REFUSED_NOT_A_CASH_BURN",
+    "REFUSED_RUNWAY_PERIOD",
     "SCOPE_RULES",
     "SCOPE_SAME",
     "SCOPE_SEGMENT_OVER_GROUP",

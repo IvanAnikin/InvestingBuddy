@@ -137,6 +137,10 @@ class V3ResearchOutcome:
     #: Non-US issuers: which official disclosures (UK FCA NSM / ASX) were secured into
     #: the corpus before the questions were asked, and why any was not.
     core_disclosures: dict[str, Any] = field(default_factory=dict)
+    #: Item 21 — the issuer's own statements as this run found them: which slots its
+    #: acquired documents fill, and — when none — whether the report was acquired but not
+    #: extracted, not acquired, or (with the official listing as evidence) never filed.
+    financial_statements: dict[str, Any] = field(default_factory=dict)
     #: Migration 043 — the final reconciliation: each gap closed / partially closed /
     #: superseded / still open, the temporal supersessions, and (once attached to a
     #: report) the labels on the V2 report's own gap statements.
@@ -181,6 +185,7 @@ class V3ResearchOutcome:
             "corpus_index": dict(self.corpus_index),
             "core_filings": dict(self.core_filings),
             "core_disclosures": dict(self.core_disclosures),
+            "financial_statements_state": dict(self.financial_statements),
             "gap_reconciliation": dict(self.gap_reconciliation),
             "elapsed_seconds": round(self.elapsed_seconds, 3),
             "degraded": list(self.degraded),
@@ -466,6 +471,24 @@ async def _run(
                 f"({item.get('source_id')} {item.get('document_ref')}) is not in the "
                 f"corpus ({item.get('reason')})"
             )
+
+    # Item 21 — the statements those documents yielded, read the way the V2 snapshot
+    # reads its own facts. The V2 report was assembled before any of this was acquired,
+    # so without it an acquired annual report still rendered as "Not reported".
+    from app.services.pipeline.issuer_financials import financial_statements_for
+
+    try:
+        async with session.begin_nested():
+            outcome.financial_statements = await financial_statements_for(
+                session,
+                company,
+                core_disclosures=outcome.core_disclosures,
+                core_filings=outcome.core_filings,
+            )
+    except Exception as exc:  # noqa: BLE001 - a statements view must not end the run
+        outcome.degraded.append(
+            f"the issuer's statement figures could not be read ({type(exc).__name__})"
+        )
 
     if search_backend is not None:
         from app.services.corpus.indexing import ensure_company_indexed

@@ -430,6 +430,56 @@ export type V3Research = {
   /** How the run's gaps and the V2 report's own gap statements were reconciled
       against its findings. Null on reports written before reconciliation existed. */
   gapReconciliation: V3GapReconciliation | null;
+  /** Item 21 — the issuer's own statements as the run found them. Null on reports
+      written before this existed. */
+  financialStatements: V3FinancialStatements | null;
+};
+
+/**
+ * Item 21 — which of the reporting situations a report is in. Never merged into one
+ * "Not reported": an acquired-but-unread annual report and an issuer that filed none are
+ * opposite statements.
+ */
+export type StatementStateKind =
+  | "facts_extracted"
+  | "report_acquired_facts_not_extracted"
+  | "not_acquired"
+  | "not_reported_by_issuer";
+
+export type StatementState = {
+  state: StatementStateKind;
+  /** "FY2025" when known — the extracted period, or the period the document names. */
+  period: string | null;
+  /** The backend's own sentence, e.g. "FY2025 annual report acquired (2026-04-30) —
+      figures not yet extracted". */
+  label: string;
+  reason: string | null;
+};
+
+export type DerivedMetric = {
+  key: string;
+  label: string;
+  basis: string | null;
+  computed: boolean;
+  value: number | null;
+  periodKey: string | null;
+  refusalDetail: string | null;
+  interpretation: string | null;
+};
+
+export type V3FinancialStatements = {
+  annual: StatementState | null;
+  currentPeriod: StatementState | null;
+  reportingPeriods: {
+    latestAnnual: string | null;
+    latestInterim: string | null;
+    latestQuarter: string | null;
+    latestCurrent: string | null;
+  };
+  /** `<field>_primary_filing` / `<field>_current_period` datapoints, the V2 shape. */
+  slots: Record<string, unknown>;
+  derived: DerivedMetric[];
+  conflictCount: number;
 };
 
 /** A V2 gap statement, labelled against the V3 findings. */
@@ -1048,7 +1098,73 @@ export function readV3Research(sourceSummary: unknown): V3Research | null {
     }),
     professionalResearch,
     gapReconciliation: readGapReconciliation(raw.gap_reconciliation),
+    financialStatements: readStatementsPayload(raw.financial_statements_state),
   };
+}
+
+const STATEMENT_STATE_KINDS: readonly StatementStateKind[] = [
+  "facts_extracted",
+  "report_acquired_facts_not_extracted",
+  "not_acquired",
+  "not_reported_by_issuer",
+];
+
+function readStatementState(v: unknown): StatementState | null {
+  if (!isRecord(v)) return null;
+  const state = str(v.state);
+  const label = str(v.label);
+  if (!state || !label) return null;
+  if (!(STATEMENT_STATE_KINDS as readonly string[]).includes(state)) return null;
+  return {
+    state: state as StatementStateKind,
+    period: str(v.period),
+    label,
+    reason: str(v.reason),
+  };
+}
+
+function readStatementsPayload(v: unknown): V3FinancialStatements | null {
+  if (!isRecord(v) || Object.keys(v).length === 0) return null;
+  const periods = isRecord(v.reporting_periods) ? v.reporting_periods : {};
+  return {
+    annual: readStatementState(v.annual),
+    currentPeriod: readStatementState(v.current_period),
+    reportingPeriods: {
+      latestAnnual: str(periods.latest_annual),
+      latestInterim: str(periods.latest_interim),
+      latestQuarter: str(periods.latest_quarter),
+      latestCurrent: str(periods.latest_current_period),
+    },
+    slots: isRecord(v.slots) ? v.slots : {},
+    derived: records(v.derived)
+      .map((d): DerivedMetric | null => {
+        const key = str(d.definition_key);
+        if (!key) return null;
+        return {
+          key,
+          label: str(d.label) ?? key,
+          basis: str(d.basis),
+          computed: d.status === "computed",
+          value: num(d.value),
+          periodKey: str(d.period_key),
+          refusalDetail: str(d.detail),
+          interpretation: str(d.interpretation),
+        };
+      })
+      .filter((d): d is DerivedMetric => d !== null),
+    conflictCount: records(v.conflicts).length,
+  };
+}
+
+/**
+ * The issuer statements block alone, straight off `source_summary_json`. The library
+ * reads it for every row; building the whole V3 view there would be wasted work.
+ */
+export function readFinancialStatements(
+  sourceSummary: unknown,
+): V3FinancialStatements | null {
+  if (!isRecord(sourceSummary) || !isRecord(sourceSummary.v3_research)) return null;
+  return readStatementsPayload(sourceSummary.v3_research.financial_statements_state);
 }
 
 function readV2Labels(v: unknown, keyField: "field" | "key"): V2ItemLabel[] {
