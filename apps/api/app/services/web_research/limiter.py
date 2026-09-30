@@ -10,10 +10,13 @@
 The per-run per-domain page cap lives in the run's budget
 (:meth:`WebResearchBudget.domain_refusal`), not here: this limiter is process-wide.
 
-Order inside :meth:`OpenWebLimiter.slot`: domain semaphore → global semaphore → the
-domain's pacing lock → wait until the window admits → record → request. The pacing
-event is recorded at the moment the request starts, so the interval is measured
-between real request starts.
+Order inside :meth:`OpenWebLimiter.slot`: domain semaphore → wait (WITHOUT a global
+slot) until the domain's window admits → take a global slot → re-check the window
+(another request may have started meanwhile; if so give the global slot back and wait
+again) → record → request. A site's 10 s ``Crawl-delay`` therefore never holds a global
+slot idle (review M4), and the interval is measured between real request starts.
+``Crawl-delay`` read from several origins of one registrable domain applies its
+maximum.
 
 The clock and the sleep are injectable: tests drive the pacing with a fake clock and
 assert the observed intervals without sleeping.
@@ -46,6 +49,7 @@ class _DomainState:
         default_factory=lambda: SlidingWindowLimiter(1, MIN_INTERVAL_SECONDS)
     )
     last_used: float = 0.0
+    in_flight: int = 0
 
 
 class OpenWebLimiter:
@@ -83,7 +87,8 @@ class OpenWebLimiter:
         now = self._clock()
         for key, state in list(self._domains.items()):
             if (
-                not state.lock.locked()
+                state.in_flight == 0
+                and not state.lock.locked()
                 and now - state.last_used > MAX_CRAWL_DELAY_SECONDS
                 and not getattr(state.semaphore, "_waiters", None)
             ):
@@ -93,30 +98,44 @@ class OpenWebLimiter:
         return self._state(domain).window.per_seconds
 
     def set_crawl_delay(self, domain: str, seconds: float | None) -> float:
-        """Widen ``domain``'s interval to its ``Crawl-delay`` (clamped to 1–10 s)."""
+        """Widen ``domain``'s interval to a ``Crawl-delay`` (clamped to 1–10 s).
+
+        Never narrows: two origins of one domain with different delays get the larger.
+        """
         state = self._state(domain)
         if seconds is not None and seconds > 0:
             wanted = min(float(seconds), MAX_CRAWL_DELAY_SECONDS)
-            state.window.per_seconds = max(self._min_interval, wanted)
+            state.window.per_seconds = max(state.window.per_seconds, self._min_interval, wanted)
         return state.window.per_seconds
 
     @asynccontextmanager
     async def slot(self, domain: str) -> AsyncIterator[float]:
         """Hold a request slot for ``domain``; yields the (clock) start time."""
         state = self._state(domain)
-        async with state.semaphore, self._global:
-            async with state.lock:
+        state.in_flight += 1
+        try:
+            async with state.semaphore:
                 while True:
                     wait = state.window.wait_seconds(self._clock())
-                    if wait <= 0:
+                    if wait > 0:
+                        await self._sleep(wait)  # no global slot held while pacing
+                        continue
+                    await self._global.acquire()
+                    # No await between this check and the record: atomic under asyncio.
+                    if state.window.wait_seconds(self._clock()) <= 0:
                         break
-                    await self._sleep(wait)
+                    self._global.release()
                 started = self._clock()
                 state.window.allow(started)
                 state.last_used = started
-            if len(self.starts) < 10_000:
-                self.starts.append((domain, started))
-            yield started
+                if len(self.starts) < 10_000:
+                    self.starts.append((domain, started))
+                try:
+                    yield started
+                finally:
+                    self._global.release()
+        finally:
+            state.in_flight -= 1
 
 
 __all__ = [

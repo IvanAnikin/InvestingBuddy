@@ -3297,8 +3297,11 @@ case the totals count only what is shown. `enforced_by` values: `client`, `provi
 fetch metrics derived from the rows: logical `attempts`, `fetched`, `partial`,
 `success_rate`, `http_403(_rate)`, `paywall(_rate)` (402, JSON-LD, login and consent walls),
 `captcha`, `robots(_rate)`, `tdm_reserved`/`tdm_rate`, `policy_denied`/`policy_deny_rate`,
-`negative_cached`, `retries`, `redirects`, `bytes`, `js_required(_rate)`, `mime_mismatch`,
-`by_status`, `by_failure_code`.
+`negative_cached`, `budget_refused`, `policy_file_requests`, `retries`, `redirects`, `bytes`,
+`js_required(_rate)`, `mime_mismatch`,
+`by_status`, `by_failure_code`. `attempts` (and every rate) counts only page fetches that
+were actually tried: negative-cache hits, budget refusals, retried physical attempts and
+robots.txt/TDMRep requests have their own counters.
 
 ## V3.1 Research Corpus — no API surface (`develop/v3` only)
 

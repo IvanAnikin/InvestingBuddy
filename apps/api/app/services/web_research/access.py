@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
 
-from app.services.web_research.content import iter_start_tag_spans, iter_start_tags
+from app.services.web_research.content import iter_start_tag_spans
 
 REASON_HTTP_401 = "http_401"
 REASON_HTTP_402 = "http_402"
@@ -55,6 +55,14 @@ ACCESS_REASONS: frozenset[str] = frozenset(
 
 #: Pages with at least this much visible text are not treated as walls by markup alone.
 SMALL_PAGE_VISIBLE_CHARS = 3000
+#: A 2xx interstitial (Cloudflare/DataDome/PerimeterX/Incapsula) is a near-empty page.
+INTERSTITIAL_MAX_VISIBLE_CHARS = 1500
+#: A bare CAPTCHA widget with (almost) nothing else on the page.
+WIDGET_MAX_VISIBLE_CHARS = 300
+#: A login form that IS the page (not a header/nav "investor login" box).
+LOGIN_MAX_VISIBLE_CHARS = 1500
+#: A consent prompt that IS the page (not a cookie banner on an article).
+CONSENT_MAX_VISIBLE_CHARS = 400
 #: Statuses a bot challenge is usually served with.
 _CHALLENGE_STATUSES = frozenset({403, 429, 503})
 
@@ -76,6 +84,24 @@ _CAPTCHA_MARKERS: tuple[str, ...] = (
     "please complete the security check",
     "attention required! | cloudflare",
 )
+#: 2xx pages: only markers of an INTERSTITIAL challenge count (review H1). Site-wide
+#: scripts — Cloudflare's ``/cdn-cgi/challenge-platform/scripts/jsd`` beacon, reCAPTCHA
+#: v3's ``api.js?render=`` — sit on ordinary pages and are deliberately NOT here.
+_INTERSTITIAL_MARKERS: tuple[str, ...] = (
+    "cf-chl-",
+    "captcha-delivery.com",
+    "px-captcha",
+    "_incapsula_resource",
+    "verify you are human",
+    "are you a robot",
+    "please complete the security check",
+    "attention required! | cloudflare",
+    "checking your browser before accessing",
+)
+#: A visible CAPTCHA widget; counts on a 2xx page only when little else is there.
+_WIDGET_MARKERS: tuple[str, ...] = ("g-recaptcha", "h-captcha", "cf-turnstile")
+#: Page regions a site-wide login box lives in; a password field there is not a wall.
+_CHROME_TAGS: tuple[str, ...] = ("header", "nav", "footer", "aside")
 _CONSENT_MARKERS: tuple[str, ...] = (
     "cookie consent",
     "we value your privacy",
@@ -140,11 +166,28 @@ def _jsonld_blocks(html: str) -> Iterator[str]:
             yield text[body_start:end]
 
 
-def has_password_field(html: str) -> bool:
-    return any(
-        _PASSWORD_TYPE_RE.search(tag)
-        for tag in iter_start_tags(html, "input", max_chars=_SCAN_CHARS)
-    )
+def _chrome_spans(html: str) -> list[tuple[int, int]]:
+    """``(start, end)`` of header/nav/footer/aside regions (linear scans)."""
+    text = html[:_SCAN_CHARS]
+    lowered = text.lower()
+    spans: list[tuple[int, int]] = []
+    for name in _CHROME_TAGS:
+        for start, after, _tag in iter_start_tag_spans(text, name, max_chars=_SCAN_CHARS):
+            close = lowered.find("</" + name, after)
+            spans.append((start, len(text) if close == -1 else close))
+    return spans
+
+
+def has_password_field(html: str, *, outside_chrome: bool = False) -> bool:
+    """A ``<input type=password>``; with ``outside_chrome`` only one in main content."""
+    spans = _chrome_spans(html) if outside_chrome else []
+    for start, _end, tag in iter_start_tag_spans(html, "input", max_chars=_SCAN_CHARS):
+        if not _PASSWORD_TYPE_RE.search(tag):
+            continue
+        if any(a <= start < b for a, b in spans):
+            continue
+        return True
+    return False
 
 
 def paywall_jsonld(html: str) -> bool:
@@ -169,8 +212,14 @@ def paywall_jsonld(html: str) -> bool:
 
 
 def has_captcha(html: str) -> bool:
+    """Any challenge marker — used for 4xx/5xx answers and the retry decision."""
     lowered = html[:_SCAN_CHARS].lower()
     return any(marker in lowered for marker in _CAPTCHA_MARKERS)
+
+
+def _has_any(html: str, markers: tuple[str, ...]) -> bool:
+    lowered = html[:_SCAN_CHARS].lower()
+    return any(marker in lowered for marker in markers)
 
 
 def _path(url: str | None) -> str:
@@ -222,24 +271,40 @@ def classify_status(status: int | None, body_text: str | None = None) -> AccessV
 def classify_page(
     html: str,
     *,
-    visible_chars: Callable[[], int],
+    visible_text: Callable[[], str],
     requested_url: str | None = None,
     final_url: str | None = None,
 ) -> AccessVerdict:
-    """The verdict for a 2xx HTML page.
+    """The verdict for a 2xx HTML page. Conservative: a wall here is negative-cached.
 
-    ``visible_chars`` is called (once, by a caching caller) only when a wall marker is
-    present: counting visible text on every page would cost seconds on large ones.
+    ``visible_text`` is called (once, by a caching caller) only when a marker is
+    present: extracting visible text on every page would cost seconds on large ones.
+
+    * ``captcha`` — an interstitial marker on a near-empty page, or a bare widget;
+    * ``consent_wall`` — consent wording in the VISIBLE text of a tiny page;
+    * ``login_wall`` — a password field in main content (not header/nav/footer/aside)
+      on a small page;
+    * ``paywall_jsonld`` — schema.org ``isAccessibleForFree: false``.
     """
     wall = redirected_to_wall(requested_url, final_url)
     if wall:
         return AccessVerdict(False, wall)
-    if has_captcha(html) and visible_chars() < SMALL_PAGE_VISIBLE_CHARS:
+    if _has_any(html, _INTERSTITIAL_MARKERS) and (
+        len(visible_text()) < INTERSTITIAL_MAX_VISIBLE_CHARS
+    ):
         return AccessVerdict(False, REASON_CAPTCHA)
-    lowered = html[:_SCAN_CHARS].lower()
-    if any(m in lowered for m in _CONSENT_MARKERS) and visible_chars() < 1000:
-        return AccessVerdict(False, REASON_CONSENT_WALL)
-    if has_password_field(html) and visible_chars() < SMALL_PAGE_VISIBLE_CHARS:
+    if _has_any(html, _WIDGET_MARKERS) and len(visible_text()) < WIDGET_MAX_VISIBLE_CHARS:
+        return AccessVerdict(False, REASON_CAPTCHA)
+    if _has_any(html, _CONSENT_MARKERS):
+        text = visible_text()
+        lowered = text.lower()
+        if len(text) < CONSENT_MAX_VISIBLE_CHARS and any(m in lowered for m in _CONSENT_MARKERS):
+            return AccessVerdict(False, REASON_CONSENT_WALL)
+    if (
+        has_password_field(html)
+        and len(visible_text()) < LOGIN_MAX_VISIBLE_CHARS
+        and has_password_field(html, outside_chrome=True)
+    ):
         return AccessVerdict(False, REASON_LOGIN_WALL)
     if paywall_jsonld(html):
         return AccessVerdict(False, REASON_PAYWALL_JSONLD)

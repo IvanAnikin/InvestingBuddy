@@ -121,7 +121,11 @@ from app.services.sources.safe_web_fetcher import (
     read_bounded_body,
 )
 from app.services.web_research import access, content, robots
-from app.services.web_research.budget import WebResearchBudget
+from app.services.web_research.budget import (
+    BUDGET_REFUSAL_PREFIX,
+    LIMIT_PDFS,
+    WebResearchBudget,
+)
 from app.services.web_research.canonical import (
     canonical_url,
     choose_canonical,
@@ -175,9 +179,18 @@ FAILURE_TRANSPORT_ERROR = "transport_error"
 FAILURE_REDIRECT_LIMIT = "redirect_limit"
 FAILURE_REDIRECT_NO_LOCATION = "redirect_without_location"
 FAILURE_EMPTY_URL = "empty_url"
+FAILURE_INTERNAL = "transport_error"
+FAILURE_ROBOTS_REDIRECT_LIMIT = "policy_file_redirect_limit"
 FAILURE_DNS = "dns_failure"
 
 MAX_REDIRECTS = 3
+#: RFC 9309 §2.3.1.2: follow at least five redirects for robots.txt; beyond → fail closed.
+POLICY_FILE_MAX_REDIRECTS = 5
+#: robots.txt / TDMRep get their OWN deadline, independent of the run's remaining budget
+#: (review H2): a run about to run out must not record a site as unreachable.
+POLICY_FILE_DEADLINE_SECONDS = 20.0
+ORIGIN_ROBOTS = "robots"
+ORIGIN_TDM = "tdm"
 MAX_RETRY_AFTER_SECONDS = 30.0
 BACKOFF_BASE_SECONDS = 1.0
 BACKOFF_JITTER_SECONDS = 0.5
@@ -370,12 +383,18 @@ def parse_retry_after(value: str | None, *, now: datetime | None = None) -> floa
     return max(0.0, (when - current).total_seconds())
 
 
+UNPARSEABLE_URL = "<unparseable-url>"
+
+
 def _stored(url: str | None) -> str:
+    """The W0 stored form; never the raw text (it may carry userinfo or a token)."""
     text = (url or "")[:MAX_STORED_URL_CHARS]
+    if not text:
+        return ""
     try:
-        return stored_url(text) or text
-    except Exception:  # noqa: BLE001 - an unparseable URL is stored as its bounded text
-        return text
+        return stored_url(text) or UNPARSEABLE_URL
+    except Exception:  # noqa: BLE001 - security review S4: never fall back to raw text
+        return UNPARSEABLE_URL
 
 
 def _block_code(reason: str) -> str:
@@ -434,6 +453,12 @@ class _Answer:
     retry_after: float | None = None
 
 
+def _apply_cap(
+    cap_for: Callable[[bytes, str | None], int], served: str | None, prefix: bytes
+) -> int:
+    return cap_for(prefix, served)
+
+
 async def _request(
     url: str,
     host: str,
@@ -442,9 +467,13 @@ async def _request(
     cfg: Any,
     deadline: float,
     max_bytes: int,
-    sniff_cap: Callable[[bytes], int] | None,
+    cap_for: Callable[[bytes, str | None], int] | None,
 ) -> _Answer:
-    """GET ``url`` over a transport pinned to ``ip``. Never raises, never follows."""
+    """GET ``url`` over a transport pinned to ``ip``. Never raises, never follows.
+
+    ``cap_for(prefix, served_content_type)`` names the byte cap once the body's first
+    bytes are known (per-class caps, the PDF budget).
+    """
     import httpx
 
     transport = _pinned.build_pinned_transport({host: ip})
@@ -475,6 +504,10 @@ async def _request(
                     answer.body = read.content
                     answer.retry_after = parse_retry_after(answer.headers.get("retry-after"))
                     return answer
+                served = resp.headers.get("content-type")
+                sniff_cap = (
+                    None if cap_for is None else functools.partial(_apply_cap, cap_for, served)
+                )
                 read = await read_bounded_body(
                     resp, max_bytes=max_bytes, deadline=deadline, sniff_cap=sniff_cap
                 )
@@ -526,15 +559,24 @@ def _analyse(
     if content_class != content.CLASS_HTML:
         return out
     html = content.decode_text(body, codec)
-    # Counted at most once, and only if a wall or SPA marker makes it matter.
-    visible = functools.cache(lambda: content.visible_text_chars(html))
+    # Extracted at most once, and only if a wall or SPA marker makes it matter.
+    visible = functools.cache(lambda: content.visible_text(html))
     out.verdict = access.classify_page(
-        html, visible_chars=visible, requested_url=requested_url, final_url=final_url
+        html, visible_text=visible, requested_url=requested_url, final_url=final_url
     )
     out.tdm_signals = robots.tdm_signals_from_html(html)
     out.declared_canonical = rel_canonical_from_html(html)
-    out.js_required = content.js_required(len(body), html, visible)
+    out.js_required = content.js_required(len(body), html, lambda: len(visible()))
     return out
+
+
+@dataclass(frozen=True)
+class _Outcome:
+    """How a logical fetch ended. Computed inside the deadline; persisted outside it."""
+
+    status: str
+    failure_code: str | None = None
+    policy: str | None = None
 
 
 class _OpenWebFetch:
@@ -565,16 +607,23 @@ class _OpenWebFetch:
         self.network_bytes = 0
         self.fetch_reserved = False
         self.meta: dict[str, Any] = {}
+        #: Canonical form of the REQUESTED url: the negative-cache key (review M6).
+        self.request_key: str | None = None
+        #: Registrable domains this logical fetch was counted against (review M1).
+        self.counted_domains: set[str] = set()
 
     # -- policy -------------------------------------------------------------
 
-    async def _policy(self, url: str) -> tuple[str | None, str | None, str | None]:
+    async def _policy(
+        self, url: str, *, page: bool = True
+    ) -> tuple[str | None, str | None, str | None]:
         """``(failure_code, host, pinned_ip)`` — the full per-hop policy check."""
         reason, host = check_url_shape(url)
         if reason:
             return _block_code(reason), None, None
         if denylisted(host):
-            self.meta["denylist_version"] = DENYLIST_VERSION
+            if page:
+                self.meta["denylist_version"] = DENYLIST_VERSION
             return FAILURE_DENYLISTED, host, None
         reason, ip = await async_check_fetch_url(
             url, (), cfg=self.cfg, resolver=self.resolver, policy=FetchPolicy.OPEN_WEB
@@ -610,8 +659,9 @@ class _OpenWebFetch:
         ip: str,
         domain: str,
         *,
+        deadline: float,
         max_bytes: int,
-        sniff_cap: Callable[[bytes], int] | None,
+        cap_for: Callable[[bytes, str | None], int] | None,
         on_retry: Callable[[_Answer], None] | None,
     ) -> _Answer:
         """One request with at most one retry, each inside a limiter slot."""
@@ -623,39 +673,141 @@ class _OpenWebFetch:
                     host,
                     ip,
                     cfg=self.cfg,
-                    deadline=self.deadline,
+                    deadline=deadline,
                     max_bytes=max_bytes,
-                    sniff_cap=sniff_cap,
+                    cap_for=cap_for,
                 )
             self.network_bytes += len(answer.body)
             wait = self._retry_wait(answer) if attempt == 0 else None
             loop_now = asyncio.get_running_loop().time()
-            if wait is None or loop_now + wait >= self.deadline:
+            if wait is None or loop_now + wait >= deadline:
                 return answer
             if on_retry is not None:
                 on_retry(answer)
             await self.rt.sleep(wait)
             attempt += 1
 
-    async def small_fetch(self, url: str, max_bytes: int) -> robots.SmallFetch:
-        """robots.txt / TDMRep through the same policy: guarded, pinned, paced."""
+    def _policy_file_row(
+        self,
+        kind: str,
+        requested: str,
+        chain: list[dict[str, Any]],
+        *,
+        status: str,
+        failure_code: str | None,
+        http_status: int | None,
+        byte_count: int | None,
+        policy: str = POLICY_ALLOWED,
+    ) -> None:
+        """A ``web_fetch_attempts`` row for a robots.txt / TDMRep request (review M5)."""
+        final = chain[-1].get("url") if chain else None
+        self.session.add(
+            WebFetchAttempt(
+                id=uuid.uuid4(),
+                research_job_id=self.context.research_job_id,
+                discovery_run_id=self.context.discovery_run_id,
+                origin=kind,
+                requested_url=_stored(requested),
+                final_url=final,
+                canonical_url=canonical_url(requested),
+                redirect_chain_json=chain or None,
+                policy_decision=policy,
+                http_status=http_status,
+                bytes=byte_count,
+                fetch_ms=int((time.perf_counter() - self.started) * 1000),
+                status=status,
+                failure_code=failure_code,
+                created_at=datetime.now(timezone.utc),
+            )
+        )
+
+    async def small_fetch(self, url: str, max_bytes: int, *, kind: str) -> robots.SmallFetch:
+        """robots.txt / TDMRep through the same policy: guarded, pinned, paced, logged.
+
+        Its own deadline (not the run's remainder), up to 5 redirects (RFC 9309), and
+        beyond that FAIL CLOSED. Every physical request writes an attempt row.
+        """
+        deadline = asyncio.get_running_loop().time() + POLICY_FILE_DEADLINE_SECONDS
         current = url
-        for _ in range(MAX_REDIRECTS + 1):
-            code, host, ip = await self._policy(current)
+        chain: list[dict[str, Any]] = []
+        for _ in range(POLICY_FILE_MAX_REDIRECTS + 1):
+            code, host, ip = await self._policy(current, page=False)
             if code or not host or not ip:
+                chain.append({"url": _stored(current), "refused": code})
+                self._policy_file_row(
+                    kind,
+                    url,
+                    chain,
+                    status=STATUS_REFUSED,
+                    failure_code=code,
+                    http_status=None,
+                    byte_count=None,
+                    policy=POLICY_DENIED,
+                )
                 return robots.SmallFetch(None, failed=True)
             domain = await _domain_of(host)
+            hop_url = current
+
+            def _retried(answer: _Answer, _u: str = hop_url) -> None:
+                self._policy_file_row(
+                    kind,
+                    url,
+                    [*chain, {"url": _stored(_u), "status": answer.status}],
+                    status=STATUS_RETRIED,
+                    failure_code=_answer_code(answer),
+                    http_status=answer.status,
+                    byte_count=len(answer.body),
+                )
+
             answer = await self._hop(
-                current, host, ip, domain, max_bytes=max_bytes, sniff_cap=None, on_retry=None
+                current,
+                host,
+                ip,
+                domain,
+                deadline=deadline,
+                max_bytes=max_bytes,
+                cap_for=None,
+                on_retry=_retried,
             )
-            if answer.failure_code or answer.body_error:
+            chain.append({"url": _stored(current), "status": answer.status})
+            code = answer.failure_code or (FAILURE_UNDECODABLE_BODY if answer.body_error else None)
+            if code:
+                self._policy_file_row(
+                    kind,
+                    url,
+                    chain,
+                    status=STATUS_FAILED,
+                    failure_code=code,
+                    http_status=answer.status,
+                    byte_count=len(answer.body),
+                )
                 return robots.SmallFetch(None, failed=True)
             status = answer.status or 0
             if 300 <= status < 400 and answer.location:
                 current = answer.location
                 continue
-            return robots.SmallFetch(status, answer.body if 200 <= status < 300 else b"")
-        return robots.SmallFetch(310)  # an unfollowed redirect chain: RFC 9309 "unavailable"
+            ok = 200 <= status < 300
+            self._policy_file_row(
+                kind,
+                url,
+                chain,
+                status=STATUS_FETCHED if ok else STATUS_FAILED,
+                failure_code=None if ok else f"http_{status}",
+                http_status=answer.status,
+                byte_count=len(answer.body),
+            )
+            return robots.SmallFetch(status, answer.body if ok else b"")
+        self._policy_file_row(
+            kind,
+            url,
+            chain,
+            status=STATUS_REFUSED,
+            failure_code=FAILURE_ROBOTS_REDIRECT_LIMIT,
+            http_status=None,
+            byte_count=None,
+            policy=POLICY_DENIED,
+        )
+        return robots.SmallFetch(None, failed=True)  # too many redirects: fail closed
 
     # -- rows ---------------------------------------------------------------
 
@@ -730,33 +882,27 @@ class _OpenWebFetch:
 
         return _record
 
-    async def _finish(
-        self,
-        result: OpenWebFetchResult,
-        status: str,
-        failure_code: str | None = None,
-        *,
-        policy: str | None = None,
-    ) -> OpenWebFetchResult:
+    async def _finish(self, result: OpenWebFetchResult, outcome: _Outcome) -> OpenWebFetchResult:
+        """Persist ONE row for the logical fetch. Runs OUTSIDE the deadline (review B1)."""
+        status, failure_code = outcome.status, outcome.failure_code
         result.status = status
         result.failure_code = failure_code
-        if policy is not None:
-            result.policy_decision = policy
+        if outcome.policy is not None:
+            result.policy_decision = outcome.policy
         if status not in (STATUS_FETCHED, STATUS_PARTIAL):
             result.content = None
-        if self.fetch_reserved:
-            self.budget.bytes_downloaded += self.network_bytes
-            if result.content_class == content.CLASS_PDF and status in (
-                STATUS_FETCHED,
-                STATUS_PARTIAL,
-            ):
-                self.budget.pdfs += 1
+        # Every byte we pulled counts, robots.txt and TDMRep included (review S5).
+        self.budget.bytes_downloaded += self.network_bytes
+        self.network_bytes = 0
         cacheable = failure_code in NEGATIVE_CACHE_CODES or (
             # A runtime refusal or a DNS failure says nothing lasting about the URL.
-            policy == POLICY_DENIED and failure_code not in (FAILURE_RUNTIME_UNSAFE, FAILURE_DNS)
+            outcome.policy == POLICY_DENIED
+            and failure_code not in (FAILURE_RUNTIME_UNSAFE, FAILURE_DNS)
         )
-        if cacheable and failure_code:
-            self.rt.negative.record(result.canonical_url, failure_code)
+        # A negative-cache HIT is not a new failure: re-recording it would grow the
+        # strike count and extend the TTL forever (review B2).
+        if cacheable and failure_code and status != STATUS_NEGATIVE_CACHED:
+            self.rt.negative.record(self.request_key, failure_code)
         self.meta.setdefault("tdm_signals", list(result.tdm_signals))
         result.redirect_chain = self._chain_json(result)
         result.fetch_ms = int((time.perf_counter() - self.started) * 1000)
@@ -795,10 +941,24 @@ class _OpenWebFetch:
         result = OpenWebFetchResult(
             status=STATUS_FAILED, origin=self.origin, requested_url=_stored(raw)
         )
-        if not raw:
-            return await self._finish(
-                result, STATUS_REFUSED, FAILURE_EMPTY_URL, policy=POLICY_DENIED
+        try:
+            outcome = await self._decide(result, raw)
+        except TimeoutError:
+            outcome = _Outcome(STATUS_FAILED, FAILURE_FETCH_TIMEOUT)
+        except Exception as exc:  # noqa: BLE001 - "never raises": coded, row written
+            log_event(
+                logger,
+                "web_fetch_internal_error",
+                level=logging.WARNING,
+                origin=self.origin,
+                error=type(exc).__name__,
             )
+            outcome = _Outcome(STATUS_FAILED, FAILURE_INTERNAL)
+        return await self._finish(result, outcome)
+
+    async def _decide(self, result: OpenWebFetchResult, raw: str) -> _Outcome:
+        if not raw:
+            return _Outcome(STATUS_REFUSED, FAILURE_EMPTY_URL, POLICY_DENIED)
         target = normalize_link_url(raw) or raw
         if self.origin == ORIGIN_USER:
             lowered = target.lower()
@@ -812,58 +972,83 @@ class _OpenWebFetch:
         result.canonical_url = (
             canonical_url(target) if target.lower().startswith("https://") else None
         )
+        self.request_key = result.canonical_url
 
-        cached = self.rt.negative.get(result.canonical_url)
+        cached = self.rt.negative.get(self.request_key)
         if cached:
-            return await self._finish(
-                result, STATUS_NEGATIVE_CACHED, cached, policy=POLICY_NEGATIVE
-            )
+            return _Outcome(STATUS_NEGATIVE_CACHED, cached, POLICY_NEGATIVE)
 
-        is_pdf_hint = urlsplit(target).path.lower().endswith(".pdf") if "://" in target else False
+        try:
+            is_pdf_hint = urlsplit(target).path.lower().endswith(".pdf")
+        except ValueError:
+            is_pdf_hint = False  # a malformed URL is refused by the policy below
         refusal = self.budget.fetch_refusal(is_pdf=is_pdf_hint)
         if refusal:
-            return await self._finish(result, STATUS_REFUSED, refusal, policy=POLICY_BUDGET)
+            return _Outcome(STATUS_REFUSED, refusal, POLICY_BUDGET)
 
         budget_seconds = min(
             fetch_total_deadline_seconds(self.cfg, kind="document"),
             max(0.05, self.budget.wall_seconds_remaining),
         )
         self.deadline = asyncio.get_running_loop().time() + budget_seconds
-        try:
-            async with asyncio.timeout_at(self.deadline):
-                return await self._walk(result, target)
-        except TimeoutError:
-            return await self._finish(result, STATUS_FAILED, FAILURE_FETCH_TIMEOUT)
+        # Only the network walk is under the deadline; _finish (the DB flush) is not.
+        async with asyncio.timeout_at(self.deadline):
+            return await self._walk(result, target)
 
-    async def _walk(self, result: OpenWebFetchResult, target: str) -> OpenWebFetchResult:
+    def _cap_for(self, ceiling: int) -> Callable[[bytes, str | None], int]:
+        def _cap(prefix: bytes, served: str | None) -> int:
+            routed = content.route(prefix, served)
+            if routed.content_class == content.CLASS_PDF and self._pdf_budget_spent():
+                return len(prefix)  # stop reading: the run has had its PDFs (review M2)
+            return content.cap_for_prefix(prefix, ceiling, served)
+
+        return _cap
+
+    def _pdf_budget_spent(self) -> bool:
+        return self.budget.pdfs >= self.budget.limits.max_pdfs
+
+    async def _count_domain(self, domain: str) -> str | None:
+        """Charge ``domain``'s per-run page cap once per logical fetch (review M1)."""
+        if domain in self.counted_domains:
+            return None
+        refusal = self.budget.domain_refusal(domain)
+        if refusal:
+            return refusal
+        self.budget.record_domain_fetch(domain)
+        self.counted_domains.add(domain)
+        return None
+
+    async def _walk(self, result: OpenWebFetchResult, target: str) -> _Outcome:
         code, host, ip = await self._policy(target)
         if code or not host or not ip:
-            return await self._finish(result, STATUS_REFUSED, code, policy=POLICY_DENIED)
+            return _Outcome(STATUS_REFUSED, code, POLICY_DENIED)
         domain = await _domain_of(host)
         refusal = self.budget.domain_refusal(domain)
         if refusal:
-            return await self._finish(result, STATUS_REFUSED, refusal, policy=POLICY_BUDGET)
+            return _Outcome(STATUS_REFUSED, refusal, POLICY_BUDGET)
         result.policy_decision = POLICY_ALLOWED
+        robots_fetcher = functools.partial(self.small_fetch, kind=ORIGIN_ROBOTS)
+        tdm_fetcher = functools.partial(self.small_fetch, kind=ORIGIN_TDM)
 
         current, hops = target, 0
         tdm_decision = robots.TDM_NOT_RESERVED
         while True:
-            check = await self.rt.robots_gate.check(current, self.small_fetch)
+            check = await self.rt.robots_gate.check(current, robots_fetcher)
             result.robots_decision = check.decision
             if check.crawl_delay is not None:
                 result.crawl_delay = check.crawl_delay
                 self.meta["crawl_delay"] = check.crawl_delay
                 self.rt.limiter.set_crawl_delay(domain, check.crawl_delay)
             if check.decision == robots.ROBOTS_DISALLOWED:
-                return await self._finish(result, STATUS_NOT_RETRIEVABLE, FAILURE_ROBOTS_DISALLOWED)
+                return _Outcome(STATUS_NOT_RETRIEVABLE, FAILURE_ROBOTS_DISALLOWED)
             if check.decision == robots.ROBOTS_UNAVAILABLE:
-                return await self._finish(result, STATUS_REFUSED, FAILURE_ROBOTS_UNAVAILABLE)
+                return _Outcome(STATUS_REFUSED, FAILURE_ROBOTS_UNAVAILABLE)
 
-            tdm = await self.rt.tdmrep_gate.check(current, self.small_fetch)
+            tdm = await self.rt.tdmrep_gate.check(current, tdm_fetcher)
             if tdm.decision == robots.TDM_RESERVED:
                 result.tdm_decision = robots.TDM_RESERVED
                 result.tdm_signals = tdm.signals
-                return await self._finish(result, STATUS_NOT_RETRIEVABLE, FAILURE_TDM_RESERVED)
+                return _Outcome(STATUS_NOT_RETRIEVABLE, FAILURE_TDM_RESERVED)
             if tdm.decision == robots.TDM_UNKNOWN:
                 tdm_decision = robots.TDM_UNKNOWN
             result.tdm_decision = tdm_decision
@@ -871,10 +1056,13 @@ class _OpenWebFetch:
             if not self.fetch_reserved:
                 refusal = self.budget.fetch_refusal()
                 if refusal:
-                    return await self._finish(result, STATUS_REFUSED, refusal, policy=POLICY_BUDGET)
+                    return _Outcome(STATUS_REFUSED, refusal, POLICY_BUDGET)
                 self.budget.record_fetch(byte_count=0)
-                self.budget.record_domain_fetch(domain)
                 self.fetch_reserved = True
+            refusal = await self._count_domain(domain)
+            if refusal:
+                result.redirect_chain.append({"url": _stored(current), "refused": refusal})
+                return _Outcome(STATUS_REFUSED, refusal, POLICY_BUDGET)
 
             ceiling = max(1, min(content.MAX_CLASS_BYTES, self.budget.bytes_remaining))
             answer = await self._hop(
@@ -882,8 +1070,9 @@ class _OpenWebFetch:
                 host,
                 ip,
                 domain,
+                deadline=self.deadline,
                 max_bytes=ceiling,
-                sniff_cap=functools.partial(content.cap_for_prefix, ceiling=ceiling),
+                cap_for=self._cap_for(ceiling),
                 on_retry=self._on_retry(result, current),
             )
             result.redirect_chain.append({"url": _stored(current), "status": answer.status})
@@ -891,21 +1080,19 @@ class _OpenWebFetch:
             result.http_status = answer.status
             result.bytes = len(answer.body)
             if answer.failure_code:
-                return await self._finish(result, STATUS_FAILED, answer.failure_code)
+                return _Outcome(STATUS_FAILED, answer.failure_code)
             status = answer.status or 0
             if 300 <= status < 400:
                 if not answer.location:
-                    return await self._finish(result, STATUS_FAILED, FAILURE_REDIRECT_NO_LOCATION)
+                    return _Outcome(STATUS_FAILED, FAILURE_REDIRECT_NO_LOCATION)
                 hops += 1
                 if hops > MAX_REDIRECTS:
-                    return await self._finish(
-                        result, STATUS_REFUSED, FAILURE_REDIRECT_LIMIT, policy=POLICY_DENIED
-                    )
+                    return _Outcome(STATUS_REFUSED, FAILURE_REDIRECT_LIMIT, POLICY_DENIED)
                 nxt = answer.location
                 code, next_host, next_ip = await self._policy(nxt)
                 if code or not next_host or not next_ip:
                     result.redirect_chain.append({"url": _stored(nxt), "refused": code})
-                    return await self._finish(result, STATUS_REFUSED, code, policy=POLICY_DENIED)
+                    return _Outcome(STATUS_REFUSED, code, POLICY_DENIED)
                 current, host, ip = nxt, next_host, next_ip
                 domain = await _domain_of(host)
                 continue
@@ -913,7 +1100,7 @@ class _OpenWebFetch:
 
     async def _terminal(
         self, result: OpenWebFetchResult, answer: _Answer, requested: str, final: str
-    ) -> OpenWebFetchResult:
+    ) -> _Outcome:
         status = answer.status or 0
         headers = answer.headers
         result.mime_served = content.media_type(headers.get("content-type"))
@@ -924,20 +1111,20 @@ class _OpenWebFetch:
         if status >= 400:
             verdict = access.classify_status(status, answer.body.decode("utf-8", "replace"))
             if not verdict.retrievable:
-                return await self._finish(result, STATUS_NOT_RETRIEVABLE, verdict.reason)
-            return await self._finish(result, STATUS_FAILED, f"http_{status}")
+                return _Outcome(STATUS_NOT_RETRIEVABLE, verdict.reason)
+            return _Outcome(STATUS_FAILED, f"http_{status}")
         if status < 200:
-            return await self._finish(result, STATUS_FAILED, f"http_{status}")
+            return _Outcome(STATUS_FAILED, f"http_{status}")
         if answer.body_error:
             code = {
                 BODY_DEADLINE_EXCEEDED: FAILURE_FETCH_TIMEOUT,
                 BODY_DECOMPRESSION_RATIO: FAILURE_DECOMPRESSION_BOMB,
                 BODY_UNSUPPORTED_ENCODING: FAILURE_UNSUPPORTED_ENCODING,
             }.get(answer.body_error, FAILURE_UNDECODABLE_BODY)
-            return await self._finish(result, STATUS_FAILED, code)
+            return _Outcome(STATUS_FAILED, code)
 
         body = answer.body
-        sniffed = content.sniff(body[:SNIFF_PREFIX_BYTES])
+        sniffed = content.route(body[:SNIFF_PREFIX_BYTES], headers.get("content-type"))
         result.mime_sniffed = sniffed.mime
         result.content_class = sniffed.content_class
         result.mime_mismatch = content.mime_mismatch(
@@ -950,7 +1137,11 @@ class _OpenWebFetch:
         result.filename_hint = _filename_hint(headers.get("content-disposition"))
         self.meta["filename_hint"] = result.filename_hint
         if not sniffed.supported:
-            return await self._finish(result, STATUS_REFUSED, FAILURE_UNSUPPORTED_TYPE)
+            return _Outcome(STATUS_REFUSED, FAILURE_UNSUPPORTED_TYPE)
+        if sniffed.content_class == content.CLASS_PDF:
+            if self._pdf_budget_spent():
+                return _Outcome(STATUS_REFUSED, BUDGET_REFUSAL_PREFIX + LIMIT_PDFS, POLICY_BUDGET)
+            self.budget.pdfs += 1  # reserved at the sniff, before any await (review M2)
 
         analysis = await asyncio.to_thread(
             _analyse,
@@ -975,16 +1166,16 @@ class _OpenWebFetch:
             self.meta["rel_canonical_honoured"] = decision.honoured
             self.meta["rel_canonical_reason"] = decision.reason
         if not analysis.verdict.retrievable:
-            return await self._finish(result, STATUS_NOT_RETRIEVABLE, analysis.verdict.reason)
+            return _Outcome(STATUS_NOT_RETRIEVABLE, analysis.verdict.reason)
 
         signals = robots.tdm_signals_from_headers(headers) + analysis.tdm_signals
         if signals:
             result.tdm_decision = robots.TDM_RESERVED
             result.tdm_signals = tuple(dict.fromkeys(signals))
-            return await self._finish(result, STATUS_NOT_RETRIEVABLE, FAILURE_TDM_RESERVED)
+            return _Outcome(STATUS_NOT_RETRIEVABLE, FAILURE_TDM_RESERVED)
 
         result.content = body
-        return await self._finish(result, STATUS_PARTIAL if result.truncated else STATUS_FETCHED)
+        return _Outcome(STATUS_PARTIAL if result.truncated else STATUS_FETCHED)
 
 
 async def open_web_fetch(
@@ -1044,6 +1235,8 @@ __all__ = [
     "ORIGINS",
     "ORIGIN_CRAWL",
     "ORIGIN_LEAD",
+    "ORIGIN_ROBOTS",
+    "ORIGIN_TDM",
     "ORIGIN_SEARCH",
     "ORIGIN_USER",
     "STATUS_DISABLED",

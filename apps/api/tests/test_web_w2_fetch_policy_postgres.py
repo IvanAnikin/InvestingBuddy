@@ -74,6 +74,7 @@ async def test_attempt_rows_carry_lineage_jsonb_and_survive_their_job(web: Web) 
     maker = async_sessionmaker(engine, expire_on_commit=False)
     job_id = uuid.uuid4()
     query_id = uuid.uuid4()
+    row_ids: list[uuid.UUID] = []
     result_id = uuid.uuid4()
     try:
         async with maker() as s:
@@ -145,6 +146,10 @@ async def test_attempt_rows_carry_lineage_jsonb_and_survive_their_job(web: Web) 
                 .scalars()
                 .all()
             )
+            row_ids.extend(r.id for r in rows)
+            policy_rows = [r for r in rows if r.origin in ("robots", "tdm")]
+            assert {r.origin for r in policy_rows} == {"robots", "tdm"}
+            rows = [r for r in rows if r.origin not in ("robots", "tdm")]
             assert [r.status for r in rows] == [STATUS_RETRIED, STATUS_FETCHED, STATUS_FETCHED]
             fetched = rows[1]
             assert fetched.web_search_result_id == result_id
@@ -171,12 +176,21 @@ async def test_attempt_rows_carry_lineage_jsonb_and_survive_their_job(web: Web) 
                 .all()
             )
             assert len(survivors) == 3, "deleting a job never deletes its fetch audit"
+            orphans = (
+                (await s.execute(sa.select(WebFetchAttempt).where(WebFetchAttempt.id.in_(row_ids))))
+                .scalars()
+                .all()
+            )
+            assert len(orphans) == len(row_ids)
+            assert all(r.research_job_id is None for r in orphans)
             assert all(r.research_job_id is None for r in survivors)
     finally:
         async with maker() as s:
             await s.execute(
                 sa.delete(WebFetchAttempt).where(WebFetchAttempt.canonical_url.contains(marker))
             )
+            if row_ids:
+                await s.execute(sa.delete(WebFetchAttempt).where(WebFetchAttempt.id.in_(row_ids)))
             await s.execute(sa.delete(WebSearchQuery).where(WebSearchQuery.id == query_id))
             await s.execute(sa.delete(ResearchJob).where(ResearchJob.id == job_id))
             await s.commit()

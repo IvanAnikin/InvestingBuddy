@@ -11,7 +11,9 @@ userinfo and the fragment dropped; scheme and host lower-cased; path escapes nor
 plus:
 
 * tracking parameters removed: ``utm_*``, ``fbclid``, ``gclid``, ``mc_cid``, ``mc_eid``,
-  ``_hsenc``, ``_hsmi``, ``ref``, ``ref_src``, ``cmpid``, ``ocid``, ``igshid``;
+  ``_hsenc``, ``_hsmi``, ``ref_src``, ``cmpid``, ``ocid``, ``igshid``. Plain ``ref`` is
+  deliberately KEPT: sites use it as a document reference (``?ref=RNS-1234``), and
+  dropping it would merge distinct documents under one identity (review, low);
 * the default port ``:443`` dropped for ``https``.
 
 ``rel=canonical`` (an HTML ``<link>`` or an HTTP ``Link`` header) is honoured only when it
@@ -39,7 +41,6 @@ TRACKING_PARAMS: frozenset[str] = frozenset(
         "mc_eid",
         "_hsenc",
         "_hsmi",
-        "ref",
         "ref_src",
         "cmpid",
         "ocid",

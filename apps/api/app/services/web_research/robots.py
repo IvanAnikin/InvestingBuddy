@@ -104,28 +104,50 @@ def normalise_path(path: str) -> str:
     return _ESCAPE_RE.sub(_fix, encoded)
 
 
+#: Rules kept per robots.txt (all matched groups together) and the longest pattern
+#: honoured. Beyond these a file is truncated (the RFC only requires 500 KiB parsed);
+#: they bound the cost of every ``decide`` call (security review S1).
+MAX_ROBOTS_RULES = 2000
+MAX_PATTERN_CHARS = 1024
+
+
+def wildcard_match(pattern: str, path: str) -> bool:
+    """RFC 9309 path matching: ``*`` = any run of characters, a final ``$`` anchors.
+
+    NOT a regex (security review S1): ``re`` with ``.*`` backtracks exponentially on a
+    pattern like ``/*a*a*a*a*b`` (a measured 349 s freeze). A glob made only of ``*``
+    is matched correctly by a leftmost ``str.find`` per literal segment, which is
+    O(len(path) x segments).
+    """
+    anchored = pattern.endswith("$")
+    body = pattern[:-1] if anchored else pattern
+    parts = body.split("*")
+    head = parts[0]
+    if not path.startswith(head):
+        return False
+    if len(parts) == 1:
+        return len(path) == len(head) if anchored else True
+    pos = len(head)
+    for part in parts[1:-1]:
+        if not part:
+            continue
+        found = path.find(part, pos)
+        if found == -1:
+            return False
+        pos = found + len(part)
+    last = parts[-1]
+    if anchored:
+        return path.endswith(last) and len(path) - len(last) >= pos
+    return not last or path.find(last, pos) != -1
+
+
 @dataclass(frozen=True)
 class RobotsRule:
     allow: bool
     pattern: str
 
     def matches(self, path: str) -> bool:
-        return _compile(self.pattern).match(path) is not None
-
-
-_COMPILED: dict[str, re.Pattern[str]] = {}
-
-
-def _compile(pattern: str) -> re.Pattern[str]:
-    compiled = _COMPILED.get(pattern)
-    if compiled is None:
-        anchored = pattern.endswith("$")
-        body = pattern[:-1] if anchored else pattern
-        regex = ".*".join(re.escape(part) for part in body.split("*"))
-        compiled = re.compile(regex + ("$" if anchored else ""), re.DOTALL)
-        if len(_COMPILED) < 4096:
-            _COMPILED[pattern] = compiled
-    return compiled
+        return wildcard_match(self.pattern, path)
 
 
 def best_rule(rules: Iterable[RobotsRule], path: str) -> RobotsRule | None:
@@ -198,9 +220,10 @@ def parse_robots(text: str, product_token: str = USER_AGENT_PRODUCT_TOKEN) -> Ro
             continue
         if key in ("allow", "disallow"):
             last_was_agent = False
-            if current is None or not value:
+            if current is None or not value or len(value) > MAX_PATTERN_CHARS:
                 continue  # an empty rule matches nothing (RFC 9309 §2.2.2)
-            current.rules.append(RobotsRule(key == "allow", normalise_path(value)))
+            if len(current.rules) < MAX_ROBOTS_RULES:
+                current.rules.append(RobotsRule(key == "allow", normalise_path(value)))
         elif key == "crawl-delay":
             last_was_agent = False
             if current is None:
@@ -216,7 +239,7 @@ def parse_robots(text: str, product_token: str = USER_AGENT_PRODUCT_TOKEN) -> Ro
     names_us = bool(matched)
     if not matched:
         matched = [g for g in groups if "*" in g.agents]
-    rules = tuple(rule for g in matched for rule in g.rules)
+    rules = tuple(rule for g in matched for rule in g.rules)[:MAX_ROBOTS_RULES]
     delays = [g.crawl_delay for g in matched if g.crawl_delay is not None]
     return RobotsPolicy(
         decision_source=ROBOTS_ALLOWED,
@@ -274,8 +297,10 @@ class RobotsGate:
             cached = self._cache.get(origin)
             if cached is not None:
                 return cached, True
+            # If the RUN's deadline cancels this fetch, the exception leaves here and
+            # nothing is cached: our own budget running out says nothing about the site.
             answer = await fetcher(origin + "/robots.txt", ROBOTS_MAX_BYTES)
-            policy = policy_from_answer(answer)
+            policy = await asyncio.to_thread(policy_from_answer, answer)
             ttl = (
                 ROBOTS_UNAVAILABLE_TTL_SECONDS
                 if policy.decision_source == ROBOTS_UNAVAILABLE
@@ -287,7 +312,13 @@ class RobotsGate:
     async def check(self, url: str, fetcher: SmallFetcher) -> RobotsCheck:
         origin, path = _path_and_query(url)
         policy, cached = await self.policy_for(origin, fetcher)
-        return RobotsCheck(policy.decide(path), policy.crawl_delay, cached)
+        # Bounded (rule and pattern caps, non-backtracking matcher) and still kept off
+        # the event loop for a large rule set.
+        if len(policy.rules) > 64:
+            decision = await asyncio.to_thread(policy.decide, path)
+        else:
+            decision = policy.decide(path)
+        return RobotsCheck(decision, policy.crawl_delay, cached)
 
     def clear(self) -> None:
         self._cache.clear()
@@ -347,7 +378,11 @@ def parse_tdmrep(body: bytes) -> tuple[TdmRule, ...] | None:
             continue
         location = entry.get("location")
         reservation = entry.get("tdm-reservation")
-        if not isinstance(location, str) or not location.strip():
+        if (
+            not isinstance(location, str)
+            or not location.strip()
+            or len(location) > MAX_PATTERN_CHARS
+        ):
             continue
         reserved = reservation in (1, "1", True)
         rules.append(TdmRule(normalise_path(location.strip()), reserved))
@@ -359,7 +394,7 @@ def tdmrep_reserves(rules: tuple[TdmRule, ...], path_and_query: str) -> bool:
     path = normalise_path(path_and_query or "/")
     best: TdmRule | None = None
     for rule in rules:
-        if _compile(rule.pattern).match(path) is None:
+        if not wildcard_match(rule.pattern, path):
             continue
         if best is None or len(rule.pattern) > len(best.pattern):
             best = rule
@@ -441,12 +476,38 @@ def content_usage_reserves(header: str | None) -> bool:
     return False
 
 
+#: ``X-Robots-Tag`` directives that carry a value after a colon (not a user agent).
+_VALUED_DIRECTIVES = frozenset(
+    {"unavailable_after", "max-snippet", "max-image-preview", "max-video-preview"}
+)
+
+
+def x_robots_tag_noai(value: str | None) -> bool:
+    """True when ``X-Robots-Tag`` says ``noai`` to everyone or to OUR product token.
+
+    ``otherbot: noai, noindex`` addresses another crawler and is not read as ours.
+    """
+    ours = USER_AGENT_PRODUCT_TOKEN.lower()
+    agent: str | None = None
+    for part in (value or "").split(","):
+        text = part.strip()
+        if not text:
+            continue
+        name, sep, rest = text.partition(":")
+        if sep and name.strip().lower() not in _VALUED_DIRECTIVES and " " not in name.strip():
+            agent = name.strip().lower()
+            text = rest.strip()
+        if agent in (None, "*", ours) and "noai" in _directive_tokens(text):
+            return True
+    return False
+
+
 def tdm_signals_from_headers(headers: dict[str, str]) -> list[str]:
     """Reservation signals in response headers (names lower-cased by the caller)."""
     signals: list[str] = []
     if (headers.get("tdm-reservation") or "").strip() == "1":
         signals.append(SIGNAL_HEADER)
-    if "noai" in _directive_tokens(headers.get("x-robots-tag") or ""):
+    if x_robots_tag_noai(headers.get("x-robots-tag")):
         signals.append(SIGNAL_NOAI)
     if content_usage_reserves(headers.get("content-usage")):
         signals.append(SIGNAL_CONTENT_USAGE)
@@ -499,4 +560,6 @@ __all__ = [
     "tdm_signals_from_headers",
     "tdm_signals_from_html",
     "tdmrep_reserves",
+    "wildcard_match",
+    "x_robots_tag_noai",
 ]

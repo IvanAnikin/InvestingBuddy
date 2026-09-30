@@ -86,8 +86,10 @@ class WebFetchAttemptRead(BaseModel):
 class WebFetchMetrics(BaseModel):
     """Spec §22.1 fetch metrics for one run, derived from ``web_fetch_attempts`` rows.
 
-    ``attempts`` counts LOGICAL fetches (a retried physical attempt is in ``retries``,
-    not here). Rates are over ``attempts`` and are 0.0 when there were none.
+    ``attempts`` counts LOGICAL page fetches that were actually tried. Not in it: a
+    retried physical attempt (``retries``), a negative-cache hit (``negative_cached``),
+    a budget refusal (``budget_refused``) and robots.txt/TDMRep requests
+    (``policy_file_requests``). Rates are over ``attempts``; 0.0 when there were none.
     """
 
     attempts: int = 0
@@ -108,6 +110,8 @@ class WebFetchMetrics(BaseModel):
     policy_denied: int = 0
     policy_deny_rate: float = 0.0
     negative_cached: int = 0
+    budget_refused: int = 0
+    policy_file_requests: int = 0
     retries: int = 0
     redirects: int = 0
     bytes: int = 0

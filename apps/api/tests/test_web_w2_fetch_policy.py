@@ -19,6 +19,7 @@ import asyncio
 import codecs
 import gzip
 import hashlib
+import inspect
 import json
 import logging
 import random
@@ -197,7 +198,10 @@ class Web:
             return httpx.Response(404, content=b"not found")
         if isinstance(route, list):
             route = route.pop(0) if len(route) > 1 else route[0]
-        return route(request)
+        response = route(request)
+        if inspect.isawaitable(response):
+            response = await response
+        return response
 
     def hosts(self) -> list[str]:
         return [r.headers.get("host", "") for r in self.requests]
@@ -326,11 +330,15 @@ class Harness:
             **kw,
         )
 
-    async def rows(self) -> list[WebFetchAttempt]:
+    async def all_rows(self) -> list[WebFetchAttempt]:
         result = await self.session.execute(
             select(WebFetchAttempt).order_by(WebFetchAttempt.created_at)
         )
         return list(result.scalars().all())
+
+    async def rows(self) -> list[WebFetchAttempt]:
+        """Page-attempt rows (robots.txt / TDMRep rows excluded)."""
+        return [r for r in await self.all_rows() if r.origin not in ("robots", "tdm")]
 
 
 @pytest.fixture
@@ -948,7 +956,8 @@ class TestCanonical:
             "https://Example.com:443/a?utm_source=x&UTM_Medium=y&fbclid=1&gclid=2&mc_cid=3"
             "&mc_eid=4&_hsenc=5&_hsmi=6&ref=7&ref_src=8&cmpid=9&ocid=10&igshid=11&id=42#frag"
         )
-        assert canonical_url(url) == "https://example.com/a?id=42"
+        # Plain ``ref`` is a document reference on many sites and is KEPT (review, low).
+        assert canonical_url(url) == "https://example.com/a?ref=7&id=42"
 
     def test_same_domain_rel_canonical_is_honoured(self) -> None:
         decision = choose_canonical("https://www.example.com/a?x=1", "https://example.com/story")
@@ -1366,6 +1375,10 @@ class TestMetrics:
         await h.fetch("https://example.com/r")
         await h.fetch("https://example.com/tdm")
         await h.fetch("https://web.archive.org/x")
+        await h.fetch("https://example.com/forbidden")  # a negative-cache hit
+        spent = _budget(h.clock)
+        spent.fetches = spent.limits.max_fetches
+        await h.fetch("https://example.com/ok", budget=spent)  # a budget refusal
         await h.session.flush()
 
         audit = await web_research_audit(h.session, research_job_id=h.job_id)
@@ -1377,8 +1390,13 @@ class TestMetrics:
         assert m.policy_denied == 1 and m.retries == 1 and m.redirects == 1
         assert m.js_required == 1
         assert m.bytes > 0
-        assert audit.totals.fetch_attempts == 9  # the retried physical attempt is a row
-        assert audit.fetch_attempts[0].canonical_url == "https://example.com/ok"
+        # Rows: 8 logical + 1 retried physical attempt + robots.txt + tdmrep.json.
+        assert audit.totals.fetch_attempts == 13
+        assert m.policy_file_requests == 2
+        # Neither a cache hit nor a budget refusal is an attempt (review, low).
+        assert m.negative_cached == 1 and m.budget_refused == 1
+        pages = [f for f in audit.fetch_attempts if f.origin == "search"]
+        assert pages[0].canonical_url == "https://example.com/ok"
 
 
 # --------------------------------------------------------------------------- #
@@ -1406,7 +1424,7 @@ class TestHostileMarkup:
             b"<meta " * 500_000,
             b'<script type="application/ld+json">' * 85_000,
             b"<link rel=canonical href=" * 110_000,
-            b"g-recaptcha id=\"root\" " + b"<div>" * 590_000,
+            b'g-recaptcha id="root" ' + b"<div>" * 590_000,
             b"<" * 3_000_000,
         ],
     )
@@ -1427,3 +1445,451 @@ class TestHostileMarkup:
         )
         # Linear scans take well under 3 s here; a quadratic regex took minutes.
         assert time.perf_counter() - started < 20.0
+
+
+# --------------------------------------------------------------------------- #
+# Review round 1 — each blocking/high/medium finding, mutation-sensitive
+# --------------------------------------------------------------------------- #
+
+ARTICLE_900 = (
+    "<article><h1>Plant expansion</h1>"
+    + "<p>The company doubled transformer output after its new line opened. </p>" * 13
+    + "</article>"
+)
+
+
+class _SlowFlushSession:
+    """Delegates to a real session; ``flush`` first sleeps (real time)."""
+
+    def __init__(self, inner: Any, delay: float) -> None:
+        self._inner = inner
+        self._delay = delay
+
+    def add(self, obj: Any) -> None:
+        self._inner.add(obj)
+
+    async def flush(self) -> None:
+        await asyncio.sleep(self._delay)
+        await self._inner.flush()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
+class TestReviewBlocking:
+    async def test_b1_a_deadline_during_the_flush_does_not_refinish(self, h: Harness) -> None:
+        h.web.route("example.com", "/warm", respond())
+        h.web.route("example.com", "/a", respond())
+        await h.fetch("https://example.com/warm")  # warm DNS/PSL/robots so /a is fast
+        slow = _SlowFlushSession(h.session, delay=2.5)
+        result = await open_web_fetch(
+            slow,
+            "https://example.com/a",
+            context=WebFetchContext(research_job_id=h.job_id),
+            budget=h.budget,
+            origin="search",
+            cfg=_cfg(source_document_total_deadline_seconds=1.5),
+            resolver=h.dns,
+            runtime=h.runtime,
+        )
+        # The walk finished inside the deadline; the slow flush is outside it, so the
+        # result is not rewritten as a timeout and exactly one page row exists.
+        assert result.status == STATUS_FETCHED
+        rows = await h.rows()
+        assert [r.status for r in rows] == ["fetched", "fetched"]  # /warm, then /a once
+
+    async def test_b2_a_negative_cache_hit_does_not_add_a_strike(self, h: Harness) -> None:
+        h.web.route("example.com", "/gone", respond(404, b"gone"))
+        await h.fetch("https://example.com/gone")
+        for _ in range(3):
+            hit = await h.fetch("https://example.com/gone")
+            assert hit.status == STATUS_NEGATIVE_CACHED
+        assert h.runtime.negative.strikes("https://example.com/gone") == 1
+
+
+class TestReviewFalseWalls:
+    async def test_h1_cloudflare_beacon_and_recaptcha_v3_are_not_a_captcha(
+        self, h: Harness
+    ) -> None:
+        body = (
+            "<html><head>"
+            '<script src="/cdn-cgi/challenge-platform/scripts/jsd/main.js"></script>'
+            '<script src="https://www.google.com/recaptcha/api.js?render=6Lc_KEY"></script>'
+            f"</head><body>{ARTICLE_900}</body></html>"
+        ).encode()
+        h.web.route("example.com", "/a", respond(body=body))
+        result = await h.fetch("https://example.com/a")
+        assert result.status == STATUS_FETCHED and result.failure_code is None
+
+    async def test_h1_a_nav_investor_login_box_is_not_a_login_wall(self, h: Harness) -> None:
+        body = (
+            "<html><body><header><nav><form action='/investor/login'>"
+            "<input type='text' placeholder='Investor login'>"
+            "<input type='password' name='pw'></form></nav></header>"
+            f"{ARTICLE_900}</body></html>"
+        ).encode()
+        h.web.route("example.com", "/a", respond(body=body))
+        result = await h.fetch("https://example.com/a")
+        assert result.status == STATUS_FETCHED
+
+    async def test_h1_a_onetrust_banner_is_not_a_consent_wall(self, h: Harness) -> None:
+        body = (
+            "<html><body><div id='onetrust-banner-sdk'><p>We value your privacy. We and "
+            "our partners use cookies.</p><button>Accept All Cookies</button></div>"
+            f"{ARTICLE_900}</body></html>"
+        ).encode()
+        h.web.route("example.com", "/a", respond(body=body))
+        result = await h.fetch("https://example.com/a")
+        assert result.status == STATUS_FETCHED
+
+    async def test_h1_a_real_interstitial_is_still_a_captcha(self, h: Harness) -> None:
+        body = (
+            b"<html><head><title>Just a moment...</title></head><body>"
+            b"<div id='cf-chl-widget'>Verify you are human by completing the action "
+            b"below.</div></body></html>"
+        )
+        h.web.route("example.com", "/a", respond(body=body))
+        result = await h.fetch("https://example.com/a")
+        assert result.failure_code == "captcha"
+
+    async def test_h1_a_consent_only_page_is_still_a_consent_wall(self, h: Harness) -> None:
+        body = (
+            b"<html><body><h1>Before you continue</h1><p>We value your privacy.</p>"
+            b"<button>Accept all cookies</button></body></html>"
+        )
+        h.web.route("example.com", "/a", respond(body=body))
+        result = await h.fetch("https://example.com/a")
+        assert result.failure_code == "consent_wall"
+
+
+class TestReviewRobotsDeadline:
+    async def test_h2_our_own_run_deadline_never_caches_robots_unavailable(
+        self, h: Harness
+    ) -> None:
+        async def slow_robots(_r: httpx.Request) -> httpx.Response:
+            await asyncio.sleep(1.5)
+            return httpx.Response(404)
+
+        h.web.route("example.com", "/robots.txt", slow_robots)
+        h.web.route("example.com", "/a", respond())
+        first = await h.fetch(
+            "https://example.com/a", cfg=_cfg(source_document_total_deadline_seconds=0.3)
+        )
+        assert first.failure_code == "fetch_timeout"
+        # The site was not slow by its own standard — our run ran out. Nothing cached:
+        h.web.route("example.com", "/robots.txt", respond(404, b"none"))
+        second = await h.fetch("https://example.com/a")
+        assert second.status == STATUS_FETCHED
+        assert second.robots_decision == robots.ROBOTS_NONE
+
+    async def test_h2_policy_files_get_their_own_deadline_not_the_runs(
+        self, h: Harness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from app.services.web_research import fetch as fetch_module
+
+        seen: list[tuple[str, float]] = []
+        real_request = fetch_module._request
+
+        async def recording(url: str, host: str, ip: str, **kw: Any) -> Any:
+            seen.append((url, kw["deadline"] - asyncio.get_running_loop().time()))
+            return await real_request(url, host, ip, **kw)
+
+        monkeypatch.setattr(fetch_module, "_request", recording)
+        h.web.route("example.com", "/a", respond())
+        await h.fetch("https://example.com/a", cfg=_cfg(source_document_total_deadline_seconds=2.0))
+        policy = [left for url, left in seen if url.endswith((".txt", ".json"))]
+        page = [left for url, left in seen if url.endswith("/a")]
+        assert policy and all(left > 10.0 for left in policy)  # its own 20 s budget
+        assert page and all(left <= 2.0 for left in page)  # the run's deadline
+
+    async def test_h2_a_cancelled_robots_fetch_is_never_cached(self) -> None:
+        gate = robots.RobotsGate()
+        calls = 0
+
+        async def cancelled(_url: str, _max: int) -> robots.SmallFetch:
+            nonlocal calls
+            calls += 1
+            raise TimeoutError  # what the run's own deadline looks like from here
+
+        with pytest.raises(TimeoutError):
+            await gate.check("https://example.com/a", cancelled)
+
+        async def fine(_url: str, _max: int) -> robots.SmallFetch:
+            return robots.SmallFetch(404)
+
+        check = await gate.check("https://example.com/a", fine)
+        assert check.decision == robots.ROBOTS_NONE and not check.from_cache
+
+    async def test_s6_robots_redirects_follow_five_then_fail_closed(self, h: Harness) -> None:
+        for i in range(4):
+            h.web.route("example.com", f"/r{i}", redirect(f"/r{i + 1}"))
+        h.web.route(
+            "example.com",
+            "/r4",
+            respond(body=b"User-agent: *\nDisallow: /\n", content_type="text/plain"),
+        )
+        h.web.route("example.com", "/robots.txt", redirect("/r0"))
+        h.web.route("example.com", "/a", respond())
+        five = await h.fetch("https://example.com/a")
+        # Five redirects (robots.txt → r0 → … → r4) are followed.
+        assert five.failure_code == "robots_disallowed"
+
+        h.web.route("news.example.org", "/robots.txt", redirect("/q0"))
+        for i in range(7):
+            h.web.route("news.example.org", f"/q{i}", redirect(f"/q{i + 1}"))
+        h.web.route("news.example.org", "/n", respond())
+        loop = await h.fetch("https://news.example.org/n")
+        assert loop.failure_code == "robots_unavailable"
+        assert "/n" not in h.web.paths("news.example.org")
+
+
+class TestReviewBudget:
+    async def test_m1_a_redirect_counts_against_the_target_domains_cap(
+        self, h: Harness, clock: FakeClock
+    ) -> None:
+        budget = _budget(clock, "company_quick")  # 4 per domain
+        for i in range(4):
+            h.web.route("news.example.org", f"/{i}", respond())
+        for i in range(4):
+            assert (await h.fetch(f"https://news.example.org/{i}", budget=budget)).ok
+        h.web.route("example.com", "/go", redirect("https://news.example.org/x"))
+        h.web.route("news.example.org", "/x", respond())
+        result = await h.fetch("https://example.com/go", budget=budget)
+        assert result.failure_code == "budget:max_per_domain"
+        assert "/x" not in h.web.paths("news.example.org")
+
+    async def test_m2_a_sniffed_pdf_over_the_pdf_cap_is_not_read(
+        self, h: Harness, clock: FakeClock
+    ) -> None:
+        budget = _budget(clock)
+        budget.pdfs = budget.limits.max_pdfs
+        pdf = b"%PDF-1.7\n" + b"0" * 200_000
+        h.web.route("example.com", "/doc", respond(body=pdf, content_type="application/pdf"))
+        result = await h.fetch("https://example.com/doc", budget=budget)  # no .pdf hint
+        assert result.status == STATUS_REFUSED
+        assert result.failure_code == "budget:max_pdfs"
+        assert result.bytes <= 1024
+        assert budget.pdfs == budget.limits.max_pdfs
+
+
+class TestReviewSniffing:
+    async def test_m3_html_served_as_html_with_an_unlisted_first_tag_is_html(
+        self, h: Harness
+    ) -> None:
+        body = (
+            b"<custom-banner>Site banner</custom-banner>"
+            b'<meta name="tdm-reservation" content="1">' + HTML_PAGE
+        )
+        h.web.route("example.com", "/a", respond(body=body))
+        result = await h.fetch("https://example.com/a")
+        assert result.content_class == "html"
+        assert result.failure_code == "tdm_reserved"
+
+    def test_m3_the_served_type_never_makes_bytes_a_pdf(self) -> None:
+        assert content.route(b"plain words", "application/pdf").content_class == "text"
+        assert content.route(b"PK\x03\x04", "text/html").content_class == "office"
+
+
+class TestReviewLimiter:
+    async def test_m4_a_pacing_wait_holds_no_global_slot(self) -> None:
+        now = [0.0]
+        gate = asyncio.Event()
+
+        async def blocked_sleep(seconds: float) -> None:
+            await gate.wait()
+            now[0] += seconds
+
+        limiter = OpenWebLimiter(global_concurrency=1, clock=lambda: now[0], sleep=blocked_sleep)
+        async with limiter.slot("a.example"):
+            pass
+
+        async def use(domain: str) -> bool:
+            async with limiter.slot(domain):
+                return True
+
+        paced = asyncio.create_task(use("a.example"))  # must wait 1 s for its window
+        await asyncio.sleep(0.01)
+        assert await asyncio.wait_for(use("b.example"), timeout=2.0)
+        gate.set()
+        assert await paced
+
+    def test_crawl_delay_never_narrows_across_origins(self) -> None:
+        limiter = OpenWebLimiter()
+        limiter.set_crawl_delay("example.com", 5)
+        assert limiter.set_crawl_delay("example.com", 2) == 5.0
+
+    async def test_an_in_flight_domain_is_never_evicted(self) -> None:
+        now = [0.0]
+        limiter = OpenWebLimiter(clock=lambda: now[0])
+        async with limiter.slot("busy.example"):
+            now[0] += 1000.0
+            limiter._evict_idle()
+            assert "busy.example" in limiter._domains
+
+
+class TestReviewRowsAndCache:
+    async def test_m5_robots_and_tdmrep_requests_write_rows(self, h: Harness) -> None:
+        h.web.route("example.com", "/robots.txt", [respond(503, b"x"), respond(404, b"n")])
+        h.web.route("example.com", "/a", respond())
+        await h.fetch("https://example.com/a")
+        rows = await h.all_rows()
+        by_origin = [(r.origin, r.status, r.http_status) for r in rows]
+        assert ("robots", "retried", 503) in by_origin
+        assert ("robots", "failed", 404) in by_origin
+        assert ("tdm", "failed", 404) in by_origin
+        assert all(r.research_job_id == h.job_id for r in rows)
+        assert h.budget.fetches == 1  # policy files are not page fetches
+
+    async def test_m6_a_wall_is_cached_under_the_requested_url_not_its_canonical(
+        self, h: Harness
+    ) -> None:
+        wall = (
+            b'<html><head><link rel="canonical" href="/"></head><body><h1>Sign in</h1>'
+            b'<form><input type="password" name="p"></form></body></html>'
+        )
+        h.web.route("example.com", "/members", respond(body=wall))
+        h.web.route("example.com", "/", respond())
+        first = await h.fetch("https://example.com/members")
+        assert first.failure_code == "login_wall"
+        home = await h.fetch("https://example.com/")
+        assert home.status == STATUS_FETCHED
+        again = await h.fetch("https://example.com/members")
+        assert again.status == STATUS_NEGATIVE_CACHED
+
+
+class TestReviewSecurity:
+    def test_s1_a_backtracking_pattern_matches_in_bounded_time(self) -> None:
+        import time
+
+        policy = robots.parse_robots("User-agent: *\nDisallow: /*a*a*a*a*a*a*a*a*a*a*b\n")
+        started = time.perf_counter()
+        assert policy.decide("/" + "a" * 2000) == robots.ROBOTS_ALLOWED
+        assert time.perf_counter() - started < 0.5
+
+    def test_s1_a_huge_robots_file_is_capped_and_cheap(self) -> None:
+        import time
+
+        text = "User-agent: *\n" + "".join(f"Disallow: /*x{i}*y*z$\n" for i in range(25_000))
+        started = time.perf_counter()
+        policy = robots.parse_robots(text)
+        assert len(policy.rules) == robots.MAX_ROBOTS_RULES
+        for _ in range(20):
+            policy.decide("/" + "x1y" * 600)
+        assert time.perf_counter() - started < 5.0
+
+    def test_s1_tdmrep_uses_the_same_bounded_matcher(self) -> None:
+        import time
+
+        rules = robots.parse_tdmrep(
+            json.dumps([{"location": "/*a*a*a*a*a*a*a*a*a*a*b", "tdm-reservation": 1}]).encode()
+        )
+        assert rules is not None
+        started = time.perf_counter()
+        assert not robots.tdmrep_reserves(rules, "/" + "a" * 2000)
+        assert time.perf_counter() - started < 0.5
+
+    @pytest.mark.parametrize(
+        ("pattern", "path", "expected"),
+        [
+            ("/a*b", "/axxb", True),
+            ("/a*b$", "/axxbc", False),
+            ("/a*b$", "/axxb", True),
+            ("/*.pdf$", "/x.pdf", True),
+            ("/*.pdf$", "/.pdf.pdf", True),
+            ("/a**b", "/ab", True),
+            ("/a*", "/a", True),
+            ("/a$", "/ab", False),
+            ("/a*b*c", "/acb", False),
+        ],
+    )
+    def test_s1_wildcard_semantics(self, pattern: str, path: str, expected: bool) -> None:
+        assert robots.wildcard_match(pattern, path) is expected
+
+    async def test_s1_a_hostile_robots_file_does_not_freeze_the_fetch(self, h: Harness) -> None:
+        import time
+
+        hostile = b"User-agent: *\n" + b"Disallow: /*a*a*a*a*a*a*a*a*a*a*a*b\n" * 3000
+        h.web.route("example.com", "/robots.txt", respond(body=hostile, content_type="text/plain"))
+        h.web.route("example.com", "/" + "a" * 1500, respond())
+        started = time.perf_counter()
+        result = await h.fetch("https://example.com/" + "a" * 1500)
+        assert time.perf_counter() - started < 10.0
+        assert result.robots_decision == robots.ROBOTS_ALLOWED
+
+    async def test_s3a_charset_idna_cannot_select_a_python_codec(self, h: Harness) -> None:
+        assert content.normalise_charset("idna") is None
+        assert content.normalise_charset("rot13") is None
+        assert content.decode_text("café".encode("latin-1"), "idna")  # never raises
+        body = "<html><body><p>Café résumé</p></body></html>".encode("latin-1")
+        h.web.route("example.com", "/a", respond(body=body, content_type="text/html; charset=idna"))
+        result = await h.fetch("https://example.com/a")
+        assert result.status == STATUS_FETCHED
+        assert result.charset_source != "header"
+        assert "Caf" in (result.text() or "")
+
+    async def test_s3b_a_malformed_url_is_coded_not_raised(self, h: Harness) -> None:
+        result = await h.fetch("https://[zz/p")
+        assert result.status in (STATUS_REFUSED, STATUS_FAILED)
+        assert (await h.rows())[0].failure_code == result.failure_code
+
+    async def test_s3b_any_internal_error_is_coded_and_written(
+        self, h: Harness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from app.services.web_research import fetch as fetch_module
+
+        async def boom(self: Any, result: Any, target: str) -> Any:
+            raise RuntimeError("unexpected")
+
+        monkeypatch.setattr(fetch_module._OpenWebFetch, "_walk", boom)
+        result = await h.fetch("https://example.com/a")
+        assert (result.status, result.failure_code) == (STATUS_FAILED, "transport_error")
+        assert len(await h.rows()) == 1
+
+    def test_s4_an_unstorable_url_never_falls_back_to_raw_text(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from app.services.web_research import fetch as fetch_module
+
+        def broken(_url: str) -> str:
+            raise ValueError("bad")
+
+        monkeypatch.setattr(fetch_module, "stored_url", broken)
+        assert fetch_module._stored("https://user:pw@example.com/?token=s") == "<unparseable-url>"
+
+
+class TestReviewLow:
+    @pytest.mark.parametrize(
+        ("value", "reserved"),
+        [
+            ("noai", True),
+            ("otherbot: noai, noindex", False),
+            ("InvestingBuddy-Research-Bot: noai", True),
+            ("otherbot: noindex, *: noai", True),
+            ("unavailable_after: 2027-01-01, noai", True),
+            ("noindex", False),
+        ],
+    )
+    def test_x_robots_tag_is_scoped_to_our_token(self, value: str, reserved: bool) -> None:
+        assert robots.x_robots_tag_noai(value) is reserved
+
+    @pytest.mark.parametrize(
+        "host",
+        [
+            "sci-hub.se",
+            "libgen.rs",
+            "annas-archive.org",
+            "nitter.poast.org",
+            "example-com.translate.goog",
+            "www-example-com.cdn.ampproject.org",
+            "r.jina.ai",
+            "youtu.be",
+            "hotcopper.com.au",
+            "news.ycombinator.com",
+            "freedium.cfd",
+        ],
+    )
+    def test_denylist_additions(self, host: str) -> None:
+        assert denylisted(host)
+
+    def test_denylist_label_rule_is_not_a_substring_rule(self) -> None:
+        assert not denylisted("scihub-news.com") and not denylisted("sci-hub")

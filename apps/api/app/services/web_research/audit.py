@@ -72,6 +72,7 @@ def _query_read(row: WebSearchQuery, results: list[WebSearchResult]) -> WebSearc
     )
 
 
+_POLICY_FILE_ORIGINS = frozenset({"robots", "tdm"})
 _PAYWALL_CODES = frozenset({"http_402", "paywall_jsonld", "login_wall", "consent_wall"})
 _ROBOTS_CODES = frozenset({"robots_disallowed", "robots_unavailable"})
 
@@ -89,9 +90,20 @@ def fetch_metrics(rows: list[WebFetchAttemptRead]) -> WebFetchMetrics:
     m = WebFetchMetrics()
     for row in rows:
         m.by_status[row.status] = m.by_status.get(row.status, 0) + 1
+        if row.origin in _POLICY_FILE_ORIGINS:
+            # robots.txt / TDMRep requests are overhead, not page attempts.
+            m.policy_file_requests += 1
+            m.bytes += int(row.bytes or 0)
+            continue
         if row.status == "retried":
             m.retries += 1
             m.bytes += int(row.bytes or 0)
+            continue
+        if row.status == "negative_cached":
+            m.negative_cached += 1  # no request was made: not an attempt
+            continue
+        if row.policy_decision == "budget_refused":
+            m.budget_refused += 1  # refused before any request: not an attempt
             continue
         m.attempts += 1
         code = row.failure_code or ""
@@ -107,7 +119,6 @@ def fetch_metrics(rows: list[WebFetchAttemptRead]) -> WebFetchMetrics:
         m.robots += int(code in _ROBOTS_CODES)
         m.tdm_reserved += int(row.tdm_decision == "tdm_reserved")
         m.policy_denied += int(row.policy_decision == "denied")
-        m.negative_cached += int(row.status == "negative_cached")
         m.bytes += int(row.bytes or 0)
         hops = [h for h in row.redirect_chain if isinstance(h, dict) and "status" in h]
         m.redirects += max(0, len(hops) - 1)

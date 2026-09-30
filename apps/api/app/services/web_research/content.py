@@ -79,6 +79,17 @@ _HTML_TAGS: tuple[bytes, ...] = (
     b"<br",
     b"<p",
     b"<!--",
+    # Not WHATWG patterns, but real pages start with them (review M3).
+    b"<meta",
+    b"<link",
+    b"<header",
+    b"<nav",
+    b"<main",
+    b"<section",
+    b"<article",
+    b"<span",
+    b"<form",
+    b"<noscript",
 )
 _TAG_TERMINATORS = b" >\t\n\r\x0c"
 
@@ -163,12 +174,28 @@ def sniff(prefix: bytes) -> Sniffed:
     return Sniffed(MIME_TEXT, CLASS_TEXT, bom)
 
 
-def cap_for_prefix(prefix: bytes, ceiling: int) -> int:
+def route(prefix: bytes, served_mime: str | None) -> Sniffed:
+    """The sniffed type, with one concession to the served type (review M3).
+
+    Bytes with no binary signature that sniff as plain text, served as ``text/html``,
+    are HTML: a page may legitimately start with a tag no sniffing table lists
+    (``<custom-element>``, a bare text node), and treating it as text would skip every
+    HTML check (access walls, TDM meta, ``rel=canonical``). The served type never
+    turns bytes INTO a PDF or out of a refused class.
+    """
+    sniffed = sniff(prefix)
+    served = media_type(served_mime)  # accepts a full Content-Type header
+    if sniffed.content_class == CLASS_TEXT and served_class(served) == CLASS_HTML:
+        return Sniffed(MIME_HTML, CLASS_HTML, sniffed.bom)
+    return sniffed
+
+
+def cap_for_prefix(prefix: bytes, ceiling: int, served_mime: str | None = None) -> int:
     """The byte cap for the class ``prefix`` reveals, never above ``ceiling``.
 
     A refused class returns the prefix length: reading stops at the sniff prefix.
     """
-    sniffed = sniff(prefix)
+    sniffed = route(prefix, served_mime)
     if not sniffed.supported:
         return len(prefix)
     return max(1, min(int(ceiling), CLASS_BYTE_CAPS[sniffed.content_class]))
@@ -264,17 +291,129 @@ CHARSET_DETECTED = "detected"
 CHARSET_DEFAULT = "default"
 
 
+def _whatwg_labels() -> dict[str, str]:
+    """WHATWG Encoding Standard labels → Python codec names (security review S3a).
+
+    Only these labels are honoured: a page cannot select an arbitrary Python codec
+    (``idna``, ``punycode``, ``rot13``, ``zlib_codec``…) by declaring it as a charset.
+    """
+    table: dict[str, str] = {label: "cp1252" for label in _WINDOWS_1252_LABELS}
+    groups: dict[str, tuple[str, ...]] = {
+        "utf-8": (
+            "unicode-1-1-utf-8",
+            "unicode11utf8",
+            "unicode20utf8",
+            "utf-8",
+            "utf8",
+            "x-unicode20utf8",
+        ),
+        "cp866": ("866", "cp866", "csibm866", "ibm866"),
+        "koi8_r": ("cskoi8r", "koi", "koi8", "koi8-r", "koi8_r"),
+        "koi8_u": ("koi8-ru", "koi8-u"),
+        "mac_roman": ("csmacintosh", "mac", "macintosh", "x-mac-roman"),
+        "mac_cyrillic": ("x-mac-cyrillic", "x-mac-ukrainian"),
+        "cp874": ("dos-874", "iso-8859-11", "iso8859-11", "iso885911", "tis-620", "windows-874"),
+        "gbk": (
+            "chinese",
+            "csgb2312",
+            "csiso58gb231280",
+            "gb2312",
+            "gb_2312",
+            "gb_2312-80",
+            "gbk",
+            "iso-ir-58",
+            "x-gbk",
+        ),
+        "gb18030": ("gb18030",),
+        "big5hkscs": ("big5", "big5-hkscs", "cn-big5", "csbig5", "x-x-big5"),
+        "euc_jp": ("cseucpkdfmtjapanese", "euc-jp", "x-euc-jp"),
+        "iso2022_jp": ("csiso2022jp", "iso-2022-jp"),
+        "cp932": (
+            "csshiftjis",
+            "ms932",
+            "ms_kanji",
+            "shift-jis",
+            "shift_jis",
+            "sjis",
+            "windows-31j",
+            "x-sjis",
+        ),
+        "cp949": (
+            "cseuckr",
+            "csksc56011987",
+            "euc-kr",
+            "iso-ir-149",
+            "korean",
+            "ks_c_5601-1987",
+            "ks_c_5601-1989",
+            "ksc5601",
+            "ksc_5601",
+            "windows-949",
+        ),
+        "utf-16-be": ("unicodefffe", "utf-16be"),
+        "utf-16-le": (
+            "csunicode",
+            "iso-10646-ucs-2",
+            "ucs-2",
+            "unicode",
+            "unicodefeff",
+            "utf-16",
+            "utf-16le",
+        ),
+    }
+    for codec, labels in groups.items():
+        for label in labels:
+            table[label] = codec
+    for n in (2, 3, 4, 5, 6, 7, 8, 10, 13, 14, 15, 16):
+        for label in (f"iso-8859-{n}", f"iso8859-{n}", f"iso_8859-{n}", f"iso8859{n}"):
+            table[label] = f"iso8859_{n}"
+    for alias, n in (
+        ("latin2", 2),
+        ("l2", 2),
+        ("latin3", 3),
+        ("l3", 3),
+        ("latin4", 4),
+        ("l4", 4),
+        ("cyrillic", 5),
+        ("arabic", 6),
+        ("greek", 7),
+        ("hebrew", 8),
+        ("latin6", 10),
+        ("l6", 10),
+        ("latin9", 15),
+        ("l9", 15),
+    ):
+        table[alias] = f"iso8859_{n}"
+    for n in (1250, 1251, 1253, 1254, 1255, 1256, 1257, 1258):
+        for label in (f"windows-{n}", f"cp{n}", f"x-cp{n}"):
+            table[label] = f"cp{n}"
+    return table
+
+
+WHATWG_CHARSETS: dict[str, str] = _whatwg_labels()
+#: Python codec names a detected encoding may map to (the same WHATWG set).
+_ALLOWED_CODECS: frozenset[str] = frozenset(
+    {codecs.lookup(c).name for c in WHATWG_CHARSETS.values()}
+    | {codecs.lookup("shift_jis").name, codecs.lookup("big5").name}
+)
+
+
 def normalise_charset(label: str | None) -> str | None:
-    """A Python codec name for ``label``, or None when it is not a real encoding."""
+    """The Python codec for a WHATWG charset ``label``, or None for anything else."""
     if not label:
         return None
-    cleaned = label.strip().lower()
-    if cleaned in _WINDOWS_1252_LABELS:
-        return "cp1252"
+    return WHATWG_CHARSETS.get(label.strip().lower())
+
+
+def _allowed_detected(name: str | None) -> str | None:
+    """A codec ``charset_normalizer`` named, if it is one of the WHATWG encodings."""
+    if not name:
+        return None
     try:
-        return codecs.lookup(cleaned).name
+        codec = codecs.lookup(name).name
     except LookupError:
         return None
+    return codec if codec in _ALLOWED_CODECS else None
 
 
 def detect_charset(body: bytes, *, content_type: str | None, content_class: str) -> tuple[str, str]:
@@ -311,7 +450,7 @@ def detect_charset(body: bytes, *, content_type: str | None, content_class: str)
         except Exception:  # noqa: BLE001 - detection is best effort
             best = None
         if best is not None and best.encoding:
-            codec = normalise_charset(best.encoding)
+            codec = _allowed_detected(best.encoding)
             if codec:
                 return codec, CHARSET_DETECTED
     return "utf-8", CHARSET_DEFAULT
@@ -321,7 +460,8 @@ def decode_text(body: bytes, codec: str) -> str:
     """Decode with ``codec``; undecodable bytes become U+FFFD, never an exception."""
     try:
         text = body.decode(codec, "replace")
-    except LookupError:
+    except (LookupError, UnicodeError, ValueError, TypeError):
+        # Only WHATWG codecs reach here, but a decoder must never raise into a run.
         text = body.decode("utf-8", "replace")
     return text.lstrip("﻿")
 
@@ -401,8 +541,8 @@ _HIDDEN_START_RE = re.compile(r"<!--|<(script|style|noscript|template|head|svg)\
 _ANY_TAG_RE = re.compile(r"<[/!?]?[a-zA-Z][^<>]*>")
 
 
-def visible_text_chars(html: str) -> int:
-    """Characters of visible text (scripts, styles, the head and comments excluded).
+def visible_text(html: str) -> str:
+    """Visible text (scripts, styles, the head and comments excluded), whitespace-collapsed.
 
     Linear, not a DOM: this feeds two thresholds only (the ``js_required`` heuristic
     and "is this page small enough to be a wall"). A real parser took ~14 s on a 3 MB
@@ -433,7 +573,11 @@ def visible_text_chars(html: str) -> int:
         close = lowered.find(">", end)
         pos = n if close == -1 else close + 1
     visible = _ANY_TAG_RE.sub(" ", " ".join(keep))
-    return len(" ".join(visible.split()))
+    return " ".join(visible.split())
+
+
+def visible_text_chars(html: str) -> int:
+    return len(visible_text(html))
 
 
 def js_required(body_bytes: int, html: str, visible_chars: Callable[[], int] | None = None) -> bool:
@@ -477,5 +621,8 @@ __all__ = [
     "normalise_charset",
     "served_class",
     "sniff",
+    "WHATWG_CHARSETS",
+    "route",
+    "visible_text",
     "visible_text_chars",
 ]

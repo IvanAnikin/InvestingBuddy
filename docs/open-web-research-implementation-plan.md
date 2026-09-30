@@ -249,7 +249,11 @@ hosts, which needs U2.
   `sniff_cap` hook) instead.
 - robots.txt and TDMRep are cached per **origin**, not per registrable domain: RFC 9309
   scopes a robots.txt to its host. Pacing is per registrable domain as specified. An
-  unreachable robots.txt is cached for 15 minutes (about one run), not 24 h.
+  unreachable robots.txt is cached for 15 minutes (about one run), not 24 h. They are
+  fetched with their OWN 20 s deadline (never the run's remainder), follow up to 5
+  redirects then fail closed, write their own attempt rows (`origin` `robots`/`tdm`), and
+  an outcome caused by the run's own deadline is never cached. Matching uses a
+  non-backtracking wildcard matcher with rule (2,000) and pattern (1,024) caps.
 - Page-level metadata with no dedicated column (ETag/Last-Modified, `rel=canonical`,
   charset, `js_required`, MIME mismatch, TDM signals) rides on the last entry of
   `redirect_chain_json` under `meta`, so no migration was needed (docs/DATABASE.md).
@@ -257,6 +261,15 @@ hosts, which needs U2.
   `partial_preview` ingestion of a served preview is left to W3.
 - Also refused: a `consent_wall` reason, and a DNS failure is coded `dns_failure` (never
   negative-cached).
+- Review round 1 hardening: the row is written once, outside the deadline; a
+  negative-cache hit never adds a strike; failures are keyed on the REQUESTED URL's
+  canonical form (never a page-declared canonical); redirects charge each new domain's
+  page cap; a sniffed PDF over the run's PDF cap is not read; HTML served as `text/html`
+  with an unlisted first tag is HTML; pacing never holds a global slot; walls need
+  interstitial markers / main-content password fields / a consent-only page (site-wide
+  challenge beacons, nav login boxes and cookie banners are not walls); only WHATWG
+  charset labels are honoured; plain `ref` is not a tracking parameter; denylist
+  `2026-09-30.2`.
 
 **Complexity:** L (about 3–4 days).
 
