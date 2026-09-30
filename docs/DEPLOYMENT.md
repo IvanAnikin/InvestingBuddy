@@ -2054,6 +2054,17 @@ with the SSH runbook above (`source antenv/bin/activate && python -m alembic upg
 Live smoke (after U1 only; spends real credits):
 `WEB_RESEARCH_LIVE=1 TAVILY_API_KEY=... python scripts/web-search-live-smoke.py [--persist]`.
 
+## Open-web W2 — the open-web fetch policy
+
+| Setting | Default | What it does |
+|---|---|---|
+| `V3_WEB_FETCH_ENABLED` | `false` | Master switch for fetching **non-allowlisted** hosts (`services/web_research/fetch.py`, its only consumer). Off → refusal `web_fetch_disabled`: no DNS, no socket, no `web_fetch_attempts` row. Allowlisted connector fetches are unaffected either way. |
+
+Turning it on needs decision **U2** and migration **042** applied first. It does **not**
+require touching `SOURCE_CONNECTOR_ALLOWLIST_ONLY` (leave it `true`): the open-web policy
+replaces the allowlist for its own fetches only. New dependency: `charset-normalizer`
+(already transitive; now pinned in `requirements.txt`). Rollback: set the flag to `false`.
+
 ## Security Limitations
 
 ### Current state (Phase 12)

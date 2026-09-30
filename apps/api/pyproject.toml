@@ -26,6 +26,10 @@ dependencies = [
     # W0 (open-web threat model D11): registrable-domain lookup. Pure-Python, ships a
     # Public Suffix List snapshot in the wheel and makes NO network call at runtime.
     "publicsuffixlist>=1.0.2,<2",
+    # Open-web W2: charset detection for open-web pages with no BOM, header or meta
+    # charset (spec §9.2). Already a transitive dependency; pinned explicitly because
+    # the fetch policy imports it directly.
+    "charset-normalizer>=3.3,<4",
 ]
 
 [project.optional-dependencies]

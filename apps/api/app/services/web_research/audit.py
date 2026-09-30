@@ -14,6 +14,7 @@ import sqlalchemy as sa
 from app.models.web_research import WebFetchAttempt, WebSearchQuery, WebSearchResult
 from app.schemas.web_research import (
     WebFetchAttemptRead,
+    WebFetchMetrics,
     WebResearchAuditRead,
     WebResearchTotals,
     WebSearchQueryRead,
@@ -69,6 +70,60 @@ def _query_read(row: WebSearchQuery, results: list[WebSearchResult]) -> WebSearc
             for r in results
         ],
     )
+
+
+_PAYWALL_CODES = frozenset({"http_402", "paywall_jsonld", "login_wall", "consent_wall"})
+_ROBOTS_CODES = frozenset({"robots_disallowed", "robots_unavailable"})
+
+
+def _final_meta(chain: Any) -> dict[str, Any]:
+    if isinstance(chain, list) and chain and isinstance(chain[-1], dict):
+        meta = chain[-1].get("meta")
+        if isinstance(meta, dict):
+            return meta
+    return {}
+
+
+def fetch_metrics(rows: list[WebFetchAttemptRead]) -> WebFetchMetrics:
+    """Spec §22.1 fetch metrics from attempt rows (W2). Counts and codes only."""
+    m = WebFetchMetrics()
+    for row in rows:
+        m.by_status[row.status] = m.by_status.get(row.status, 0) + 1
+        if row.status == "retried":
+            m.retries += 1
+            m.bytes += int(row.bytes or 0)
+            continue
+        m.attempts += 1
+        code = row.failure_code or ""
+        if code:
+            m.by_failure_code[code] = m.by_failure_code.get(code, 0) + 1
+        if row.status == "fetched":
+            m.fetched += 1
+        elif row.status == "fetched_partial":
+            m.partial += 1
+        m.http_403 += int(code == "http_403")
+        m.paywall += int(code in _PAYWALL_CODES)
+        m.captcha += int(code == "captcha")
+        m.robots += int(code in _ROBOTS_CODES)
+        m.tdm_reserved += int(row.tdm_decision == "tdm_reserved")
+        m.policy_denied += int(row.policy_decision == "denied")
+        m.negative_cached += int(row.status == "negative_cached")
+        m.bytes += int(row.bytes or 0)
+        hops = [h for h in row.redirect_chain if isinstance(h, dict) and "status" in h]
+        m.redirects += max(0, len(hops) - 1)
+        meta = _final_meta(row.redirect_chain)
+        m.js_required += int(bool(meta.get("js_required")))
+        m.mime_mismatch += int(bool(meta.get("mime_mismatch")))
+    if m.attempts:
+        n = float(m.attempts)
+        m.success_rate = round((m.fetched + m.partial) / n, 4)
+        m.http_403_rate = round(m.http_403 / n, 4)
+        m.paywall_rate = round(m.paywall / n, 4)
+        m.robots_rate = round(m.robots / n, 4)
+        m.tdm_rate = round(m.tdm_reserved / n, 4)
+        m.policy_deny_rate = round(m.policy_denied / n, 4)
+        m.js_required_rate = round(m.js_required / n, 4)
+    return m
 
 
 def _totals(queries: list[WebSearchQueryRead], fetches: int) -> WebResearchTotals:
@@ -155,6 +210,8 @@ async def web_research_audit(
             origin=f.origin,
             requested_url=f.requested_url,
             final_url=f.final_url,
+            canonical_url=f.canonical_url,
+            redirect_chain=[h for h in (f.redirect_chain_json or []) if isinstance(h, dict)],
             policy_decision=f.policy_decision,
             robots_decision=f.robots_decision,
             tdm_decision=f.tdm_decision,
@@ -170,15 +227,17 @@ async def web_research_audit(
         )
         for f in fetch_rows
     ]
+    totals = _totals(queries, len(fetches))
+    totals.fetch_metrics = fetch_metrics(fetches)
     return WebResearchAuditRead(
         scope=scope,
         scope_id=scope_id,
         queries=queries,
         fetch_attempts=fetches,
-        totals=_totals(queries, len(fetches)),
+        totals=totals,
         queries_truncated=queries_truncated,
         fetch_attempts_truncated=fetches_truncated,
     )
 
 
-__all__ = ["SCOPE_DISCOVERY_RUN", "SCOPE_RESEARCH_JOB", "web_research_audit"]
+__all__ = ["SCOPE_DISCOVERY_RUN", "SCOPE_RESEARCH_JOB", "fetch_metrics", "web_research_audit"]

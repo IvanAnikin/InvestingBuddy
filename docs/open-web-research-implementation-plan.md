@@ -236,6 +236,28 @@ hosts, which needs U2.
 
 **Rollback:** `V3_WEB_FETCH_ENABLED=false`. The allowlisted paths are unaffected.
 
+**As built (W2).** Modules: `web_research/fetch.py`, `robots.py` (RFC 9309 + TDM signals),
+`canonical.py`, `access.py`, `content.py` (sniffing, class caps, charset, `js_required`),
+`limiter.py`, `negative_cache.py`, `domain_policy.py` (the versioned denylist) and
+`user_urls.py`. Deviations from the plan, each deliberate:
+
+- The guard gained `FetchPolicy.OPEN_WEB` on `async_check_fetch_url` (allowlist off,
+  resolution + runtime check mandatory) rather than a parameter on `safe_fetch_document`:
+  that function gates on the SERVED content type before any byte is sniffed and exposes
+  no response headers, so `fetch.py` composes the same W0 primitives (shape check, guard,
+  mandatory pinned transport, `guarded_client_kwargs`, `read_bounded_body` with a new
+  `sniff_cap` hook) instead.
+- robots.txt and TDMRep are cached per **origin**, not per registrable domain: RFC 9309
+  scopes a robots.txt to its host. Pacing is per registrable domain as specified. An
+  unreachable robots.txt is cached for 15 minutes (about one run), not 24 h.
+- Page-level metadata with no dedicated column (ETag/Last-Modified, `rel=canonical`,
+  charset, `js_required`, MIME mismatch, TDM signals) rides on the last entry of
+  `redirect_chain_json` under `meta`, so no migration was needed (docs/DATABASE.md).
+- A TDM reservation or an access wall returns no bytes (`content=None`); the spec §20.3
+  `partial_preview` ingestion of a served preview is left to W3.
+- Also refused: a `consent_wall` reason, and a DNS failure is coded `dns_failure` (never
+  negative-cached).
+
 **Complexity:** L (about 3–4 days).
 
 ---

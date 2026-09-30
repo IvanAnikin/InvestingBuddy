@@ -1425,6 +1425,12 @@ class Settings(BaseSettings):
     # other value makes the provider refuse to call out (``host_not_allowed``).
     tavily_base_url: str = "https://api.tavily.com"
 
+    # ── Open-web research W2: the open-web fetch policy (spec §9.2, §26.2) ───
+    # Master switch for fetching NON-allowlisted hosts. The ONLY consumer is
+    # ``services/web_research/fetch.py``: off → refusal ``web_fetch_disabled``, no
+    # socket, no row. Allowlisted connector fetches are unaffected either way.
+    v3_web_fetch_enabled: bool = False
+
     # ── Real OCR: Azure Document Intelligence (Phase 32A Slice 5B.2) ─────────
     # Only ever consulted when ``primary_document_ocr_enabled`` (Slice 5,
     # default False) is also True. With the endpoint left empty (the default),

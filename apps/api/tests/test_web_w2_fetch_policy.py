@@ -1,0 +1,1429 @@
+"""Open-web W2 — the open-web fetch policy (spec §9.2, §18, §20.2-20.3, §21, §22.1).
+
+FULLY OFFLINE, like the W0 suite: names resolve through a fake ``getaddrinfo``-shaped
+resolver, and every request goes through the REAL pinned transport whose inner transport
+is an ``httpx.MockTransport`` that records what reached a target. "Refused before any
+request" is asserted as "the mock network recorded no request to that host/address".
+
+Pacing and retries run on a fake clock with a fake sleep: intervals are asserted, never
+waited for. Rows are written to in-memory SQLite (JSONB compiled as JSON); the real
+PostgreSQL types are proven in ``test_web_w2_fetch_policy_postgres.py``.
+
+Every config below sets ``source_connector_allowlist_only=True`` (the production value):
+the open-web policy must replace the allowlist WITHOUT the global switch being flipped.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import codecs
+import gzip
+import hashlib
+import json
+import logging
+import random
+import socket
+import uuid
+from typing import Any
+
+import httpx
+import pytest
+from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.compiler import compiles
+from sqlalchemy.pool import StaticPool
+
+from app.core.config import Settings
+from app.db.base import Base
+from app.models.web_research import WebFetchAttempt
+from app.services.sources import pinned_transport as pinned_module
+from app.services.sources.rate_limit import SlidingWindowLimiter
+from app.services.sources.safe_web_fetcher import (
+    FetchPolicy,
+    async_check_fetch_url,
+    read_bounded_body,
+)
+from app.services.web_research import access, content, robots
+from app.services.web_research.audit import web_research_audit
+from app.services.web_research.budget import PROFILES, WebResearchBudget
+from app.services.web_research.canonical import (
+    canonical_url,
+    choose_canonical,
+    rel_canonical_from_header,
+)
+from app.services.web_research.domain_policy import DENYLIST_VERSION, denylisted
+from app.services.web_research.fetch import (
+    STATUS_DISABLED,
+    STATUS_FAILED,
+    STATUS_FETCHED,
+    STATUS_NEGATIVE_CACHED,
+    STATUS_NOT_RETRIEVABLE,
+    STATUS_PARTIAL,
+    STATUS_REFUSED,
+    STATUS_RETRIED,
+    OpenWebFetchRuntime,
+    WebFetchContext,
+    open_web_fetch,
+    parse_retry_after,
+    reset_default_runtime,
+)
+from app.services.web_research.limiter import OpenWebLimiter
+from app.services.web_research.negative_cache import (
+    FIRST_TTL_SECONDS,
+    REPEAT_TTL_SECONDS,
+    NegativeCache,
+)
+from app.services.web_research.user_urls import extract_user_urls, fetch_user_urls
+
+PUBLIC_A = "93.184.216.34"
+PUBLIC_B = "93.184.216.35"
+PRIVATE = "10.0.0.5"
+
+HTML_PAGE = (
+    b"<!doctype html><html><head><title>Transformer demand</title></head><body>"
+    + b"<p>Grid operators ordered more large power transformers this year.</p>" * 20
+    + b"</body></html>"
+)
+
+
+@compiles(JSONB, "sqlite")
+def _jsonb_as_json(element, compiler, **kw):  # noqa: ANN001, ANN201
+    return "JSON"
+
+
+# --------------------------------------------------------------------------- #
+# Offline network, fake clock, session
+# --------------------------------------------------------------------------- #
+
+
+def _info(ip: str) -> tuple[Any, ...]:
+    family = socket.AF_INET6 if ":" in ip else socket.AF_INET
+    sockaddr: tuple[Any, ...] = (ip, 0, 0, 0) if ":" in ip else (ip, 0)
+    return (family, socket.SOCK_STREAM, 6, "", sockaddr)
+
+
+class FakeDNS:
+    """``getaddrinfo``-shaped. A tuple value is a sequence of answers (rebinding)."""
+
+    def __init__(self, table: dict[str, Any] | None = None) -> None:
+        self.table: dict[str, Any] = {
+            "example.com": [PUBLIC_A],
+            "www.example.com": [PUBLIC_A],
+            "news.example.org": [PUBLIC_B],
+            "other.example.net": [PUBLIC_B],
+            "a.example": [PUBLIC_A],
+            "b.example": [PUBLIC_A],
+            "c.example": [PUBLIC_A],
+            "d.example": [PUBLIC_A],
+            "e.example": [PUBLIC_A],
+            **(table or {}),
+        }
+        self.calls: list[str] = []
+        self._served: dict[str, int] = {}
+
+    def __call__(self, host: str, port: Any = None, *a: Any, **kw: Any) -> list[Any]:
+        self.calls.append(host)
+        entry = self.table.get(host)
+        if entry is None:
+            raise socket.gaierror(f"no such host: {host}")
+        if isinstance(entry, tuple):
+            n = self._served.get(host, 0)
+            self._served[host] = n + 1
+            answer = entry[min(n, len(entry) - 1)]
+        else:
+            answer = entry
+        return [_info(ip) for ip in answer]
+
+
+def respond(
+    status: int = 200,
+    body: bytes = HTML_PAGE,
+    *,
+    content_type: str | None = "text/html; charset=utf-8",
+    **headers: str,
+) -> Any:
+    """A route factory: a fresh ``httpx.Response`` per request."""
+    hdrs = {k.replace("_", "-"): v for k, v in headers.items()}
+    if content_type:
+        hdrs["content-type"] = content_type
+
+    def route(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status, headers=hdrs, content=body)
+
+    return route
+
+
+def redirect(location: str, status: int = 302) -> Any:
+    def route(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status, headers={"location": location})
+
+    return route
+
+
+def streamed(headers: dict[str, str], body: bytes, chunk: int = 16_384) -> Any:
+    def route(_request: httpx.Request) -> httpx.Response:
+        async def gen():  # noqa: ANN202
+            for i in range(0, len(body), chunk):
+                yield body[i : i + chunk]
+
+        return httpx.Response(200, headers=headers, content=gen())
+
+    return route
+
+
+def connect_error(_request: httpx.Request) -> httpx.Response:
+    raise httpx.ConnectError("connection refused", request=_request)
+
+
+class Web:
+    """Routes by (Host header, path). Unknown paths answer 404. Records every request."""
+
+    def __init__(self) -> None:
+        self.sites: dict[str, dict[str, Any]] = {}
+        self.requests: list[httpx.Request] = []
+
+    def site(self, host: str, **routes: Any) -> None:
+        self.sites.setdefault(host, {}).update(routes)
+
+    def route(self, host: str, path: str, handler: Any) -> None:
+        self.sites.setdefault(host, {})[path] = handler
+
+    async def handler(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        host = request.headers.get("host", "")
+        route = self.sites.get(host, {}).get(request.url.path)
+        if route is None:
+            return httpx.Response(404, content=b"not found")
+        if isinstance(route, list):
+            route = route.pop(0) if len(route) > 1 else route[0]
+        return route(request)
+
+    def hosts(self) -> list[str]:
+        return [r.headers.get("host", "") for r in self.requests]
+
+    def ips(self) -> list[str]:
+        return [r.url.host for r in self.requests]
+
+    def paths(self, host: str) -> list[str]:
+        return [r.url.path for r in self.requests if r.headers.get("host") == host]
+
+    def page_paths(self, host: str) -> list[str]:
+        return [p for p in self.paths(host) if p not in ("/robots.txt", robots.TDMREP_PATH)]
+
+
+@pytest.fixture
+def web(monkeypatch: pytest.MonkeyPatch) -> Web:
+    network = Web()
+
+    def _build(pins: dict[str, str] | None = None, **_kw: Any) -> Any:
+        return pinned_module.PinnedAsyncHTTPTransport(
+            pins=pins, transport_factory=lambda: httpx.MockTransport(network.handler)
+        )
+
+    monkeypatch.setattr(pinned_module, "build_pinned_transport", _build)
+    return network
+
+
+class FakeClock:
+    def __init__(self) -> None:
+        self.now = 1000.0
+        self.sleeps: list[float] = []
+
+    def __call__(self) -> float:
+        return self.now
+
+    async def sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+        self.now += max(0.0, seconds)
+        await asyncio.sleep(0)
+
+
+@pytest.fixture
+def clock() -> FakeClock:
+    return FakeClock()
+
+
+@pytest.fixture
+def runtime(clock: FakeClock) -> OpenWebFetchRuntime:
+    return OpenWebFetchRuntime.create(clock=clock, sleep=clock.sleep, rng=random.Random(7))
+
+
+@pytest.fixture(autouse=True)
+def _fresh_default_runtime() -> Any:
+    reset_default_runtime()
+    yield
+    reset_default_runtime()
+
+
+_WEB_TABLES = ("web_search_queries", "web_search_results", "web_fetch_attempts")
+
+
+@pytest.fixture
+async def session():  # noqa: ANN201
+    engine = create_async_engine(
+        "sqlite+aiosqlite:///:memory:",
+        future=True,
+        poolclass=StaticPool,
+        connect_args={"check_same_thread": False},
+    )
+    tables = [Base.metadata.tables[name] for name in _WEB_TABLES]
+    async with engine.begin() as conn:
+        # Only the three web tables: SQLite does not validate FK targets at CREATE time,
+        # and building the whole schema per test dominated this file's runtime.
+        await conn.run_sync(lambda c: Base.metadata.create_all(c, tables=tables))
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    async with maker() as s:
+        yield s
+    await engine.dispose()
+
+
+def _cfg(**overrides: Any) -> Settings:
+    values: dict[str, Any] = {
+        "v3_web_fetch_enabled": True,
+        "source_connector_allowlist_only": True,  # production value: NOT flipped
+        "primary_document_pin_dns_enabled": True,
+        "source_connector_timeout_seconds": 10,
+        "source_fetch_total_deadline_seconds": 30.0,
+        "source_document_total_deadline_seconds": 60.0,
+    }
+    values.update(overrides)
+    return Settings(**values)
+
+
+def _budget(clock: FakeClock, profile: str = "company_standard") -> WebResearchBudget:
+    return WebResearchBudget(limits=PROFILES[profile], daily_cap=300, clock=clock)
+
+
+class Harness:
+    def __init__(
+        self,
+        session: Any,
+        web: Web,
+        runtime: OpenWebFetchRuntime,
+        clock: FakeClock,
+        dns: FakeDNS | None = None,
+    ) -> None:
+        self.session = session
+        self.web = web
+        self.runtime = runtime
+        self.clock = clock
+        self.dns = dns or FakeDNS()
+        self.budget = _budget(clock)
+        self.job_id = uuid.uuid4()
+        self.cfg = _cfg()
+
+    async def fetch(self, url: str, origin: str = "search", **kw: Any) -> Any:
+        return await open_web_fetch(
+            self.session,
+            url,
+            context=WebFetchContext(research_job_id=self.job_id),
+            budget=kw.pop("budget", self.budget),
+            origin=origin,
+            cfg=kw.pop("cfg", self.cfg),
+            resolver=self.dns,
+            runtime=self.runtime,
+            **kw,
+        )
+
+    async def rows(self) -> list[WebFetchAttempt]:
+        result = await self.session.execute(
+            select(WebFetchAttempt).order_by(WebFetchAttempt.created_at)
+        )
+        return list(result.scalars().all())
+
+
+@pytest.fixture
+def h(session: Any, web: Web, runtime: OpenWebFetchRuntime, clock: FakeClock) -> Harness:
+    return Harness(session, web, runtime, clock)
+
+
+# --------------------------------------------------------------------------- #
+# The flag and the happy path
+# --------------------------------------------------------------------------- #
+
+
+class TestTheFlag:
+    async def test_flag_off_is_a_refusal_with_no_network_and_no_row(self, h: Harness) -> None:
+        h.web.site("example.com", **{"/": respond()})
+        result = await h.fetch("https://example.com/", cfg=_cfg(v3_web_fetch_enabled=False))
+        assert result.status == STATUS_DISABLED
+        assert result.failure_code == "web_fetch_disabled"
+        assert h.dns.calls == []
+        assert h.web.requests == []
+        assert await h.rows() == []
+
+    async def test_the_default_setting_is_off(self) -> None:
+        assert Settings.model_fields["v3_web_fetch_enabled"].default is False
+
+    async def test_an_unknown_origin_is_a_programming_error(self, h: Harness) -> None:
+        with pytest.raises(ValueError):
+            await h.fetch("https://example.com/", origin="browser")
+
+
+class TestHappyPath:
+    async def test_a_public_page_is_fetched_through_the_pin_with_a_complete_row(
+        self, h: Harness
+    ) -> None:
+        h.web.site(
+            "example.com",
+            **{"/report": respond(etag='"v1"', last_modified="Wed, 30 Sep 2026 10:00:00 GMT")},
+        )
+        result_id = uuid.uuid4()
+        parent_id = uuid.uuid4()
+        result = await h.fetch(
+            "https://example.com/report?utm_source=news&token=s3cret&id=7",
+            search_result_id=result_id,
+            parent_attempt_id=parent_id,
+        )
+        assert result.status == STATUS_FETCHED and result.complete and result.ok
+        assert result.content == HTML_PAGE
+        # Pinned: every request connected to the validated address.
+        assert set(h.web.ips()) == {PUBLIC_A}
+        page = [r for r in h.web.requests if r.url.path == "/report"][0]
+        # D12: the URL requested is the URL given (token and utm kept on the wire) …
+        assert b"token=s3cret" in page.url.query and b"utm_source=news" in page.url.query
+        assert page.headers["user-agent"].startswith("InvestingBuddy-Research-Bot/")
+        assert "cookie" not in page.headers and "authorization" not in page.headers
+
+        rows = await h.rows()
+        assert len(rows) == 1
+        row = rows[0]
+        # … while every STORED url is secret-stripped, and the canonical drops tracking.
+        assert "s3cret" not in row.requested_url and "s3cret" not in (row.final_url or "")
+        assert row.canonical_url == "https://example.com/report?id=7"
+        assert row.origin == "search"
+        assert row.research_job_id == h.job_id
+        assert row.web_search_result_id == result_id
+        assert row.parent_attempt_id == parent_id
+        assert row.policy_decision == "allowed"
+        assert row.robots_decision == robots.ROBOTS_NONE
+        assert row.tdm_decision == robots.TDM_NOT_RESERVED
+        assert row.http_status == 200
+        assert row.mime_served == "text/html" and row.mime_sniffed == "text/html"
+        assert row.bytes == len(HTML_PAGE)
+        assert row.truncated is False
+        assert row.content_hash == hashlib.sha256(HTML_PAGE).hexdigest()
+        assert isinstance(row.fetch_ms, int)
+        assert row.status == "fetched" and row.failure_code is None
+        meta = row.redirect_chain_json[-1]["meta"]
+        assert meta["etag"] == '"v1"'
+        assert meta["last_modified"].startswith("Wed, 30 Sep 2026")
+        assert meta["charset"] == "utf-8" and meta["charset_source"] == "header"
+        assert result.attempt_id == row.id
+
+    async def test_the_allowlist_is_replaced_by_policy_not_by_the_global_switch(self) -> None:
+        cfg = _cfg()
+        dns = FakeDNS()
+        reason, ip = await async_check_fetch_url(
+            "https://example.com/", (), cfg=cfg, resolver=dns, policy=FetchPolicy.OPEN_WEB
+        )
+        assert reason is None and ip == PUBLIC_A
+        # The same URL under the historical policy is still refused by the allowlist.
+        reason, _ = await async_check_fetch_url("https://example.com/", (), cfg=cfg, resolver=dns)
+        assert reason is not None and "allowlist" in reason
+
+    async def test_logs_carry_codes_never_urls_or_page_text(
+        self, h: Harness, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        h.web.site("example.com", **{"/secret-path": respond()})
+        with caplog.at_level(logging.INFO):
+            await h.fetch("https://example.com/secret-path?q=private-thing")
+        text = caplog.text
+        assert "web_fetch_attempt" in text
+        assert "secret-path" not in text and "private-thing" not in text
+        assert "example.com" not in text and "Grid operators" not in text
+
+
+# --------------------------------------------------------------------------- #
+# SSRF, re-run through the policy (SSRF-10…15) + the domain denylist
+# --------------------------------------------------------------------------- #
+
+
+class TestRedirectSsrfThroughThePolicy:
+    async def test_ssrf10_redirect_to_loopback_is_refused_before_any_request(
+        self, h: Harness
+    ) -> None:
+        h.web.site("example.com", **{"/go": redirect("https://127.0.0.1/admin")})
+        result = await h.fetch("https://example.com/go")
+        assert result.status == STATUS_REFUSED and result.policy_decision == "denied"
+        assert result.failure_code == "blocked_host"
+        assert "127.0.0.1" not in h.web.ips() + h.web.hosts()
+        assert result.redirect_chain[-1]["refused"] == "blocked_host"
+
+    async def test_ssrf11_https_to_http_downgrade_is_refused(self, h: Harness) -> None:
+        h.web.site("example.com", **{"/go": redirect("http://news.example.org/x")})
+        result = await h.fetch("https://example.com/go")
+        assert result.status == STATUS_REFUSED
+        assert result.failure_code == "blocked_scheme"
+        assert "news.example.org" not in h.web.hosts()
+
+    async def test_ssrf12_a_rebinding_name_never_reaches_the_private_address(
+        self, session: Any, web: Web, runtime: OpenWebFetchRuntime, clock: FakeClock
+    ) -> None:
+        dns = FakeDNS({"rebind.example": ([PUBLIC_A], [PRIVATE])})
+        h = Harness(session, web, runtime, clock, dns)
+        web.site("a.example", **{"/go": redirect("https://rebind.example/x")})
+        web.site("rebind.example", **{"/x": respond()})
+        # Hop 1 is fine; the redirect target resolves public ONCE (hop check), then private.
+        result = await h.fetch("https://a.example/go")
+        assert PRIVATE not in web.ips()
+        # Every request that happened went to a validated public address.
+        assert set(web.ips()) <= {PUBLIC_A}
+        assert result.status in (STATUS_REFUSED, STATUS_FETCHED)
+        assert dns.calls.count("rebind.example") >= 2  # re-resolved per use, never reused
+
+    async def test_ssrf12_a_redirect_hop_is_re_resolved_and_re_validated(
+        self, session: Any, web: Web, runtime: OpenWebFetchRuntime, clock: FakeClock
+    ) -> None:
+        dns = FakeDNS({"rebind.example": ([PRIVATE],)})
+        h = Harness(session, web, runtime, clock, dns)
+        web.site("a.example", **{"/go": redirect("https://rebind.example/x")})
+        result = await h.fetch("https://a.example/go")
+        assert result.status == STATUS_REFUSED
+        assert result.failure_code == "blocked_private_ip"
+        assert "rebind.example" not in web.hosts() and PRIVATE not in web.ips()
+
+    async def test_ssrf13_one_public_and_one_private_record_is_refused(
+        self, session: Any, web: Web, runtime: OpenWebFetchRuntime, clock: FakeClock
+    ) -> None:
+        dns = FakeDNS({"mixed.example": [PUBLIC_A, PRIVATE]})
+        h = Harness(session, web, runtime, clock, dns)
+        result = await h.fetch("https://mixed.example/")
+        assert result.status == STATUS_REFUSED
+        assert result.failure_code == "blocked_private_ip"
+        assert web.requests == []
+
+    async def test_ssrf14_a_four_hop_chain_is_refused_at_hop_four(self, h: Harness) -> None:
+        h.web.site("a.example", **{"/": redirect("https://b.example/")})
+        h.web.site("b.example", **{"/": redirect("https://c.example/")})
+        h.web.site("c.example", **{"/": redirect("https://d.example/")})
+        h.web.site("d.example", **{"/": redirect("https://e.example/")})
+        h.web.site("e.example", **{"/": respond()})
+        result = await h.fetch("https://a.example/")
+        assert result.status == STATUS_REFUSED
+        assert result.failure_code == "redirect_limit"
+        assert h.web.page_paths("e.example") == []
+
+    async def test_ssrf14_a_redirect_loop_is_refused(self, h: Harness) -> None:
+        h.web.site("a.example", **{"/": redirect("https://b.example/")})
+        h.web.site("b.example", **{"/": redirect("https://a.example/")})
+        result = await h.fetch("https://a.example/")
+        assert result.failure_code == "redirect_limit"
+        assert len(h.web.page_paths("a.example")) + len(h.web.page_paths("b.example")) == 4
+
+    @pytest.mark.parametrize(
+        "target",
+        [
+            "https://kv-prod.vault.azure.net/secrets/x",
+            "https://db.database.azure.com/",
+            "https://ib-stg-api.scm.azurewebsites.net/api/zip",
+            "https://ib-stg-api.azurewebsites.net/api/v1/admin",
+        ],
+    )
+    async def test_ssrf15_redirect_to_a_denied_suffix_is_refused(
+        self, h: Harness, target: str
+    ) -> None:
+        h.web.site("example.com", **{"/go": redirect(target)})
+        result = await h.fetch("https://example.com/go")
+        assert result.status == STATUS_REFUSED and result.policy_decision == "denied"
+        host = target.split("/")[2]
+        assert host not in h.web.hosts() and host not in h.dns.calls
+
+    async def test_the_domain_denylist_refuses_without_resolving(self, h: Harness) -> None:
+        result = await h.fetch("https://web.archive.org/web/2026/https://example.com/")
+        assert result.status == STATUS_REFUSED
+        assert result.failure_code == "denylisted_domain"
+        assert "web.archive.org" not in h.dns.calls and h.web.requests == []
+        rows = await h.rows()
+        assert rows[0].redirect_chain_json[-1]["meta"]["denylist_version"] == DENYLIST_VERSION
+
+    async def test_a_redirect_to_a_denylisted_domain_is_refused(self, h: Harness) -> None:
+        h.web.site("example.com", **{"/go": redirect("https://12ft.io/proxy?q=x")})
+        result = await h.fetch("https://example.com/go")
+        assert result.failure_code == "denylisted_domain"
+        assert "12ft.io" not in h.web.hosts()
+
+    def test_denylist_matches_subdomains_only_on_label_boundaries(self) -> None:
+        assert denylisted("www.reddit.com") and denylisted("reddit.com")
+        assert not denylisted("notreddit.com") and not denylisted("example.com")
+
+    async def test_an_http_url_from_search_is_refused_not_upgraded(self, h: Harness) -> None:
+        result = await h.fetch("http://example.com/")
+        assert result.status == STATUS_REFUSED and result.failure_code == "blocked_scheme"
+        assert h.web.requests == []
+
+    async def test_a_dns_failure_is_coded_and_not_negative_cached(self, h: Harness) -> None:
+        result = await h.fetch("https://nowhere.example/")
+        assert result.failure_code == "dns_failure"
+        again = await h.fetch("https://nowhere.example/")
+        assert again.status != STATUS_NEGATIVE_CACHED
+
+
+# --------------------------------------------------------------------------- #
+# robots.txt (RFC 9309)
+# --------------------------------------------------------------------------- #
+
+
+class TestRobotsParser:
+    def test_our_group_overrides_star(self) -> None:
+        policy = robots.parse_robots(
+            "User-agent: *\nDisallow: /\n\n"
+            "User-agent: InvestingBuddy-Research-Bot\nDisallow: /private\n"
+        )
+        assert policy.names_us
+        assert policy.decide("/public") == robots.ROBOTS_ALLOWED
+        assert policy.decide("/private/x") == robots.ROBOTS_DISALLOWED
+
+    def test_star_applies_when_no_group_names_us(self) -> None:
+        policy = robots.parse_robots(
+            "User-agent: OtherBot\nDisallow: /\n\nUser-agent: *\nDisallow: /tmp"
+        )
+        assert not policy.names_us
+        assert policy.decide("/") == robots.ROBOTS_ALLOWED
+        assert policy.decide("/tmp/a") == robots.ROBOTS_DISALLOWED
+
+    def test_longest_match_wins_and_allow_wins_a_tie(self) -> None:
+        policy = robots.parse_robots(
+            "User-agent: *\nDisallow: /reports\nAllow: /reports/annual\nDisallow: /x/\nAllow: /x/\n"
+        )
+        assert policy.decide("/reports/annual/2025.pdf") == robots.ROBOTS_ALLOWED
+        assert policy.decide("/reports/q1.pdf") == robots.ROBOTS_DISALLOWED
+        assert policy.decide("/x/y") == robots.ROBOTS_ALLOWED
+
+    def test_wildcards_and_end_anchor(self) -> None:
+        policy = robots.parse_robots("User-agent: *\nDisallow: /*.pdf$\nDisallow: /search*q=\n")
+        assert policy.decide("/doc.pdf") == robots.ROBOTS_DISALLOWED
+        assert policy.decide("/doc.pdf?x=1") == robots.ROBOTS_ALLOWED
+        assert policy.decide("/search?q=abc") == robots.ROBOTS_DISALLOWED
+
+    def test_percent_encoding_is_normalised(self) -> None:
+        policy = robots.parse_robots("User-agent: *\nDisallow: /caf%C3%A9\n")
+        assert policy.decide("/café/menu") == robots.ROBOTS_DISALLOWED
+        assert robots.normalise_path("/%7Euser/%2f") == "/~user/%2F"
+
+    def test_group_lines_merge_and_versioned_tokens_match(self) -> None:
+        policy = robots.parse_robots(
+            "User-agent: investingbuddy-research-bot/1.0\nUser-agent: other\nDisallow: /a\n"
+            "Crawl-delay: 3\n\nUser-agent: InvestingBuddy-Research-Bot\nDisallow: /b\n"
+        )
+        assert policy.decide("/a") == robots.ROBOTS_DISALLOWED
+        assert policy.decide("/b") == robots.ROBOTS_DISALLOWED
+        assert policy.crawl_delay == 3.0
+
+    def test_robots_txt_itself_is_always_allowed_and_empty_disallow_allows(self) -> None:
+        policy = robots.parse_robots("User-agent: *\nDisallow: /\n")
+        assert policy.decide("/robots.txt") == robots.ROBOTS_ALLOWED
+        assert (
+            robots.parse_robots("User-agent: *\nDisallow:\n").decide("/") == robots.ROBOTS_ALLOWED
+        )
+
+    @pytest.mark.parametrize(
+        ("answer", "source"),
+        [
+            (robots.SmallFetch(404), robots.ROBOTS_NONE),
+            (robots.SmallFetch(401), robots.ROBOTS_NONE),
+            (robots.SmallFetch(403), robots.ROBOTS_NONE),
+            (robots.SmallFetch(429), robots.ROBOTS_UNAVAILABLE),
+            (robots.SmallFetch(500), robots.ROBOTS_UNAVAILABLE),
+            (robots.SmallFetch(503), robots.ROBOTS_UNAVAILABLE),
+            (robots.SmallFetch(None, failed=True), robots.ROBOTS_UNAVAILABLE),
+        ],
+    )
+    def test_status_mapping(self, answer: robots.SmallFetch, source: str) -> None:
+        assert robots.policy_from_answer(answer).decision_source == source
+
+
+class TestRobotsThroughTheFetch:
+    async def test_disallow_means_no_fetch(self, h: Harness) -> None:
+        h.web.site(
+            "example.com",
+            **{
+                "/robots.txt": respond(
+                    body=b"User-agent: InvestingBuddy-Research-Bot\nDisallow: /private\n",
+                    content_type="text/plain",
+                ),
+                "/private/doc": respond(),
+            },
+        )
+        result = await h.fetch("https://example.com/private/doc")
+        assert result.status == STATUS_NOT_RETRIEVABLE
+        assert result.failure_code == "robots_disallowed"
+        assert result.robots_decision == robots.ROBOTS_DISALLOWED
+        assert h.web.page_paths("example.com") == []
+
+    async def test_allowed_path_is_fetched_and_robots_is_cached(self, h: Harness) -> None:
+        h.web.site(
+            "example.com",
+            **{
+                "/robots.txt": respond(
+                    body=b"User-agent: *\nDisallow: /private\n", content_type="text/plain"
+                ),
+                "/a": respond(),
+                "/b": respond(),
+            },
+        )
+        first = await h.fetch("https://example.com/a")
+        second = await h.fetch("https://example.com/b")
+        assert first.robots_decision == robots.ROBOTS_ALLOWED
+        assert second.status == STATUS_FETCHED
+        assert h.web.paths("example.com").count("/robots.txt") == 1
+
+    async def test_4xx_robots_means_allowed(self, h: Harness) -> None:
+        h.web.site("example.com", **{"/robots.txt": respond(403, b"no"), "/a": respond()})
+        result = await h.fetch("https://example.com/a")
+        assert result.status == STATUS_FETCHED
+        assert result.robots_decision == robots.ROBOTS_NONE
+
+    async def test_5xx_robots_fails_closed_after_one_retry(self, h: Harness) -> None:
+        h.web.site("example.com", **{"/robots.txt": respond(503, b"down"), "/a": respond()})
+        result = await h.fetch("https://example.com/a")
+        assert result.status == STATUS_REFUSED
+        assert result.failure_code == "robots_unavailable"
+        assert h.web.paths("example.com").count("/robots.txt") == 2  # one retry
+        assert h.web.page_paths("example.com") == []
+        # Cached for the run: the next URL on the origin does not ask again.
+        again = await h.fetch("https://example.com/b")
+        assert again.failure_code == "robots_unavailable"
+        assert h.web.paths("example.com").count("/robots.txt") == 2
+
+    async def test_unreachable_robots_fails_closed(self, h: Harness) -> None:
+        h.web.site("example.com", **{"/robots.txt": connect_error, "/a": respond()})
+        result = await h.fetch("https://example.com/a")
+        assert result.failure_code == "robots_unavailable"
+        assert h.web.page_paths("example.com") == []
+
+    async def test_robots_is_fetched_through_the_same_guard(self, h: Harness) -> None:
+        h.web.site(
+            "example.com",
+            **{
+                "/robots.txt": redirect("https://169.254.169.254/latest/meta-data/"),
+                "/a": respond(),
+            },
+        )
+        result = await h.fetch("https://example.com/a")
+        assert result.failure_code == "robots_unavailable"
+        assert "169.254.169.254" not in h.web.ips() + h.web.hosts()
+
+    async def test_crawl_delay_is_honoured_and_capped_at_ten_seconds(self, h: Harness) -> None:
+        h.web.site(
+            "example.com",
+            **{
+                "/robots.txt": respond(
+                    body=b"User-agent: *\nCrawl-delay: 5\n", content_type="text/plain"
+                ),
+                "/a": respond(),
+                "/b": respond(),
+            },
+        )
+        h.web.site(
+            "news.example.org",
+            **{
+                "/robots.txt": respond(
+                    body=b"User-agent: *\nCrawl-delay: 60\n", content_type="text/plain"
+                ),
+                "/n": respond(),
+            },
+        )
+        await h.fetch("https://example.com/a")
+        await h.fetch("https://example.com/b")
+        await h.fetch("https://news.example.org/n")
+        limiter = h.runtime.limiter
+        assert limiter.interval_for("example.com") == 5.0
+        assert limiter.interval_for("example.org") == 10.0
+        starts = [t for d, t in limiter.starts if d == "example.com"]
+        gaps = [b - a for a, b in zip(starts, starts[1:], strict=False)]
+        # robots, tdmrep, /a at 1 s pacing, then /b after the 5 s crawl delay.
+        assert gaps[-1] >= 5.0
+
+
+# --------------------------------------------------------------------------- #
+# TDM reservation
+# --------------------------------------------------------------------------- #
+
+
+class TestTdm:
+    async def test_tdm_reservation_header(self, h: Harness) -> None:
+        h.web.site("example.com", **{"/a": respond(tdm_reservation="1")})
+        result = await h.fetch("https://example.com/a")
+        assert result.status == STATUS_NOT_RETRIEVABLE
+        assert result.failure_code == "tdm_reserved"
+        assert result.tdm_decision == robots.TDM_RESERVED
+        assert result.content is None and not result.ok
+        row = (await h.rows())[0]
+        assert row.tdm_decision == "tdm_reserved"
+        assert row.redirect_chain_json[-1]["meta"]["tdm_signals"] == ["tdm_reservation_header"]
+
+    async def test_well_known_tdmrep_reserves_a_path_without_fetching_it(self, h: Harness) -> None:
+        tdmrep = json.dumps(
+            [
+                {"location": "/reports/*", "tdm-reservation": 1, "tdm-policy": "https://x/p"},
+                {"location": "/*", "tdm-reservation": 0},
+            ]
+        ).encode()
+        h.web.site(
+            "example.com",
+            **{
+                robots.TDMREP_PATH: respond(body=tdmrep, content_type="application/json"),
+                "/reports/annual": respond(),
+                "/about": respond(),
+            },
+        )
+        reserved = await h.fetch("https://example.com/reports/annual")
+        free = await h.fetch("https://example.com/about")
+        assert reserved.failure_code == "tdm_reserved"
+        assert "/reports/annual" not in h.web.paths("example.com")
+        assert free.status == STATUS_FETCHED
+        assert free.tdm_decision == robots.TDM_NOT_RESERVED
+        assert h.web.paths("example.com").count(robots.TDMREP_PATH) == 1
+
+    @pytest.mark.parametrize(
+        ("headers", "body", "signal"),
+        [
+            (
+                {},
+                b'<html><head><meta name="robots" content="noai, noimageai"></head>' + HTML_PAGE,
+                "noai",
+            ),
+            (
+                {},
+                b'<html><head><meta name="tdm-reservation" content="1"></head>' + HTML_PAGE,
+                "tdm_reservation_meta",
+            ),
+            ({"x_robots_tag": "noai"}, HTML_PAGE, "noai"),
+            ({"content_usage": "train-ai=n, search=y"}, HTML_PAGE, "content_usage"),
+        ],
+    )
+    async def test_meta_and_header_signals(
+        self, h: Harness, headers: dict[str, str], body: bytes, signal: str
+    ) -> None:
+        h.web.site("example.com", **{"/a": respond(body=body, **headers)})
+        result = await h.fetch("https://example.com/a")
+        assert result.failure_code == "tdm_reserved"
+        assert signal in result.tdm_signals
+
+    def test_content_usage_y_does_not_reserve(self) -> None:
+        assert not robots.content_usage_reserves("train-ai=y, search=y")
+        assert robots.content_usage_reserves('tdm="n"')
+
+    async def test_unreachable_tdmrep_is_recorded_unknown_and_the_page_fetched(
+        self, h: Harness
+    ) -> None:
+        h.web.site("example.com", **{robots.TDMREP_PATH: respond(500, b"x"), "/a": respond()})
+        result = await h.fetch("https://example.com/a")
+        assert result.status == STATUS_FETCHED
+        assert result.tdm_decision == robots.TDM_UNKNOWN
+
+
+# --------------------------------------------------------------------------- #
+# Pacing and concurrency (fake clock)
+# --------------------------------------------------------------------------- #
+
+
+class TestPacing:
+    async def test_one_request_per_second_per_registrable_domain(self, h: Harness) -> None:
+        for path in ("/1", "/2", "/3"):
+            h.web.route("example.com", path, respond())
+        h.web.route("www.example.com", "/4", respond())
+        for path in ("/1", "/2", "/3"):
+            await h.fetch(f"https://example.com{path}")
+        await h.fetch("https://www.example.com/4")
+        starts = [t for d, t in h.runtime.limiter.starts if d == "example.com"]
+        # robots + tdmrep for two origins, and four pages: all one domain, all paced.
+        assert len(starts) == 8
+        assert all(b - a >= 1.0 for a, b in zip(starts, starts[1:], strict=False))
+
+    async def test_other_domains_are_not_delayed(self, h: Harness) -> None:
+        h.web.route("example.com", "/a", respond())
+        h.web.route("news.example.org", "/b", respond())
+        await h.fetch("https://example.com/a")
+        before = h.clock.now
+        h.clock.sleeps.clear()
+        await h.fetch("https://news.example.org/b")
+        # Only the new domain's own robots → tdmrep → page pacing (2 × 1 s) applies.
+        assert h.clock.now - before <= 2.0 + 1e-9
+
+    async def test_per_host_and_global_concurrency(self) -> None:
+        limiter = OpenWebLimiter(min_interval_seconds=0.001)
+        active: dict[str, int] = {}
+        peak: dict[str, int] = {}
+        peak_total = 0
+        release = asyncio.Event()
+
+        async def worker(domain: str) -> None:
+            nonlocal peak_total
+            async with limiter.slot(domain):
+                active[domain] = active.get(domain, 0) + 1
+                peak[domain] = max(peak.get(domain, 0), active[domain])
+                peak_total = max(peak_total, sum(active.values()))
+                await release.wait()
+                active[domain] -= 1
+
+        tasks = [asyncio.create_task(worker("one.example")) for _ in range(5)]
+        tasks += [asyncio.create_task(worker(f"d{i}.example")) for i in range(6)]
+        for _ in range(50):
+            await asyncio.sleep(0.001)
+        release.set()
+        await asyncio.gather(*tasks)
+        assert peak["one.example"] <= 2
+        assert peak_total <= 4
+
+    def test_the_sliding_window_admits_at_exactly_the_interval(self) -> None:
+        window = SlidingWindowLimiter(1, 1.0)
+        assert window.allow(10.0)
+        assert not window.allow(10.5) and window.wait_seconds(10.5) == pytest.approx(0.5)
+        assert window.allow(11.0)
+
+
+# --------------------------------------------------------------------------- #
+# Retries
+# --------------------------------------------------------------------------- #
+
+
+class TestRetries:
+    async def test_429_with_a_short_retry_after_is_retried_once(self, h: Harness) -> None:
+        h.web.route("example.com", "/a", [respond(429, b"slow", retry_after="2"), respond()])
+        result = await h.fetch("https://example.com/a")
+        assert result.status == STATUS_FETCHED and result.retries == 1
+        assert 2.0 in h.clock.sleeps
+        assert h.web.page_paths("example.com") == ["/a", "/a"]
+        rows = await h.rows()
+        assert [r.status for r in rows] == [STATUS_RETRIED, STATUS_FETCHED]
+        assert rows[0].failure_code == "http_429" and rows[0].http_status == 429
+        assert h.budget.fetches == 1  # a retried fetch counts once
+
+    async def test_429_with_a_long_or_absent_retry_after_is_not_retried(self, h: Harness) -> None:
+        h.web.route("example.com", "/long", respond(429, b"x", retry_after="120"))
+        h.web.route("example.com", "/none", respond(429, b"x"))
+        long = await h.fetch("https://example.com/long")
+        none = await h.fetch("https://example.com/none")
+        assert long.failure_code == none.failure_code == "http_429"
+        assert h.web.page_paths("example.com") == ["/long", "/none"]
+
+    async def test_5xx_is_retried_once_with_deterministic_jitter(self, h: Harness) -> None:
+        h.web.route("example.com", "/a", [respond(503, b"x"), respond(503, b"x")])
+        result = await h.fetch("https://example.com/a")
+        assert result.status == STATUS_FAILED and result.failure_code == "http_503"
+        assert h.web.page_paths("example.com") == ["/a", "/a"]
+        expected = 1.0 + random.Random(7).uniform(0, 0.5)  # the runtime's seeded RNG
+        assert any(s == pytest.approx(expected) for s in h.clock.sleeps)
+
+    async def test_403_is_never_retried(self, h: Harness) -> None:
+        h.web.route("example.com", "/a", respond(403, b"forbidden"))
+        result = await h.fetch("https://example.com/a")
+        assert result.failure_code == "http_403" and result.retries == 0
+        assert h.web.page_paths("example.com") == ["/a"]
+
+    async def test_a_connect_error_is_retried_once(self, h: Harness) -> None:
+        h.web.route("example.com", "/a", [connect_error, respond()])
+        result = await h.fetch("https://example.com/a")
+        assert result.status == STATUS_FETCHED and result.retries == 1
+        assert [r.failure_code for r in await h.rows()] == ["connect_error", None]
+
+    async def test_a_cloudflare_challenge_503_is_captcha_and_not_retried(self, h: Harness) -> None:
+        page = b"<html><title>Just a moment...</title><div class='cf-turnstile'></div></html>"
+        h.web.route("example.com", "/a", respond(503, page))
+        result = await h.fetch("https://example.com/a")
+        assert result.failure_code == "captcha"
+        assert result.status == STATUS_NOT_RETRIEVABLE
+        assert h.web.page_paths("example.com") == ["/a"]
+
+    def test_retry_after_parses_seconds_and_http_dates(self) -> None:
+        from datetime import datetime, timezone
+
+        now = datetime(2026, 9, 30, 10, 0, 0, tzinfo=timezone.utc)
+        assert parse_retry_after("7") == 7.0
+        assert parse_retry_after("Wed, 30 Sep 2026 10:00:20 GMT", now=now) == 20.0
+        assert parse_retry_after("soon") is None
+
+
+# --------------------------------------------------------------------------- #
+# Canonicalisation
+# --------------------------------------------------------------------------- #
+
+
+class TestCanonical:
+    def test_tracking_parameters_are_removed(self) -> None:
+        url = (
+            "https://Example.com:443/a?utm_source=x&UTM_Medium=y&fbclid=1&gclid=2&mc_cid=3"
+            "&mc_eid=4&_hsenc=5&_hsmi=6&ref=7&ref_src=8&cmpid=9&ocid=10&igshid=11&id=42#frag"
+        )
+        assert canonical_url(url) == "https://example.com/a?id=42"
+
+    def test_same_domain_rel_canonical_is_honoured(self) -> None:
+        decision = choose_canonical("https://www.example.com/a?x=1", "https://example.com/story")
+        assert decision.honoured and decision.canonical_url == "https://example.com/story"
+
+    def test_cross_domain_rel_canonical_is_recorded_not_honoured(self) -> None:
+        decision = choose_canonical("https://example.com/a", "https://other.example.net/a")
+        assert not decision.honoured and decision.reason == "cross_domain"
+        assert decision.declared == "https://other.example.net/a"
+        assert decision.canonical_url == "https://example.com/a"
+
+    def test_link_header_canonical(self) -> None:
+        header = '<https://example.com/doc.pdf>; rel="canonical", <https://x/y>; rel="next"'
+        assert rel_canonical_from_header(header) == "https://example.com/doc.pdf"
+
+    async def test_rel_canonical_never_changes_what_was_fetched(self, h: Harness) -> None:
+        body = b'<html><head><link rel="canonical" href="/story"></head>' + HTML_PAGE
+        h.web.route("www.example.com", "/amp/story", respond(body=body))
+        result = await h.fetch("https://www.example.com/amp/story?utm_source=feed")
+        assert result.canonical_url == "https://www.example.com/story"
+        assert result.rel_canonical_honoured
+        assert result.final_url == "https://www.example.com/amp/story?utm_source=feed"
+        assert h.web.page_paths("www.example.com") == ["/amp/story"]
+
+
+# --------------------------------------------------------------------------- #
+# Content: charset, sniffing, caps, bombs
+# --------------------------------------------------------------------------- #
+
+
+LATIN1_TEXT = "Café résumé — naïve façade"
+WIN1252_TEXT = "“Quoted” price €12 – up"
+SJIS_TEXT = "東京証券取引所に上場している電力機器メーカーの年次報告書です。" * 8
+
+
+class TestCharset:
+    def test_latin1_header_label_decodes_as_windows_1252(self) -> None:
+        body = f"<html><body><p>{LATIN1_TEXT.replace('—', '-')}</p></body></html>".encode("latin-1")
+        codec, source = content.detect_charset(
+            body, content_type="text/html; charset=ISO-8859-1", content_class="html"
+        )
+        assert (codec, source) == ("cp1252", "header")
+        assert "Café résumé" in content.decode_text(body, codec)
+
+    def test_windows_1252_from_meta(self) -> None:
+        body = (
+            b'<html><head><meta charset="windows-1252"></head><body>'
+            + WIN1252_TEXT.encode("cp1252")
+            + b"</body></html>"
+        )
+        codec, source = content.detect_charset(body, content_type="text/html", content_class="html")
+        assert (codec, source) == ("cp1252", "meta")
+        assert WIN1252_TEXT in content.decode_text(body, codec)
+
+    def test_shift_jis_is_detected_without_a_label(self) -> None:
+        body = ("<html><body><p>" + SJIS_TEXT + "</p></body></html>").encode("shift_jis")
+        codec, source = content.detect_charset(body, content_type="text/html", content_class="html")
+        assert source == "detected"
+        assert SJIS_TEXT[:10] in content.decode_text(body, codec)
+
+    def test_a_bom_wins_over_the_header(self) -> None:
+        body = codecs.BOM_UTF8 + "naïve".encode()
+        codec, source = content.detect_charset(
+            body, content_type="text/plain; charset=iso-8859-1", content_class="text"
+        )
+        assert (codec, source) == ("utf-8", "bom")
+        assert content.decode_text(body, codec) == "naïve"
+
+    async def test_the_fetch_reports_decoded_text(self, h: Harness) -> None:
+        body = ("<html><body><p>" + SJIS_TEXT + "</p></body></html>").encode("shift_jis")
+        h.web.route("example.com", "/jp", respond(body=body, content_type="text/html"))
+        result = await h.fetch("https://example.com/jp")
+        assert result.charset_source == "detected"
+        assert SJIS_TEXT[:10] in (result.text() or "")
+
+
+class TestSniffing:
+    async def test_file01_pdf_url_serving_html_is_routed_as_html_and_flagged(
+        self, h: Harness
+    ) -> None:
+        h.web.route("example.com", "/report.pdf", respond())
+        result = await h.fetch("https://example.com/report.pdf")
+        assert result.content_class == "html" and result.mime_sniffed == "text/html"
+        assert result.mime_mismatch
+
+    async def test_file01_html_declared_as_pdf_is_flagged(self, h: Harness) -> None:
+        h.web.route("example.com", "/x", respond(content_type="application/pdf"))
+        result = await h.fetch("https://example.com/x")
+        assert result.mime_served == "application/pdf" and result.content_class == "html"
+        assert result.mime_mismatch
+        row = (await h.rows())[0]
+        assert row.mime_served == "application/pdf" and row.mime_sniffed == "text/html"
+        assert row.redirect_chain_json[-1]["meta"]["mime_mismatch"] is True
+
+    async def test_a_pdf_served_as_octet_stream_is_a_pdf(self, h: Harness) -> None:
+        pdf = b"%PDF-1.7\n" + b"0" * 5000
+        h.web.route("example.com", "/d", respond(body=pdf, content_type="application/octet-stream"))
+        result = await h.fetch("https://example.com/d")
+        assert result.content_class == "pdf" and not result.mime_mismatch
+        assert result.status == STATUS_FETCHED and h.budget.pdfs == 1
+
+    async def test_office_containers_are_refused_after_the_sniff_prefix(self, h: Harness) -> None:
+        docx = b"PK\x03\x04" + b"\x00" * 500_000
+        h.web.route(
+            "example.com",
+            "/f.docx",
+            respond(
+                body=docx,
+                content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            ),
+        )
+        result = await h.fetch("https://example.com/f.docx")
+        assert result.status == STATUS_REFUSED and result.failure_code == "unsupported_type"
+        assert result.bytes <= 1024 and result.content is None
+
+    @pytest.mark.parametrize(
+        ("prefix", "cls"),
+        [
+            (b"%PDF-1.4", "pdf"),
+            (b"  \n<!DOCTYPE html><html>", "html"),
+            (codecs.BOM_UTF8 + b"<html>", "html"),
+            ("<html>".encode("utf-16"), "html"),
+            (b'<?xml version="1.0"?><svg xmlns="x">', "binary"),
+            (b"PK\x03\x04", "office"),
+            (b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1", "office"),
+            (b"\x89PNG\r\n\x1a\n", "binary"),
+            (b'{"a": 1}', "text"),
+            (b"plain words", "text"),
+            (b"<abbr>not html sniff</abbr>", "text"),
+        ],
+    )
+    def test_sniff_table(self, prefix: bytes, cls: str) -> None:
+        assert content.sniff(prefix).content_class == cls
+
+
+class TestCaps:
+    async def test_file02_oversized_html_is_truncated_and_never_complete(self, h: Harness) -> None:
+        body = b"<html><body>" + b"<p>word</p>" * 400_000  # ~4.4 MB
+        h.web.route("example.com", "/big", respond(body=body))
+        result = await h.fetch("https://example.com/big")
+        assert result.status == STATUS_PARTIAL
+        assert result.truncated and not result.complete and result.ok
+        assert result.bytes == content.CLASS_BYTE_CAPS["html"]
+        row = (await h.rows())[0]
+        assert row.truncated is True and row.status == "fetched_partial"
+
+    async def test_file02_text_class_cap_is_two_megabytes(self, h: Harness) -> None:
+        body = b"plain text line\n" * 200_000  # 3.2 MB
+        h.web.route("example.com", "/t.txt", respond(body=body, content_type="text/plain"))
+        result = await h.fetch("https://example.com/t.txt")
+        assert result.truncated and result.bytes == content.CLASS_BYTE_CAPS["text"]
+
+    async def test_file03_gzip_bomb_is_stopped_by_the_ratio_cap(self, h: Harness) -> None:
+        bomb = gzip.compress(b"<html><body>" + b" " * 60_000_000, compresslevel=9)
+        h.web.route(
+            "example.com",
+            "/bomb",
+            streamed({"content-type": "text/html", "content-encoding": "gzip"}, bomb),
+        )
+        result = await h.fetch("https://example.com/bomb")
+        assert result.status == STATUS_FAILED
+        assert result.failure_code == "decompression_bomb"
+        assert result.content is None
+
+    async def test_the_sniff_hook_narrows_but_never_widens(self) -> None:
+        body = b"<html>" + b"x" * 10_000
+
+        class _Resp:
+            headers: dict[str, str] = {}
+
+            async def aiter_bytes(self):  # noqa: ANN202
+                for i in range(0, len(body), 700):
+                    yield body[i : i + 700]
+
+        read = await read_bounded_body(_Resp(), max_bytes=5000, sniff_cap=lambda _p: 10**9)
+        assert read.truncated and len(read.content) == 5000
+        read = await read_bounded_body(_Resp(), max_bytes=10**6, sniff_cap=lambda _p: 2000)
+        assert read.truncated and len(read.content) == 2000
+        read = await read_bounded_body(_Resp(), max_bytes=10**6)
+        assert not read.truncated and read.content == body
+
+    async def test_js_shell_is_flagged_js_required(self, h: Harness) -> None:
+        shell = (
+            b'<!doctype html><html><head><script id="__NEXT_DATA__">'
+            + b"x" * 30_000
+            + b'</script></head><body><div id="__next"></div></body></html>'
+        )
+        h.web.route("example.com", "/spa", respond(body=shell))
+        result = await h.fetch("https://example.com/spa")
+        assert result.js_required and result.status == STATUS_FETCHED
+        assert not content.js_required(len(HTML_PAGE), HTML_PAGE.decode())
+
+
+# --------------------------------------------------------------------------- #
+# Access restrictions (never bypassed)
+# --------------------------------------------------------------------------- #
+
+
+ARTICLE = "<p>" + "The plant doubled output after the new line opened. " * 100 + "</p>"
+
+
+class TestAccess:
+    async def test_402_is_not_retrievable(self, h: Harness) -> None:
+        h.web.route("example.com", "/a", respond(402, b"pay"))
+        result = await h.fetch("https://example.com/a")
+        assert (result.status, result.failure_code) == (STATUS_NOT_RETRIEVABLE, "http_402")
+
+    @pytest.mark.parametrize("value", ["false", '"False"'])
+    async def test_json_ld_paywall(self, h: Harness, value: str) -> None:
+        body = (
+            '<html><head><script type="application/ld+json">{"@type":"NewsArticle",'
+            f'"hasPart":{{"@type":"WebPageElement","isAccessibleForFree":{value}}}}}'
+            f"</script></head><body>{ARTICLE}</body></html>"
+        ).encode()
+        h.web.route("example.com", "/a", respond(body=body))
+        result = await h.fetch("https://example.com/a")
+        assert result.failure_code == "paywall_jsonld" and result.content is None
+
+    async def test_login_wall_by_redirect(self, h: Harness) -> None:
+        h.web.route("example.com", "/a", redirect("/account/login?next=/a"))
+        h.web.route("example.com", "/account/login", respond())
+        result = await h.fetch("https://example.com/a")
+        assert result.failure_code == "login_wall"
+
+    async def test_login_wall_by_password_form(self, h: Harness) -> None:
+        body = b'<html><body><h1>Sign in</h1><form><input type="password" name="p"></form></body></html>'
+        h.web.route("example.com", "/a", respond(body=body))
+        result = await h.fetch("https://example.com/a")
+        assert result.failure_code == "login_wall"
+
+    async def test_captcha_page(self, h: Harness) -> None:
+        body = b'<html><body><div class="g-recaptcha" data-sitekey="x"></div></body></html>'
+        h.web.route("example.com", "/a", respond(body=body))
+        result = await h.fetch("https://example.com/a")
+        assert result.failure_code == "captcha"
+
+    async def test_a_real_article_with_a_contact_form_captcha_is_not_a_wall(
+        self, h: Harness
+    ) -> None:
+        body = (
+            f"<html><body>{ARTICLE}<form><div class='g-recaptcha'></div>"
+            "<input type='password'></form></body></html>"
+        ).encode()
+        h.web.route("example.com", "/a", respond(body=body))
+        result = await h.fetch("https://example.com/a")
+        assert result.status == STATUS_FETCHED
+
+    async def test_consent_redirect(self, h: Harness) -> None:
+        h.web.route("example.com", "/a", redirect("https://www.example.com/consent?x=1"))
+        h.web.route("www.example.com", "/consent", respond())
+        result = await h.fetch("https://example.com/a")
+        assert result.failure_code == "consent_wall"
+
+    async def test_the_client_never_sends_a_cookie_even_when_offered_one(self, h: Harness) -> None:
+        def set_cookie(_r: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                302, headers={"location": "/b", "set-cookie": "session=abc; Path=/"}
+            )
+
+        h.web.route("example.com", "/a", set_cookie)
+        h.web.route("example.com", "/b", respond())
+        await h.fetch("https://example.com/a")
+        assert all("cookie" not in r.headers for r in h.web.requests)
+
+    def test_status_classifier(self) -> None:
+        assert access.classify_status(401).reason == "http_401"
+        assert access.classify_status(404).retrievable
+
+
+# --------------------------------------------------------------------------- #
+# Negative cache and the budget
+# --------------------------------------------------------------------------- #
+
+
+class TestNegativeCache:
+    async def test_a_404_is_not_asked_again_even_with_tracking_params(self, h: Harness) -> None:
+        h.web.route("example.com", "/gone", respond(404, b"gone"))
+        first = await h.fetch("https://example.com/gone")
+        second = await h.fetch("https://example.com/gone?utm_source=newsletter")
+        assert first.failure_code == "http_404"
+        assert second.status == STATUS_NEGATIVE_CACHED and second.failure_code == "http_404"
+        assert h.web.page_paths("example.com") == ["/gone"]
+        rows = await h.rows()
+        assert (
+            rows[-1].status == "negative_cached" and rows[-1].policy_decision == "negative_cached"
+        )
+
+    async def test_a_paywall_is_negative_cached(self, h: Harness) -> None:
+        h.web.route("example.com", "/p", respond(402, b"pay"))
+        await h.fetch("https://example.com/p")
+        again = await h.fetch("https://example.com/p")
+        assert again.status == STATUS_NEGATIVE_CACHED
+
+    def test_24_hours_then_7_days_on_a_repeat(self, clock: FakeClock) -> None:
+        cache = NegativeCache(clock=clock)
+        assert cache.record("k", "http_403") == FIRST_TTL_SECONDS
+        assert cache.get("k") == "http_403"
+        clock.now += FIRST_TTL_SECONDS + 1
+        assert cache.get("k") is None
+        assert cache.record("k", "http_403") == REPEAT_TTL_SECONDS
+        clock.now += FIRST_TTL_SECONDS + 1
+        assert cache.get("k") == "http_403"
+        clock.now += REPEAT_TTL_SECONDS
+        assert cache.get("k") is None
+
+
+class TestBudget:
+    async def test_the_per_domain_cap_refuses_without_network(
+        self, h: Harness, clock: FakeClock
+    ) -> None:
+        budget = _budget(clock, "company_quick")  # 4 per domain
+        for i in range(5):
+            h.web.route("example.com", f"/{i}", respond())
+        results = [await h.fetch(f"https://example.com/{i}", budget=budget) for i in range(5)]
+        assert [r.status for r in results[:4]] == [STATUS_FETCHED] * 4
+        assert results[4].failure_code == "budget:max_per_domain"
+        assert "/4" not in h.web.paths("example.com")
+        assert budget.fetches == 4 and budget.bytes_downloaded >= 4 * len(HTML_PAGE)
+
+    async def test_the_run_fetch_cap(self, h: Harness, clock: FakeClock) -> None:
+        budget = _budget(clock, "company_quick")
+        budget.fetches = budget.limits.max_fetches
+        result = await h.fetch("https://example.com/", budget=budget)
+        assert result.failure_code == "budget:max_fetches" and h.web.requests == []
+
+
+# --------------------------------------------------------------------------- #
+# User-supplied URLs (spec §21)
+# --------------------------------------------------------------------------- #
+
+
+class TestUserUrls:
+    def test_urls_are_extracted_and_deduplicated_by_canonical_form(self) -> None:
+        text = (
+            "Transformer makers. Also use https://example.com/r?utm_source=x and "
+            "https://example.com/r, http://news.example.org/a, www.example.com/w."
+        )
+        assert extract_user_urls(text) == [
+            "https://example.com/r?utm_source=x",
+            "http://news.example.org/a",
+            "www.example.com/w",
+        ]
+
+    async def test_the_user_path_refuses_internal_targets_and_upgrades_http(
+        self, h: Harness
+    ) -> None:
+        h.dns.table["intranet.example"] = [PRIVATE]
+        h.web.route("news.example.org", "/a", respond())
+        text = (
+            "Thesis: grid equipment. Sources: https://127.0.0.1/admin "
+            "https://169.254.169.254/latest/meta-data/ https://intranet.example/x "
+            "http://news.example.org/a ftp://example.com/f"
+        )
+        results = await fetch_user_urls(
+            h.session,
+            text,
+            context=WebFetchContext(research_job_id=h.job_id),
+            budget=h.budget,
+            cfg=h.cfg,
+            resolver=h.dns,
+            runtime=h.runtime,
+        )
+        by_code = [(r.status, r.failure_code) for r in results]
+        assert by_code[0] == (STATUS_REFUSED, "blocked_host")
+        assert by_code[1] == (STATUS_REFUSED, "blocked_host")
+        assert by_code[2] == (STATUS_REFUSED, "blocked_private_ip")
+        assert by_code[3] == (STATUS_FETCHED, None) and results[3].upgraded_from_http
+        assert by_code[4] == (STATUS_REFUSED, "blocked_scheme")
+        assert set(h.web.hosts()) == {"news.example.org"}
+        assert all(r.url.scheme == "https" for r in h.web.requests)
+        rows = await h.rows()
+        assert {r.origin for r in rows} == {"user"} and len(rows) == 5
+        upgraded = [r for r in rows if r.status == "fetched"][0]
+        assert upgraded.redirect_chain_json[-1]["meta"]["upgraded_from_http"] is True
+        assert upgraded.requested_url.startswith("http://")
+
+    async def test_the_user_path_is_gated_by_the_same_flag(self, h: Harness) -> None:
+        results = await fetch_user_urls(
+            h.session,
+            "see https://example.com/x",
+            context=WebFetchContext(),
+            budget=h.budget,
+            cfg=_cfg(v3_web_fetch_enabled=False),
+            resolver=h.dns,
+            runtime=h.runtime,
+        )
+        assert [r.failure_code for r in results] == ["web_fetch_disabled"]
+        assert h.web.requests == [] and h.dns.calls == []
+
+
+# --------------------------------------------------------------------------- #
+# Metrics through the W1 audit read model (spec §22.1)
+# --------------------------------------------------------------------------- #
+
+
+class TestMetrics:
+    async def test_the_audit_exposes_fetch_metrics(self, h: Harness) -> None:
+        shell = (
+            b'<html><body><div id="root"></div><script>'
+            + b"x" * 30_000
+            + b"</script></body></html>"
+        )
+        h.web.route("example.com", "/ok", respond())
+        h.web.route("example.com", "/spa", respond(body=shell))
+        h.web.route("example.com", "/forbidden", respond(403, b"no"))
+        h.web.route("example.com", "/pay", respond(402, b"no"))
+        h.web.route("example.com", "/retry", [respond(503, b"x"), respond()])
+        h.web.route("example.com", "/r", redirect("/ok"))
+        h.web.route("example.com", "/tdm", respond(tdm_reservation="1"))
+        await h.fetch("https://example.com/ok")
+        await h.fetch("https://example.com/spa")
+        await h.fetch("https://example.com/forbidden")
+        await h.fetch("https://example.com/pay")
+        await h.fetch("https://example.com/retry")
+        await h.fetch("https://example.com/r")
+        await h.fetch("https://example.com/tdm")
+        await h.fetch("https://web.archive.org/x")
+        await h.session.flush()
+
+        audit = await web_research_audit(h.session, research_job_id=h.job_id)
+        m = audit.totals.fetch_metrics
+        assert m.attempts == 8
+        assert m.fetched == 4  # ok, spa, retry, redirect → ok
+        assert m.success_rate == 0.5
+        assert m.http_403 == 1 and m.paywall == 1 and m.tdm_reserved == 1
+        assert m.policy_denied == 1 and m.retries == 1 and m.redirects == 1
+        assert m.js_required == 1
+        assert m.bytes > 0
+        assert audit.totals.fetch_attempts == 9  # the retried physical attempt is a row
+        assert audit.fetch_attempts[0].canonical_url == "https://example.com/ok"
+
+
+# --------------------------------------------------------------------------- #
+# Hostile markup: every scanner is linear (no <tag[^>]*> backtracking)
+# --------------------------------------------------------------------------- #
+
+
+class TestHostileMarkup:
+    def test_tag_scanner_finds_real_tags_only(self) -> None:
+        html = '<metadata><meta name="a"><META\nname="b"/><meta'
+        tags = list(content.iter_start_tags(html, "meta"))
+        assert tags == ['<meta name="a">', '<META\nname="b"/>']
+
+    def test_visible_text_skips_scripts_comments_and_head(self) -> None:
+        html = (
+            "<html><head><title>T</title></head><body><!-- hidden --><p>Hello  world</p>"
+            "<script>var x = '<p>no</p>';</script><style>p{}</style>a < b</body></html>"
+        )
+        assert content.visible_text_chars(html) == len("Hello world a < b")
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            b"<script " * 370_000,
+            b"<meta " * 500_000,
+            b'<script type="application/ld+json">' * 85_000,
+            b"<link rel=canonical href=" * 110_000,
+            b"g-recaptcha id=\"root\" " + b"<div>" * 590_000,
+            b"<" * 3_000_000,
+        ],
+    )
+    def test_three_megabytes_of_hostile_markup_is_analysed_in_bounded_time(
+        self, body: bytes
+    ) -> None:
+        import time
+
+        from app.services.web_research.fetch import _analyse
+
+        started = time.perf_counter()
+        _analyse(
+            body,
+            content_class="html",
+            content_type="text/html",
+            requested_url="https://example.com/a",
+            final_url="https://example.com/a",
+        )
+        # Linear scans take well under 3 s here; a quadratic regex took minutes.
+        assert time.perf_counter() - started < 20.0

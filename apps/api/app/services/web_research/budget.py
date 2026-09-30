@@ -34,6 +34,7 @@ LIMIT_PDFS = "max_pdfs"
 LIMIT_BYTES = "max_bytes"
 LIMIT_WALL = "max_wall_seconds"
 LIMIT_DAILY = "daily_platform_cap"
+LIMIT_PER_DOMAIN = "max_per_domain"
 
 #: The prefix every budget refusal code carries, e.g. ``budget:max_queries``.
 BUDGET_REFUSAL_PREFIX = "budget:"
@@ -51,17 +52,20 @@ class WebBudgetLimits:
     max_pdfs: int
     max_bytes: int
     max_wall_seconds: float
+    #: Pages fetched from one registrable domain per run (spec §19.1 "Per-domain
+    #: fetches"; W2). Robots.txt and TDMRep lookups do not count.
+    max_per_domain: int = 8
 
 
 #: Spec §19.1, recommended initial values. Keyed by ``<entry point>_<depth>``.
 PROFILES: dict[str, WebBudgetLimits] = {
-    "discovery_standard": WebBudgetLimits(24, 200, 40, 8, 80 * _MB, 6 * 60),
-    "discovery_deep": WebBudgetLimits(48, 400, 80, 15, 160 * _MB, 10 * 60),
-    "company_quick": WebBudgetLimits(6, 40, 8, 2, 20 * _MB, 2 * 60),
-    "company_standard": WebBudgetLimits(16, 120, 30, 6, 60 * _MB, 6 * 60),
-    "company_deep": WebBudgetLimits(36, 300, 70, 12, 150 * _MB, 12 * 60),
-    "company_max": WebBudgetLimits(60, 300, 100, 20, 150 * _MB, 20 * 60),
-    "followup": WebBudgetLimits(6, 40, 12, 3, 30 * _MB, 3 * 60),
+    "discovery_standard": WebBudgetLimits(24, 200, 40, 8, 80 * _MB, 6 * 60, 8),
+    "discovery_deep": WebBudgetLimits(48, 400, 80, 15, 160 * _MB, 10 * 60, 8),
+    "company_quick": WebBudgetLimits(6, 40, 8, 2, 20 * _MB, 2 * 60, 4),
+    "company_standard": WebBudgetLimits(16, 120, 30, 6, 60 * _MB, 6 * 60, 8),
+    "company_deep": WebBudgetLimits(36, 300, 70, 12, 150 * _MB, 12 * 60, 10),
+    "company_max": WebBudgetLimits(60, 300, 100, 20, 150 * _MB, 20 * 60, 10),
+    "followup": WebBudgetLimits(6, 40, 12, 3, 30 * _MB, 3 * 60, 4),
 }
 
 
@@ -97,6 +101,8 @@ class WebResearchBudget:
     fetches: int = 0
     pdfs: int = 0
     bytes_downloaded: int = 0
+    #: Logical page fetches per registrable domain this run (W2).
+    domain_fetches: dict[str, int] = field(default_factory=dict)
     started_at: float = field(default=0.0)
 
     def __post_init__(self) -> None:
@@ -160,6 +166,24 @@ class WebResearchBudget:
             self.pdfs += 1
         self.bytes_downloaded += max(0, int(byte_count))
 
+    @property
+    def bytes_remaining(self) -> int:
+        return max(0, self.limits.max_bytes - self.bytes_downloaded)
+
+    @property
+    def wall_seconds_remaining(self) -> float:
+        return max(0.0, self.limits.max_wall_seconds - self.elapsed_seconds)
+
+    def domain_refusal(self, domain: str) -> str | None:
+        """``budget:max_per_domain`` once ``domain`` had its share of this run's fetches."""
+        if self.domain_fetches.get(domain, 0) >= self.limits.max_per_domain:
+            return BUDGET_REFUSAL_PREFIX + LIMIT_PER_DOMAIN
+        return None
+
+    def record_domain_fetch(self, domain: str) -> None:
+        """Count one LOGICAL fetch against ``domain`` (a retry is not a second one)."""
+        self.domain_fetches[domain] = self.domain_fetches.get(domain, 0) + 1
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "queries_reserved": self.queries_reserved,
@@ -168,6 +192,10 @@ class WebResearchBudget:
             "max_results": self.limits.max_results,
             "daily_used": self.daily_used,
             "daily_cap": self.daily_cap,
+            "fetches": self.fetches,
+            "max_fetches": self.limits.max_fetches,
+            "pdfs": self.pdfs,
+            "bytes_downloaded": self.bytes_downloaded,
             "elapsed_seconds": round(self.elapsed_seconds, 3),
         }
 
@@ -212,7 +240,11 @@ async def budget_for_run(
 
 __all__ = [
     "BUDGET_REFUSAL_PREFIX",
+    "LIMIT_BYTES",
     "LIMIT_DAILY",
+    "LIMIT_FETCHES",
+    "LIMIT_PDFS",
+    "LIMIT_PER_DOMAIN",
     "LIMIT_QUERIES",
     "LIMIT_RESULTS",
     "LIMIT_WALL",
