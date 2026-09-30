@@ -599,17 +599,28 @@ class TestChairAndReport:
 class TestV2Labels:
     closers = [
         gr.FindingFacts("f-capex", "", ("metric:capex",), source_kinds=ISSUER),
+        gr.FindingFacts("f-cap", "", ("metric:production_capacity",), source_kinds=ISSUER),
     ]
 
     def test_a_missing_field_a_finding_states_is_closed(self) -> None:
         out = gr.label_v2_items(
-            missing_items=[{"field": "capital_expenditure", "source": "financial_data_agent"},
+            missing_items=[{"field": "profile.production_capacity", "source": "x"},
                            {"field": "identity.isin", "source": "company_snapshot"}],
             concerns=[], closers=self.closers,
         )
         (item,) = out["missing_information"]  # the ISIN names no field: left as V2 wrote it
-        assert item["field"] == "capital_expenditure"
-        assert item["status"] == "closed" and item["finding_ids"] == ["f-capex"]
+        assert item["field"] == "profile.production_capacity"
+        assert item["status"] == "closed" and item["finding_ids"] == ["f-cap"]
+
+    def test_an_unperiodised_period_metric_is_never_hidden(self) -> None:
+        # Review round 2 (4): "capital_expenditure" / "revenue" with no period.
+        out = gr.label_v2_items(
+            missing_items=[{"field": "capital_expenditure", "source": "x"}],
+            concerns=[], closers=self.closers,
+        )
+        (item,) = out["missing_information"]
+        assert item["status"] == "partially_closed"
+        assert gr.REASON_PERIOD_UNSPECIFIED in item["reasons"]
 
     def test_only_gap_shaped_concerns_are_labelled(self) -> None:
         out = gr.label_v2_items(
@@ -628,7 +639,7 @@ class TestV2Labels:
         from app.services.pipeline.v3_pipeline import V3ResearchOutcome, attach_to_report
 
         content = {"missing_information": {"missing_items": {"value": [
-            {"field": "capital_expenditure", "source": "financial_data_agent"}]}}}
+            {"field": "production_capacity", "source": "financial_data_agent"}]}}}
         report = SimpleNamespace(
             content_markdown="# R\n```json\n" + json.dumps(content) + "\n```\n",
             source_summary_json={"llm_council": {"agents": [{
@@ -1111,3 +1122,287 @@ class TestReconcileStepOnPostgres:
                 await session.rollback()
         finally:
             await engine.dispose()
+
+
+# ── Review round 2: false closes and false supersessions ──────────────────────── #
+
+AS_OF = D(2026, 9, 30)
+
+
+def _st(description: str, *findings, gap_type=ledger.GAP_EVIDENCE_UNAVAILABLE):  # noqa: ANN001, ANN002, ANN202
+    (verdict,) = gr.reconcile([_gap(description, gap_type=gap_type)], list(findings),
+                              as_of=AS_OF)
+    return verdict
+
+
+class TestRound2FalseCloses:
+    # (1) a reporting-period cue outranks a study word; spent/incurred is period capex.
+    @pytest.mark.parametrize(
+        "statement",
+        [
+            "Capex for FY2024 was £3.1m, mostly on DFS work",
+            "Capex of £3.1m was spent during the year on feasibility work",
+            "Capex of £3.1m was incurred on the PFS",
+        ],
+    )
+    def test_period_spend_on_a_study_is_not_a_project_estimate(self, statement: str) -> None:
+        assert "metric:capex_period" in rf.fields_stated(statement)
+        assert "metric:capex_project" not in rf.fields_stated(statement)
+        assert _st("Project capex estimate not acquired", _pf("f", statement)).status == (
+            ledger.RECONCILED_PARTIALLY_CLOSED)
+
+    # (2) "capital expenditure estimate" / "capital cost" ask for the project estimate;
+    #     a family gap answered by period spend is only partial.
+    def test_an_estimate_gap_is_not_closed_by_period_spend(self) -> None:
+        assert "metric:capex_project" in rf.fields_mentioned(
+            "No capital expenditure estimate acquired for the Foo Project")
+        verdict = _st("No capital expenditure estimate acquired for the Foo Project",
+                      _pf("f", "Capex at the Foo Project in FY2025 was £3.1m",
+                          period_key="FY2025"))
+        assert verdict.status == ledger.RECONCILED_PARTIALLY_CLOSED
+        family = _st("Capex not acquired", _pf("f", "Capex for FY2024 was £3.1m",
+                                                period_key="FY2024"))
+        assert family.status == ledger.RECONCILED_PARTIALLY_CLOSED
+        assert gr.REASON_SUBTYPE_DIFFERS in family.reasons
+
+    # (3) period parsing.
+    @pytest.mark.parametrize(
+        ("text", "period"),
+        [
+            ("Revenue for the half-year ended 31 December 2025 was A$3.1m", "HYE2025-12-31"),
+            ("Revenue for the six months to 30 June 2026 was £1m", "HYE2026-06-30"),
+            ("Revenue for the year ended 30 June 2026 was A$3.1m", "FYE2026-06-30"),
+            ("H1 FY26 revenue was A$1m", "FY2026-H1"),
+            ("Revenue in Q3 FY2026 was A$1m", "FY2026-Q3"),
+            ("2025 revenue not acquired", "CY2025"),
+            ("Revenue for calendar year 2025 not acquired", "CY2025"),
+            ("Cash at 30 June 2026 not acquired", "2026-06-30"),
+        ],
+    )
+    def test_periods_are_parsed_literally(self, text: str, period: str) -> None:
+        assert rf.statement_period(text) == period
+
+    @pytest.mark.parametrize(
+        ("gap", "statement", "period_key"),
+        [
+            ("FY2025 revenue not acquired",
+             "Revenue for the half-year ended 31 December 2025 was A$3.1m", None),
+            ("2025 revenue not acquired", "Revenue for FY2019 was £3.1m", "FY2019"),
+            ("H1 2026 revenue not acquired", "Revenue for FY2026 was A$3.1m", "FY2026"),
+            ("Cash at 30 June 2026 not acquired",
+             "Cash and cash equivalents of £6.1m at 31 December 2025", None),
+        ],
+    )
+    def test_another_period_never_closes(self, gap: str, statement: str, period_key) -> None:  # noqa: ANN001
+        verdict = _st(gap, _pf("f", statement, period_key=period_key))
+        assert verdict.status == ledger.RECONCILED_PARTIALLY_CLOSED, verdict.reasons
+
+    # (4) V2 missing items: exact names; derived metrics never labelled.
+    @pytest.mark.parametrize("name", ["revenue_growth", "net_debt_to_ebitda", "gross_margin",
+                                      "capex_to_revenue", "revenue_cagr"])
+    def test_a_derived_metric_is_never_labelled(self, name: str) -> None:
+        closers = [gr.FindingFacts("r", "", ("metric:revenue", "metric:net_debt",
+                                             "metric:capex"), source_kinds=ISSUER)]
+        out = gr.label_v2_items(missing_items=[name], concerns=[], closers=closers)
+        assert out["missing_information"] == []
+        assert gr.exact_field_for_item(name) is None
+
+    def test_a_derived_concern_is_never_labelled(self) -> None:
+        closers = [gr.FindingFacts("r", "", ("metric:revenue",), source_kinds=ISSUER)]
+        out = gr.label_v2_items(missing_items=[],
+                                concerns=[{"text": "Revenue growth is unknown"}],
+                                closers=closers)
+        assert out["council_concerns"] == []
+
+    # (5) stale values.
+    def test_a_current_value_needs_recent_evidence(self) -> None:
+        old = _pf("f", "Cash and cash equivalents of £6.1m at 31 December 2022",
+                  D(2023, 3, 1))
+        verdict = _st("Current cash position unknown", old)
+        assert verdict.status == ledger.RECONCILED_PARTIALLY_CLOSED
+        assert gr.REASON_RECENCY_UNCONFIRMED in verdict.reasons
+        fresh = _pf("n", "Cash and cash equivalents of £4.2m at 30 June 2026", D(2026, 9, 1))
+        assert _st("Current cash position unknown", fresh).status == ledger.RECONCILED_CLOSED
+
+    def test_a_former_or_passed_target_does_not_close_a_milestone_gap(self) -> None:
+        former = _pf("f", "First production was expected in 2021 according to the 2018 "
+                          "scoping study", D(2026, 8, 1))
+        assert _st("First production date not acquired", former).status == (
+            ledger.RECONCILED_STILL_OPEN)
+        passed = _pf("p", "First production is expected in 2021", D(2019, 8, 1))
+        verdict = _st("First production date not acquired", passed)
+        assert verdict.status == ledger.RECONCILED_PARTIALLY_CLOSED
+        assert gr.REASON_TARGET_PASSED in verdict.reasons
+        stale_target = _pf("s", "First production is expected in 2021", D(2023, 8, 1))
+        assert _st("First production date not acquired", stale_target).status == (
+            ledger.RECONCILED_STILL_OPEN)  # a target before its own source is no target
+
+    def test_a_historical_quote_only_partly_answers(self) -> None:
+        verdict = _st("No capex estimate acquired",
+                      _pf("f", "The 2019 PFS estimated capex of US$250m", D(2026, 8, 1)))
+        assert verdict.status == ledger.RECONCILED_PARTIALLY_CLOSED
+        assert gr.REASON_HISTORICAL_CITATION in verdict.reasons
+
+    def test_a_gap_qualifier_must_be_met(self) -> None:
+        verdict = _st("Post-tax NPV not acquired",
+                      _pf("f", "Pre-tax NPV8 of US$700m", D(2026, 8, 1)))
+        assert verdict.status == ledger.RECONCILED_PARTIALLY_CLOSED
+        assert gr.REASON_QUALIFIER_DIFFERS in verdict.reasons
+
+
+class TestRound2FalseSupersessions:
+    @pytest.mark.parametrize(
+        ("older", "newer"),
+        [
+            # (6) valuation basis
+            ("Post-tax NPV10 of US$400m", "Post-tax NPV8 of US$500m"),
+            ("Post-tax NPV8 of US$500m", "Pre-tax NPV8 of US$700m"),
+            ("Post-tax IRR of 24%", "Pre-tax IRR of 30%"),
+            # (7) resource category
+            ("Mineral Resource of 50Mt at 1.5% TREO", "Ore Reserve of 20Mt at 1.2% TREO"),
+            ("Inferred Resources of 30Mt at 2% TREO",
+             "Measured and Indicated Resources of 20Mt at 3% TREO"),
+            # (8) historical quotes without a year
+            ("The DFS estimates capex of US$302m", "The PFS estimated capex of US$250m"),
+            ("The DFS estimates capex of US$302m", "The previous capex estimate was US$250m"),
+            # (9) product, plant type, stage mentioned in the clause
+            ("Nameplate capacity of 4,000 tpa NdPr oxide", "Nameplate capacity of 12,500 tpa MREC"),
+            ("Commissioning of the commercial plant is expected in 2028",
+             "Commissioning of the pilot plant is expected in 2026"),
+            ("First production at the Foo Project is expected in 2028",
+             "First production at the Foo Project is expected in 2027, ahead of the Stage 2 "
+             "expansion"),
+            # a refinement of the same target is not a change
+            ("FID is targeted for 2026", "FID is targeted for H2 2026"),
+        ],
+    )
+    def test_different_quantities_are_never_ordered_in_time(self, older, newer) -> None:  # noqa: ANN001
+        supersessions, _ = gr.supersede([_pf("o", older, D(2025, 11, 1)),
+                                         _pf("n", newer, D(2026, 8, 1))])
+        assert supersessions == [], (older, newer)
+
+    def test_a_scale_rounded_amount_is_the_same_only_within_five_percent(self) -> None:
+        # (14)
+        rounded = rf.money_values("us$0.3bn")
+        precise = rf.money_values("us$302m")
+        far = rf.money_values("us$340m")
+        assert gr.compare_values(gr._Value("money", rounded), gr._Value("money", precise)) == gr.SAME  # noqa: SLF001
+        assert gr.compare_values(gr._Value("money", rounded), gr._Value("money", far)) == gr.DIFFERENT  # noqa: SLF001
+
+
+class TestRound2Formats:
+    @pytest.mark.parametrize(
+        ("text", "currency", "value"),
+        [
+            ("302 million us dollars", "usd", 302e6),
+            ("302m usd", "usd", 302e6),
+            ("r4.2bn", "zar", 4.2e9),
+            ("rmb 2.1bn", "cny", 2.1e9),
+        ],
+    )
+    def test_money_formats(self, text: str, currency: str, value: float) -> None:
+        ((cur, amount, _tol),) = rf.money_values(text)
+        assert (cur, amount) == (currency, pytest.approx(value))
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "Nameplate capacity of 12,500 t per annum",
+            "Design capacity of 40,000 oz per annum",
+            "Plant capacity of 1.5 million tonnes per annum",
+            "Nameplate capacity 12,500 tonnes of oxide per year",
+        ],
+    )
+    def test_capacity_formats(self, text: str) -> None:
+        assert "metric:production_capacity" in rf.fields_stated(text)
+
+    def test_ramp_up_output_is_not_capacity(self) -> None:
+        # (13)
+        assert rf.fields_stated(
+            "The company expects to produce 2,000 tpa in the first year of ramp-up") == ()
+
+    def test_an_exploration_target_is_not_a_resource(self) -> None:
+        # (10)
+        assert rf.fields_stated("An Exploration Target of 50-100Mt at 1-2% TREO sits beside "
+                                "the Mineral Resource") == ()
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "The DFS estimates capex of US$302m, which is not expected to change",
+            "The DFS estimates capex of US$302m for the plant outside Johannesburg",
+            "Capex of US$302m includes no contingency",
+            "The DFS estimates capex of US$302m, not including US$20m of owner's costs",
+            "The DFS estimates capex of US$302m, and the PFS figure is no longer valid",
+        ],
+    )
+    def test_a_subordinate_negation_does_not_negate_the_value(self, text: str) -> None:
+        # (11)
+        assert "metric:capex" in rf.fields_stated(text)
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "First production is targeted for 2027 after the delayed FID",
+            "First production is targeted for 2027, with no further delays expected",
+        ],
+    )
+    def test_a_subordinate_negation_does_not_negate_a_milestone(self, text: str) -> None:
+        assert rf.fields_stated(text) == ("milestone:first_production",)
+
+    def test_two_milestones_in_one_clause_state_neither(self) -> None:
+        assert rf.fields_stated("First production and commissioning are expected in 2027") == ()
+
+
+class TestRound2Pointer:
+    async def test_the_column_points_at_the_latest_newer_finding(self, session) -> None:  # noqa: ANN001
+        run = await ledger.open_run(session, mode="standard")
+        rows = []
+        for statement, published in (
+            ("First production is expected in 2028", D(2024, 1, 1)),
+            ("First production is expected in 2027", D(2025, 1, 1)),
+            ("First production is expected in 2029", D(2026, 1, 1)),
+        ):
+            rows.append(await ledger.record_finding(
+                session, run, statement=statement, evidence_ids=["ev"],
+                source_kinds=ISSUER, source_published_at=published,
+                claim_key=rf.claim_key_for(statement)))
+        result = await gr.reconcile_run(session, run, as_of=AS_OF)
+        await session.refresh(rows[0])
+        assert rows[0].superseded_by_finding_id == rows[2].id
+        assert {s["superseded_by_finding_id"] for s in result["supersessions"]} == {
+            str(rows[2].id)}
+
+
+class TestRound2Pins:
+    """Cases that pin each round-2 rule on its own (no other rule masks them)."""
+
+    @pytest.mark.parametrize(
+        "statement",
+        ["Sustaining capex of US$12m per annum", "Capex of £3.1m was spent in the quarter"],
+    )
+    def test_a_capex_gap_is_only_partly_answered_by_spend_or_sustaining(self, statement) -> None:  # noqa: ANN001
+        verdict = _st("Capex not acquired", _pf("f", statement))
+        assert verdict.status == ledger.RECONCILED_PARTIALLY_CLOSED
+        assert gr.REASON_SUBTYPE_DIFFERS in verdict.reasons
+
+    def test_current_needs_evidence_from_the_last_year(self) -> None:
+        stale = _pf("f", "The DFS estimates capex of US$302m", D(2024, 1, 1))
+        verdict = _st("Current capex estimate not acquired", stale)
+        assert verdict.status == ledger.RECONCILED_PARTIALLY_CLOSED
+        assert gr.REASON_RECENCY_UNCONFIRMED in verdict.reasons
+
+    def test_a_past_tense_target_is_a_former_target(self) -> None:
+        assert rf.fields_stated("First production was expected in 2027") == ()
+        assert _st("First production date not acquired",
+                   _pf("f", "First production was expected in 2027")).status == (
+            ledger.RECONCILED_STILL_OPEN)
+
+    @pytest.mark.parametrize("name", ["capex_estimate", "cash_flow_statement", "revenue_by_segment"])
+    def test_only_an_exact_field_name_is_labelled(self, name: str) -> None:
+        assert gr.exact_field_for_item(name) is None
+        closers = [gr.FindingFacts("f", "", ("metric:capex", "metric:revenue", "metric:cash"),
+                                   source_kinds=ISSUER)]
+        assert gr.label_v2_items(missing_items=[name], concerns=[],
+                                 closers=closers)["missing_information"] == []
+        assert gr.exact_field_for_item("fundamentals.capital_expenditure") == "metric:capex"

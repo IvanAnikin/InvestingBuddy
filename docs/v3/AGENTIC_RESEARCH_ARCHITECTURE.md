@@ -311,6 +311,35 @@ counterparty or volume).
    whose gap cue and field share a clause and that carry no risk vocabulary; the web
    drops a fully stated missing-information field name but only ANNOTATES a concern.
 
+Review round 2 made it stricter still — **any qualifier ambiguity means no supersession;
+any value-type ambiguity means `partially_closed`, never `closed`**:
+
+* a reporting-period cue (FY, H1, "spent", "incurred", "for the year") outranks a study
+  word, so money spent on a DFS is period capex; "capital expenditure estimate" and
+  "capital cost" ask for the project estimate; a capex gap answered by spend or sustaining
+  capital is partial;
+* periods are literal: `FY2025`, `CY2025`, `FY2026-H1`, `2026-H1`, `HYE2025-12-31`
+  (half ended), `FYE2026-06-30` (year ended) and a balance date are different strings,
+  and only an equal string closes;
+* a gap asking for a current value needs evidence published — and, for a balance, dated
+  — within 365 days of the run; a former ("was expected") or passed milestone target
+  never closes; a quoted older study ("the PFS estimated", "the previous estimate")
+  only partly answers and never supersedes;
+* the supersession group key includes value qualifiers — tax basis, NPV discount rate,
+  resource vs reserve and category, product after a capacity unit, pilot vs commercial,
+  stage/phase/expansion anywhere in the clause, scenario; a scale-rounded amount equals a
+  precise one only within its rounding and 5%;
+* negation inside subordinate material ("which is not expected to change", "not
+  including …", "includes no contingency", "outside Johannesburg") does not negate the
+  value; a clause naming two milestones states neither; an Exploration Target is not a
+  resource; ramp-up / first-year output is not capacity;
+* V2 missing-information items are labelled only on an EXACT field name; derived metrics
+  (growth, ratios, margins) never are, and a period-bound metric with no period is at
+  most annotated.
+
+`research_findings.superseded_by_finding_id` holds the LATEST newer finding; the per-field
+map in `v3_research.gap_reconciliation.supersessions` is authoritative.
+
 The council payload's `primary_source_finding_count` (findings citing issuer filings/IR)
 replaces the always-zero "verified" hint; nothing verifies findings yet, and the Chair's
 deterministic verdict logic is unchanged. Non-English gap text has no field and stays

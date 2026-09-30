@@ -93,7 +93,8 @@ _PROJECT_CAPEX = (
     r"\b(?:initial|development|pre-?production|construction|upfront|up-front|start-?up)\s+"
     r"(?:capital|capex)\b",
     r"\bproject\s+(?:capex|capital\s+cost)\b",
-    r"\b(?:capex|capital\s+cost)\s+estimate\b",
+    r"\b(?:capex|capital\s+(?:cost|expenditure))s?\s+estimates?\b",
+    r"\bcapital\s+costs?\b",
     r"\bestimat\w*\s+(?:(?:the\s+)?(?:initial\s+)?(?:capex|capital\s+costs?))\b",
     r"\b(?:dfs|pfs|bfs|feasibility|scoping\s+study|pea)\b",
 )
@@ -106,8 +107,11 @@ _PERIOD_CAPEX = (
     r"\b(?:h[12]|q[1-4])\b",
     r"\bfor\s+the\s+(?:year|half|quarter|period|six\s+months|three\s+months)\b",
     r"\b(?:year|half-year|quarter|period)\s+ended\b",
-    r"\b(?:spent|incurred|invested)\b",
+    r"\b(?:spent|incurred|invested|paid)\b",
     r"\bduring\s+(?:the\s+)?(?:year|half|quarter|period|(?:19|20)\d{2})\b",
+    r"\b(?:in|for)\s+the\s+(?:year|half|half-year|quarter|six\s+months|twelve\s+months)\s+"
+    r"(?:to|ended|ending)\b",
+    r"\b(?:year|half|half-year|quarter|six\s+months)\s+to\s+\d",
 )
 
 FIELDS: tuple[ResearchField, ...] = (
@@ -197,6 +201,7 @@ FIELDS: tuple[ResearchField, ...] = (
         (
             r"\bcash\s+and\s+(?:cash\s+)?equivalents\b",
             r"\bcash\s+(?:balance|position|on\s+hand|reserves?|holdings?|at\s+bank)\b",
+            r"\bcash\s+(?:at|as\s+at|as\s+of)\s+\d",
             r"\b(?:held|holds|had|has)\s[^;]{0,30}?\bin\s+cash\b",
         ),
         needs=NEEDS_MONEY,
@@ -275,7 +280,7 @@ FIELD_KEYS: frozenset[str] = frozenset(FIELDS_BY_KEY)
 SUPERSEDABLE_FIELDS: frozenset[str] = frozenset(f.key for f in FIELDS if f.supersedable)
 CAPEX_FAMILY = "metric:capex"
 CAPEX_SUBTYPES: tuple[str, ...] = (
-    "metric:capex_sustaining", "metric:capex_project", "metric:capex_period",
+    "metric:capex_sustaining", "metric:capex_period", "metric:capex_project",
 )
 
 _COMPILED: dict[str, tuple[re.Pattern[str], ...]] = {
@@ -298,7 +303,7 @@ def family_of(field_key: str) -> str:
 
 #: A denial scopes to its CLAUSE. Same split the thesis grader uses.
 CLAUSE_SPLIT_RE = re.compile(
-    r"[;.]\s+|,\s+(?:but|although|though|while|whereas|yet)\s+|\s+but\s+"
+    r"[;.]\s+|,\s+(?:but|although|though|while|whereas|yet)\s+|\s+but\s+|,\s+and\s+(?=the\s)"
 )
 #: Anywhere in a clause, these make it a statement of absence, withdrawal, deferral or
 #: sensitivity — not of a value.
@@ -328,16 +333,29 @@ _CURRENCY = (
     r"\bdkk|\bchf|\bjpy|\bcny"
 )
 MONEY_RE = re.compile(
-    r"(?P<cur>" + _CURRENCY + r")\s?(?P<num>\d[\d,]*(?:\.\d+)?)\s*"
+    r"(?P<cur>" + _CURRENCY + r"|\brmb|\br(?=\d))\s?(?P<num>\d[\d,]*(?:\.\d+)?)\s*"
     r"(?P<scale>bn|billion|b|mn|million|m|k|thousand)?(?![\w])",
     re.IGNORECASE,
 )
+#: "302 million US dollars", "302m USD": the currency AFTER the amount.
+MONEY_SUFFIX_RE = re.compile(
+    r"(?<![\w.$£€])(?P<num>\d[\d,]*(?:\.\d+)?)\s*(?P<scale>bn|billion|mn|million|m|k|thousand)?"
+    r"\s*(?P<cur>usd|aud|cad|gbp|eur|zar|rmb|cny|us\s+dollars|australian\s+dollars|"
+    r"canadian\s+dollars|pounds\s+sterling|euros|rand)\b",
+    re.IGNORECASE,
+)
 _CAPACITY_RE = re.compile(
-    r"\d[\d,]*(?:\.\d+)?\s*(?:k|m)?\s*(?:"
-    r"tpa|tpy|t/y(?:r)?|t/a|t/d|tpd|mtpa|ktpa|mtpy|mt/y|mt\s+(?:per|a)\s+(?:annum|year)|"
-    r"(?:tonnes?|tons?)\s+(?:per|a|an)\s+(?:annum|year|day)|mw|gw|mwh|gwh|"
-    r"oz/y(?:r)?|ounces?\s+(?:per|a)\s+year|lb/y(?:r)?|pounds?\s+(?:per|a)\s+year|"
-    r"bpd|barrels?\s+(?:per|a)\s+day|units?\s+(?:per|a)\s+year)\b",
+    r"\d[\d,]*(?:\.\d+)?\s*(?:k|m|million\s+|thousand\s+)?\s*(?:"
+    r"tpa|tpy|t/y(?:r)?|t/a|t/d|tpd|mtpa|ktpa|mtpy|mt/y|"
+    r"(?:mt|kt|t|tonnes?|tons?|oz|ounces?|lbs?|pounds?|units?|barrels?)\s+"
+    r"(?:of\s+[a-z][a-z\s-]{0,30}?\s+)?(?:per|a|an)\s+(?:annum|year|day)|"
+    r"mw|gw|mwh|gwh|oz/y(?:r)?|lb/y(?:r)?|bpd)\b",
+    re.IGNORECASE,
+)
+#: Output in a ramp-up or a first year is not nameplate capacity.
+_RAMP_RE = re.compile(
+    r"\bramp[\s-]?up\b|\bfirst\s+(?:full\s+)?year\b|\byear\s+(?:one|1)\b|"
+    r"\binitial\s+(?:production\s+)?rate\b",
     re.IGNORECASE,
 )
 _TONNAGE_RE = re.compile(
@@ -379,8 +397,27 @@ def clauses(text: str | None) -> list[str]:
     return [c.lower() for c in _raw_clauses(text)]
 
 
-def is_negated(clause: str) -> bool:
-    return _NEGATION_RE.search(_NEUTRAL_NEGATION_RE.sub(" ", clause or "")) is not None
+#: Subordinate material whose negation governs something ELSE, not the value: "which is
+#: not expected to change", "not including US$20m of owner's costs", "includes no
+#: contingency", "with no further delays expected", "after the delayed FID", and a
+#: place "outside Johannesburg". Removed before the negation check.
+_SUBORDINATE_RE = re.compile(
+    r",\s*(?:which|that)\b[^,;]*|,?\s*(?:not\s+including|excluding|exclusive\s+of)\b[^,;]*|"
+    r"\b(?:includes?|including|with|and)\s+no\s+(?:contingency|further|additional|"
+    r"material|change)\b[^,;]*|\b(?:after|following|despite)\s+the\s+(?:delayed|deferred|"
+    r"suspended|withdrawn)\b[^,;]*|\bthe\s+(?:delayed|deferred|suspended)\s+\w+",
+    re.IGNORECASE,
+)
+_PLACE_OUTSIDE_RE = re.compile(r"\boutside\s+(?:of\s+)?(?:the\s+)?[A-Z][\w-]*")
+
+
+def is_negated(clause: str, raw: str | None = None) -> bool:
+    """Does a negation govern THIS clause's value? ``raw`` (original case) lets a place
+    name after "outside" be recognised as geography."""
+    text = raw if raw is not None else clause or ""
+    text = _PLACE_OUTSIDE_RE.sub(" ", text)
+    text = _SUBORDINATE_RE.sub(" ", text)
+    return _NEGATION_RE.search(_NEUTRAL_NEGATION_RE.sub(" ", text)) is not None
 
 
 def has_figure(clause: str) -> bool:
@@ -397,7 +434,9 @@ def has_date(clause: str) -> bool:
 
 
 def has_money(clause: str) -> bool:
-    return MONEY_RE.search(clause or "") is not None
+    return MONEY_RE.search(clause or "") is not None or (
+        MONEY_SUFFIX_RE.search(clause or "") is not None
+    )
 
 
 def target_years(clause: str) -> frozenset[str]:
@@ -405,6 +444,10 @@ def target_years(clause: str) -> frozenset[str]:
     quarter ("h2 2027"). Incidental years ("following the 2026 DFS") are not targets."""
     out: set[str] = set()
     for match in _TARGET_YEAR_RE.finditer(clause or ""):
+        before = (clause or "")[: match.start()].lower()
+        # "was expected in 2021", "had been planned for 2024": a FORMER target.
+        if re.search(r"\b(?:was|were|had\s+been|originally|previously|initially)\s*$", before):
+            continue
         sub = (match.group("sub") or "").strip().lower()
         sub = re.sub(r"[\s,-]*(?:of\s*)?$", "", sub)
         out.add(f"{sub} {match.group('year')}".strip())
@@ -422,9 +465,13 @@ def _satisfies(needs: str | None, clause_raw: str) -> bool:
     if needs == NEEDS_MONEY:
         return has_money(low)
     if needs == NEEDS_CAPACITY:
-        return _CAPACITY_RE.search(low) is not None
+        return _CAPACITY_RE.search(low) is not None and _RAMP_RE.search(low) is None
     if needs == NEEDS_TONNAGE_AND_GRADE:
-        return _TONNAGE_RE.search(low) is not None and _GRADE_RE.search(low) is not None
+        # An Exploration Target is explicitly NOT a resource estimate.
+        return (
+            _TONNAGE_RE.search(low) is not None and _GRADE_RE.search(low) is not None
+            and "exploration target" not in low
+        )
     if needs == NEEDS_PERCENT_RATE:
         return _IRR_RATE_RE.search(low) is not None
     if needs == NEEDS_TARGET_DATE:
@@ -443,7 +490,9 @@ def _matches(patterns: Iterable[re.Pattern[str]], text: str) -> bool:
 
 
 def _capex_subtype(low: str) -> str | None:
-    for key in CAPEX_SUBTYPES:  # sustaining before project before period
+    # Sustaining, then a REPORTING-PERIOD cue, then study words: "capex for FY2024 was
+    # £3.1m, mostly on DFS work" is money spent in a period, not a project estimate.
+    for key in CAPEX_SUBTYPES:
         if _matches(_SUBTYPE_CUES[key], low):
             return key
     return None
@@ -462,6 +511,16 @@ def _clause_fields(low: str) -> list[str]:
         if sub:
             out.insert(out.index(CAPEX_FAMILY) + 1, sub)
     return out
+
+
+def _stated_keys(low: str) -> list[str]:
+    """Fields a clause can STATE: when it names two milestones ("first production in
+    2027 after the delayed FID") its one date belongs to neither with certainty."""
+    keys = _clause_fields(_SUBORDINATE_RE.sub(" ", low))
+    milestones = [k for k in keys if k.startswith("milestone:")]
+    if len(milestones) > 1:
+        keys = [k for k in keys if not k.startswith("milestone:")]
+    return keys
 
 
 # ── Classifiers ─────────────────────────────────────────────────────────────── #
@@ -492,9 +551,9 @@ def fields_stated(text: str | None) -> tuple[str, ...]:
     out: list[str] = []
     for raw in _raw_clauses(text):
         low = raw.lower()
-        if is_negated(low):
+        if is_negated(low, raw):
             continue
-        for key in _clause_fields(low):
+        for key in _stated_keys(low):
             found = FIELDS_BY_KEY[key]
             if key in out or not _satisfies(found.needs, raw):
                 continue
@@ -508,7 +567,7 @@ def field_clause(text: str | None, field_key: str) -> str | None:
         return None
     for raw in _raw_clauses(text):
         low = raw.lower()
-        if is_negated(low) or field_key not in _clause_fields(low):
+        if is_negated(low, raw) or field_key not in _stated_keys(low):
             continue
         if _satisfies(FIELDS_BY_KEY[field_key].needs, raw):
             return low
@@ -544,29 +603,33 @@ _SCALE = {
     "": 1.0, "k": 1e3, "thousand": 1e3, "m": 1e6, "mn": 1e6, "million": 1e6,
     "b": 1e9, "bn": 1e9, "billion": 1e9,
 }
-_CURRENCY_ALIASES = {"$": "usd", "us$": "usd", "usd": "usd", "a$": "aud", "aud": "aud",
-                     "c$": "cad", "cad": "cad", "£": "gbp", "gbp": "gbp", "€": "eur",
-                     "eur": "eur"}
+_CURRENCY_ALIASES = {"$": "usd", "us$": "usd", "usd": "usd", "us dollars": "usd",
+                     "a$": "aud", "aud": "aud", "australian dollars": "aud",
+                     "c$": "cad", "cad": "cad", "canadian dollars": "cad",
+                     "£": "gbp", "gbp": "gbp", "pounds sterling": "gbp",
+                     "€": "eur", "eur": "eur", "euros": "eur",
+                     "r": "zar", "zar": "zar", "rand": "zar", "rmb": "cny", "cny": "cny"}
 
 
 def money_values(clause: str | None) -> tuple[tuple[str, float, float], ...]:
     """``(currency, value, tolerance)`` per amount, scale-normalised.
 
-    The tolerance is half a unit of the last digit written, so "US$0.3bn" and "US$302m"
-    are the same statement at different precision, not a change of guidance.
+    The tolerance is half a unit of the last digit written; ``compare_values`` decides
+    how far a rounded form may stretch.
     """
     out: list[tuple[str, float, float]] = []
-    for match in MONEY_RE.finditer(clause or ""):
-        cur_raw = match.group("cur").lower().strip()
-        currency = _CURRENCY_ALIASES.get(cur_raw, cur_raw)
-        number = match.group("num").replace(",", "")
-        scale = _SCALE.get((match.group("scale") or "").lower(), 1.0)
-        try:
-            value = float(number) * scale
-        except ValueError:
-            continue
-        decimals = len(number.split(".", 1)[1]) if "." in number else 0
-        out.append((currency, value, 0.5 * (10 ** -decimals) * scale))
+    for pattern in (MONEY_RE, MONEY_SUFFIX_RE):
+        for match in pattern.finditer(clause or ""):
+            cur_raw = re.sub(r"\s+", " ", match.group("cur").lower().strip())
+            currency = _CURRENCY_ALIASES.get(cur_raw, cur_raw)
+            number = match.group("num").replace(",", "")
+            scale = _SCALE.get((match.group("scale") or "").lower(), 1.0)
+            try:
+                value = float(number) * scale
+            except ValueError:
+                continue
+            decimals = len(number.split(".", 1)[1]) if "." in number else 0
+            out.append((currency, value, 0.5 * (10 ** -decimals) * scale))
     return tuple(out)
 
 
@@ -639,73 +702,121 @@ def projects_compatible(a: str | None, b: str | None) -> bool | None:
 
 _MONTHS = ("january february march april may june july august september october "
            "november december").split()
+_MONTH_ALT = "|".join(_MONTHS)
+_DAY_MONTH_YEAR = (
+    r"(?P<d>\d{1,2})\s+(?P<m>" + _MONTH_ALT + r")\s+(?P<y>(?:19|20)\d{2})"
+)
 _FY_RE = re.compile(r"\bfy\s?'?(?P<y>(?:19|20)?\d{2})\b", re.IGNORECASE)
-_HALF_RE = re.compile(
-    r"\b(?:(?P<h>h[12])|(?P<hw>first|second)\s+half)\s*(?:of\s+)?(?:fy\s?)?"
-    r"(?P<y>(?:19|20)\d{2})\b|\b(?P<y2>(?:19|20)\d{2})[-\s](?P<h2>h[12])\b",
+#: "half-year ended 31 December 2025", "six months to 30 June 2026" — a HALF, whatever
+#: word "year" appears in it. Matched before any full-year form.
+_HALF_ENDED_RE = re.compile(
+    r"\b(?:half[\s-]year|half|six\s+months|6\s+months|interim\s+period)\s+"
+    r"(?:ended|ending|to)\s+" + _DAY_MONTH_YEAR,
     re.IGNORECASE,
 )
-_QUARTER_RE = re.compile(
-    r"\b(?P<q>q[1-4])\s*(?:fy\s?)?(?P<y>(?:19|20)\d{2})\b|"
-    r"\b(?P<y2>(?:19|20)\d{2})[-\s](?P<q2>q[1-4])\b",
-    re.IGNORECASE,
-)
-_ASAT_RE = re.compile(
-    r"\b(?:at|as\s+at|as\s+of)\s+(?P<d>\d{1,2})\s+(?P<m>" + "|".join(_MONTHS)
-    + r")\s+(?P<y>(?:19|20)\d{2})\b",
+_YEAR_ENDED_DATE_RE = re.compile(
+    r"\b(?:year|twelve\s+months|12\s+months|financial\s+year)\s+(?:ended|ending|to)\s+"
+    + _DAY_MONTH_YEAR,
     re.IGNORECASE,
 )
 _YEAR_ENDED_RE = re.compile(
-    r"\b(?:year|twelve\s+months|12\s+months)\s+ended\s+(?:\d{1,2}\s+\w+\s+)?"
-    r"(?P<y>(?:19|20)\d{2})\b",
+    r"\b(?:year|twelve\s+months|12\s+months)\s+ended\s+(?P<y>(?:19|20)\d{2})\b",
     re.IGNORECASE,
 )
+_QUARTER_RE = re.compile(
+    r"\b(?P<q>q[1-4])\s*(?P<fy>fy\s?'?)?(?P<y>(?:19|20)?\d{2})\b|"
+    r"\b(?P<y2>(?:19|20)\d{2})[-\s](?P<q2>q[1-4])\b",
+    re.IGNORECASE,
+)
+_HALF_RE = re.compile(
+    r"\b(?:(?P<h>h[12])|(?P<hw>first|second)\s+half)\s*(?:of\s+)?(?P<fy>fy\s?'?)?"
+    r"(?P<y>(?:19|20)?\d{2})\b|\b(?P<y2>(?:19|20)\d{2})[-\s](?P<h2>h[12])\b",
+    re.IGNORECASE,
+)
+_CALENDAR_RE = re.compile(
+    r"\b(?:calendar(?:\s+year)?|cy)\s?(?P<y>(?:19|20)\d{2})\b|"
+    r"\b(?:revenues?|sales|turnover|capex|capital\s+expenditure|cash\s+flows?|earnings|"
+    r"ebitda|results|net\s+debt)\s+(?:for|in)\s+(?:the\s+year\s+)?"
+    r"(?P<y2>(?:19|20)\d{2})\b(?!\s*-)|"
+    r"\b(?P<y3>(?:19|20)\d{2})\s+(?:revenues?|sales|turnover|capex|capital\s+expenditure|"
+    r"cash\s+flows?|earnings|ebitda|results|net\s+debt)\b",
+    re.IGNORECASE,
+)
+_ASAT_RE = re.compile(r"\b(?:at|as\s+at|as\s+of)\s+" + _DAY_MONTH_YEAR, re.IGNORECASE)
+
+
+def _iso(match: re.Match[str]) -> str | None:
+    month = _MONTHS.index(match.group("m").lower()) + 1
+    try:
+        return date(int(match.group("y")), month, int(match.group("d"))).isoformat()
+    except ValueError:
+        return None
+
+
+def _year4(value: str) -> str:
+    return value if len(value) == 4 else "20" + value
 
 
 def statement_period(text: str | None) -> str | None:
     """The reporting period a statement is FOR, read from its words, normalised.
 
-    ``FY2025`` | ``2026-H1`` | ``2025-Q3`` | ``2026-06-30`` (a balance at a date) |
-    ``None``. Used when the evidence carried no ``period_key``, so "revenue for FY2024"
-    and "revenue for FY2025" are never treated as one period.
+    ``FY2025`` (a fiscal year) | ``FY2026-H1`` / ``FY2026-Q3`` (a fiscal half/quarter) |
+    ``2026-H1`` / ``2025-Q3`` (a calendar half/quarter) | ``CY2025`` (a calendar year) |
+    ``FYE2026-06-30`` (a year ENDED on a date) | ``HYE2025-12-31`` (a half ended on a
+    date) | ``2026-06-30`` (a balance at a date) | ``None``.
+
+    Deliberately literal: FY2025, CY2025 and "year ended 30 June 2025" are three
+    different strings, and only an equal string is the same period. Which calendar a
+    company's fiscal year follows is not something a sentence settles.
     """
     source = text or ""
+    half_ended = _HALF_ENDED_RE.search(source)
+    if half_ended:
+        iso = _iso(half_ended)
+        return f"HYE{iso}" if iso else None
+    year_ended = _YEAR_ENDED_DATE_RE.search(source)
+    if year_ended:
+        iso = _iso(year_ended)
+        return f"FYE{iso}" if iso else None
     q = _QUARTER_RE.search(source)
-    if q:
-        year = q.group("y") or q.group("y2")
-        quarter = (q.group("q") or q.group("q2")).upper()
-        return f"{year}-{quarter}"
+    if q and (q.group("y2") or len(q.group("y") or "") == 4 or q.group("fy")):
+        if q.group("y2"):
+            return f"{q.group('y2')}-{q.group('q2').upper()}"
+        year = _year4(q.group("y"))
+        quarter = q.group("q").upper()
+        return f"FY{year}-{quarter}" if q.group("fy") else f"{year}-{quarter}"
     h = _HALF_RE.search(source)
-    if h:
-        year = h.group("y") or h.group("y2")
-        half = (h.group("h") or h.group("h2") or "").upper()
-        if not half:
-            half = "H1" if (h.group("hw") or "").lower() == "first" else "H2"
-        return f"{year}-{half}"
+    if h and (h.group("y2") or len(h.group("y") or "") == 4 or h.group("fy")):
+        if h.group("y2"):
+            return f"{h.group('y2')}-{h.group('h2').upper()}"
+        half = (h.group("h") or "").upper() or (
+            "H1" if (h.group("hw") or "").lower() == "first" else "H2"
+        )
+        year = _year4(h.group("y"))
+        return f"FY{year}-{half}" if h.group("fy") else f"{year}-{half}"
     fy = _FY_RE.search(source)
     if fy:
-        year = fy.group("y")
-        return f"FY{year if len(year) == 4 else '20' + year}"
+        return f"FY{_year4(fy.group('y'))}"
     ended = _YEAR_ENDED_RE.search(source)
     if ended:
         return f"FY{ended.group('y')}"
+    calendar = _CALENDAR_RE.search(source)
+    if calendar:
+        return f"CY{calendar.group('y') or calendar.group('y2') or calendar.group('y3')}"
     asat = _ASAT_RE.search(source)
     if asat:
-        month = _MONTHS.index(asat.group("m").lower()) + 1
-        try:
-            return date(int(asat.group("y")), month, int(asat.group("d"))).isoformat()
-        except ValueError:
-            return None
+        return _iso(asat)
     return None
 
 
 def normalise_period(period_key: str | None) -> str | None:
-    """``FY2025`` / ``2025-Q3`` / ``2025-H1`` / ISO date, from a stored period key."""
+    """A stored period key in the ``statement_period`` vocabulary."""
     text = str(period_key or "").strip()
     if not text:
         return None
-    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
-        return text
+    if re.fullmatch(r"(?:FYE|HYE)?\d{4}-\d{2}-\d{2}|CY\d{4}|FY\d{4}(?:-[HQ]\d)?|\d{4}-[HQ]\d",
+                    text, re.IGNORECASE):
+        return text.upper()
     parsed = statement_period(text)
     if parsed:
         return parsed
@@ -715,30 +826,39 @@ def normalise_period(period_key: str | None) -> str | None:
 
 
 def period_rank(period_key: str | None) -> tuple[int, int] | None:
-    """A comparable (year, sub-period) for a period key, or ``None`` when unreadable.
+    """A comparable (year, sub-period), or ``None`` when the period is not rankable.
 
-    Sub-period: Q1..Q4 → 1..4, H1 → 5, H2 → 6, a full year → 9.
+    Sub-period: Q1..Q4 → 1..4, H1 → 5, H2 → 6, a full year or a date → 9. A half ended
+    on a date is not ranked: which half it is depends on the fiscal calendar.
     """
     normalised = normalise_period(period_key)
     if not normalised:
         return None
-    match = re.fullmatch(r"FY(\d{4})", normalised)
+    match = re.fullmatch(r"(?:FY|CY)(\d{4})", normalised)
     if match:
         return int(match.group(1)), 9
-    match = re.fullmatch(r"(\d{4})-Q([1-4])", normalised)
+    match = re.fullmatch(r"(?:FY)?(\d{4})-Q([1-4])", normalised)
     if match:
         return int(match.group(1)), int(match.group(2))
-    match = re.fullmatch(r"(\d{4})-H([12])", normalised)
+    match = re.fullmatch(r"(?:FY)?(\d{4})-H([12])", normalised)
     if match:
         return int(match.group(1)), 4 + int(match.group(2))
-    match = re.fullmatch(r"(\d{4})-\d{2}-\d{2}", normalised)
+    match = re.fullmatch(r"(?:FYE)?(\d{4})-\d{2}-\d{2}", normalised)
     if match:
         return int(match.group(1)), 9
     return None
 
 
+def period_end_date(period: str | None) -> date | None:
+    """The date a DATED period ends on (a balance date, a year or half ended)."""
+    match = re.search(r"(\d{4}-\d{2}-\d{2})$", str(period or ""))
+    return parse_date(match.group(1)) if match else None
+
+
 _REAL_PERIOD_RE = re.compile(
-    r"^(?:FY\d{4}|\d{4}-Q[1-4]|\d{4}-H[12]|\d{4}|\d{4}-\d{2}-\d{2})$", re.IGNORECASE
+    r"^(?:FY\d{4}(?:-[HQ]\d)?|CY\d{4}|\d{4}-Q[1-4]|\d{4}-H[12]|\d{4}|"
+    r"(?:FYE|HYE)?\d{4}-\d{2}-\d{2})$",
+    re.IGNORECASE,
 )
 
 
@@ -788,8 +908,93 @@ RECENCY_RE = re.compile(
 )
 
 
+#: …and without a year: "The PFS estimated …", "the previous capex estimate was …".
+_HISTORICAL_NO_YEAR_RE = re.compile(
+    r"\b(?:dfs|pfs|bfs|pea|scoping\s+study|feasibility\s+study|study)\s+(?:had\s+)?"
+    r"(?:estimated|forecast|projected|assumed|put|valued|showed)\b|"
+    r"\b(?:previous|prior|original|earlier|former|old|superseded|outdated)\s+"
+    r"(?:[a-z-]+\s+){0,2}?(?:capex|capital|cost|costs|estimate|estimates|guidance|target|"
+    r"schedule|timeline|plan|forecast|figure|npv|irr|resource|reserve|capacity)\b",
+    re.IGNORECASE,
+)
+
+
 def is_historical_citation(clause: str | None) -> bool:
-    return _HISTORICAL_CITATION_RE.search(clause or "") is not None
+    return (
+        _HISTORICAL_CITATION_RE.search(clause or "") is not None
+        or _HISTORICAL_NO_YEAR_RE.search(clause or "") is not None
+    )
+
+
+# ── Qualifiers: what makes two values of one field NOT the same quantity ────── #
+
+_QUALIFIER_RES: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("plant", re.compile(r"\b(pilot|demonstration|demo|commercial|trial|test)\s+"
+                         r"(?:plant|scale|facility|operation|module|line|circuit)\b", re.I)),
+    ("tax", re.compile(r"\b(pre|post|after|before)[\s-]?tax\b", re.I)),
+    ("case", re.compile(r"\b(base|expanded|expansion|upside|downside|low|high|alternative)"
+                        r"\s+(?:case|scenario)\b", re.I)),
+    ("cat", re.compile(r"\b(measured|indicated|inferred|proven|proved|probable)\b", re.I)),
+    ("basis", re.compile(r"\b(real|nominal)\s+(?:terms|basis|dollars|discount)\b", re.I)),
+)
+_DISCOUNT_RE = re.compile(
+    r"\bnpv\s?(\d{1,2}(?:\.\d)?)\b|(\d{1,2}(?:\.\d)?)\s*%\s*(?:real\s+|nominal\s+)?"
+    r"discount",
+    re.IGNORECASE,
+)
+_PRODUCT_STOP = frozenset(
+    "of per a an the at by for from in into and or to with on is was will be which that "
+    "capacity nameplate design plant".split()
+)
+
+
+def value_qualifiers(clause: str | None, field_key: str) -> frozenset[str]:
+    """Qualifiers that make two values of one field different QUANTITIES.
+
+    Tax basis and discount rate for NPV/IRR, category and resource-vs-reserve for a
+    mineral estimate, the product a capacity is of, pilot vs commercial plant, a stage,
+    phase or expansion, a named scenario. Two statements with different qualifier sets
+    are never ordered in time, and a gap asking for one is not closed by another.
+    """
+    text = clause or ""
+    out: set[str] = set()
+    for kind, pattern in _QUALIFIER_RES:
+        for match in pattern.finditer(text):
+            value = match.group(1).lower()
+            value = {"after": "post", "before": "pre", "proved": "proven",
+                     "demo": "demonstration"}.get(value, value)
+            out.add(f"{kind}:{value}")
+    for match in _DISCOUNT_RE.finditer(text):
+        out.add(f"disc:{match.group(1) or match.group(2)}")
+    for match in _STAGE_RE.finditer(text):
+        out.add(f"stage:{match.group(1).lower()} {match.group(2).lower()}")
+    if _EXPANSION_RE.search(text):
+        out.add("stage:expansion")
+    if field_key == "metric:mineral_resource":
+        low = text.lower()
+        if "reserve" in low:
+            out.add("class:reserve")
+        if "resource" in low:
+            out.add("class:resource")
+    if field_key == "metric:production_capacity":
+        for match in _CAPACITY_RE.finditer(text):
+            words = re.findall(r"[a-z][a-z0-9-]*", text[match.end(): match.end() + 40].lower())
+            product: list[str] = []
+            for word in words:
+                if word in _PRODUCT_STOP:
+                    if product:
+                        break
+                    continue
+                product.append(word)
+                if len(product) == 2:
+                    break
+            if product:
+                out.add("product:" + " ".join(product))
+            of = re.search(r"\bof\s+([a-z][a-z-]*(?:\s+(?!per\b|an?\b)[a-z][a-z-]*)?)",
+                           match.group(0).lower())
+            if of:
+                out.add("product:" + of.group(1))
+    return frozenset(out)
 
 
 # ── The persisted claim key ─────────────────────────────────────────────────── #
@@ -905,10 +1110,12 @@ __all__ = [
     "parse_claim_key",
     "parse_date",
     "period_rank",
+    "period_end_date",
     "project_key",
     "projects_compatible",
     "requested_period",
     "statement_period",
     "target_years",
+    "value_qualifiers",
     "years_in",
 ]

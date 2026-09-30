@@ -114,6 +114,20 @@ REASON_RECENCY_UNCONFIRMED = "recency_unconfirmed"
 REASON_DOCUMENT_ACQUIRED = "document_acquired"
 REASON_FACT_VALIDATED = "validated_fact_acquired"
 REASON_ALREADY_CLOSED = "already_closed"
+REASON_QUALIFIER_DIFFERS = "value_qualifier_differs"
+REASON_HISTORICAL_CITATION = "historical_citation"
+REASON_TARGET_PASSED = "target_date_passed"
+REASON_PERIOD_UNSPECIFIED = "period_unspecified"
+
+#: How recent evidence must be to answer a gap asking for the CURRENT value.
+RECENCY_WINDOW_DAYS = 365
+#: Relative difference within which a scale-rounded amount is the same amount.
+ROUNDED_SAME_TOLERANCE = 0.05
+#: Period-bound metrics: without a period a V2 item about one is never hidden.
+PERIOD_BOUND_FIELDS: frozenset[str] = frozenset(
+    {"metric:revenue", "metric:operating_cash_flow", "metric:cash", "metric:net_debt",
+     "metric:capex", "metric:capex_period", "metric:capex_sustaining"}
+)
 
 MAX_CLOSING_FINDINGS = 200
 MAX_DISAGREEMENTS_PER_GROUP = 4
@@ -343,9 +357,24 @@ def compare_values(a: _Value, b: _Value) -> str:
         if len(a.items) != len(b.items):
             return DIFFERENT
         for (_c1, v1, t1), (_c2, v2, t2) in zip(a.items, b.items, strict=True):
-            if abs(v1 - v2) > max(t1, t2):
-                return DIFFERENT
+            gap = abs(v1 - v2)
+            if gap <= 1e-9 * max(abs(v1), abs(v2), 1.0):
+                continue
+            # A scale-rounded form ("US$0.3bn") matches a precise one only within its
+            # own rounding AND within 5%: US$0.3bn is US$302m, never US$340m.
+            if gap <= max(t1, t2) and gap <= ROUNDED_SAME_TOLERANCE * max(abs(v1), abs(v2)):
+                continue
+            return DIFFERENT
         return SAME
+    if a.kind == "date":
+        # "2026" and "h2 2026" are one target stated at two precisions — a refinement,
+        # not a change of guidance.
+        years_a = {t[-4:] for t in a.items}
+        years_b = {t[-4:] for t in b.items}
+        if years_a == years_b and (
+            all(len(t) == 4 for t in a.items) or all(len(t) == 4 for t in b.items)
+        ):
+            return SAME
     return SAME if a.items == b.items else DIFFERENT
 
 
@@ -365,7 +394,7 @@ def supersede(
     findings: Sequence[FindingFacts],
 ) -> tuple[list[Supersession], list[TemporalDisagreement]]:
     """Order same-field GUIDANCE in time. Pure: returns what to persist."""
-    groups: dict[tuple[str, str, str, str], list[tuple[FindingFacts, _Value]]] = {}
+    groups: dict[tuple[str, str, str, str, str], list[tuple[FindingFacts, _Value]]] = {}
     for finding in findings:
         if finding.withdrawn:
             continue
@@ -388,12 +417,15 @@ def supersede(
                 (finding.scope_key or "").casefold(),
                 finding.project or "",  # EXACT: a stage is its own project
                 period or "",
+                # Tax basis, discount rate, resource category, product, pilot vs
+                # commercial, stage, scenario: any difference means two quantities.
+                "|".join(sorted(rf.value_qualifiers(clause, field_key))),
             )
             groups.setdefault(key, []).append((finding, value))
 
     supersessions: list[Supersession] = []
     disagreements: list[TemporalDisagreement] = []
-    for (field_key, _scope, _project, period), members in groups.items():
+    for (field_key, _scope, _project, period, _qualifiers), members in groups.items():
         if len(members) < 2:
             continue
         if all(compare_values(members[0][1], v) == SAME for _f, v in members[1:]):
@@ -520,6 +552,20 @@ def _field_match(finding: FindingFacts, requirement: str) -> list[str] | None:
     return None
 
 
+def _family_subtype_reasons(finding: FindingFacts, requirement: str) -> list[str]:
+    """A gap asking for capex in general, answered by money SPENT in a period or by
+    sustaining capital: related, not the same — shown, never closed."""
+    if requirement != rf.CAPEX_FAMILY:
+        return []
+    if any(sub in finding.fields for sub in ("metric:capex_period", "metric:capex_sustaining")):
+        return [REASON_SUBTYPE_DIFFERS]
+    if "metric:capex_project" not in finding.fields and rf.is_financial_period(
+        finding.effective_period
+    ):
+        return [REASON_SUBTYPE_DIFFERS]
+    return []
+
+
 def _scope_reasons(finding: FindingFacts, scope: str | None) -> list[str] | None:
     finding_segment = bool(finding.scope_key) and not _is_group_scope(finding.scope_key)
     if scope and scope.startswith("segment"):
@@ -559,18 +605,53 @@ def _period_reasons(finding: FindingFacts, gap_period: str | None) -> list[str]:
     return [REASON_OTHER_PERIOD]
 
 
-def _recency_reasons(finding: FindingFacts, gap_text: str, requirement: str) -> list[str]:
+def _recency_reasons(
+    finding: FindingFacts, gap_text: str, requirement: str, as_of: date
+) -> list[str]:
+    clause = rf.field_clause(finding.statement, requirement) if finding.statement else None
+    historical = clause is not None and rf.is_historical_citation(clause)
     if not rf.RECENCY_RE.search(gap_text or ""):
-        return []
-    if finding.published_at is None:
+        # Not asking for the current value; a quoted old study still only PARTLY answers.
+        return [REASON_HISTORICAL_CITATION] if historical else []
+    if finding.published_at is None or historical:
         return [REASON_RECENCY_UNCONFIRMED]
     years = rf.years_in(gap_text)
     if years and finding.published_at.year <= max(years):
         return [REASON_RECENCY_UNCONFIRMED]
-    clause = rf.field_clause(finding.statement, requirement) if finding.statement else None
-    if clause is not None and rf.is_historical_citation(clause):
+    if (as_of - finding.published_at).days > RECENCY_WINDOW_DAYS:
         return [REASON_RECENCY_UNCONFIRMED]
+    ended = rf.period_end_date(finding.effective_period)
+    if ended is not None and (as_of - ended).days > RECENCY_WINDOW_DAYS:
+        return [REASON_RECENCY_UNCONFIRMED]  # "current cash" answered by a 2022 balance
     return []
+
+
+def _milestone_reasons(
+    finding: FindingFacts, requirement: str, as_of: date
+) -> list[str] | None:
+    """A milestone answers only with a live TARGET: not one that predates its own
+    source, and — shown, never closed — not one whose date has already passed."""
+    if not requirement.startswith("milestone:"):
+        return []
+    clause = rf.field_clause(finding.statement, requirement) if finding.statement else None
+    if clause is None:
+        return [] if not finding.statement else None
+    years = [int(t[-4:]) for t in rf.target_years(clause)]
+    if finding.published_at is not None:
+        years = [y for y in years if y >= finding.published_at.year]
+    if not years:
+        return None
+    return [REASON_TARGET_PASSED] if max(years) < as_of.year else []
+
+
+def _qualifier_reasons(finding: FindingFacts, requirement: str, gap_text: str) -> list[str]:
+    wanted = {q for q in rf.value_qualifiers(gap_text, requirement)
+              if q.split(":", 1)[0] in {"tax", "disc", "cat", "class", "plant", "case", "product"}}
+    if not wanted:
+        return []
+    clause = rf.field_clause(finding.statement, requirement) if finding.statement else None
+    have = rf.value_qualifiers(clause or "", requirement)
+    return [] if wanted <= have else [REASON_QUALIFIER_DIFFERS]
 
 
 def _assess(
@@ -581,19 +662,24 @@ def _assess(
     gap_project: str | None,
     gap_period: str | None,
     scope: str | None,
+    as_of: date | None = None,
 ) -> list[str] | None:
     """``[]`` when the finding fully answers, reasons when partly, ``None`` when not."""
+    today = as_of or date.today()
     reasons: list[str] = []
     for part in (
         _field_match(finding, requirement),
         _project_reasons(finding, gap_project),
         _scope_reasons(finding, scope),
+        _milestone_reasons(finding, requirement, today),
     ):
         if part is None:
             return None
         reasons.extend(part)
+    reasons.extend(_family_subtype_reasons(finding, requirement))
     reasons.extend(_period_reasons(finding, gap_period))
-    reasons.extend(_recency_reasons(finding, gap_text, requirement))
+    reasons.extend(_recency_reasons(finding, gap_text, requirement, today))
+    reasons.extend(_qualifier_reasons(finding, requirement, gap_text))
     if not finding.is_primary:
         reasons.append(REASON_THIRD_PARTY_ONLY)
     return reasons
@@ -624,8 +710,10 @@ def reconcile(
     facts: Sequence[FactFacts] = (),
     documents: Sequence[DocumentFacts] = (),
     question_fields: Mapping[str, Sequence[str]] | None = None,
+    as_of: date | None = None,
 ) -> list[GapVerdict]:
-    """One verdict per gap. Pure: the caller persists."""
+    """One verdict per gap. Pure: the caller persists. ``as_of`` is the run date that
+    "current" and "has this target passed" are judged against."""
     live = [f for f in findings if not f.withdrawn]
     # Current guidance before prior guidance, primary sources before third parties.
     live.sort(key=lambda f: (f.superseded_by is not None, not f.is_primary))
@@ -633,7 +721,8 @@ def reconcile(
     for doc in documents:
         ready_docs.setdefault(doc.kind, doc)
     by_question = dict(question_fields or {})
-    return [_reconcile_one(gap, live, facts, ready_docs, by_question) for gap in gaps]
+    today = as_of or date.today()
+    return [_reconcile_one(gap, live, facts, ready_docs, by_question, today) for gap in gaps]
 
 
 def _reconcile_one(
@@ -642,6 +731,7 @@ def _reconcile_one(
     facts: Sequence[FactFacts],
     ready_docs: Mapping[str, DocumentFacts],
     question_fields: Mapping[str, Sequence[str]],
+    as_of: date | None = None,
 ) -> GapVerdict:
     if gap.status == ledger.GAP_CLOSED:
         return GapVerdict(
@@ -686,7 +776,7 @@ def _reconcile_one(
     for requirement in wanted:
         for finding in findings:
             reasons = _assess(finding, requirement, gap_text=text, gap_project=gap_project,
-                              gap_period=gap_period, scope=scope)
+                              gap_period=gap_period, scope=scope, as_of=as_of)
             if reasons is None:
                 continue
             if not reasons:
@@ -755,14 +845,50 @@ def normalise_item_text(text: str | None) -> str:
     return value.rstrip(" .;:!?")
 
 
+#: Words that make an item a DERIVED metric (a growth rate, a ratio, a margin): a
+#: finding stating the underlying figure does not answer it.
+_DERIVED_RE = re.compile(
+    r"\b(?:growth|ratio|ratios|margin|margins|yield|intensity|conversion|cagr|change|"
+    r"coverage|leverage|multiple|per\s+share|to|vs|versus|pct|percent|percentage|"
+    r"return|returns|payout|turnover\s+ratio)\b",
+    re.IGNORECASE,
+)
+_UNIT_SUFFIX_RE = re.compile(r"(?:\s+(?:mln|mn|m|bn|usd|eur|gbp|aud|local|reported))+$")
+
+
+def _exact_field_names() -> dict[str, str]:
+    names: dict[str, str] = {}
+    for f in rf.FIELDS:
+        for alias in (f.key.split(":", 1)[1], f.label, *f.metric_aliases, *f.fact_labels):
+            names.setdefault(alias.replace("_", " ").strip().lower(), f.key)
+    return names
+
+
+_EXACT_NAMES = _exact_field_names()
+
+
+def exact_field_for_item(name: str) -> str | None:
+    """The field a V2 missing-information NAME is, exactly, or ``None``.
+
+    ``fundamentals.capital_expenditure`` → capex; ``revenue_growth``,
+    ``net_debt_to_ebitda``, ``gross_margin`` → ``None``: a derived metric is not the
+    figure it is derived from.
+    """
+    tail = str(name or "").strip().lower().rsplit(".", 1)[-1].replace("_", " ")
+    tail = _UNIT_SUFFIX_RE.sub("", re.sub(r"\s+", " ", tail)).strip()
+    if not tail or _DERIVED_RE.search(tail):
+        return None
+    return _EXACT_NAMES.get(tail)
+
+
 def _label_item(
-    text: str, closers: Sequence[FindingFacts]
+    text: str, closers: Sequence[FindingFacts], as_of: date | None = None
 ) -> dict[str, Any] | None:
     fields = rf.fields_mentioned(text)
     if not fields:
         return None
     gap = GapFacts(gap_id="", gap_type=ledger.GAP_EVIDENCE_UNAVAILABLE, description=text)
-    verdict = _reconcile_one(gap, closers, (), {}, {})
+    verdict = _reconcile_one(gap, closers, (), {}, {}, as_of)
     return {
         "status": verdict.status,
         "fields": list(verdict.fields),
@@ -774,7 +900,7 @@ def _label_item(
 
 def _gap_clause(text: str) -> str | None:
     """The one clause holding BOTH a gap cue and a field, when the concern is no risk."""
-    if _RISK_RE.search(text):
+    if _RISK_RE.search(text) or _DERIVED_RE.search(text):
         return None
     # Original case: a project is named by its capitalised words.
     for clause in rf.CLAUSE_SPLIT_RE.split(text):
@@ -788,6 +914,7 @@ def label_v2_items(
     missing_items: Iterable[Mapping[str, Any] | str],
     concerns: Iterable[Mapping[str, Any]],
     closers: Sequence[FindingFacts],
+    as_of: date | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     """Label the V2 report's own gap statements against the V3 findings.
 
@@ -805,16 +932,30 @@ def label_v2_items(
         source = item.get("source") if isinstance(item, Mapping) else None
         if not name:
             continue
-        labelled = _label_item(str(name), live)
-        if labelled is not None:
-            missing_out.append({"field": str(name), "source": source, **labelled})
+        # EXACT names only: "revenue_growth" is not "revenue".
+        field_key = exact_field_for_item(str(name))
+        if field_key is None:
+            continue
+        labelled = _label_item(rf.label_of(field_key), live, as_of)
+        if labelled is None:
+            continue
+        if (
+            labelled["status"] == ledger.RECONCILED_CLOSED
+            and field_key in PERIOD_BOUND_FIELDS
+            and rf.statement_period(str(name)) is None
+        ):
+            # "revenue" with no period: a finding for SOME year is not THE figure the
+            # item names. Annotated, never hidden.
+            labelled["status"] = ledger.RECONCILED_PARTIALLY_CLOSED
+            labelled["reasons"] = [*labelled["reasons"], REASON_PERIOD_UNSPECIFIED]
+        missing_out.append({"field": str(name), "source": source, **labelled})
     concerns_out: list[dict[str, Any]] = []
     for index, concern in enumerate(concerns):
         text = str(concern.get("text") or "")
         clause = _gap_clause(text) if text else None
         if clause is None:
             continue
-        labelled = _label_item(clause, live)
+        labelled = _label_item(clause, live, as_of)
         if labelled is not None:
             concerns_out.append({
                 "text": text,
@@ -899,8 +1040,10 @@ async def reconcile_run(
     company_id: Any = None,
     core_filings: Mapping[str, Any] | None = None,
     core_disclosures: Mapping[str, Any] | None = None,
+    as_of: date | None = None,
 ) -> dict[str, Any]:
     """Supersede, reconcile, persist. Returns the record the report carries."""
+    as_of = as_of or date.today()
     from sqlalchemy import select
 
     from app.models.ledger import (
@@ -917,12 +1060,16 @@ async def reconcile_run(
 
     # 19 — supersession first, so closure prefers current guidance.
     supersessions, temporal = supersede([FindingFacts.from_row(r) for r in finding_rows])
-    marked: set[str] = set()
-    for s in supersessions:
-        # The column is the PRIMARY pointer (first field); every field is in the record.
-        if s.older_id not in marked:
-            await ledger.mark_superseded(session, by_id[s.older_id], by=by_id[s.newer_id])
-            marked.add(s.older_id)
+    # The column holds ONE pointer: the LATEST newer finding. The per-field map in the
+    # returned record (``supersessions``) is authoritative — a finding can be prior
+    # guidance for one field and current for another.
+    latest: dict[str, Supersession] = {}
+    for sup in supersessions:
+        held = latest.get(sup.older_id)
+        if held is None or sup.newer_published_at > held.newer_published_at:
+            latest[sup.older_id] = sup
+    for older_id, sup in latest.items():
+        await ledger.mark_superseded(session, by_id[older_id], by=by_id[sup.newer_id])
     existing_pairs = {
         frozenset((str(a), str(b)))
         for a, b in (await session.execute(
@@ -976,6 +1123,7 @@ async def reconcile_run(
         facts=facts,
         documents=ready_documents(core_filings, core_disclosures),
         question_fields=question_field_map(question_rows),
+        as_of=as_of,
     )
     gaps_by_id = {str(row.id): row for row in gap_rows}
     for verdict in verdicts:
@@ -993,7 +1141,8 @@ async def reconcile_run(
 
     closers = [f for f in findings if f.fields and not f.withdrawn]
     return {
-        "version": 2,
+        "version": 3,
+        "as_of": as_of.isoformat(),
         "gaps": [v.to_dict() for v in verdicts][:120],
         "counts": dict(sorted(counts.items())),
         "supersessions": [s.to_dict() for s in supersessions][:60],
