@@ -23,6 +23,9 @@ dependencies = [
     # Pillow (Pillow gates the future OCR raster path via a pixel cap). No system
     # deps, no OCR binary (tesseract/pdf2image/pymupdf intentionally excluded).
     "pdfplumber>=0.11,<0.12",
+    # W0 (open-web threat model D11): registrable-domain lookup. Pure-Python, ships a
+    # Public Suffix List snapshot in the wheel and makes NO network call at runtime.
+    "publicsuffixlist>=1.0.2,<2",
 ]
 
 [project.optional-dependencies]

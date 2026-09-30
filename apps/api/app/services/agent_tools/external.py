@@ -136,12 +136,41 @@ def _validate_search_web(arguments: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-async def _search_web(context: "ToolContext", arguments: dict[str, Any]) -> dict[str, Any]:
-    """One retrieval-backed external investigation. Returns CLAIMS, never evidence.
+def _discovery_mode_of(result: Any) -> tuple[str, int]:
+    """``(discovery_mode, executed_search_queries)`` for one provider result.
 
-    The provider searches, opens pages and reports what it found. What comes back is a
-    list of ``ResearchLead``-shaped claims, each carrying a URL the provider says it
-    opened — and every one of them is still a claim. The payload has no ``evidence_id``
+    Spec §22.3 / W0: provenance is a NETWORK FACT. ``search`` requires a recorded,
+    executed search query — the provider's own label when it gives one, else the
+    trace's executed-query count, else the consumption's ``web_search_calls``. With
+    none of those, the claims are the model's recall and are labelled so. Nothing
+    here can turn recall into search: a provider label of ``search`` with zero
+    executed queries is still recall.
+    """
+    metadata = getattr(result, "raw_provider_metadata", None) or {}
+    trace = metadata.get("trace") or {}
+    if "query_call_count" in trace:
+        executed = int(trace.get("query_call_count") or 0) - int(
+            trace.get("failed_query_call_count") or 0
+        )
+    else:
+        spent = getattr(result, "consumption", None)
+        executed = int(getattr(spent, "web_search_calls", 0) or 0)
+    executed = max(0, executed)
+    mode = "search" if executed > 0 else "model_recall"
+    if metadata.get("discovery_mode") == "model_recall":
+        mode = "model_recall"
+    return mode, executed
+
+
+async def _search_web(context: "ToolContext", arguments: dict[str, Any]) -> dict[str, Any]:
+    """One external investigation. Returns CLAIMS, never evidence.
+
+    The provider is ASKED to search, open pages and report what it found. Whether it
+    actually searched is read from its trace, not assumed (spec §22.3): with zero
+    executed search queries every lead is labelled ``discovery_mode="model_recall"``
+    and the tool summary says ``web_search_unavailable``. What comes back is a list of
+    ``ResearchLead``-shaped claims, each carrying a URL the provider cites — and every
+    one of them is still a claim. The payload has no ``evidence_id``
     anywhere in it, which is what stops the Investigator citing a search result: the
     model may only cite ids the tools returned, and this tool returns none.
 
@@ -170,15 +199,14 @@ async def _search_web(context: "ToolContext", arguments: dict[str, Any]) -> dict
     result = await provider.investigate(
         question=question,
         context=arguments.get("context"),
-        max_seconds=int(
-            getattr(context.cfg, "v3_external_search_timeout_seconds", 0) or 180
-        ),
+        max_seconds=int(context.cfg.v3_external_search_timeout_seconds),
         domains=arguments.get("domains") or None,
     )
 
     metadata = result.raw_provider_metadata or {}
     trace = metadata.get("trace") or {}
     spent = result.consumption
+    discovery_mode, executed_queries = _discovery_mode_of(result)
     leads = [
         {
             # Deliberately NOT "evidence_id" and NOT "id": `_citation_of` in the
@@ -195,12 +223,29 @@ async def _search_web(context: "ToolContext", arguments: dict[str, Any]) -> dict
             "claimed_publisher": lead.claimed_publisher,
             "claimed_metric": getattr(lead, "claimed_metric", None),
             "claimed_geography": getattr(lead, "claimed_geography", None),
+            # How the provider came by this claim — never "search" without an
+            # executed search query (spec §22.3).
+            "discovery_mode": discovery_mode,
             "verified_by_investingbuddy": False,
         }
         for index, lead in enumerate(result.research_leads[:MAX_LEADS_RETURNED])
     ]
+    if discovery_mode == "search":
+        summary = (
+            f"search_web: {len(leads)} claim(s) from {executed_queries} executed "
+            "search quer(ies); none verified yet"
+        )
+    else:
+        summary = (
+            "web_search_unavailable: the provider executed no search query; "
+            f"{len(leads)} claim(s) are model recall, none verified"
+        )
     return {
         "available": True,
+        "summary": summary,
+        "discovery_mode": discovery_mode,
+        "web_search": "executed" if discovery_mode == "search" else "web_search_unavailable",
+        "executed_search_queries": executed_queries,
         "status": result.status,
         "provider": result.provider,
         "model": result.model,
@@ -250,10 +295,12 @@ async def _search_web(context: "ToolContext", arguments: dict[str, Any]) -> dict
 SEARCH_WEB_SPEC = ToolSpec(
     name=TOOL_SEARCH_WEB,
     description=(
-        "Ask the configured external research provider a question. It searches the web, "
-        "opens pages and returns CLAIMS with the URLs it opened. Nothing it returns is "
-        "evidence and nothing it returns is citable — use fetch_public_source to verify "
-        "a claim against a document InvestingBuddy retrieves itself."
+        "Ask the configured external research provider a question. It is asked to search "
+        "the web and returns CLAIMS with the URLs it cites; `discovery_mode` says whether "
+        "a search actually ran (`search`) or the claims are the model's recall "
+        "(`model_recall`). Nothing it returns is evidence and nothing it returns is "
+        "citable — use fetch_public_source to verify a claim against a document "
+        "InvestingBuddy retrieves itself."
     ),
     handler=_search_web,
     validate_arguments=_validate_search_web,
@@ -342,6 +389,19 @@ async def _fetch_public_source(
         verify_lead,
     )
     from app.services.sources.publisher_tiers import publisher_tier
+    from app.services.sources.safe_web_fetcher import open_web_fetch_refusal
+
+    # W0 / D13: this is the open-web fetch (the host is model-chosen). On a runtime
+    # whose `ipaddress` classification is not trusted, refuse before anything else.
+    runtime_refusal = open_web_fetch_refusal()
+    if runtime_refusal is not None:
+        return {
+            "items": [],
+            "verified": False,
+            "refused": True,
+            "summary": f"refused: {runtime_refusal}",
+            "consumption": units_for(FETCH_UNITS, url_fetch_calls=0),
+        }
 
     lead = ResearchLead(
         claim_text=arguments["claim"],

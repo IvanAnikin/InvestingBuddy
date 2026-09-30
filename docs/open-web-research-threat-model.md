@@ -140,6 +140,25 @@ this specification is approved.
 | D13 | Python `ipaddress` classification was wrong for some ranges before 3.12.4 (CVE-2024-4032) | `infra/azure/modules/appservice.bicep` sets `PYTHON|3.12` with no patch version pinned, so the deployed patch level is not visible in code | Assert runtime ≥ 3.12.4 in a startup check, *and* use the explicit denylist rather than relying on `is_private` alone |
 | D14 | **Cookies persist across redirect hops.** The httpx client keeps a cookie jar, and one client serves every hop, so a `Set-Cookie` from hop 1 is sent on hop 2, which may be a different host | `document_fetcher.py:204, 215` | Disable cookie persistence (a no-op cookie jar); strip `Cookie` on every hop |
 
+**W0 status (branch `feature/web-w0-fetch-hardening`, not yet merged or deployed).** D1–D14
+are fixed in code and covered by `apps/api/tests/test_web_w0_fetch_hardening.py`
+(SSRF-01…SSRF-25). Implementation notes that differ from the "Fix" column:
+
+- D7: `Accept-Encoding: identity` is sent **and** a server that compresses anyway is decoded
+  incrementally from the raw stream (gzip/deflate only; any other encoding is refused) with
+  an exact decoded-bytes cap and a 100:1 ratio cap past 1 MB.
+- D8: new setting `SOURCE_FETCH_TOTAL_DEADLINE_SECONDS` (default 90), read by
+  `safe_web_fetcher.fetch_total_deadline_seconds` for page, document and JSON fetches.
+  `primary_document_total_timeout_seconds` keeps its separate meaning (fetch + extract).
+- D11: `publicsuffixlist` (bundled snapshot, no runtime network), full list including the
+  private section, in `services/sources/public_suffix.py`.
+- D12: `SafeLink.url` stays the stored, secret-stripped form; `SafeLink.fetch_target` is the
+  link as published and is what `company_ir` and the issuer traversal request.
+- D13: open-web fetch (`fetch_public_source`) is refused on Python < 3.12.4, and startup logs
+  the check; allowlisted fetches keep running on the explicit denylist.
+- `resolve_ip` is forced on whenever `SOURCE_CONNECTOR_ALLOWLIST_ONLY` is off, and the one live
+  fetch that ran without it (`live_document_extractor`) now resolves and pins.
+
 ### 2.4 Target defences (the open-web fetch policy)
 
 A URL is fetched only if **every** check below passes, and passes again on every redirect hop.

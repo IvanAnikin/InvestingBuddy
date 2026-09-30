@@ -522,7 +522,7 @@ async def screen_issuer(
     try:
         answer = await provider.investigate(
             question=screening_question(issuer, intent),
-            max_seconds=int(getattr(cfg, "v3_external_search_timeout_seconds", 0) or 180),
+            max_seconds=int(cfg.v3_external_search_timeout_seconds),
         )
     except Exception as exc:  # noqa: BLE001
         result.warnings.append(f"screening investigation failed ({type(exc).__name__})")

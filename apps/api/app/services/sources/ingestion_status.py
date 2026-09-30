@@ -195,7 +195,9 @@ def failure_code_for_block(reason: str | None) -> str:
         return FAILURE_BLOCKED_REDIRECT
     if "scheme" in text:
         return FAILURE_BLOCKED_SCHEME
-    if "allowlist" in text or "host" in text:
+    # W0: URL-shape refusals (userinfo, port, parser disagreement, forbidden
+    # characters, length) are host-policy refusals.
+    if "allowlist" in text or "host" in text or "unsafe url" in text:
         return FAILURE_BLOCKED_HOST
     if "timeout" in text or "timed out" in text:
         return FAILURE_FETCH_TIMEOUT
