@@ -2334,6 +2334,40 @@ function mockStatementsReportA(id) {
   });
 }
 
+// Item 20 — a proved pre-revenue developer: the professional report names the stage and
+// revenue is "pre-revenue / not applicable yet", never a missing figure.
+const DEV_STAGE_REPORT_ID = "00000000-0000-0000-0000-0000000001a0";
+
+function mockDevStageReport(id) {
+  const base = mockStatementsReportB(id);
+  const content = sampleReportContent({ withCouncil: true });
+  content.missing_information.missing_items.value.push({
+    field: "fundamentals.revenue",
+    source: "company_snapshot",
+  });
+  content.missing_information.total_missing_items += 1;
+  base.content_markdown = finalReportMarkdown(content);
+  const v3 = base.source_summary_json.v3_research;
+  v3.professional_research = professionalResearchPayload();
+  v3.professional_research.subject = {
+    ticker: "EXRTEST",
+    exchange: "AU",
+    name: "Example Resources Test Issuer",
+    stage: "development_stage_resource",
+  };
+  v3.stage = {
+    stage: "development_stage_resource",
+    signals: ["development_stage_resource"],
+    basis: ["P1: no revenue line in the FY2025 statements, which report a loss"],
+  };
+  v3.financial_statements_state.revenue_status = {
+    state: "pre_revenue",
+    label: "Revenue: pre-revenue / not applicable yet",
+    note: "Revenue and margins are not applicable yet; this is a stage, not a missing figure.",
+  };
+  return base;
+}
+
 function mockScopeReport(id) {
   const base = mockReport(id);
   base.title =
@@ -3564,6 +3598,9 @@ const server = createServer((req, res) => {
     }
     if (rid === STATEMENTS_A_REPORT_ID) {
       return send(res, 200, mockStatementsReportA(rid));
+    }
+    if (rid === DEV_STAGE_REPORT_ID) {
+      return send(res, 200, mockDevStageReport(rid));
     }
     if (rid === LEGACY_TECH_REPORT_ID) {
       return send(res, 200, mockLegacyTechnicalReport(rid));

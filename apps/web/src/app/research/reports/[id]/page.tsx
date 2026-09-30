@@ -24,6 +24,7 @@ import TrendChart from "@/components/research/TrendChart";
 import {
   buildResearchReportView,
   readCouncilMetadata,
+  relabelPreRevenue,
 } from "@/components/research/reportView";
 import {
   buildInvestmentCases,
@@ -192,12 +193,16 @@ export default async function ResearchReportPage({
       findingLabels,
     ),
   };
-  const missing = reconcileMissingItems(
+  const reconciledMissing = reconcileMissingItems(
     view.missing.items,
     view.missing.total,
     v3?.gapReconciliation ?? null,
     findingLabels,
   );
+  const missing = {
+    ...reconciledMissing,
+    items: relabelPreRevenue(reconciledMissing.items, view.snapshot.revenueStatus),
+  };
   // The two cases, argued by the COUNCIL rather than lifted verbatim from the
   // deterministic layer. Built from the RECONCILED reading, so a numeric claim
   // the guard withheld cannot reappear here. A report whose council predates

@@ -258,6 +258,8 @@ export interface FinancialSnapshotView {
   fromIssuerStatements: boolean;
   /** Platform-derived metrics over the issuer's own statement lines (cash runway). */
   derived: DerivedMetric[];
+  /** Item 20 — a proved pre-revenue developer: revenue is a stage, not a gap. */
+  revenueStatus?: { label: string; note: string | null } | null;
   annual: FinancialDatapoint[];
   currentPeriod: FinancialDatapoint[];
   /** Regulator/aggregator statement slots (SEC XBRL and similar). */
@@ -418,7 +420,27 @@ export function withIssuerStatements(
     currentState: periods.latestCurrent ? null : stateView(statements.currentPeriod),
     fromIssuerStatements: useAnnual || useCurrent,
     derived: statements.derived,
+    revenueStatus: statements.revenueStatus,
   };
+}
+
+const PRE_REVENUE_ITEM = /revenue|ebitda|gross_profit|margin/i;
+
+/**
+ * Item 20 — for a proved pre-revenue developer, a V2 "missing revenue / EBITDA / margin"
+ * item is not a missing-evidence gap: the figure does not exist yet. It stays listed,
+ * relabelled, so nothing disappears silently.
+ */
+export function relabelPreRevenue(
+  items: MissingItem[],
+  revenueStatus: { label: string } | null | undefined,
+): MissingItem[] {
+  if (!revenueStatus) return items;
+  return items.map((item) =>
+    PRE_REVENUE_ITEM.test(item.field)
+      ? { ...item, field: `${item.field} — not applicable yet (pre-revenue)` }
+      : item,
+  );
 }
 
 /** The header's words for a period: the period, else the situation, never a guess. */

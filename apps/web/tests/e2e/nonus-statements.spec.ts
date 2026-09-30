@@ -1,6 +1,7 @@
 import { adminTest as test, expect } from "../support/auth";
 import {
   periodText,
+  relabelPreRevenue,
   withIssuerStatements,
   type FinancialSnapshotView,
 } from "../../src/components/research/reportView";
@@ -107,6 +108,7 @@ function statements(over: Partial<V3FinancialStatements> = {}): V3FinancialState
     },
     derived: [],
     conflictCount: 0,
+    revenueStatus: null,
     ...over,
   };
 }
@@ -167,5 +169,43 @@ test.describe("C > B > A", () => {
         v3_research: { financial_statements_state: { annual: { state: "x", label: "y" } } },
       })?.annual,
     ).toBeNull();
+  });
+});
+
+const DEV_REPORT = "/research/reports/00000000-0000-0000-0000-0000000001a0";
+
+test.describe("item 20 — a development-stage resource company", () => {
+  test("revenue is a stage, not a missing figure", async ({ page }) => {
+    await page.goto(DEV_REPORT);
+    await expect(page.getByTestId("revenue-status")).toContainText(
+      "Revenue: pre-revenue / not applicable yet",
+    );
+    await expect(page.getByTestId("subject-stage")).toContainText(
+      "Development-stage resource company",
+    );
+    const technical = page.getByTestId("technical-gaps");
+    if (await technical.count()) {
+      await expect(technical).toContainText(
+        "fundamentals.revenue — not applicable yet (pre-revenue)",
+      );
+    }
+  });
+
+  test("V2 revenue gaps are relabelled, never dropped", () => {
+    const items = [
+      { field: "fundamentals.revenue", source: null },
+      { field: "fundamentals.ebitda", source: null },
+      { field: "profile.website", source: null },
+    ];
+    expect(relabelPreRevenue(items, null)).toBe(items);
+    expect(
+      relabelPreRevenue(items, { label: "Revenue: pre-revenue / not applicable yet" }).map(
+        (i) => i.field,
+      ),
+    ).toEqual([
+      "fundamentals.revenue — not applicable yet (pre-revenue)",
+      "fundamentals.ebitda — not applicable yet (pre-revenue)",
+      "profile.website",
+    ]);
   });
 });

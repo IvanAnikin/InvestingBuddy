@@ -191,9 +191,11 @@ def test_selection_works_with_no_signals_because_production_passes_none():
         )
 
 
-def test_pipeline_does_not_pass_signals_to_selection():
-    """Pins the production call itself, so the claim above is checked against the code
-    rather than restated."""
+def test_pipeline_passes_only_the_stage_detectors_signals_to_selection():
+    """Pins the production call itself. Item 20: the ONLY signals production selection
+    receives are the stage detector's positive-proof signals (``classification.stage``)
+    — never a model's, never a ticker list's. Classification alone still selects every
+    family above (``signals=()``)."""
     import inspect
 
     from app.services.pipeline import v3_pipeline
@@ -201,9 +203,9 @@ def test_pipeline_does_not_pass_signals_to_selection():
     source = inspect.getsource(v3_pipeline)
     call_start = source.index("selection = select_playbooks(")
     call = source[call_start : source.index(")", call_start)]
-    assert "signals" not in call, (
-        "production selection passes no signals; if that changes, update the test that "
-        "documents it rather than the documentation"
+    assert "signals=stage.signals" in call, (
+        "production selection takes signals from the stage detector only; if that "
+        "changes, update the test that documents it rather than the documentation"
     )
 
 

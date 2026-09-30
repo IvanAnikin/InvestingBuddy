@@ -160,6 +160,7 @@ export default function KeyFinancials({
     currentState,
     fromIssuerStatements,
     derived,
+    revenueStatus,
   } = snapshot;
   const hasAnything = groups.length > 0 || latestClose !== null;
   // Item 21 — the one sentence that says why no annual figure is shown, when the report
@@ -235,6 +236,20 @@ export default function KeyFinancials({
             </div>
           ))}
         </dl>
+      )}
+
+      {revenueStatus && (
+        <p
+          className="ib-breakable mt-3 max-w-2xl text-sm leading-relaxed text-[color:var(--ib-ink-2)]"
+          data-testid="revenue-status"
+        >
+          {revenueStatus.label}
+          {revenueStatus.note ? (
+            <span className="block text-xs text-[color:var(--ib-ink-3)]">
+              {revenueStatus.note}
+            </span>
+          ) : null}
+        </p>
       )}
 
       {fromIssuerStatements && (

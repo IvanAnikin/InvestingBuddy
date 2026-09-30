@@ -204,6 +204,10 @@ class ResearchPlan:
     degraded: list[str] = field(default_factory=list)
     playbook_versions: dict[str, int] = field(default_factory=dict)
     refined_by_model: bool = False
+    #: Item 20 — ``{question_key: overlay_playbook_id}``: a playbook question an overlay
+    #: superseded (a developer is not asked a producer's revenue-share question).
+    #: Recorded, never silent. Empty without an overlay.
+    superseded: dict[str, str] = field(default_factory=dict)
 
     @property
     def blocking_questions(self) -> list[PlannedQuestion]:
@@ -222,6 +226,7 @@ class ResearchPlan:
             "dropped_for_capacity": list(self.dropped_for_capacity),
             "playbook_versions": dict(self.playbook_versions),
             "refined_by_model": self.refined_by_model,
+            **({"superseded_by": dict(self.superseded)} if self.superseded else {}),
             "limits": {
                 "max_rounds": self.limits.max_rounds,
                 "max_tasks": self.limits.max_tasks,
@@ -317,9 +322,21 @@ async def plan_research(
     # 1. Playbook questions first: they are the methodology, and they are the only
     #    source permitted to mark a question blocking.
     replaced: set[str] = set()
+    # Item 20 — what an OVERLAY playbook supersedes in the others. Collected first,
+    # because selection order is by id and an overlay may come after what it replaces.
+    overlay_replaces: dict[str, str] = {}
+    for playbook in playbooks:
+        if getattr(playbook, "overlay", False):
+            for question in playbook.mandatory_questions():
+                for key in question.replaces:
+                    overlay_replaces.setdefault(key, playbook.playbook_id)
     for playbook in playbooks:
         plan.playbook_versions[playbook.playbook_id] = playbook.version
+        is_overlay = bool(getattr(playbook, "overlay", False))
         for question in playbook.mandatory_questions():
+            if not is_overlay and question.key in overlay_replaces:
+                plan.superseded[question.key] = overlay_replaces[question.key]
+                continue
             # Carried WHOLE. Rebuilding it field by field here is how
             # `required_calculations` was dropped once already; a copy with the origin
             # pinned cannot drop anything a later slice adds.

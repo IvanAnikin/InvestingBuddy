@@ -387,7 +387,12 @@ export type ProfessionalEditor = {
 
 export type ProfessionalResearch = {
   version: number | null;
-  subject: { ticker: string | null; name: string | null } | null;
+  subject: {
+    ticker: string | null;
+    name: string | null;
+    /** Item 20 — "development_stage_resource" when the stage detector proved it. */
+    stage?: string | null;
+  } | null;
   sections: ProfessionalSection[];
   /** Findings shown across all sections. Zero means the ledger had nothing to say. */
   findingCount: number;
@@ -480,6 +485,8 @@ export type V3FinancialStatements = {
   slots: Record<string, unknown>;
   derived: DerivedMetric[];
   conflictCount: number;
+  /** Item 20 — "Revenue: pre-revenue / not applicable yet" for a proved developer. */
+  revenueStatus: { label: string; note: string | null } | null;
 };
 
 /** A V2 gap statement, labelled against the V3 findings. */
@@ -1008,7 +1015,12 @@ export function readProfessionalResearch(v3Payload: unknown): ProfessionalResear
   if (sections.length === 0) return null;
 
   const subject = isRecord(raw.subject)
-    ? { ticker: str(raw.subject.ticker), name: str(raw.subject.name) }
+    ? {
+        ticker: str(raw.subject.ticker),
+        name: str(raw.subject.name),
+        // Only when the backend stated one, so every other subject is unchanged.
+        ...(str(raw.subject.stage) ? { stage: str(raw.subject.stage) } : {}),
+      }
     : null;
   const editor = isRecord(raw.editor)
     ? {
@@ -1153,6 +1165,15 @@ function readStatementsPayload(v: unknown): V3FinancialStatements | null {
       })
       .filter((d): d is DerivedMetric => d !== null),
     conflictCount: records(v.conflicts).length,
+    revenueStatus:
+      isRecord(v.revenue_status) &&
+      v.revenue_status.state === "pre_revenue" &&
+      str(v.revenue_status.label)
+        ? {
+            label: str(v.revenue_status.label) as string,
+            note: str(v.revenue_status.note),
+          }
+        : null,
   };
 }
 

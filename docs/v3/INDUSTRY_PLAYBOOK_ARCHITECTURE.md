@@ -149,3 +149,45 @@ The failure mode to avoid is building five sector integrations at once and havin
 none of them properly bounded, rate-limited or gap-honest. One source, wired
 correctly, beats four half-wired ones — the platform already learned this the
 expensive way with 28 reference-only connectors.
+
+## 8. Business-model signals and the development-stage overlay (item 20)
+
+Until item 20 production selection passed NO signals, so every
+`business_model_signals` declaration was dead. Selection now receives the signals of
+the stage detector (`app/services/classification/stage.py`) — and only those; a model
+or a ticker list never sets one. The detector reads the company's own extracted
+statement facts (`pipeline.issuer_financials.load_statement_facts`) and corpus, and
+proves, never assumes:
+
+* **P1** no or immaterial revenue in the latest annual / half-year statements (no revenue
+  line beside a loss or an operating cash outflow, or revenue < 10% of administrative
+  plus expensed exploration costs). No extracted statement ⇒ no P1.
+* **P2** exploration / development spend (an extracted line, or the documents naming
+  exploration-and-evaluation or capitalised development expenditure).
+* **P3** at least two project-disclosure terms (JORC, NI 43-101, S-K 1300, PERC, Mineral
+  Resource, Ore Reserve, scoping / PFS / DFS / BFS, FID, offtake agreement).
+
+`development_stage_resource` = P1 ∧ (P2 ∨ P3); `resource_extraction` = P3 ∧ the subject
+profile names a commodity. The detector never emits `pre_revenue` (that selects
+biotech). The assessment is on the report as `v3_research.stage`.
+
+**Overlays.** `Playbook.overlay=True` makes a playbook's `replaces` supersede OTHER
+playbooks' questions as well as the base model's. The supersession is recorded
+(`ResearchPlan.superseded`, `plan.to_dict()["superseded_by"]`,
+`v3_research.stage.superseded_questions`), never silent. `DEVELOPMENT_STAGE_RESOURCE`
+(v1) asks project questions — portfolio (blocking), product, resource and reserve,
+offtake, permits, construction and schedule, capex and funding (blocking), cash runway
+and dilution (`cash_runway_quarters`), the issuer's own study economics (NPV / IRR /
+assumptions as the issuer's stated figures, never a platform assessment),
+infrastructure, execution risk, revenue status — and supersedes revenue trajectory,
+profitability, cash generation, product revenue mix, the mining playbook's
+revenue-share `commodity_exposure`, unit costs, reserve life and producer offtake.
+Question wording names the `research_fields` vocabulary (capex, first production,
+offtake, NPV, IRR, cash runway, mineral resource, commissioning, FID) so gap
+reconciliation joins findings to these questions. For such a company the statements
+view carries `revenue_status: "Revenue: pre-revenue / not applicable yet"`, and V2
+"missing revenue / EBITDA / margin" items are relabelled "not applicable yet
+(pre-revenue)", never dropped.
+
+Producer, biotech and luxury plans are byte-identical to the plans before the overlay
+(`tests/fixtures/playbook_plans_before_overlay.json`, generated from the parent commit).

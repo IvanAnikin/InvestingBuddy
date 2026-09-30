@@ -1084,6 +1084,12 @@ export default function ProfessionalResearchReport({
         <p className={kicker}>Research report</p>
         <p className="ib-breakable mt-2 max-w-3xl text-sm leading-relaxed text-[color:var(--ib-ink-2)]">
           {subject ? `${subject} — ` : ""}
+          {report.subject?.stage === "development_stage_resource" && (
+            <span data-testid="subject-stage">
+              Development-stage resource company: researched as a project, not as a
+              producer — revenue is pre-revenue / not applicable yet.{" "}
+            </span>
+          )}
           {report.sections.length} sections assembled from the research ledger. Each
           finding is stated once, in the section that owns it, under a label such as F1;
           everything else refers to it by that label.
